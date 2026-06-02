@@ -343,7 +343,6 @@ sibling task.
 Small / shared / control-plane / CLI. Mostly independent; can be done
 piecewise.
 
-- [ ] `src/acp/agent.ts`
 - [ ] `src/agent/agent.ts`
 - [x] `src/bus/bus-event.ts`
 - [ ] `src/bus/index.ts`
