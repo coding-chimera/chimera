@@ -29,16 +29,16 @@ describe("resource", () => {
     process.env.OTEL_RESOURCE_ATTRIBUTES = "service.namespace=anomalyco,broken"
 
     expect(resource().attributes["service.namespace"]).toBeUndefined()
-    expect(resource().attributes["opencode.client"]).toBeDefined()
+    expect(resource().attributes["chimera.client"]).toBeDefined()
   })
 
   test("keeps built-in attributes when env values conflict", () => {
     process.env.OPENCODE_CLIENT = "cli"
     process.env.OTEL_RESOURCE_ATTRIBUTES =
-      "opencode.client=web,service.instance.id=override,service.namespace=anomalyco"
+      "chimera.client=web,service.instance.id=override,service.namespace=anomalyco"
 
     expect(resource().attributes).toMatchObject({
-      "opencode.client": "cli",
+      "chimera.client": "cli",
       "service.namespace": "anomalyco",
     })
     expect(resource().attributes["service.instance.id"]).not.toBe("override")

@@ -68,7 +68,7 @@ describe("Link header host", () => {
     const response = await app(true).request(`/session/${sessionID}/message?limit=2`, {
       headers: {
         host: "opencode.test:4096",
-        "x-opencode-directory": tmp.path,
+        "x-chimera-directory": tmp.path,
       },
     })
 
@@ -97,7 +97,7 @@ describe("404 mapping for missing session", () => {
     await using tmp = await tmpdir({ config: { formatter: false, lsp: false } })
 
     const response = await app(true).request("/session/ses_does_not_exist/todo", {
-      headers: { "x-opencode-directory": tmp.path },
+      headers: { "x-chimera-directory": tmp.path },
     })
 
     expect(response.status).toBe(404)
@@ -113,7 +113,7 @@ describe("404 mapping for missing session", () => {
 describe("Error JSON shape parity", () => {
   test("HttpApi 404 body matches Hono shape", async () => {
     await using tmp = await tmpdir({ config: { formatter: false, lsp: false } })
-    const headers = { "x-opencode-directory": tmp.path }
+    const headers = { "x-chimera-directory": tmp.path }
 
     const hono = await app(false).request("/session/ses_does_not_exist", { headers })
     const httpapi = await app(true).request("/session/ses_does_not_exist", { headers })

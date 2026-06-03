@@ -11,6 +11,7 @@ import { configEntryNameFromPath } from "./entry-name"
 import { InvalidError } from "./error"
 import * as ConfigMarkdown from "./markdown"
 import { ConfigModelID } from "./model-id"
+import { ConfigPaths } from "./paths"
 
 const log = Log.create({ service: "config" })
 
@@ -43,7 +44,7 @@ export async function load(dir: string) {
     })
     if (!md) continue
 
-    const patterns = ["/.opencode/command/", "/.opencode/commands/", "/command/", "/commands/"]
+    const patterns = [`/${ConfigPaths.APP_CONFIG_DIR}/command/`, `/${ConfigPaths.APP_CONFIG_DIR}/commands/`, "/command/", "/commands/"]
     const name = configEntryNameFromPath(item, patterns)
 
     const config = {

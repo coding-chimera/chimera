@@ -60,7 +60,7 @@ describe("experimental HttpApi", () => {
       },
     })
 
-    const headers = { "x-opencode-directory": tmp.path }
+    const headers = { "x-chimera-directory": tmp.path }
     const [consoleState, consoleOrgs, toolList, toolIDs, worktrees, resources] = await Promise.all([
       app().request(ExperimentalPaths.console, { headers }),
       app().request(ExperimentalPaths.consoleOrgs, { headers }),
@@ -116,7 +116,7 @@ describe("experimental HttpApi", () => {
 
     const switched = await app().request(ExperimentalPaths.consoleSwitch, {
       method: "POST",
-      headers: { "x-opencode-directory": tmp.path, "content-type": "application/json" },
+      headers: { "x-chimera-directory": tmp.path, "content-type": "application/json" },
       body: JSON.stringify({ accountID: "account-test", orgID: "org-test" }),
     })
 
@@ -137,7 +137,7 @@ describe("experimental HttpApi", () => {
       fn: async () => createSession({ title: "page-two" }),
     })
 
-    const headers = { "x-opencode-directory": tmp.path }
+    const headers = { "x-chimera-directory": tmp.path }
     const page = await app().request(
       `${ExperimentalPaths.session}?${new URLSearchParams({ directory: tmp.path, limit: "1" })}`,
       { headers },
@@ -164,7 +164,7 @@ describe("experimental HttpApi", () => {
   testWorktreeMutations("serves worktree mutations through Hono bridge", async () => {
     await using tmp = await tmpdir({ git: true, config: { formatter: false, lsp: false } })
 
-    const headers = { "x-opencode-directory": tmp.path, "content-type": "application/json" }
+    const headers = { "x-chimera-directory": tmp.path, "content-type": "application/json" }
     const created = await app().request(ExperimentalPaths.worktree, {
       method: "POST",
       headers,
@@ -173,7 +173,7 @@ describe("experimental HttpApi", () => {
 
     expect(created.status).toBe(200)
     const info = (await created.json()) as Worktree.Info
-    expect(info).toMatchObject({ name: "api-test", branch: "opencode/api-test" })
+    expect(info).toMatchObject({ name: "api-test", branch: "chimera/api-test" })
     await waitReady(info.directory)
 
     const listed = await app().request(ExperimentalPaths.worktree, { headers })

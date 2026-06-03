@@ -160,7 +160,7 @@ describe("session HttpApi", () => {
     "returns declared not found errors for read routes",
     withTmp({ git: true, config: { formatter: false, lsp: false } }, (tmp) =>
       Effect.gen(function* () {
-        const headers = { "x-opencode-directory": tmp.path }
+        const headers = { "x-chimera-directory": tmp.path }
         const missingSession = SessionID.descending()
         const missingSessionBody = {
           name: "NotFoundError",
@@ -201,7 +201,7 @@ describe("session HttpApi", () => {
     "serves read routes through Hono bridge",
     withTmp({ git: true, config: { formatter: false, lsp: false } }, (tmp) =>
       Effect.gen(function* () {
-        const headers = { "x-opencode-directory": tmp.path }
+        const headers = { "x-chimera-directory": tmp.path }
         const parent = yield* createSession(tmp.path, { title: "parent" })
         const child = yield* createSession(tmp.path, { title: "child", parentID: parent.id })
         const message = yield* createTextMessage(tmp.path, parent.id, "hello")
@@ -308,7 +308,7 @@ describe("session HttpApi", () => {
     "serves lifecycle mutation routes through Hono bridge",
     withTmp({ git: true, config: { formatter: false, lsp: false, share: "disabled" } }, (tmp) =>
       Effect.gen(function* () {
-        const headers = { "x-opencode-directory": tmp.path, "content-type": "application/json" }
+        const headers = { "x-chimera-directory": tmp.path, "content-type": "application/json" }
 
         const createdEmpty = yield* requestJson<Session.Info>(SessionPaths.create, {
           method: "POST",
@@ -368,7 +368,7 @@ describe("session HttpApi", () => {
 
         const created = yield* requestJson<Session.Info>(`${SessionPaths.create}?workspace=${workspace.id}`, {
           method: "POST",
-          headers: { "x-opencode-directory": tmp.path, "content-type": "application/json" },
+          headers: { "x-chimera-directory": tmp.path, "content-type": "application/json" },
           body: JSON.stringify({ title: "workspace session" }),
         })
 
@@ -392,7 +392,7 @@ describe("session HttpApi", () => {
     "matches legacy archived timestamp validation",
     withTmp({ git: true, config: { formatter: false, lsp: false } }, (tmp) =>
       Effect.gen(function* () {
-        const headers = { "x-opencode-directory": tmp.path, "content-type": "application/json" }
+        const headers = { "x-chimera-directory": tmp.path, "content-type": "application/json" }
         const legacy = yield* createSession(tmp.path, { title: "legacy" })
         const effect = yield* createSession(tmp.path, { title: "effect" })
         const body = JSON.stringify({ time: { archived: -1 } })
@@ -440,7 +440,7 @@ describe("session HttpApi", () => {
           path: "packages/opencode/src",
           directory: currentDir,
         })
-        const headers = { "x-opencode-directory": tmp.path }
+        const headers = { "x-chimera-directory": tmp.path }
         const legacy = (yield* json<Session.Info[]>(
           yield* requestWithBackend(false, `${SessionPaths.list}?${query}`, { headers }),
         )).map((item) => item.id)
@@ -459,7 +459,7 @@ describe("session HttpApi", () => {
     "matches legacy paginated message link headers",
     withTmp({ git: true, config: { formatter: false, lsp: false } }, (tmp) =>
       Effect.gen(function* () {
-        const headers = { "x-opencode-directory": tmp.path }
+        const headers = { "x-chimera-directory": tmp.path }
         const session = yield* createSession(tmp.path, { title: "messages" })
         yield* createTextMessage(tmp.path, session.id, "first")
         yield* createTextMessage(tmp.path, session.id, "second")
@@ -481,7 +481,7 @@ describe("session HttpApi", () => {
     "serves message mutation routes through Hono bridge",
     withTmp({ git: true, config: { formatter: false, lsp: false } }, (tmp) =>
       Effect.gen(function* () {
-        const headers = { "x-opencode-directory": tmp.path, "content-type": "application/json" }
+        const headers = { "x-chimera-directory": tmp.path, "content-type": "application/json" }
         const session = yield* createSession(tmp.path, { title: "messages" })
         const first = yield* createTextMessage(tmp.path, session.id, "first")
         const second = yield* createTextMessage(tmp.path, session.id, "second")
@@ -525,7 +525,7 @@ describe("session HttpApi", () => {
     "serves remaining non-LLM session mutation routes through Hono bridge",
     withTmp({ git: true, config: { formatter: false, lsp: false } }, (tmp) =>
       Effect.gen(function* () {
-        const headers = { "x-opencode-directory": tmp.path, "content-type": "application/json" }
+        const headers = { "x-chimera-directory": tmp.path, "content-type": "application/json" }
         const session = yield* createSession(tmp.path, { title: "remaining" })
 
         expect(

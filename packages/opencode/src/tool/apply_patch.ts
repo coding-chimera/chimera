@@ -14,6 +14,7 @@ import DESCRIPTION from "./apply_patch.txt"
 import { File } from "../file"
 import { Format } from "../format"
 import * as Bom from "@/util/bom"
+import { Chimera } from "@/chimera"
 
 export const Parameters = Schema.Struct({
   patchText: Schema.String.annotate({ description: "The full patch text that describes all changes to be made" }),
@@ -210,53 +211,66 @@ export const ApplyPatchTool = Tool.define(
         },
       })
 
-      // Apply the changes
-      const updates: Array<{ file: string; event: "add" | "change" | "unlink" }> = []
+      yield* Chimera.trackToolMutation(
+        {
+          toolID: "apply_patch",
+          ctx,
+          files: fileChanges.flatMap((change) => (change.movePath ? [change.filePath, change.movePath] : [change.filePath])),
+          bus,
+          metadata: {
+            files,
+          },
+        },
+        Effect.gen(function* () {
+          // Apply the changes
+          const updates: Array<{ file: string; event: "add" | "change" | "unlink" }> = []
 
-      for (const change of fileChanges) {
-        const edited = change.type === "delete" ? undefined : (change.movePath ?? change.filePath)
-        switch (change.type) {
-          case "add":
-            // Create parent directories (recursive: true is safe on existing/root dirs)
+          for (const change of fileChanges) {
+            const edited = change.type === "delete" ? undefined : (change.movePath ?? change.filePath)
+            switch (change.type) {
+              case "add":
+                // Create parent directories (recursive: true is safe on existing/root dirs)
 
-            yield* afs.writeWithDirs(change.filePath, Bom.join(change.newContent, change.bom))
-            updates.push({ file: change.filePath, event: "add" })
-            break
+                yield* afs.writeWithDirs(change.filePath, Bom.join(change.newContent, change.bom))
+                updates.push({ file: change.filePath, event: "add" })
+                break
 
-          case "update":
-            yield* afs.writeWithDirs(change.filePath, Bom.join(change.newContent, change.bom))
-            updates.push({ file: change.filePath, event: "change" })
-            break
+              case "update":
+                yield* afs.writeWithDirs(change.filePath, Bom.join(change.newContent, change.bom))
+                updates.push({ file: change.filePath, event: "change" })
+                break
 
-          case "move":
-            if (change.movePath) {
-              // Create parent directories (recursive: true is safe on existing/root dirs)
+              case "move":
+                if (change.movePath) {
+                  // Create parent directories (recursive: true is safe on existing/root dirs)
 
-              yield* afs.writeWithDirs(change.movePath!, Bom.join(change.newContent, change.bom))
-              yield* afs.remove(change.filePath)
-              updates.push({ file: change.filePath, event: "unlink" })
-              updates.push({ file: change.movePath, event: "add" })
+                  yield* afs.writeWithDirs(change.movePath!, Bom.join(change.newContent, change.bom))
+                  yield* afs.remove(change.filePath)
+                  updates.push({ file: change.filePath, event: "unlink" })
+                  updates.push({ file: change.movePath, event: "add" })
+                }
+                break
+
+              case "delete":
+                yield* afs.remove(change.filePath)
+                updates.push({ file: change.filePath, event: "unlink" })
+                break
             }
-            break
 
-          case "delete":
-            yield* afs.remove(change.filePath)
-            updates.push({ file: change.filePath, event: "unlink" })
-            break
-        }
-
-        if (edited) {
-          if (yield* format.file(edited)) {
-            yield* Bom.syncFile(afs, edited, change.bom)
+            if (edited) {
+              if (yield* format.file(edited)) {
+                yield* Bom.syncFile(afs, edited, change.bom)
+              }
+              yield* bus.publish(File.Event.Edited, { file: edited })
+            }
           }
-          yield* bus.publish(File.Event.Edited, { file: edited })
-        }
-      }
 
-      // Publish file change events
-      for (const update of updates) {
-        yield* bus.publish(FileWatcher.Event.Updated, update)
-      }
+          // Publish file change events
+          for (const update of updates) {
+            yield* bus.publish(FileWatcher.Event.Updated, update)
+          }
+        }),
+      )
 
       // Notify LSP of file changes and collect diagnostics
       for (const change of fileChanges) {

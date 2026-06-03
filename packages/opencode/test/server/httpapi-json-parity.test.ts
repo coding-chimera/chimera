@@ -115,7 +115,7 @@ describe("HttpApi JSON parity", () => {
         Effect.gen(function* () {
           yield* Effect.promise(() => Bun.write(`${tmp.path}/hello.txt`, "hello\n"))
 
-          const headers = { "x-opencode-directory": tmp.path }
+          const headers = { "x-chimera-directory": tmp.path }
           const legacy = app(false)
           const httpapi = app(true)
 
@@ -181,7 +181,7 @@ describe("HttpApi JSON parity", () => {
     "matches legacy JSON shape for session read endpoints",
     withTmp({ git: true, config: { formatter: false, lsp: false } }, (tmp) =>
       Effect.gen(function* () {
-        const headers = { "x-opencode-directory": tmp.path }
+        const headers = { "x-chimera-directory": tmp.path }
         const seeded = yield* seedSessions.pipe(Effect.provide(Session.defaultLayer))
         const legacy = app(false)
         const httpapi = app(true)

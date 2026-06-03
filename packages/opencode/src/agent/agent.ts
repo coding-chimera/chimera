@@ -1,4 +1,5 @@
 import { Config } from "@/config/config"
+import { ConfigPaths } from "@/config/paths"
 import z from "zod"
 import { Provider } from "@/provider/provider"
 import { ModelID, ProviderID } from "../provider/schema"
@@ -138,7 +139,7 @@ export const layer = Layer.effect(
                 },
                 edit: {
                   "*": "deny",
-                  [path.join(".opencode", "plans", "*.md")]: "allow",
+                  [path.join(ConfigPaths.APP_CONFIG_DIR, "plans", "*.md")]: "allow",
                   [path.relative(ctx.worktree, path.join(Global.Path.data, path.join("plans", "*.md")))]: "allow",
                 },
               }),

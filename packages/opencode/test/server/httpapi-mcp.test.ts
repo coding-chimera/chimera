@@ -27,7 +27,7 @@ type TestApp = ReturnType<typeof app>
 
 function request(route: string, directory: string, init?: RequestInit) {
   const headers = new Headers(init?.headers)
-  headers.set("x-opencode-directory", directory)
+  headers.set("x-chimera-directory", directory)
   return ExperimentalHttpApiServer.webHandler().handler(
     new Request(`http://localhost${route}`, {
       ...init,
@@ -44,9 +44,9 @@ function withMcpProject<A, E, R>(self: (dir: string) => Effect.Effect<A, E, R>) 
     const dir = yield* fs.makeTempDirectoryScoped({ prefix: "opencode-test-" })
 
     yield* fs.writeFileString(
-      path.join(dir, "opencode.json"),
+      path.join(dir, "chimera.json"),
       JSON.stringify({
-        $schema: "https://opencode.ai/config.json",
+        $schema: "https://chimera.ai/config.json",
         formatter: false,
         lsp: false,
         mcp: {
@@ -168,7 +168,7 @@ describe("mcp HttpApi", () => {
     "matches legacy unsupported OAuth error responses",
     withMcpProject((dir) =>
       Effect.gen(function* () {
-        const headers = { "x-opencode-directory": dir }
+        const headers = { "x-chimera-directory": dir }
         const legacy = app(false)
         const httpapi = app(true)
 

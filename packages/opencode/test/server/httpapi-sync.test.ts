@@ -36,7 +36,7 @@ describe("sync HttpApi", () => {
   test("serves sync routes through Hono bridge", async () => {
     Flag.OPENCODE_EXPERIMENTAL_WORKSPACES = true
     await using tmp = await tmpdir({ git: true, config: { formatter: false, lsp: false } })
-    const headers = { "x-opencode-directory": tmp.path, "content-type": "application/json" }
+    const headers = { "x-chimera-directory": tmp.path, "content-type": "application/json" }
     const info = spyOn(Log.create({ service: "server.sync" }), "info")
 
     const session = await WithInstance.provide({
@@ -87,7 +87,7 @@ describe("sync HttpApi", () => {
 
   test("matches legacy seq validation", async () => {
     await using tmp = await tmpdir({ git: true, config: { formatter: false, lsp: false } })
-    const headers = { "x-opencode-directory": tmp.path, "content-type": "application/json" }
+    const headers = { "x-chimera-directory": tmp.path, "content-type": "application/json" }
     const cases = [
       {
         path: SyncPaths.history,

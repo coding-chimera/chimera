@@ -56,7 +56,7 @@ describe("tui HttpApi bridge", () => {
 
   test("serves TUI command and event routes through experimental Effect routes", async () => {
     await using tmp = await tmpdir({ git: true, config: { formatter: false, lsp: false } })
-    const headers = { "x-opencode-directory": tmp.path }
+    const headers = { "x-chimera-directory": tmp.path }
 
     await expectTrue(TuiPaths.appendPrompt, headers, { text: "hello" })
     await expectTrue(TuiPaths.openHelp, headers)
@@ -83,7 +83,7 @@ describe("tui HttpApi bridge", () => {
 
   test("matches Hono missing selected session error body", async () => {
     await using tmp = await tmpdir({ git: true, config: { formatter: false, lsp: false } })
-    const headers = { "x-opencode-directory": tmp.path, "content-type": "application/json" }
+    const headers = { "x-chimera-directory": tmp.path, "content-type": "application/json" }
     const body = JSON.stringify({ sessionID: SessionID.descending() })
 
     const hono = await app(false).request(TuiPaths.selectSession, { method: "POST", headers, body })
@@ -95,7 +95,7 @@ describe("tui HttpApi bridge", () => {
 
   test("matches legacy unknown execute command behavior", async () => {
     await using tmp = await tmpdir({ git: true, config: { formatter: false, lsp: false } })
-    const headers = { "x-opencode-directory": tmp.path, "content-type": "application/json" }
+    const headers = { "x-chimera-directory": tmp.path, "content-type": "application/json" }
     const body = JSON.stringify({ command: "unknown_command" })
 
     const legacyCommand = nextCommandExecute()
@@ -117,7 +117,7 @@ describe("tui HttpApi bridge", () => {
   test("serves TUI control queue through experimental Effect routes", async () => {
     await using tmp = await tmpdir({ git: true, config: { formatter: false, lsp: false } })
     const pending = callTui({ req: { json: async () => ({ value: 1 }), path: "/demo" } } as unknown as Context)
-    const headers = { "x-opencode-directory": tmp.path }
+    const headers = { "x-chimera-directory": tmp.path }
 
     const next = await app().request(TuiPaths.controlNext, { headers })
     expect(next.status).toBe(200)

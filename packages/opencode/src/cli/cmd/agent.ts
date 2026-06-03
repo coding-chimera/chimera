@@ -13,6 +13,7 @@ import { EOL } from "os"
 import type { Argv } from "yargs"
 import { Effect } from "effect"
 import { effectCmd } from "../effect-cmd"
+import { ConfigPaths } from "@/config/paths"
 
 type AgentMode = "all" | "primary" | "subagent"
 
@@ -106,7 +107,10 @@ const AgentCreateCommand = effectCmd({
           if (prompts.isCancel(scopeResult)) throw new UI.CancelledError()
           scope = scopeResult
         }
-        targetPath = path.join(scope === "global" ? Global.Path.config : path.join(ctx.worktree, ".opencode"), "agents")
+        targetPath = path.join(
+          scope === "global" ? Global.Path.config : path.join(ctx.worktree, ConfigPaths.APP_CONFIG_DIR),
+          "agents",
+        )
       }
 
       // Get description

@@ -310,7 +310,7 @@ describe("HttpApi server", () => {
 
     const response = await app().request(fileUrl(), {
       headers: {
-        "x-opencode-directory": tmp.path,
+        "x-chimera-directory": tmp.path,
       },
     })
 
@@ -323,7 +323,7 @@ describe("HttpApi server", () => {
 
     const response = await app().request("/project/current", {
       headers: {
-        "x-opencode-directory": tmp.path,
+        "x-chimera-directory": tmp.path,
       },
     })
 
@@ -337,18 +337,18 @@ describe("HttpApi server", () => {
 
     const [missing, bad, good] = await Promise.all([
       app({ password: "secret" }).request(fileUrl(), {
-        headers: { "x-opencode-directory": tmp.path },
+        headers: { "x-chimera-directory": tmp.path },
       }),
       app({ password: "secret" }).request(fileUrl(), {
         headers: {
           authorization: authorization("opencode", "wrong"),
-          "x-opencode-directory": tmp.path,
+          "x-chimera-directory": tmp.path,
         },
       }),
       app({ password: "secret" }).request(fileUrl(), {
         headers: {
           authorization: authorization("opencode", "secret"),
-          "x-opencode-directory": tmp.path,
+          "x-chimera-directory": tmp.path,
         },
       }),
     ])
@@ -366,7 +366,7 @@ describe("HttpApi server", () => {
       fileUrl({ token: Buffer.from("opencode:secret").toString("base64") }),
       {
         headers: {
-          "x-opencode-directory": tmp.path,
+          "x-chimera-directory": tmp.path,
         },
       },
     )
@@ -382,7 +382,7 @@ describe("HttpApi server", () => {
 
     const response = await app().request(fileUrl({ directory: query.path }), {
       headers: {
-        "x-opencode-directory": header.path,
+        "x-chimera-directory": header.path,
       },
     })
 

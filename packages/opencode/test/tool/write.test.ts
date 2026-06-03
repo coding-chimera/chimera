@@ -92,6 +92,36 @@ describe("tool.write", () => {
         expect(content).toBe("relative content")
       }),
     )
+
+    it.instance("records Chimera provenance for file mutations", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "tracked.ts")
+        yield* run(
+          { filePath: filepath, content: "export const tracked = 1\n" },
+          { ...ctx, callID: "call_write_provenance" },
+        )
+
+        const artifact = path.join(test.directory, ".codegraph", "chimera", "tool-provenance.jsonl")
+        const text = yield* Effect.promise(() => fs.readFile(artifact, "utf-8"))
+        const lines = text.trim().split("\n")
+        const record = JSON.parse(lines[lines.length - 1]!)
+
+        expect(record.tool.id).toBe("write")
+        expect(record.tool.callID).toBe("call_write_provenance")
+        expect(record.status).toBe("success")
+        expect(record.graph.before.revision).toEqual(expect.any(String))
+        expect(record.graph.after.revision).toEqual(expect.any(String))
+        expect(record.graph.after.revision).not.toBe(record.graph.before.revision)
+        expect(record.files).toContainEqual(
+          expect.objectContaining({
+            graphPath: "tracked.ts",
+            insideGraph: true,
+          }),
+        )
+        expect(record.graph.sync.filesAdded).toBe(1)
+      }),
+    )
   })
 
   describe("existing file overwrite", () => {

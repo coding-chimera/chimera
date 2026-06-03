@@ -5,8 +5,15 @@ import path from "path"
 import { Global } from "@opencode-ai/core/global"
 
 describe("global paths", () => {
+  test("default xdg paths use the Chimera app slug", () => {
+    expect(path.basename(Global.Path.config)).toBe("chimera")
+    expect(path.basename(Global.Path.data)).toBe("chimera")
+    expect(path.basename(Global.Path.cache)).toBe("chimera")
+    expect(path.basename(Global.Path.state)).toBe("chimera")
+  })
+
   test("tmp path is under the system temp directory", () => {
-    expect(Global.Path.tmp).toBe(path.join(os.tmpdir(), "opencode"))
+    expect(Global.Path.tmp).toBe(path.join(os.tmpdir(), "chimera"))
     expect(Global.make().tmp).toBe(Global.Path.tmp)
   })
 

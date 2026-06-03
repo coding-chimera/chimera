@@ -5,7 +5,7 @@ import { NonNegativeInt, withStatics } from "@/util/schema"
 import { Global } from "@opencode-ai/core/global"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 
-export const OAUTH_DUMMY_KEY = "opencode-oauth-dummy-key"
+export const OAUTH_DUMMY_KEY = "chimera-oauth-dummy-key"
 
 const AccountID = Schema.String.pipe(
   Schema.brand("AccountID"),

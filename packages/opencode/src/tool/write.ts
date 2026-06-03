@@ -14,6 +14,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { trimDiff } from "./edit"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import * as Bom from "@/util/bom"
+import { Chimera } from "@/chimera"
 
 const MAX_PROJECT_DIAGNOSTICS_FILES = 5
 
@@ -61,15 +62,28 @@ export const WriteTool = Tool.define(
             },
           })
 
-          yield* fs.writeWithDirs(filepath, Bom.join(contentNew, desiredBom))
-          if (yield* format.file(filepath)) {
-            yield* Bom.syncFile(fs, filepath, desiredBom)
-          }
-          yield* bus.publish(File.Event.Edited, { file: filepath })
-          yield* bus.publish(FileWatcher.Event.Updated, {
-            file: filepath,
-            event: exists ? "change" : "add",
-          })
+          yield* Chimera.trackToolMutation(
+            {
+              toolID: "write",
+              ctx,
+              files: [filepath],
+              bus,
+              metadata: {
+                exists,
+              },
+            },
+            Effect.gen(function* () {
+              yield* fs.writeWithDirs(filepath, Bom.join(contentNew, desiredBom))
+              if (yield* format.file(filepath)) {
+                yield* Bom.syncFile(fs, filepath, desiredBom)
+              }
+              yield* bus.publish(File.Event.Edited, { file: filepath })
+              yield* bus.publish(FileWatcher.Event.Updated, {
+                file: filepath,
+                event: exists ? "change" : "add",
+              })
+            }),
+          )
 
           let output = "Wrote file successfully."
           yield* lsp.touchFile(filepath, "document")

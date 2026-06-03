@@ -27,5 +27,6 @@ target
 opencode-dev
 UPCOMING_CHANGELOG.md
 logs/
+.codegraph/
 *.bun-build
 tsconfig.tsbuildinfo
