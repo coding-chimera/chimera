@@ -59,7 +59,7 @@ function serverUrl() {
   return HttpServer.HttpServer.use((server) => Effect.succeed(HttpServer.formatAddress(server.address)))
 }
 
-const directoryHeader = (dir: string) => HttpClientRequest.setHeader("x-opencode-directory", dir)
+const directoryHeader = (dir: string) => HttpClientRequest.setHeader("x-chimera-directory", dir)
 
 afterEach(async () => {
   Flag.OPENCODE_EXPERIMENTAL_HTTPAPI = original
@@ -70,7 +70,7 @@ afterEach(async () => {
 describe("pty HttpApi bridge", () => {
   test("serves available shell list through experimental Effect routes", async () => {
     await using tmp = await tmpdir({ git: true, config: { formatter: false, lsp: false } })
-    const response = await app().request(PtyPaths.shells, { headers: { "x-opencode-directory": tmp.path } })
+    const response = await app().request(PtyPaths.shells, { headers: { "x-chimera-directory": tmp.path } })
 
     expect(response.status).toBe(200)
     expect(await response.json()).toEqual(
@@ -86,7 +86,7 @@ describe("pty HttpApi bridge", () => {
 
   testPty("serves PTY JSON routes through experimental Effect routes", async () => {
     await using tmp = await tmpdir({ git: true, config: { formatter: false, lsp: false } })
-    const headers = { "x-opencode-directory": tmp.path }
+    const headers = { "x-chimera-directory": tmp.path }
     const list = await app().request(PtyPaths.list, { headers })
     expect(list.status).toBe(200)
     expect(await list.json()).toEqual([])
@@ -123,7 +123,7 @@ describe("pty HttpApi bridge", () => {
 
   test("matches Hono missing PTY error body", async () => {
     await using tmp = await tmpdir({ git: true, config: { formatter: false, lsp: false } })
-    const headers = { "x-opencode-directory": tmp.path }
+    const headers = { "x-chimera-directory": tmp.path }
     const path = PtyPaths.get.replace(":ptyID", PtyID.ascending())
 
     const hono = await app(false).request(path, { headers })
@@ -136,7 +136,7 @@ describe("pty HttpApi bridge", () => {
   test("returns 404 for missing PTY websocket before upgrade", async () => {
     await using tmp = await tmpdir({ git: true, config: { formatter: false, lsp: false } })
     const response = await app().request(PtyPaths.connect.replace(":ptyID", PtyID.ascending()), {
-      headers: { "x-opencode-directory": tmp.path },
+      headers: { "x-chimera-directory": tmp.path },
     })
     expect(response.status).toBe(404)
   })

@@ -12,6 +12,7 @@ import * as ConfigMarkdown from "./markdown"
 import { ConfigModelID } from "./model-id"
 import { ConfigParse } from "./parse"
 import { ConfigPermission } from "./permission"
+import { ConfigPaths } from "./paths"
 
 const log = Log.create({ service: "config" })
 
@@ -126,7 +127,7 @@ export async function load(dir: string) {
     })
     if (!md) continue
 
-    const patterns = ["/.opencode/agent/", "/.opencode/agents/", "/agent/", "/agents/"]
+    const patterns = [`/${ConfigPaths.APP_CONFIG_DIR}/agent/`, `/${ConfigPaths.APP_CONFIG_DIR}/agents/`, "/agent/", "/agents/"]
     const name = configEntryNameFromPath(item, patterns)
 
     const config = {

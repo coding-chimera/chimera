@@ -51,7 +51,7 @@ describe("Worktree", () => {
 
             expect(info.name).toBeDefined()
             expect(typeof info.name).toBe("string")
-            expect(info.branch).toBe(`opencode/${info.name}`)
+            expect(info.branch).toBe(`chimera/${info.name}`)
             expect(info.directory).toContain(info.name)
           }),
         { git: true },
@@ -66,7 +66,7 @@ describe("Worktree", () => {
             const info = yield* svc.makeWorktreeInfo("my-feature")
 
             expect(info.name).toBe("my-feature")
-            expect(info.branch).toBe("opencode/my-feature")
+            expect(info.branch).toBe("chimera/my-feature")
           }),
         { git: true },
       ),
@@ -107,7 +107,7 @@ describe("Worktree", () => {
             const info = yield* svc.create()
 
             expect(info.name).toBeDefined()
-            expect(info.branch).toStartWith("opencode/")
+            expect(info.branch).toStartWith("chimera/")
             expect(info.directory).toBeDefined()
 
             yield* Effect.promise(() => Bun.sleep(1000))
@@ -128,7 +128,7 @@ describe("Worktree", () => {
             const info = yield* svc.create()
 
             expect(info.name).toBeDefined()
-            expect(info.branch).toStartWith("opencode/")
+            expect(info.branch).toStartWith("chimera/")
 
             const text = yield* Effect.promise(() => $`git worktree list --porcelain`.cwd(dir).quiet().text())
             const next = yield* Effect.promise(() => fs.realpath(info.directory).catch(() => info.directory))
@@ -160,7 +160,7 @@ describe("Worktree", () => {
             const info = yield* svc.create({ name: "test-workspace" })
 
             expect(info.name).toBe("test-workspace")
-            expect(info.branch).toBe("opencode/test-workspace")
+            expect(info.branch).toBe("chimera/test-workspace")
 
             yield* Effect.promise(() => ready)
             yield* Effect.promise(() =>

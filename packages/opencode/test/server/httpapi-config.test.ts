@@ -38,7 +38,7 @@ describe("config HttpApi", () => {
       method: "PATCH",
       headers: {
         "content-type": "application/json",
-        "x-opencode-directory": tmp.path,
+        "x-chimera-directory": tmp.path,
       },
       body: JSON.stringify({ username: "patched-user", formatter: false, lsp: false }),
     })

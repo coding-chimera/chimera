@@ -19,9 +19,9 @@ import { WithInstance } from "../../src/project/with-instance"
 //   await using tmp = await tmpdir({
 //     init: async (dir) => {
 //       await Bun.write(
-//         path.join(dir, "opencode.json"),
+//         path.join(dir, "chimera.json"),
 //         JSON.stringify({
-//           $schema: "https://opencode.ai/config.json",
+//           $schema: "https://chimera.ai/config.json",
 //         }),
 //       )
 //     },
@@ -43,9 +43,9 @@ import { WithInstance } from "../../src/project/with-instance"
 //   await using tmp = await tmpdir({
 //     init: async (dir) => {
 //       await Bun.write(
-//         path.join(dir, "opencode.json"),
+//         path.join(dir, "chimera.json"),
 //         JSON.stringify({
-//           $schema: "https://opencode.ai/config.json",
+//           $schema: "https://chimera.ai/config.json",
 //           provider: {
 //             gitlab: {
 //               options: {
@@ -75,9 +75,9 @@ import { WithInstance } from "../../src/project/with-instance"
 //   await using tmp = await tmpdir({
 //     init: async (dir) => {
 //       await Bun.write(
-//         path.join(dir, "opencode.json"),
+//         path.join(dir, "chimera.json"),
 //         JSON.stringify({
-//           $schema: "https://opencode.ai/config.json",
+//           $schema: "https://chimera.ai/config.json",
 //         }),
 //       )
 //     },
@@ -112,9 +112,9 @@ import { WithInstance } from "../../src/project/with-instance"
 //   await using tmp = await tmpdir({
 //     init: async (dir) => {
 //       await Bun.write(
-//         path.join(dir, "opencode.json"),
+//         path.join(dir, "chimera.json"),
 //         JSON.stringify({
-//           $schema: "https://opencode.ai/config.json",
+//           $schema: "https://chimera.ai/config.json",
 //         }),
 //       )
 //     },
@@ -148,9 +148,9 @@ import { WithInstance } from "../../src/project/with-instance"
 //   await using tmp = await tmpdir({
 //     init: async (dir) => {
 //       await Bun.write(
-//         path.join(dir, "opencode.json"),
+//         path.join(dir, "chimera.json"),
 //         JSON.stringify({
-//           $schema: "https://opencode.ai/config.json",
+//           $schema: "https://chimera.ai/config.json",
 //           provider: {
 //             gitlab: {
 //               options: {
@@ -180,9 +180,9 @@ import { WithInstance } from "../../src/project/with-instance"
 //   await using tmp = await tmpdir({
 //     init: async (dir) => {
 //       await Bun.write(
-//         path.join(dir, "opencode.json"),
+//         path.join(dir, "chimera.json"),
 //         JSON.stringify({
-//           $schema: "https://opencode.ai/config.json",
+//           $schema: "https://chimera.ai/config.json",
 //           provider: {
 //             gitlab: {
 //               options: {
@@ -210,9 +210,9 @@ import { WithInstance } from "../../src/project/with-instance"
 //   await using tmp = await tmpdir({
 //     init: async (dir) => {
 //       await Bun.write(
-//         path.join(dir, "opencode.json"),
+//         path.join(dir, "chimera.json"),
 //         JSON.stringify({
-//           $schema: "https://opencode.ai/config.json",
+//           $schema: "https://chimera.ai/config.json",
 //         }),
 //       )
 //     },
@@ -236,9 +236,9 @@ import { WithInstance } from "../../src/project/with-instance"
 //   await using tmp = await tmpdir({
 //     init: async (dir) => {
 //       await Bun.write(
-//         path.join(dir, "opencode.json"),
+//         path.join(dir, "chimera.json"),
 //         JSON.stringify({
-//           $schema: "https://opencode.ai/config.json",
+//           $schema: "https://chimera.ai/config.json",
 //           provider: {
 //             gitlab: {
 //               options: {
@@ -271,9 +271,9 @@ import { WithInstance } from "../../src/project/with-instance"
 //   await using tmp = await tmpdir({
 //     init: async (dir) => {
 //       await Bun.write(
-//         path.join(dir, "opencode.json"),
+//         path.join(dir, "chimera.json"),
 //         JSON.stringify({
-//           $schema: "https://opencode.ai/config.json",
+//           $schema: "https://chimera.ai/config.json",
 //         }),
 //       )
 //     },
@@ -299,7 +299,7 @@ import { WithInstance } from "../../src/project/with-instance"
 //   test("duo-workflow-* model routes through workflowChat", async () => {
 //     await using tmp = await tmpdir({
 //       init: async (dir) => {
-//         await Bun.write(path.join(dir, "opencode.json"), JSON.stringify({ $schema: "https://opencode.ai/config.json" }))
+//         await Bun.write(path.join(dir, "chimera.json"), JSON.stringify({ $schema: "https://chimera.ai/config.json" }))
 //       },
 //     })
 //     await WithInstance.provide({
@@ -347,7 +347,7 @@ import { WithInstance } from "../../src/project/with-instance"
 //   test("duo-chat-* model routes through agenticChat (not workflow)", async () => {
 //     await using tmp = await tmpdir({
 //       init: async (dir) => {
-//         await Bun.write(path.join(dir, "opencode.json"), JSON.stringify({ $schema: "https://opencode.ai/config.json" }))
+//         await Bun.write(path.join(dir, "chimera.json"), JSON.stringify({ $schema: "https://chimera.ai/config.json" }))
 //       },
 //     })
 //     await WithInstance.provide({
@@ -370,7 +370,7 @@ import { WithInstance } from "../../src/project/with-instance"
 //   test("model.options merged with provider.options in getLanguage", async () => {
 //     await using tmp = await tmpdir({
 //       init: async (dir) => {
-//         await Bun.write(path.join(dir, "opencode.json"), JSON.stringify({ $schema: "https://opencode.ai/config.json" }))
+//         await Bun.write(path.join(dir, "chimera.json"), JSON.stringify({ $schema: "https://chimera.ai/config.json" }))
 //       },
 //     })
 //     await WithInstance.provide({
@@ -394,7 +394,7 @@ import { WithInstance } from "../../src/project/with-instance"
 //   test("static duo-chat models always present regardless of discovery", async () => {
 //     await using tmp = await tmpdir({
 //       init: async (dir) => {
-//         await Bun.write(path.join(dir, "opencode.json"), JSON.stringify({ $schema: "https://opencode.ai/config.json" }))
+//         await Bun.write(path.join(dir, "chimera.json"), JSON.stringify({ $schema: "https://chimera.ai/config.json" }))
 //       },
 //     })
 //     await WithInstance.provide({

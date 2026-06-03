@@ -32,6 +32,7 @@ import { ProjectID } from "../project/schema"
 import { WorkspaceID } from "../control-plane/schema"
 import { SessionID, MessageID, PartID } from "./schema"
 import { ModelID, ProviderID } from "@/provider/schema"
+import { ConfigPaths } from "@/config/paths"
 
 import type { Provider } from "@/provider/provider"
 import { Permission } from "@/permission"
@@ -345,7 +346,7 @@ export const Event = {
 
 export function plan(input: { slug: string; time: { created: number } }, instance: InstanceContext) {
   const base = instance.project.vcs
-    ? path.join(instance.worktree, ".opencode", "plans")
+    ? path.join(instance.worktree, ConfigPaths.APP_CONFIG_DIR, "plans")
     : path.join(Global.Path.data, "plans")
   return path.join(base, [input.time.created, input.slug].join("-") + ".md")
 }

@@ -322,9 +322,9 @@ describe("session.llm.stream", () => {
     await using tmp = await tmpdir({
       init: async (dir) => {
         await Bun.write(
-          path.join(dir, "opencode.json"),
+          path.join(dir, "chimera.json"),
           JSON.stringify({
-            $schema: "https://opencode.ai/config.json",
+            $schema: "https://chimera.ai/config.json",
             enabled_providers: [providerID],
             provider: {
               [providerID]: {
@@ -409,9 +409,9 @@ describe("session.llm.stream", () => {
     await using tmp = await tmpdir({
       init: async (dir) => {
         await Bun.write(
-          path.join(dir, "opencode.json"),
+          path.join(dir, "chimera.json"),
           JSON.stringify({
-            $schema: "https://opencode.ai/config.json",
+            $schema: "https://chimera.ai/config.json",
             enabled_providers: [providerID],
             provider: {
               [providerID]: {
@@ -499,9 +499,9 @@ describe("session.llm.stream", () => {
     await using tmp = await tmpdir({
       init: async (dir) => {
         await Bun.write(
-          path.join(dir, "opencode.json"),
+          path.join(dir, "chimera.json"),
           JSON.stringify({
-            $schema: "https://opencode.ai/config.json",
+            $schema: "https://chimera.ai/config.json",
             enabled_providers: [providerID],
             provider: {
               [providerID]: {
@@ -606,9 +606,9 @@ describe("session.llm.stream", () => {
     await using tmp = await tmpdir({
       init: async (dir) => {
         await Bun.write(
-          path.join(dir, "opencode.json"),
+          path.join(dir, "chimera.json"),
           JSON.stringify({
-            $schema: "https://opencode.ai/config.json",
+            $schema: "https://chimera.ai/config.json",
             enabled_providers: ["openai"],
             provider: {
               openai: {
@@ -722,9 +722,9 @@ describe("session.llm.stream", () => {
     await using tmp = await tmpdir({
       init: async (dir) => {
         await Bun.write(
-          path.join(dir, "opencode.json"),
+          path.join(dir, "chimera.json"),
           JSON.stringify({
-            $schema: "https://opencode.ai/config.json",
+            $schema: "https://chimera.ai/config.json",
             enabled_providers: ["openai"],
             provider: {
               openai: {
@@ -848,9 +848,9 @@ describe("session.llm.stream", () => {
     await using tmp = await tmpdir({
       init: async (dir) => {
         await Bun.write(
-          path.join(dir, "opencode.json"),
+          path.join(dir, "chimera.json"),
           JSON.stringify({
-            $schema: "https://opencode.ai/config.json",
+            $schema: "https://chimera.ai/config.json",
             enabled_providers: [providerID],
             provider: {
               [providerID]: {
@@ -959,9 +959,9 @@ describe("session.llm.stream", () => {
     await using tmp = await tmpdir({
       init: async (dir) => {
         await Bun.write(
-          path.join(dir, "opencode.json"),
+          path.join(dir, "chimera.json"),
           JSON.stringify({
-            $schema: "https://opencode.ai/config.json",
+            $schema: "https://chimera.ai/config.json",
             enabled_providers: ["anthropic"],
             provider: {
               anthropic: {
@@ -1207,9 +1207,9 @@ describe("session.llm.stream", () => {
     await using tmp = await tmpdir({
       init: async (dir) => {
         await Bun.write(
-          path.join(dir, "opencode.json"),
+          path.join(dir, "chimera.json"),
           JSON.stringify({
-            $schema: "https://opencode.ai/config.json",
+            $schema: "https://chimera.ai/config.json",
             enabled_providers: [providerID],
             provider: {
               [providerID]: {

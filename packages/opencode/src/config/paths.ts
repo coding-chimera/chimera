@@ -7,6 +7,10 @@ import { unique } from "remeda"
 import * as Effect from "effect/Effect"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 
+export const APP_CONFIG_NAME = "chimera"
+export const APP_CONFIG_DIR = ".chimera"
+export const APP_CONFIG_FILES = [`${APP_CONFIG_NAME}.json`, `${APP_CONFIG_NAME}.jsonc`] as const
+
 export const files = Effect.fn("ConfigPaths.projectFiles")(function* (
   name: string,
   directory: string,
@@ -26,13 +30,13 @@ export const directories = Effect.fn("ConfigPaths.directories")(function* (direc
     Global.Path.config,
     ...(!Flag.OPENCODE_DISABLE_PROJECT_CONFIG
       ? yield* afs.up({
-          targets: [".opencode"],
+          targets: [APP_CONFIG_DIR],
           start: directory,
           stop: worktree,
         })
       : []),
     ...(yield* afs.up({
-      targets: [".opencode"],
+      targets: [APP_CONFIG_DIR],
       start: Global.Path.home,
       stop: Global.Path.home,
     })),

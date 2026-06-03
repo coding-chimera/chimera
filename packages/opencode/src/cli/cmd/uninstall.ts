@@ -215,7 +215,7 @@ async function executeUninstall(method: Installation.Method, targets: RemovalTar
     prompts.log.info(`  rm "${targets.binary}"`)
 
     const binDir = path.dirname(targets.binary)
-    if (binDir.includes(".opencode")) {
+    if (binDir.includes(".chimera") || binDir.includes(".opencode")) {
       prompts.log.info(`  rmdir "${binDir}" 2>/dev/null`)
     }
   }
@@ -229,7 +229,7 @@ async function executeUninstall(method: Installation.Method, targets: RemovalTar
   }
 
   UI.empty()
-  prompts.log.success("Thank you for using OpenCode!")
+  prompts.log.success("Thank you for using Chimera!")
 }
 
 async function getShellConfigFile(): Promise<string | null> {
@@ -266,7 +266,12 @@ async function getShellConfigFile(): Promise<string | null> {
     if (!exists) continue
 
     const content = await Filesystem.readText(file).catch(() => "")
-    if (content.includes("# opencode") || content.includes(".opencode/bin")) {
+    if (
+      content.includes("# chimera") ||
+      content.includes("# opencode") ||
+      content.includes(".chimera/bin") ||
+      content.includes(".opencode/bin")
+    ) {
       return file
     }
   }
@@ -284,21 +289,22 @@ async function cleanShellConfig(file: string) {
   for (const line of lines) {
     const trimmed = line.trim()
 
-    if (trimmed === "# opencode") {
+    if (trimmed === "# chimera" || trimmed === "# opencode") {
       skip = true
       continue
     }
 
     if (skip) {
       skip = false
-      if (trimmed.includes(".opencode/bin") || trimmed.includes("fish_add_path")) {
+      if (trimmed.includes(".chimera/bin") || trimmed.includes(".opencode/bin") || trimmed.includes("fish_add_path")) {
         continue
       }
     }
 
     if (
-      (trimmed.startsWith("export PATH=") && trimmed.includes(".opencode/bin")) ||
-      (trimmed.startsWith("fish_add_path") && trimmed.includes(".opencode"))
+      (trimmed.startsWith("export PATH=") &&
+        (trimmed.includes(".chimera/bin") || trimmed.includes(".opencode/bin"))) ||
+      (trimmed.startsWith("fish_add_path") && (trimmed.includes(".chimera") || trimmed.includes(".opencode")))
     ) {
       continue
     }

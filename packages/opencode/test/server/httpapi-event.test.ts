@@ -44,7 +44,7 @@ afterEach(async () => {
 describe("event HttpApi bridge", () => {
   test("serves event stream through experimental Effect route", async () => {
     await using tmp = await tmpdir({ git: true, config: { formatter: false, lsp: false } })
-    const response = await app().request(EventPaths.event, { headers: { "x-opencode-directory": tmp.path } })
+    const response = await app().request(EventPaths.event, { headers: { "x-chimera-directory": tmp.path } })
 
     expect(response.status).toBe(200)
     expect(response.headers.get("content-type")).toContain("text/event-stream")
@@ -56,7 +56,7 @@ describe("event HttpApi bridge", () => {
 
   test("matches legacy first event frame", async () => {
     await using tmp = await tmpdir({ git: true, config: { formatter: false, lsp: false } })
-    const headers = { "x-opencode-directory": tmp.path }
+    const headers = { "x-chimera-directory": tmp.path }
     const legacy = await app(false).request(EventPaths.event, { headers })
     const effect = await app(true).request(EventPaths.event, { headers })
 
