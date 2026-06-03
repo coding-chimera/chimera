@@ -3,7 +3,14 @@ import { createHash } from "crypto"
 import { mkdir } from "fs/promises"
 import { Effect, Schema } from "effect"
 import { InstanceState } from "@/effect/instance-state"
-import { Chimera, type CodeGraphNode, type CodeGraphSnapshot, type FrozenSemanticObject, type ToolMutationRecord } from "@/chimera"
+import {
+  Chimera,
+  type CodeGraphNode,
+  type CodeGraphSnapshot,
+  type FrozenSemanticObject,
+  type ProjectGraphState,
+  type ToolMutationRecord,
+} from "@/chimera"
 import * as Tool from "./tool"
 
 const NodeKind = Schema.Union([
@@ -229,11 +236,14 @@ export const ObligationsParameters = Schema.Struct({
 type StatusMetadata = {
   projectRoot: string
   artifact: string
+  obligationsArtifact: string
   snapshot: CodeGraphSnapshot
   stats: unknown
   backend: string
   journalMode: string
   provenanceRecords: number
+  obligationCounts: ObligationCounts
+  pendingObligations: number
 }
 
 type SearchMetadata = {
@@ -248,6 +258,7 @@ type ImpactMetadata = {
   seeds: Array<FrozenSemanticObject | null>
   impacted: Array<FrozenSemanticObject | null>
   fileDependents: string[]
+  evidence: AuditCandidate[]
 }
 
 type ContextMetadata = {
@@ -255,22 +266,46 @@ type ContextMetadata = {
   snapshot: CodeGraphSnapshot
   mode: "arch" | "search" | "impact" | "audit"
   query: string
+  overlay: ContextOverlay
+}
+
+type ChangeClassification = "source" | "test" | "docs" | "config" | "dependency" | "api_route" | "unknown"
+
+type RiskCategory =
+  | "api_contract"
+  | "behavior_boundary"
+  | "test"
+  | "documentation"
+  | "configuration"
+  | "dependency"
+  | "importer"
+  | "call_flow"
+  | "entrypoint"
+  | "unknown"
+
+type CauseLink = {
+  type: "changed_file" | "changed_seed" | "file_dependency" | "impact_radius" | "context_selection"
+  target: string
+  evidence: string
 }
 
 type AuditCandidate = {
   target: string
   targetNode?: FrozenSemanticObject | null
   reason: string
-  risk: string
+  risk: RiskCategory
+  classification: ChangeClassification
   requiredAction: "review_or_update"
   evidence: string
+  causeChain: CauseLink[]
 }
 
 type AuditMetadata = {
   projectRoot: string
   snapshot: CodeGraphSnapshot
-  source: "input" | "recent_provenance"
+  source: "input" | "recent_provenance" | "git_diff"
   changedFiles: string[]
+  classifications: Array<{ file: string; classification: ChangeClassification; reason: string }>
   seedNodes: Array<FrozenSemanticObject | null>
   impactedNodes: Array<FrozenSemanticObject | null>
   fileDependents: string[]
@@ -296,9 +331,11 @@ type PersistentObligation = {
   target: string
   targetNode?: FrozenSemanticObject | null
   reason: string
-  risk: string
+  risk: RiskCategory
+  classification?: ChangeClassification
   requiredAction: "review_or_update"
   evidence: string
+  causeChain?: CauseLink[]
   source: {
     type: AuditMetadata["source"]
     provenanceID?: string
@@ -331,6 +368,29 @@ type ObligationsMetadata = {
   audit?: AuditMetadata
 }
 
+type ContextOverlay = {
+  provenance?: {
+    id: string
+    toolID: string
+    status: ToolMutationRecord["status"]
+    finishedAt: string
+    beforeRevision: string
+    afterRevision: string
+    files: string[]
+  }
+  selectedImpact: {
+    seeds: Array<FrozenSemanticObject | null>
+    impacted: Array<FrozenSemanticObject | null>
+    fileDependents: string[]
+    evidence: AuditCandidate[]
+  }
+  obligations: {
+    artifact: string
+    counts: ObligationCounts
+    active: PersistentObligation[]
+  }
+}
+
 function bounded(value: number | undefined, fallback: number, max: number) {
   return Math.max(1, Math.min(max, Math.floor(value ?? fallback)))
 }
@@ -360,12 +420,166 @@ function uniqueStrings(items: string[]) {
   return [...new Set(items)]
 }
 
-function riskForNode(node: CodeGraphNode) {
+function classifyFile(filePath: string): { classification: ChangeClassification; reason: string } {
+  const lower = filePath.toLowerCase()
+  const basename = path.basename(lower)
+  if (
+    basename === "package.json" ||
+    basename.endsWith(".lock") ||
+    basename === "bun.lockb" ||
+    basename === "cargo.toml" ||
+    basename === "go.mod" ||
+    basename === "requirements.txt"
+  ) {
+    return { classification: "dependency", reason: "dependency manifest or lockfile boundary" }
+  }
+  if (lower.includes("/test/") || lower.includes("/tests/") || /\.(test|spec)\.[cm]?[jt]sx?$/.test(lower)) {
+    return { classification: "test", reason: "test or spec file boundary" }
+  }
+  if (/\.(md|mdx|rst|adoc|txt)$/.test(lower) || lower.includes("/docs/") || lower.includes("/specs/")) {
+    return { classification: "docs", reason: "documentation or specification boundary" }
+  }
+  if (
+    lower.includes("/route") ||
+    lower.includes("/routes/") ||
+    lower.includes("/api/") ||
+    lower.includes("/httpapi/") ||
+    lower.includes("/server/")
+  ) {
+    return { classification: "api_route", reason: "route/server/API boundary" }
+  }
+  if (
+    basename.startsWith(".") ||
+    basename.includes("config") ||
+    basename === "tsconfig.json" ||
+    basename === "vite.config.ts" ||
+    basename === "drizzle.config.ts"
+  ) {
+    return { classification: "config", reason: "configuration boundary" }
+  }
+  if (/\.[cm]?[jt]sx?$|\.tsx?$|\.rs$|\.go$|\.py$|\.java$|\.kt$|\.swift$/.test(lower)) {
+    return { classification: "source", reason: "source implementation file" }
+  }
+  return { classification: "unknown", reason: "unclassified file boundary" }
+}
+
+function riskForClassification(classification: ChangeClassification): RiskCategory {
+  if (classification === "dependency") return "dependency"
+  if (classification === "test") return "test"
+  if (classification === "docs") return "documentation"
+  if (classification === "config") return "configuration"
+  if (classification === "api_route") return "api_contract"
+  if (classification === "source") return "behavior_boundary"
+  return "unknown"
+}
+
+function riskForFile(filePath: string) {
+  return riskForClassification(classifyFile(filePath).classification)
+}
+
+function riskForNode(node: CodeGraphNode): RiskCategory {
+  const classification = classifyFile(node.filePath).classification
   if (node.kind === "route") return "api_contract"
-  if (node.filePath.includes("test") || node.filePath.includes("spec")) return "test"
+  if (classification === "test") return "test"
+  if (classification === "docs") return "documentation"
+  if (classification === "config") return "configuration"
+  if (classification === "dependency") return "dependency"
+  if (classification === "api_route") return "api_contract"
   if (node.kind === "import" || node.kind === "export") return "importer"
   if (node.kind === "function" || node.kind === "method" || node.kind === "component") return "call_flow"
   return "unknown"
+}
+
+function riskReasonForNode(node: CodeGraphNode) {
+  const classification = classifyFile(node.filePath)
+  if (node.kind === "route") return "route node can expose API contract behavior"
+  if (node.kind === "import" || node.kind === "export") return "import/export node can propagate module boundary changes"
+  if (node.kind === "function" || node.kind === "method" || node.kind === "component") {
+    return `callable ${node.kind} inside ${classification.reason}`
+  }
+  return classification.reason
+}
+
+function formatCauseChain(causeChain: CauseLink[]) {
+  return causeChain.map((item) => `${item.type}:${item.target} (${item.evidence})`).join(" -> ")
+}
+
+function formatClassification(item: { file: string; classification: ChangeClassification; reason: string }) {
+  return `- ${item.file}: ${item.classification}\n  reason: ${item.reason}`
+}
+
+function sourceCause(source: AuditMetadata["source"] | "context_selection", changedFiles: string[], seedNames: string[]) {
+  if (changedFiles.length) {
+    return {
+      type: "changed_file" as const,
+      target: changedFiles.slice(0, 5).join(", "),
+      evidence: source === "git_diff" ? "git:status" : `chimera:${source}`,
+    }
+  }
+  return {
+    type: "changed_seed" as const,
+    target: seedNames.slice(0, 5).join(", ") || "unknown seed",
+    evidence: source === "context_selection" ? "chimera:context_selection" : `chimera:${source}`,
+  }
+}
+
+function buildImpactEvidence(input: {
+  state: ProjectGraphState
+  snapshot: CodeGraphSnapshot
+  seedNodes: CodeGraphNode[]
+  changedFiles: string[]
+  normalizedFile?: string
+  source: AuditMetadata["source"] | "context_selection"
+  depth: number
+  limit: number
+}) {
+  const impactedNodes = uniqueNodes(
+    input.seedNodes.flatMap((node) => [...input.state.graph.impactRadius(node.id, input.depth).nodes.values()]).slice(0, input.limit),
+  ).filter((node) => !input.seedNodes.some((seed) => seed.id === node.id))
+  const fileDependents = uniqueStrings(
+    [
+      ...(input.normalizedFile ? input.state.graph.fileDependents(input.normalizedFile) : []),
+      ...input.changedFiles.flatMap((file) => input.state.graph.fileDependents(file)),
+      ...input.seedNodes.flatMap((node) => input.state.graph.fileDependents(node.filePath)),
+    ].slice(0, input.limit),
+  )
+  const seedNames = input.seedNodes.map((node) => node.qualifiedName || node.name).slice(0, 5)
+  const cause = sourceCause(input.source, input.changedFiles, seedNames)
+  const evidence = uniqueCandidates([
+    ...fileDependents.map((file) => {
+      const classification = classifyFile(file).classification
+      return {
+        target: file,
+        reason: `dependent file may need review because it imports or depends on ${input.changedFiles.slice(0, 3).join(", ") || seedNames.join(", ") || "the changed seed"}`,
+        risk: riskForFile(file),
+        classification,
+        requiredAction: "review_or_update" as const,
+        evidence: "codegraph:file_dependents",
+        causeChain: [cause, { type: "file_dependency" as const, target: file, evidence: "codegraph:file_dependents" }],
+      }
+    }),
+    ...impactedNodes.map((node) => {
+      const classification = classifyFile(node.filePath).classification
+      return {
+        target: `${node.filePath}:${node.startLine} ${node.qualifiedName || node.name}`,
+        targetNode: input.state.graph.projectNode(node, input.snapshot),
+        reason: `${riskReasonForNode(node)}; symbol is inside impact radius of ${seedNames.join(", ") || input.changedFiles.slice(0, 3).join(", ") || "the changed seed"}`,
+        risk: riskForNode(node),
+        classification,
+        requiredAction: "review_or_update" as const,
+        evidence: "codegraph:impact_radius",
+        causeChain: [
+          cause,
+          {
+            type: "impact_radius" as const,
+            target: `${node.filePath}:${node.startLine} ${node.qualifiedName || node.name}`,
+            evidence: "codegraph:impact_radius",
+          },
+        ],
+      }
+    }),
+  ]).slice(0, input.limit)
+  return { impactedNodes, fileDependents, evidence }
 }
 
 function permission(ctx: Tool.Context, toolID: string, metadata: Record<string, unknown>) {
@@ -406,8 +620,28 @@ function provenanceGraphFiles(record: ToolMutationRecord | undefined) {
   return record.files.flatMap((file) => (file.insideGraph && file.graphPath ? [file.graphPath] : []))
 }
 
+function gitStatusFiles(root: string) {
+  return Effect.promise(async () => {
+    const result = await Bun.$`git status --porcelain=v1 --untracked-files=all --no-renames -z -- .`
+      .cwd(root)
+      .quiet()
+      .nothrow()
+    if (result.exitCode !== 0) return [] as string[]
+    return uniqueStrings(
+      new TextDecoder()
+        .decode(result.stdout)
+        .split("\0")
+        .flatMap((item) => {
+          const file = item.slice(3).replaceAll("\\", "/")
+          if (!file || file.startsWith(".codegraph/")) return []
+          return [file]
+        }),
+    )
+  })
+}
+
 function candidateKey(candidate: AuditCandidate) {
-  return `${candidate.target}:${candidate.evidence}:${candidate.reason}`
+  return `${candidate.target}:${candidate.evidence}:${candidate.classification}:${candidate.reason}`
 }
 
 function uniqueCandidates(candidates: AuditCandidate[]) {
@@ -430,6 +664,18 @@ function readObligationStore(artifact: string) {
   return Effect.promise(async () => {
     if (!(await Bun.file(artifact).exists())) return emptyObligationStore()
     return (await Bun.file(artifact).json()) as ObligationStore
+  })
+}
+
+function readObligationSummary(provenanceArtifact: string, limit = 10) {
+  return Effect.gen(function* () {
+    const artifact = obligationsArtifact(provenanceArtifact)
+    const store = yield* readObligationStore(artifact)
+    return {
+      artifact,
+      counts: obligationCounts(store.obligations),
+      active: activeObligations(store.obligations).slice(0, limit),
+    }
   })
 }
 
@@ -488,8 +734,10 @@ function makeObligation(audit: AuditMetadata, candidate: AuditCandidate, now: st
     targetNode: candidate.targetNode,
     reason: candidate.reason,
     risk: candidate.risk,
+    classification: candidate.classification,
     requiredAction: candidate.requiredAction,
     evidence: candidate.evidence,
+    causeChain: candidate.causeChain,
     source: {
       type: audit.source,
       provenanceID: audit.provenance?.id,
@@ -521,8 +769,10 @@ function upsertObligations(store: ObligationStore, audit: AuditMetadata, now: st
       targetNode: next.targetNode,
       reason: next.reason,
       risk: next.risk,
+      classification: next.classification,
       requiredAction: next.requiredAction,
       evidence: next.evidence,
+      causeChain: next.causeChain,
       source: next.source,
       updatedAt: now,
     }
@@ -569,8 +819,55 @@ function formatObligation(item: PersistentObligation) {
     `- ${item.id} [${item.status}] ${item.target}`,
     `  reason: ${item.reason}`,
     `  risk: ${item.risk}`,
+    item.classification ? `  classification: ${item.classification}` : undefined,
     `  required_action: ${item.requiredAction}`,
     `  evidence: ${item.evidence}`,
+    item.causeChain?.length ? `  cause_chain: ${formatCauseChain(item.causeChain)}` : undefined,
+  ]
+    .filter(Boolean)
+    .join("\n")
+}
+
+function formatEvidence(item: AuditCandidate) {
+  return [
+    `- target: ${item.target}`,
+    `  reason: ${item.reason}`,
+    `  risk: ${item.risk}`,
+    `  classification: ${item.classification}`,
+    `  required_action: ${item.requiredAction}`,
+    `  evidence: ${item.evidence}`,
+    `  cause_chain: ${formatCauseChain(item.causeChain)}`,
+  ].join("\n")
+}
+
+function formatProvenance(record: ContextOverlay["provenance"]) {
+  if (!record) return ["Current provenance:", "- None recorded."].join("\n")
+  return [
+    "Current provenance:",
+    `- ${record.id}`,
+    `  tool: ${record.toolID}`,
+    `  status: ${record.status}`,
+    `  finished_at: ${record.finishedAt}`,
+    `  revisions: ${record.beforeRevision} -> ${record.afterRevision}`,
+    `  files: ${record.files.join(", ") || "none"}`,
+  ].join("\n")
+}
+
+function formatContextOverlay(overlay: ContextOverlay) {
+  return [
+    "## Chimera Overlay",
+    formatProvenance(overlay.provenance),
+    "",
+    "Selected impact:",
+    `- Seed symbols: ${overlay.selectedImpact.seeds.length}`,
+    `- File dependents: ${overlay.selectedImpact.fileDependents.length}`,
+    `- Impacted symbols: ${overlay.selectedImpact.impacted.length}`,
+    ...(overlay.selectedImpact.evidence.length ? overlay.selectedImpact.evidence.slice(0, 10).map(formatEvidence) : ["- None selected."]),
+    "",
+    "Future obligations:",
+    `- Artifact: ${overlay.obligations.artifact}`,
+    `- ${formatCounts(overlay.obligations.counts)}`,
+    ...(overlay.obligations.active.length ? overlay.obligations.active.map(formatObligation) : ["- None active."]),
   ].join("\n")
 }
 
@@ -582,6 +879,9 @@ function formatAuditOutput(audit: AuditMetadata) {
     "",
     `Changed files (${audit.changedFiles.length}):`,
     ...(audit.changedFiles.length ? audit.changedFiles.map((file) => `- ${file}`) : ["- None supplied or found."]),
+    "",
+    "Change classification:",
+    ...(audit.classifications.length ? audit.classifications.map(formatClassification) : ["- No changed files to classify."]),
     "",
     `Changed seed symbols (${audit.seedNodes.length}):`,
     ...(audit.seedNodes.length
@@ -596,13 +896,13 @@ function formatAuditOutput(audit: AuditMetadata) {
     `- File dependents: ${audit.fileDependents.length}`,
     `- Impacted symbols: ${audit.impactedNodes.length}`,
     "",
-    `Candidate obligations (${audit.obligations.length}):`,
+    "Behavior-boundary evidence:",
     ...(audit.obligations.length
-      ? audit.obligations.map(
-          (item) =>
-            `- target: ${item.target}\n  reason: ${item.reason}\n  risk: ${item.risk}\n  required_action: ${item.requiredAction}\n  evidence: ${item.evidence}`,
-        )
+      ? audit.obligations.map((item) => `- ${item.target}: ${item.classification} / ${item.risk}`)
       : ["- None found."]),
+    "",
+    `Candidate obligations (${audit.obligations.length}):`,
+    ...(audit.obligations.length ? audit.obligations.map(formatEvidence) : ["- None found."]),
     "",
     "Required action:",
     "- Review or update each candidate obligation before claiming completion.",
@@ -618,12 +918,11 @@ const buildAudit = Effect.fn("ChimeraTool.buildAudit")(function* (params: AuditP
   const explicitFiles = uniqueStrings([...(params.files ?? []), ...(params.filePath ? [params.filePath] : [])]).map((file) =>
     graphPath(state.projectRoot, instance.directory, file),
   )
-  const changedFiles = explicitFiles.length
-    ? explicitFiles
-    : params.recent === false
-      ? []
-      : uniqueStrings(provenanceGraphFiles(recent))
-  const source: AuditMetadata["source"] = explicitFiles.length || params.symbol || params.nodeID ? "input" : "recent_provenance"
+  const recentFiles = params.recent === false || explicitFiles.length || params.symbol || params.nodeID ? [] : uniqueStrings(provenanceGraphFiles(recent))
+  const gitFiles = params.recent === false || explicitFiles.length || params.symbol || params.nodeID || recentFiles.length ? [] : yield* gitStatusFiles(state.projectRoot)
+  const changedFiles = explicitFiles.length ? explicitFiles : recentFiles.length ? recentFiles : gitFiles
+  const source: AuditMetadata["source"] =
+    explicitFiles.length || params.symbol || params.nodeID ? "input" : recentFiles.length ? "recent_provenance" : "git_diff"
   const depth = bounded(params.depth, 2, 5)
   const limit = bounded(params.limit, 30, 100)
   const snapshot = state.graph.snapshot()
@@ -645,46 +944,21 @@ const buildAudit = Effect.fn("ChimeraTool.buildAudit")(function* (params: AuditP
   ])
 
   if (changedFiles.length === 0 && seedNodes.length === 0) {
-    throw new Error("chimera_audit requires files/filePath, symbol/nodeID, or a recent successful Chimera tool mutation")
+    throw new Error("chimera_audit requires files/filePath, symbol/nodeID, a recent successful Chimera tool mutation, or git diff changes")
   }
 
-  const impactedNodes = uniqueNodes(
-    seedNodes.flatMap((node) => [...state.graph.impactRadius(node.id, depth).nodes.values()]).slice(0, limit),
-  ).filter((node) => !seedNodes.some((seed) => seed.id === node.id))
-  const fileDependents = uniqueStrings(
-    [
-      ...changedFiles.flatMap((file) => state.graph.fileDependents(file)),
-      ...seedNodes.flatMap((node) => state.graph.fileDependents(node.filePath)),
-    ].slice(0, limit),
-  )
-  const seedNames = seedNodes.map((node) => node.qualifiedName || node.name).slice(0, 5)
-  const obligations = uniqueCandidates([
-    ...fileDependents.map((file) => ({
-      target: file,
-      reason: `file depends on changed file/symbol (${changedFiles.slice(0, 3).join(", ") || seedNames.join(", ")})`,
-      risk: "importer",
-      requiredAction: "review_or_update" as const,
-      evidence: "codegraph:file_dependents",
-    })),
-    ...impactedNodes.map((node) => ({
-      target: `${node.filePath}:${node.startLine} ${node.qualifiedName || node.name}`,
-      targetNode: state.graph.projectNode(node, snapshot),
-      reason: `symbol is inside impact radius of changed seed (${seedNames.join(", ") || changedFiles.slice(0, 3).join(", ")})`,
-      risk: riskForNode(node),
-      requiredAction: "review_or_update" as const,
-      evidence: "codegraph:impact_radius",
-    })),
-  ]).slice(0, limit)
+  const impact = buildImpactEvidence({ state, snapshot, seedNodes, changedFiles, source, depth, limit })
 
   return {
     projectRoot: state.projectRoot,
     snapshot,
     source,
     changedFiles,
+    classifications: changedFiles.map((file) => ({ file, ...classifyFile(file) })),
     seedNodes: seedNodes.map((node) => state.graph.projectNode(node, snapshot)),
-    impactedNodes: impactedNodes.map((node) => state.graph.projectNode(node, snapshot)),
-    fileDependents,
-    obligations,
+    impactedNodes: impact.impactedNodes.map((node) => state.graph.projectNode(node, snapshot)),
+    fileDependents: impact.fileDependents,
+    obligations: impact.evidence,
     ...(source === "recent_provenance" && recent ? { provenance: recent } : {}),
   }
 })
@@ -702,6 +976,7 @@ export const ChimeraStatusTool = Tool.define<typeof StatusParameters, StatusMeta
         const snapshot = state.graph.snapshot()
         const stats = state.graph.stats()
         const provenanceRecords = yield* provenanceRecordCount(state.artifact)
+        const obligations = yield* readObligationSummary(state.artifact, 0)
 
         return {
           title: "Chimera status",
@@ -716,15 +991,19 @@ export const ChimeraStatusTool = Tool.define<typeof StatusParameters, StatusMeta
             `Backend: ${state.graph.backend()}`,
             `Journal mode: ${state.graph.journalMode()}`,
             `Tool provenance records: ${provenanceRecords}`,
+            `Pending obligations: ${obligations.counts.pending}`,
           ].join("\n"),
           metadata: {
             projectRoot: state.projectRoot,
             artifact: state.artifact,
+            obligationsArtifact: obligations.artifact,
             snapshot,
             stats,
             backend: String(state.graph.backend()),
             journalMode: state.graph.journalMode(),
             provenanceRecords,
+            obligationCounts: obligations.counts,
+            pendingObligations: obligations.counts.pending,
           },
         }
       }).pipe(Effect.orDie),
@@ -818,15 +1097,16 @@ export const ChimeraImpactTool = Tool.define<typeof ImpactParameters, ImpactMeta
           throw new Error("chimera_impact requires nodeID, symbol, or filePath that resolves to at least one graph seed")
         }
 
-        const impactNodes = uniqueNodes(
-          seedNodes.flatMap((node) => [...state.graph.impactRadius(node.id, depth).nodes.values()]).slice(0, limit),
-        ).filter((node) => !seedNodes.some((seed) => seed.id === node.id))
-        const fileDependents = uniqueStrings(
-          [
-            ...(normalizedFile ? state.graph.fileDependents(normalizedFile) : []),
-            ...seedNodes.flatMap((node) => state.graph.fileDependents(node.filePath)),
-          ].slice(0, limit),
-        )
+        const impact = buildImpactEvidence({
+          state,
+          snapshot,
+          seedNodes,
+          changedFiles: normalizedFile ? [normalizedFile] : [],
+          normalizedFile,
+          source: "input",
+          depth,
+          limit,
+        })
 
         return {
           title: "Chimera impact",
@@ -836,11 +1116,19 @@ export const ChimeraImpactTool = Tool.define<typeof ImpactParameters, ImpactMeta
             "Seed symbols:",
             ...(seedNodes.length ? seedNodes.map((node) => formatNode(node)) : ["- No symbol seeds; file-level impact only."]),
             "",
-            `File dependents (${fileDependents.length}):`,
-            ...(fileDependents.length ? fileDependents.map((file) => `- ${file}`) : ["- None found."]),
+            "Change classification:",
+            ...(normalizedFile ? [formatClassification({ file: normalizedFile, ...classifyFile(normalizedFile) })] : ["- No changed file supplied."]),
             "",
-            `Impacted symbols (${impactNodes.length}):`,
-            ...(impactNodes.length ? impactNodes.map((node) => `${formatNode(node)}\n  risk: ${riskForNode(node)}`) : ["- None found."]),
+            `File dependents (${impact.fileDependents.length}):`,
+            ...(impact.fileDependents.length ? impact.fileDependents.map((file) => `- ${file}`) : ["- None found."]),
+            "",
+            `Impacted symbols (${impact.impactedNodes.length}):`,
+            ...(impact.impactedNodes.length
+              ? impact.impactedNodes.map((node) => `${formatNode(node)}\n  risk: ${riskForNode(node)}\n  risk_reason: ${riskReasonForNode(node)}`)
+              : ["- None found."]),
+            "",
+            "Impact evidence:",
+            ...(impact.evidence.length ? impact.evidence.map(formatEvidence) : ["- None found."]),
             "",
             "Required action:",
             "- Review impacted symbols/files before claiming the change is complete. This is graph evidence, not test/build verification.",
@@ -849,8 +1137,9 @@ export const ChimeraImpactTool = Tool.define<typeof ImpactParameters, ImpactMeta
             projectRoot: state.projectRoot,
             snapshot,
             seeds: seedNodes.map((node) => state.graph.projectNode(node, snapshot)),
-            impacted: impactNodes.map((node) => state.graph.projectNode(node, snapshot)),
-            fileDependents,
+            impacted: impact.impactedNodes.map((node) => state.graph.projectNode(node, snapshot)),
+            fileDependents: impact.fileDependents,
+            evidence: impact.evidence,
           },
         }
       }).pipe(Effect.orDie),
@@ -1112,6 +1401,47 @@ export const ChimeraContextTool = Tool.define<typeof ContextParameters, ContextM
             maxCodeBlocks: bounded(params.maxCodeBlocks, 8, 30),
           }),
         ).pipe(Effect.orDie)
+        const records = yield* provenanceRecords(state.artifact)
+        const recent = latestSuccessfulProvenance(records)
+        const overlaySeeds = uniqueNodes([
+          ...(node ? [node] : []),
+          ...(params.symbol ? state.graph.searchNodes(params.symbol, { limit: 5 }).map((result) => result.node) : []),
+          ...(normalizedFile ? state.graph.nodesInFile(normalizedFile).slice(0, 5) : []),
+          ...(!node && !params.symbol && !normalizedFile ? state.graph.searchNodes(query, { limit: 5 }).map((result) => result.node) : []),
+        ]).slice(0, 5)
+        const selectedImpact = buildImpactEvidence({
+          state,
+          snapshot,
+          seedNodes: overlaySeeds,
+          changedFiles: normalizedFile ? [normalizedFile] : [],
+          normalizedFile,
+          source: "context_selection",
+          depth: 2,
+          limit: bounded(params.maxNodes, 30, 100),
+        })
+        const obligations = yield* readObligationSummary(state.artifact, 10)
+        const overlay: ContextOverlay = {
+          ...(recent
+            ? {
+                provenance: {
+                  id: recent.id,
+                  toolID: recent.tool.id,
+                  status: recent.status,
+                  finishedAt: recent.finishedAt,
+                  beforeRevision: recent.graph.before.revision,
+                  afterRevision: recent.graph.after.revision,
+                  files: recent.files.map((file) => file.graphPath ?? file.absolutePath),
+                },
+              }
+            : {}),
+          selectedImpact: {
+            seeds: overlaySeeds.map((item) => state.graph.projectNode(item, snapshot)),
+            impacted: selectedImpact.impactedNodes.map((item) => state.graph.projectNode(item, snapshot)),
+            fileDependents: selectedImpact.fileDependents,
+            evidence: selectedImpact.evidence,
+          },
+          obligations,
+        }
 
         return {
           title: "Chimera context",
@@ -1120,6 +1450,8 @@ export const ChimeraContextTool = Tool.define<typeof ContextParameters, ContextM
             `Query: ${query}`,
             `Graph revision: ${snapshot.revision}`,
             "",
+            formatContextOverlay(overlay),
+            "",
             typeof context === "string" ? context : JSON.stringify(context, null, 2),
           ].join("\n"),
           metadata: {
@@ -1127,6 +1459,7 @@ export const ChimeraContextTool = Tool.define<typeof ContextParameters, ContextM
             snapshot,
             mode,
             query,
+            overlay,
           },
         }
       }).pipe(Effect.orDie),
