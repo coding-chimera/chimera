@@ -11,6 +11,7 @@ import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { Plugin } from "@/plugin"
 import { Question } from "@/question"
 import { Todo } from "@/session/todo"
+import { WorkBrief } from "@/session/work-brief"
 import { Skill } from "@/skill"
 import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
@@ -34,6 +35,7 @@ const registryLayer = ToolRegistry.layer.pipe(
   Layer.provide(Plugin.defaultLayer),
   Layer.provide(Question.defaultLayer),
   Layer.provide(Todo.defaultLayer),
+  Layer.provide(WorkBrief.defaultLayer),
   Layer.provide(Skill.defaultLayer),
   Layer.provide(Agent.defaultLayer),
   Layer.provide(Session.defaultLayer),
@@ -86,6 +88,7 @@ describe("tool.registry", () => {
       expect(ids).toContain("chimera_context")
       expect(ids).toContain("chimera_audit")
       expect(ids).toContain("chimera_obligations")
+      expect(ids).toContain("workbrief")
       expect(ids).toContain("hello")
     }),
   )

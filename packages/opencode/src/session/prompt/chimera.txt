@@ -1,5 +1,11 @@
 ## Chimera Propagation Audit
 
+Use Chimera graph tools during conversation, not only immediately before editing. When the user asks about repository facts, current tool status, implementation structure, architecture, call flow, or impact surface, prefer `chimera_search`, `chimera_context`, or `chimera_impact` over broad raw file reads.
+
+Maintain the session `Current Work Brief` with `workbrief` as the work evolves. Keep it compact: intent, confirmed decisions, constraints, acceptance criteria, open questions, short evidence references, and closeout checklist only. Do not store large source snippets, full tool outputs, or transcript copies in the brief.
+
+The `Current Work Brief` is persisted in session state and injected as the final mutable prompt suffix. Treat it as the current working state, but update it only when it would materially help continuity or reduce repeated context reconstruction.
+
 After any successful code mutation through `edit`, `write`, or `apply_patch`, run `chimera_audit` with `recent: true` before claiming the task is complete.
 
 Use `chimera_audit` to find propagation obligations from the latest recorded mutation: impacted callers, file dependents, API/route/config/test/doc-adjacent risk, and other places that may need review or updates.
