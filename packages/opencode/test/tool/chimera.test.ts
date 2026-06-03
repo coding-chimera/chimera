@@ -99,9 +99,11 @@ describe("tool.chimera", () => {
 
       expect(result.title).toBe("Chimera status")
       expect(result.output).toContain("Chimera graph surface is ready.")
+      expect(result.output).toContain("Pending obligations: 0")
       expect(result.metadata.snapshot.fileCount).toBeGreaterThan(0)
       expect(result.metadata.snapshot.nodeCount).toBeGreaterThan(0)
       expect(result.metadata.snapshot.revision).toEqual(expect.any(String))
+      expect(result.metadata.pendingObligations).toBe(0)
 
       const marker = yield* Effect.promise(() => fs.stat(path.join(test.directory, ".codegraph", "codegraph.db")))
       expect(marker.isFile()).toBe(true)
@@ -138,6 +140,8 @@ describe("tool.chimera", () => {
 
       expect(result.title).toBe("Chimera impact")
       expect(result.output).toContain("Seed symbols")
+      expect(result.output).toContain("Impact evidence")
+      expect(result.output).toContain("cause_chain")
       expect(result.metadata.seeds.length).toBeGreaterThan(0)
     }),
   )
@@ -153,7 +157,11 @@ describe("tool.chimera", () => {
 
       expect(result.title).toBe("Chimera context")
       expect(result.output).toContain("trackedContext")
+      expect(result.output).toContain("Chimera Overlay")
+      expect(result.output).toContain("Selected impact")
+      expect(result.output).toContain("Future obligations")
       expect(result.metadata.query).toBe("trackedContext")
+      expect(result.metadata.overlay.selectedImpact.seeds.length).toBeGreaterThan(0)
     }),
   )
 
@@ -172,9 +180,42 @@ describe("tool.chimera", () => {
 
       expect(result.title).toBe("Chimera audit")
       expect(result.output).toContain("Candidate obligations")
+      expect(result.output).toContain("Change classification")
+      expect(result.output).toContain("Behavior-boundary evidence")
+      expect(result.output).toContain("cause_chain")
       expect(result.metadata.changedFiles).toContain("base.ts")
+      expect(result.metadata.classifications[0].classification).toBe("source")
       expect(result.metadata.obligations.length).toBeGreaterThan(0)
+      expect(result.metadata.obligations[0].causeChain.length).toBeGreaterThan(0)
     }),
+  )
+
+  it.instance(
+    "falls back to git diff changes when no recent provenance exists",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "base.ts"), "export function base() { return 1 }\n"))
+        yield* Effect.promise(() =>
+          fs.writeFile(
+            path.join(test.directory, "consumer.ts"),
+            "import { base } from './base'\nexport function consumer() { return base() }\n",
+          ),
+        )
+        yield* Effect.promise(() => Bun.$`git add base.ts consumer.ts`.cwd(test.directory).quiet())
+        yield* Effect.promise(() => Bun.$`git commit -m baseline`.cwd(test.directory).quiet())
+        yield* runStatus({ refresh: true })
+        yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "base.ts"), "export function base() { return 2 }\n"))
+
+        const result = yield* runAudit({})
+
+        expect(result.title).toBe("Chimera audit")
+        expect(result.output).toContain("Source: git_diff")
+        expect(result.metadata.source).toBe("git_diff")
+        expect(result.metadata.changedFiles).toContain("base.ts")
+        expect(result.metadata.changedFiles.some((file) => file.startsWith(".codegraph/"))).toBe(false)
+      }),
+    { git: true },
   )
 
   it.instance("syncs and updates persistent obligations", () =>
@@ -195,6 +236,17 @@ describe("tool.chimera", () => {
       expect(synced.output).toContain("Chimera obligations synced")
       expect(synced.metadata.synced).toBeGreaterThan(0)
       expect(obligation.status).toBe("pending")
+      expect(obligation.classification).toBe("source")
+      expect(obligation.causeChain?.length).toBeGreaterThan(0)
+
+      const status = yield* runStatus({ refresh: false })
+      expect(status.output).toContain(`Pending obligations: ${synced.metadata.obligations.length}`)
+      expect(status.metadata.pendingObligations).toBe(synced.metadata.obligations.length)
+
+      const context = yield* runContext({ filePath: "base.ts", mode: "audit", maxNodes: 10, maxCodeBlocks: 2 })
+      expect(context.output).toContain("Future obligations")
+      expect(context.output).toContain(obligation.id)
+      expect(context.metadata.overlay.obligations.counts.pending).toBe(synced.metadata.obligations.length)
 
       const claimed = yield* runObligations({ action: "claim", obligationID: obligation.id })
       expect(claimed.metadata.obligations[0].status).toBe("claimed")
