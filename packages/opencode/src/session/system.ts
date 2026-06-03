@@ -3,6 +3,7 @@ import { Context, Effect, Layer } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 
 import PROMPT_ANTHROPIC from "./prompt/anthropic.txt"
+import PROMPT_CHIMERA from "./prompt/chimera.txt"
 import PROMPT_DEFAULT from "./prompt/default.txt"
 import PROMPT_BEAST from "./prompt/beast.txt"
 import PROMPT_GEMINI from "./prompt/gemini.txt"
@@ -59,6 +60,7 @@ export const layer = Layer.effect(
             `  Today's date: ${new Date().toDateString()}`,
             `</env>`,
           ].join("\n"),
+          PROMPT_CHIMERA,
         ]
       }),
 

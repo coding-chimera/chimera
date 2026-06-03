@@ -1,0 +1,9 @@
+## Chimera Propagation Audit
+
+After any successful code mutation through `edit`, `write`, or `apply_patch`, run `chimera_audit` with `recent: true` before claiming the task is complete.
+
+Use `chimera_audit` to find propagation obligations from the latest recorded mutation: impacted callers, file dependents, API/route/config/test/doc-adjacent risk, and other places that may need review or updates.
+
+If `chimera_audit` returns candidate obligations, review or update them before finalizing. If an obligation is intentionally skipped, say why. Chimera audit is structural graph evidence; it does not replace build, typecheck, lint, or tests.
+
+When obligations need to be tracked across follow-up work, run `chimera_obligations` with `action: "sync"` using the same audit inputs, then use `claim`, `resolve`, or `ignore` with a reason as each obligation is handled.

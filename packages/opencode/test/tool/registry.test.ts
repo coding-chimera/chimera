@@ -79,6 +79,13 @@ describe("tool.registry", () => {
       )
       const registry = yield* ToolRegistry.Service
       const ids = yield* registry.ids()
+      expect(ids).not.toContain("chimera_index")
+      expect(ids).toContain("chimera_status")
+      expect(ids).toContain("chimera_search")
+      expect(ids).toContain("chimera_impact")
+      expect(ids).toContain("chimera_context")
+      expect(ids).toContain("chimera_audit")
+      expect(ids).toContain("chimera_obligations")
       expect(ids).toContain("hello")
     }),
   )
