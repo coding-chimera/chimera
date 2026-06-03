@@ -34,6 +34,29 @@ import { queryOptions, useMutation, useQueries, useQuery, useQueryClient } from 
 import { createRefreshQueue } from "./global-sync/queue"
 import { directoryKey } from "./global-sync/utils"
 
+const CHIMERA_TOOL_MUTATION_RECORDED = "chimera.tool.mutation.recorded"
+const CHIMERA_GRAPH_READY = "chimera.graph.ready"
+
+function chimeraMutationSummary(properties: unknown) {
+  if (!properties || typeof properties !== "object") return undefined
+  const files = (properties as { files?: unknown }).files
+  if (!Array.isArray(files)) return undefined
+  const count = files.length
+  if (count === 0) return "CodeGraph recorded a tool mutation."
+  if (count === 1) return `CodeGraph updated for ${String(files[0])}.`
+  return `CodeGraph updated for ${count} files.`
+}
+
+function chimeraGraphReadySummary(properties: unknown) {
+  if (!properties || typeof properties !== "object") return "CodeGraph is ready for this project."
+  const props = properties as { fileCount?: unknown; nodeCount?: unknown }
+  if (typeof props.fileCount === "number" && typeof props.nodeCount === "number") {
+    return `CodeGraph ready with ${props.fileCount} files and ${props.nodeCount} nodes.`
+  }
+  if (typeof props.fileCount === "number") return `CodeGraph ready with ${props.fileCount} files.`
+  return "CodeGraph is ready for this project."
+}
+
 type GlobalStore = {
   ready: boolean
   error?: InitError
@@ -335,6 +358,24 @@ function createGlobalSync() {
     const key = directoryKey(directory)
     const event = e.details
     const recent = bootingRoot || Date.now() - bootedAt < 1500
+    const unknownEvent = event as { type: string; properties?: unknown }
+
+    if (unknownEvent.type === CHIMERA_TOOL_MUTATION_RECORDED) {
+      const description = chimeraMutationSummary(unknownEvent.properties)
+      showToast({
+        title: "CodeGraph updated",
+        description,
+        variant: "success",
+      })
+    }
+
+    if (unknownEvent.type === CHIMERA_GRAPH_READY) {
+      showToast({
+        title: "CodeGraph ready",
+        description: chimeraGraphReadySummary(unknownEvent.properties),
+        variant: "success",
+      })
+    }
 
     if (directory === "global") {
       applyGlobalEvent({

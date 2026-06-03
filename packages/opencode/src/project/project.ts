@@ -13,7 +13,6 @@ import { ProjectID } from "./schema"
 import { Bus } from "@/bus"
 import { Command } from "@/command"
 import { InstanceState } from "@/effect/instance-state"
-import { Chimera } from "@/chimera"
 import { Effect, Layer, Path, Scope, Context, Stream, Types, Schema } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { NodePath } from "@effect/platform-node"
@@ -113,8 +112,7 @@ export type UpdatePayload = Types.DeepMutable<Schema.Schema.Type<typeof UpdatePa
 
 export interface Interface {
   /**
-   * Per-instance setup. Initializes the Chimera CodeGraph index in the
-   * foreground, then subscribes to the `/init` slash command for the current
+   * Per-instance setup. Subscribes to the `/init` slash command for the current
    * instance and stamps the project's initialized timestamp when it fires.
    * Subscription lifetime is tied to the per-instance state scope.
    */
@@ -442,7 +440,6 @@ export const layer: Layer.Layer<
 
     const init = Effect.fn("Project.init")(function* () {
       yield* InstanceState.get(initState)
-      yield* Chimera.initProjectGraph()
     })
 
     const sandboxes = Effect.fn("Project.sandboxes")(function* (id: ProjectID) {

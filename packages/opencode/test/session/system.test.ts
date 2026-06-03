@@ -52,6 +52,20 @@ const it = testEffect(
 )
 
 describe("session.system", () => {
+  it.instance("environment includes Chimera propagation audit guidance", () =>
+    Effect.gen(function* () {
+      const prompt = yield* SystemPrompt.Service
+      const output = yield* prompt.environment({
+        providerID: "test",
+        api: { id: "test-model" },
+      } as unknown as Parameters<SystemPrompt.Interface["environment"]>[0])
+
+      expect(output.join("\n")).toContain("chimera_audit")
+      expect(output.join("\n")).toContain("chimera_obligations")
+      expect(output.join("\n")).toContain("After any successful code mutation")
+    }),
+  )
+
   it.effect("skills output is sorted by name and stable across calls", () =>
     Effect.gen(function* () {
       const prompt = yield* SystemPrompt.Service

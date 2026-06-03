@@ -29,6 +29,8 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import * as Stream from "effect/Stream"
 import { Command } from "../command"
+import { Chimera } from "@/chimera"
+import { Question } from "@/question"
 import { pathToFileURL, fileURLToPath } from "url"
 import { Config } from "@/config/config"
 import { ConfigMarkdown } from "@/config/markdown"
@@ -116,6 +118,7 @@ export const layer = Layer.effect(
     const summary = yield* SessionSummary.Service
     const sys = yield* SystemPrompt.Service
     const llm = yield* LLM.Service
+    const question = yield* Question.Service
     const runner = Effect.fn("SessionPrompt.runner")(function* () {
       return yield* EffectBridge.make()
     })
@@ -1734,6 +1737,48 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           : yield* lastModel(input.sessionID)
         : taskModel
 
+      if (input.command === Command.Default.INIT) {
+        const answers = yield* question
+          .ask({
+            sessionID: input.sessionID,
+            questions: [
+              {
+                header: "CodeGraph",
+                question:
+                  "Run CodeGraph for this project before /init continues? This may create or update .codegraph in the current project root.",
+                custom: false,
+                options: [
+                  {
+                    label: "Run CodeGraph",
+                    description: "Initialize or sync CodeGraph for this project root.",
+                  },
+                  {
+                    label: "Skip",
+                    description: "Continue /init without creating or updating CodeGraph.",
+                  },
+                ],
+              },
+            ],
+          })
+          .pipe(Effect.catchTag("QuestionRejectedError", () => Effect.succeed([["Skip"]])))
+
+        if (answers[0]?.[0] === "Run CodeGraph") {
+          yield* Chimera.initProjectGraph({
+            bus,
+            source: "command.init",
+            sessionID: input.sessionID,
+          }).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("chimera graph init failed", {
+                cause,
+                sessionID: input.sessionID,
+                command: input.command,
+              }),
+            ),
+          )
+        }
+      }
+
       yield* plugin.trigger(
         "command.execute.before",
         { command: input.command, sessionID: input.sessionID, arguments: input.arguments },
@@ -1785,6 +1830,7 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(Instruction.defaultLayer),
     Layer.provide(AppFileSystem.defaultLayer),
     Layer.provide(Plugin.defaultLayer),
+    Layer.provide(Question.defaultLayer),
     Layer.provide(Session.defaultLayer),
     Layer.provide(SessionRevert.defaultLayer),
     Layer.provide(SessionSummary.defaultLayer),

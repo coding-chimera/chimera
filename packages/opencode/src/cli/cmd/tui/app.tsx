@@ -108,6 +108,27 @@ function errorMessage(error: unknown) {
   return FormatUnknownError(error)
 }
 
+const CHIMERA_TOOL_MUTATION_RECORDED = "chimera.tool.mutation.recorded"
+const CHIMERA_GRAPH_READY = "chimera.graph.ready"
+
+function chimeraMutationMessage(properties: unknown) {
+  if (!properties || typeof properties !== "object") return "CodeGraph recorded a tool mutation."
+  const files = (properties as { files?: unknown }).files
+  if (!Array.isArray(files) || files.length === 0) return "CodeGraph recorded a tool mutation."
+  if (files.length === 1) return `CodeGraph updated for ${String(files[0])}`
+  return `CodeGraph updated for ${files.length} files`
+}
+
+function chimeraGraphReadyMessage(properties: unknown) {
+  if (!properties || typeof properties !== "object") return "CodeGraph is ready for this project"
+  const props = properties as { fileCount?: unknown; nodeCount?: unknown }
+  if (typeof props.fileCount === "number" && typeof props.nodeCount === "number") {
+    return `CodeGraph ready with ${props.fileCount} files and ${props.nodeCount} nodes`
+  }
+  if (typeof props.fileCount === "number") return `CodeGraph ready with ${props.fileCount} files`
+  return "CodeGraph is ready for this project"
+}
+
 export function tui(input: {
   url: string
   args: Args
@@ -792,6 +813,26 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       variant: evt.properties.variant,
       duration: evt.properties.duration,
     })
+  })
+
+  event.subscribe((evt) => {
+    const unknownEvent = evt as { type: string; properties?: unknown }
+    if (unknownEvent.type === CHIMERA_TOOL_MUTATION_RECORDED) {
+      toast.show({
+        title: "CodeGraph updated",
+        message: chimeraMutationMessage(unknownEvent.properties),
+        variant: "success",
+        duration: 5000,
+      })
+    }
+    if (unknownEvent.type === CHIMERA_GRAPH_READY) {
+      toast.show({
+        title: "CodeGraph ready",
+        message: chimeraGraphReadyMessage(unknownEvent.properties),
+        variant: "success",
+        duration: 5000,
+      })
+    }
   })
 
   event.on(TuiEvent.SessionSelect.type, (evt) => {

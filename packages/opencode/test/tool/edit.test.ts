@@ -208,6 +208,7 @@ describe("tool.edit", () => {
           )
 
           expect(result.output).toContain("Edit applied successfully")
+          expect(result.output).toContain("chimera_audit")
 
           const content = await fs.readFile(filepath, "utf-8")
           expect(content).toBe("new content here")

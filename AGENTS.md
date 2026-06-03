@@ -6,6 +6,12 @@
 
 ## Style Guide
 
+### Agent-Facing Tools
+
+- When adding or changing an agent-facing tool, update the corresponding agent guidance in the same change. This can include the tool description, system prompt, tool result hint, command template, or workflow instruction that teaches the model when and how to use the tool.
+- Do not rely only on implementation or tests to make a new tool discoverable. If a tool is part of an expected workflow, add a high-salience prompt or tool-output reminder for that workflow.
+- For Chimera tools specifically, keep tool names and workflow guidance aligned with `specs/coding-chimera/plan.md`.
+
 ### General Principles
 
 - Keep things in one function unless composable or reusable

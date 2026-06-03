@@ -30,3 +30,6 @@ logs/
 .codegraph/
 *.bun-build
 tsconfig.tsbuildinfo
+
+# Local paper reading bundles
+papers/2309.12499-codeplan/

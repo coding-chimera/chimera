@@ -15,6 +15,7 @@ import { trimDiff } from "./edit"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import * as Bom from "@/util/bom"
 import { Chimera } from "@/chimera"
+import { TOOL_MUTATION_AUDIT_HINT } from "@/chimera/guidance"
 
 const MAX_PROJECT_DIAGNOSTICS_FILES = 5
 
@@ -85,7 +86,7 @@ export const WriteTool = Tool.define(
             }),
           )
 
-          let output = "Wrote file successfully."
+          let output = `Wrote file successfully.\n\n${TOOL_MUTATION_AUDIT_HINT}`
           yield* lsp.touchFile(filepath, "document")
           const diagnostics = yield* lsp.diagnostics()
           const normalizedFilepath = AppFileSystem.normalizePath(filepath)

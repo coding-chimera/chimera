@@ -27,12 +27,32 @@ export const ToolMutationRecorded = BusEvent.define(
   }),
 )
 
+export const GraphReady = BusEvent.define(
+  "chimera.graph.ready",
+  Schema.Struct({
+    projectRoot: Schema.String,
+    revision: Schema.String,
+    indexedAt: Schema.Number,
+    fileCount: Schema.Number,
+    nodeCount: Schema.Number,
+    edgeCount: Schema.Number,
+    source: Schema.String,
+    sessionID: Schema.optional(Schema.String),
+  }),
+)
+
 export interface ToolMutationInput {
   toolID: string
   ctx: Tool.Context
   files: string[]
   bus?: BusInterface
   metadata?: Record<string, unknown>
+}
+
+export interface InitProjectGraphInput {
+  bus?: BusInterface
+  source?: string
+  sessionID?: string
 }
 
 export interface ProvenanceFile {
@@ -68,13 +88,13 @@ export interface ToolMutationRecord {
   metadata?: Record<string, unknown>
 }
 
-interface State {
+export interface ProjectGraphState {
   graph: CodeGraphAdapter
   projectRoot: string
   artifact: string
 }
 
-const graphStates = new Map<string, Promise<State>>()
+const graphStates = new Map<string, Promise<ProjectGraphState>>()
 
 function projectRoot(input: { directory: string; worktree: string }) {
   return input.worktree === "/" ? input.directory : input.worktree
@@ -121,7 +141,7 @@ async function appendRecord(file: string, record: ToolMutationRecord) {
   await appendFile(file, `${JSON.stringify(record)}\n`, "utf8")
 }
 
-function openGraphState(root: string): Promise<State> {
+function openGraphState(root: string): Promise<ProjectGraphState> {
   let promise = graphStates.get(root)
   if (!promise) {
     promise = CodeGraphAdapter.open(root, { init: true, index: true, sync: true }).then((graph) => ({
@@ -202,10 +222,30 @@ export function trackToolMutation<A, E, R>(
   })
 }
 
-export const initProjectGraph = Effect.fn("Chimera.initProjectGraph")(function* () {
+export const initProjectGraph = Effect.fn("Chimera.initProjectGraph")(function* (input: InitProjectGraphInput = {}) {
+  const s = yield* openProjectGraph({ sync: true })
+  const snapshot = s.graph.snapshot()
+  if (input.bus) {
+    yield* input.bus.publish(GraphReady, {
+      projectRoot: s.projectRoot,
+      revision: snapshot.revision,
+      indexedAt: snapshot.indexedAt,
+      fileCount: snapshot.fileCount,
+      nodeCount: snapshot.nodeCount,
+      edgeCount: snapshot.edgeCount,
+      source: input.source ?? "project.init",
+      sessionID: input.sessionID,
+    })
+  }
+  return snapshot
+})
+
+export const openProjectGraph = Effect.fn("Chimera.openProjectGraph")(function* (input: { sync?: boolean } = {}) {
   const instance = yield* InstanceState.context
   const root = projectRoot(instance)
-  yield* Effect.promise(() => openGraphState(root)).pipe(Effect.orDie)
+  const s = yield* Effect.promise(() => openGraphState(root)).pipe(Effect.orDie)
+  if (input.sync) yield* Effect.promise(() => s.graph.sync()).pipe(Effect.orDie)
+  return s
 })
 
 export * as Chimera from "./provenance"

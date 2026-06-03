@@ -12,6 +12,14 @@ import { WebFetchTool } from "./webfetch"
 import { WriteTool } from "./write"
 import { InvalidTool } from "./invalid"
 import { SkillTool } from "./skill"
+import {
+  ChimeraAuditTool,
+  ChimeraContextTool,
+  ChimeraImpactTool,
+  ChimeraObligationsTool,
+  ChimeraSearchTool,
+  ChimeraStatusTool,
+} from "./chimera"
 import * as Tool from "./tool"
 import { Config } from "@/config/config"
 import { type ToolContext as PluginToolContext, type ToolDefinition } from "@opencode-ai/plugin"
@@ -113,6 +121,12 @@ export const layer: Layer.Layer<
     const greptool = yield* GrepTool
     const patchtool = yield* ApplyPatchTool
     const skilltool = yield* SkillTool
+    const chimeraStatusTool = yield* ChimeraStatusTool
+    const chimeraSearchTool = yield* ChimeraSearchTool
+    const chimeraImpactTool = yield* ChimeraImpactTool
+    const chimeraContextTool = yield* ChimeraContextTool
+    const chimeraAuditTool = yield* ChimeraAuditTool
+    const chimeraObligationsTool = yield* ChimeraObligationsTool
     const agent = yield* Agent.Service
 
     const state = yield* InstanceState.make<State>(
@@ -210,6 +224,12 @@ export const layer: Layer.Layer<
           question: Tool.init(question),
           lsp: Tool.init(lsptool),
           plan: Tool.init(plan),
+          chimeraStatus: Tool.init(chimeraStatusTool),
+          chimeraSearch: Tool.init(chimeraSearchTool),
+          chimeraImpact: Tool.init(chimeraImpactTool),
+          chimeraContext: Tool.init(chimeraContextTool),
+          chimeraAudit: Tool.init(chimeraAuditTool),
+          chimeraObligations: Tool.init(chimeraObligationsTool),
         })
 
         return {
@@ -229,6 +249,12 @@ export const layer: Layer.Layer<
             tool.search,
             tool.skill,
             tool.patch,
+            tool.chimeraStatus,
+            tool.chimeraSearch,
+            tool.chimeraImpact,
+            tool.chimeraContext,
+            tool.chimeraAudit,
+            tool.chimeraObligations,
             ...(Flag.OPENCODE_EXPERIMENTAL_LSP_TOOL ? [tool.lsp] : []),
             ...(Flag.OPENCODE_EXPERIMENTAL_PLAN_MODE && Flag.OPENCODE_CLIENT === "cli" ? [tool.plan] : []),
           ],
