@@ -18,6 +18,7 @@ import { Env } from "../../src/env"
 import { ModelID, ProviderID } from "../../src/provider/schema"
 import { Question } from "../../src/question"
 import { Todo } from "../../src/session/todo"
+import { WorkBrief } from "../../src/session/work-brief"
 import { Session } from "@/session/session"
 import { SessionMessageTable } from "../../src/session/session.sql"
 import { LLM } from "../../src/session/llm"
@@ -174,6 +175,7 @@ function makeHttp() {
   ).pipe(Layer.provideMerge(infra))
   const question = Question.layer.pipe(Layer.provideMerge(deps))
   const todo = Todo.layer.pipe(Layer.provideMerge(deps))
+  const workBrief = WorkBrief.layer.pipe(Layer.provideMerge(deps))
   const registry = ToolRegistry.layer.pipe(
     Layer.provide(Skill.defaultLayer),
     Layer.provide(FetchHttpClient.layer),
@@ -181,6 +183,7 @@ function makeHttp() {
     Layer.provide(Ripgrep.defaultLayer),
     Layer.provide(Format.defaultLayer),
     Layer.provideMerge(todo),
+    Layer.provideMerge(workBrief),
     Layer.provideMerge(question),
     Layer.provideMerge(deps),
   )
@@ -197,6 +200,7 @@ function makeHttp() {
       Layer.provideMerge(proc),
       Layer.provideMerge(registry),
       Layer.provideMerge(trunc),
+      Layer.provideMerge(workBrief),
       Layer.provide(Instruction.defaultLayer),
       Layer.provide(SystemPrompt.defaultLayer),
       Layer.provideMerge(deps),
@@ -439,6 +443,44 @@ it.live("static loop returns assistant text through local provider", () =>
       expect(result.parts.some((part) => part.type === "text" && part.text === "world")).toBe(true)
       expect(yield* llm.hits).toHaveLength(1)
       expect(yield* llm.pending).toBe(0)
+    }),
+    { git: true, config: providerCfg },
+  ),
+)
+
+it.live("injects current work brief into the LLM input", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const workBrief = yield* WorkBrief.Service
+      const session = yield* sessions.create({
+        title: "Work brief",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+
+      yield* workBrief.update({
+        sessionID: session.id,
+        brief: WorkBrief.normalize({
+          intent: "ship prompt suffix",
+          confirmedDecisions: ["Use mutable suffix instead of rewriting history."],
+        }),
+      })
+
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "hello" }],
+      })
+
+      yield* llm.text("world")
+      yield* prompt.loop({ sessionID: session.id })
+
+      const body = JSON.stringify(yield* llm.inputs)
+      expect(body).toContain("## Current Work Brief")
+      expect(body).toContain("ship prompt suffix")
+      expect(body).toContain("Use mutable suffix instead of rewriting history.")
     }),
     { git: true, config: providerCfg },
   ),

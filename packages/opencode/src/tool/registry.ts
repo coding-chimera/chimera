@@ -10,6 +10,7 @@ import { TaskTool } from "./task"
 import { TodoWriteTool } from "./todo"
 import { WebFetchTool } from "./webfetch"
 import { WriteTool } from "./write"
+import { WorkBriefTool } from "./workbrief"
 import { InvalidTool } from "./invalid"
 import { SkillTool } from "./skill"
 import {
@@ -47,6 +48,7 @@ import { Format } from "../format"
 import { InstanceState } from "@/effect/instance-state"
 import { Question } from "../question"
 import { Todo } from "../session/todo"
+import { WorkBrief } from "../session/work-brief"
 import { LSP } from "@/lsp/lsp"
 import { Instruction } from "../session/instruction"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
@@ -83,6 +85,7 @@ export const layer: Layer.Layer<
   | Plugin.Service
   | Question.Service
   | Todo.Service
+  | WorkBrief.Service
   | Agent.Service
   | Skill.Service
   | Session.Service
@@ -117,6 +120,7 @@ export const layer: Layer.Layer<
     const shell = yield* ShellTool
     const globtool = yield* GlobTool
     const writetool = yield* WriteTool
+    const workbrief = yield* WorkBriefTool
     const edit = yield* EditTool
     const greptool = yield* GrepTool
     const patchtool = yield* ApplyPatchTool
@@ -215,6 +219,7 @@ export const layer: Layer.Layer<
           grep: Tool.init(greptool),
           edit: Tool.init(edit),
           write: Tool.init(writetool),
+          workbrief: Tool.init(workbrief),
           task: Tool.init(task),
           fetch: Tool.init(webfetch),
           todo: Tool.init(todo),
@@ -243,6 +248,7 @@ export const layer: Layer.Layer<
             tool.grep,
             tool.edit,
             tool.write,
+            tool.workbrief,
             tool.task,
             tool.fetch,
             tool.todo,
@@ -363,6 +369,7 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(Plugin.defaultLayer),
     Layer.provide(Question.defaultLayer),
     Layer.provide(Todo.defaultLayer),
+    Layer.provide(WorkBrief.defaultLayer),
     Layer.provide(Skill.defaultLayer),
     Layer.provide(Agent.defaultLayer),
     Layer.provide(Session.defaultLayer),

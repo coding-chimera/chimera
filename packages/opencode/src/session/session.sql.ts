@@ -103,6 +103,25 @@ export const TodoTable = sqliteTable(
   ],
 )
 
+type WorkBriefData = {
+  intent?: string
+  confirmedDecisions: string[]
+  constraints: string[]
+  acceptanceCriteria: string[]
+  openQuestions: string[]
+  relevantEvidence: string[]
+  closeout: string[]
+}
+
+export const WorkBriefTable = sqliteTable("work_brief", {
+  session_id: text()
+    .$type<SessionID>()
+    .primaryKey()
+    .references(() => SessionTable.id, { onDelete: "cascade" }),
+  data: text({ mode: "json" }).notNull().$type<WorkBriefData>(),
+  ...Timestamps,
+})
+
 export const SessionMessageTable = sqliteTable(
   "session_message",
   {

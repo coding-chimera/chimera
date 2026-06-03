@@ -43,6 +43,7 @@ import { Question } from "../../src/question"
 import { Skill } from "../../src/skill"
 import { SystemPrompt } from "../../src/session/system"
 import { Todo } from "../../src/session/todo"
+import { WorkBrief } from "../../src/session/work-brief"
 import { SessionCompaction } from "../../src/session/compaction"
 import { Instruction } from "../../src/session/instruction"
 import { SessionProcessor } from "../../src/session/processor"
@@ -124,6 +125,7 @@ function makeHttp() {
   ).pipe(Layer.provideMerge(infra))
   const question = Question.layer.pipe(Layer.provideMerge(deps))
   const todo = Todo.layer.pipe(Layer.provideMerge(deps))
+  const workBrief = WorkBrief.layer.pipe(Layer.provideMerge(deps))
   const registry = ToolRegistry.layer.pipe(
     Layer.provide(Skill.defaultLayer),
     Layer.provide(FetchHttpClient.layer),
@@ -131,6 +133,7 @@ function makeHttp() {
     Layer.provide(Ripgrep.defaultLayer),
     Layer.provide(Format.defaultLayer),
     Layer.provideMerge(todo),
+    Layer.provideMerge(workBrief),
     Layer.provideMerge(question),
     Layer.provideMerge(deps),
   )
@@ -148,6 +151,7 @@ function makeHttp() {
       Layer.provideMerge(proc),
       Layer.provideMerge(registry),
       Layer.provideMerge(trunc),
+      Layer.provideMerge(workBrief),
       Layer.provide(Instruction.defaultLayer),
       Layer.provide(SystemPrompt.defaultLayer),
       Layer.provideMerge(deps),
