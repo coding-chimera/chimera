@@ -6,6 +6,7 @@ import {
   type FrozenSemanticObject,
   type IndexProgress,
   type Node as CodeGraphNode,
+  type PendingFile as CodeGraphPendingFile,
   type RangeQueryOptions,
   type SearchOptions,
   type SourceRange,
@@ -18,6 +19,7 @@ export type {
   CodeGraphNode,
   CodeGraphSnapshot,
   CodeGraphSyncResult,
+  CodeGraphPendingFile,
   FrozenSemanticObject,
   IndexProgress as CodeGraphIndexProgress,
   RangeQueryOptions,
@@ -93,6 +95,14 @@ export class CodeGraphAdapter {
 
   sync(options: { onProgress?: (progress: IndexProgress) => void } = {}) {
     return this.graph.sync({ onProgress: options.onProgress })
+  }
+
+  pendingFiles(): CodeGraphPendingFile[] {
+    return this.graph.getPendingFiles()
+  }
+
+  changedFiles() {
+    return this.graph.getChangedFiles()
   }
 
   nodesIntersectingRange(filePath: string, range: SourceRange, options: RangeQueryOptions = {}) {

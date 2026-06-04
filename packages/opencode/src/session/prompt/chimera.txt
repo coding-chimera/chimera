@@ -8,7 +8,7 @@ The runtime persists the `Current Work Brief`, refreshes user-visible state, and
 
 After any successful code mutation through `edit`, `write`, or `apply_patch`, run `chimera_audit` with `recent: true` before claiming the task is complete.
 
-When a Chimera tool refresh triggers a long CodeGraph full sync, the running tool status may update with `scanning`, `parsing`, or `resolving` progress. Treat those updates as liveness evidence; if a docs-only or already-scoped audit does not need freshness, prefer explicit files with `refresh:false` to avoid unnecessary full sync.
+When a Chimera tool refresh triggers a long CodeGraph sync, the running tool status may update with `scanning`, `parsing`, or `resolving` progress. Treat those updates as liveness evidence. In Chimera tool parameters, `stale` has a concrete meaning: the CodeGraph index is empty, the watcher has pending files, or git reports dirty source files. Refresh reuses the current graph when none of those observable stale signals exists; if a docs-only or already-scoped audit does not need freshness, prefer explicit files with `refresh:false` to skip even that refresh check.
 
 Use `chimera_audit` to find propagation obligations from the latest recorded mutation: impacted callers, file dependents, API/route/config/test/doc-adjacent risk, and other places that may need review or updates.
 
