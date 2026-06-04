@@ -5,6 +5,7 @@ const id = "internal:sidebar-work-brief"
 type WorkBriefView = NonNullable<ReturnType<TuiPluginApi["state"]["session"]["workBrief"]>>
 
 type Section = {
+  key: string
   label: string
   items: readonly string[]
 }
@@ -24,30 +25,42 @@ function isEmpty(brief: WorkBriefView | undefined) {
 
 function sections(brief: WorkBriefView): Section[] {
   return [
-    ...(brief.intent ? [{ label: "Intent", items: [brief.intent] }] : []),
-    { label: "Decisions", items: brief.confirmedDecisions },
-    { label: "Constraints", items: brief.constraints },
-    { label: "Criteria", items: brief.acceptanceCriteria },
-    { label: "Questions", items: brief.openQuestions },
-    { label: "Evidence", items: brief.relevantEvidence },
-    { label: "Closeout", items: brief.closeout },
+    ...(brief.intent ? [{ key: "intent", label: "Intent", items: [brief.intent] }] : []),
+    { key: "decisions", label: "Decisions", items: brief.confirmedDecisions },
+    { key: "constraints", label: "Constraints", items: brief.constraints },
+    { key: "criteria", label: "Criteria", items: brief.acceptanceCriteria },
+    { key: "questions", label: "Questions", items: brief.openQuestions },
+    { key: "evidence", label: "Evidence", items: brief.relevantEvidence },
+    { key: "closeout", label: "Closeout", items: brief.closeout },
   ].filter((section) => section.items.length > 0)
 }
 
 function View(props: { api: TuiPluginApi; session_id: string }) {
   const [open, setOpen] = createSignal(true)
+  const [closedSections, setClosedSections] = createSignal(new Set<string>())
   const theme = () => props.api.theme.current
   const brief = createMemo(() => props.api.state.session.workBrief(props.session_id))
   const list = createMemo(() => (brief() ? sections(brief()!) : []))
   const count = createMemo(() => list().reduce((sum, section) => sum + section.items.length, 0))
   const collapsible = createMemo(() => count() > 6)
+  const sectionOpen = (key: string) => !closedSections().has(key)
+  const toggleSection = (key: string) =>
+    setClosedSections((current) => {
+      const next = new Set(current)
+      if (next.has(key)) {
+        next.delete(key)
+        return next
+      }
+      next.add(key)
+      return next
+    })
 
   return (
     <Show when={!isEmpty(brief())}>
       <box>
         <box flexDirection="row" gap={1} onMouseDown={() => collapsible() && setOpen((x) => !x)}>
           <Show when={collapsible()}>
-            <text fg={theme().text}>{open() ? "v" : ">"}</text>
+            <text fg={theme().text}>{open() ? "▼" : "▶"}</text>
           </Show>
           <text fg={theme().text}>
             <b>Work Brief</b>
@@ -56,16 +69,21 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
         <Show when={!collapsible() || open()}>
           <For each={list()}>
             {(section) => (
-              <box paddingTop={1}>
-                <text fg={theme().textMuted}>{section.label}</text>
-                <For each={section.items}>
-                  {(item) => (
-                    <text fg={theme().textMuted}>
-                      <span>- </span>
-                      <span>{item}</span>
-                    </text>
-                  )}
-                </For>
+              <box paddingTop={1} paddingLeft={2}>
+                <box flexDirection="row" gap={1} onMouseDown={() => toggleSection(section.key)}>
+                  <text fg={theme().text}>{sectionOpen(section.key) ? "v" : ">"}</text>
+                  <text fg={theme().text}>{section.label}</text>
+                </box>
+                <Show when={sectionOpen(section.key)}>
+                  <For each={section.items}>
+                    {(item) => (
+                      <text fg={theme().textMuted}>
+                        <span>- </span>
+                        <span>{item}</span>
+                      </text>
+                    )}
+                  </For>
+                </Show>
               </box>
             )}
           </For>
