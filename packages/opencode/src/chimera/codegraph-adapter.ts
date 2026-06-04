@@ -10,6 +10,7 @@ import {
   type SourceRange,
   type SyncResult as CodeGraphSyncResult,
   type TaskInput,
+  type WatchOptions,
 } from "../../../../../codegraph/dist/index.js"
 
 export type {
@@ -20,6 +21,7 @@ export type {
   RangeQueryOptions,
   SearchOptions,
   SourceRange,
+  WatchOptions,
 }
 
 export interface OpenOptions {
@@ -127,6 +129,18 @@ export class CodeGraphAdapter {
 
   async buildContext(input: TaskInput, options: BuildContextOptions = {}) {
     return this.graph.buildContext(input, options)
+  }
+
+  watch(options: WatchOptions = {}) {
+    return this.graph.watch(options)
+  }
+
+  unwatch() {
+    this.graph.unwatch()
+  }
+
+  isWatching() {
+    return this.graph.isWatching()
   }
 
   projectNode(nodeOrId: CodeGraphNode | string, snapshot = this.snapshot()): FrozenSemanticObject | null {

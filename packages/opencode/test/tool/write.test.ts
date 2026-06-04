@@ -10,6 +10,7 @@ import { Bus } from "../../src/bus"
 import { Format } from "../../src/format"
 import { Truncate } from "@/tool/truncate"
 import { Tool } from "@/tool/tool"
+import { readProvenanceRecords } from "@/chimera/store"
 import { Agent } from "../../src/agent/agent"
 import { SessionID, MessageID } from "../../src/session/schema"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
@@ -104,12 +105,14 @@ describe("tool.write", () => {
         )
 
         const artifact = path.join(test.directory, ".codegraph", "chimera", "tool-provenance.jsonl")
-        const text = yield* Effect.promise(() => fs.readFile(artifact, "utf-8"))
-        const lines = text.trim().split("\n")
-        const record = JSON.parse(lines[lines.length - 1]!)
+        const records = yield* Effect.promise(() => readProvenanceRecords(test.directory, artifact))
+        const record = records[records.length - 1]!
 
         expect(record.tool.id).toBe("write")
         expect(record.tool.callID).toBe("call_write_provenance")
+        expect(record.origin).toBe("tool")
+        expect(record.provenanceStrength).toBe("strong")
+        expect(record.actor?.sessionID).toBe(ctx.sessionID)
         expect(record.status).toBe("success")
         expect(record.graph.before.revision).toEqual(expect.any(String))
         expect(record.graph.after.revision).toEqual(expect.any(String))

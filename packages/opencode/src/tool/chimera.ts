@@ -1,6 +1,5 @@
 import path from "path"
 import { createHash } from "crypto"
-import { mkdir } from "fs/promises"
 import { Effect, Schema } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import {
@@ -11,6 +10,13 @@ import {
   type ProjectGraphState,
   type ToolMutationRecord,
 } from "@/chimera"
+import {
+  provenanceRecordCount as storedProvenanceRecordCount,
+  readProvenanceRecords,
+  readPersistentObligationStore,
+  recordAuditRun,
+  writePersistentObligationStore,
+} from "@/chimera/store"
 import * as Tool from "./tool"
 
 const NodeKind = Schema.Union([
@@ -236,6 +242,7 @@ export const ObligationsParameters = Schema.Struct({
 type StatusMetadata = {
   projectRoot: string
   artifact: string
+  storePath: string
   obligationsArtifact: string
   snapshot: CodeGraphSnapshot
   stats: unknown
@@ -360,6 +367,7 @@ type ObligationCounts = Record<ObligationStatusValue, number>
 type ObligationsMetadata = {
   projectRoot: string
   artifact: string
+  storePath: string
   action: "list" | "sync" | "claim" | "resolve" | "ignore"
   counts: ObligationCounts
   obligations: PersistentObligation[]
@@ -386,6 +394,7 @@ type ContextOverlay = {
   }
   obligations: {
     artifact: string
+    storePath?: string
     counts: ObligationCounts
     active: PersistentObligation[]
   }
@@ -591,24 +600,12 @@ function permission(ctx: Tool.Context, toolID: string, metadata: Record<string, 
   })
 }
 
-function provenanceRecordCount(artifact: string) {
-  return Effect.promise(async () => {
-    if (!(await Bun.file(artifact).exists())) return 0
-    const text = await Bun.file(artifact).text()
-    return text.trim() ? text.trim().split("\n").length : 0
-  })
+function provenanceRecordCount(projectRoot: string, artifact: string) {
+  return Effect.promise(() => storedProvenanceRecordCount(projectRoot, artifact))
 }
 
-function provenanceRecords(artifact: string) {
-  return Effect.promise(async () => {
-    if (!(await Bun.file(artifact).exists())) return [] as ToolMutationRecord[]
-    const text = await Bun.file(artifact).text()
-    if (!text.trim()) return [] as ToolMutationRecord[]
-    return text
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line) as ToolMutationRecord)
-  })
+function provenanceRecords(projectRoot: string, artifact: string) {
+  return Effect.promise(() => readProvenanceRecords(projectRoot, artifact))
 }
 
 function latestSuccessfulProvenance(records: ToolMutationRecord[]) {
@@ -660,30 +657,25 @@ function emptyObligationStore(): ObligationStore {
   return { schemaVersion: 1, obligations: [] }
 }
 
-function readObligationStore(artifact: string) {
-  return Effect.promise(async () => {
-    if (!(await Bun.file(artifact).exists())) return emptyObligationStore()
-    return (await Bun.file(artifact).json()) as ObligationStore
-  })
+function readObligationStore(projectRoot: string, artifact: string) {
+  return Effect.promise(() => readPersistentObligationStore<PersistentObligation>(projectRoot, artifact, emptyObligationStore()))
 }
 
-function readObligationSummary(provenanceArtifact: string, limit = 10) {
+function readObligationSummary(projectRoot: string, provenanceArtifact: string, storePath: string, limit = 10) {
   return Effect.gen(function* () {
     const artifact = obligationsArtifact(provenanceArtifact)
-    const store = yield* readObligationStore(artifact)
+    const store = yield* readObligationStore(projectRoot, artifact)
     return {
       artifact,
+      storePath,
       counts: obligationCounts(store.obligations),
       active: activeObligations(store.obligations).slice(0, limit),
     }
   })
 }
 
-function writeObligationStore(artifact: string, store: ObligationStore) {
-  return Effect.promise(async () => {
-    await mkdir(path.dirname(artifact), { recursive: true })
-    await Bun.write(artifact, `${JSON.stringify(store, null, 2)}\n`)
-  })
+function writeObligationStore(projectRoot: string, artifact: string, store: ObligationStore, runID?: string) {
+  return Effect.promise(() => writePersistentObligationStore(projectRoot, artifact, store, runID))
 }
 
 function obligationCounts(obligations: PersistentObligation[]): ObligationCounts {
@@ -865,7 +857,8 @@ function formatContextOverlay(overlay: ContextOverlay) {
     ...(overlay.selectedImpact.evidence.length ? overlay.selectedImpact.evidence.slice(0, 10).map(formatEvidence) : ["- None selected."]),
     "",
     "Future obligations:",
-    `- Artifact: ${overlay.obligations.artifact}`,
+    `- Store: ${overlay.obligations.storePath ?? overlay.obligations.artifact}`,
+    `- Fallback artifact: ${overlay.obligations.artifact}`,
     `- ${formatCounts(overlay.obligations.counts)}`,
     ...(overlay.obligations.active.length ? overlay.obligations.active.map(formatObligation) : ["- None active."]),
   ].join("\n")
@@ -913,7 +906,7 @@ function formatAuditOutput(audit: AuditMetadata) {
 const buildAudit = Effect.fn("ChimeraTool.buildAudit")(function* (params: AuditParams) {
   const instance = yield* InstanceState.context
   const state = yield* Chimera.openProjectGraph({ sync: params.refresh !== false })
-  const records = yield* provenanceRecords(state.artifact)
+  const records = yield* provenanceRecords(state.projectRoot, state.artifact)
   const recent = latestSuccessfulProvenance(records)
   const explicitFiles = uniqueStrings([...(params.files ?? []), ...(params.filePath ? [params.filePath] : [])]).map((file) =>
     graphPath(state.projectRoot, instance.directory, file),
@@ -975,8 +968,8 @@ export const ChimeraStatusTool = Tool.define<typeof StatusParameters, StatusMeta
         const state = yield* Chimera.openProjectGraph({ sync: params.refresh !== false })
         const snapshot = state.graph.snapshot()
         const stats = state.graph.stats()
-        const provenanceRecords = yield* provenanceRecordCount(state.artifact)
-        const obligations = yield* readObligationSummary(state.artifact, 0)
+        const provenanceRecords = yield* provenanceRecordCount(state.projectRoot, state.artifact)
+        const obligations = yield* readObligationSummary(state.projectRoot, state.artifact, state.storePath, 0)
 
         return {
           title: "Chimera status",
@@ -990,12 +983,14 @@ export const ChimeraStatusTool = Tool.define<typeof StatusParameters, StatusMeta
             `Indexed at: ${snapshot.indexedAt}`,
             `Backend: ${state.graph.backend()}`,
             `Journal mode: ${state.graph.journalMode()}`,
+            `Chimera store: ${state.storePath}`,
             `Tool provenance records: ${provenanceRecords}`,
             `Pending obligations: ${obligations.counts.pending}`,
           ].join("\n"),
           metadata: {
             projectRoot: state.projectRoot,
             artifact: state.artifact,
+            storePath: state.storePath,
             obligationsArtifact: obligations.artifact,
             snapshot,
             stats,
@@ -1196,19 +1191,31 @@ export const ChimeraObligationsTool = Tool.define<typeof ObligationsParameters, 
         const state = yield* Chimera.openProjectGraph({ sync: params.refresh !== false })
         const artifact = obligationsArtifact(state.artifact)
         const now = new Date().toISOString()
-        const store = yield* readObligationStore(artifact)
+        const store = yield* readObligationStore(state.projectRoot, artifact)
 
         if (action === "sync") {
           const audit = yield* buildAudit(params)
+          const auditRunID = yield* Effect.promise(() =>
+            recordAuditRun(state.projectRoot, {
+              source: audit.source,
+              provenanceID: audit.provenance?.id,
+              changedFiles: audit.changedFiles,
+              snapshotRevision: audit.snapshot.revision,
+              seedNodes: audit.seedNodes,
+              obligations: audit.obligations,
+              payload: audit,
+            }),
+          )
           const result = upsertObligations(store, audit, now)
-          yield* writeObligationStore(artifact, result.store)
+          yield* writeObligationStore(state.projectRoot, artifact, result.store, auditRunID)
           const obligations = result.touched.slice(0, bounded(params.limit, 30, 100))
           const counts = obligationCounts(result.store.obligations)
           return {
             title: "Chimera obligations",
             output: [
               "Chimera obligations synced from propagation audit.",
-              `Artifact: ${artifact}`,
+              `Store: ${state.storePath}`,
+              `Fallback artifact: ${artifact}`,
               `Synced: ${result.synced} new, ${result.updated} updated`,
               formatCounts(counts),
               "",
@@ -1221,6 +1228,7 @@ export const ChimeraObligationsTool = Tool.define<typeof ObligationsParameters, 
             metadata: {
               projectRoot: state.projectRoot,
               artifact,
+              storePath: state.storePath,
               action,
               counts,
               obligations,
@@ -1232,7 +1240,7 @@ export const ChimeraObligationsTool = Tool.define<typeof ObligationsParameters, 
         }
 
         const refreshed = params.refresh === false ? store : refreshStaleObligations(store, state, now)
-        if (params.refresh !== false) yield* writeObligationStore(artifact, refreshed)
+        if (params.refresh !== false) yield* writeObligationStore(state.projectRoot, artifact, refreshed)
 
         if (action === "claim") {
           if (!params.obligationID) throw new Error("chimera_obligations action=claim requires obligationID")
@@ -1247,7 +1255,7 @@ export const ChimeraObligationsTool = Tool.define<typeof ObligationsParameters, 
           if (!refreshed.obligations.some((item) => item.id === params.obligationID)) {
             throw new Error(`unknown Chimera obligation: ${params.obligationID}`)
           }
-          yield* writeObligationStore(artifact, next)
+          yield* writeObligationStore(state.projectRoot, artifact, next)
           const obligations = next.obligations.filter((item) => item.id === params.obligationID)
           return {
             title: "Chimera obligations",
@@ -1260,6 +1268,7 @@ export const ChimeraObligationsTool = Tool.define<typeof ObligationsParameters, 
             metadata: {
               projectRoot: state.projectRoot,
               artifact,
+              storePath: state.storePath,
               action,
               counts: obligationCounts(next.obligations),
               obligations,
@@ -1280,7 +1289,7 @@ export const ChimeraObligationsTool = Tool.define<typeof ObligationsParameters, 
           if (!refreshed.obligations.some((item) => item.id === params.obligationID)) {
             throw new Error(`unknown Chimera obligation: ${params.obligationID}`)
           }
-          yield* writeObligationStore(artifact, next)
+          yield* writeObligationStore(state.projectRoot, artifact, next)
           const obligations = next.obligations.filter((item) => item.id === params.obligationID)
           return {
             title: "Chimera obligations",
@@ -1293,6 +1302,7 @@ export const ChimeraObligationsTool = Tool.define<typeof ObligationsParameters, 
             metadata: {
               projectRoot: state.projectRoot,
               artifact,
+              storePath: state.storePath,
               action,
               counts: obligationCounts(next.obligations),
               obligations,
@@ -1315,7 +1325,7 @@ export const ChimeraObligationsTool = Tool.define<typeof ObligationsParameters, 
           if (!refreshed.obligations.some((item) => item.id === params.obligationID)) {
             throw new Error(`unknown Chimera obligation: ${params.obligationID}`)
           }
-          yield* writeObligationStore(artifact, next)
+          yield* writeObligationStore(state.projectRoot, artifact, next)
           const obligations = next.obligations.filter((item) => item.id === params.obligationID)
           return {
             title: "Chimera obligations",
@@ -1328,6 +1338,7 @@ export const ChimeraObligationsTool = Tool.define<typeof ObligationsParameters, 
             metadata: {
               projectRoot: state.projectRoot,
               artifact,
+              storePath: state.storePath,
               action,
               counts: obligationCounts(next.obligations),
               obligations,
@@ -1341,7 +1352,8 @@ export const ChimeraObligationsTool = Tool.define<typeof ObligationsParameters, 
           title: "Chimera obligations",
           output: [
             "Chimera obligations.",
-            `Artifact: ${artifact}`,
+            `Store: ${state.storePath}`,
+            `Fallback artifact: ${artifact}`,
             formatCounts(counts),
             "",
             `Obligations (${obligations.length}):`,
@@ -1353,6 +1365,7 @@ export const ChimeraObligationsTool = Tool.define<typeof ObligationsParameters, 
           metadata: {
             projectRoot: state.projectRoot,
             artifact,
+            storePath: state.storePath,
             action,
             counts,
             obligations,
@@ -1401,7 +1414,7 @@ export const ChimeraContextTool = Tool.define<typeof ContextParameters, ContextM
             maxCodeBlocks: bounded(params.maxCodeBlocks, 8, 30),
           }),
         ).pipe(Effect.orDie)
-        const records = yield* provenanceRecords(state.artifact)
+        const records = yield* provenanceRecords(state.projectRoot, state.artifact)
         const recent = latestSuccessfulProvenance(records)
         const overlaySeeds = uniqueNodes([
           ...(node ? [node] : []),
@@ -1419,7 +1432,7 @@ export const ChimeraContextTool = Tool.define<typeof ContextParameters, ContextM
           depth: 2,
           limit: bounded(params.maxNodes, 30, 100),
         })
-        const obligations = yield* readObligationSummary(state.artifact, 10)
+        const obligations = yield* readObligationSummary(state.projectRoot, state.artifact, state.storePath, 10)
         const overlay: ContextOverlay = {
           ...(recent
             ? {
