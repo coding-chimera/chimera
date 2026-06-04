@@ -4,15 +4,21 @@ import { Effect, Schema } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import {
   Chimera,
+  classifyChangeRecord,
+  classifyFileBoundary,
+  collectFileProjections,
+  type ChangeFact,
   type CodeGraphIndexProgress,
   type CodeGraphNode,
   type CodeGraphSnapshot,
+  type FileClassification,
   type FrozenSemanticObject,
   type ProjectGraphState,
   type ToolMutationRecord,
 } from "@/chimera"
 import {
   provenanceRecordCount as storedProvenanceRecordCount,
+  readChangeFacts,
   readProvenanceRecords,
   readPersistentObligationStore,
   recordAuditRun,
@@ -280,7 +286,7 @@ type ContextMetadata = {
   overlay: ContextOverlay
 }
 
-type ChangeClassification = "source" | "test" | "docs" | "config" | "dependency" | "api_route" | "unknown"
+type ChangeClassification = FileClassification
 
 type RiskCategory =
   | "api_contract"
@@ -295,7 +301,7 @@ type RiskCategory =
   | "unknown"
 
 type CauseLink = {
-  type: "changed_file" | "changed_seed" | "file_dependency" | "impact_radius" | "context_selection"
+  type: "changed_file" | "changed_seed" | "change_fact" | "file_dependency" | "impact_radius" | "context_selection"
   target: string
   evidence: string
 }
@@ -317,6 +323,7 @@ type AuditMetadata = {
   source: "input" | "recent_provenance" | "git_diff"
   changedFiles: string[]
   classifications: Array<{ file: string; classification: ChangeClassification; reason: string }>
+  changeFacts: ChangeFact[]
   seedNodes: Array<FrozenSemanticObject | null>
   impactedNodes: Array<FrozenSemanticObject | null>
   fileDependents: string[]
@@ -353,6 +360,7 @@ type PersistentObligation = {
     changedFiles: string[]
     snapshotRevision: string
     seedNodes: Array<FrozenSemanticObject | null>
+    changeFacts?: ChangeFact[]
   }
   createdAt: string
   updatedAt: string
@@ -520,46 +528,8 @@ function uniqueStrings(items: string[]) {
 }
 
 function classifyFile(filePath: string): { classification: ChangeClassification; reason: string } {
-  const lower = filePath.toLowerCase()
-  const basename = path.basename(lower)
-  if (
-    basename === "package.json" ||
-    basename.endsWith(".lock") ||
-    basename === "bun.lockb" ||
-    basename === "cargo.toml" ||
-    basename === "go.mod" ||
-    basename === "requirements.txt"
-  ) {
-    return { classification: "dependency", reason: "dependency manifest or lockfile boundary" }
-  }
-  if (lower.includes("/test/") || lower.includes("/tests/") || /\.(test|spec)\.[cm]?[jt]sx?$/.test(lower)) {
-    return { classification: "test", reason: "test or spec file boundary" }
-  }
-  if (/\.(md|mdx|rst|adoc|txt)$/.test(lower) || lower.includes("/docs/") || lower.includes("/specs/")) {
-    return { classification: "docs", reason: "documentation or specification boundary" }
-  }
-  if (
-    lower.includes("/route") ||
-    lower.includes("/routes/") ||
-    lower.includes("/api/") ||
-    lower.includes("/httpapi/") ||
-    lower.includes("/server/")
-  ) {
-    return { classification: "api_route", reason: "route/server/API boundary" }
-  }
-  if (
-    basename.startsWith(".") ||
-    basename.includes("config") ||
-    basename === "tsconfig.json" ||
-    basename === "vite.config.ts" ||
-    basename === "drizzle.config.ts"
-  ) {
-    return { classification: "config", reason: "configuration boundary" }
-  }
-  if (/\.[cm]?[jt]sx?$|\.tsx?$|\.rs$|\.go$|\.py$|\.java$|\.kt$|\.swift$/.test(lower)) {
-    return { classification: "source", reason: "source implementation file" }
-  }
-  return { classification: "unknown", reason: "unclassified file boundary" }
+  const boundary = classifyFileBoundary(filePath)
+  return { classification: boundary.classification, reason: boundary.reason }
 }
 
 function riskForClassification(classification: ChangeClassification): RiskCategory {
@@ -607,6 +577,19 @@ function formatClassification(item: { file: string; classification: ChangeClassi
   return `- ${item.file}: ${item.classification}\n  reason: ${item.reason}`
 }
 
+function formatChangeFact(fact: ChangeFact) {
+  return [
+    `- ${fact.id}: ${fact.subjectKind}/${fact.changeKind} ${fact.filePath}`,
+    fact.nodeKey ? `  node: ${fact.nodeKey}` : undefined,
+    `  confidence: ${fact.confidence}`,
+    `  rule: ${fact.evidence.rule}`,
+    `  reason: ${fact.evidence.confidenceReason}`,
+    fact.evidence.signals.length ? `  signals: ${fact.evidence.signals.join(", ")}` : undefined,
+  ]
+    .filter(Boolean)
+    .join("\n")
+}
+
 function sourceCause(source: AuditMetadata["source"] | "context_selection", changedFiles: string[], seedNames: string[]) {
   if (changedFiles.length) {
     return {
@@ -622,11 +605,22 @@ function sourceCause(source: AuditMetadata["source"] | "context_selection", chan
   }
 }
 
+function factCause(changeFacts: ChangeFact[]) {
+  const fact = changeFacts[0]
+  if (!fact) return undefined
+  return {
+    type: "change_fact" as const,
+    target: `${fact.subjectKind}/${fact.changeKind} ${fact.filePath}`,
+    evidence: `chimera_change_fact:${fact.id} confidence:${fact.confidence}`,
+  }
+}
+
 function buildImpactEvidence(input: {
   state: ProjectGraphState
   snapshot: CodeGraphSnapshot
   seedNodes: CodeGraphNode[]
   changedFiles: string[]
+  changeFacts: ChangeFact[]
   normalizedFile?: string
   source: AuditMetadata["source"] | "context_selection"
   depth: number
@@ -644,6 +638,8 @@ function buildImpactEvidence(input: {
   )
   const seedNames = input.seedNodes.map((node) => node.qualifiedName || node.name).slice(0, 5)
   const cause = sourceCause(input.source, input.changedFiles, seedNames)
+  const changeFactCause = factCause(input.changeFacts)
+  const baseCauseChain = changeFactCause ? [cause, changeFactCause] : [cause]
   const evidence = uniqueCandidates([
     ...fileDependents.map((file) => {
       const classification = classifyFile(file).classification
@@ -654,7 +650,7 @@ function buildImpactEvidence(input: {
         classification,
         requiredAction: "review_or_update" as const,
         evidence: "codegraph:file_dependents",
-        causeChain: [cause, { type: "file_dependency" as const, target: file, evidence: "codegraph:file_dependents" }],
+        causeChain: [...baseCauseChain, { type: "file_dependency" as const, target: file, evidence: "codegraph:file_dependents" }],
       }
     }),
     ...impactedNodes.map((node) => {
@@ -668,7 +664,7 @@ function buildImpactEvidence(input: {
         requiredAction: "review_or_update" as const,
         evidence: "codegraph:impact_radius",
         causeChain: [
-          cause,
+          ...baseCauseChain,
           {
             type: "impact_radius" as const,
             target: `${node.filePath}:${node.startLine} ${node.qualifiedName || node.name}`,
@@ -725,6 +721,57 @@ function gitStatusFiles(root: string) {
         }),
     )
   })
+}
+
+function syntheticAuditRecord(input: {
+  projectRoot: string
+  directory: string
+  source: AuditMetadata["source"]
+  changedFiles: string[]
+  snapshot: CodeGraphSnapshot
+}): ToolMutationRecord {
+  const now = new Date().toISOString()
+  return {
+    schemaVersion: 1,
+    id: `audit:${createHash("sha256").update(`${now}:${input.changedFiles.join(",")}`).digest("hex").slice(0, 16)}`,
+    origin: input.source === "git_diff" ? "git" : "tool",
+    provenanceStrength: input.source === "git_diff" ? "weak" : "strong",
+    tool: {
+      id: "chimera_audit",
+      messageID: "audit",
+      sessionID: "audit",
+      agent: "chimera",
+    },
+    project: {
+      root: input.projectRoot,
+      worktree: input.projectRoot,
+      directory: input.directory,
+    },
+    status: "success",
+    startedAt: now,
+    finishedAt: now,
+    graph: {
+      before: input.snapshot,
+      after: input.snapshot,
+      sync: {
+        filesChecked: input.changedFiles.length,
+        filesAdded: 0,
+        filesModified: input.changedFiles.length,
+        filesRemoved: 0,
+        nodesUpdated: 0,
+        durationMs: 0,
+        changedFiles: input.changedFiles.map((file) => ({ path: file, status: "modified" as const })),
+      },
+    },
+    files: input.changedFiles.map((file) => ({
+      absolutePath: path.isAbsolute(file) ? file : path.join(input.projectRoot, file),
+      graphPath: file,
+      insideGraph: true,
+    })),
+    metadata: {
+      classifierSource: input.source === "git_diff" ? "git_diff" : "explicit_input",
+    },
+  }
 }
 
 function candidateKey(candidate: AuditCandidate) {
@@ -831,6 +878,7 @@ function makeObligation(audit: AuditMetadata, candidate: AuditCandidate, now: st
       changedFiles: audit.changedFiles,
       snapshotRevision: audit.snapshot.revision,
       seedNodes: audit.seedNodes,
+      changeFacts: audit.changeFacts,
     },
     createdAt: now,
     updatedAt: now,
@@ -971,6 +1019,9 @@ function formatAuditOutput(audit: AuditMetadata) {
     "Change classification:",
     ...(audit.classifications.length ? audit.classifications.map(formatClassification) : ["- No changed files to classify."]),
     "",
+    `Change facts (${audit.changeFacts.length}):`,
+    ...(audit.changeFacts.length ? audit.changeFacts.map(formatChangeFact) : ["- None generated."]),
+    "",
     `Changed seed symbols (${audit.seedNodes.length}):`,
     ...(audit.seedNodes.length
       ? audit.seedNodes.map((node) =>
@@ -1014,6 +1065,18 @@ const buildAudit = Effect.fn("ChimeraTool.buildAudit")(function* (params: AuditP
   const depth = bounded(params.depth, 2, 5)
   const limit = bounded(params.limit, 30, 100)
   const snapshot = state.graph.snapshot()
+  const storedChangeFacts = source === "recent_provenance" && recent ? yield* Effect.promise(() => readChangeFacts(state.projectRoot, [recent.id])) : []
+  const ephemeralRecord = storedChangeFacts.length
+    ? undefined
+    : recent ?? syntheticAuditRecord({ projectRoot: state.projectRoot, directory: instance.directory, source, changedFiles, snapshot })
+  const changeFacts = storedChangeFacts.length
+    ? storedChangeFacts
+    : ephemeralRecord
+      ? classifyChangeRecord({
+          record: ephemeralRecord,
+          afterNodes: collectFileProjections(state.graph, ephemeralRecord.files, snapshot),
+        })
+      : []
   const kinds = params.kind ? [params.kind] : undefined
   const rangeFile = params.filePath ? graphPath(state.projectRoot, instance.directory, params.filePath) : undefined
   const fileSeedBudget = Math.max(1, Math.min(10, Math.floor(limit / Math.max(changedFiles.length, 1))))
@@ -1035,7 +1098,7 @@ const buildAudit = Effect.fn("ChimeraTool.buildAudit")(function* (params: AuditP
     throw new Error("chimera_audit requires files/filePath, symbol/nodeID, a recent successful Chimera tool mutation, or git diff changes")
   }
 
-  const impact = buildImpactEvidence({ state, snapshot, seedNodes, changedFiles, source, depth, limit })
+  const impact = buildImpactEvidence({ state, snapshot, seedNodes, changedFiles, changeFacts, source, depth, limit })
 
   return {
     projectRoot: state.projectRoot,
@@ -1043,6 +1106,7 @@ const buildAudit = Effect.fn("ChimeraTool.buildAudit")(function* (params: AuditP
     source,
     changedFiles,
     classifications: changedFiles.map((file) => ({ file, ...classifyFile(file) })),
+    changeFacts,
     seedNodes: seedNodes.map((node) => state.graph.projectNode(node, snapshot)),
     impactedNodes: impact.impactedNodes.map((node) => state.graph.projectNode(node, snapshot)),
     fileDependents: impact.fileDependents,
@@ -1192,6 +1256,7 @@ export const ChimeraImpactTool = Tool.define<typeof ImpactParameters, ImpactMeta
           snapshot,
           seedNodes,
           changedFiles: normalizedFile ? [normalizedFile] : [],
+          changeFacts: [],
           normalizedFile,
           source: "input",
           depth,
@@ -1522,6 +1587,7 @@ export const ChimeraContextTool = Tool.define<typeof ContextParameters, ContextM
           snapshot,
           seedNodes: overlaySeeds,
           changedFiles: normalizedFile ? [normalizedFile] : [],
+          changeFacts: [],
           normalizedFile,
           source: "context_selection",
           depth: 2,

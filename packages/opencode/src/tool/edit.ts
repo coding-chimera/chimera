@@ -93,10 +93,12 @@ export const EditTool = Tool.define(
               ctx,
               files: [filePath],
               bus,
-              metadata: {
+              metadata: () => ({
                 create: params.oldString === "",
                 replaceAll: params.replaceAll ?? false,
-              },
+                filePath,
+                diff,
+              }),
             },
             lock(filePath).withPermits(1)(
               Effect.gen(function* () {
