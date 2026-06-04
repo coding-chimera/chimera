@@ -10,7 +10,7 @@ import { Bus } from "../../src/bus"
 import { Format } from "../../src/format"
 import { Truncate } from "@/tool/truncate"
 import { Tool } from "@/tool/tool"
-import { readProvenanceRecords } from "@/chimera/store"
+import { readChangeFacts, readProvenanceRecords } from "@/chimera/store"
 import { Agent } from "../../src/agent/agent"
 import { SessionID, MessageID } from "../../src/session/schema"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
@@ -124,6 +124,15 @@ describe("tool.write", () => {
           }),
         )
         expect(record.graph.sync.filesAdded).toBe(1)
+        const facts = yield* Effect.promise(() => readChangeFacts(test.directory, [record.id]))
+        expect(facts).toContainEqual(
+          expect.objectContaining({
+            eventID: record.id,
+            filePath: "tracked.ts",
+            subjectKind: "file",
+            changeKind: "add",
+          }),
+        )
       }),
     )
   })

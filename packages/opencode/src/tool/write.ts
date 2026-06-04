@@ -71,6 +71,8 @@ export const WriteTool = Tool.define(
               bus,
               metadata: {
                 exists,
+                filePath: filepath,
+                diff,
               },
             },
             Effect.gen(function* () {

@@ -2,6 +2,7 @@ import path from "path"
 import { createHash } from "crypto"
 import { appendFile, mkdir } from "fs/promises"
 import { DatabaseConnection, getDatabasePath } from "../../../../../codegraph/dist/index.js"
+import type { ChangeFact } from "./change-classifier"
 import type { ToolMutationRecord } from "./provenance"
 
 type ChimeraDb = ReturnType<DatabaseConnection["getDb"]>
@@ -83,6 +84,26 @@ CREATE TABLE IF NOT EXISTS chimera_change_file (
 CREATE INDEX IF NOT EXISTS chimera_change_event_finished_at_idx ON chimera_change_event(finished_at);
 CREATE INDEX IF NOT EXISTS chimera_change_event_origin_idx ON chimera_change_event(origin, provenance_strength);
 CREATE INDEX IF NOT EXISTS chimera_change_file_graph_path_idx ON chimera_change_file(graph_path);
+
+CREATE TABLE IF NOT EXISTS chimera_change_fact (
+  id TEXT PRIMARY KEY,
+  event_id TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  old_path TEXT,
+  node_id TEXT,
+  node_key TEXT,
+  change_kind TEXT NOT NULL,
+  subject_kind TEXT NOT NULL,
+  confidence REAL NOT NULL,
+  evidence_json TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (event_id) REFERENCES chimera_change_event(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS chimera_change_fact_event_id_idx ON chimera_change_fact(event_id);
+CREATE INDEX IF NOT EXISTS chimera_change_fact_file_path_idx ON chimera_change_fact(file_path);
+CREATE INDEX IF NOT EXISTS chimera_change_fact_subject_confidence_idx ON chimera_change_fact(subject_kind, confidence);
 
 CREATE TABLE IF NOT EXISTS chimera_audit_run (
   id TEXT PRIMARY KEY,
@@ -317,6 +338,58 @@ export async function provenanceRecordCount(projectRoot: string, artifact: strin
     return row?.count ?? 0
   })
   return count ?? legacy.length
+}
+
+export async function writeChangeFacts(projectRoot: string, facts: ChangeFact[]) {
+  if (facts.length === 0) return
+  await withDb(projectRoot, (db) => {
+    const eventIDs = [...new Set(facts.map((fact) => fact.eventID))]
+    db.transaction(() => {
+      for (const eventID of eventIDs) db.prepare("DELETE FROM chimera_change_fact WHERE event_id = ?").run(eventID)
+      for (const fact of facts) {
+        db.prepare(`
+          INSERT OR REPLACE INTO chimera_change_fact (
+            id,
+            event_id,
+            file_path,
+            old_path,
+            node_id,
+            node_key,
+            change_kind,
+            subject_kind,
+            confidence,
+            evidence_json,
+            payload_json,
+            created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          fact.id,
+          fact.eventID,
+          fact.filePath,
+          fact.oldPath ?? null,
+          fact.nodeID ?? null,
+          fact.nodeKey ?? null,
+          fact.changeKind,
+          fact.subjectKind,
+          fact.confidence,
+          safeJson(fact.evidence),
+          safeJson(fact),
+          fact.createdAt,
+        )
+      }
+    })()
+    return true
+  })
+}
+
+export async function readChangeFacts(projectRoot: string, eventIDs?: string[]) {
+  const filter = eventIDs ? new Set(eventIDs) : undefined
+  const facts = await withDb(projectRoot, (db) =>
+    (db.prepare("SELECT payload_json FROM chimera_change_fact ORDER BY created_at ASC, id ASC").all() as PayloadRow[])
+      .flatMap((row) => parseJson<ChangeFact>(row.payload_json))
+      .filter((fact) => !filter || filter.has(fact.eventID)),
+  )
+  return facts ?? []
 }
 
 export async function recordAuditRun(projectRoot: string, input: AuditRunInput) {
