@@ -396,18 +396,17 @@ describe("HttpApi SDK", () => {
   parity("matches generated SDK basic auth behavior across backends", (backend) =>
     withStandardProject(backend, ({ directory }) =>
       Effect.gen(function* () {
-        const missing = yield* capture(() =>
-          client(backend, directory, { password: "secret" }).file.read({ path: "hello.txt" }),
-        )
+        const auth = { username: "opencode", password: "secret" }
+        const missing = yield* capture(() => client(backend, directory, auth).file.read({ path: "hello.txt" }))
         const bad = yield* capture(() =>
           client(backend, directory, {
-            password: "secret",
+            ...auth,
             headers: { authorization: authorization("opencode", "wrong") },
           }).file.read({ path: "hello.txt" }),
         )
         const good = yield* capture(() =>
           client(backend, directory, {
-            password: "secret",
+            ...auth,
             headers: { authorization: authorization("opencode", "secret") },
           }).file.read({ path: "hello.txt" }),
         )
@@ -484,6 +483,7 @@ describe("HttpApi SDK", () => {
         const all = yield* capture(() => sdk.session.list({ roots: false, limit: 10 }))
         const children = yield* capture(() => sdk.session.children({ sessionID: parentID }))
         const todo = yield* capture(() => sdk.session.todo({ sessionID: parentID }))
+        const workBrief = yield* capture(() => sdk.session.workBrief({ sessionID: parentID }))
         const status = yield* capture(() => sdk.session.status())
         const messages = yield* capture(() => sdk.session.messages({ sessionID: parentID }))
         const missingGet = yield* capture(() => sdk.session.get({ sessionID: "ses_missing" }))
@@ -504,6 +504,7 @@ describe("HttpApi SDK", () => {
             all,
             children,
             todo,
+            workBrief,
             status,
             messages,
             missingGet,
@@ -518,6 +519,7 @@ describe("HttpApi SDK", () => {
           allTitles: sessionTitles(all.data),
           childCount: array(children.data).length,
           todoCount: array(todo.data).length,
+          workBriefCloseoutCount: array(record(workBrief.data).closeout).length,
           messageCount: array(messages.data).length,
         }
       }),

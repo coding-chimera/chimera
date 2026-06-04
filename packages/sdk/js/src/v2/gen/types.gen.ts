@@ -21,9 +21,12 @@ export type Event =
   | EventQuestionReplied
   | EventQuestionRejected
   | EventTodoUpdated
+  | EventWorkBriefUpdated
   | EventSessionStatus
   | EventSessionIdle
   | EventSessionCompacted
+  | EventChimeraToolMutationRecorded
+  | EventChimeraGraphReady1
   | EventTuiPromptAppend
   | EventTuiCommandExecute
   | EventTuiToastShow1
@@ -256,6 +259,16 @@ export type Todo = {
    * Priority level of the task: high, medium, low
    */
   priority: string
+}
+
+export type WorkBrief = {
+  intent?: string
+  confirmedDecisions: Array<string>
+  constraints: Array<string>
+  acceptanceCriteria: Array<string>
+  openQuestions: Array<string>
+  relevantEvidence: Array<string>
+  closeout: Array<string>
 }
 
 export type SessionStatus =
@@ -786,9 +799,12 @@ export type GlobalEvent = {
     | EventQuestionReplied
     | EventQuestionRejected
     | EventTodoUpdated
+    | EventWorkBriefUpdated
     | EventSessionStatus
     | EventSessionIdle
     | EventSessionCompacted
+    | EventChimeraToolMutationRecorded
+    | EventChimeraGraphReady
     | EventTuiPromptAppend
     | EventTuiCommandExecute
     | EventTuiToastShow
@@ -883,7 +899,7 @@ export type GlobalEvent = {
 export type LogLevel = "DEBUG" | "INFO" | "WARN" | "ERROR"
 
 /**
- * Server configuration for opencode serve and web commands
+ * Server configuration for chimera serve and web commands
  */
 export type ServerConfig = {
   port?: number
@@ -913,6 +929,7 @@ export type PermissionConfig =
       task?: PermissionRuleConfig
       external_directory?: PermissionRuleConfig
       todowrite?: PermissionActionConfig
+      workbrief?: PermissionActionConfig
       question?: PermissionActionConfig
       webfetch?: PermissionActionConfig
       websearch?: PermissionActionConfig
@@ -2418,6 +2435,15 @@ export type EventTodoUpdated = {
   }
 }
 
+export type EventWorkBriefUpdated = {
+  id: string
+  type: "work_brief.updated"
+  properties: {
+    sessionID: string
+    brief: WorkBrief
+  }
+}
+
 export type EventSessionStatus = {
   id: string
   type: "session.status"
@@ -2440,6 +2466,39 @@ export type EventSessionCompacted = {
   type: "session.compacted"
   properties: {
     sessionID: string
+  }
+}
+
+export type EventChimeraToolMutationRecorded = {
+  id: string
+  type: "chimera.tool.mutation.recorded"
+  properties: {
+    id: string
+    sessionID: string
+    messageID: string
+    callID?: string
+    toolID: string
+    projectRoot: string
+    files: Array<string>
+    status: "success" | "failure"
+    beforeRevision: string
+    afterRevision: string
+    artifact: string
+  }
+}
+
+export type EventChimeraGraphReady = {
+  id: string
+  type: "chimera.graph.ready"
+  properties: {
+    projectRoot: string
+    revision: string
+    indexedAt: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    fileCount: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    nodeCount: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    edgeCount: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    source: string
+    sessionID?: string
   }
 }
 
@@ -3233,6 +3292,21 @@ export type SessionMessage =
   | SessionMessageShell
   | SessionMessageAssistant
   | SessionMessageCompaction
+
+export type EventChimeraGraphReady1 = {
+  id: string
+  type: "chimera.graph.ready"
+  properties: {
+    projectRoot: string
+    revision: string
+    indexedAt: number | "NaN" | "Infinity" | "-Infinity"
+    fileCount: number | "NaN" | "Infinity" | "-Infinity"
+    nodeCount: number | "NaN" | "Infinity" | "-Infinity"
+    edgeCount: number | "NaN" | "Infinity" | "-Infinity"
+    source: string
+    sessionID?: string
+  }
+}
 
 export type EventTuiToastShow1 = {
   id: string
@@ -5319,6 +5393,40 @@ export type SessionTodoResponses = {
 }
 
 export type SessionTodoResponse = SessionTodoResponses[keyof SessionTodoResponses]
+
+export type SessionWorkBriefData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/work_brief"
+}
+
+export type SessionWorkBriefErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SessionWorkBriefError = SessionWorkBriefErrors[keyof SessionWorkBriefErrors]
+
+export type SessionWorkBriefResponses = {
+  /**
+   * Current Work Brief
+   */
+  200: WorkBrief
+}
+
+export type SessionWorkBriefResponse = SessionWorkBriefResponses[keyof SessionWorkBriefResponses]
 
 export type SessionDiffData = {
   body?: never

@@ -35,6 +35,7 @@ import { SessionRunState } from "@/session/run-state"
 import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
 import { Todo } from "@/session/todo"
+import { WorkBrief } from "@/session/work-brief"
 import { SessionShare } from "@/share/session"
 import { ShareNext } from "@/share/share-next"
 import { Skill } from "@/skill"
@@ -182,6 +183,7 @@ export function createRoutes(corsOptions?: CorsOptions) {
       SyncEvent.defaultLayer,
       Skill.defaultLayer,
       Todo.defaultLayer,
+      WorkBrief.defaultLayer,
       ToolRegistry.defaultLayer,
       Vcs.defaultLayer,
       Workspace.defaultLayer,
