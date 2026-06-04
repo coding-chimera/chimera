@@ -5,6 +5,8 @@ import { BusEvent } from "@/bus/bus-event"
 import { Bus } from "@/bus"
 import { Database } from "@/storage/db"
 import { InstanceState } from "@/effect/instance-state"
+import { zod } from "@/util/effect-zod"
+import { withStatics } from "@/util/schema"
 import { SessionID } from "./schema"
 import { WorkBriefTable } from "./session.sql"
 
@@ -20,7 +22,9 @@ export const Info = Schema.Struct({
   openQuestions: Schema.Array(Schema.String),
   relevantEvidence: Schema.Array(Schema.String),
   closeout: Schema.Array(Schema.String),
-}).annotate({ identifier: "WorkBrief" })
+})
+  .annotate({ identifier: "WorkBrief" })
+  .pipe(withStatics((s) => ({ zod: zod(s) })))
 export type Info = Types.DeepMutable<Schema.Schema.Type<typeof Info>>
 
 type ToolMutationRecord = {

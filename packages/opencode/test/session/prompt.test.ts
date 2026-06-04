@@ -486,6 +486,35 @@ it.live("injects current work brief into the LLM input", () =>
   ),
 )
 
+it.live("does not auto-update work brief after final assistant turn", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const workBrief = yield* WorkBrief.Service
+      const session = yield* sessions.create({
+        title: "Work brief auto update",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "please implement a compact work brief sidebar panel" }],
+      })
+
+      yield* llm.text("done")
+      yield* prompt.loop({ sessionID: session.id })
+
+      const brief = yield* workBrief.get(session.id)
+      expect(brief.intent).toBeUndefined()
+      expect(brief.relevantEvidence).toEqual([])
+    }),
+    { git: true, config: providerCfg },
+  ),
+)
+
 it.live("static loop consumes queued replies across turns", () =>
   provideTmpdirServer(
     Effect.fnUntraced(function* ({ llm }) {

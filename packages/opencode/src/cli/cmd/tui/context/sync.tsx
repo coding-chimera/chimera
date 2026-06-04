@@ -17,6 +17,7 @@ import type {
   ProviderListResponse,
   ProviderAuthMethod,
   VcsInfo,
+  WorkBrief,
 } from "@opencode-ai/sdk/v2"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { useProject } from "@tui/context/project"
@@ -62,6 +63,9 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       todo: {
         [sessionID: string]: Todo[]
       }
+      work_brief: {
+        [sessionID: string]: WorkBrief
+      }
       message: {
         [sessionID: string]: Message[]
       }
@@ -97,6 +101,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       session_status: {},
       session_diff: {},
       todo: {},
+      work_brief: {},
       message: {},
       part: {},
       lsp: [],
@@ -212,6 +217,10 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
 
         case "todo.updated":
           setStore("todo", event.properties.sessionID, event.properties.todos)
+          break
+
+        case "work_brief.updated":
+          setStore("work_brief", event.properties.sessionID, event.properties.brief)
           break
 
         case "session.diff":
@@ -514,10 +523,11 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         },
         async sync(sessionID: string) {
           if (fullSyncedSessions.has(sessionID)) return
-          const [session, messages, todo, diff] = await Promise.all([
+          const [session, messages, todo, workBrief, diff] = await Promise.all([
             sdk.client.session.get({ sessionID }, { throwOnError: true }),
             sdk.client.session.messages({ sessionID, limit: 100 }),
             sdk.client.session.todo({ sessionID }),
+            sdk.client.session.workBrief({ sessionID }),
             sdk.client.session.diff({ sessionID }),
           ])
           setStore(
@@ -526,6 +536,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
               if (match.found) draft.session[match.index] = session.data!
               if (!match.found) draft.session.splice(match.index, 0, session.data!)
               draft.todo[sessionID] = todo.data ?? []
+              draft.work_brief[sessionID] = workBrief.data!
               draft.message[sessionID] = messages.data!.map((x) => x.info)
               for (const message of messages.data!) {
                 draft.part[message.info.id] = message.parts

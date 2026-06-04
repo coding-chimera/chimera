@@ -13,6 +13,7 @@ import { SessionShare } from "@/share/session"
 import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
 import { Todo } from "@/session/todo"
+import { WorkBrief } from "@/session/work-brief"
 import { Effect } from "effect"
 import { Agent } from "@/agent/agent"
 import { Snapshot } from "@/snapshot"
@@ -215,6 +216,38 @@ export const SessionRoutes = lazy(() =>
         return jsonRequest("SessionRoutes.todo", c, function* () {
           const todo = yield* Todo.Service
           return yield* todo.get(sessionID)
+        })
+      },
+    )
+    .get(
+      "/:sessionID/work_brief",
+      describeRoute({
+        summary: "Get session work brief",
+        description: "Retrieve the Current Work Brief associated with a specific session.",
+        operationId: "session.workBrief",
+        responses: {
+          200: {
+            description: "Current Work Brief",
+            content: {
+              "application/json": {
+                schema: resolver(WorkBrief.Info.zod),
+              },
+            },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          sessionID: SessionID.zod,
+        }),
+      ),
+      async (c) => {
+        const sessionID = c.req.valid("param").sessionID
+        return jsonRequest("SessionRoutes.workBrief", c, function* () {
+          const workBrief = yield* WorkBrief.Service
+          return yield* workBrief.get(sessionID)
         })
       },
     )

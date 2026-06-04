@@ -1,7 +1,9 @@
 Use this tool to maintain the session's Current Work Brief. The brief is persisted in session state and injected at the end of the model prompt as a mutable suffix.
 
-Use it when the active work intent, confirmed decisions, constraints, acceptance criteria, open questions, relevant evidence, or closeout checklist changes during conversation.
+Use it in the same turn when the active work intent, confirmed decisions, constraints, acceptance criteria, open questions, relevant evidence, or closeout checklist changes during conversation.
 
-Keep entries compact. Do not store large source snippets, full tool outputs, or long transcripts. Store short findings, decisions, and references only.
+This tool is the primary path for Work Brief updates. The runtime persists and displays the submitted brief; it does not default to a hidden post-turn semantic updater. When the user corrects the brief, replace conflicting old entries instead of appending both versions.
+
+Keep entries in the user's communication language and keep them compact. Do not store large source snippets, full tool outputs, or long transcripts. Store short findings, decisions, and references only.
 
 The tool uses patch semantics: omitted fields keep their previous values. Set `clear` to true to reset the brief before applying supplied fields.

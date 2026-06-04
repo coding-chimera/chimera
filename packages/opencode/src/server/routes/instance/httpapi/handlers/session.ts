@@ -15,6 +15,7 @@ import { SessionRunState } from "@/session/run-state"
 import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
 import { Todo } from "@/session/todo"
+import { WorkBrief } from "@/session/work-brief"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { NotFoundError } from "@/storage/storage"
 import { NamedError } from "@opencode-ai/core/util/error"
@@ -51,6 +52,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const permissionSvc = yield* Permission.Service
     const statusSvc = yield* SessionStatus.Service
     const todoSvc = yield* Todo.Service
+    const workBriefSvc = yield* WorkBrief.Service
     const summary = yield* SessionSummary.Service
     const bus = yield* Bus.Service
     const scope = yield* Scope.Scope
@@ -81,6 +83,10 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
 
     const todo = Effect.fn("SessionHttpApi.todo")(function* (ctx: { params: { sessionID: SessionID } }) {
       return yield* todoSvc.get(ctx.params.sessionID)
+    })
+
+    const workBrief = Effect.fn("SessionHttpApi.workBrief")(function* (ctx: { params: { sessionID: SessionID } }) {
+      return yield* workBriefSvc.get(ctx.params.sessionID)
     })
 
     const diff = Effect.fn("SessionHttpApi.diff")(function* (ctx: {
@@ -357,6 +363,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("get", get)
       .handle("children", children)
       .handle("todo", todo)
+      .handle("workBrief", workBrief)
       .handle("diff", diff)
       .handle("messages", messages)
       .handle("message", message)

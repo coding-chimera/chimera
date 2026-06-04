@@ -8,6 +8,7 @@ import { SessionRevert } from "@/session/revert"
 import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
 import { Todo } from "@/session/todo"
+import { WorkBrief } from "@/session/work-brief"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { Snapshot } from "@/snapshot"
 import { Schema, SchemaGetter, Struct } from "effect"
@@ -74,6 +75,7 @@ export const SessionPaths = {
   get: `${root}/:sessionID`,
   children: `${root}/:sessionID/children`,
   todo: `${root}/:sessionID/todo`,
+  workBrief: `${root}/:sessionID/work_brief`,
   diff: `${root}/:sessionID/diff`,
   messages: `${root}/:sessionID/message`,
   message: `${root}/:sessionID/message/:messageID`,
@@ -152,6 +154,17 @@ export const SessionApi = HttpApi.make("session")
             identifier: "session.todo",
             summary: "Get session todos",
             description: "Retrieve the todo list associated with a specific session, showing tasks and action items.",
+          }),
+        ),
+        HttpApiEndpoint.get("workBrief", SessionPaths.workBrief, {
+          params: { sessionID: SessionID },
+          success: described(WorkBrief.Info, "Current Work Brief"),
+          error: [HttpApiError.BadRequest, HttpApiError.NotFound],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.workBrief",
+            summary: "Get session work brief",
+            description: "Retrieve the Current Work Brief associated with a specific session.",
           }),
         ),
         HttpApiEndpoint.get("diff", SessionPaths.diff, {
