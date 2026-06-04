@@ -4,6 +4,7 @@ import {
   type BuildContextOptions,
   type CodeGraphSnapshot,
   type FrozenSemanticObject,
+  type IndexProgress,
   type Node as CodeGraphNode,
   type RangeQueryOptions,
   type SearchOptions,
@@ -18,6 +19,7 @@ export type {
   CodeGraphSnapshot,
   CodeGraphSyncResult,
   FrozenSemanticObject,
+  IndexProgress as CodeGraphIndexProgress,
   RangeQueryOptions,
   SearchOptions,
   SourceRange,
@@ -28,6 +30,7 @@ export interface OpenOptions {
   init?: boolean
   index?: boolean
   sync?: boolean
+  onProgress?: (progress: IndexProgress) => void
 }
 
 function emptySyncResult(): CodeGraphSyncResult {
@@ -50,12 +53,17 @@ export class CodeGraphAdapter {
   static async open(projectRoot: string, options: OpenOptions = {}) {
     const root = path.resolve(projectRoot)
     if (CodeGraph.isInitialized(root)) {
-      return new CodeGraphAdapter(root, await CodeGraph.open(root, { sync: options.sync }))
+      const adapter = new CodeGraphAdapter(root, await CodeGraph.open(root, { sync: false }))
+      if (options.sync) await adapter.sync({ onProgress: options.onProgress })
+      return adapter
     }
     if (!options.init) {
       throw new Error(`CodeGraph is not initialized in ${root}`)
     }
-    return new CodeGraphAdapter(root, await CodeGraph.init(root, { index: options.index }))
+    const adapter = new CodeGraphAdapter(root, await CodeGraph.init(root, { index: false }))
+    if (options.index) await adapter.graph.indexAll({ onProgress: options.onProgress })
+    if (!options.index && options.sync) await adapter.sync({ onProgress: options.onProgress })
+    return adapter
   }
 
   close() {
@@ -78,13 +86,13 @@ export class CodeGraphAdapter {
     return this.graph.getJournalMode()
   }
 
-  async syncFiles(filePaths: string[]) {
+  async syncFiles(filePaths: string[], options: { onProgress?: (progress: IndexProgress) => void } = {}) {
     if (filePaths.length === 0) return emptySyncResult()
-    return this.graph.syncFiles(filePaths)
+    return this.graph.syncFiles(filePaths, { onProgress: options.onProgress })
   }
 
-  sync() {
-    return this.graph.sync()
+  sync(options: { onProgress?: (progress: IndexProgress) => void } = {}) {
+    return this.graph.sync({ onProgress: options.onProgress })
   }
 
   nodesIntersectingRange(filePath: string, range: SourceRange, options: RangeQueryOptions = {}) {
