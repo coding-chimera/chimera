@@ -38,7 +38,7 @@ const formatCached = (usage: typeof empty) => {
   return `${Locale.number(usage.input)} (${cached})`
 }
 
-const estimateStreamingTokens = (parts: Part[]) => {
+const estimateStreamingTokens = (parts: readonly Part[]) => {
   const lastFinish = parts.findLastIndex(isStepFinish)
   const pending = parts.slice(lastFinish + 1)
   const chars = pending.reduce(
