@@ -75,9 +75,12 @@ const Range = Schema.Struct({
   endColumn: Schema.optional(Schema.Number),
 })
 
+const RefreshDescription =
+  "Refresh CodeGraph when stale: the index is empty, watcher has pending files, or git reports dirty source files. Defaults to true."
+
 export const StatusParameters = Schema.Struct({
   refresh: Schema.optional(Schema.Boolean).annotate({
-    description: "Sync CodeGraph before returning status. Defaults to true.",
+    description: RefreshDescription,
   }),
 })
 
@@ -98,7 +101,7 @@ export const SearchParameters = Schema.Struct({
     description: "Maximum results to return. Defaults to 10, capped at 50.",
   }),
   refresh: Schema.optional(Schema.Boolean).annotate({
-    description: "Sync CodeGraph before searching. Defaults to true.",
+    description: RefreshDescription,
   }),
 })
 
@@ -125,7 +128,7 @@ export const ImpactParameters = Schema.Struct({
     description: "Maximum impacted symbols/files to return. Defaults to 20, capped at 100.",
   }),
   refresh: Schema.optional(Schema.Boolean).annotate({
-    description: "Sync CodeGraph before impact analysis. Defaults to true.",
+    description: RefreshDescription,
   }),
 })
 
@@ -155,7 +158,7 @@ export const ContextParameters = Schema.Struct({
     description: "Maximum code blocks in context. Defaults to 8.",
   }),
   refresh: Schema.optional(Schema.Boolean).annotate({
-    description: "Sync CodeGraph before building context. Defaults to true.",
+    description: RefreshDescription,
   }),
 })
 
@@ -188,7 +191,7 @@ export const AuditParameters = Schema.Struct({
     description: "Maximum candidate obligations to return. Defaults to 30, capped at 100.",
   }),
   refresh: Schema.optional(Schema.Boolean).annotate({
-    description: "Sync CodeGraph before auditing. Defaults to true.",
+    description: RefreshDescription,
   }),
 })
 
@@ -236,7 +239,7 @@ export const ObligationsParameters = Schema.Struct({
     description: "Maximum obligations to list or sync. Defaults to 30, capped at 100.",
   }),
   refresh: Schema.optional(Schema.Boolean).annotate({
-    description: "Sync CodeGraph before listing or syncing obligations. Defaults to true.",
+    description: RefreshDescription,
   }),
 })
 
@@ -424,9 +427,9 @@ function compactProgressFile(file: string | undefined) {
 function formatProgressMessage(progress: ChimeraSyncProgress) {
   const count = progress.total && progress.total > 0 ? ` ${progress.current ?? 0}/${progress.total}` : ""
   const phase = progress.phase ? ` ${progress.phase}` : ""
-  if (progress.status === "complete") return `Chimera full sync complete${phase}${count}`
-  if (progress.status === "starting") return "Chimera full sync is still running"
-  return `Chimera full sync${phase}${count}`
+  if (progress.status === "complete") return `Chimera refresh complete${phase}${count}`
+  if (progress.status === "starting") return "Chimera refresh is still running"
+  return `Chimera refresh${phase}${count}`
 }
 
 function createSyncProgressReporter(ctx: Tool.Context, enabled: boolean) {
@@ -1052,7 +1055,7 @@ export const ChimeraStatusTool = Tool.define<typeof StatusParameters, StatusMeta
   "chimera_status",
   Effect.succeed({
     description:
-      "Show Chimera/CodeGraph graph readiness, snapshot, backend, freshness, and provenance status. May initialize or sync .codegraph.",
+      "Show Chimera/CodeGraph graph readiness, snapshot, backend, freshness, and provenance status. May initialize or refresh .codegraph.",
     parameters: StatusParameters,
     execute: (params: Schema.Schema.Type<typeof StatusParameters>, ctx: Tool.Context<StatusMetadata>) =>
       Effect.gen(function* () {

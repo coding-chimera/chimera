@@ -1,4 +1,5 @@
 import path from "path"
+import fs from "fs"
 import { Effect, Exit, Schema } from "effect"
 import type { Interface as BusInterface } from "@/bus"
 import { BusEvent } from "@/bus/bus-event"
@@ -10,6 +11,7 @@ import { appendProvenanceRecord, databaseStorePath, readProvenanceRecords } from
 const ARTIFACT_DIR = path.join(".codegraph", "chimera")
 const TOOL_PROVENANCE_FILE = "tool-provenance.jsonl"
 const TOOL_DEDUPE_WINDOW_MS = 15_000
+const EMPTY_GRAPH_RETRY_MS = 2_000
 
 export const ToolMutationRecorded = BusEvent.define(
   "chimera.tool.mutation.recorded",
@@ -113,6 +115,8 @@ export interface ProjectGraphState {
   projectRoot: string
   artifact: string
   storePath: string
+  lastRefreshAttemptAt?: number
+  refreshPromise?: Promise<void>
 }
 
 const graphStates = new Map<string, Promise<ProjectGraphState>>()
@@ -197,6 +201,56 @@ function weakObserver() {
     id: "codegraph.watch",
     agent: "chimera",
   }
+}
+
+function hasIndexedFiles(stats: { fileCount: number }) {
+  return stats.fileCount > 0
+}
+
+function hasGitMetadata(root: string) {
+  return fs.existsSync(path.join(root, ".git"))
+}
+
+function uniqueAbsolute(root: string, files: string[]) {
+  return [...new Set(files.map((file) => path.join(root, file)))]
+}
+
+async function refreshProjectGraph(state: ProjectGraphState, onProgress?: (progress: CodeGraphIndexProgress) => void) {
+  if (state.refreshPromise) return state.refreshPromise
+
+  const now = Date.now()
+  const empty = !hasIndexedFiles(state.graph.stats())
+  if (empty && state.lastRefreshAttemptAt && now - state.lastRefreshAttemptAt < EMPTY_GRAPH_RETRY_MS) return
+
+  state.refreshPromise = (async () => {
+    if (empty) {
+      state.lastRefreshAttemptAt = now
+      await state.graph.sync({ onProgress })
+      return
+    }
+
+    const pendingFiles = uniqueAbsolute(state.projectRoot, state.graph.pendingFiles().map((file) => file.path))
+    if (pendingFiles.length > 0) {
+      await state.graph.syncFiles(pendingFiles, { onProgress })
+      return
+    }
+
+    const gitChangedFiles = hasGitMetadata(state.projectRoot) ? state.graph.changedFiles() : undefined
+    const changedFiles = gitChangedFiles
+      ? uniqueAbsolute(state.projectRoot, [
+          ...gitChangedFiles.added,
+          ...gitChangedFiles.modified,
+          ...gitChangedFiles.removed,
+        ])
+      : []
+    if (changedFiles.length > 0) {
+      await state.graph.syncFiles(changedFiles, { onProgress })
+    }
+  })().finally(() => {
+    delete state.refreshPromise
+  })
+
+  return state.refreshPromise
 }
 
 function syntheticTool(origin: "filesystem" | "git", batchID: string) {
@@ -310,8 +364,8 @@ function startFilesystemWatcher(state: ProjectGraphState) {
 function openGraphState(root: string, onProgress?: (progress: CodeGraphIndexProgress) => void): Promise<ProjectGraphState> {
   let promise = graphStates.get(root)
   if (!promise) {
-    promise = CodeGraphAdapter.open(root, { init: true, index: true, sync: true, onProgress }).then((graph) => {
-      const state = {
+    promise = CodeGraphAdapter.open(root, { init: true, index: true, sync: false, onProgress }).then((graph) => {
+      const state: ProjectGraphState = {
         graph,
         projectRoot: root,
         artifact: path.join(root, ARTIFACT_DIR, TOOL_PROVENANCE_FILE),
@@ -425,7 +479,7 @@ export const openProjectGraph = Effect.fn("Chimera.openProjectGraph")(function* 
   const instance = yield* InstanceState.context
   const root = projectRoot(instance)
   const s = yield* Effect.promise(() => openGraphState(root, input.onProgress)).pipe(Effect.orDie)
-  if (input.sync) yield* Effect.promise(() => s.graph.sync({ onProgress: input.onProgress })).pipe(Effect.orDie)
+  if (input.sync) yield* Effect.promise(() => refreshProjectGraph(s, input.onProgress)).pipe(Effect.orDie)
   return s
 })
 
