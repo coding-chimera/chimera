@@ -256,9 +256,8 @@ describe("tool.chimera", () => {
 
       const listed = yield* runObligations({ action: "list", status: "resolved" })
       expect(listed.metadata.obligations.some((item) => item.id === obligation.id)).toBe(true)
-      expect(yield* Effect.promise(() => Bun.file(path.join(test.directory, ".codegraph", "chimera", "obligations.json")).exists())).toBe(
-        true,
-      )
+      expect(yield* Effect.promise(() => Bun.file(path.join(test.directory, ".codegraph", "codegraph.db")).exists())).toBe(true)
+      expect(yield* Effect.promise(() => Bun.file(path.join(test.directory, ".codegraph", "chimera", "obligations.json")).exists())).toBe(false)
     }),
   )
 })

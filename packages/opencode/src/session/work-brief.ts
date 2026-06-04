@@ -5,6 +5,7 @@ import { BusEvent } from "@/bus/bus-event"
 import { Bus } from "@/bus"
 import { Database } from "@/storage/db"
 import { InstanceState } from "@/effect/instance-state"
+import { readPersistentObligationStore, readProvenanceRecords } from "@/chimera/store"
 import { zod } from "@/util/effect-zod"
 import { withStatics } from "@/util/schema"
 import { SessionID } from "./schema"
@@ -31,21 +32,27 @@ type ToolMutationRecord = {
   id: string
   status: "success" | "failure"
   finishedAt: string
+  actor?: { sessionID: string }
   tool: { id: string; sessionID: string; messageID: string; callID?: string }
   graph: { before: { revision: string }; after: { revision: string } }
   files: Array<{ absolutePath: string; graphPath?: string; insideGraph: boolean }>
 }
 
+type TemporalObligation = {
+  id: string
+  fingerprint: string
+  status: string
+  target: string
+  reason: string
+  risk: string
+  evidence: string
+  createdAt: string
+  updatedAt: string
+}
+
 type ObligationStore = {
-  obligations?: Array<{
-    id: string
-    status: string
-    target: string
-    reason: string
-    risk: string
-    evidence: string
-    updatedAt?: string
-  }>
+  schemaVersion: 1
+  obligations: TemporalObligation[]
 }
 
 export const Event = {
@@ -144,41 +151,19 @@ function projectRoot(input: { directory: string; worktree: string }) {
   return input.worktree === "/" ? input.directory : input.worktree
 }
 
-async function readJsonl<T>(file: string) {
-  if (!(await Bun.file(file).exists())) return [] as T[]
-  const text = await Bun.file(file).text()
-  if (!text.trim()) return [] as T[]
-  return text
-    .trim()
-    .split("\n")
-    .flatMap((line) => {
-      try {
-        return [JSON.parse(line) as T]
-      } catch {
-        return []
-      }
-    })
-}
-
-async function readJson<T>(file: string, fallback: T) {
-  if (!(await Bun.file(file).exists())) return fallback
-  try {
-    return (await Bun.file(file).json()) as T
-  } catch {
-    return fallback
-  }
-}
-
 const temporalContext = Effect.fn("WorkBrief.temporalContext")(function* (sessionID: SessionID) {
   const instance = yield* InstanceState.context
-  const dir = path.join(projectRoot(instance), ".codegraph", "chimera")
-  const records = yield* Effect.promise(() => readJsonl<ToolMutationRecord>(path.join(dir, "tool-provenance.jsonl")))
+  const root = projectRoot(instance)
+  const dir = path.join(root, ".codegraph", "chimera")
+  const records = yield* Effect.promise(() => readProvenanceRecords(root, path.join(dir, "tool-provenance.jsonl")) as Promise<ToolMutationRecord[]>)
   const recent = records
-    .filter((record) => record.tool.sessionID === sessionID && record.status === "success")
+    .filter((record) => (record.actor?.sessionID ?? record.tool.sessionID) === sessionID && record.status === "success")
     .slice(-3)
     .toReversed()
-  const store = yield* Effect.promise(() => readJson<ObligationStore>(path.join(dir, "obligations.json"), { obligations: [] }))
-  const obligations = (store.obligations ?? [])
+  const store = yield* Effect.promise(() =>
+    readPersistentObligationStore<TemporalObligation>(root, path.join(dir, "obligations.json"), { schemaVersion: 1, obligations: [] }),
+  )
+  const obligations = store.obligations
     .filter((item) => item.status === "pending" || item.status === "claimed" || item.status === "stale")
     .slice(0, 8)
 
