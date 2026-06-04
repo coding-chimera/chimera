@@ -4,7 +4,7 @@ import type { Interface as BusInterface } from "@/bus"
 import { BusEvent } from "@/bus/bus-event"
 import { InstanceState } from "@/effect/instance-state"
 import type { Tool } from "@/tool/tool"
-import { CodeGraphAdapter, type CodeGraphSnapshot, type CodeGraphSyncResult } from "./codegraph-adapter"
+import { CodeGraphAdapter, type CodeGraphIndexProgress, type CodeGraphSnapshot, type CodeGraphSyncResult } from "./codegraph-adapter"
 import { appendProvenanceRecord, databaseStorePath, readProvenanceRecords } from "./store"
 
 const ARTIFACT_DIR = path.join(".codegraph", "chimera")
@@ -54,6 +54,12 @@ export interface InitProjectGraphInput {
   bus?: BusInterface
   source?: string
   sessionID?: string
+  onProgress?: (progress: CodeGraphIndexProgress) => void
+}
+
+export interface OpenProjectGraphInput {
+  sync?: boolean
+  onProgress?: (progress: CodeGraphIndexProgress) => void
 }
 
 export interface ProvenanceFile {
@@ -301,10 +307,10 @@ function startFilesystemWatcher(state: ProjectGraphState) {
   })
 }
 
-function openGraphState(root: string): Promise<ProjectGraphState> {
+function openGraphState(root: string, onProgress?: (progress: CodeGraphIndexProgress) => void): Promise<ProjectGraphState> {
   let promise = graphStates.get(root)
   if (!promise) {
-    promise = CodeGraphAdapter.open(root, { init: true, index: true, sync: true }).then((graph) => {
+    promise = CodeGraphAdapter.open(root, { init: true, index: true, sync: true, onProgress }).then((graph) => {
       const state = {
         graph,
         projectRoot: root,
@@ -398,7 +404,7 @@ export function trackToolMutation<A, E, R>(
 }
 
 export const initProjectGraph = Effect.fn("Chimera.initProjectGraph")(function* (input: InitProjectGraphInput = {}) {
-  const s = yield* openProjectGraph({ sync: true })
+  const s = yield* openProjectGraph({ sync: true, onProgress: input.onProgress })
   const snapshot = s.graph.snapshot()
   if (input.bus) {
     yield* input.bus.publish(GraphReady, {
@@ -415,11 +421,11 @@ export const initProjectGraph = Effect.fn("Chimera.initProjectGraph")(function* 
   return snapshot
 })
 
-export const openProjectGraph = Effect.fn("Chimera.openProjectGraph")(function* (input: { sync?: boolean } = {}) {
+export const openProjectGraph = Effect.fn("Chimera.openProjectGraph")(function* (input: OpenProjectGraphInput = {}) {
   const instance = yield* InstanceState.context
   const root = projectRoot(instance)
-  const s = yield* Effect.promise(() => openGraphState(root)).pipe(Effect.orDie)
-  if (input.sync) yield* Effect.promise(() => s.graph.sync()).pipe(Effect.orDie)
+  const s = yield* Effect.promise(() => openGraphState(root, input.onProgress)).pipe(Effect.orDie)
+  if (input.sync) yield* Effect.promise(() => s.graph.sync({ onProgress: input.onProgress })).pipe(Effect.orDie)
   return s
 })
 

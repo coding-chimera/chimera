@@ -4,6 +4,7 @@ import { Effect, Schema } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import {
   Chimera,
+  type CodeGraphIndexProgress,
   type CodeGraphNode,
   type CodeGraphSnapshot,
   type FrozenSemanticObject,
@@ -400,6 +401,92 @@ type ContextOverlay = {
   }
 }
 
+type ChimeraSyncProgress = {
+  operation: "full_sync"
+  status: "starting" | "running" | "complete"
+  phase?: CodeGraphIndexProgress["phase"]
+  current?: number
+  total?: number
+  currentFile?: string
+  elapsedMs: number
+  message: string
+}
+
+const SYNC_PROGRESS_DELAY_MS = 1_500
+const SYNC_PROGRESS_INTERVAL_MS = 1_000
+
+function compactProgressFile(file: string | undefined) {
+  if (!file) return undefined
+  if (file.length <= 80) return file
+  return `...${file.slice(-77)}`
+}
+
+function formatProgressMessage(progress: ChimeraSyncProgress) {
+  const count = progress.total && progress.total > 0 ? ` ${progress.current ?? 0}/${progress.total}` : ""
+  const phase = progress.phase ? ` ${progress.phase}` : ""
+  if (progress.status === "complete") return `Chimera full sync complete${phase}${count}`
+  if (progress.status === "starting") return "Chimera full sync is still running"
+  return `Chimera full sync${phase}${count}`
+}
+
+function createSyncProgressReporter(ctx: Tool.Context, enabled: boolean) {
+  if (!enabled) return { onProgress: undefined, done() {} }
+
+  const startedAt = Date.now()
+  let latest: CodeGraphIndexProgress | undefined
+  let lastEmittedAt = 0
+  let visible = false
+  let finished = false
+
+  const emit = (status: ChimeraSyncProgress["status"]) => {
+    if (finished && status !== "complete") return
+    const payload: ChimeraSyncProgress = {
+      operation: "full_sync",
+      status,
+      phase: latest?.phase,
+      current: latest?.current,
+      total: latest?.total,
+      currentFile: compactProgressFile(latest?.currentFile),
+      elapsedMs: Date.now() - startedAt,
+      message: "",
+    }
+    payload.message = formatProgressMessage(payload)
+    visible = true
+    lastEmittedAt = Date.now()
+    void Effect.runPromise(
+      ctx.metadata({
+        title: payload.message,
+        metadata: { chimeraSyncProgress: payload },
+      }),
+    ).catch(() => undefined)
+  }
+
+  const timer = setTimeout(() => emit("starting"), SYNC_PROGRESS_DELAY_MS)
+
+  return {
+    onProgress(progress: CodeGraphIndexProgress) {
+      latest = progress
+      const now = Date.now()
+      if (now - startedAt < SYNC_PROGRESS_DELAY_MS) return
+      const phaseDone = progress.total > 0 && progress.current >= progress.total
+      if (!phaseDone && now - lastEmittedAt < SYNC_PROGRESS_INTERVAL_MS) return
+      emit("running")
+    },
+    done() {
+      clearTimeout(timer)
+      finished = true
+      if (visible) emit("complete")
+    },
+  }
+}
+
+function openProjectGraphForTool(ctx: Tool.Context, refresh: boolean) {
+  const reporter = createSyncProgressReporter(ctx, refresh)
+  return Chimera.openProjectGraph({ sync: refresh, onProgress: reporter.onProgress }).pipe(
+    Effect.ensuring(Effect.sync(() => reporter.done())),
+  )
+}
+
 function bounded(value: number | undefined, fallback: number, max: number) {
   return Math.max(1, Math.min(max, Math.floor(value ?? fallback)))
 }
@@ -646,6 +733,11 @@ function uniqueCandidates(candidates: AuditCandidate[]) {
 }
 
 type AuditParams = Schema.Schema.Type<typeof AuditParameters>
+
+type BuildAuditOptions = {
+  ctx?: Tool.Context
+  state?: ProjectGraphState
+}
 
 type ObligationsParams = Schema.Schema.Type<typeof ObligationsParameters>
 
@@ -903,9 +995,9 @@ function formatAuditOutput(audit: AuditMetadata) {
   ].join("\n")
 }
 
-const buildAudit = Effect.fn("ChimeraTool.buildAudit")(function* (params: AuditParams) {
+const buildAudit = Effect.fn("ChimeraTool.buildAudit")(function* (params: AuditParams, options: BuildAuditOptions = {}) {
   const instance = yield* InstanceState.context
-  const state = yield* Chimera.openProjectGraph({ sync: params.refresh !== false })
+  const state = options.state ?? (options.ctx ? yield* openProjectGraphForTool(options.ctx, params.refresh !== false) : yield* Chimera.openProjectGraph({ sync: params.refresh !== false }))
   const records = yield* provenanceRecords(state.projectRoot, state.artifact)
   const recent = latestSuccessfulProvenance(records)
   const explicitFiles = uniqueStrings([...(params.files ?? []), ...(params.filePath ? [params.filePath] : [])]).map((file) =>
@@ -965,7 +1057,7 @@ export const ChimeraStatusTool = Tool.define<typeof StatusParameters, StatusMeta
     execute: (params: Schema.Schema.Type<typeof StatusParameters>, ctx: Tool.Context<StatusMetadata>) =>
       Effect.gen(function* () {
         yield* permission(ctx, "chimera_status", { refresh: params.refresh !== false })
-        const state = yield* Chimera.openProjectGraph({ sync: params.refresh !== false })
+        const state = yield* openProjectGraphForTool(ctx as Tool.Context, params.refresh !== false)
         const snapshot = state.graph.snapshot()
         const stats = state.graph.stats()
         const provenanceRecords = yield* provenanceRecordCount(state.projectRoot, state.artifact)
@@ -1019,7 +1111,7 @@ export const ChimeraSearchTool = Tool.define<typeof SearchParameters, SearchMeta
           refresh: params.refresh !== false,
         })
         const instance = yield* InstanceState.context
-        const state = yield* Chimera.openProjectGraph({ sync: params.refresh !== false })
+        const state = yield* openProjectGraphForTool(ctx as Tool.Context, params.refresh !== false)
         const limit = bounded(params.limit, 10, 50)
         const snapshot = state.graph.snapshot()
         const kinds = params.kind ? [params.kind] : undefined
@@ -1071,7 +1163,7 @@ export const ChimeraImpactTool = Tool.define<typeof ImpactParameters, ImpactMeta
           refresh: params.refresh !== false,
         })
         const instance = yield* InstanceState.context
-        const state = yield* Chimera.openProjectGraph({ sync: params.refresh !== false })
+        const state = yield* openProjectGraphForTool(ctx as Tool.Context, params.refresh !== false)
         const depth = bounded(params.depth, 2, 5)
         const limit = bounded(params.limit, 20, 100)
         const snapshot = state.graph.snapshot()
@@ -1157,7 +1249,7 @@ export const ChimeraAuditTool = Tool.define<typeof AuditParameters, AuditMetadat
           recent: params.recent !== false,
           refresh: params.refresh !== false,
         })
-        const audit = yield* buildAudit(params)
+        const audit = yield* buildAudit(params, { ctx: ctx as Tool.Context })
 
         return {
           title: "Chimera audit",
@@ -1188,13 +1280,13 @@ export const ChimeraObligationsTool = Tool.define<typeof ObligationsParameters, 
           recent: params.recent !== false,
           refresh: params.refresh !== false,
         })
-        const state = yield* Chimera.openProjectGraph({ sync: params.refresh !== false })
+        const state = yield* openProjectGraphForTool(ctx as Tool.Context, params.refresh !== false)
         const artifact = obligationsArtifact(state.artifact)
         const now = new Date().toISOString()
         const store = yield* readObligationStore(state.projectRoot, artifact)
 
         if (action === "sync") {
-          const audit = yield* buildAudit(params)
+          const audit = yield* buildAudit(params, { ctx: ctx as Tool.Context, state })
           const auditRunID = yield* Effect.promise(() =>
             recordAuditRun(state.projectRoot, {
               source: audit.source,
@@ -1392,7 +1484,7 @@ export const ChimeraContextTool = Tool.define<typeof ContextParameters, ContextM
           refresh: params.refresh !== false,
         })
         const instance = yield* InstanceState.context
-        const state = yield* Chimera.openProjectGraph({ sync: params.refresh !== false })
+        const state = yield* openProjectGraphForTool(ctx as Tool.Context, params.refresh !== false)
         const mode: ContextMetadata["mode"] = params.mode ?? "search"
         const node = params.nodeID ? state.graph.node(params.nodeID) : undefined
         const normalizedFile = params.filePath ? graphPath(state.projectRoot, instance.directory, params.filePath) : undefined
