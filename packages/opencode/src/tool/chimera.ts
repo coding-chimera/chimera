@@ -4,16 +4,19 @@ import { Effect, Schema } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import {
   Chimera,
+  NODE_KINDS,
   classifyChangeRecord,
   classifyFileBoundary,
   collectFileProjections,
   type ChangeFact,
   type CodeGraphIndexProgress,
   type CodeGraphNode,
+  type CodeGraphRelation,
   type CodeGraphSnapshot,
   type FileClassification,
   type FrozenSemanticObject,
   type ProjectGraphState,
+  type RelationKind,
   type ToolMutationRecord,
 } from "@/chimera"
 import {
@@ -26,30 +29,7 @@ import {
 } from "@/chimera/store"
 import * as Tool from "./tool"
 
-const NodeKind = Schema.Union([
-  Schema.Literal("file"),
-  Schema.Literal("module"),
-  Schema.Literal("class"),
-  Schema.Literal("struct"),
-  Schema.Literal("interface"),
-  Schema.Literal("trait"),
-  Schema.Literal("protocol"),
-  Schema.Literal("function"),
-  Schema.Literal("method"),
-  Schema.Literal("property"),
-  Schema.Literal("field"),
-  Schema.Literal("variable"),
-  Schema.Literal("constant"),
-  Schema.Literal("enum"),
-  Schema.Literal("enum_member"),
-  Schema.Literal("type_alias"),
-  Schema.Literal("namespace"),
-  Schema.Literal("parameter"),
-  Schema.Literal("import"),
-  Schema.Literal("export"),
-  Schema.Literal("route"),
-  Schema.Literal("component"),
-])
+const NodeKind = Schema.Union(NODE_KINDS.map((kind) => Schema.Literal(kind)))
 
 const ContextMode = Schema.Union([
   Schema.Literal("arch"),
@@ -301,7 +281,7 @@ type RiskCategory =
   | "unknown"
 
 type CauseLink = {
-  type: "changed_file" | "changed_seed" | "change_fact" | "file_dependency" | "impact_radius" | "context_selection"
+  type: "changed_file" | "changed_seed" | "change_fact" | "file_dependency" | "relation" | "impact_radius" | "context_selection"
   target: string
   evidence: string
 }
@@ -527,6 +507,24 @@ function uniqueStrings(items: string[]) {
   return [...new Set(items)]
 }
 
+const DependentRelations: RelationKind[] = [
+  "CalledBy",
+  "ImportedBy",
+  "UsedBy",
+  "InstantiatedBy",
+  "BaseClassOf",
+  "OverriddenBy",
+  "DecoratedBy",
+]
+
+function nodeTarget(node: CodeGraphNode) {
+  return `${node.filePath}:${node.startLine} ${node.qualifiedName || node.name}`
+}
+
+function relationEvidence(relation: CodeGraphRelation) {
+  return `codegraph:relation:${relation.relation}:${relation.edgeKind}:${relation.quality}`
+}
+
 function classifyFile(filePath: string): { classification: ChangeClassification; reason: string } {
   const boundary = classifyFileBoundary(filePath)
   return { classification: boundary.classification, reason: boundary.reason }
@@ -626,9 +624,16 @@ function buildImpactEvidence(input: {
   depth: number
   limit: number
 }) {
-  const impactedNodes = uniqueNodes(
-    input.seedNodes.flatMap((node) => [...input.state.graph.impactRadius(node.id, input.depth).nodes.values()]).slice(0, input.limit),
-  ).filter((node) => !input.seedNodes.some((seed) => seed.id === node.id))
+  const incomingRelations = input.seedNodes.flatMap((node) =>
+    input.state.graph.incomingRelations(node.id, { relations: DependentRelations }),
+  ).slice(0, input.limit)
+  const relationNodes = uniqueNodes(incomingRelations.map((relation) => relation.otherNode))
+  const relationNodeIDs = new Set(relationNodes.map((node) => node.id))
+  const impactedNodes = uniqueNodes([
+    ...relationNodes,
+    ...input.seedNodes.flatMap((node) => [...input.state.graph.impactRadius(node.id, input.depth).nodes.values()]),
+  ].slice(0, input.limit)).filter((node) => !input.seedNodes.some((seed) => seed.id === node.id) && !relationNodeIDs.has(node.id))
+  const selectedImpactNodes = uniqueNodes([...relationNodes, ...impactedNodes]).filter((node) => !input.seedNodes.some((seed) => seed.id === node.id))
   const fileDependents = uniqueStrings(
     [
       ...(input.normalizedFile ? input.state.graph.fileDependents(input.normalizedFile) : []),
@@ -641,6 +646,22 @@ function buildImpactEvidence(input: {
   const changeFactCause = factCause(input.changeFacts)
   const baseCauseChain = changeFactCause ? [cause, changeFactCause] : [cause]
   const evidence = uniqueCandidates([
+    ...incomingRelations.map((relation) => {
+      const node = relation.otherNode
+      const classification = classifyFile(node.filePath).classification
+      const target = nodeTarget(node)
+      const relationLabel = relationEvidence(relation)
+      return {
+        target,
+        targetNode: input.state.graph.projectNode(node, input.snapshot),
+        reason: `${riskReasonForNode(node)}; relation ${relation.relation} (${relation.edgeKind}) points from ${target} to ${seedNames.join(", ") || "the changed seed"}`,
+        risk: riskForNode(node),
+        classification,
+        requiredAction: "review_or_update" as const,
+        evidence: `codegraph:relation:${relation.relation}`,
+        causeChain: [...baseCauseChain, { type: "relation" as const, target, evidence: relationLabel }],
+      }
+    }),
     ...fileDependents.map((file) => {
       const classification = classifyFile(file).classification
       return {
@@ -655,8 +676,9 @@ function buildImpactEvidence(input: {
     }),
     ...impactedNodes.map((node) => {
       const classification = classifyFile(node.filePath).classification
+      const target = nodeTarget(node)
       return {
-        target: `${node.filePath}:${node.startLine} ${node.qualifiedName || node.name}`,
+        target,
         targetNode: input.state.graph.projectNode(node, input.snapshot),
         reason: `${riskReasonForNode(node)}; symbol is inside impact radius of ${seedNames.join(", ") || input.changedFiles.slice(0, 3).join(", ") || "the changed seed"}`,
         risk: riskForNode(node),
@@ -667,14 +689,14 @@ function buildImpactEvidence(input: {
           ...baseCauseChain,
           {
             type: "impact_radius" as const,
-            target: `${node.filePath}:${node.startLine} ${node.qualifiedName || node.name}`,
+            target,
             evidence: "codegraph:impact_radius",
           },
         ],
       }
     }),
   ]).slice(0, input.limit)
-  return { impactedNodes, fileDependents, evidence }
+  return { impactedNodes: selectedImpactNodes, fileDependents, evidence }
 }
 
 function permission(ctx: Tool.Context, toolID: string, metadata: Record<string, unknown>) {

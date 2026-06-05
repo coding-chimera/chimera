@@ -200,7 +200,7 @@ describe("change classifier", () => {
     expect(facts.some((fact) => fact.subjectKind === "schema" && fact.nodeKey?.includes(":class:Sample"))).toBe(false)
   })
 
-  test("does not add body facts for signature deltas", () => {
+  test("uses CodeGraph semantic diff evidence for signature deltas", () => {
     const patch = `--- sample.ts
 +++ sample.ts
 @@ -1,3 +1,3 @@
@@ -217,8 +217,34 @@ describe("change classifier", () => {
       afterNodes: [after],
     })
 
-    expect(facts.some((fact) => fact.subjectKind === "signature" && fact.nodeKey?.includes(":function:value"))).toBe(true)
+    const signature = facts.find((fact) => fact.subjectKind === "signature" && fact.nodeKey?.includes(":function:value"))
+    expect(signature?.evidence.rule).toBe("codegraph.semantic.diff")
+    expect(signature?.evidence.semanticDiff?.changedFields).toEqual(["signature"])
+    expect(signature?.evidence.signals).toContain("codegraph_semantic_diff:modify")
     expect(facts.some((fact) => fact.subjectKind === "body" && fact.nodeKey?.includes(":function:value"))).toBe(false)
+  })
+
+  test("uses CodeGraph semantic diff evidence for export deltas", () => {
+    const patch = `--- sample.ts
++++ sample.ts
+@@ -1,3 +1,3 @@
+-function value() {
++export function value() {
+ return 1
+ }
+`
+    const before = node({ id: "before-value", kind: "function", name: "value", startLine: 1, endLine: 3, signature: "function value()", isExported: false })
+    const after = node({ id: "after-value", kind: "function", name: "value", startLine: 1, endLine: 3, signature: "function value()", isExported: true })
+    const facts = classifyChangeRecord({
+      record: record({ patch }),
+      beforeNodes: [before],
+      afterNodes: [after],
+    })
+
+    const exported = facts.find((fact) => fact.subjectKind === "export" && fact.nodeKey?.includes(":function:value"))
+    expect(exported?.evidence.rule).toBe("codegraph.semantic.diff")
+    expect(exported?.evidence.semanticDiff?.changedFields).toEqual(["isExported"])
+    expect(exported?.evidence.signals).toContain("changed:isExported")
   })
 
   test("does not add unknown fallback when line heuristics classify the diff", () => {
