@@ -60,6 +60,581 @@ Output: Creates directory 'foo'"
 }
 `;
 
+exports[`tool parameters JSON Schema (wire shape) chimera_audit 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Provide at least one explicit audit seed: files, filePath, symbol, or nodeID. Use chimera_audit_recent for the latest mutation.",
+  "properties": {
+    "depth": {
+      "description": "Impact traversal depth. Defaults to 2, capped at 5.",
+      "type": "number",
+    },
+    "filePath": {
+      "description": "Single changed file to audit, absolute or project-relative.",
+      "type": "string",
+    },
+    "files": {
+      "description": "Changed files to audit, absolute or project-relative.",
+      "items": {
+        "type": "string",
+      },
+      "type": "array",
+    },
+    "kind": {
+      "description": "Optional node kind filter when resolving audit seed symbols.",
+      "enum": [
+        "file",
+        "module",
+        "class",
+        "struct",
+        "interface",
+        "trait",
+        "protocol",
+        "function",
+        "method",
+        "property",
+        "field",
+        "variable",
+        "constant",
+        "enum",
+        "enum_member",
+        "type_alias",
+        "namespace",
+        "parameter",
+        "import",
+        "export",
+        "route",
+        "component",
+      ],
+      "type": "string",
+    },
+    "limit": {
+      "description": "Maximum candidate obligations to return. Defaults to 30, capped at 100.",
+      "type": "number",
+    },
+    "nodeID": {
+      "description": "Exact CodeGraph node id to use as an audit seed.",
+      "type": "string",
+    },
+    "range": {
+      "description": "Optional changed source range inside filePath.",
+      "properties": {
+        "endColumn": {
+          "description": "Optional 1-based end column within endLine.",
+          "type": "number",
+        },
+        "endLine": {
+          "description": "Optional 1-based end line for the source range. Defaults to the start line when omitted.",
+          "type": "number",
+        },
+        "startColumn": {
+          "description": "Optional 1-based start column within startLine.",
+          "type": "number",
+        },
+        "startLine": {
+          "description": "1-based start line for the source range.",
+          "type": "number",
+        },
+      },
+      "required": [
+        "startLine",
+      ],
+      "type": "object",
+    },
+    "refresh": {
+      "description": "Refresh CodeGraph when stale: the index is empty, watcher has pending files, or git reports dirty source files. Defaults to true.",
+      "type": "boolean",
+    },
+    "symbol": {
+      "description": "Changed symbol to audit when file/range is not precise enough.",
+      "type": "string",
+    },
+  },
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) chimera_audit_recent 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "limit": {
+      "description": "Maximum candidate obligations to return. Defaults to 30, capped at 100.",
+      "type": "number",
+    },
+    "refresh": {
+      "description": "Refresh CodeGraph when stale: the index is empty, watcher has pending files, or git reports dirty source files. Defaults to true.",
+      "type": "boolean",
+    },
+  },
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) chimera_context 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Provide query, symbol, nodeID, filePath, or mode=arch.",
+  "properties": {
+    "filePath": {
+      "description": "File path to use as the context query when query, symbol, and nodeID are omitted.",
+      "type": "string",
+    },
+    "includeCode": {
+      "description": "Include source snippets in context. Defaults to true.",
+      "type": "boolean",
+    },
+    "maxCodeBlocks": {
+      "description": "Maximum code blocks in context. Defaults to 8.",
+      "type": "number",
+    },
+    "maxNodes": {
+      "description": "Maximum graph nodes in context. Defaults to 30.",
+      "type": "number",
+    },
+    "mode": {
+      "description": "Context mode. arch produces an architecture-oriented query; defaults to search.",
+      "enum": [
+        "arch",
+        "search",
+        "impact",
+        "audit",
+      ],
+      "type": "string",
+    },
+    "nodeID": {
+      "description": "Exact CodeGraph node id to use as the context focus when query and symbol are omitted.",
+      "type": "string",
+    },
+    "query": {
+      "description": "Natural-language or symbol/file query for context.",
+      "type": "string",
+    },
+    "refresh": {
+      "description": "Refresh CodeGraph when stale: the index is empty, watcher has pending files, or git reports dirty source files. Defaults to true.",
+      "type": "boolean",
+    },
+    "symbol": {
+      "description": "Symbol name to use as the context query when query is omitted.",
+      "type": "string",
+    },
+  },
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) chimera_file_symbols 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "filePath": {
+      "description": "File path to list indexed symbols from, absolute or project-relative.",
+      "type": "string",
+    },
+    "kind": {
+      "description": "Optional CodeGraph node kind filter.",
+      "enum": [
+        "file",
+        "module",
+        "class",
+        "struct",
+        "interface",
+        "trait",
+        "protocol",
+        "function",
+        "method",
+        "property",
+        "field",
+        "variable",
+        "constant",
+        "enum",
+        "enum_member",
+        "type_alias",
+        "namespace",
+        "parameter",
+        "import",
+        "export",
+        "route",
+        "component",
+      ],
+      "type": "string",
+    },
+    "limit": {
+      "description": "Maximum results to return. Defaults to 10, capped at 50.",
+      "type": "number",
+    },
+    "range": {
+      "description": "Optional source range inside filePath; returns intersecting symbols.",
+      "properties": {
+        "endColumn": {
+          "description": "Optional 1-based end column within endLine.",
+          "type": "number",
+        },
+        "endLine": {
+          "description": "Optional 1-based end line for the source range. Defaults to the start line when omitted.",
+          "type": "number",
+        },
+        "startColumn": {
+          "description": "Optional 1-based start column within startLine.",
+          "type": "number",
+        },
+        "startLine": {
+          "description": "1-based start line for the source range.",
+          "type": "number",
+        },
+      },
+      "required": [
+        "startLine",
+      ],
+      "type": "object",
+    },
+    "refresh": {
+      "description": "Refresh CodeGraph when stale: the index is empty, watcher has pending files, or git reports dirty source files. Defaults to true.",
+      "type": "boolean",
+    },
+  },
+  "required": [
+    "filePath",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) chimera_impact 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Provide at least one impact seed: nodeID, symbol, or filePath. Use range only with filePath.",
+  "properties": {
+    "depth": {
+      "description": "Graph traversal depth for symbol impact. Defaults to 2, capped at 5.",
+      "type": "number",
+    },
+    "filePath": {
+      "description": "File to analyze for file-level dependents; absolute or project-relative.",
+      "type": "string",
+    },
+    "kind": {
+      "description": "Optional node kind filter when resolving symbol or range seeds.",
+      "enum": [
+        "file",
+        "module",
+        "class",
+        "struct",
+        "interface",
+        "trait",
+        "protocol",
+        "function",
+        "method",
+        "property",
+        "field",
+        "variable",
+        "constant",
+        "enum",
+        "enum_member",
+        "type_alias",
+        "namespace",
+        "parameter",
+        "import",
+        "export",
+        "route",
+        "component",
+      ],
+      "type": "string",
+    },
+    "limit": {
+      "description": "Maximum impacted symbols/files to return. Defaults to 20, capped at 100.",
+      "type": "number",
+    },
+    "nodeID": {
+      "description": "Exact CodeGraph node id to analyze.",
+      "type": "string",
+    },
+    "range": {
+      "description": "Optional source range inside filePath; seed symbols are nodes intersecting this range.",
+      "properties": {
+        "endColumn": {
+          "description": "Optional 1-based end column within endLine.",
+          "type": "number",
+        },
+        "endLine": {
+          "description": "Optional 1-based end line for the source range. Defaults to the start line when omitted.",
+          "type": "number",
+        },
+        "startColumn": {
+          "description": "Optional 1-based start column within startLine.",
+          "type": "number",
+        },
+        "startLine": {
+          "description": "1-based start line for the source range.",
+          "type": "number",
+        },
+      },
+      "required": [
+        "startLine",
+      ],
+      "type": "object",
+    },
+    "refresh": {
+      "description": "Refresh CodeGraph when stale: the index is empty, watcher has pending files, or git reports dirty source files. Defaults to true.",
+      "type": "boolean",
+    },
+    "symbol": {
+      "description": "Symbol name to analyze. Used when nodeID is not supplied.",
+      "type": "string",
+    },
+  },
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) chimera_obligation_claim 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "obligationID": {
+      "description": "Obligation id to claim.",
+      "type": "string",
+    },
+  },
+  "required": [
+    "obligationID",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) chimera_obligation_ignore 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "note": {
+      "description": "Optional additional context.",
+      "type": "string",
+    },
+    "obligationID": {
+      "description": "Obligation id to ignore.",
+      "type": "string",
+    },
+    "reason": {
+      "description": "Required reason for ignoring the obligation.",
+      "type": "string",
+    },
+  },
+  "required": [
+    "obligationID",
+    "reason",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) chimera_obligation_resolve 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "note": {
+      "description": "Optional short note stating the evidence or update that resolved the obligation.",
+      "type": "string",
+    },
+    "obligationID": {
+      "description": "Obligation id to resolve.",
+      "type": "string",
+    },
+  },
+  "required": [
+    "obligationID",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) chimera_obligations_list 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "limit": {
+      "description": "Maximum obligations to list. Defaults to 30, capped at 100.",
+      "type": "number",
+    },
+    "refresh": {
+      "description": "Refresh CodeGraph when stale: the index is empty, watcher has pending files, or git reports dirty source files. Defaults to true.",
+      "type": "boolean",
+    },
+    "status": {
+      "description": "Optional status filter for list.",
+      "enum": [
+        "pending",
+        "claimed",
+        "resolved",
+        "ignored",
+        "stale",
+      ],
+      "type": "string",
+    },
+  },
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) chimera_obligations_sync 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Provide explicit sync seeds or omit them to sync from recent mutation or git diff fallback.",
+  "properties": {
+    "depth": {
+      "description": "Impact traversal depth for sync. Defaults to 2, capped at 5.",
+      "type": "number",
+    },
+    "filePath": {
+      "description": "Single changed file to audit and sync into obligations.",
+      "type": "string",
+    },
+    "files": {
+      "description": "Changed files to audit and sync into obligations.",
+      "items": {
+        "type": "string",
+      },
+      "type": "array",
+    },
+    "kind": {
+      "description": "Optional CodeGraph node kind filter when resolving sync seed symbols.",
+      "enum": [
+        "file",
+        "module",
+        "class",
+        "struct",
+        "interface",
+        "trait",
+        "protocol",
+        "function",
+        "method",
+        "property",
+        "field",
+        "variable",
+        "constant",
+        "enum",
+        "enum_member",
+        "type_alias",
+        "namespace",
+        "parameter",
+        "import",
+        "export",
+        "route",
+        "component",
+      ],
+      "type": "string",
+    },
+    "limit": {
+      "description": "Maximum obligations to list or sync. Defaults to 30, capped at 100.",
+      "type": "number",
+    },
+    "nodeID": {
+      "description": "Exact CodeGraph node id to audit and sync into obligations.",
+      "type": "string",
+    },
+    "range": {
+      "description": "Optional changed source range inside filePath for sync.",
+      "properties": {
+        "endColumn": {
+          "description": "Optional 1-based end column within endLine.",
+          "type": "number",
+        },
+        "endLine": {
+          "description": "Optional 1-based end line for the source range. Defaults to the start line when omitted.",
+          "type": "number",
+        },
+        "startColumn": {
+          "description": "Optional 1-based start column within startLine.",
+          "type": "number",
+        },
+        "startLine": {
+          "description": "1-based start line for the source range.",
+          "type": "number",
+        },
+      },
+      "required": [
+        "startLine",
+      ],
+      "type": "object",
+    },
+    "refresh": {
+      "description": "Refresh CodeGraph when stale: the index is empty, watcher has pending files, or git reports dirty source files. Defaults to true.",
+      "type": "boolean",
+    },
+    "symbol": {
+      "description": "Changed symbol to audit and sync into obligations.",
+      "type": "string",
+    },
+  },
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) chimera_search 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "kind": {
+      "description": "Optional CodeGraph node kind filter.",
+      "enum": [
+        "file",
+        "module",
+        "class",
+        "struct",
+        "interface",
+        "trait",
+        "protocol",
+        "function",
+        "method",
+        "property",
+        "field",
+        "variable",
+        "constant",
+        "enum",
+        "enum_member",
+        "type_alias",
+        "namespace",
+        "parameter",
+        "import",
+        "export",
+        "route",
+        "component",
+      ],
+      "type": "string",
+    },
+    "limit": {
+      "description": "Maximum results to return. Defaults to 10, capped at 50.",
+      "type": "number",
+    },
+    "query": {
+      "description": "Symbol or CodeGraph-indexed text query. This is not raw literal/code-string search; use Grep for arbitrary source text.",
+      "type": "string",
+    },
+    "refresh": {
+      "description": "Refresh CodeGraph when stale: the index is empty, watcher has pending files, or git reports dirty source files. Defaults to true.",
+      "type": "boolean",
+    },
+  },
+  "required": [
+    "query",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) chimera_status 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "refresh": {
+      "description": "Refresh CodeGraph when stale: the index is empty, watcher has pending files, or git reports dirty source files. Defaults to true.",
+      "type": "boolean",
+    },
+  },
+  "type": "object",
+}
+`;
+
 exports[`tool parameters JSON Schema (wire shape) edit 1`] = `
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",

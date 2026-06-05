@@ -10,6 +10,20 @@ import { toJsonSchema } from "../../src/util/effect-zod"
 // byte-identical regardless of whether a tool has migrated from zod to Schema.
 
 import { Parameters as ApplyPatch } from "../../src/tool/apply_patch"
+import {
+  AuditParameters as ChimeraAudit,
+  ContextParameters as ChimeraContext,
+  FileSymbolsParameters as ChimeraFileSymbols,
+  ImpactParameters as ChimeraImpact,
+  ObligationClaimParameters as ChimeraObligationClaim,
+  ObligationIgnoreParameters as ChimeraObligationIgnore,
+  ObligationResolveParameters as ChimeraObligationResolve,
+  ObligationsListParameters as ChimeraObligationsList,
+  ObligationsSyncParameters as ChimeraObligationsSync,
+  RecentAuditParameters as ChimeraAuditRecent,
+  SearchParameters as ChimeraSearch,
+  StatusParameters as ChimeraStatus,
+} from "../../src/tool/chimera"
 import { Parameters as Edit } from "../../src/tool/edit"
 import { Parameters as Glob } from "../../src/tool/glob"
 import { Parameters as Grep } from "../../src/tool/grep"
@@ -36,6 +50,18 @@ describe("tool parameters", () => {
   describe("JSON Schema (wire shape)", () => {
     test("apply_patch", () => expect(toJsonSchema(ApplyPatch)).toMatchSnapshot())
     test("bash", () => expect(toJsonSchema(Shell)).toMatchSnapshot())
+    test("chimera_audit", () => expect(toJsonSchema(ChimeraAudit)).toMatchSnapshot())
+    test("chimera_audit_recent", () => expect(toJsonSchema(ChimeraAuditRecent)).toMatchSnapshot())
+    test("chimera_context", () => expect(toJsonSchema(ChimeraContext)).toMatchSnapshot())
+    test("chimera_file_symbols", () => expect(toJsonSchema(ChimeraFileSymbols)).toMatchSnapshot())
+    test("chimera_impact", () => expect(toJsonSchema(ChimeraImpact)).toMatchSnapshot())
+    test("chimera_obligation_claim", () => expect(toJsonSchema(ChimeraObligationClaim)).toMatchSnapshot())
+    test("chimera_obligation_ignore", () => expect(toJsonSchema(ChimeraObligationIgnore)).toMatchSnapshot())
+    test("chimera_obligation_resolve", () => expect(toJsonSchema(ChimeraObligationResolve)).toMatchSnapshot())
+    test("chimera_obligations_list", () => expect(toJsonSchema(ChimeraObligationsList)).toMatchSnapshot())
+    test("chimera_obligations_sync", () => expect(toJsonSchema(ChimeraObligationsSync)).toMatchSnapshot())
+    test("chimera_search", () => expect(toJsonSchema(ChimeraSearch)).toMatchSnapshot())
+    test("chimera_status", () => expect(toJsonSchema(ChimeraStatus)).toMatchSnapshot())
     test("edit", () => expect(toJsonSchema(Edit)).toMatchSnapshot())
     test("glob", () => expect(toJsonSchema(Glob)).toMatchSnapshot())
     test("grep", () => expect(toJsonSchema(Grep)).toMatchSnapshot())
@@ -98,6 +124,43 @@ describe("tool parameters", () => {
     })
     test("rejects missing filePath", () => {
       expect(accepts(Edit, { oldString: "x", newString: "y" })).toBe(false)
+    })
+  })
+
+  describe("chimera", () => {
+    test("search requires query", () => {
+      expect(parse(ChimeraSearch, { query: "SessionPrompt" }).query).toBe("SessionPrompt")
+      expect(accepts(ChimeraSearch, {})).toBe(false)
+    })
+
+    test("file symbols requires filePath and accepts range", () => {
+      const parsed = parse(ChimeraFileSymbols, { filePath: "src/tool/chimera.ts", range: { startLine: 1 } })
+      expect(parsed.filePath).toBe("src/tool/chimera.ts")
+      expect(parsed.range?.startLine).toBe(1)
+      expect(accepts(ChimeraFileSymbols, {})).toBe(false)
+    })
+
+    test("audit selector combination is runtime-level, not JSON-schema-level", () => {
+      expect(accepts(ChimeraAudit, {})).toBe(true)
+      expect(parse(ChimeraAudit, { filePath: "src/tool/chimera.ts" }).filePath).toBe("src/tool/chimera.ts")
+    })
+
+    test("context selector combination is runtime-level, not JSON-schema-level", () => {
+      expect(accepts(ChimeraContext, {})).toBe(true)
+      expect(parse(ChimeraContext, { mode: "arch" }).mode).toBe("arch")
+    })
+
+    test("obligation lifecycle tools require ids and ignore reason", () => {
+      expect(accepts(ChimeraObligationClaim, {})).toBe(false)
+      expect(parse(ChimeraObligationClaim, { obligationID: "obl_1" }).obligationID).toBe("obl_1")
+      expect(accepts(ChimeraObligationResolve, {})).toBe(false)
+      expect(parse(ChimeraObligationResolve, { obligationID: "obl_1", note: "reviewed caller" }).note).toBe(
+        "reviewed caller",
+      )
+      expect(accepts(ChimeraObligationIgnore, { obligationID: "obl_1" })).toBe(false)
+      expect(parse(ChimeraObligationIgnore, { obligationID: "obl_1", reason: "out of scope" }).reason).toBe(
+        "out of scope",
+      )
     })
   })
 

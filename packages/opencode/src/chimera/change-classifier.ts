@@ -1,6 +1,18 @@
 import path from "path"
 import { createHash } from "crypto"
-import { diffNodeSemantics, type CodeGraphAdapter, type CodeGraphSnapshot, type FrozenSemanticObject, type NodeSemanticDiff, type SourceRange } from "./codegraph-adapter"
+import {
+  diffFileSemantics,
+  diffNodeSemantics,
+  getFileSemanticInfo,
+  type CodeGraphAdapter,
+  type CodeGraphSnapshot,
+  type FileSemanticInfo,
+  type FileSemanticInputNode,
+  type FileSemanticSignal,
+  type FrozenSemanticObject,
+  type NodeSemanticDiff,
+  type SourceRange,
+} from "./codegraph-adapter"
 import type { ProvenanceFile, ToolMutationRecord } from "./provenance"
 
 export type ChangeKind = "add" | "modify" | "delete" | "move"
@@ -17,7 +29,7 @@ export type ChangeSubjectKind =
   | "doc"
   | "unknown"
 
-export type FileClassification = "source" | "test" | "docs" | "config" | "dependency" | "api_route" | "unknown"
+export type FileClassification = "source" | "test" | "docs" | "config" | "dependency" | "api_route" | "generated" | "unknown"
 
 export type SourceHunk = {
   oldRange?: SourceRange
@@ -156,45 +168,55 @@ function classifiedStatus(record: ToolMutationRecord, filePath: string) {
   return { status: undefined, source: "unknown" }
 }
 
-export function classifyFileBoundary(filePath: string): {
+function classificationForFileRole(role: FileSemanticInfo["role"]): FileClassification {
+  if (role === "dependency_manifest") return "dependency"
+  if (role === "docs") return "docs"
+  if (role === "api_route") return "api_route"
+  if (role === "generated") return "generated"
+  if (role === "source" || role === "test" || role === "config") return role
+  return "unknown"
+}
+
+function subjectForFileRole(role: FileSemanticInfo["role"]): ChangeSubjectKind {
+  if (role === "dependency_manifest" || role === "config") return "config"
+  if (role === "test") return "test"
+  if (role === "docs") return "doc"
+  if (role === "api_route") return "route"
+  return "unknown"
+}
+
+function fileSemanticConfidence(semantic: FileSemanticInfo, classification: FileClassification) {
+  if (semantic.confidence === "exact") return 0.95
+  if (semantic.confidence === "unknown") return 0.35
+  if (classification === "api_route") return 0.65
+  if (classification === "generated") return 0.45
+  return 0.75
+}
+
+export function classifyFileBoundary(filePath: string, semantic = getFileSemanticInfo(filePath)): {
   classification: FileClassification
+  role: FileSemanticInfo["role"]
+  source: FileSemanticInfo["source"]
+  confidence: number
   subjectKind: ChangeSubjectKind
   reason: string
   signals: string[]
 } {
-  const lower = filePath.toLowerCase()
-  const basename = path.basename(lower)
-  if (
-    basename === "package.json" ||
-    basename.endsWith(".lock") ||
-    basename === "bun.lockb" ||
-    basename === "cargo.toml" ||
-    basename === "go.mod" ||
-    basename === "requirements.txt"
-  ) {
-    return {
-      classification: "dependency",
-      subjectKind: "config",
-      reason: "dependency manifest or lockfile boundary",
-      signals: ["dependency_manifest"],
-    }
+  const classification = classificationForFileRole(semantic.role)
+  return {
+    classification,
+    role: semantic.role,
+    source: semantic.source,
+    confidence: fileSemanticConfidence(semantic, classification),
+    subjectKind: subjectForFileRole(semantic.role),
+    reason: semantic.reason,
+    signals: [
+      `codegraph_file_role:${semantic.role}`,
+      `source:${semantic.source}`,
+      `confidence:${semantic.confidence}`,
+      ...semantic.signals,
+    ],
   }
-  if (lower.includes("/test/") || lower.includes("/tests/") || /\.(test|spec)\.[cm]?[jt]sx?$/.test(lower)) {
-    return { classification: "test", subjectKind: "test", reason: "test or spec file boundary", signals: ["test_path"] }
-  }
-  if (/\.(md|mdx|rst|adoc|txt)$/.test(lower) || lower.includes("/docs/") || lower.includes("/specs/")) {
-    return { classification: "docs", subjectKind: "doc", reason: "documentation or specification boundary", signals: ["doc_path"] }
-  }
-  if (lower.includes("/route") || lower.includes("/routes/") || lower.includes("/api/") || lower.includes("/httpapi/") || lower.includes("/server/")) {
-    return { classification: "api_route", subjectKind: "route", reason: "route/server/API boundary", signals: ["route_path"] }
-  }
-  if (basename.startsWith(".") || basename.includes("config") || basename === "tsconfig.json" || basename === "vite.config.ts" || basename === "drizzle.config.ts") {
-    return { classification: "config", subjectKind: "config", reason: "configuration boundary", signals: ["config_path"] }
-  }
-  if (/\.[cm]?[jt]sx?$|\.tsx?$|\.rs$|\.go$|\.py$|\.java$|\.kt$|\.swift$/.test(lower)) {
-    return { classification: "source", subjectKind: "unknown", reason: "source implementation file", signals: ["source_path"] }
-  }
-  return { classification: "unknown", subjectKind: "unknown", reason: "unclassified file boundary", signals: ["unknown_path"] }
 }
 
 function range(startLine: number, count: number): SourceRange {
@@ -327,6 +349,33 @@ function semanticSignals(node: FrozenSemanticObject) {
 
 function semanticDiffSignals(diff: NodeSemanticDiff) {
   return [`codegraph_semantic_diff:${diff.changeKind}`, ...diff.changedFields.map((field) => `changed:${field}`)]
+}
+
+function fileSemanticInputNodes(nodes: FrozenSemanticObject[]): FileSemanticInputNode[] {
+  return nodes.map((node) => ({ kind: node.payload.kind, filePath: node.payload.filePath }))
+}
+
+function subjectForFileSignal(signal: FileSemanticSignal): Extract<ChangeSubjectKind, "import" | "export"> {
+  return signal.kind === "import_statement" ? "import" : "export"
+}
+
+function fileSignalChangeKind(signal: FileSemanticSignal, fallback: ChangeKind): ChangeKind {
+  if (signal.changeKind === "add" || signal.changeKind === "delete" || signal.changeKind === "modify") return signal.changeKind
+  return fallback
+}
+
+function fileSignalHunk(signal: FileSemanticSignal, fallback: SourceHunk | undefined): SourceHunk | undefined {
+  if (!signal.range) return fallback
+  if (signal.changeKind === "delete") return { oldRange: signal.range }
+  return { newRange: signal.range }
+}
+
+function fileSignalSignals(signal: FileSemanticSignal) {
+  return [
+    `codegraph_file_semantic_signal:${signal.kind}`,
+    `source:${signal.source}`,
+    ...signal.signals,
+  ]
 }
 
 function hasSemanticDelta(diff: NodeSemanticDiff) {
@@ -500,17 +549,17 @@ export function classifyChangeRecord(input: {
     }))
 
     const boundary = classifyFileBoundary(file.graphPath)
-    if (boundary.subjectKind !== "unknown") {
-      facts.push(fact({
-        record,
-        filePath: file.graphPath,
-        changeKind,
-        subjectKind: boundary.subjectKind,
-        confidence: boundary.classification === "api_route" ? 0.65 : 0.75,
-        rule: `path.boundary.${boundary.classification}`,
-        confidenceReason: boundary.reason,
-        status,
-        signals: boundary.signals,
+      if (boundary.subjectKind !== "unknown") {
+        facts.push(fact({
+          record,
+          filePath: file.graphPath,
+          changeKind,
+          subjectKind: boundary.subjectKind,
+          confidence: boundary.confidence,
+          rule: `codegraph.file_role.${boundary.role}`,
+          confidenceReason: boundary.reason,
+          status,
+          signals: boundary.signals,
       }))
     }
   }
@@ -671,6 +720,32 @@ export function classifyChangeRecord(input: {
     }
 
     const firstHunk = diff.hunks[0]
+    const fileSignals = diffFileSemantics({
+      filePath: diff.filePath,
+      oldPath: diff.oldPath,
+      patch: diff.patch,
+      hunks: diff.hunks,
+      nodes: fileSemanticInputNodes([...beforeNodes, ...afterNodes].filter((node) => node.payload.filePath === diff.filePath || node.payload.filePath === diff.oldPath)),
+    })
+
+    for (const signal of fileSignals) {
+      const subjectKind = subjectForFileSignal(signal)
+      if (facts.some((item) => item.filePath === diff.filePath && item.subjectKind === subjectKind)) continue
+      facts.push(fact({
+        record,
+        filePath: diff.filePath,
+        oldPath: diff.oldPath,
+        changeKind: fileSignalChangeKind(signal, changeKind),
+        subjectKind,
+        confidence: signal.confidence,
+        rule: `codegraph.file_semantic.${signal.kind}`,
+        confidenceReason: signal.reason,
+        status,
+        hunk: fileSignalHunk(signal, firstHunk),
+        signals: fileSignalSignals(signal),
+      }))
+    }
+
     if (lineHeuristic(diff.patch, "import") && !facts.some((item) => item.filePath === diff.filePath && item.subjectKind === "import")) {
       facts.push(fact({
         record,
@@ -678,12 +753,12 @@ export function classifyChangeRecord(input: {
         oldPath: diff.oldPath,
         changeKind,
         subjectKind: "import",
-        confidence: 0.65,
-        rule: "diff.line.import",
-        confidenceReason: "diff line matches language import syntax without CodeGraph node confirmation",
+        confidence: 0.45,
+        rule: "temporary_heuristic.diff.line.import",
+        confidenceReason: "temporary Chimera fallback matched import syntax; delete after CodeGraph R3 file semantic signal covers this path",
         status,
         hunk: firstHunk,
-        signals: ["diff_import_syntax"],
+        signals: ["temporary_heuristic", "source:chimera:temporary_heuristic", "confidence:0.45", "delete_after:codegraph_r3_file_semantic_signal", "diff_import_syntax"],
       }))
     }
 
@@ -694,12 +769,12 @@ export function classifyChangeRecord(input: {
         oldPath: diff.oldPath,
         changeKind,
         subjectKind: "export",
-        confidence: 0.65,
-        rule: "diff.line.export",
-        confidenceReason: "diff line matches language export syntax without CodeGraph node confirmation",
+        confidence: 0.45,
+        rule: "temporary_heuristic.diff.line.export",
+        confidenceReason: "temporary Chimera fallback matched export syntax; delete after CodeGraph R3 file semantic signal covers this path",
         status,
         hunk: firstHunk,
-        signals: ["diff_export_syntax"],
+        signals: ["temporary_heuristic", "source:chimera:temporary_heuristic", "confidence:0.45", "delete_after:codegraph_r3_file_semantic_signal", "diff_export_syntax"],
       }))
     }
 

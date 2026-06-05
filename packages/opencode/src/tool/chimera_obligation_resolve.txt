@@ -1,0 +1,15 @@
+Resolve one tracked Chimera obligation.
+
+Use this tool when the required review or update has been completed for a specific obligation.
+
+Do NOT use this tool for skipped or irrelevant obligations. Use `chimera_obligation_ignore` with a reason instead.
+
+Parameter rules:
+- `obligationID` is required and must refer to an existing tracked obligation.
+- `note` is optional and should briefly state the evidence or update that resolved it.
+
+Common calls:
+- Resolve an obligation after reviewing the target and applying any needed update.
+
+After this tool:
+- Continue until all relevant active obligations are resolved or explicitly ignored.

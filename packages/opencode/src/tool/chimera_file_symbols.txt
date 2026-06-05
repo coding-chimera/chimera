@@ -1,0 +1,19 @@
+List indexed symbols for a known file or source range.
+
+Use this tool when you already know the file path and need CodeGraph nodes inside that file, or nodes intersecting a specific range.
+
+Do NOT use this tool for open-ended search. Use `chimera_search` for query-based graph search and `grep` for raw source text.
+
+Parameter rules:
+- `filePath` is required and may be absolute or project-relative.
+- `range` is meaningful only with `filePath`; it narrows results to intersecting symbols.
+- `kind` filters node kind.
+- `limit` defaults to 10 and is capped at 50.
+- `refresh` defaults to true and controls whether stale graph signals may trigger a sync.
+
+Common calls:
+- List exported functions/classes/components in a changed file.
+- Resolve the smallest graph seeds for a line range before impact or audit.
+
+After this tool:
+- Use `chimera_impact` or `chimera_audit` when the listed symbols may propagate behavior.

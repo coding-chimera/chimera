@@ -247,7 +247,16 @@ describe("change classifier", () => {
     expect(exported?.evidence.signals).toContain("changed:isExported")
   })
 
-  test("does not add unknown fallback when line heuristics classify the diff", () => {
+  test("uses CodeGraph file role evidence for file boundary facts", () => {
+    const facts = classifyChangeRecord({ record: record({ filePath: "package.json" }) })
+
+    const config = facts.find((fact) => fact.subjectKind === "config")
+    expect(config?.evidence.rule).toBe("codegraph.file_role.dependency_manifest")
+    expect(config?.evidence.signals).toContain("codegraph_file_role:dependency_manifest")
+    expect(config?.evidence.signals).toContain("source:codegraph:file_classifier")
+  })
+
+  test("uses CodeGraph file-level import semantic signals", () => {
     const patch = `--- sample.ts
 +++ sample.ts
 @@ -1,1 +1,1 @@
@@ -255,8 +264,10 @@ describe("change classifier", () => {
 +import { newValue } from "./new"
 `
     const facts = classifyChangeRecord({ record: record({ patch }) })
+    const imported = facts.find((fact) => fact.subjectKind === "import")
 
-    expect(facts.some((fact) => fact.subjectKind === "import")).toBe(true)
+    expect(imported?.evidence.rule).toBe("codegraph.file_semantic.import_statement")
+    expect(imported?.evidence.signals).toContain("source:codegraph:diff_classifier")
     expect(facts.some((fact) => fact.subjectKind === "unknown")).toBe(false)
   })
 })

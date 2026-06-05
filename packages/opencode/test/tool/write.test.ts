@@ -66,7 +66,7 @@ describe("tool.write", () => {
         const result = yield* run({ filePath: filepath, content: "Hello, World!" })
 
         expect(result.output).toContain("Wrote file successfully")
-        expect(result.output).toContain("chimera_audit")
+        expect(result.output).toContain("chimera_audit_recent")
         expect(result.metadata.exists).toBe(false)
 
         const content = yield* Effect.promise(() => fs.readFile(filepath, "utf-8"))

@@ -61,7 +61,8 @@ describe("session.system", () => {
       } as unknown as Parameters<SystemPrompt.Interface["environment"]>[0])
 
       expect(output.join("\n")).toContain("chimera_audit")
-      expect(output.join("\n")).toContain("chimera_obligations")
+      expect(output.join("\n")).toContain("chimera_audit_recent")
+      expect(output.join("\n")).toContain("chimera_obligations_sync")
       expect(output.join("\n")).toContain("After any successful code mutation")
     }),
   )

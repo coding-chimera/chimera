@@ -28,6 +28,18 @@ import {
   writePersistentObligationStore,
 } from "@/chimera/store"
 import * as Tool from "./tool"
+import STATUS_DESCRIPTION from "./chimera_status.txt"
+import SEARCH_DESCRIPTION from "./chimera_search.txt"
+import FILE_SYMBOLS_DESCRIPTION from "./chimera_file_symbols.txt"
+import IMPACT_DESCRIPTION from "./chimera_impact.txt"
+import CONTEXT_DESCRIPTION from "./chimera_context.txt"
+import AUDIT_RECENT_DESCRIPTION from "./chimera_audit_recent.txt"
+import AUDIT_DESCRIPTION from "./chimera_audit.txt"
+import OBLIGATIONS_LIST_DESCRIPTION from "./chimera_obligations_list.txt"
+import OBLIGATIONS_SYNC_DESCRIPTION from "./chimera_obligations_sync.txt"
+import OBLIGATION_CLAIM_DESCRIPTION from "./chimera_obligation_claim.txt"
+import OBLIGATION_RESOLVE_DESCRIPTION from "./chimera_obligation_resolve.txt"
+import OBLIGATION_IGNORE_DESCRIPTION from "./chimera_obligation_ignore.txt"
 
 const NodeKind = Schema.Union(NODE_KINDS.map((kind) => Schema.Literal(kind)))
 
@@ -36,14 +48,6 @@ const ContextMode = Schema.Union([
   Schema.Literal("search"),
   Schema.Literal("impact"),
   Schema.Literal("audit"),
-])
-
-const ObligationAction = Schema.Union([
-  Schema.Literal("list"),
-  Schema.Literal("sync"),
-  Schema.Literal("claim"),
-  Schema.Literal("resolve"),
-  Schema.Literal("ignore"),
 ])
 
 const ObligationStatus = Schema.Union([
@@ -55,10 +59,16 @@ const ObligationStatus = Schema.Union([
 ])
 
 const Range = Schema.Struct({
-  startLine: Schema.Number,
-  endLine: Schema.optional(Schema.Number),
-  startColumn: Schema.optional(Schema.Number),
-  endColumn: Schema.optional(Schema.Number),
+  startLine: Schema.Number.annotate({ description: "1-based start line for the source range." }),
+  endLine: Schema.optional(Schema.Number).annotate({
+    description: "Optional 1-based end line for the source range. Defaults to the start line when omitted.",
+  }),
+  startColumn: Schema.optional(Schema.Number).annotate({
+    description: "Optional 1-based start column within startLine.",
+  }),
+  endColumn: Schema.optional(Schema.Number).annotate({
+    description: "Optional 1-based end column within endLine.",
+  }),
 })
 
 const RefreshDescription =
@@ -71,11 +81,23 @@ export const StatusParameters = Schema.Struct({
 })
 
 export const SearchParameters = Schema.Struct({
-  query: Schema.optional(Schema.String).annotate({
-    description: "Symbol or text query to search in the CodeGraph index.",
+  query: Schema.String.annotate({
+    description: "Symbol or CodeGraph-indexed text query. This is not raw literal/code-string search; use Grep for arbitrary source text.",
   }),
-  filePath: Schema.optional(Schema.String).annotate({
-    description: "Optional file path to list indexed symbols from, absolute or project-relative.",
+  kind: Schema.optional(NodeKind).annotate({
+    description: "Optional CodeGraph node kind filter.",
+  }),
+  limit: Schema.optional(Schema.Number).annotate({
+    description: "Maximum results to return. Defaults to 10, capped at 50.",
+  }),
+  refresh: Schema.optional(Schema.Boolean).annotate({
+    description: RefreshDescription,
+  }),
+})
+
+export const FileSymbolsParameters = Schema.Struct({
+  filePath: Schema.String.annotate({
+    description: "File path to list indexed symbols from, absolute or project-relative.",
   }),
   range: Schema.optional(Range).annotate({
     description: "Optional source range inside filePath; returns intersecting symbols.",
@@ -116,6 +138,8 @@ export const ImpactParameters = Schema.Struct({
   refresh: Schema.optional(Schema.Boolean).annotate({
     description: RefreshDescription,
   }),
+}).annotate({
+  description: "Provide at least one impact seed: nodeID, symbol, or filePath. Use range only with filePath.",
 })
 
 export const ContextParameters = Schema.Struct({
@@ -146,11 +170,22 @@ export const ContextParameters = Schema.Struct({
   refresh: Schema.optional(Schema.Boolean).annotate({
     description: RefreshDescription,
   }),
+}).annotate({
+  description: "Provide query, symbol, nodeID, filePath, or mode=arch.",
+})
+
+export const RecentAuditParameters = Schema.Struct({
+  limit: Schema.optional(Schema.Number).annotate({
+    description: "Maximum candidate obligations to return. Defaults to 30, capped at 100.",
+  }),
+  refresh: Schema.optional(Schema.Boolean).annotate({
+    description: RefreshDescription,
+  }),
 })
 
 export const AuditParameters = Schema.Struct({
   files: Schema.optional(Schema.Array(Schema.String)).annotate({
-    description: "Changed files to audit, absolute or project-relative. If omitted, audit can use the latest tool mutation.",
+    description: "Changed files to audit, absolute or project-relative.",
   }),
   filePath: Schema.optional(Schema.String).annotate({
     description: "Single changed file to audit, absolute or project-relative.",
@@ -167,9 +202,6 @@ export const AuditParameters = Schema.Struct({
   kind: Schema.optional(NodeKind).annotate({
     description: "Optional node kind filter when resolving audit seed symbols.",
   }),
-  recent: Schema.optional(Schema.Boolean).annotate({
-    description: "Use the latest successful Chimera tool mutation when files/symbol/nodeID are omitted. Defaults to true.",
-  }),
   depth: Schema.optional(Schema.Number).annotate({
     description: "Impact traversal depth. Defaults to 2, capped at 5.",
   }),
@@ -179,24 +211,23 @@ export const AuditParameters = Schema.Struct({
   refresh: Schema.optional(Schema.Boolean).annotate({
     description: RefreshDescription,
   }),
+}).annotate({
+  description: "Provide at least one explicit audit seed: files, filePath, symbol, or nodeID. Use chimera_audit_recent for the latest mutation.",
 })
 
-export const ObligationsParameters = Schema.Struct({
-  action: Schema.optional(ObligationAction).annotate({
-    description: "Obligation operation. Defaults to list.",
-  }),
-  obligationID: Schema.optional(Schema.String).annotate({
-    description: "Obligation id for claim, resolve, or ignore actions.",
-  }),
+export const ObligationsListParameters = Schema.Struct({
   status: Schema.optional(ObligationStatus).annotate({
     description: "Optional status filter for list.",
   }),
-  note: Schema.optional(Schema.String).annotate({
-    description: "Resolution note for resolve, or additional context for ignore.",
+  limit: Schema.optional(Schema.Number).annotate({
+    description: "Maximum obligations to list. Defaults to 30, capped at 100.",
   }),
-  reason: Schema.optional(Schema.String).annotate({
-    description: "Required reason for ignore.",
+  refresh: Schema.optional(Schema.Boolean).annotate({
+    description: RefreshDescription,
   }),
+})
+
+export const ObligationsSyncParameters = Schema.Struct({
   files: Schema.optional(Schema.Array(Schema.String)).annotate({
     description: "Changed files to audit and sync into obligations.",
   }),
@@ -215,9 +246,6 @@ export const ObligationsParameters = Schema.Struct({
   kind: Schema.optional(NodeKind).annotate({
     description: "Optional CodeGraph node kind filter when resolving sync seed symbols.",
   }),
-  recent: Schema.optional(Schema.Boolean).annotate({
-    description: "Use the latest successful Chimera tool mutation for sync when no files/symbol/nodeID are supplied. Defaults to true.",
-  }),
   depth: Schema.optional(Schema.Number).annotate({
     description: "Impact traversal depth for sync. Defaults to 2, capped at 5.",
   }),
@@ -226,6 +254,35 @@ export const ObligationsParameters = Schema.Struct({
   }),
   refresh: Schema.optional(Schema.Boolean).annotate({
     description: RefreshDescription,
+  }),
+}).annotate({
+  description: "Provide explicit sync seeds or omit them to sync from recent mutation or git diff fallback.",
+})
+
+export const ObligationClaimParameters = Schema.Struct({
+  obligationID: Schema.String.annotate({
+    description: "Obligation id to claim.",
+  }),
+})
+
+export const ObligationResolveParameters = Schema.Struct({
+  obligationID: Schema.String.annotate({
+    description: "Obligation id to resolve.",
+  }),
+  note: Schema.optional(Schema.String).annotate({
+    description: "Optional short note stating the evidence or update that resolved the obligation.",
+  }),
+})
+
+export const ObligationIgnoreParameters = Schema.Struct({
+  obligationID: Schema.String.annotate({
+    description: "Obligation id to ignore.",
+  }),
+  reason: Schema.String.annotate({
+    description: "Required reason for ignoring the obligation.",
+  }),
+  note: Schema.optional(Schema.String).annotate({
+    description: "Optional additional context.",
   }),
 })
 
@@ -499,6 +556,16 @@ function formatNode(node: CodeGraphNode) {
     .join("\n")
 }
 
+function nodeMatchesQuery(node: CodeGraphNode, query: string | undefined) {
+  const normalizedQuery = query?.trim().toLowerCase()
+  if (!normalizedQuery) return true
+  const searchable = [node.name, node.qualifiedName, node.signature, node.filePath, node.docstring, node.kind, node.language]
+    .filter(Boolean)
+    .join("\n")
+    .toLowerCase()
+  return normalizedQuery.split(/\s+/).every((term) => searchable.includes(term))
+}
+
 function uniqueNodes(nodes: CodeGraphNode[]) {
   return [...new Map(nodes.map((node) => [node.id, node])).values()]
 }
@@ -537,6 +604,7 @@ function riskForClassification(classification: ChangeClassification): RiskCatego
   if (classification === "config") return "configuration"
   if (classification === "api_route") return "api_contract"
   if (classification === "source") return "behavior_boundary"
+  if (classification === "generated") return "unknown"
   return "unknown"
 }
 
@@ -552,6 +620,7 @@ function riskForNode(node: CodeGraphNode): RiskCategory {
   if (classification === "config") return "configuration"
   if (classification === "dependency") return "dependency"
   if (classification === "api_route") return "api_contract"
+  if (classification === "generated") return "unknown"
   if (node.kind === "import" || node.kind === "export") return "importer"
   if (node.kind === "function" || node.kind === "method" || node.kind === "component") return "call_flow"
   return "unknown"
@@ -805,13 +874,19 @@ function uniqueCandidates(candidates: AuditCandidate[]) {
 }
 
 type AuditParams = Schema.Schema.Type<typeof AuditParameters>
+type RecentAuditParams = Schema.Schema.Type<typeof RecentAuditParameters>
+type BuildAuditParams = AuditParams & RecentAuditParams & { recent?: boolean }
 
 type BuildAuditOptions = {
   ctx?: Tool.Context
   state?: ProjectGraphState
 }
 
-type ObligationsParams = Schema.Schema.Type<typeof ObligationsParameters>
+type ObligationsListParams = Schema.Schema.Type<typeof ObligationsListParameters>
+type ObligationsSyncParams = Schema.Schema.Type<typeof ObligationsSyncParameters>
+type ObligationClaimParams = Schema.Schema.Type<typeof ObligationClaimParameters>
+type ObligationResolveParams = Schema.Schema.Type<typeof ObligationResolveParameters>
+type ObligationIgnoreParams = Schema.Schema.Type<typeof ObligationIgnoreParameters>
 
 function obligationsArtifact(provenanceArtifact: string) {
   return path.join(path.dirname(provenanceArtifact), "obligations.json")
@@ -964,11 +1039,23 @@ function activeObligations(obligations: PersistentObligation[]) {
   return obligations.filter((item) => item.status !== "resolved" && item.status !== "ignored")
 }
 
-function filterObligations(obligations: PersistentObligation[], params: ObligationsParams) {
+function filterObligations(obligations: PersistentObligation[], params: ObligationsListParams) {
   return (params.status ? obligations.filter((item) => item.status === params.status) : activeObligations(obligations)).slice(
     0,
     bounded(params.limit, 30, 100),
   )
+}
+
+function obligationContext(ctx: Tool.Context, refresh: boolean) {
+  return Effect.gen(function* () {
+    const state = yield* openProjectGraphForTool(ctx, refresh)
+    const artifact = obligationsArtifact(state.artifact)
+    const now = new Date().toISOString()
+    const store = yield* readObligationStore(state.projectRoot, artifact)
+    const refreshed = refresh ? refreshStaleObligations(store, state, now) : store
+    if (refresh) yield* writeObligationStore(state.projectRoot, artifact, refreshed)
+    return { state, artifact, now, store, refreshed }
+  })
 }
 
 function formatObligation(item: PersistentObligation) {
@@ -1071,7 +1158,11 @@ function formatAuditOutput(audit: AuditMetadata) {
   ].join("\n")
 }
 
-const buildAudit = Effect.fn("ChimeraTool.buildAudit")(function* (params: AuditParams, options: BuildAuditOptions = {}) {
+function hasExplicitAuditSeed(params: AuditParams) {
+  return Boolean(params.files?.length || params.filePath || params.symbol || params.nodeID)
+}
+
+const buildAudit = Effect.fn("ChimeraTool.buildAudit")(function* (params: BuildAuditParams, options: BuildAuditOptions = {}) {
   const instance = yield* InstanceState.context
   const state = options.state ?? (options.ctx ? yield* openProjectGraphForTool(options.ctx, params.refresh !== false) : yield* Chimera.openProjectGraph({ sync: params.refresh !== false }))
   const records = yield* provenanceRecords(state.projectRoot, state.artifact)
@@ -1140,8 +1231,7 @@ const buildAudit = Effect.fn("ChimeraTool.buildAudit")(function* (params: AuditP
 export const ChimeraStatusTool = Tool.define<typeof StatusParameters, StatusMetadata, never>(
   "chimera_status",
   Effect.succeed({
-    description:
-      "Show Chimera/CodeGraph graph readiness, snapshot, backend, freshness, and provenance status. May initialize or refresh .codegraph.",
+    description: STATUS_DESCRIPTION,
     parameters: StatusParameters,
     execute: (params: Schema.Schema.Type<typeof StatusParameters>, ctx: Tool.Context<StatusMetadata>) =>
       Effect.gen(function* () {
@@ -1189,34 +1279,20 @@ export const ChimeraStatusTool = Tool.define<typeof StatusParameters, StatusMeta
 export const ChimeraSearchTool = Tool.define<typeof SearchParameters, SearchMetadata, never>(
   "chimera_search",
   Effect.succeed({
-    description:
-      "Search Chimera's CodeGraph-backed graph surface by symbol/text, file, or source range. Returns graph evidence, not raw file reads.",
+    description: SEARCH_DESCRIPTION,
     parameters: SearchParameters,
     execute: (params: Schema.Schema.Type<typeof SearchParameters>, ctx: Tool.Context<SearchMetadata>) =>
       Effect.gen(function* () {
         yield* permission(ctx, "chimera_search", {
           query: params.query,
-          filePath: params.filePath,
           refresh: params.refresh !== false,
         })
-        const instance = yield* InstanceState.context
+        if (!params.query.trim()) throw new Error("chimera_search requires a non-empty query")
         const state = yield* openProjectGraphForTool(ctx as Tool.Context, params.refresh !== false)
         const limit = bounded(params.limit, 10, 50)
         const snapshot = state.graph.snapshot()
         const kinds = params.kind ? [params.kind] : undefined
-        const normalizedFile = params.filePath ? graphPath(state.projectRoot, instance.directory, params.filePath) : undefined
-        const results = normalizedFile
-          ? (params.range
-              ? state.graph.nodesIntersectingRange(normalizedFile, params.range, { kinds, smallestOnly: false })
-              : state.graph.nodesInFile(normalizedFile).filter((node) => !params.kind || node.kind === params.kind)
-            )
-              .slice(0, limit)
-              .map((node) => ({ node }))
-          : params.query
-            ? state.graph.searchNodes(params.query, { kinds, limit })
-            : []
-
-        if (!normalizedFile && !params.query) throw new Error("chimera_search requires either query or filePath")
+        const results = state.graph.searchNodes(params.query, { kinds, limit })
 
         return {
           title: "Chimera search",
@@ -1237,11 +1313,53 @@ export const ChimeraSearchTool = Tool.define<typeof SearchParameters, SearchMeta
   }),
 )
 
+export const ChimeraFileSymbolsTool = Tool.define<typeof FileSymbolsParameters, SearchMetadata, never>(
+  "chimera_file_symbols",
+  Effect.succeed({
+    description: FILE_SYMBOLS_DESCRIPTION,
+    parameters: FileSymbolsParameters,
+    execute: (params: Schema.Schema.Type<typeof FileSymbolsParameters>, ctx: Tool.Context<SearchMetadata>) =>
+      Effect.gen(function* () {
+        yield* permission(ctx, "chimera_file_symbols", {
+          filePath: params.filePath,
+          refresh: params.refresh !== false,
+        })
+        const instance = yield* InstanceState.context
+        const state = yield* openProjectGraphForTool(ctx as Tool.Context, params.refresh !== false)
+        const limit = bounded(params.limit, 10, 50)
+        const snapshot = state.graph.snapshot()
+        const kinds = params.kind ? [params.kind] : undefined
+        const normalizedFile = graphPath(state.projectRoot, instance.directory, params.filePath)
+        const results = (params.range
+          ? state.graph.nodesIntersectingRange(normalizedFile, params.range, { kinds, smallestOnly: false })
+          : state.graph.nodesInFile(normalizedFile).filter((node) => !params.kind || node.kind === params.kind)
+        )
+          .slice(0, limit)
+          .map((node) => ({ node }))
+
+        return {
+          title: "Chimera file symbols",
+          output: [
+            `Static graph evidence (${results.length} result${results.length === 1 ? "" : "s"}):`,
+            ...results.map((result) => formatNode(result.node)),
+          ].join("\n"),
+          metadata: {
+            projectRoot: state.projectRoot,
+            snapshot,
+            results: results.map((result) => ({
+              ...result,
+              projection: state.graph.projectNode(result.node, snapshot),
+            })),
+          },
+        }
+      }).pipe(Effect.orDie),
+  }),
+)
+
 export const ChimeraImpactTool = Tool.define<typeof ImpactParameters, ImpactMetadata, never>(
   "chimera_impact",
   Effect.succeed({
-    description:
-      "Analyze bounded file and symbol impact through Chimera's CodeGraph-backed graph surface. Returns static evidence plus initial risk categories.",
+    description: IMPACT_DESCRIPTION,
     parameters: ImpactParameters,
     execute: (params: Schema.Schema.Type<typeof ImpactParameters>, ctx: Tool.Context<ImpactMetadata>) =>
       Effect.gen(function* () {
@@ -1326,17 +1444,39 @@ export const ChimeraImpactTool = Tool.define<typeof ImpactParameters, ImpactMeta
 export const ChimeraAuditTool = Tool.define<typeof AuditParameters, AuditMetadata, never>(
   "chimera_audit",
   Effect.succeed({
-    description:
-      "Run a first-pass Chimera propagation audit for changed files, a changed symbol, or the latest tool mutation. Produces non-persistent candidate obligations.",
+    description: AUDIT_DESCRIPTION,
     parameters: AuditParameters,
     execute: (params: Schema.Schema.Type<typeof AuditParameters>, ctx: Tool.Context<AuditMetadata>) =>
       Effect.gen(function* () {
+        if (!hasExplicitAuditSeed(params)) {
+          throw new Error("chimera_audit requires files/filePath, symbol, or nodeID. Use chimera_audit_recent after a tool mutation.")
+        }
         yield* permission(ctx, "chimera_audit", {
           files: params.files,
           filePath: params.filePath,
           symbol: params.symbol,
           nodeID: params.nodeID,
-          recent: params.recent !== false,
+          refresh: params.refresh !== false,
+        })
+        const audit = yield* buildAudit({ ...params, recent: false }, { ctx: ctx as Tool.Context })
+
+        return {
+          title: "Chimera audit",
+          output: formatAuditOutput(audit),
+          metadata: audit,
+        }
+      }).pipe(Effect.orDie),
+  }),
+)
+
+export const ChimeraAuditRecentTool = Tool.define<typeof RecentAuditParameters, AuditMetadata, never>(
+  "chimera_audit_recent",
+  Effect.succeed({
+    description: AUDIT_RECENT_DESCRIPTION,
+    parameters: RecentAuditParameters,
+    execute: (params: Schema.Schema.Type<typeof RecentAuditParameters>, ctx: Tool.Context<AuditMetadata>) =>
+      Effect.gen(function* () {
+        yield* permission(ctx, "chimera_audit_recent", {
           refresh: params.refresh !== false,
         })
         const audit = yield* buildAudit(params, { ctx: ctx as Tool.Context })
@@ -1350,192 +1490,26 @@ export const ChimeraAuditTool = Tool.define<typeof AuditParameters, AuditMetadat
   }),
 )
 
-export const ChimeraObligationsTool = Tool.define<typeof ObligationsParameters, ObligationsMetadata, never>(
-  "chimera_obligations",
+export const ChimeraObligationsListTool = Tool.define<typeof ObligationsListParameters, ObligationsMetadata, never>(
+  "chimera_obligations_list",
   Effect.succeed({
-    description:
-      "Persist and manage Chimera audit obligations. Sync converts CodeGraph-backed audit candidates into trackable pending/claimed/resolved/ignored/stale obligations.",
-    parameters: ObligationsParameters,
-    execute: (params: ObligationsParams, ctx: Tool.Context<ObligationsMetadata>) =>
+    description: OBLIGATIONS_LIST_DESCRIPTION,
+    parameters: ObligationsListParameters,
+    execute: (params: ObligationsListParams, ctx: Tool.Context<ObligationsMetadata>) =>
       Effect.gen(function* () {
-        const action = params.action ?? "list"
-        yield* permission(ctx, "chimera_obligations", {
-          action,
-          obligationID: params.obligationID,
+        yield* permission(ctx, "chimera_obligations_list", {
           status: params.status,
-          files: params.files,
-          filePath: params.filePath,
-          symbol: params.symbol,
-          nodeID: params.nodeID,
-          recent: params.recent !== false,
           refresh: params.refresh !== false,
         })
-        const state = yield* openProjectGraphForTool(ctx as Tool.Context, params.refresh !== false)
-        const artifact = obligationsArtifact(state.artifact)
-        const now = new Date().toISOString()
-        const store = yield* readObligationStore(state.projectRoot, artifact)
-
-        if (action === "sync") {
-          const audit = yield* buildAudit(params, { ctx: ctx as Tool.Context, state })
-          const auditRunID = yield* Effect.promise(() =>
-            recordAuditRun(state.projectRoot, {
-              source: audit.source,
-              provenanceID: audit.provenance?.id,
-              changedFiles: audit.changedFiles,
-              snapshotRevision: audit.snapshot.revision,
-              seedNodes: audit.seedNodes,
-              obligations: audit.obligations,
-              payload: audit,
-            }),
-          )
-          const result = upsertObligations(store, audit, now)
-          yield* writeObligationStore(state.projectRoot, artifact, result.store, auditRunID)
-          const obligations = result.touched.slice(0, bounded(params.limit, 30, 100))
-          const counts = obligationCounts(result.store.obligations)
-          return {
-            title: "Chimera obligations",
-            output: [
-              "Chimera obligations synced from propagation audit.",
-              `Store: ${state.storePath}`,
-              `Fallback artifact: ${artifact}`,
-              `Synced: ${result.synced} new, ${result.updated} updated`,
-              formatCounts(counts),
-              "",
-              `Obligations (${obligations.length}):`,
-              ...(obligations.length ? obligations.map(formatObligation) : ["- None found."]),
-              "",
-              "Required action:",
-              "- Claim, resolve, or ignore each active obligation as you review the propagation surface.",
-            ].join("\n"),
-            metadata: {
-              projectRoot: state.projectRoot,
-              artifact,
-              storePath: state.storePath,
-              action,
-              counts,
-              obligations,
-              synced: result.synced,
-              updated: result.updated,
-              audit,
-            },
-          }
-        }
-
-        const refreshed = params.refresh === false ? store : refreshStaleObligations(store, state, now)
-        if (params.refresh !== false) yield* writeObligationStore(state.projectRoot, artifact, refreshed)
-
-        if (action === "claim") {
-          if (!params.obligationID) throw new Error("chimera_obligations action=claim requires obligationID")
-          const next = {
-            schemaVersion: 1 as const,
-            obligations: refreshed.obligations.map((item) =>
-              item.id === params.obligationID
-                ? { ...item, status: "claimed" as const, claimedBy: actor(ctx, now), updatedAt: now }
-                : item,
-            ),
-          }
-          if (!refreshed.obligations.some((item) => item.id === params.obligationID)) {
-            throw new Error(`unknown Chimera obligation: ${params.obligationID}`)
-          }
-          yield* writeObligationStore(state.projectRoot, artifact, next)
-          const obligations = next.obligations.filter((item) => item.id === params.obligationID)
-          return {
-            title: "Chimera obligations",
-            output: [
-              "Chimera obligation claimed.",
-              `Artifact: ${artifact}`,
-              "",
-              ...obligations.map(formatObligation),
-            ].join("\n"),
-            metadata: {
-              projectRoot: state.projectRoot,
-              artifact,
-              storePath: state.storePath,
-              action,
-              counts: obligationCounts(next.obligations),
-              obligations,
-            },
-          }
-        }
-
-        if (action === "resolve") {
-          if (!params.obligationID) throw new Error("chimera_obligations action=resolve requires obligationID")
-          const next = {
-            schemaVersion: 1 as const,
-            obligations: refreshed.obligations.map((item) =>
-              item.id === params.obligationID
-                ? { ...item, status: "resolved" as const, resolvedBy: { ...actor(ctx, now), note: params.note }, updatedAt: now }
-                : item,
-            ),
-          }
-          if (!refreshed.obligations.some((item) => item.id === params.obligationID)) {
-            throw new Error(`unknown Chimera obligation: ${params.obligationID}`)
-          }
-          yield* writeObligationStore(state.projectRoot, artifact, next)
-          const obligations = next.obligations.filter((item) => item.id === params.obligationID)
-          return {
-            title: "Chimera obligations",
-            output: [
-              "Chimera obligation resolved.",
-              `Artifact: ${artifact}`,
-              "",
-              ...obligations.map(formatObligation),
-            ].join("\n"),
-            metadata: {
-              projectRoot: state.projectRoot,
-              artifact,
-              storePath: state.storePath,
-              action,
-              counts: obligationCounts(next.obligations),
-              obligations,
-            },
-          }
-        }
-
-        if (action === "ignore") {
-          const reason = params.reason ?? params.note
-          if (!params.obligationID) throw new Error("chimera_obligations action=ignore requires obligationID")
-          if (!reason) throw new Error("chimera_obligations action=ignore requires reason")
-          const next = {
-            schemaVersion: 1 as const,
-            obligations: refreshed.obligations.map((item) =>
-              item.id === params.obligationID
-                ? { ...item, status: "ignored" as const, ignoredBy: { ...actor(ctx, now), reason, note: params.note }, updatedAt: now }
-                : item,
-            ),
-          }
-          if (!refreshed.obligations.some((item) => item.id === params.obligationID)) {
-            throw new Error(`unknown Chimera obligation: ${params.obligationID}`)
-          }
-          yield* writeObligationStore(state.projectRoot, artifact, next)
-          const obligations = next.obligations.filter((item) => item.id === params.obligationID)
-          return {
-            title: "Chimera obligations",
-            output: [
-              "Chimera obligation ignored.",
-              `Artifact: ${artifact}`,
-              "",
-              ...obligations.map(formatObligation),
-            ].join("\n"),
-            metadata: {
-              projectRoot: state.projectRoot,
-              artifact,
-              storePath: state.storePath,
-              action,
-              counts: obligationCounts(next.obligations),
-              obligations,
-            },
-          }
-        }
-
-        const obligations = filterObligations(refreshed.obligations, params)
-        const counts = obligationCounts(refreshed.obligations)
+        const current = yield* obligationContext(ctx as Tool.Context, params.refresh !== false)
+        const obligations = filterObligations(current.refreshed.obligations, params)
+        const counts = obligationCounts(current.refreshed.obligations)
         return {
           title: "Chimera obligations",
           output: [
             "Chimera obligations.",
-            `Store: ${state.storePath}`,
-            `Fallback artifact: ${artifact}`,
+            `Store: ${current.state.storePath}`,
+            `Fallback artifact: ${current.artifact}`,
             formatCounts(counts),
             "",
             `Obligations (${obligations.length}):`,
@@ -1545,11 +1519,199 @@ export const ChimeraObligationsTool = Tool.define<typeof ObligationsParameters, 
             "- Active obligations should be reviewed, updated, resolved, or ignored with a reason before closeout.",
           ].join("\n"),
           metadata: {
+            projectRoot: current.state.projectRoot,
+            artifact: current.artifact,
+            storePath: current.state.storePath,
+            action: "list" as const,
+            counts,
+            obligations,
+          },
+        }
+      }).pipe(Effect.orDie),
+  }),
+)
+
+export const ChimeraObligationsSyncTool = Tool.define<typeof ObligationsSyncParameters, ObligationsMetadata, never>(
+  "chimera_obligations_sync",
+  Effect.succeed({
+    description: OBLIGATIONS_SYNC_DESCRIPTION,
+    parameters: ObligationsSyncParameters,
+    execute: (params: ObligationsSyncParams, ctx: Tool.Context<ObligationsMetadata>) =>
+      Effect.gen(function* () {
+        yield* permission(ctx, "chimera_obligations_sync", {
+          files: params.files,
+          filePath: params.filePath,
+          symbol: params.symbol,
+          nodeID: params.nodeID,
+          refresh: params.refresh !== false,
+        })
+        const state = yield* openProjectGraphForTool(ctx as Tool.Context, params.refresh !== false)
+        const artifact = obligationsArtifact(state.artifact)
+        const store = yield* readObligationStore(state.projectRoot, artifact)
+        const audit = yield* buildAudit(params, { ctx: ctx as Tool.Context, state })
+        const auditRunID = yield* Effect.promise(() =>
+          recordAuditRun(state.projectRoot, {
+            source: audit.source,
+            provenanceID: audit.provenance?.id,
+            changedFiles: audit.changedFiles,
+            snapshotRevision: audit.snapshot.revision,
+            seedNodes: audit.seedNodes,
+            obligations: audit.obligations,
+            payload: audit,
+          }),
+        )
+        const result = upsertObligations(store, audit, new Date().toISOString())
+        yield* writeObligationStore(state.projectRoot, artifact, result.store, auditRunID)
+        const obligations = result.touched.slice(0, bounded(params.limit, 30, 100))
+        const counts = obligationCounts(result.store.obligations)
+        return {
+          title: "Chimera obligations",
+          output: [
+            "Chimera obligations synced from propagation audit.",
+            `Store: ${state.storePath}`,
+            `Fallback artifact: ${artifact}`,
+            `Synced: ${result.synced} new, ${result.updated} updated`,
+            formatCounts(counts),
+            "",
+            `Obligations (${obligations.length}):`,
+            ...(obligations.length ? obligations.map(formatObligation) : ["- None found."]),
+            "",
+            "Required action:",
+            "- Claim, resolve, or ignore each active obligation as you review the propagation surface.",
+          ].join("\n"),
+          metadata: {
             projectRoot: state.projectRoot,
             artifact,
             storePath: state.storePath,
-            action,
+            action: "sync" as const,
             counts,
+            obligations,
+            synced: result.synced,
+            updated: result.updated,
+            audit,
+          },
+        }
+      }).pipe(Effect.orDie),
+  }),
+)
+
+export const ChimeraObligationClaimTool = Tool.define<typeof ObligationClaimParameters, ObligationsMetadata, never>(
+  "chimera_obligation_claim",
+  Effect.succeed({
+    description: OBLIGATION_CLAIM_DESCRIPTION,
+    parameters: ObligationClaimParameters,
+    execute: (params: ObligationClaimParams, ctx: Tool.Context<ObligationsMetadata>) =>
+      Effect.gen(function* () {
+        yield* permission(ctx, "chimera_obligation_claim", { obligationID: params.obligationID })
+        const current = yield* obligationContext(ctx as Tool.Context, true)
+        const next = {
+          schemaVersion: 1 as const,
+          obligations: current.refreshed.obligations.map((item) =>
+            item.id === params.obligationID
+              ? { ...item, status: "claimed" as const, claimedBy: actor(ctx, current.now), updatedAt: current.now }
+              : item,
+          ),
+        }
+        if (!current.refreshed.obligations.some((item) => item.id === params.obligationID)) {
+          throw new Error(`unknown Chimera obligation: ${params.obligationID}`)
+        }
+        yield* writeObligationStore(current.state.projectRoot, current.artifact, next)
+        const obligations = next.obligations.filter((item) => item.id === params.obligationID)
+        return {
+          title: "Chimera obligations",
+          output: ["Chimera obligation claimed.", `Artifact: ${current.artifact}`, "", ...obligations.map(formatObligation)].join("\n"),
+          metadata: {
+            projectRoot: current.state.projectRoot,
+            artifact: current.artifact,
+            storePath: current.state.storePath,
+            action: "claim" as const,
+            counts: obligationCounts(next.obligations),
+            obligations,
+          },
+        }
+      }).pipe(Effect.orDie),
+  }),
+)
+
+export const ChimeraObligationResolveTool = Tool.define<typeof ObligationResolveParameters, ObligationsMetadata, never>(
+  "chimera_obligation_resolve",
+  Effect.succeed({
+    description: OBLIGATION_RESOLVE_DESCRIPTION,
+    parameters: ObligationResolveParameters,
+    execute: (params: ObligationResolveParams, ctx: Tool.Context<ObligationsMetadata>) =>
+      Effect.gen(function* () {
+        yield* permission(ctx, "chimera_obligation_resolve", { obligationID: params.obligationID })
+        const current = yield* obligationContext(ctx as Tool.Context, true)
+        const next = {
+          schemaVersion: 1 as const,
+          obligations: current.refreshed.obligations.map((item) =>
+            item.id === params.obligationID
+              ? {
+                  ...item,
+                  status: "resolved" as const,
+                  resolvedBy: { ...actor(ctx, current.now), note: params.note },
+                  updatedAt: current.now,
+                }
+              : item,
+          ),
+        }
+        if (!current.refreshed.obligations.some((item) => item.id === params.obligationID)) {
+          throw new Error(`unknown Chimera obligation: ${params.obligationID}`)
+        }
+        yield* writeObligationStore(current.state.projectRoot, current.artifact, next)
+        const obligations = next.obligations.filter((item) => item.id === params.obligationID)
+        return {
+          title: "Chimera obligations",
+          output: ["Chimera obligation resolved.", `Artifact: ${current.artifact}`, "", ...obligations.map(formatObligation)].join("\n"),
+          metadata: {
+            projectRoot: current.state.projectRoot,
+            artifact: current.artifact,
+            storePath: current.state.storePath,
+            action: "resolve" as const,
+            counts: obligationCounts(next.obligations),
+            obligations,
+          },
+        }
+      }).pipe(Effect.orDie),
+  }),
+)
+
+export const ChimeraObligationIgnoreTool = Tool.define<typeof ObligationIgnoreParameters, ObligationsMetadata, never>(
+  "chimera_obligation_ignore",
+  Effect.succeed({
+    description: OBLIGATION_IGNORE_DESCRIPTION,
+    parameters: ObligationIgnoreParameters,
+    execute: (params: ObligationIgnoreParams, ctx: Tool.Context<ObligationsMetadata>) =>
+      Effect.gen(function* () {
+        yield* permission(ctx, "chimera_obligation_ignore", { obligationID: params.obligationID })
+        const current = yield* obligationContext(ctx as Tool.Context, true)
+        const next = {
+          schemaVersion: 1 as const,
+          obligations: current.refreshed.obligations.map((item) =>
+            item.id === params.obligationID
+              ? {
+                  ...item,
+                  status: "ignored" as const,
+                  ignoredBy: { ...actor(ctx, current.now), reason: params.reason, note: params.note },
+                  updatedAt: current.now,
+                }
+              : item,
+          ),
+        }
+        if (!current.refreshed.obligations.some((item) => item.id === params.obligationID)) {
+          throw new Error(`unknown Chimera obligation: ${params.obligationID}`)
+        }
+        yield* writeObligationStore(current.state.projectRoot, current.artifact, next)
+        const obligations = next.obligations.filter((item) => item.id === params.obligationID)
+        return {
+          title: "Chimera obligations",
+          output: ["Chimera obligation ignored.", `Artifact: ${current.artifact}`, "", ...obligations.map(formatObligation)].join("\n"),
+          metadata: {
+            projectRoot: current.state.projectRoot,
+            artifact: current.artifact,
+            storePath: current.state.storePath,
+            action: "ignore" as const,
+            counts: obligationCounts(next.obligations),
             obligations,
           },
         }
@@ -1560,8 +1722,7 @@ export const ChimeraObligationsTool = Tool.define<typeof ObligationsParameters, 
 export const ChimeraContextTool = Tool.define<typeof ContextParameters, ContextMetadata, never>(
   "chimera_context",
   Effect.succeed({
-    description:
-      "Build compact Chimera graph context for architecture, search, impact, or audit work. Uses CodeGraph context plus Chimera surface metadata.",
+    description: CONTEXT_DESCRIPTION,
     parameters: ContextParameters,
     execute: (params: Schema.Schema.Type<typeof ContextParameters>, ctx: Tool.Context<ContextMetadata>) =>
       Effect.gen(function* () {

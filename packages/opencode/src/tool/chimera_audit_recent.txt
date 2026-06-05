@@ -1,0 +1,18 @@
+Run the default Chimera propagation audit for the latest successful tool mutation.
+
+Use this tool after successful `edit`, `write`, or `apply_patch` mutations before claiming a code-change task is complete.
+
+Do NOT pass file paths to this tool. If you need to audit explicit files, symbols, or node ids, use `chimera_audit`.
+
+Parameter rules:
+- `limit` controls how many candidate obligations are returned.
+- `refresh` defaults to true. Set it to false only when the current graph state is known to be sufficient.
+
+Common calls:
+- Audit propagation after a successful `edit`, `write`, or `apply_patch`.
+- Re-run the latest mutation audit with a smaller `limit` for compact closeout.
+
+After this tool:
+- Review or update each candidate obligation.
+- Use build, typecheck, lint, or tests for oracle verification; this audit is structural graph evidence only.
+- Use `chimera_obligations_sync` when findings need tracked follow-up.

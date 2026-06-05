@@ -6,10 +6,15 @@ import { Bus } from "@/bus"
 import { Agent } from "@/agent/agent"
 import { MessageID, SessionID } from "@/session/schema"
 import {
+  ChimeraAuditRecentTool,
   ChimeraAuditTool,
   ChimeraContextTool,
+  ChimeraFileSymbolsTool,
   ChimeraImpactTool,
-  ChimeraObligationsTool,
+  ChimeraObligationClaimTool,
+  ChimeraObligationResolveTool,
+  ChimeraObligationsListTool,
+  ChimeraObligationsSyncTool,
   ChimeraSearchTool,
   ChimeraStatusTool,
 } from "@/tool/chimera"
@@ -53,6 +58,15 @@ const runSearch = Effect.fn("ChimeraToolTest.runSearch")(function* (
   return yield* tool.execute(args, next)
 })
 
+const runFileSymbols = Effect.fn("ChimeraToolTest.runFileSymbols")(function* (
+  args: Tool.InferParameters<typeof ChimeraFileSymbolsTool>,
+  next: Tool.Context = ctx,
+) {
+  const info = yield* ChimeraFileSymbolsTool
+  const tool = yield* info.init()
+  return yield* tool.execute(args, next)
+})
+
 const runImpact = Effect.fn("ChimeraToolTest.runImpact")(function* (
   args: Tool.InferParameters<typeof ChimeraImpactTool>,
   next: Tool.Context = ctx,
@@ -80,11 +94,47 @@ const runAudit = Effect.fn("ChimeraToolTest.runAudit")(function* (
   return yield* tool.execute(args, next)
 })
 
-const runObligations = Effect.fn("ChimeraToolTest.runObligations")(function* (
-  args: Tool.InferParameters<typeof ChimeraObligationsTool>,
+const runAuditRecent = Effect.fn("ChimeraToolTest.runAuditRecent")(function* (
+  args: Tool.InferParameters<typeof ChimeraAuditRecentTool>,
   next: Tool.Context = ctx,
 ) {
-  const info = yield* ChimeraObligationsTool
+  const info = yield* ChimeraAuditRecentTool
+  const tool = yield* info.init()
+  return yield* tool.execute(args, next)
+})
+
+const runObligationsSync = Effect.fn("ChimeraToolTest.runObligationsSync")(function* (
+  args: Tool.InferParameters<typeof ChimeraObligationsSyncTool>,
+  next: Tool.Context = ctx,
+) {
+  const info = yield* ChimeraObligationsSyncTool
+  const tool = yield* info.init()
+  return yield* tool.execute(args, next)
+})
+
+const runObligationsList = Effect.fn("ChimeraToolTest.runObligationsList")(function* (
+  args: Tool.InferParameters<typeof ChimeraObligationsListTool>,
+  next: Tool.Context = ctx,
+) {
+  const info = yield* ChimeraObligationsListTool
+  const tool = yield* info.init()
+  return yield* tool.execute(args, next)
+})
+
+const runObligationClaim = Effect.fn("ChimeraToolTest.runObligationClaim")(function* (
+  args: Tool.InferParameters<typeof ChimeraObligationClaimTool>,
+  next: Tool.Context = ctx,
+) {
+  const info = yield* ChimeraObligationClaimTool
+  const tool = yield* info.init()
+  return yield* tool.execute(args, next)
+})
+
+const runObligationResolve = Effect.fn("ChimeraToolTest.runObligationResolve")(function* (
+  args: Tool.InferParameters<typeof ChimeraObligationResolveTool>,
+  next: Tool.Context = ctx,
+) {
+  const info = yield* ChimeraObligationResolveTool
   const tool = yield* info.init()
   return yield* tool.execute(args, next)
 })
@@ -122,6 +172,21 @@ describe("tool.chimera", () => {
       expect(result.title).toBe("Chimera search")
       expect(result.output).toContain("trackedSearch")
       expect(result.metadata.results.some((item) => item.node.name === "trackedSearch")).toBe(true)
+    }),
+  )
+
+  it.instance("lists indexed symbols for a known file", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        fs.writeFile(path.join(test.directory, "symbols.ts"), "export function trackedFileSymbol() { return 1 }\n"),
+      )
+
+      const result = yield* runFileSymbols({ filePath: "symbols.ts" })
+
+      expect(result.title).toBe("Chimera file symbols")
+      expect(result.output).toContain("trackedFileSymbol")
+      expect(result.metadata.results.some((item) => item.node.name === "trackedFileSymbol")).toBe(true)
     }),
   )
 
@@ -207,7 +272,7 @@ describe("tool.chimera", () => {
         yield* runStatus({ refresh: true })
         yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "base.ts"), "export function base() { return 2 }\n"))
 
-        const result = yield* runAudit({})
+        const result = yield* runAuditRecent({})
 
         expect(result.title).toBe("Chimera audit")
         expect(result.output).toContain("Source: git_diff")
@@ -229,7 +294,7 @@ describe("tool.chimera", () => {
         ),
       )
 
-      const synced = yield* runObligations({ action: "sync", filePath: "base.ts", depth: 2 })
+      const synced = yield* runObligationsSync({ filePath: "base.ts", depth: 2 })
       const obligation = synced.metadata.obligations[0]
 
       expect(synced.title).toBe("Chimera obligations")
@@ -248,13 +313,13 @@ describe("tool.chimera", () => {
       expect(context.output).toContain(obligation.id)
       expect(context.metadata.overlay.obligations.counts.pending).toBe(synced.metadata.obligations.length)
 
-      const claimed = yield* runObligations({ action: "claim", obligationID: obligation.id })
+      const claimed = yield* runObligationClaim({ obligationID: obligation.id })
       expect(claimed.metadata.obligations[0].status).toBe("claimed")
 
-      const resolved = yield* runObligations({ action: "resolve", obligationID: obligation.id, note: "reviewed caller" })
+      const resolved = yield* runObligationResolve({ obligationID: obligation.id, note: "reviewed caller" })
       expect(resolved.metadata.obligations[0].status).toBe("resolved")
 
-      const listed = yield* runObligations({ action: "list", status: "resolved" })
+      const listed = yield* runObligationsList({ status: "resolved" })
       expect(listed.metadata.obligations.some((item) => item.id === obligation.id)).toBe(true)
       expect(yield* Effect.promise(() => Bun.file(path.join(test.directory, ".codegraph", "codegraph.db")).exists())).toBe(true)
       expect(yield* Effect.promise(() => Bun.file(path.join(test.directory, ".codegraph", "chimera", "obligations.json")).exists())).toBe(false)
