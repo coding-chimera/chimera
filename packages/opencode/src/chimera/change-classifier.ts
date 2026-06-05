@@ -1,6 +1,6 @@
 import path from "path"
 import { createHash } from "crypto"
-import type { CodeGraphAdapter, CodeGraphSnapshot, FrozenSemanticObject, SourceRange } from "./codegraph-adapter"
+import { diffNodeSemantics, type CodeGraphAdapter, type CodeGraphSnapshot, type FrozenSemanticObject, type NodeSemanticDiff, type SourceRange } from "./codegraph-adapter"
 import type { ProvenanceFile, ToolMutationRecord } from "./provenance"
 
 export type ChangeKind = "add" | "modify" | "delete" | "move"
@@ -44,6 +44,7 @@ export type ChangeFactEvidence = {
   hunk?: SourceHunk
   beforeNode?: FrozenSemanticObject | null
   afterNode?: FrozenSemanticObject | null
+  semanticDiff?: NodeSemanticDiff
   signals: string[]
 }
 
@@ -310,13 +311,36 @@ function nodeRangeIntersects(node: FrozenSemanticObject, sourceRange: SourceRang
   return node.payload.range.startLine <= (sourceRange.endLine ?? sourceRange.startLine) && node.payload.range.endLine >= sourceRange.startLine
 }
 
+function isCallableNode(node: FrozenSemanticObject) {
+  return node.payload.semantic?.attributes.isCallable ?? CALLABLE_KINDS.has(node.payload.kind)
+}
+
+function isContainerNode(node: FrozenSemanticObject) {
+  return node.payload.semantic?.attributes.isContainer ?? CONTAINER_KINDS.has(node.payload.kind)
+}
+
+function semanticSignals(node: FrozenSemanticObject) {
+  const semantic = node.payload.semantic
+  if (!semantic) return [`node_kind:${node.payload.kind}`]
+  return [`codegraph_role:${semantic.role}`, `codegraph_subject:${semantic.changeSubject}`]
+}
+
+function semanticDiffSignals(diff: NodeSemanticDiff) {
+  return [`codegraph_semantic_diff:${diff.changeKind}`, ...diff.changedFields.map((field) => `changed:${field}`)]
+}
+
+function hasSemanticDelta(diff: NodeSemanticDiff) {
+  return diff.changedFields.length > 0 && diff.changeSubject !== "unknown" && diff.changeSubject !== "body"
+}
+
 function subjectForNode(node: FrozenSemanticObject): ChangeSubjectKind {
+  if (node.payload.semantic?.changeSubject && node.payload.semantic.changeSubject !== "unknown" && node.payload.semantic.changeSubject !== "body") return node.payload.semantic.changeSubject
   if (node.payload.kind === "import") return "import"
   if (node.payload.kind === "export") return "export"
   if (node.payload.kind === "route") return "route"
   if (node.payload.isExported) return "export"
   if (SCHEMA_KINDS.has(node.payload.kind)) return "schema"
-  if (CALLABLE_KINDS.has(node.payload.kind)) return "signature"
+  if (isCallableNode(node)) return "signature"
   return "unknown"
 }
 
@@ -329,8 +353,8 @@ function nodeSpan(node: FrozenSemanticObject) {
 }
 
 function actionableNode(node: FrozenSemanticObject) {
-  if (CONTAINER_KINDS.has(node.payload.kind)) return false
-  return CALLABLE_KINDS.has(node.payload.kind) || subjectForNode(node) !== "unknown"
+  if (isContainerNode(node)) return false
+  return isCallableNode(node) || subjectForNode(node) !== "unknown"
 }
 
 function touched(nodes: FrozenSemanticObject[], filePath: string, sourceRange: SourceRange | undefined) {
@@ -338,18 +362,6 @@ function touched(nodes: FrozenSemanticObject[], filePath: string, sourceRange: S
   return candidates.filter(
     (node) => !candidates.some((other) => other !== node && containsNode(node, other) && nodeSpan(other) < nodeSpan(node)),
   )
-}
-
-function signatureDelta(before: FrozenSemanticObject, after: FrozenSemanticObject) {
-  return [
-    before.payload.signature !== after.payload.signature ? "signature" : undefined,
-    before.payload.name !== after.payload.name ? "name" : undefined,
-    before.payload.qualifiedName !== after.payload.qualifiedName ? "qualifiedName" : undefined,
-    before.payload.visibility !== after.payload.visibility ? "visibility" : undefined,
-    before.payload.isExported !== after.payload.isExported ? "isExported" : undefined,
-    JSON.stringify(before.payload.typeParameters ?? []) !== JSON.stringify(after.payload.typeParameters ?? []) ? "typeParameters" : undefined,
-    JSON.stringify(before.payload.decorators ?? []) !== JSON.stringify(after.payload.decorators ?? []) ? "decorators" : undefined,
-  ].filter((item): item is string => Boolean(item))
 }
 
 function evidence(input: {
@@ -362,6 +374,7 @@ function evidence(input: {
   hunk?: SourceHunk
   beforeNode?: FrozenSemanticObject | null
   afterNode?: FrozenSemanticObject | null
+  semanticDiff?: NodeSemanticDiff
   signals: string[]
 }): ChangeFactEvidence {
   return {
@@ -381,6 +394,7 @@ function evidence(input: {
     hunk: input.hunk,
     beforeNode: input.beforeNode,
     afterNode: input.afterNode,
+    semanticDiff: input.semanticDiff,
     signals: input.signals,
   }
 }
@@ -399,6 +413,7 @@ function fact(input: {
   confidenceReason: string
   status?: string
   hunk?: SourceHunk
+  semanticDiff?: NodeSemanticDiff
   signals: string[]
 }): ChangeFact {
   const key = input.node ? nodeKey(input.node) : undefined
@@ -432,6 +447,7 @@ function fact(input: {
       hunk: input.hunk,
       beforeNode: input.beforeNode,
       afterNode: input.afterNode,
+      semanticDiff: input.semanticDiff,
       signals: input.signals,
     }),
     createdAt: input.record.finishedAt,
@@ -517,6 +533,7 @@ export function classifyChangeRecord(input: {
         const before = beforeByKey.get(nodeKey(after))
         const subject = subjectForNode(after)
         if (!before) {
+          const semanticDiff = diffNodeSemantics(null, after)
           facts.push(fact({
             record,
             filePath: diff.filePath,
@@ -524,20 +541,21 @@ export function classifyChangeRecord(input: {
             node: after,
             afterNode: after,
             changeKind: changeKind === "delete" ? "modify" : changeKind,
-            subjectKind: subject,
-            confidence: 0.85,
+            subjectKind: semanticDiff.changeSubject === "unknown" ? subject : semanticDiff.changeSubject,
+            confidence: semanticDiff.confidence,
             rule: `range.node.${subject}`,
-            confidenceReason: "changed hunk intersects an after-sync CodeGraph node without a matching before projection",
+            confidenceReason: semanticDiff.confidenceReason,
             status,
             hunk,
-            signals: ["after_node", "missing_before_projection", `node_kind:${after.payload.kind}`],
+            semanticDiff,
+            signals: ["after_node", "missing_before_projection", ...semanticDiffSignals(semanticDiff), ...semanticSignals(after)],
           }))
           emitted.add(nodeKey(after))
           continue
         }
 
-        const signatureSignals = signatureDelta(before, after)
-        if (signatureSignals.length > 0 && CALLABLE_KINDS.has(after.payload.kind)) {
+        const semanticDiff = diffNodeSemantics(before, after)
+        if (hasSemanticDelta(semanticDiff)) {
           facts.push(fact({
             record,
             filePath: diff.filePath,
@@ -546,40 +564,20 @@ export function classifyChangeRecord(input: {
             beforeNode: before,
             afterNode: after,
             changeKind: "modify",
-            subjectKind: "signature",
-            confidence: 0.95,
-            rule: "projection.signature.delta",
-            confidenceReason: "before/after CodeGraph projections changed signature-like fields",
+            subjectKind: semanticDiff.changeSubject,
+            confidence: semanticDiff.confidence,
+            rule: "codegraph.semantic.diff",
+            confidenceReason: semanticDiff.confidenceReason,
             status,
             hunk,
-            signals: signatureSignals.map((signal) => `changed:${signal}`),
+            semanticDiff,
+            signals: [...semanticDiffSignals(semanticDiff), ...semanticSignals(after)],
           }))
           emitted.add(nodeKey(after))
           continue
         }
 
-        if (before.payload.isExported !== after.payload.isExported) {
-          facts.push(fact({
-            record,
-            filePath: diff.filePath,
-            oldPath: diff.oldPath,
-            node: after,
-            beforeNode: before,
-            afterNode: after,
-            changeKind: "modify",
-            subjectKind: "export",
-            confidence: 0.95,
-            rule: "projection.export.delta",
-            confidenceReason: "before/after CodeGraph projections changed export state",
-            status,
-            hunk,
-            signals: ["changed:isExported"],
-          }))
-          emitted.add(nodeKey(after))
-          continue
-        }
-
-        const isBody = CALLABLE_KINDS.has(after.payload.kind)
+        const isBody = isCallableNode(after)
         if (isBody && hasBoundaryNode) {
           emitted.add(nodeKey(after))
           continue
@@ -596,11 +594,12 @@ export function classifyChangeRecord(input: {
           confidence: isBody ? 0.5 : 0.85,
           rule: isBody ? "range.node.body" : `range.node.${subject}`,
           confidenceReason: isBody
-            ? "changed hunk intersects callable node but signature-like projection fields were stable"
+            ? "changed hunk intersects callable node but CodeGraph semantic diff fields were stable"
             : "changed hunk intersects a CodeGraph node",
           status,
           hunk,
-          signals: [`node_kind:${after.payload.kind}`],
+          semanticDiff,
+          signals: semanticSignals(after),
         }))
         emitted.add(nodeKey(after))
       }
@@ -608,8 +607,8 @@ export function classifyChangeRecord(input: {
       for (const before of beforeTouched) {
         const after = afterByKey.get(nodeKey(before))
         if (after && !emitted.has(nodeKey(before))) {
-          const signatureSignals = signatureDelta(before, after)
-          if (signatureSignals.length > 0 && CALLABLE_KINDS.has(after.payload.kind)) {
+          const semanticDiff = diffNodeSemantics(before, after)
+          if (hasSemanticDelta(semanticDiff)) {
             facts.push(fact({
               record,
               filePath: diff.filePath,
@@ -618,36 +617,18 @@ export function classifyChangeRecord(input: {
               beforeNode: before,
               afterNode: after,
               changeKind: "modify",
-              subjectKind: "signature",
-              confidence: 0.95,
-              rule: "projection.signature.delta",
-              confidenceReason: "before/after CodeGraph projections changed signature-like fields",
+              subjectKind: semanticDiff.changeSubject,
+              confidence: semanticDiff.confidence,
+              rule: "codegraph.semantic.diff",
+              confidenceReason: semanticDiff.confidenceReason,
               status,
               hunk,
-              signals: signatureSignals.map((signal) => `changed:${signal}`),
+              semanticDiff,
+              signals: [...semanticDiffSignals(semanticDiff), ...semanticSignals(after)],
             }))
             continue
           }
-          if (before.payload.isExported !== after.payload.isExported) {
-            facts.push(fact({
-              record,
-              filePath: diff.filePath,
-              oldPath: diff.oldPath,
-              node: after,
-              beforeNode: before,
-              afterNode: after,
-              changeKind: "modify",
-              subjectKind: "export",
-              confidence: 0.95,
-              rule: "projection.export.delta",
-              confidenceReason: "before/after CodeGraph projections changed export state",
-              status,
-              hunk,
-              signals: ["changed:isExported"],
-            }))
-            continue
-          }
-          if (CALLABLE_KINDS.has(after.payload.kind) && !hasBoundaryNode) {
+          if (isCallableNode(after) && !hasBoundaryNode) {
             facts.push(fact({
               record,
               filePath: diff.filePath,
@@ -659,15 +640,17 @@ export function classifyChangeRecord(input: {
               subjectKind: "body",
               confidence: 0.5,
               rule: "range.node.body",
-              confidenceReason: "deleted changed lines intersect callable node but signature-like projection fields were stable",
+              confidenceReason: "deleted changed lines intersect callable node but CodeGraph semantic diff fields were stable",
               status,
               hunk,
-              signals: [`node_kind:${after.payload.kind}`],
+              semanticDiff,
+              signals: semanticSignals(after),
             }))
           }
           continue
         }
         if (after) continue
+        const semanticDiff = diffNodeSemantics(before, null)
         facts.push(fact({
           record,
           filePath: diff.filePath,
@@ -675,13 +658,14 @@ export function classifyChangeRecord(input: {
           node: before,
           beforeNode: before,
           changeKind: "delete",
-          subjectKind: subjectForNode(before),
-          confidence: 0.85,
+          subjectKind: semanticDiff.changeSubject === "unknown" ? subjectForNode(before) : semanticDiff.changeSubject,
+          confidence: semanticDiff.confidence,
           rule: "range.node.deleted",
-          confidenceReason: "changed hunk intersects a before-sync CodeGraph node with no matching after projection",
+          confidenceReason: semanticDiff.confidenceReason,
           status,
           hunk,
-          signals: ["before_node", "missing_after_projection", `node_kind:${before.payload.kind}`],
+          semanticDiff,
+          signals: ["before_node", "missing_after_projection", ...semanticDiffSignals(semanticDiff), ...semanticSignals(before)],
         }))
       }
     }

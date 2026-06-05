@@ -1,13 +1,22 @@
 import path from "path"
 import {
   CodeGraph,
+  NODE_KINDS,
+  diffNodeSemantics as codegraphDiffNodeSemantics,
   type BuildContextOptions,
   type CodeGraphSnapshot,
+  type Edge as CodeGraphEdge,
+  type EdgeKind,
   type FrozenSemanticObject,
   type IndexProgress,
   type Node as CodeGraphNode,
+  type NodeSemanticDiff,
+  type NodeSemanticInfo,
   type PendingFile as CodeGraphPendingFile,
   type RangeQueryOptions,
+  type RelationEvidence as CodeGraphRelation,
+  type RelationKind,
+  type RelationQueryOptions,
   type SearchOptions,
   type SourceRange,
   type SyncResult as CodeGraphSyncResult,
@@ -16,17 +25,27 @@ import {
 } from "../../../../../codegraph/dist/index.js"
 
 export type {
+  CodeGraphEdge,
   CodeGraphNode,
   CodeGraphSnapshot,
   CodeGraphSyncResult,
   CodeGraphPendingFile,
+  EdgeKind,
   FrozenSemanticObject,
   IndexProgress as CodeGraphIndexProgress,
+  NodeSemanticDiff,
+  NodeSemanticInfo,
   RangeQueryOptions,
+  CodeGraphRelation,
+  RelationKind,
+  RelationQueryOptions,
   SearchOptions,
   SourceRange,
   WatchOptions,
 }
+
+export { NODE_KINDS }
+export const diffNodeSemantics = codegraphDiffNodeSemantics
 
 export interface OpenOptions {
   init?: boolean
@@ -143,6 +162,30 @@ export class CodeGraphAdapter {
 
   fileDependents(filePath: string) {
     return this.graph.getFileDependents(filePath)
+  }
+
+  outgoingEdges(nodeID: string, kinds?: EdgeKind[], provenance?: CodeGraphEdge["provenance"]) {
+    return this.graph.getOutgoingEdges(nodeID, kinds, provenance)
+  }
+
+  incomingEdges(nodeID: string, kinds?: EdgeKind[], provenance?: CodeGraphEdge["provenance"]) {
+    return this.graph.getIncomingEdges(nodeID, kinds, provenance)
+  }
+
+  outgoingRelations(nodeID: string, options: RelationQueryOptions = {}) {
+    return this.graph.getOutgoingRelations(nodeID, options)
+  }
+
+  incomingRelations(nodeID: string, options: RelationQueryOptions = {}) {
+    return this.graph.getIncomingRelations(nodeID, options)
+  }
+
+  semanticInfo(nodeOrId: CodeGraphNode | string): NodeSemanticInfo | null {
+    return this.graph.getNodeSemanticInfo(nodeOrId)
+  }
+
+  semanticDiff(before?: FrozenSemanticObject | null, after?: FrozenSemanticObject | null): NodeSemanticDiff {
+    return this.graph.diffNodeSemantics(before, after)
   }
 
   async buildContext(input: TaskInput, options: BuildContextOptions = {}) {
