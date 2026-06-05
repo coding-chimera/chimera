@@ -13,7 +13,7 @@ import { WorkBriefTable } from "./session.sql"
 
 const MAX_ITEMS = 12
 const MAX_ITEM_CHARS = 300
-const DEFAULT_CLOSEOUT = "Run `chimera_audit recent=true` after successful code mutation."
+const DEFAULT_CLOSEOUT = "Run `chimera_audit_recent` after successful code mutation."
 
 export const Info = Schema.Struct({
   intent: Schema.optional(Schema.String),

@@ -1,0 +1,20 @@
+Build compact Chimera graph context for architecture, search, impact, or audit work.
+
+Use this tool when you need a compact context pack that combines CodeGraph context with Chimera provenance, selected impact, and active obligation metadata.
+
+Do NOT use this tool when a narrower graph lookup is enough. Prefer `chimera_search`, `chimera_file_symbols`, or `chimera_impact` for specific questions.
+
+Parameter rules:
+- Provide one of `query`, `symbol`, `nodeID`, `filePath`, or use `mode=arch`.
+- `mode=arch` builds architecture-oriented context.
+- `includeCode` defaults to true; disable it for metadata-only context.
+- `maxNodes` defaults to 30 and is capped at 100.
+- `maxCodeBlocks` defaults to 8 and is capped at 30.
+- `refresh` defaults to true and controls whether stale graph signals may trigger a sync.
+
+Common calls:
+- Build architecture context before a scoped refactor.
+- Gather compact audit context after search or impact points to concrete seeds.
+
+After this tool:
+- Treat returned context as evidence for planning, not as proof that implementation is complete.

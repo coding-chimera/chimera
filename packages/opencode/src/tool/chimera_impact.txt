@@ -1,0 +1,21 @@
+Analyze bounded file and symbol impact through Chimera's CodeGraph surface.
+
+Use this tool when you need static graph evidence about callers, importers, file dependents, impact radius, or risk categories for a known file, symbol, node id, or range.
+
+Do NOT use this tool as a replacement for tests, typecheck, build, or lint. It is graph evidence, not oracle verification.
+
+Parameter rules:
+- Prefer `nodeID` when you have an exact CodeGraph node id.
+- Use `symbol` when you know a name but not its node id.
+- Use `filePath` for file-level impact; combine with `range` only when a source range is relevant.
+- `depth` defaults to 2 and is capped at 5.
+- `limit` defaults to 20 and is capped at 100.
+- `refresh` controls whether stale graph signals may trigger a sync.
+
+Common calls:
+- Check callers, importers, or file dependents before changing a shared API.
+- Compare bounded impact for a file-level versus symbol-level seed.
+
+After this tool:
+- Review impacted files or symbols before claiming completion.
+- Run verification commands separately when correctness matters.

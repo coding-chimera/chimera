@@ -1,0 +1,17 @@
+List tracked Chimera propagation obligations.
+
+Use this tool when you need to inspect pending, claimed, stale, resolved, or ignored obligations for the current project.
+
+Do NOT use this tool to create or update obligations. Use `chimera_obligations_sync`, `chimera_obligation_claim`, `chimera_obligation_resolve`, or `chimera_obligation_ignore`.
+
+Parameter rules:
+- `status` filters obligations by status.
+- `limit` keeps output compact.
+- `refresh` defaults to true and may mark obligations stale if referenced graph nodes disappeared.
+
+Common calls:
+- List pending or claimed obligations before final closeout.
+- Check stale obligations after graph refresh.
+
+After this tool:
+- Claim, resolve, or ignore active obligations before final closeout when they are relevant to the task.

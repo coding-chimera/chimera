@@ -1,0 +1,19 @@
+Persist Chimera audit candidates as tracked obligations.
+
+Use this tool when audit findings need durable follow-up across turns or agents.
+
+Do NOT use this tool to claim, resolve, or ignore an existing obligation. Use the single-obligation tools for status changes.
+
+Parameter rules:
+- With no explicit seed, sync from the latest successful Chimera tool mutation or git diff fallback.
+- Provide `files`, `filePath`, `symbol`, or `nodeID` to sync explicit audit seeds.
+- Use `range` only with `filePath`.
+- `depth` and `limit` bound audit traversal and output size.
+- `refresh` controls whether stale graph signals may trigger a sync.
+
+Common calls:
+- Persist candidates from `chimera_audit_recent` after a risky mutation.
+- Persist explicit audit candidates for a changed file or symbol.
+
+After this tool:
+- Use `chimera_obligation_claim`, `chimera_obligation_resolve`, or `chimera_obligation_ignore` as each active obligation is handled.

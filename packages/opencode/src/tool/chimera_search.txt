@@ -1,0 +1,20 @@
+Search Chimera's CodeGraph-backed graph index by query.
+
+Use this tool when you need graph evidence for symbol names, qualified names, signatures, or CodeGraph-indexed text.
+
+Do NOT use this tool for arbitrary source-code literals, regex searches, or counting matches. Use `grep` for raw source text and `glob` for filename patterns.
+
+Parameter rules:
+- `query` is required. Keep it focused on a symbol, module, route, API surface, or architecture term.
+- Use `kind` only when you know the CodeGraph node kind you want.
+- Use `limit` to keep results compact.
+- `refresh` controls whether stale graph signals may trigger a sync.
+
+Common calls:
+- Find a symbol or component by name.
+- Find graph-indexed API or route terms.
+- Locate likely declarations before reading files.
+
+After this tool:
+- Use `chimera_impact` for dependency or caller impact.
+- Use `read` only after graph evidence points to concrete files.

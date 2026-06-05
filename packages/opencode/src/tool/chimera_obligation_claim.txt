@@ -1,0 +1,14 @@
+Claim one tracked Chimera obligation.
+
+Use this tool when you are taking responsibility for reviewing or updating a specific obligation.
+
+Do NOT use this tool to create obligations or choose from candidates. Use `chimera_obligations_sync` first when findings need tracking.
+
+Parameter rules:
+- `obligationID` is required and must refer to an existing tracked obligation.
+
+Common calls:
+- Claim a pending obligation before editing or reviewing its target.
+
+After this tool:
+- Review or update the target, then resolve or ignore the obligation with a reason.

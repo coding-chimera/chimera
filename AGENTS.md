@@ -11,6 +11,8 @@
 - When adding or changing an agent-facing tool, update the corresponding agent guidance in the same change. This can include the tool description, system prompt, tool result hint, command template, or workflow instruction that teaches the model when and how to use the tool.
 - Do not rely only on implementation or tests to make a new tool discoverable. If a tool is part of an expected workflow, add a high-salience prompt or tool-output reminder for that workflow.
 - For Chimera tools specifically, keep tool names and workflow guidance aligned with `specs/coding-chimera/plan.md`.
+- Prefer one model-facing action per tool. Avoid teaching multi-mode tools that require `action`, `mode`, `recent`, or broad optional selector combinations when a workflow-specific tool name can carry the intent.
+- For Chimera tools, prefer `chimera_audit_recent` for post-mutation closeout, `chimera_audit` for explicit audit seeds, and split obligation tools (`chimera_obligations_list`, `chimera_obligations_sync`, `chimera_obligation_claim`, `chimera_obligation_resolve`, `chimera_obligation_ignore`) over action-based umbrella tools.
 
 ### General Principles
 

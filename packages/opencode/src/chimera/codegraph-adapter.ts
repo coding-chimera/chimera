@@ -2,11 +2,16 @@ import path from "path"
 import {
   CodeGraph,
   NODE_KINDS,
+  diffFileSemantics as codegraphDiffFileSemantics,
   diffNodeSemantics as codegraphDiffNodeSemantics,
   type BuildContextOptions,
   type CodeGraphSnapshot,
   type Edge as CodeGraphEdge,
   type EdgeKind,
+  type FileSemanticDiffInput,
+  type FileSemanticInfo,
+  type FileSemanticInputNode,
+  type FileSemanticSignal,
   type FrozenSemanticObject,
   type IndexProgress,
   type Node as CodeGraphNode,
@@ -31,6 +36,10 @@ export type {
   CodeGraphSyncResult,
   CodeGraphPendingFile,
   EdgeKind,
+  FileSemanticDiffInput,
+  FileSemanticInfo,
+  FileSemanticInputNode,
+  FileSemanticSignal,
   FrozenSemanticObject,
   IndexProgress as CodeGraphIndexProgress,
   NodeSemanticDiff,
@@ -46,6 +55,8 @@ export type {
 
 export { NODE_KINDS }
 export const diffNodeSemantics = codegraphDiffNodeSemantics
+export const diffFileSemantics = codegraphDiffFileSemantics
+export const getFileSemanticInfo = CodeGraph.getFileSemanticInfo
 
 export interface OpenOptions {
   init?: boolean
@@ -186,6 +197,14 @@ export class CodeGraphAdapter {
 
   semanticDiff(before?: FrozenSemanticObject | null, after?: FrozenSemanticObject | null): NodeSemanticDiff {
     return this.graph.diffNodeSemantics(before, after)
+  }
+
+  fileSemanticInfo(filePath: string): FileSemanticInfo {
+    return this.graph.getFileSemanticInfo(filePath)
+  }
+
+  fileSemanticDiff(input: FileSemanticDiffInput): FileSemanticSignal[] {
+    return this.graph.diffFileSemantics(input)
   }
 
   async buildContext(input: TaskInput, options: BuildContextOptions = {}) {

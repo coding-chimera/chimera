@@ -14,10 +14,16 @@ import { WorkBriefTool } from "./workbrief"
 import { InvalidTool } from "./invalid"
 import { SkillTool } from "./skill"
 import {
+  ChimeraAuditRecentTool,
   ChimeraAuditTool,
   ChimeraContextTool,
+  ChimeraFileSymbolsTool,
   ChimeraImpactTool,
-  ChimeraObligationsTool,
+  ChimeraObligationClaimTool,
+  ChimeraObligationIgnoreTool,
+  ChimeraObligationResolveTool,
+  ChimeraObligationsListTool,
+  ChimeraObligationsSyncTool,
   ChimeraSearchTool,
   ChimeraStatusTool,
 } from "./chimera"
@@ -127,10 +133,16 @@ export const layer: Layer.Layer<
     const skilltool = yield* SkillTool
     const chimeraStatusTool = yield* ChimeraStatusTool
     const chimeraSearchTool = yield* ChimeraSearchTool
+    const chimeraFileSymbolsTool = yield* ChimeraFileSymbolsTool
     const chimeraImpactTool = yield* ChimeraImpactTool
     const chimeraContextTool = yield* ChimeraContextTool
     const chimeraAuditTool = yield* ChimeraAuditTool
-    const chimeraObligationsTool = yield* ChimeraObligationsTool
+    const chimeraAuditRecentTool = yield* ChimeraAuditRecentTool
+    const chimeraObligationsListTool = yield* ChimeraObligationsListTool
+    const chimeraObligationsSyncTool = yield* ChimeraObligationsSyncTool
+    const chimeraObligationClaimTool = yield* ChimeraObligationClaimTool
+    const chimeraObligationResolveTool = yield* ChimeraObligationResolveTool
+    const chimeraObligationIgnoreTool = yield* ChimeraObligationIgnoreTool
     const agent = yield* Agent.Service
 
     const state = yield* InstanceState.make<State>(
@@ -231,10 +243,16 @@ export const layer: Layer.Layer<
           plan: Tool.init(plan),
           chimeraStatus: Tool.init(chimeraStatusTool),
           chimeraSearch: Tool.init(chimeraSearchTool),
+          chimeraFileSymbols: Tool.init(chimeraFileSymbolsTool),
           chimeraImpact: Tool.init(chimeraImpactTool),
           chimeraContext: Tool.init(chimeraContextTool),
           chimeraAudit: Tool.init(chimeraAuditTool),
-          chimeraObligations: Tool.init(chimeraObligationsTool),
+          chimeraAuditRecent: Tool.init(chimeraAuditRecentTool),
+          chimeraObligationsList: Tool.init(chimeraObligationsListTool),
+          chimeraObligationsSync: Tool.init(chimeraObligationsSyncTool),
+          chimeraObligationClaim: Tool.init(chimeraObligationClaimTool),
+          chimeraObligationResolve: Tool.init(chimeraObligationResolveTool),
+          chimeraObligationIgnore: Tool.init(chimeraObligationIgnoreTool),
         })
 
         return {
@@ -257,10 +275,16 @@ export const layer: Layer.Layer<
             tool.patch,
             tool.chimeraStatus,
             tool.chimeraSearch,
+            tool.chimeraFileSymbols,
             tool.chimeraImpact,
             tool.chimeraContext,
+            tool.chimeraAuditRecent,
             tool.chimeraAudit,
-            tool.chimeraObligations,
+            tool.chimeraObligationsList,
+            tool.chimeraObligationsSync,
+            tool.chimeraObligationClaim,
+            tool.chimeraObligationResolve,
+            tool.chimeraObligationIgnore,
             ...(Flag.OPENCODE_EXPERIMENTAL_LSP_TOOL ? [tool.lsp] : []),
             ...(Flag.OPENCODE_EXPERIMENTAL_PLAN_MODE && Flag.OPENCODE_CLIENT === "cli" ? [tool.plan] : []),
           ],

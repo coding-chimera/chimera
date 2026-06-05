@@ -1,2 +1,2 @@
 export const TOOL_MUTATION_AUDIT_HINT =
-  "Chimera provenance recorded. Run chimera_audit with recent=true to check propagation impact before claiming completion; use chimera_obligations action=sync when the findings need tracked follow-up."
+  "Chimera provenance recorded. Run chimera_audit_recent to check propagation impact before claiming completion; use chimera_obligations_sync when findings need tracked follow-up."
