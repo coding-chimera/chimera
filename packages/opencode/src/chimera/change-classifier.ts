@@ -352,7 +352,7 @@ function semanticDiffSignals(diff: NodeSemanticDiff) {
 }
 
 function fileSemanticInputNodes(nodes: FrozenSemanticObject[]): FileSemanticInputNode[] {
-  return nodes.map((node) => ({ kind: node.payload.kind, filePath: node.payload.filePath }))
+  return nodes.map((node) => ({ kind: node.payload.kind, filePath: node.payload.filePath, range: node.payload.range }))
 }
 
 function subjectForFileSignal(signal: FileSemanticSignal): Extract<ChangeSubjectKind, "import" | "export"> {
@@ -505,11 +505,6 @@ function fact(input: {
 
 function uniqueFacts(facts: ChangeFact[]) {
   return [...new Map(facts.map((item) => [item.id, item])).values()]
-}
-
-function lineHeuristic(patch: string, kind: "import" | "export") {
-  if (kind === "import") return /^[+-]\s*(import\s|from\s+.+\s+import\s)/m.test(patch)
-  return /^[+-]\s*export\s/m.test(patch)
 }
 
 export function classifyChangeRecord(input: {
@@ -743,38 +738,6 @@ export function classifyChangeRecord(input: {
         status,
         hunk: fileSignalHunk(signal, firstHunk),
         signals: fileSignalSignals(signal),
-      }))
-    }
-
-    if (lineHeuristic(diff.patch, "import") && !facts.some((item) => item.filePath === diff.filePath && item.subjectKind === "import")) {
-      facts.push(fact({
-        record,
-        filePath: diff.filePath,
-        oldPath: diff.oldPath,
-        changeKind,
-        subjectKind: "import",
-        confidence: 0.45,
-        rule: "temporary_heuristic.diff.line.import",
-        confidenceReason: "temporary Chimera fallback matched import syntax; delete after CodeGraph R3 file semantic signal covers this path",
-        status,
-        hunk: firstHunk,
-        signals: ["temporary_heuristic", "source:chimera:temporary_heuristic", "confidence:0.45", "delete_after:codegraph_r3_file_semantic_signal", "diff_import_syntax"],
-      }))
-    }
-
-    if (lineHeuristic(diff.patch, "export") && !facts.some((item) => item.filePath === diff.filePath && item.subjectKind === "export")) {
-      facts.push(fact({
-        record,
-        filePath: diff.filePath,
-        oldPath: diff.oldPath,
-        changeKind,
-        subjectKind: "export",
-        confidence: 0.45,
-        rule: "temporary_heuristic.diff.line.export",
-        confidenceReason: "temporary Chimera fallback matched export syntax; delete after CodeGraph R3 file semantic signal covers this path",
-        status,
-        hunk: firstHunk,
-        signals: ["temporary_heuristic", "source:chimera:temporary_heuristic", "confidence:0.45", "delete_after:codegraph_r3_file_semantic_signal", "diff_export_syntax"],
       }))
     }
 

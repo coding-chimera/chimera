@@ -268,6 +268,24 @@ describe("change classifier", () => {
 
     expect(imported?.evidence.rule).toBe("codegraph.file_semantic.import_statement")
     expect(imported?.evidence.signals).toContain("source:codegraph:diff_classifier")
+    expect(imported?.evidence.signals).not.toContain("temporary_heuristic")
+    expect(facts.every((fact) => !fact.evidence.rule.startsWith("temporary_heuristic."))).toBe(true)
     expect(facts.some((fact) => fact.subjectKind === "unknown")).toBe(false)
+  })
+
+  test("uses CodeGraph file-level export semantic signals", () => {
+    const patch = `--- sample.ts
++++ sample.ts
+@@ -1,1 +1,2 @@
+ const value = 1
++export { value }
+`
+    const facts = classifyChangeRecord({ record: record({ patch }) })
+    const exported = facts.find((fact) => fact.subjectKind === "export")
+
+    expect(exported?.evidence.rule).toBe("codegraph.file_semantic.export_boundary")
+    expect(exported?.evidence.signals).toContain("source:codegraph:diff_classifier")
+    expect(exported?.evidence.signals).not.toContain("temporary_heuristic")
+    expect(facts.every((fact) => !fact.evidence.rule.startsWith("temporary_heuristic."))).toBe(true)
   })
 })
