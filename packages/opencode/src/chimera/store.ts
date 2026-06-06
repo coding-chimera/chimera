@@ -1,8 +1,9 @@
 import path from "path"
 import { createHash } from "crypto"
 import { appendFile, mkdir } from "fs/promises"
-import { DatabaseConnection, getDatabasePath } from "../../../../../codegraph/dist/index.js"
+import { DatabaseConnection, getDatabasePath, type StorageExtension } from "../../../../../codegraph/dist/index.js"
 import type { ChangeFact } from "./change-classifier"
+import { diffRelations, type FrozenRelation, type FrozenSemanticObject } from "./codegraph-adapter"
 import type { ToolMutationRecord } from "./provenance"
 
 type ChimeraDb = ReturnType<DatabaseConnection["getDb"]>
@@ -13,6 +14,33 @@ type PayloadRow = {
 
 type CountRow = {
   count: number
+}
+
+type SemanticObjectKind = "file" | "node" | "relation" | "snippet" | "tombstone"
+type SemanticSnapshotSide = "before" | "after"
+type SemanticSnapshotRole = "touched" | "neighbor" | "impact_seed" | "deleted" | "created"
+
+type SemanticObjectRecord = {
+  hash: string
+  kind: SemanticObjectKind
+  codegraphID?: string
+  filePath?: string
+  payload: FrozenSemanticObject | FrozenRelation
+}
+
+type SemanticSnapshotRefRecord = {
+  objectHash: string
+  role: SemanticSnapshotRole
+  rank?: number
+}
+
+type SemanticSnapshotSideRecord = {
+  id?: string
+  refs: Map<string, SemanticSnapshotRefRecord>
+}
+
+type SemanticObjectRow = {
+  payload_json: string
 }
 
 type ObligationLike = {
@@ -43,7 +71,14 @@ export type AuditRunInput = {
   payload: unknown
 }
 
-const CHIMERA_SCHEMA = `
+const CHIMERA_STORAGE_EXTENSION: StorageExtension = {
+  id: "chimera",
+  namespace: "chimera_",
+  migrations: [
+    {
+      version: 1,
+      description: "Create Chimera audit overlay and semantic snapshot tables",
+      sql: `
 CREATE TABLE IF NOT EXISTS chimera_change_event (
   id TEXT PRIMARY KEY,
   origin TEXT NOT NULL,
@@ -135,7 +170,58 @@ CREATE TABLE IF NOT EXISTS chimera_audit_obligation (
 
 CREATE INDEX IF NOT EXISTS chimera_audit_obligation_status_idx ON chimera_audit_obligation(status);
 CREATE INDEX IF NOT EXISTS chimera_audit_obligation_updated_at_idx ON chimera_audit_obligation(updated_at);
-`
+
+CREATE TABLE IF NOT EXISTS chimera_semantic_snapshot (
+  id TEXT PRIMARY KEY,
+  event_id TEXT NOT NULL,
+  side TEXT NOT NULL CHECK (side IN ('before', 'after')),
+  file_snapshot TEXT NOT NULL,
+  graph_revision TEXT NOT NULL,
+  root_hash TEXT NOT NULL,
+  hash_version TEXT NOT NULL DEFAULT 'chimera-tree:v1',
+  parent_snapshot_id TEXT,
+  previous_snapshot_id TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (event_id) REFERENCES chimera_change_event(id) ON DELETE CASCADE,
+  FOREIGN KEY (parent_snapshot_id) REFERENCES chimera_semantic_snapshot(id) ON DELETE SET NULL,
+  FOREIGN KEY (previous_snapshot_id) REFERENCES chimera_semantic_snapshot(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS chimera_semantic_snapshot_event_side_idx ON chimera_semantic_snapshot(event_id, side);
+CREATE INDEX IF NOT EXISTS chimera_semantic_snapshot_root_hash_idx ON chimera_semantic_snapshot(root_hash);
+CREATE INDEX IF NOT EXISTS chimera_semantic_snapshot_graph_revision_idx ON chimera_semantic_snapshot(graph_revision);
+
+CREATE TABLE IF NOT EXISTS chimera_semantic_object (
+  hash TEXT PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (kind IN ('file', 'node', 'relation', 'snippet', 'tombstone')),
+  codegraph_id TEXT,
+  file_path TEXT,
+  payload_json TEXT NOT NULL,
+  hash_version TEXT NOT NULL DEFAULT 'chimera-object:v1',
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS chimera_semantic_object_kind_idx ON chimera_semantic_object(kind);
+CREATE INDEX IF NOT EXISTS chimera_semantic_object_file_path_idx ON chimera_semantic_object(file_path);
+CREATE INDEX IF NOT EXISTS chimera_semantic_object_codegraph_id_idx ON chimera_semantic_object(codegraph_id);
+
+CREATE TABLE IF NOT EXISTS chimera_semantic_snapshot_ref (
+  snapshot_id TEXT NOT NULL,
+  object_hash TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('touched', 'neighbor', 'impact_seed', 'deleted', 'created')),
+  rank INTEGER,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (snapshot_id, object_hash, role),
+  FOREIGN KEY (snapshot_id) REFERENCES chimera_semantic_snapshot(id) ON DELETE CASCADE,
+  FOREIGN KEY (object_hash) REFERENCES chimera_semantic_object(hash) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS chimera_semantic_snapshot_ref_object_hash_idx ON chimera_semantic_snapshot_ref(object_hash);
+CREATE INDEX IF NOT EXISTS chimera_semantic_snapshot_ref_role_rank_idx ON chimera_semantic_snapshot_ref(role, rank);
+`,
+    },
+  ],
+}
 
 export function databaseStorePath(projectRoot: string) {
   return getDatabasePath(projectRoot)
@@ -149,6 +235,61 @@ function safeJson(input: unknown) {
   }
 }
 
+function stableJson(input: unknown): string {
+  if (input === undefined) return "null"
+  if (input === null || typeof input !== "object") return JSON.stringify(input)
+  if (Array.isArray(input)) return `[${input.map((item) => stableJson(item)).join(",")}]`
+  return `{${Object.keys(input)
+    .sort()
+    .flatMap((key) => {
+      const value = (input as Record<string, unknown>)[key]
+      return value === undefined ? [] : [`${JSON.stringify(key)}:${stableJson(value)}`]
+    })
+    .join(",")}}`
+}
+
+function hashBytes(prefix: string, payload: string) {
+  return createHash("sha256")
+    .update(`${prefix} ${new TextEncoder().encode(payload).length}\0${payload}`)
+    .digest("hex")
+}
+
+function semanticObjectKind(input: FrozenSemanticObject | FrozenRelation): SemanticObjectKind {
+  if (input.objectType === "relation") return "relation"
+  return input.payload.kind === "file" ? "file" : "node"
+}
+
+function semanticObjectCodegraphID(input: FrozenSemanticObject | FrozenRelation) {
+  if (input.objectType === "relation") return undefined
+  return input.source.codegraphId
+}
+
+function semanticObjectFilePath(input: FrozenSemanticObject | FrozenRelation) {
+  if (input.objectType === "relation") return input.payload.focalNode.filePath
+  return input.payload.filePath
+}
+
+function semanticObject(input: FrozenSemanticObject | FrozenRelation): SemanticObjectRecord {
+  const kind = semanticObjectKind(input)
+  return {
+    hash: hashBytes(`chimera-object:v1 ${kind}`, stableJson(input)),
+    kind,
+    codegraphID: semanticObjectCodegraphID(input),
+    filePath: semanticObjectFilePath(input),
+    payload: input,
+  }
+}
+
+function semanticSnapshotRootHash(refs: SemanticSnapshotRefRecord[]) {
+  return hashBytes("chimera-tree:v1", stableJson(refs
+    .map((ref) => ({ role: ref.role, objectHash: ref.objectHash, rank: ref.rank }))
+    .sort((a, b) => a.role.localeCompare(b.role) || (a.rank ?? Number.MAX_SAFE_INTEGER) - (b.rank ?? Number.MAX_SAFE_INTEGER) || a.objectHash.localeCompare(b.objectHash))))
+}
+
+function semanticSnapshotID(eventID: string, side: SemanticSnapshotSide, rootHash: string) {
+  return `snapshot_${hashBytes("chimera-snapshot:v1", stableJson({ eventID, side, rootHash })).slice(0, 16)}`
+}
+
 function parseJson<T>(input: string) {
   try {
     return [JSON.parse(input) as T]
@@ -157,18 +298,13 @@ function parseJson<T>(input: string) {
   }
 }
 
-function ensureSchema(db: ChimeraDb) {
-  db.exec(CHIMERA_SCHEMA)
-}
-
 async function withDb<T>(projectRoot: string, fn: (db: ChimeraDb, dbPath: string) => T) {
   const dbPath = databaseStorePath(projectRoot)
   if (!(await Bun.file(dbPath).exists())) return undefined
   try {
-    const connection = DatabaseConnection.open(dbPath)
+    const connection = DatabaseConnection.open(dbPath, { storageExtensions: [CHIMERA_STORAGE_EXTENSION] })
     try {
       const db = connection.getDb()
-      ensureSchema(db)
       return fn(db, dbPath)
     } finally {
       connection.close()
@@ -200,6 +336,210 @@ async function readJson<T>(file: string, fallback: T) {
 async function appendJsonl(file: string, record: ToolMutationRecord) {
   await mkdir(path.dirname(file), { recursive: true })
   await appendFile(file, `${safeJson(record)}\n`, "utf8")
+}
+
+function emptySnapshotSide(): SemanticSnapshotSideRecord {
+  return { refs: new Map() }
+}
+
+function semanticEventSnapshots() {
+  return { before: emptySnapshotSide(), after: emptySnapshotSide() }
+}
+
+function appendSemanticRef(side: SemanticSnapshotSideRecord, object: SemanticObjectRecord, role: SemanticSnapshotRole) {
+  const key = `${object.hash}:${role}`
+  if (side.refs.has(key)) return
+  side.refs.set(key, { objectHash: object.hash, role, rank: side.refs.size })
+}
+
+function unique(items: string[]) {
+  return [...new Set(items)]
+}
+
+function writeSemanticObject(db: ChimeraDb, object: SemanticObjectRecord, createdAt: string) {
+  db.prepare(`
+    INSERT OR IGNORE INTO chimera_semantic_object (
+      hash,
+      kind,
+      codegraph_id,
+      file_path,
+      payload_json,
+      hash_version,
+      created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    object.hash,
+    object.kind,
+    object.codegraphID ?? null,
+    object.filePath ?? null,
+    stableJson(object.payload),
+    "chimera-object:v1",
+    createdAt,
+  )
+}
+
+function writeSemanticSnapshot(input: {
+  db: ChimeraDb
+  eventID: string
+  side: SemanticSnapshotSide
+  graphRevision?: string
+  snapshot: SemanticSnapshotSideRecord
+  createdAt: string
+}) {
+  const refs = [...input.snapshot.refs.values()]
+  if (refs.length === 0) return undefined
+  const rootHash = semanticSnapshotRootHash(refs)
+  const id = semanticSnapshotID(input.eventID, input.side, rootHash)
+  input.db.prepare(`
+    INSERT OR REPLACE INTO chimera_semantic_snapshot (
+      id,
+      event_id,
+      side,
+      file_snapshot,
+      graph_revision,
+      root_hash,
+      hash_version,
+      parent_snapshot_id,
+      previous_snapshot_id,
+      created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    input.eventID,
+    input.side,
+    `codegraph:${input.graphRevision ?? "unknown"}`,
+    input.graphRevision ?? "unknown",
+    rootHash,
+    "chimera-tree:v1",
+    null,
+    null,
+    input.createdAt,
+  )
+  input.db.prepare("DELETE FROM chimera_semantic_snapshot_ref WHERE snapshot_id = ?").run(id)
+  for (const ref of refs) {
+    input.db.prepare(`
+      INSERT INTO chimera_semantic_snapshot_ref (
+        snapshot_id,
+        object_hash,
+        role,
+        rank,
+        created_at
+      ) VALUES (?, ?, ?, ?, ?)
+    `).run(id, ref.objectHash, ref.role, ref.rank ?? null, input.createdAt)
+  }
+  input.snapshot.id = id
+  return id
+}
+
+function enrichFactsWithSemanticSnapshots(db: ChimeraDb, facts: ChangeFact[]) {
+  if (facts.length === 0) return facts
+  const objects = new Map<string, SemanticObjectRecord>()
+  const events = new Map<string, ReturnType<typeof semanticEventSnapshots>>()
+  const refsByFact = new Map<string, {
+    beforeObjectHashes: string[]
+    afterObjectHashes: string[]
+    beforeRelationHashes: string[]
+    afterRelationHashes: string[]
+  }>()
+
+  const eventFor = (eventID: string) => {
+    const existing = events.get(eventID)
+    if (existing) return existing
+    const next = semanticEventSnapshots()
+    events.set(eventID, next)
+    return next
+  }
+  const addObject = (input: FrozenSemanticObject | FrozenRelation, side: SemanticSnapshotSideRecord, role: SemanticSnapshotRole) => {
+    const object = semanticObject(input)
+    objects.set(object.hash, object)
+    appendSemanticRef(side, object, role)
+    return object.hash
+  }
+
+  for (const fact of facts) {
+    const event = eventFor(fact.eventID)
+    const beforeObjectHashes: string[] = []
+    const afterObjectHashes: string[] = []
+    const beforeRelationHashes: string[] = []
+    const afterRelationHashes: string[] = []
+    const removedRelationHashes = new Set((fact.evidence.relationDelta?.removedRelations ?? []).map((relation) => semanticObject(relation).hash))
+    const addedRelationHashes = new Set((fact.evidence.relationDelta?.addedRelations ?? []).map((relation) => semanticObject(relation).hash))
+
+    if (fact.evidence.beforeNode) beforeObjectHashes.push(addObject(fact.evidence.beforeNode, event.before, "touched"))
+    if (fact.evidence.afterNode) afterObjectHashes.push(addObject(fact.evidence.afterNode, event.after, "touched"))
+    for (const relation of fact.evidence.relationDelta?.beforeRelations ?? []) {
+      const hash = addObject(relation, event.before, removedRelationHashes.has(semanticObject(relation).hash) ? "deleted" : "neighbor")
+      beforeObjectHashes.push(hash)
+      beforeRelationHashes.push(hash)
+    }
+    for (const relation of fact.evidence.relationDelta?.afterRelations ?? []) {
+      const hash = addObject(relation, event.after, addedRelationHashes.has(semanticObject(relation).hash) ? "created" : "neighbor")
+      afterObjectHashes.push(hash)
+      afterRelationHashes.push(hash)
+    }
+    refsByFact.set(fact.id, {
+      beforeObjectHashes: unique(beforeObjectHashes),
+      afterObjectHashes: unique(afterObjectHashes),
+      beforeRelationHashes: unique(beforeRelationHashes),
+      afterRelationHashes: unique(afterRelationHashes),
+    })
+  }
+
+  const createdAt = facts[0]?.createdAt ?? new Date().toISOString()
+  for (const object of objects.values()) writeSemanticObject(db, object, createdAt)
+  for (const [eventID, snapshots] of events) {
+    const fact = facts.find((item) => item.eventID === eventID)
+    writeSemanticSnapshot({ db, eventID, side: "before", graphRevision: fact?.evidence.graph.beforeRevision, snapshot: snapshots.before, createdAt })
+    writeSemanticSnapshot({ db, eventID, side: "after", graphRevision: fact?.evidence.graph.afterRevision, snapshot: snapshots.after, createdAt })
+  }
+
+  return facts.map((fact) => {
+    const snapshots = events.get(fact.eventID)
+    const refs = refsByFact.get(fact.id)
+    if (!snapshots || !refs) return fact
+    return {
+      ...fact,
+      evidence: {
+        ...fact.evidence,
+        semanticSnapshots: {
+          version: 1 as const,
+          source: "chimera_semantic_snapshot" as const,
+          beforeSnapshotID: snapshots.before.id,
+          afterSnapshotID: snapshots.after.id,
+          beforeObjectHashes: refs.beforeObjectHashes,
+          afterObjectHashes: refs.afterObjectHashes,
+          beforeRelationHashes: refs.beforeRelationHashes,
+          afterRelationHashes: refs.afterRelationHashes,
+        },
+        signals: unique([...fact.evidence.signals, "semantic_snapshot_refs"]),
+      },
+    }
+  })
+}
+
+function readSemanticRelations(db: ChimeraDb, hashes: string[] | undefined) {
+  return unique(hashes ?? []).flatMap((hash) => {
+    const row = db.prepare("SELECT payload_json FROM chimera_semantic_object WHERE hash = ? AND kind = 'relation'").get(hash) as SemanticObjectRow | undefined
+    return row ? parseJson<FrozenRelation>(row.payload_json) : []
+  })
+}
+
+function hydrateFactFromSemanticSnapshots(db: ChimeraDb, fact: ChangeFact): ChangeFact {
+  const refs = fact.evidence.semanticSnapshots
+  if (!refs) return fact
+  const expectedRelations = (refs.beforeRelationHashes?.length ?? 0) + (refs.afterRelationHashes?.length ?? 0)
+  if (expectedRelations === 0) return fact
+  const beforeRelations = readSemanticRelations(db, refs.beforeRelationHashes)
+  const afterRelations = readSemanticRelations(db, refs.afterRelationHashes)
+  if (beforeRelations.length + afterRelations.length !== expectedRelations) return fact
+  return {
+    ...fact,
+    evidence: {
+      ...fact.evidence,
+      relationDelta: diffRelations(beforeRelations, afterRelations),
+      signals: unique(["semantic_snapshot_refs", ...fact.evidence.signals]),
+    },
+  }
 }
 
 export async function readLegacyProvenanceRecords(file: string) {
@@ -346,7 +686,8 @@ export async function writeChangeFacts(projectRoot: string, facts: ChangeFact[])
     const eventIDs = [...new Set(facts.map((fact) => fact.eventID))]
     db.transaction(() => {
       for (const eventID of eventIDs) db.prepare("DELETE FROM chimera_change_fact WHERE event_id = ?").run(eventID)
-      for (const fact of facts) {
+      const enrichedFacts = enrichFactsWithSemanticSnapshots(db, facts)
+      for (const fact of enrichedFacts) {
         db.prepare(`
           INSERT OR REPLACE INTO chimera_change_fact (
             id,
@@ -387,6 +728,7 @@ export async function readChangeFacts(projectRoot: string, eventIDs?: string[]) 
   const facts = await withDb(projectRoot, (db) =>
     (db.prepare("SELECT payload_json FROM chimera_change_fact ORDER BY created_at ASC, id ASC").all() as PayloadRow[])
       .flatMap((row) => parseJson<ChangeFact>(row.payload_json))
+      .map((fact) => hydrateFactFromSemanticSnapshots(db, fact))
       .filter((fact) => !filter || filter.has(fact.eventID)),
   )
   return facts ?? []
