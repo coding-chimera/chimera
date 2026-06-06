@@ -61,6 +61,16 @@ export type ChangeFactEvidence = {
   afterNode?: FrozenSemanticObject | null
   semanticDiff?: NodeSemanticDiff
   relationDelta?: RelationDeltaEvidence
+  semanticSnapshots?: {
+    version: 1
+    source: "chimera_semantic_snapshot"
+    beforeSnapshotID?: string
+    afterSnapshotID?: string
+    beforeObjectHashes?: string[]
+    afterObjectHashes?: string[]
+    beforeRelationHashes?: string[]
+    afterRelationHashes?: string[]
+  }
   signals: string[]
 }
 
