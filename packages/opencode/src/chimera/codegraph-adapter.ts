@@ -4,6 +4,7 @@ import {
   NODE_KINDS,
   diffFileSemantics as codegraphDiffFileSemantics,
   diffNodeSemantics as codegraphDiffNodeSemantics,
+  diffRelations as codegraphDiffRelations,
   type BuildContextOptions,
   type CodeGraphSnapshot,
   type Edge as CodeGraphEdge,
@@ -12,6 +13,7 @@ import {
   type FileSemanticInfo,
   type FileSemanticInputNode,
   type FileSemanticSignal,
+  type FrozenRelation,
   type FrozenSemanticObject,
   type IndexProgress,
   type Node as CodeGraphNode,
@@ -19,8 +21,10 @@ import {
   type NodeSemanticInfo,
   type PendingFile as CodeGraphPendingFile,
   type RangeQueryOptions,
+  type RelationDeltaEvidence,
   type RelationEvidence as CodeGraphRelation,
   type RelationKind,
+  type RelationProjectionOptions,
   type RelationQueryOptions,
   type SearchOptions,
   type SourceRange,
@@ -40,13 +44,16 @@ export type {
   FileSemanticInfo,
   FileSemanticInputNode,
   FileSemanticSignal,
+  FrozenRelation,
   FrozenSemanticObject,
   IndexProgress as CodeGraphIndexProgress,
   NodeSemanticDiff,
   NodeSemanticInfo,
   RangeQueryOptions,
+  RelationDeltaEvidence,
   CodeGraphRelation,
   RelationKind,
+  RelationProjectionOptions,
   RelationQueryOptions,
   SearchOptions,
   SourceRange,
@@ -56,6 +63,7 @@ export type {
 export { NODE_KINDS }
 export const diffNodeSemantics = codegraphDiffNodeSemantics
 export const diffFileSemantics = codegraphDiffFileSemantics
+export const diffRelations = codegraphDiffRelations
 export const getFileSemanticInfo = CodeGraph.getFileSemanticInfo
 
 export interface OpenOptions {
@@ -205,6 +213,14 @@ export class CodeGraphAdapter {
 
   fileSemanticDiff(input: FileSemanticDiffInput): FileSemanticSignal[] {
     return this.graph.diffFileSemantics(input)
+  }
+
+  incidentRelations(nodeOrId: CodeGraphNode | FrozenSemanticObject | string, snapshot = this.snapshot(), options: RelationProjectionOptions = {}): FrozenRelation[] {
+    return this.graph.projectIncidentRelations(nodeOrId, snapshot, options)
+  }
+
+  relationDiff(beforeRelations: readonly FrozenRelation[] = [], afterRelations: readonly FrozenRelation[] = []): RelationDeltaEvidence {
+    return this.graph.diffRelations(beforeRelations, afterRelations)
   }
 
   async buildContext(input: TaskInput, options: BuildContextOptions = {}) {
