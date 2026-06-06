@@ -8,12 +8,14 @@ import {
   classifyChangeRecord,
   classifyFileBoundary,
   collectFileProjections,
+  collectIncidentRelations,
   type ChangeFact,
   type CodeGraphIndexProgress,
   type CodeGraphNode,
   type CodeGraphRelation,
   type CodeGraphSnapshot,
   type FileClassification,
+  type FrozenRelation,
   type FrozenSemanticObject,
   type ProjectGraphState,
   type RelationKind,
@@ -338,7 +340,18 @@ type RiskCategory =
   | "unknown"
 
 type CauseLink = {
-  type: "changed_file" | "changed_seed" | "change_fact" | "file_dependency" | "relation" | "impact_radius" | "context_selection"
+  type:
+    | "changed_file"
+    | "changed_seed"
+    | "change_fact"
+    | "file_dependency"
+    | "relation"
+    | "before_relation"
+    | "after_relation"
+    | "added_relation"
+    | "removed_relation"
+    | "impact_radius"
+    | "context_selection"
   target: string
   evidence: string
 }
@@ -636,6 +649,22 @@ function riskReasonForNode(node: CodeGraphNode) {
   return classification.reason
 }
 
+function frozenRelationNodeTarget(node: FrozenRelation["payload"]["otherNode"]) {
+  return `${node.filePath}:${node.range.startLine} ${node.qualifiedName || node.name}`
+}
+
+function riskForFrozenRelationNode(node: FrozenRelation["payload"]["otherNode"]): RiskCategory {
+  const classification = classifyFile(node.filePath).classification
+  if (node.kind === "route") return "api_contract"
+  if (node.kind === "import" || node.kind === "export") return "importer"
+  if (node.kind === "function" || node.kind === "method" || node.kind === "component") return "call_flow"
+  return riskForClassification(classification)
+}
+
+function frozenRelationEvidence(relation: FrozenRelation, type: "added_relation" | "removed_relation") {
+  return `codegraph:${type}:${relation.payload.relation}:${relation.payload.edgeKind}:${relation.payload.quality}`
+}
+
 function formatCauseChain(causeChain: CauseLink[]) {
   return causeChain.map((item) => `${item.type}:${item.target} (${item.evidence})`).join(" -> ")
 }
@@ -645,12 +674,16 @@ function formatClassification(item: { file: string; classification: ChangeClassi
 }
 
 function formatChangeFact(fact: ChangeFact) {
+  const relationDelta = fact.evidence.relationDelta
   return [
     `- ${fact.id}: ${fact.subjectKind}/${fact.changeKind} ${fact.filePath}`,
     fact.nodeKey ? `  node: ${fact.nodeKey}` : undefined,
     `  confidence: ${fact.confidence}`,
     `  rule: ${fact.evidence.rule}`,
     `  reason: ${fact.evidence.confidenceReason}`,
+    relationDelta
+      ? `  relation_delta: +${relationDelta.addedRelations.length} -${relationDelta.removedRelations.length} before:${relationDelta.beforeRelations.length} after:${relationDelta.afterRelations.length}`
+      : undefined,
     fact.evidence.signals.length ? `  signals: ${fact.evidence.signals.join(", ")}` : undefined,
   ]
     .filter(Boolean)
@@ -680,6 +713,56 @@ function factCause(changeFacts: ChangeFact[]) {
     target: `${fact.subjectKind}/${fact.changeKind} ${fact.filePath}`,
     evidence: `chimera_change_fact:${fact.id} confidence:${fact.confidence}`,
   }
+}
+
+function relationDeltaCandidate(input: {
+  state: ProjectGraphState
+  snapshot: CodeGraphSnapshot
+  relation: FrozenRelation
+  type: "added_relation" | "removed_relation"
+  baseCauseChain: CauseLink[]
+}): AuditCandidate {
+  const current = input.state.graph.node(input.relation.payload.otherNode.codegraphId)
+  const target = current ? nodeTarget(current) : frozenRelationNodeTarget(input.relation.payload.otherNode)
+  const classification = classifyFile(current?.filePath ?? input.relation.payload.otherNode.filePath).classification
+  const change = input.type === "added_relation" ? "added" : "removed"
+  const graphSide = input.type === "added_relation" ? "after graph" : "before graph"
+  return {
+    target,
+    targetNode: current ? input.state.graph.projectNode(current, input.snapshot) : undefined,
+    reason: `${current ? riskReasonForNode(current) : classifyFile(input.relation.payload.otherNode.filePath).reason}; relation ${input.relation.payload.relation} (${input.relation.payload.edgeKind}) was ${change} in CodeGraph ${graphSide} evidence for ${input.relation.payload.focalNode.nodeKey}`,
+    risk: current ? riskForNode(current) : riskForFrozenRelationNode(input.relation.payload.otherNode),
+    classification,
+    requiredAction: "review_or_update",
+    evidence: `codegraph:relation_delta:${change}:${input.relation.payload.relation}`,
+    causeChain: [
+      ...input.baseCauseChain,
+      { type: input.type, target, evidence: frozenRelationEvidence(input.relation, input.type) },
+    ],
+  }
+}
+
+function relationDeltaCandidates(input: {
+  state: ProjectGraphState
+  snapshot: CodeGraphSnapshot
+  changeFacts: ChangeFact[]
+  sourceCause: CauseLink
+}) {
+  const dependentRelation = (relation: FrozenRelation) => DependentRelations.includes(relation.payload.relation)
+  return input.changeFacts.flatMap((fact) => {
+    const delta = fact.evidence.relationDelta
+    if (!delta) return []
+    const factLink = factCause([fact])
+    const baseCauseChain = factLink ? [input.sourceCause, factLink] : [input.sourceCause]
+    return [
+      ...delta.removedRelations.filter(dependentRelation).map((relation) =>
+        relationDeltaCandidate({ state: input.state, snapshot: input.snapshot, relation, type: "removed_relation", baseCauseChain }),
+      ),
+      ...delta.addedRelations.filter(dependentRelation).map((relation) =>
+        relationDeltaCandidate({ state: input.state, snapshot: input.snapshot, relation, type: "added_relation", baseCauseChain }),
+      ),
+    ]
+  })
 }
 
 function buildImpactEvidence(input: {
@@ -715,6 +798,7 @@ function buildImpactEvidence(input: {
   const changeFactCause = factCause(input.changeFacts)
   const baseCauseChain = changeFactCause ? [cause, changeFactCause] : [cause]
   const evidence = uniqueCandidates([
+    ...relationDeltaCandidates({ state: input.state, snapshot: input.snapshot, changeFacts: input.changeFacts, sourceCause: cause }),
     ...incomingRelations.map((relation) => {
       const node = relation.otherNode
       const classification = classifyFile(node.filePath).classification
@@ -1182,12 +1266,15 @@ const buildAudit = Effect.fn("ChimeraTool.buildAudit")(function* (params: BuildA
   const ephemeralRecord = storedChangeFacts.length
     ? undefined
     : recent ?? syntheticAuditRecord({ projectRoot: state.projectRoot, directory: instance.directory, source, changedFiles, snapshot })
+  const ephemeralAfterNodes = ephemeralRecord ? collectFileProjections(state.graph, ephemeralRecord.files, snapshot) : []
+  const ephemeralAfterRelations = ephemeralRecord ? collectIncidentRelations(state.graph, ephemeralAfterNodes, snapshot) : []
   const changeFacts = storedChangeFacts.length
     ? storedChangeFacts
     : ephemeralRecord
       ? classifyChangeRecord({
           record: ephemeralRecord,
-          afterNodes: collectFileProjections(state.graph, ephemeralRecord.files, snapshot),
+          afterNodes: ephemeralAfterNodes,
+          afterRelations: ephemeralAfterRelations,
         })
       : []
   const kinds = params.kind ? [params.kind] : undefined

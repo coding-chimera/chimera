@@ -3,14 +3,17 @@ import { createHash } from "crypto"
 import {
   diffFileSemantics,
   diffNodeSemantics,
+  diffRelations,
   getFileSemanticInfo,
   type CodeGraphAdapter,
   type CodeGraphSnapshot,
   type FileSemanticInfo,
   type FileSemanticInputNode,
   type FileSemanticSignal,
+  type FrozenRelation,
   type FrozenSemanticObject,
   type NodeSemanticDiff,
+  type RelationDeltaEvidence,
   type SourceRange,
 } from "./codegraph-adapter"
 import type { ProvenanceFile, ToolMutationRecord } from "./provenance"
@@ -57,6 +60,7 @@ export type ChangeFactEvidence = {
   beforeNode?: FrozenSemanticObject | null
   afterNode?: FrozenSemanticObject | null
   semanticDiff?: NodeSemanticDiff
+  relationDelta?: RelationDeltaEvidence
   signals: string[]
 }
 
@@ -83,7 +87,7 @@ type DiffInfo = {
   hunks: SourceHunk[]
 }
 
-type ProjectionGraph = Pick<CodeGraphAdapter, "nodesInFile" | "projectNode">
+type ProjectionGraph = Pick<CodeGraphAdapter, "nodesInFile" | "projectNode" | "incidentRelations">
 
 const CALLABLE_KINDS = new Set(["function", "method", "component"])
 const CONTAINER_KINDS = new Set(["file", "module"])
@@ -320,12 +324,31 @@ export function collectFileProjections(graph: ProjectionGraph, files: Provenance
   )
 }
 
+export function collectIncidentRelations(graph: ProjectionGraph, nodes: FrozenSemanticObject[], snapshot: CodeGraphSnapshot) {
+  return nodes.flatMap((node) => graph.incidentRelations(node, snapshot))
+}
+
 function nodeKey(node: FrozenSemanticObject) {
   return `${node.payload.filePath}:${node.payload.kind}:${node.payload.qualifiedName || node.payload.name}`
 }
 
 function nodeID(node: FrozenSemanticObject | undefined) {
   return node?.source.codegraphId
+}
+
+function relationsForNode(relations: FrozenRelation[], node: FrozenSemanticObject | null | undefined) {
+  if (!node) return []
+  const key = nodeKey(node)
+  return relations.filter((relation) => relation.payload.focalNode.nodeKey === key)
+}
+
+function fileNode(nodes: FrozenSemanticObject[], filePath: string | undefined) {
+  if (!filePath) return undefined
+  return nodes.find((node) => node.payload.kind === "file" && node.payload.filePath === filePath)
+}
+
+function hasRelationDelta(delta: RelationDeltaEvidence) {
+  return delta.addedRelations.length > 0 || delta.removedRelations.length > 0
 }
 
 function nodeRangeIntersects(node: FrozenSemanticObject, sourceRange: SourceRange | undefined) {
@@ -424,6 +447,7 @@ function evidence(input: {
   beforeNode?: FrozenSemanticObject | null
   afterNode?: FrozenSemanticObject | null
   semanticDiff?: NodeSemanticDiff
+  relationDelta?: RelationDeltaEvidence
   signals: string[]
 }): ChangeFactEvidence {
   return {
@@ -444,6 +468,7 @@ function evidence(input: {
     beforeNode: input.beforeNode,
     afterNode: input.afterNode,
     semanticDiff: input.semanticDiff,
+    relationDelta: input.relationDelta,
     signals: input.signals,
   }
 }
@@ -463,6 +488,7 @@ function fact(input: {
   status?: string
   hunk?: SourceHunk
   semanticDiff?: NodeSemanticDiff
+  relationDelta?: RelationDeltaEvidence
   signals: string[]
 }): ChangeFact {
   const key = input.node ? nodeKey(input.node) : undefined
@@ -497,6 +523,7 @@ function fact(input: {
       beforeNode: input.beforeNode,
       afterNode: input.afterNode,
       semanticDiff: input.semanticDiff,
+      relationDelta: input.relationDelta,
       signals: input.signals,
     }),
     createdAt: input.record.finishedAt,
@@ -511,22 +538,32 @@ export function classifyChangeRecord(input: {
   record: ToolMutationRecord
   beforeNodes?: FrozenSemanticObject[]
   afterNodes?: FrozenSemanticObject[]
+  beforeRelations?: FrozenRelation[]
+  afterRelations?: FrozenRelation[]
 }) {
   const record = input.record
   if (record.status !== "success") return [] as ChangeFact[]
 
   const beforeNodes = input.beforeNodes ?? []
   const afterNodes = input.afterNodes ?? []
+  const beforeRelations = input.beforeRelations ?? []
+  const afterRelations = input.afterRelations ?? []
   const beforeByKey = new Map(beforeNodes.map((node) => [nodeKey(node), node]))
   const afterByKey = new Map(afterNodes.map((node) => [nodeKey(node), node]))
   const diffs = metadataDiffs(record)
   const facts: ChangeFact[] = []
+
+  const relationDeltaFor = (before: FrozenSemanticObject | null | undefined, after: FrozenSemanticObject | null | undefined) => {
+    const delta = diffRelations(relationsForNode(beforeRelations, before), relationsForNode(afterRelations, after))
+    return hasRelationDelta(delta) ? delta : undefined
+  }
 
   for (const file of record.files) {
     if (!file.graphPath) continue
     const classified = classifiedStatus(record, file.graphPath)
     const status = classified.status
     const changeKind = statusToKind(status)
+    const fileRelationDelta = relationDeltaFor(fileNode(beforeNodes, file.graphPath), fileNode(afterNodes, file.graphPath))
     facts.push(fact({
       record,
       filePath: file.graphPath,
@@ -540,6 +577,7 @@ export function classifyChangeRecord(input: {
           ? "file status came from CodeGraph sync result"
           : "file changed without explicit sync status",
       status,
+      relationDelta: fileRelationDelta,
       signals: [status ? `status:${status}` : "status:unknown", `status_source:${classified.source}`],
     }))
 
@@ -554,6 +592,7 @@ export function classifyChangeRecord(input: {
           rule: `codegraph.file_role.${boundary.role}`,
           confidenceReason: boundary.reason,
           status,
+          relationDelta: fileRelationDelta,
           signals: boundary.signals,
       }))
     }
@@ -564,6 +603,7 @@ export function classifyChangeRecord(input: {
     const status = diff.status ?? classified.status
     const changeKind = statusToKind(status)
     const diffFacts = facts.length
+    const fileRelationDelta = relationDeltaFor(fileNode(beforeNodes, diff.oldPath ?? diff.filePath), fileNode(afterNodes, diff.filePath))
 
     for (const hunk of diff.hunks) {
       const emitted = new Set<string>()
@@ -592,6 +632,7 @@ export function classifyChangeRecord(input: {
             status,
             hunk,
             semanticDiff,
+            relationDelta: relationDeltaFor(null, after),
             signals: ["after_node", "missing_before_projection", ...semanticDiffSignals(semanticDiff), ...semanticSignals(after)],
           }))
           emitted.add(nodeKey(after))
@@ -615,6 +656,7 @@ export function classifyChangeRecord(input: {
             status,
             hunk,
             semanticDiff,
+            relationDelta: relationDeltaFor(before, after),
             signals: [...semanticDiffSignals(semanticDiff), ...semanticSignals(after)],
           }))
           emitted.add(nodeKey(after))
@@ -643,6 +685,7 @@ export function classifyChangeRecord(input: {
           status,
           hunk,
           semanticDiff,
+          relationDelta: relationDeltaFor(before, after),
           signals: semanticSignals(after),
         }))
         emitted.add(nodeKey(after))
@@ -668,6 +711,7 @@ export function classifyChangeRecord(input: {
               status,
               hunk,
               semanticDiff,
+              relationDelta: relationDeltaFor(before, after),
               signals: [...semanticDiffSignals(semanticDiff), ...semanticSignals(after)],
             }))
             continue
@@ -688,6 +732,7 @@ export function classifyChangeRecord(input: {
               status,
               hunk,
               semanticDiff,
+              relationDelta: relationDeltaFor(before, after),
               signals: semanticSignals(after),
             }))
           }
@@ -709,6 +754,7 @@ export function classifyChangeRecord(input: {
           status,
           hunk,
           semanticDiff,
+          relationDelta: relationDeltaFor(before, null),
           signals: ["before_node", "missing_after_projection", ...semanticDiffSignals(semanticDiff), ...semanticSignals(before)],
         }))
       }
@@ -737,6 +783,7 @@ export function classifyChangeRecord(input: {
         confidenceReason: signal.reason,
         status,
         hunk: fileSignalHunk(signal, firstHunk),
+        relationDelta: fileRelationDelta,
         signals: fileSignalSignals(signal),
       }))
     }

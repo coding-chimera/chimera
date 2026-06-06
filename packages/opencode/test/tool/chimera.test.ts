@@ -3,6 +3,7 @@ import fs from "fs/promises"
 import path from "path"
 import { Effect, Layer } from "effect"
 import { Bus } from "@/bus"
+import { Chimera } from "@/chimera"
 import { Agent } from "@/agent/agent"
 import { MessageID, SessionID } from "@/session/schema"
 import {
@@ -139,6 +140,27 @@ const runObligationResolve = Effect.fn("ChimeraToolTest.runObligationResolve")(f
   return yield* tool.execute(args, next)
 })
 
+const trackWrite = Effect.fn("ChimeraToolTest.trackWrite")(function* (input: {
+  filePath: string
+  content: string
+  patch: string
+  callID: string
+}) {
+  yield* Chimera.trackToolMutation(
+    {
+      toolID: "write",
+      ctx: { ...ctx, callID: input.callID },
+      files: [input.filePath],
+      metadata: {
+        exists: true,
+        filePath: input.filePath,
+        diff: input.patch,
+      },
+    },
+    Effect.promise(() => fs.writeFile(input.filePath, input.content)),
+  )
+})
+
 describe("tool.chimera", () => {
   it.instance("reports graph status and initializes CodeGraph", () =>
     Effect.gen(function* () {
@@ -252,6 +274,91 @@ describe("tool.chimera", () => {
       expect(result.metadata.classifications[0].classification).toBe("source")
       expect(result.metadata.obligations.length).toBeGreaterThan(0)
       expect(result.metadata.obligations[0].causeChain.length).toBeGreaterThan(0)
+    }),
+  )
+
+  it.instance("audits callable rename through removed before-graph caller relations", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const base = path.join(test.directory, "base.ts")
+      yield* Effect.promise(() => fs.writeFile(base, "export function target() { return 1 }\n"))
+      yield* Effect.promise(() =>
+        fs.writeFile(
+          path.join(test.directory, "consumer.ts"),
+          "import { target } from './base'\nexport function consumer() { return target() }\n",
+        ),
+      )
+
+      yield* trackWrite({
+        filePath: base,
+        content: "export function renamed() { return 1 }\n",
+        callID: "call_chimera_relation_delta_callable",
+        patch: `--- base.ts
++++ base.ts
+@@ -1,1 +1,1 @@
+-export function target() { return 1 }
++export function renamed() { return 1 }
+`,
+      })
+
+      const result = yield* runAuditRecent({ refresh: false })
+      const fact = result.metadata.changeFacts.find((item) =>
+        item.evidence.relationDelta?.removedRelations.some((relation) => relation.payload.relation === "CalledBy"),
+      )
+      const candidate = result.metadata.obligations.find((item) =>
+        item.evidence === "codegraph:relation_delta:removed:CalledBy" &&
+        item.causeChain.some((link) => link.type === "removed_relation" && link.evidence.includes("CalledBy")),
+      )
+
+      expect(result.metadata.source).toBe("recent_provenance")
+      expect(fact?.evidence.relationDelta?.removedRelations.some((relation) => relation.payload.otherNode.name === "consumer")).toBe(true)
+      expect(candidate?.target).toContain("consumer")
+      expect(candidate?.causeChain.map((link) => link.type)).toContain("removed_relation")
+      expect(result.output).toContain("codegraph:removed_relation:CalledBy")
+    }),
+  )
+
+  it.instance("audits export removal through removed before-graph importer relations", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const exportsFile = path.join(test.directory, "exports.ts")
+      yield* Effect.promise(() => fs.writeFile(exportsFile, "export function value() { return 1 }\n"))
+      yield* Effect.promise(() =>
+        fs.writeFile(
+          path.join(test.directory, "importer.ts"),
+          "import { value } from './exports'\nexport function importer() { return value() }\n",
+        ),
+      )
+
+      yield* trackWrite({
+        filePath: exportsFile,
+        content: "export function other() { return 1 }\n",
+        callID: "call_chimera_relation_delta_importer",
+        patch: `--- exports.ts
++++ exports.ts
+@@ -1,1 +1,1 @@
+-export function value() { return 1 }
++export function other() { return 1 }
+`,
+      })
+
+      const result = yield* runAuditRecent({ refresh: false })
+      const fact = result.metadata.changeFacts.find((item) =>
+        item.evidence.relationDelta?.removedRelations.some((relation) =>
+          relation.payload.otherNode.filePath === "importer.ts" && relation.payload.relation !== "ContainedBy",
+        ),
+      )
+      const candidate = result.metadata.obligations.find((item) =>
+        item.evidence.startsWith("codegraph:relation_delta:removed:") &&
+        item.target.includes("importer.ts") &&
+        item.causeChain.some((link) => link.type === "removed_relation"),
+      )
+
+      expect(result.metadata.source).toBe("recent_provenance")
+      expect(fact?.evidence.relationDelta?.removedRelations.some((relation) => relation.payload.otherNode.filePath === "importer.ts")).toBe(true)
+      expect(candidate?.target).toContain("importer.ts")
+      expect(candidate?.causeChain.map((link) => link.type)).toContain("removed_relation")
+      expect(result.output).toContain("codegraph:removed_relation:")
     }),
   )
 

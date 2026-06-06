@@ -5,7 +5,7 @@ import type { Interface as BusInterface } from "@/bus"
 import { BusEvent } from "@/bus/bus-event"
 import { InstanceState } from "@/effect/instance-state"
 import type { Tool } from "@/tool/tool"
-import { classifyChangeRecord, collectFileProjections } from "./change-classifier"
+import { classifyChangeRecord, collectFileProjections, collectIncidentRelations } from "./change-classifier"
 import { CodeGraphAdapter, type CodeGraphIndexProgress, type CodeGraphSnapshot, type CodeGraphSyncResult } from "./codegraph-adapter"
 import { appendProvenanceRecord, databaseStorePath, readProvenanceRecords, writeChangeFacts } from "./store"
 
@@ -398,10 +398,12 @@ export function trackToolMutation<A, E, R>(
     const syncFiles = files.filter((file) => file.insideGraph).map((file) => file.absolutePath)
     const before = s.graph.snapshot()
     const beforeNodes = collectFileProjections(s.graph, files, before)
+    const beforeRelations = collectIncidentRelations(s.graph, beforeNodes, before)
     const exit = yield* effect.pipe(Effect.exit)
     const sync = yield* Effect.promise(() => s.graph.syncFiles(syncFiles)).pipe(Effect.orDie)
     const after = s.graph.snapshot()
     const afterNodes = collectFileProjections(s.graph, files, after)
+    const afterRelations = collectIncidentRelations(s.graph, afterNodes, after)
     const finishedAt = new Date().toISOString()
     const record: ToolMutationRecord = {
       schemaVersion: 1,
@@ -440,7 +442,7 @@ export function trackToolMutation<A, E, R>(
 
     yield* Effect.promise(() => appendProvenanceRecord(s.projectRoot, s.artifact, record)).pipe(Effect.orDie)
     if (Exit.isSuccess(exit)) {
-      const facts = classifyChangeRecord({ record, beforeNodes, afterNodes })
+      const facts = classifyChangeRecord({ record, beforeNodes, afterNodes, beforeRelations, afterRelations })
       yield* Effect.promise(() => writeChangeFacts(s.projectRoot, facts)).pipe(Effect.orDie)
     }
     rememberToolFiles(s.projectRoot, files)

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { classifyChangeRecord } from "../../src/chimera/change-classifier"
-import type { FrozenSemanticObject } from "../../src/chimera/codegraph-adapter"
+import type { FrozenRelation, FrozenSemanticObject } from "../../src/chimera/codegraph-adapter"
 import type { ToolMutationRecord } from "../../src/chimera/provenance"
 
 const bodyPatch = `--- sample.ts
@@ -109,6 +109,43 @@ function node(input: {
       },
       signature: input.signature,
       isExported: input.isExported ?? false,
+    },
+  }
+}
+
+function relationNode(node: FrozenSemanticObject): FrozenRelation["payload"]["focalNode"] {
+  return {
+    codegraphId: node.source.codegraphId,
+    graphRevision: node.source.graphRevision,
+    nodeKey: `${node.payload.filePath}:${node.payload.kind}:${node.payload.qualifiedName || node.payload.name}`,
+    filePath: node.payload.filePath,
+    kind: node.payload.kind,
+    name: node.payload.name,
+    qualifiedName: node.payload.qualifiedName,
+    range: node.payload.range,
+  }
+}
+
+function relation(input: { focal: FrozenSemanticObject; other: FrozenSemanticObject }): FrozenRelation {
+  return {
+    schemaVersion: 1,
+    objectType: "relation",
+    source: {
+      system: "codegraph",
+      codegraphVersion: "test",
+      graphRevision: input.focal.source.graphRevision,
+      schemaVersion: 1,
+    },
+    payload: {
+      relation: "CalledBy",
+      direction: "incoming",
+      edgeKind: "calls",
+      focalNode: relationNode(input.focal),
+      otherNode: relationNode(input.other),
+      sourceNode: relationNode(input.other),
+      targetNode: relationNode(input.focal),
+      provenance: "tree-sitter",
+      quality: "exact",
     },
   }
 }
@@ -287,5 +324,28 @@ describe("change classifier", () => {
     expect(exported?.evidence.signals).toContain("source:codegraph:diff_classifier")
     expect(exported?.evidence.signals).not.toContain("temporary_heuristic")
     expect(facts.every((fact) => !fact.evidence.rule.startsWith("temporary_heuristic."))).toBe(true)
+  })
+
+  test("stores CodeGraph relation delta evidence for deleted node facts", () => {
+    const patch = `--- sample.ts
++++ sample.ts
+@@ -1,3 +0,0 @@
+-export function one() {
+-return 1
+-}
+`
+    const before = node({ id: "before-one", kind: "function", name: "one", startLine: 1, endLine: 3, signature: "function one()" })
+    const caller = node({ id: "caller", kind: "function", name: "caller", filePath: "caller.ts", startLine: 1, endLine: 3, signature: "function caller()" })
+    const facts = classifyChangeRecord({
+      record: record({ patch }),
+      beforeNodes: [before],
+      afterNodes: [],
+      beforeRelations: [relation({ focal: before, other: caller })],
+      afterRelations: [],
+    })
+
+    const deleted = facts.find((fact) => fact.changeKind === "delete" && fact.nodeKey?.includes(":function:one"))
+    expect(deleted?.evidence.relationDelta?.removedRelations[0]?.payload.relation).toBe("CalledBy")
+    expect(deleted?.evidence.relationDelta?.removedRelations[0]?.payload.otherNode.name).toBe("caller")
   })
 })
