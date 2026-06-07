@@ -6,6 +6,7 @@ Do NOT use this tool when a narrower graph lookup is enough. Prefer `chimera_sea
 
 Parameter rules:
 - Provide one of `query`, `symbol`, `nodeID`, `filePath`, or use `mode=arch`.
+- Existing explicit `filePath` values are synced from the filesystem before context and selected-impact resolution, even when they are not yet tracked by git.
 - `mode=arch` builds architecture-oriented context.
 - `includeCode` defaults to true; disable it for metadata-only context.
 - `maxNodes` defaults to 30 and is capped at 100.

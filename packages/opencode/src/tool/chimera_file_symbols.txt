@@ -6,6 +6,7 @@ Do NOT use this tool for open-ended search. Use `chimera_search` for query-based
 
 Parameter rules:
 - `filePath` is required and may be absolute or project-relative.
+- Existing explicit `filePath` values are synced from the filesystem before symbol resolution, even when the file is not yet tracked by git.
 - `range` is meaningful only with `filePath`; it narrows results to intersecting symbols.
 - `kind` filters node kind.
 - `limit` defaults to 10 and is capped at 50.

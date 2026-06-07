@@ -6,6 +6,7 @@ Do NOT pass file paths to this tool. If you need to audit explicit files, symbol
 
 Parameter rules:
 - `limit` controls how many candidate obligations are returned.
+- Recent provenance files that still exist but are missing graph records or symbols are synced from the filesystem before audit classification.
 - `refresh` defaults to true. Set it to false only when the current graph state is known to be sufficient.
 
 Common calls:

@@ -3,6 +3,7 @@ import {
   CodeGraph,
   NODE_KINDS,
   diffFileSemantics as codegraphDiffFileSemantics,
+  diffNodeLanguageSignals as codegraphDiffNodeLanguageSignals,
   diffNodeSemantics as codegraphDiffNodeSemantics,
   diffRelations as codegraphDiffRelations,
   type BuildContextOptions,
@@ -16,6 +17,8 @@ import {
   type FrozenRelation,
   type FrozenSemanticObject,
   type IndexProgress,
+  type LanguageAwareSignal,
+  type LanguageAwareSignalDiffInput,
   type Node as CodeGraphNode,
   type NodeSemanticDiff,
   type NodeSemanticInfo,
@@ -47,6 +50,8 @@ export type {
   FrozenRelation,
   FrozenSemanticObject,
   IndexProgress as CodeGraphIndexProgress,
+  LanguageAwareSignal,
+  LanguageAwareSignalDiffInput,
   NodeSemanticDiff,
   NodeSemanticInfo,
   RangeQueryOptions,
@@ -62,6 +67,7 @@ export type {
 
 export { NODE_KINDS }
 export const diffNodeSemantics = codegraphDiffNodeSemantics
+export const diffNodeLanguageSignals = codegraphDiffNodeLanguageSignals
 export const diffFileSemantics = codegraphDiffFileSemantics
 export const diffRelations = codegraphDiffRelations
 export const getFileSemanticInfo = CodeGraph.getFileSemanticInfo

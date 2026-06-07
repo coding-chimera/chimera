@@ -212,6 +212,20 @@ describe("tool.chimera", () => {
     }),
   )
 
+  it.instance("syncs an existing explicit file path before listing symbols", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "baseline.ts"), "export const baseline = 1\n"))
+      yield* runStatus({ refresh: true })
+      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "late-symbol.ts"), "export function lateSymbol() { return 1 }\n"))
+
+      const result = yield* runFileSymbols({ filePath: "late-symbol.ts", refresh: false })
+
+      expect(result.title).toBe("Chimera file symbols")
+      expect(result.metadata.results.some((item) => item.node.name === "lateSymbol")).toBe(true)
+    }),
+  )
+
   it.instance("analyzes symbol impact seeds", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
@@ -274,6 +288,21 @@ describe("tool.chimera", () => {
       expect(result.metadata.classifications[0].classification).toBe("source")
       expect(result.metadata.obligations.length).toBeGreaterThan(0)
       expect(result.metadata.obligations[0].causeChain.length).toBeGreaterThan(0)
+    }),
+  )
+
+  it.instance("syncs an existing explicit file path before auditing", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "baseline.ts"), "export const baseline = 1\n"))
+      yield* runStatus({ refresh: true })
+      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "late-audit.ts"), "export function lateAudit() { return 1 }\n"))
+
+      const result = yield* runAudit({ filePath: "late-audit.ts", refresh: false })
+
+      expect(result.title).toBe("Chimera audit")
+      expect(result.metadata.changedFiles).toContain("late-audit.ts")
+      expect(result.metadata.seedNodes.some((node) => node?.payload.name === "lateAudit")).toBe(true)
     }),
   )
 
@@ -451,6 +480,69 @@ describe("tool.chimera", () => {
       expect(fact?.evidence.relationDelta?.beforeRelations.some((relation) => relation.payload.otherNode.name === "render")).toBe(true)
       expect(fact?.evidence.relationDelta?.afterRelations.some((relation) => relation.payload.otherNode.name === "render")).toBe(true)
       expect(result.output).toContain("relation_delta: +0 -0 before:")
+    }),
+  )
+
+  it.instance("downgrades local-only TS body changes with CodeGraph language signals", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const base = path.join(test.directory, "body-local.ts")
+      yield* Effect.promise(() => fs.writeFile(base, "export function calculate(value: number) {\n  const local = value + 1\n  return value\n}\n"))
+
+      yield* trackWrite({
+        filePath: base,
+        content: "export function calculate(value: number) {\n  const local = value + 2\n  return value\n}\n",
+        callID: "call_chimera_language_signal_local_only",
+        patch: `--- body-local.ts
++++ body-local.ts
+@@ -1,4 +1,4 @@
+ export function calculate(value: number) {
+-  const local = value + 1
++  const local = value + 2
+   return value
+ }
+`,
+      })
+
+      const result = yield* runAuditRecent({ refresh: false })
+      const fact = result.metadata.changeFacts.find((item) => item.subjectKind === "body" && item.filePath === "body-local.ts")
+
+      expect(result.metadata.source).toBe("recent_provenance")
+      expect(fact?.confidence).toBeLessThan(0.5)
+      expect(fact?.evidence.rule).toBe("codegraph.language.body.local_only")
+      expect(fact?.evidence.languageSignals?.some((signal) => signal.kind === "local_only_change")).toBe(true)
+      expect(result.output).toContain("codegraph_language_signal:local_only_change")
+    }),
+  )
+
+  it.instance("upgrades caller-visible TS body changes with CodeGraph language signals", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const base = path.join(test.directory, "body-visible.ts")
+      yield* Effect.promise(() => fs.writeFile(base, "export function calculate(value: number) {\n  return value + 1\n}\n"))
+
+      yield* trackWrite({
+        filePath: base,
+        content: "export function calculate(value: number) {\n  return value + 2\n}\n",
+        callID: "call_chimera_language_signal_return_value",
+        patch: `--- body-visible.ts
++++ body-visible.ts
+@@ -1,3 +1,3 @@
+ export function calculate(value: number) {
+-  return value + 1
++  return value + 2
+ }
+`,
+      })
+
+      const result = yield* runAuditRecent({ refresh: false })
+      const fact = result.metadata.changeFacts.find((item) => item.subjectKind === "body" && item.filePath === "body-visible.ts")
+
+      expect(result.metadata.source).toBe("recent_provenance")
+      expect(fact?.confidence).toBeGreaterThanOrEqual(0.8)
+      expect(fact?.evidence.rule).toBe("codegraph.language.body.caller_visible")
+      expect(fact?.evidence.languageSignals?.some((signal) => signal.kind === "return_value_changed")).toBe(true)
+      expect(result.output).toContain("codegraph_language_signal:return_value_changed")
     }),
   )
 

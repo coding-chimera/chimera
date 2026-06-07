@@ -2,6 +2,7 @@ import path from "path"
 import { createHash } from "crypto"
 import {
   diffFileSemantics,
+  diffNodeLanguageSignals,
   diffNodeSemantics,
   diffRelations,
   getFileSemanticInfo,
@@ -12,6 +13,7 @@ import {
   type FileSemanticSignal,
   type FrozenRelation,
   type FrozenSemanticObject,
+  type LanguageAwareSignal,
   type NodeSemanticDiff,
   type RelationDeltaEvidence,
   type SourceRange,
@@ -61,6 +63,7 @@ export type ChangeFactEvidence = {
   afterNode?: FrozenSemanticObject | null
   semanticDiff?: NodeSemanticDiff
   relationDelta?: RelationDeltaEvidence
+  languageSignals?: LanguageAwareSignal[]
   semanticSnapshots?: {
     version: 1
     source: "chimera_semantic_snapshot"
@@ -370,14 +373,65 @@ function isCallableNode(node: FrozenSemanticObject) {
   return node.payload.semantic?.attributes.isCallable ?? CALLABLE_KINDS.has(node.payload.kind)
 }
 
+function languageSignalSignals(signals: LanguageAwareSignal[] | undefined) {
+  return (signals ?? []).flatMap((signal) => [
+    `codegraph_language_signal:${signal.kind}`,
+    `language:${signal.language}`,
+    `source:${signal.source}`,
+    `quality:${signal.quality}`,
+    ...signal.signals,
+  ])
+}
+
+function nodeLanguageSignals(node: FrozenSemanticObject | null | undefined) {
+  return node?.payload.languageSignals ?? []
+}
+
+function bodyLanguageSignals(before: FrozenSemanticObject | null | undefined, after: FrozenSemanticObject | null | undefined, hunk: SourceHunk | undefined) {
+  return diffNodeLanguageSignals({ before, after, hunk: hunk ? { oldRange: hunk.oldRange, newRange: hunk.newRange } : undefined })
+}
+
+function bodyLanguageContext(node: FrozenSemanticObject | null | undefined) {
+  const context = new Set(["constructor_like", "override_like", "route_handler_like"])
+  return nodeLanguageSignals(node).filter((signal) => context.has(signal.kind))
+}
+
+function bodySignalConfidence(signals: LanguageAwareSignal[], node: FrozenSemanticObject | null | undefined) {
+  const kinds = new Set(signals.map((signal) => signal.kind))
+  if (kinds.has("local_only_change")) return 0.25
+  if (kinds.has("unknown_body_effect")) return 0.5
+  const callerVisible = signals.length > 0
+  if (callerVisible && bodyLanguageContext(node).length > 0) return 0.9
+  if (callerVisible) return 0.85
+  return 0.5
+}
+
+function bodySignalRule(signals: LanguageAwareSignal[]) {
+  const kinds = new Set(signals.map((signal) => signal.kind))
+  if (kinds.has("local_only_change")) return "codegraph.language.body.local_only"
+  if (kinds.has("unknown_body_effect")) return "codegraph.language.body.unknown"
+  if (signals.length > 0) return "codegraph.language.body.caller_visible"
+  return "range.node.body"
+}
+
+function bodySignalReason(signals: LanguageAwareSignal[], node: FrozenSemanticObject | null | undefined, fallback: string) {
+  if (signals.length === 0) return fallback
+  const context = bodyLanguageContext(node).map((signal) => signal.kind)
+  return [
+    signals.map((signal) => signal.reason).join("; "),
+    context.length ? `node context: ${context.join(", ")}` : undefined,
+  ].filter(Boolean).join("; ")
+}
+
 function isContainerNode(node: FrozenSemanticObject) {
   return node.payload.semantic?.attributes.isContainer ?? CONTAINER_KINDS.has(node.payload.kind)
 }
 
 function semanticSignals(node: FrozenSemanticObject) {
   const semantic = node.payload.semantic
-  if (!semantic) return [`node_kind:${node.payload.kind}`]
-  return [`codegraph_role:${semantic.role}`, `codegraph_subject:${semantic.changeSubject}`]
+  const languageSignals = languageSignalSignals(node.payload.languageSignals)
+  if (!semantic) return [`node_kind:${node.payload.kind}`, ...languageSignals]
+  return [`codegraph_role:${semantic.role}`, `codegraph_subject:${semantic.changeSubject}`, ...languageSignals]
 }
 
 function semanticDiffSignals(diff: NodeSemanticDiff) {
@@ -458,6 +512,7 @@ function evidence(input: {
   afterNode?: FrozenSemanticObject | null
   semanticDiff?: NodeSemanticDiff
   relationDelta?: RelationDeltaEvidence
+  languageSignals?: LanguageAwareSignal[]
   signals: string[]
 }): ChangeFactEvidence {
   return {
@@ -479,6 +534,7 @@ function evidence(input: {
     afterNode: input.afterNode,
     semanticDiff: input.semanticDiff,
     relationDelta: input.relationDelta,
+    languageSignals: input.languageSignals,
     signals: input.signals,
   }
 }
@@ -499,6 +555,7 @@ function fact(input: {
   hunk?: SourceHunk
   semanticDiff?: NodeSemanticDiff
   relationDelta?: RelationDeltaEvidence
+  languageSignals?: LanguageAwareSignal[]
   signals: string[]
 }): ChangeFact {
   const key = input.node ? nodeKey(input.node) : undefined
@@ -534,6 +591,7 @@ function fact(input: {
       afterNode: input.afterNode,
       semanticDiff: input.semanticDiff,
       relationDelta: input.relationDelta,
+      languageSignals: input.languageSignals,
       signals: input.signals,
     }),
     createdAt: input.record.finishedAt,
@@ -684,6 +742,7 @@ export function classifyChangeRecord(input: {
           emitted.add(nodeKey(after))
           continue
         }
+        const languageSignals = isBody ? bodyLanguageSignals(before, after, hunk) : []
         facts.push(fact({
           record,
           filePath: diff.filePath,
@@ -693,16 +752,17 @@ export function classifyChangeRecord(input: {
           afterNode: after,
           changeKind: "modify",
           subjectKind: isBody ? "body" : subject,
-          confidence: isBody ? 0.5 : 0.85,
-          rule: isBody ? "range.node.body" : `range.node.${subject}`,
+          confidence: isBody ? bodySignalConfidence(languageSignals, after) : 0.85,
+          rule: isBody ? bodySignalRule(languageSignals) : `range.node.${subject}`,
           confidenceReason: isBody
-            ? "changed hunk intersects callable node but CodeGraph semantic diff fields were stable"
+            ? bodySignalReason(languageSignals, after, "changed hunk intersects callable node but CodeGraph semantic diff fields were stable")
             : "changed hunk intersects a CodeGraph node",
           status,
           hunk,
           semanticDiff,
           relationDelta: relationDeltaFor(before, after),
-          signals: semanticSignals(after),
+          languageSignals: isBody ? languageSignals : undefined,
+          signals: isBody ? [...semanticSignals(after), ...languageSignalSignals(languageSignals)] : semanticSignals(after),
         }))
         emitted.add(nodeKey(after))
       }
@@ -733,6 +793,7 @@ export function classifyChangeRecord(input: {
             continue
           }
           if (isCallableNode(after) && !hasBoundaryNode) {
+            const languageSignals = bodyLanguageSignals(before, after, hunk)
             facts.push(fact({
               record,
               filePath: diff.filePath,
@@ -742,14 +803,15 @@ export function classifyChangeRecord(input: {
               afterNode: after,
               changeKind: "modify",
               subjectKind: "body",
-              confidence: 0.5,
-              rule: "range.node.body",
-              confidenceReason: "deleted changed lines intersect callable node but CodeGraph semantic diff fields were stable",
+              confidence: bodySignalConfidence(languageSignals, after),
+              rule: bodySignalRule(languageSignals),
+              confidenceReason: bodySignalReason(languageSignals, after, "deleted changed lines intersect callable node but CodeGraph semantic diff fields were stable"),
               status,
               hunk,
               semanticDiff,
               relationDelta: relationDeltaFor(before, after),
-              signals: semanticSignals(after),
+              languageSignals,
+              signals: [...semanticSignals(after), ...languageSignalSignals(languageSignals)],
             }))
           }
           continue
