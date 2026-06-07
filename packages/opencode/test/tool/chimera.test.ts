@@ -362,6 +362,98 @@ describe("tool.chimera", () => {
     }),
   )
 
+  it.instance("audits override redirect through added after-graph relation evidence", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const implementation = path.join(test.directory, "implementation.ts")
+      yield* Effect.promise(() =>
+        fs.writeFile(
+          path.join(test.directory, "contract.ts"),
+          "export class TaskRunner {\n  run() { return 0 }\n}\n",
+        ),
+      )
+      yield* Effect.promise(() =>
+        fs.writeFile(
+          implementation,
+          "import { TaskRunner } from './contract'\nexport class Runner extends TaskRunner {\n  other() { return 1 }\n}\n",
+        ),
+      )
+
+      yield* trackWrite({
+        filePath: implementation,
+        content: "import { TaskRunner } from './contract'\nexport class Runner extends TaskRunner {\n  run() { return 1 }\n}\n",
+        callID: "call_chimera_relation_delta_override_redirect",
+        patch: `--- implementation.ts
++++ implementation.ts
+@@ -1,4 +1,4 @@
+ import { TaskRunner } from './contract'
+ export class Runner extends TaskRunner {
+-  other() { return 1 }
++  run() { return 1 }
+ }
+`,
+      })
+
+      const result = yield* runAuditRecent({ refresh: false })
+      const fact = result.metadata.changeFacts.find((item) =>
+        item.evidence.relationDelta?.addedRelations.some((relation) =>
+          relation.payload.relation === "CalledBy" && relation.payload.otherNode.qualifiedName.includes("TaskRunner"),
+        ),
+      )
+      const candidate = result.metadata.obligations.find((item) =>
+        item.evidence === "codegraph:relation_delta:added:CalledBy" &&
+        item.causeChain.some((link) => link.type === "added_relation" && link.evidence.includes("CalledBy")),
+      )
+
+      expect(result.metadata.source).toBe("recent_provenance")
+      expect(fact?.evidence.relationDelta?.addedRelations.some((relation) => relation.payload.focalNode.qualifiedName.includes("Runner"))).toBe(true)
+      expect(candidate?.target).toContain("TaskRunner")
+      expect(candidate?.causeChain.map((link) => link.type)).toContain("added_relation")
+      expect(result.output).toContain("codegraph:added_relation:CalledBy")
+    }),
+  )
+
+  it.instance("preserves caller relation evidence for signature deltas", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const base = path.join(test.directory, "base.ts")
+      yield* Effect.promise(() => fs.writeFile(base, "export function format(value: string) { return value.trim() }\n"))
+      yield* Effect.promise(() =>
+        fs.writeFile(
+          path.join(test.directory, "consumer.ts"),
+          "import { format } from './base'\nexport function render() { return format('x') }\n",
+        ),
+      )
+
+      yield* trackWrite({
+        filePath: base,
+        content: "export function format(value: string, fallback = '') { return (value || fallback).trim() }\n",
+        callID: "call_chimera_relation_delta_signature",
+        patch: `--- base.ts
++++ base.ts
+@@ -1,1 +1,1 @@
+-export function format(value: string) { return value.trim() }
++export function format(value: string, fallback = '') { return (value || fallback).trim() }
+`,
+      })
+
+      const result = yield* runAuditRecent({ refresh: false })
+      const fact = result.metadata.changeFacts.find((item) =>
+        item.subjectKind === "signature" &&
+        item.evidence.semanticDiff?.changedFields.includes("signature") &&
+        item.evidence.relationDelta?.beforeRelations.some((relation) => relation.payload.relation === "CalledBy") &&
+        item.evidence.relationDelta?.afterRelations.some((relation) => relation.payload.relation === "CalledBy"),
+      )
+
+      expect(result.metadata.source).toBe("recent_provenance")
+      expect(fact?.evidence.relationDelta?.addedRelations).toHaveLength(0)
+      expect(fact?.evidence.relationDelta?.removedRelations).toHaveLength(0)
+      expect(fact?.evidence.relationDelta?.beforeRelations.some((relation) => relation.payload.otherNode.name === "render")).toBe(true)
+      expect(fact?.evidence.relationDelta?.afterRelations.some((relation) => relation.payload.otherNode.name === "render")).toBe(true)
+      expect(result.output).toContain("relation_delta: +0 -0 before:")
+    }),
+  )
+
   it.instance(
     "falls back to git diff changes when no recent provenance exists",
     () =>
