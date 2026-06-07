@@ -553,10 +553,53 @@ function bounded(value: number | undefined, fallback: number, max: number) {
 }
 
 function graphPath(root: string, base: string, filePath: string) {
+  return graphFile(root, base, filePath).graphPath
+}
+
+type GraphFileSeed = {
+  absolutePath: string
+  graphPath: string
+  insideGraph: boolean
+}
+
+function graphFile(root: string, base: string, filePath: string): GraphFileSeed {
   const absolute = path.isAbsolute(filePath) ? filePath : path.resolve(base, filePath)
   const relative = path.relative(root, absolute).replaceAll("\\", "/")
-  if (relative && !relative.startsWith("..") && !path.isAbsolute(relative)) return relative
-  return filePath.replaceAll("\\", "/")
+  const insideGraph = relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative)
+  return {
+    absolutePath: absolute,
+    graphPath: insideGraph ? relative : filePath.replaceAll("\\", "/"),
+    insideGraph,
+  }
+}
+
+function uniqueGraphFiles(files: GraphFileSeed[]) {
+  return [...new Map(files.map((file) => [file.graphPath, file])).values()]
+}
+
+async function existingGraphFiles(files: GraphFileSeed[]) {
+  const checked = await Promise.all(
+    uniqueGraphFiles(files)
+      .filter((file) => file.insideGraph)
+      .map(async (file) => ({ file, exists: await Bun.file(file.absolutePath).exists() })),
+  )
+  return checked.flatMap((item) => (item.exists ? [item.file] : []))
+}
+
+async function syncExistingGraphFiles(state: ProjectGraphState, files: GraphFileSeed[], mode: "force" | "missing" = "force") {
+  const existing = await existingGraphFiles(files)
+  const indexed = mode === "force"
+    ? existing
+    : existing.filter((file) => {
+        const hasFileRecord = state.graph.files().some((record) => record.path === file.graphPath)
+        return !hasFileRecord || state.graph.nodesInFile(file.graphPath).length === 0
+      })
+  if (indexed.length > 0) await state.graph.syncFiles(indexed.map((file) => file.absolutePath))
+  return indexed.map((file) => file.graphPath)
+}
+
+function graphFilesFromPaths(root: string, base: string, files: string[]) {
+  return uniqueGraphFiles(files.map((file) => graphFile(root, base, file)))
 }
 
 function formatNode(node: CodeGraphNode) {
@@ -1251,9 +1294,8 @@ const buildAudit = Effect.fn("ChimeraTool.buildAudit")(function* (params: BuildA
   const state = options.state ?? (options.ctx ? yield* openProjectGraphForTool(options.ctx, params.refresh !== false) : yield* Chimera.openProjectGraph({ sync: params.refresh !== false }))
   const records = yield* provenanceRecords(state.projectRoot, state.artifact)
   const recent = latestSuccessfulProvenance(records)
-  const explicitFiles = uniqueStrings([...(params.files ?? []), ...(params.filePath ? [params.filePath] : [])]).map((file) =>
-    graphPath(state.projectRoot, instance.directory, file),
-  )
+  const explicitFileSeeds = graphFilesFromPaths(state.projectRoot, instance.directory, [...(params.files ?? []), ...(params.filePath ? [params.filePath] : [])])
+  const explicitFiles = explicitFileSeeds.map((file) => file.graphPath)
   const recentFiles = params.recent === false || explicitFiles.length || params.symbol || params.nodeID ? [] : uniqueStrings(provenanceGraphFiles(recent))
   const gitFiles = params.recent === false || explicitFiles.length || params.symbol || params.nodeID || recentFiles.length ? [] : yield* gitStatusFiles(state.projectRoot)
   const changedFiles = explicitFiles.length ? explicitFiles : recentFiles.length ? recentFiles : gitFiles
@@ -1261,6 +1303,11 @@ const buildAudit = Effect.fn("ChimeraTool.buildAudit")(function* (params: BuildA
     explicitFiles.length || params.symbol || params.nodeID ? "input" : recentFiles.length ? "recent_provenance" : "git_diff"
   const depth = bounded(params.depth, 2, 5)
   const limit = bounded(params.limit, 30, 100)
+  if (explicitFileSeeds.length > 0) {
+    yield* Effect.promise(() => syncExistingGraphFiles(state, explicitFileSeeds, "force")).pipe(Effect.orDie)
+  } else if (recentFiles.length > 0) {
+    yield* Effect.promise(() => syncExistingGraphFiles(state, graphFilesFromPaths(state.projectRoot, state.projectRoot, recentFiles), "missing")).pipe(Effect.orDie)
+  }
   const snapshot = state.graph.snapshot()
   const storedChangeFacts = source === "recent_provenance" && recent ? yield* Effect.promise(() => readChangeFacts(state.projectRoot, [recent.id])) : []
   const ephemeralRecord = storedChangeFacts.length
@@ -1414,9 +1461,12 @@ export const ChimeraFileSymbolsTool = Tool.define<typeof FileSymbolsParameters, 
         const instance = yield* InstanceState.context
         const state = yield* openProjectGraphForTool(ctx as Tool.Context, params.refresh !== false)
         const limit = bounded(params.limit, 10, 50)
-        const snapshot = state.graph.snapshot()
         const kinds = params.kind ? [params.kind] : undefined
-        const normalizedFile = graphPath(state.projectRoot, instance.directory, params.filePath)
+        const file = graphFile(state.projectRoot, instance.directory, params.filePath)
+        yield* Effect.promise(() => syncExistingGraphFiles(state, [file], "force")).pipe(Effect.orDie)
+        const fileExists = yield* Effect.promise(() => Bun.file(file.absolutePath).exists()).pipe(Effect.orDie)
+        const snapshot = state.graph.snapshot()
+        const normalizedFile = file.graphPath
         const results = (params.range
           ? state.graph.nodesIntersectingRange(normalizedFile, params.range, { kinds, smallestOnly: false })
           : state.graph.nodesInFile(normalizedFile).filter((node) => !params.kind || node.kind === params.kind)
@@ -1428,6 +1478,9 @@ export const ChimeraFileSymbolsTool = Tool.define<typeof FileSymbolsParameters, 
           title: "Chimera file symbols",
           output: [
             `Static graph evidence (${results.length} result${results.length === 1 ? "" : "s"}):`,
+            ...(results.length === 0 && file.insideGraph && fileExists
+              ? ["- No indexed symbols found. File exists; possible unsupported parser, excluded path, or non-source file."]
+              : []),
             ...results.map((result) => formatNode(result.node)),
           ].join("\n"),
           metadata: {
@@ -1460,8 +1513,10 @@ export const ChimeraImpactTool = Tool.define<typeof ImpactParameters, ImpactMeta
         const state = yield* openProjectGraphForTool(ctx as Tool.Context, params.refresh !== false)
         const depth = bounded(params.depth, 2, 5)
         const limit = bounded(params.limit, 20, 100)
+        const file = params.filePath ? graphFile(state.projectRoot, instance.directory, params.filePath) : undefined
+        if (file) yield* Effect.promise(() => syncExistingGraphFiles(state, [file], "force")).pipe(Effect.orDie)
         const snapshot = state.graph.snapshot()
-        const normalizedFile = params.filePath ? graphPath(state.projectRoot, instance.directory, params.filePath) : undefined
+        const normalizedFile = file?.graphPath
         const kinds = params.kind ? [params.kind] : undefined
         const seedNodes = uniqueNodes(
           params.nodeID
@@ -1825,7 +1880,9 @@ export const ChimeraContextTool = Tool.define<typeof ContextParameters, ContextM
         const state = yield* openProjectGraphForTool(ctx as Tool.Context, params.refresh !== false)
         const mode: ContextMetadata["mode"] = params.mode ?? "search"
         const node = params.nodeID ? state.graph.node(params.nodeID) : undefined
-        const normalizedFile = params.filePath ? graphPath(state.projectRoot, instance.directory, params.filePath) : undefined
+        const file = params.filePath ? graphFile(state.projectRoot, instance.directory, params.filePath) : undefined
+        if (file) yield* Effect.promise(() => syncExistingGraphFiles(state, [file], "force")).pipe(Effect.orDie)
+        const normalizedFile = file?.graphPath
         const query =
           params.query ??
           params.symbol ??

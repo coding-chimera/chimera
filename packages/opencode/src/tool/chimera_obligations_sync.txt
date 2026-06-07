@@ -7,6 +7,7 @@ Do NOT use this tool to claim, resolve, or ignore an existing obligation. Use th
 Parameter rules:
 - With no explicit seed, sync from the latest successful Chimera tool mutation or git diff fallback.
 - Provide `files`, `filePath`, `symbol`, or `nodeID` to sync explicit audit seeds.
+- Existing explicit `files` / `filePath` seeds are synced from the filesystem before audit seed resolution, even when they are not yet tracked by git.
 - Use `range` only with `filePath`.
 - `depth` and `limit` bound audit traversal and output size.
 - `refresh` controls whether stale graph signals may trigger a sync.

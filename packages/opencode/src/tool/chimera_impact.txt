@@ -8,6 +8,7 @@ Parameter rules:
 - Prefer `nodeID` when you have an exact CodeGraph node id.
 - Use `symbol` when you know a name but not its node id.
 - Use `filePath` for file-level impact; combine with `range` only when a source range is relevant.
+- Existing explicit `filePath` seeds are synced from the filesystem before impact seed resolution, even when they are not yet tracked by git.
 - `depth` defaults to 2 and is capped at 5.
 - `limit` defaults to 20 and is capped at 100.
 - `refresh` controls whether stale graph signals may trigger a sync.

@@ -6,6 +6,7 @@ Do NOT use this as the default post-mutation audit. Use `chimera_audit_recent` a
 
 Parameter rules:
 - Provide at least one of `files`, `filePath`, `symbol`, or `nodeID`.
+- Existing explicit `files` / `filePath` seeds are synced from the filesystem before audit seed resolution, even when they are not yet tracked by git.
 - Use `range` only with `filePath`.
 - Use `kind` only when resolving seed symbols needs a node-kind filter.
 - `depth` defaults to 2 and is capped at 5.
