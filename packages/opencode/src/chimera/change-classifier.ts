@@ -563,9 +563,15 @@ export function classifyChangeRecord(input: {
   const diffs = metadataDiffs(record)
   const facts: ChangeFact[] = []
 
-  const relationDeltaFor = (before: FrozenSemanticObject | null | undefined, after: FrozenSemanticObject | null | undefined) => {
+  const relationDeltaFor = (
+    before: FrozenSemanticObject | null | undefined,
+    after: FrozenSemanticObject | null | undefined,
+    options: { includeStable?: boolean } = {},
+  ) => {
     const delta = diffRelations(relationsForNode(beforeRelations, before), relationsForNode(afterRelations, after))
-    return hasRelationDelta(delta) ? delta : undefined
+    if (hasRelationDelta(delta)) return delta
+    if (options.includeStable && (delta.beforeRelations.length > 0 || delta.afterRelations.length > 0)) return delta
+    return undefined
   }
 
   for (const file of record.files) {
@@ -666,7 +672,7 @@ export function classifyChangeRecord(input: {
             status,
             hunk,
             semanticDiff,
-            relationDelta: relationDeltaFor(before, after),
+            relationDelta: relationDeltaFor(before, after, { includeStable: true }),
             signals: [...semanticDiffSignals(semanticDiff), ...semanticSignals(after)],
           }))
           emitted.add(nodeKey(after))
@@ -721,7 +727,7 @@ export function classifyChangeRecord(input: {
               status,
               hunk,
               semanticDiff,
-              relationDelta: relationDeltaFor(before, after),
+              relationDelta: relationDeltaFor(before, after, { includeStable: true }),
               signals: [...semanticDiffSignals(semanticDiff), ...semanticSignals(after)],
             }))
             continue
