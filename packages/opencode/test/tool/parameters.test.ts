@@ -108,20 +108,30 @@ describe("tool parameters", () => {
   })
 
   describe("edit", () => {
-    test("accepts all four fields", () => {
-      expect(parse(Edit, { filePath: "/a", oldString: "x", newString: "y", replaceAll: true })).toEqual({
+    test("accepts hashline edit fields", () => {
+      expect(
+        parse(Edit, {
+          filePath: "/a",
+          edits: [{ op: "replace", pos: "1#AB", lines: "next" }],
+          rename: "/b",
+          expectedFileHash: "hash",
+        }),
+      ).toEqual({
         filePath: "/a",
-        oldString: "x",
-        newString: "y",
-        replaceAll: true,
+        edits: [{ op: "replace", pos: "1#AB", lines: "next" }],
+        rename: "/b",
+        expectedFileHash: "hash",
       })
     })
-    test("replaceAll is optional", () => {
-      const parsed = parse(Edit, { filePath: "/a", oldString: "x", newString: "y" })
-      expect(parsed.replaceAll).toBeUndefined()
+    test("delete is optional", () => {
+      const parsed = parse(Edit, { filePath: "/a", edits: [] })
+      expect(parsed.delete).toBeUndefined()
     })
     test("rejects missing filePath", () => {
-      expect(accepts(Edit, { oldString: "x", newString: "y" })).toBe(false)
+      expect(accepts(Edit, { edits: [] })).toBe(false)
+    })
+    test("rejects legacy oldString shape", () => {
+      expect(accepts(Edit, { filePath: "/a", oldString: "x", newString: "y" })).toBe(false)
     })
   })
 

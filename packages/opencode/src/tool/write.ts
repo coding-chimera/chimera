@@ -88,7 +88,8 @@ export const WriteTool = Tool.define(
             }),
           )
 
-          let output = `Wrote file successfully.\n\n${TOOL_MUTATION_AUDIT_HINT}`
+          const lineCount = contentNew === "" ? 0 : contentNew.replace(/\n$/, "").split(/\r?\n/).length
+          let output = `File written successfully. ${lineCount} lines written.\n\n${TOOL_MUTATION_AUDIT_HINT}`
           yield* lsp.touchFile(filepath, "document")
           const diagnostics = yield* lsp.diagnostics()
           const normalizedFilepath = AppFileSystem.normalizePath(filepath)
