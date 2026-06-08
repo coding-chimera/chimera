@@ -70,6 +70,27 @@ export type AuditRunInput = {
   payload: unknown
 }
 
+export type PredesignRunInput = {
+  sessionID: string
+  messageID: string
+  callID?: string
+  agent: string
+  intent: string
+  files: string[]
+  seedNodes: unknown[]
+  impactedNodes: unknown[]
+  fileDependents: string[]
+  evidence: unknown[]
+  snapshotRevision: string
+  payload: unknown
+}
+
+export type PredesignRunRecord = PredesignRunInput & {
+  schemaVersion: 1
+  id: string
+  createdAt: string
+}
+
 const CHIMERA_STORAGE_EXTENSION: StorageExtension = {
   id: "chimera",
   namespace: "chimera_",
@@ -219,6 +240,31 @@ CREATE INDEX IF NOT EXISTS chimera_semantic_snapshot_ref_object_hash_idx ON chim
 CREATE INDEX IF NOT EXISTS chimera_semantic_snapshot_ref_role_rank_idx ON chimera_semantic_snapshot_ref(role, rank);
 `,
     },
+    {
+      version: 2,
+      description: "Create Chimera predesign evidence table",
+      sql: `
+CREATE TABLE IF NOT EXISTS chimera_predesign_run (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  message_id TEXT NOT NULL,
+  call_id TEXT,
+  agent TEXT NOT NULL,
+  intent TEXT NOT NULL,
+  files_json TEXT NOT NULL,
+  seed_nodes_json TEXT NOT NULL,
+  impacted_nodes_json TEXT NOT NULL,
+  file_dependents_json TEXT NOT NULL,
+  evidence_json TEXT NOT NULL,
+  snapshot_revision TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS chimera_predesign_run_session_created_idx ON chimera_predesign_run(session_id, created_at);
+CREATE INDEX IF NOT EXISTS chimera_predesign_run_snapshot_idx ON chimera_predesign_run(snapshot_revision);
+`,
+    },
   ],
 }
 
@@ -332,7 +378,7 @@ async function readJson<T>(file: string, fallback: T) {
   }
 }
 
-async function appendJsonl(file: string, record: ToolMutationRecord) {
+async function appendJsonl<T>(file: string, record: T) {
   await mkdir(path.dirname(file), { recursive: true })
   await appendFile(file, `${safeJson(record)}\n`, "utf8")
 }
@@ -764,6 +810,107 @@ export async function recordAuditRun(projectRoot: string, input: AuditRunInput) 
     return true
   })
   return id
+}
+
+export async function recordPredesignRun(projectRoot: string, artifact: string, input: PredesignRunInput) {
+  const createdAt = new Date().toISOString()
+  const inputPayload = safeJson(input.payload)
+  const record: PredesignRunRecord = {
+    schemaVersion: 1,
+    id: `predesign_${createHash("sha256").update(`${createdAt}:${inputPayload}`).digest("hex").slice(0, 16)}`,
+    ...input,
+    createdAt,
+  }
+  const payload = safeJson(record)
+  const wrote = await withDb(projectRoot, (db) => {
+    db.prepare(`
+      INSERT OR REPLACE INTO chimera_predesign_run (
+        id,
+        session_id,
+        message_id,
+        call_id,
+        agent,
+        intent,
+        files_json,
+        seed_nodes_json,
+        impacted_nodes_json,
+        file_dependents_json,
+        evidence_json,
+        snapshot_revision,
+        payload_json,
+        created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      record.id,
+      record.sessionID,
+      record.messageID,
+      record.callID ?? null,
+      record.agent,
+      record.intent,
+      safeJson(record.files),
+      safeJson(record.seedNodes),
+      safeJson(record.impactedNodes),
+      safeJson(record.fileDependents),
+      safeJson(record.evidence),
+      record.snapshotRevision,
+      payload,
+      record.createdAt,
+    )
+    return true
+  })
+  if (!wrote) await appendJsonl(artifact, record)
+  return record
+}
+
+export async function readPredesignRuns(projectRoot: string, artifact: string, options: { sessionID?: string; limit?: number } = {}) {
+  const legacy = await readJsonl<PredesignRunRecord>(artifact)
+  const limit = Math.max(1, Math.min(100, Math.floor(options.limit ?? 20)))
+  const records = await withDb(projectRoot, (db) => {
+    for (const record of legacy) {
+      db.prepare(`
+        INSERT OR IGNORE INTO chimera_predesign_run (
+          id,
+          session_id,
+          message_id,
+          call_id,
+          agent,
+          intent,
+          files_json,
+          seed_nodes_json,
+          impacted_nodes_json,
+          file_dependents_json,
+          evidence_json,
+          snapshot_revision,
+          payload_json,
+          created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        record.id,
+        record.sessionID,
+        record.messageID,
+        record.callID ?? null,
+        record.agent,
+        record.intent,
+        safeJson(record.files),
+        safeJson(record.seedNodes),
+        safeJson(record.impactedNodes),
+        safeJson(record.fileDependents),
+        safeJson(record.evidence),
+        record.snapshotRevision,
+        safeJson(record),
+        record.createdAt,
+      )
+    }
+    const rows = options.sessionID
+      ? db.prepare("SELECT payload_json FROM chimera_predesign_run WHERE session_id = ? ORDER BY created_at DESC, id DESC LIMIT ?").all(options.sessionID, limit)
+      : db.prepare("SELECT payload_json FROM chimera_predesign_run ORDER BY created_at DESC, id DESC LIMIT ?").all(limit)
+    return (rows as PayloadRow[]).flatMap((row) => parseJson<PredesignRunRecord>(row.payload_json))
+  })
+  const fallback = legacy
+    .filter((record) => !options.sessionID || record.sessionID === options.sessionID)
+    .toSorted((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))
+    .slice(0, limit)
+  return records ?? fallback
 }
 
 function writeObligationToDb<T extends ObligationLike>(db: ChimeraDb, item: T, runID?: string, mode: "ignore" | "replace" = "replace") {

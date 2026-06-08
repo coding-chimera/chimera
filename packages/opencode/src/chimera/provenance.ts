@@ -5,10 +5,11 @@ import type { Interface as BusInterface } from "@/bus"
 import { BusEvent } from "@/bus/bus-event"
 import { InstanceState } from "@/effect/instance-state"
 import type { Tool } from "@/tool/tool"
-import { classifyChangeRecord, collectFileProjections, collectIncidentRelations } from "./change-classifier"
+import { classifyChangeRecord, classifyFileBoundary, collectFileProjections, collectIncidentRelations } from "./change-classifier"
 import { CodeGraphAdapter } from "./codegraph-adapter"
 import type { CodeGraphSnapshot, IndexProgress as CodeGraphIndexProgress, SyncResult as CodeGraphSyncResult } from "@colbymchenry/codegraph"
-import { appendProvenanceRecord, databaseStorePath, readProvenanceRecords, writeChangeFacts } from "./store"
+import { appendProvenanceRecord, databaseStorePath, readPredesignRuns, readProvenanceRecords, writeChangeFacts } from "./store"
+import { TOOL_MUTATION_PREDESIGN_REQUIRED } from "./guidance"
 
 const ARTIFACT_DIR = path.join(".codegraph", "chimera")
 const TOOL_PROVENANCE_FILE = "tool-provenance.jsonl"
@@ -65,6 +66,37 @@ export interface OpenProjectGraphInput {
   sync?: boolean
   onProgress?: (progress: CodeGraphIndexProgress) => void
 }
+
+export interface MutationPredesignInput {
+  toolID: string
+  ctx: Tool.Context
+  files: string[]
+  destructive?: boolean
+  multiFile?: boolean
+  rename?: boolean
+}
+
+type MutationPredesignRisk = {
+  target: string
+  classification: ReturnType<typeof classifyFileBoundary>["classification"]
+  highRisk: boolean
+}
+
+type MutationPredesignDecision =
+  | {
+      required: boolean
+      allowed: true
+      files: ProvenanceFile[]
+      risks: MutationPredesignRisk[]
+      predesign?: Awaited<ReturnType<typeof readPredesignRuns>>[number]
+    }
+  | {
+      required: true
+      allowed: false
+      files: ProvenanceFile[]
+      risks: MutationPredesignRisk[]
+      result: Tool.ExecuteResult
+    }
 
 export interface ProvenanceFile {
   absolutePath: string
@@ -123,6 +155,7 @@ export interface ProjectGraphState {
 
 const graphStates = new Map<string, Promise<ProjectGraphState>>()
 const recentToolFiles = new Map<string, number>()
+const PREDESIGN_FRESH_WINDOW_MS = 2 * 60 * 60 * 1000
 
 function projectRoot(input: { directory: string; worktree: string }) {
   return input.worktree === "/" ? input.directory : input.worktree
@@ -141,6 +174,38 @@ function toProvenanceFile(root: string, filePath: string): ProvenanceFile {
     graphPath: insideGraph ? relative : undefined,
     insideGraph,
   }
+}
+
+function predesignArtifact(root: string) {
+  return path.join(root, ARTIFACT_DIR, "predesign-runs.jsonl")
+}
+
+function predesignRisk(file: ProvenanceFile) {
+  const target = file.graphPath ?? file.absolutePath
+  const classification = classifyFileBoundary(target).classification
+  const normalizedTarget = target.startsWith("/") ? target : `/${target}`
+  const codeSurface = [
+    "/src/tool/",
+    "/src/session/prompt",
+    "/src/session/system",
+    "/src/provider/",
+    "/src/config/",
+    "/src/chimera/",
+  ].some((needle) => normalizedTarget.includes(needle))
+  const highRisk = ["source", "api_route", "config", "dependency", "generated"].includes(classification) || codeSurface
+  return { target, classification, highRisk }
+}
+
+function freshPredesign(input: { records: Awaited<ReturnType<typeof readPredesignRuns>>; sessionID: string; files: ProvenanceFile[] }) {
+  const now = Date.now()
+  const targetFiles = new Set(input.files.flatMap((file) => (file.graphPath ? [file.graphPath] : [])))
+  return input.records.find((record) => {
+    if (record.sessionID !== input.sessionID) return false
+    const createdAt = Date.parse(record.createdAt)
+    if (!Number.isFinite(createdAt) || now - createdAt > PREDESIGN_FRESH_WINDOW_MS) return false
+    if (record.files.length === 0) return true
+    return record.files.some((file) => targetFiles.has(file))
+  })
 }
 
 function stableFiles(root: string, files: string[]) {
@@ -467,6 +532,51 @@ export function trackToolMutation<A, E, R>(
     return yield* Effect.failCause(exit.cause)
   })
 }
+
+export const requirePredesignForMutation: (input: MutationPredesignInput) => Effect.Effect<MutationPredesignDecision> = Effect.fn(
+  "Chimera.requirePredesignForMutation",
+)(function* (input: MutationPredesignInput) {
+  const instance = yield* InstanceState.context
+  const root = projectRoot(instance)
+  const files = stableFiles(
+    root,
+    input.files.map((file) => normalizeAbsolute(file, instance.directory)),
+  )
+  const risks = files.map(predesignRisk)
+  const risky = risks.filter((risk) => risk.highRisk)
+  const destructiveRisk = Boolean(input.destructive || input.rename || input.multiFile) && risky.length > 0
+  const required = risky.length > 0 || destructiveRisk
+  if (!required) return { required, allowed: true as const, files, risks }
+
+  const records = yield* Effect.promise(() =>
+    readPredesignRuns(root, predesignArtifact(root), { sessionID: input.ctx.sessionID, limit: 20 }),
+  ).pipe(Effect.orDie)
+  const match = freshPredesign({ records, sessionID: input.ctx.sessionID, files })
+  if (match) return { required, allowed: true as const, files, risks, predesign: match }
+
+  const output = [
+    TOOL_MUTATION_PREDESIGN_REQUIRED,
+    "",
+    "Risk surface:",
+    ...risky.map((risk) => `- ${risk.target}: ${risk.classification}`),
+  ].join("\n")
+  return {
+    required,
+    allowed: false as const,
+    files,
+    risks,
+    result: {
+      title: "Chimera pre-design required",
+      output,
+      metadata: {
+        chimeraPredesignRequired: true,
+        toolID: input.toolID,
+        files: files.map((file) => file.graphPath ?? file.absolutePath),
+        risks,
+      },
+    },
+  }
+})
 
 export const initProjectGraph = Effect.fn("Chimera.initProjectGraph")(function* (input: InitProjectGraphInput = {}) {
   const s = yield* openProjectGraph({ sync: true, onProgress: input.onProgress })

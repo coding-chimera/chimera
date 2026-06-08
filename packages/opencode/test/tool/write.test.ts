@@ -10,7 +10,7 @@ import { Bus } from "../../src/bus"
 import { Format } from "../../src/format"
 import { Truncate } from "@/tool/truncate"
 import { Tool } from "@/tool/tool"
-import { readChangeFacts, readProvenanceRecords } from "@/chimera/store"
+import { readChangeFacts, readProvenanceRecords, recordPredesignRun } from "@/chimera/store"
 import { Agent } from "../../src/agent/agent"
 import { SessionID, MessageID } from "../../src/session/schema"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
@@ -57,6 +57,25 @@ const run = Effect.fn("WriteToolTest.run")(function* (
   return yield* tool.execute(args, next)
 })
 
+const predesign = Effect.fn("WriteToolTest.predesign")(function* (root: string, files: string[]) {
+  yield* Effect.promise(() =>
+    recordPredesignRun(root, path.join(root, ".codegraph", "chimera", "predesign-runs.jsonl"), {
+      sessionID: ctx.sessionID,
+      messageID: ctx.messageID,
+      callID: "call_predesign_write_test",
+      agent: ctx.agent,
+      intent: "write source fixture",
+      files,
+      seedNodes: [],
+      impactedNodes: [],
+      fileDependents: [],
+      evidence: [],
+      snapshotRevision: "test_revision",
+      payload: {},
+    }),
+  )
+})
+
 describe("tool.write", () => {
   describe("new file creation", () => {
     it.instance("writes content to new file", () =>
@@ -99,6 +118,7 @@ describe("tool.write", () => {
       Effect.gen(function* () {
         const test = yield* TestInstance
         const filepath = path.join(test.directory, "tracked.ts")
+        yield* predesign(test.directory, ["tracked.ts"])
         yield* run(
           { filePath: filepath, content: "export const tracked = 1\n" },
           { ...ctx, callID: "call_write_provenance" },
@@ -135,6 +155,35 @@ describe("tool.write", () => {
         )
       }),
     )
+
+    it.instance("requires pre-design before writing source files", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "blocked.ts")
+        const result = yield* run({ filePath: filepath, content: "export const blocked = 1\n" })
+
+        expect(result.title).toBe("Chimera pre-design required")
+        expect(result.output).toContain("Chimera pre-design required before this mutation")
+        expect(yield* Effect.promise(() => Bun.file(filepath).exists())).toBe(false)
+      }),
+    )
+
+    it.instance("requires pre-design before writing prompt/runtime guidance files", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "src/session/prompt/chimera.txt")
+        const result = yield* run({ filePath: filepath, content: "Prompt guidance\n" })
+
+        expect(result.title).toBe("Chimera pre-design required")
+        expect(result.metadata.risks).toContainEqual(
+          expect.objectContaining({
+            target: "src/session/prompt/chimera.txt",
+            highRisk: true,
+          }),
+        )
+        expect(yield* Effect.promise(() => Bun.file(filepath).exists())).toBe(false)
+      }),
+    )
   })
 
   describe("existing file overwrite", () => {
@@ -159,6 +208,7 @@ describe("tool.write", () => {
         const filepath = path.join(test.directory, "existing.cs")
         const bom = String.fromCharCode(0xfeff)
         yield* Effect.promise(() => fs.writeFile(filepath, `${bom}using System;\n`, "utf-8"))
+        yield* predesign(test.directory, ["existing.cs"])
 
         yield* run({ filePath: filepath, content: "using Up;\n" })
 
@@ -176,6 +226,7 @@ describe("tool.write", () => {
           const filepath = path.join(test.directory, "formatted.cs")
           const bom = String.fromCharCode(0xfeff)
           yield* Effect.promise(() => fs.writeFile(filepath, `${bom}using System;\n`, "utf-8"))
+          yield* predesign(test.directory, ["formatted.cs"])
 
           yield* run({ filePath: filepath, content: "using Up;\n" })
 
@@ -218,6 +269,7 @@ describe("tool.write", () => {
       Effect.gen(function* () {
         const test = yield* TestInstance
         const filepath = path.join(test.directory, "sensitive.json")
+        yield* predesign(test.directory, ["sensitive.json"])
         yield* run({ filePath: filepath, content: JSON.stringify({ secret: "data" }) })
 
         if (process.platform !== "win32") {
@@ -234,6 +286,7 @@ describe("tool.write", () => {
         const test = yield* TestInstance
         const filepath = path.join(test.directory, "data.json")
         const data = { key: "value", nested: { array: [1, 2, 3] } }
+        yield* predesign(test.directory, ["data.json"])
         yield* run({ filePath: filepath, content: JSON.stringify(data, null, 2) })
 
         const content = yield* Effect.promise(() => fs.readFile(filepath, "utf-8"))
@@ -311,6 +364,7 @@ describe("tool.write", () => {
         const test = yield* TestInstance
         const filepath = path.join(test.directory, "src", "components", "Button.tsx")
         yield* Effect.promise(() => fs.mkdir(path.dirname(filepath), { recursive: true }))
+        yield* predesign(test.directory, ["src/components/Button.tsx"])
 
         const result = yield* run({ filePath: filepath, content: "export const Button = () => {}" })
         expect(result.title).toEndWith(path.join("src", "components", "Button.tsx"))

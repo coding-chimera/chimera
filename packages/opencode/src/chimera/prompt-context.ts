@@ -1,11 +1,12 @@
 import path from "path"
 import { Context, Effect, Layer } from "effect"
 import { InstanceState } from "@/effect/instance-state"
-import { readPersistentObligationStore, readProvenanceRecords } from "./store"
+import { readPersistentObligationStore, readPredesignRuns, readProvenanceRecords, type PredesignRunRecord } from "./store"
 import type { ToolMutationRecord } from "./provenance"
 import type { SessionID } from "@/session/schema"
 
 const MAX_RECENT_MUTATIONS = 3
+const MAX_RECENT_PREDESIGNS = 3
 const MAX_ACTIVE_OBLIGATIONS = 8
 const MAX_ITEM_CHARS = 300
 
@@ -53,6 +54,12 @@ function recentMutations(records: ToolMutationRecord[], sessionID: SessionID) {
     .toReversed()
 }
 
+function recentPredesigns(records: PredesignRunRecord[], sessionID: SessionID) {
+  return records
+    .filter((record) => record.sessionID === sessionID)
+    .slice(0, MAX_RECENT_PREDESIGNS)
+}
+
 function activeObligations(store: ObligationStore) {
   return store.obligations
     .filter((item) => item.status === "pending" || item.status === "claimed" || item.status === "stale")
@@ -65,16 +72,29 @@ function files(record: ToolMutationRecord) {
   return `${shown.join(", ") || "none"}${omitted > 0 ? ` (+${omitted} more)` : ""}`
 }
 
-function focus(recent: ToolMutationRecord[], obligations: PromptObligation[]) {
+function predesignFiles(record: PredesignRunRecord) {
+  const shown = record.files.slice(0, 5)
+  const omitted = record.files.length - shown.length
+  return `${shown.join(", ") || "none"}${omitted > 0 ? ` (+${omitted} more)` : ""}`
+}
+
+function focus(recent: ToolMutationRecord[], obligations: PromptObligation[], predesigns: PredesignRunRecord[]) {
   const claimed = obligations.find((item) => item.status === "claimed")
   if (claimed) return `obligation ${claimed.id}: ${claimed.target}`
   if (recent[0]) return `latest mutation ${recent[0].id}: ${files(recent[0])}`
+  if (predesigns[0]) return `latest pre-design ${predesigns[0].id}: ${compact(predesigns[0].intent)}`
   if (obligations.length) return `${obligations.length} active obligation(s)`
   return "none"
 }
 
-function graphSnapshot(recent: ToolMutationRecord[]) {
+function graphSnapshot(recent: ToolMutationRecord[], predesigns: PredesignRunRecord[]) {
   const record = recent[0]
+  if (!record && predesigns[0]) {
+    return [
+      `- revision: ${predesigns[0].snapshotRevision}`,
+      `- freshness: latest pre-design evidence ${predesigns[0].id}`,
+    ]
+  }
   if (!record) return ["- revision: unknown", "- freshness: no session mutation snapshot available"]
   return [
     `- revision: ${record.graph.after.revision}`,
@@ -82,24 +102,35 @@ function graphSnapshot(recent: ToolMutationRecord[]) {
   ]
 }
 
-function closeoutSignals(recent: ToolMutationRecord[], obligations: PromptObligation[]) {
+function closeoutSignals(recent: ToolMutationRecord[], obligations: PromptObligation[], predesigns: PredesignRunRecord[]) {
   return [
     ...(recent.length ? ["- Recent mutation present: run `chimera_audit_recent` before claiming completion if not already done."] : []),
+    ...(predesigns.length && recent.length === 0
+      ? ["- Pre-design evidence recorded; successful mutations still need `chimera_audit_recent` before closeout."]
+      : []),
     ...(obligations.length ? ["- Active obligations remain: review, resolve, or ignore each relevant obligation before closeout."] : []),
-    ...(recent.length || obligations.length ? [] : ["- No Chimera closeout signals recorded."]),
+    ...(recent.length || obligations.length || predesigns.length ? [] : ["- No Chimera closeout signals recorded."]),
   ]
 }
 
-function renderContext(recent: ToolMutationRecord[], obligations: PromptObligation[]) {
-  if (recent.length === 0 && obligations.length === 0) return undefined
+function renderContext(recent: ToolMutationRecord[], obligations: PromptObligation[], predesigns: PredesignRunRecord[]) {
+  if (recent.length === 0 && obligations.length === 0 && predesigns.length === 0) return undefined
   return [
     "## Chimera Execution Context",
     "",
     "Graph Snapshot:",
-    ...graphSnapshot(recent),
+    ...graphSnapshot(recent, predesigns),
     "",
     "Current Focus:",
-    `- ${focus(recent, obligations)}`,
+    `- ${focus(recent, obligations, predesigns)}`,
+    "",
+    "Recent Predesign Evidence:",
+    ...(predesigns.length
+      ? predesigns.map(
+          (record) =>
+            `- ${record.id} at ${record.createdAt}; intent: ${compact(record.intent)}; files: ${predesignFiles(record)}; graph: ${record.snapshotRevision.slice(0, 8)}; evidence: ${record.evidence.length}`,
+        )
+      : ["- None recorded for this session."]),
     "",
     "Recent Relevant Changes:",
     ...(recent.length
@@ -118,7 +149,7 @@ function renderContext(recent: ToolMutationRecord[], obligations: PromptObligati
       : ["- None active."]),
     "",
     "Closeout Signals:",
-    ...closeoutSignals(recent, obligations),
+    ...closeoutSignals(recent, obligations, predesigns),
   ].join("\n")
 }
 
@@ -130,13 +161,16 @@ export const layer = Layer.effect(
       const root = projectRoot(instance)
       const dir = path.join(root, ".codegraph", "chimera")
       const records = yield* Effect.promise(() => readProvenanceRecords(root, path.join(dir, "tool-provenance.jsonl")))
+      const predesigns = yield* Effect.promise(() =>
+        readPredesignRuns(root, path.join(dir, "predesign-runs.jsonl"), { sessionID, limit: MAX_RECENT_PREDESIGNS }),
+      )
       const store = yield* Effect.promise(() =>
         readPersistentObligationStore<PromptObligation>(root, path.join(dir, "obligations.json"), {
           schemaVersion: 1,
           obligations: [],
         }),
       )
-      return renderContext(recentMutations(records, sessionID), activeObligations(store))
+      return renderContext(recentMutations(records, sessionID), activeObligations(store), recentPredesigns(predesigns, sessionID))
     })
 
     return Service.of({ render })

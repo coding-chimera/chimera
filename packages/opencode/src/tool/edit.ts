@@ -260,6 +260,16 @@ export const EditTool = Tool.define(
           let hashline: Record<string, unknown> | undefined
           const changeID = `chg_${ulid()}`
 
+          const predesign = yield* Chimera.requirePredesignForMutation({
+            toolID: "edit",
+            ctx,
+            files: renamePath ? [filePath, renamePath] : [filePath],
+            destructive: params.delete,
+            rename: Boolean(renamePath),
+            multiFile: Boolean(renamePath),
+          })
+          if (!predesign.allowed) return predesign.result
+
           yield* Chimera.trackToolMutation(
             {
               toolID: "edit",

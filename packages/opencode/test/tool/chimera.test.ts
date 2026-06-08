@@ -5,6 +5,7 @@ import { Effect, Layer } from "effect"
 import { Bus } from "@/bus"
 import { Chimera } from "@/chimera"
 import { ChimeraPromptContext } from "@/chimera/prompt-context"
+import { readPredesignRuns } from "@/chimera/store"
 import { Agent } from "@/agent/agent"
 import { MessageID, SessionID } from "@/session/schema"
 import {
@@ -16,6 +17,7 @@ import {
   ChimeraObligationResolveTool,
   ChimeraObligationsListTool,
   ChimeraObligationsSyncTool,
+  ChimeraPredesignTool,
   ChimeraSearchTool,
   ChimeraStatusTool,
 } from "@/tool/chimera"
@@ -64,6 +66,15 @@ const runFileSymbols = Effect.fn("ChimeraToolTest.runFileSymbols")(function* (
   next: Tool.Context = ctx,
 ) {
   const info = yield* ChimeraFileSymbolsTool
+  const tool = yield* info.init()
+  return yield* tool.execute(args, next)
+})
+
+const runPredesign = Effect.fn("ChimeraToolTest.runPredesign")(function* (
+  args: Tool.InferParameters<typeof ChimeraPredesignTool>,
+  next: Tool.Context = ctx,
+) {
+  const info = yield* ChimeraPredesignTool
   const tool = yield* info.init()
   return yield* tool.execute(args, next)
 })
@@ -214,6 +225,34 @@ describe("tool.chimera", () => {
 
       expect(result.title).toBe("Chimera file symbols")
       expect(result.metadata.results.some((item) => item.node.name === "lateSymbol")).toBe(true)
+    }),
+  )
+
+  it.instance("records pre-design evidence for a risky mutation", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "source.ts"), "export function source() { return 1 }\n"))
+      yield* Effect.promise(() =>
+        fs.writeFile(
+          path.join(test.directory, "caller.ts"),
+          "import { source } from './source'\nexport function caller() { return source() }\n",
+        ),
+      )
+
+      const result = yield* runPredesign({ intent: "change source behavior", files: ["source.ts"], symbols: ["source"] })
+      const runs = yield* Effect.promise(() =>
+        readPredesignRuns(test.directory, path.join(test.directory, ".codegraph", "chimera", "predesign-runs.jsonl"), {
+          sessionID: ctx.sessionID,
+        }),
+      )
+
+      expect(result.title).toBe("Chimera pre-design")
+      expect(result.output).toContain("Chimera pre-design evidence recorded.")
+      expect(result.output).toContain("Mutation gate guidance")
+      expect(result.metadata.runID).toEqual(expect.stringMatching(/^predesign_/))
+      expect(runs[0]?.id).toBe(result.metadata.runID)
+      expect(runs[0]?.intent).toBe("change source behavior")
+      expect(runs[0]?.files).toContain("source.ts")
     }),
   )
 

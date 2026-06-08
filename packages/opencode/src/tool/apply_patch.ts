@@ -199,6 +199,16 @@ export const ApplyPatchTool = Tool.define(
         movePath: change.movePath,
       }))
 
+      const predesign = yield* Chimera.requirePredesignForMutation({
+        toolID: "apply_patch",
+        ctx,
+        files: fileChanges.flatMap((change) => (change.movePath ? [change.filePath, change.movePath] : [change.filePath])),
+        destructive: fileChanges.some((change) => change.type === "delete"),
+        rename: fileChanges.some((change) => change.type === "move"),
+        multiFile: fileChanges.length > 1,
+      })
+      if (!predesign.allowed) return predesign.result
+
       // Check permissions if needed
       const relativePaths = fileChanges.map((c) => path.relative(instance.worktree, c.filePath).replaceAll("\\", "/"))
       yield* ctx.ask({

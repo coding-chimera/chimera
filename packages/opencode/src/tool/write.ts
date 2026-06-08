@@ -53,6 +53,8 @@ export const WriteTool = Tool.define(
           const contentNew = next.text
 
           const diff = trimDiff(createTwoFilesPatch(filepath, filepath, contentOld, contentNew))
+          const predesign = yield* Chimera.requirePredesignForMutation({ toolID: "write", ctx, files: [filepath] })
+          if (!predesign.allowed) return predesign.result
           yield* ctx.ask({
             permission: "edit",
             patterns: [path.relative(instance.worktree, filepath)],

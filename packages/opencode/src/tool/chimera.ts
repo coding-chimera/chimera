@@ -26,6 +26,7 @@ import {
 import {
   provenanceRecordCount as storedProvenanceRecordCount,
   readChangeFacts,
+  recordPredesignRun,
   readProvenanceRecords,
   readPersistentObligationStore,
   recordAuditRun,
@@ -35,6 +36,7 @@ import * as Tool from "./tool"
 import STATUS_DESCRIPTION from "./chimera_status.txt"
 import SEARCH_DESCRIPTION from "./chimera_search.txt"
 import FILE_SYMBOLS_DESCRIPTION from "./chimera_file_symbols.txt"
+import PREDESIGN_DESCRIPTION from "./chimera_predesign.txt"
 import IMPACT_DESCRIPTION from "./chimera_impact.txt"
 import CONTEXT_DESCRIPTION from "./chimera_context.txt"
 import AUDIT_RECENT_DESCRIPTION from "./chimera_audit_recent.txt"
@@ -115,6 +117,32 @@ export const FileSymbolsParameters = Schema.Struct({
   refresh: Schema.optional(Schema.Boolean).annotate({
     description: RefreshDescription,
   }),
+})
+
+export const PredesignParameters = Schema.Struct({
+  intent: Schema.String.annotate({
+    description: "Brief statement of the intended mutation and why it is needed.",
+  }),
+  files: Schema.optional(Schema.Array(Schema.String)).annotate({
+    description: "Known or likely files that the upcoming mutation will touch.",
+  }),
+  symbols: Schema.optional(Schema.Array(Schema.String)).annotate({
+    description: "Known relevant symbols to resolve as pre-edit graph seeds.",
+  }),
+  nodeIDs: Schema.optional(Schema.Array(Schema.String)).annotate({
+    description: "Exact CodeGraph node ids to use as pre-edit graph seeds.",
+  }),
+  depth: Schema.optional(Schema.Number).annotate({
+    description: "Graph traversal depth for pre-edit impact discovery. Defaults to 2, capped at 5.",
+  }),
+  limit: Schema.optional(Schema.Number).annotate({
+    description: "Maximum seeds, impacted symbols, and evidence items to return. Defaults to 30, capped at 100.",
+  }),
+  refresh: Schema.optional(Schema.Boolean).annotate({
+    description: RefreshDescription,
+  }),
+}).annotate({
+  description: "Record pre-edit Chimera evidence before a risky mutation.",
 })
 
 export const ImpactParameters = Schema.Struct({
@@ -308,6 +336,24 @@ type SearchMetadata = {
   projectRoot: string
   snapshot: CodeGraphSnapshot
   results: Array<{ score?: number; node: CodeGraphNode; projection: FrozenSemanticObject | null }>
+}
+
+type PredesignMetadata = {
+  projectRoot: string
+  snapshot: CodeGraphSnapshot
+  runID: string
+  intent: string
+  files: string[]
+  seeds: Array<FrozenSemanticObject | null>
+  impacted: Array<FrozenSemanticObject | null>
+  fileDependents: string[]
+  evidence: AuditCandidate[]
+  coverage: {
+    files: number
+    symbols: number
+    nodeIDs: number
+    preciseFiles: boolean
+  }
 }
 
 type ImpactMetadata = {
@@ -1015,6 +1061,14 @@ function obligationsArtifact(provenanceArtifact: string) {
   return path.join(path.dirname(provenanceArtifact), "obligations.json")
 }
 
+function predesignArtifact(provenanceArtifact: string) {
+  return path.join(path.dirname(provenanceArtifact), "predesign-runs.jsonl")
+}
+
+function cleanStrings(items: readonly string[] | undefined) {
+  return uniqueStrings((items ?? []).map((item) => item.trim()).filter(Boolean))
+}
+
 function emptyObligationStore(): ObligationStore {
   return { schemaVersion: 1, obligations: [] }
 }
@@ -1484,6 +1538,138 @@ export const ChimeraFileSymbolsTool = Tool.define<typeof FileSymbolsParameters, 
               ...result,
               projection: state.graph.projectNode(result.node, snapshot),
             })),
+          },
+        }
+      }).pipe(Effect.orDie),
+  }),
+)
+
+export const ChimeraPredesignTool = Tool.define<typeof PredesignParameters, PredesignMetadata, never>(
+  "chimera_predesign",
+  Effect.succeed({
+    description: PREDESIGN_DESCRIPTION,
+    parameters: PredesignParameters,
+    execute: (params: Schema.Schema.Type<typeof PredesignParameters>, ctx: Tool.Context<PredesignMetadata>) =>
+      Effect.gen(function* () {
+        const intent = params.intent.trim()
+        if (!intent) throw new Error("chimera_predesign requires a non-empty intent")
+        const files = cleanStrings(params.files)
+        const symbols = cleanStrings(params.symbols)
+        const nodeIDs = cleanStrings(params.nodeIDs)
+        yield* permission(ctx, "chimera_predesign", {
+          intent,
+          files,
+          symbols,
+          nodeIDs,
+          refresh: params.refresh !== false,
+        })
+        const instance = yield* InstanceState.context
+        const state = yield* openProjectGraphForTool(ctx as Tool.Context, params.refresh !== false)
+        const depth = bounded(params.depth, 2, 5)
+        const limit = bounded(params.limit, 30, 100)
+        const graphFiles = graphFilesFromPaths(state.projectRoot, instance.directory, files)
+        if (graphFiles.length) yield* Effect.promise(() => syncExistingGraphFiles(state, graphFiles, "force")).pipe(Effect.orDie)
+        const normalizedFiles = graphFiles.map((file) => file.graphPath)
+        const snapshot = state.graph.snapshot()
+        const seedNodes = uniqueNodes([
+          ...nodeIDs.flatMap((nodeID) => {
+            const node = state.graph.node(nodeID)
+            return node ? [node] : []
+          }),
+          ...symbols.flatMap((symbol) => state.graph.searchNodes(symbol, { limit: 5 }).map((result) => result.node)),
+          ...normalizedFiles.flatMap((file) => state.graph.nodesInFile(file).slice(0, 5)),
+        ]).slice(0, limit)
+        const impact = buildImpactEvidence({
+          state,
+          snapshot,
+          seedNodes,
+          changedFiles: normalizedFiles,
+          changeFacts: [],
+          normalizedFile: normalizedFiles[0],
+          source: "input",
+          depth,
+          limit,
+        })
+        const projectedSeeds = seedNodes.map((node) => state.graph.projectNode(node, snapshot))
+        const projectedImpacted = impact.impactedNodes.map((node) => state.graph.projectNode(node, snapshot))
+        const coverage = {
+          files: normalizedFiles.length,
+          symbols: symbols.length,
+          nodeIDs: nodeIDs.length,
+          preciseFiles: normalizedFiles.length > 0,
+        }
+        const record = yield* Effect.promise(() =>
+          recordPredesignRun(state.projectRoot, predesignArtifact(state.artifact), {
+            sessionID: ctx.sessionID,
+            messageID: ctx.messageID,
+            callID: ctx.callID,
+            agent: ctx.agent,
+            intent,
+            files: normalizedFiles,
+            seedNodes: projectedSeeds,
+            impactedNodes: projectedImpacted,
+            fileDependents: impact.fileDependents,
+            evidence: impact.evidence,
+            snapshotRevision: snapshot.revision,
+            payload: {
+              coverage,
+              depth,
+              limit,
+              symbols,
+              nodeIDs,
+            },
+          }),
+        ).pipe(Effect.orDie)
+
+        return {
+          title: "Chimera pre-design",
+          output: [
+            "Chimera pre-design evidence recorded.",
+            `Run: ${record.id}`,
+            `Intent: ${intent}`,
+            `Graph revision: ${snapshot.revision}`,
+            "",
+            "Coverage:",
+            `- files: ${coverage.files ? normalizedFiles.join(", ") : "none"}`,
+            `- symbols: ${symbols.length ? symbols.join(", ") : "none"}`,
+            `- nodeIDs: ${nodeIDs.length ? nodeIDs.join(", ") : "none"}`,
+            coverage.preciseFiles ? "- file coverage: explicit" : "- file coverage: session-level only; rerun with files for stricter coverage.",
+            "",
+            "Seed symbols:",
+            ...(seedNodes.length ? seedNodes.map((node) => formatNode(node)) : ["- No symbol seeds; file/session-level evidence only."]),
+            "",
+            "Change classification:",
+            ...(normalizedFiles.length
+              ? normalizedFiles.map((file) => formatClassification({ file, ...classifyFile(file) }))
+              : ["- No files supplied."]),
+            "",
+            `File dependents (${impact.fileDependents.length}):`,
+            ...(impact.fileDependents.length ? impact.fileDependents.map((file) => `- ${file}`) : ["- None found."]),
+            "",
+            `Impacted symbols (${impact.impactedNodes.length}):`,
+            ...(impact.impactedNodes.length
+              ? impact.impactedNodes.map((node) => `${formatNode(node)}\n  risk: ${riskForNode(node)}\n  risk_reason: ${riskReasonForNode(node)}`)
+              : ["- None found."]),
+            "",
+            "Impact evidence:",
+            ...(impact.evidence.length ? impact.evidence.map(formatEvidence) : ["- None found."]),
+            "",
+            "Mutation gate guidance:",
+            "- Fresh pre-design evidence is now recorded for this session.",
+            "- Retry the intended edit/write/apply_patch mutation if it was blocked.",
+            "- Run chimera_audit_recent after successful mutation; pre-design evidence is not post-change verification.",
+          ].join("\n"),
+          metadata: {
+            projectRoot: state.projectRoot,
+            snapshot,
+            runID: record.id,
+            intent,
+            files: normalizedFiles,
+            seeds: projectedSeeds,
+            impacted: projectedImpacted,
+            fileDependents: impact.fileDependents,
+            evidence: impact.evidence,
+            coverage,
           },
         }
       }).pipe(Effect.orDie),

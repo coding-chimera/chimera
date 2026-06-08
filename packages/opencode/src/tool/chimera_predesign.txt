@@ -1,0 +1,25 @@
+Record pre-edit Chimera evidence before a risky mutation.
+
+Use this tool before `edit`, `write`, or `apply_patch` when the intended change can affect source behavior, APIs, runtime surfaces, providers, prompts, tool behavior, configuration, dependencies, or shared contracts.
+
+This tool performs bounded CodeGraph-backed impact discovery and records a pre-design run that mutation tools can use as fresh pre-edit evidence.
+
+Do NOT use this tool as post-change verification. After a successful mutation, still run `chimera_audit_recent`, and run build/typecheck/lint/tests when correctness matters.
+
+Parameter rules:
+- `intent` is required and should state what you intend to mutate and why.
+- Provide `files` when you know likely mutation targets; this gives mutation gates precise coverage.
+- Provide `symbols` or `nodeIDs` when the risk is best represented by an API, function, component, route, or other graph seed.
+- `depth` defaults to 2 and is capped at 5.
+- `limit` defaults to 30 and is capped at 100.
+- `refresh` defaults to true and controls whether stale graph signals may trigger a sync.
+
+Common calls:
+- Before changing an agent-facing tool, prompt, provider, runtime surface, API route, shared type, or config contract.
+- After search/file-symbol discovery identifies likely seeds but before writing the patch.
+- When a mutation tool reports that Chimera pre-design is required.
+
+After this tool:
+- Review the impact evidence in the current task context.
+- Retry the intended mutation if it was blocked by the pre-design gate.
+- Treat the recorded run as pre-edit evidence, not as proof the eventual mutation is correct.
