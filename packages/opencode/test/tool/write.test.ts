@@ -65,7 +65,7 @@ describe("tool.write", () => {
         const filepath = path.join(test.directory, "newfile.txt")
         const result = yield* run({ filePath: filepath, content: "Hello, World!" })
 
-        expect(result.output).toContain("Wrote file successfully")
+        expect(result.output).toContain("File written successfully. 1 lines written.")
         expect(result.output).toContain("chimera_audit_recent")
         expect(result.metadata.exists).toBe(false)
 
@@ -145,7 +145,7 @@ describe("tool.write", () => {
         yield* Effect.promise(() => fs.writeFile(filepath, "old content", "utf-8"))
         const result = yield* run({ filePath: filepath, content: "new content" })
 
-        expect(result.output).toContain("Wrote file successfully")
+        expect(result.output).toContain("File written successfully. 1 lines written.")
         expect(result.metadata.exists).toBe(true)
 
         const content = yield* Effect.promise(() => fs.readFile(filepath, "utf-8"))

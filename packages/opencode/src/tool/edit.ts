@@ -1,8 +1,3 @@
-// the approaches in this edit tool are sourced from
-// https://github.com/cline/cline/blob/main/evals/diff-edits/diff-apply/diff-06-23-25.ts
-// https://github.com/google-gemini/gemini-cli/blob/main/packages/core/src/utils/editCorrector.ts
-// https://github.com/cline/cline/blob/main/evals/diff-edits/diff-apply/diff-06-26-25.ts
-
 import * as path from "path"
 import { Effect, Schema, Semaphore } from "effect"
 import * as Tool from "./tool"
@@ -20,18 +15,54 @@ import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import * as Bom from "@/util/bom"
 import { Chimera } from "@/chimera"
 import { TOOL_MUTATION_AUDIT_HINT } from "@/chimera/guidance"
+import { ulid } from "ulid"
+import {
+  DISPLAY_ALGORITHM,
+  SCHEMA_VERSION,
+  changedRange,
+  fileHash,
+  formatChangedBlock,
+  joinText,
+  lineHash,
+  mismatchMessage,
+  normalizeLineEndings,
+  normalizeReplacement,
+  parseAnchor,
+  rangeIDs,
+  splitText,
+  type LineAnchor,
+} from "./hashline"
 
-function normalizeLineEndings(text: string): string {
-  return text.replaceAll("\r\n", "\n")
-}
+const Operation = Schema.Struct({
+  op: Schema.Union([Schema.Literal("replace"), Schema.Literal("append"), Schema.Literal("prepend")]).annotate({
+    description: "Edit operation to apply",
+  }),
+  pos: Schema.optional(Schema.String).annotate({ description: "Hashline anchor LINE#ID" }),
+  end: Schema.optional(Schema.String).annotate({ description: "Optional end Hashline anchor LINE#ID" }),
+  lines: Schema.NullOr(Schema.Union([Schema.String, Schema.Array(Schema.String)])).annotate({
+    description: "Replacement or inserted real file lines. Do not include Hashline prefixes.",
+  }),
+})
 
-function detectLineEnding(text: string): "\n" | "\r\n" {
-  return text.includes("\r\n") ? "\r\n" : "\n"
-}
+export const Parameters = Schema.Struct({
+  filePath: Schema.String.annotate({ description: "The absolute path to the file to modify" }),
+  edits: Schema.Array(Operation).annotate({ description: "Hashline anchored edits to apply to one file" }),
+  delete: Schema.optional(Schema.Boolean).annotate({ description: "Delete the file. Requires edits: [] and cannot be combined with rename." }),
+  rename: Schema.optional(Schema.String).annotate({ description: "Move the final file content to this path and remove the original path." }),
+  expectedFileHash: Schema.optional(Schema.String).annotate({ description: "Optional read-time file hash used only to report drift." }),
+})
 
-function convertToLineEnding(text: string, ending: "\n" | "\r\n"): string {
-  if (ending === "\n") return text
-  return text.replaceAll("\n", "\r\n")
+type EditInput = Schema.Schema.Type<typeof Operation>
+type Params = Schema.Schema.Type<typeof Parameters>
+
+type NormalizedEdit = {
+  op: "replace" | "append" | "prepend"
+  index: number
+  startLine: number
+  endLine: number
+  lines: string[]
+  anchored: boolean
+  key: string
 }
 
 const locks = new Map<string, Semaphore.Semaphore>()
@@ -46,16 +77,143 @@ function lock(filePath: string) {
   return next
 }
 
-export const Parameters = Schema.Struct({
-  filePath: Schema.String.annotate({ description: "The absolute path to the file to modify" }),
-  oldString: Schema.String.annotate({ description: "The text to replace" }),
-  newString: Schema.String.annotate({
-    description: "The text to replace it with (must be different from oldString)",
-  }),
-  replaceAll: Schema.optional(Schema.Boolean).annotate({
-    description: "Replace all occurrences of oldString (default false)",
-  }),
-})
+function verifyAnchor(lines: string[], anchor: LineAnchor) {
+  if (anchor.line < 1 || anchor.line > lines.length) {
+    throw new Error(`Hashline anchor ${anchor.line}#${anchor.id} is outside the current file. Re-read the target range.`)
+  }
+  const current = lineHash(anchor.line, lines[anchor.line - 1] ?? "")
+  if (current !== anchor.id) throw new Error(mismatchMessage(lines, anchor))
+}
+
+function normalizeEdit(input: EditInput, index: number, lines: string[], exists: boolean): NormalizedEdit {
+  const replacement = normalizeReplacement(input.lines)
+  const key = JSON.stringify({ op: input.op, pos: input.pos?.trim(), end: input.end?.trim(), lines: replacement })
+
+  if (input.op === "replace") {
+    const start = parseAnchor(input.pos, "replace.pos")
+    const end = input.end ? parseAnchor(input.end, "replace.end") : start
+    if (!exists) throw new Error("File not found; anchored replace cannot create files. Use unanchored append/prepend or write.")
+    verifyAnchor(lines, start)
+    verifyAnchor(lines, end)
+    if (start.line > end.line) throw new Error(`Invalid replace range: ${input.pos} is after ${input.end}`)
+    return { op: input.op, index, startLine: start.line, endLine: end.line, lines: replacement, anchored: true, key }
+  }
+
+  const anchorText = input.pos ?? input.end
+  if (!anchorText) {
+    return {
+      op: input.op,
+      index,
+      startLine: input.op === "append" ? lines.length : 0,
+      endLine: input.op === "append" ? lines.length : 0,
+      lines: replacement,
+      anchored: false,
+      key,
+    }
+  }
+
+  if (!exists) throw new Error("File not found; anchored insert cannot create files. Use unanchored append/prepend or write.")
+  if (replacement.length === 0) throw new Error(`Anchored ${input.op} requires non-empty lines.`)
+  const anchor = parseAnchor(anchorText, `${input.op}.pos`)
+  verifyAnchor(lines, anchor)
+  return { op: input.op, index, startLine: anchor.line, endLine: anchor.line, lines: replacement, anchored: true, key }
+}
+
+function normalizeEdits(edits: ReadonlyArray<EditInput>, lines: string[], exists: boolean) {
+  const seen = new Set<string>()
+  let deduplicated = 0
+  const normalized = edits.flatMap((edit, index) => {
+    const next = normalizeEdit(edit, index, lines, exists)
+    if (!seen.has(next.key)) {
+      seen.add(next.key)
+      return [next]
+    }
+    deduplicated++
+    return []
+  })
+
+  const replacements = normalized.filter((edit) => edit.op === "replace")
+  for (let i = 0; i < replacements.length; i++) {
+    for (let j = i + 1; j < replacements.length; j++) {
+      const a = replacements[i]
+      const b = replacements[j]
+      if (a.startLine <= b.endLine && b.startLine <= a.endLine) throw new Error("Overlapping replace ranges are not allowed.")
+    }
+  }
+
+  for (const insert of normalized.filter((edit) => edit.op !== "replace" && edit.anchored)) {
+    const replaced = replacements.find((edit) => edit.startLine <= insert.startLine && insert.startLine <= edit.endLine)
+    if (replaced) throw new Error("Insert anchors cannot overlap a replace range in the same edit call.")
+  }
+
+  for (const op of ["append", "prepend"] as const) {
+    const anchors = new Set<string>()
+    for (const edit of normalized.filter((item) => item.op === op && item.anchored)) {
+      const key = `${op}:${edit.startLine}`
+      if (anchors.has(key)) throw new Error(`Multiple ${op} edits at the same anchor are ambiguous.`)
+      anchors.add(key)
+    }
+  }
+
+  return { edits: normalized, deduplicated }
+}
+
+function applyEdits(lines: string[], edits: NormalizedEdit[]) {
+  const next = [...lines]
+  for (const edit of edits.toSorted((a, b) => b.startLine - a.startLine || sameLinePriority(a) - sameLinePriority(b) || b.index - a.index)) {
+    if (edit.op === "replace") {
+      next.splice(edit.startLine - 1, edit.endLine - edit.startLine + 1, ...edit.lines)
+      continue
+    }
+    if (edit.op === "append") {
+      next.splice(edit.startLine, 0, ...edit.lines)
+      continue
+    }
+    next.splice(Math.max(edit.startLine - 1, 0), 0, ...edit.lines)
+  }
+  return next
+}
+
+function sameLinePriority(edit: NormalizedEdit) {
+  if (edit.op === "append") return 0
+  if (edit.op === "prepend") return 1
+  return 2
+}
+
+function hashlineRange(lines: string[], startLine: number, endLine: number) {
+  const lineIDs = rangeIDs(lines, startLine, endLine)
+  return {
+    startLine,
+    endLine,
+    startID: lineIDs[0] ?? "",
+    endID: lineIDs.at(-1) ?? "",
+    lineIDs,
+  }
+}
+
+function beforeRanges(edits: NormalizedEdit[], lines: string[]) {
+  return edits.flatMap((edit) => {
+    if (edit.op === "replace") return [hashlineRange(lines, edit.startLine, edit.endLine)]
+    if (!edit.anchored) return []
+    return [hashlineRange(lines, edit.startLine, edit.startLine)]
+  })
+}
+
+function afterRanges(before: string[], after: string[]) {
+  const changed = changedRange(before, after)
+  if (!changed || after.length === 0) return []
+  return [hashlineRange(after, changed.afterStart, Math.min(changed.afterEnd, after.length))]
+}
+
+function targetRange(filePath: string, ranges: ReturnType<typeof afterRanges>) {
+  const first = ranges[0]
+  if (!first || first.lineIDs.length === 0) return `${filePath} none`
+  return `${filePath} ${first.startID}..${first.endID}`
+}
+
+function diffHash(diff: string) {
+  return fileHash(diff).slice(0, 16)
+}
 
 export const EditTool = Tool.define(
   "edit",
@@ -68,94 +226,98 @@ export const EditTool = Tool.define(
     return {
       description: DESCRIPTION,
       parameters: Parameters,
-      execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
+      execute: (params: Params, ctx: Tool.Context) =>
         Effect.gen(function* () {
-          if (!params.filePath) {
-            throw new Error("filePath is required")
-          }
-
-          if (params.oldString === params.newString) {
-            throw new Error("No changes to apply: oldString and newString are identical.")
-          }
-
           const instance = yield* InstanceState.context
-          const filePath = path.isAbsolute(params.filePath)
-            ? params.filePath
-            : path.join(instance.directory, params.filePath)
+          const filePath = AppFileSystem.resolve(path.isAbsolute(params.filePath) ? params.filePath : path.join(instance.directory, params.filePath))
+          const renamePath = params.rename
+            ? AppFileSystem.resolve(path.isAbsolute(params.rename) ? params.rename : path.join(instance.directory, params.rename))
+            : undefined
+          const finalPath = renamePath ?? filePath
+          const displayRoot = instance.worktree === "/" ? instance.directory : instance.worktree
           yield* assertExternalDirectoryEffect(ctx, filePath)
+          if (renamePath) yield* assertExternalDirectoryEffect(ctx, renamePath)
 
           let diff = ""
           let contentOld = ""
           let contentNew = ""
+          let formatterTouched = false
+          let create = false
+          let deleted = false
+          let deduplicatedEdits = 0
+          let hashline: Record<string, unknown> | undefined
+          const changeID = `chg_${ulid()}`
+
           yield* Chimera.trackToolMutation(
             {
               toolID: "edit",
               ctx,
-              files: [filePath],
+              files: renamePath ? [filePath, renamePath] : [filePath],
               bus,
               metadata: () => ({
-                create: params.oldString === "",
-                replaceAll: params.replaceAll ?? false,
+                create,
+                delete: params.delete ?? false,
+                renameTo: renamePath,
                 filePath,
                 diff,
+                changeID,
+                ...(hashline ? { hashline } : {}),
               }),
             },
             lock(filePath).withPermits(1)(
               Effect.gen(function* () {
-                if (params.oldString === "") {
-                  const existed = yield* afs.existsSafe(filePath)
-                  const source = existed ? yield* Bom.readFile(afs, filePath) : { bom: false, text: "" }
-                  const next = Bom.split(params.newString)
-                  const desiredBom = source.bom || next.bom
-                  contentOld = source.text
-                  contentNew = next.text
-                  diff = trimDiff(createTwoFilesPatch(filePath, filePath, contentOld, contentNew))
-                  yield* ctx.ask({
-                    permission: "edit",
-                    patterns: [path.relative(instance.worktree, filePath)],
-                    always: ["*"],
-                    metadata: {
-                      filepath: filePath,
-                      diff,
-                    },
-                  })
-                  yield* afs.writeWithDirs(filePath, Bom.join(contentNew, desiredBom))
-                  if (yield* format.file(filePath)) {
-                    contentNew = yield* Bom.syncFile(afs, filePath, desiredBom)
-                  }
-                  yield* bus.publish(File.Event.Edited, { file: filePath })
-                  yield* bus.publish(FileWatcher.Event.Updated, {
-                    file: filePath,
-                    event: existed ? "change" : "add",
-                  })
-                  return
-                }
+                if (params.delete && renamePath) throw new Error("delete=true cannot be combined with rename.")
+                if (params.delete && params.edits.length > 0) throw new Error("delete=true requires edits: [].")
 
                 const info = yield* afs.stat(filePath).pipe(Effect.catch(() => Effect.succeed(undefined)))
-                if (!info) throw new Error(`File ${filePath} not found`)
-                if (info.type === "Directory") throw new Error(`Path is a directory, not a file: ${filePath}`)
-                const source = yield* Bom.readFile(afs, filePath)
+                if (info?.type === "Directory") throw new Error(`Path is a directory, not a file: ${filePath}`)
+                if (!info && params.delete) throw new Error(`File ${filePath} not found`)
+                if (!info && renamePath) throw new Error(`File ${filePath} not found`)
+                if (!info && params.edits.length === 0) throw new Error(`File ${filePath} not found`)
+
+                const source = info ? yield* Bom.readFile(afs, filePath) : { bom: false, text: "" }
+                const before = splitText(source.text)
                 contentOld = source.text
+                create = !info
 
-                const ending = detectLineEnding(contentOld)
-                const old = convertToLineEnding(normalizeLineEndings(params.oldString), ending)
-                const replacement = convertToLineEnding(normalizeLineEndings(params.newString), ending)
-
-                const next = Bom.split(replace(contentOld, old, replacement, params.replaceAll))
-                const desiredBom = source.bom || next.bom
-                contentNew = next.text
-
-                diff = trimDiff(
-                  createTwoFilesPatch(
+                if (params.delete) {
+                  contentNew = ""
+                  deleted = true
+                } else {
+                  const normalized = normalizeEdits(params.edits, before.lines, Boolean(info))
+                  deduplicatedEdits = normalized.deduplicated
+                  if (!info && normalized.edits.some((edit) => edit.anchored)) throw new Error(`File ${filePath} not found`)
+                  if (!info && !normalized.edits.every((edit) => edit.op === "append" || edit.op === "prepend")) {
+                    throw new Error("Missing files can only be created with unanchored append/prepend edits. Prefer write for new files.")
+                  }
+                  const afterLines = applyEdits(before.lines, normalized.edits)
+                  contentNew = joinText(before, afterLines)
+                  if (!renamePath && contentOld === contentNew) throw new Error("No changes to apply: Hashline edits are a no-op.")
+                  const beforeRangeList = normalized.edits.length > 0 ? beforeRanges(normalized.edits, before.lines) : before.lines.length ? [hashlineRange(before.lines, 1, before.lines.length)] : []
+                  const computedAfterRanges = afterRanges(before.lines, afterLines)
+                  const afterRangeList = computedAfterRanges.length > 0 ? computedAfterRanges : renamePath && afterLines.length ? [hashlineRange(afterLines, 1, afterLines.length)] : []
+                  hashline = {
+                    schemaVersion: SCHEMA_VERSION,
+                    displayAlgorithm: DISPLAY_ALGORITHM,
+                    operations: [...normalized.edits.map((edit) => edit.op), ...(renamePath ? ["rename"] : [])],
                     filePath,
-                    filePath,
-                    normalizeLineEndings(contentOld),
-                    normalizeLineEndings(contentNew),
-                  ),
-                )
+                    ...(renamePath ? { renameTo: renamePath } : {}),
+                    fileHashBefore: fileHash(contentOld),
+                    expectedFileHash: params.expectedFileHash,
+                    expectedFileHashMatched: params.expectedFileHash ? params.expectedFileHash === fileHash(contentOld) : undefined,
+                    formatterTouched: false,
+                    noopEdits: 0,
+                    deduplicatedEdits,
+                    beforeRanges: beforeRangeList,
+                    afterRanges: afterRangeList,
+                    diffHunks: [],
+                  }
+                }
+
+                diff = trimDiff(createTwoFilesPatch(filePath, finalPath, normalizeLineEndings(contentOld), normalizeLineEndings(contentNew)))
                 yield* ctx.ask({
                   permission: "edit",
-                  patterns: [path.relative(instance.worktree, filePath)],
+                  patterns: [path.relative(displayRoot, filePath), ...(renamePath ? [path.relative(displayRoot, renamePath)] : [])],
                   always: ["*"],
                   metadata: {
                     filepath: filePath,
@@ -163,24 +325,50 @@ export const EditTool = Tool.define(
                   },
                 })
 
-                yield* afs.writeWithDirs(filePath, Bom.join(contentNew, desiredBom))
-                if (yield* format.file(filePath)) {
-                  contentNew = yield* Bom.syncFile(afs, filePath, desiredBom)
+                if (deleted) {
+                  yield* afs.remove(filePath)
+                  yield* bus.publish(File.Event.Edited, { file: filePath })
+                  yield* bus.publish(FileWatcher.Event.Updated, { file: filePath, event: "unlink" })
+                } else {
+                  const next = Bom.split(contentNew)
+                  const desiredBom = source.bom || next.bom
+                  yield* afs.writeWithDirs(finalPath, Bom.join(next.text, desiredBom))
+                  if (renamePath && info) {
+                    yield* afs.remove(filePath)
+                    yield* bus.publish(FileWatcher.Event.Updated, { file: filePath, event: "unlink" })
+                  }
+                  formatterTouched = yield* format.file(finalPath)
+                  if (formatterTouched) contentNew = yield* Bom.syncFile(afs, finalPath, desiredBom)
+                  yield* bus.publish(File.Event.Edited, { file: finalPath })
+                  yield* bus.publish(FileWatcher.Event.Updated, { file: finalPath, event: info && !renamePath ? "change" : "add" })
                 }
-                yield* bus.publish(File.Event.Edited, { file: filePath })
-                yield* bus.publish(FileWatcher.Event.Updated, {
-                  file: filePath,
-                  event: "change",
-                })
-                diff = trimDiff(
-                  createTwoFilesPatch(
+
+                const after = splitText(contentNew)
+                const beforeLines = splitText(contentOld).lines
+                const computedAfterRanges = deleted ? [] : afterRanges(beforeLines, after.lines)
+                const afterRangeList = computedAfterRanges.length > 0 ? computedAfterRanges : renamePath && after.lines.length ? [hashlineRange(after.lines, 1, after.lines.length)] : []
+                diff = trimDiff(createTwoFilesPatch(filePath, finalPath, normalizeLineEndings(contentOld), normalizeLineEndings(contentNew)))
+                hashline = {
+                  ...(hashline ?? {
+                    schemaVersion: SCHEMA_VERSION,
+                    displayAlgorithm: DISPLAY_ALGORITHM,
+                    operations: deleted ? ["delete"] : [renamePath ? "rename" : "replace"],
                     filePath,
-                    filePath,
-                    normalizeLineEndings(contentOld),
-                    normalizeLineEndings(contentNew),
-                  ),
-                )
-              }).pipe(Effect.orDie),
+                    fileHashBefore: fileHash(contentOld),
+                    beforeRanges: beforeLines.length ? [hashlineRange(beforeLines, 1, beforeLines.length)] : [],
+                  }),
+                  fileHashAfter: fileHash(contentNew),
+                  formatterTouched,
+                  afterRanges: afterRangeList,
+                  diffHunks: [
+                    {
+                      beforeLineIDs: beforeLines.length ? rangeIDs(beforeLines, 1, beforeLines.length) : [],
+                      afterLineIDs: after.lines.length ? rangeIDs(after.lines, 1, after.lines.length) : [],
+                      diffHash: diffHash(diff),
+                    },
+                  ],
+                }
+              }),
             ),
           )
 
@@ -191,7 +379,7 @@ export const EditTool = Tool.define(
             if (change.removed) deletions += change.count || 0
           }
           const filediff: Snapshot.FileDiff = {
-            file: filePath,
+            file: finalPath,
             patch: diff,
             additions,
             deletions,
@@ -202,14 +390,33 @@ export const EditTool = Tool.define(
               diff,
               filediff,
               diagnostics: {},
+              changeID,
+              hashline,
             },
           })
 
-          let output = `Edit applied successfully.\n\n${TOOL_MUTATION_AUDIT_HINT}`
-          yield* lsp.touchFile(filePath, "document")
+          const after = splitText(contentNew)
+          const afterRangeList = (hashline?.afterRanges as ReturnType<typeof afterRanges> | undefined) ?? []
+          const afterRange = afterRangeList[0]
+          const changedBlock = afterRange ? formatChangedBlock(after.lines, afterRange.startLine, afterRange.endLine) : "Changed lines after edit: none"
+          let output = [
+            deleted ? "File deleted successfully." : "Edit applied successfully.",
+            "",
+            "Change:",
+            `- changeID: ${changeID}`,
+            "",
+            "Resolved target:",
+            `- before: ${targetRange(path.relative(displayRoot, filePath), (hashline?.beforeRanges as ReturnType<typeof beforeRanges> | undefined) ?? [])}`,
+            `- after: ${targetRange(path.relative(displayRoot, finalPath), afterRangeList)}`,
+            "",
+            changedBlock,
+            "",
+            TOOL_MUTATION_AUDIT_HINT,
+          ].join("\n")
+          if (!deleted) yield* lsp.touchFile(finalPath, "document")
           const diagnostics = yield* lsp.diagnostics()
-          const normalizedFilePath = AppFileSystem.normalizePath(filePath)
-          const block = LSP.Diagnostic.report(filePath, diagnostics[normalizedFilePath] ?? [])
+          const normalizedFilePath = AppFileSystem.normalizePath(finalPath)
+          const block = LSP.Diagnostic.report(finalPath, diagnostics[normalizedFilePath] ?? [])
           if (block) output += `\n\nLSP errors detected in this file, please fix:\n${block}`
 
           return {
@@ -217,511 +424,20 @@ export const EditTool = Tool.define(
               diagnostics,
               diff,
               filediff,
+              changeID,
+              hashline,
             },
-            title: `${path.relative(instance.worktree, filePath)}`,
+            title: `${path.relative(displayRoot, finalPath)}`,
             output,
           }
-        }),
+        }).pipe(Effect.orDie),
     }
   }),
 )
 
-export type Replacer = (content: string, find: string) => Generator<string, void, unknown>
-
-// Similarity thresholds for block anchor fallback matching
-const SINGLE_CANDIDATE_SIMILARITY_THRESHOLD = 0.0
-const MULTIPLE_CANDIDATES_SIMILARITY_THRESHOLD = 0.3
-
-/**
- * Levenshtein distance algorithm implementation
- */
-function levenshtein(a: string, b: string): number {
-  // Handle empty strings
-  if (a === "" || b === "") {
-    return Math.max(a.length, b.length)
-  }
-  const matrix = Array.from({ length: a.length + 1 }, (_, i) =>
-    Array.from({ length: b.length + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0)),
-  )
-
-  for (let i = 1; i <= a.length; i++) {
-    for (let j = 1; j <= b.length; j++) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1
-      matrix[i][j] = Math.min(matrix[i - 1][j] + 1, matrix[i][j - 1] + 1, matrix[i - 1][j - 1] + cost)
-    }
-  }
-  return matrix[a.length][b.length]
-}
-
-export const SimpleReplacer: Replacer = function* (_content, find) {
-  yield find
-}
-
-export const LineTrimmedReplacer: Replacer = function* (content, find) {
-  const originalLines = content.split("\n")
-  const searchLines = find.split("\n")
-
-  if (searchLines[searchLines.length - 1] === "") {
-    searchLines.pop()
-  }
-
-  for (let i = 0; i <= originalLines.length - searchLines.length; i++) {
-    let matches = true
-
-    for (let j = 0; j < searchLines.length; j++) {
-      const originalTrimmed = originalLines[i + j].trim()
-      const searchTrimmed = searchLines[j].trim()
-
-      if (originalTrimmed !== searchTrimmed) {
-        matches = false
-        break
-      }
-    }
-
-    if (matches) {
-      let matchStartIndex = 0
-      for (let k = 0; k < i; k++) {
-        matchStartIndex += originalLines[k].length + 1
-      }
-
-      let matchEndIndex = matchStartIndex
-      for (let k = 0; k < searchLines.length; k++) {
-        matchEndIndex += originalLines[i + k].length
-        if (k < searchLines.length - 1) {
-          matchEndIndex += 1 // Add newline character except for the last line
-        }
-      }
-
-      yield content.substring(matchStartIndex, matchEndIndex)
-    }
-  }
-}
-
-export const BlockAnchorReplacer: Replacer = function* (content, find) {
-  const originalLines = content.split("\n")
-  const searchLines = find.split("\n")
-
-  if (searchLines.length < 3) {
-    return
-  }
-
-  if (searchLines[searchLines.length - 1] === "") {
-    searchLines.pop()
-  }
-
-  const firstLineSearch = searchLines[0].trim()
-  const lastLineSearch = searchLines[searchLines.length - 1].trim()
-  const searchBlockSize = searchLines.length
-
-  // Collect all candidate positions where both anchors match
-  const candidates: Array<{ startLine: number; endLine: number }> = []
-  for (let i = 0; i < originalLines.length; i++) {
-    if (originalLines[i].trim() !== firstLineSearch) {
-      continue
-    }
-
-    // Look for the matching last line after this first line
-    for (let j = i + 2; j < originalLines.length; j++) {
-      if (originalLines[j].trim() === lastLineSearch) {
-        candidates.push({ startLine: i, endLine: j })
-        break // Only match the first occurrence of the last line
-      }
-    }
-  }
-
-  // Return immediately if no candidates
-  if (candidates.length === 0) {
-    return
-  }
-
-  // Handle single candidate scenario (using relaxed threshold)
-  if (candidates.length === 1) {
-    const { startLine, endLine } = candidates[0]
-    const actualBlockSize = endLine - startLine + 1
-
-    let similarity = 0
-    let linesToCheck = Math.min(searchBlockSize - 2, actualBlockSize - 2) // Middle lines only
-
-    if (linesToCheck > 0) {
-      for (let j = 1; j < searchBlockSize - 1 && j < actualBlockSize - 1; j++) {
-        const originalLine = originalLines[startLine + j].trim()
-        const searchLine = searchLines[j].trim()
-        const maxLen = Math.max(originalLine.length, searchLine.length)
-        if (maxLen === 0) {
-          continue
-        }
-        const distance = levenshtein(originalLine, searchLine)
-        similarity += (1 - distance / maxLen) / linesToCheck
-
-        // Exit early when threshold is reached
-        if (similarity >= SINGLE_CANDIDATE_SIMILARITY_THRESHOLD) {
-          break
-        }
-      }
-    } else {
-      // No middle lines to compare, just accept based on anchors
-      similarity = 1.0
-    }
-
-    if (similarity >= SINGLE_CANDIDATE_SIMILARITY_THRESHOLD) {
-      let matchStartIndex = 0
-      for (let k = 0; k < startLine; k++) {
-        matchStartIndex += originalLines[k].length + 1
-      }
-      let matchEndIndex = matchStartIndex
-      for (let k = startLine; k <= endLine; k++) {
-        matchEndIndex += originalLines[k].length
-        if (k < endLine) {
-          matchEndIndex += 1 // Add newline character except for the last line
-        }
-      }
-      yield content.substring(matchStartIndex, matchEndIndex)
-    }
-    return
-  }
-
-  // Calculate similarity for multiple candidates
-  let bestMatch: { startLine: number; endLine: number } | null = null
-  let maxSimilarity = -1
-
-  for (const candidate of candidates) {
-    const { startLine, endLine } = candidate
-    const actualBlockSize = endLine - startLine + 1
-
-    let similarity = 0
-    let linesToCheck = Math.min(searchBlockSize - 2, actualBlockSize - 2) // Middle lines only
-
-    if (linesToCheck > 0) {
-      for (let j = 1; j < searchBlockSize - 1 && j < actualBlockSize - 1; j++) {
-        const originalLine = originalLines[startLine + j].trim()
-        const searchLine = searchLines[j].trim()
-        const maxLen = Math.max(originalLine.length, searchLine.length)
-        if (maxLen === 0) {
-          continue
-        }
-        const distance = levenshtein(originalLine, searchLine)
-        similarity += 1 - distance / maxLen
-      }
-      similarity /= linesToCheck // Average similarity
-    } else {
-      // No middle lines to compare, just accept based on anchors
-      similarity = 1.0
-    }
-
-    if (similarity > maxSimilarity) {
-      maxSimilarity = similarity
-      bestMatch = candidate
-    }
-  }
-
-  // Threshold judgment
-  if (maxSimilarity >= MULTIPLE_CANDIDATES_SIMILARITY_THRESHOLD && bestMatch) {
-    const { startLine, endLine } = bestMatch
-    let matchStartIndex = 0
-    for (let k = 0; k < startLine; k++) {
-      matchStartIndex += originalLines[k].length + 1
-    }
-    let matchEndIndex = matchStartIndex
-    for (let k = startLine; k <= endLine; k++) {
-      matchEndIndex += originalLines[k].length
-      if (k < endLine) {
-        matchEndIndex += 1
-      }
-    }
-    yield content.substring(matchStartIndex, matchEndIndex)
-  }
-}
-
-export const WhitespaceNormalizedReplacer: Replacer = function* (content, find) {
-  const normalizeWhitespace = (text: string) => text.replace(/\s+/g, " ").trim()
-  const normalizedFind = normalizeWhitespace(find)
-
-  // Handle single line matches
-  const lines = content.split("\n")
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]
-    if (normalizeWhitespace(line) === normalizedFind) {
-      yield line
-    } else {
-      // Only check for substring matches if the full line doesn't match
-      const normalizedLine = normalizeWhitespace(line)
-      if (normalizedLine.includes(normalizedFind)) {
-        // Find the actual substring in the original line that matches
-        const words = find.trim().split(/\s+/)
-        if (words.length > 0) {
-          const pattern = words.map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+")
-          try {
-            const regex = new RegExp(pattern)
-            const match = line.match(regex)
-            if (match) {
-              yield match[0]
-            }
-          } catch {
-            // Invalid regex pattern, skip
-          }
-        }
-      }
-    }
-  }
-
-  // Handle multi-line matches
-  const findLines = find.split("\n")
-  if (findLines.length > 1) {
-    for (let i = 0; i <= lines.length - findLines.length; i++) {
-      const block = lines.slice(i, i + findLines.length)
-      if (normalizeWhitespace(block.join("\n")) === normalizedFind) {
-        yield block.join("\n")
-      }
-    }
-  }
-}
-
-export const IndentationFlexibleReplacer: Replacer = function* (content, find) {
-  const removeIndentation = (text: string) => {
-    const lines = text.split("\n")
-    const nonEmptyLines = lines.filter((line) => line.trim().length > 0)
-    if (nonEmptyLines.length === 0) return text
-
-    const minIndent = Math.min(
-      ...nonEmptyLines.map((line) => {
-        const match = line.match(/^(\s*)/)
-        return match ? match[1].length : 0
-      }),
-    )
-
-    return lines.map((line) => (line.trim().length === 0 ? line : line.slice(minIndent))).join("\n")
-  }
-
-  const normalizedFind = removeIndentation(find)
-  const contentLines = content.split("\n")
-  const findLines = find.split("\n")
-
-  for (let i = 0; i <= contentLines.length - findLines.length; i++) {
-    const block = contentLines.slice(i, i + findLines.length).join("\n")
-    if (removeIndentation(block) === normalizedFind) {
-      yield block
-    }
-  }
-}
-
-export const EscapeNormalizedReplacer: Replacer = function* (content, find) {
-  const unescapeString = (str: string): string => {
-    return str.replace(/\\(n|t|r|'|"|`|\\|\n|\$)/g, (match, capturedChar) => {
-      switch (capturedChar) {
-        case "n":
-          return "\n"
-        case "t":
-          return "\t"
-        case "r":
-          return "\r"
-        case "'":
-          return "'"
-        case '"':
-          return '"'
-        case "`":
-          return "`"
-        case "\\":
-          return "\\"
-        case "\n":
-          return "\n"
-        case "$":
-          return "$"
-        default:
-          return match
-      }
-    })
-  }
-
-  const unescapedFind = unescapeString(find)
-
-  // Try direct match with unescaped find string
-  if (content.includes(unescapedFind)) {
-    yield unescapedFind
-  }
-
-  // Also try finding escaped versions in content that match unescaped find
-  const lines = content.split("\n")
-  const findLines = unescapedFind.split("\n")
-
-  for (let i = 0; i <= lines.length - findLines.length; i++) {
-    const block = lines.slice(i, i + findLines.length).join("\n")
-    const unescapedBlock = unescapeString(block)
-
-    if (unescapedBlock === unescapedFind) {
-      yield block
-    }
-  }
-}
-
-export const MultiOccurrenceReplacer: Replacer = function* (content, find) {
-  // This replacer yields all exact matches, allowing the replace function
-  // to handle multiple occurrences based on replaceAll parameter
-  let startIndex = 0
-
-  while (true) {
-    const index = content.indexOf(find, startIndex)
-    if (index === -1) break
-
-    yield find
-    startIndex = index + find.length
-  }
-}
-
-export const TrimmedBoundaryReplacer: Replacer = function* (content, find) {
-  const trimmedFind = find.trim()
-
-  if (trimmedFind === find) {
-    // Already trimmed, no point in trying
-    return
-  }
-
-  // Try to find the trimmed version
-  if (content.includes(trimmedFind)) {
-    yield trimmedFind
-  }
-
-  // Also try finding blocks where trimmed content matches
-  const lines = content.split("\n")
-  const findLines = find.split("\n")
-
-  for (let i = 0; i <= lines.length - findLines.length; i++) {
-    const block = lines.slice(i, i + findLines.length).join("\n")
-
-    if (block.trim() === trimmedFind) {
-      yield block
-    }
-  }
-}
-
-export const ContextAwareReplacer: Replacer = function* (content, find) {
-  const findLines = find.split("\n")
-  if (findLines.length < 3) {
-    // Need at least 3 lines to have meaningful context
-    return
-  }
-
-  // Remove trailing empty line if present
-  if (findLines[findLines.length - 1] === "") {
-    findLines.pop()
-  }
-
-  const contentLines = content.split("\n")
-
-  // Extract first and last lines as context anchors
-  const firstLine = findLines[0].trim()
-  const lastLine = findLines[findLines.length - 1].trim()
-
-  // Find blocks that start and end with the context anchors
-  for (let i = 0; i < contentLines.length; i++) {
-    if (contentLines[i].trim() !== firstLine) continue
-
-    // Look for the matching last line
-    for (let j = i + 2; j < contentLines.length; j++) {
-      if (contentLines[j].trim() === lastLine) {
-        // Found a potential context block
-        const blockLines = contentLines.slice(i, j + 1)
-        const block = blockLines.join("\n")
-
-        // Check if the middle content has reasonable similarity
-        // (simple heuristic: at least 50% of non-empty lines should match when trimmed)
-        if (blockLines.length === findLines.length) {
-          let matchingLines = 0
-          let totalNonEmptyLines = 0
-
-          for (let k = 1; k < blockLines.length - 1; k++) {
-            const blockLine = blockLines[k].trim()
-            const findLine = findLines[k].trim()
-
-            if (blockLine.length > 0 || findLine.length > 0) {
-              totalNonEmptyLines++
-              if (blockLine === findLine) {
-                matchingLines++
-              }
-            }
-          }
-
-          if (totalNonEmptyLines === 0 || matchingLines / totalNonEmptyLines >= 0.5) {
-            yield block
-            break // Only match the first occurrence
-          }
-        }
-        break
-      }
-    }
-  }
-}
-
 export function trimDiff(diff: string): string {
   const lines = diff.split("\n")
-  const contentLines = lines.filter(
-    (line) =>
-      (line.startsWith("+") || line.startsWith("-") || line.startsWith(" ")) &&
-      !line.startsWith("---") &&
-      !line.startsWith("+++"),
-  )
-
-  if (contentLines.length === 0) return diff
-
-  let min = Infinity
-  for (const line of contentLines) {
-    const content = line.slice(1)
-    if (content.trim().length > 0) {
-      const match = content.match(/^(\s*)/)
-      if (match) min = Math.min(min, match[1].length)
-    }
-  }
-  if (min === Infinity || min === 0) return diff
-  const trimmedLines = lines.map((line) => {
-    if (
-      (line.startsWith("+") || line.startsWith("-") || line.startsWith(" ")) &&
-      !line.startsWith("---") &&
-      !line.startsWith("+++")
-    ) {
-      const prefix = line[0]
-      const content = line.slice(1)
-      return prefix + content.slice(min)
-    }
-    return line
-  })
-
-  return trimmedLines.join("\n")
-}
-
-export function replace(content: string, oldString: string, newString: string, replaceAll = false): string {
-  if (oldString === newString) {
-    throw new Error("No changes to apply: oldString and newString are identical.")
-  }
-
-  let notFound = true
-
-  for (const replacer of [
-    SimpleReplacer,
-    LineTrimmedReplacer,
-    BlockAnchorReplacer,
-    WhitespaceNormalizedReplacer,
-    IndentationFlexibleReplacer,
-    EscapeNormalizedReplacer,
-    TrimmedBoundaryReplacer,
-    ContextAwareReplacer,
-    MultiOccurrenceReplacer,
-  ]) {
-    for (const search of replacer(content, oldString)) {
-      const index = content.indexOf(search)
-      if (index === -1) continue
-      notFound = false
-      if (replaceAll) {
-        return content.replaceAll(search, newString)
-      }
-      const lastIndex = content.lastIndexOf(search)
-      if (index !== lastIndex) continue
-      return content.substring(0, index) + newString + content.substring(index + search.length)
-    }
-  }
-
-  if (notFound) {
-    throw new Error(
-      "Could not find oldString in the file. It must match exactly, including whitespace, indentation, and line endings.",
-    )
-  }
-  throw new Error("Found multiple matches for oldString. Provide more surrounding context to make the match unique.")
+  const headerEndIndex = lines.findIndex((line) => line.startsWith("@@"))
+  if (headerEndIndex === -1) return diff.trim()
+  return lines.slice(headerEndIndex).join("\n").trim()
 }

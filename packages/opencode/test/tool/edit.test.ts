@@ -3,7 +3,6 @@ import path from "path"
 import fs from "fs/promises"
 import { Effect, Layer, ManagedRuntime } from "effect"
 import { EditTool } from "../../src/tool/edit"
-import { Instance } from "../../src/project/instance"
 import { WithInstance } from "../../src/project/with-instance"
 import { disposeAllInstances, tmpdir } from "../fixture/fixture"
 import { LSP } from "@/lsp/lsp"
@@ -14,6 +13,7 @@ import { Bus } from "../../src/bus"
 import { BusEvent } from "../../src/bus/bus-event"
 import { Truncate } from "@/tool/truncate"
 import { SessionID, MessageID } from "../../src/session/schema"
+import { lineHash } from "../../src/tool/hashline"
 
 const ctx = {
   sessionID: SessionID.make("ses_test-edit-session"),
@@ -53,6 +53,8 @@ const resolve = () =>
     }),
   )
 
+const anchor = (line: number, content: string) => `${line}#${lineHash(line, content)}`
+
 const subscribeBus = <D extends BusEvent.Definition>(def: D, callback: () => unknown) =>
   runtime.runPromise(Bus.Service.use((bus) => bus.subscribeCallback(def, callback)))
 
@@ -69,688 +71,314 @@ async function onceBus<D extends BusEvent.Definition>(def: D) {
 }
 
 describe("tool.edit", () => {
-  describe("creating new files", () => {
-    test("creates new file when oldString is empty", async () => {
-      await using tmp = await tmpdir()
-      const filepath = path.join(tmp.path, "newfile.txt")
+  test("creates new files with unanchored append", async () => {
+    await using tmp = await tmpdir()
+    const filepath = path.join(tmp.path, "newfile.txt")
 
-      await WithInstance.provide({
-        directory: tmp.path,
-        fn: async () => {
-          const edit = await resolve()
-          const result = await Effect.runPromise(
-            edit.execute(
-              {
-                filePath: filepath,
-                oldString: "",
-                newString: "new content",
-              },
-              ctx,
-            ),
-          )
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const edit = await resolve()
+        const result = await Effect.runPromise(
+          edit.execute(
+            {
+              filePath: filepath,
+              edits: [{ op: "append", lines: "new content" }],
+            },
+            ctx,
+          ),
+        )
 
-          expect(result.metadata.diff).toContain("new content")
-
-          const content = await fs.readFile(filepath, "utf-8")
-          expect(content).toBe("new content")
-        },
-      })
-    })
-
-    test("preserves BOM when oldString is empty on existing files", async () => {
-      await using tmp = await tmpdir()
-      const filepath = path.join(tmp.path, "existing.cs")
-      const bom = String.fromCharCode(0xfeff)
-      await fs.writeFile(filepath, `${bom}using System;\n`, "utf-8")
-
-      await WithInstance.provide({
-        directory: tmp.path,
-        fn: async () => {
-          const edit = await resolve()
-          const result = await Effect.runPromise(
-            edit.execute(
-              {
-                filePath: filepath,
-                oldString: "",
-                newString: "using Up;\n",
-              },
-              ctx,
-            ),
-          )
-
-          expect(result.metadata.diff).toContain("-using System;")
-          expect(result.metadata.diff).toContain("+using Up;")
-
-          const content = await fs.readFile(filepath, "utf-8")
-          expect(content.charCodeAt(0)).toBe(0xfeff)
-          expect(content.slice(1)).toBe("using Up;\n")
-        },
-      })
-    })
-
-    test("creates new file with nested directories", async () => {
-      await using tmp = await tmpdir()
-      const filepath = path.join(tmp.path, "nested", "dir", "file.txt")
-
-      await WithInstance.provide({
-        directory: tmp.path,
-        fn: async () => {
-          const edit = await resolve()
-          await Effect.runPromise(
-            edit.execute(
-              {
-                filePath: filepath,
-                oldString: "",
-                newString: "nested file",
-              },
-              ctx,
-            ),
-          )
-
-          const content = await fs.readFile(filepath, "utf-8")
-          expect(content).toBe("nested file")
-        },
-      })
-    })
-
-    test("emits add event for new files", async () => {
-      await using tmp = await tmpdir()
-      const filepath = path.join(tmp.path, "new.txt")
-
-      await WithInstance.provide({
-        directory: tmp.path,
-        fn: async () => {
-          const { FileWatcher } = await import("../../src/file/watcher")
-
-          const updated = await onceBus(FileWatcher.Event.Updated)
-
-          try {
-            const edit = await resolve()
-            await Effect.runPromise(
-              edit.execute(
-                {
-                  filePath: filepath,
-                  oldString: "",
-                  newString: "content",
-                },
-                ctx,
-              ),
-            )
-
-            await updated.wait
-          } finally {
-            updated.unsub()
-          }
-        },
-      })
+        expect(result.output).toContain("Edit applied successfully")
+        expect(result.output).toContain("changeID")
+        expect(result.output).toContain("1#")
+        expect(result.metadata.hashline?.operations).toContain("append")
+        expect(await fs.readFile(filepath, "utf-8")).toBe("new content")
+      },
     })
   })
 
-  describe("editing existing files", () => {
-    test("replaces text in existing file", async () => {
-      await using tmp = await tmpdir()
-      const filepath = path.join(tmp.path, "existing.txt")
-      await fs.writeFile(filepath, "old content here", "utf-8")
+  test("emits add event for created files", async () => {
+    await using tmp = await tmpdir()
+    const filepath = path.join(tmp.path, "new.txt")
 
-      await WithInstance.provide({
-        directory: tmp.path,
-        fn: async () => {
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const { FileWatcher } = await import("../../src/file/watcher")
+        const updated = await onceBus(FileWatcher.Event.Updated)
+        try {
           const edit = await resolve()
-          const result = await Effect.runPromise(
-            edit.execute(
-              {
-                filePath: filepath,
-                oldString: "old content",
-                newString: "new content",
-              },
-              ctx,
-            ),
-          )
-
-          expect(result.output).toContain("Edit applied successfully")
-          expect(result.output).toContain("chimera_audit_recent")
-
-          const content = await fs.readFile(filepath, "utf-8")
-          expect(content).toBe("new content here")
-        },
-      })
-    })
-
-    test("replaces the first visible line in BOM files", async () => {
-      await using tmp = await tmpdir()
-      const filepath = path.join(tmp.path, "existing.cs")
-      const bom = String.fromCharCode(0xfeff)
-      await fs.writeFile(filepath, `${bom}using System;\nclass Test {}\n`, "utf-8")
-
-      await WithInstance.provide({
-        directory: tmp.path,
-        fn: async () => {
-          const edit = await resolve()
-          const result = await Effect.runPromise(
-            edit.execute(
-              {
-                filePath: filepath,
-                oldString: "using System;",
-                newString: "using Up;",
-              },
-              ctx,
-            ),
-          )
-
-          expect(result.metadata.diff).toContain("-using System;")
-          expect(result.metadata.diff).toContain("+using Up;")
-          expect(result.metadata.diff).not.toContain(bom)
-
-          const content = await fs.readFile(filepath, "utf-8")
-          expect(content.charCodeAt(0)).toBe(0xfeff)
-          expect(content.slice(1)).toBe("using Up;\nclass Test {}\n")
-        },
-      })
-    })
-
-    test("throws error when file does not exist", async () => {
-      await using tmp = await tmpdir()
-      const filepath = path.join(tmp.path, "nonexistent.txt")
-
-      await WithInstance.provide({
-        directory: tmp.path,
-        fn: async () => {
-          const edit = await resolve()
-          await expect(
-            Effect.runPromise(
-              edit.execute(
-                {
-                  filePath: filepath,
-                  oldString: "old",
-                  newString: "new",
-                },
-                ctx,
-              ),
-            ),
-          ).rejects.toThrow("not found")
-        },
-      })
-    })
-
-    test("throws error when oldString equals newString", async () => {
-      await using tmp = await tmpdir()
-      const filepath = path.join(tmp.path, "file.txt")
-      await fs.writeFile(filepath, "content", "utf-8")
-
-      await WithInstance.provide({
-        directory: tmp.path,
-        fn: async () => {
-          const edit = await resolve()
-          await expect(
-            Effect.runPromise(
-              edit.execute(
-                {
-                  filePath: filepath,
-                  oldString: "same",
-                  newString: "same",
-                },
-                ctx,
-              ),
-            ),
-          ).rejects.toThrow("identical")
-        },
-      })
-    })
-
-    test("throws error when oldString not found in file", async () => {
-      await using tmp = await tmpdir()
-      const filepath = path.join(tmp.path, "file.txt")
-      await fs.writeFile(filepath, "actual content", "utf-8")
-
-      await WithInstance.provide({
-        directory: tmp.path,
-        fn: async () => {
-          const edit = await resolve()
-          await expect(
-            Effect.runPromise(
-              edit.execute(
-                {
-                  filePath: filepath,
-                  oldString: "not in file",
-                  newString: "replacement",
-                },
-                ctx,
-              ),
-            ),
-          ).rejects.toThrow()
-        },
-      })
-    })
-
-    test("replaces all occurrences with replaceAll option", async () => {
-      await using tmp = await tmpdir()
-      const filepath = path.join(tmp.path, "file.txt")
-      await fs.writeFile(filepath, "foo bar foo baz foo", "utf-8")
-
-      await WithInstance.provide({
-        directory: tmp.path,
-        fn: async () => {
-          const edit = await resolve()
-          await Effect.runPromise(
-            edit.execute(
-              {
-                filePath: filepath,
-                oldString: "foo",
-                newString: "qux",
-                replaceAll: true,
-              },
-              ctx,
-            ),
-          )
-
-          const content = await fs.readFile(filepath, "utf-8")
-          expect(content).toBe("qux bar qux baz qux")
-        },
-      })
-    })
-
-    test("emits change event for existing files", async () => {
-      await using tmp = await tmpdir()
-      const filepath = path.join(tmp.path, "file.txt")
-      await fs.writeFile(filepath, "original", "utf-8")
-
-      await WithInstance.provide({
-        directory: tmp.path,
-        fn: async () => {
-          const { FileWatcher } = await import("../../src/file/watcher")
-
-          const updated = await onceBus(FileWatcher.Event.Updated)
-
-          try {
-            const edit = await resolve()
-            await Effect.runPromise(
-              edit.execute(
-                {
-                  filePath: filepath,
-                  oldString: "original",
-                  newString: "modified",
-                },
-                ctx,
-              ),
-            )
-
-            await updated.wait
-          } finally {
-            updated.unsub()
-          }
-        },
-      })
+          await Effect.runPromise(edit.execute({ filePath: filepath, edits: [{ op: "append", lines: "content" }] }, ctx))
+          await updated.wait
+        } finally {
+          updated.unsub()
+        }
+      },
     })
   })
 
-  describe("edge cases", () => {
-    test("handles multiline replacements", async () => {
-      await using tmp = await tmpdir()
-      const filepath = path.join(tmp.path, "file.txt")
-      await fs.writeFile(filepath, "line1\nline2\nline3", "utf-8")
+  test("replaces anchored lines", async () => {
+    await using tmp = await tmpdir()
+    const filepath = path.join(tmp.path, "existing.txt")
+    await fs.writeFile(filepath, "old content here\n", "utf-8")
 
-      await WithInstance.provide({
-        directory: tmp.path,
-        fn: async () => {
-          const edit = await resolve()
-          await Effect.runPromise(
-            edit.execute(
-              {
-                filePath: filepath,
-                oldString: "line2",
-                newString: "new line 2\nextra line",
-              },
-              ctx,
-            ),
-          )
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const edit = await resolve()
+        const result = await Effect.runPromise(
+          edit.execute(
+            {
+              filePath: filepath,
+              edits: [{ op: "replace", pos: anchor(1, "old content here"), lines: "new content here" }],
+            },
+            ctx,
+          ),
+        )
 
-          const content = await fs.readFile(filepath, "utf-8")
-          expect(content).toBe("line1\nnew line 2\nextra line\nline3")
-        },
-      })
-    })
-
-    test("handles CRLF line endings", async () => {
-      await using tmp = await tmpdir()
-      const filepath = path.join(tmp.path, "file.txt")
-      await fs.writeFile(filepath, "line1\r\nold\r\nline3", "utf-8")
-
-      await WithInstance.provide({
-        directory: tmp.path,
-        fn: async () => {
-          const edit = await resolve()
-          await Effect.runPromise(
-            edit.execute(
-              {
-                filePath: filepath,
-                oldString: "old",
-                newString: "new",
-              },
-              ctx,
-            ),
-          )
-
-          const content = await fs.readFile(filepath, "utf-8")
-          expect(content).toBe("line1\r\nnew\r\nline3")
-        },
-      })
-    })
-
-    test("throws error when oldString equals newString", async () => {
-      await using tmp = await tmpdir()
-      const filepath = path.join(tmp.path, "file.txt")
-      await fs.writeFile(filepath, "content", "utf-8")
-
-      await WithInstance.provide({
-        directory: tmp.path,
-        fn: async () => {
-          const edit = await resolve()
-          await expect(
-            Effect.runPromise(
-              edit.execute(
-                {
-                  filePath: filepath,
-                  oldString: "",
-                  newString: "",
-                },
-                ctx,
-              ),
-            ),
-          ).rejects.toThrow("identical")
-        },
-      })
-    })
-
-    test("throws error when path is directory", async () => {
-      await using tmp = await tmpdir()
-      const dirpath = path.join(tmp.path, "adir")
-      await fs.mkdir(dirpath)
-
-      await WithInstance.provide({
-        directory: tmp.path,
-        fn: async () => {
-          const edit = await resolve()
-          await expect(
-            Effect.runPromise(
-              edit.execute(
-                {
-                  filePath: dirpath,
-                  oldString: "old",
-                  newString: "new",
-                },
-                ctx,
-              ),
-            ),
-          ).rejects.toThrow("directory")
-        },
-      })
-    })
-
-    test("tracks file diff statistics", async () => {
-      await using tmp = await tmpdir()
-      const filepath = path.join(tmp.path, "file.txt")
-      await fs.writeFile(filepath, "line1\nline2\nline3", "utf-8")
-
-      await WithInstance.provide({
-        directory: tmp.path,
-        fn: async () => {
-          const edit = await resolve()
-          const result = await Effect.runPromise(
-            edit.execute(
-              {
-                filePath: filepath,
-                oldString: "line2",
-                newString: "new line a\nnew line b",
-              },
-              ctx,
-            ),
-          )
-
-          expect(result.metadata.filediff).toBeDefined()
-          expect(result.metadata.filediff.file).toBe(filepath)
-          expect(result.metadata.filediff.additions).toBeGreaterThan(0)
-        },
-      })
+        expect(result.output).toContain("Changed lines after edit")
+        expect(result.output).toContain("chimera_audit_recent")
+        expect(result.metadata.diff).toContain("-old content here")
+        expect(result.metadata.diff).toContain("+new content here")
+        expect(await fs.readFile(filepath, "utf-8")).toBe("new content here\n")
+      },
     })
   })
 
-  describe("line endings", () => {
-    const old = "alpha\nbeta\ngamma"
-    const next = "alpha\nbeta-updated\ngamma"
-    const alt = "alpha\nbeta\nomega"
+  test("replaces anchored ranges and applies batch edits bottom-up", async () => {
+    await using tmp = await tmpdir()
+    const filepath = path.join(tmp.path, "batch.txt")
+    await fs.writeFile(filepath, "alpha\nbeta\ngamma\ndelta\n", "utf-8")
 
-    const normalize = (text: string, ending: "\n" | "\r\n") => {
-      const normalized = text.replaceAll("\r\n", "\n")
-      if (ending === "\n") return normalized
-      return normalized.replaceAll("\n", "\r\n")
-    }
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const edit = await resolve()
+        await Effect.runPromise(
+          edit.execute(
+            {
+              filePath: filepath,
+              edits: [
+                { op: "replace", pos: anchor(2, "beta"), lines: "BETA" },
+                { op: "replace", pos: anchor(4, "delta"), lines: "DELTA" },
+              ],
+            },
+            ctx,
+          ),
+        )
 
-    const count = (content: string) => {
-      const crlf = content.match(/\r\n/g)?.length ?? 0
-      const lf = content.match(/\n/g)?.length ?? 0
-      return {
-        crlf,
-        lf: lf - crlf,
-      }
-    }
-
-    const expectLf = (content: string) => {
-      const counts = count(content)
-      expect(counts.crlf).toBe(0)
-      expect(counts.lf).toBeGreaterThan(0)
-    }
-
-    const expectCrlf = (content: string) => {
-      const counts = count(content)
-      expect(counts.lf).toBe(0)
-      expect(counts.crlf).toBeGreaterThan(0)
-    }
-
-    type Input = {
-      content: string
-      oldString: string
-      newString: string
-      replaceAll?: boolean
-    }
-
-    const apply = async (input: Input) => {
-      await using tmp = await tmpdir({
-        init: async (dir) => {
-          await Bun.write(path.join(dir, "test.txt"), input.content)
-        },
-      })
-
-      return await WithInstance.provide({
-        directory: tmp.path,
-        fn: async () => {
-          const edit = await resolve()
-          const filePath = path.join(tmp.path, "test.txt")
-          await Effect.runPromise(
-            edit.execute(
-              {
-                filePath,
-                oldString: input.oldString,
-                newString: input.newString,
-                replaceAll: input.replaceAll,
-              },
-              ctx,
-            ),
-          )
-          return await Bun.file(filePath).text()
-        },
-      })
-    }
-
-    test("preserves LF with LF multi-line strings", async () => {
-      const content = normalize(old + "\n", "\n")
-      const output = await apply({
-        content,
-        oldString: normalize(old, "\n"),
-        newString: normalize(next, "\n"),
-      })
-      expect(output).toBe(normalize(next + "\n", "\n"))
-      expectLf(output)
-    })
-
-    test("preserves CRLF with CRLF multi-line strings", async () => {
-      const content = normalize(old + "\n", "\r\n")
-      const output = await apply({
-        content,
-        oldString: normalize(old, "\r\n"),
-        newString: normalize(next, "\r\n"),
-      })
-      expect(output).toBe(normalize(next + "\n", "\r\n"))
-      expectCrlf(output)
-    })
-
-    test("preserves LF when old/new use CRLF", async () => {
-      const content = normalize(old + "\n", "\n")
-      const output = await apply({
-        content,
-        oldString: normalize(old, "\r\n"),
-        newString: normalize(next, "\r\n"),
-      })
-      expect(output).toBe(normalize(next + "\n", "\n"))
-      expectLf(output)
-    })
-
-    test("preserves CRLF when old/new use LF", async () => {
-      const content = normalize(old + "\n", "\r\n")
-      const output = await apply({
-        content,
-        oldString: normalize(old, "\n"),
-        newString: normalize(next, "\n"),
-      })
-      expect(output).toBe(normalize(next + "\n", "\r\n"))
-      expectCrlf(output)
-    })
-
-    test("preserves LF when newString uses CRLF", async () => {
-      const content = normalize(old + "\n", "\n")
-      const output = await apply({
-        content,
-        oldString: normalize(old, "\n"),
-        newString: normalize(next, "\r\n"),
-      })
-      expect(output).toBe(normalize(next + "\n", "\n"))
-      expectLf(output)
-    })
-
-    test("preserves CRLF when newString uses LF", async () => {
-      const content = normalize(old + "\n", "\r\n")
-      const output = await apply({
-        content,
-        oldString: normalize(old, "\r\n"),
-        newString: normalize(next, "\n"),
-      })
-      expect(output).toBe(normalize(next + "\n", "\r\n"))
-      expectCrlf(output)
-    })
-
-    test("preserves LF with mixed old/new line endings", async () => {
-      const content = normalize(old + "\n", "\n")
-      const output = await apply({
-        content,
-        oldString: "alpha\nbeta\r\ngamma",
-        newString: "alpha\r\nbeta\nomega",
-      })
-      expect(output).toBe(normalize(alt + "\n", "\n"))
-      expectLf(output)
-    })
-
-    test("preserves CRLF with mixed old/new line endings", async () => {
-      const content = normalize(old + "\n", "\r\n")
-      const output = await apply({
-        content,
-        oldString: "alpha\r\nbeta\ngamma",
-        newString: "alpha\nbeta\r\nomega",
-      })
-      expect(output).toBe(normalize(alt + "\n", "\r\n"))
-      expectCrlf(output)
-    })
-
-    test("replaceAll preserves LF for multi-line blocks", async () => {
-      const blockOld = "alpha\nbeta"
-      const blockNew = "alpha\nbeta-updated"
-      const content = normalize(blockOld + "\n" + blockOld + "\n", "\n")
-      const output = await apply({
-        content,
-        oldString: normalize(blockOld, "\n"),
-        newString: normalize(blockNew, "\n"),
-        replaceAll: true,
-      })
-      expect(output).toBe(normalize(blockNew + "\n" + blockNew + "\n", "\n"))
-      expectLf(output)
-    })
-
-    test("replaceAll preserves CRLF for multi-line blocks", async () => {
-      const blockOld = "alpha\nbeta"
-      const blockNew = "alpha\nbeta-updated"
-      const content = normalize(blockOld + "\n" + blockOld + "\n", "\r\n")
-      const output = await apply({
-        content,
-        oldString: normalize(blockOld, "\r\n"),
-        newString: normalize(blockNew, "\r\n"),
-        replaceAll: true,
-      })
-      expect(output).toBe(normalize(blockNew + "\n" + blockNew + "\n", "\r\n"))
-      expectCrlf(output)
+        expect(await fs.readFile(filepath, "utf-8")).toBe("alpha\nBETA\ngamma\nDELTA\n")
+      },
     })
   })
 
-  describe("concurrent editing", () => {
-    test("preserves concurrent edits to different sections of the same file", async () => {
-      await using tmp = await tmpdir()
-      const filepath = path.join(tmp.path, "file.txt")
-      await fs.writeFile(filepath, "top = 0\nmiddle = keep\nbottom = 0\n", "utf-8")
+  test("supports append and prepend anchors", async () => {
+    await using tmp = await tmpdir()
+    const filepath = path.join(tmp.path, "insert.txt")
+    await fs.writeFile(filepath, "one\nthree\n", "utf-8")
 
-      await WithInstance.provide({
-        directory: tmp.path,
-        fn: async () => {
-          const edit = await resolve()
-          let asks = 0
-          const firstAsk = Promise.withResolvers<void>()
-          const delayedCtx = {
-            ...ctx,
-            ask: () =>
-              Effect.gen(function* () {
-                asks++
-                if (asks !== 1) return
-                firstAsk.resolve()
-                yield* Effect.promise(() => Bun.sleep(50))
-              }),
-          }
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const edit = await resolve()
+        await Effect.runPromise(
+          edit.execute(
+            {
+              filePath: filepath,
+              edits: [
+                { op: "append", pos: anchor(1, "one"), lines: "two" },
+                { op: "prepend", pos: anchor(2, "three"), lines: "two-point-five" },
+              ],
+            },
+            ctx,
+          ),
+        )
 
-          const promise1 = Effect.runPromise(
+        expect(await fs.readFile(filepath, "utf-8")).toBe("one\ntwo\ntwo-point-five\nthree\n")
+      },
+    })
+  })
+
+  test("rejects stale hash anchors", async () => {
+    await using tmp = await tmpdir()
+    const filepath = path.join(tmp.path, "stale.txt")
+    await fs.writeFile(filepath, "before\n", "utf-8")
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const edit = await resolve()
+        await fs.writeFile(filepath, "after\n", "utf-8")
+        await expect(
+          Effect.runPromise(
             edit.execute(
               {
                 filePath: filepath,
-                oldString: "top = 0",
-                newString: "top = 1",
+                edits: [{ op: "replace", pos: anchor(1, "before"), lines: "next" }],
               },
-              delayedCtx,
+              ctx,
             ),
-          )
+          ),
+        ).rejects.toThrow("Hashline anchor mismatch")
+      },
+    })
+  })
 
-          await firstAsk.promise
+  test("rejects overlapping ranges and no-op edits", async () => {
+    await using tmp = await tmpdir()
+    const filepath = path.join(tmp.path, "reject.txt")
+    await fs.writeFile(filepath, "one\ntwo\nthree\n", "utf-8")
 
-          const promise2 = Effect.runPromise(
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const edit = await resolve()
+        await expect(
+          Effect.runPromise(
             edit.execute(
               {
                 filePath: filepath,
-                oldString: "bottom = 0",
-                newString: "bottom = 2",
+                edits: [
+                  { op: "replace", pos: anchor(1, "one"), end: anchor(2, "two"), lines: "x" },
+                  { op: "replace", pos: anchor(2, "two"), end: anchor(3, "three"), lines: "y" },
+                ],
               },
-              delayedCtx,
+              ctx,
             ),
-          )
+          ),
+        ).rejects.toThrow("Overlapping")
 
-          const results = await Promise.allSettled([promise1, promise2])
-          expect(results[0]?.status).toBe("fulfilled")
-          expect(results[1]?.status).toBe("fulfilled")
-          expect(await fs.readFile(filepath, "utf-8")).toBe("top = 1\nmiddle = keep\nbottom = 2\n")
-        },
-      })
+        await expect(
+          Effect.runPromise(edit.execute({ filePath: filepath, edits: [{ op: "replace", pos: anchor(1, "one"), lines: "one" }] }, ctx)),
+        ).rejects.toThrow("no-op")
+      },
+    })
+  })
+
+  test("strips accidental Hashline prefixes from replacement lines", async () => {
+    await using tmp = await tmpdir()
+    const filepath = path.join(tmp.path, "prefix.txt")
+    await fs.writeFile(filepath, "old\n", "utf-8")
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const edit = await resolve()
+        await Effect.runPromise(
+          edit.execute(
+            {
+              filePath: filepath,
+              edits: [{ op: "replace", pos: anchor(1, "old"), lines: `1#${lineHash(1, "new")}|new` }],
+            },
+            ctx,
+          ),
+        )
+
+        expect(await fs.readFile(filepath, "utf-8")).toBe("new\n")
+      },
+    })
+  })
+
+  test("preserves BOM and CRLF line endings", async () => {
+    await using tmp = await tmpdir()
+    const filepath = path.join(tmp.path, "existing.cs")
+    const bom = String.fromCharCode(0xfeff)
+    await fs.writeFile(filepath, `${bom}using System;\r\nclass Test {}\r\n`, "utf-8")
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const edit = await resolve()
+        const result = await Effect.runPromise(
+          edit.execute(
+            {
+              filePath: filepath,
+              edits: [{ op: "replace", pos: anchor(1, "using System;"), lines: "using Up;" }],
+            },
+            ctx,
+          ),
+        )
+
+        expect(result.metadata.diff).not.toContain(bom)
+        const content = await fs.readFile(filepath, "utf-8")
+        expect(content.charCodeAt(0)).toBe(0xfeff)
+        expect(content.slice(1)).toBe("using Up;\r\nclass Test {}\r\n")
+      },
+    })
+  })
+
+  test("deletes files", async () => {
+    await using tmp = await tmpdir()
+    const filepath = path.join(tmp.path, "delete.txt")
+    await fs.writeFile(filepath, "remove me\n", "utf-8")
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const edit = await resolve()
+        const result = await Effect.runPromise(edit.execute({ filePath: filepath, edits: [], delete: true }, ctx))
+        expect(result.output).toContain("File deleted successfully")
+        expect(await Bun.file(filepath).exists()).toBe(false)
+      },
+    })
+  })
+
+  test("renames files", async () => {
+    await using tmp = await tmpdir()
+    const filepath = path.join(tmp.path, "old.txt")
+    const next = path.join(tmp.path, "new.txt")
+    await fs.writeFile(filepath, "move me\n", "utf-8")
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const edit = await resolve()
+        const result = await Effect.runPromise(edit.execute({ filePath: filepath, edits: [], rename: next }, ctx))
+        expect(result.title).toBe("new.txt")
+        expect(await Bun.file(filepath).exists()).toBe(false)
+        expect(await fs.readFile(next, "utf-8")).toBe("move me\n")
+      },
+    })
+  })
+
+  test("throws error when path is directory", async () => {
+    await using tmp = await tmpdir()
+    const dirpath = path.join(tmp.path, "adir")
+    await fs.mkdir(dirpath)
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const edit = await resolve()
+        await expect(Effect.runPromise(edit.execute({ filePath: dirpath, edits: [] }, ctx))).rejects.toThrow("directory")
+      },
+    })
+  })
+
+  test("tracks file diff statistics", async () => {
+    await using tmp = await tmpdir()
+    const filepath = path.join(tmp.path, "file.txt")
+    await fs.writeFile(filepath, "line1\nline2\nline3\n", "utf-8")
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const edit = await resolve()
+        const result = await Effect.runPromise(
+          edit.execute(
+            {
+              filePath: filepath,
+              edits: [{ op: "replace", pos: anchor(2, "line2"), lines: "new line a\nnew line b" }],
+            },
+            ctx,
+          ),
+        )
+
+        expect(result.metadata.filediff).toBeDefined()
+        expect(result.metadata.filediff.file).toBe(filepath)
+        expect(result.metadata.filediff.additions).toBeGreaterThan(0)
+      },
     })
   })
 })

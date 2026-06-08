@@ -587,27 +587,77 @@ exports[`tool parameters JSON Schema (wire shape) edit 1`] = `
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "delete": {
+      "description": "Delete the file. Requires edits: [] and cannot be combined with rename.",
+      "type": "boolean",
+    },
+    "edits": {
+      "description": "Hashline anchored edits to apply to one file",
+      "items": {
+        "properties": {
+          "end": {
+            "description": "Optional end Hashline anchor LINE#ID",
+            "type": "string",
+          },
+          "lines": {
+            "anyOf": [
+              {
+                "anyOf": [
+                  {
+                    "type": "string",
+                  },
+                  {
+                    "items": {
+                      "type": "string",
+                    },
+                    "type": "array",
+                  },
+                ],
+              },
+              {
+                "type": "null",
+              },
+            ],
+            "description": "Replacement or inserted real file lines. Do not include Hashline prefixes.",
+          },
+          "op": {
+            "description": "Edit operation to apply",
+            "enum": [
+              "replace",
+              "append",
+              "prepend",
+            ],
+            "type": "string",
+          },
+          "pos": {
+            "description": "Hashline anchor LINE#ID",
+            "type": "string",
+          },
+        },
+        "required": [
+          "op",
+          "lines",
+        ],
+        "type": "object",
+      },
+      "type": "array",
+    },
+    "expectedFileHash": {
+      "description": "Optional read-time file hash used only to report drift.",
+      "type": "string",
+    },
     "filePath": {
       "description": "The absolute path to the file to modify",
       "type": "string",
     },
-    "newString": {
-      "description": "The text to replace it with (must be different from oldString)",
+    "rename": {
+      "description": "Move the final file content to this path and remove the original path.",
       "type": "string",
-    },
-    "oldString": {
-      "description": "The text to replace",
-      "type": "string",
-    },
-    "replaceAll": {
-      "description": "Replace all occurrences of oldString (default false)",
-      "type": "boolean",
     },
   },
   "required": [
     "filePath",
-    "oldString",
-    "newString",
+    "edits",
   ],
   "type": "object",
 }
