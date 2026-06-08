@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "@opencode-ai/chimera",
+  "version": "0.9.9",
+  "description": "Local-first semantic code intelligence runtime and CLI for Chimera.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "browser": "./src/index.ts",
+      "bun": "./src/index.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "chimera": "dist/cli/chimera.js",
+    "codegraph": "dist/cli/chimera.js"
+  },
+  "files": [
+    "dist",
+    "scripts",
+    "README.md",
+    "CHANGELOG.md",
+    "BUNDLING.md",
+    "install.sh",
+    "install.ps1"
+  ],
+  "scripts": {
+    "build": "tsc && bun run copy-assets && node -e \"require('fs').chmodSync('dist/cli/chimera.js', 0o755)\"",
+    "copy-assets": "node -e \"const fs=require('fs');fs.mkdirSync('dist/db',{recursive:true});fs.copyFileSync('src/db/schema.sql','dist/db/schema.sql');fs.mkdirSync('dist/extraction/wasm',{recursive:true});fs.readdirSync('src/extraction/wasm').filter(f=>f.endsWith('.wasm')).forEach(f=>fs.copyFileSync('src/extraction/wasm/'+f,'dist/extraction/wasm/'+f))\"",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "typecheck": "tsgo --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:eval": "vitest run test/evaluation/",
+    "eval": "bun run build && npx tsx test/evaluation/runner.ts",
+    "cli": "bun run build && node dist/cli/chimera.js",
+    "prepack": "bun run build",
+    "preuninstall": "node dist/cli/uninstall.js"
+  },
+  "keywords": [
+    "chimera",
+    "code-intelligence",
+    "knowledge-graph",
+    "static-analysis"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@clack/prompts": "^1.3.0",
+    "chokidar": "^4.0.3",
+    "commander": "^14.0.2",
+    "fast-string-width": "^3.0.2",
+    "fast-wrap-ansi": "^0.2.0",
+    "ignore": "^7.0.5",
+    "jsonc-parser": "^3.3.1",
+    "picomatch": "^4.0.3",
+    "sisteransi": "^1.0.5",
+    "tree-sitter-wasms": "^0.1.11",
+    "web-tree-sitter": "^0.25.3"
+  },
+  "devDependencies": {
+    "@tsconfig/bun": "1.0.9",
+    "@types/node": "24.12.2",
+    "@types/picomatch": "^4.0.2",
+    "@typescript/native-preview": "7.0.0-dev.20251207.1",
+    "typescript": "5.8.2",
+    "vitest": "^2.1.9"
+  },
+  "engines": {
+    "node": ">=20.0.0 <25.0.0"
+  },
+  "directories": {
+    "test": "test"
+  },
+  "type": "commonjs"
+}

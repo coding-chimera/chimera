@@ -17,7 +17,7 @@ import {
   type NodeSemanticDiff,
   type RelationDeltaEvidence,
   type SourceRange,
-} from "@colbymchenry/codegraph"
+} from "@opencode-ai/chimera"
 import type { ProvenanceFile, ToolMutationRecord } from "./provenance"
 
 export type ChangeKind = "add" | "modify" | "delete" | "move"

@@ -305,6 +305,35 @@ describe("tool.chimera", () => {
     }),
   )
 
+  it.instance("does not reuse recent provenance change facts for explicit audits", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const explicitFile = path.join(test.directory, "explicit.ts")
+      const recentFile = path.join(test.directory, "package.json")
+      yield* Effect.promise(() => fs.writeFile(explicitFile, "export function explicitAudit() { return 1 }\n"))
+      yield* trackWrite({
+        filePath: recentFile,
+        content: "{\n  \"name\": \"recent\"\n}\n",
+        callID: "call_chimera_explicit_audit_recent_isolation",
+        patch: `--- package.json
++++ package.json
+@@ -0,0 +1,3 @@
++{
++  "name": "recent"
++}
+`,
+      })
+
+      const result = yield* runAudit({ files: ["explicit.ts"], refresh: false })
+      const factFiles = new Set(result.metadata.changeFacts.map((fact) => fact.filePath))
+
+      expect(result.metadata.source).toBe("input")
+      expect(result.metadata.changedFiles).toEqual(["explicit.ts"])
+      expect(factFiles).toContain("explicit.ts")
+      expect(factFiles).not.toContain("package.json")
+    }),
+  )
+
   it.instance("syncs an existing explicit file path before auditing", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance

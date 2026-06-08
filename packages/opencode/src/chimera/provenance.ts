@@ -7,7 +7,7 @@ import { InstanceState } from "@/effect/instance-state"
 import type { Tool } from "@/tool/tool"
 import { classifyChangeRecord, classifyFileBoundary, collectFileProjections, collectIncidentRelations } from "./change-classifier"
 import { CodeGraphAdapter } from "./codegraph-adapter"
-import type { CodeGraphSnapshot, IndexProgress as CodeGraphIndexProgress, SyncResult as CodeGraphSyncResult } from "@colbymchenry/codegraph"
+import type { CodeGraphSnapshot, IndexProgress as CodeGraphIndexProgress, SyncResult as CodeGraphSyncResult } from "@opencode-ai/chimera"
 import { appendProvenanceRecord, databaseStorePath, readPredesignRuns, readProvenanceRecords, writeChangeFacts } from "./store"
 import { TOOL_MUTATION_PREDESIGN_REQUIRED } from "./guidance"
 

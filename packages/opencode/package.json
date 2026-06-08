@@ -17,8 +17,7 @@
     "db": "bun drizzle-kit"
   },
   "bin": {
-    "opencode": "./bin/opencode",
-    "chimera": "./bin/opencode"
+    "opencode": "./bin/opencode"
   },
   "exports": {
     "./*": "./src/*.ts"
@@ -115,7 +114,7 @@
     "@octokit/graphql": "9.0.2",
     "@octokit/rest": "catalog:",
     "@openauthjs/openauth": "catalog:",
-    "@colbymchenry/codegraph": "file:../../../codegraph",
+    "@opencode-ai/chimera": "workspace:*",
     "@opencode-ai/plugin": "workspace:*",
     "@opencode-ai/script": "workspace:*",
     "@opencode-ai/sdk": "workspace:*",
