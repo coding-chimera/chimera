@@ -1052,3 +1052,53 @@ exports[`tool parameters JSON Schema (wire shape) write 1`] = `
   "type": "object",
 }
 `;
+
+exports[`tool parameters JSON Schema (wire shape) chimera_predesign 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Record pre-edit Chimera evidence before a risky mutation.",
+  "properties": {
+    "depth": {
+      "description": "Graph traversal depth for pre-edit impact discovery. Defaults to 2, capped at 5.",
+      "type": "number",
+    },
+    "files": {
+      "description": "Known or likely files that the upcoming mutation will touch.",
+      "items": {
+        "type": "string",
+      },
+      "type": "array",
+    },
+    "intent": {
+      "description": "Brief statement of the intended mutation and why it is needed.",
+      "type": "string",
+    },
+    "limit": {
+      "description": "Maximum seeds, impacted symbols, and evidence items to return. Defaults to 30, capped at 100.",
+      "type": "number",
+    },
+    "nodeIDs": {
+      "description": "Exact CodeGraph node ids to use as pre-edit graph seeds.",
+      "items": {
+        "type": "string",
+      },
+      "type": "array",
+    },
+    "refresh": {
+      "description": "Refresh CodeGraph when stale: the index is empty, watcher has pending files, or git reports dirty source files. Defaults to true.",
+      "type": "boolean",
+    },
+    "symbols": {
+      "description": "Known relevant symbols to resolve as pre-edit graph seeds.",
+      "items": {
+        "type": "string",
+      },
+      "type": "array",
+    },
+  },
+  "required": [
+    "intent",
+  ],
+  "type": "object",
+}
+`;

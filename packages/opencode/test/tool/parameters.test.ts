@@ -19,6 +19,7 @@ import {
   ObligationResolveParameters as ChimeraObligationResolve,
   ObligationsListParameters as ChimeraObligationsList,
   ObligationsSyncParameters as ChimeraObligationsSync,
+  PredesignParameters as ChimeraPredesign,
   RecentAuditParameters as ChimeraAuditRecent,
   SearchParameters as ChimeraSearch,
   StatusParameters as ChimeraStatus,
@@ -52,6 +53,7 @@ describe("tool parameters", () => {
     test("chimera_audit", () => expect(toJsonSchema(ChimeraAudit)).toMatchSnapshot())
     test("chimera_audit_recent", () => expect(toJsonSchema(ChimeraAuditRecent)).toMatchSnapshot())
     test("chimera_file_symbols", () => expect(toJsonSchema(ChimeraFileSymbols)).toMatchSnapshot())
+    test("chimera_predesign", () => expect(toJsonSchema(ChimeraPredesign)).toMatchSnapshot())
     test("chimera_impact", () => expect(toJsonSchema(ChimeraImpact)).toMatchSnapshot())
     test("chimera_obligation_claim", () => expect(toJsonSchema(ChimeraObligationClaim)).toMatchSnapshot())
     test("chimera_obligation_ignore", () => expect(toJsonSchema(ChimeraObligationIgnore)).toMatchSnapshot())
@@ -146,6 +148,32 @@ describe("tool parameters", () => {
       expect(parsed.filePath).toBe("src/tool/chimera.ts")
       expect(parsed.range?.startLine).toBe(1)
       expect(accepts(ChimeraFileSymbols, {})).toBe(false)
+    })
+
+    test("predesign requires intent and accepts optional seeds", () => {
+      expect(parse(ChimeraPredesign, { intent: "change the provider contract" })).toEqual({
+        intent: "change the provider contract",
+      })
+      expect(
+        parse(ChimeraPredesign, {
+          intent: "update shared API",
+          files: ["src/api.ts"],
+          symbols: ["sharedApi"],
+          nodeIDs: ["node_1"],
+          depth: 3,
+          limit: 40,
+          refresh: false,
+        }),
+      ).toEqual({
+        intent: "update shared API",
+        files: ["src/api.ts"],
+        symbols: ["sharedApi"],
+        nodeIDs: ["node_1"],
+        depth: 3,
+        limit: 40,
+        refresh: false,
+      })
+      expect(accepts(ChimeraPredesign, { files: ["src/api.ts"] })).toBe(false)
     })
 
     test("audit selector combination is runtime-level, not JSON-schema-level", () => {

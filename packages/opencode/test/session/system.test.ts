@@ -52,6 +52,36 @@ const it = testEffect(
 )
 
 describe("session.system", () => {
+  it.effect("routes gpt-5.5 ids to the GPT-5.5 prompt", () =>
+    Effect.gen(function* () {
+      const raw = SystemPrompt.provider({
+        providerID: "openai",
+        api: { id: "gpt-5.5" },
+      } as unknown as Parameters<typeof SystemPrompt.provider>[0]).join("\n")
+      const namespaced = SystemPrompt.provider({
+        providerID: "openai",
+        api: { id: "openai/gpt-5.5" },
+      } as unknown as Parameters<typeof SystemPrompt.provider>[0]).join("\n")
+      const codexNamespaced = SystemPrompt.provider({
+        providerID: "openai",
+        api: { id: "codex/gpt-5.5" },
+      } as unknown as Parameters<typeof SystemPrompt.provider>[0]).join("\n")
+      const fallback = SystemPrompt.provider({
+        providerID: "openai",
+        api: { id: "gpt-5.4" },
+      } as unknown as Parameters<typeof SystemPrompt.provider>[0]).join("\n")
+
+      expect(raw).toContain("powered by GPT-5.5")
+      expect(raw).toContain("Codex OAuth and OpenAI API")
+      expect(namespaced).toContain("powered by GPT-5.5")
+      expect(namespaced).toContain("Codex OAuth and OpenAI API")
+      expect(codexNamespaced).toContain("powered by GPT-5.5")
+      expect(codexNamespaced).toContain("Codex OAuth and OpenAI API")
+      expect(fallback).not.toContain("Codex OAuth and OpenAI API")
+      yield* Effect.void
+    }),
+  )
+
   it.instance("environment includes Chimera propagation audit guidance", () =>
     Effect.gen(function* () {
       const prompt = yield* SystemPrompt.Service
@@ -62,6 +92,7 @@ describe("session.system", () => {
 
       expect(output.join("\n")).toContain("chimera_audit")
       expect(output.join("\n")).toContain("chimera_audit_recent")
+      expect(output.join("\n")).toContain("chimera_predesign")
       expect(output.join("\n")).toContain("chimera_obligations_sync")
       expect(output.join("\n")).toContain("After any successful code mutation")
     }),

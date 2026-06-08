@@ -536,6 +536,23 @@ it.live("injects Chimera execution context separately from work brief", () =>
           files: [{ absolutePath: path.join(dir, "src", "context.ts"), graphPath: "src/context.ts", insideGraph: true }],
           metadata: { diff: "" },
         })}\n`))
+        yield* Effect.promise(() => Bun.write(path.join(chimeraDir, "predesign-runs.jsonl"), `${JSON.stringify({
+          schemaVersion: 1,
+          id: "predesign_prompt_context",
+          sessionID: session.id,
+          messageID: "msg_predesign_context",
+          callID: "call_predesign_context",
+          agent: "build",
+          intent: "update the Chimera context suffix",
+          files: ["src/context.ts"],
+          seedNodes: [],
+          impactedNodes: [],
+          fileDependents: [],
+          evidence: [],
+          snapshotRevision: "predesign_revision",
+          payload: {},
+          createdAt: "2026-01-01T00:00:00.500Z",
+        })}\n`))
 
         yield* prompt.prompt({
           sessionID: session.id,
@@ -549,6 +566,9 @@ it.live("injects Chimera execution context separately from work brief", () =>
 
         const body = JSON.stringify(yield* llm.inputs)
         expect(body).toContain("## Chimera Execution Context")
+        expect(body).toContain("Recent Predesign Evidence")
+        expect(body).toContain("predesign_prompt_context")
+        expect(body).toContain("update the Chimera context suffix")
         expect(body).toContain("chg_prompt_context")
         expect(body).toContain("src/context.ts")
         expect(body).not.toContain("## Chimera Temporal Context")

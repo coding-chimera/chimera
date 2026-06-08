@@ -23,6 +23,7 @@ import {
   ChimeraObligationResolveTool,
   ChimeraObligationsListTool,
   ChimeraObligationsSyncTool,
+  ChimeraPredesignTool,
   ChimeraSearchTool,
   ChimeraStatusTool,
 } from "./chimera"
@@ -133,6 +134,7 @@ export const layer: Layer.Layer<
     const chimeraStatusTool = yield* ChimeraStatusTool
     const chimeraSearchTool = yield* ChimeraSearchTool
     const chimeraFileSymbolsTool = yield* ChimeraFileSymbolsTool
+    const chimeraPredesignTool = yield* ChimeraPredesignTool
     const chimeraImpactTool = yield* ChimeraImpactTool
     const chimeraAuditTool = yield* ChimeraAuditTool
     const chimeraAuditRecentTool = yield* ChimeraAuditRecentTool
@@ -242,6 +244,7 @@ export const layer: Layer.Layer<
           chimeraStatus: Tool.init(chimeraStatusTool),
           chimeraSearch: Tool.init(chimeraSearchTool),
           chimeraFileSymbols: Tool.init(chimeraFileSymbolsTool),
+          chimeraPredesign: Tool.init(chimeraPredesignTool),
           chimeraImpact: Tool.init(chimeraImpactTool),
           chimeraAudit: Tool.init(chimeraAuditTool),
           chimeraAuditRecent: Tool.init(chimeraAuditRecentTool),
@@ -273,6 +276,7 @@ export const layer: Layer.Layer<
             tool.chimeraStatus,
             tool.chimeraSearch,
             tool.chimeraFileSymbols,
+            tool.chimeraPredesign,
             tool.chimeraImpact,
             tool.chimeraAuditRecent,
             tool.chimeraAudit,
