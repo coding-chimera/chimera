@@ -25,7 +25,9 @@ import {
   joinText,
   lineHash,
   mismatchMessage,
+  normalizeInsertLines,
   normalizeLineEndings,
+  normalizeReplaceLines,
   normalizeReplacement,
   parseAnchor,
   rangeIDs,
@@ -77,6 +79,12 @@ function lock(filePath: string) {
   return next
 }
 
+function withLocks<T, E, R>(filePaths: string[], effect: Effect.Effect<T, E, R>) {
+  return [...new Set(filePaths.map(AppFileSystem.resolve))]
+    .toSorted((a, b) => a.localeCompare(b))
+    .reduceRight((next, filePath) => lock(filePath).withPermits(1)(next), effect)
+}
+
 function verifyAnchor(lines: string[], anchor: LineAnchor) {
   if (anchor.line < 1 || anchor.line > lines.length) {
     throw new Error(`Hashline anchor ${anchor.line}#${anchor.id} is outside the current file. Re-read the target range.`)
@@ -86,8 +94,7 @@ function verifyAnchor(lines: string[], anchor: LineAnchor) {
 }
 
 function normalizeEdit(input: EditInput, index: number, lines: string[], exists: boolean): NormalizedEdit {
-  const replacement = normalizeReplacement(input.lines)
-  const key = JSON.stringify({ op: input.op, pos: input.pos?.trim(), end: input.end?.trim(), lines: replacement })
+  const rawReplacement = normalizeReplacement(input.lines)
 
   if (input.op === "replace") {
     const start = parseAnchor(input.pos, "replace.pos")
@@ -96,6 +103,8 @@ function normalizeEdit(input: EditInput, index: number, lines: string[], exists:
     verifyAnchor(lines, start)
     verifyAnchor(lines, end)
     if (start.line > end.line) throw new Error(`Invalid replace range: ${input.pos} is after ${input.end}`)
+    const replacement = normalizeReplaceLines(lines, start.line, end.line, rawReplacement)
+    const key = JSON.stringify({ op: input.op, pos: input.pos?.trim(), end: input.end?.trim(), lines: replacement })
     return { op: input.op, index, startLine: start.line, endLine: end.line, lines: replacement, anchored: true, key }
   }
 
@@ -106,16 +115,19 @@ function normalizeEdit(input: EditInput, index: number, lines: string[], exists:
       index,
       startLine: input.op === "append" ? lines.length : 0,
       endLine: input.op === "append" ? lines.length : 0,
-      lines: replacement,
+      lines: rawReplacement,
       anchored: false,
-      key,
+      key: JSON.stringify({ op: input.op, pos: input.pos?.trim(), end: input.end?.trim(), lines: rawReplacement }),
     }
   }
 
   if (!exists) throw new Error("File not found; anchored insert cannot create files. Use unanchored append/prepend or write.")
-  if (replacement.length === 0) throw new Error(`Anchored ${input.op} requires non-empty lines.`)
+  if (rawReplacement.length === 0) throw new Error(`Anchored ${input.op} requires non-empty lines.`)
   const anchor = parseAnchor(anchorText, `${input.op}.pos`)
   verifyAnchor(lines, anchor)
+  const replacement = normalizeInsertLines(lines, anchor.line, input.op, rawReplacement)
+  if (replacement.length === 0) throw new Error(`Anchored ${input.op} requires non-empty lines.`)
+  const key = JSON.stringify({ op: input.op, pos: input.pos?.trim(), end: input.end?.trim(), lines: replacement })
   return { op: input.op, index, startLine: anchor.line, endLine: anchor.line, lines: replacement, anchored: true, key }
 }
 
@@ -264,7 +276,8 @@ export const EditTool = Tool.define(
                 ...(hashline ? { hashline } : {}),
               }),
             },
-            lock(filePath).withPermits(1)(
+            withLocks(
+              renamePath ? [filePath, renamePath] : [filePath],
               Effect.gen(function* () {
                 if (params.delete && renamePath) throw new Error("delete=true cannot be combined with rename.")
                 if (params.delete && params.edits.length > 0) throw new Error("delete=true requires edits: [].")

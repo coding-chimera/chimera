@@ -4,6 +4,7 @@ const CID = "ZPMQVRWSNKTXJBYH"
 export const DISPLAY_ALGORITHM = "omo-cid2"
 export const SCHEMA_VERSION = 1
 export const UNANCHORABLE_TOKEN = "--"
+const SIGNIFICANT_CONTENT = /[\p{L}\p{N}]/u
 
 export type LineAnchor = {
   line: number
@@ -53,11 +54,14 @@ export function fileHash(text: string) {
   return createHash("sha256").update(normalizeLineEndings(text)).digest("hex")
 }
 
-export function lineHash(lineNumber: number, content: string) {
-  const stripped = content.replace(/\s+/g, "")
-  const seed = /[A-Za-z0-9]/.test(stripped) ? 0 : lineNumber
-  const hash = Number(Bun.hash.xxHash32(stripped, seed)) & 0xff
+function hashID(lineNumber: number, normalized: string) {
+  const seed = SIGNIFICANT_CONTENT.test(normalized) ? 0 : lineNumber
+  const hash = Number(Bun.hash.xxHash32(normalized, seed)) & 0xff
   return `${CID[(hash >> 4) & 0xf]}${CID[hash & 0xf]}`
+}
+
+export function lineHash(lineNumber: number, content: string) {
+  return hashID(lineNumber, content.replace(/\r/g, "").trimEnd())
 }
 
 export function lineInfo(lineNumber: number, content: string, anchorable = true): LineInfo {
@@ -99,6 +103,152 @@ function stripDiffPrefix(line: string) {
   return line.startsWith("+") && !line.startsWith("+++") ? line.slice(1) : line
 }
 
+function equalsIgnoringWhitespace(a: string, b: string) {
+  if (a === b) return true
+  return a.replace(/\s+/g, "") === b.replace(/\s+/g, "")
+}
+
+function leadingWhitespace(line: string) {
+  return line.match(/^\s*/)?.[0] ?? ""
+}
+
+function restoreLeadingIndent(template: string, line: string) {
+  if (line.length === 0) return line
+  const templateIndent = leadingWhitespace(template)
+  if (templateIndent.length === 0) return line
+  if (leadingWhitespace(line).length > 0) return line
+  if (template.trim() === line.trim()) return line
+  return templateIndent + line
+}
+
+function stripAllWhitespace(text: string) {
+  return text.replace(/\s+/g, "")
+}
+
+function stripRangeBoundaryEcho(fileLines: string[], startLine: number, endLine: number, replacement: string[]) {
+  const replacedCount = endLine - startLine + 1
+  if (replacement.length <= 1 || replacement.length <= replacedCount) return replacement
+
+  const beforeIndex = startLine - 2
+  const withoutBefore =
+    beforeIndex >= 0 && replacement[0] === fileLines[beforeIndex] ? replacement.slice(1) : replacement
+
+  const afterIndex = endLine
+  if (afterIndex < fileLines.length && withoutBefore.at(-1) === fileLines[afterIndex]) {
+    return withoutBefore.slice(0, -1)
+  }
+  return withoutBefore
+}
+
+function restoreOldWrappedLines(oldLines: string[], replacement: string[]) {
+  if (oldLines.length === 0 || replacement.length < 2) return replacement
+
+  const canonicalToOld = new Map<string, { line: string; count: number }>()
+  for (const line of oldLines) {
+    const canonical = stripAllWhitespace(line)
+    const hit = canonicalToOld.get(canonical)
+    if (hit) {
+      hit.count++
+      continue
+    }
+    canonicalToOld.set(canonical, { line, count: 1 })
+  }
+
+  const candidates = replacement.flatMap((_, start) =>
+    Array.from({ length: Math.min(10, replacement.length - start) - 1 }, (_, index) => index + 2).flatMap((length) => {
+      const span = replacement.slice(start, start + length)
+      if (span.some((line) => line.trim().length === 0)) return []
+      const canonical = stripAllWhitespace(span.join(""))
+      const old = canonicalToOld.get(canonical)
+      if (!old || old.count !== 1 || canonical.length < 6) return []
+      return [{ start, length, replacement: old.line, canonical }]
+    }),
+  )
+  if (candidates.length === 0) return replacement
+
+  const canonicalCounts = new Map<string, number>()
+  for (const candidate of candidates) canonicalCounts.set(candidate.canonical, (canonicalCounts.get(candidate.canonical) ?? 0) + 1)
+
+  const unique = candidates.filter((candidate) => canonicalCounts.get(candidate.canonical) === 1).toSorted((a, b) => b.start - a.start)
+  if (unique.length === 0) return replacement
+
+  const next = [...replacement]
+  for (const candidate of unique) next.splice(candidate.start, candidate.length, candidate.replacement)
+  return next
+}
+
+function restoreIndentForPairedReplacement(oldLines: string[], replacement: string[]) {
+  if (oldLines.length !== replacement.length) return replacement
+  return replacement.map((line, index) => restoreLeadingIndent(oldLines[index], line))
+}
+
+function stripTrailingContinuationTokens(text: string) {
+  return text.replace(/(?:&&|\|\||\?\?|\?|:|=|,|\+|-|\*|\/|\.|\()\s*$/u, "")
+}
+
+function stripMergeOperatorChars(text: string) {
+  return text.replace(/[|&?]/g, "")
+}
+
+function maybeExpandSingleLineMerge(oldLines: string[], replacement: string[]) {
+  if (replacement.length !== 1 || oldLines.length <= 1) return replacement
+
+  const merged = replacement[0]
+  const parts = oldLines.map((line) => line.trim()).filter((line) => line.length > 0)
+  if (parts.length !== oldLines.length) return replacement
+
+  const indices: number[] = []
+  let offset = 0
+  let orderedMatch = true
+  for (const part of parts) {
+    let index = merged.indexOf(part, offset)
+    let matchedLength = part.length
+    if (index === -1) {
+      const stripped = stripTrailingContinuationTokens(part)
+      if (stripped !== part) {
+        index = merged.indexOf(stripped, offset)
+        if (index !== -1) matchedLength = stripped.length
+      }
+    }
+    if (index === -1) {
+      const segment = merged.slice(offset)
+      const segmentStripped = stripMergeOperatorChars(segment)
+      const partStripped = stripMergeOperatorChars(part)
+      const fuzzyIndex = segmentStripped.indexOf(partStripped)
+      if (fuzzyIndex !== -1) {
+        let strippedPosition = 0
+        let originalPosition = 0
+        while (strippedPosition < fuzzyIndex && originalPosition < segment.length) {
+          if (!/[|&?]/.test(segment[originalPosition])) strippedPosition++
+          originalPosition++
+        }
+        index = offset + originalPosition
+        matchedLength = part.length
+      }
+    }
+    if (index === -1) {
+      orderedMatch = false
+      break
+    }
+    indices.push(index)
+    offset = index + matchedLength
+  }
+
+  const expanded = orderedMatch
+    ? indices.map((start, index) => merged.slice(start, index + 1 < indices.length ? indices[index + 1] : merged.length).trim())
+    : []
+  if (expanded.length === oldLines.length && expanded.every((line) => line.length > 0)) return expanded
+
+  const semicolonSplit = merged
+    .split(/;\s+/)
+    .map((line, index, lines) => (index < lines.length - 1 && !line.endsWith(";") ? `${line};` : line))
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+  if (semicolonSplit.length === oldLines.length) return semicolonSplit
+
+  return replacement
+}
+
 export function normalizeReplacement(input: string | ReadonlyArray<string> | null | undefined) {
   if (input === null || input === undefined) return [] as string[]
   const raw = typeof input === "string" ? normalizeLineEndings(input).split("\n") : [...input]
@@ -106,9 +256,26 @@ export function normalizeReplacement(input: string | ReadonlyArray<string> | nul
   const nonEmpty = lines.filter((line) => line.trim())
   const hashlinePrefixed = nonEmpty.filter((line) => /^(?:[>\s]*)?\d+\s*#\s*[A-Za-z0-9-]{2}\|/.test(line)).length
   const diffPrefixed = nonEmpty.filter((line) => /^\+(?!\+\+)/.test(line)).length
-  if (nonEmpty.length > 0 && hashlinePrefixed > nonEmpty.length / 2) return lines.map(stripHashlinePrefix)
-  if (nonEmpty.length > 0 && diffPrefixed > nonEmpty.length / 2) return lines.map(stripDiffPrefix)
+  if (nonEmpty.length > 0 && hashlinePrefixed >= nonEmpty.length / 2) return lines.map(stripHashlinePrefix)
+  if (nonEmpty.length > 0 && diffPrefixed >= nonEmpty.length / 2) return lines.map(stripDiffPrefix)
   return lines
+}
+
+export function normalizeReplaceLines(fileLines: string[], startLine: number, endLine: number, replacement: string[]) {
+  const oldLines = fileLines.slice(startLine - 1, endLine)
+  return restoreIndentForPairedReplacement(
+    oldLines,
+    restoreOldWrappedLines(oldLines, maybeExpandSingleLineMerge(oldLines, stripRangeBoundaryEcho(fileLines, startLine, endLine, replacement))),
+  )
+}
+
+export function normalizeInsertLines(fileLines: string[], anchorLine: number, op: "append" | "prepend", replacement: string[]) {
+  if (replacement.length === 0) return replacement
+  if (op === "append" && equalsIgnoringWhitespace(replacement[0], fileLines[anchorLine - 1] ?? "")) return replacement.slice(1)
+  if (op === "prepend" && replacement.length > 1 && equalsIgnoringWhitespace(replacement.at(-1) ?? "", fileLines[anchorLine - 1] ?? "")) {
+    return replacement.slice(0, -1)
+  }
+  return replacement
 }
 
 export function changedRange(before: string[], after: string[]) {
