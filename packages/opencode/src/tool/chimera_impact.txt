@@ -18,5 +18,5 @@ Common calls:
 - Compare bounded impact for a file-level versus symbol-level seed.
 
 After this tool:
-- Review impacted files or symbols before claiming completion.
+- Interpret impacted files or symbols in the current task context before claiming completion.
 - Run verification commands separately when correctness matters.

@@ -4,23 +4,25 @@ import { Effect, Schema } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import {
   Chimera,
-  NODE_KINDS,
   classifyChangeRecord,
   classifyFileBoundary,
   collectFileProjections,
   collectIncidentRelations,
   type ChangeFact,
-  type CodeGraphIndexProgress,
-  type CodeGraphNode,
-  type CodeGraphRelation,
-  type CodeGraphSnapshot,
   type FileClassification,
-  type FrozenRelation,
-  type FrozenSemanticObject,
   type ProjectGraphState,
-  type RelationKind,
   type ToolMutationRecord,
 } from "@/chimera"
+import {
+  NODE_KINDS,
+  type CodeGraphSnapshot,
+  type FrozenRelation,
+  type FrozenSemanticObject,
+  type IndexProgress as CodeGraphIndexProgress,
+  type Node as CodeGraphNode,
+  type RelationEvidence as CodeGraphRelation,
+  type RelationKind,
+} from "@colbymchenry/codegraph"
 import {
   provenanceRecordCount as storedProvenanceRecordCount,
   readChangeFacts,
@@ -178,7 +180,7 @@ export const ContextParameters = Schema.Struct({
 
 export const RecentAuditParameters = Schema.Struct({
   limit: Schema.optional(Schema.Number).annotate({
-    description: "Maximum candidate obligations to return. Defaults to 30, capped at 100.",
+    description: "Maximum propagation findings to return. Defaults to 30, capped at 100.",
   }),
   refresh: Schema.optional(Schema.Boolean).annotate({
     description: RefreshDescription,
@@ -208,7 +210,7 @@ export const AuditParameters = Schema.Struct({
     description: "Impact traversal depth. Defaults to 2, capped at 5.",
   }),
   limit: Schema.optional(Schema.Number).annotate({
-    description: "Maximum candidate obligations to return. Defaults to 30, capped at 100.",
+    description: "Maximum propagation findings to return. Defaults to 30, capped at 100.",
   }),
   refresh: Schema.optional(Schema.Boolean).annotate({
     description: RefreshDescription,
@@ -362,7 +364,6 @@ type AuditCandidate = {
   reason: string
   risk: RiskCategory
   classification: ChangeClassification
-  requiredAction: "review_or_update"
   evidence: string
   causeChain: CauseLink[]
 }
@@ -401,7 +402,6 @@ type PersistentObligation = {
   reason: string
   risk: RiskCategory
   classification?: ChangeClassification
-  requiredAction: "review_or_update"
   evidence: string
   causeChain?: CauseLink[]
   source: {
@@ -776,7 +776,6 @@ function relationDeltaCandidate(input: {
     reason: `${current ? riskReasonForNode(current) : classifyFile(input.relation.payload.otherNode.filePath).reason}; relation ${input.relation.payload.relation} (${input.relation.payload.edgeKind}) was ${change} in CodeGraph ${graphSide} evidence for ${input.relation.payload.focalNode.nodeKey}`,
     risk: current ? riskForNode(current) : riskForFrozenRelationNode(input.relation.payload.otherNode),
     classification,
-    requiredAction: "review_or_update",
     evidence: `codegraph:relation_delta:${change}:${input.relation.payload.relation}`,
     causeChain: [
       ...input.baseCauseChain,
@@ -853,7 +852,6 @@ function buildImpactEvidence(input: {
         reason: `${riskReasonForNode(node)}; relation ${relation.relation} (${relation.edgeKind}) points from ${target} to ${seedNames.join(", ") || "the changed seed"}`,
         risk: riskForNode(node),
         classification,
-        requiredAction: "review_or_update" as const,
         evidence: `codegraph:relation:${relation.relation}`,
         causeChain: [...baseCauseChain, { type: "relation" as const, target, evidence: relationLabel }],
       }
@@ -865,7 +863,6 @@ function buildImpactEvidence(input: {
         reason: `dependent file may need review because it imports or depends on ${input.changedFiles.slice(0, 3).join(", ") || seedNames.join(", ") || "the changed seed"}`,
         risk: riskForFile(file),
         classification,
-        requiredAction: "review_or_update" as const,
         evidence: "codegraph:file_dependents",
         causeChain: [...baseCauseChain, { type: "file_dependency" as const, target: file, evidence: "codegraph:file_dependents" }],
       }
@@ -879,7 +876,6 @@ function buildImpactEvidence(input: {
         reason: `${riskReasonForNode(node)}; symbol is inside impact radius of ${seedNames.join(", ") || input.changedFiles.slice(0, 3).join(", ") || "the changed seed"}`,
         risk: riskForNode(node),
         classification,
-        requiredAction: "review_or_update" as const,
         evidence: "codegraph:impact_radius",
         causeChain: [
           ...baseCauseChain,
@@ -1093,7 +1089,6 @@ function makeObligation(audit: AuditMetadata, candidate: AuditCandidate, now: st
     reason: candidate.reason,
     risk: candidate.risk,
     classification: candidate.classification,
-    requiredAction: candidate.requiredAction,
     evidence: candidate.evidence,
     causeChain: candidate.causeChain,
     source: {
@@ -1129,7 +1124,6 @@ function upsertObligations(store: ObligationStore, audit: AuditMetadata, now: st
       reason: next.reason,
       risk: next.risk,
       classification: next.classification,
-      requiredAction: next.requiredAction,
       evidence: next.evidence,
       causeChain: next.causeChain,
       source: next.source,
@@ -1191,7 +1185,6 @@ function formatObligation(item: PersistentObligation) {
     `  reason: ${item.reason}`,
     `  risk: ${item.risk}`,
     item.classification ? `  classification: ${item.classification}` : undefined,
-    `  required_action: ${item.requiredAction}`,
     `  evidence: ${item.evidence}`,
     item.causeChain?.length ? `  cause_chain: ${formatCauseChain(item.causeChain)}` : undefined,
   ]
@@ -1205,7 +1198,6 @@ function formatEvidence(item: AuditCandidate) {
     `  reason: ${item.reason}`,
     `  risk: ${item.risk}`,
     `  classification: ${item.classification}`,
-    `  required_action: ${item.requiredAction}`,
     `  evidence: ${item.evidence}`,
     `  cause_chain: ${formatCauseChain(item.causeChain)}`,
   ].join("\n")
@@ -1276,12 +1268,14 @@ function formatAuditOutput(audit: AuditMetadata) {
       ? audit.obligations.map((item) => `- ${item.target}: ${item.classification} / ${item.risk}`)
       : ["- None found."]),
     "",
-    `Candidate obligations (${audit.obligations.length}):`,
+    `Propagation findings (${audit.obligations.length}):`,
     ...(audit.obligations.length ? audit.obligations.map(formatEvidence) : ["- None found."]),
     "",
-    "Required action:",
-    "- Review or update each candidate obligation before claiming completion.",
-    "- Run build/typecheck/test as oracle verification; this audit is structural graph evidence, not correctness proof.",
+    "Closeout guidance:",
+    "- Treat findings as structural graph evidence, not commands or tracked obligations.",
+    "- Decide which findings are relevant to the current task before claiming completion.",
+    "- Run build/typecheck/test as oracle verification when correctness matters.",
+    "- Use chimera_obligations_sync only when findings need durable follow-up.",
   ].join("\n")
 }
 
@@ -1567,8 +1561,9 @@ export const ChimeraImpactTool = Tool.define<typeof ImpactParameters, ImpactMeta
             "Impact evidence:",
             ...(impact.evidence.length ? impact.evidence.map(formatEvidence) : ["- None found."]),
             "",
-            "Required action:",
-            "- Review impacted symbols/files before claiming the change is complete. This is graph evidence, not test/build verification.",
+            "Closeout guidance:",
+            "- Treat impact evidence as structural graph evidence, not commands or oracle verification.",
+            "- Decide which impacted symbols/files are relevant before claiming the change is complete.",
           ].join("\n"),
           metadata: {
             projectRoot: state.projectRoot,
@@ -1657,7 +1652,7 @@ export const ChimeraObligationsListTool = Tool.define<typeof ObligationsListPara
             `Obligations (${obligations.length}):`,
             ...(obligations.length ? obligations.map(formatObligation) : ["- None found."]),
             "",
-            "Required action:",
+            "Lifecycle guidance:",
             "- Active obligations should be reviewed, updated, resolved, or ignored with a reason before closeout.",
           ].join("\n"),
           metadata: {
@@ -1718,7 +1713,7 @@ export const ChimeraObligationsSyncTool = Tool.define<typeof ObligationsSyncPara
             `Obligations (${obligations.length}):`,
             ...(obligations.length ? obligations.map(formatObligation) : ["- None found."]),
             "",
-            "Required action:",
+            "Lifecycle guidance:",
             "- Claim, resolve, or ignore each active obligation as you review the propagation surface.",
           ].join("\n"),
           metadata: {

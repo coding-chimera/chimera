@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { classifyChangeRecord } from "../../src/chimera/change-classifier"
-import type { FrozenRelation, FrozenSemanticObject } from "../../src/chimera/codegraph-adapter"
+import type { FrozenRelation, FrozenSemanticObject, LanguageAwareSignal } from "@colbymchenry/codegraph"
 import type { ToolMutationRecord } from "../../src/chimera/provenance"
 
 const bodyPatch = `--- sample.ts
@@ -84,6 +84,8 @@ function node(input: {
   endLine: number
   signature?: string
   isExported?: boolean
+  language?: FrozenSemanticObject["payload"]["language"]
+  languageSignals?: LanguageAwareSignal[]
 }): FrozenSemanticObject {
   return {
     schemaVersion: 1,
@@ -100,7 +102,7 @@ function node(input: {
       name: input.name,
       qualifiedName: input.qualifiedName ?? input.name,
       filePath: input.filePath ?? "sample.ts",
-      language: "typescript" as FrozenSemanticObject["payload"]["language"],
+      language: input.language ?? "typescript" as FrozenSemanticObject["payload"]["language"],
       range: {
         startLine: input.startLine,
         endLine: input.endLine,
@@ -109,7 +111,32 @@ function node(input: {
       },
       signature: input.signature,
       isExported: input.isExported ?? false,
+      languageSignals: input.languageSignals,
     },
+  }
+}
+
+function languageSignal(input: {
+  kind: LanguageAwareSignal["kind"]
+  line: number
+  language?: LanguageAwareSignal["language"]
+  source?: LanguageAwareSignal["source"]
+  quality?: LanguageAwareSignal["quality"]
+  confidence?: number
+}): LanguageAwareSignal {
+  const language = input.language ?? "typescript"
+  const source = input.source ?? "codegraph:language_analyzer"
+  const quality = input.quality ?? (input.kind === "unknown_body_effect" ? "unknown" : "heuristic")
+  return {
+    schemaVersion: 1,
+    kind: input.kind,
+    language,
+    source,
+    quality,
+    confidence: input.confidence ?? (quality === "unknown" ? 0.45 : quality === "exact" ? 0.95 : 0.75),
+    range: { startLine: input.line, endLine: input.line, startColumn: 0, endColumn: 0 },
+    reason: `test ${input.kind}`,
+    signals: [`language:${language}`, `source:${source}`, `quality:${quality}`, `codegraph_language_signal:${input.kind}`],
   }
 }
 
@@ -237,6 +264,62 @@ describe("change classifier", () => {
     expect(facts.some((fact) => fact.subjectKind === "schema" && fact.nodeKey?.includes(":class:Sample"))).toBe(false)
   })
 
+  test("uses CodeGraph local-only language signals for body confidence", () => {
+    const patch = `--- sample.ts
++++ sample.ts
+@@ -1,4 +1,4 @@
+ export function calculate(value: number) {
+-const local = value + 1
++const local = value + 2
+ return value
+ }
+`
+    const languageSignals = [languageSignal({ kind: "return_value_changed", line: 3 })]
+    const before = node({ id: "before-calculate", kind: "function", name: "calculate", startLine: 1, endLine: 4, signature: "function calculate(value: number)", languageSignals })
+    const after = node({ id: "after-calculate", kind: "function", name: "calculate", startLine: 1, endLine: 4, signature: "function calculate(value: number)", languageSignals })
+    const facts = classifyChangeRecord({ record: record({ patch }), beforeNodes: [before], afterNodes: [after] })
+
+    const body = facts.find((fact) => fact.subjectKind === "body" && fact.nodeKey?.includes(":function:calculate"))
+    expect(body?.confidence).toBe(0.25)
+    expect(body?.evidence.rule).toBe("codegraph.language.body.local_only")
+    expect(body?.evidence.languageSignals?.map((signal) => signal.kind)).toEqual(["local_only_change"])
+    expect(body?.evidence.signals).toContain("codegraph_language_signal:local_only_change")
+  })
+
+  test("uses caller-visible language signals and preserves constructor override route context", () => {
+    const languageSignals = [
+      languageSignal({ kind: "return_value_changed", line: 2 }),
+      languageSignal({ kind: "constructor_like", line: 1, quality: "exact", confidence: 0.95 }),
+      languageSignal({ kind: "override_like", line: 1, quality: "exact", confidence: 0.95 }),
+      languageSignal({ kind: "route_handler_like", line: 1, quality: "exact", confidence: 0.95 }),
+    ]
+    const before = node({ id: "before-visible", kind: "function", name: "visible", startLine: 1, endLine: 3, signature: "function visible()", languageSignals })
+    const after = node({ id: "after-visible", kind: "function", name: "visible", startLine: 1, endLine: 3, signature: "function visible()", languageSignals })
+    const facts = classifyChangeRecord({ record: record(), beforeNodes: [before], afterNodes: [after] })
+
+    const body = facts.find((fact) => fact.subjectKind === "body" && fact.nodeKey?.includes(":function:visible"))
+    expect(body?.confidence).toBe(0.9)
+    expect(body?.evidence.rule).toBe("codegraph.language.body.caller_visible")
+    expect(body?.evidence.confidenceReason).toContain("node context: constructor_like, override_like, route_handler_like")
+    expect(body?.evidence.languageSignals?.map((signal) => signal.kind)).toEqual(["return_value_changed"])
+    expect(body?.evidence.signals).toContain("codegraph_language_signal:constructor_like")
+    expect(body?.evidence.signals).toContain("codegraph_language_signal:override_like")
+    expect(body?.evidence.signals).toContain("codegraph_language_signal:route_handler_like")
+  })
+
+  test("keeps unknown body effects for unsupported languages", () => {
+    const languageSignals = [languageSignal({ kind: "unknown_body_effect", line: 1, language: "python", source: "codegraph:fallback", quality: "unknown" })]
+    const before = node({ id: "before-py", kind: "function", name: "calculate", startLine: 1, endLine: 3, signature: "def calculate()", language: "python", languageSignals })
+    const after = node({ id: "after-py", kind: "function", name: "calculate", startLine: 1, endLine: 3, signature: "def calculate()", language: "python", languageSignals })
+    const facts = classifyChangeRecord({ record: record(), beforeNodes: [before], afterNodes: [after] })
+
+    const body = facts.find((fact) => fact.subjectKind === "body" && fact.nodeKey?.includes(":function:calculate"))
+    expect(body?.confidence).toBe(0.5)
+    expect(body?.evidence.rule).toBe("codegraph.language.body.unknown")
+    expect(body?.evidence.languageSignals?.map((signal) => signal.kind)).toEqual(["unknown_body_effect"])
+    expect(body?.evidence.signals).not.toContain("codegraph_language_signal:local_only_change")
+  })
+
   test("uses CodeGraph semantic diff evidence for signature deltas", () => {
     const patch = `--- sample.ts
 +++ sample.ts
@@ -289,6 +372,8 @@ describe("change classifier", () => {
 
     const config = facts.find((fact) => fact.subjectKind === "config")
     expect(config?.evidence.rule).toBe("codegraph.file_role.dependency_manifest")
+    expect(config?.evidence.fileSemantic?.role).toBe("dependency_manifest")
+    expect(config?.evidence.fileSemantic?.classifierVersion).toBe(1)
     expect(config?.evidence.signals).toContain("codegraph_file_role:dependency_manifest")
     expect(config?.evidence.signals).toContain("source:codegraph:file_classifier")
   })

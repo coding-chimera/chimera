@@ -1,4 +1,4 @@
-Persist Chimera audit candidates as tracked obligations.
+Persist Chimera audit findings as tracked obligations.
 
 Use this tool when audit findings need durable follow-up across turns or agents.
 
@@ -13,8 +13,8 @@ Parameter rules:
 - `refresh` controls whether stale graph signals may trigger a sync.
 
 Common calls:
-- Persist candidates from `chimera_audit_recent` after a risky mutation.
-- Persist explicit audit candidates for a changed file or symbol.
+- Persist findings from `chimera_audit_recent` after a risky mutation.
+- Persist explicit audit findings for a changed file or symbol.
 
 After this tool:
 - Use `chimera_obligation_claim`, `chimera_obligation_resolve`, or `chimera_obligation_ignore` as each active obligation is handled.

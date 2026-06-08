@@ -266,7 +266,7 @@ describe("tool.chimera", () => {
     }),
   )
 
-  it.instance("audits changed files into candidate obligations", () =>
+  it.instance("audits changed files into propagation findings", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
       yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "base.ts"), "export function base() { return 1 }\n"))
@@ -280,10 +280,13 @@ describe("tool.chimera", () => {
       const result = yield* runAudit({ filePath: "base.ts", depth: 2 })
 
       expect(result.title).toBe("Chimera audit")
-      expect(result.output).toContain("Candidate obligations")
+      expect(result.output).toContain("Propagation findings")
       expect(result.output).toContain("Change classification")
       expect(result.output).toContain("Behavior-boundary evidence")
+      expect(result.output).toContain("Closeout guidance")
       expect(result.output).toContain("cause_chain")
+      expect(result.output).not.toContain("required_action")
+      expect(result.output).not.toContain("review_or_update")
       expect(result.metadata.changedFiles).toContain("base.ts")
       expect(result.metadata.classifications[0].classification).toBe("source")
       expect(result.metadata.obligations.length).toBeGreaterThan(0)

@@ -1,11 +1,6 @@
 import path from "path"
 import {
   CodeGraph,
-  NODE_KINDS,
-  diffFileSemantics as codegraphDiffFileSemantics,
-  diffNodeLanguageSignals as codegraphDiffNodeLanguageSignals,
-  diffNodeSemantics as codegraphDiffNodeSemantics,
-  diffRelations as codegraphDiffRelations,
   type BuildContextOptions,
   type CodeGraphSnapshot,
   type Edge as CodeGraphEdge,
@@ -34,43 +29,7 @@ import {
   type SyncResult as CodeGraphSyncResult,
   type TaskInput,
   type WatchOptions,
-} from "../../../../../codegraph/dist/index.js"
-
-export type {
-  CodeGraphEdge,
-  CodeGraphNode,
-  CodeGraphSnapshot,
-  CodeGraphSyncResult,
-  CodeGraphPendingFile,
-  EdgeKind,
-  FileSemanticDiffInput,
-  FileSemanticInfo,
-  FileSemanticInputNode,
-  FileSemanticSignal,
-  FrozenRelation,
-  FrozenSemanticObject,
-  IndexProgress as CodeGraphIndexProgress,
-  LanguageAwareSignal,
-  LanguageAwareSignalDiffInput,
-  NodeSemanticDiff,
-  NodeSemanticInfo,
-  RangeQueryOptions,
-  RelationDeltaEvidence,
-  CodeGraphRelation,
-  RelationKind,
-  RelationProjectionOptions,
-  RelationQueryOptions,
-  SearchOptions,
-  SourceRange,
-  WatchOptions,
-}
-
-export { NODE_KINDS }
-export const diffNodeSemantics = codegraphDiffNodeSemantics
-export const diffNodeLanguageSignals = codegraphDiffNodeLanguageSignals
-export const diffFileSemantics = codegraphDiffFileSemantics
-export const diffRelations = codegraphDiffRelations
-export const getFileSemanticInfo = CodeGraph.getFileSemanticInfo
+} from "@colbymchenry/codegraph"
 
 export interface OpenOptions {
   init?: boolean

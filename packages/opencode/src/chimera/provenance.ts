@@ -6,7 +6,8 @@ import { BusEvent } from "@/bus/bus-event"
 import { InstanceState } from "@/effect/instance-state"
 import type { Tool } from "@/tool/tool"
 import { classifyChangeRecord, collectFileProjections, collectIncidentRelations } from "./change-classifier"
-import { CodeGraphAdapter, type CodeGraphIndexProgress, type CodeGraphSnapshot, type CodeGraphSyncResult } from "./codegraph-adapter"
+import { CodeGraphAdapter } from "./codegraph-adapter"
+import type { CodeGraphSnapshot, IndexProgress as CodeGraphIndexProgress, SyncResult as CodeGraphSyncResult } from "@colbymchenry/codegraph"
 import { appendProvenanceRecord, databaseStorePath, readProvenanceRecords, writeChangeFacts } from "./store"
 
 const ARTIFACT_DIR = path.join(".codegraph", "chimera")

@@ -1,12 +1,12 @@
 import path from "path"
 import { createHash } from "crypto"
+import type { CodeGraphAdapter } from "./codegraph-adapter"
 import {
   diffFileSemantics,
   diffNodeLanguageSignals,
   diffNodeSemantics,
   diffRelations,
   getFileSemanticInfo,
-  type CodeGraphAdapter,
   type CodeGraphSnapshot,
   type FileSemanticInfo,
   type FileSemanticInputNode,
@@ -17,7 +17,7 @@ import {
   type NodeSemanticDiff,
   type RelationDeltaEvidence,
   type SourceRange,
-} from "./codegraph-adapter"
+} from "@colbymchenry/codegraph"
 import type { ProvenanceFile, ToolMutationRecord } from "./provenance"
 
 export type ChangeKind = "add" | "modify" | "delete" | "move"
@@ -64,6 +64,7 @@ export type ChangeFactEvidence = {
   semanticDiff?: NodeSemanticDiff
   relationDelta?: RelationDeltaEvidence
   languageSignals?: LanguageAwareSignal[]
+  fileSemantic?: FileSemanticInfo
   semanticSnapshots?: {
     version: 1
     source: "chimera_semantic_snapshot"
@@ -218,6 +219,7 @@ export function classifyFileBoundary(filePath: string, semantic = getFileSemanti
   subjectKind: ChangeSubjectKind
   reason: string
   signals: string[]
+  semantic: FileSemanticInfo
 } {
   const classification = classificationForFileRole(semantic.role)
   return {
@@ -227,6 +229,7 @@ export function classifyFileBoundary(filePath: string, semantic = getFileSemanti
     confidence: fileSemanticConfidence(semantic, classification),
     subjectKind: subjectForFileRole(semantic.role),
     reason: semantic.reason,
+    semantic,
     signals: [
       `codegraph_file_role:${semantic.role}`,
       `source:${semantic.source}`,
@@ -513,6 +516,7 @@ function evidence(input: {
   semanticDiff?: NodeSemanticDiff
   relationDelta?: RelationDeltaEvidence
   languageSignals?: LanguageAwareSignal[]
+  fileSemantic?: FileSemanticInfo
   signals: string[]
 }): ChangeFactEvidence {
   return {
@@ -535,6 +539,7 @@ function evidence(input: {
     semanticDiff: input.semanticDiff,
     relationDelta: input.relationDelta,
     languageSignals: input.languageSignals,
+    fileSemantic: input.fileSemantic,
     signals: input.signals,
   }
 }
@@ -556,6 +561,7 @@ function fact(input: {
   semanticDiff?: NodeSemanticDiff
   relationDelta?: RelationDeltaEvidence
   languageSignals?: LanguageAwareSignal[]
+  fileSemantic?: FileSemanticInfo
   signals: string[]
 }): ChangeFact {
   const key = input.node ? nodeKey(input.node) : undefined
@@ -592,6 +598,7 @@ function fact(input: {
       semanticDiff: input.semanticDiff,
       relationDelta: input.relationDelta,
       languageSignals: input.languageSignals,
+      fileSemantic: input.fileSemantic,
       signals: input.signals,
     }),
     createdAt: input.record.finishedAt,
@@ -667,6 +674,7 @@ export function classifyChangeRecord(input: {
           confidenceReason: boundary.reason,
           status,
           relationDelta: fileRelationDelta,
+          fileSemantic: boundary.semantic,
           signals: boundary.signals,
       }))
     }

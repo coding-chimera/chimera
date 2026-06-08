@@ -1,9 +1,8 @@
 import path from "path"
 import { createHash } from "crypto"
 import { appendFile, mkdir } from "fs/promises"
-import { DatabaseConnection, getDatabasePath, type StorageExtension } from "../../../../../codegraph/dist/index.js"
+import { DatabaseConnection, diffRelations, getDatabasePath, type FrozenRelation, type FrozenSemanticObject, type StorageExtension } from "@colbymchenry/codegraph"
 import type { ChangeFact } from "./change-classifier"
-import { diffRelations, type FrozenRelation, type FrozenSemanticObject } from "./codegraph-adapter"
 import type { ToolMutationRecord } from "./provenance"
 
 type ChimeraDb = ReturnType<DatabaseConnection["getDb"]>
