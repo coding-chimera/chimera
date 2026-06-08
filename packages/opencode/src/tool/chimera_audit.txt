@@ -1,6 +1,8 @@
 Run a first-pass Chimera propagation audit for explicit changed files, a changed symbol, a node id, or a source range.
 
-Use this tool when you know the audit seed and want non-persistent candidate obligations from CodeGraph-backed structural evidence.
+Use this tool when you know the audit seed and want non-persistent propagation findings from CodeGraph-backed structural evidence.
+
+Findings are not commands and are not tracked obligations. They are evidence for deciding whether affected callers, importers, tests, docs, config, or API boundaries need follow-up.
 
 Do NOT use this as the default post-mutation audit. Use `chimera_audit_recent` after successful file mutations.
 
@@ -18,6 +20,7 @@ Common calls:
 - Audit a specific exported symbol, route handler, or config surface.
 
 After this tool:
-- Review or update each candidate obligation before closeout.
+- Interpret findings in the current task context; inspect or update relevant targets as needed.
+- Intentional, irrelevant, duplicate, or temporary-cleanup findings can be skipped with a brief note when that matters for closeout.
 - Run build, typecheck, lint, or tests separately when correctness matters.
-- Use `chimera_obligations_sync` when the candidates need durable tracking.
+- Use `chimera_obligations_sync` when findings need durable tracking.

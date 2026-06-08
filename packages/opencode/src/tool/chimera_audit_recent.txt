@@ -2,10 +2,12 @@ Run the default Chimera propagation audit for the latest successful tool mutatio
 
 Use this tool after successful `edit`, `write`, or `apply_patch` mutations before claiming a code-change task is complete.
 
+This returns non-persistent propagation findings from CodeGraph-backed structural evidence. Findings are not commands and are not tracked obligations.
+
 Do NOT pass file paths to this tool. If you need to audit explicit files, symbols, or node ids, use `chimera_audit`.
 
 Parameter rules:
-- `limit` controls how many candidate obligations are returned.
+- `limit` controls how many propagation findings are returned.
 - Recent provenance files that still exist but are missing graph records or symbols are synced from the filesystem before audit classification.
 - `refresh` defaults to true. Set it to false only when the current graph state is known to be sufficient.
 
@@ -14,6 +16,7 @@ Common calls:
 - Re-run the latest mutation audit with a smaller `limit` for compact closeout.
 
 After this tool:
-- Review or update each candidate obligation.
+- Interpret findings in the current task context; inspect or update relevant targets as needed.
+- Intentional, irrelevant, duplicate, or temporary-cleanup findings can be skipped with a brief note when that matters for closeout.
 - Use build, typecheck, lint, or tests for oracle verification; this audit is structural graph evidence only.
 - Use `chimera_obligations_sync` when findings need tracked follow-up.
