@@ -225,6 +225,31 @@ describe("tool.edit", () => {
     })
   })
 
+  test("rejects anchors after whitespace-only line drift", async () => {
+    await using tmp = await tmpdir()
+    const filepath = path.join(tmp.path, "whitespace-drift.ts")
+    await fs.writeFile(filepath, "if (a && b) {\n", "utf-8")
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const edit = await resolve()
+        await fs.writeFile(filepath, "if(a&&b){\n", "utf-8")
+        await expect(
+          Effect.runPromise(
+            edit.execute(
+              {
+                filePath: filepath,
+                edits: [{ op: "replace", pos: anchor(1, "if (a && b) {"), lines: "if (a || b) {" }],
+              },
+              ctx,
+            ),
+          ),
+        ).rejects.toThrow("Hashline anchor mismatch")
+      },
+    })
+  })
+
   test("rejects overlapping ranges and no-op edits", async () => {
     await using tmp = await tmpdir()
     const filepath = path.join(tmp.path, "reject.txt")

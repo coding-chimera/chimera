@@ -1,7 +1,7 @@
 Edits files using Hashline anchors from the Read tool.
 
 Usage:
-- You must use your `Read` tool at least once in the conversation before editing. This tool will error if you attempt an edit without reading the file. 
+- Use your `Read` tool to get current `LINE#ID` anchors before editing existing file content. Anchored edits fail when a line's current text no longer matches the supplied hash.
 - Read output prefixes text lines as `<line>#<hash>|<content>`. Use only the `LINE#ID` portion as `pos` / `end`. Everything after `|` is actual file content.
 - The `lines` field must contain real file text, not diff text. Never include Hashline prefixes in `lines`; the tool strips common accidental prefixes, but you should not rely on that.
 - Use `edits: [{ op: "replace" | "append" | "prepend", pos?, end?, lines }]`. `replace` requires `pos`; `end` extends the replaced range. `append` / `prepend` may omit anchors to insert at EOF/BOF or create a missing file.
