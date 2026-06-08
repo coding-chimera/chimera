@@ -109,7 +109,7 @@ exports[`tool parameters JSON Schema (wire shape) chimera_audit 1`] = `
       "type": "string",
     },
     "limit": {
-      "description": "Maximum candidate obligations to return. Defaults to 30, capped at 100.",
+      "description": "Maximum propagation findings to return. Defaults to 30, capped at 100.",
       "type": "number",
     },
     "nodeID": {
@@ -159,64 +159,12 @@ exports[`tool parameters JSON Schema (wire shape) chimera_audit_recent 1`] = `
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "limit": {
-      "description": "Maximum candidate obligations to return. Defaults to 30, capped at 100.",
+      "description": "Maximum propagation findings to return. Defaults to 30, capped at 100.",
       "type": "number",
     },
     "refresh": {
       "description": "Refresh CodeGraph when stale: the index is empty, watcher has pending files, or git reports dirty source files. Defaults to true.",
       "type": "boolean",
-    },
-  },
-  "type": "object",
-}
-`;
-
-exports[`tool parameters JSON Schema (wire shape) chimera_context 1`] = `
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "Provide query, symbol, nodeID, filePath, or mode=arch.",
-  "properties": {
-    "filePath": {
-      "description": "File path to use as the context query when query, symbol, and nodeID are omitted.",
-      "type": "string",
-    },
-    "includeCode": {
-      "description": "Include source snippets in context. Defaults to true.",
-      "type": "boolean",
-    },
-    "maxCodeBlocks": {
-      "description": "Maximum code blocks in context. Defaults to 8.",
-      "type": "number",
-    },
-    "maxNodes": {
-      "description": "Maximum graph nodes in context. Defaults to 30.",
-      "type": "number",
-    },
-    "mode": {
-      "description": "Context mode. arch produces an architecture-oriented query; defaults to search.",
-      "enum": [
-        "arch",
-        "search",
-        "impact",
-        "audit",
-      ],
-      "type": "string",
-    },
-    "nodeID": {
-      "description": "Exact CodeGraph node id to use as the context focus when query and symbol are omitted.",
-      "type": "string",
-    },
-    "query": {
-      "description": "Natural-language or symbol/file query for context.",
-      "type": "string",
-    },
-    "refresh": {
-      "description": "Refresh CodeGraph when stale: the index is empty, watcher has pending files, or git reports dirty source files. Defaults to true.",
-      "type": "boolean",
-    },
-    "symbol": {
-      "description": "Symbol name to use as the context query when query is omitted.",
-      "type": "string",
     },
   },
   "type": "object",

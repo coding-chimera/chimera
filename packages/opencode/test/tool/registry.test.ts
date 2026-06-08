@@ -86,7 +86,7 @@ describe("tool.registry", () => {
       expect(ids).toContain("chimera_search")
       expect(ids).toContain("chimera_file_symbols")
       expect(ids).toContain("chimera_impact")
-      expect(ids).toContain("chimera_context")
+      expect(ids).not.toContain("chimera_context")
       expect(ids).toContain("chimera_audit_recent")
       expect(ids).toContain("chimera_audit")
       expect(ids).toContain("chimera_obligations_list")

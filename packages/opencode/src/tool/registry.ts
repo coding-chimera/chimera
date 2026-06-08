@@ -16,7 +16,6 @@ import { SkillTool } from "./skill"
 import {
   ChimeraAuditRecentTool,
   ChimeraAuditTool,
-  ChimeraContextTool,
   ChimeraFileSymbolsTool,
   ChimeraImpactTool,
   ChimeraObligationClaimTool,
@@ -135,7 +134,6 @@ export const layer: Layer.Layer<
     const chimeraSearchTool = yield* ChimeraSearchTool
     const chimeraFileSymbolsTool = yield* ChimeraFileSymbolsTool
     const chimeraImpactTool = yield* ChimeraImpactTool
-    const chimeraContextTool = yield* ChimeraContextTool
     const chimeraAuditTool = yield* ChimeraAuditTool
     const chimeraAuditRecentTool = yield* ChimeraAuditRecentTool
     const chimeraObligationsListTool = yield* ChimeraObligationsListTool
@@ -245,7 +243,6 @@ export const layer: Layer.Layer<
           chimeraSearch: Tool.init(chimeraSearchTool),
           chimeraFileSymbols: Tool.init(chimeraFileSymbolsTool),
           chimeraImpact: Tool.init(chimeraImpactTool),
-          chimeraContext: Tool.init(chimeraContextTool),
           chimeraAudit: Tool.init(chimeraAuditTool),
           chimeraAuditRecent: Tool.init(chimeraAuditRecentTool),
           chimeraObligationsList: Tool.init(chimeraObligationsListTool),
@@ -277,7 +274,6 @@ export const layer: Layer.Layer<
             tool.chimeraSearch,
             tool.chimeraFileSymbols,
             tool.chimeraImpact,
-            tool.chimeraContext,
             tool.chimeraAuditRecent,
             tool.chimeraAudit,
             tool.chimeraObligationsList,

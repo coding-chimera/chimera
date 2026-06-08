@@ -1,11 +1,8 @@
-import path from "path"
 import { Effect, Layer, Context, Schema, Types } from "effect"
 import { eq } from "drizzle-orm"
 import { BusEvent } from "@/bus/bus-event"
 import { Bus } from "@/bus"
 import { Database } from "@/storage/db"
-import { InstanceState } from "@/effect/instance-state"
-import { readPersistentObligationStore, readProvenanceRecords } from "@/chimera/store"
 import { zod } from "@/util/effect-zod"
 import { withStatics } from "@/util/schema"
 import { SessionID } from "./schema"
@@ -27,33 +24,6 @@ export const Info = Schema.Struct({
   .annotate({ identifier: "WorkBrief" })
   .pipe(withStatics((s) => ({ zod: zod(s) })))
 export type Info = Types.DeepMutable<Schema.Schema.Type<typeof Info>>
-
-type ToolMutationRecord = {
-  id: string
-  status: "success" | "failure"
-  finishedAt: string
-  actor?: { sessionID: string }
-  tool: { id: string; sessionID: string; messageID: string; callID?: string }
-  graph: { before: { revision: string }; after: { revision: string } }
-  files: Array<{ absolutePath: string; graphPath?: string; insideGraph: boolean }>
-}
-
-type TemporalObligation = {
-  id: string
-  fingerprint: string
-  status: string
-  target: string
-  reason: string
-  risk: string
-  evidence: string
-  createdAt: string
-  updatedAt: string
-}
-
-type ObligationStore = {
-  schemaVersion: 1
-  obligations: TemporalObligation[]
-}
 
 export const Event = {
   Updated: BusEvent.define(
@@ -147,46 +117,6 @@ export function format(brief: Info) {
   ].join("\n")
 }
 
-function projectRoot(input: { directory: string; worktree: string }) {
-  return input.worktree === "/" ? input.directory : input.worktree
-}
-
-const temporalContext = Effect.fn("WorkBrief.temporalContext")(function* (sessionID: SessionID) {
-  const instance = yield* InstanceState.context
-  const root = projectRoot(instance)
-  const dir = path.join(root, ".codegraph", "chimera")
-  const records = yield* Effect.promise(() => readProvenanceRecords(root, path.join(dir, "tool-provenance.jsonl")) as Promise<ToolMutationRecord[]>)
-  const recent = records
-    .filter((record) => (record.actor?.sessionID ?? record.tool.sessionID) === sessionID && record.status === "success")
-    .slice(-3)
-    .toReversed()
-  const store = yield* Effect.promise(() =>
-    readPersistentObligationStore<TemporalObligation>(root, path.join(dir, "obligations.json"), { schemaVersion: 1, obligations: [] }),
-  )
-  const obligations = store.obligations
-    .filter((item) => item.status === "pending" || item.status === "claimed" || item.status === "stale")
-    .slice(0, 8)
-
-  if (recent.length === 0 && obligations.length === 0) return undefined
-
-  return [
-    "## Chimera Temporal Context",
-    "",
-    "Recent Mutations:",
-    ...(recent.length
-      ? recent.map((record) => {
-          const files = record.files.map((file) => file.graphPath ?? file.absolutePath).slice(0, 5).join(", ") || "none"
-          return `- ${record.tool.id} ${record.status} at ${record.finishedAt}; files: ${files}; graph: ${record.graph.before.revision.slice(0, 8)} -> ${record.graph.after.revision.slice(0, 8)}`
-        })
-      : ["- None recorded for this session."]),
-    "",
-    "Active Obligations:",
-    ...(obligations.length
-      ? obligations.map((item) => `- ${item.id} [${item.status}] ${item.target}; risk: ${item.risk}; evidence: ${item.evidence}; reason: ${compact(item.reason)}`)
-      : ["- None active."]),
-  ].join("\n")
-})
-
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -214,7 +144,7 @@ export const layer = Layer.effect(
     })
 
     const render = Effect.fn("WorkBrief.render")(function* (sessionID: SessionID) {
-      return [format(yield* get(sessionID)), yield* temporalContext(sessionID)].filter(Boolean).join("\n\n") || undefined
+      return format(yield* get(sessionID))
     })
 
     return Service.of({ get, update, render })

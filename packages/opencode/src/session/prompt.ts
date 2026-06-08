@@ -36,6 +36,7 @@ import { Config } from "@/config/config"
 import { ConfigMarkdown } from "@/config/markdown"
 import { SessionSummary } from "./summary"
 import { WorkBrief } from "./work-brief"
+import { ChimeraPromptContext } from "@/chimera/prompt-context"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { SessionProcessor } from "./processor"
 import { Tool } from "@/tool/tool"
@@ -118,6 +119,7 @@ export const layer = Layer.effect(
     const revert = yield* SessionRevert.Service
     const summary = yield* SessionSummary.Service
     const workBrief = yield* WorkBrief.Service
+    const chimeraPromptContext = yield* ChimeraPromptContext.Service
     const sys = yield* SystemPrompt.Service
     const llm = yield* LLM.Service
     const question = yield* Question.Service
@@ -1570,14 +1572,21 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
             yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
 
-            const [skills, env, instructions, modelMsgs, workBriefSuffix] = yield* Effect.all([
+            const [skills, env, instructions, modelMsgs, workBriefSuffix, chimeraContextSuffix] = yield* Effect.all([
               sys.skills(agent),
               sys.environment(model),
               instruction.system().pipe(Effect.orDie),
               MessageV2.toModelMessagesEffect(msgs, model),
               workBrief.render(sessionID),
+              chimeraPromptContext.render(sessionID),
             ])
-            const system = [...env, ...instructions, ...(skills ? [skills] : []), ...(workBriefSuffix ? [workBriefSuffix] : [])]
+            const system = [
+              ...env,
+              ...instructions,
+              ...(skills ? [skills] : []),
+              ...(workBriefSuffix ? [workBriefSuffix] : []),
+              ...(chimeraContextSuffix ? [chimeraContextSuffix] : []),
+            ]
             const format = lastUser.format ?? { type: "text" as const }
             if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
             const result = yield* handle.process({
@@ -1836,7 +1845,7 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(Question.defaultLayer),
     Layer.provide(Session.defaultLayer),
     Layer.provide(SessionRevert.defaultLayer),
-    Layer.provide(Layer.mergeAll(SessionSummary.defaultLayer, WorkBrief.defaultLayer)),
+    Layer.provide(Layer.mergeAll(SessionSummary.defaultLayer, WorkBrief.defaultLayer, ChimeraPromptContext.defaultLayer)),
     Layer.provide(
       Layer.mergeAll(
         Agent.defaultLayer,
