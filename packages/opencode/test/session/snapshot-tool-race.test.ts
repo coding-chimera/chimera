@@ -32,6 +32,7 @@ import { NodeFileSystem } from "@effect/platform-node"
 import { Agent as AgentSvc } from "../../src/agent/agent"
 import { Bus } from "../../src/bus"
 import { Command } from "../../src/command"
+import { ChimeraPromptContext } from "@/chimera/prompt-context"
 import { Config } from "@/config/config"
 import { LSP } from "@/lsp/lsp"
 import { MCP } from "../../src/mcp"
@@ -126,6 +127,7 @@ function makeHttp() {
   const question = Question.layer.pipe(Layer.provideMerge(deps))
   const todo = Todo.layer.pipe(Layer.provideMerge(deps))
   const workBrief = WorkBrief.layer.pipe(Layer.provideMerge(deps))
+  const chimeraPromptContext = ChimeraPromptContext.layer.pipe(Layer.provideMerge(deps))
   const registry = ToolRegistry.layer.pipe(
     Layer.provide(Skill.defaultLayer),
     Layer.provide(FetchHttpClient.layer),
@@ -152,6 +154,7 @@ function makeHttp() {
       Layer.provideMerge(registry),
       Layer.provideMerge(trunc),
       Layer.provideMerge(workBrief),
+      Layer.provideMerge(chimeraPromptContext),
       Layer.provide(Instruction.defaultLayer),
       Layer.provide(SystemPrompt.defaultLayer),
       Layer.provideMerge(deps),

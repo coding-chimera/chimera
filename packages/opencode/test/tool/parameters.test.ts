@@ -12,7 +12,6 @@ import { toJsonSchema } from "../../src/util/effect-zod"
 import { Parameters as ApplyPatch } from "../../src/tool/apply_patch"
 import {
   AuditParameters as ChimeraAudit,
-  ContextParameters as ChimeraContext,
   FileSymbolsParameters as ChimeraFileSymbols,
   ImpactParameters as ChimeraImpact,
   ObligationClaimParameters as ChimeraObligationClaim,
@@ -52,7 +51,6 @@ describe("tool parameters", () => {
     test("bash", () => expect(toJsonSchema(Shell)).toMatchSnapshot())
     test("chimera_audit", () => expect(toJsonSchema(ChimeraAudit)).toMatchSnapshot())
     test("chimera_audit_recent", () => expect(toJsonSchema(ChimeraAuditRecent)).toMatchSnapshot())
-    test("chimera_context", () => expect(toJsonSchema(ChimeraContext)).toMatchSnapshot())
     test("chimera_file_symbols", () => expect(toJsonSchema(ChimeraFileSymbols)).toMatchSnapshot())
     test("chimera_impact", () => expect(toJsonSchema(ChimeraImpact)).toMatchSnapshot())
     test("chimera_obligation_claim", () => expect(toJsonSchema(ChimeraObligationClaim)).toMatchSnapshot())
@@ -143,11 +141,6 @@ describe("tool parameters", () => {
     test("audit selector combination is runtime-level, not JSON-schema-level", () => {
       expect(accepts(ChimeraAudit, {})).toBe(true)
       expect(parse(ChimeraAudit, { filePath: "src/tool/chimera.ts" }).filePath).toBe("src/tool/chimera.ts")
-    })
-
-    test("context selector combination is runtime-level, not JSON-schema-level", () => {
-      expect(accepts(ChimeraContext, {})).toBe(true)
-      expect(parse(ChimeraContext, { mode: "arch" }).mode).toBe("arch")
     })
 
     test("obligation lifecycle tools require ids and ignore reason", () => {

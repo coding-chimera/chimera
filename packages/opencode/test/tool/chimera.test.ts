@@ -4,12 +4,12 @@ import path from "path"
 import { Effect, Layer } from "effect"
 import { Bus } from "@/bus"
 import { Chimera } from "@/chimera"
+import { ChimeraPromptContext } from "@/chimera/prompt-context"
 import { Agent } from "@/agent/agent"
 import { MessageID, SessionID } from "@/session/schema"
 import {
   ChimeraAuditRecentTool,
   ChimeraAuditTool,
-  ChimeraContextTool,
   ChimeraFileSymbolsTool,
   ChimeraImpactTool,
   ChimeraObligationClaimTool,
@@ -35,7 +35,7 @@ const ctx = {
   ask: () => Effect.void,
 }
 
-const it = testEffect(Layer.mergeAll(Bus.layer, Agent.defaultLayer, Truncate.defaultLayer))
+const it = testEffect(Layer.mergeAll(Bus.layer, Agent.defaultLayer, Truncate.defaultLayer, ChimeraPromptContext.layer))
 
 afterEach(async () => {
   await disposeAllInstances()
@@ -73,15 +73,6 @@ const runImpact = Effect.fn("ChimeraToolTest.runImpact")(function* (
   next: Tool.Context = ctx,
 ) {
   const info = yield* ChimeraImpactTool
-  const tool = yield* info.init()
-  return yield* tool.execute(args, next)
-})
-
-const runContext = Effect.fn("ChimeraToolTest.runContext")(function* (
-  args: Tool.InferParameters<typeof ChimeraContextTool>,
-  next: Tool.Context = ctx,
-) {
-  const info = yield* ChimeraContextTool
   const tool = yield* info.init()
   return yield* tool.execute(args, next)
 })
@@ -244,25 +235,6 @@ describe("tool.chimera", () => {
       expect(result.output).toContain("Impact evidence")
       expect(result.output).toContain("cause_chain")
       expect(result.metadata.seeds.length).toBeGreaterThan(0)
-    }),
-  )
-
-  it.instance("builds compact graph context", () =>
-    Effect.gen(function* () {
-      const test = yield* TestInstance
-      yield* Effect.promise(() =>
-        fs.writeFile(path.join(test.directory, "context.ts"), "export function trackedContext() { return 1 }\n"),
-      )
-
-      const result = yield* runContext({ query: "trackedContext", maxNodes: 5, maxCodeBlocks: 2 })
-
-      expect(result.title).toBe("Chimera context")
-      expect(result.output).toContain("trackedContext")
-      expect(result.output).toContain("Chimera Overlay")
-      expect(result.output).toContain("Selected impact")
-      expect(result.output).toContain("Future obligations")
-      expect(result.metadata.query).toBe("trackedContext")
-      expect(result.metadata.overlay.selectedImpact.seeds.length).toBeGreaterThan(0)
     }),
   )
 
@@ -602,10 +574,11 @@ describe("tool.chimera", () => {
       expect(status.output).toContain(`Pending obligations: ${synced.metadata.obligations.length}`)
       expect(status.metadata.pendingObligations).toBe(synced.metadata.obligations.length)
 
-      const context = yield* runContext({ filePath: "base.ts", mode: "audit", maxNodes: 10, maxCodeBlocks: 2 })
-      expect(context.output).toContain("Future obligations")
-      expect(context.output).toContain(obligation.id)
-      expect(context.metadata.overlay.obligations.counts.pending).toBe(synced.metadata.obligations.length)
+      const promptContext = yield* ChimeraPromptContext.Service
+      const context = yield* promptContext.render(ctx.sessionID)
+      expect(context).toContain("## Chimera Execution Context")
+      expect(context).toContain("Active Obligations")
+      expect(context).toContain(obligation.id)
 
       const claimed = yield* runObligationClaim({ obligationID: obligation.id })
       expect(claimed.metadata.obligations[0].status).toBe("claimed")

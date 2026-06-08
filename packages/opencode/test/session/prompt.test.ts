@@ -3,11 +3,13 @@ import { FetchHttpClient } from "effect/unstable/http"
 import { expect } from "bun:test"
 import { Cause, Effect, Exit, Fiber, Layer } from "effect"
 import path from "path"
+import fs from "fs/promises"
 import { fileURLToPath } from "url"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { Agent as AgentSvc } from "../../src/agent/agent"
 import { Bus } from "../../src/bus"
 import { Command } from "../../src/command"
+import { ChimeraPromptContext } from "@/chimera/prompt-context"
 import { Config } from "@/config/config"
 import { LSP } from "@/lsp/lsp"
 import { MCP } from "../../src/mcp"
@@ -176,6 +178,7 @@ function makeHttp() {
   const question = Question.layer.pipe(Layer.provideMerge(deps))
   const todo = Todo.layer.pipe(Layer.provideMerge(deps))
   const workBrief = WorkBrief.layer.pipe(Layer.provideMerge(deps))
+  const chimeraPromptContext = ChimeraPromptContext.layer.pipe(Layer.provideMerge(deps))
   const registry = ToolRegistry.layer.pipe(
     Layer.provide(Skill.defaultLayer),
     Layer.provide(FetchHttpClient.layer),
@@ -201,6 +204,7 @@ function makeHttp() {
       Layer.provideMerge(registry),
       Layer.provideMerge(trunc),
       Layer.provideMerge(workBrief),
+      Layer.provideMerge(chimeraPromptContext),
       Layer.provide(Instruction.defaultLayer),
       Layer.provide(SystemPrompt.defaultLayer),
       Layer.provideMerge(deps),
@@ -482,6 +486,73 @@ it.live("injects current work brief into the LLM input", () =>
       expect(body).toContain("ship prompt suffix")
       expect(body).toContain("Use mutable suffix instead of rewriting history.")
     }),
+    { git: true, config: providerCfg },
+  ),
+)
+
+it.live("injects Chimera execution context separately from work brief", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const session = yield* sessions.create({
+          title: "Chimera context suffix",
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+        const chimeraDir = path.join(dir, ".codegraph", "chimera")
+        yield* Effect.promise(() => fs.mkdir(chimeraDir, { recursive: true }))
+        yield* Effect.promise(() => Bun.write(path.join(chimeraDir, "tool-provenance.jsonl"), `${JSON.stringify({
+          schemaVersion: 1,
+          id: "chg_prompt_context",
+          origin: "tool",
+          provenanceStrength: "strong",
+          actor: {
+            sessionID: session.id,
+            messageID: "msg_prompt_context",
+            callID: "call_prompt_context",
+            agent: "build",
+          },
+          tool: {
+            id: "edit",
+            callID: "call_prompt_context",
+            messageID: "msg_prompt_context",
+            sessionID: session.id,
+            agent: "build",
+          },
+          project: {
+            root: dir,
+            worktree: dir,
+            directory: dir,
+          },
+          status: "success",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          finishedAt: "2026-01-01T00:00:01.000Z",
+          graph: {
+            before: { revision: "before_revision" },
+            after: { revision: "after_revision" },
+            sync: { changedFiles: [] },
+          },
+          files: [{ absolutePath: path.join(dir, "src", "context.ts"), graphPath: "src/context.ts", insideGraph: true }],
+          metadata: { diff: "" },
+        })}\n`))
+
+        yield* prompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "hello" }],
+        })
+
+        yield* llm.text("world")
+        yield* prompt.loop({ sessionID: session.id })
+
+        const body = JSON.stringify(yield* llm.inputs)
+        expect(body).toContain("## Chimera Execution Context")
+        expect(body).toContain("chg_prompt_context")
+        expect(body).toContain("src/context.ts")
+        expect(body).not.toContain("## Chimera Temporal Context")
+      }),
     { git: true, config: providerCfg },
   ),
 )
