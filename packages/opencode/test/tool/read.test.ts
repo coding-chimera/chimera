@@ -12,6 +12,7 @@ import { Instruction } from "../../src/session/instruction"
 import { ReadTool } from "../../src/tool/read"
 import { Truncate } from "@/tool/truncate"
 import { Tool } from "@/tool/tool"
+import { lineHash } from "@/tool/hashline"
 import { Filesystem } from "@/util/filesystem"
 import { disposeAllInstances, provideInstance, TestInstance, tmpdirScoped } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
@@ -255,6 +256,20 @@ describe("tool.read env file permissions", () => {
 })
 
 describe("tool.read truncation", () => {
+  it.instance("formats text lines with Hashline anchors", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* put(path.join(test.directory, "hashline.txt"), "hello\n\nworld")
+
+      const result = yield* run({ filePath: path.join(test.directory, "hashline.txt") })
+      expect(result.output).toContain(`1#${lineHash(1, "hello")}|hello`)
+      expect(result.output).toContain(`2#${lineHash(2, "")}|`)
+      expect(result.output).toContain(`3#${lineHash(3, "world")}|world`)
+      expect(result.metadata.hashline?.displayAlgorithm).toBe("omo-cid2")
+      expect(result.metadata.hashline?.anchors).toBe(3)
+    }),
+  )
+
   it.instance("truncates large file by bytes and sets truncated metadata", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
@@ -304,10 +319,10 @@ describe("tool.read truncation", () => {
       yield* put(path.join(dir, "offset.txt"), lines)
 
       const result = yield* exec(dir, { filePath: path.join(dir, "offset.txt"), offset: 10, limit: 5 })
-      expect(result.output).toContain("10: line10")
-      expect(result.output).toContain("14: line14")
-      expect(result.output).not.toContain("9: line10")
-      expect(result.output).not.toContain("15: line15")
+      expect(result.output).toContain(`10#${lineHash(10, "line10")}|line10`)
+      expect(result.output).toContain(`14#${lineHash(14, "line14")}|line14`)
+      expect(result.output).not.toContain(`9#${lineHash(9, "line10")}|line10`)
+      expect(result.output).not.toContain(`15#${lineHash(15, "line15")}|line15`)
       expect(result.output).toContain("line10")
       expect(result.output).toContain("line14")
       expect(result.output).not.toContain("line0")
@@ -371,6 +386,8 @@ describe("tool.read truncation", () => {
 
       const result = yield* exec(dir, { filePath: path.join(dir, "long-line.txt") })
       expect(result.output).toContain("(line truncated to 2000 chars)")
+      expect(result.output).toContain("1#--|")
+      expect(result.metadata.hashline?.unanchorable).toEqual([1])
       expect(result.output.length).toBeLessThan(3000)
     }),
   )

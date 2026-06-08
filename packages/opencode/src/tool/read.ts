@@ -11,6 +11,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { Instruction } from "../session/instruction"
 import { isPdfAttachment, sniffAttachmentMime } from "@/util/media"
+import { DISPLAY_ALGORITHM, SCHEMA_VERSION, formatLine, lineInfo } from "./hashline"
 
 const DEFAULT_READ_LIMIT = 2000
 const MAX_LINE_LENGTH = 2000
@@ -254,7 +255,7 @@ export const ReadTool = Tool.define(
       }
 
       let output = [`<path>${filepath}</path>`, `<type>file</type>`, "<content>\n"].join("\n")
-      output += file.raw.map((line, i) => `${i + file.offset}: ${line}`).join("\n")
+      output += file.raw.map((line, i) => formatLine(lineInfo(i + file.offset, line, !file.unanchorable.includes(i + file.offset)))).join("\n")
 
       const last = file.offset + file.raw.length - 1
       const next = last + 1
@@ -281,6 +282,12 @@ export const ReadTool = Tool.define(
           preview: file.raw.slice(0, 20).join("\n"),
           truncated,
           loaded: loaded.map((item) => item.filepath),
+          hashline: {
+            schemaVersion: SCHEMA_VERSION,
+            displayAlgorithm: DISPLAY_ALGORITHM,
+            anchors: file.raw.length - file.unanchorable.length,
+            unanchorable: file.unanchorable,
+          },
         },
       }
     })
@@ -289,7 +296,7 @@ export const ReadTool = Tool.define(
       description: DESCRIPTION,
       parameters: Parameters,
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
-        run(params, ctx).pipe(Effect.orDie),
+        run(params, ctx).pipe(Effect.orDie) as Effect.Effect<Tool.ExecuteResult>,
     }
   }),
 )
@@ -305,6 +312,7 @@ async function lines(filepath: string, opts: { limit: number; offset: number }) 
 
   const start = opts.offset - 1
   const raw: string[] = []
+  const unanchorable: number[] = []
   let bytes = 0
   let count = 0
   let cut = false
@@ -319,7 +327,8 @@ async function lines(filepath: string, opts: { limit: number; offset: number }) 
         continue
       }
 
-      const line = text.length > MAX_LINE_LENGTH ? text.substring(0, MAX_LINE_LENGTH) + MAX_LINE_SUFFIX : text
+      const truncatedLine = text.length > MAX_LINE_LENGTH
+      const line = truncatedLine ? text.substring(0, MAX_LINE_LENGTH) + MAX_LINE_SUFFIX : text
       const size = Buffer.byteLength(line, "utf-8") + (raw.length > 0 ? 1 : 0)
       if (bytes + size > MAX_BYTES) {
         cut = true
@@ -328,6 +337,7 @@ async function lines(filepath: string, opts: { limit: number; offset: number }) 
       }
 
       raw.push(line)
+      if (truncatedLine) unanchorable.push(count)
       bytes += size
     }
   } finally {
@@ -335,5 +345,5 @@ async function lines(filepath: string, opts: { limit: number; offset: number }) 
     stream.destroy()
   }
 
-  return { raw, count, cut, more, offset: opts.offset }
+  return { raw, count, cut, more, offset: opts.offset, unanchorable }
 }
