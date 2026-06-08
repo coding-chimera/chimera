@@ -22,7 +22,7 @@ import {
   type Node as CodeGraphNode,
   type RelationEvidence as CodeGraphRelation,
   type RelationKind,
-} from "@colbymchenry/codegraph"
+} from "@opencode-ai/chimera"
 import {
   provenanceRecordCount as storedProvenanceRecordCount,
   readChangeFacts,
@@ -1360,7 +1360,9 @@ const buildAudit = Effect.fn("ChimeraTool.buildAudit")(function* (params: BuildA
   const storedChangeFacts = source === "recent_provenance" && recent ? yield* Effect.promise(() => readChangeFacts(state.projectRoot, [recent.id])) : []
   const ephemeralRecord = storedChangeFacts.length
     ? undefined
-    : recent ?? syntheticAuditRecord({ projectRoot: state.projectRoot, directory: instance.directory, source, changedFiles, snapshot })
+    : source === "recent_provenance" && recent
+      ? recent
+      : syntheticAuditRecord({ projectRoot: state.projectRoot, directory: instance.directory, source, changedFiles, snapshot })
   const ephemeralAfterNodes = ephemeralRecord ? collectFileProjections(state.graph, ephemeralRecord.files, snapshot) : []
   const ephemeralAfterRelations = ephemeralRecord ? collectIncidentRelations(state.graph, ephemeralAfterNodes, snapshot) : []
   const changeFacts = storedChangeFacts.length

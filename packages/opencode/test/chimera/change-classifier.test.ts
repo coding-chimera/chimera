@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { classifyChangeRecord } from "../../src/chimera/change-classifier"
-import type { FrozenRelation, FrozenSemanticObject, LanguageAwareSignal } from "@colbymchenry/codegraph"
+import type { FrozenRelation, FrozenSemanticObject, LanguageAwareSignal } from "@opencode-ai/chimera"
 import type { ToolMutationRecord } from "../../src/chimera/provenance"
 
 const bodyPatch = `--- sample.ts
