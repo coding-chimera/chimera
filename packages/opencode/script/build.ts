@@ -3,12 +3,14 @@
 import { $ } from "bun"
 import fs from "fs"
 import path from "path"
+import { createRequire } from "module"
 import { fileURLToPath } from "url"
 import { createSolidTransformPlugin } from "@opentui/solid/bun-plugin"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const dir = path.resolve(__dirname, "..")
+const graphRequire = createRequire(path.join(dir, "../chimera/package.json"))
 
 process.chdir(dir)
 
@@ -46,6 +48,23 @@ const migrations = await Promise.all(
   }),
 )
 console.log(`Loaded ${migrations.length} migrations`)
+
+const graphSchema = await Bun.file(path.join(dir, "../chimera/src/db/schema.sql")).text()
+const graphWasmOutDir = path.dirname(graphRequire.resolve("tree-sitter-wasms/out/tree-sitter-typescript.wasm"))
+const graphVendoredWasmDir = path.join(dir, "../chimera/src/extraction/wasm")
+
+async function copyGraphGrammarWasms(targetDir: string) {
+  const grammarDir = path.join(targetDir, "tree-sitter-wasms", "out")
+  await fs.promises.mkdir(grammarDir, { recursive: true })
+
+  for (const file of (await fs.promises.readdir(graphWasmOutDir)).filter((item) => item.endsWith(".wasm"))) {
+    await fs.promises.copyFile(path.join(graphWasmOutDir, file), path.join(grammarDir, file))
+  }
+
+  for (const file of (await fs.promises.readdir(graphVendoredWasmDir)).filter((item) => item.endsWith(".wasm"))) {
+    await fs.promises.copyFile(path.join(graphVendoredWasmDir, file), path.join(grammarDir, file))
+  }
+}
 
 const singleFlag = process.argv.includes("--single")
 const baselineFlag = process.argv.includes("--baseline")
@@ -194,6 +213,9 @@ for (const item of targets) {
   const bunfsRoot = item.os === "win32" ? "B:/~BUN/root/" : "/$bunfs/root/"
   const workerRelativePath = path.relative(dir, parserWorker).replaceAll("\\", "/")
 
+  const binaryName = item.os === "win32" ? "chimera.exe" : "chimera"
+  const embeddedWebUIEntrypoint = "chimera-web-ui.gen.ts"
+
   await Bun.build({
     conditions: ["browser"],
     tsconfig: "./tsconfig.json",
@@ -209,15 +231,17 @@ for (const item of targets) {
       autoloadTsconfig: true,
       autoloadPackageJson: true,
       target: name.replace(pkg.name, "bun") as any,
-      outfile: `dist/${name}/bin/opencode`,
-      execArgv: [`--user-agent=opencode/${Script.version}`, "--use-system-ca", "--"],
+      outfile: `dist/${name}/bin/${binaryName}`,
+      execArgv: ["--liftoff-only", `--user-agent=chimera/${Script.version}`, "--use-system-ca", "--"],
       windows: {},
     },
-    files: embeddedFileMap ? { "opencode-web-ui.gen.ts": embeddedFileMap } : {},
-    entrypoints: ["./src/index.ts", parserWorker, workerPath, ...(embeddedFileMap ? ["opencode-web-ui.gen.ts"] : [])],
+    files: embeddedFileMap ? { [embeddedWebUIEntrypoint]: embeddedFileMap } : {},
+    entrypoints: ["./src/index.ts", parserWorker, workerPath, ...(embeddedFileMap ? [embeddedWebUIEntrypoint] : [])],
     define: {
       OPENCODE_VERSION: `'${Script.version}'`,
       OPENCODE_MIGRATIONS: JSON.stringify(migrations),
+      CHIMERA_DB_SCHEMA: JSON.stringify(graphSchema),
+      CHIMERA_BUNDLED_RUNTIME: "true",
       OTUI_TREE_SITTER_WORKER_PATH: bunfsRoot + workerRelativePath,
       OPENCODE_WORKER_PATH: workerPath,
       OPENCODE_CHANNEL: `'${Script.channel}'`,
@@ -225,9 +249,11 @@ for (const item of targets) {
     },
   })
 
+  await copyGraphGrammarWasms(path.join(dir, "dist", name, "bin"))
+
   // Smoke test: only run if binary is for current platform
   if (item.os === process.platform && item.arch === process.arch && !item.abi) {
-    const binaryPath = `dist/${name}/bin/opencode`
+    const binaryPath = `dist/${name}/bin/${binaryName}`
     console.log(`Running smoke test: ${binaryPath} --version`)
     try {
       const versionOutput = await $`${binaryPath} --version`.text()

@@ -17,7 +17,16 @@ function run(target) {
   process.exit(code)
 }
 
-const envPath = process.env.OPENCODE_BIN_PATH
+function chimeraEnv(key) {
+  const next = process.env[`CHIMERA_${key}`]
+  const legacy = process.env[`OPENCODE_${key}`]
+  if (next && legacy && next !== legacy) {
+    console.warn(`CHIMERA_${key} overrides OPENCODE_${key}`)
+  }
+  return next || legacy
+}
+
+const envPath = chimeraEnv("BIN_PATH")
 if (envPath) {
   run(envPath)
 }
@@ -25,10 +34,14 @@ if (envPath) {
 const scriptPath = fs.realpathSync(__filename)
 const scriptDir = path.dirname(scriptPath)
 
-//
-const cached = path.join(scriptDir, ".opencode")
+const cached = path.join(scriptDir, ".chimera")
 if (fs.existsSync(cached)) {
   run(cached)
+}
+
+const legacyCached = path.join(scriptDir, ".opencode")
+if (fs.existsSync(legacyCached)) {
+  run(legacyCached)
 }
 
 const platformMap = {
@@ -50,8 +63,8 @@ let arch = archMap[os.arch()]
 if (!arch) {
   arch = os.arch()
 }
-const base = "opencode-" + platform + "-" + arch
-const binary = platform === "windows" ? "opencode.exe" : "opencode"
+const base = "coding-chimera-" + platform + "-" + arch
+const binary = platform === "windows" ? "chimera.exe" : "chimera"
 
 function supportsAvx2() {
   if (arch !== "x64") return false
@@ -169,7 +182,7 @@ function findBinary(startDir) {
 const resolved = findBinary(scriptDir)
 if (!resolved) {
   console.error(
-    "It seems that your package manager failed to install the right version of the opencode CLI for your platform. You can try manually installing " +
+    "It seems that your package manager failed to install the right version of the Chimera CLI for your platform. You can try manually installing " +
       names.map((n) => `\"${n}\"`).join(" or ") +
       " package",
   )

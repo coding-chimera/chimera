@@ -117,11 +117,11 @@ export async function runInstallerWithOptions(opts: RunInstallerOptions): Promis
       const s = clack.spinner();
       s.start('Installing chimera CLI...');
       try {
-        execSync('npm install -g @opencode-ai/chimera', { stdio: 'pipe', windowsHide: true });
+        execSync('npm install -g coding-chimera', { stdio: 'pipe', windowsHide: true });
         s.stop('Installed chimera CLI on PATH');
       } catch {
         s.stop('Could not install (permission denied)');
-        clack.log.warn('Try: sudo npm install -g @opencode-ai/chimera');
+        clack.log.warn('Try: sudo npm install -g coding-chimera');
       }
     } else {
       clack.log.info('Skipped CLI install — agents will not be able to launch the MCP server without it');

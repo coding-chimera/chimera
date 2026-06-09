@@ -1,6 +1,76 @@
 import { Config } from "effect"
 import { InstallationChannel } from "../installation/version"
 
+const CHIMERA_OPENCODE_ENV_ALIASES = [
+  "AUTO_SHARE",
+  "AUTO_HEAP_SNAPSHOT",
+  "GIT_BASH_PATH",
+  "CONFIG",
+  "CONFIG_CONTENT",
+  "DISABLE_AUTOUPDATE",
+  "ALWAYS_NOTIFY_UPDATE",
+  "DISABLE_PRUNE",
+  "DISABLE_TERMINAL_TITLE",
+  "SHOW_TTFD",
+  "PERMISSION",
+  "DISABLE_DEFAULT_PLUGINS",
+  "DISABLE_LSP_DOWNLOAD",
+  "ENABLE_EXPERIMENTAL_MODELS",
+  "DISABLE_AUTOCOMPACT",
+  "DISABLE_MODELS_FETCH",
+  "DISABLE_MOUSE",
+  "DISABLE_CLAUDE_CODE",
+  "DISABLE_CLAUDE_CODE_PROMPT",
+  "DISABLE_CLAUDE_CODE_SKILLS",
+  "DISABLE_EXTERNAL_SKILLS",
+  "FAKE_VCS",
+  "SERVER_PASSWORD",
+  "SERVER_USERNAME",
+  "ENABLE_QUESTION_TOOL",
+  "EXPERIMENTAL",
+  "EXPERIMENTAL_FILEWATCHER",
+  "EXPERIMENTAL_DISABLE_FILEWATCHER",
+  "EXPERIMENTAL_ICON_DISCOVERY",
+  "EXPERIMENTAL_DISABLE_COPY_ON_SELECT",
+  "ENABLE_EXA",
+  "EXPERIMENTAL_EXA",
+  "EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS",
+  "EXPERIMENTAL_OUTPUT_TOKEN_MAX",
+  "EXPERIMENTAL_OXFMT",
+  "EXPERIMENTAL_LSP_TY",
+  "EXPERIMENTAL_LSP_TOOL",
+  "EXPERIMENTAL_PLAN_MODE",
+  "EXPERIMENTAL_MARKDOWN",
+  "MODELS_URL",
+  "MODELS_PATH",
+  "DISABLE_EMBEDDED_WEB_UI",
+  "DB",
+  "DISABLE_CHANNEL_DB",
+  "SKIP_MIGRATIONS",
+  "STRICT_CONFIG_DEPS",
+  "WORKSPACE_ID",
+  "EXPERIMENTAL_HTTPAPI",
+  "EXPERIMENTAL_WORKSPACES",
+  "EXPERIMENTAL_EVENT_SYSTEM",
+  "DISABLE_PROJECT_CONFIG",
+  "TUI_CONFIG",
+  "CONFIG_DIR",
+  "PURE",
+  "PLUGIN_META_FILE",
+  "CLIENT",
+] as const
+
+for (const key of CHIMERA_OPENCODE_ENV_ALIASES) {
+  const chimeraKey = `CHIMERA_${key}`
+  const opencodeKey = `OPENCODE_${key}`
+  const value = process.env[chimeraKey]
+  if (value === undefined) continue
+  if (process.env[opencodeKey] !== undefined && process.env[opencodeKey] !== value) {
+    console.warn(`${chimeraKey} overrides ${opencodeKey}`)
+  }
+  process.env[opencodeKey] = value
+}
+
 function truthy(key: string) {
   const value = process.env[key]?.toLowerCase()
   return value === "true" || value === "1"

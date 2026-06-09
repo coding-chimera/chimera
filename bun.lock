@@ -86,10 +86,6 @@
     "packages/chimera": {
       "name": "@opencode-ai/chimera",
       "version": "0.9.9",
-      "bin": {
-        "chimera": "./dist/cli/chimera.js",
-        "codegraph": "./dist/cli/chimera.js",
-      },
       "dependencies": {
         "@clack/prompts": "^1.3.0",
         "chokidar": "^4.0.3",
@@ -358,7 +354,7 @@
       "name": "coding-chimera",
       "version": "1.14.41",
       "bin": {
-        "opencode": "./bin/opencode",
+        "chimera": "./bin/chimera",
       },
       "dependencies": {
         "@actions/core": "1.11.1",

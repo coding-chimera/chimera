@@ -143,10 +143,10 @@ describe('Installer targets — contract', () => {
             const after = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
             if (target.id === 'opencode') {
               expect(after.mcp.other).toBeDefined();
-              expect(after.mcp.codegraph).toBeDefined();
+              expect(after.mcp.chimera).toBeDefined();
             } else {
               expect(after.mcpServers.other).toBeDefined();
-              expect(after.mcpServers.codegraph).toBeDefined();
+              expect(after.mcpServers.chimera).toBeDefined();
             }
           });
 
@@ -281,7 +281,7 @@ describe('Installer targets — partial-state idempotency', () => {
     expect(afterInstall).toContain('// top-level note about my opencode setup');
     expect(afterInstall).toContain('/* multi-line block comment');
     expect(afterInstall).toContain('// pinned');
-    expect(afterInstall).toContain('"codegraph"');
+    expect(afterInstall).toContain('"chimera"');
     expect(afterInstall).toContain('"providers"');
 
     // Idempotent re-run reports unchanged, file is byte-identical.
@@ -339,7 +339,7 @@ describe('Installer targets — partial-state idempotency', () => {
     expect(fs.existsSync(path.join(process.cwd(), 'AGENTS.md'))).toBe(false);
   });
 
-  it('gemini: install writes settings.json (mcpServers.codegraph) and no GEMINI.md (#529)', () => {
+  it('gemini: install writes settings.json (mcpServers.chimera) and no GEMINI.md (#529)', () => {
     const gemini = getTarget('gemini')!;
     const result = gemini.install('global', { autoAllow: true });
     const settings = path.join(tmpHome, '.gemini', 'settings.json');
@@ -349,7 +349,7 @@ describe('Installer targets — partial-state idempotency', () => {
     expect(fs.existsSync(geminiMd)).toBe(false);
 
     const cfg = JSON.parse(fs.readFileSync(settings, 'utf-8'));
-    expect(cfg.mcpServers.codegraph).toEqual({ type: 'stdio', command: 'chimera', args: ['serve', '--mcp'] });
+    expect(cfg.mcpServers.chimera).toEqual({ type: 'stdio', command: 'chimera', args: ['graph', 'serve', '--mcp'] });
   });
 
   it('gemini: install preserves pre-existing settings (security.auth survives)', () => {
@@ -364,7 +364,7 @@ describe('Installer targets — partial-state idempotency', () => {
 
     const after = JSON.parse(fs.readFileSync(settings, 'utf-8'));
     expect(after.security?.auth?.selectedType).toBe('oauth-personal');
-    expect(after.mcpServers?.codegraph).toBeDefined();
+    expect(after.mcpServers?.chimera).toBeDefined();
   });
 
   it('gemini: uninstall strips codegraph but leaves pre-existing settings (security.auth) intact', () => {
@@ -406,7 +406,7 @@ describe('Installer targets — partial-state idempotency', () => {
     expect(body).not.toContain('CODEGRAPH_START');
   });
 
-  it('kiro: install writes settings/mcp.json (mcpServers.codegraph) and no steering doc (#529)', () => {
+  it('kiro: install writes settings/mcp.json (mcpServers.chimera) and no steering doc (#529)', () => {
     const kiro = getTarget('kiro')!;
     const result = kiro.install('global', { autoAllow: true });
     const mcp = path.join(tmpHome, '.kiro', 'settings', 'mcp.json');
@@ -416,7 +416,7 @@ describe('Installer targets — partial-state idempotency', () => {
     expect(fs.existsSync(steering)).toBe(false);
 
     const cfg = JSON.parse(fs.readFileSync(mcp, 'utf-8'));
-    expect(cfg.mcpServers.codegraph).toEqual({ type: 'stdio', command: 'chimera', args: ['serve', '--mcp'] });
+    expect(cfg.mcpServers.chimera).toEqual({ type: 'stdio', command: 'chimera', args: ['graph', 'serve', '--mcp'] });
   });
 
   it('kiro: install deletes a leftover steering codegraph.md (self-heal) (#529)', () => {
@@ -442,7 +442,7 @@ describe('Installer targets — partial-state idempotency', () => {
 
     const after = JSON.parse(fs.readFileSync(mcp, 'utf-8'));
     expect(after.mcpServers.other).toBeDefined();
-    expect(after.mcpServers.codegraph).toBeDefined();
+    expect(after.mcpServers.chimera).toBeDefined();
   });
 
   it('kiro: uninstall strips codegraph but leaves sibling MCP servers intact', () => {
@@ -501,7 +501,7 @@ describe('Installer targets — partial-state idempotency', () => {
     const legacyFile = path.join(tmpHome, '.gemini', 'antigravity', 'mcp_config.json');
     expect(fs.existsSync(legacyFile)).toBe(true);
     const cfg = JSON.parse(fs.readFileSync(legacyFile, 'utf-8'));
-    expect(cfg.mcpServers.codegraph).toBeDefined();
+    expect(cfg.mcpServers.chimera).toBeDefined();
     // Crucially: does NOT touch the Gemini CLI's settings.json.
     expect(fs.existsSync(path.join(tmpHome, '.gemini', 'settings.json'))).toBe(false);
   });
@@ -519,7 +519,7 @@ describe('Installer targets — partial-state idempotency', () => {
     const unifiedFile = path.join(unifiedDir, 'mcp_config.json');
     expect(fs.existsSync(unifiedFile)).toBe(true);
     const cfg = JSON.parse(fs.readFileSync(unifiedFile, 'utf-8'));
-    expect(cfg.mcpServers.codegraph).toBeDefined();
+    expect(cfg.mcpServers.chimera).toBeDefined();
     // Legacy path is NOT touched when the marker tells us migration happened.
     expect(fs.existsSync(path.join(tmpHome, '.gemini', 'antigravity', 'mcp_config.json'))).toBe(false);
   });
@@ -536,7 +536,7 @@ describe('Installer targets — partial-state idempotency', () => {
     antigravity.install('global', { autoAllow: true });
 
     const cfg = JSON.parse(fs.readFileSync(unifiedFile, 'utf-8'));
-    expect(cfg.mcpServers.codegraph).toBeDefined();
+    expect(cfg.mcpServers.chimera).toBeDefined();
   });
 
   it('antigravity: entry has NO `type` field (Antigravity rejects entries with it)', () => {
@@ -550,9 +550,9 @@ describe('Installer targets — partial-state idempotency', () => {
     const cfg = JSON.parse(fs.readFileSync(
       path.join(tmpHome, '.gemini', 'config', 'mcp_config.json'), 'utf-8'
     ));
-    expect(cfg.mcpServers.codegraph.type).toBeUndefined();
-    expect(cfg.mcpServers.codegraph.command).toBeDefined();
-    expect(cfg.mcpServers.codegraph.args).toEqual(['serve', '--mcp']);
+    expect(cfg.mcpServers.chimera.type).toBeUndefined();
+    expect(cfg.mcpServers.chimera.command).toBeDefined();
+    expect(cfg.mcpServers.chimera.args).toEqual(['graph', 'serve', '--mcp']);
   });
 
   it('antigravity: install migrates a legacy codegraph entry to the unified path when marker appears', () => {
@@ -564,7 +564,7 @@ describe('Installer targets — partial-state idempotency', () => {
     const legacyFile = path.join(tmpHome, '.gemini', 'antigravity', 'mcp_config.json');
     fs.mkdirSync(path.dirname(legacyFile), { recursive: true });
     fs.writeFileSync(legacyFile, JSON.stringify({
-      mcpServers: { codegraph: { command: 'chimera', args: ['serve', '--mcp'] } },
+      mcpServers: { codegraph: { command: 'chimera', args: ['graph', 'serve', '--mcp'] } },
     }, null, 2) + '\n');
     fs.mkdirSync(path.join(tmpHome, '.gemini', 'config'), { recursive: true });
     fs.writeFileSync(path.join(tmpHome, '.gemini', 'config', '.migrated'), '');
@@ -574,7 +574,7 @@ describe('Installer targets — partial-state idempotency', () => {
     const unified = JSON.parse(fs.readFileSync(
       path.join(tmpHome, '.gemini', 'config', 'mcp_config.json'), 'utf-8'
     ));
-    expect(unified.mcpServers.codegraph).toBeDefined();
+    expect(unified.mcpServers.chimera).toBeDefined();
     // Legacy file's codegraph entry got stripped.
     const legacy = JSON.parse(fs.readFileSync(legacyFile, 'utf-8'));
     expect(legacy.mcpServers).toBeUndefined();
@@ -592,7 +592,7 @@ describe('Installer targets — partial-state idempotency', () => {
 
     const after = JSON.parse(fs.readFileSync(mcpFile, 'utf-8'));
     expect(after.mcpServers.other).toBeDefined();
-    expect(after.mcpServers.codegraph).toBeDefined();
+    expect(after.mcpServers.chimera).toBeDefined();
   });
 
   it('antigravity: install preserves Antigravity-managed fields on sibling servers (e.g. disabled flag)', () => {
@@ -614,7 +614,7 @@ describe('Installer targets — partial-state idempotency', () => {
 
     const after = JSON.parse(fs.readFileSync(unified, 'utf-8'));
     expect(after.mcpServers['code-review-graph'].disabled).toBe(true);
-    expect(after.mcpServers.codegraph).toBeDefined();
+    expect(after.mcpServers.chimera).toBeDefined();
   });
 
   it('antigravity: uninstall removes only codegraph, sibling MCP server survives', () => {
@@ -643,10 +643,10 @@ describe('Installer targets — partial-state idempotency', () => {
     fs.mkdirSync(path.dirname(legacy), { recursive: true });
     fs.mkdirSync(path.dirname(unified), { recursive: true });
     fs.writeFileSync(legacy, JSON.stringify({
-      mcpServers: { codegraph: { command: 'chimera', args: ['serve', '--mcp'] } },
+      mcpServers: { codegraph: { command: 'chimera', args: ['graph', 'serve', '--mcp'] } },
     }, null, 2) + '\n');
     fs.writeFileSync(unified, JSON.stringify({
-      mcpServers: { codegraph: { command: 'chimera', args: ['serve', '--mcp'] } },
+      mcpServers: { codegraph: { command: 'chimera', args: ['graph', 'serve', '--mcp'] } },
     }, null, 2) + '\n');
     fs.writeFileSync(path.join(path.dirname(unified), '.migrated'), '');
 
@@ -683,13 +683,13 @@ describe('Installer targets — partial-state idempotency', () => {
     // Antigravity lands on the LEGACY path here since no .migrated marker
     // was planted — same end-to-end check either way.
     const ideCfg = JSON.parse(fs.readFileSync(path.join(tmpHome, '.gemini', 'antigravity', 'mcp_config.json'), 'utf-8'));
-    expect(cliCfg.mcpServers.codegraph).toBeDefined();
-    expect(ideCfg.mcpServers.codegraph).toBeDefined();
+    expect(cliCfg.mcpServers.chimera).toBeDefined();
+    expect(ideCfg.mcpServers.chimera).toBeDefined();
 
     // Uninstall one — the other's MCP entry must survive.
     antigravity.uninstall('global');
     const cliAfter = JSON.parse(fs.readFileSync(path.join(tmpHome, '.gemini', 'settings.json'), 'utf-8'));
-    expect(cliAfter.mcpServers.codegraph).toBeDefined();
+    expect(cliAfter.mcpServers.chimera).toBeDefined();
   });
 
   it('hermes: install adds codegraph MCP server and cli toolset, preserving existing yaml', () => {
@@ -715,7 +715,7 @@ describe('Installer targets — partial-state idempotency', () => {
     const body = fs.readFileSync(config, 'utf-8');
     expect(body).toContain('model:\n  default: qwen-3.7');
     expect(body).toContain('mcp_servers:\n  other:\n    command: other');
-    expect(body).toContain('  codegraph:\n    command: codegraph');
+    expect(body).toContain('  codegraph:\n    command: chimera');
     expect(body).toContain('    - hermes-cli');
     expect(body).toContain('    - mcp-codegraph');
     expect(body).toContain('  discord:\n    - hermes-discord');
@@ -814,12 +814,12 @@ describe('Installer targets — partial-state idempotency', () => {
     hermes.uninstall('global');
     const body = fs.readFileSync(config, 'utf-8');
     expect(body).not.toContain('mcp-codegraph');
-    expect(body).not.toContain('command: codegraph');
+    expect(body).not.toContain('command: chimera');
     expect(body).toContain('  cli:\n  - hermes-cli\n  - browser');
     expect(body).toContain('  telegram:\n  - hermes-telegram');
   });
 
-  it('opencode: uninstall removes only mcp.codegraph, preserves comments and siblings', () => {
+  it('opencode: uninstall removes only mcp.chimera, preserves comments and siblings', () => {
     const opencode = getTarget('opencode')!;
     const dir = path.join(tmpHome, '.config', 'opencode');
     fs.mkdirSync(dir, { recursive: true });
@@ -837,31 +837,31 @@ describe('Installer targets — partial-state idempotency', () => {
 
     opencode.install('global', { autoAllow: true });
     const afterInstall = fs.readFileSync(file, 'utf-8');
-    expect(afterInstall).toContain('"codegraph"');
+    expect(afterInstall).toContain('"chimera"');
     expect(afterInstall).toContain('"other"');
 
     opencode.uninstall('global');
     const afterUninstall = fs.readFileSync(file, 'utf-8');
-    expect(afterUninstall).not.toContain('codegraph');
+    expect(afterUninstall).not.toContain('chimera');
     expect(afterUninstall).toContain('// important comment');
     expect(afterUninstall).toContain('"other"');
   });
 
-  it('codex: user-added key inside [mcp_servers.codegraph] survives idempotent re-install', () => {
+  it('codex: user-added key inside [mcp_servers.chimera] is reset on idempotent re-install', () => {
     const codex = getTarget('codex')!;
     codex.install('global', { autoAllow: false });
     const tomlPath = path.join(tmpHome, '.codex', 'config.toml');
     const original = fs.readFileSync(tomlPath, 'utf-8');
     // User edits the block to add a custom key.
     const edited = original.replace(
-      'args = ["serve", "--mcp"]',
-      'args = ["serve", "--mcp"]\nenabled = true',
+      'args = ["graph", "serve", "--mcp"]',
+      'args = ["graph", "serve", "--mcp"]\nenabled = true',
     );
     fs.writeFileSync(tomlPath, edited);
     // Re-install: our serializer doesn't know `enabled = true`, so
     // the block no longer matches the canonical form — we'll
     // overwrite it. This is the documented contract: we own the
-    // codegraph block exclusively.
+    // chimera MCP block exclusively.
     const second = codex.install('global', { autoAllow: false });
     const tomlEntry = second.files.find((f) => f.path.endsWith('config.toml'))!;
     expect(tomlEntry.action).toBe('updated');
@@ -877,7 +877,7 @@ describe('Installer targets — partial-state idempotency', () => {
     expect(fs.existsSync(path.join(tmpCwd, '.mcp.json'))).toBe(true);
     expect(fs.existsSync(path.join(tmpCwd, '.claude.json'))).toBe(false);
     const cfg = JSON.parse(fs.readFileSync(path.join(tmpCwd, '.mcp.json'), 'utf-8'));
-    expect(cfg.mcpServers.codegraph).toBeDefined();
+    expect(cfg.mcpServers.chimera).toBeDefined();
   });
 
   it('claude: install does NOT create a CLAUDE.md instructions file (#529)', () => {
@@ -907,7 +907,7 @@ describe('Installer targets — partial-state idempotency', () => {
     const claude = getTarget('claude')!;
     claude.install('global', { autoAllow: false });
     const cfg = JSON.parse(fs.readFileSync(path.join(tmpHome, '.claude.json'), 'utf-8'));
-    expect(cfg.mcpServers.codegraph).toBeDefined();
+    expect(cfg.mcpServers.chimera).toBeDefined();
   });
 
   it('claude: local install migrates a legacy ./.claude.json codegraph entry into ./.mcp.json', () => {
@@ -915,7 +915,7 @@ describe('Installer targets — partial-state idempotency', () => {
     const legacy = path.join(tmpCwd, '.claude.json');
     fs.writeFileSync(
       legacy,
-      JSON.stringify({ mcpServers: { codegraph: { type: 'stdio', command: 'chimera', args: ['serve', '--mcp'] } } }, null, 2),
+      JSON.stringify({ mcpServers: { codegraph: { type: 'stdio', command: 'chimera', args: ['graph', 'serve', '--mcp'] } } }, null, 2),
     );
 
     claude.install('local', { autoAllow: false });
@@ -923,7 +923,7 @@ describe('Installer targets — partial-state idempotency', () => {
     // codegraph now lives in .mcp.json; the legacy file (which held only
     // codegraph) is gone.
     const mcp = JSON.parse(fs.readFileSync(path.join(tmpCwd, '.mcp.json'), 'utf-8'));
-    expect(mcp.mcpServers.codegraph).toBeDefined();
+    expect(mcp.mcpServers.chimera).toBeDefined();
     expect(fs.existsSync(legacy)).toBe(false);
   });
 
@@ -934,7 +934,7 @@ describe('Installer targets — partial-state idempotency', () => {
       legacy,
       JSON.stringify({
         mcpServers: {
-          codegraph: { type: 'stdio', command: 'chimera', args: ['serve', '--mcp'] },
+          codegraph: { type: 'stdio', command: 'chimera', args: ['graph', 'serve', '--mcp'] },
           other: { command: 'x' },
         },
         somethingElse: true,
@@ -949,7 +949,7 @@ describe('Installer targets — partial-state idempotency', () => {
     expect(after.mcpServers.other).toBeDefined();
     expect(after.somethingElse).toBe(true);
     const mcp = JSON.parse(fs.readFileSync(path.join(tmpCwd, '.mcp.json'), 'utf-8'));
-    expect(mcp.mcpServers.codegraph).toBeDefined();
+    expect(mcp.mcpServers.chimera).toBeDefined();
   });
 
   it('claude: uninstall strips codegraph from ./.mcp.json and a legacy ./.claude.json', () => {
@@ -1020,7 +1020,7 @@ describe('Installer targets — partial-state idempotency', () => {
     // The unrelated GitKraken hook survives untouched.
     expect(stopCommands.some((c: string) => c.includes('gk') && c.includes('ai hook run'))).toBe(true);
     // Permissions still written as normal alongside the cleanup.
-    expect(after.permissions?.allow).toContain('mcp__codegraph__codegraph_search');
+    expect(after.permissions?.allow).toContain('mcp__chimera__codegraph_search');
   });
 
   it('claude: cleanupLegacyHooks preserves a sibling hook sharing our matcher group', () => {
@@ -1114,27 +1114,27 @@ describe('Installer targets — registry', () => {
 });
 
 describe('Installer targets — TOML serializer (Codex backbone)', () => {
-  it('builds a [mcp_servers.codegraph] block with command + args', () => {
-    const block = buildTomlTable('mcp_servers.codegraph', {
+  it('builds a [mcp_servers.chimera] block with command + args', () => {
+    const block = buildTomlTable('mcp_servers.chimera', {
       command: 'chimera',
-      args: ['serve', '--mcp'],
+      args: ['graph', 'serve', '--mcp'],
     });
-    expect(block).toContain('[mcp_servers.codegraph]');
-    expect(block).toContain('command = "codegraph"');
-    expect(block).toContain('args = ["serve", "--mcp"]');
+    expect(block).toContain('[mcp_servers.chimera]');
+    expect(block).toContain('command = "chimera"');
+    expect(block).toContain('args = ["graph", "serve", "--mcp"]');
   });
 
   it('upsert inserts into empty content', () => {
-    const block = buildTomlTable('mcp_servers.codegraph', { command: 'chimera', args: ['serve'] });
-    const { content, action } = upsertTomlTable('', 'mcp_servers.codegraph', block);
+    const block = buildTomlTable('mcp_servers.chimera', { command: 'chimera', args: ['serve'] });
+    const { content, action } = upsertTomlTable('', 'mcp_servers.chimera', block);
     expect(action).toBe('inserted');
-    expect(content.startsWith('[mcp_servers.codegraph]')).toBe(true);
+    expect(content.startsWith('[mcp_servers.chimera]')).toBe(true);
   });
 
   it('upsert is idempotent — second call returns unchanged', () => {
-    const block = buildTomlTable('mcp_servers.codegraph', { command: 'chimera', args: ['serve'] });
-    const first = upsertTomlTable('', 'mcp_servers.codegraph', block);
-    const second = upsertTomlTable(first.content, 'mcp_servers.codegraph', block);
+    const block = buildTomlTable('mcp_servers.chimera', { command: 'chimera', args: ['serve'] });
+    const first = upsertTomlTable('', 'mcp_servers.chimera', block);
+    const second = upsertTomlTable(first.content, 'mcp_servers.chimera', block);
     expect(second.action).toBe('unchanged');
     expect(second.content).toBe(first.content);
   });
@@ -1144,26 +1144,26 @@ describe('Installer targets — TOML serializer (Codex backbone)', () => {
       '[other_table]',
       'foo = "bar"',
       '',
-      '[mcp_servers.codegraph]',
-      'command = "old-codegraph"',
+      '[mcp_servers.chimera]',
+      'command = "old-chimera"',
       'args = ["old"]',
       '',
       '[zzz]',
       'baz = "qux"',
       '',
     ].join('\n');
-    const newBlock = buildTomlTable('mcp_servers.codegraph', {
+    const newBlock = buildTomlTable('mcp_servers.chimera', {
       command: 'chimera',
-      args: ['serve', '--mcp'],
+      args: ['graph', 'serve', '--mcp'],
     });
-    const { content, action } = upsertTomlTable(existing, 'mcp_servers.codegraph', newBlock);
+    const { content, action } = upsertTomlTable(existing, 'mcp_servers.chimera', newBlock);
     expect(action).toBe('replaced');
     expect(content).toContain('[other_table]');
     expect(content).toContain('foo = "bar"');
     expect(content).toContain('[zzz]');
     expect(content).toContain('baz = "qux"');
-    expect(content).toContain('command = "codegraph"');
-    expect(content).not.toContain('old-codegraph');
+    expect(content).toContain('command = "chimera"');
+    expect(content).not.toContain('old-chimera');
   });
 
   it('removeTomlTable strips the block and preserves siblings', () => {
@@ -1171,20 +1171,20 @@ describe('Installer targets — TOML serializer (Codex backbone)', () => {
       '[other_table]',
       'foo = "bar"',
       '',
-      '[mcp_servers.codegraph]',
-      'command = "codegraph"',
+      '[mcp_servers.chimera]',
+      'command = "chimera"',
       'args = ["serve"]',
     ].join('\n');
-    const { content, action } = removeTomlTable(existing, 'mcp_servers.codegraph');
+    const { content, action } = removeTomlTable(existing, 'mcp_servers.chimera');
     expect(action).toBe('removed');
     expect(content).toContain('[other_table]');
     expect(content).toContain('foo = "bar"');
-    expect(content).not.toContain('mcp_servers.codegraph');
+    expect(content).not.toContain('mcp_servers.chimera');
   });
 
   it('removeTomlTable on missing table returns not-found, no content change', () => {
     const existing = '[other]\nfoo = "bar"\n';
-    const { content, action } = removeTomlTable(existing, 'mcp_servers.codegraph');
+    const { content, action } = removeTomlTable(existing, 'mcp_servers.chimera');
     expect(action).toBe('not-found');
     expect(content).toBe(existing);
   });
@@ -1198,10 +1198,10 @@ describe('Installer targets — TOML serializer (Codex backbone)', () => {
       'name = "b"',
       '',
     ].join('\n');
-    const block = buildTomlTable('mcp_servers.codegraph', { command: 'chimera', args: ['serve'] });
-    const { content } = upsertTomlTable(existing, 'mcp_servers.codegraph', block);
+    const block = buildTomlTable('mcp_servers.chimera', { command: 'chimera', args: ['serve'] });
+    const { content } = upsertTomlTable(existing, 'mcp_servers.chimera', block);
     expect(content.match(/\[\[foo\]\]/g)?.length).toBe(2);
-    expect(content).toContain('[mcp_servers.codegraph]');
+    expect(content).toContain('[mcp_servers.chimera]');
   });
 });
 

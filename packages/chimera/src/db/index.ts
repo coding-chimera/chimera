@@ -25,6 +25,8 @@ export type {
 } from './extensions';
 export { getPendingStorageExtensionMigrations } from './extensions';
 
+declare const CHIMERA_DB_SCHEMA: string | undefined;
+
 export interface DatabaseOpenOptions {
   readOnly?: boolean;
   storageExtensions?: readonly StorageExtension[];
@@ -56,6 +58,11 @@ function configureConnection(db: SqliteDatabase, options: DatabaseOpenOptions = 
   db.pragma('cache_size = -64000');      // 64 MB page cache
   db.pragma('temp_store = MEMORY');      // temp tables in memory
   db.pragma('mmap_size = 268435456');    // 256 MB memory-mapped I/O
+}
+
+function loadInitialSchema(): string {
+  if (typeof CHIMERA_DB_SCHEMA === 'string') return CHIMERA_DB_SCHEMA;
+  return fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf-8');
 }
 
 /**
@@ -90,9 +97,7 @@ export class DatabaseConnection {
     configureConnection(db);
 
     // Run schema initialization
-    const schemaPath = path.join(__dirname, 'schema.sql');
-    const schema = fs.readFileSync(schemaPath, 'utf-8');
-    db.exec(schema);
+    db.exec(loadInitialSchema());
 
     // Record current schema version so migrations aren't re-applied on open
     const currentVersion = getCurrentVersion(db);

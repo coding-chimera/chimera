@@ -12,6 +12,7 @@ import { CodeGraph } from '../src';
 import { Node, Edge } from '../src/types';
 import { isInitialized, getCodeGraphDir, validateDirectory } from '../src/directory';
 import { DatabaseConnection, getDatabasePath } from '../src/db';
+import { CURRENT_SCHEMA_VERSION } from '../src/db/migrations';
 
 // Create a temporary directory for each test
 function createTempDir(): string {
@@ -239,7 +240,7 @@ describe('Database Connection', () => {
 
     const version = db.getSchemaVersion();
     expect(version).not.toBeNull();
-    expect(version?.version).toBe(4);
+    expect(version?.version).toBe(CURRENT_SCHEMA_VERSION);
 
     db.close();
   });

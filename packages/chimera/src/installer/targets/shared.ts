@@ -20,7 +20,7 @@ export function getMcpServerConfig(): { type: string; command: string; args: str
   return {
     type: 'stdio',
     command: 'chimera',
-    args: ['serve', '--mcp'],
+    args: ['graph', 'serve', '--mcp'],
   };
 }
 

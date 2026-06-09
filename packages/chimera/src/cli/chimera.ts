@@ -25,6 +25,7 @@
 import { Command } from 'commander';
 import * as path from 'path';
 import * as fs from 'fs';
+import '../env';
 import { getCodeGraphDir, isInitialized } from '../directory';
 import { detectWorktreeIndexMismatch, worktreeMismatchWarning } from '../sync/worktree';
 import { createShimmerProgress } from '../ui/shimmer-progress';
@@ -53,6 +54,16 @@ async function loadCodeGraph(): Promise<typeof import('../index')> {
 const importESM = new Function('specifier', 'return import(specifier)') as
   (specifier: string) => Promise<typeof import('@clack/prompts')>;
 
+declare const CHIMERA_BUNDLED_RUNTIME: boolean | undefined;
+
+async function loadClackPrompts(): Promise<typeof import('@clack/prompts')> {
+  if (typeof CHIMERA_BUNDLED_RUNTIME !== 'undefined' && CHIMERA_BUNDLED_RUNTIME) {
+    return import('@clack/prompts');
+  }
+
+  return importESM('@clack/prompts');
+}
+
 // Block Chimera on Node.js 25.x — V8's turboshaft WASM JIT has a Zone
 // allocator bug that reliably crashes when compiling tree-sitter
 // grammars (see #54, #81, #140). The previous behaviour was a soft
@@ -60,59 +71,77 @@ const importESM = new Function('specifier', 'return import(specifier)') as
 // later, leading to a steady stream of "what is this OOM" reports.
 // Hard-exit before any WASM work; allow override via env var for users
 // who patched V8 themselves or want to test a future fix.
-const nodeVersion = process.versions.node;
-const nodeMajor = parseInt(nodeVersion.split('.')[0] ?? '0', 10);
+let prepared = false;
+
 function unsafeNodeOverrideEnabled(): boolean {
   return process.env.CHIMERA_ALLOW_UNSAFE_NODE === '1' || process.env.CODEGRAPH_ALLOW_UNSAFE_NODE === '1';
 }
 
-if (nodeMajor >= 25) {
-  process.stderr.write(buildNode25BlockBanner(nodeVersion) + '\n');
-  if (!unsafeNodeOverrideEnabled()) {
-    process.exit(1);
-  }
-  // Override active — banner shown for visibility, continuing.
-}
-// Enforce the supported Node floor. `engines` in package.json only *warns* on
-// install (unless engine-strict), so hard-block here to actually keep users off
-// unsupported versions. Mirrors the 25+ block above. See package.json `engines`.
-if (nodeMajor < MIN_NODE_MAJOR) {
-  process.stderr.write(buildNodeTooOldBanner(nodeVersion) + '\n');
-  if (!unsafeNodeOverrideEnabled()) {
-    process.exit(1);
-  }
-  // Override active — banner shown for visibility, continuing.
-}
+function prepareRuntime(): void {
+  if (prepared) return;
+  prepared = true;
 
-// Re-exec with V8's `--liftoff-only` if it isn't already set, so tree-sitter's
-// large WASM grammars never hit the turboshaft Zone OOM (`Fatal process out of
-// memory: Zone`) on Node >= 22. No-op under the bundled launcher, which already
-// passes the flag. Must run before any grammar (in the parse worker, which
-// inherits this process's flags) is compiled. See ../extraction/wasm-runtime-flags.
-relaunchWithWasmRuntimeFlagsIfNeeded(__filename);
+  const nodeVersion = process.versions.node;
+  const nodeMajor = parseInt(nodeVersion.split('.')[0] ?? '0', 10);
 
-// Check if running with no arguments - run installer
-if (process.argv.length === 2) {
-  import('../installer').then(({ runInstaller }) =>
-    runInstaller()
-  ).catch((err) => {
-    console.error('Installation failed:', err instanceof Error ? err.message : String(err));
-    process.exit(1);
+  if (nodeMajor >= 25) {
+    process.stderr.write(buildNode25BlockBanner(nodeVersion) + '\n');
+    if (!unsafeNodeOverrideEnabled()) {
+      process.exit(1);
+    }
+    // Override active — banner shown for visibility, continuing.
+  }
+
+  // Enforce the supported Node floor. `engines` in package.json only *warns* on
+  // install (unless engine-strict), so hard-block here to actually keep users off
+  // unsupported versions. Mirrors the 25+ block above. See package.json `engines`.
+  if (nodeMajor < MIN_NODE_MAJOR) {
+    process.stderr.write(buildNodeTooOldBanner(nodeVersion) + '\n');
+    if (!unsafeNodeOverrideEnabled()) {
+      process.exit(1);
+    }
+    // Override active — banner shown for visibility, continuing.
+  }
+
+  // Re-exec with V8's `--liftoff-only` if it isn't already set, so tree-sitter's
+  // large WASM grammars never hit the turboshaft Zone OOM (`Fatal process out of
+  // memory: Zone`) on Node >= 22. No-op under the bundled launcher, which already
+  // passes the flag. Must run before any grammar (in the parse worker, which
+  // inherits this process's flags) is compiled. See ../extraction/wasm-runtime-flags.
+  relaunchWithWasmRuntimeFlagsIfNeeded(__filename);
+
+  process.on('uncaughtException', (error) => {
+    console.error('[Chimera] Uncaught exception:', error);
   });
-} else {
-  // Normal CLI flow
-  main();
+
+  process.on('unhandledRejection', (reason) => {
+    console.error('[Chimera] Unhandled rejection:', reason);
+  });
 }
 
-process.on('uncaughtException', (error) => {
-  console.error('[Chimera] Uncaught exception:', error);
-});
+export type RunChimeraCliOptions = {
+  defaultToInstaller?: boolean;
+  programName?: string;
+};
 
-process.on('unhandledRejection', (reason) => {
-  console.error('[Chimera] Unhandled rejection:', reason);
-});
+export async function runChimeraCli(argv = process.argv.slice(2), options: RunChimeraCliOptions = {}): Promise<void> {
+  prepareRuntime();
 
-function main() {
+  if (argv.length === 0 && options.defaultToInstaller) {
+    try {
+      const { runInstaller } = await import('../installer');
+      await runInstaller();
+      return;
+    } catch (err) {
+      console.error('Installation failed:', err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+  }
+
+  await main(argv.length === 0 ? ['--help'] : argv, options.programName ?? 'chimera');
+}
+
+async function main(argv = process.argv.slice(2), programName = 'chimera') {
 
 const program = new Command();
 
@@ -151,7 +180,7 @@ const chalk = {
 };
 
 program
-  .name('chimera')
+  .name(programName)
   .description('Semantic code intelligence and knowledge graph for any codebase')
   .version(packageJson.version);
 
@@ -425,7 +454,7 @@ program
   .option('-v, --verbose', 'Show detailed worker lifecycle and memory info')
   .action(async (pathArg: string | undefined, options: { index?: boolean; verbose?: boolean }) => {
     const projectPath = path.resolve(pathArg || process.cwd());
-    const clack = await importESM('@clack/prompts');
+    const clack = await loadClackPrompts();
 
     clack.intro('Initializing CodeGraph');
 
@@ -562,7 +591,7 @@ program
         return;
       }
 
-      const clack = await importESM('@clack/prompts');
+      const clack = await loadClackPrompts();
       clack.intro('Indexing project');
 
       if (options.force) {
@@ -1661,6 +1690,18 @@ program
   });
 
 // Parse and run
-program.parse();
+await program.parseAsync(argv, { from: 'user' });
 
 } // end main()
+
+function isCliEntrypoint(): boolean {
+  try {
+    return !!process.argv[1] && fs.realpathSync(process.argv[1]) === __filename;
+  } catch {
+    return false;
+  }
+}
+
+if (isCliEntrypoint()) {
+  void runChimeraCli(process.argv.slice(2), { defaultToInstaller: true });
+}
