@@ -36,6 +36,7 @@ import {
 import { buildTomlTable, removeTomlTable, upsertTomlTable } from './toml';
 
 const TOML_HEADER = 'mcp_servers.chimera';
+const LEGACY_TOML_HEADER = 'mcp_servers.codegraph';
 
 function configDir(): string {
   return path.join(os.homedir(), '.codex');
@@ -65,7 +66,7 @@ class CodexTarget implements AgentTarget {
     if (fs.existsSync(tomlPath)) {
       try {
         const content = fs.readFileSync(tomlPath, 'utf-8');
-        alreadyConfigured = content.includes(`[${TOML_HEADER}]`) || content.includes('[mcp_servers.codegraph]');
+        alreadyConfigured = content.includes(`[${TOML_HEADER}]`) || content.includes(`[${LEGACY_TOML_HEADER}]`);
       } catch { /* ignore */ }
     }
     const installed = fs.existsSync(configDir());
@@ -99,8 +100,9 @@ class CodexTarget implements AgentTarget {
     const tomlPath = tomlConfigPath();
     if (fs.existsSync(tomlPath)) {
       const content = fs.readFileSync(tomlPath, 'utf-8');
-      const { content: nextContent, action } = removeTomlTable(content, TOML_HEADER);
-      if (action === 'removed') {
+      const { content: withoutCurrent, action } = removeTomlTable(content, TOML_HEADER);
+      const { content: nextContent, action: legacyAction } = removeTomlTable(withoutCurrent, LEGACY_TOML_HEADER);
+      if (action === 'removed' || legacyAction === 'removed') {
         if (nextContent.trim() === '') {
           try { fs.unlinkSync(tomlPath); } catch { /* ignore */ }
         } else {
@@ -152,9 +154,10 @@ function writeMcpEntry(): WriteResult['files'][number] {
   // between two `fs.existsSync` calls.
   const existing = fs.existsSync(file) ? fs.readFileSync(file, 'utf-8') : '';
   const created = existing.length === 0;
-  const { content: nextContent, action } = upsertTomlTable(existing, TOML_HEADER, block);
+  const { content: upsertedContent, action } = upsertTomlTable(existing, TOML_HEADER, block);
+  const { content: nextContent, action: legacyAction } = removeTomlTable(upsertedContent, LEGACY_TOML_HEADER);
 
-  if (action === 'unchanged') {
+  if (action === 'unchanged' && legacyAction !== 'removed') {
     return { path: file, action: 'unchanged' };
   }
   atomicWriteFileSync(file, nextContent);

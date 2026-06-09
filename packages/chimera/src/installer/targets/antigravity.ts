@@ -142,7 +142,7 @@ function resolveCodegraphCommand(): string {
 function buildAntigravityEntry(): { command: string; args: string[] } {
   return {
     command: resolveCodegraphCommand(),
-    args: ['serve', '--mcp'],
+    args: ['graph', 'serve', '--mcp'],
   };
 }
 

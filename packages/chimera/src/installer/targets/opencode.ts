@@ -97,7 +97,7 @@ function parseConfig(text: string): Record<string, any> {
 function getOpencodeServerEntry(): { type: string; command: string[]; enabled: boolean } {
   return {
     type: 'local',
-    command: ['chimera', 'serve', '--mcp'],
+    command: ['chimera', 'graph', 'serve', '--mcp'],
     enabled: true,
   };
 }

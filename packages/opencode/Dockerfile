@@ -7,12 +7,12 @@ ENV BUN_RUNTIME_TRANSPILER_CACHE_PATH=${BUN_RUNTIME_TRANSPILER_CACHE_PATH}
 RUN apk add libgcc libstdc++ ripgrep
 
 FROM base AS build-amd64
-COPY dist/opencode-linux-x64-baseline-musl/bin/opencode /usr/local/bin/opencode
+COPY dist/coding-chimera-linux-x64-baseline-musl/bin/chimera /usr/local/bin/chimera
 
 FROM base AS build-arm64
-COPY dist/opencode-linux-arm64-musl/bin/opencode /usr/local/bin/opencode
+COPY dist/coding-chimera-linux-arm64-musl/bin/chimera /usr/local/bin/chimera
 
 ARG TARGETARCH
 FROM build-${TARGETARCH}
-RUN opencode --version
-ENTRYPOINT ["opencode"]
+RUN chimera --version
+ENTRYPOINT ["chimera"]

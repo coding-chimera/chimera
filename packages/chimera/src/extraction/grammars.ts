@@ -6,6 +6,7 @@
  * are compiled, keeping V8 WASM memory pressure low on large codebases.
  */
 
+import * as fs from 'fs';
 import * as path from 'path';
 import type { Parser, Language as WasmLanguage } from 'web-tree-sitter';
 import { Language } from '../types';
@@ -80,6 +81,34 @@ const WASM_GRAMMAR_FILES: Record<GrammarLanguage, string> = {
   luau: 'tree-sitter-luau.wasm',
   objc: 'tree-sitter-objc.wasm',
 };
+
+const VENDORED_GRAMMAR_LANGUAGES = new Set<GrammarLanguage>(['pascal', 'scala', 'lua', 'luau']);
+
+function binaryAdjacentGrammarPath(wasmFile: string): string | undefined {
+  const candidate = path.join(path.dirname(process.execPath), 'tree-sitter-wasms', 'out', wasmFile);
+  return fs.existsSync(candidate) ? candidate : undefined;
+}
+
+function resolveGrammarWasmPath(lang: GrammarLanguage): string {
+  const wasmFile = WASM_GRAMMAR_FILES[lang];
+  const vendoredPath = path.join(__dirname, 'wasm', wasmFile);
+
+  if (VENDORED_GRAMMAR_LANGUAGES.has(lang) && fs.existsSync(vendoredPath)) return vendoredPath;
+
+  if (!VENDORED_GRAMMAR_LANGUAGES.has(lang)) {
+    try {
+      return require.resolve(`tree-sitter-wasms/out/${wasmFile}`);
+    } catch {
+      const fallback = binaryAdjacentGrammarPath(wasmFile);
+      if (fallback) return fallback;
+      throw new Error(`Cannot resolve grammar WASM: ${wasmFile}`);
+    }
+  }
+
+  const fallback = binaryAdjacentGrammarPath(wasmFile);
+  if (fallback) return fallback;
+  return vendoredPath;
+}
 
 /**
  * File extension to Language mapping
@@ -213,17 +242,13 @@ export async function loadGrammarsForLanguages(languages: Language[]): Promise<v
   // Load grammars sequentially to avoid web-tree-sitter WASM race condition on Node 20+
   // See: https://github.com/tree-sitter/tree-sitter/issues/2338
   for (const lang of toLoad) {
-    const wasmFile = WASM_GRAMMAR_FILES[lang];
     try {
       // Some grammars ship their own WASMs (not in tree-sitter-wasms, or the
       // tree-sitter-wasms build is too old). Lua: tree-sitter-wasms ships an
       // ABI-13 build that corrupts the shared WASM heap under web-tree-sitter
       // 0.25 (drops nested calls/imports on every file after the first); we
       // vendor the upstream ABI-15 wasm instead.
-      const wasmPath = (lang === 'pascal' || lang === 'scala' || lang === 'lua' || lang === 'luau')
-        ? path.join(__dirname, 'wasm', wasmFile)
-        : require.resolve(`tree-sitter-wasms/out/${wasmFile}`);
-      const language = await TreeSitter.Language.load(wasmPath);
+      const language = await TreeSitter.Language.load(resolveGrammarWasmPath(lang));
       languageCache.set(lang, language);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

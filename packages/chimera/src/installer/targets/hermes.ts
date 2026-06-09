@@ -5,7 +5,7 @@
  * top-level `mcp_servers` key, and exposes discovered MCP tools through
  * dynamic toolsets named `mcp-<server>`. We add:
  *
- *   mcp_servers.codegraph -> `chimera serve --mcp`
+ *   mcp_servers.codegraph -> `chimera graph serve --mcp`
  *   platform_toolsets.cli -> `mcp-codegraph`
  *
  * The second entry matters because Hermes CLI profiles often enable an
@@ -252,8 +252,9 @@ function escapeRegExp(value: string): string {
 function renderCodeGraphMcpChild(): string[] {
   return [
     '  codegraph:',
-    '    command: codegraph',
+    '    command: chimera',
     '    args:',
+    '      - graph',
     '      - serve',
     '      - --mcp',
     '    timeout: 120',

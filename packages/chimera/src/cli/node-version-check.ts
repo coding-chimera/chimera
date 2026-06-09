@@ -27,6 +27,7 @@ export function buildNode25BlockBanner(nodeVersion: string): string {
     'crashes with `Fatal process out of memory: Zone` when Chimera',
     'compiles tree-sitter grammars. Chimera WILL crash on this Node',
     'version mid-indexing.',
+    'More: https://github.com/colbymchenry/codegraph/issues/81',
     '',
     'Fix: install Node.js 22 LTS:',
     '  nvm install 22 && nvm use 22                          # nvm',
@@ -34,7 +35,7 @@ export function buildNode25BlockBanner(nodeVersion: string): string {
     '',
     'To override (NOT recommended - you will likely OOM):',
     '  CHIMERA_ALLOW_UNSAFE_NODE=1 chimera ...',
-    '  CODEGRAPH_ALLOW_UNSAFE_NODE=1 codegraph ...  # legacy alias',
+    '  CODEGRAPH_ALLOW_UNSAFE_NODE=1 chimera graph ...  # legacy env alias',
     sep,
   ].join('\n');
 }
@@ -72,7 +73,7 @@ export function buildNodeTooOldBanner(nodeVersion: string): string {
     '',
     'To override (NOT recommended - unsupported):',
     '  CHIMERA_ALLOW_UNSAFE_NODE=1 chimera ...',
-    '  CODEGRAPH_ALLOW_UNSAFE_NODE=1 codegraph ...  # legacy alias',
+    '  CODEGRAPH_ALLOW_UNSAFE_NODE=1 chimera graph ...  # legacy env alias',
     sep,
   ].join('\n');
 }

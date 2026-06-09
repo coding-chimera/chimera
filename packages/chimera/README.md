@@ -6,9 +6,9 @@
 
 **~16% cheaper · ~58% fewer tool calls · 100% local**
 
-### Semantic code intelligence runtime and CLI
+### Semantic code intelligence runtime for the Coding Chimera agent
 
-[![npm version](https://img.shields.io/npm/v/@opencode-ai/chimera.svg)](https://www.npmjs.com/package/@opencode-ai/chimera)
+[![npm version](https://img.shields.io/npm/v/coding-chimera.svg)](https://www.npmjs.com/package/coding-chimera)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Self-contained](https://img.shields.io/badge/Node.js-bundled%20%C2%B7%20none%20required-brightgreen.svg)](https://nodejs.org/)
 
@@ -29,31 +29,30 @@
 
 ## Get Started
 
-**No Node.js required** — one command grabs the right build for your OS:
+Install the complete Coding Chimera agent package. It registers one public command: `chimera`.
 
 ```bash
-# npm / bun
-npm i -g @opencode-ai/chimera
-bun add -g @opencode-ai/chimera
+npm install -g coding-chimera
+chimera
 ```
 
-Already have Node? Use npm instead (works on any version):
+Graph commands live under the agent command:
 
 ```bash
-npx @opencode-ai/chimera        # zero-install, or:
-chimera --version
+chimera graph --help
+chimera --graph status
 ```
 
-<sub>Chimera keeps the CodeGraph-compatible runtime and can be installed as a normal npm/bun package. The interactive installer auto-configures your agent(s) — Claude Code, Cursor, Codex CLI, opencode, Hermes Agent, Gemini CLI, Antigravity IDE, Kiro.</sub>
+<sub>`@opencode-ai/chimera` is retained as a graph/library compatibility surface. User installs should use `coding-chimera` so the full agent and graph runtime come from one package.</sub>
 
 ### Initialize Projects
 
 ```bash
 cd your-project
-chimera init -i
+chimera graph init
 ```
 
-<sub>`chimera init` creates the local `.codegraph/` index directory for compatibility; adding `-i` (`--index`) also builds the initial graph in the same step. Without `-i`, run `chimera index` afterwards to populate it.</sub>
+<sub>`chimera graph init` creates the local `.codegraph/` index directory for compatibility and builds the initial graph. The `.codegraph` directory remains the graph store compatibility path.</sub>
 
 <div align="center">
 
@@ -66,10 +65,10 @@ chimera init -i
 Changed your mind? One command removes Chimera from every agent it configured:
 
 ```bash
-chimera uninstall
+chimera graph uninstall
 ```
 
-<sub>Reverses the installer — strips Chimera's MCP server config, instructions, and permissions from each configured agent. Your project indexes (`.codegraph/`) are left untouched; remove those per-project with `chimera uninit`. Use `--target` to remove from specific agents, or `--yes` to run non-interactively.</sub>
+<sub>Reverses the graph/MCP installer — strips Chimera's MCP server config, instructions, and permissions from each configured agent. Your project indexes (`.codegraph/`) are left untouched; remove those per-project with `chimera graph uninit`. Use `--target` to remove from specific agents, or `--yes` to run non-interactively.</sub>
 
 ---
 
@@ -210,7 +209,7 @@ CodeGraph cuts **tokens, tool calls, and wall-clock time on every repo** — acr
 <details>
 <summary><strong>How auto-syncing works — and why you don't need to run <code>chimera sync</code> manually</strong></summary>
 
-When your agent (Claude Code, Cursor, Codex, opencode) launches `chimera serve --mcp`, three layers keep the index in step with your code — and make sure the agent never gets a silent wrong answer in the brief window between an edit and the next sync:
+When your agent (Claude Code, Cursor, Codex, opencode) launches `chimera graph serve --mcp`, three layers keep the index in step with your code — and make sure the agent never gets a silent wrong answer in the brief window between an edit and the next sync:
 
 1. **File watcher with debounced auto-sync.** A native FSEvents / inotify / ReadDirectoryChangesW watcher captures every source-file create / modify / delete and triggers a re-index after a debounce window (default `2000ms`, tunable via `CODEGRAPH_WATCH_DEBOUNCE_MS`, clamped to `[100ms, 60s]`). Bursts of edits collapse into a single sync.
 

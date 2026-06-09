@@ -11,11 +11,13 @@
       "browser": "./src/index.ts",
       "bun": "./src/index.ts",
       "default": "./dist/index.js"
+    },
+    "./cli": {
+      "types": "./dist/cli/chimera.d.ts",
+      "browser": "./src/cli/chimera.ts",
+      "bun": "./src/cli/chimera.ts",
+      "default": "./dist/cli/chimera.js"
     }
-  },
-  "bin": {
-    "chimera": "dist/cli/chimera.js",
-    "codegraph": "dist/cli/chimera.js"
   },
   "files": [
     "dist",

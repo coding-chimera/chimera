@@ -1,5 +1,6 @@
 import yargs from "yargs"
 import { hideBin } from "yargs/helpers"
+import { runChimeraCli } from "@opencode-ai/chimera/cli"
 import { RunCommand } from "./cli/cmd/run"
 import { GenerateCommand } from "./cli/cmd/generate"
 import * as Log from "@opencode-ai/core/util/log"
@@ -38,6 +39,7 @@ import { PluginCommand } from "./cli/cmd/plug"
 import { Heap } from "./cli/heap"
 import { drizzle } from "drizzle-orm/bun-sqlite"
 import { ensureProcessMetadata } from "@opencode-ai/core/util/opencode-process"
+import { graphCliArgs } from "./cli/graph-route"
 
 const processMetadata = ensureProcessMetadata("main")
 
@@ -54,6 +56,11 @@ process.on("uncaughtException", (e) => {
 })
 
 const args = hideBin(process.argv)
+const graphArgs = graphCliArgs(args, process.argv.slice(1))
+if (graphArgs) {
+  await runChimeraCli(graphArgs, { programName: "chimera graph" })
+  process.exit()
+}
 
 function show(out: string) {
   const text = out.trimStart()

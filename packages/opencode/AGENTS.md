@@ -1,4 +1,13 @@
-# opencode database guide
+# Coding Chimera agent package guide
+
+## Package / CLI identity
+
+- `packages/opencode` is the current complete Coding Chimera agent package source.
+- Publish/install identity is `coding-chimera`; the only public bin is `chimera`.
+- Do not add `opencode` or `codegraph` public bins. Graph commands route through `chimera graph ...` or `chimera --graph ...`.
+- If changing installer, MCP, tool, prompt, build, or publish behavior, keep user-facing guidance aligned with `npm install -g coding-chimera` + `chimera`.
+
+# Database guide
 
 ## Database
 

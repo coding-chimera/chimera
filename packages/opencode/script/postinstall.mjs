@@ -49,8 +49,8 @@ function detectPlatformAndArch() {
 
 function findBinary() {
   const { platform, arch } = detectPlatformAndArch()
-  const packageName = `opencode-${platform}-${arch}`
-  const binaryName = platform === "windows" ? "opencode.exe" : "opencode"
+  const packageName = `coding-chimera-${platform}-${arch}`
+  const binaryName = platform === "windows" ? "chimera.exe" : "chimera"
 
   try {
     // Use require.resolve to find the package
@@ -68,6 +68,14 @@ function findBinary() {
   }
 }
 
+function syncGrammarAssets(binaryPath) {
+  const source = path.join(path.dirname(binaryPath), "tree-sitter-wasms")
+  const target = path.join(__dirname, "bin", "tree-sitter-wasms")
+  fs.rmSync(target, { recursive: true, force: true })
+  if (!fs.existsSync(source)) return
+  fs.cpSync(source, target, { recursive: true })
+}
+
 async function main() {
   try {
     if (os.platform() === "win32") {
@@ -80,7 +88,7 @@ async function main() {
     // On non-Windows platforms, just verify the binary package exists
     // Don't replace the wrapper script - it handles binary execution
     const { binaryPath } = findBinary()
-    const target = path.join(__dirname, "bin", ".opencode")
+    const target = path.join(__dirname, "bin", ".chimera")
     if (fs.existsSync(target)) fs.unlinkSync(target)
     try {
       fs.linkSync(binaryPath, target)
@@ -88,8 +96,9 @@ async function main() {
       fs.copyFileSync(binaryPath, target)
     }
     fs.chmodSync(target, 0o755)
+    syncGrammarAssets(binaryPath)
   } catch (error) {
-    console.error("Failed to setup opencode binary:", error.message)
+    console.error("Failed to setup Chimera binary:", error.message)
     process.exit(1)
   }
 }

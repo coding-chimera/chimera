@@ -269,8 +269,7 @@ function cleanupLegacyLocalMcp(): WriteResult['files'][number] | null {
  * a pre-0.8 install wrote. Those installers added
  * `PostToolUse(Edit|Write) → codegraph mark-dirty` and
  * `Stop → codegraph sync-if-dirty` (local builds used the
- * `npx @opencode-ai/chimera …` form, which still contains the
- * `codegraph <subcommand>` substring). Both subcommands were later
+ * `npx @opencode-ai/chimera …` form). Both subcommands were later
  * removed from the CLI, so the Stop hook fails every turn with
  * "unknown command 'sync-if-dirty'". Matching on the codegraph-scoped
  * subcommand keeps unrelated user hooks (e.g. GitKraken's
@@ -280,7 +279,9 @@ function isLegacyCodegraphHookCommand(command: unknown): boolean {
   if (typeof command !== 'string') return false;
   return (
     command.includes('codegraph mark-dirty') ||
-    command.includes('codegraph sync-if-dirty')
+    command.includes('codegraph sync-if-dirty') ||
+    command.includes('@opencode-ai/chimera mark-dirty') ||
+    command.includes('@opencode-ai/chimera sync-if-dirty')
   );
 }
 

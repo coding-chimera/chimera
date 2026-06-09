@@ -4,6 +4,13 @@
 - Local `main` ref may not exist; use `dev` or `origin/dev` for diffs.
 - Prefer automation: execute requested actions without confirmation unless blocked by missing info or safety/irreversibility.
 
+## Naming convention
+
+- In this workspace, `opencode` no longer means upstream/original opencode by default.
+- `chimera` is the public CLI for the complete Coding Chimera distribution (also called Chimera): the opencode-derived agent runtime plus the Chimera/CodeGraph graph and audit runtime. The npm package name is `coding-chimera`.
+- Do not add public `opencode` or `codegraph` bins; graph/runtime commands live under `chimera graph ...` and `chimera --graph ...`.
+- When referring to the original upstream project, say **upstream opencode** or **original opencode** explicitly.
+
 ## Style Guide
 
 ### Agent-Facing Tools
