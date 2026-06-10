@@ -43,7 +43,7 @@ async function loadCodeGraph(): Promise<typeof import('../index')> {
     console.error(`\x1b[31m${getGlyphs().err}\x1b[0m Failed to load Chimera modules.`);
     console.error(`\n  Node: ${process.version}  Platform: ${process.platform} ${process.arch}`);
     console.error(`\n  Error: ${msg}`);
-    console.error('\n  Try reinstalling with: npm install -g chimera\n');
+    console.error('\n  Try reinstalling with: npm install -g coding-chimera\n');
     process.exit(1);
   }
 }

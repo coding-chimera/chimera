@@ -185,7 +185,7 @@ describe("Truncate", () => {
       }),
     )
 
-    it.live("suggests Task tool when agent has task permission", () =>
+    it.live("mentions Task only as optional broad exploration when permitted", () =>
       Effect.gen(function* () {
         const svc = yield* Truncate.Service
         const lines = Array.from({ length: 100 }, (_, i) => `line${i}`).join("\n")
@@ -194,7 +194,9 @@ describe("Truncate", () => {
 
         expect(result.truncated).toBe(true)
         expect(result.content).toContain("Grep")
-        expect(result.content).toContain("Task tool")
+        expect(result.content).toContain("consider the Task tool")
+        expect(result.content).not.toContain("Do NOT read the full file yourself")
+        expect(result.content).not.toContain("delegate to save context")
       }),
     )
 

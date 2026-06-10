@@ -1,6 +1,6 @@
 # Chimera package
 
-`packages/chimera` is the graph/runtime compatibility package (`@opencode-ai/chimera`). It contains the CodeGraph-derived core plus the retained graph CLI/MCP surface used by the complete Coding Chimera agent package.
+`packages/chimera` is a legacy graph package boundary pending deletion or archival. It must not be treated as the canonical graph/runtime source; `packages/opencode/src/graph` is the current canonical source used by the complete Coding Chimera agent package.
 
 The public complete-agent npm package is `coding-chimera`, and the only public command it registers is `chimera`. In that package, graph commands are exposed as `chimera graph ...` and `chimera --graph ...`; do not add new public `opencode` or `codegraph` command paths.
 
@@ -20,8 +20,8 @@ node dist/cli/chimera.js --version
 
 ## Architecture
 
-- `src/index.ts` is the public library surface. Keep `CodeGraph` compatible for existing consumers; add Chimera-named aliases rather than breaking opencode integration during migration.
-- `src/cli/chimera.ts` is the retained graph CLI. Keep it importable by `packages/opencode` through `@opencode-ai/chimera/cli` so the full agent can route `chimera graph ...` without starting the TUI/session runtime.
+- `src/index.ts` and `src/cli/chimera.ts` are legacy copies. Do not add new runtime behavior here unless the migration plan explicitly says this package is being kept for a specific purpose.
+- `packages/opencode` must not import this package through `@opencode-ai/chimera` or `@opencode-ai/chimera/cli`; use `packages/opencode/src/graph` instead.
 - `src/db/schema.sql` and `src/extraction/wasm/*.wasm` are runtime assets and must work from source, tests, and `dist/`.
 - `src/mcp/server-instructions.ts` is the single source of truth for standalone MCP agent-facing guidance. Installer targets should not duplicate that guidance into agent instruction files.
 - `src/installer/targets/*` owns agent config writers. Preserve idempotent install/uninstall behavior and legacy CodeGraph cleanup paths.
@@ -31,7 +31,7 @@ node dist/cli/chimera.js --version
 - The default data directory remains `.codegraph` in this migration stage.
 - Existing `codegraph_*` MCP tools and legacy installer markers remain compatibility surfaces unless a migration plan explicitly removes them.
 - New user-facing install snippets should use `npm install -g coding-chimera` and `chimera`. Refer to this package as a graph compatibility/runtime surface when needed.
-- opencode must consume this package through `@opencode-ai/chimera`; do not add reverse imports from this package into `packages/opencode` or `@/` aliases.
+- Do not preserve `@opencode-ai/chimera` import/require compatibility by default. The current decision is no old users and no compatibility shim; any reversal requires updating the migration plan first.
 
 ## Validation expectations
 
