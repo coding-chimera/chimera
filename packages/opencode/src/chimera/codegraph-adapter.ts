@@ -29,7 +29,7 @@ import {
   type SyncResult as CodeGraphSyncResult,
   type TaskInput,
   type WatchOptions,
-} from "@opencode-ai/chimera"
+} from "@/graph"
 
 export interface OpenOptions {
   init?: boolean

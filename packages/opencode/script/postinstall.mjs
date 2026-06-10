@@ -4,10 +4,8 @@ import fs from "fs"
 import path from "path"
 import os from "os"
 import { fileURLToPath } from "url"
-import { createRequire } from "module"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const require = createRequire(import.meta.url)
 
 function detectPlatformAndArch() {
   // Map platform names
@@ -47,25 +45,31 @@ function detectPlatformAndArch() {
   return { platform, arch }
 }
 
+function candidatePackageNames(platform, arch) {
+  const base = `chimera-${platform}-${arch}`
+  if (platform !== "linux") return arch === "x64" ? [base, `${base}-baseline`] : [base]
+  if (arch !== "x64") return [base, `${base}-musl`]
+  return [base, `${base}-baseline`, `${base}-musl`, `${base}-baseline-musl`]
+}
+
 function findBinary() {
   const { platform, arch } = detectPlatformAndArch()
-  const packageName = `coding-chimera-${platform}-${arch}`
   const binaryName = platform === "windows" ? "chimera.exe" : "chimera"
+  let current = __dirname
+  for (;;) {
+    const modules = path.join(current, "node_modules")
+    for (const packageName of candidatePackageNames(platform, arch)) {
+      const nested = path.join(modules, packageName, "bin", binaryName)
+      if (fs.existsSync(nested)) return { binaryPath: nested, binaryName }
 
-  try {
-    // Use require.resolve to find the package
-    const packageJsonPath = require.resolve(`${packageName}/package.json`)
-    const packageDir = path.dirname(packageJsonPath)
-    const binaryPath = path.join(packageDir, "bin", binaryName)
-
-    if (!fs.existsSync(binaryPath)) {
-      throw new Error(`Binary not found at ${binaryPath}`)
+      const sibling = path.join(current, packageName, "bin", binaryName)
+      if (fs.existsSync(sibling)) return { binaryPath: sibling, binaryName }
     }
-
-    return { binaryPath, binaryName }
-  } catch (error) {
-    throw new Error(`Could not find package ${packageName}: ${error.message}`, { cause: error })
+    const parent = path.dirname(current)
+    if (parent === current) break
+    current = parent
   }
+  throw new Error(`Could not find Chimera platform package for ${platform}/${arch}`)
 }
 
 function syncGrammarAssets(binaryPath) {

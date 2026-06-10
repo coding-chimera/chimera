@@ -341,13 +341,13 @@ describe("HttpApi server", () => {
       }),
       app({ password: "secret" }).request(fileUrl(), {
         headers: {
-          authorization: authorization("opencode", "wrong"),
+          authorization: authorization("chimera", "wrong"),
           "x-chimera-directory": tmp.path,
         },
       }),
       app({ password: "secret" }).request(fileUrl(), {
         headers: {
-          authorization: authorization("opencode", "secret"),
+          authorization: authorization("chimera", "secret"),
           "x-chimera-directory": tmp.path,
         },
       }),
@@ -363,7 +363,7 @@ describe("HttpApi server", () => {
     await Bun.write(`${tmp.path}/hello.txt`, "hello")
 
     const response = await app({ password: "secret" }).request(
-      fileUrl({ token: Buffer.from("opencode:secret").toString("base64") }),
+      fileUrl({ token: Buffer.from("chimera:secret").toString("base64") }),
       {
         headers: {
           "x-chimera-directory": tmp.path,

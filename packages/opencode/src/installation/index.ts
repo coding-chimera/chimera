@@ -56,6 +56,7 @@ export const Info = z
 export type Info = z.infer<typeof Info>
 
 export const USER_AGENT = `opencode/${InstallationChannel}/${InstallationVersion}/${Flag.OPENCODE_CLIENT}`
+const NPM_PACKAGE = "chimera"
 
 export function isPreview() {
   return InstallationChannel !== "latest"
@@ -181,9 +182,9 @@ export const layer: Layer.Layer<Service, never, HttpClient.HttpClient | ChildPro
             { name: "yarn", command: () => text(["yarn", "global", "list"]) },
             { name: "pnpm", command: () => text(["pnpm", "list", "-g", "--depth=0"]) },
             { name: "bun", command: () => text(["bun", "pm", "ls", "-g"]) },
-            { name: "brew", command: () => text(["brew", "list", "--formula", "opencode"]) },
-            { name: "scoop", command: () => text(["scoop", "list", "opencode"]) },
-            { name: "choco", command: () => text(["choco", "list", "--limit-output", "opencode"]) },
+            { name: "brew", command: () => text(["brew", "list", "--formula", "chimera"]) },
+            { name: "scoop", command: () => text(["scoop", "list", "chimera"]) },
+            { name: "choco", command: () => text(["choco", "list", "--limit-output", "chimera"]) },
           ]
 
           checks.sort((a, b) => {
@@ -197,7 +198,7 @@ export const layer: Layer.Layer<Service, never, HttpClient.HttpClient | ChildPro
           for (const check of checks) {
             const output = yield* check.command()
             const installedName =
-              check.name === "brew" || check.name === "choco" || check.name === "scoop" ? "opencode" : "opencode-ai"
+              check.name === "brew" || check.name === "choco" || check.name === "scoop" ? "chimera" : NPM_PACKAGE
             if (output.includes(installedName)) {
               return check.name
             }
@@ -227,7 +228,7 @@ export const layer: Layer.Layer<Service, never, HttpClient.HttpClient | ChildPro
           if (detectedMethod === "npm" || detectedMethod === "bun" || detectedMethod === "pnpm") {
             const response = yield* httpOk.execute(
               HttpClientRequest.get(
-                `${yield* NpmConfig.registry(process.cwd())}/opencode-ai/${InstallationChannel}`,
+                `${yield* NpmConfig.registry(process.cwd())}/${NPM_PACKAGE}/${InstallationChannel}`,
               ).pipe(HttpClientRequest.acceptJson),
             )
             const data = yield* HttpClientResponse.schemaBodyJson(NpmPackage)(response)
@@ -269,13 +270,13 @@ export const layer: Layer.Layer<Service, never, HttpClient.HttpClient | ChildPro
               upgradeResult = yield* upgradeCurl(target)
               break
             case "npm":
-              upgradeResult = yield* run(["npm", "install", "-g", `opencode-ai@${target}`])
+              upgradeResult = yield* run(["npm", "install", "-g", `${NPM_PACKAGE}@${target}`])
               break
             case "pnpm":
-              upgradeResult = yield* run(["pnpm", "install", "-g", `opencode-ai@${target}`])
+              upgradeResult = yield* run(["pnpm", "install", "-g", `${NPM_PACKAGE}@${target}`])
               break
             case "bun":
-              upgradeResult = yield* run(["bun", "install", "-g", `opencode-ai@${target}`])
+              upgradeResult = yield* run(["bun", "install", "-g", `${NPM_PACKAGE}@${target}`])
               break
             case "brew": {
               const formula = yield* getBrewFormula()

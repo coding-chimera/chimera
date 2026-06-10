@@ -4,10 +4,11 @@ import { Effect, Exit, Schema } from "effect"
 import type { Interface as BusInterface } from "@/bus"
 import { BusEvent } from "@/bus/bus-event"
 import { InstanceState } from "@/effect/instance-state"
+import { registerDisposer } from "@/effect/instance-registry"
 import type { Tool } from "@/tool/tool"
 import { classifyChangeRecord, classifyFileBoundary, collectFileProjections, collectIncidentRelations } from "./change-classifier"
 import { CodeGraphAdapter } from "./codegraph-adapter"
-import type { CodeGraphSnapshot, IndexProgress as CodeGraphIndexProgress, SyncResult as CodeGraphSyncResult } from "@opencode-ai/chimera"
+import type { CodeGraphSnapshot, IndexProgress as CodeGraphIndexProgress, SyncResult as CodeGraphSyncResult } from "@/graph"
 import { appendProvenanceRecord, databaseStorePath, readPredesignRuns, readProvenanceRecords, writeChangeFacts } from "./store"
 import { TOOL_MUTATION_PREDESIGN_REQUIRED } from "./guidance"
 
@@ -59,11 +60,13 @@ export interface InitProjectGraphInput {
   bus?: BusInterface
   source?: string
   sessionID?: string
+  watch?: boolean
   onProgress?: (progress: CodeGraphIndexProgress) => void
 }
 
 export interface OpenProjectGraphInput {
   sync?: boolean
+  watch?: boolean
   onProgress?: (progress: CodeGraphIndexProgress) => void
 }
 
@@ -154,6 +157,8 @@ export interface ProjectGraphState {
 }
 
 const graphStates = new Map<string, Promise<ProjectGraphState>>()
+const graphRootsByDirectory = new Map<string, string>()
+const directoriesByGraphRoot = new Map<string, Set<string>>()
 const recentToolFiles = new Map<string, number>()
 const PREDESIGN_FRESH_WINDOW_MS = 2 * 60 * 60 * 1000
 
@@ -233,6 +238,47 @@ function safeMetadata(input: ToolMutationInput["metadata"]) {
 function recentToolKey(root: string, graphPath: string) {
   return `${root}\0${graphPath}`
 }
+
+function rememberGraphRoot(directory: string, root: string) {
+  const previous = graphRootsByDirectory.get(directory)
+  if (previous === root) return
+  if (previous) {
+    const directories = directoriesByGraphRoot.get(previous)
+    directories?.delete(directory)
+    if (directories?.size === 0) directoriesByGraphRoot.delete(previous)
+  }
+  graphRootsByDirectory.set(directory, root)
+  const directories = directoriesByGraphRoot.get(root) ?? new Set<string>()
+  directories.add(directory)
+  directoriesByGraphRoot.set(root, directories)
+}
+
+async function closeGraphRoot(root: string) {
+  const promise = graphStates.get(root)
+  graphStates.delete(root)
+  for (const key of recentToolFiles.keys()) {
+    if (key.startsWith(`${root}\0`)) recentToolFiles.delete(key)
+  }
+  if (!promise) return
+  try {
+    const state = await promise
+    state.graph.unwatch()
+    state.graph.close()
+  } catch {
+    // Failed opens have no live watcher/db to close.
+  }
+}
+
+registerDisposer(async (directory) => {
+  const root = graphRootsByDirectory.get(directory)
+  if (!root) return
+  graphRootsByDirectory.delete(directory)
+  const directories = directoriesByGraphRoot.get(root)
+  directories?.delete(directory)
+  if (directories && directories.size > 0) return
+  directoriesByGraphRoot.delete(root)
+  await closeGraphRoot(root)
+})
 
 function rememberToolFiles(root: string, files: ProvenanceFile[], now = Date.now()) {
   for (const file of files) {
@@ -429,20 +475,25 @@ function startFilesystemWatcher(state: ProjectGraphState) {
   })
 }
 
-function openGraphState(root: string, onProgress?: (progress: CodeGraphIndexProgress) => void): Promise<ProjectGraphState> {
+function openGraphState(
+  root: string,
+  options: { watch?: boolean; onProgress?: (progress: CodeGraphIndexProgress) => void } = {},
+): Promise<ProjectGraphState> {
   let promise = graphStates.get(root)
   if (!promise) {
-    promise = CodeGraphAdapter.open(root, { init: true, index: true, sync: false, onProgress }).then((graph) => {
+    promise = CodeGraphAdapter.open(root, { init: true, index: true, sync: false, onProgress: options.onProgress }).then((graph) => {
       const state: ProjectGraphState = {
         graph,
         projectRoot: root,
         artifact: path.join(root, ARTIFACT_DIR, TOOL_PROVENANCE_FILE),
         storePath: databaseStorePath(root),
       }
-      startFilesystemWatcher(state)
+      if (options.watch) startFilesystemWatcher(state)
       return state
     })
     graphStates.set(root, promise)
+  } else if (options.watch) {
+    promise.then(startFilesystemWatcher).catch(() => undefined)
   }
   return promise
 }
@@ -579,7 +630,7 @@ export const requirePredesignForMutation: (input: MutationPredesignInput) => Eff
 })
 
 export const initProjectGraph = Effect.fn("Chimera.initProjectGraph")(function* (input: InitProjectGraphInput = {}) {
-  const s = yield* openProjectGraph({ sync: true, onProgress: input.onProgress })
+  const s = yield* openProjectGraph({ sync: true, watch: input.watch ?? true, onProgress: input.onProgress })
   const snapshot = s.graph.snapshot()
   if (input.bus) {
     yield* input.bus.publish(GraphReady, {
@@ -599,7 +650,8 @@ export const initProjectGraph = Effect.fn("Chimera.initProjectGraph")(function* 
 export const openProjectGraph = Effect.fn("Chimera.openProjectGraph")(function* (input: OpenProjectGraphInput = {}) {
   const instance = yield* InstanceState.context
   const root = projectRoot(instance)
-  const s = yield* Effect.promise(() => openGraphState(root, input.onProgress)).pipe(Effect.orDie)
+  yield* Effect.sync(() => rememberGraphRoot(instance.directory, root))
+  const s = yield* Effect.promise(() => openGraphState(root, { watch: input.watch ?? true, onProgress: input.onProgress })).pipe(Effect.orDie)
   if (input.sync) yield* Effect.promise(() => refreshProjectGraph(s, input.onProgress)).pipe(Effect.orDie)
   return s
 })

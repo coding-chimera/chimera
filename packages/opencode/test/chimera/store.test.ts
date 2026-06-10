@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import path from "path"
-import { DatabaseConnection, getDatabasePath, type FrozenRelation, type FrozenSemanticObject } from "@opencode-ai/chimera"
+import { DatabaseConnection, getDatabasePath, type FrozenRelation, type FrozenSemanticObject } from "@/graph"
 import { appendProvenanceRecord, readChangeFacts, writeChangeFacts } from "../../src/chimera/store"
 import type { ChangeFact } from "../../src/chimera/change-classifier"
 import type { ToolMutationRecord } from "../../src/chimera/provenance"
