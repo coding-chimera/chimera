@@ -308,6 +308,37 @@ describe("ProviderTransform.options - gpt-5 textVerbosity", () => {
     const result = ProviderTransform.options({ model, sessionID, providerOptions: {} })
     expect(result.textVerbosity).toBeUndefined()
   })
+
+  test("gpt-5 openai-compatible does not receive reasoningSummary", () => {
+    const model = {
+      ...createGpt5Model("gpt-5.2"),
+      providerID: "custom-provider",
+      api: {
+        id: "gpt-5.2",
+        url: "https://api.custom.com",
+        npm: "@ai-sdk/openai-compatible",
+      },
+    }
+    const result = ProviderTransform.options({ model, sessionID, providerOptions: {} })
+    expect(result.reasoningEffort).toBe("medium")
+    expect(result.reasoningSummary).toBeUndefined()
+    expect(result.include).toBeUndefined()
+  })
+
+  test("gpt-5 mantle receives reasoningSummary and encrypted reasoning include", () => {
+    const model = {
+      ...createGpt5Model("gpt-5.2"),
+      providerID: "amazon-bedrock",
+      api: {
+        id: "gpt-5.2",
+        url: "https://bedrock.aws",
+        npm: "@ai-sdk/amazon-bedrock/mantle",
+      },
+    }
+    const result = ProviderTransform.options({ model, sessionID, providerOptions: {} })
+    expect(result.reasoningSummary).toBe("auto")
+    expect(result.include).toEqual(["reasoning.encrypted_content"])
+  })
 })
 
 describe("ProviderTransform.options - gateway", () => {
