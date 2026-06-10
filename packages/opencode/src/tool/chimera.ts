@@ -521,6 +521,8 @@ type ChimeraSyncProgress = {
 
 const SYNC_PROGRESS_DELAY_MS = 1_500
 const SYNC_PROGRESS_INTERVAL_MS = 1_000
+const PREDESIGN_OUTPUT_PREVIEW_LIMIT = 12
+const PREDESIGN_TEXT_PREVIEW_CHARS = 240
 
 function compactProgressFile(file: string | undefined) {
   if (!file) return undefined
@@ -656,6 +658,38 @@ function formatNode(node: CodeGraphNode) {
   ]
     .filter(Boolean)
     .join("\n")
+}
+
+function compactText(text: string, limit = PREDESIGN_TEXT_PREVIEW_CHARS) {
+  const normalized = text.replace(/\s+/g, " ").trim()
+  if (normalized.length <= limit) return normalized
+  return `${normalized.slice(0, Math.max(0, limit - 3))}...`
+}
+
+function inlinePreview(items: string[]) {
+  if (!items.length) return "none"
+  return [
+    items.slice(0, PREDESIGN_OUTPUT_PREVIEW_LIMIT).join(", "),
+    items.length > PREDESIGN_OUTPUT_PREVIEW_LIMIT
+      ? `... ${items.length - PREDESIGN_OUTPUT_PREVIEW_LIMIT} more`
+      : undefined,
+  ]
+    .filter(Boolean)
+    .join(", ")
+}
+
+function previewList<T>(items: T[], empty: string, label: string, format: (item: T) => string) {
+  const shown = items.slice(0, PREDESIGN_OUTPUT_PREVIEW_LIMIT).map(format)
+  if (items.length > PREDESIGN_OUTPUT_PREVIEW_LIMIT) {
+    shown.push(
+      `- ... ${items.length - PREDESIGN_OUTPUT_PREVIEW_LIMIT} more ${label} omitted from pre-design output; full data remains in metadata and the recorded run.`,
+    )
+  }
+  return shown.length ? shown : [empty]
+}
+
+function formatNodePreview(node: CodeGraphNode) {
+  return `- ${node.qualifiedName || node.name} (${node.kind}) ${node.filePath}:${node.startLine}-${node.endLine}`
 }
 
 function nodeMatchesQuery(node: CodeGraphNode, query: string | undefined) {
@@ -1257,6 +1291,15 @@ function formatEvidence(item: AuditCandidate) {
   ].join("\n")
 }
 
+function formatPredesignEvidence(item: AuditCandidate) {
+  return [
+    `- ${item.target}: ${item.classification} / ${item.risk}`,
+    `  evidence: ${item.evidence}`,
+    `  reason: ${compactText(item.reason)}`,
+    `  cause_chain: ${compactText(formatCauseChain(item.causeChain))}`,
+  ].join("\n")
+}
+
 function formatProvenance(record: ContextOverlay["provenance"]) {
   if (!record) return ["Current provenance:", "- None recorded."].join("\n")
   return [
@@ -1632,13 +1675,14 @@ export const ChimeraPredesignTool = Tool.define<typeof PredesignParameters, Pred
             `Graph revision: ${snapshot.revision}`,
             "",
             "Coverage:",
-            `- files: ${coverage.files ? normalizedFiles.join(", ") : "none"}`,
-            `- symbols: ${symbols.length ? symbols.join(", ") : "none"}`,
-            `- nodeIDs: ${nodeIDs.length ? nodeIDs.join(", ") : "none"}`,
+            `- files: ${inlinePreview(normalizedFiles)}`,
+            `- symbols: ${inlinePreview(symbols)}`,
+            `- nodeIDs: ${inlinePreview(nodeIDs)}`,
             coverage.preciseFiles ? "- file coverage: explicit" : "- file coverage: session-level only; rerun with files for stricter coverage.",
+            `- detailed sections show up to ${PREDESIGN_OUTPUT_PREVIEW_LIMIT} items each; full evidence remains in metadata and the recorded run.`,
             "",
-            "Seed symbols:",
-            ...(seedNodes.length ? seedNodes.map((node) => formatNode(node)) : ["- No symbol seeds; file/session-level evidence only."]),
+            `Seed symbols (${seedNodes.length}):`,
+            ...previewList(seedNodes, "- No symbol seeds; file/session-level evidence only.", "seed symbols", formatNodePreview),
             "",
             "Change classification:",
             ...(normalizedFiles.length
@@ -1646,15 +1690,18 @@ export const ChimeraPredesignTool = Tool.define<typeof PredesignParameters, Pred
               : ["- No files supplied."]),
             "",
             `File dependents (${impact.fileDependents.length}):`,
-            ...(impact.fileDependents.length ? impact.fileDependents.map((file) => `- ${file}`) : ["- None found."]),
+            ...previewList(impact.fileDependents, "- None found.", "file dependents", (file) => `- ${file}`),
             "",
             `Impacted symbols (${impact.impactedNodes.length}):`,
-            ...(impact.impactedNodes.length
-              ? impact.impactedNodes.map((node) => `${formatNode(node)}\n  risk: ${riskForNode(node)}\n  risk_reason: ${riskReasonForNode(node)}`)
-              : ["- None found."]),
+            ...previewList(
+              impact.impactedNodes,
+              "- None found.",
+              "impacted symbols",
+              (node) => `${formatNodePreview(node)}\n  risk: ${riskForNode(node)}; reason: ${compactText(riskReasonForNode(node))}`,
+            ),
             "",
-            "Impact evidence:",
-            ...(impact.evidence.length ? impact.evidence.map(formatEvidence) : ["- None found."]),
+            `Impact evidence (${impact.evidence.length}):`,
+            ...previewList(impact.evidence, "- None found.", "evidence items", formatPredesignEvidence),
             "",
             "Mutation gate guidance:",
             "- Fresh pre-design evidence is now recorded for this session.",

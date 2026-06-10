@@ -6,6 +6,7 @@ import { fileURLToPath } from "url"
 
 const dir = fileURLToPath(new URL("..", import.meta.url))
 process.chdir(dir)
+const dryRun = process.argv.includes("--dry-run")
 
 async function published(name: string, version: string) {
   return (await $`npm view ${name}@${version} version`.nothrow()).exitCode === 0
@@ -15,39 +16,53 @@ async function publish(dir: string, name: string, version: string) {
   // GitHub artifact downloads can drop the executable bit, and Docker uses the
   // unpacked dist binaries directly rather than the published tarball.
   if (process.platform !== "win32") await $`chmod -R 755 .`.cwd(dir)
-  if (await published(name, version)) {
+  if (!dryRun && (await published(name, version))) {
     console.log(`already published ${name}@${version}`)
     return
   }
   await $`bun pm pack`.cwd(dir)
+  if (dryRun) {
+    console.log(`dry run packed ${name}@${version}`)
+    return
+  }
   await $`npm publish *.tgz --access public --tag ${Script.channel}`.cwd(dir)
 }
 
 const binaries: Record<string, string> = {}
-for (const filepath of new Bun.Glob("*/package.json").scanSync({ cwd: "./dist" })) {
-  const pkg = await Bun.file(`./dist/${filepath}`).json()
-  binaries[pkg.name] = pkg.version
+for (const filepath of new Bun.Glob(`${pkg.name}-*/package.json`).scanSync({ cwd: "./dist" })) {
+  const binaryPkg = await Bun.file(`./dist/${filepath}`).json()
+  binaries[binaryPkg.name] = binaryPkg.version
 }
 console.log("binaries", binaries)
-const version = Object.values(binaries)[0]
+const versions = [...new Set(Object.values(binaries))]
+if (versions.length === 0) {
+  throw new Error("No platform packages found in dist. Run the build before publishing.")
+}
+if (versions.length !== 1) {
+  throw new Error(`Platform package versions do not match: ${versions.join(", ")}`)
+}
+const version = versions[0]
 
+await $`rm -rf ./dist/${pkg.name}`
 await $`mkdir -p ./dist/${pkg.name}`
 await $`cp -r ./bin ./dist/${pkg.name}/bin`
 await $`cp ./script/postinstall.mjs ./dist/${pkg.name}/postinstall.mjs`
+await $`cp ./README.md ./dist/${pkg.name}/README.md`
 await Bun.file(`./dist/${pkg.name}/LICENSE`).write(await Bun.file("../../LICENSE").text())
 
 await Bun.file(`./dist/${pkg.name}/package.json`).write(
   JSON.stringify(
     {
       name: pkg.name,
+      version: version,
+      type: "module",
+      license: pkg.license,
       bin: {
         chimera: "./bin/chimera",
       },
       scripts: {
         postinstall: "bun ./postinstall.mjs || node ./postinstall.mjs",
       },
-      version: version,
-      license: pkg.license,
       optionalDependencies: binaries,
     },
     null,
@@ -69,7 +84,7 @@ const tags = [`${image}:${version}`, `${image}:${Script.channel}`]
 const tagFlags = tags.flatMap((t) => ["-t", t])
 
 // registries
-if (!Script.preview) {
+if (!Script.preview && !dryRun) {
   await $`docker buildx build --platform ${platforms} ${tagFlags} --push .`
   // Calculate SHA values
   const arm64Sha = await $`sha256sum ./dist/${releaseName}-linux-arm64.tar.gz | cut -d' ' -f1`.text().then((x) => x.trim())

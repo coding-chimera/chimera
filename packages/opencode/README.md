@@ -1,11 +1,11 @@
 # Chimera agent package
 
-This package is the complete Chimera agent runtime: the opencode-derived agent plus the built-in Chimera graph and propagation-audit runtime. The npm package name is `chimera`; the only public CLI command is `chimera`.
+This package is the complete Chimera agent runtime: the opencode-derived agent plus the built-in Chimera graph and propagation-audit runtime. The npm package name is `coding-chimera`; the only public CLI command is `chimera`.
 
 To install from npm once published:
 
 ```bash
-npm install -g chimera
+npm install -g coding-chimera
 chimera
 ```
 
@@ -46,7 +46,7 @@ Build the current platform binary package from this package directory:
 bun run build --single --skip-install --skip-embed-web-ui
 ```
 
-Create local npm tarballs for the main `chimera` package and the current platform package:
+Create local npm tarballs for the main `coding-chimera` package and the current platform package:
 
 ```bash
 bun run pack:local
@@ -62,7 +62,7 @@ Install the locally built package into a temporary npm prefix:
 
 ```bash
 prefix="$(mktemp -d)"
-npm install -g --prefix "$prefix" dist/npm-tarballs/chimera-*.tgz
+npm install -g --prefix "$prefix" dist/npm-tarballs/coding-chimera-*.tgz
 "$prefix/bin/chimera" --version
 "$prefix/bin/chimera" --graph --help
 ```
@@ -77,4 +77,13 @@ printf 'export function add(a: number, b: number) { return a + b }\n' > "$projec
 "$prefix/bin/chimera" graph query add --path "$project"
 ```
 
-The generated main tarball has `package.json.name === "chimera"` and exposes only the `chimera` bin. The platform tarball is named `chimera-<os>-<arch>` and contains the compiled `bin/chimera` binary plus graph runtime assets.
+The generated main tarball has `package.json.name === "coding-chimera"` and exposes only the `chimera` bin. The platform tarball is named `coding-chimera-<os>-<arch>` and contains the compiled `bin/chimera` binary plus graph runtime assets.
+
+## Platform verification help wanted
+
+The current maintainer has not yet verified the full Linux and Windows build,
+pack, and install matrix. Linux and Windows users are encouraged to try the
+commands above on their own machines. If you hit a platform-specific problem,
+please report it to the maintainer with the OS, architecture, command output,
+and any relevant logs. Fixes or pull requests are especially welcome if you are
+able to investigate and patch the issue locally.

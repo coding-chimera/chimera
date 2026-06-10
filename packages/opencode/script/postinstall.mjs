@@ -46,7 +46,7 @@ function detectPlatformAndArch() {
 }
 
 function candidatePackageNames(platform, arch) {
-  const base = `chimera-${platform}-${arch}`
+  const base = `coding-chimera-${platform}-${arch}`
   if (platform !== "linux") return arch === "x64" ? [base, `${base}-baseline`] : [base]
   if (arch !== "x64") return [base, `${base}-musl`]
   return [base, `${base}-baseline`, `${base}-musl`, `${base}-baseline-musl`]

@@ -256,6 +256,26 @@ describe("tool.chimera", () => {
     }),
   )
 
+  it.instance("caps pre-design output while preserving full metadata", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const symbols = Array.from({ length: 15 }, (_, i) => `capSeed${i.toString().padStart(2, "0")}`)
+      yield* Effect.promise(() =>
+        fs.writeFile(
+          path.join(test.directory, "source.ts"),
+          symbols.map((symbol) => `export function ${symbol}() { return "${symbol}" }`).join("\n"),
+        ),
+      )
+
+      const result = yield* runPredesign({ intent: "review many seeds", files: ["source.ts"], symbols })
+
+      expect(result.metadata.seeds.length).toBeGreaterThan(12)
+      expect(result.output).toContain("detailed sections show up to 12 items each")
+      expect(result.output).toContain("more seed symbols omitted from pre-design output")
+      expect(result.output).toContain("full data remains in metadata")
+    }),
+  )
+
   it.instance("analyzes symbol impact seeds", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance

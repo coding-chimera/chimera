@@ -64,7 +64,7 @@ let arch = archMap[os.arch()]
 if (!arch) {
   arch = os.arch()
 }
-const base = "chimera-" + platform + "-" + arch
+const base = "coding-chimera-" + platform + "-" + arch
 const binary = platform === "windows" ? "chimera.exe" : "chimera"
 
 function supportsAvx2() {
