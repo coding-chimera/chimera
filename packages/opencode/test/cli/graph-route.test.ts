@@ -14,7 +14,7 @@ describe("graph CLI routing", () => {
     ])
     expect(
       graphCliArgs(["--help"], [
-        "--user-agent=chimera/1.14.41",
+        "--user-agent=chimera/0.0.1",
         "--use-system-ca",
         "--",
         "graph",
