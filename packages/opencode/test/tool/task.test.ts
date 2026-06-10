@@ -42,14 +42,15 @@ function defer<T>() {
   return { promise, resolve }
 }
 
-const seed = Effect.fn("TaskToolTest.seed")(function* (title = "Pinned") {
+const seed = Effect.fn("TaskToolTest.seed")(function* (title = "Pinned", agentName?: string) {
   const session = yield* Session.Service
-  const chat = yield* session.create({ title })
+  const chat = yield* session.create({ title, ...(agentName ? { agent: agentName } : {}) })
+  const messageAgent = agentName ?? "build"
   const user = yield* session.updateMessage({
     id: MessageID.ascending(),
     role: "user",
     sessionID: chat.id,
-    agent: "build",
+    agent: messageAgent,
     model: ref,
     time: { created: Date.now() },
   })
@@ -58,8 +59,8 @@ const seed = Effect.fn("TaskToolTest.seed")(function* (title = "Pinned") {
     role: "assistant",
     parentID: user.id,
     sessionID: chat.id,
-    mode: "build",
-    agent: "build",
+    mode: messageAgent,
+    agent: messageAgent,
     cost: 0,
     path: { cwd: "/tmp", root: "/tmp" },
     tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
@@ -431,5 +432,39 @@ describe("tool.task", () => {
         },
       },
     },
+  )
+
+  it.instance("execute inherits parent agent deny rules", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed("Plan parent", "plan")
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+
+      const result = yield* def.execute(
+        {
+          description: "inspect bug",
+          prompt: "look into the cache key path",
+          subagent_type: "general",
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "plan",
+          abort: new AbortController().signal,
+          extra: { promptOps: stubOps() },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      const child = yield* sessions.get(result.metadata.sessionId)
+      expect(child.permission).toContainEqual({
+        permission: "edit",
+        pattern: "*",
+        action: "deny",
+      })
+    }),
   )
 })
