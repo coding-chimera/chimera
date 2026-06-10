@@ -1,8 +1,9 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
   "name": "@opencode-ai/chimera",
-  "version": "0.9.9",
-  "description": "Local-first semantic code intelligence runtime and CLI for Chimera.",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Legacy compatibility graph package. The complete Chimera agent runtime is packaged by packages/opencode as npm package chimera.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {

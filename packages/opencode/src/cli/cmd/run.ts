@@ -205,7 +205,7 @@ function normalizePath(input?: string) {
 
 export const RunCommand = effectCmd({
   command: "run [message..]",
-  describe: "run opencode with a message",
+  describe: "run Chimera with a message",
   // --attach connects to a remote server (no local instance needed); the
   // default path runs an in-process server and needs the project instance.
   instance: (args) => !args.attach,
@@ -279,7 +279,7 @@ export const RunCommand = effectCmd({
       .option("username", {
         alias: ["u"],
         type: "string",
-        describe: "basic auth username (defaults to OPENCODE_SERVER_USERNAME or 'opencode')",
+        describe: "basic auth username (defaults to OPENCODE_SERVER_USERNAME or 'chimera')",
       })
       .option("dir", {
         type: "string",

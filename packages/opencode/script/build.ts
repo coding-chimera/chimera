@@ -3,14 +3,12 @@
 import { $ } from "bun"
 import fs from "fs"
 import path from "path"
-import { createRequire } from "module"
 import { fileURLToPath } from "url"
 import { createSolidTransformPlugin } from "@opentui/solid/bun-plugin"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const dir = path.resolve(__dirname, "..")
-const graphRequire = createRequire(path.join(dir, "../chimera/package.json"))
 
 process.chdir(dir)
 
@@ -49,9 +47,9 @@ const migrations = await Promise.all(
 )
 console.log(`Loaded ${migrations.length} migrations`)
 
-const graphSchema = await Bun.file(path.join(dir, "../chimera/src/db/schema.sql")).text()
-const graphWasmOutDir = path.dirname(graphRequire.resolve("tree-sitter-wasms/out/tree-sitter-typescript.wasm"))
-const graphVendoredWasmDir = path.join(dir, "../chimera/src/extraction/wasm")
+const graphSchema = await Bun.file(path.join(dir, "src/graph/db/schema.sql")).text()
+const graphWasmOutDir = path.dirname(Bun.resolveSync("tree-sitter-wasms/out/tree-sitter-typescript.wasm", dir))
+const graphVendoredWasmDir = path.join(dir, "src/graph/extraction/wasm")
 
 async function copyGraphGrammarWasms(targetDir: string) {
   const grammarDir = path.join(targetDir, "tree-sitter-wasms", "out")
@@ -217,7 +215,7 @@ for (const item of targets) {
   const embeddedWebUIEntrypoint = "chimera-web-ui.gen.ts"
 
   await Bun.build({
-    conditions: ["browser"],
+    conditions: ["node"],
     tsconfig: "./tsconfig.json",
     plugins: [plugin],
     external: ["node-gyp"],

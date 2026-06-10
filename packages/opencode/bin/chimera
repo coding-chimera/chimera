@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 
-const childProcess = require("child_process")
-const fs = require("fs")
-const path = require("path")
-const os = require("os")
+import childProcess from "child_process"
+import fs from "fs"
+import path from "path"
+import os from "os"
+import { fileURLToPath } from "url"
 
 function run(target) {
   const result = childProcess.spawnSync(target, process.argv.slice(2), {
@@ -31,7 +32,7 @@ if (envPath) {
   run(envPath)
 }
 
-const scriptPath = fs.realpathSync(__filename)
+const scriptPath = fs.realpathSync(fileURLToPath(import.meta.url))
 const scriptDir = path.dirname(scriptPath)
 
 const cached = path.join(scriptDir, ".chimera")
@@ -63,7 +64,7 @@ let arch = archMap[os.arch()]
 if (!arch) {
   arch = os.arch()
 }
-const base = "coding-chimera-" + platform + "-" + arch
+const base = "chimera-" + platform + "-" + arch
 const binary = platform === "windows" ? "chimera.exe" : "chimera"
 
 function supportsAvx2() {
@@ -165,11 +166,15 @@ function findBinary(startDir) {
   let current = startDir
   for (;;) {
     const modules = path.join(current, "node_modules")
-    if (fs.existsSync(modules)) {
-      for (const name of names) {
-        const candidate = path.join(modules, name, "bin", binary)
-        if (fs.existsSync(candidate)) return candidate
-      }
+    for (const name of names) {
+      const nested = path.join(modules, name, "bin", binary)
+      if (fs.existsSync(nested)) return nested
+
+      // Local smoke installs often install the main tarball and the platform
+      // tarball as global siblings instead of nesting the platform package
+      // under the main package's node_modules.
+      const sibling = path.join(current, name, "bin", binary)
+      if (fs.existsSync(sibling)) return sibling
     }
     const parent = path.dirname(current)
     if (parent === current) {

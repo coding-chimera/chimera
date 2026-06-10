@@ -1,7 +1,7 @@
 import path from "path"
 import { createHash } from "crypto"
 import { appendFile, mkdir } from "fs/promises"
-import { DatabaseConnection, diffRelations, getDatabasePath, type FrozenRelation, type FrozenSemanticObject, type StorageExtension } from "@opencode-ai/chimera"
+import { DatabaseConnection, diffRelations, getDatabasePath, type FrozenRelation, type FrozenSemanticObject, type StorageExtension } from "@/graph"
 import type { ChangeFact } from "./change-classifier"
 import type { ToolMutationRecord } from "./provenance"
 

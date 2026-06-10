@@ -7,7 +7,7 @@
 ## Naming convention
 
 - In this workspace, `opencode` no longer means upstream/original opencode by default.
-- `chimera` is the public CLI for the complete Coding Chimera distribution (also called Chimera): the opencode-derived agent runtime plus the Chimera/CodeGraph graph and audit runtime. The npm package name is `coding-chimera`.
+- `chimera` is the public CLI and npm package for the complete Coding Chimera distribution (also called Chimera): the opencode-derived agent runtime plus the Chimera/CodeGraph graph and audit runtime.
 - Do not add public `opencode` or `codegraph` bins; graph/runtime commands live under `chimera graph ...` and `chimera --graph ...`.
 - When referring to the original upstream project, say **upstream opencode** or **original opencode** explicitly.
 

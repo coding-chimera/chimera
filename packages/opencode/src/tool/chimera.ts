@@ -22,7 +22,7 @@ import {
   type Node as CodeGraphNode,
   type RelationEvidence as CodeGraphRelation,
   type RelationKind,
-} from "@opencode-ai/chimera"
+} from "@/graph"
 import {
   provenanceRecordCount as storedProvenanceRecordCount,
   readChangeFacts,
