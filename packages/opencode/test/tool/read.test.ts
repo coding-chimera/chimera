@@ -156,7 +156,7 @@ describe("tool.read external_directory permission", () => {
         yield* exec(dir, { filePath: alt }, next)
         const read = items.find((item) => item.permission === "read")
         expect(read).toBeDefined()
-        expect(read!.patterns).toEqual([full(target)])
+        expect(read!.patterns).toEqual([path.relative(dir, full(target))])
       }),
     )
   }
@@ -198,6 +198,20 @@ describe("tool.read external_directory permission", () => {
       yield* exec(dir, { filePath: path.join(dir, "internal.txt") }, next)
       const ext = items.find((item) => item.permission === "external_directory")
       expect(ext).toBeUndefined()
+    }),
+  )
+
+  it.live("asks for read permission using a worktree-relative pattern", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      yield* put(path.join(dir, "src", "internal.txt"), "internal content")
+
+      const { items, next } = asks()
+
+      yield* exec(dir, { filePath: path.join(dir, "src", "internal.txt") }, next)
+      const read = items.find((item) => item.permission === "read")
+      expect(read).toBeDefined()
+      expect(read!.patterns).toEqual([glob(path.join("src", "internal.txt"))])
     }),
   )
 })

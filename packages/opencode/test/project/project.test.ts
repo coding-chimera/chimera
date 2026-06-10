@@ -82,8 +82,8 @@ describe("Project.fromDirectory", () => {
     expect(project.vcs).toBe("git")
     expect(project.worktree).toBe(tmp.path)
 
-    const opencodeFile = path.join(tmp.path, ".git", "opencode")
-    expect(await Bun.file(opencodeFile).exists()).toBe(false)
+    const chimeraFile = path.join(tmp.path, ".git", "chimera")
+    expect(await Bun.file(chimeraFile).exists()).toBe(false)
   })
 
   test("should handle git repository with commits", async () => {
@@ -96,8 +96,8 @@ describe("Project.fromDirectory", () => {
     expect(project.vcs).toBe("git")
     expect(project.worktree).toBe(tmp.path)
 
-    const opencodeFile = path.join(tmp.path, ".git", "opencode")
-    expect(await Bun.file(opencodeFile).exists()).toBe(true)
+    const chimeraFile = path.join(tmp.path, ".git", "chimera")
+    expect(await Bun.file(chimeraFile).exists()).toBe(true)
   })
 
   test("returns global for non-git directory", async () => {
@@ -191,7 +191,7 @@ describe("Project.fromDirectory with worktrees", () => {
       expect(wt.id).toBe(main.id)
 
       // Cache should live in the common .git dir, not the worktree's .git file
-      const cache = path.join(tmp.path, ".git", "opencode")
+      const cache = path.join(tmp.path, ".git", "chimera")
       const exists = await Bun.file(cache).exists()
       expect(exists).toBe(true)
     } finally {
@@ -535,8 +535,8 @@ describe("Project.fromDirectory with bare repos", () => {
       expect(project.id).not.toBe(ProjectID.global)
       expect(project.worktree).toBe(barePath)
 
-      const correctCache = path.join(barePath, "opencode")
-      const wrongCache = path.join(parentDir, ".git", "opencode")
+      const correctCache = path.join(barePath, "chimera")
+      const wrongCache = path.join(parentDir, ".git", "chimera")
 
       expect(await Bun.file(correctCache).exists()).toBe(true)
       expect(await Bun.file(wrongCache).exists()).toBe(false)
@@ -566,9 +566,9 @@ describe("Project.fromDirectory with bare repos", () => {
 
       expect(projA.id).not.toBe(projB.id)
 
-      const cacheA = path.join(bareA, "opencode")
-      const cacheB = path.join(bareB, "opencode")
-      const wrongCache = path.join(parentDir, ".git", "opencode")
+      const cacheA = path.join(bareA, "chimera")
+      const cacheB = path.join(bareB, "chimera")
+      const wrongCache = path.join(parentDir, ".git", "chimera")
 
       expect(await Bun.file(cacheA).exists()).toBe(true)
       expect(await Bun.file(cacheB).exists()).toBe(true)
@@ -594,7 +594,7 @@ describe("Project.fromDirectory with bare repos", () => {
       expect(project.id).not.toBe(ProjectID.global)
       expect(project.worktree).toBe(barePath)
 
-      const correctCache = path.join(barePath, "opencode")
+      const correctCache = path.join(barePath, "chimera")
       expect(await Bun.file(correctCache).exists()).toBe(true)
     } finally {
       await $`rm -rf ${barePath} ${worktreePath}`.quiet().nothrow()
