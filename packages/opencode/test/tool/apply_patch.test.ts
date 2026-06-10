@@ -121,7 +121,8 @@ describe("tool.apply_patch freeform", () => {
         if (process.platform === "win32") {
           expect(result.output).not.toContain("\\")
         }
-        expect(result.metadata.diff).toContain("Index:")
+        expect(result.metadata.diff).toContain("+created")
+        expect(result.metadata.diff).toContain("-obsolete")
         expect(calls.length).toBe(1)
 
         // Verify permission metadata includes files array for UI rendering
