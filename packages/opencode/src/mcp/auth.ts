@@ -3,6 +3,7 @@ import z from "zod"
 import { Global } from "@opencode-ai/core/global"
 import { Effect, Layer, Context } from "effect"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
+import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
 
 export const Tokens = z.object({
   accessToken: z.string(),
@@ -30,6 +31,7 @@ export const Entry = z.object({
 export type Entry = z.infer<typeof Entry>
 
 const filepath = path.join(Global.Path.data, "mcp-auth.json")
+const lockKey = `mcp-auth:${filepath}`
 
 export interface Interface {
   readonly all: () => Effect.Effect<Record<string, Entry>>
@@ -53,12 +55,27 @@ export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const fs = yield* AppFileSystem.Service
+    const flock = yield* EffectFlock.Service
 
-    const all = Effect.fn("McpAuth.all")(function* () {
+    const read = Effect.fn("McpAuth.read")(function* () {
       return yield* fs.readJson(filepath).pipe(
         Effect.map((data) => data as Record<string, Entry>),
         Effect.catch(() => Effect.succeed({} as Record<string, Entry>)),
       )
+    })
+
+    const all = Effect.fn("McpAuth.all")(function* () {
+      return yield* read().pipe(flock.withLock(lockKey), Effect.orDie)
+    })
+
+    const mutate = Effect.fn("McpAuth.mutate")(function* (
+      update: (data: Record<string, Entry>) => Record<string, Entry> | undefined,
+    ) {
+      yield* Effect.gen(function* () {
+        const next = update(yield* read())
+        if (!next) return
+        yield* fs.writeJson(filepath, next, 0o600).pipe(Effect.orDie)
+      }).pipe(flock.withLock(lockKey), Effect.orDie)
     })
 
     const get = Effect.fn("McpAuth.get")(function* (mcpName: string) {
@@ -75,31 +92,37 @@ export const layer = Layer.effect(
     })
 
     const set = Effect.fn("McpAuth.set")(function* (mcpName: string, entry: Entry, serverUrl?: string) {
-      const data = yield* all()
-      if (serverUrl) entry.serverUrl = serverUrl
-      yield* fs.writeJson(filepath, { ...data, [mcpName]: entry }, 0o600).pipe(Effect.orDie)
+      yield* mutate((data) => ({
+        ...data,
+        [mcpName]: serverUrl ? { ...entry, serverUrl } : entry,
+      }))
     })
 
     const remove = Effect.fn("McpAuth.remove")(function* (mcpName: string) {
-      const data = yield* all()
-      delete data[mcpName]
-      yield* fs.writeJson(filepath, data, 0o600).pipe(Effect.orDie)
+      yield* mutate((data) => {
+        const next = { ...data }
+        delete next[mcpName]
+        return next
+      })
     })
 
     const updateField = <K extends keyof Entry>(field: K, spanName: string) =>
       Effect.fn(`McpAuth.${spanName}`)(function* (mcpName: string, value: NonNullable<Entry[K]>, serverUrl?: string) {
-        const entry = (yield* get(mcpName)) ?? {}
-        entry[field] = value
-        yield* set(mcpName, entry, serverUrl)
+        yield* mutate((data) => {
+          const entry = { ...(data[mcpName] ?? {}), [field]: value }
+          return { ...data, [mcpName]: serverUrl ? { ...entry, serverUrl } : entry }
+        })
       })
 
     const clearField = <K extends keyof Entry>(field: K, spanName: string) =>
       Effect.fn(`McpAuth.${spanName}`)(function* (mcpName: string) {
-        const entry = yield* get(mcpName)
-        if (entry) {
-          delete entry[field]
-          yield* set(mcpName, entry)
-        }
+        yield* mutate((data) => {
+          const entry = data[mcpName]
+          if (!entry) return undefined
+          const nextEntry = { ...entry }
+          delete nextEntry[field]
+          return { ...data, [mcpName]: nextEntry }
+        })
       })
 
     const updateTokens = updateField("tokens", "updateTokens")
@@ -139,6 +162,9 @@ export const layer = Layer.effect(
   }),
 )
 
-export const defaultLayer = layer.pipe(Layer.provide(AppFileSystem.defaultLayer))
+export const defaultLayer = layer.pipe(
+  Layer.provide(EffectFlock.defaultLayer),
+  Layer.provide(AppFileSystem.defaultLayer),
+)
 
 export * as McpAuth from "./auth"
