@@ -287,7 +287,7 @@ export function Session() {
         `${logo[3] ?? ""}`,
         ``,
         `  ${weak("Session")}${UI.Style.TEXT_NORMAL_BOLD}${title}${UI.Style.TEXT_NORMAL}`,
-        `  ${weak("Continue")}${UI.Style.TEXT_NORMAL_BOLD}opencode -s ${session()?.id}${UI.Style.TEXT_NORMAL}`,
+        `  ${weak("Continue")}${UI.Style.TEXT_NORMAL_BOLD}chimera -s ${session()?.id}${UI.Style.TEXT_NORMAL}`,
         ``,
       ].join("\n"),
     )
@@ -1173,13 +1173,19 @@ export function Session() {
                 )}
               </For>
             </scrollbox>
-            <box flexShrink={0}>
-              <Show when={permissions().length > 0}>
-                <PermissionPrompt request={permissions()[0]} />
-              </Show>
-              <Show when={permissions().length === 0 && questions().length > 0}>
-                <QuestionPrompt request={questions()[0]} />
-              </Show>
+              <box flexShrink={0}>
+                <Show when={permissions().length > 0}>
+                  <PermissionPrompt
+                    request={permissions()[0]}
+                    directory={sync.session.get(permissions()[0].sessionID)?.directory}
+                  />
+                </Show>
+                <Show when={permissions().length === 0 && questions().length > 0}>
+                  <QuestionPrompt
+                    request={questions()[0]}
+                    directory={sync.session.get(questions()[0].sessionID)?.directory}
+                  />
+                </Show>
               <Show when={session()?.parentID}>
                 <SubagentFooter />
               </Show>
@@ -1450,10 +1456,25 @@ const PART_MAPPING = {
 function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: AssistantMessage }) {
   const { theme, subtleSyntax } = useTheme()
   const ctx = use()
+  const [expanded, setExpanded] = createSignal(false)
   const content = createMemo(() => {
     // Filter out redacted reasoning chunks from OpenRouter
     // OpenRouter sends encrypted reasoning data that appears as [REDACTED]
     return props.part.text.replace("[REDACTED]", "").trim()
+  })
+  const running = createMemo(() => props.part.time?.end === undefined)
+  const open = createMemo(() => running() || expanded())
+  const lines = createMemo(() => content().split("\n").filter((line) => line.trim().length > 0))
+  const preview = createMemo(() => {
+    const text = lines()[0] ?? content()
+    if (text.length <= 100) return text
+    return text.slice(0, 97) + "..."
+  })
+  const label = createMemo(() => {
+    const lineCount = lines().length
+    const suffix = lineCount === 1 ? "1 line" : `${lineCount} lines`
+    if (running()) return `Thinking · streaming · ${suffix}`
+    return `Thinking · ${suffix}`
   })
   return (
     <Show when={content() && ctx.showThinking()}>
@@ -1465,16 +1486,33 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
         border={["left"]}
         customBorderChars={SplitBorder.customBorderChars}
         borderColor={theme.backgroundElement}
+        onMouseUp={() => {
+          if (!running()) setExpanded((prev) => !prev)
+        }}
       >
-        <code
-          filetype="markdown"
-          drawUnstyledText={false}
-          streaming={true}
-          syntaxStyle={subtleSyntax()}
-          content={"_Thinking:_ " + content()}
-          conceal={ctx.conceal()}
-          fg={theme.textMuted}
-        />
+        <text fg={theme.textMuted}>
+          {open() ? "[-]" : "[+]"} {label()}
+        </text>
+        <Show
+          when={open()}
+          fallback={
+            <box paddingTop={1}>
+              <text fg={theme.textMuted}>{preview()}</text>
+            </box>
+          }
+        >
+          <box paddingTop={1}>
+            <code
+              filetype="markdown"
+              drawUnstyledText={false}
+              streaming={running()}
+              syntaxStyle={subtleSyntax()}
+              content={content()}
+              conceal={ctx.conceal()}
+              fg={theme.textMuted}
+            />
+          </box>
+        </Show>
       </box>
     </Show>
   )

@@ -131,7 +131,7 @@ function TextBody(props: { title: string; description?: string; icon?: string })
   )
 }
 
-export function PermissionPrompt(props: { request: PermissionRequest }) {
+export function PermissionPrompt(props: { request: PermissionRequest; directory?: string }) {
   const sdk = useSDK()
   const project = useProject()
   const sync = useSync()
@@ -163,11 +163,11 @@ export function PermissionPrompt(props: { request: PermissionRequest }) {
           body={
             <Switch>
               <Match when={props.request.always.length === 1 && props.request.always[0] === "*"}>
-                <TextBody title={"This will allow " + props.request.permission + " until OpenCode is restarted."} />
+                <TextBody title={"This will allow " + props.request.permission + " until Chimera is restarted."} />
               </Match>
               <Match when={true}>
                 <box paddingLeft={1} gap={1}>
-                  <text fg={theme.textMuted}>This will allow the following patterns until OpenCode is restarted</text>
+                  <text fg={theme.textMuted}>This will allow the following patterns until Chimera is restarted</text>
                   <box>
                     <For each={props.request.always}>
                       {(pattern) => (
@@ -190,6 +190,7 @@ export function PermissionPrompt(props: { request: PermissionRequest }) {
             void sdk.client.permission.reply({
               reply: "always",
               requestID: props.request.id,
+              directory: props.directory,
               workspace: project.workspace.current(),
             })
           }}
@@ -201,6 +202,7 @@ export function PermissionPrompt(props: { request: PermissionRequest }) {
             void sdk.client.permission.reply({
               reply: "reject",
               requestID: props.request.id,
+              directory: props.directory,
               message: message || undefined,
               workspace: project.workspace.current(),
             })
@@ -440,6 +442,7 @@ export function PermissionPrompt(props: { request: PermissionRequest }) {
                   void sdk.client.permission.reply({
                     reply: "reject",
                     requestID: props.request.id,
+                    directory: props.directory,
                     workspace: project.workspace.current(),
                   })
                   return
@@ -447,6 +450,7 @@ export function PermissionPrompt(props: { request: PermissionRequest }) {
                 void sdk.client.permission.reply({
                   reply: "once",
                   requestID: props.request.id,
+                  directory: props.directory,
                   workspace: project.workspace.current(),
                 })
               }}
@@ -496,7 +500,7 @@ function RejectPrompt(props: { onConfirm: (message: string) => void; onCancel: (
           <text fg={theme.text}>Reject permission</text>
         </box>
         <box paddingLeft={1}>
-          <text fg={theme.textMuted}>Tell OpenCode what to do differently</text>
+          <text fg={theme.textMuted}>Tell Chimera what to do differently</text>
         </box>
       </box>
       <box
