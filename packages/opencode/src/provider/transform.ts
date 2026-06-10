@@ -432,7 +432,7 @@ export function message(msgs: ModelMessage[], model: Provider.Model, options: Re
   }
 
   // Remap providerOptions keys from stored providerID to expected SDK key
-  const key = sdkKey(model.api.npm)
+  const key = model.providerID === "opencode" ? "chimera" : sdkKey(model.api.npm)
   if (key && key !== model.providerID) {
     const remap = (opts: Record<string, any> | undefined) => {
       if (!opts) return opts
@@ -1055,9 +1055,13 @@ export function options(input: {
       if (
         input.model.api.npm === "@ai-sdk/openai" ||
         input.model.api.npm === "@ai-sdk/azure" ||
-        input.model.api.npm === "@ai-sdk/github-copilot"
+        input.model.api.npm === "@ai-sdk/github-copilot" ||
+        input.model.api.npm === "@ai-sdk/amazon-bedrock/mantle"
       ) {
         result["reasoningSummary"] = "auto"
+      }
+      if (input.model.api.npm === "@ai-sdk/openai" || input.model.api.npm === "@ai-sdk/amazon-bedrock/mantle") {
+        result["include"] = ["reasoning.encrypted_content"]
       }
     }
 

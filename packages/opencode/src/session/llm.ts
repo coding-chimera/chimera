@@ -139,6 +139,13 @@ const live: Layer.Layer<
             providerOptions: item.options,
           })
       const options = mergeOptions(mergeOptions(mergeOptions(base, input.model.options), input.agent.options), variant)
+      if (
+        input.model.api.npm === "@ai-sdk/azure" &&
+        (item.options.useCompletionUrls || input.model.options.useCompletionUrls || options.useCompletionUrls)
+      ) {
+        delete options.reasoningSummary
+        delete options.include
+      }
       if (isOpenaiOauth) {
         options.instructions = system.join("\n")
       }
