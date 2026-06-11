@@ -124,7 +124,7 @@ Możesz załadować niestandardowy plik konfiguracyjny, ustawiając zmienną śr
 
 ```bash
 export OPENCODE_CONFIG=/path/to/my/custom-config.json
-opencode run "Hello world"
+chimera run "Hello world"
 ```
 
 Konfiguracja niestandardowa jest ładowana po konfiguracji globalnej i przed konfiguracją projektu w kolejności priorytetów.
@@ -137,7 +137,7 @@ Możesz ustawić niestandardowy katalog konfiguracyjny za pomocą zmiennej środ
 
 ```bash
 export OPENCODE_CONFIG_DIR=/path/to/my/config-directory
-opencode run "Hello world"
+chimera run "Hello world"
 ```
 
 Katalog niestandardowy jest ładowany po globalnej konfiguracji i katalogach `.opencode`, więc **może być łączony** z ich zawartością.
@@ -349,7 +349,7 @@ Domyślnego agenta można ustawić za pomocą opcji `default_agent`. Określa to
 
 Agent domyślny musi być agentem typu `primary` (nie `subagent`). Może to być agent wbudowany, taki jak `"build"` lub `"plan"`, albo zdefiniowany przez Ciebie [agent niestandardowy](/docs/agents). Jeśli agent nie istnieje lub jest subagentem, OpenCode powróci do `"build"` z ostrzeżeniem.
 
-Dotyczy to wszystkich interfejsów: TUI, CLI (`opencode run`), aplikacji desktopowej i GitHub Actions.
+Dotyczy to wszystkich interfejsów: TUI, CLI (`chimera run`), aplikacji desktopowej i GitHub Actions.
 
 ---
 

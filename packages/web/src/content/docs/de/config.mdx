@@ -121,7 +121,7 @@ Geben Sie mithilfe der Umgebungsvariablen `OPENCODE_CONFIG` einen benutzerdefini
 
 ```bash
 export OPENCODE_CONFIG=/path/to/my/custom-config.json
-opencode run "Hello world"
+chimera run "Hello world"
 ```
 
 Die benutzerdefinierte Konfiguration wird in der Rangfolge zwischen globalen und Projektkonfigurationen geladen.
@@ -137,7 +137,7 @@ folgen der gleichen Struktur.
 
 ```bash
 export OPENCODE_CONFIG_DIR=/path/to/my/config-directory
-opencode run "Hello world"
+chimera run "Hello world"
 ```
 
 Das benutzerdefinierte Verzeichnis wird nach den Verzeichnissen global config und `.opencode` geladen, sodass es deren Einstellungen **überschreiben** kann.
@@ -353,7 +353,7 @@ Sie können den Standardagenten mit der Option `default_agent` festlegen. Dadurc
 
 Der Standardagent muss ein Primäragent (kein Subagent) sein. Dies kann ein integrierter Agent wie `"build"` oder `"plan"` oder ein von Ihnen definierter [custom agent](/docs/agents) sein. Wenn der angegebene Agent nicht existiert oder ein Subagent ist, greift OpenCode mit einer Warnung auf `"build"` zurück.
 
-Diese Einstellung gilt für alle Schnittstellen: TUI, CLI (`opencode run`), Desktop-App und GitHub Aktion.
+Diese Einstellung gilt für alle Schnittstellen: TUI, CLI (`chimera run`), Desktop-App und GitHub Aktion.
 
 ---
 

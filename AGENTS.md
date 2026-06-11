@@ -7,7 +7,7 @@
 ## Naming convention
 
 - In this workspace, `opencode` no longer means upstream/original opencode by default.
-- `coding-chimera` is the public npm package for the complete Coding Chimera distribution (also called Chimera), and `chimera` is its public CLI command: the opencode-derived agent runtime plus the Chimera/CodeGraph graph and audit runtime.
+- `chimera` is the public npm package and public CLI command for the complete Chimera distribution: the opencode-derived agent runtime plus the Chimera/CodeGraph graph and audit runtime.
 - Do not add public `opencode` or `codegraph` bins; graph/runtime commands live under `chimera graph ...` and `chimera --graph ...`.
 - When referring to the original upstream project, say **upstream opencode** or **original opencode** explicitly.
 
@@ -111,8 +111,8 @@ const table = sqliteTable("session", {
 
 - Avoid mocks as much as possible
 - Test actual implementation, do not duplicate logic into tests
-- Tests cannot run from repo root (guard: `do-not-run-tests-from-root`); run from package dirs like `packages/opencode`.
+- Tests cannot run from repo root (guard: `do-not-run-tests-from-root`); run from package dirs like `packages/chimera`.
 
 ## Type Checking
 
-- Always run `bun typecheck` from package directories (e.g., `packages/opencode`), never `tsc` directly.
+- Always run `bun typecheck` from package directories (e.g., `packages/chimera`), never `tsc` directly.

@@ -50,7 +50,7 @@ jobs:
 
       - name: Install Chimera
         if: inputs.bump || inputs.version
-        run: bun i -g coding-chimera
+        run: bun i -g chimera
 
       - id: version
         run: |
@@ -88,7 +88,7 @@ jobs:
       - name: Build
         id: build
         run: |
-          ./packages/opencode/script/build.ts ${{ (github.ref_name == 'beta' && '--sourcemaps') || '' }}
+          ./packages/chimera/script/build.ts ${{ (github.ref_name == 'beta' && '--sourcemaps') || '' }}
         env:
           OPENCODE_VERSION: ${{ needs.version.outputs.version }}
           OPENCODE_RELEASE: ${{ needs.version.outputs.release }}
@@ -97,15 +97,15 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: coding-chimera-cli
+          name: chimera-cli
           path: |
-            packages/opencode/dist/coding-chimera-darwin*
-            packages/opencode/dist/coding-chimera-linux*
+            packages/chimera/dist/chimera-darwin*
+            packages/chimera/dist/chimera-linux*
 
       - uses: actions/upload-artifact@v4
         with:
-          name: coding-chimera-cli-windows
-          path: packages/opencode/dist/coding-chimera-windows*
+          name: chimera-cli-windows
+          path: packages/chimera/dist/chimera-windows*
     outputs:
       version: ${{ needs.version.outputs.version }}
 
@@ -127,8 +127,8 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: coding-chimera-cli-windows
-          path: packages/opencode/dist
+          name: chimera-cli-windows
+          path: packages/chimera/dist
 
       - name: Setup git committer
         id: committer
@@ -150,9 +150,9 @@ jobs:
           signing-account-name: ${{ env.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
           certificate-profile-name: ${{ env.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE }}
           files: |
-            ${{ github.workspace }}\packages\opencode\dist\coding-chimera-windows-arm64\bin\chimera.exe
-            ${{ github.workspace }}\packages\opencode\dist\coding-chimera-windows-x64\bin\chimera.exe
-            ${{ github.workspace }}\packages\opencode\dist\coding-chimera-windows-x64-baseline\bin\chimera.exe
+            ${{ github.workspace }}\packages\chimera\dist\chimera-windows-arm64\bin\chimera.exe
+            ${{ github.workspace }}\packages\chimera\dist\chimera-windows-x64\bin\chimera.exe
+            ${{ github.workspace }}\packages\chimera\dist\chimera-windows-x64-baseline\bin\chimera.exe
           exclude-environment-credential: true
           exclude-workload-identity-credential: true
           exclude-managed-identity-credential: true
@@ -168,9 +168,9 @@ jobs:
         shell: pwsh
         run: |
           $files = @(
-            "${{ github.workspace }}\packages\opencode\dist\coding-chimera-windows-arm64\bin\chimera.exe",
-            "${{ github.workspace }}\packages\opencode\dist\coding-chimera-windows-x64\bin\chimera.exe",
-            "${{ github.workspace }}\packages\opencode\dist\coding-chimera-windows-x64-baseline\bin\chimera.exe"
+            "${{ github.workspace }}\packages\chimera\dist\chimera-windows-arm64\bin\chimera.exe",
+            "${{ github.workspace }}\packages\chimera\dist\chimera-windows-x64\bin\chimera.exe",
+            "${{ github.workspace }}\packages\chimera\dist\chimera-windows-x64-baseline\bin\chimera.exe"
           )
 
           foreach ($file in $files) {
@@ -181,12 +181,12 @@ jobs:
           }
 
       - name: Repack Windows CLI archives
-        working-directory: packages/opencode/dist
+        working-directory: packages/chimera/dist
         shell: pwsh
         run: |
-          Compress-Archive -Path "coding-chimera-windows-arm64\bin\*" -DestinationPath "coding-chimera-windows-arm64.zip" -Force
-          Compress-Archive -Path "coding-chimera-windows-x64\bin\*" -DestinationPath "coding-chimera-windows-x64.zip" -Force
-          Compress-Archive -Path "coding-chimera-windows-x64-baseline\bin\*" -DestinationPath "coding-chimera-windows-x64-baseline.zip" -Force
+          Compress-Archive -Path "chimera-windows-arm64\bin\*" -DestinationPath "chimera-windows-arm64.zip" -Force
+          Compress-Archive -Path "chimera-windows-x64\bin\*" -DestinationPath "chimera-windows-x64.zip" -Force
+          Compress-Archive -Path "chimera-windows-x64-baseline\bin\*" -DestinationPath "chimera-windows-x64-baseline.zip" -Force
 
       - name: Upload signed Windows CLI release assets
         if: needs.version.outputs.release != ''
@@ -195,19 +195,19 @@ jobs:
           GH_TOKEN: ${{ steps.committer.outputs.token }}
         run: |
           gh release upload "v${{ needs.version.outputs.version }}" `
-            "${{ github.workspace }}\packages\opencode\dist\coding-chimera-windows-arm64.zip" `
-            "${{ github.workspace }}\packages\opencode\dist\coding-chimera-windows-x64.zip" `
-            "${{ github.workspace }}\packages\opencode\dist\coding-chimera-windows-x64-baseline.zip" `
+            "${{ github.workspace }}\packages\chimera\dist\chimera-windows-arm64.zip" `
+            "${{ github.workspace }}\packages\chimera\dist\chimera-windows-x64.zip" `
+            "${{ github.workspace }}\packages\chimera\dist\chimera-windows-x64-baseline.zip" `
             --clobber `
             --repo "${{ needs.version.outputs.repo }}"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: coding-chimera-cli-signed-windows
+          name: chimera-cli-signed-windows
           path: |
-            packages/opencode/dist/coding-chimera-windows-arm64
-            packages/opencode/dist/coding-chimera-windows-x64
-            packages/opencode/dist/coding-chimera-windows-x64-baseline
+            packages/chimera/dist/chimera-windows-arm64
+            packages/chimera/dist/chimera-windows-x64
+            packages/chimera/dist/chimera-windows-x64-baseline
 
   build-electron:
     needs:
@@ -308,7 +308,7 @@ jobs:
         env:
           OPENCODE_VERSION: ${{ needs.version.outputs.version }}
           OPENCODE_CHANNEL: ${{ (github.ref_name == 'beta' && 'beta') || 'prod' }}
-          OPENCODE_CLI_ARTIFACT: ${{ (runner.os == 'Windows' && 'coding-chimera-cli-windows') || 'coding-chimera-cli' }}
+          OPENCODE_CLI_ARTIFACT: ${{ (runner.os == 'Windows' && 'chimera-cli-windows') || 'chimera-cli' }}
           RUST_TARGET: ${{ matrix.settings.target }}
           GH_TOKEN: ${{ github.token }}
           GITHUB_RUN_ID: ${{ github.run_id }}
@@ -432,18 +432,18 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: coding-chimera-cli
-          path: packages/opencode/dist
+          name: chimera-cli
+          path: packages/chimera/dist
 
       - uses: actions/download-artifact@v4
         with:
-          name: coding-chimera-cli-windows
-          path: packages/opencode/dist
+          name: chimera-cli-windows
+          path: packages/chimera/dist
 
       - uses: actions/download-artifact@v4
         with:
-          name: coding-chimera-cli-signed-windows
-          path: packages/opencode/dist
+          name: chimera-cli-signed-windows
+          path: packages/chimera/dist
 
       - uses: actions/download-artifact@v4
         if: needs.version.outputs.release
