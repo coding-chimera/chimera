@@ -121,7 +121,7 @@ OpenCode 支援 **JSON** 和 **JSONC**（帶註解的 JSON）格式。
 
 ```bash
 export OPENCODE_CONFIG=/path/to/my/custom-config.json
-opencode run "Hello world"
+chimera run "Hello world"
 ```
 
 自訂設定在優先順序中位於全域設定和專案設定之間載入。
@@ -134,7 +134,7 @@ opencode run "Hello world"
 
 ```bash
 export OPENCODE_CONFIG_DIR=/path/to/my/config-directory
-opencode run "Hello world"
+chimera run "Hello world"
 ```
 
 自訂目錄在全域設定和 `.opencode` 目錄之後載入，因此**可以覆寫**它們的設定。
@@ -354,7 +354,7 @@ Bearer Token（`AWS_BEARER_TOKEN_BEDROCK` 或 `/connect`）優先於基於設定
 
 預設代理必須是主代理（不能是子代理）。可以是內建代理（如 `"build"` 或 `"plan"`），也可以是您定義的[自訂代理](/docs/agents)。如果指定的代理不存在或是子代理，OpenCode 將回退到 `"build"` 並發出警告。
 
-此設定適用於所有介面：TUI、CLI（`opencode run`）、桌面應用程式和 GitHub Action。
+此設定適用於所有介面：TUI、CLI（`chimera run`）、桌面應用程式和 GitHub Action。
 
 ---
 

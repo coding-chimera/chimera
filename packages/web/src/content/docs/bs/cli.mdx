@@ -14,7 +14,7 @@ opencode
 Ali takođe prihvata naredbe kao što je dokumentovano na ovoj stranici. Ovo vam omogućava programsku interakciju sa OpenCode.
 
 ```bash
-opencode run "Explain how closures work in JavaScript"
+chimera run "Explain how closures work in JavaScript"
 ```
 
 ---
@@ -315,13 +315,13 @@ opencode models --refresh
 Pokrenite OpenCode u neinteraktivnom modu tako što ćete direktno proslijediti prompt.
 
 ```bash
-opencode run [message..]
+chimera run [message..]
 ```
 
 Ovo je korisno za skriptiranje, automatizaciju ili kada želite brz odgovor bez pokretanja punog TUI-ja. Na primjer:
 
-```bash "opencode run"
-opencode run Explain the use of context in Go
+```bash "chimera run"
+chimera run Explain the use of context in Go
 ```
 
 Također možete priključiti pokrenutu `opencode serve` instancu kako biste izbjegli vrijeme hladnog pokretanja MCP servera pri svakom pokretanju:
@@ -331,7 +331,7 @@ Također možete priključiti pokrenutu `opencode serve` instancu kako biste izb
 opencode serve
 
 # In another terminal, run commands that attach to it
-opencode run --attach http://localhost:4096 "Explain async/await in JavaScript"
+chimera run --attach http://localhost:4096 "Explain async/await in JavaScript"
 ```
 
 #### Opcije

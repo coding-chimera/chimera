@@ -14,7 +14,7 @@ opencode
 Ancak bu sayfada belgelendiği gibi komutları da kabul eder. Bu, opencode ile programlı olarak etkileşim kurmanıza olanak tanır.
 
 ```bash
-opencode run "Explain how closures work in JavaScript"
+chimera run "Explain how closures work in JavaScript"
 ```
 
 ---
@@ -318,13 +318,13 @@ opencode models --refresh
 Doğrudan bir istem ileterek opencode'u etkileşimli olmayan modda çalıştırın.
 
 ```bash
-opencode run [message..]
+chimera run [message..]
 ```
 
 Bu, komut dosyası oluşturma, otomasyon veya TUI'un tamamını başlatmadan hızlı bir yanıt istediğinizde kullanışlıdır. Örneğin.
 
-```bash "opencode run"
-opencode run Explain the use of context in Go
+```bash "chimera run"
+chimera run Explain the use of context in Go
 ```
 
 Ayrıca, her çalıştırmada MCP sunucusunun soğuk önyükleme sürelerini önlemek için çalışan bir `opencode serve` örneğine de ekleyebilirsiniz:
@@ -334,7 +334,7 @@ Ayrıca, her çalıştırmada MCP sunucusunun soğuk önyükleme sürelerini ön
 opencode serve
 
 # In another terminal, run commands that attach to it
-opencode run --attach http://localhost:4096 "Explain async/await in JavaScript"
+chimera run --attach http://localhost:4096 "Explain async/await in JavaScript"
 ```
 
 #### Bayraklar

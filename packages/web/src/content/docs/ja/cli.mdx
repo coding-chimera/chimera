@@ -14,7 +14,7 @@ opencode
 ただし、このページに記載されているようにコマンドも受け入れます。これにより、OpenCode をプログラム的に操作できるようになります。
 
 ```bash
-opencode run "Explain how closures work in JavaScript"
+chimera run "Explain how closures work in JavaScript"
 ```
 
 ---
@@ -318,13 +318,13 @@ opencode models --refresh
 プロンプトを直接渡して、非対話モードで opencode を実行します。
 
 ```bash
-opencode run [message..]
+chimera run [message..]
 ```
 
 これは、スクリプト作成、自動化、または完全な TUI を起動せずに迅速な回答が必要な場合に便利です。例えば。
 
-```bash "opencode run"
-opencode run Explain the use of context in Go
+```bash "chimera run"
+chimera run Explain the use of context in Go
 ```
 
 実行中の `opencode serve` インスタンスにアタッチして、実行ごとの MCP サーバーのコールドブート時間を回避することもできます。
@@ -334,7 +334,7 @@ opencode run Explain the use of context in Go
 opencode serve
 
 # In another terminal, run commands that attach to it
-opencode run --attach http://localhost:4096 "Explain async/await in JavaScript"
+chimera run --attach http://localhost:4096 "Explain async/await in JavaScript"
 ```
 
 #### フラグ

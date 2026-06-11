@@ -14,7 +14,7 @@ opencode
 Men den godtar også kommandoer som dokumentert på denne siden. Dette lar deg samhandle med OpenCode programmatisk.
 
 ```bash
-opencode run "Explain how closures work in JavaScript"
+chimera run "Explain how closures work in JavaScript"
 ```
 
 ---
@@ -318,13 +318,13 @@ opencode models --refresh
 Kjør OpenCode i ikke-interaktiv modus ved å sende en melding direkte.
 
 ```bash
-opencode run [message..]
+chimera run [message..]
 ```
 
 Dette er nyttig for skripting, automatisering eller når du vil ha et raskt svar uten å starte hele TUI. For eksempel.
 
-```bash "opencode run"
-opencode run Explain the use of context in Go
+```bash "chimera run"
+chimera run Explain the use of context in Go
 ```
 
 Du kan også koble til en kjørende `opencode serve`-forekomst for å unngå MCP-serveres kaldstarttid ved hver kjøring:
@@ -334,7 +334,7 @@ Du kan også koble til en kjørende `opencode serve`-forekomst for å unngå MCP
 opencode serve
 
 # In another terminal, run commands that attach to it
-opencode run --attach http://localhost:4096 "Explain async/await in JavaScript"
+chimera run --attach http://localhost:4096 "Explain async/await in JavaScript"
 ```
 
 #### Flagg

@@ -122,7 +122,7 @@ Angiv en brugerdefineret konfigurationsfilsti ved hjælp af miljøvariablen `OPE
 
 ```bash
 export OPENCODE_CONFIG=/path/to/my/custom-config.json
-opencode run "Hello world"
+chimera run "Hello world"
 ```
 
 Brugerdefineret konfigurationsindlæses mellem globale konfigurationer og projektkonfigurationer i prioriteret rækkefølge.
@@ -138,7 +138,7 @@ følge samme struktur.
 
 ```bash
 export OPENCODE_CONFIG_DIR=/path/to/my/config-directory
-opencode run "Hello world"
+chimera run "Hello world"
 ```
 
 Den brugerdefinerede mappe indlæses efter den globale konfig og `.opencode` mapper, så den **kan tilsidesætte** deres indstillinger.
@@ -354,7 +354,7 @@ Du kan indstille standardagenten ved at bruge indstillingen `default_agent`. Det
 
 Standardagenten skal være en primær agent (ikke en subagent). Dette kan være en indbygget agent som `"build"` eller `"plan"`, eller en [custom agent](/docs/agents), du har defineret. Hvis den angivne agent ikke eksisterer eller er en underagent, vil OpenCode falde tilbage til `"build"` med en advarsel.
 
-Denne indstilling gælder på tværs af alle grænseflader: TUI, CLI (`opencode run`), desktop-app og GitHub Action.
+Denne indstilling gælder på tværs af alle grænseflader: TUI, CLI (`chimera run`), desktop-app og GitHub Action.
 
 ---
 

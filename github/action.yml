@@ -1,5 +1,5 @@
-name: "opencode GitHub Action"
-description: "Run opencode in GitHub Actions workflows"
+name: "Chimera GitHub Action"
+description: "Run Chimera in GitHub Actions workflows"
 branding:
   icon: "code"
   color: "orange"
@@ -14,7 +14,7 @@ inputs:
     required: false
 
   share:
-    description: "Share the opencode session (defaults to true for public repos)"
+    description: "Share the Chimera session (defaults to true for public repos)"
     required: false
 
   prompt:
@@ -27,7 +27,7 @@ inputs:
     default: "false"
 
   mentions:
-    description: "Comma-separated list of trigger phrases (case-insensitive). Defaults to '/opencode,/oc'"
+    description: "Comma-separated list of trigger phrases (case-insensitive). Defaults to '/chimera,/oc'"
     required: false
 
   variant:
@@ -41,33 +41,28 @@ inputs:
 runs:
   using: "composite"
   steps:
-    - name: Get opencode version
+    - name: Get Chimera version
       id: version
       shell: bash
       run: |
-        VERSION=$(curl -sf https://api.github.com/repos/anomalyco/opencode/releases/latest | grep -o '"tag_name": *"[^"]*"' | cut -d'"' -f4)
+        VERSION=$(npm view chimera version 2>/dev/null || echo latest)
         echo "version=${VERSION:-latest}" >> $GITHUB_OUTPUT
 
-    - name: Cache opencode
+    - name: Cache Chimera npm packages
       id: cache
       uses: actions/cache@v4
       with:
-        path: ~/.opencode/bin
-        key: opencode-${{ runner.os }}-${{ runner.arch }}-${{ steps.version.outputs.version }}
+        path: ~/.npm
+        key: chimera-${{ runner.os }}-${{ runner.arch }}-${{ steps.version.outputs.version }}
 
-    - name: Install opencode
-      if: steps.cache.outputs.cache-hit != 'true'
+    - name: Install Chimera
       shell: bash
-      run: curl -fsSL https://opencode.ai/install | bash
+      run: npm install -g chimera
 
-    - name: Add opencode to PATH
+    - name: Run Chimera
       shell: bash
-      run: echo "$HOME/.opencode/bin" >> $GITHUB_PATH
-
-    - name: Run opencode
-      shell: bash
-      id: run_opencode
-      run: opencode github run
+      id: run_chimera
+      run: chimera github run
       env:
         MODEL: ${{ inputs.model }}
         AGENT: ${{ inputs.agent }}

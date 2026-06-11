@@ -14,7 +14,7 @@ opencode
 Mais elle accepte également les commandes documentées sur cette page. Cela vous permet d'interagir avec OpenCode par programme.
 
 ```bash
-opencode run "Explain how closures work in JavaScript"
+chimera run "Explain how closures work in JavaScript"
 ```
 
 ---
@@ -318,13 +318,13 @@ opencode models --refresh
 Exécutez opencode en mode non interactif en transmettant directement un prompt.
 
 ```bash
-opencode run [message..]
+chimera run [message..]
 ```
 
 Ceci est utile pour les scripts, l'automatisation ou lorsque vous souhaitez une réponse rapide sans lancer le TUI complet. Par exemple :
 
-```bash "opencode run"
-opencode run Explain the use of context in Go
+```bash "chimera run"
+chimera run Explain the use of context in Go
 ```
 
 Vous pouvez également vous connecter à une instance `opencode serve` en cours d'exécution pour éviter les temps de démarrage à froid du serveur MCP à chaque exécution :
@@ -334,7 +334,7 @@ Vous pouvez également vous connecter à une instance `opencode serve` en cours 
 opencode serve
 
 # In another terminal, run commands that attach to it
-opencode run --attach http://localhost:4096 "Explain async/await in JavaScript"
+chimera run --attach http://localhost:4096 "Explain async/await in JavaScript"
 ```
 
 #### Options

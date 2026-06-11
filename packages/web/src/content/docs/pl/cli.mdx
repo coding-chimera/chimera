@@ -14,7 +14,7 @@ opencode
 CLI obsługuje też polecenia opisane na tej stronie, więc możesz używać OpenCode programowo.
 
 ```bash
-opencode run "Explain how closures work in JavaScript"
+chimera run "Explain how closures work in JavaScript"
 ```
 
 ---
@@ -318,13 +318,13 @@ opencode models --refresh
 Uruchom OpenCode w trybie nieinteraktywnym, przekazując bezpośrednio prompt.
 
 ```bash
-opencode run [message..]
+chimera run [message..]
 ```
 
 Jest to przydatne do tworzenia skryptów, automatyzacji lub gdy chcesz wysłać szybkie zapytanie bez uruchamiania TUI. Na przykład:
 
-```bash "opencode run"
-opencode run Explain the use of context in Go
+```bash "chimera run"
+chimera run Explain the use of context in Go
 ```
 
 Można również użyć tego z działającym `opencode serve`, aby uniknąć zimnego startu serwera MCP przy każdym uruchomieniu:
@@ -334,7 +334,7 @@ Można również użyć tego z działającym `opencode serve`, aby uniknąć zim
 opencode serve
 
 # In another terminal, run commands that attach to it
-opencode run --attach http://localhost:4096 "Explain async/await in JavaScript"
+chimera run --attach http://localhost:4096 "Explain async/await in JavaScript"
 ```
 
 #### Flagi

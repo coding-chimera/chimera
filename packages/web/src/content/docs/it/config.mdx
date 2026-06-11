@@ -125,7 +125,7 @@ Specifica un percorso personalizzato per il file di configurazione usando la var
 
 ```bash
 export OPENCODE_CONFIG=/path/to/my/custom-config.json
-opencode run "Hello world"
+chimera run "Hello world"
 ```
 
 La configurazione personalizzata viene caricata tra quella globale e quella di progetto nell'ordine di precedenza.
@@ -138,7 +138,7 @@ Specifica una directory di configurazione personalizzata usando la variabile d'a
 
 ```bash
 export OPENCODE_CONFIG_DIR=/path/to/my/config-directory
-opencode run "Hello world"
+chimera run "Hello world"
 ```
 
 La directory personalizzata viene caricata dopo la configurazione globale e le directory `.opencode`, quindi **puo sovrascrivere** le loro impostazioni.
@@ -352,7 +352,7 @@ Puoi impostare l'agente predefinito usando l'opzione `default_agent`. Questo det
 
 L'agente predefinito deve essere un agente primary (non un subagent). Puo essere un agente integrato come `"build"` o `"plan"`, oppure un [agente personalizzato](/docs/agents) che hai definito. Se l'agente specificato non esiste o e un subagent, OpenCode fara fallback su `"build"` mostrando un avviso.
 
-Questa impostazione si applica a tutte le interfacce: TUI, CLI (`opencode run`), app desktop e GitHub Action.
+Questa impostazione si applica a tutte le interfacce: TUI, CLI (`chimera run`), app desktop e GitHub Action.
 
 ---
 

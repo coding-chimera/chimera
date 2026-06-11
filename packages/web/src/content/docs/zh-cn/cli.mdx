@@ -14,7 +14,7 @@ opencode
 但它也接受本页面中记录的命令，使您可以通过编程方式与 OpenCode 进行交互。
 
 ```bash
-opencode run "Explain how closures work in JavaScript"
+chimera run "Explain how closures work in JavaScript"
 ```
 
 ---
@@ -318,13 +318,13 @@ opencode models --refresh
 以非交互模式运行 OpenCode，直接传入提示词。
 
 ```bash
-opencode run [message..]
+chimera run [message..]
 ```
 
 这对于脚本编写、自动化或无需启动完整 TUI 即可快速获取答案的场景非常有用。例如：
 
-```bash "opencode run"
-opencode run Explain the use of context in Go
+```bash "chimera run"
+chimera run Explain the use of context in Go
 ```
 
 您还可以连接到正在运行的 `opencode serve` 实例，以避免每次运行时 MCP 服务器的冷启动时间：
@@ -334,7 +334,7 @@ opencode run Explain the use of context in Go
 opencode serve
 
 # In another terminal, run commands that attach to it
-opencode run --attach http://localhost:4096 "Explain async/await in JavaScript"
+chimera run --attach http://localhost:4096 "Explain async/await in JavaScript"
 ```
 
 #### 标志

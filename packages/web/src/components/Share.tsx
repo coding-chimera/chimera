@@ -5,12 +5,53 @@ import { IconArrowDown } from "./icons"
 import { IconOpencode } from "./icons/custom"
 import { ShareI18nProvider, formatCurrency, formatNumber, normalizeLocale } from "./share/common"
 import styles from "./share.module.css"
-import type { MessageV2 } from "opencode/session/message-v2"
-import type { Message } from "opencode/session/message"
-import type { Session } from "opencode/session/index"
+import type {
+  AssistantMessage,
+  Message as MessageV2Info,
+  Part as MessageV2Part,
+  Session as SessionInfo,
+  ToolState,
+} from "@opencode-ai/sdk/v2"
 import { Part, ProviderIcon } from "./share/part"
 
-type MessageWithParts = MessageV2.Info & { parts: MessageV2.Part[] }
+type MessageWithParts = MessageV2Info & { parts: MessageV2Part[] }
+type LegacyToolMetadata = {
+  title: string
+  time: Extract<ToolState, { status: "completed" }>["time"]
+} & Record<string, unknown>
+type LegacyMessageInfo = {
+  id: string
+  role: "assistant" | "user"
+  parts: (
+    | { type: "text"; text: string }
+    | { type: "step-start" }
+    | { type: "file"; mediaType: string; filename?: string; url: string }
+    | {
+        type: "tool-invocation"
+        toolInvocation:
+          | { state: "partial-call"; toolCallId: string; toolName: string; args: Record<string, unknown> }
+          | { state: "call"; toolCallId: string; toolName: string; args: Record<string, unknown> }
+          | { state: "result"; toolCallId: string; toolName: string; args: Record<string, unknown>; result: string }
+      }
+  )[]
+  metadata: {
+    time: {
+      created: number
+      completed?: number
+    }
+    error?: AssistantMessage["error"]
+    sessionID: string
+    tool: Record<string, LegacyToolMetadata>
+    assistant?: {
+      modelID: string
+      providerID: string
+      path: AssistantMessage["path"]
+      cost: number
+      summary?: boolean
+      tokens?: AssistantMessage["tokens"]
+    }
+  }
+}
 
 type Status = "disconnected" | "connecting" | "connected" | "error" | "reconnecting"
 
@@ -41,7 +82,7 @@ function getStatusText(status: [Status, string?], messages: Record<string, strin
 export default function Share(props: {
   id: string
   api: string
-  info: Session.Info
+  info: SessionInfo
   messages: { locale: string } & Record<string, string>
 }) {
   let lastScrollY = 0
@@ -58,7 +99,7 @@ export default function Share(props: {
   const [isNearBottom, setIsNearBottom] = createSignal(false)
 
   const [store, setStore] = createStore<{
-    info?: Session.Info
+    info?: SessionInfo
     messages: Record<string, MessageWithParts>
   }>({
     info: {
@@ -498,7 +539,7 @@ export default function Share(props: {
   )
 }
 
-export function fromV1(v1: Message.Info): MessageWithParts {
+export function fromV1(v1: LegacyMessageInfo): MessageWithParts {
   if (v1.role === "assistant") {
     return {
       id: v1.id,
@@ -526,7 +567,7 @@ export function fromV1(v1: Message.Info): MessageWithParts {
       providerID: v1.metadata.assistant!.providerID,
       mode: "build",
       error: v1.metadata.error,
-      parts: v1.parts.flatMap((part, index): MessageV2.Part[] => {
+      parts: v1.parts.flatMap((part, index): MessageV2Part[] => {
         const base = {
           id: index.toString(),
           messageID: v1.id,
@@ -609,7 +650,7 @@ export function fromV1(v1: Message.Info): MessageWithParts {
       time: {
         created: v1.metadata.time.created,
       },
-      parts: v1.parts.flatMap((part, index): MessageV2.Part[] => {
+      parts: v1.parts.flatMap((part, index): MessageV2Part[] => {
         const base = {
           id: index.toString(),
           messageID: v1.id,

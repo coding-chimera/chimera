@@ -121,7 +121,7 @@ description: استخدام ملف إعدادات OpenCode بصيغة JSON.
 
 ```bash
 export OPENCODE_CONFIG=/path/to/my/custom-config.json
-opencode run "Hello world"
+chimera run "Hello world"
 ```
 
 تُحمَّل الإعدادات المخصصة بين الإعدادات العامة وإعدادات المشروع ضمن ترتيب الأولوية.
@@ -136,7 +136,7 @@ opencode run "Hello world"
 
 ```bash
 export OPENCODE_CONFIG_DIR=/path/to/my/config-directory
-opencode run "Hello world"
+chimera run "Hello world"
 ```
 
 يُحمَّل الدليل المخصص بعد الإعدادات العامة وأدلة `.opencode`، لذلك **يمكنه تجاوز** إعداداتها.
@@ -352,7 +352,7 @@ opencode run "Hello world"
 
 يجب أن يكون الوكيل الافتراضي وكيلًا أساسيًا (وليس وكيلًا فرعيًا). يمكن أن يكون وكيلًا مدمجًا مثل `"build"` أو `"plan"`، أو [وكيلًا مخصصًا](/docs/agents) قمت بتعريفه. إذا لم يكن الوكيل المحدد موجودًا أو كان وكيلًا فرعيًا، فسيعود OpenCode إلى `"build"` مع تحذير.
 
-ينطبق هذا الإعداد على جميع الواجهات: TUI وCLI (`opencode run`) وتطبيق سطح المكتب وGitHub Action.
+ينطبق هذا الإعداد على جميع الواجهات: TUI وCLI (`chimera run`) وتطبيق سطح المكتب وGitHub Action.
 
 ---
 

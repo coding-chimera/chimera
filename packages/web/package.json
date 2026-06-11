@@ -17,6 +17,7 @@
     "@astrojs/solid-js": "5.1.0",
     "@astrojs/starlight": "0.34.3",
     "@fontsource/ibm-plex-mono": "5.2.5",
+    "@opencode-ai/sdk": "workspace:*",
     "@shikijs/transformers": "3.20.0",
     "@solid-primitives/resize-observer": "2.1.5",
     "@types/luxon": "catalog:",
@@ -36,7 +37,6 @@
     "vscode-languageserver-types": "3.17.5"
   },
   "devDependencies": {
-    "chimera": "workspace:*",
     "@types/node": "catalog:",
     "@astrojs/check": "0.9.6",
     "typescript": "catalog:"

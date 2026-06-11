@@ -125,7 +125,7 @@ Navedite prilagođenu putanju konfiguracijske datoteke koristeći varijablu okru
 
 ```bash
 export OPENCODE_CONFIG=/path/to/my/custom-config.json
-opencode run "Hello world"
+chimera run "Hello world"
 ```
 
 Prilagođena konfiguracija se učitava između globalne i projektne konfiguracije po redoslijedu prioriteta.
@@ -138,7 +138,7 @@ Navedite prilagođeni konfiguracijski direktorij koristeći `OPENCODE_CONFIG_DIR
 
 ```bash
 export OPENCODE_CONFIG_DIR=/path/to/my/config-directory
-opencode run "Hello world"
+chimera run "Hello world"
 ```
 
 Prilagođeni direktorij se učitava nakon direktorija globalne konfiguracije i `.opencode`, tako da **može nadjačati** njihove postavke.
@@ -352,7 +352,7 @@ Možete postaviti zadanog agenta koristeći opciju `default_agent`. Ovo određuj
 
 Zadani agent mora biti primarni agent (ne podagent). Ovo može biti ugrađeni agent kao što je `"build"` ili `"plan"`, ili [prilagođeni agent](/docs/agents) koji ste definirali. Ako navedeni agent ne postoji ili je podagent, OpenCode će se vratiti na `"build"` s upozorenjem.
 
-Ova postavka se primjenjuje na sva sučelja: TUI, CLI (`opencode run`), desktop aplikaciju i GitHub Action.
+Ova postavka se primjenjuje na sva sučelja: TUI, CLI (`chimera run`), desktop aplikaciju i GitHub Action.
 
 ---
 

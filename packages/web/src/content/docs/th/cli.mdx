@@ -14,7 +14,7 @@ opencode
 นอกจากนี้ยังรับคำสั่งและแฟล็ก ซึ่งช่วยให้คุณใช้ OpenCode ผ่านโปรแกรมได้
 
 ```bash
-opencode run "Explain how closures work in JavaScript"
+chimera run "Explain how closures work in JavaScript"
 ```
 
 ---
@@ -319,13 +319,13 @@ opencode models --refresh
 รัน OpenCode โดยไม่ต้องใช้ TUI โดยส่งพรอมต์โดยตรง
 
 ```bash
-opencode run [message..]
+chimera run [message..]
 ```
 
 มีประโยชน์สำหรับการทำงานอัตโนมัติหรือเมื่อต้องการคำตอบอย่างรวดเร็วโดยไม่ต้องเปิด TUI ตัวอย่าง:
 
-```bash "opencode run"
-opencode run Explain the use of context in Go
+```bash "chimera run"
+chimera run Explain the use of context in Go
 ```
 
 คุณยังสามารถแนบไปกับเซิร์ฟเวอร์ `opencode serve` ที่ทำงานอยู่ หรือใช้เซิร์ฟเวอร์ MCP แบบ headless:
@@ -335,7 +335,7 @@ opencode run Explain the use of context in Go
 opencode serve
 
 # In another terminal, run commands that attach to it
-opencode run --attach http://localhost:4096 "Explain async/await in JavaScript"
+chimera run --attach http://localhost:4096 "Explain async/await in JavaScript"
 ```
 
 #### แฟล็ก
