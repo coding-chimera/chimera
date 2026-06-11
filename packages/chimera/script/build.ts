@@ -2,6 +2,7 @@
 
 import { $ } from "bun"
 import fs from "fs"
+import os from "os"
 import path from "path"
 import { fileURLToPath } from "url"
 import { createSolidTransformPlugin } from "@opentui/solid/bun-plugin"
@@ -50,6 +51,7 @@ console.log(`Loaded ${migrations.length} migrations`)
 const graphSchema = await Bun.file(path.join(dir, "src/graph/db/schema.sql")).text()
 const graphWasmOutDir = path.dirname(Bun.resolveSync("tree-sitter-wasms/out/tree-sitter-typescript.wasm", dir))
 const graphVendoredWasmDir = path.join(dir, "src/graph/extraction/wasm")
+const webTreeSitterRuntimeDir = path.dirname(Bun.resolveSync("web-tree-sitter/tree-sitter.wasm", dir))
 
 async function copyGraphGrammarWasms(targetDir: string) {
   const grammarDir = path.join(targetDir, "tree-sitter-wasms", "out")
@@ -61,6 +63,15 @@ async function copyGraphGrammarWasms(targetDir: string) {
 
   for (const file of (await fs.promises.readdir(graphVendoredWasmDir)).filter((item) => item.endsWith(".wasm"))) {
     await fs.promises.copyFile(path.join(graphVendoredWasmDir, file), path.join(grammarDir, file))
+  }
+}
+
+async function copyWebTreeSitterRuntime(targetDir: string) {
+  const runtimeDir = path.join(targetDir, "web-tree-sitter")
+  await fs.promises.mkdir(runtimeDir, { recursive: true })
+
+  for (const file of ["tree-sitter.cjs", "tree-sitter.wasm"]) {
+    await fs.promises.copyFile(path.join(webTreeSitterRuntimeDir, file), path.join(runtimeDir, file))
   }
 }
 
@@ -248,17 +259,21 @@ for (const item of targets) {
   })
 
   await copyGraphGrammarWasms(path.join(dir, "dist", name, "bin"))
+  await copyWebTreeSitterRuntime(path.join(dir, "dist", name, "bin"))
 
   // Smoke test: only run if binary is for current platform
   if (item.os === process.platform && item.arch === process.arch && !item.abi) {
-    const binaryPath = `dist/${name}/bin/${binaryName}`
-    console.log(`Running smoke test: ${binaryPath} --version`)
+    const binaryPath = path.join(dir, "dist", name, "bin", binaryName)
+    const smokeCwd = await fs.promises.mkdtemp(path.join(os.tmpdir(), "chimera-smoke-"))
+    console.log(`Running smoke test: ${path.relative(dir, binaryPath)} --version`)
     try {
-      const versionOutput = await $`${binaryPath} --version`.text()
+      const versionOutput = await $`${binaryPath} --version`.cwd(smokeCwd).text()
       console.log(`Smoke test passed: ${versionOutput.trim()}`)
     } catch (e) {
       console.error(`Smoke test failed for ${name}:`, e)
       process.exit(1)
+    } finally {
+      await fs.promises.rm(smokeCwd, { recursive: true, force: true })
     }
   }
 
