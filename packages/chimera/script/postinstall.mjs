@@ -72,12 +72,17 @@ function findBinary() {
   throw new Error(`Could not find Chimera platform package for ${platform}/${arch}`)
 }
 
-function syncGrammarAssets(binaryPath) {
-  const source = path.join(path.dirname(binaryPath), "tree-sitter-wasms")
-  const target = path.join(__dirname, "bin", "tree-sitter-wasms")
+function syncAssetDirectory(binaryPath, dirname) {
+  const source = path.join(path.dirname(binaryPath), dirname)
+  const target = path.join(__dirname, "bin", dirname)
   fs.rmSync(target, { recursive: true, force: true })
   if (!fs.existsSync(source)) return
   fs.cpSync(source, target, { recursive: true })
+}
+
+function syncRuntimeAssets(binaryPath) {
+  syncAssetDirectory(binaryPath, "tree-sitter-wasms")
+  syncAssetDirectory(binaryPath, "web-tree-sitter")
 }
 
 async function main() {
@@ -100,7 +105,7 @@ async function main() {
       fs.copyFileSync(binaryPath, target)
     }
     fs.chmodSync(target, 0o755)
-    syncGrammarAssets(binaryPath)
+    syncRuntimeAssets(binaryPath)
   } catch (error) {
     console.error("Failed to setup Chimera binary:", error.message)
     process.exit(1)
