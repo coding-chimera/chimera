@@ -183,6 +183,39 @@ export const layer = Layer.effect(
       return history.slice(0, idx + 1)
     }
 
+    const toolContextMessages = (history: MessageV2.WithParts[]) =>
+      history.flatMap((msg): MessageV2.WithParts[] => {
+        const parts = msg.parts.flatMap((part): MessageV2.ToolPart[] => {
+          if (part.type !== "tool") return []
+          if (part.tool !== "read") return []
+          if (part.state.status !== "completed") return []
+          const loaded = part.state.metadata?.loaded
+          if (!Array.isArray(loaded)) return []
+          const loadedPaths = loaded.filter((item): item is string => typeof item === "string")
+          if (loadedPaths.length === 0) return []
+          return [
+            {
+              id: part.id,
+              sessionID: part.sessionID,
+              messageID: part.messageID,
+              type: "tool",
+              callID: part.callID,
+              tool: part.tool,
+              state: {
+                status: "completed",
+                input: {},
+                output: "",
+                title: part.state.title,
+                metadata: { loaded: loadedPaths },
+                time: { ...part.state.time },
+                attachments: [],
+              },
+            },
+          ]
+        })
+        return parts.length > 0 ? [{ info: msg.info, parts }] : []
+      })
+
     const title = Effect.fn("SessionPrompt.ensureTitle")(function* (input: {
       session: Session.Info
       history: MessageV2.WithParts[]
@@ -389,22 +422,24 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       messages: MessageV2.WithParts[]
     }) {
       using _ = log.time("resolveTools")
+      const { agent, model, session, processor, bypassAgentCheck, messages } = input
       const tools: Record<string, AITool> = {}
       const run = yield* runner()
       const promptOps = yield* ops()
       const fallbackAbort = AbortSignal.any([])
       const toolAbortGraceMs = 1000
+      const contextMessages = toolContextMessages(messages)
 
       const context = (args: any, options: ToolExecutionOptions): Tool.Context => ({
-        sessionID: input.session.id,
+        sessionID: session.id,
         abort: options.abortSignal ?? fallbackAbort,
-        messageID: input.processor.message.id,
+        messageID: processor.message.id,
         callID: options.toolCallId,
-        extra: { model: input.model, bypassAgentCheck: input.bypassAgentCheck, promptOps },
-        agent: input.agent.name,
-        messages: input.messages,
+        extra: { model, bypassAgentCheck, promptOps },
+        agent: agent.name,
+        messages: contextMessages,
         metadata: (val) =>
-          input.processor.updateToolCall(options.toolCallId, (match) => {
+          processor.updateToolCall(options.toolCallId, (match) => {
             if (!["running", "pending"].includes(match.state.status)) return match
             return {
               ...match,
@@ -421,9 +456,9 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           permission
             .ask({
               ...req,
-              sessionID: input.session.id,
-              tool: { messageID: input.processor.message.id, callID: options.toolCallId },
-              ruleset: Permission.merge(input.agent.permission, input.session.permission ?? []),
+              sessionID: session.id,
+              tool: { messageID: processor.message.id, callID: options.toolCallId },
+              ruleset: Permission.merge(agent.permission, session.permission ?? []),
             })
             .pipe(Effect.orDie),
       })
@@ -453,21 +488,21 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           Effect.raceFirst(waitForAbort(signal)),
           Effect.catchCause((cause) =>
             Effect.gen(function* () {
-              yield* input.processor
+              yield* processor
                 .failToolCall(callID, Cause.hasInterruptsOnly(cause) ? abortError(signal) : Cause.squash(cause))
                 .pipe(Effect.ignore)
               return yield* Effect.failCause(cause)
             }),
           ),
-          Effect.onInterrupt(() => input.processor.failToolCall(callID, abortError(signal)).pipe(Effect.ignore)),
+          Effect.onInterrupt(() => processor.failToolCall(callID, abortError(signal)).pipe(Effect.ignore)),
         )
 
       for (const item of yield* registry.tools({
-        modelID: ModelID.make(input.model.api.id),
-        providerID: input.model.providerID,
-        agent: input.agent,
+        modelID: ModelID.make(model.api.id),
+        providerID: model.providerID,
+        agent,
       })) {
-        const schema = ProviderTransform.schema(input.model, EffectZod.toJsonSchema(item.parameters))
+        const schema = ProviderTransform.schema(model, EffectZod.toJsonSchema(item.parameters))
         tools[item.id] = tool({
           description: item.description,
           inputSchema: jsonSchema(schema),
@@ -490,7 +525,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                       ...attachment,
                       id: PartID.ascending(),
                       sessionID: ctx.sessionID,
-                      messageID: input.processor.message.id,
+                      messageID: processor.message.id,
                     })),
                   }
                   yield* plugin.trigger(
@@ -499,7 +534,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                     output,
                   )
                   if (ctx.abort.aborted) {
-                    yield* input.processor.completeToolCall(options.toolCallId, output)
+                    yield* processor.completeToolCall(options.toolCallId, output)
                   }
                   return output
                 }),
@@ -514,7 +549,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         if (!execute) continue
 
         const schema = yield* Effect.promise(() => Promise.resolve(asSchema(item.inputSchema).jsonSchema))
-        const transformed = ProviderTransform.schema(input.model, schema)
+        const transformed = ProviderTransform.schema(model, schema)
         item.inputSchema = jsonSchema(transformed)
         item.execute = (args, opts) => {
           const ctx = context(args, opts)
@@ -537,7 +572,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                       "tool.name": key,
                       "tool.call_id": opts.toolCallId,
                       "session.id": ctx.sessionID,
-                      "message.id": input.processor.message.id,
+                      "message.id": processor.message.id,
                     },
                   }),
                 )
@@ -571,7 +606,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                   }
                 }
 
-                const truncated = yield* truncate.output(textParts.join("\n\n"), {}, input.agent)
+                const truncated = yield* truncate.output(textParts.join("\n\n"), {}, agent)
                 const metadata = {
                   ...result.metadata,
                   truncated: truncated.truncated,
@@ -586,12 +621,12 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                     ...attachment,
                     id: PartID.ascending(),
                     sessionID: ctx.sessionID,
-                    messageID: input.processor.message.id,
+                    messageID: processor.message.id,
                   })),
                   content: result.content,
                 }
                 if (ctx.abort.aborted) {
-                  yield* input.processor.completeToolCall(opts.toolCallId, output)
+                  yield* processor.completeToolCall(opts.toolCallId, output)
                 }
                 return output
               }),
