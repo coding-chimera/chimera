@@ -277,7 +277,7 @@ registerDisposer(async (directory) => {
   if (directories && directories.size > 0) return
   directoriesByGraphRoot.delete(root)
   await closeGraphRoot(root)
-})
+}, "chimera-provenance-graph")
 
 function rememberToolFiles(root: string, files: ProvenanceFile[], now = Date.now()) {
   for (const file of files) {

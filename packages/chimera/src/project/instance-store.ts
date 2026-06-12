@@ -85,9 +85,25 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
         }),
       )
 
+    const runInstanceDisposers = Effect.fnUntraced(function* (directory: string) {
+      const results = yield* Effect.promise(() => runDisposers(directory))
+      for (const result of results) {
+        if (result.status === "fulfilled") continue
+        yield* Effect.logWarning("instance disposer did not complete", {
+          directory,
+          disposer: result.name,
+          disposerID: result.id,
+          status: result.status,
+          elapsed: result.elapsed,
+          error: result.error,
+        })
+      }
+      return results
+    })
+
     const disposeContext = Effect.fn("InstanceStore.disposeContext")(function* (ctx: InstanceContext) {
       yield* Effect.logInfo("disposing instance", { directory: ctx.directory })
-      yield* Effect.promise(() => runDisposers(ctx.directory))
+      yield* runInstanceDisposers(ctx.directory)
       yield* emitDisposed({ directory: ctx.directory, project: ctx.project.id })
     })
 
@@ -128,7 +144,7 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
             yield* Effect.logInfo("reloading instance", { directory })
             if (previous) {
               yield* Deferred.await(previous.deferred).pipe(Effect.ignore)
-              yield* Effect.promise(() => runDisposers(directory))
+              yield* runInstanceDisposers(directory)
               yield* emitDisposed({ directory, project: input.project?.id })
             }
             yield* completeLoad(directory, input, entry)

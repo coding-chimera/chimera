@@ -2,7 +2,7 @@ import { afterEach, describe, expect } from "bun:test"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Effect, Fiber, Layer } from "effect"
 import { InstanceRef } from "../../src/effect/instance-ref"
-import { registerDisposer } from "../../src/effect/instance-registry"
+import { disposeInstance, registerDisposer } from "../../src/effect/instance-registry"
 import { InstanceBootstrap } from "../../src/project/bootstrap-service"
 import { Instance } from "../../src/project/instance"
 import { WithInstance } from "../../src/project/with-instance"
@@ -197,6 +197,40 @@ describe("InstanceStore", () => {
       releaseDispose.resolve()
       yield* Effect.all([Fiber.join(first), Fiber.join(second)])
       expect(disposed).toEqual([dir])
+    }),
+  )
+
+  it.live("reports failing instance disposers", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      const off = registerDisposer(async () => {
+        throw new Error("dispose failed")
+      }, "test-failing-disposer")
+      yield* Effect.addFinalizer(() => Effect.sync(off))
+
+      const results = yield* Effect.promise(() => disposeInstance(dir, { timeoutMs: 100 }))
+      const result = results.find((item) => item.name === "test-failing-disposer")
+
+      expect(result?.status).toBe("rejected")
+      expect(result?.error).toBe("dispose failed")
+      expect(result?.directory).toBe(dir)
+    }),
+  )
+
+  it.live("times out hanging instance disposers", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      const off = registerDisposer(() => new Promise<void>(() => {}), "test-hanging-disposer")
+      yield* Effect.addFinalizer(() => Effect.sync(off))
+
+      const started = Date.now()
+      const results = yield* Effect.promise(() => disposeInstance(dir, { timeoutMs: 20 }))
+      const result = results.find((item) => item.name === "test-hanging-disposer")
+
+      expect(Date.now() - started).toBeLessThan(500)
+      expect(result?.status).toBe("timed_out")
+      expect(result?.error).toBe("Timed out after 20ms")
+      expect(result?.directory).toBe(dir)
     }),
   )
 
