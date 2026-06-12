@@ -28,6 +28,14 @@ declare global {
 }
 
 type RpcClient = ReturnType<typeof Rpc.client<typeof rpc>>
+const DEFAULT_WORKER_SHUTDOWN_TIMEOUT_MS = 15_000
+
+function workerShutdownTimeout() {
+  const raw = process.env.OPENCODE_WORKER_SHUTDOWN_TIMEOUT_MS
+  if (!raw) return DEFAULT_WORKER_SHUTDOWN_TIMEOUT_MS
+  const parsed = Number(raw)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_WORKER_SHUTDOWN_TIMEOUT_MS
+}
 
 function createWorkerFetch(client: RpcClient): typeof fetch {
   const fn = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -179,8 +187,10 @@ export const TuiThreadCommand = cmd({
         process.off("uncaughtException", error)
         process.off("unhandledRejection", error)
         process.off("SIGUSR2", reload)
-        await withTimeout(client.call("shutdown", undefined), 5000).catch((error) => {
+        const timeoutMs = workerShutdownTimeout()
+        await withTimeout(client.call("shutdown", undefined), timeoutMs, "worker shutdown").catch((error) => {
           Log.Default.warn("worker shutdown failed", {
+            timeoutMs,
             error: errorMessage(error),
           })
         })

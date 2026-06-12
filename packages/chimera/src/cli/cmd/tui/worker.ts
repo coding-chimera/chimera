@@ -47,6 +47,22 @@ GlobalBus.on("event", (event) => {
 
 let server: Awaited<ReturnType<typeof Server.listen>> | undefined
 
+async function shutdownPhase(name: string, fn: () => Promise<void>) {
+  const started = Date.now()
+  Log.Default.info("worker shutdown phase started", { phase: name })
+  try {
+    await fn()
+    Log.Default.info("worker shutdown phase completed", { phase: name, elapsed: Date.now() - started })
+  } catch (error) {
+    Log.Default.error("worker shutdown phase failed", {
+      phase: name,
+      elapsed: Date.now() - started,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    throw error
+  }
+}
+
 export const rpc = {
   async fetch(input: { url: string; method: string; headers: Record<string, string>; body?: string }) {
     const headers = { ...input.headers }
@@ -94,10 +110,12 @@ export const rpc = {
     )
   },
   async shutdown() {
+    const started = Date.now()
     Log.Default.info("worker shutting down")
 
-    await InstanceRuntime.disposeAllInstances()
-    if (server) await server.stop(true)
+    await shutdownPhase("dispose instances", () => InstanceRuntime.disposeAllInstances())
+    if (server) await shutdownPhase("stop server", () => server!.stop(true))
+    Log.Default.info("worker shutdown completed", { elapsed: Date.now() - started })
   },
 }
 
