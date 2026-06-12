@@ -173,6 +173,16 @@ export const layer = Layer.effect(
       return parts
     })
 
+    const realUser = (m: MessageV2.WithParts) =>
+      m.info.role === "user" && !m.parts.every((p) => "synthetic" in p && p.synthetic)
+
+    const titleHistory = (history: MessageV2.WithParts[]) => {
+      const idx = history.findIndex(realUser)
+      if (idx === -1) return []
+      if (history.filter(realUser).length !== 1) return []
+      return history.slice(0, idx + 1)
+    }
+
     const title = Effect.fn("SessionPrompt.ensureTitle")(function* (input: {
       session: Session.Info
       history: MessageV2.WithParts[]
@@ -182,14 +192,8 @@ export const layer = Layer.effect(
       if (input.session.parentID) return
       if (!Session.isDefaultTitle(input.session.title)) return
 
-      const real = (m: MessageV2.WithParts) =>
-        m.info.role === "user" && !m.parts.every((p) => "synthetic" in p && p.synthetic)
-      const idx = input.history.findIndex(real)
-      if (idx === -1) return
-      if (input.history.filter(real).length !== 1) return
-
-      const context = input.history.slice(0, idx + 1)
-      const firstUser = context[idx]
+      const context = titleHistory(input.history)
+      const firstUser = context.at(-1)
       if (!firstUser || firstUser.info.role !== "user") return
       const firstInfo = firstUser.info
 
@@ -1508,7 +1512,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               session,
               modelID: lastUser.model.modelID,
               providerID: lastUser.model.providerID,
-              history: msgs,
+              history: titleHistory(msgs),
             }).pipe(Effect.ignore, Effect.forkIn(scope))
 
           const model = yield* getModel(lastUser.model.providerID, lastUser.model.modelID, sessionID)
