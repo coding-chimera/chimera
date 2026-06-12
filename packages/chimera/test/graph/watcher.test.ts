@@ -78,7 +78,7 @@ describe('FileWatcher', () => {
   });
 
   describe('start/stop lifecycle', () => {
-    it('should start and stop without errors', () => {
+    it('should start and stop without errors', async () => {
       const syncFn = vi.fn().mockResolvedValue({ filesChanged: 0, durationMs: 0 });
       const watcher = new FileWatcher(testDir, syncFn);
 
@@ -86,11 +86,11 @@ describe('FileWatcher', () => {
       expect(started).toBe(true);
       expect(watcher.isActive()).toBe(true);
 
-      watcher.stop();
+      await watcher.stop();
       expect(watcher.isActive()).toBe(false);
     });
 
-    it('should be idempotent on double start', () => {
+    it('should be idempotent on double start', async () => {
       const syncFn = vi.fn().mockResolvedValue({ filesChanged: 0, durationMs: 0 });
       const watcher = new FileWatcher(testDir, syncFn);
 
@@ -98,16 +98,16 @@ describe('FileWatcher', () => {
       expect(watcher.start()).toBe(true); // Should not throw
       expect(watcher.isActive()).toBe(true);
 
-      watcher.stop();
+      await watcher.stop();
     });
 
-    it('should be idempotent on double stop', () => {
+    it('should be idempotent on double stop', async () => {
       const syncFn = vi.fn().mockResolvedValue({ filesChanged: 0, durationMs: 0 });
       const watcher = new FileWatcher(testDir, syncFn);
 
       watcher.start();
-      watcher.stop();
-      watcher.stop(); // Should not throw
+      await watcher.stop();
+      await watcher.stop(); // Should not throw
 
       expect(watcher.isActive()).toBe(false);
     });
@@ -487,8 +487,8 @@ describe('FileWatcher', () => {
   describe('CodeGraph integration', () => {
     let cg: CodeGraphType;
 
-    afterEach(() => {
-      if (cg) cg.close();
+    afterEach(async () => {
+      if (cg) await cg.close();
     });
 
     it('should watch and unwatch via CodeGraph API', async () => {
@@ -501,7 +501,7 @@ describe('FileWatcher', () => {
       expect(started).toBe(true);
       expect(cg.isWatching()).toBe(true);
 
-      cg.unwatch();
+      await cg.unwatch();
       expect(cg.isWatching()).toBe(false);
     });
 
@@ -512,7 +512,7 @@ describe('FileWatcher', () => {
       cg.watch({ debounceMs: 200 });
       expect(cg.isWatching()).toBe(true);
 
-      cg.close();
+      await cg.close();
       // After close, isWatching should be false
       // (we can't call isWatching after close since DB is closed,
       //  but we verify no errors are thrown)
@@ -549,7 +549,7 @@ describe('FileWatcher', () => {
       const results = cg.searchNodes('added');
       expect(results.length).toBeGreaterThan(0);
 
-      cg.unwatch();
+      await cg.unwatch();
     });
 
     it('should allow manual batch handling through CodeGraph.watch', async () => {
@@ -575,7 +575,7 @@ describe('FileWatcher', () => {
       await waitFor(() => cg.getStats().nodeCount > initialStats.nodeCount, 5000);
       expect(cg.searchNodes('manual').length).toBeGreaterThan(0);
 
-      cg.unwatch();
+      await cg.unwatch();
     });
   });
 });

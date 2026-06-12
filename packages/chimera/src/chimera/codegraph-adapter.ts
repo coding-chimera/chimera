@@ -72,7 +72,7 @@ export class CodeGraphAdapter {
   }
 
   close() {
-    this.graph.close()
+    return this.graph.close()
   }
 
   snapshot(): CodeGraphSnapshot {
@@ -197,7 +197,7 @@ export class CodeGraphAdapter {
   }
 
   unwatch() {
-    this.graph.unwatch()
+    return this.graph.unwatch()
   }
 
   isWatching() {

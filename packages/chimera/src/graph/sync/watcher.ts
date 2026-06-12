@@ -391,7 +391,7 @@ export class FileWatcher {
   /**
    * Stop watching for file changes.
    */
-  stop(): void {
+  async stop(): Promise<void> {
     this.stopped = true;
 
     if (this.debounceTimer) {
@@ -399,15 +399,14 @@ export class FileWatcher {
       this.debounceTimer = null;
     }
 
-    if (this.watcher) {
-      this.watcher.close();
-      this.watcher = null;
-    }
+    const watcher = this.watcher;
+    this.watcher = null;
 
     this.pendingEvents.clear();
     this.chokidarReady = false;
     this.ignoreMatcher = null;
     this.watchedGitRelPaths.clear();
+    if (watcher) await watcher.close();
     logDebug('File watcher stopped');
   }
 
