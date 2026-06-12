@@ -239,7 +239,18 @@ describe("tool.chimera", () => {
         ),
       )
 
-      const result = yield* runPredesign({ intent: "change source behavior", files: ["source.ts"], symbols: ["source"] })
+      const stages: string[] = []
+      const result = yield* runPredesign(
+        { intent: "change source behavior", files: ["source.ts"], symbols: ["source"] },
+        {
+          ...ctx,
+          metadata: (value: { metadata?: Record<string, any> }) =>
+            Effect.sync(() => {
+              const stage = value.metadata?.chimeraPredesignStage
+              if (stage?.status === "running") stages.push(stage.stage)
+            }),
+        },
+      )
       const runs = yield* Effect.promise(() =>
         readPredesignRuns(test.directory, path.join(test.directory, ".codegraph", "chimera", "predesign-runs.jsonl"), {
           sessionID: ctx.sessionID,
@@ -253,6 +264,7 @@ describe("tool.chimera", () => {
       expect(runs[0]?.id).toBe(result.metadata.runID)
       expect(runs[0]?.intent).toBe("change source behavior")
       expect(runs[0]?.files).toContain("source.ts")
+      expect(stages).toEqual(["permission", "open graph", "sync files", "build impact", "record run", "return result"])
     }),
   )
 

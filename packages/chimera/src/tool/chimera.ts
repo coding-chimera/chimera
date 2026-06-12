@@ -1,6 +1,7 @@
 import path from "path"
 import { createHash } from "crypto"
-import { Effect, Schema } from "effect"
+import { Cause, Effect, Exit, Schema } from "effect"
+import * as Log from "@opencode-ai/core/util/log"
 import { InstanceState } from "@/effect/instance-state"
 import {
   Chimera,
@@ -47,6 +48,7 @@ import OBLIGATION_CLAIM_DESCRIPTION from "./chimera_obligation_claim.txt"
 import OBLIGATION_RESOLVE_DESCRIPTION from "./chimera_obligation_resolve.txt"
 import OBLIGATION_IGNORE_DESCRIPTION from "./chimera_obligation_ignore.txt"
 
+const log = Log.create({ service: "chimera.tool" })
 const NodeKind = Schema.Union(NODE_KINDS.map((kind) => Schema.Literal(kind)))
 
 const ContextMode = Schema.Union([
@@ -338,6 +340,15 @@ type SearchMetadata = {
   results: Array<{ score?: number; node: CodeGraphNode; projection: FrozenSemanticObject | null }>
 }
 
+type PredesignStageMetadata = {
+  stage: string
+  status: "running" | "complete" | "error"
+  startedAt: string
+  elapsedMs: number
+  timeoutMs: number
+  error?: string
+}
+
 type PredesignMetadata = {
   projectRoot: string
   snapshot: CodeGraphSnapshot
@@ -354,6 +365,7 @@ type PredesignMetadata = {
     nodeIDs: number
     preciseFiles: boolean
   }
+  chimeraPredesignStage?: PredesignStageMetadata
 }
 
 type ImpactMetadata = {
@@ -594,6 +606,70 @@ function openProjectGraphForTool(ctx: Tool.Context, refresh: boolean) {
   return Chimera.openProjectGraph({ sync: refresh, watch: false, onProgress: reporter.onProgress }).pipe(
     Effect.ensuring(Effect.sync(() => reporter.done())),
   )
+}
+
+const PREDESIGN_STAGE_TIMEOUT_MS = 120_000
+const PREDESIGN_PERMISSION_TIMEOUT_MS = 300_000
+
+function predesignStage<A, E, R>(
+  ctx: Tool.Context<PredesignMetadata>,
+  stage: string,
+  effect: Effect.Effect<A, E, R>,
+  timeoutMs = PREDESIGN_STAGE_TIMEOUT_MS,
+) {
+  return Effect.gen(function* () {
+    const started = Date.now()
+    const startedAt = new Date(started).toISOString()
+    const metadata = (status: PredesignStageMetadata["status"], error?: string): PredesignStageMetadata => ({
+      stage,
+      status,
+      startedAt,
+      elapsedMs: Date.now() - started,
+      timeoutMs,
+      ...(error ? { error } : {}),
+    })
+    const emit = (status: PredesignStageMetadata["status"], error?: string) =>
+      ctx
+        .metadata({
+          title: `Chimera pre-design: ${stage} ${status}`,
+          metadata: { chimeraPredesignStage: metadata(status, error) } as PredesignMetadata,
+        })
+        .pipe(Effect.ignore)
+
+    log.info("predesign stage start", { stage, sessionID: ctx.sessionID, callID: ctx.callID, timeoutMs })
+    yield* emit("running")
+    const exit = yield* effect.pipe(
+      Effect.raceFirst(
+        Effect.sleep(timeoutMs).pipe(
+          Effect.flatMap(() =>
+            Effect.fail(new Error(`chimera_predesign timed out during ${stage} after ${timeoutMs}ms`)),
+          ),
+        ),
+      ),
+      Effect.exit,
+    )
+    if (Exit.isSuccess(exit)) {
+      log.info("predesign stage complete", {
+        stage,
+        sessionID: ctx.sessionID,
+        callID: ctx.callID,
+        elapsedMs: Date.now() - started,
+      })
+      yield* emit("complete")
+      return exit.value
+    }
+    const error = Cause.squash(exit.cause)
+    const message = error instanceof Error ? error.message : String(error)
+    log.error("predesign stage failed", {
+      stage,
+      sessionID: ctx.sessionID,
+      callID: ctx.callID,
+      elapsedMs: Date.now() - started,
+      error: message,
+    })
+    yield* emit("error", message)
+    return yield* Effect.failCause(exit.cause)
+  })
 }
 
 function bounded(value: number | undefined, fallback: number, max: number) {
@@ -1601,40 +1677,64 @@ export const ChimeraPredesignTool = Tool.define<typeof PredesignParameters, Pred
         const files = cleanStrings(params.files)
         const symbols = cleanStrings(params.symbols)
         const nodeIDs = cleanStrings(params.nodeIDs)
-        yield* permission(ctx, "chimera_predesign", {
-          intent,
-          files,
-          symbols,
-          nodeIDs,
-          refresh: params.refresh !== false,
-        })
+        yield* predesignStage(
+          ctx,
+          "permission",
+          permission(ctx, "chimera_predesign", {
+            intent,
+            files,
+            symbols,
+            nodeIDs,
+            refresh: params.refresh !== false,
+          }),
+          PREDESIGN_PERMISSION_TIMEOUT_MS,
+        )
         const instance = yield* InstanceState.context
-        const state = yield* openProjectGraphForTool(ctx as Tool.Context, params.refresh !== false)
+        const state = yield* predesignStage(
+          ctx,
+          "open graph",
+          openProjectGraphForTool(ctx as Tool.Context, params.refresh !== false),
+        )
         const depth = bounded(params.depth, 2, 5)
         const limit = bounded(params.limit, 30, 100)
         const graphFiles = graphFilesFromPaths(state.projectRoot, instance.directory, files)
-        if (graphFiles.length) yield* Effect.promise(() => syncExistingGraphFiles(state, graphFiles, "force")).pipe(Effect.orDie)
+        yield* predesignStage(
+          ctx,
+          "sync files",
+          graphFiles.length
+            ? Effect.promise(() => syncExistingGraphFiles(state, graphFiles, "force")).pipe(Effect.orDie)
+            : Effect.void,
+        )
         const normalizedFiles = graphFiles.map((file) => file.graphPath)
         const snapshot = state.graph.snapshot()
-        const seedNodes = uniqueNodes([
-          ...nodeIDs.flatMap((nodeID) => {
-            const node = state.graph.node(nodeID)
-            return node ? [node] : []
+        const { seedNodes, impact } = yield* predesignStage(
+          ctx,
+          "build impact",
+          Effect.sync(() => {
+            const seedNodes = uniqueNodes([
+              ...nodeIDs.flatMap((nodeID) => {
+                const node = state.graph.node(nodeID)
+                return node ? [node] : []
+              }),
+              ...symbols.flatMap((symbol) => state.graph.searchNodes(symbol, { limit: 5 }).map((result) => result.node)),
+              ...normalizedFiles.flatMap((file) => state.graph.nodesInFile(file).slice(0, 5)),
+            ]).slice(0, limit)
+            return {
+              seedNodes,
+              impact: buildImpactEvidence({
+                state,
+                snapshot,
+                seedNodes,
+                changedFiles: normalizedFiles,
+                changeFacts: [],
+                normalizedFile: normalizedFiles[0],
+                source: "input",
+                depth,
+                limit,
+              }),
+            }
           }),
-          ...symbols.flatMap((symbol) => state.graph.searchNodes(symbol, { limit: 5 }).map((result) => result.node)),
-          ...normalizedFiles.flatMap((file) => state.graph.nodesInFile(file).slice(0, 5)),
-        ]).slice(0, limit)
-        const impact = buildImpactEvidence({
-          state,
-          snapshot,
-          seedNodes,
-          changedFiles: normalizedFiles,
-          changeFacts: [],
-          normalizedFile: normalizedFiles[0],
-          source: "input",
-          depth,
-          limit,
-        })
+        )
         const projectedSeeds = seedNodes.map((node) => state.graph.projectNode(node, snapshot))
         const projectedImpacted = impact.impactedNodes.map((node) => state.graph.projectNode(node, snapshot))
         const coverage = {
@@ -1643,84 +1743,92 @@ export const ChimeraPredesignTool = Tool.define<typeof PredesignParameters, Pred
           nodeIDs: nodeIDs.length,
           preciseFiles: normalizedFiles.length > 0,
         }
-        const record = yield* Effect.promise(() =>
-          recordPredesignRun(state.projectRoot, predesignArtifact(state.artifact), {
-            sessionID: ctx.sessionID,
-            messageID: ctx.messageID,
-            callID: ctx.callID,
-            agent: ctx.agent,
-            intent,
-            files: normalizedFiles,
-            seedNodes: projectedSeeds,
-            impactedNodes: projectedImpacted,
-            fileDependents: impact.fileDependents,
-            evidence: impact.evidence,
-            snapshotRevision: snapshot.revision,
-            payload: {
-              coverage,
-              depth,
-              limit,
-              symbols,
-              nodeIDs,
-            },
-          }),
-        ).pipe(Effect.orDie)
+        const record = yield* predesignStage(
+          ctx,
+          "record run",
+          Effect.promise(() =>
+            recordPredesignRun(state.projectRoot, predesignArtifact(state.artifact), {
+              sessionID: ctx.sessionID,
+              messageID: ctx.messageID,
+              callID: ctx.callID,
+              agent: ctx.agent,
+              intent,
+              files: normalizedFiles,
+              seedNodes: projectedSeeds,
+              impactedNodes: projectedImpacted,
+              fileDependents: impact.fileDependents,
+              evidence: impact.evidence,
+              snapshotRevision: snapshot.revision,
+              payload: {
+                coverage,
+                depth,
+                limit,
+                symbols,
+                nodeIDs,
+              },
+            }),
+          ).pipe(Effect.orDie),
+        )
 
-        return {
-          title: "Chimera pre-design",
-          output: [
-            "Chimera pre-design evidence recorded.",
-            `Run: ${record.id}`,
-            `Intent: ${intent}`,
-            `Graph revision: ${snapshot.revision}`,
-            "",
-            "Coverage:",
-            `- files: ${inlinePreview(normalizedFiles)}`,
-            `- symbols: ${inlinePreview(symbols)}`,
-            `- nodeIDs: ${inlinePreview(nodeIDs)}`,
-            coverage.preciseFiles ? "- file coverage: explicit" : "- file coverage: session-level only; rerun with files for stricter coverage.",
-            `- detailed sections show up to ${PREDESIGN_OUTPUT_PREVIEW_LIMIT} items each; full evidence remains in metadata and the recorded run.`,
-            "",
-            `Seed symbols (${seedNodes.length}):`,
-            ...previewList(seedNodes, "- No symbol seeds; file/session-level evidence only.", "seed symbols", formatNodePreview),
-            "",
-            "Change classification:",
-            ...(normalizedFiles.length
-              ? normalizedFiles.map((file) => formatClassification({ file, ...classifyFile(file) }))
-              : ["- No files supplied."]),
-            "",
-            `File dependents (${impact.fileDependents.length}):`,
-            ...previewList(impact.fileDependents, "- None found.", "file dependents", (file) => `- ${file}`),
-            "",
-            `Impacted symbols (${impact.impactedNodes.length}):`,
-            ...previewList(
-              impact.impactedNodes,
-              "- None found.",
-              "impacted symbols",
-              (node) => `${formatNodePreview(node)}\n  risk: ${riskForNode(node)}; reason: ${compactText(riskReasonForNode(node))}`,
-            ),
-            "",
-            `Impact evidence (${impact.evidence.length}):`,
-            ...previewList(impact.evidence, "- None found.", "evidence items", formatPredesignEvidence),
-            "",
-            "Mutation gate guidance:",
-            "- Fresh pre-design evidence is now recorded for this session.",
-            "- Retry the intended edit/write/apply_patch mutation if it was blocked.",
-            "- Run chimera_audit_recent after successful mutation; pre-design evidence is not post-change verification.",
-          ].join("\n"),
-          metadata: {
-            projectRoot: state.projectRoot,
-            snapshot,
-            runID: record.id,
-            intent,
-            files: normalizedFiles,
-            seeds: projectedSeeds,
-            impacted: projectedImpacted,
-            fileDependents: impact.fileDependents,
-            evidence: impact.evidence,
-            coverage,
-          },
-        }
+        return yield* predesignStage(
+          ctx,
+          "return result",
+          Effect.sync(() => ({
+            title: "Chimera pre-design",
+            output: [
+              "Chimera pre-design evidence recorded.",
+              `Run: ${record.id}`,
+              `Intent: ${intent}`,
+              `Graph revision: ${snapshot.revision}`,
+              "",
+              "Coverage:",
+              `- files: ${inlinePreview(normalizedFiles)}`,
+              `- symbols: ${inlinePreview(symbols)}`,
+              `- nodeIDs: ${inlinePreview(nodeIDs)}`,
+              coverage.preciseFiles ? "- file coverage: explicit" : "- file coverage: session-level only; rerun with files for stricter coverage.",
+              `- detailed sections show up to ${PREDESIGN_OUTPUT_PREVIEW_LIMIT} items each; full evidence remains in metadata and the recorded run.`,
+              "",
+              `Seed symbols (${seedNodes.length}):`,
+              ...previewList(seedNodes, "- No symbol seeds; file/session-level evidence only.", "seed symbols", formatNodePreview),
+              "",
+              "Change classification:",
+              ...(normalizedFiles.length
+                ? normalizedFiles.map((file) => formatClassification({ file, ...classifyFile(file) }))
+                : ["- No files supplied."]),
+              "",
+              `File dependents (${impact.fileDependents.length}):`,
+              ...previewList(impact.fileDependents, "- None found.", "file dependents", (file) => `- ${file}`),
+              "",
+              `Impacted symbols (${impact.impactedNodes.length}):`,
+              ...previewList(
+                impact.impactedNodes,
+                "- None found.",
+                "impacted symbols",
+                (node) => `${formatNodePreview(node)}\n  risk: ${riskForNode(node)}; reason: ${compactText(riskReasonForNode(node))}`,
+              ),
+              "",
+              `Impact evidence (${impact.evidence.length}):`,
+              ...previewList(impact.evidence, "- None found.", "evidence items", formatPredesignEvidence),
+              "",
+              "Mutation gate guidance:",
+              "- Fresh pre-design evidence is now recorded for this session.",
+              "- Retry the intended edit/write/apply_patch mutation if it was blocked.",
+              "- Run chimera_audit_recent after successful mutation; pre-design evidence is not post-change verification.",
+            ].join("\n"),
+            metadata: {
+              projectRoot: state.projectRoot,
+              snapshot,
+              runID: record.id,
+              intent,
+              files: normalizedFiles,
+              seeds: projectedSeeds,
+              impacted: projectedImpacted,
+              fileDependents: impact.fileDependents,
+              evidence: impact.evidence,
+              coverage,
+            },
+          })),
+        )
       }).pipe(Effect.orDie),
   }),
 )
