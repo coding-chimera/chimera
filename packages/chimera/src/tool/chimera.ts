@@ -591,7 +591,7 @@ function createSyncProgressReporter(ctx: Tool.Context, enabled: boolean) {
 
 function openProjectGraphForTool(ctx: Tool.Context, refresh: boolean) {
   const reporter = createSyncProgressReporter(ctx, refresh)
-  return Chimera.openProjectGraph({ sync: refresh, onProgress: reporter.onProgress }).pipe(
+  return Chimera.openProjectGraph({ sync: refresh, watch: false, onProgress: reporter.onProgress }).pipe(
     Effect.ensuring(Effect.sync(() => reporter.done())),
   )
 }
