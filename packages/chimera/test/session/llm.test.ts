@@ -477,6 +477,82 @@ describe("session.llm.stream", () => {
     })
   })
 
+  test("service stream propagates caller abort signal to provider request", async () => {
+    const server = state.server
+    if (!server) throw new Error("Server not initialized")
+
+    const providerID = "alibaba"
+    const modelID = "qwen-plus"
+    const fixture = await loadFixture(providerID, modelID)
+    const model = fixture.model
+    const pending = waitStreamingRequest("/chat/completions")
+
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(
+          path.join(dir, "chimera.json"),
+          JSON.stringify({
+            $schema: "https://chimera.ai/config.json",
+            enabled_providers: [providerID],
+            provider: {
+              [providerID]: {
+                options: {
+                  apiKey: "test-key",
+                  baseURL: `${server.url.origin}/v1`,
+                },
+              },
+            },
+          }),
+        )
+      },
+    })
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const resolved = await getModel(ProviderID.make(providerID), ModelID.make(model.id))
+        const sessionID = SessionID.make("session-test-caller-abort")
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        } satisfies Agent.Info
+        const user = {
+          id: MessageID.make("user-caller-abort"),
+          sessionID,
+          role: "user",
+          time: { created: Date.now() },
+          agent: agent.name,
+          model: { providerID: ProviderID.make(providerID), modelID: resolved.id },
+        } satisfies MessageV2.User
+
+        const ctrl = new AbortController()
+        const run = llm.runPromiseExit((svc) =>
+          svc
+            .stream({
+              user,
+              sessionID,
+              model: resolved,
+              agent,
+              system: ["You are a helpful assistant."],
+              messages: [{ role: "user", content: "Hello" }],
+              tools: {},
+              abort: ctrl.signal,
+            })
+            .pipe(Stream.runDrain),
+        )
+
+        await pending.request
+        ctrl.abort()
+
+        await Promise.race([pending.responseCanceled, timeout(500)])
+        await run
+        await Promise.race([pending.requestAborted, timeout(500)]).catch(() => undefined)
+      },
+    })
+  })
+
   test("keeps tools enabled by prompt permissions", async () => {
     const server = state.server
     if (!server) {

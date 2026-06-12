@@ -44,11 +44,12 @@ export type StreamInput = {
   messages: ModelMessage[]
   small?: boolean
   tools: Record<string, Tool>
+  abort?: AbortSignal
   retries?: number
   toolChoice?: "auto" | "required" | "none"
 }
 
-export type StreamRequest = StreamInput & {
+export type StreamRequest = Omit<StreamInput, "abort"> & {
   abort: AbortSignal
 }
 
@@ -431,7 +432,10 @@ const live: Layer.Layer<
               (ctrl) => Effect.sync(() => ctrl.abort()),
             )
 
-            const result = yield* run({ ...input, abort: ctrl.signal })
+            const result = yield* run({
+              ...input,
+              abort: input.abort ? AbortSignal.any([input.abort, ctrl.signal]) : ctrl.signal,
+            })
 
             return Stream.fromAsyncIterable(result.fullStream, (e) => (e instanceof Error ? e : new Error(String(e))))
           }),
