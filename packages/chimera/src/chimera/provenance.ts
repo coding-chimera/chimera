@@ -262,8 +262,7 @@ async function closeGraphRoot(root: string) {
   if (!promise) return
   try {
     const state = await promise
-    state.graph.unwatch()
-    state.graph.close()
+    await state.graph.close()
   } catch {
     // Failed opens have no live watcher/db to close.
   }

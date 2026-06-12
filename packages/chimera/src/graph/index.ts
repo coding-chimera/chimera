@@ -1051,11 +1051,14 @@ export class CodeGraph {
   /**
    * Close the CodeGraph instance and release resources
    */
-  close(): void {
-    this.unwatch();
-    // Release file lock if held
-    this.fileLock.release();
-    this.db.close();
+  async close(): Promise<void> {
+    try {
+      await this.unwatch();
+    } finally {
+      // Release file lock if held
+      this.fileLock.release();
+      this.db.close();
+    }
   }
 
   /**
@@ -1381,11 +1384,10 @@ export class CodeGraph {
   /**
    * Stop watching for file changes.
    */
-  unwatch(): void {
-    if (this.watcher) {
-      this.watcher.stop();
-      this.watcher = null;
-    }
+  async unwatch(): Promise<void> {
+    const watcher = this.watcher;
+    this.watcher = null;
+    if (watcher) await watcher.stop();
   }
 
   /**
@@ -2131,8 +2133,8 @@ export class CodeGraph {
    * Alias for close() for backwards compatibility.
    * @deprecated Use close() instead
    */
-  destroy(): void {
-    this.close();
+  destroy(): Promise<void> {
+    return this.close();
   }
 
   /**
@@ -2141,8 +2143,8 @@ export class CodeGraph {
    *
    * WARNING: This permanently deletes all CodeGraph data for the project.
    */
-  uninitialize(): void {
-    this.close();
+  async uninitialize(): Promise<void> {
+    await this.close();
     removeDirectory(this.projectRoot);
   }
 }
