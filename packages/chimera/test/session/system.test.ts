@@ -64,8 +64,12 @@ describe("session.system", () => {
       } as unknown as Parameters<typeof SystemPrompt.provider>[0]).join("\n")
 
       expect(unknown).toContain("# Chimera tools")
+      expect(unknown).toContain("# Work Brief")
+      expect(unknown).toContain("workbrief")
+      expect(unknown).toContain("chimera_audit_recent")
       expect(unknown).not.toContain("Kimi For Coding")
       expect(kimi).toContain("# Chimera tools")
+      expect(kimi).toContain("# Work Brief")
       expect(kimi).toContain("Kimi For Coding")
       expect(kimi.indexOf("# Chimera tools")).toBeLessThan(kimi.indexOf("Kimi For Coding"))
       yield* Effect.void

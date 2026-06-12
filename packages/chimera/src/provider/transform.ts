@@ -500,6 +500,7 @@ export function topK(model: Provider.Model) {
 
 const WIDELY_SUPPORTED_EFFORTS = ["low", "medium", "high"]
 const OPENAI_EFFORTS = ["none", "minimal", ...WIDELY_SUPPORTED_EFFORTS, "xhigh"]
+const NVIDIA_KIMI_K26_EFFORTS = ["none", "minimal", ...WIDELY_SUPPORTED_EFFORTS, "xhigh", "max"]
 
 // OpenAI rolled out the `none` reasoning_effort tier on this date (Responses API).
 // Models released before it 400 on `reasoning_effort: "none"`, so we only expose
@@ -541,11 +542,23 @@ function anthropicAdaptiveEfforts(apiId: string): string[] | null {
   return null
 }
 
+function isNvidiaKimiK26(model: Provider.Model) {
+  return (
+    model.providerID === "nvidia" &&
+    model.capabilities.reasoning &&
+    model.api.npm === "@ai-sdk/openai-compatible" &&
+    model.api.id.toLowerCase().includes("kimi-k2.6")
+  )
+}
+
 export function variants(model: Provider.Model): Record<string, Record<string, any>> {
   if (!model.capabilities.reasoning) return {}
 
   const id = model.id.toLowerCase()
   const adaptiveEfforts = anthropicAdaptiveEfforts(model.api.id)
+  if (isNvidiaKimiK26(model)) {
+    return Object.fromEntries(NVIDIA_KIMI_K26_EFFORTS.map((effort) => [effort, { reasoningEffort: effort }]))
+  }
   if (
     id.includes("deepseek-chat") ||
     id.includes("deepseek-reasoner") ||
@@ -1022,6 +1035,9 @@ export function options(input: {
 
   // Enable thinking by default for kimi models using anthropic SDK
   const modelId = input.model.api.id.toLowerCase()
+  if (isNvidiaKimiK26(input.model)) {
+    result["reasoningEffort"] = "medium"
+  }
   if (
     (input.model.api.npm === "@ai-sdk/anthropic" || input.model.api.npm === "@ai-sdk/google-vertex/anthropic") &&
     (modelId.includes("k2p") || modelId.includes("kimi-k2.") || modelId.includes("kimi-k2p"))

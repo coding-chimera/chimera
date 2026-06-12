@@ -1,9 +1,78 @@
-Use this tool to maintain the session's Current Work Brief. The brief is persisted in session state and injected at the end of the model prompt as a mutable suffix.
+Use this tool to maintain the session's Current Work Brief. The brief is persisted in session state and injected at the end of the model prompt as a mutable suffix, so future turns and agents can recover the active goal, constraints, decisions, evidence, open questions, and closeout expectations.
 
-Use it in the same turn when the active work intent, confirmed decisions, constraints, acceptance criteria, open questions, relevant evidence, or closeout checklist changes during conversation. When handling a new user message, first decide whether the message changes or corrects the brief; if it does, call this tool before continuing with the response or other tool work.
+This tool is similar to the todo tool, but it tracks durable session context instead of step-by-step task status. Use todo for actionable progress items. Use workbrief for the facts and commitments that should keep guiding the session even after context shifts, interruptions, or subagent handoffs.
 
-This tool is the primary path for Work Brief updates. The runtime persists and displays the submitted brief; it does not default to a hidden post-turn semantic updater. When the user corrects the brief, replace conflicting old entries instead of appending both versions.
+## When to Use This Tool
 
-Keep entries in the user's communication language and keep them compact. Do not store large source snippets, full tool outputs, or long transcripts. Store short findings, decisions, and references only.
+Use this tool proactively when the session state changes:
 
-The tool uses patch semantics: omitted fields keep their previous values. Set `clear` to true to reset the brief before applying supplied fields.
+1. New or changed intent - The user starts a new task, narrows the goal, changes priorities, or corrects what the work is supposed to accomplish.
+2. Confirmed decisions - The user or repository evidence establishes a decision that should guide later work.
+3. Constraints and requirements - The user gives boundaries such as "do not edit code", "only report", "do not run tests", "use this remote", or "preserve this behavior".
+4. Acceptance criteria - The definition of done becomes clear, changes, or needs to be remembered across turns.
+5. Open questions - A blocker or unresolved choice remains and should not be forgotten.
+6. Relevant evidence - A file path, command result, tool finding, runtime observation, or source-backed conclusion should guide later work.
+7. Closeout checklist - The task now has required verification, audit, commit, push, packaging, or reporting steps.
+8. After receiving corrective user feedback - Update the brief before continuing so stale state does not steer the next actions.
+
+When handling a new user message, first decide whether it changes or corrects the brief. If it does, call this tool before substantial tool work.
+
+## When NOT to Use This Tool
+
+Skip this tool when:
+
+1. The task is a single straightforward action and there is no durable state to preserve.
+2. The message is purely conversational and does not change the active work.
+3. You only need a local step checklist for the current turn. Use todo instead.
+4. The information is large, transient, or better kept in files, command output, or final response text.
+
+Do not update the brief just to show activity. Update it only when the stored session context would become more accurate or useful.
+
+## What to Store
+
+- `intent`: one compact sentence describing the active objective.
+- `confirmedDecisions`: stable choices or conclusions that should guide future work.
+- `constraints`: user or repo boundaries that must be preserved.
+- `acceptanceCriteria`: observable conditions for completion.
+- `openQuestions`: unresolved questions that need user input or more evidence.
+- `relevantEvidence`: short references to files, commands, tool findings, or conclusions.
+- `closeout`: verification, audit, packaging, commit, push, or reporting steps still required before claiming completion.
+
+Keep entries in the user's communication language. Keep them compact and specific. Prefer short file paths, command names, and concise evidence summaries.
+
+## What NOT to Store
+
+Do not store large source snippets, full tool outputs, long transcripts, speculative thoughts, or duplicate versions of the same fact. Do not use workbrief as a scratchpad for every step. Do not use it as a replacement for todo status updates.
+
+When the user corrects the brief, replace conflicting old entries instead of appending both versions.
+
+## Patch Semantics
+
+The tool uses patch semantics: omitted fields keep their previous values. Include only fields that should change. Set `clear` to true to reset the brief before applying supplied fields.
+
+Use `clear` when the active task has changed enough that old intent, constraints, evidence, or closeout items would mislead future work.
+
+## Examples
+
+<example>
+User: Do not modify code yet. First inspect why chimera_impact keeps failing and report.
+Assistant: Calls workbrief with:
+- intent: Inspect why chimera_impact calls fail and report without code changes.
+- constraints: Do not modify code.
+- acceptanceCriteria: Source-backed explanation of the failure mode.
+</example>
+
+<example>
+User: Actually, the release must target coding-chimera/coding-chimera, not the chimera submodule.
+Assistant: Calls workbrief before continuing, replacing any conflicting release target decision with:
+- confirmedDecisions: Releases target the root/superproject repository coding-chimera/coding-chimera.
+- constraints: Do not publish future release assets on coding-chimera/chimera.
+</example>
+
+<example>
+User: Add these three provider fixes and run the focused tests.
+Assistant: Uses todo to track implementation steps. Uses workbrief only for durable context such as:
+- intent: Implement the requested provider fixes.
+- acceptanceCriteria: Focused provider tests pass.
+- closeout: Run focused tests and report any skipped verification.
+</example>
