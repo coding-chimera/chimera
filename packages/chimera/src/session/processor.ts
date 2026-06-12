@@ -32,6 +32,27 @@ function isAbortError(error: unknown) {
   return error instanceof Error && error.name === "AbortError"
 }
 
+function isUnfinishedToolPart(part: MessageV2.Part): part is MessageV2.ToolPart {
+  return part.type === "tool" && (part.state.status === "pending" || part.state.status === "running")
+}
+
+function errorToolPart(part: MessageV2.ToolPart, error: unknown, end = Date.now()): MessageV2.ToolPart {
+  const metadata = "metadata" in part.state && isRecord(part.state.metadata) ? part.state.metadata : {}
+  const interrupted = isAbortError(error)
+  return {
+    ...part,
+    state: {
+      status: "error",
+      input: part.state.input,
+      error: errorMessage(error),
+      ...(interrupted || Object.keys(metadata).length
+        ? { metadata: interrupted ? { ...metadata, interrupted: true } : metadata }
+        : {}),
+      time: { start: "time" in part.state ? part.state.time.start : end, end },
+    },
+  }
+}
+
 export type Result = "compact" | "stop" | "continue"
 
 export type Event = LLM.Event
@@ -205,21 +226,8 @@ export const layer: Layer.Layer<
 
       const failToolCall = Effect.fn("SessionProcessor.failToolCall")(function* (toolCallID: string, error: unknown) {
         const match = yield* readToolCall(toolCallID)
-        if (!match || match.part.state.status !== "running") return false
-        const metadata = isRecord(match.part.state.metadata) ? match.part.state.metadata : {}
-        const interrupted = isAbortError(error)
-        yield* session.updatePart({
-          ...match.part,
-          state: {
-            status: "error",
-            input: match.part.state.input,
-            error: errorMessage(error),
-            ...(interrupted || Object.keys(metadata).length
-              ? { metadata: interrupted ? { ...metadata, interrupted: true } : metadata }
-              : {}),
-            time: { start: match.part.state.time.start, end: Date.now() },
-          },
-        })
+        if (!match || !isUnfinishedToolPart(match.part)) return false
+        yield* session.updatePart(errorToolPart(match.part, error))
         if (error instanceof Permission.RejectedError || error instanceof Question.RejectedError) {
           ctx.blocked = ctx.shouldBreak
         }
@@ -631,24 +639,14 @@ export const layer: Layer.Layer<
           { concurrency: "unbounded" },
         )
 
-        for (const toolCallID of Object.keys(ctx.toolcalls)) {
-          const match = yield* readToolCall(toolCallID)
-          if (!match) continue
-          const part = match.part
-          const end = Date.now()
-          const metadata = "metadata" in part.state && isRecord(part.state.metadata) ? part.state.metadata : {}
-          yield* session.updatePart({
-            ...part,
-            state: {
-              ...part.state,
-              status: "error",
-              error: "Tool execution aborted",
-              metadata: { ...metadata, interrupted: true },
-              time: { start: "time" in part.state ? part.state.time.start : end, end },
-            },
-          })
+        const end = Date.now()
+        const abort = new DOMException("Tool execution aborted", "AbortError")
+        for (const part of MessageV2.parts(ctx.assistantMessage.id).filter(isUnfinishedToolPart)) {
+          yield* session.updatePart(errorToolPart(part, abort, end))
         }
-        ctx.toolcalls = {}
+        for (const toolCallID of Object.keys(ctx.toolcalls)) {
+          yield* settleToolCall(toolCallID)
+        }
         ctx.assistantMessage.time.completed = Date.now()
         yield* session.updateMessage(ctx.assistantMessage)
       })

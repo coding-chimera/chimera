@@ -712,6 +712,79 @@ it.live("session.processor effect tests mark pending tools as aborted on cleanup
   ),
 )
 
+it.live("session.processor effect tests sweep persisted running tools on cleanup", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+
+        yield* llm.hang
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "stale tool")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const staleCallID = "call-stale-running"
+        yield* session.updatePart({
+          id: PartID.ascending(),
+          messageID: msg.id,
+          sessionID: chat.id,
+          type: "tool",
+          tool: "chimera_predesign",
+          callID: staleCallID,
+          state: {
+            status: "running",
+            input: { files: ["specs/example.md"] },
+            metadata: { stage: "open graph" },
+            time: { start: Date.now() },
+          },
+        })
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+        })
+
+        const run = yield* handle
+          .process({
+            user: {
+              id: parent.id,
+              sessionID: chat.id,
+              role: "user",
+              time: parent.time,
+              agent: parent.agent,
+              model: { providerID: ref.providerID, modelID: ref.modelID },
+            } satisfies MessageV2.User,
+            sessionID: chat.id,
+            model: mdl,
+            agent: agent(),
+            system: [],
+            messages: [{ role: "user", content: "stale tool" }],
+            tools: {},
+          })
+          .pipe(Effect.forkChild)
+
+        yield* llm.wait(1)
+        yield* Fiber.interrupt(run)
+
+        const exit = yield* Fiber.await(run)
+        const call = MessageV2.parts(msg.id).find(
+          (part): part is MessageV2.ToolPart => part.type === "tool" && part.callID === staleCallID,
+        )
+
+        expect(Exit.isFailure(exit)).toBe(true)
+        expect(call?.state.status).toBe("error")
+        if (call?.state.status === "error") {
+          expect(call.state.error).toBe("Tool execution aborted")
+          expect(call.state.metadata?.stage).toBe("open graph")
+          expect(call.state.metadata?.interrupted).toBe(true)
+          expect(call.state.time.end).toBeDefined()
+        }
+      }),
+    { git: true, config: (url) => providerCfg(url) },
+  ),
+)
+
 it.live("session.processor effect tests record aborted errors and idle state", () =>
   provideTmpdirServer(
     ({ dir, llm }) =>
