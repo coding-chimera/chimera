@@ -28,6 +28,10 @@ import * as DateTime from "effect/DateTime"
 const DOOM_LOOP_THRESHOLD = 3
 const log = Log.create({ service: "session.processor" })
 
+function isAbortError(error: unknown) {
+  return error instanceof Error && error.name === "AbortError"
+}
+
 export type Result = "compact" | "stop" | "continue"
 
 export type Event = LLM.Event
@@ -47,6 +51,7 @@ export interface Handle {
       attachments?: MessageV2.FilePart[]
     },
   ) => Effect.Effect<void>
+  readonly failToolCall: (toolCallID: string, error: unknown) => Effect.Effect<boolean>
   readonly process: (streamInput: LLM.StreamInput) => Effect.Effect<Result>
 }
 
@@ -201,12 +206,17 @@ export const layer: Layer.Layer<
       const failToolCall = Effect.fn("SessionProcessor.failToolCall")(function* (toolCallID: string, error: unknown) {
         const match = yield* readToolCall(toolCallID)
         if (!match || match.part.state.status !== "running") return false
+        const metadata = isRecord(match.part.state.metadata) ? match.part.state.metadata : {}
+        const interrupted = isAbortError(error)
         yield* session.updatePart({
           ...match.part,
           state: {
             status: "error",
             input: match.part.state.input,
             error: errorMessage(error),
+            ...(interrupted || Object.keys(metadata).length
+              ? { metadata: interrupted ? { ...metadata, interrupted: true } : metadata }
+              : {}),
             time: { start: match.part.state.time.start, end: Date.now() },
           },
         })
@@ -738,6 +748,7 @@ export const layer: Layer.Layer<
         },
         updateToolCall,
         completeToolCall,
+        failToolCall,
         process,
       } satisfies Handle
     })
