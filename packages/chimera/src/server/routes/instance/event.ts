@@ -8,6 +8,7 @@ import { Bus } from "@/bus"
 import { AsyncQueue } from "@/util/queue"
 
 const log = Log.create({ service: "server" })
+const EVENT_QUEUE_CAPACITY = 1024
 
 export const EventRoutes = () =>
   new Hono().get(
@@ -37,7 +38,7 @@ export const EventRoutes = () =>
       c.header("X-Accel-Buffering", "no")
       c.header("X-Content-Type-Options", "nosniff")
       return streamSSE(c, async (stream) => {
-        const q = new AsyncQueue<string | null>()
+        const q = new AsyncQueue<string | null>({ capacity: EVENT_QUEUE_CAPACITY, overflow: "drop-oldest" })
         let done = false
 
         q.push(
@@ -64,7 +65,7 @@ export const EventRoutes = () =>
           done = true
           clearInterval(heartbeat)
           unsub()
-          q.push(null)
+          q.push(null, { force: true })
           log.info("event disconnected")
         }
 

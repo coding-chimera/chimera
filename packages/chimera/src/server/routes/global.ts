@@ -18,10 +18,11 @@ import { errors } from "../error"
 import { disposeAllInstancesAndEmitGlobalDisposed } from "../global-lifecycle"
 
 const log = Log.create({ service: "server" })
+const EVENT_QUEUE_CAPACITY = 1024
 
 async function streamEvents(c: Context, subscribe: (q: AsyncQueue<string | null>) => () => void) {
   return streamSSE(c, async (stream) => {
-    const q = new AsyncQueue<string | null>()
+    const q = new AsyncQueue<string | null>({ capacity: EVENT_QUEUE_CAPACITY, overflow: "drop-oldest" })
     let done = false
 
     q.push(
@@ -52,7 +53,7 @@ async function streamEvents(c: Context, subscribe: (q: AsyncQueue<string | null>
       done = true
       clearInterval(heartbeat)
       unsub()
-      q.push(null)
+      q.push(null, { force: true })
       log.info("global event disconnected")
     }
 
