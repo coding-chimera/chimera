@@ -18,24 +18,29 @@ import type { Agent } from "@/agent/agent"
 import { Permission } from "@/permission"
 import { Skill } from "@/skill"
 
-export function provider(model: Provider.Model) {
+function specialization(model: Provider.Model) {
   const apiID = model.api.id.toLowerCase()
+  const providerID = model.providerID.toLowerCase()
   const modelSlug = apiID.split("/").at(-1) ?? apiID
 
   if (apiID.includes("gpt-4") || apiID.includes("o1") || apiID.includes("o3"))
-    return [PROMPT_BEAST]
+    return PROMPT_BEAST
   if (apiID.includes("gpt")) {
-    if (modelSlug === "gpt-5.5") return [PROMPT_GPT55]
+    if (modelSlug === "gpt-5.5") return PROMPT_GPT55
     if (apiID.includes("codex")) {
-      return [PROMPT_CODEX]
+      return PROMPT_CODEX
     }
-    return [PROMPT_GPT]
+    return PROMPT_GPT
   }
-  if (apiID.includes("gemini-")) return [PROMPT_GEMINI]
-  if (apiID.includes("claude")) return [PROMPT_ANTHROPIC]
-  if (apiID.includes("trinity")) return [PROMPT_TRINITY]
-  if (apiID.includes("kimi")) return [PROMPT_KIMI]
-  return [PROMPT_DEFAULT]
+  if (apiID.includes("gemini-")) return PROMPT_GEMINI
+  if (apiID.includes("claude")) return PROMPT_ANTHROPIC
+  if (apiID.includes("trinity")) return PROMPT_TRINITY
+  if (providerID.includes("kimi") || apiID.includes("kimi")) return PROMPT_KIMI
+}
+
+export function provider(model: Provider.Model) {
+  const tuned = specialization(model)
+  return [PROMPT_DEFAULT, ...(tuned ? [tuned] : [])]
 }
 
 export interface Interface {

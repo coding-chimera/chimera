@@ -52,6 +52,26 @@ const it = testEffect(
 )
 
 describe("session.system", () => {
+  it.effect("always includes the default prompt before model-specific tuning", () =>
+    Effect.gen(function* () {
+      const unknown = SystemPrompt.provider({
+        providerID: "local",
+        api: { id: "unknown-model" },
+      } as unknown as Parameters<typeof SystemPrompt.provider>[0]).join("\n")
+      const kimi = SystemPrompt.provider({
+        providerID: "kimi-for-coding",
+        api: { id: "k2p6" },
+      } as unknown as Parameters<typeof SystemPrompt.provider>[0]).join("\n")
+
+      expect(unknown).toContain("# Chimera tools")
+      expect(unknown).not.toContain("Kimi For Coding")
+      expect(kimi).toContain("# Chimera tools")
+      expect(kimi).toContain("Kimi For Coding")
+      expect(kimi.indexOf("# Chimera tools")).toBeLessThan(kimi.indexOf("Kimi For Coding"))
+      yield* Effect.void
+    }),
+  )
+
   it.effect("routes gpt-5.5 ids to the GPT-5.5 prompt", () =>
     Effect.gen(function* () {
       const raw = SystemPrompt.provider({
@@ -71,13 +91,74 @@ describe("session.system", () => {
         api: { id: "gpt-5.4" },
       } as unknown as Parameters<typeof SystemPrompt.provider>[0]).join("\n")
 
+      expect(raw).toContain("# Chimera tools")
       expect(raw).toContain("powered by GPT-5.5")
       expect(raw).toContain("Codex OAuth and OpenAI API")
+      expect(namespaced).toContain("# Chimera tools")
       expect(namespaced).toContain("powered by GPT-5.5")
       expect(namespaced).toContain("Codex OAuth and OpenAI API")
+      expect(codexNamespaced).toContain("# Chimera tools")
       expect(codexNamespaced).toContain("powered by GPT-5.5")
       expect(codexNamespaced).toContain("Codex OAuth and OpenAI API")
+      expect(fallback).toContain("# Chimera tools")
       expect(fallback).not.toContain("Codex OAuth and OpenAI API")
+      yield* Effect.void
+    }),
+  )
+
+  it.effect("routes Kimi For Coding provider models to the Kimi prompt", () =>
+    Effect.gen(function* () {
+      const stable = SystemPrompt.provider({
+        providerID: "kimi-for-coding",
+        api: { id: "kimi-for-coding" },
+      } as unknown as Parameters<typeof SystemPrompt.provider>[0]).join("\n")
+      const legacyAlias = SystemPrompt.provider({
+        providerID: "kimi-for-coding",
+        api: { id: "k2p6" },
+      } as unknown as Parameters<typeof SystemPrompt.provider>[0]).join("\n")
+      const apiNamed = SystemPrompt.provider({
+        providerID: "moonshot",
+        api: { id: "kimi-k2-thinking" },
+      } as unknown as Parameters<typeof SystemPrompt.provider>[0]).join("\n")
+
+      expect(stable).toContain("Kimi For Coding")
+      expect(stable).toContain("factual restraint")
+      expect(stable).toContain("Chimera Operating Discipline")
+      expect(stable).toContain("workbrief")
+      expect(stable).toContain("chimera_search")
+      expect(stable).toContain("chimera_predesign")
+      expect(stable).toContain("chimera_audit_recent")
+      expect(stable).toContain("# Chimera tools")
+      expect(legacyAlias).toContain("Kimi For Coding")
+      expect(legacyAlias).toContain("# Chimera tools")
+      expect(apiNamed).toContain("Kimi For Coding")
+      expect(apiNamed).toContain("# Chimera tools")
+      yield* Effect.void
+    }),
+  )
+
+  it.effect("routes other model-specific prompts as overlays on top of default", () =>
+    Effect.gen(function* () {
+      const cases = [
+        { providerID: "openai", apiID: "gpt-5.4", marker: "## GPT Overlay" },
+        { providerID: "openai", apiID: "gpt-4.1", marker: "## High-Reasoning GPT Overlay" },
+        { providerID: "openai", apiID: "gpt-5-codex", marker: "## Codex Overlay" },
+        { providerID: "anthropic", apiID: "claude-sonnet-4", marker: "## Claude / Anthropic Overlay" },
+        { providerID: "google", apiID: "gemini-2.5-pro", marker: "## Gemini Overlay" },
+        { providerID: "opencode", apiID: "trinity-large", marker: "## Trinity Overlay" },
+      ]
+
+      for (const item of cases) {
+        const prompt = SystemPrompt.provider({
+          providerID: item.providerID,
+          api: { id: item.apiID },
+        } as unknown as Parameters<typeof SystemPrompt.provider>[0]).join("\n")
+
+        expect(prompt).toContain("# Chimera tools")
+        expect(prompt).toContain(item.marker)
+        expect(prompt.indexOf("# Chimera tools")).toBeLessThan(prompt.indexOf(item.marker))
+      }
+
       yield* Effect.void
     }),
   )
