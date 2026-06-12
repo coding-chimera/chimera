@@ -972,6 +972,55 @@ it.live(
 )
 
 it.live(
+  "cancel finalizes active inline tool execute as interrupted error",
+  () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const ready = defer<void>()
+        const aborted = defer<void>()
+        const registry = yield* ToolRegistry.Service
+        const { read } = yield* registry.named()
+        const original = read.execute
+        read.execute = (_args: Parameters<typeof original>[0], ctx: Parameters<typeof original>[1]) =>
+          Effect.callback<never>(() => {
+            ready.resolve()
+            ctx.abort.addEventListener("abort", () => aborted.resolve(), { once: true })
+            return Effect.sync(() => aborted.resolve())
+          })
+        yield* Effect.addFinalizer(() => Effect.sync(() => void (read.execute = original)))
+
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const chat = yield* sessions.create({
+          title: "Pinned",
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+        yield* user(chat.id, "hello")
+        yield* llm.tool("read", { filePath: path.join(process.cwd(), "missing.txt") })
+
+        const fiber = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+        yield* Effect.promise(() => ready.promise)
+        yield* prompt.cancel(chat.id)
+        yield* Effect.promise(() => aborted.promise)
+
+        const exit = yield* Fiber.await(fiber)
+        expect(Exit.isSuccess(exit)).toBe(true)
+
+        const tool = (yield* MessageV2.filterCompactedEffect(chat.id))
+          .flatMap((msg) => msg.parts)
+          .find((part): part is MessageV2.ToolPart => part.type === "tool" && part.tool === "read")
+        expect(tool?.state.status).toBe("error")
+        if (tool?.state.status !== "error") return
+
+        expect(tool.state.metadata?.interrupted).toBe(true)
+        expect(tool.state.time.end).toBeDefined()
+      }),
+      { git: true, config: providerCfg },
+    ),
+  30_000,
+)
+
+it.live(
   "cancel finalizes subtask tool state",
   () =>
     provideTmpdirInstance(
