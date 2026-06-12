@@ -1,22 +1,61 @@
 Analyze bounded file and symbol impact through Chimera's CodeGraph surface.
 
-Use this tool when you need static graph evidence about callers, importers, file dependents, impact radius, or risk categories for a known file, symbol, node id, or range.
+Use this tool when you need static graph evidence about callers, importers, file dependents, impact radius, or risk categories for a known file, symbol, node id, or source range.
 
-Do NOT use this tool as a replacement for tests, typecheck, build, or lint. It is graph evidence, not oracle verification.
+Do NOT use this tool as a replacement for tests, typecheck, build, or lint. It is structural graph evidence, not oracle verification.
 
-Parameter rules:
-- Prefer `nodeID` when you have an exact CodeGraph node id.
-- Use `symbol` when you know a name but not its node id.
-- Use `filePath` for file-level impact; combine with `range` only when a source range is relevant.
-- Existing explicit `filePath` seeds are synced from the filesystem before impact seed resolution, even when they are not yet tracked by git.
-- `depth` defaults to 2 and is capped at 5.
-- `limit` defaults to 20 and is capped at 100.
-- `refresh` controls whether stale graph signals may trigger a sync.
+## When to Use This Tool
 
-Common calls:
-- Check callers, importers, or file dependents before changing a shared API.
-- Compare bounded impact for a file-level versus symbol-level seed.
+Use this tool when you have a concrete seed and need to understand what may be affected:
 
-After this tool:
+1. Before changing a shared API, exported function, provider transform, prompt, config, route, or tool surface.
+2. When `chimera_file_symbols` or `chimera_search` has already identified a likely graph node and you need callers, dependents, or nearby risk.
+3. When a user asks what a change might break, what calls a symbol, what imports a file, or how far a change may propagate.
+4. When comparing file-level impact against a narrower symbol or range seed before choosing an edit shape.
+
+## Seed Selection Rules
+
+Pass at least one concrete, non-empty seed: `nodeID`, `symbol`, or `filePath`.
+
+1. Prefer `nodeID` when you have an exact CodeGraph node id from `chimera_search`, `chimera_file_symbols`, or prior tool metadata.
+2. Use `filePath` for file-level dependents and importers. Existing explicit `filePath` seeds are synced from the filesystem before impact seed resolution, even when the file is not yet tracked by git.
+3. Use `filePath` plus `range` when the relevant code is in a known line range. This resolves seed symbols intersecting that range.
+4. Use `symbol` only when the name is specific enough to identify the intended seed. Generic names such as `run`, `handler`, `options`, `transform`, or `variants` may match unrelated symbols across packages or languages.
+5. If a symbol name is generic, duplicated, or known to live in a specific file, first call `chimera_file_symbols` with `filePath` and optional `range`, then call `chimera_impact` with the exact `nodeID`.
+6. Use `kind` only as a narrowing filter when you know the CodeGraph node kind you want.
+
+Omit seed fields you do not know. Do not pass empty strings for `nodeID`, `symbol`, or `filePath`. A call with blank seed fields is not a valid impact query and will fail.
+
+## When NOT to Use This Tool
+
+Skip this tool when:
+
+1. You need arbitrary raw text search, regex matches, or counts. Use grep for that.
+2. You do not yet have any concrete seed. Use `chimera_search` for query-based discovery or `chimera_file_symbols` for symbols in a known file.
+3. You need post-mutation propagation closeout from the latest edit. Use `chimera_audit_recent`.
+4. You need to record pre-edit evidence for a risky mutation gate. Use `chimera_predesign`.
+
+## Parameters
+
+- `nodeID`: exact CodeGraph node id to analyze; best choice when available.
+- `symbol`: symbol name to resolve and analyze; use only when specific enough.
+- `filePath`: absolute or project-relative file path for file-level impact.
+- `range`: optional source range inside `filePath`; meaningful only with `filePath`.
+- `kind`: optional node kind filter for symbol or range resolution.
+- `depth`: graph traversal depth; defaults to 2 and is capped at 5.
+- `limit`: maximum impacted symbols/files; defaults to 20 and is capped at 100.
+- `refresh`: controls whether stale graph signals may trigger a sync.
+
+## Recovery From Empty Results
+
+If the tool says no seed resolved, do not retry with the same blank or ambiguous inputs. Resolve a seed first:
+
+1. Known file: call `chimera_file_symbols` with `filePath`, and add `range` or `kind` if useful.
+2. Unknown file: call `chimera_search` with a focused symbol, module, API, or architecture term.
+3. Multiple possible matches: choose the intended file or exact `nodeID` before calling this tool again.
+
+## After This Tool
+
 - Interpret impacted files or symbols in the current task context before claiming completion.
-- Run verification commands separately when correctness matters.
+- Treat the output as risk and propagation evidence, not as proof that behavior is correct.
+- Run build, typecheck, lint, or tests separately when correctness matters.

@@ -30,6 +30,7 @@ import * as ProviderTransform from "./transform"
 import { ModelID, ProviderID } from "./schema"
 
 const log = Log.create({ service: "provider" })
+const KIMI_FOR_CODING_ID = "kimi-for-coding"
 
 function shouldUseCopilotResponsesApi(modelID: string): boolean {
   const match = /^gpt-(\d+)/.exec(modelID)
@@ -1035,6 +1036,55 @@ function fromModelsDevModel(provider: ModelsDev.Provider, model: ModelsDev.Model
   }
 }
 
+function exposeKimiForCodingModel(provider: ModelsDev.Provider, models: Record<string, Model>) {
+  if (provider.id !== KIMI_FOR_CODING_ID) return
+
+  const fallback =
+    models[KIMI_FOR_CODING_ID] ??
+    models["k2p6"] ??
+    models["k2p5"] ??
+    models["kimi-k2-thinking"] ??
+    Object.values(models)[0]
+  if (!fallback) return
+
+  const stable: Model = {
+    ...fallback,
+    id: ModelID.make(KIMI_FOR_CODING_ID),
+    name: provider.name || "Kimi For Coding",
+    family: fallback.family ?? KIMI_FOR_CODING_ID,
+    api: {
+      ...fallback.api,
+      id: KIMI_FOR_CODING_ID,
+      url: provider.api ?? fallback.api.url,
+      npm: "@ai-sdk/openai-compatible",
+    },
+    status: "active",
+    capabilities: {
+      ...fallback.capabilities,
+      temperature: false,
+      reasoning: true,
+      toolcall: true,
+      input: {
+        ...fallback.capabilities.input,
+        text: true,
+      },
+      output: {
+        ...fallback.capabilities.output,
+        text: true,
+      },
+      interleaved: { field: "reasoning_content" },
+    },
+    limit: {
+      ...fallback.limit,
+      context: Math.max(fallback.limit.context, 262_144),
+      output: Math.max(fallback.limit.output, 32_768),
+    },
+    variants: {},
+  }
+  stable.variants = mapValues(ProviderTransform.variants(stable), (v) => v)
+  models[KIMI_FOR_CODING_ID] = stable
+}
+
 export function fromModelsDevProvider(provider: ModelsDev.Provider): Info {
   const models: Record<string, Model> = {}
   for (const [key, model] of Object.entries(provider.models)) {
@@ -1059,6 +1109,7 @@ export function fromModelsDevProvider(provider: ModelsDev.Provider): Info {
       }
     }
   }
+  exposeKimiForCodingModel(provider, models)
   return {
     id: ProviderID.make(provider.id),
     source: "custom",

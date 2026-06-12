@@ -172,6 +172,44 @@ describe("ProviderTransform.options - zai/zhipuai thinking", () => {
   }
 })
 
+describe("ProviderTransform.options - nvidia Kimi K2.6 thinking", () => {
+  const sessionID = "test-session-123"
+
+  test("sets medium reasoning effort by default", () => {
+    const result = ProviderTransform.options({
+      model: {
+        id: "moonshotai/kimi-k2.6",
+        providerID: "nvidia",
+        api: {
+          id: "moonshotai/kimi-k2.6",
+          url: "https://integrate.api.nvidia.com/v1",
+          npm: "@ai-sdk/openai-compatible",
+        },
+        name: "Kimi K2.6",
+        capabilities: {
+          temperature: true,
+          reasoning: true,
+          attachment: true,
+          toolcall: true,
+          input: { text: true, audio: false, image: true, video: true, pdf: false },
+          output: { text: true, audio: false, image: false, video: false, pdf: false },
+          interleaved: { field: "reasoning_content" },
+        },
+        cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+        limit: { context: 262_144, output: 262_144 },
+        status: "active",
+        options: {},
+        headers: {},
+        release_date: "2026-04-21",
+      } as any,
+      sessionID,
+      providerOptions: {},
+    })
+
+    expect(result.reasoningEffort).toBe("medium")
+  })
+})
+
 describe("ProviderTransform.options - google thinkingConfig gating", () => {
   const sessionID = "test-session-123"
 
@@ -2398,6 +2436,22 @@ describe("ProviderTransform.variants", () => {
     })
     const result = ProviderTransform.variants(model)
     expect(result).toEqual({})
+  })
+
+  test("nvidia Kimi K2.6 returns extended reasoning effort variants", () => {
+    const model = createMockModel({
+      id: "moonshotai/kimi-k2.6",
+      providerID: "nvidia",
+      api: {
+        id: "moonshotai/kimi-k2.6",
+        url: "https://integrate.api.nvidia.com/v1",
+        npm: "@ai-sdk/openai-compatible",
+      },
+    })
+    const result = ProviderTransform.variants(model)
+    expect(Object.keys(result)).toEqual(["none", "minimal", "low", "medium", "high", "xhigh", "max"])
+    expect(result.medium).toEqual({ reasoningEffort: "medium" })
+    expect(result.max).toEqual({ reasoningEffort: "max" })
   })
 
   test("mistral models with reasoning support return variants", () => {

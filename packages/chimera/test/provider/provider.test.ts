@@ -1962,6 +1962,58 @@ test("models.dev normalization fills required response fields", () => {
   expect(model.release_date).toBe("")
 })
 
+test("models.dev normalization exposes Kimi For Coding as a stable model id", () => {
+  const provider = {
+    id: "kimi-for-coding",
+    name: "Kimi For Coding",
+    env: ["KIMI_API_KEY"],
+    npm: "@ai-sdk/anthropic",
+    api: "https://api.kimi.com/coding/v1",
+    models: {
+      k2p6: {
+        id: "k2p6",
+        name: "Kimi K2.6",
+        family: "kimi-thinking",
+        attachment: false,
+        reasoning: true,
+        temperature: true,
+        tool_call: true,
+        release_date: "2026-04",
+        modalities: {
+          input: ["text", "image", "video"],
+          output: ["text"],
+        },
+        limit: {
+          context: 262_144,
+          output: 32_768,
+        },
+        cost: {
+          input: 0,
+          output: 0,
+          cache_read: 0,
+          cache_write: 0,
+        },
+      },
+    },
+  } as unknown as ModelsDev.Provider
+
+  const models = Provider.fromModelsDevProvider(provider).models
+  const stable = models["kimi-for-coding"]
+
+  expect(models["k2p6"]).toBeDefined()
+  expect(stable).toBeDefined()
+  expect(stable.id).toBe(ModelID.make("kimi-for-coding"))
+  expect(stable.api.id).toBe("kimi-for-coding")
+  expect(stable.api.url).toBe("https://api.kimi.com/coding/v1")
+  expect(stable.api.npm).toBe("@ai-sdk/openai-compatible")
+  expect(stable.capabilities.temperature).toBe(false)
+  expect(stable.capabilities.reasoning).toBe(true)
+  expect(stable.capabilities.toolcall).toBe(true)
+  expect(stable.capabilities.interleaved).toEqual({ field: "reasoning_content" })
+  expect(stable.limit.context).toBe(262_144)
+  expect(stable.limit.output).toBe(32_768)
+})
+
 test("model variants are generated for reasoning models", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
