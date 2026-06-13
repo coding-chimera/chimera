@@ -1665,7 +1665,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             const openaiAuth = yield* auth.get("openai").pipe(Effect.orElseSucceed(() => undefined))
             const remoteCompaction =
               cfg.compaction?.remote !== "off" && model.providerID === "openai" && openaiAuth?.type === "oauth"
-                ? "sentinel"
+                ? "encoded"
                 : "text"
             const [skills, env, instructions, modelMsgs, workBriefSuffix, chimeraContextSuffix] = yield* Effect.all([
               sys.skills(agent),

@@ -11,7 +11,8 @@ export type RemoteCompactionMetadata = {
   output: RemoteCompactionOutputItem[]
 }
 
-const SENTINEL = "__chimera_remote_compaction__:"
+const ENVELOPE_KEY = "__chimera_remote_compaction"
+const ENVELOPE_VERSION = 1
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -30,34 +31,31 @@ export function decodeRemoteCompactionOutput(value: unknown) {
   return output
 }
 
-export function encodeRemoteCompactionSentinel(output: RemoteCompactionOutputItem[]) {
-  return `${SENTINEL}${Buffer.from(JSON.stringify(output)).toString("base64url")}`
+export function encodeRemoteCompactionInput(output: RemoteCompactionOutputItem[]) {
+  return JSON.stringify({ [ENVELOPE_KEY]: { version: ENVELOPE_VERSION, output } })
 }
 
-export function decodeRemoteCompactionSentinel(text: string) {
-  if (!text.startsWith(SENTINEL)) return undefined
+export function decodeRemoteCompactionInput(text: string) {
   try {
-    return decodeRemoteCompactionOutput(JSON.parse(Buffer.from(text.slice(SENTINEL.length), "base64url").toString()))
+    const parsed = JSON.parse(text)
+    if (!isRecord(parsed)) return undefined
+    const envelope = parsed[ENVELOPE_KEY]
+    if (!isRecord(envelope) || envelope.version !== ENVELOPE_VERSION) return undefined
+    return decodeRemoteCompactionOutput(envelope.output)
   } catch {
     return undefined
   }
 }
 
-export function findRemoteCompactionOutput(value: unknown): RemoteCompactionOutputItem[] | undefined {
-  if (typeof value === "string") return decodeRemoteCompactionSentinel(value)
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const output = findRemoteCompactionOutput(item)
-      if (output) return output
-    }
-    return undefined
-  }
+function findRemoteCompactionOutput(value: unknown): RemoteCompactionOutputItem[] | undefined {
   if (!isRecord(value)) return undefined
-  for (const item of Object.values(value)) {
+  if (typeof value.text === "string") return decodeRemoteCompactionInput(value.text)
+  if (typeof value.content === "string") return decodeRemoteCompactionInput(value.content)
+  if (!Array.isArray(value.content)) return undefined
+  for (const item of value.content) {
     const output = findRemoteCompactionOutput(item)
     if (output) return output
   }
-  return undefined
 }
 
 export function rewriteRemoteCompactionInput(body: string) {

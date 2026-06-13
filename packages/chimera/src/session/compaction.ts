@@ -569,6 +569,23 @@ export const layer: Layer.Layer<
           return "continue"
         }
         log.warn("remote compaction failed", { error: result.error.message, status: result.error.status })
+        compactionPart.remote_error = RemoteCompaction.failureMetadata({ modelID: model.id, error: result.error })
+        compactionPart.tail_start_id = selected.tail_start_id
+        yield* session.updatePart(compactionPart)
+        yield* session.updatePart({
+          id: PartID.ascending(),
+          messageID: compactionPart.messageID,
+          sessionID: input.sessionID,
+          type: "text",
+          text: `Remote Codex compaction failed${result.error.status ? ` with status ${result.error.status}` : ""}; falling back to local compaction.`,
+          synthetic: true,
+          ignored: true,
+          metadata: { remote_compaction_failure: true },
+          time: {
+            start: Date.now(),
+            end: Date.now(),
+          },
+        })
       }
 
       const modelMessages = yield* MessageV2.toModelMessagesEffect(msgs, model, {

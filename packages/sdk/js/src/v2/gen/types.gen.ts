@@ -706,6 +706,25 @@ export type CompactionPart = {
   auto: boolean
   overflow?: boolean
   tail_start_id?: string
+  remote?: {
+    providerID: "openai"
+    endpoint: "codex"
+    implementation: "responses_compact"
+    modelID: string
+    output: Array<{
+      type: "compaction" | "compaction_summary"
+      encrypted_content: string
+    }>
+  }
+  remote_error?: {
+    providerID: "openai"
+    endpoint: "codex"
+    implementation: "responses_compact"
+    modelID: string
+    message: string
+    status?: number
+    time: number
+  }
 }
 
 export type Part =

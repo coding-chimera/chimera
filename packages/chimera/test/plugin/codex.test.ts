@@ -6,7 +6,7 @@ import {
   extractAccountId,
   type IdTokenClaims,
 } from "../../src/plugin/codex"
-import { encodeRemoteCompactionSentinel } from "../../src/session/remote-compaction-codec"
+import { encodeRemoteCompactionInput } from "../../src/session/remote-compaction-codec"
 
 function createTestJwt(payload: object): string {
   const header = Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url")
@@ -220,7 +220,7 @@ describe("plugin.codex", () => {
     ])
   })
 
-  test("rewrites remote compaction sentinels into raw Responses input", async () => {
+  test("rewrites encoded remote compaction inputs into raw Responses input", async () => {
     let auth: { type: "oauth"; refresh: string; access: string; expires: number; accountId?: string } = {
       type: "oauth" as const,
       refresh: "refresh",
@@ -266,11 +266,11 @@ describe("plugin.codex", () => {
       },
     )
     const loaded = await hooks.auth!.loader!(async () => auth as never, {} as never)
-    const sentinel = encodeRemoteCompactionSentinel([{ type: "compaction_summary", encrypted_content: "encrypted" }])
+    const encoded = encodeRemoteCompactionInput([{ type: "compaction_summary", encrypted_content: "encrypted" }])
     await loaded.fetch!("https://api.openai.com/v1/responses", {
       method: "POST",
       body: JSON.stringify({
-        input: [{ type: "message", role: "user", content: [{ type: "input_text", text: sentinel }] }],
+        input: [{ type: "message", role: "user", content: [{ type: "input_text", text: encoded }] }],
       }),
     })
 
