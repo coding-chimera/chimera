@@ -4,11 +4,14 @@ import { makeRuntime } from "@/effect/run-service"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import os from "os"
 import { Context, Effect, Layer, Schema } from "effect"
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http"
 import type { Provider } from "@/provider/provider"
 import type { SessionID } from "./schema"
 import { MessageV2 } from "./message-v2"
 import { codexAuthHeaders, codexEndpointUrl } from "@/plugin/codex"
+import type { ModelMessage } from "ai"
 import {
+  decodeRemoteCompactionInput,
   decodeRemoteCompactionOutput,
   type RemoteCompactionMetadata,
   type RemoteCompactionOutputItem,
@@ -21,6 +24,8 @@ type ResponsesMessageItem = {
 }
 
 type ResponsesInputItem = RemoteCompactionOutputItem | ResponsesMessageItem
+
+const TOOL_OUTPUT_MAX_CHARS = 2_000
 
 export class RemoteCompactionError extends Schema.TaggedErrorClass<RemoteCompactionError>()(
   "RemoteCompactionError",
@@ -46,6 +51,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
+function errorMessage(cause: unknown) {
+  return cause instanceof Error ? cause.message : String(cause)
+}
+
+function truncate(text: string) {
+  if (text.length <= TOOL_OUTPUT_MAX_CHARS) return text
+  return `${text.slice(0, TOOL_OUTPUT_MAX_CHARS)}\n[Tool output truncated for remote compaction]`
+}
+
+function roleForResponses(role: unknown): "user" | "assistant" {
+  return role === "assistant" || role === "tool" ? "assistant" : "user"
+}
+
 function messageText(parts: string[], role: "user" | "assistant"): ResponsesInputItem[] {
   if (!parts.length) return []
   return [
@@ -57,40 +75,79 @@ function messageText(parts: string[], role: "user" | "assistant"): ResponsesInpu
   ]
 }
 
-function responsesInput(messages: MessageV2.WithParts[]): ResponsesInputItem[] {
-  return messages.flatMap((msg) => {
-    if (msg.info.role === "user") {
-      const remote = msg.parts.flatMap((part) => (part.type === "compaction" && part.remote ? part.remote.output : []))
-      if (remote.length) return remote
-      return messageText(
-        msg.parts.flatMap((part) => {
-          if (part.type === "text" && !part.ignored) return [part.text]
-          if (part.type === "file") return [`[Attached ${part.mime}: ${part.filename ?? "file"}]`]
-          if (part.type === "subtask") return [`Subtask ${part.agent}: ${part.description}\n${part.prompt}`]
-          if (part.type === "compaction") return ["What did we do so far?"]
-          return []
-        }),
-        "user",
-      )
-    }
-    return messageText(
-      msg.parts.flatMap((part) => {
-        if (part.type === "text") return [part.text]
-        if (part.type === "reasoning" && part.text.trim()) return [part.text]
-        if (part.type === "tool" && part.state.status === "completed") return [`Tool ${part.tool} result:\n${part.state.output}`]
-        if (part.type === "tool" && part.state.status === "error") return [`Tool ${part.tool} error:\n${part.state.error}`]
-        return []
-      }),
-      "assistant",
-    )
-  })
+function textFromRecord(value: Record<string, unknown>) {
+  if (typeof value.text === "string") return value.text
+  if (typeof value.errorText === "string") return value.errorText
+  if (typeof value.value === "string") return value.value
+  if (typeof value.output === "string") return value.output
+  return undefined
 }
 
-export const layer: Layer.Layer<Service, never, Auth.Service | Config.Service> = Layer.effect(
+function inputFromText(text: string, role: "user" | "assistant") {
+  return decodeRemoteCompactionInput(text) ?? messageText([text], role)
+}
+
+function inputFromContent(content: unknown, role: "user" | "assistant"): ResponsesInputItem[] {
+  if (typeof content === "string") return inputFromText(content, role)
+  if (!Array.isArray(content)) return []
+  const items = content.flatMap((part): ResponsesInputItem[] => {
+    if (!isRecord(part)) return []
+    const text = textFromRecord(part)
+    if (text) return inputFromText(text, role)
+    if (part.type === "file" || part.type === "image" || part.type === "media") {
+      return messageText([`[Attached ${String(part.mediaType ?? part.mime ?? "file")}: ${String(part.filename ?? "file")}]`], role)
+    }
+    if (typeof part.type === "string" && part.type.startsWith("tool-")) {
+      const output = typeof part.output === "string" ? truncate(part.output) : JSON.stringify(part.output ?? part.errorText ?? "")
+      return messageText([`Tool ${part.type.slice(5)} result:\n${output}`], "assistant")
+    }
+    return []
+  })
+  const remote = items.flatMap((item) => (item.type === "compaction" || item.type === "compaction_summary" ? [item] : []))
+  if (remote.length) return remote
+  return messageText(
+    items.flatMap((item) => (item.type === "message" ? item.content.map((part) => part.text) : [])),
+    role,
+  )
+}
+
+const responsesInput = Effect.fn("RemoteCompaction.responsesInput")(function* (
+  messages: MessageV2.WithParts[],
+  model: Provider.Model,
+) {
+  const modelMessages = yield* MessageV2.toModelMessagesEffect(messages, model, {
+    stripMedia: true,
+    toolOutputMaxChars: TOOL_OUTPUT_MAX_CHARS,
+    remoteCompaction: "encoded",
+  })
+  return modelMessages.flatMap((message: ModelMessage): ResponsesInputItem[] => {
+    if (!isRecord(message)) return []
+    return inputFromContent(message.content, roleForResponses(message.role))
+  })
+})
+
+export function failureMetadata(input: { modelID: string; error: RemoteCompactionError }) {
+  return {
+    providerID: "openai" as const,
+    endpoint: "codex" as const,
+    implementation: "responses_compact" as const,
+    modelID: input.modelID,
+    message: input.error.message,
+    ...(input.error.status === undefined ? {} : { status: input.error.status }),
+    time: Date.now(),
+  }
+}
+
+export const layerWithEndpoint = (endpoint = codexEndpointUrl("responses/compact")): Layer.Layer<
+  Service,
+  never,
+  Auth.Service | Config.Service | HttpClient.HttpClient
+> => Layer.effect(
   Service,
   Effect.gen(function* () {
     const auth = yield* Auth.Service
     const config = yield* Config.Service
+    const http = yield* HttpClient.HttpClient
 
     const canCompact = Effect.fn("RemoteCompaction.canCompact")(function* (input: { model: Provider.Model }) {
       if ((yield* config.get()).compaction?.remote === "off") return false
@@ -113,39 +170,37 @@ export const layer: Layer.Layer<Service, never, Auth.Service | Config.Service> =
             auth: stored,
             setAuth: (next) => Effect.runPromise(auth.set("openai", next)),
           }),
-        catch: (cause) => new RemoteCompactionError({ message: cause instanceof Error ? cause.message : String(cause) }),
+        catch: (cause) => new RemoteCompactionError({ message: errorMessage(cause) }),
       })).headers
       headers.set("Content-Type", "application/json")
       headers.set("originator", "opencode")
       headers.set("User-Agent", `opencode/${InstallationVersion} (${os.platform()} ${os.release()}; ${os.arch()})`)
       headers.set("session_id", input.sessionID)
-      const response = yield* Effect.tryPromise({
-        try: () =>
-          fetch(codexEndpointUrl("responses/compact"), {
-            method: "POST",
-            headers,
-            body: JSON.stringify({
-              model: input.model.api.id,
-              input: responsesInput(input.messages),
-              instructions: input.instructions,
-              tools: [],
-              parallel_tool_calls: false,
-              prompt_cache_key: input.sessionID,
-              text: { format: { type: "text" } },
-            }),
-          }),
-        catch: (cause) => new RemoteCompactionError({ message: cause instanceof Error ? cause.message : String(cause) }),
-      })
-      if (!response.ok) {
+      const requestInput = yield* responsesInput(input.messages, input.model)
+      const response = yield* HttpClientRequest.post(endpoint).pipe(
+        HttpClientRequest.setHeaders(Object.fromEntries(headers.entries())),
+        HttpClientRequest.bodyJson({
+          model: input.model.api.id,
+          input: requestInput,
+          instructions: input.instructions,
+          tools: [],
+          parallel_tool_calls: false,
+          prompt_cache_key: input.sessionID,
+          text: { format: { type: "text" } },
+        }),
+        Effect.flatMap((request) => http.execute(request)),
+        Effect.mapError((cause) => new RemoteCompactionError({ message: errorMessage(cause) })),
+      )
+      if (response.status < 200 || response.status >= 300) {
+        const body = yield* response.text.pipe(Effect.catch(() => Effect.succeed("")))
         return yield* new RemoteCompactionError({
-          message: `remote compaction failed: ${response.status}`,
+          message: [`remote compaction failed: ${response.status}`, body.trim().slice(0, 500)].filter(Boolean).join(" "),
           status: response.status,
         })
       }
-      const json = yield* Effect.tryPromise({
-        try: () => response.json(),
-        catch: (cause) => new RemoteCompactionError({ message: cause instanceof Error ? cause.message : String(cause) }),
-      })
+      const json = yield* response.json.pipe(
+        Effect.mapError((cause) => new RemoteCompactionError({ message: errorMessage(cause) })),
+      )
       const output = isRecord(json) ? decodeRemoteCompactionOutput(json.output) : undefined
       if (!output || output.length !== 1) {
         return yield* new RemoteCompactionError({ message: "remote compaction response missing compaction output" })
@@ -163,7 +218,13 @@ export const layer: Layer.Layer<Service, never, Auth.Service | Config.Service> =
   }),
 )
 
-export const defaultLayer = layer.pipe(Layer.provide(Auth.defaultLayer), Layer.provide(Config.defaultLayer))
+export const layer = layerWithEndpoint()
+
+export const defaultLayer = layer.pipe(
+  Layer.provide(Auth.defaultLayer),
+  Layer.provide(Config.defaultLayer),
+  Layer.provide(FetchHttpClient.layer),
+)
 
 export const disabledLayer = Layer.succeed(
   Service,

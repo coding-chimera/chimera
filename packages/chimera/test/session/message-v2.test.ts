@@ -6,7 +6,7 @@ import type { Provider } from "@/provider/provider"
 import { ModelID, ProviderID } from "../../src/provider/schema"
 import { SessionID, MessageID, PartID } from "../../src/session/schema"
 import { Question } from "../../src/question"
-import { decodeRemoteCompactionSentinel } from "../../src/session/remote-compaction-codec"
+import { decodeRemoteCompactionInput } from "../../src/session/remote-compaction-codec"
 
 const sessionID = SessionID.make("session")
 const providerID = ProviderID.make("test")
@@ -269,7 +269,7 @@ describe("session.message-v2.toModelMessage", () => {
     ])
   })
 
-  test("emits remote compaction sentinel only when requested", async () => {
+  test("emits encoded remote compaction input only when requested", async () => {
     const messageID = "m-user"
     const input: MessageV2.WithParts[] = [
       {
@@ -297,13 +297,13 @@ describe("session.message-v2.toModelMessage", () => {
         content: [{ type: "text", text: "What did we do so far?" }],
       },
     ])
-    const replay = await MessageV2.toModelMessages(input, model, { remoteCompaction: "sentinel" })
+    const replay = await MessageV2.toModelMessages(input, model, { remoteCompaction: "encoded" })
     expect(replay[0]?.role).toBe("user")
     if (replay[0]?.role !== "user" || typeof replay[0].content === "string") throw new Error("invalid replay")
     const text = replay[0].content[0]
     expect(text.type).toBe("text")
     if (text.type !== "text") throw new Error("invalid replay text")
-    expect(decodeRemoteCompactionSentinel(text.text)).toEqual([
+    expect(decodeRemoteCompactionInput(text.text)).toEqual([
       { type: "compaction_summary", encrypted_content: "encrypted" },
     ])
   })
