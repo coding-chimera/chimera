@@ -6,6 +6,7 @@ import os from "os"
 import path from "path"
 import { fileURLToPath } from "url"
 import { createSolidTransformPlugin } from "@opentui/solid/bun-plugin"
+import { resolveVersion } from "./version"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -81,6 +82,7 @@ const skipInstall = process.argv.includes("--skip-install")
 const sourcemapsFlag = process.argv.includes("--sourcemaps")
 const plugin = createSolidTransformPlugin()
 const skipEmbedWebUi = process.argv.includes("--skip-embed-web-ui")
+const buildVersion = resolveVersion({ currentVersion: pkg.version })
 
 const createEmbeddedWebUIBundle = async () => {
   console.log(`Building Web UI to embed in the binary`)
@@ -241,13 +243,13 @@ for (const item of targets) {
       autoloadPackageJson: true,
       target: name.replace(pkg.name, "bun") as any,
       outfile: `dist/${name}/bin/${binaryName}`,
-      execArgv: ["--liftoff-only", `--user-agent=chimera/${Script.version}`, "--use-system-ca", "--"],
+      execArgv: ["--liftoff-only", `--user-agent=chimera/${buildVersion}`, "--use-system-ca", "--"],
       windows: {},
     },
     files: embeddedFileMap ? { [embeddedWebUIEntrypoint]: embeddedFileMap } : {},
     entrypoints: ["./src/index.ts", parserWorker, workerPath, ...(embeddedFileMap ? [embeddedWebUIEntrypoint] : [])],
     define: {
-      OPENCODE_VERSION: `'${Script.version}'`,
+      OPENCODE_VERSION: `'${buildVersion}'`,
       OPENCODE_MIGRATIONS: JSON.stringify(migrations),
       CHIMERA_DB_SCHEMA: JSON.stringify(graphSchema),
       CHIMERA_BUNDLED_RUNTIME: "true",
@@ -282,7 +284,7 @@ for (const item of targets) {
     JSON.stringify(
       {
         name,
-        version: Script.version,
+        version: buildVersion,
         os: [item.os],
         cpu: [item.arch],
       },
@@ -290,7 +292,7 @@ for (const item of targets) {
       2,
     ),
   )
-  binaries[name] = Script.version
+  binaries[name] = buildVersion
 }
 
 if (Script.release) {
@@ -301,7 +303,7 @@ if (Script.release) {
       await $`zip -r ../../${key}.zip *`.cwd(`dist/${key}/bin`)
     }
   }
-  await $`gh release upload v${Script.version} ./dist/*.zip ./dist/*.tar.gz --clobber --repo ${process.env.GH_REPO}`
+  await $`gh release upload v${buildVersion} ./dist/*.zip ./dist/*.tar.gz --clobber --repo ${process.env.GH_REPO}`
 }
 
 export { binaries }

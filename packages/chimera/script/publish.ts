@@ -92,7 +92,7 @@ if (!Script.preview && !dryRun) {
   const macX64Sha = await $`sha256sum ./dist/${releaseName}-darwin-x64.zip | cut -d' ' -f1`.text().then((x) => x.trim())
   const macArm64Sha = await $`sha256sum ./dist/${releaseName}-darwin-arm64.zip | cut -d' ' -f1`.text().then((x) => x.trim())
 
-  const [pkgver, _subver = ""] = Script.version.split(/(-.*)/, 2)
+  const [pkgver, _subver = ""] = version.split(/(-.*)/, 2)
 
   // arch
   const binaryPkgbuild = [
@@ -134,7 +134,7 @@ if (!Script.preview && !dryRun) {
         await $`cd ./dist/aur-${pkg} && makepkg --printsrcinfo > .SRCINFO`
         await $`cd ./dist/aur-${pkg} && git add PKGBUILD .SRCINFO`
         if ((await $`cd ./dist/aur-${pkg} && git diff --cached --quiet`.nothrow()).exitCode === 0) break
-        await $`cd ./dist/aur-${pkg} && git commit -m "Update to v${Script.version}"`
+        await $`cd ./dist/aur-${pkg} && git commit -m "Update to v${version}"`
         await $`cd ./dist/aur-${pkg} && git push`
         break
       } catch {
@@ -152,13 +152,13 @@ if (!Script.preview && !dryRun) {
     "class Chimera < Formula",
     `  desc "The Coding Chimera agent built for the terminal."`,
     `  homepage "https://github.com/${repo}"`,
-    `  version "${Script.version.split("-")[0]}"`,
+    `  version "${version.split("-")[0]}"`,
     "",
     `  depends_on "ripgrep"`,
     "",
     "  on_macos do",
     "    if Hardware::CPU.intel?",
-    `      url "https://github.com/${repo}/releases/download/v${Script.version}/${releaseName}-darwin-x64.zip"`,
+    `      url "https://github.com/${repo}/releases/download/v${version}/${releaseName}-darwin-x64.zip"`,
     `      sha256 "${macX64Sha}"`,
     "",
     "      def install",
@@ -166,7 +166,7 @@ if (!Script.preview && !dryRun) {
     "      end",
     "    end",
     "    if Hardware::CPU.arm?",
-    `      url "https://github.com/${repo}/releases/download/v${Script.version}/${releaseName}-darwin-arm64.zip"`,
+    `      url "https://github.com/${repo}/releases/download/v${version}/${releaseName}-darwin-arm64.zip"`,
     `      sha256 "${macArm64Sha}"`,
     "",
     "      def install",
@@ -177,14 +177,14 @@ if (!Script.preview && !dryRun) {
     "",
     "  on_linux do",
     "    if Hardware::CPU.intel? and Hardware::CPU.is_64_bit?",
-    `      url "https://github.com/${repo}/releases/download/v${Script.version}/${releaseName}-linux-x64.tar.gz"`,
+    `      url "https://github.com/${repo}/releases/download/v${version}/${releaseName}-linux-x64.tar.gz"`,
     `      sha256 "${x64Sha}"`,
     "      def install",
     '        bin.install "chimera"',
     "      end",
     "    end",
     "    if Hardware::CPU.arm? and Hardware::CPU.is_64_bit?",
-    `      url "https://github.com/${repo}/releases/download/v${Script.version}/${releaseName}-linux-arm64.tar.gz"`,
+    `      url "https://github.com/${repo}/releases/download/v${version}/${releaseName}-linux-arm64.tar.gz"`,
     `      sha256 "${arm64Sha}"`,
     "      def install",
     '        bin.install "chimera"',
@@ -207,7 +207,7 @@ if (!Script.preview && !dryRun) {
   await Bun.file(`./dist/homebrew-tap/${releaseName}.rb`).write(homebrewFormula)
   await $`git add ${releaseName}.rb`.cwd("./dist/homebrew-tap")
   if ((await $`cd ./dist/homebrew-tap && git diff --cached --quiet`.nothrow()).exitCode !== 0) {
-    await $`cd ./dist/homebrew-tap && git commit -m "Update ${releaseName} to v${Script.version}"`
+    await $`cd ./dist/homebrew-tap && git commit -m "Update ${releaseName} to v${version}"`
     await $`cd ./dist/homebrew-tap && git push`
   }
 }
