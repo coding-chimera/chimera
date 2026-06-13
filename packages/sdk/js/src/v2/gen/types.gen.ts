@@ -1243,6 +1243,7 @@ export type Config = {
     tail_turns?: number
     preserve_recent_tokens?: number
     reserved?: number
+    remote?: "auto" | "off"
   }
   experimental?: {
     disable_paste_summary?: boolean

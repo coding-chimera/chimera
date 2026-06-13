@@ -6,12 +6,13 @@ import { OAUTH_DUMMY_KEY } from "../auth"
 import os from "os"
 import { setTimeout as sleep } from "node:timers/promises"
 import { createServer } from "http"
+import { rewriteRemoteCompactionInput } from "../session/remote-compaction-codec"
 
 const log = Log.create({ service: "plugin.codex" })
 
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 const ISSUER = "https://auth.openai.com"
-const CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
+export const CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
 const OAUTH_PORT = 1455
 const OAUTH_POLLING_SAFETY_MARGIN_MS = 3000
 const ALLOWED_MODELS = new Set([
@@ -111,11 +112,19 @@ function buildAuthorizeUrl(redirectUri: string, pkce: PkceCodes, state: string):
   return `${ISSUER}/oauth/authorize?${params.toString()}`
 }
 
-interface TokenResponse {
+export interface TokenResponse {
   id_token: string
   access_token: string
   refresh_token: string
   expires_in?: number
+}
+
+export interface CodexOAuthAuth {
+  type: "oauth"
+  refresh: string
+  access: string
+  expires: number
+  accountId?: string
 }
 
 interface CodexAuthPluginOptions {
@@ -141,7 +150,7 @@ async function exchangeCodeForTokens(code: string, redirectUri: string, pkce: Pk
   return response.json()
 }
 
-async function refreshAccessToken(refreshToken: string, issuer = ISSUER): Promise<TokenResponse> {
+export async function refreshAccessToken(refreshToken: string, issuer = ISSUER): Promise<TokenResponse> {
   const response = await fetch(`${issuer}/oauth/token`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -155,6 +164,47 @@ async function refreshAccessToken(refreshToken: string, issuer = ISSUER): Promis
     throw new Error(`Token refresh failed: ${response.status}`)
   }
   return response.json()
+}
+
+const codexRefreshes = new Map<string, Promise<CodexOAuthAuth>>()
+
+export function codexEndpointUrl(kind: "responses" | "responses/compact", endpoint = CODEX_API_ENDPOINT) {
+  if (kind === "responses") return endpoint
+  return `${endpoint.replace(/\/+$/, "")}/compact`
+}
+
+export async function codexAuthHeaders(input: {
+  auth: CodexOAuthAuth
+  issuer?: string
+  setAuth?: (auth: CodexOAuthAuth) => Promise<void>
+}) {
+  const auth = await (async () => {
+    if (input.auth.access && input.auth.expires >= Date.now()) return input.auth
+    const key = `${input.issuer ?? ISSUER}:${input.auth.refresh}`
+    const existing = codexRefreshes.get(key)
+    if (existing) return existing
+    const next = refreshAccessToken(input.auth.refresh, input.issuer)
+      .then(async (tokens) => {
+        const updated = {
+          type: "oauth" as const,
+          refresh: tokens.refresh_token,
+          access: tokens.access_token,
+          expires: Date.now() + (tokens.expires_in ?? 3600) * 1000,
+          accountId: extractAccountId(tokens) || input.auth.accountId,
+        }
+        await input.setAuth?.(updated)
+        return updated
+      })
+      .finally(() => {
+        codexRefreshes.delete(key)
+      })
+    codexRefreshes.set(key, next)
+    return next
+  })()
+  const headers = new Headers()
+  headers.set("authorization", `Bearer ${auth.access}`)
+  if (auth.accountId) headers.set("ChatGPT-Account-Id", auth.accountId)
+  return { auth, headers }
 }
 
 const HTML_SUCCESS = `<!doctype html>
@@ -507,9 +557,13 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
               parsed.pathname.includes("/v1/responses") || parsed.pathname.includes("/chat/completions")
                 ? new URL(codexApiEndpoint)
                 : parsed
+            const nextInit =
+              parsed.pathname.includes("/v1/responses") && typeof init?.body === "string"
+                ? { ...init, body: rewriteRemoteCompactionInput(init.body) }
+                : init
 
             return fetch(url, {
-              ...init,
+              ...nextInit,
               headers,
             })
           },

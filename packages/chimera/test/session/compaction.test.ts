@@ -5,9 +5,11 @@ import * as Stream from "effect/Stream"
 import z from "zod"
 import { Bus } from "../../src/bus"
 import { Config } from "@/config/config"
+import { Auth } from "@/auth"
 import { Agent } from "../../src/agent/agent"
 import { LLM } from "../../src/session/llm"
 import { SessionCompaction } from "../../src/session/compaction"
+import { RemoteCompaction } from "../../src/session/remote-compaction"
 import { Token } from "@/util/token"
 import { Instance } from "../../src/project/instance"
 import { WithInstance } from "../../src/project/with-instance"
@@ -102,13 +104,13 @@ function createModel(opts: {
 
 const wide = () => ProviderTest.fake({ model: createModel({ context: 100_000, output: 32_000 }) })
 
-async function user(sessionID: SessionID, text: string) {
+async function user(sessionID: SessionID, text: string, model = ref) {
   const msg = await svc.updateMessage({
     id: MessageID.ascending(),
     role: "user",
     sessionID,
     agent: "build",
-    model: ref,
+    model,
     time: { created: Date.now() },
   })
   await svc.updatePart({
@@ -226,6 +228,7 @@ function runtime(
   const bus = Bus.layer
   return ManagedRuntime.make(
     Layer.mergeAll(SessionCompaction.layer, bus).pipe(
+      Layer.provide(RemoteCompaction.disabledLayer),
       Layer.provide(provider.layer),
       Layer.provide(SessionNs.defaultLayer),
       Layer.provide(layer(result)),
@@ -244,6 +247,7 @@ const deps = Layer.mergeAll(
   Plugin.defaultLayer,
   Bus.layer,
   Config.defaultLayer,
+  RemoteCompaction.disabledLayer,
 )
 
 const env = Layer.mergeAll(
@@ -282,6 +286,7 @@ function liveRuntime(layer: Layer.Layer<LLM.Service>, provider = ProviderTest.fa
   const processor = SessionProcessorModule.SessionProcessor.layer.pipe(Layer.provide(summary))
   return ManagedRuntime.make(
     Layer.mergeAll(SessionCompaction.layer.pipe(Layer.provide(processor)), processor, bus, status).pipe(
+      Layer.provide(RemoteCompaction.disabledLayer),
       Layer.provide(provider.layer),
       Layer.provide(SessionNs.defaultLayer),
       Layer.provide(Snapshot.defaultLayer),
@@ -956,6 +961,114 @@ describe("session.compaction.process", () => {
             expect(last.parts[0].text).toContain("use the available search, read, Chimera graph, or task/explore tools")
           }
         } finally {
+          await rt.dispose()
+        }
+      },
+    })
+  })
+
+  test("uses Codex remote compaction when OpenAI OAuth is available", async () => {
+    await using tmp = await tmpdir()
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const originalFetch = globalThis.fetch
+        const openai = { providerID: ProviderID.make("openai"), modelID: ModelID.make("gpt-5.2") }
+        let compactRequest:
+          | {
+              url: string
+              body: Record<string, unknown>
+              headers: Headers
+            }
+          | undefined
+        globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
+          compactRequest = {
+            url: typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url,
+            body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+            headers: new Headers(init?.headers),
+          }
+          return Response.json({
+            output: [
+              { type: "message", role: "user", content: [{ type: "input_text", text: "first" }] },
+              { type: "compaction_summary", encrypted_content: "encrypted" },
+            ],
+          })
+        }) as unknown as typeof fetch
+
+        const session = await svc.create({})
+        await user(session.id, "first", openai)
+        await SessionCompaction.create({
+          sessionID: session.id,
+          agent: "build",
+          model: openai,
+          auto: false,
+        })
+
+        const config = cfg({ remote: "auto", tail_turns: 0 })
+        const auth = Layer.mock(Auth.Service)({
+          get: (providerID: string) =>
+            Effect.succeed(
+              providerID === "openai"
+                ? {
+                    type: "oauth" as const,
+                    refresh: "refresh",
+                    access: "access",
+                    expires: Date.now() + 60_000,
+                    accountId: "acc-123",
+                  }
+                : undefined,
+            ),
+          all: () => Effect.succeed({}),
+          set: () => Effect.void,
+          remove: () => Effect.void,
+        })
+        const bus = Bus.layer
+        const remoteLayer = RemoteCompaction.layer.pipe(Layer.provide(auth), Layer.provide(config))
+        const rt = ManagedRuntime.make(
+          Layer.mergeAll(SessionCompaction.layer.pipe(Layer.provide(remoteLayer)), bus).pipe(
+            Layer.provide(ProviderTest.fake().layer),
+            Layer.provide(SessionNs.defaultLayer),
+            Layer.provide(layer("continue")),
+            Layer.provide(Agent.defaultLayer),
+            Layer.provide(Plugin.defaultLayer),
+            Layer.provide(bus),
+            Layer.provide(config),
+          ),
+        )
+        try {
+          const msgs = await svc.messages({ sessionID: session.id })
+          const parent = msgs.at(-1)?.info.id
+          expect(parent).toBeTruthy()
+          const result = await rt.runPromise(
+            SessionCompaction.Service.use((svc) =>
+              svc.process({
+                parentID: parent!,
+                messages: msgs,
+                sessionID: session.id,
+                auto: false,
+              }),
+            ),
+          )
+
+          const part = await lastCompactionPart(session.id)
+          const all = await svc.messages({ sessionID: session.id })
+          const summary = all.find((msg) => msg.info.role === "assistant" && msg.info.summary)
+
+          expect(result).toBe("continue")
+          expect(compactRequest?.url).toBe("https://chatgpt.com/backend-api/codex/responses/compact")
+          expect(compactRequest?.headers.get("authorization")).toBe("Bearer access")
+          expect(compactRequest?.headers.get("ChatGPT-Account-Id")).toBe("acc-123")
+          expect(compactRequest?.headers.get("session_id")).toBe(session.id)
+          expect(compactRequest?.body.model).toBe("gpt-5.2")
+          expect("store" in (compactRequest?.body ?? {})).toBe(false)
+          expect(JSON.stringify(compactRequest?.body.input)).toContain("first")
+          expect(part?.type).toBe("compaction")
+          expect(part?.remote?.output[0]?.type).toBe("compaction_summary")
+          expect(part?.remote?.output[0]?.encrypted_content).toBe("encrypted")
+          expect(summary?.info.role).toBe("assistant")
+          expect(summary?.parts[0]).toMatchObject({ type: "text", text: "Remote Codex compaction installed." })
+        } finally {
+          globalThis.fetch = originalFetch
           await rt.dispose()
         }
       },

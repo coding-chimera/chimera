@@ -6,6 +6,7 @@ import type { Provider } from "@/provider/provider"
 import { ModelID, ProviderID } from "../../src/provider/schema"
 import { SessionID, MessageID, PartID } from "../../src/session/schema"
 import { Question } from "../../src/question"
+import { decodeRemoteCompactionSentinel } from "../../src/session/remote-compaction-codec"
 
 const sessionID = SessionID.make("session")
 const providerID = ProviderID.make("test")
@@ -265,6 +266,45 @@ describe("session.message-v2.toModelMessage", () => {
           { type: "text", text: "The following tool was executed by the user" },
         ],
       },
+    ])
+  })
+
+  test("emits remote compaction sentinel only when requested", async () => {
+    const messageID = "m-user"
+    const input: MessageV2.WithParts[] = [
+      {
+        info: userInfo(messageID),
+        parts: [
+          {
+            ...basePart(messageID, "p1"),
+            type: "compaction",
+            auto: false,
+            remote: {
+              providerID: "openai",
+              endpoint: "codex",
+              implementation: "responses_compact",
+              modelID: "gpt-5.2",
+              output: [{ type: "compaction_summary", encrypted_content: "encrypted" }],
+            },
+          },
+        ] as MessageV2.Part[],
+      },
+    ]
+
+    expect(await MessageV2.toModelMessages(input, model)).toStrictEqual([
+      {
+        role: "user",
+        content: [{ type: "text", text: "What did we do so far?" }],
+      },
+    ])
+    const replay = await MessageV2.toModelMessages(input, model, { remoteCompaction: "sentinel" })
+    expect(replay[0]?.role).toBe("user")
+    if (replay[0]?.role !== "user" || typeof replay[0].content === "string") throw new Error("invalid replay")
+    const text = replay[0].content[0]
+    expect(text.type).toBe("text")
+    if (text.type !== "text") throw new Error("invalid replay text")
+    expect(decodeRemoteCompactionSentinel(text.text)).toEqual([
+      { type: "compaction_summary", encrypted_content: "encrypted" },
     ])
   })
 
