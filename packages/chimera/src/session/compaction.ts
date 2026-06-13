@@ -537,7 +537,7 @@ export const layer: Layer.Layer<
               (input.overflow
                 ? "The previous request exceeded the provider's size limit due to large media attachments. The conversation was compacted and media files were removed from context. If the user was asking about attached images or files, explain that the attachments were too large to process and suggest they try again with smaller or fewer files.\n\n"
                 : "") +
-              "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed."
+              "Continue the interrupted task from the compacted conversation state. Do not treat compaction as task completion. If more repository evidence is needed, use the available search, read, Chimera graph, or task/explore tools before answering. Stop only when the task is complete or genuinely blocked."
             yield* session.updatePart({
               id: PartID.ascending(),
               messageID: continueMsg.id,
