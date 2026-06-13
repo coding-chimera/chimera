@@ -4,6 +4,11 @@ import { useTheme } from "../context/theme"
 import { useDialog } from "@tui/ui/dialog"
 import { useSync } from "@tui/context/sync"
 import { For, Match, Switch, Show, createMemo } from "solid-js"
+import {
+  openAIRemoteCompactionDescription,
+  openAIRemoteCompactionEnabled,
+  openAIRemoteCompactionStatus,
+} from "@tui/util/remote-compaction"
 
 export type DialogStatusProps = {}
 
@@ -13,6 +18,9 @@ export function DialogStatus() {
   const dialog = useDialog()
 
   const enabledFormatters = createMemo(() => sync.data.formatter.filter((f) => f.enabled))
+  const remoteCompactionEnabled = createMemo(() => openAIRemoteCompactionEnabled(sync.data.config))
+  const remoteCompactionStatus = createMemo(() => openAIRemoteCompactionStatus(sync.data.config))
+  const remoteCompactionDescription = createMemo(() => openAIRemoteCompactionDescription(sync.data.config))
 
   const plugins = createMemo(() => {
     const list = sync.data.config.plugin ?? []
@@ -49,6 +57,26 @@ export function DialogStatus() {
         <text fg={theme.textMuted} onMouseUp={() => dialog.clear()}>
           esc
         </text>
+      </box>
+      <box>
+        <text fg={theme.text}>Settings</text>
+        <box flexDirection="row" gap={1}>
+          <text
+            flexShrink={0}
+            style={{
+              fg: remoteCompactionEnabled() ? theme.success : theme.textMuted,
+            }}
+          >
+            •
+          </text>
+          <text fg={theme.text} wrapMode="word">
+            <b>OpenAI remote compaction</b>{" "}
+            <span style={{ fg: remoteCompactionEnabled() ? theme.success : theme.textMuted }}>
+              {remoteCompactionStatus()}
+            </span>{" "}
+            <span style={{ fg: theme.textMuted }}>{remoteCompactionDescription()}</span>
+          </text>
+        </box>
       </box>
       <Show when={Object.keys(sync.data.mcp).length > 0} fallback={<text fg={theme.text}>No MCP Servers</text>}>
         <box>

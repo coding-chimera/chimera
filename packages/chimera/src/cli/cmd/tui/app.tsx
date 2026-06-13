@@ -22,7 +22,7 @@ import { DialogProvider, useDialog } from "@tui/ui/dialog"
 import { DialogProvider as DialogProviderList } from "@tui/component/dialog-provider"
 import { ErrorComponent } from "@tui/component/error-component"
 import { PluginRouteMissing } from "@tui/component/plugin-route-missing"
-import { ProjectProvider } from "@tui/context/project"
+import { ProjectProvider, useProject } from "@tui/context/project"
 import { EditorContextProvider } from "@tui/context/editor"
 import { useEvent } from "@tui/context/event"
 import { SDKProvider, useSDK } from "@tui/context/sdk"
@@ -64,6 +64,12 @@ import { createTuiApi } from "@/cli/cmd/tui/plugin/api"
 import { TuiPluginRuntime } from "@/cli/cmd/tui/plugin/runtime"
 import type { RouteMap } from "@/cli/cmd/tui/plugin/api"
 import { FormatError, FormatUnknownError } from "@/cli/error"
+import {
+  nextOpenAIRemoteCompactionMode,
+  openAIRemoteCompactionStatus,
+  openAIRemoteCompactionToggleDescription,
+  openAIRemoteCompactionToggleTitle,
+} from "@tui/util/remote-compaction"
 
 import type { EventSource } from "./context/sdk"
 import { DialogVariant } from "./component/dialog-variant"
@@ -240,6 +246,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const keybind = useKeybind()
   const event = useEvent()
   const sdk = useSDK()
+  const project = useProject()
   const toast = useToast()
   const themeState = useTheme()
   const { theme, mode, setMode, locked, lock, unlock } = themeState
@@ -430,6 +437,49 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     ),
   )
 
+  async function toggleOpenAIRemoteCompaction() {
+    const remote = nextOpenAIRemoteCompactionMode(sync.data.config)
+    const result = await sdk.client.config
+      .update({
+        workspace: project.workspace.current(),
+        config: {
+          compaction: {
+            remote,
+          },
+        },
+      })
+      .catch((error) => {
+        toast.show({
+          variant: "error",
+          message: errorMessage(error),
+          duration: 5000,
+        })
+      })
+    if (!result) return
+    if (result.error) {
+      toast.show({
+        variant: "error",
+        message: errorMessage(result.error),
+        duration: 5000,
+      })
+      return
+    }
+    sync.set("config", "compaction", { ...sync.data.config.compaction, remote })
+    await sync.bootstrap({ fatal: false }).catch((error) => {
+      toast.show({
+        variant: "error",
+        message: errorMessage(error),
+        duration: 5000,
+      })
+    })
+    sync.set("config", "compaction", { ...sync.data.config.compaction, remote })
+    toast.show({
+      variant: "info",
+      message: `OpenAI remote compaction: ${openAIRemoteCompactionStatus(sync.data.config)}`,
+      duration: 3000,
+    })
+  }
+
   const connected = useConnected()
   command.register(() => [
     {
@@ -619,6 +669,21 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       },
       onSelect: () => {
         dialog.replace(() => <DialogStatus />)
+      },
+      category: "System",
+    },
+    {
+      title: openAIRemoteCompactionToggleTitle(sync.data.config),
+      description: openAIRemoteCompactionToggleDescription(sync.data.config),
+      value: "app.toggle.openai_remote_compaction",
+      suggested: true,
+      slash: {
+        name: "remote-compaction",
+        aliases: ["remote-compact", "openai-remote-compaction"],
+      },
+      onSelect: async (dialog) => {
+        await toggleOpenAIRemoteCompaction()
+        dialog.clear()
       },
       category: "System",
     },

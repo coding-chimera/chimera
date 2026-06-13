@@ -21,6 +21,7 @@ import { makeRuntime } from "@/effect/run-service"
 import { fn } from "@/util/fn"
 import { EventV2 } from "@/v2/event"
 import { SessionEvent } from "@/v2/session-event"
+import { RemoteCompaction } from "./remote-compaction"
 
 const log = Log.create({ service: "session.compaction" })
 
@@ -85,6 +86,11 @@ type Turn = {
 type Tail = {
   start: number
   id: MessageID
+}
+
+type Replay = {
+  info: MessageV2.User
+  parts: MessageV2.Part[]
 }
 
 type CompletedCompaction = {
@@ -218,6 +224,7 @@ export const layer: Layer.Layer<
   | Plugin.Service
   | SessionProcessor.Service
   | Provider.Service
+  | RemoteCompaction.Service
 > = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -228,6 +235,7 @@ export const layer: Layer.Layer<
     const plugin = yield* Plugin.Service
     const processors = yield* SessionProcessor.Service
     const provider = yield* Provider.Service
+    const remote = yield* RemoteCompaction.Service
 
     const isOverflow = Effect.fn("SessionCompaction.isOverflow")(function* (input: {
       tokens: MessageV2.Assistant["tokens"]
@@ -343,6 +351,92 @@ export const layer: Layer.Layer<
       }
     })
 
+    const autoContinue = Effect.fn("SessionCompaction.autoContinue")(function* (input: {
+      auto: boolean
+      replay?: Replay
+      userMessage: MessageV2.User
+      sessionID: SessionID
+      overflow?: boolean
+    }) {
+      if (!input.auto) return
+      if (input.replay) {
+        const original = input.replay.info
+        const replayMsg = yield* session.updateMessage({
+          id: MessageID.ascending(),
+          role: "user",
+          sessionID: input.sessionID,
+          time: { created: Date.now() },
+          agent: original.agent,
+          model: original.model,
+          format: original.format,
+          tools: original.tools,
+          system: original.system,
+        })
+        for (const part of input.replay.parts) {
+          if (part.type === "compaction") continue
+          const replayPart =
+            part.type === "file" && MessageV2.isMedia(part.mime)
+              ? { type: "text" as const, text: `[Attached ${part.mime}: ${part.filename ?? "file"}]` }
+              : part
+          yield* session.updatePart({
+            ...replayPart,
+            id: PartID.ascending(),
+            messageID: replayMsg.id,
+            sessionID: input.sessionID,
+          })
+        }
+        return
+      }
+
+      const info = yield* provider.getProvider(input.userMessage.model.providerID)
+      if (
+        !(yield* plugin.trigger(
+          "experimental.compaction.autocontinue",
+          {
+            sessionID: input.sessionID,
+            agent: input.userMessage.agent,
+            model: yield* provider.getModel(input.userMessage.model.providerID, input.userMessage.model.modelID),
+            provider: {
+              source: info.source,
+              info,
+              options: info.options,
+            },
+            message: input.userMessage,
+            overflow: input.overflow === true,
+          },
+          { enabled: true },
+        )).enabled
+      ) {
+        return
+      }
+      const continueMsg = yield* session.updateMessage({
+        id: MessageID.ascending(),
+        role: "user",
+        sessionID: input.sessionID,
+        time: { created: Date.now() },
+        agent: input.userMessage.agent,
+        model: input.userMessage.model,
+      })
+      const text =
+        (input.overflow
+          ? "The previous request exceeded the provider's size limit due to large media attachments. The conversation was compacted and media files were removed from context. If the user was asking about attached images or files, explain that the attachments were too large to process and suggest they try again with smaller or fewer files.\n\n"
+          : "") +
+        "Continue the interrupted task from the compacted conversation state. Do not treat compaction as task completion. If more repository evidence is needed, use the available search, read, Chimera graph, or task/explore tools before answering. Stop only when the task is complete or genuinely blocked."
+      yield* session.updatePart({
+        id: PartID.ascending(),
+        messageID: continueMsg.id,
+        sessionID: input.sessionID,
+        type: "text",
+        metadata: { compaction_continue: true },
+        synthetic: true,
+        text,
+        time: {
+          start: Date.now(),
+          end: Date.now(),
+        },
+      })
+    })
+
     const processCompaction = Effect.fn("SessionCompaction.process")(function* (input: {
       parentID: MessageID
       messages: MessageV2.WithParts[]
@@ -358,12 +452,7 @@ export const layer: Layer.Layer<
       const compactionPart = parent.parts.find((part): part is MessageV2.CompactionPart => part.type === "compaction")
 
       let messages = input.messages
-      let replay:
-        | {
-            info: MessageV2.User
-            parts: MessageV2.Part[]
-          }
-        | undefined
+      let replay: Replay | undefined
       if (input.overflow) {
         const idx = input.messages.findIndex((m) => m.info.id === input.parentID)
         for (let i = idx - 1; i >= 0; i--) {
@@ -405,12 +494,8 @@ export const layer: Layer.Layer<
       const nextPrompt = compacting.prompt ?? buildPrompt({ previousSummary, context: compacting.context })
       const msgs = structuredClone(selected.head)
       yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
-      const modelMessages = yield* MessageV2.toModelMessagesEffect(msgs, model, {
-        stripMedia: true,
-        toolOutputMaxChars: TOOL_OUTPUT_MAX_CHARS,
-      })
       const ctx = yield* InstanceState.context
-      const msg: MessageV2.Assistant = {
+      const makeSummaryMessage = (): MessageV2.Assistant => ({
         id: MessageID.ascending(),
         role: "assistant",
         parentID: input.parentID,
@@ -435,7 +520,62 @@ export const layer: Layer.Layer<
         time: {
           created: Date.now(),
         },
+      })
+
+      if (remote && compactionPart) {
+        const result = yield* remote
+          .compact({
+            sessionID: input.sessionID,
+            model,
+            messages: msgs,
+            instructions: nextPrompt,
+          })
+          .pipe(
+            Effect.map((metadata) => ({ ok: true as const, metadata })),
+            Effect.catch((error) => Effect.succeed({ ok: false as const, error })),
+          )
+        if (result.ok) {
+          yield* session.updatePart({
+            ...compactionPart,
+            tail_start_id: selected.tail_start_id,
+            remote: result.metadata,
+          })
+          const msg = makeSummaryMessage()
+          msg.finish = "end_turn"
+          msg.time.completed = Date.now()
+          yield* session.updateMessage(msg)
+          const text = "Remote Codex compaction installed."
+          yield* session.updatePart({
+            id: PartID.ascending(),
+            messageID: msg.id,
+            sessionID: input.sessionID,
+            type: "text",
+            text,
+          })
+          yield* autoContinue({
+            auto: input.auto,
+            replay,
+            userMessage,
+            sessionID: input.sessionID,
+            overflow: input.overflow,
+          })
+          EventV2.run(SessionEvent.Compaction.Ended.Sync, {
+            sessionID: input.sessionID,
+            timestamp: DateTime.makeUnsafe(Date.now()),
+            text,
+            include: selected.tail_start_id,
+          })
+          yield* bus.publish(Event.Compacted, { sessionID: input.sessionID })
+          return "continue"
+        }
+        log.warn("remote compaction failed", { error: result.error.message, status: result.error.status })
       }
+
+      const modelMessages = yield* MessageV2.toModelMessagesEffect(msgs, model, {
+        stripMedia: true,
+        toolOutputMaxChars: TOOL_OUTPUT_MAX_CHARS,
+      })
+      const msg = makeSummaryMessage()
       yield* session.updateMessage(msg)
       const processor = yield* processors.create({
         assistantMessage: msg,
@@ -476,86 +616,14 @@ export const layer: Layer.Layer<
         })
       }
 
-      if (result === "continue" && input.auto) {
-        if (replay) {
-          const original = replay.info
-          const replayMsg = yield* session.updateMessage({
-            id: MessageID.ascending(),
-            role: "user",
-            sessionID: input.sessionID,
-            time: { created: Date.now() },
-            agent: original.agent,
-            model: original.model,
-            format: original.format,
-            tools: original.tools,
-            system: original.system,
-          })
-          for (const part of replay.parts) {
-            if (part.type === "compaction") continue
-            const replayPart =
-              part.type === "file" && MessageV2.isMedia(part.mime)
-                ? { type: "text" as const, text: `[Attached ${part.mime}: ${part.filename ?? "file"}]` }
-                : part
-            yield* session.updatePart({
-              ...replayPart,
-              id: PartID.ascending(),
-              messageID: replayMsg.id,
-              sessionID: input.sessionID,
-            })
-          }
-        }
-
-        if (!replay) {
-          const info = yield* provider.getProvider(userMessage.model.providerID)
-          if (
-            (yield* plugin.trigger(
-              "experimental.compaction.autocontinue",
-              {
-                sessionID: input.sessionID,
-                agent: userMessage.agent,
-                model: yield* provider.getModel(userMessage.model.providerID, userMessage.model.modelID),
-                provider: {
-                  source: info.source,
-                  info,
-                  options: info.options,
-                },
-                message: userMessage,
-                overflow: input.overflow === true,
-              },
-              { enabled: true },
-            )).enabled
-          ) {
-            const continueMsg = yield* session.updateMessage({
-              id: MessageID.ascending(),
-              role: "user",
-              sessionID: input.sessionID,
-              time: { created: Date.now() },
-              agent: userMessage.agent,
-              model: userMessage.model,
-            })
-            const text =
-              (input.overflow
-                ? "The previous request exceeded the provider's size limit due to large media attachments. The conversation was compacted and media files were removed from context. If the user was asking about attached images or files, explain that the attachments were too large to process and suggest they try again with smaller or fewer files.\n\n"
-                : "") +
-              "Continue the interrupted task from the compacted conversation state. Do not treat compaction as task completion. If more repository evidence is needed, use the available search, read, Chimera graph, or task/explore tools before answering. Stop only when the task is complete or genuinely blocked."
-            yield* session.updatePart({
-              id: PartID.ascending(),
-              messageID: continueMsg.id,
-              sessionID: input.sessionID,
-              type: "text",
-              // Internal marker for auto-compaction followups so provider plugins
-              // can distinguish them from manual post-compaction user prompts.
-              // This is not a stable plugin contract and may change or disappear.
-              metadata: { compaction_continue: true },
-              synthetic: true,
-              text,
-              time: {
-                start: Date.now(),
-                end: Date.now(),
-              },
-            })
-          }
-        }
+      if (result === "continue") {
+        yield* autoContinue({
+          auto: input.auto,
+          replay,
+          userMessage,
+          sessionID: input.sessionID,
+          overflow: input.overflow,
+        })
       }
 
       if (processor.message.error) return "stop"
@@ -625,6 +693,7 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(Plugin.defaultLayer),
     Layer.provide(Bus.layer),
     Layer.provide(Config.defaultLayer),
+    Layer.provide(RemoteCompaction.defaultLayer),
   ),
 )
 

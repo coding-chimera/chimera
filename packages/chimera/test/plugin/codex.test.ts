@@ -6,6 +6,7 @@ import {
   extractAccountId,
   type IdTokenClaims,
 } from "../../src/plugin/codex"
+import { encodeRemoteCompactionSentinel } from "../../src/session/remote-compaction-codec"
 
 function createTestJwt(payload: object): string {
   const header = Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url")
@@ -123,7 +124,7 @@ describe("plugin.codex", () => {
   })
 
   test("deduplicates concurrent Codex token refreshes", async () => {
-    let auth = {
+    let auth: { type: "oauth"; refresh: string; access: string; expires: number; accountId?: string } = {
       type: "oauth" as const,
       refresh: "refresh-old",
       access: "",
@@ -217,6 +218,63 @@ describe("plugin.codex", () => {
       { authorization: "Bearer access-new", accountId: "acc-123" },
       { authorization: "Bearer access-new", accountId: "acc-123" },
     ])
+  })
+
+  test("rewrites remote compaction sentinels into raw Responses input", async () => {
+    let auth: { type: "oauth"; refresh: string; access: string; expires: number; accountId?: string } = {
+      type: "oauth" as const,
+      refresh: "refresh",
+      access: "access",
+      expires: Date.now() + 60_000,
+      accountId: "acc-123",
+    }
+    let body: Record<string, unknown> | undefined
+
+    using server = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        const url = new URL(request.url)
+        if (url.pathname === "/backend-api/codex/responses") {
+          body = JSON.parse(await request.text())
+          return new Response("{}", { status: 200 })
+        }
+        return new Response("unexpected request", { status: 500 })
+      },
+    })
+
+    const hooks = await CodexAuthPlugin(
+      {
+        client: {
+          auth: {
+            async set(input: { body: { refresh: string; access: string; expires: number; accountId?: string } }) {
+              auth = { type: "oauth", ...input.body }
+            },
+          },
+        } as never,
+        project: {} as never,
+        directory: "",
+        worktree: "",
+        experimental_workspace: {
+          register() {},
+        },
+        serverUrl: new URL("https://example.com"),
+        $: {} as never,
+      },
+      {
+        issuer: server.url.origin,
+        codexApiEndpoint: new URL("/backend-api/codex/responses", server.url).toString(),
+      },
+    )
+    const loaded = await hooks.auth!.loader!(async () => auth as never, {} as never)
+    const sentinel = encodeRemoteCompactionSentinel([{ type: "compaction_summary", encrypted_content: "encrypted" }])
+    await loaded.fetch!("https://api.openai.com/v1/responses", {
+      method: "POST",
+      body: JSON.stringify({
+        input: [{ type: "message", role: "user", content: [{ type: "input_text", text: sentinel }] }],
+      }),
+    })
+
+    expect(body?.input).toEqual([{ type: "compaction_summary", encrypted_content: "encrypted" }])
   })
 })
 

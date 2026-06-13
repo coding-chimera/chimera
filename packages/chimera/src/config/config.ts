@@ -272,6 +272,9 @@ export const Info = Schema.Struct({
       reserved: Schema.optional(NonNegativeInt).annotate({
         description: "Token buffer for compaction. Leaves enough window to avoid overflow during compaction.",
       }),
+      remote: Schema.optional(Schema.Literals(["auto", "off"])).annotate({
+        description: "Use Codex remote compaction when available, or set to off to always use local compaction.",
+      }),
     }),
   ),
   experimental: Schema.optional(

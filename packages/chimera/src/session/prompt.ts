@@ -33,6 +33,7 @@ import { Chimera } from "@/chimera"
 import { Question } from "@/question"
 import { pathToFileURL, fileURLToPath } from "url"
 import { Config } from "@/config/config"
+import { Auth } from "@/auth"
 import { ConfigMarkdown } from "@/config/markdown"
 import { SessionSummary } from "./summary"
 import { WorkBrief } from "./work-brief"
@@ -106,6 +107,7 @@ export const layer = Layer.effect(
     const plugin = yield* Plugin.Service
     const commands = yield* Command.Service
     const config = yield* Config.Service
+    const auth = yield* Auth.Service
     const permission = yield* Permission.Service
     const fsys = yield* AppFileSystem.Service
     const mcp = yield* MCP.Service
@@ -1659,11 +1661,17 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
             yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
 
+            const cfg = yield* config.get()
+            const openaiAuth = yield* auth.get("openai").pipe(Effect.orElseSucceed(() => undefined))
+            const remoteCompaction =
+              cfg.compaction?.remote !== "off" && model.providerID === "openai" && openaiAuth?.type === "oauth"
+                ? "sentinel"
+                : "text"
             const [skills, env, instructions, modelMsgs, workBriefSuffix, chimeraContextSuffix] = yield* Effect.all([
               sys.skills(agent),
               sys.environment(model),
               instruction.system().pipe(Effect.orDie),
-              MessageV2.toModelMessagesEffect(msgs, model),
+              MessageV2.toModelMessagesEffect(msgs, model, { remoteCompaction }),
               workBrief.render(sessionID),
               chimeraPromptContext.render(sessionID),
             ])
@@ -1939,6 +1947,7 @@ export const defaultLayer = Layer.suspend(() =>
         SystemPrompt.defaultLayer,
         LLM.defaultLayer,
         Bus.layer,
+        Auth.defaultLayer,
         CrossSpawnSpawner.defaultLayer,
       ),
     ),

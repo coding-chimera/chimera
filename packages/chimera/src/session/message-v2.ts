@@ -27,6 +27,7 @@ import { zod, ZodOverride } from "@/util/effect-zod"
 import { NonNegativeInt, withStatics } from "@/util/schema"
 import { namedSchemaError } from "@/util/named-schema-error"
 import * as EffectLogger from "@opencode-ai/core/effect/logger"
+import { encodeRemoteCompactionSentinel } from "./remote-compaction-codec"
 
 /** Error shape thrown by Bun's fetch() when gzip/br decompression fails mid-stream */
 interface FetchDecompressionError extends Error {
@@ -216,6 +217,20 @@ export const CompactionPart = Schema.Struct({
   auto: Schema.Boolean,
   overflow: Schema.optional(Schema.Boolean),
   tail_start_id: Schema.optional(MessageID),
+  remote: Schema.optional(
+    Schema.Struct({
+      providerID: Schema.Literal("openai"),
+      endpoint: Schema.Literal("codex"),
+      implementation: Schema.Literal("responses_compact"),
+      modelID: Schema.String,
+      output: Schema.Array(
+        Schema.Struct({
+          type: Schema.Union([Schema.Literal("compaction"), Schema.Literal("compaction_summary")]),
+          encrypted_content: Schema.String,
+        }),
+      ),
+    }),
+  ),
 })
   .annotate({ identifier: "CompactionPart" })
   .pipe(withStatics((s) => ({ zod: zod(s) })))
@@ -729,7 +744,7 @@ function providerMeta(metadata: Record<string, any> | undefined) {
 export const toModelMessagesEffect = Effect.fnUntraced(function* (
   input: WithParts[],
   model: Provider.Model,
-  options?: { stripMedia?: boolean; toolOutputMaxChars?: number },
+  options?: { stripMedia?: boolean; toolOutputMaxChars?: number; remoteCompaction?: "sentinel" | "text" },
 ) {
   const result: UIMessage[] = []
   const toolNames = new Set<string>()
@@ -824,7 +839,10 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
         if (part.type === "compaction") {
           userMessage.parts.push({
             type: "text",
-            text: "What did we do so far?",
+            text:
+              options?.remoteCompaction === "sentinel" && part.remote
+                ? encodeRemoteCompactionSentinel(part.remote.output)
+                : "What did we do so far?",
           })
         }
         if (part.type === "subtask") {
@@ -1012,7 +1030,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
 export function toModelMessages(
   input: WithParts[],
   model: Provider.Model,
-  options?: { stripMedia?: boolean; toolOutputMaxChars?: number },
+  options?: { stripMedia?: boolean; toolOutputMaxChars?: number; remoteCompaction?: "sentinel" | "text" },
 ): Promise<ModelMessage[]> {
   return Effect.runPromise(toModelMessagesEffect(input, model, options).pipe(Effect.provide(EffectLogger.layer)))
 }
