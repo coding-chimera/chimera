@@ -952,7 +952,8 @@ describe("session.compaction.process", () => {
             metadata: { compaction_continue: true },
           })
           if (last?.parts[0]?.type === "text") {
-            expect(last.parts[0].text).toContain("Continue if you have next steps")
+            expect(last.parts[0].text).toContain("Continue the interrupted task from the compacted conversation state")
+            expect(last.parts[0].text).toContain("use the available search, read, Chimera graph, or task/explore tools")
           }
         } finally {
           await rt.dispose()
@@ -1262,7 +1263,9 @@ describe("session.compaction.process", () => {
                 msg.info.role === "user" &&
                 msg.parts.some(
                   (part) =>
-                    part.type === "text" && part.synthetic && part.text.includes("Continue if you have next steps"),
+                    part.type === "text" &&
+                    part.synthetic &&
+                    part.text.includes("Continue the interrupted task from the compacted conversation state"),
                 ),
             ),
           ).toBe(false)
