@@ -52,7 +52,7 @@ import { DialogWorkspaceUnavailable } from "../dialog-workspace-unavailable"
 import { useArgs } from "@tui/context/args"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { WorkspaceLabel, type WorkspaceStatus } from "../workspace-label"
-import { openAIRemoteCompactionStatus } from "@tui/util/remote-compaction"
+import { openAIRemoteCompactionEnabled, openAIRemoteCompactionStatus } from "@tui/util/remote-compaction"
 
 export type PromptProps = {
   sessionID?: string
@@ -186,7 +186,8 @@ export function Prompt(props: PromptProps) {
   const [workspaceCreatingDots, setWorkspaceCreatingDots] = createSignal(3)
   const [warpNotice, setWarpNotice] = createSignal<string>()
   const currentProviderLabel = createMemo(() => local.model.parsed().provider)
-  const remoteCompactionStatus = createMemo(() => openAIRemoteCompactionStatus(sync.data.config))
+  const remoteCompactionEnabled = createMemo(() => openAIRemoteCompactionEnabled(sync.data.config, local.model.current()))
+  const remoteCompactionStatus = createMemo(() => openAIRemoteCompactionStatus(sync.data.config, local.model.current()))
   const hasRightContent = createMemo(() => Boolean(props.right))
   const defaultWorkspaceID = createMemo(() => props.workspaceID ?? project.workspace.current())
 
@@ -1470,10 +1471,12 @@ export function Prompt(props: PromptProps) {
                               </span>
                             </text>
                           </Show>
-                          <text fg={fadeColor(theme.textMuted, modelMetaAlpha())}>·</text>
-                          <text fg={fadeColor(theme.textMuted, modelMetaAlpha())}>
-                            OpenAI remote compaction: {remoteCompactionStatus()}
-                          </text>
+                          <Show when={remoteCompactionEnabled()}>
+                            <text fg={fadeColor(theme.textMuted, modelMetaAlpha())}>·</text>
+                            <text fg={fadeColor(theme.textMuted, modelMetaAlpha())}>
+                              OpenAI remote compaction: {remoteCompactionStatus()}
+                            </text>
+                          </Show>
                         </box>
                       </Show>
                     </>

@@ -55,6 +55,11 @@ function errorMessage(cause: unknown) {
   return cause instanceof Error ? cause.message : String(cause)
 }
 
+export function supportsOpenAIRemoteCompactionModel(model: Provider.Model) {
+  const id = (model.api.id ?? model.id).toLowerCase()
+  return model.providerID === "openai" || /^(gpt-|o[1-9](?:-|$)|chatgpt-|codex-)/.test(id)
+}
+
 function truncate(text: string) {
   if (text.length <= TOOL_OUTPUT_MAX_CHARS) return text
   return `${text.slice(0, TOOL_OUTPUT_MAX_CHARS)}\n[Tool output truncated for remote compaction]`
@@ -150,8 +155,10 @@ export const layerWithEndpoint = (endpoint = codexEndpointUrl("responses/compact
     const http = yield* HttpClient.HttpClient
 
     const canCompact = Effect.fn("RemoteCompaction.canCompact")(function* (input: { model: Provider.Model }) {
-      if ((yield* config.get()).compaction?.remote === "off") return false
-      if (input.model.providerID !== "openai") return false
+      const mode = (yield* config.get()).compaction?.remote ?? "auto"
+      if (mode === "off") return false
+      if (mode === "auto" && input.model.providerID !== "openai") return false
+      if (mode === "on" && !supportsOpenAIRemoteCompactionModel(input.model)) return false
       return (yield* auth.get("openai").pipe(Effect.orElseSucceed(() => undefined)))?.type === "oauth"
     })
 

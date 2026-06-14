@@ -62,6 +62,7 @@ import { EventV2 } from "@/v2/event"
 import { SessionEvent } from "@/v2/session-event"
 import { Modelv2 } from "@/v2/model"
 import { AgentAttachment, FileAttachment, Source } from "@/v2/session-prompt"
+import { supportsOpenAIRemoteCompactionModel } from "./remote-compaction"
 import * as DateTime from "effect/DateTime"
 import { eq } from "@/storage/db"
 import * as Database from "@/storage/db"
@@ -1663,8 +1664,11 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
             const cfg = yield* config.get()
             const openaiAuth = yield* auth.get("openai").pipe(Effect.orElseSucceed(() => undefined))
+            const remoteMode = cfg.compaction?.remote ?? "auto"
             const remoteCompaction =
-              cfg.compaction?.remote !== "off" && model.providerID === "openai" && openaiAuth?.type === "oauth"
+              remoteMode !== "off" &&
+              (remoteMode === "auto" ? model.providerID === "openai" : supportsOpenAIRemoteCompactionModel(model)) &&
+              openaiAuth?.type === "oauth"
                 ? "encoded"
                 : "text"
             const [skills, env, instructions, modelMsgs, workBriefSuffix, chimeraContextSuffix] = yield* Effect.all([

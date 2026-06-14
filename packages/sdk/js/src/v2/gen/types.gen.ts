@@ -1262,7 +1262,7 @@ export type Config = {
     tail_turns?: number
     preserve_recent_tokens?: number
     reserved?: number
-    remote?: "auto" | "off"
+    remote?: "auto" | "on" | "off"
   }
   experimental?: {
     disable_paste_summary?: boolean

@@ -79,10 +79,13 @@ function createModel(opts: {
   input?: number
   cost?: Provider.Model["cost"]
   npm?: string
+  id?: string
+  providerID?: string
 }): Provider.Model {
+  const id = opts.id ?? "test-model"
   return {
-    id: "test-model",
-    providerID: "test",
+    id,
+    providerID: opts.providerID ?? "test",
     name: "Test",
     limit: {
       context: opts.context,
@@ -98,7 +101,7 @@ function createModel(opts: {
       input: { text: true, image: false, audio: false, video: false },
       output: { text: true, image: false, audio: false, video: false },
     },
-    api: { npm: opts.npm ?? "@ai-sdk/anthropic" },
+    api: { id, npm: opts.npm ?? "@ai-sdk/anthropic" },
     options: {},
   } as Provider.Model
 }
@@ -1188,6 +1191,139 @@ describe("session.compaction.process", () => {
           expect(notice?.type).toBe("text")
           if (notice?.type !== "text") throw new Error("missing remote compaction failure notice")
           expect(notice.text).toContain("falling back to local compaction")
+        } finally {
+          await rt.dispose()
+        }
+      },
+    })
+  })
+
+  test("defaults remote compaction off for non-OpenAI models unless forced on", async () => {
+    const model = createModel({ context: 100_000, output: 32_000 })
+    const openai = createModel({ context: 100_000, output: 32_000, id: "gpt-5", providerID: "openai" })
+    const mirror = createModel({ context: 100_000, output: 32_000, id: "gpt-5", npm: "@ai-sdk/openai-compatible" })
+    const auth = Layer.mock(Auth.Service)({
+      get: (providerID: string) =>
+        Effect.succeed(
+          providerID === "openai"
+            ? {
+                type: "oauth" as const,
+                refresh: "refresh",
+                access: "access",
+                expires: Date.now() + 60_000,
+              }
+            : undefined,
+        ),
+      all: () => Effect.succeed({}),
+      set: () => Effect.void,
+      remove: () => Effect.void,
+    })
+    async function canCompact(remote: "auto" | "on" | "off", model: Provider.Model) {
+      const rt = ManagedRuntime.make(
+        RemoteCompaction.layerWithEndpoint("http://127.0.0.1/responses/compact").pipe(
+          Layer.provide(auth),
+          Layer.provide(cfg({ remote })),
+          Layer.provide(FetchHttpClient.layer),
+        ),
+      )
+      try {
+        return await rt.runPromise(RemoteCompaction.Service.use((svc) => svc.canCompact({ model })))
+      } finally {
+        await rt.dispose()
+      }
+    }
+
+    expect(await canCompact("auto", model)).toBe(false)
+    expect(await canCompact("on", model)).toBe(false)
+    expect(await canCompact("off", model)).toBe(false)
+    expect(await canCompact("auto", openai)).toBe(true)
+    expect(await canCompact("on", mirror)).toBe(true)
+  })
+
+  test("skips remote compaction for non-OpenAI models", async () => {
+    await using tmp = await tmpdir()
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const calls: string[] = []
+        using server = Bun.serve({
+          port: 0,
+          fetch(request) {
+            calls.push(request.url)
+            return new Response("unexpected request", { status: 500 })
+          },
+        })
+
+        const session = await svc.create({})
+        await user(session.id, "first", ref)
+        await SessionCompaction.create({
+          sessionID: session.id,
+          agent: "build",
+          model: ref,
+          auto: false,
+        })
+
+        const config = cfg({ remote: "auto", tail_turns: 0 })
+        const auth = Layer.mock(Auth.Service)({
+          get: (providerID: string) =>
+            Effect.succeed(
+              providerID === "openai"
+                ? {
+                    type: "oauth" as const,
+                    refresh: "refresh",
+                    access: "access",
+                    expires: Date.now() + 60_000,
+                  }
+                : undefined,
+            ),
+          all: () => Effect.succeed({}),
+          set: () => Effect.void,
+          remove: () => Effect.void,
+        })
+        const bus = Bus.layer
+        const remoteLayer = RemoteCompaction.layerWithEndpoint(server.url.toString()).pipe(
+          Layer.provide(auth),
+          Layer.provide(config),
+          Layer.provide(FetchHttpClient.layer),
+        )
+        const rt = ManagedRuntime.make(
+          Layer.mergeAll(SessionCompaction.layer.pipe(Layer.provide(remoteLayer)), bus).pipe(
+            Layer.provide(wide().layer),
+            Layer.provide(SessionNs.defaultLayer),
+            Layer.provide(layer("continue")),
+            Layer.provide(Agent.defaultLayer),
+            Layer.provide(Plugin.defaultLayer),
+            Layer.provide(bus),
+            Layer.provide(config),
+          ),
+        )
+        try {
+          const msgs = await svc.messages({ sessionID: session.id })
+          const parent = msgs.at(-1)?.info.id
+          expect(parent).toBeTruthy()
+          const result = await rt.runPromise(
+            SessionCompaction.Service.use((svc) =>
+              svc.process({
+                parentID: parent!,
+                messages: msgs,
+                sessionID: session.id,
+                auto: false,
+              }),
+            ),
+          )
+
+          const all = await svc.messages({ sessionID: session.id })
+          const compactionMessage = all.find((msg) => msg.info.id === parent)
+          const part = compactionMessage?.parts.find((item): item is MessageV2.CompactionPart => item.type === "compaction")
+          const notice = compactionMessage?.parts.find(
+            (item) => item.type === "text" && item.metadata?.remote_compaction_failure === true,
+          )
+
+          expect(result).toBe("continue")
+          expect(calls).toEqual([])
+          expect(part?.remote).toBeUndefined()
+          expect(part?.remote_error).toBeUndefined()
+          expect(notice).toBeUndefined()
         } finally {
           await rt.dispose()
         }

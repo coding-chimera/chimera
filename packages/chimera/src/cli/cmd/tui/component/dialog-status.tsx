@@ -3,6 +3,7 @@ import { fileURLToPath } from "bun"
 import { useTheme } from "../context/theme"
 import { useDialog } from "@tui/ui/dialog"
 import { useSync } from "@tui/context/sync"
+import { useLocal } from "@tui/context/local"
 import { For, Match, Switch, Show, createMemo } from "solid-js"
 import {
   openAIRemoteCompactionDescription,
@@ -14,13 +15,16 @@ export type DialogStatusProps = {}
 
 export function DialogStatus() {
   const sync = useSync()
+  const local = useLocal()
   const { theme } = useTheme()
   const dialog = useDialog()
 
   const enabledFormatters = createMemo(() => sync.data.formatter.filter((f) => f.enabled))
-  const remoteCompactionEnabled = createMemo(() => openAIRemoteCompactionEnabled(sync.data.config))
-  const remoteCompactionStatus = createMemo(() => openAIRemoteCompactionStatus(sync.data.config))
-  const remoteCompactionDescription = createMemo(() => openAIRemoteCompactionDescription(sync.data.config))
+  const remoteCompactionEnabled = createMemo(() => openAIRemoteCompactionEnabled(sync.data.config, local.model.current()))
+  const remoteCompactionStatus = createMemo(() => openAIRemoteCompactionStatus(sync.data.config, local.model.current()))
+  const remoteCompactionDescription = createMemo(() =>
+    openAIRemoteCompactionDescription(sync.data.config, local.model.current()),
+  )
 
   const plugins = createMemo(() => {
     const list = sync.data.config.plugin ?? []

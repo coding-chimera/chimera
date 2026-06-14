@@ -75,11 +75,11 @@ describe("session.system", () => {
       expect(unknown).not.toContain("You are opencode")
       expect(unknown).not.toContain("github.com/anomalyco/opencode")
       expect(unknown).not.toContain("fewer than 4 lines")
-      expect(unknown).not.toContain("Kimi For Coding")
+      expect(unknown).not.toContain("kimi-for-coding(k2.7)")
       expect(kimi).toContain("# Chimera tools")
       expect(kimi).toContain("# Work Brief")
-      expect(kimi).toContain("Kimi For Coding")
-      expect(kimi.indexOf("# Chimera tools")).toBeLessThan(kimi.indexOf("Kimi For Coding"))
+      expect(kimi).toContain("kimi-for-coding(k2.7)")
+      expect(kimi.indexOf("# Chimera tools")).toBeLessThan(kimi.indexOf("kimi-for-coding(k2.7)"))
       yield* Effect.void
     }),
   )
@@ -142,17 +142,20 @@ describe("session.system", () => {
         api: { id: "kimi-k2-thinking" },
       } as unknown as Parameters<typeof SystemPrompt.provider>[0]).join("\n")
 
-      expect(stable).toContain("Kimi For Coding")
+      expect(stable).toContain("kimi-for-coding(k2.7)")
       expect(stable).toContain("factual restraint")
+      expect(stable).toContain("Kimi Tool Discipline")
+      expect(stable).toContain("read/search evidence -> act")
       expect(stable).toContain("Chimera Operating Discipline")
       expect(stable).toContain("workbrief")
       expect(stable).toContain("chimera_search")
       expect(stable).toContain("chimera_predesign")
       expect(stable).toContain("chimera_audit_recent")
+      expect(stable).toContain("Kimi Final Contract")
       expect(stable).toContain("# Chimera tools")
-      expect(legacyAlias).toContain("Kimi For Coding")
+      expect(legacyAlias).toContain("kimi-for-coding(k2.7)")
       expect(legacyAlias).toContain("# Chimera tools")
-      expect(apiNamed).toContain("Kimi For Coding")
+      expect(apiNamed).toContain("kimi-for-coding(k2.7)")
       expect(apiNamed).toContain("# Chimera tools")
       yield* Effect.void
     }),

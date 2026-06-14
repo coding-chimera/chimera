@@ -85,7 +85,7 @@
     },
     "packages/chimera": {
       "name": "chimera",
-      "version": "0.0.1",
+      "version": "0.0.3",
       "bin": {
         "chimera": "./bin/chimera",
       },
