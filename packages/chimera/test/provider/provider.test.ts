@@ -2147,11 +2147,12 @@ test("models.dev normalization exposes Kimi For Coding as a stable model id", ()
 
   const models = Provider.fromModelsDevProvider(provider).models
   const stable = models["kimi-for-coding"]
+  const legacy = models["k2p6"]
 
-  expect(models["k2p6"]).toBeDefined()
+  expect(legacy).toBeDefined()
   expect(stable).toBeDefined()
   expect(stable.id).toBe(ModelID.make("kimi-for-coding"))
-  expect(stable.name).toBe("kimi-for-coding(k2.7)")
+  expect(stable.name).toBe("kimi-for-coding（Kimi-K2.7）")
   expect(stable.api.id).toBe("kimi-for-coding")
   expect(stable.api.url).toBe("https://api.kimi.com/coding/v1")
   expect(stable.api.npm).toBe("@ai-sdk/openai-compatible")
@@ -2161,6 +2162,10 @@ test("models.dev normalization exposes Kimi For Coding as a stable model id", ()
   expect(stable.capabilities.interleaved).toEqual({ field: "reasoning_content" })
   expect(stable.limit.context).toBe(262_144)
   expect(stable.limit.output).toBe(32_768)
+  expect(legacy.id).toBe(ModelID.make("k2p6"))
+  expect(legacy.name).toBe("kimi-for-coding（Kimi-K2.7）")
+  expect(legacy.api.id).toBe("kimi-for-coding")
+  expect(legacy.status).toBe("deprecated")
 })
 
 test("model variants are generated for reasoning models", async () => {

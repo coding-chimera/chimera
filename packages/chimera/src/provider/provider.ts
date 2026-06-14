@@ -31,7 +31,7 @@ import { ModelID, ProviderID } from "./schema"
 
 const log = Log.create({ service: "provider" })
 const KIMI_FOR_CODING_ID = "kimi-for-coding"
-const KIMI_FOR_CODING_NAME = "kimi-for-coding(k2.7)"
+const KIMI_FOR_CODING_NAME = "kimi-for-coding（Kimi-K2.7）"
 
 function shouldUseCopilotResponsesApi(modelID: string): boolean {
   const match = /^gpt-(\d+)/.exec(modelID)
@@ -1075,6 +1075,45 @@ export function findKnownModelMetadata(database: Record<string, Info>, ...ids: (
 function exposeKimiForCodingModel(provider: ModelsDev.Provider, models: Record<string, Model>) {
   if (provider.id !== KIMI_FOR_CODING_ID) return
 
+  function normalize(model: Model, id: ModelID, status: Model["status"]): Model {
+    const normalized: Model = {
+      ...model,
+      id,
+      name: KIMI_FOR_CODING_NAME,
+      family: model.family ?? KIMI_FOR_CODING_ID,
+      api: {
+        ...model.api,
+        id: KIMI_FOR_CODING_ID,
+        url: provider.api ?? model.api.url,
+        npm: "@ai-sdk/openai-compatible",
+      },
+      status,
+      capabilities: {
+        ...model.capabilities,
+        temperature: false,
+        reasoning: true,
+        toolcall: true,
+        input: {
+          ...model.capabilities.input,
+          text: true,
+        },
+        output: {
+          ...model.capabilities.output,
+          text: true,
+        },
+        interleaved: { field: "reasoning_content" },
+      },
+      limit: {
+        ...model.limit,
+        context: Math.max(model.limit.context, 262_144),
+        output: Math.max(model.limit.output, 32_768),
+      },
+      variants: {},
+    }
+    normalized.variants = mapValues(ProviderTransform.variants(normalized), (v) => v)
+    return normalized
+  }
+
   const fallback =
     models[KIMI_FOR_CODING_ID] ??
     models["k2p6"] ??
@@ -1083,42 +1122,11 @@ function exposeKimiForCodingModel(provider: ModelsDev.Provider, models: Record<s
     Object.values(models)[0]
   if (!fallback) return
 
-  const stable: Model = {
-    ...fallback,
-    id: ModelID.make(KIMI_FOR_CODING_ID),
-    name: KIMI_FOR_CODING_NAME,
-    family: fallback.family ?? KIMI_FOR_CODING_ID,
-    api: {
-      ...fallback.api,
-      id: KIMI_FOR_CODING_ID,
-      url: provider.api ?? fallback.api.url,
-      npm: "@ai-sdk/openai-compatible",
-    },
-    status: "active",
-    capabilities: {
-      ...fallback.capabilities,
-      temperature: false,
-      reasoning: true,
-      toolcall: true,
-      input: {
-        ...fallback.capabilities.input,
-        text: true,
-      },
-      output: {
-        ...fallback.capabilities.output,
-        text: true,
-      },
-      interleaved: { field: "reasoning_content" },
-    },
-    limit: {
-      ...fallback.limit,
-      context: Math.max(fallback.limit.context, 262_144),
-      output: Math.max(fallback.limit.output, 32_768),
-    },
-    variants: {},
+  for (const [id, model] of Object.entries(models)) {
+    if (id === KIMI_FOR_CODING_ID) continue
+    models[id] = normalize(model, model.id, "deprecated")
   }
-  stable.variants = mapValues(ProviderTransform.variants(stable), (v) => v)
-  models[KIMI_FOR_CODING_ID] = stable
+  models[KIMI_FOR_CODING_ID] = normalize(fallback, ModelID.make(KIMI_FOR_CODING_ID), "active")
 }
 
 export function fromModelsDevProvider(provider: ModelsDev.Provider): Info {
