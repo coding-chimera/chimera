@@ -31,6 +31,7 @@ import { ModelID, ProviderID } from "./schema"
 
 const log = Log.create({ service: "provider" })
 const KIMI_FOR_CODING_ID = "kimi-for-coding"
+const KIMI_FOR_CODING_NAME = "kimi-for-coding(k2.7)"
 
 function shouldUseCopilotResponsesApi(modelID: string): boolean {
   const match = /^gpt-(\d+)/.exec(modelID)
@@ -1050,7 +1051,7 @@ function exposeKimiForCodingModel(provider: ModelsDev.Provider, models: Record<s
   const stable: Model = {
     ...fallback,
     id: ModelID.make(KIMI_FOR_CODING_ID),
-    name: provider.name || "Kimi For Coding",
+    name: KIMI_FOR_CODING_NAME,
     family: fallback.family ?? KIMI_FOR_CODING_ID,
     api: {
       ...fallback.api,

@@ -522,7 +522,7 @@ export const layer: Layer.Layer<
         },
       })
 
-      if (remote && compactionPart) {
+      if (compactionPart && (yield* remote.canCompact({ model }))) {
         const result = yield* remote
           .compact({
             sessionID: input.sessionID,

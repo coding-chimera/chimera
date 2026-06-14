@@ -438,7 +438,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   )
 
   async function toggleOpenAIRemoteCompaction() {
-    const remote = nextOpenAIRemoteCompactionMode(sync.data.config)
+    const remote = nextOpenAIRemoteCompactionMode(sync.data.config, local.model.current())
     const result = await sdk.client.config
       .update({
         workspace: project.workspace.current(),
@@ -475,7 +475,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     sync.set("config", "compaction", { ...sync.data.config.compaction, remote })
     toast.show({
       variant: "info",
-      message: `OpenAI remote compaction: ${openAIRemoteCompactionStatus(sync.data.config)}`,
+      message: `OpenAI remote compaction: ${openAIRemoteCompactionStatus(sync.data.config, local.model.current())}`,
       duration: 3000,
     })
   }
@@ -673,8 +673,8 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       category: "System",
     },
     {
-      title: openAIRemoteCompactionToggleTitle(sync.data.config),
-      description: openAIRemoteCompactionToggleDescription(sync.data.config),
+      title: openAIRemoteCompactionToggleTitle(sync.data.config, local.model.current()),
+      description: openAIRemoteCompactionToggleDescription(sync.data.config, local.model.current()),
       value: "app.toggle.openai_remote_compaction",
       suggested: true,
       slash: {

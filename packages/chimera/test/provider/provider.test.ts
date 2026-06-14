@@ -1965,7 +1965,7 @@ test("models.dev normalization fills required response fields", () => {
 test("models.dev normalization exposes Kimi For Coding as a stable model id", () => {
   const provider = {
     id: "kimi-for-coding",
-    name: "Kimi For Coding",
+    name: "Kimi K2.6",
     env: ["KIMI_API_KEY"],
     npm: "@ai-sdk/anthropic",
     api: "https://api.kimi.com/coding/v1",
@@ -2003,6 +2003,7 @@ test("models.dev normalization exposes Kimi For Coding as a stable model id", ()
   expect(models["k2p6"]).toBeDefined()
   expect(stable).toBeDefined()
   expect(stable.id).toBe(ModelID.make("kimi-for-coding"))
+  expect(stable.name).toBe("kimi-for-coding(k2.7)")
   expect(stable.api.id).toBe("kimi-for-coding")
   expect(stable.api.url).toBe("https://api.kimi.com/coding/v1")
   expect(stable.api.npm).toBe("@ai-sdk/openai-compatible")
