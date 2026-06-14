@@ -301,6 +301,154 @@ test("custom provider with npm package", async () => {
   })
 })
 
+test("custom OpenAI-compatible provider reuses known model metadata", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "chimera.json"),
+        JSON.stringify({
+          $schema: "https://chimera.ai/config.json",
+          provider: {
+            "custom-openai": {
+              name: "Custom OpenAI",
+              npm: "@ai-sdk/openai-compatible",
+              env: [],
+              models: {
+                "openai/gpt-5.4-pro": {},
+              },
+              options: {
+                baseURL: "https://api.custom.com/v1",
+              },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const providers = await list()
+      const model = providers[ProviderID.make("custom-openai")].models["openai/gpt-5.4-pro"]
+      expect(model.name).toBe("GPT-5.4 Pro")
+      expect(model.capabilities.reasoning).toBe(true)
+      expect(model.capabilities.attachment).toBe(true)
+      expect(model.limit.context).toBe(1_050_000)
+      expect(model.limit.output).toBe(128_000)
+      expect(model.cost.input).toBeGreaterThan(0)
+    },
+  })
+})
+
+test("known model metadata lookup normalizes provider-prefixed GPT-5.5 ids", () => {
+  const provider = Provider.fromModelsDevProvider({
+    id: "openai",
+    name: "OpenAI",
+    env: [],
+    api: "https://api.openai.com/v1",
+    models: {
+      "gpt-5.5": {
+        id: "gpt-5.5",
+        name: "GPT-5.5",
+        family: "gpt",
+        release_date: "2026-06-01",
+        attachment: true,
+        reasoning: true,
+        temperature: false,
+        tool_call: true,
+        cost: {
+          input: 5,
+          output: 30,
+          cache_read: 0.5,
+          context_over_200k: {
+            input: 10,
+            output: 45,
+            cache_read: 1,
+          },
+        },
+        limit: {
+          context: 1_050_000,
+          input: 922_000,
+          output: 128_000,
+        },
+      },
+    },
+  } as unknown as ModelsDev.Provider)
+
+  const model = Provider.findKnownModelMetadata({ openai: provider }, "openai/gpt-5.5")
+  expect(model?.name).toBe("GPT-5.5")
+  expect(model?.family).toBe("gpt")
+  expect(model?.limit.context).toBe(1_050_000)
+  expect(model?.cost.experimentalOver200K).toEqual({
+    input: 10,
+    output: 45,
+    cache: {
+      read: 1,
+      write: 0,
+    },
+  })
+})
+
+test("config provider model cost parses over-200k pricing", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "chimera.json"),
+        JSON.stringify({
+          $schema: "https://chimera.ai/config.json",
+          provider: {
+            "custom-openai": {
+              name: "Custom OpenAI",
+              npm: "@ai-sdk/openai-compatible",
+              env: [],
+              models: {
+                "custom-model": {
+                  cost: {
+                    input: 1,
+                    output: 2,
+                    cache_read: 0.5,
+                    context_over_200k: {
+                      input: 3,
+                      output: 4,
+                      cache_read: 1.5,
+                    },
+                  },
+                },
+              },
+              options: {
+                baseURL: "https://api.custom.com/v1",
+              },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const providers = await list()
+      const model = providers[ProviderID.make("custom-openai")].models["custom-model"]
+      expect(model.cost).toEqual({
+        input: 1,
+        output: 2,
+        cache: {
+          read: 0.5,
+          write: 0,
+        },
+        experimentalOver200K: {
+          input: 3,
+          output: 4,
+          cache: {
+            read: 1.5,
+            write: 0,
+          },
+        },
+      })
+    },
+  })
+})
+
 test("custom DeepSeek openai-compatible model defaults interleaved reasoning field", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {

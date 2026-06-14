@@ -1037,6 +1037,41 @@ function fromModelsDevModel(provider: ModelsDev.Provider, model: ModelsDev.Model
   }
 }
 
+const MODEL_METADATA_PROVIDER_PRIORITY = [
+  ProviderID.openai,
+  ProviderID.make("opencode"),
+  ProviderID.make("zenmux"),
+  ProviderID.openrouter,
+  ProviderID.githubCopilot,
+]
+
+function knownModelIDCandidates(value: string) {
+  const lower = value.trim().toLowerCase()
+  const last = lower.split("/").at(-1) ?? lower
+  return [lower, last, last.replace(/^(openai|codex)[-_.:]+/, "")]
+}
+
+function modelMetadataProviders(database: Record<string, Info>) {
+  return [
+    ...MODEL_METADATA_PROVIDER_PRIORITY.flatMap((providerID) => (database[providerID] ? [database[providerID]] : [])),
+    ...Object.entries(database)
+      .filter(([providerID]) => !MODEL_METADATA_PROVIDER_PRIORITY.includes(ProviderID.make(providerID)))
+      .map(([, provider]) => provider),
+  ]
+}
+
+export function findKnownModelMetadata(database: Record<string, Info>, ...ids: (string | undefined)[]) {
+  const exact = new Set(ids.filter((id): id is string => Boolean(id?.trim())).map((id) => id.trim().toLowerCase()))
+  const normalized = new Set([...exact].flatMap(knownModelIDCandidates))
+  const find = (values: Set<string>) =>
+    modelMetadataProviders(database)
+      .flatMap((provider) => Object.entries(provider.models).map(([modelID, model]) => ({ modelID, model })))
+      .find((item) =>
+        [item.modelID, item.model.id, item.model.api.id].some((id) => values.has(id.trim().toLowerCase())),
+      )?.model
+  return find(exact) ?? find(normalized)
+}
+
 function exposeKimiForCodingModel(provider: ModelsDev.Provider, models: Record<string, Model>) {
   if (provider.id !== KIMI_FOR_CODING_ID) return
 
@@ -1232,6 +1267,7 @@ const layer: Layer.Layer<
 
           for (const [modelID, model] of Object.entries(provider.models ?? {})) {
             const existingModel = parsed.models[model.id ?? modelID]
+            const metadataModel = existingModel ?? findKnownModelMetadata(database, model.id, modelID)
             const apiID = model.id ?? existingModel?.api.id ?? modelID
             const apiNpm =
               model.provider?.npm ??
@@ -1242,7 +1278,7 @@ const layer: Layer.Layer<
             const name = iife(() => {
               if (model.name) return model.name
               if (model.id && model.id !== modelID) return modelID
-              return existingModel?.name ?? modelID
+              return metadataModel?.name ?? modelID
             })
             const parsedModel: Model = {
               id: ModelID.make(modelID),
@@ -1251,55 +1287,72 @@ const layer: Layer.Layer<
                 npm: apiNpm,
                 url: model.provider?.api ?? provider?.api ?? existingModel?.api.url ?? modelsDev[providerID]?.api ?? "",
               },
-              status: model.status ?? existingModel?.status ?? "active",
+              status: model.status ?? metadataModel?.status ?? "active",
               name,
               providerID: ProviderID.make(providerID),
               capabilities: {
-                temperature: model.temperature ?? existingModel?.capabilities.temperature ?? false,
-                reasoning: model.reasoning ?? existingModel?.capabilities.reasoning ?? false,
-                attachment: model.attachment ?? existingModel?.capabilities.attachment ?? false,
-                toolcall: model.tool_call ?? existingModel?.capabilities.toolcall ?? true,
+                temperature: model.temperature ?? metadataModel?.capabilities.temperature ?? false,
+                reasoning: model.reasoning ?? metadataModel?.capabilities.reasoning ?? false,
+                attachment: model.attachment ?? metadataModel?.capabilities.attachment ?? false,
+                toolcall: model.tool_call ?? metadataModel?.capabilities.toolcall ?? true,
                 input: {
-                  text: model.modalities?.input?.includes("text") ?? existingModel?.capabilities.input.text ?? true,
-                  audio: model.modalities?.input?.includes("audio") ?? existingModel?.capabilities.input.audio ?? false,
-                  image: model.modalities?.input?.includes("image") ?? existingModel?.capabilities.input.image ?? false,
-                  video: model.modalities?.input?.includes("video") ?? existingModel?.capabilities.input.video ?? false,
-                  pdf: model.modalities?.input?.includes("pdf") ?? existingModel?.capabilities.input.pdf ?? false,
+                  text: model.modalities?.input?.includes("text") ?? metadataModel?.capabilities.input.text ?? true,
+                  audio: model.modalities?.input?.includes("audio") ?? metadataModel?.capabilities.input.audio ?? false,
+                  image: model.modalities?.input?.includes("image") ?? metadataModel?.capabilities.input.image ?? false,
+                  video: model.modalities?.input?.includes("video") ?? metadataModel?.capabilities.input.video ?? false,
+                  pdf: model.modalities?.input?.includes("pdf") ?? metadataModel?.capabilities.input.pdf ?? false,
                 },
                 output: {
-                  text: model.modalities?.output?.includes("text") ?? existingModel?.capabilities.output.text ?? true,
+                  text: model.modalities?.output?.includes("text") ?? metadataModel?.capabilities.output.text ?? true,
                   audio:
-                    model.modalities?.output?.includes("audio") ?? existingModel?.capabilities.output.audio ?? false,
+                    model.modalities?.output?.includes("audio") ?? metadataModel?.capabilities.output.audio ?? false,
                   image:
-                    model.modalities?.output?.includes("image") ?? existingModel?.capabilities.output.image ?? false,
+                    model.modalities?.output?.includes("image") ?? metadataModel?.capabilities.output.image ?? false,
                   video:
-                    model.modalities?.output?.includes("video") ?? existingModel?.capabilities.output.video ?? false,
-                  pdf: model.modalities?.output?.includes("pdf") ?? existingModel?.capabilities.output.pdf ?? false,
+                    model.modalities?.output?.includes("video") ?? metadataModel?.capabilities.output.video ?? false,
+                  pdf: model.modalities?.output?.includes("pdf") ?? metadataModel?.capabilities.output.pdf ?? false,
                 },
                 interleaved:
                   model.interleaved ??
                   existingModel?.capabilities.interleaved ??
                   (!existingModel && apiNpm === "@ai-sdk/openai-compatible" && apiID.includes("deepseek")
                     ? { field: "reasoning_content" }
-                    : false),
+                    : metadataModel?.capabilities.interleaved ?? false),
               },
               cost: {
-                input: model?.cost?.input ?? existingModel?.cost?.input ?? 0,
-                output: model?.cost?.output ?? existingModel?.cost?.output ?? 0,
+                input: model?.cost?.input ?? metadataModel?.cost?.input ?? 0,
+                output: model?.cost?.output ?? metadataModel?.cost?.output ?? 0,
                 cache: {
-                  read: model?.cost?.cache_read ?? existingModel?.cost?.cache.read ?? 0,
-                  write: model?.cost?.cache_write ?? existingModel?.cost?.cache.write ?? 0,
+                  read: model?.cost?.cache_read ?? metadataModel?.cost?.cache.read ?? 0,
+                  write: model?.cost?.cache_write ?? metadataModel?.cost?.cache.write ?? 0,
                 },
+                ...iife(() => {
+                  const over200K = model.cost?.context_over_200k
+                  if (over200K)
+                    return {
+                      experimentalOver200K: {
+                        input: over200K.input,
+                        output: over200K.output,
+                        cache: {
+                          read: over200K.cache_read ?? 0,
+                          write: over200K.cache_write ?? 0,
+                        },
+                      },
+                    }
+                  if (metadataModel?.cost.experimentalOver200K)
+                    return { experimentalOver200K: metadataModel.cost.experimentalOver200K }
+                  return {}
+                }),
               },
               options: mergeDeep(existingModel?.options ?? {}, model.options ?? {}),
               limit: {
-                context: model.limit?.context ?? existingModel?.limit?.context ?? 0,
-                input: model.limit?.input ?? existingModel?.limit?.input,
-                output: model.limit?.output ?? existingModel?.limit?.output ?? 0,
+                context: model.limit?.context ?? metadataModel?.limit?.context ?? 0,
+                input: model.limit?.input ?? metadataModel?.limit?.input,
+                output: model.limit?.output ?? metadataModel?.limit?.output ?? 0,
               },
               headers: mergeDeep(existingModel?.headers ?? {}, model.headers ?? {}),
-              family: model.family ?? existingModel?.family ?? "",
-              release_date: model.release_date ?? existingModel?.release_date ?? "",
+              family: model.family ?? metadataModel?.family ?? "",
+              release_date: model.release_date ?? metadataModel?.release_date ?? "",
               variants: {},
             }
             const merged = mergeDeep(ProviderTransform.variants(parsedModel), model.variants ?? {})

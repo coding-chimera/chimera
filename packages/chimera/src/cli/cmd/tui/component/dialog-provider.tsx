@@ -5,6 +5,7 @@ import { DialogSelect } from "@tui/ui/dialog-select"
 import { useDialog } from "@tui/ui/dialog"
 import { useSDK } from "../context/sdk"
 import { DialogPrompt } from "../ui/dialog-prompt"
+import { DialogConfirm } from "../ui/dialog-confirm"
 import { Link } from "../ui/link"
 import { useTheme } from "../context/theme"
 import { TextAttributes } from "@opentui/core"
@@ -15,6 +16,11 @@ import * as Clipboard from "@tui/util/clipboard"
 import { useToast } from "../ui/toast"
 import { isConsoleManagedProvider } from "@tui/util/provider-origin"
 import { useConnected } from "./use-connected"
+import {
+  discoverOpenAICompatibleModels,
+  normalizeOpenAICompatibleBaseURL,
+  suggestOpenAICompatibleProviderID,
+} from "@tui/util/custom-provider"
 
 const PROVIDER_PRIORITY: Record<string, number> = {
   opencode: 0,
@@ -87,18 +93,27 @@ export function createDialogProviderOptions() {
   const { theme } = useTheme()
   const onboarded = useConnected()
 
-  async function promptCustomProviderID(): Promise<string | undefined> {
-    const value = await DialogPrompt.show(dialog, "Other", {
+  function providerExists(providerID: string) {
+    return (
+      sync.data.provider.some((provider) => provider.id === providerID) ||
+      sync.data.provider_next.all.some((provider) => provider.id === providerID) ||
+      Boolean(sync.data.config.provider?.[providerID])
+    )
+  }
+
+  async function promptCustomProviderID(value?: string): Promise<string | undefined> {
+    const input = await DialogPrompt.show(dialog, "Provider id", {
       placeholder: "Provider id",
+      value,
       description: () => (
         <text fg={theme.textMuted}>
-          This only stores a credential. Configure the provider in chimera.json to use it.
+          Use lowercase letters, numbers, hyphens, and underscores.
         </text>
       ),
     })
-    if (value === null) return
+    if (input === null) return
 
-    const providerID = normalizeCustomProviderID(value)
+    const providerID = normalizeCustomProviderID(input)
     if (providerID) return providerID
 
     toast.show({
@@ -106,7 +121,169 @@ export function createDialogProviderOptions() {
       message:
         "Provider ids must start with a lowercase letter or number and only use lowercase letters, numbers, hyphens, and underscores",
     })
-    return promptCustomProviderID()
+    return promptCustomProviderID(value)
+  }
+
+  async function promptEndpointURL(): Promise<string | undefined> {
+    const value = await DialogPrompt.show(dialog, "OpenAI-compatible endpoint", {
+      placeholder: "https://api.example.com/v1",
+      description: () => <text fg={theme.textMuted}>Enter the endpoint base URL. Chimera will try /models.</text>,
+    })
+    if (value === null) return
+    const baseURL = normalizeOpenAICompatibleBaseURL(value)
+    if (baseURL) return baseURL
+    toast.show({ variant: "error", message: "Endpoint URL must start with http:// or https://" })
+    return promptEndpointURL()
+  }
+
+  async function promptToken() {
+    const value = await DialogPrompt.show(dialog, "API token", {
+      placeholder: "Optional API token",
+      description: () => <text fg={theme.textMuted}>Leave empty for local endpoints that do not require a token.</text>,
+    })
+    if (value === null) return
+    return value.trim()
+  }
+
+  async function promptManualModelID(): Promise<string | undefined> {
+    const value = await DialogPrompt.show(dialog, "Model id", {
+      placeholder: "gpt-5.5",
+      description: () => <text fg={theme.textMuted}>Enter the model id accepted by this endpoint.</text>,
+    })
+    if (value === null) return
+    const modelID = value.trim()
+    if (modelID) return modelID
+    toast.show({ variant: "error", message: "Model id is required" })
+    return promptManualModelID()
+  }
+
+  async function selectDiscoveredModel(models: string[]) {
+    return new Promise<string | undefined>((resolve) => {
+      dialog.replace(
+        () => (
+          <DialogSelect
+            title="Select model"
+            options={models.toSorted((a, b) => a.localeCompare(b)).map((model) => ({
+              title: model,
+              value: model,
+              category: "Discovered models",
+            }))}
+            onSelect={(option) => resolve(option.value)}
+          />
+        ),
+        () => resolve(undefined),
+      )
+    })
+  }
+
+  async function selectDiscoveryFallback(error: unknown) {
+    return new Promise<"retry" | "manual" | undefined>((resolve) => {
+      dialog.replace(
+        () => (
+          <DialogSelect
+            title="Model discovery failed"
+            options={[
+              {
+                title: "Retry",
+                value: "retry" as const,
+                description: error instanceof Error ? error.message : String(error),
+              },
+              {
+                title: "Enter model id manually",
+                value: "manual" as const,
+              },
+            ]}
+            onSelect={(option) => resolve(option.value)}
+          />
+        ),
+        () => resolve(undefined),
+      )
+    })
+  }
+
+  async function discoverOrPromptModel(baseURL: string, token: string): Promise<{
+    baseURL: string
+    models: string[]
+    selected: string
+  } | undefined> {
+    dialog.replace(() => (
+      <DialogPrompt title="Discover models" busy busyText="Fetching /models..." value={baseURL} />
+    ))
+    try {
+      const discovered = await discoverOpenAICompatibleModels({ baseURL, token: token || undefined })
+      const selected = await selectDiscoveredModel(discovered.models)
+      if (!selected) return
+      return { ...discovered, selected }
+    } catch (error) {
+      const next = await selectDiscoveryFallback(error)
+      if (next === "retry") return discoverOrPromptModel(baseURL, token)
+      if (next === "manual") {
+        const modelID = await promptManualModelID()
+        if (!modelID) return
+        return { baseURL, models: [modelID], selected: modelID }
+      }
+    }
+  }
+
+  async function promptCustomOpenAICompatibleProvider() {
+    const inputBaseURL = await promptEndpointURL()
+    if (!inputBaseURL) return
+    const token = await promptToken()
+    if (token === undefined) return
+    const discovered = await discoverOrPromptModel(inputBaseURL, token)
+    if (!discovered) return
+    const providerID = await promptCustomProviderID(suggestOpenAICompatibleProviderID(discovered.baseURL))
+    if (!providerID) return
+    if (providerExists(providerID)) {
+      const ok = await DialogConfirm.show(
+        dialog,
+        "Replace provider",
+        `${providerID} already exists. Replace its custom endpoint configuration?`,
+      )
+      if (!ok) return
+    }
+    const models = Object.fromEntries(
+      Array.from(new Set([...discovered.models, discovered.selected])).map((modelID) => [modelID, {}]),
+    )
+    const result = await sdk.client.global.config.update({
+      config: {
+        model: `${providerID}/${discovered.selected}`,
+        provider: {
+          [providerID]: {
+            name: providerID,
+            npm: "@ai-sdk/openai-compatible",
+            env: [],
+            models,
+            options: {
+              baseURL: discovered.baseURL,
+            },
+          },
+        },
+      },
+    })
+    if (result.error) {
+      toast.show({ variant: "error", message: JSON.stringify(result.error), duration: 5000 })
+      dialog.clear()
+      return
+    }
+    if (token) {
+      const auth = await sdk.client.auth.set({
+        providerID,
+        auth: {
+          type: "api",
+          key: token,
+        },
+      })
+      if (auth.error) {
+        toast.show({ variant: "error", message: JSON.stringify(auth.error), duration: 5000 })
+        dialog.clear()
+        return
+      }
+    }
+    await sdk.client.instance.dispose()
+    await sync.bootstrap()
+    toast.show({ variant: "info", message: `Connected ${providerID}` })
+    dialog.replace(() => <DialogModel providerID={providerID} />)
   }
 
   const options = createMemo(() => {
@@ -120,9 +297,7 @@ export function createDialogProviderOptions() {
             description: provider.description,
             category: provider.category,
             async onSelect() {
-              const providerID = await promptCustomProviderID()
-              if (!providerID) return
-              return dialog.replace(() => <ApiMethod providerID={providerID} title="API key" custom />)
+              return promptCustomOpenAICompatibleProvider()
             },
           }
         }
