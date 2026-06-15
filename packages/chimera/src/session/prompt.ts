@@ -1511,7 +1511,10 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           let lastUser: MessageV2.User | undefined
           let lastAssistant: MessageV2.Assistant | undefined
           let lastFinished: MessageV2.Assistant | undefined
-          let tasks: (MessageV2.CompactionPart | MessageV2.SubtaskPart)[] = []
+          let tasks: Array<{
+            parentID: MessageID
+            part: MessageV2.CompactionPart | MessageV2.SubtaskPart
+          }> = []
           for (let i = msgs.length - 1; i >= 0; i--) {
             const msg = msgs[i]
             if (!lastUser && msg.info.role === "user") lastUser = msg.info
@@ -1519,7 +1522,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             if (!lastFinished && msg.info.role === "assistant" && msg.info.finish) lastFinished = msg.info
             if (lastUser && lastFinished) break
             const task = msg.parts.filter((part) => part.type === "compaction" || part.type === "subtask")
-            if (task && !lastFinished) tasks.push(...task)
+            if (task && !lastFinished) tasks.push(...task.map((part) => ({ parentID: msg.info.id, part })))
           }
 
           if (!lastUser) throw new Error("No user message found in stream. This should never happen.")
@@ -1556,18 +1559,18 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           const model = yield* getModel(lastUser.model.providerID, lastUser.model.modelID, sessionID)
           const task = tasks.pop()
 
-          if (task?.type === "subtask") {
-            yield* handleSubtask({ task, model, lastUser, sessionID, session, msgs })
+          if (task && task.parentID !== lastUser.id) {
+            log.warn("skipping stale task", { lastUserID: lastUser.id, parentID: task.parentID, task: task.part.type })
+          } else if (task?.part.type === "subtask") {
+            yield* handleSubtask({ task: task.part, model, lastUser, sessionID, session, msgs })
             continue
-          }
-
-          if (task?.type === "compaction") {
+          } else if (task?.part.type === "compaction") {
             const result = yield* compaction.process({
               messages: msgs,
-              parentID: lastUser.id,
+              parentID: task.parentID,
               sessionID,
-              auto: task.auto,
-              overflow: task.overflow,
+              auto: task.part.auto,
+              overflow: task.part.overflow,
             })
             if (result === "stop") break
             continue

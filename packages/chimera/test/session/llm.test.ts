@@ -632,8 +632,9 @@ describe("session.llm.stream", () => {
         })
 
         const capture = await request
-        const tools = capture.body.tools as Array<{ function?: { name?: string } }> | undefined
+        const tools = capture.body.tools as Array<{ function?: { name?: string }; type?: string }> | undefined
         expect(tools?.some((item) => item.function?.name === "question")).toBe(true)
+        expect(tools?.some((item) => item.type === "web_search")).toBe(false)
       },
     })
   })
@@ -745,6 +746,12 @@ describe("session.llm.stream", () => {
         expect(body.model).toBe(resolved.api.id)
         expect(body.stream).toBe(true)
         expect((body.reasoning as { effort?: string } | undefined)?.effort).toBe("high")
+        expect(body.tools).toContainEqual({
+          type: "web_search",
+          external_web_access: true,
+          search_context_size: "medium",
+        })
+        expect(body.tool_choice).toBe("auto")
 
         const maxTokens = body.max_output_tokens as number | undefined
         expect(maxTokens).toBe(undefined) // match codex cli behavior

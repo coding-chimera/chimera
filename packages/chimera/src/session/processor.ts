@@ -32,6 +32,41 @@ function isAbortError(error: unknown) {
   return error instanceof Error && error.name === "AbortError"
 }
 
+type CompleteToolOutput = {
+  title: string
+  metadata: Record<string, any>
+  output: string
+  attachments?: MessageV2.FilePart[]
+}
+
+function jsonSafe(value: unknown) {
+  const serialized = JSON.stringify(value)
+  return serialized === undefined ? null : JSON.parse(serialized)
+}
+
+function stringifyToolOutput(output: unknown) {
+  if (typeof output === "string") return output
+  return JSON.stringify(jsonSafe(output))
+}
+
+function isCompleteToolOutput(output: unknown): output is CompleteToolOutput {
+  return (
+    isRecord(output) &&
+    typeof output.title === "string" &&
+    typeof output.output === "string" &&
+    isRecord(output.metadata)
+  )
+}
+
+function normalizeToolOutput(part: MessageV2.ToolPart | undefined, output: unknown): CompleteToolOutput {
+  if (isCompleteToolOutput(output)) return output
+  return {
+    title: `${part?.tool ?? "Tool"} result`,
+    metadata: part?.metadata?.providerExecuted ? { providerOutput: jsonSafe(output) } : {},
+    output: stringifyToolOutput(output),
+  }
+}
+
 function isUnfinishedToolPart(part: MessageV2.Part): part is MessageV2.ToolPart {
   return part.type === "tool" && (part.state.status === "pending" || part.state.status === "running")
 }
@@ -65,12 +100,7 @@ export interface Handle {
   ) => Effect.Effect<MessageV2.ToolPart | undefined>
   readonly completeToolCall: (
     toolCallID: string,
-    output: {
-      title: string
-      metadata: Record<string, any>
-      output: string
-      attachments?: MessageV2.FilePart[]
-    },
+    output: unknown,
   ) => Effect.Effect<void>
   readonly failToolCall: (toolCallID: string, error: unknown) => Effect.Effect<boolean>
   readonly process: (streamInput: LLM.StreamInput) => Effect.Effect<Result>
@@ -200,25 +230,21 @@ export const layer: Layer.Layer<
 
       const completeToolCall = Effect.fn("SessionProcessor.completeToolCall")(function* (
         toolCallID: string,
-        output: {
-          title: string
-          metadata: Record<string, any>
-          output: string
-          attachments?: MessageV2.FilePart[]
-        },
+        output: unknown,
       ) {
         const match = yield* readToolCall(toolCallID)
         if (!match || match.part.state.status !== "running") return
+        const normalized = normalizeToolOutput(match.part, output)
         yield* session.updatePart({
           ...match.part,
           state: {
             status: "completed",
             input: match.part.state.input,
-            output: output.output,
-            metadata: output.metadata,
-            title: output.title,
+            output: normalized.output,
+            metadata: normalized.metadata,
+            title: normalized.title,
             time: { start: match.part.state.time.start, end: Date.now() },
-            attachments: output.attachments,
+            attachments: normalized.attachments,
           },
         })
         yield* settleToolCall(toolCallID)
@@ -395,18 +421,19 @@ export const layer: Layer.Layer<
 
           case "tool-result": {
             const toolCall = yield* readToolCall(value.toolCallId)
+            const output = normalizeToolOutput(toolCall?.part, value.output)
             // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
             EventV2.run(SessionEvent.Tool.Success.Sync, {
               sessionID: ctx.sessionID,
               callID: value.toolCallId,
-              structured: value.output.metadata,
+              structured: output.metadata,
               content: [
                 {
                   type: "text",
-                  text: value.output.output,
+                  text: output.output,
                 },
-                ...(value.output.attachments?.map((item: MessageV2.FilePart) => ({
-                  type: "file",
+                ...(output.attachments?.map((item: MessageV2.FilePart) => ({
+                  type: "file" as const,
                   uri: item.url,
                   mime: item.mime,
                   name: item.filename,
@@ -417,7 +444,7 @@ export const layer: Layer.Layer<
               },
               timestamp: DateTime.makeUnsafe(Date.now()),
             })
-            yield* completeToolCall(value.toolCallId, value.output)
+            yield* completeToolCall(value.toolCallId, output)
             return
           }
 

@@ -90,6 +90,7 @@ import { TuiPluginRuntime } from "@/cli/cmd/tui/plugin/runtime"
 import { DialogGoUpsell } from "../../component/dialog-go-upsell"
 import { SessionRetry } from "@/session/retry"
 import { getRevertDiffFiles } from "../../util/revert-diff"
+import { formatHostedWebSearch, isHostedWebSearchTool } from "@/cli/cmd/web-search-display"
 
 addDefaultParsers(parsers.parsers)
 
@@ -1609,6 +1610,9 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
         <Match when={props.part.tool === "websearch"}>
           <WebSearch {...toolprops} />
         </Match>
+        <Match when={isHostedWebSearchTool(props.part.tool)}>
+          <HostedWebSearch {...toolprops} />
+        </Match>
         <Match when={props.part.tool === "write"}>
           <Write {...toolprops} />
         </Match>
@@ -1987,10 +1991,20 @@ function WebFetch(props: ToolProps<typeof WebFetchTool>) {
 }
 
 function WebSearch(props: ToolProps<typeof WebSearchTool>) {
-  const metadata = props.metadata as { numResults?: number }
+  const metadata = props.metadata as { numResults?: number; provider?: string }
   return (
     <InlineTool icon="◈" pending="Searching web..." complete={props.input.query} part={props.part}>
-      Exa Web Search "{props.input.query}" <Show when={metadata.numResults}>({metadata.numResults} results)</Show>
+      Web Search "{props.input.query}" <Show when={metadata.provider}>via {metadata.provider}</Show>{" "}
+      <Show when={metadata.numResults}>({metadata.numResults} results)</Show>
+    </InlineTool>
+  )
+}
+
+function HostedWebSearch(props: ToolProps<typeof WebSearchTool>) {
+  const display = createMemo(() => formatHostedWebSearch(props))
+  return (
+    <InlineTool icon="◈" pending="Searching web..." complete={display().title} part={props.part}>
+      {display().title} <Show when={display().description}>{display().description}</Show>
     </InlineTool>
   )
 }

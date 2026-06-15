@@ -239,6 +239,8 @@ export const CompactionPart = Schema.Struct({
       modelID: Schema.String,
       message: Schema.String,
       status: Schema.optional(Schema.Number),
+      retryable: Schema.optional(Schema.Boolean),
+      attempts: Schema.optional(NonNegativeInt),
       time: NonNegativeInt,
     }),
   ),
@@ -752,6 +754,15 @@ function providerMeta(metadata: Record<string, any> | undefined) {
   return Object.keys(rest).length > 0 ? rest : undefined
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null
+}
+
+function jsonSafe(value: unknown) {
+  const serialized = JSON.stringify(value)
+  return serialized === undefined ? null : JSON.parse(serialized)
+}
+
 export const toModelMessagesEffect = Effect.fnUntraced(function* (
   input: WithParts[],
   model: Provider.Model,
@@ -786,11 +797,8 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
       return { type: "text", value: output }
     }
 
-    if (typeof output === "object") {
-      const outputObject = output as {
-        text: string
-        attachments?: Array<{ mime: string; url: string }>
-      }
+    if (isRecord(output) && (typeof output.text === "string" || Array.isArray(output.attachments))) {
+      const outputObject = output as { text?: string; attachments?: Array<{ mime: string; url: string }> }
       const attachments = (outputObject.attachments ?? []).filter((attachment) => {
         return attachment.url.startsWith("data:") && attachment.url.includes(",")
       })
@@ -811,7 +819,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
       }
     }
 
-    return { type: "json", value: output as never }
+    return { type: "json", value: jsonSafe(output) as never }
   }
 
   for (const msg of input) {
@@ -929,8 +937,14 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
             }
             const finalAttachments = supportsMediaInToolResults ? attachments : nonMediaAttachments
 
+            const providerOutput =
+              part.metadata?.providerExecuted && part.state.metadata && "providerOutput" in part.state.metadata
+                ? part.state.metadata.providerOutput
+                : undefined
             const output =
-              finalAttachments.length > 0
+              providerOutput !== undefined
+                ? providerOutput
+                : finalAttachments.length > 0
                 ? {
                     text: outputText,
                     attachments: finalAttachments,

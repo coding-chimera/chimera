@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import {
+  CODEX_OAUTH_SCOPE,
   CodexAuthPlugin,
+  codexEndpointUrl,
   parseJwtClaims,
   extractAccountIdFromClaims,
   extractAccountId,
@@ -15,6 +17,21 @@ function createTestJwt(payload: object): string {
 }
 
 describe("plugin.codex", () => {
+  test("builds Codex endpoint URLs", () => {
+    expect(codexEndpointUrl("responses", "https://chatgpt.com/backend-api/codex/responses")).toBe(
+      "https://chatgpt.com/backend-api/codex/responses",
+    )
+    expect(codexEndpointUrl("responses/compact", "https://chatgpt.com/backend-api/codex/responses")).toBe(
+      "https://chatgpt.com/backend-api/codex/responses/compact",
+    )
+  })
+
+  test("requests Codex OAuth connector scopes without OpenAI API write scope", () => {
+    expect(CODEX_OAUTH_SCOPE.split(" ")).toContain("api.connectors.read")
+    expect(CODEX_OAUTH_SCOPE.split(" ")).toContain("api.connectors.invoke")
+    expect(CODEX_OAUTH_SCOPE.split(" ")).not.toContain("api.responses.write")
+  })
+
   describe("parseJwtClaims", () => {
     test("parses valid JWT with claims", () => {
       const payload = { email: "test@example.com", chatgpt_account_id: "acc-123" }

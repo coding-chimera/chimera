@@ -13,6 +13,7 @@ const log = Log.create({ service: "plugin.codex" })
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 const ISSUER = "https://auth.openai.com"
 export const CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
+export const CODEX_OAUTH_SCOPE = "openid profile email offline_access api.connectors.read api.connectors.invoke"
 const OAUTH_PORT = 1455
 const OAUTH_POLLING_SAFETY_MARGIN_MS = 3000
 const ALLOWED_MODELS = new Set([
@@ -101,7 +102,7 @@ function buildAuthorizeUrl(redirectUri: string, pkce: PkceCodes, state: string):
     response_type: "code",
     client_id: CLIENT_ID,
     redirect_uri: redirectUri,
-    scope: "openid profile email offline_access",
+    scope: CODEX_OAUTH_SCOPE,
     code_challenge: pkce.challenge,
     code_challenge_method: "S256",
     id_token_add_organizations: "true",
@@ -203,7 +204,7 @@ export async function codexAuthHeaders(input: {
   })()
   const headers = new Headers()
   headers.set("authorization", `Bearer ${auth.access}`)
-  if (auth.accountId) headers.set("ChatGPT-Account-Id", auth.accountId)
+  if (auth.accountId) headers.set("ChatGPT-Account-ID", auth.accountId)
   return { auth, headers }
 }
 

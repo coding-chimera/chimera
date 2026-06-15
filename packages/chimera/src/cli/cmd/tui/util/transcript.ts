@@ -1,6 +1,7 @@
 import type { AssistantMessage, Part, Provider, UserMessage } from "@opencode-ai/sdk/v2"
 import { Locale } from "@/util/locale"
 import * as Model from "./model"
+import { formatHostedWebSearch, isHostedWebSearchTool } from "@/cli/cmd/web-search-display"
 
 export type TranscriptOptions = {
   thinking: boolean
@@ -94,6 +95,21 @@ export function formatPart(part: Part, options: TranscriptOptions): string {
   }
 
   if (part.type === "tool") {
+    if (isHostedWebSearchTool(part.tool)) {
+      const display = formatHostedWebSearch({
+        input: part.state.input,
+        metadata: "metadata" in part.state ? part.state.metadata : undefined,
+        output: "output" in part.state ? part.state.output : undefined,
+      })
+      const summary = [display.title, display.description].filter((item): item is string => Boolean(item)).join(" · ")
+      let result = `**Tool: ${part.tool}**\n\n${summary}\n`
+      if (options.toolDetails && part.state.status === "error" && part.state.error) {
+        result += `\n**Error:**\n\`\`\`\n${part.state.error}\n\`\`\`\n`
+      }
+      result += `\n`
+      return result
+    }
+
     let result = `**Tool: ${part.tool}**\n`
     if (options.toolDetails && part.state.input) {
       result += `\n**Input:**\n\`\`\`json\n${JSON.stringify(part.state.input, null, 2)}\n\`\`\`\n`
