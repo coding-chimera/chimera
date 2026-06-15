@@ -32,6 +32,7 @@ import { ModelID, ProviderID } from "./schema"
 const log = Log.create({ service: "provider" })
 const KIMI_FOR_CODING_ID = "kimi-for-coding"
 const KIMI_FOR_CODING_NAME = "kimi-for-coding（Kimi-K2.7）"
+const MODEL_DISCOVERY_TIMEOUT = 5_000
 
 function shouldUseCopilotResponsesApi(modelID: string): boolean {
   const match = /^gpt-(\d+)/.exec(modelID)
@@ -138,6 +139,79 @@ type CustomDep = {
 
 function useLanguageModel(sdk: any) {
   return sdk.responses === undefined && sdk.chat === undefined
+}
+
+function nonEmptyString(value: unknown) {
+  if (typeof value !== "string") return
+  const trimmed = value.trim()
+  if (!trimmed) return
+  return trimmed
+}
+
+function cleanOpenAICompatibleBaseURL(value: unknown) {
+  const trimmed = nonEmptyString(value)?.replace(/\/+$/, "")
+  if (!trimmed) return
+  try {
+    const url = new URL(trimmed)
+    if (url.protocol !== "http:" && url.protocol !== "https:") return
+    return url.toString().replace(/\/+$/, "")
+  } catch {
+    return
+  }
+}
+
+function openAICompatibleModelBaseURLCandidates(value: unknown) {
+  const baseURL = cleanOpenAICompatibleBaseURL(value)
+  if (!baseURL) return []
+  const candidates = [baseURL]
+  if (!new URL(baseURL).pathname.replace(/\/+$/, "").endsWith("/v1")) candidates.push(`${baseURL}/v1`)
+  return Array.from(new Set(candidates))
+}
+
+function parseOpenAICompatibleModelIDs(value: unknown) {
+  const source = Array.isArray(value)
+    ? value
+    : isRecord(value) && Array.isArray(value.data)
+      ? value.data
+      : isRecord(value) && Array.isArray(value.models)
+        ? value.models
+        : []
+  return Array.from(
+    new Set(
+      source.flatMap((item) => {
+        if (typeof item === "string") return [item.trim()]
+        if (!isRecord(item)) return []
+        const id = item.id
+        if (typeof id === "string") return [id.trim()]
+        const model = item.model
+        if (typeof model === "string") return [model.trim()]
+        const name = item.name
+        if (typeof name === "string") return [name.trim()]
+        return []
+      }),
+    ),
+  ).filter(Boolean)
+}
+
+async function discoverOpenAICompatibleModelIDs(input: { baseURL: string; apiKey?: string }) {
+  for (const baseURL of openAICompatibleModelBaseURLCandidates(input.baseURL)) {
+    const response = await fetch(`${baseURL.replace(/\/+$/, "")}/models`, {
+      headers: {
+        Accept: "application/json",
+        ...(input.apiKey ? { Authorization: `Bearer ${input.apiKey}` } : {}),
+      },
+      signal: AbortSignal.timeout(MODEL_DISCOVERY_TIMEOUT),
+    }).catch((error) => {
+      log.debug("openai-compatible model discovery request failed", {
+        baseURL,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return undefined
+    })
+    if (!response?.ok) continue
+    const models = parseOpenAICompatibleModelIDs(await response.json().catch(() => undefined))
+    if (models.length > 0) return { baseURL, models }
+  }
 }
 
 function selectAzureLanguageModel(sdk: any, modelID: string, useChat: boolean) {
@@ -1227,6 +1301,8 @@ const layer: Layer.Layer<
         const configProviders = Object.entries(cfg.provider ?? {})
         const disabled = new Set(cfg.disabled_providers ?? [])
         const enabled = cfg.enabled_providers ? new Set(cfg.enabled_providers) : null
+        const envs = yield* env.all()
+        const discoveredBaseURLs: Record<string, string> = {}
 
         function isProviderAllowed(providerID: ProviderID): boolean {
           if (enabled && !enabled.has(providerID)) return false
@@ -1264,16 +1340,39 @@ const layer: Layer.Layer<
         // extend database from config
         for (const [providerID, provider] of configProviders) {
           const existing = database[providerID]
+          const id = ProviderID.make(providerID)
           const parsed: Info = {
-            id: ProviderID.make(providerID),
+            id,
             name: provider.name ?? existing?.name ?? providerID,
             env: provider.env ?? existing?.env ?? [],
             options: mergeDeep(existing?.options ?? {}, provider.options ?? {}),
             source: "config",
             models: existing?.models ?? {},
           }
+          const configuredModels = { ...(provider.models ?? {}) }
+          if (
+            isProviderAllowed(id) &&
+            Object.keys(configuredModels).length === 0 &&
+            Object.keys(parsed.models).length === 0 &&
+            (provider.npm ?? "@ai-sdk/openai-compatible") === "@ai-sdk/openai-compatible"
+          ) {
+            const baseURL = nonEmptyString(provider.options?.baseURL) ?? nonEmptyString(provider.api)
+            if (baseURL) {
+              const stored = yield* auth.get(id).pipe(Effect.orDie)
+              const apiKey =
+                nonEmptyString(provider.options?.apiKey) ??
+                nonEmptyString(stored?.type === "api" ? stored.key : undefined) ??
+                parsed.env.map((item) => nonEmptyString(envs[item])).find(Boolean)
+              const discovered = yield* Effect.promise(() => discoverOpenAICompatibleModelIDs({ baseURL, apiKey }))
+              if (discovered) {
+                parsed.options.baseURL = discovered.baseURL
+                discoveredBaseURLs[providerID] = discovered.baseURL
+                for (const modelID of discovered.models) configuredModels[modelID] = {}
+              }
+            }
+          }
 
-          for (const [modelID, model] of Object.entries(provider.models ?? {})) {
+          for (const [modelID, model] of Object.entries(configuredModels)) {
             const existingModel = parsed.models[model.id ?? modelID]
             const metadataModel = existingModel ?? findKnownModelMetadata(database, model.id, modelID)
             const apiID = model.id ?? existingModel?.api.id ?? modelID
@@ -1374,7 +1473,6 @@ const layer: Layer.Layer<
         }
 
         // load env
-        const envs = yield* env.all()
         for (const [id, provider] of Object.entries(database)) {
           const providerID = ProviderID.make(id)
           if (disabled.has(providerID)) continue
@@ -1445,7 +1543,8 @@ const layer: Layer.Layer<
           const partial: Partial<Info> = { source: "config" }
           if (provider.env) partial.env = provider.env
           if (provider.name) partial.name = provider.name
-          if (provider.options) partial.options = provider.options
+          if (provider.options || discoveredBaseURLs[id])
+            partial.options = mergeDeep(provider.options ?? {}, discoveredBaseURLs[id] ? { baseURL: discoveredBaseURLs[id] } : {})
           mergeProvider(providerID, partial)
         }
 

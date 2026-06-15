@@ -568,16 +568,23 @@ export const layer: Layer.Layer<
           yield* bus.publish(Event.Compacted, { sessionID: input.sessionID })
           return "continue"
         }
-        log.warn("remote compaction failed", { error: result.error.message, status: result.error.status })
+        log.warn("remote compaction failed", {
+          attempts: result.error.attempts,
+          error: result.error.message,
+          retryable: result.error.retryable,
+          status: result.error.status,
+        })
         compactionPart.remote_error = RemoteCompaction.failureMetadata({ modelID: model.id, error: result.error })
         compactionPart.tail_start_id = selected.tail_start_id
         yield* session.updatePart(compactionPart)
+        const attempts = result.error.attempts && result.error.attempts > 1 ? ` after ${result.error.attempts} attempts` : ""
+        log.info("local compaction fallback", { attempts: result.error.attempts, status: result.error.status })
         yield* session.updatePart({
           id: PartID.ascending(),
           messageID: compactionPart.messageID,
           sessionID: input.sessionID,
           type: "text",
-          text: `Remote Codex compaction failed${result.error.status ? ` with status ${result.error.status}` : ""}; falling back to local compaction.`,
+          text: `Remote Codex compaction failed${attempts}${result.error.status ? ` with status ${result.error.status}` : ""}; falling back to local compaction.`,
           synthetic: true,
           ignored: true,
           metadata: { remote_compaction_failure: true },

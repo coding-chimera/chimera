@@ -1,6 +1,6 @@
 import { NodeFileSystem } from "@effect/platform-node"
 import { expect } from "bun:test"
-import { Cause, Effect, Exit, Fiber, Layer } from "effect"
+import { Cause, Effect, Exit, Fiber, Layer, Stream } from "effect"
 import path from "path"
 import type { Agent } from "../../src/agent/agent"
 import { Agent as AgentSvc } from "../../src/agent/agent"
@@ -20,7 +20,7 @@ import { SessionSummary } from "../../src/session/summary"
 import { Snapshot } from "../../src/snapshot"
 import * as Log from "@opencode-ai/core/util/log"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
-import { provideTmpdirServer } from "../fixture/fixture"
+import { provideTmpdirInstance, provideTmpdirServer } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { raw, reply, TestLLMServer } from "../lib/llm-server"
 
@@ -173,6 +173,41 @@ const env = Layer.mergeAll(
 
 const it = testEffect(env)
 
+const providerExecutedLLM = Layer.succeed(
+  LLM.Service,
+  LLM.Service.of({
+    stream: () =>
+      Stream.fromIterable([
+        { type: "start" },
+        { type: "tool-input-start", id: "ws_1", toolName: "web_search", providerExecuted: true },
+        { type: "tool-input-end", id: "ws_1" },
+        { type: "tool-call", toolCallId: "ws_1", toolName: "web_search", input: {}, providerExecuted: true },
+        {
+          type: "tool-result",
+          toolCallId: "ws_1",
+          toolName: "web_search",
+          input: {},
+          output: { action: { type: "search", query: undefined } },
+          providerExecuted: true,
+        },
+        { type: "finish" },
+      ] as LLM.Event[]),
+  }),
+)
+const providerExecutedDeps = Layer.mergeAll(
+  Session.defaultLayer,
+  Snapshot.defaultLayer,
+  AgentSvc.defaultLayer,
+  Permission.defaultLayer,
+  Plugin.defaultLayer,
+  Config.defaultLayer,
+  providerExecutedLLM,
+  Provider.defaultLayer,
+  status,
+).pipe(Layer.provideMerge(infra))
+const providerExecutedEnv = SessionProcessor.layer.pipe(Layer.provide(summary), Layer.provideMerge(providerExecutedDeps))
+const providerExecutedIt = testEffect(providerExecutedEnv)
+
 const boot = Effect.fn("test.boot")(function* () {
   const processors = yield* SessionProcessor.Service
   const session = yield* Session.Service
@@ -228,6 +263,53 @@ it.live("session.processor effect tests capture llm input cleanly", () =>
         expect(parts.some((part) => part.type === "text" && part.text === "hello")).toBe(true)
       }),
     { git: true, config: (url) => providerCfg(url) },
+  ),
+)
+
+providerExecutedIt.live("session.processor normalizes provider-executed tool results", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "search")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+        })
+
+        const value = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies MessageV2.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "search" }],
+          tools: {},
+        })
+        const toolPart = MessageV2.parts(msg.id).find(
+          (part): part is MessageV2.ToolPart => part.type === "tool" && part.tool === "web_search",
+        )
+
+        expect(value).toBe("continue")
+        expect(toolPart?.metadata?.providerExecuted).toBe(true)
+        expect(toolPart?.state.status).toBe("completed")
+        if (toolPart?.state.status !== "completed") throw new Error("provider tool result was not completed")
+        expect(toolPart.state.output).toBe('{"action":{"type":"search"}}')
+        expect(toolPart.state.metadata.providerOutput).toEqual({ action: { type: "search" } })
+      }),
+    { git: true, config: providerCfg("http://localhost:1/v1") },
   ),
 )
 

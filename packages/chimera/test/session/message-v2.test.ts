@@ -400,6 +400,110 @@ describe("session.message-v2.toModelMessage", () => {
     ])
   })
 
+  test("replays provider-executed tool results as assistant json output", async () => {
+    const userID = "m-user-provider-tool"
+    const assistantID = "m-assistant-provider-tool"
+
+    const input: MessageV2.WithParts[] = [
+      {
+        info: userInfo(userID),
+        parts: [{ ...basePart(userID, "u1"), type: "text", text: "search" }] as MessageV2.Part[],
+      },
+      {
+        info: assistantInfo(assistantID, userID),
+        parts: [
+          {
+            ...basePart(assistantID, "a1"),
+            type: "tool",
+            callID: "ws_1",
+            tool: "web_search",
+            state: {
+              status: "completed",
+              input: {},
+              output: '{"action":{"type":"search"}}',
+              title: "web_search result",
+              metadata: { providerOutput: { action: { type: "search", query: undefined } } },
+              time: { start: 0, end: 1 },
+            },
+            metadata: { providerExecuted: true },
+          },
+        ] as MessageV2.Part[],
+      },
+    ]
+
+    expect(await MessageV2.toModelMessages(input, model)).toStrictEqual([
+      {
+        role: "user",
+        content: [{ type: "text", text: "search" }],
+      },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "ws_1",
+            toolName: "web_search",
+            input: {},
+            providerExecuted: true,
+          },
+          {
+            type: "tool-result",
+            toolCallId: "ws_1",
+            toolName: "web_search",
+            output: { type: "json", value: { action: { type: "search" } } },
+          },
+        ],
+      },
+    ])
+  })
+
+  test("replays legacy provider-executed tool results with missing output safely", async () => {
+    const assistantID = "m-assistant-provider-tool-legacy"
+    const input: MessageV2.WithParts[] = [
+      {
+        info: assistantInfo(assistantID, "m-parent"),
+        parts: [
+          {
+            ...basePart(assistantID, "a1"),
+            type: "tool",
+            callID: "ws_legacy",
+            tool: "web_search",
+            state: {
+              status: "completed",
+              input: {},
+              output: undefined as unknown as string,
+              title: "web_search result",
+              metadata: {},
+              time: { start: 0, end: 1 },
+            },
+            metadata: { providerExecuted: true },
+          },
+        ] as MessageV2.Part[],
+      },
+    ]
+
+    expect(await MessageV2.toModelMessages(input, model)).toStrictEqual([
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "ws_legacy",
+            toolName: "web_search",
+            input: {},
+            providerExecuted: true,
+          },
+          {
+            type: "tool-result",
+            toolCallId: "ws_legacy",
+            toolName: "web_search",
+            output: { type: "json", value: null },
+          },
+        ],
+      },
+    ])
+  })
+
   test("preserves jpeg tool-result media for anthropic models", async () => {
     const anthropicModel: Provider.Model = {
       ...model,

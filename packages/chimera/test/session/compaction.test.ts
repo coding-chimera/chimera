@@ -1107,6 +1107,198 @@ describe("session.compaction.process", () => {
     })
   })
 
+  test("retries remote compaction timeout before succeeding", async () => {
+    await using tmp = await tmpdir()
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const openai = { providerID: ProviderID.make("openai"), modelID: ModelID.make("gpt-5.2") }
+        let calls = 0
+        using server = Bun.serve({
+          port: 0,
+          async fetch() {
+            calls++
+            if (calls === 1) {
+              await new Promise((done) => setTimeout(done, 50))
+              return Response.json({ output: [{ type: "compaction_summary", encrypted_content: "late" }] })
+            }
+            return Response.json({ output: [{ type: "compaction_summary", encrypted_content: "retry" }] })
+          },
+        })
+
+        const session = await svc.create({})
+        await user(session.id, "first", openai)
+        await SessionCompaction.create({
+          sessionID: session.id,
+          agent: "build",
+          model: openai,
+          auto: false,
+        })
+
+        const config = cfg({ remote: "auto", tail_turns: 0 })
+        const auth = Layer.mock(Auth.Service)({
+          get: (providerID: string) =>
+            Effect.succeed(
+              providerID === "openai"
+                ? {
+                    type: "oauth" as const,
+                    refresh: "refresh",
+                    access: "access",
+                    expires: Date.now() + 60_000,
+                  }
+                : undefined,
+            ),
+          all: () => Effect.succeed({}),
+          set: () => Effect.void,
+          remove: () => Effect.void,
+        })
+        const bus = Bus.layer
+        const remoteLayer = RemoteCompaction.layerWithEndpoint(server.url.toString(), {
+          attempts: 2,
+          timeout: "10 millis",
+        }).pipe(Layer.provide(auth), Layer.provide(config), Layer.provide(FetchHttpClient.layer))
+        const rt = ManagedRuntime.make(
+          Layer.mergeAll(SessionCompaction.layer.pipe(Layer.provide(remoteLayer)), bus).pipe(
+            Layer.provide(ProviderTest.fake().layer),
+            Layer.provide(SessionNs.defaultLayer),
+            Layer.provide(layer("continue")),
+            Layer.provide(Agent.defaultLayer),
+            Layer.provide(Plugin.defaultLayer),
+            Layer.provide(bus),
+            Layer.provide(config),
+          ),
+        )
+        try {
+          const msgs = await svc.messages({ sessionID: session.id })
+          const parent = msgs.at(-1)?.info.id
+          expect(parent).toBeTruthy()
+          const result = await rt.runPromise(
+            SessionCompaction.Service.use((svc) =>
+              svc.process({
+                parentID: parent!,
+                messages: msgs,
+                sessionID: session.id,
+                auto: false,
+              }),
+            ),
+          )
+
+          const all = await svc.messages({ sessionID: session.id })
+          const compactionMessage = all.find((msg) => msg.info.id === parent)
+          const part = compactionMessage?.parts.find((item): item is MessageV2.CompactionPart => item.type === "compaction")
+          const notice = compactionMessage?.parts.find(
+            (item) => item.type === "text" && item.metadata?.remote_compaction_failure === true,
+          )
+
+          expect(result).toBe("continue")
+          expect(calls).toBe(2)
+          expect(part?.remote?.output[0]?.encrypted_content).toBe("retry")
+          expect(part?.remote_error).toBeUndefined()
+          expect(notice).toBeUndefined()
+        } finally {
+          await rt.dispose()
+        }
+      },
+    })
+  })
+
+  test("falls back locally after remote compaction timeout retries are exhausted", async () => {
+    await using tmp = await tmpdir()
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const openai = { providerID: ProviderID.make("openai"), modelID: ModelID.make("gpt-5.2") }
+        let calls = 0
+        using server = Bun.serve({
+          port: 0,
+          async fetch() {
+            calls++
+            await new Promise((done) => setTimeout(done, 50))
+            return Response.json({ output: [{ type: "compaction_summary", encrypted_content: "late" }] })
+          },
+        })
+
+        const session = await svc.create({})
+        await user(session.id, "first", openai)
+        await SessionCompaction.create({
+          sessionID: session.id,
+          agent: "build",
+          model: openai,
+          auto: false,
+        })
+
+        const config = cfg({ remote: "auto", tail_turns: 0 })
+        const auth = Layer.mock(Auth.Service)({
+          get: (providerID: string) =>
+            Effect.succeed(
+              providerID === "openai"
+                ? {
+                    type: "oauth" as const,
+                    refresh: "refresh",
+                    access: "access",
+                    expires: Date.now() + 60_000,
+                  }
+                : undefined,
+            ),
+          all: () => Effect.succeed({}),
+          set: () => Effect.void,
+          remove: () => Effect.void,
+        })
+        const bus = Bus.layer
+        const remoteLayer = RemoteCompaction.layerWithEndpoint(server.url.toString(), {
+          attempts: 2,
+          timeout: "10 millis",
+        }).pipe(Layer.provide(auth), Layer.provide(config), Layer.provide(FetchHttpClient.layer))
+        const rt = ManagedRuntime.make(
+          Layer.mergeAll(SessionCompaction.layer.pipe(Layer.provide(remoteLayer)), bus).pipe(
+            Layer.provide(ProviderTest.fake().layer),
+            Layer.provide(SessionNs.defaultLayer),
+            Layer.provide(layer("continue")),
+            Layer.provide(Agent.defaultLayer),
+            Layer.provide(Plugin.defaultLayer),
+            Layer.provide(bus),
+            Layer.provide(config),
+          ),
+        )
+        try {
+          const msgs = await svc.messages({ sessionID: session.id })
+          const parent = msgs.at(-1)?.info.id
+          expect(parent).toBeTruthy()
+          const result = await rt.runPromise(
+            SessionCompaction.Service.use((svc) =>
+              svc.process({
+                parentID: parent!,
+                messages: msgs,
+                sessionID: session.id,
+                auto: false,
+              }),
+            ),
+          )
+
+          const all = await svc.messages({ sessionID: session.id })
+          const compactionMessage = all.find((msg) => msg.info.id === parent)
+          const part = compactionMessage?.parts.find((item): item is MessageV2.CompactionPart => item.type === "compaction")
+          const notice = compactionMessage?.parts.find(
+            (item) => item.type === "text" && item.metadata?.remote_compaction_failure === true,
+          )
+
+          expect(result).toBe("continue")
+          expect(calls).toBe(2)
+          expect(part?.remote).toBeUndefined()
+          expect(part?.remote_error?.attempts).toBe(2)
+          expect(part?.remote_error?.retryable).toBe(true)
+          expect(part?.remote_error?.message).toContain("remote compaction failed after 2 attempts")
+          expect(notice?.type).toBe("text")
+          if (notice?.type !== "text") throw new Error("missing remote compaction failure notice")
+          expect(notice.text).toContain("failed after 2 attempts")
+          expect(notice.text).toContain("falling back to local compaction")
+        } finally {
+          await rt.dispose()
+        }
+      },
+    })
+  })
+
   test("records remote compaction failure before local fallback", async () => {
     await using tmp = await tmpdir()
     await WithInstance.provide({

@@ -27,6 +27,7 @@ import { ShellTool } from "../../tool/shell"
 import { ShellID } from "../../tool/shell/id"
 import { TodoWriteTool } from "../../tool/todo"
 import { Locale } from "@/util/locale"
+import { formatHostedWebSearch, isHostedWebSearchTool } from "./web-search-display"
 
 type ToolProps<T> = {
   input: Tool.InferParameters<T>
@@ -148,7 +149,20 @@ function edit(info: ToolProps<typeof EditTool>) {
 function websearch(info: ToolProps<typeof WebSearchTool>) {
   inline({
     icon: "◈",
-    title: `Exa Web Search "${info.input.query}"`,
+    title: `Web Search "${info.input.query}"`,
+  })
+}
+
+function hostedWebSearch(part: ToolPart) {
+  const display = formatHostedWebSearch({
+    input: "input" in part.state ? part.state.input : undefined,
+    metadata: "metadata" in part.state ? part.state.metadata : undefined,
+    output: "output" in part.state ? part.state.output : undefined,
+  })
+  inline({
+    icon: "◈",
+    title: display.title,
+    ...(display.description && { description: display.description }),
   })
 }
 
@@ -421,6 +435,7 @@ export const RunCommand = effectCmd({
             if (part.tool === "webfetch") return webfetch(props<typeof WebFetchTool>(part))
             if (part.tool === "edit") return edit(props<typeof EditTool>(part))
             if (part.tool === "websearch") return websearch(props<typeof WebSearchTool>(part))
+            if (isHostedWebSearchTool(part.tool)) return hostedWebSearch(part)
             if (part.tool === "task") return task(props<typeof TaskTool>(part))
             if (part.tool === "todowrite") return todo(props<typeof TodoWriteTool>(part))
             if (part.tool === "skill") return skill(props<typeof SkillTool>(part))

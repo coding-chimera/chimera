@@ -389,6 +389,55 @@ it.live("loop calls LLM and returns assistant message", () =>
   ),
 )
 
+it.live("loop skips stale compaction task when a newer user is present", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({
+        title: "Pinned",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      const stale = yield* sessions.updateMessage({
+        id: MessageID.ascending(),
+        role: "user",
+        sessionID: chat.id,
+        agent: "build",
+        model: ref,
+        time: { created: Date.now() },
+      })
+      yield* sessions.updatePart({
+        id: PartID.ascending(),
+        messageID: stale.id,
+        sessionID: chat.id,
+        type: "compaction",
+        auto: true,
+      })
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "latest" }],
+      })
+      const latest = (yield* sessions.messages({ sessionID: chat.id })).at(-1)?.info
+      expect(latest?.role).toBe("user")
+      yield* llm.text("handled latest")
+
+      const result = yield* prompt.loop({ sessionID: chat.id })
+      const all = yield* sessions.messages({ sessionID: chat.id })
+
+      expect(result.info.role).toBe("assistant")
+      if (result.info.role === "assistant") {
+        expect(result.info.mode).toBe("build")
+        expect(result.info.parentID).not.toBe(stale.id)
+      }
+      expect(all.some((msg) => msg.info.role === "assistant" && msg.info.mode === "compaction")).toBe(false)
+      expect(yield* llm.calls).toBe(1)
+    }),
+    { git: true, config: providerCfg },
+  ),
+)
+
 it.live("prompt emits v2 prompted and synthetic events", () =>
   provideTmpdirServer(
     Effect.fnUntraced(function* () {

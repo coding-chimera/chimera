@@ -3,6 +3,7 @@ import * as Log from "@opencode-ai/core/util/log"
 import { Context, Effect, Layer, Record } from "effect"
 import * as Stream from "effect/Stream"
 import { streamText, wrapLanguageModel, type ModelMessage, type Tool, tool, jsonSchema } from "ai"
+import { openai } from "@ai-sdk/openai"
 import { mergeDeep } from "remeda"
 import { GitLabWorkflowLanguageModel } from "gitlab-ai-provider"
 import { ProviderTransform } from "@/provider/transform"
@@ -28,10 +29,21 @@ import * as OtelTracer from "@effect/opentelemetry/Tracer"
 const log = Log.create({ service: "llm" })
 export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
 type Result = Awaited<ReturnType<typeof streamText>>
+const OPENAI_HOSTED_WEB_SEARCH_TOOL = "web_search"
 
 // Avoid re-instantiating remeda's deep merge types in this hot LLM path; the runtime behavior is still mergeDeep.
 const mergeOptions = (target: Record<string, any>, source: Record<string, any> | undefined): Record<string, any> =>
   mergeDeep(target, source ?? {}) as Record<string, any>
+
+function supportsOpenAIHostedWebSearch(input: StreamRequest) {
+  return (
+    !input.small &&
+    input.toolChoice !== "required" &&
+    input.model.providerID === "openai" &&
+    input.model.api.npm === "@ai-sdk/openai" &&
+    input.model.capabilities.toolcall
+  )
+}
 
 export type StreamInput = {
   user: MessageV2.User
@@ -201,6 +213,12 @@ const live: Layer.Layer<
       )
 
       const tools = resolveTools(input)
+      if (supportsOpenAIHostedWebSearch(input) && tools[OPENAI_HOSTED_WEB_SEARCH_TOOL] === undefined) {
+        tools[OPENAI_HOSTED_WEB_SEARCH_TOOL] = openai.tools.webSearch({
+          externalWebAccess: true,
+          searchContextSize: "medium",
+        })
+      }
 
       // LiteLLM and some Anthropic proxies require the tools parameter to be present
       // when message history contains tool calls, even if no tools are being used.

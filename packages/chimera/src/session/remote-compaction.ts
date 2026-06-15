@@ -2,6 +2,7 @@ import { Auth } from "@/auth"
 import { Config } from "@/config/config"
 import { makeRuntime } from "@/effect/run-service"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
+import * as Log from "@opencode-ai/core/util/log"
 import os from "os"
 import { Context, Effect, Layer, Schema } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http"
@@ -17,6 +18,8 @@ import {
   type RemoteCompactionOutputItem,
 } from "./remote-compaction-codec"
 
+const log = Log.create({ service: "remote.compaction" })
+
 type ResponsesMessageItem = {
   type: "message"
   role: "user" | "assistant"
@@ -26,12 +29,21 @@ type ResponsesMessageItem = {
 type ResponsesInputItem = RemoteCompactionOutputItem | ResponsesMessageItem
 
 const TOOL_OUTPUT_MAX_CHARS = 2_000
+const DEFAULT_COMPACTION_TIMEOUT = "60 seconds"
+const DEFAULT_COMPACTION_ATTEMPTS = 2
+
+type RemoteCompactionOptions = {
+  timeout?: Parameters<typeof Effect.sleep>[0]
+  attempts?: number
+}
 
 export class RemoteCompactionError extends Schema.TaggedErrorClass<RemoteCompactionError>()(
   "RemoteCompactionError",
   {
     message: Schema.String,
     status: Schema.optional(Schema.Number),
+    retryable: Schema.optional(Schema.Boolean),
+    attempts: Schema.optional(Schema.Number),
   },
 ) {}
 
@@ -53,6 +65,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function errorMessage(cause: unknown) {
   return cause instanceof Error ? cause.message : String(cause)
+}
+
+function remoteError(cause: unknown) {
+  return cause instanceof RemoteCompactionError ? cause : new RemoteCompactionError({ message: errorMessage(cause) })
+}
+
+function durationLabel(duration: Parameters<typeof Effect.sleep>[0]) {
+  return typeof duration === "number" || typeof duration === "string" ? String(duration) : "configured timeout"
 }
 
 export function supportsOpenAIRemoteCompactionModel(model: Provider.Model) {
@@ -139,11 +159,13 @@ export function failureMetadata(input: { modelID: string; error: RemoteCompactio
     modelID: input.modelID,
     message: input.error.message,
     ...(input.error.status === undefined ? {} : { status: input.error.status }),
+    ...(input.error.attempts === undefined ? {} : { attempts: input.error.attempts }),
+    ...(input.error.retryable === undefined ? {} : { retryable: input.error.retryable }),
     time: Date.now(),
   }
 }
 
-export const layerWithEndpoint = (endpoint = codexEndpointUrl("responses/compact")): Layer.Layer<
+export const layerWithEndpoint = (endpoint = codexEndpointUrl("responses/compact"), options: RemoteCompactionOptions = {}): Layer.Layer<
   Service,
   never,
   Auth.Service | Config.Service | HttpClient.HttpClient
@@ -153,6 +175,8 @@ export const layerWithEndpoint = (endpoint = codexEndpointUrl("responses/compact
     const auth = yield* Auth.Service
     const config = yield* Config.Service
     const http = yield* HttpClient.HttpClient
+    const timeout = options.timeout ?? DEFAULT_COMPACTION_TIMEOUT
+    const attempts = Math.max(1, Math.floor(options.attempts ?? DEFAULT_COMPACTION_ATTEMPTS))
 
     const canCompact = Effect.fn("RemoteCompaction.canCompact")(function* (input: { model: Provider.Model }) {
       const mode = (yield* config.get()).compaction?.remote ?? "auto"
@@ -184,41 +208,86 @@ export const layerWithEndpoint = (endpoint = codexEndpointUrl("responses/compact
       headers.set("User-Agent", `opencode/${InstallationVersion} (${os.platform()} ${os.release()}; ${os.arch()})`)
       headers.set("session_id", input.sessionID)
       const requestInput = yield* responsesInput(input.messages, input.model)
-      const response = yield* HttpClientRequest.post(endpoint).pipe(
-        HttpClientRequest.setHeaders(Object.fromEntries(headers.entries())),
-        HttpClientRequest.bodyJson({
-          model: input.model.api.id,
-          input: requestInput,
-          instructions: input.instructions,
-          tools: [],
-          parallel_tool_calls: false,
-          prompt_cache_key: input.sessionID,
-          text: { format: { type: "text" } },
-        }),
-        Effect.flatMap((request) => http.execute(request)),
-        Effect.mapError((cause) => new RemoteCompactionError({ message: errorMessage(cause) })),
-      )
-      if (response.status < 200 || response.status >= 300) {
-        const body = yield* response.text.pipe(Effect.catch(() => Effect.succeed("")))
-        return yield* new RemoteCompactionError({
-          message: [`remote compaction failed: ${response.status}`, body.trim().slice(0, 500)].filter(Boolean).join(" "),
-          status: response.status,
+      const request = (attempt: number) =>
+        Effect.gen(function* () {
+          log.info("remote compaction request", { attempt, attempts, timeout: durationLabel(timeout) })
+          const response = yield* HttpClientRequest.post(endpoint).pipe(
+            HttpClientRequest.setHeaders(Object.fromEntries(headers.entries())),
+            HttpClientRequest.bodyJson({
+              model: input.model.api.id,
+              input: requestInput,
+              instructions: input.instructions,
+              tools: [],
+              parallel_tool_calls: false,
+              prompt_cache_key: input.sessionID,
+              text: { format: { type: "text" } },
+            }),
+            Effect.flatMap((request) => http.execute(request)),
+            Effect.timeoutOrElse({
+              duration: timeout,
+              orElse: () =>
+                Effect.fail(
+                  new RemoteCompactionError({
+                    message: `remote compaction timed out after ${durationLabel(timeout)}`,
+                    retryable: true,
+                  }),
+                ),
+            }),
+            Effect.mapError(remoteError),
+          )
+          if (response.status < 200 || response.status >= 300) {
+            const body = yield* response.text.pipe(Effect.catch(() => Effect.succeed("")))
+            return yield* new RemoteCompactionError({
+              message: [`remote compaction failed: ${response.status}`, body.trim().slice(0, 500)].filter(Boolean).join(" "),
+              status: response.status,
+              retryable: response.status === 429 || response.status >= 500,
+            })
+          }
+          const json = yield* response.json.pipe(
+            Effect.mapError((cause) => new RemoteCompactionError({ message: errorMessage(cause) })),
+          )
+          const output = isRecord(json) ? decodeRemoteCompactionOutput(json.output) : undefined
+          if (!output || output.length !== 1) {
+            return yield* new RemoteCompactionError({ message: "remote compaction response missing compaction output" })
+          }
+          return {
+            providerID: "openai" as const,
+            endpoint: "codex" as const,
+            implementation: "responses_compact" as const,
+            modelID: input.model.id,
+            output,
+          }
         })
-      }
-      const json = yield* response.json.pipe(
-        Effect.mapError((cause) => new RemoteCompactionError({ message: errorMessage(cause) })),
-      )
-      const output = isRecord(json) ? decodeRemoteCompactionOutput(json.output) : undefined
-      if (!output || output.length !== 1) {
-        return yield* new RemoteCompactionError({ message: "remote compaction response missing compaction output" })
-      }
-      return {
-        providerID: "openai" as const,
-        endpoint: "codex" as const,
-        implementation: "responses_compact" as const,
-        modelID: input.model.id,
-        output,
-      }
+      const attemptCompact: (attempt: number) => Effect.Effect<RemoteCompactionMetadata, RemoteCompactionError> = (attempt) =>
+        Effect.gen(function* () {
+          const result = yield* request(attempt).pipe(
+            Effect.map((metadata) => ({ ok: true as const, metadata })),
+            Effect.catch((error) => Effect.succeed({ ok: false as const, error })),
+          )
+          if (result.ok) {
+            log.info("remote compaction succeeded", { attempt, attempts })
+            return result.metadata
+          }
+          if (result.error.retryable && attempt < attempts) {
+            log.warn("remote compaction retrying", {
+              attempt,
+              attempts,
+              error: result.error.message,
+              status: result.error.status,
+            })
+            return yield* attemptCompact(attempt + 1)
+          }
+          if (attempt > 1) {
+            return yield* new RemoteCompactionError({
+              message: `remote compaction failed after ${attempt} attempts: ${result.error.message}`,
+              status: result.error.status,
+              retryable: result.error.retryable,
+              attempts: attempt,
+            })
+          }
+          return yield* Effect.fail(result.error)
+        })
+      return yield* attemptCompact(1)
     })
 
     return Service.of({ canCompact, compact })

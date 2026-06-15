@@ -340,6 +340,55 @@ test("custom OpenAI-compatible provider reuses known model metadata", async () =
   })
 })
 
+test("custom OpenAI-compatible provider discovers models when omitted from config", async () => {
+  const calls: { path: string; auth: string | null }[] = []
+  using server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      const url = new URL(request.url)
+      calls.push({ path: url.pathname, auth: request.headers.get("authorization") })
+      if (url.pathname === "/v1/models") return Response.json({ data: [{ id: "gpt-5.5" }] })
+      return new Response("not found", { status: 404 })
+    },
+  })
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "chimera.json"),
+        JSON.stringify({
+          $schema: "https://chimera.ai/config.json",
+          provider: {
+            "custom-openai": {
+              name: "Custom OpenAI",
+              npm: "@ai-sdk/openai-compatible",
+              env: [],
+              options: {
+                apiKey: "test-key",
+                baseURL: server.url.origin,
+              },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const providers = await list()
+      const provider = providers[ProviderID.make("custom-openai")]
+      expect(provider).toBeDefined()
+      expect(provider.options.baseURL).toBe(`${server.url.origin}/v1`)
+      expect(provider.models["gpt-5.5"]).toBeDefined()
+      expect(provider.models["gpt-5.5"].api.npm).toBe("@ai-sdk/openai-compatible")
+    },
+  })
+  expect(calls).toEqual([
+    { path: "/models", auth: "Bearer test-key" },
+    { path: "/v1/models", auth: "Bearer test-key" },
+  ])
+})
+
 test("known model metadata lookup normalizes provider-prefixed GPT-5.5 ids", () => {
   const provider = Provider.fromModelsDevProvider({
     id: "openai",

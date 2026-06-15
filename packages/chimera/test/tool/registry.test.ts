@@ -24,13 +24,15 @@ import { Format } from "@/format"
 import { Ripgrep } from "@/file/ripgrep"
 import * as Truncate from "@/tool/truncate"
 import { InstanceState } from "@/effect/instance-state"
+import { ProviderID, ModelID } from "@/provider/schema"
+import { WebSearchTool } from "@/tool/websearch"
 
 const node = CrossSpawnSpawner.defaultLayer
 const configLayer = TestConfig.layer({
   directories: () => InstanceState.directory.pipe(Effect.map((dir) => [path.join(dir, ".chimera")])),
 })
-
-const registryLayer = ToolRegistry.layer.pipe(
+const makeRegistryLayer = () =>
+  ToolRegistry.layer.pipe(
   Layer.provide(configLayer),
   Layer.provide(Plugin.defaultLayer),
   Layer.provide(Question.defaultLayer),
@@ -49,8 +51,9 @@ const registryLayer = ToolRegistry.layer.pipe(
   Layer.provide(node),
   Layer.provide(Ripgrep.defaultLayer),
   Layer.provide(Truncate.defaultLayer),
-)
+  )
 
+const registryLayer = makeRegistryLayer()
 const it = testEffect(Layer.mergeAll(registryLayer, node))
 
 afterEach(async () => {
@@ -200,6 +203,45 @@ describe("tool.registry", () => {
       const registry = yield* ToolRegistry.Service
       const ids = yield* registry.ids()
       expect(ids).toContain("cowsay")
+    }),
+  )
+
+  it.instance("registers local Exa websearch for opencode models", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const tools = yield* registry.tools({
+        providerID: ProviderID.opencode,
+        modelID: ModelID.make("kimi-k2"),
+        agent: { name: "build", mode: "primary", permission: [{ permission: "task", pattern: "*", action: "allow" }], options: {} },
+      })
+
+      expect(tools.map((tool) => tool.id)).toContain(WebSearchTool.id)
+    }),
+  )
+
+  it.instance("does not register local Exa websearch for OpenAI hosted search models", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const tools = yield* registry.tools({
+        providerID: ProviderID.openai,
+        modelID: ModelID.make("gpt-5.2"),
+        agent: { name: "build", mode: "primary", permission: [{ permission: "task", pattern: "*", action: "allow" }], options: {} },
+      })
+
+      expect(tools.map((tool) => tool.id)).not.toContain(WebSearchTool.id)
+    }),
+  )
+
+  it.instance("does not register websearch for third-party models by default", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const tools = yield* registry.tools({
+        providerID: ProviderID.make("deepseek"),
+        modelID: ModelID.make("deepseek-chat"),
+        agent: { name: "build", mode: "primary", permission: [{ permission: "task", pattern: "*", action: "allow" }], options: {} },
+      })
+
+      expect(tools.map((tool) => tool.id)).not.toContain(WebSearchTool.id)
     }),
   )
 })

@@ -113,7 +113,6 @@ export const layer: Layer.Layer<
     const agents = yield* Agent.Service
     const skill = yield* Skill.Service
     const truncate = yield* Truncate.Service
-
     const invalid = yield* InvalidTool
     const task = yield* TaskTool
     const read = yield* ReadTool

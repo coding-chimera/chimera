@@ -257,6 +257,38 @@ describe("transcript", () => {
       expect(result).toContain("**Error:**")
       expect(result).toContain("Command failed")
     })
+
+    test("summarizes hosted web search without raw provider output", () => {
+      const part: Part = {
+        id: "part_1",
+        sessionID: "ses_123",
+        messageID: "msg_123",
+        type: "tool",
+        callID: "call_1",
+        tool: "web_search",
+        state: {
+          status: "completed",
+          input: {},
+          output:
+            '{"action":{"type":"search","query":"OpenAI official blog"},"sources":[{"url":"https://example.com/a"},{"url":"https://example.com/b"}]}',
+          title: "web_search result",
+          metadata: {
+            providerOutput: {
+              action: { type: "search", query: "OpenAI official blog" },
+              sources: [{ url: "https://example.com/a" }, { url: "https://example.com/b" }],
+            },
+          },
+          time: { start: 1000, end: 1100 },
+        },
+        metadata: { providerExecuted: true },
+      }
+
+      const result = formatPart(part, options)
+      expect(result).toContain('Web Search "OpenAI official blog"')
+      expect(result).toContain("2 sources")
+      expect(result).not.toContain('{"action"')
+      expect(result).not.toContain("https://example.com/a")
+    })
   })
 
   describe("formatMessage", () => {
