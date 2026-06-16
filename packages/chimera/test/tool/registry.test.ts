@@ -26,14 +26,22 @@ import * as Truncate from "@/tool/truncate"
 import { InstanceState } from "@/effect/instance-state"
 import { ProviderID, ModelID } from "@/provider/schema"
 import { WebSearchTool } from "@/tool/websearch"
+import { Auth } from "@/auth"
 
 const node = CrossSpawnSpawner.defaultLayer
 const configLayer = TestConfig.layer({
   directories: () => InstanceState.directory.pipe(Effect.map((dir) => [path.join(dir, ".chimera")])),
 })
+const authLayer = Layer.mock(Auth.Service)({
+  get: () => Effect.succeed(undefined),
+  all: () => Effect.succeed({}),
+  set: () => Effect.void,
+  remove: () => Effect.void,
+})
 const makeRegistryLayer = () =>
   ToolRegistry.layer.pipe(
   Layer.provide(configLayer),
+  Layer.provide(authLayer),
   Layer.provide(Plugin.defaultLayer),
   Layer.provide(Question.defaultLayer),
   Layer.provide(Todo.defaultLayer),
@@ -206,7 +214,7 @@ describe("tool.registry", () => {
     }),
   )
 
-  it.instance("registers local Exa websearch for opencode models", () =>
+  it.instance("registers unified websearch for non-OpenAI models", () =>
     Effect.gen(function* () {
       const registry = yield* ToolRegistry.Service
       const tools = yield* registry.tools({
@@ -219,7 +227,7 @@ describe("tool.registry", () => {
     }),
   )
 
-  it.instance("does not register local Exa websearch for OpenAI hosted search models", () =>
+  it.instance("does not register unified websearch for OpenAI hosted search models", () =>
     Effect.gen(function* () {
       const registry = yield* ToolRegistry.Service
       const tools = yield* registry.tools({
@@ -232,7 +240,20 @@ describe("tool.registry", () => {
     }),
   )
 
-  it.instance("does not register websearch for third-party models by default", () =>
+  it.instance("does not register unified websearch for Codex hosted search models", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const tools = yield* registry.tools({
+        providerID: ProviderID.make("codex"),
+        modelID: ModelID.make("gpt-5.2-codex"),
+        agent: { name: "build", mode: "primary", permission: [{ permission: "task", pattern: "*", action: "allow" }], options: {} },
+      })
+
+      expect(tools.map((tool) => tool.id)).not.toContain(WebSearchTool.id)
+    }),
+  )
+
+  it.instance("registers unified websearch for third-party models", () =>
     Effect.gen(function* () {
       const registry = yield* ToolRegistry.Service
       const tools = yield* registry.tools({
@@ -241,7 +262,7 @@ describe("tool.registry", () => {
         agent: { name: "build", mode: "primary", permission: [{ permission: "task", pattern: "*", action: "allow" }], options: {} },
       })
 
-      expect(tools.map((tool) => tool.id)).not.toContain(WebSearchTool.id)
+      expect(tools.map((tool) => tool.id)).toContain(WebSearchTool.id)
     }),
   )
 })

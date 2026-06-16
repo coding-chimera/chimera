@@ -139,6 +139,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         }
         state.pending = false
         void Filesystem.writeJson(filePath, {
+          model: modelStore.model,
           recent: modelStore.recent,
           favorite: modelStore.favorite,
           variant: modelStore.variant,
@@ -147,6 +148,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
 
       Filesystem.readJson(filePath)
         .then((x: any) => {
+          if (typeof x.model === "object" && x.model !== null) setModelStore("model", x.model)
           if (Array.isArray(x.recent)) setModelStore("recent", x.recent)
           if (Array.isArray(x.favorite)) setModelStore("favorite", x.favorite)
           if (typeof x.variant === "object" && x.variant !== null) setModelStore("variant", x.variant)
@@ -155,55 +157,42 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         .finally(() => {
           setModelStore("ready", true)
           if (state.pending) save()
-        })
-
-      const args = useArgs()
-      const fallbackModel = createMemo(() => {
-        if (args.model) {
-          const { providerID, modelID } = parseModel(args.model)
-          if (isModelValid({ providerID, modelID })) {
-            return {
-              providerID,
-              modelID,
-            }
-          }
-        }
-
-        if (sync.data.config.model) {
-          const { providerID, modelID } = parseModel(sync.data.config.model)
-          if (isModelValid({ providerID, modelID })) {
-            return {
-              providerID,
-              modelID,
-            }
-          }
-        }
-
-        for (const item of modelStore.recent) {
-          if (isModelValid(item)) {
-            return item
-          }
-        }
-
-        const provider = sync.data.provider[0]
-        if (!provider) return undefined
-        const defaultModel = sync.data.provider_default[provider.id]
-        const firstModel = Object.values(provider.models)[0]
-        const model = defaultModel ?? firstModel?.id
-        if (!model) return undefined
-        return {
-          providerID: provider.id,
-          modelID: model,
-        }
       })
 
+      const args = useArgs()
       const currentModel = createMemo(() => {
         const a = agent.current()
         return (
           getFirstValidModel(
+            () => {
+              if (!args.model) return
+              const { providerID, modelID } = parseModel(args.model)
+              return {
+                providerID,
+                modelID,
+              }
+            },
             () => a && modelStore.model[a.name],
+            () => modelStore.recent.find((item) => isModelValid(item)),
             () => a && a.model,
-            fallbackModel,
+            () => {
+              if (!sync.data.config.model) return
+              const { providerID, modelID } = parseModel(sync.data.config.model)
+              return {
+                providerID,
+                modelID,
+              }
+            },
+            () => {
+              const provider = sync.data.provider[0]
+              if (!provider) return
+              const model = sync.data.provider_default[provider.id] ?? Object.values(provider.models)[0]?.id
+              if (!model) return
+              return {
+                providerID: provider.id,
+                modelID: model,
+              }
+            },
           ) ?? undefined
         )
       })
@@ -250,6 +239,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           const a = agent.current()
           if (!a) return
           setModelStore("model", a.name, { ...val })
+          save()
         },
         cycleFavorite(direction: 1 | -1) {
           const favorites = modelStore.favorite.filter((item) => isModelValid(item))
@@ -306,8 +296,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
                 "recent",
                 uniq.map((x) => ({ providerID: x.providerID, modelID: x.modelID })),
               )
-              save()
             }
+            save()
           })
         },
         toggleFavorite(model: { providerID: string; modelID: string }) {

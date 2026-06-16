@@ -1,4 +1,5 @@
 - Search the web using Chimera's configured Kimi/Exa search provider.
+- For non-OpenAI/Codex models, use Kimi search when kimi-for-coding API-key auth is configured; otherwise fall back to Exa.
 - Provides up-to-date information for current events and recent data.
 - Supports configurable result counts and returns relevant web context when the selected provider supports it.
 - Use this tool for accessing information beyond knowledge cutoff
