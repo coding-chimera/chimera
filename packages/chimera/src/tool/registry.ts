@@ -35,8 +35,8 @@ import z from "zod"
 import { ZodOverride } from "@/util/effect-zod"
 import { Plugin } from "../plugin"
 import { Provider } from "@/provider/provider"
-import { ProviderID, type ModelID } from "../provider/schema"
-import { WebSearchTool } from "./websearch"
+import { type ProviderID, type ModelID } from "../provider/schema"
+import { usesProviderHostedWebSearch, WebSearchTool } from "./websearch"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import * as Log from "@opencode-ai/core/util/log"
 import { LspTool } from "./lsp"
@@ -62,6 +62,7 @@ import { Bus } from "../bus"
 import { Agent } from "../agent/agent"
 import { Skill } from "../skill"
 import { Permission } from "@/permission"
+import { Auth } from "@/auth"
 
 const log = Log.create({ service: "tool.registry" })
 
@@ -105,6 +106,7 @@ export const layer: Layer.Layer<
   | Ripgrep.Service
   | Format.Service
   | Truncate.Service
+  | Auth.Service
 > = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -339,7 +341,7 @@ export const layer: Layer.Layer<
     const tools: Interface["tools"] = Effect.fn("ToolRegistry.tools")(function* (input) {
       const filtered = (yield* all()).filter((tool) => {
         if (tool.id === WebSearchTool.id) {
-          return input.providerID === ProviderID.opencode || Flag.OPENCODE_ENABLE_EXA
+          return !usesProviderHostedWebSearch(input.providerID)
         }
 
         const usePatch =
@@ -389,6 +391,7 @@ export const layer: Layer.Layer<
 export const defaultLayer = Layer.suspend(() =>
   layer.pipe(
     Layer.provide(Config.defaultLayer),
+    Layer.provide(Auth.defaultLayer),
     Layer.provide(Plugin.defaultLayer),
     Layer.provide(Question.defaultLayer),
     Layer.provide(Todo.defaultLayer),
