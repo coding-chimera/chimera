@@ -111,7 +111,7 @@ async function addAssistant(
   return id
 }
 
-async function addCompactionPart(sessionID: SessionID, messageID: MessageID, tailStartID?: MessageID) {
+async function addCompactionPart(sessionID: SessionID, messageID: MessageID, tailStartID?: MessageID, remote = false) {
   await svc.updatePart({
     id: PartID.ascending(),
     sessionID,
@@ -119,6 +119,17 @@ async function addCompactionPart(sessionID: SessionID, messageID: MessageID, tai
     type: "compaction",
     auto: true,
     tail_start_id: tailStartID,
+    ...(remote
+      ? {
+          remote: {
+            providerID: "openai",
+            endpoint: "codex",
+            implementation: "responses_compaction_v2",
+            modelID: "gpt-5.2",
+            output: [{ type: "compaction", encrypted_content: "encrypted" }],
+          },
+        }
+      : {}),
   } as any)
 }
 
@@ -835,6 +846,56 @@ describe("MessageV2.filterCompacted", () => {
         const result = MessageV2.filterCompacted(MessageV2.stream(session.id))
 
         expect(result.map((item) => item.info.id)).toEqual([c1, s1, u2, a2, u3, a3])
+
+        await svc.remove(session.id)
+      },
+    })
+  })
+
+  test("does not fold remote-only compaction when replaying as text", async () => {
+    await WithInstance.provide({
+      directory: root,
+      fn: async () => {
+        const session = await svc.create({})
+
+        const u1 = await addUser(session.id, "first")
+        const a1 = await addAssistant(session.id, u1, { finish: "end_turn" })
+        await svc.updatePart({
+          id: PartID.ascending(),
+          sessionID: session.id,
+          messageID: a1,
+          type: "text",
+          text: "first reply",
+        })
+
+        const u2 = await addUser(session.id, "second")
+        const a2 = await addAssistant(session.id, u2, { finish: "end_turn" })
+        await svc.updatePart({
+          id: PartID.ascending(),
+          sessionID: session.id,
+          messageID: a2,
+          type: "text",
+          text: "second reply",
+        })
+
+        const c1 = await addUser(session.id)
+        await addCompactionPart(session.id, c1, u2, true)
+        const s1 = await addAssistant(session.id, c1, { summary: true, finish: "end_turn" })
+        await svc.updatePart({
+          id: PartID.ascending(),
+          sessionID: session.id,
+          messageID: s1,
+          type: "text",
+          text: "Remote Codex compaction installed.",
+        })
+
+        const u3 = await addUser(session.id, "third")
+
+        const encoded = MessageV2.filterCompacted(MessageV2.stream(session.id))
+        const text = MessageV2.filterCompacted(MessageV2.stream(session.id), { remoteCompaction: "text" })
+
+        expect(encoded.map((item) => item.info.id)).toEqual([c1, s1, u2, a2, u3])
+        expect(text.map((item) => item.info.id)).toEqual([u1, a1, u2, a2, u3])
 
         await svc.remove(session.id)
       },

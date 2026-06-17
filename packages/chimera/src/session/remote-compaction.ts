@@ -17,6 +17,7 @@ import {
   type RemoteCompactionImplementation,
   type RemoteCompactionMetadata,
   type RemoteCompactionOutputItem,
+  type RemoteCompactionUsage,
 } from "./remote-compaction-codec"
 
 const log = Log.create({ service: "remote.compaction" })
@@ -228,6 +229,25 @@ function outputItemFromEvent(data: unknown) {
   return data
 }
 
+function usageFromCompleted(data: unknown): RemoteCompactionUsage | undefined {
+  if (!isRecord(data) || !isRecord(data.usage)) return undefined
+  const usage = Object.fromEntries(
+    Object.entries(data.usage).filter((entry): entry is [string, number] => {
+      const value = entry[1]
+      return typeof value === "number" && Number.isFinite(value) && value >= 0
+    }),
+  )
+  return Object.keys(usage).length ? usage : undefined
+}
+
+function remoteHttpErrorMessage(status: number, body: string) {
+  const base =
+    status === 401 || status === 403
+      ? `remote compaction failed: ${status} Codex remote compaction authorization or entitlement failed; verify the selected ChatGPT account has Codex access and re-authenticate if needed.`
+      : `remote compaction failed: ${status}`
+  return [base, body.trim().slice(0, 500)].filter(Boolean).join(" ")
+}
+
 function parseV2CompactionStream(body: string) {
   const events = sseEvents(body)
   const invalid = events.find((event) => event instanceof RemoteCompactionError)
@@ -237,18 +257,19 @@ function parseV2CompactionStream(body: string) {
   )
   if (!parsedEvents.some((event) => event.event === "response.completed")) {
     return new RemoteCompactionError({
-      message: "remote compaction v2 stream closed before response.completed",
+      message: "remote compaction v2 schema drift: stream closed before response.completed",
       retryable: true,
       implementation: V2_IMPLEMENTATION,
     })
   }
+  const completed = parsedEvents.find((event) => event.event === "response.completed")
   const outputItems = parsedEvents
     .filter((event) => event.event === "response.output_item.done")
     .map((event) => outputItemFromEvent(event.data))
     .filter((item): item is Record<string, unknown> => isRecord(item) && item.type === "compaction")
   if (outputItems.some((item) => typeof item.encrypted_content !== "string")) {
     return new RemoteCompactionError({
-      message: "remote compaction v2 compaction output missing encrypted_content",
+      message: "remote compaction v2 schema drift: compaction output missing encrypted_content",
       implementation: V2_IMPLEMENTATION,
     })
   }
@@ -257,11 +278,11 @@ function parseV2CompactionStream(body: string) {
   )
   if (output.length !== 1) {
     return new RemoteCompactionError({
-      message: `remote compaction v2 expected exactly one compaction output item, got ${output.length}`,
+      message: `remote compaction v2 schema drift: expected exactly one compaction output item, got ${output.length}`,
       implementation: V2_IMPLEMENTATION,
     })
   }
-  return output
+  return { output, usage: usageFromCompleted(completed?.data) }
 }
 
 export function failureMetadata(input: { modelID: string; error: RemoteCompactionError }) {
@@ -370,7 +391,7 @@ export const layerWithEndpoint = (endpoint = codexEndpointUrl("responses/compact
           if (response.status < 200 || response.status >= 300) {
             const body = yield* response.text.pipe(Effect.catch(() => Effect.succeed("")))
             return yield* new RemoteCompactionError({
-              message: [`remote compaction failed: ${response.status}`, body.trim().slice(0, 500)].filter(Boolean).join(" "),
+              message: remoteHttpErrorMessage(response.status, body),
               status: response.status,
               retryable: response.status === 429 || response.status >= 500,
               implementation,
@@ -418,7 +439,8 @@ export const layerWithEndpoint = (endpoint = codexEndpointUrl("responses/compact
             endpoint: "codex" as const,
             implementation: V2_IMPLEMENTATION,
             modelID: input.model.id,
-            output: parsed,
+            output: parsed.output,
+            ...(parsed.usage ? { usage: parsed.usage } : {}),
           }
         })
       const attemptProtocol = (

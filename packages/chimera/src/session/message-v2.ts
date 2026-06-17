@@ -216,6 +216,8 @@ const RemoteCompactionImplementation = Schema.Union([
   Schema.Literal("responses_compaction_v2"),
 ])
 
+const RemoteCompactionUsage = Schema.Record(Schema.String, NonNegativeInt)
+
 export const CompactionPart = Schema.Struct({
   ...partBase,
   type: Schema.Literal("compaction"),
@@ -234,6 +236,7 @@ export const CompactionPart = Schema.Struct({
           encrypted_content: Schema.String,
         }),
       ),
+      usage: Schema.optional(RemoteCompactionUsage),
     }),
   ),
   remote_error: Schema.optional(
@@ -768,10 +771,12 @@ function jsonSafe(value: unknown) {
   return serialized === undefined ? null : JSON.parse(serialized)
 }
 
+export type RemoteCompactionReplay = "encoded" | "text"
+
 export const toModelMessagesEffect = Effect.fnUntraced(function* (
   input: WithParts[],
   model: Provider.Model,
-  options?: { stripMedia?: boolean; toolOutputMaxChars?: number; remoteCompaction?: "encoded" | "text" },
+  options?: { stripMedia?: boolean; toolOutputMaxChars?: number; remoteCompaction?: RemoteCompactionReplay },
 ) {
   const result: UIMessage[] = []
   const toolNames = new Set<string>()
@@ -860,13 +865,10 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
           }
         }
 
-        if (part.type === "compaction") {
+        if (part.type === "compaction" && !(options?.remoteCompaction === "text" && part.remote)) {
           userMessage.parts.push({
             type: "text",
-            text:
-              options?.remoteCompaction === "encoded" && part.remote
-                ? encodeRemoteCompactionInput(part.remote.output)
-                : "What did we do so far?",
+            text: options?.remoteCompaction === "encoded" && part.remote ? encodeRemoteCompactionInput(part.remote.output) : "What did we do so far?",
           })
         }
         if (part.type === "subtask") {
@@ -1060,7 +1062,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
 export function toModelMessages(
   input: WithParts[],
   model: Provider.Model,
-  options?: { stripMedia?: boolean; toolOutputMaxChars?: number; remoteCompaction?: "encoded" | "text" },
+  options?: { stripMedia?: boolean; toolOutputMaxChars?: number; remoteCompaction?: RemoteCompactionReplay },
 ): Promise<ModelMessage[]> {
   return Effect.runPromise(toModelMessagesEffect(input, model, options).pipe(Effect.provide(EffectLogger.layer)))
 }
@@ -1146,9 +1148,10 @@ export function get(input: { sessionID: SessionID; messageID: MessageID }): With
   }
 }
 
-export function filterCompacted(msgs: Iterable<WithParts>) {
+export function filterCompacted(msgs: Iterable<WithParts>, options?: { remoteCompaction?: RemoteCompactionReplay }) {
   const result = [] as WithParts[]
-  const completed = new Set<string>()
+  const completed = new Map<MessageID, MessageID>()
+  const skipped = new Set<MessageID>()
   let retain: MessageID | undefined
   for (const msg of msgs) {
     result.push(msg)
@@ -1156,31 +1159,36 @@ export function filterCompacted(msgs: Iterable<WithParts>) {
       if (msg.info.id === retain) break
       continue
     }
-    if (msg.info.role === "user" && completed.has(msg.info.id)) {
+    const completedSummary = completed.get(msg.info.id)
+    if (msg.info.role === "user" && completedSummary) {
       const part = msg.parts.find((item): item is CompactionPart => item.type === "compaction")
       if (!part) continue
+      if (options?.remoteCompaction === "text" && part.remote) {
+        skipped.add(msg.info.id)
+        skipped.add(completedSummary)
+        continue
+      }
       if (!part.tail_start_id) break
       retain = part.tail_start_id
       if (msg.info.id === retain) break
       continue
     }
-    if (msg.info.role === "user" && completed.has(msg.info.id) && msg.parts.some((part) => part.type === "compaction"))
-      break
     if (msg.info.role === "assistant" && msg.info.summary && msg.info.finish && !msg.info.error)
-      completed.add(msg.info.parentID)
+      completed.set(msg.info.parentID, msg.info.id)
   }
   result.reverse()
-  const compactionIndex = result.findLastIndex(
+  const filtered = skipped.size ? result.filter((msg) => !skipped.has(msg.info.id)) : result
+  const compactionIndex = filtered.findLastIndex(
     (msg) =>
       msg.info.role === "user" &&
       msg.parts.some((item): item is CompactionPart => item.type === "compaction" && item.tail_start_id !== undefined),
   )
-  const compaction = result[compactionIndex]
+  const compaction = filtered[compactionIndex]
   const part = compaction?.parts.find(
     (item): item is CompactionPart => item.type === "compaction" && item.tail_start_id !== undefined,
   )
   const summaryIndex = compaction
-    ? result.findIndex(
+    ? filtered.findIndex(
         (msg, index) =>
           index > compactionIndex &&
           msg.info.role === "assistant" &&
@@ -1188,19 +1196,22 @@ export function filterCompacted(msgs: Iterable<WithParts>) {
           msg.info.parentID === compaction.info.id,
       )
     : -1
-  const tailIndex = part?.tail_start_id ? result.findIndex((msg) => msg.info.id === part.tail_start_id) : -1
+  const tailIndex = part?.tail_start_id ? filtered.findIndex((msg) => msg.info.id === part.tail_start_id) : -1
   if (tailIndex >= 0 && tailIndex < compactionIndex && summaryIndex > compactionIndex) {
     return [
-      ...result.slice(compactionIndex, summaryIndex + 1),
-      ...result.slice(tailIndex, compactionIndex),
-      ...result.slice(summaryIndex + 1),
+      ...filtered.slice(compactionIndex, summaryIndex + 1),
+      ...filtered.slice(tailIndex, compactionIndex),
+      ...filtered.slice(summaryIndex + 1),
     ]
   }
-  return result
+  return filtered
 }
 
-export const filterCompactedEffect = Effect.fnUntraced(function* (sessionID: SessionID) {
-  return filterCompacted(stream(sessionID))
+export const filterCompactedEffect = Effect.fnUntraced(function* (
+  sessionID: SessionID,
+  options?: { remoteCompaction?: RemoteCompactionReplay },
+) {
+  return filterCompacted(stream(sessionID), options)
 })
 
 export function fromError(
