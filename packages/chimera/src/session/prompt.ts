@@ -1494,6 +1494,37 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       throw new Error("Impossible")
     })
 
+    const inspectLoopMessages = (msgs: MessageV2.WithParts[]) => {
+      let lastUser: MessageV2.User | undefined
+      let lastAssistant: MessageV2.Assistant | undefined
+      let lastFinished: MessageV2.Assistant | undefined
+      const tasks: Array<{
+        parentID: MessageID
+        part: MessageV2.CompactionPart | MessageV2.SubtaskPart
+      }> = []
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const msg = msgs[i]
+        if (!lastUser && msg.info.role === "user") lastUser = msg.info
+        if (!lastAssistant && msg.info.role === "assistant") lastAssistant = msg.info
+        if (!lastFinished && msg.info.role === "assistant" && msg.info.finish) lastFinished = msg.info
+        if (lastUser && lastFinished) break
+        const task = msg.parts.filter((part) => part.type === "compaction" || part.type === "subtask")
+        if (task && !lastFinished) tasks.push(...task.map((part) => ({ parentID: msg.info.id, part })))
+      }
+      return { lastUser, lastAssistant, lastFinished, tasks }
+    }
+
+    const remoteCompactionReplay = Effect.fnUntraced(function* (model: Provider.Model) {
+      const cfg = yield* config.get()
+      const openaiAuth = yield* auth.get("openai").pipe(Effect.orElseSucceed(() => undefined))
+      const remoteMode = cfg.compaction?.remote ?? "auto"
+      return remoteMode !== "off" &&
+        (remoteMode === "auto" ? model.providerID === "openai" : supportsOpenAIRemoteCompactionModel(model)) &&
+        openaiAuth?.type === "oauth"
+        ? "encoded"
+        : "text"
+    })
+
     const runLoop: (sessionID: SessionID) => Effect.Effect<MessageV2.WithParts> = Effect.fn("SessionPrompt.run")(
       function* (sessionID: SessionID) {
         const ctx = yield* InstanceState.context
@@ -1506,25 +1537,18 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           yield* status.set(sessionID, { type: "busy" })
           yield* slog.info("loop", { step })
 
-          let msgs = yield* MessageV2.filterCompactedEffect(sessionID)
+          const rawMsgs = Array.from(MessageV2.stream(sessionID))
+          let msgs = MessageV2.filterCompacted(rawMsgs)
+          let loopState = inspectLoopMessages(msgs)
 
-          let lastUser: MessageV2.User | undefined
-          let lastAssistant: MessageV2.Assistant | undefined
-          let lastFinished: MessageV2.Assistant | undefined
-          let tasks: Array<{
-            parentID: MessageID
-            part: MessageV2.CompactionPart | MessageV2.SubtaskPart
-          }> = []
-          for (let i = msgs.length - 1; i >= 0; i--) {
-            const msg = msgs[i]
-            if (!lastUser && msg.info.role === "user") lastUser = msg.info
-            if (!lastAssistant && msg.info.role === "assistant") lastAssistant = msg.info
-            if (!lastFinished && msg.info.role === "assistant" && msg.info.finish) lastFinished = msg.info
-            if (lastUser && lastFinished) break
-            const task = msg.parts.filter((part) => part.type === "compaction" || part.type === "subtask")
-            if (task && !lastFinished) tasks.push(...task.map((part) => ({ parentID: msg.info.id, part })))
+          if (!loopState.lastUser) throw new Error("No user message found in stream. This should never happen.")
+          const model = yield* getModel(loopState.lastUser.model.providerID, loopState.lastUser.model.modelID, sessionID)
+          const remoteCompaction = yield* remoteCompactionReplay(model)
+          if (remoteCompaction === "text") {
+            msgs = MessageV2.filterCompacted(rawMsgs, { remoteCompaction })
+            loopState = inspectLoopMessages(msgs)
           }
-
+          const { lastUser, lastAssistant, lastFinished, tasks } = loopState
           if (!lastUser) throw new Error("No user message found in stream. This should never happen.")
 
           const lastAssistantMsg = msgs.findLast(
@@ -1556,7 +1580,6 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               history: titleHistory(msgs),
             }).pipe(Effect.ignore, Effect.forkIn(scope))
 
-          const model = yield* getModel(lastUser.model.providerID, lastUser.model.modelID, sessionID)
           const task = tasks.pop()
 
           if (task && task.parentID !== lastUser.id) {
@@ -1665,15 +1688,6 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
             yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
 
-            const cfg = yield* config.get()
-            const openaiAuth = yield* auth.get("openai").pipe(Effect.orElseSucceed(() => undefined))
-            const remoteMode = cfg.compaction?.remote ?? "auto"
-            const remoteCompaction =
-              remoteMode !== "off" &&
-              (remoteMode === "auto" ? model.providerID === "openai" : supportsOpenAIRemoteCompactionModel(model)) &&
-              openaiAuth?.type === "oauth"
-                ? "encoded"
-                : "text"
             const [skills, env, instructions, modelMsgs, workBriefSuffix, chimeraContextSuffix] = yield* Effect.all([
               sys.skills(agent),
               sys.environment(model),

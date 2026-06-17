@@ -1215,6 +1215,7 @@ describe("session.compaction.process", () => {
           expect(Array.isArray(requestInput) ? requestInput.at(-1) : undefined).toEqual({ type: "compaction_trigger" })
           expect(part?.remote?.implementation).toBe("responses_compaction_v2")
           expect(part?.remote?.output).toEqual([{ type: "compaction", encrypted_content: "encrypted-v2" }])
+          expect(part?.remote?.usage).toEqual({ input_tokens: 1, output_tokens: 1 })
         } finally {
           await rt.dispose()
         }
@@ -1390,6 +1391,72 @@ describe("session.compaction.process", () => {
               ),
             ).rejects.toThrow(item.message)
           }
+        } finally {
+          await rt.dispose()
+        }
+      },
+    })
+  })
+
+  test("records entitlement diagnostics for remote compaction auth failures", async () => {
+    await using tmp = await tmpdir()
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const openai = { providerID: ProviderID.make("openai"), modelID: ModelID.make("gpt-5.2") }
+        using server = Bun.serve({
+          port: 0,
+          fetch() {
+            return new Response("forbidden", { status: 403 })
+          },
+        })
+
+        const session = await svc.create({})
+        await user(session.id, "first", openai)
+        await SessionCompaction.create({
+          sessionID: session.id,
+          agent: "build",
+          model: openai,
+          auto: false,
+        })
+
+        const config = cfg({ remote: "auto", remote_protocol: "v2", tail_turns: 0 })
+        const bus = Bus.layer
+        const remoteLayer = RemoteCompaction.layerWithEndpoint(server.url.toString(), { attempts: 1 }).pipe(
+          Layer.provide(authLayer()),
+          Layer.provide(config),
+          Layer.provide(FetchHttpClient.layer),
+        )
+        const rt = ManagedRuntime.make(
+          Layer.mergeAll(SessionCompaction.layer.pipe(Layer.provide(remoteLayer)), bus).pipe(
+            Layer.provide(ProviderTest.fake().layer),
+            Layer.provide(SessionNs.defaultLayer),
+            Layer.provide(layer("continue")),
+            Layer.provide(Agent.defaultLayer),
+            Layer.provide(Plugin.defaultLayer),
+            Layer.provide(bus),
+            Layer.provide(config),
+          ),
+        )
+        try {
+          const msgs = await svc.messages({ sessionID: session.id })
+          const parent = msgs.at(-1)?.info.id
+          expect(parent).toBeTruthy()
+          await rt.runPromise(
+            SessionCompaction.Service.use((svc) =>
+              svc.process({
+                parentID: parent!,
+                messages: msgs,
+                sessionID: session.id,
+                auto: false,
+              }),
+            ),
+          )
+          const part = await lastCompactionPart(session.id)
+          expect(part?.remote_error?.status).toBe(403)
+          expect(part?.remote_error?.retryable).toBe(false)
+          expect(part?.remote_error?.message).toContain("entitlement")
+          expect(part?.remote_error?.message).toContain("forbidden")
         } finally {
           await rt.dispose()
         }

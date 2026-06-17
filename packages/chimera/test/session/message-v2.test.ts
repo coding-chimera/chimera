@@ -321,9 +321,10 @@ describe("session.message-v2.toModelMessage", () => {
           implementation: "responses_compaction_v2",
           modelID: "gpt-5.2",
           output: [{ type: "compaction", encrypted_content: "encrypted" }],
+          usage: { input_tokens: 12, output_tokens: 3 },
         },
-      }).remote?.implementation,
-    ).toBe("responses_compaction_v2")
+      }).remote,
+    ).toMatchObject({ implementation: "responses_compaction_v2", usage: { input_tokens: 12, output_tokens: 3 } })
   })
 
   test("converts assistant tool completion into tool-call + tool-result messages with attachments", async () => {

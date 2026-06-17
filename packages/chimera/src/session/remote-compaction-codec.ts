@@ -5,12 +5,15 @@ export type RemoteCompactionOutputItem = {
 
 export type RemoteCompactionImplementation = "responses_compact" | "responses_compaction_v2"
 
+export type RemoteCompactionUsage = Record<string, number>
+
 export type RemoteCompactionMetadata = {
   providerID: "openai"
   endpoint: "codex"
   implementation: RemoteCompactionImplementation
   modelID: string
   output: RemoteCompactionOutputItem[]
+  usage?: RemoteCompactionUsage
 }
 
 const ENVELOPE_KEY = "__chimera_remote_compaction"
@@ -60,10 +63,17 @@ function findRemoteCompactionOutput(value: unknown): RemoteCompactionOutputItem[
   }
 }
 
+export class RemoteCompactionRewriteError extends Error {
+  override readonly name = "RemoteCompactionRewriteError"
+}
+
 export function rewriteRemoteCompactionInput(body: string) {
+  if (!body.includes(ENVELOPE_KEY)) return body
   try {
     const parsed = JSON.parse(body)
-    if (!isRecord(parsed) || !Array.isArray(parsed.input)) return body
+    if (!isRecord(parsed) || !Array.isArray(parsed.input)) {
+      throw new RemoteCompactionRewriteError("remote compaction replay body does not contain a Responses input array")
+    }
     let changed = false
     const input = parsed.input.flatMap((item) => {
       const output = findRemoteCompactionOutput(item)
@@ -71,10 +81,11 @@ export function rewriteRemoteCompactionInput(body: string) {
       changed = true
       return output
     })
-    if (!changed) return body
+    if (!changed) throw new RemoteCompactionRewriteError("remote compaction replay payload was not rewritten")
     return JSON.stringify({ ...parsed, input })
-  } catch {
-    return body
+  } catch (cause) {
+    if (cause instanceof RemoteCompactionRewriteError) throw cause
+    throw new RemoteCompactionRewriteError("remote compaction replay body could not be parsed")
   }
 }
 

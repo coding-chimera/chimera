@@ -293,6 +293,66 @@ describe("plugin.codex", () => {
 
     expect(body?.input).toEqual([{ type: "compaction", encrypted_content: "encrypted" }])
   })
+
+  test("blocks encoded remote compaction replay when rewrite fails", async () => {
+    let auth: { type: "oauth"; refresh: string; access: string; expires: number; accountId?: string } = {
+      type: "oauth" as const,
+      refresh: "refresh",
+      access: "access",
+      expires: Date.now() + 60_000,
+      accountId: "acc-123",
+    }
+    let calls = 0
+
+    using server = Bun.serve({
+      port: 0,
+      fetch() {
+        calls++
+        return new Response("unexpected", { status: 500 })
+      },
+    })
+
+    const hooks = await CodexAuthPlugin(
+      {
+        client: {
+          auth: {
+            async set(input: { body: { refresh: string; access: string; expires: number; accountId?: string } }) {
+              auth = { type: "oauth", ...input.body }
+            },
+          },
+        } as never,
+        project: {} as never,
+        directory: "",
+        worktree: "",
+        experimental_workspace: {
+          register() {},
+        },
+        serverUrl: new URL("https://example.com"),
+        $: {} as never,
+      },
+      {
+        issuer: server.url.origin,
+        codexApiEndpoint: new URL("/backend-api/codex/responses", server.url).toString(),
+      },
+    )
+    const loaded = await hooks.auth!.loader!(async () => auth as never, {} as never)
+    const encoded = JSON.stringify({
+      __chimera_remote_compaction: {
+        version: 999,
+        output: [{ type: "compaction", encrypted_content: "encrypted" }],
+      },
+    })
+    await expect(
+      loaded.fetch!("https://api.openai.com/v1/responses", {
+        method: "POST",
+        body: JSON.stringify({
+          input: [{ type: "message", role: "user", content: [{ type: "input_text", text: encoded }] }],
+        }),
+      }),
+    ).rejects.toThrow("remote compaction replay payload was not rewritten")
+
+    expect(calls).toBe(0)
+  })
 })
 
 async function waitFor(predicate: () => boolean) {

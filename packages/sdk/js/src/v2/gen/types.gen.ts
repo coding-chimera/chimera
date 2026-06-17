@@ -715,6 +715,9 @@ export type CompactionPart = {
       type: "compaction" | "compaction_summary"
       encrypted_content: string
     }>
+    usage?: {
+      [key: string]: number
+    }
   }
   remote_error?: {
     providerID: "openai"
@@ -1815,6 +1818,9 @@ export type CompactionPart1 = {
       type: "compaction" | "compaction_summary"
       encrypted_content: string
     }>
+    usage?: {
+      [key: string]: number
+    }
   }
   remote_error?: {
     providerID: "openai"
