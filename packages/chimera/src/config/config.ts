@@ -276,6 +276,10 @@ export const Info = Schema.Struct({
         description:
           "Use Codex remote compaction automatically for OpenAI, set to on to force it for compatible endpoints, or off to always use local compaction.",
       }),
+      remote_protocol: Schema.optional(Schema.Literals(["auto", "v2", "legacy"])).annotate({
+        description:
+          "Select the Codex remote compaction wire protocol. auto tries Responses v2 before legacy, v2 uses only Responses compaction v2, and legacy uses /responses/compact.",
+      }),
     }),
   ),
   experimental: Schema.optional(

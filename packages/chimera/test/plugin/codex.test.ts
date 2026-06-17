@@ -283,7 +283,7 @@ describe("plugin.codex", () => {
       },
     )
     const loaded = await hooks.auth!.loader!(async () => auth as never, {} as never)
-    const encoded = encodeRemoteCompactionInput([{ type: "compaction_summary", encrypted_content: "encrypted" }])
+    const encoded = encodeRemoteCompactionInput([{ type: "compaction", encrypted_content: "encrypted" }])
     await loaded.fetch!("https://api.openai.com/v1/responses", {
       method: "POST",
       body: JSON.stringify({
@@ -291,7 +291,7 @@ describe("plugin.codex", () => {
       }),
     })
 
-    expect(body?.input).toEqual([{ type: "compaction_summary", encrypted_content: "encrypted" }])
+    expect(body?.input).toEqual([{ type: "compaction", encrypted_content: "encrypted" }])
   })
 })
 

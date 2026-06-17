@@ -52,7 +52,7 @@ import { DialogWorkspaceUnavailable } from "../dialog-workspace-unavailable"
 import { useArgs } from "@tui/context/args"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { WorkspaceLabel, type WorkspaceStatus } from "../workspace-label"
-import { openAIRemoteCompactionEnabled, openAIRemoteCompactionStatus } from "@tui/util/remote-compaction"
+import { openAIRemoteCompactionEnabled, openAIRemoteCompactionProtocolStatus } from "@tui/util/remote-compaction"
 
 export type PromptProps = {
   sessionID?: string
@@ -187,7 +187,7 @@ export function Prompt(props: PromptProps) {
   const [warpNotice, setWarpNotice] = createSignal<string>()
   const currentProviderLabel = createMemo(() => local.model.parsed().provider)
   const remoteCompactionEnabled = createMemo(() => openAIRemoteCompactionEnabled(sync.data.config, local.model.current()))
-  const remoteCompactionStatus = createMemo(() => openAIRemoteCompactionStatus(sync.data.config, local.model.current()))
+  const remoteCompactionStatus = createMemo(() => openAIRemoteCompactionProtocolStatus(sync.data.config, local.model.current()))
   const hasRightContent = createMemo(() => Boolean(props.right))
   const defaultWorkspaceID = createMemo(() => props.workspaceID ?? project.workspace.current())
 

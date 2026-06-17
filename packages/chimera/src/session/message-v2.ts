@@ -211,6 +211,11 @@ export const AgentPart = Schema.Struct({
   .pipe(withStatics((s) => ({ zod: zod(s) })))
 export type AgentPart = Types.DeepMutable<Schema.Schema.Type<typeof AgentPart>>
 
+const RemoteCompactionImplementation = Schema.Union([
+  Schema.Literal("responses_compact"),
+  Schema.Literal("responses_compaction_v2"),
+])
+
 export const CompactionPart = Schema.Struct({
   ...partBase,
   type: Schema.Literal("compaction"),
@@ -221,7 +226,7 @@ export const CompactionPart = Schema.Struct({
     Schema.Struct({
       providerID: Schema.Literal("openai"),
       endpoint: Schema.Literal("codex"),
-      implementation: Schema.Literal("responses_compact"),
+      implementation: RemoteCompactionImplementation,
       modelID: Schema.String,
       output: Schema.Array(
         Schema.Struct({
@@ -235,7 +240,7 @@ export const CompactionPart = Schema.Struct({
     Schema.Struct({
       providerID: Schema.Literal("openai"),
       endpoint: Schema.Literal("codex"),
-      implementation: Schema.Literal("responses_compact"),
+      implementation: RemoteCompactionImplementation,
       modelID: Schema.String,
       message: Schema.String,
       status: Schema.optional(Schema.Number),

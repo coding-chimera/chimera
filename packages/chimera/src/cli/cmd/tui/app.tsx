@@ -66,6 +66,11 @@ import type { RouteMap } from "@/cli/cmd/tui/plugin/api"
 import { FormatError, FormatUnknownError } from "@/cli/error"
 import {
   nextOpenAIRemoteCompactionMode,
+  nextOpenAIRemoteCompactionProtocolStatus,
+  openAIRemoteCompactionProtocolConfig,
+  openAIRemoteCompactionProtocolStatus,
+  openAIRemoteCompactionProtocolToggleDescription,
+  openAIRemoteCompactionProtocolToggleTitle,
   openAIRemoteCompactionStatus,
   openAIRemoteCompactionToggleDescription,
   openAIRemoteCompactionToggleTitle,
@@ -480,6 +485,48 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     })
   }
 
+  async function toggleOpenAIRemoteCompactionProtocol() {
+    const next = nextOpenAIRemoteCompactionProtocolStatus(sync.data.config, local.model.current())
+    const config = openAIRemoteCompactionProtocolConfig(next, local.model.current())
+    const result = await sdk.client.config
+      .update({
+        workspace: project.workspace.current(),
+        config: {
+          compaction: config,
+        },
+      })
+      .catch((error) => {
+        toast.show({
+          variant: "error",
+          message: errorMessage(error),
+          duration: 5000,
+        })
+      })
+    if (!result) return
+    if (result.error) {
+      toast.show({
+        variant: "error",
+        message: errorMessage(result.error),
+        duration: 5000,
+      })
+      return
+    }
+    sync.set("config", "compaction", { ...sync.data.config.compaction, ...config })
+    await sync.bootstrap({ fatal: false }).catch((error) => {
+      toast.show({
+        variant: "error",
+        message: errorMessage(error),
+        duration: 5000,
+      })
+    })
+    sync.set("config", "compaction", { ...sync.data.config.compaction, ...config })
+    toast.show({
+      variant: "info",
+      message: `OpenAI remote compaction protocol: ${openAIRemoteCompactionProtocolStatus(sync.data.config, local.model.current())}`,
+      duration: 3000,
+    })
+  }
+
   const connected = useConnected()
   command.register(() => [
     {
@@ -683,6 +730,21 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       },
       onSelect: async (dialog) => {
         await toggleOpenAIRemoteCompaction()
+        dialog.clear()
+      },
+      category: "System",
+    },
+    {
+      title: openAIRemoteCompactionProtocolToggleTitle(sync.data.config, local.model.current()),
+      description: openAIRemoteCompactionProtocolToggleDescription(sync.data.config, local.model.current()),
+      value: "app.toggle.openai_remote_compaction_protocol",
+      suggested: true,
+      slash: {
+        name: "remote-compaction-protocol",
+        aliases: ["remote-compact-protocol", "remote-protocol"],
+      },
+      onSelect: async (dialog) => {
+        await toggleOpenAIRemoteCompactionProtocol()
         dialog.clear()
       },
       category: "System",

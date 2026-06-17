@@ -14,6 +14,7 @@ import type { ModelMessage } from "ai"
 import {
   decodeRemoteCompactionInput,
   decodeRemoteCompactionOutput,
+  type RemoteCompactionImplementation,
   type RemoteCompactionMetadata,
   type RemoteCompactionOutputItem,
 } from "./remote-compaction-codec"
@@ -28,13 +29,28 @@ type ResponsesMessageItem = {
 
 type ResponsesInputItem = RemoteCompactionOutputItem | ResponsesMessageItem
 
+type ResponsesCompactionTriggerItem = {
+  type: "compaction_trigger"
+}
+
+type RemoteCompactionProtocol = "auto" | "v2" | "legacy"
+
+type SseEvent = {
+  event: string | undefined
+  data: unknown
+}
+
 const TOOL_OUTPUT_MAX_CHARS = 2_000
 const DEFAULT_COMPACTION_TIMEOUT = "60 seconds"
 const DEFAULT_COMPACTION_ATTEMPTS = 2
+const LEGACY_IMPLEMENTATION = "responses_compact" as const
+const V2_IMPLEMENTATION = "responses_compaction_v2" as const
 
 type RemoteCompactionOptions = {
   timeout?: Parameters<typeof Effect.sleep>[0]
   attempts?: number
+  responsesEndpoint?: string
+  legacyEndpoint?: string
 }
 
 export class RemoteCompactionError extends Schema.TaggedErrorClass<RemoteCompactionError>()(
@@ -44,6 +60,9 @@ export class RemoteCompactionError extends Schema.TaggedErrorClass<RemoteCompact
     status: Schema.optional(Schema.Number),
     retryable: Schema.optional(Schema.Boolean),
     attempts: Schema.optional(Schema.Number),
+    implementation: Schema.optional(
+      Schema.Union([Schema.Literal("responses_compact"), Schema.Literal("responses_compaction_v2")]),
+    ),
   },
 ) {}
 
@@ -151,11 +170,105 @@ const responsesInput = Effect.fn("RemoteCompaction.responsesInput")(function* (
   })
 })
 
+function responsesEndpointFrom(endpoint: string) {
+  const trimmed = endpoint.replace(/\/+$/, "")
+  if (trimmed.endsWith("/compact")) return trimmed.slice(0, -"/compact".length)
+  return endpoint
+}
+
+function legacyEndpointFrom(endpoint: string) {
+  const trimmed = endpoint.replace(/\/+$/, "")
+  if (trimmed.endsWith("/compact")) return endpoint
+  return codexEndpointUrl("responses/compact", endpoint)
+}
+
+function protocolsFor(protocol: RemoteCompactionProtocol) {
+  if (protocol === "legacy") return [LEGACY_IMPLEMENTATION]
+  if (protocol === "v2") return [V2_IMPLEMENTATION]
+  return [V2_IMPLEMENTATION, LEGACY_IMPLEMENTATION]
+}
+
+function withImplementation(error: RemoteCompactionError, implementation: RemoteCompactionImplementation) {
+  return new RemoteCompactionError({
+    message: error.message,
+    status: error.status,
+    retryable: error.retryable,
+    attempts: error.attempts,
+    implementation,
+  })
+}
+
+function sseEvents(body: string): Array<SseEvent | RemoteCompactionError> {
+  return body
+    .split(/\r?\n\r?\n/)
+    .map((block): SseEvent | RemoteCompactionError | undefined => {
+      const lines = block.split(/\r?\n/)
+      const data = lines
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice("data:".length).trimStart())
+        .join("\n")
+      if (!data || data === "[DONE]") return undefined
+      try {
+        const parsed = JSON.parse(data)
+        const event = lines.find((line) => line.startsWith("event:"))?.slice("event:".length).trim()
+        return { event: isRecord(parsed) && typeof parsed.type === "string" ? parsed.type : event, data: parsed }
+      } catch {
+        return new RemoteCompactionError({
+          message: "remote compaction v2 stream contained invalid JSON",
+          implementation: V2_IMPLEMENTATION,
+        })
+      }
+    })
+    .filter((event): event is SseEvent | RemoteCompactionError => event !== undefined)
+}
+
+function outputItemFromEvent(data: unknown) {
+  if (!isRecord(data)) return undefined
+  if (isRecord(data.item)) return data.item
+  return data
+}
+
+function parseV2CompactionStream(body: string) {
+  const events = sseEvents(body)
+  const invalid = events.find((event) => event instanceof RemoteCompactionError)
+  if (invalid instanceof RemoteCompactionError) return invalid
+  const parsedEvents = events.filter(
+    (event): event is { event: string | undefined; data: unknown } => !(event instanceof RemoteCompactionError),
+  )
+  if (!parsedEvents.some((event) => event.event === "response.completed")) {
+    return new RemoteCompactionError({
+      message: "remote compaction v2 stream closed before response.completed",
+      retryable: true,
+      implementation: V2_IMPLEMENTATION,
+    })
+  }
+  const outputItems = parsedEvents
+    .filter((event) => event.event === "response.output_item.done")
+    .map((event) => outputItemFromEvent(event.data))
+    .filter((item): item is Record<string, unknown> => isRecord(item) && item.type === "compaction")
+  if (outputItems.some((item) => typeof item.encrypted_content !== "string")) {
+    return new RemoteCompactionError({
+      message: "remote compaction v2 compaction output missing encrypted_content",
+      implementation: V2_IMPLEMENTATION,
+    })
+  }
+  const output = outputItems.map(
+    (item): RemoteCompactionOutputItem => ({ type: "compaction", encrypted_content: item.encrypted_content as string }),
+  )
+  if (output.length !== 1) {
+    return new RemoteCompactionError({
+      message: `remote compaction v2 expected exactly one compaction output item, got ${output.length}`,
+      implementation: V2_IMPLEMENTATION,
+    })
+  }
+  return output
+}
+
 export function failureMetadata(input: { modelID: string; error: RemoteCompactionError }) {
   return {
     providerID: "openai" as const,
     endpoint: "codex" as const,
-    implementation: "responses_compact" as const,
+    implementation: input.error.implementation ?? LEGACY_IMPLEMENTATION,
     modelID: input.modelID,
     message: input.error.message,
     ...(input.error.status === undefined ? {} : { status: input.error.status }),
@@ -177,6 +290,8 @@ export const layerWithEndpoint = (endpoint = codexEndpointUrl("responses/compact
     const http = yield* HttpClient.HttpClient
     const timeout = options.timeout ?? DEFAULT_COMPACTION_TIMEOUT
     const attempts = Math.max(1, Math.floor(options.attempts ?? DEFAULT_COMPACTION_ATTEMPTS))
+    const responsesEndpoint = options.responsesEndpoint ?? responsesEndpointFrom(endpoint)
+    const legacyEndpoint = options.legacyEndpoint ?? legacyEndpointFrom(endpoint)
 
     const canCompact = Effect.fn("RemoteCompaction.canCompact")(function* (input: { model: Provider.Model }) {
       const mode = (yield* config.get()).compaction?.remote ?? "auto"
@@ -192,36 +307,52 @@ export const layerWithEndpoint = (endpoint = codexEndpointUrl("responses/compact
       messages: MessageV2.WithParts[]
       instructions: string
     }) {
-      if (!(yield* canCompact(input))) return yield* new RemoteCompactionError({ message: "remote compaction unavailable" })
+      const cfg = yield* config.get()
+      const protocol = cfg.compaction?.remote_protocol ?? "auto"
+      const firstImplementation = protocolsFor(protocol)[0] ?? V2_IMPLEMENTATION
+      if (!(yield* canCompact(input))) {
+        return yield* new RemoteCompactionError({
+          message: "remote compaction unavailable",
+          implementation: firstImplementation,
+        })
+      }
       const stored = yield* auth.get("openai").pipe(Effect.orElseSucceed(() => undefined))
-      if (!stored || stored.type !== "oauth") return yield* new RemoteCompactionError({ message: "openai oauth missing" })
+      if (!stored || stored.type !== "oauth") {
+        return yield* new RemoteCompactionError({ message: "openai oauth missing", implementation: firstImplementation })
+      }
       const headers = (yield* Effect.tryPromise({
         try: () =>
           codexAuthHeaders({
             auth: stored,
             setAuth: (next) => Effect.runPromise(auth.set("openai", next)),
           }),
-        catch: (cause) => new RemoteCompactionError({ message: errorMessage(cause) }),
+        catch: (cause) => new RemoteCompactionError({ message: errorMessage(cause), implementation: firstImplementation }),
       })).headers
       headers.set("Content-Type", "application/json")
       headers.set("originator", "opencode")
       headers.set("User-Agent", `opencode/${InstallationVersion} (${os.platform()} ${os.release()}; ${os.arch()})`)
       headers.set("session_id", input.sessionID)
       const requestInput = yield* responsesInput(input.messages, input.model)
-      const request = (attempt: number) =>
+      const body = {
+        model: input.model.api.id,
+        input: requestInput,
+        instructions: input.instructions,
+        tools: [],
+        parallel_tool_calls: false,
+        prompt_cache_key: input.sessionID,
+        text: { format: { type: "text" } },
+      }
+      const execute = (
+        requestEndpoint: string,
+        requestBody: Record<string, unknown>,
+        implementation: RemoteCompactionImplementation,
+        attempt: number,
+      ) =>
         Effect.gen(function* () {
-          log.info("remote compaction request", { attempt, attempts, timeout: durationLabel(timeout) })
-          const response = yield* HttpClientRequest.post(endpoint).pipe(
+          log.info("remote compaction request", { attempt, attempts, implementation, timeout: durationLabel(timeout) })
+          const response = yield* HttpClientRequest.post(requestEndpoint).pipe(
             HttpClientRequest.setHeaders(Object.fromEntries(headers.entries())),
-            HttpClientRequest.bodyJson({
-              model: input.model.api.id,
-              input: requestInput,
-              instructions: input.instructions,
-              tools: [],
-              parallel_tool_calls: false,
-              prompt_cache_key: input.sessionID,
-              text: { format: { type: "text" } },
-            }),
+            HttpClientRequest.bodyJson(requestBody),
             Effect.flatMap((request) => http.execute(request)),
             Effect.timeoutOrElse({
               duration: timeout,
@@ -230,10 +361,11 @@ export const layerWithEndpoint = (endpoint = codexEndpointUrl("responses/compact
                   new RemoteCompactionError({
                     message: `remote compaction timed out after ${durationLabel(timeout)}`,
                     retryable: true,
+                    implementation,
                   }),
                 ),
             }),
-            Effect.mapError(remoteError),
+            Effect.mapError((cause) => withImplementation(remoteError(cause), implementation)),
           )
           if (response.status < 200 || response.status >= 300) {
             const body = yield* response.text.pipe(Effect.catch(() => Effect.succeed("")))
@@ -241,53 +373,111 @@ export const layerWithEndpoint = (endpoint = codexEndpointUrl("responses/compact
               message: [`remote compaction failed: ${response.status}`, body.trim().slice(0, 500)].filter(Boolean).join(" "),
               status: response.status,
               retryable: response.status === 429 || response.status >= 500,
+              implementation,
             })
           }
+          return response
+        })
+      const compactLegacy = (attempt: number) =>
+        Effect.gen(function* () {
+          const response = yield* execute(legacyEndpoint, body, LEGACY_IMPLEMENTATION, attempt)
           const json = yield* response.json.pipe(
-            Effect.mapError((cause) => new RemoteCompactionError({ message: errorMessage(cause) })),
+            Effect.mapError((cause) => new RemoteCompactionError({ message: errorMessage(cause), implementation: LEGACY_IMPLEMENTATION })),
           )
           const output = isRecord(json) ? decodeRemoteCompactionOutput(json.output) : undefined
           if (!output || output.length !== 1) {
-            return yield* new RemoteCompactionError({ message: "remote compaction response missing compaction output" })
+            return yield* new RemoteCompactionError({
+              message: "remote compaction response missing compaction output",
+              implementation: LEGACY_IMPLEMENTATION,
+            })
           }
           return {
             providerID: "openai" as const,
             endpoint: "codex" as const,
-            implementation: "responses_compact" as const,
+            implementation: LEGACY_IMPLEMENTATION,
             modelID: input.model.id,
             output,
           }
         })
-      const attemptCompact: (attempt: number) => Effect.Effect<RemoteCompactionMetadata, RemoteCompactionError> = (attempt) =>
+      const compactV2 = (attempt: number) =>
         Effect.gen(function* () {
-          const result = yield* request(attempt).pipe(
-            Effect.map((metadata) => ({ ok: true as const, metadata })),
-            Effect.catch((error) => Effect.succeed({ ok: false as const, error })),
+          const response = yield* execute(
+            responsesEndpoint,
+            {
+              ...body,
+              input: [...requestInput, { type: "compaction_trigger" } satisfies ResponsesCompactionTriggerItem],
+              stream: true,
+            },
+            V2_IMPLEMENTATION,
+            attempt,
           )
-          if (result.ok) {
-            log.info("remote compaction succeeded", { attempt, attempts })
-            return result.metadata
+          const parsed = parseV2CompactionStream(yield* response.text.pipe(Effect.catch(() => Effect.succeed(""))))
+          if (parsed instanceof RemoteCompactionError) return yield* parsed
+          return {
+            providerID: "openai" as const,
+            endpoint: "codex" as const,
+            implementation: V2_IMPLEMENTATION,
+            modelID: input.model.id,
+            output: parsed,
           }
-          if (result.error.retryable && attempt < attempts) {
-            log.warn("remote compaction retrying", {
-              attempt,
-              attempts,
-              error: result.error.message,
-              status: result.error.status,
-            })
-            return yield* attemptCompact(attempt + 1)
-          }
-          if (attempt > 1) {
-            return yield* new RemoteCompactionError({
-              message: `remote compaction failed after ${attempt} attempts: ${result.error.message}`,
-              status: result.error.status,
-              retryable: result.error.retryable,
-              attempts: attempt,
-            })
-          }
-          return yield* Effect.fail(result.error)
         })
-      return yield* attemptCompact(1)
+      const attemptProtocol = (
+        implementation: RemoteCompactionImplementation,
+        request: (attempt: number) => Effect.Effect<RemoteCompactionMetadata, RemoteCompactionError>,
+      ) => {
+        const attemptCompact: (attempt: number) => Effect.Effect<RemoteCompactionMetadata, RemoteCompactionError> = (attempt) =>
+          Effect.gen(function* () {
+            const result = yield* request(attempt).pipe(
+              Effect.map((metadata) => ({ ok: true as const, metadata })),
+              Effect.catch((error) => Effect.succeed({ ok: false as const, error })),
+            )
+            if (result.ok) {
+              log.info("remote compaction succeeded", { attempt, attempts, implementation })
+              return result.metadata
+            }
+            if (result.error.retryable && attempt < attempts) {
+              log.warn("remote compaction retrying", {
+                attempt,
+                attempts,
+                implementation,
+                error: result.error.message,
+                status: result.error.status,
+              })
+              return yield* attemptCompact(attempt + 1)
+            }
+            if (attempt > 1) {
+              return yield* new RemoteCompactionError({
+                message: `remote compaction failed after ${attempt} attempts: ${result.error.message}`,
+                status: result.error.status,
+                retryable: result.error.retryable,
+                attempts: attempt,
+                implementation,
+              })
+            }
+            return yield* Effect.fail(withImplementation(result.error, implementation))
+          })
+        return attemptCompact(1)
+      }
+      const runProtocol = (implementation: RemoteCompactionImplementation) =>
+        implementation === V2_IMPLEMENTATION
+          ? attemptProtocol(implementation, compactV2)
+          : attemptProtocol(implementation, compactLegacy)
+      const ordered = protocolsFor(protocol)
+      const first = ordered[0] ?? V2_IMPLEMENTATION
+      const result = yield* runProtocol(first).pipe(
+        Effect.map((metadata) => ({ ok: true as const, metadata })),
+        Effect.catch((error) => Effect.succeed({ ok: false as const, error })),
+      )
+      if (result.ok) return result.metadata
+      const next = ordered[1]
+      if (!next) return yield* Effect.fail(result.error)
+      log.warn("remote compaction protocol fallback", {
+        from: first,
+        to: next,
+        error: result.error.message,
+        status: result.error.status,
+      })
+      return yield* runProtocol(next)
     })
 
     return Service.of({ canCompact, compact })

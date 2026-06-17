@@ -576,6 +576,27 @@ test("validates config schema and throws on invalid fields", async () => {
   })
 })
 
+test("loads remote compaction protocol config", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await writeConfig(dir, {
+        $schema: "https://chimera.ai/config.json",
+        compaction: {
+          remote: "auto",
+          remote_protocol: "v2",
+        },
+      })
+    },
+  })
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const config = await load()
+      expect(config.compaction?.remote_protocol).toBe("v2")
+    },
+  })
+})
+
 test("throws error for invalid JSON", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
