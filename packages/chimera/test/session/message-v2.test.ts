@@ -308,6 +308,24 @@ describe("session.message-v2.toModelMessage", () => {
     ])
   })
 
+  test("accepts v2 remote compaction implementation metadata", () => {
+    const messageID = MessageID.ascending()
+    expect(
+      MessageV2.CompactionPart.zod.parse({
+        ...basePart(messageID, PartID.ascending()),
+        type: "compaction",
+        auto: false,
+        remote: {
+          providerID: "openai",
+          endpoint: "codex",
+          implementation: "responses_compaction_v2",
+          modelID: "gpt-5.2",
+          output: [{ type: "compaction", encrypted_content: "encrypted" }],
+        },
+      }).remote?.implementation,
+    ).toBe("responses_compaction_v2")
+  })
+
   test("converts assistant tool completion into tool-call + tool-result messages with attachments", async () => {
     const userID = "m-user"
     const assistantID = "m-assistant"

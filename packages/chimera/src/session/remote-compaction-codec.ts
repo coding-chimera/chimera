@@ -3,10 +3,12 @@ export type RemoteCompactionOutputItem = {
   encrypted_content: string
 }
 
+export type RemoteCompactionImplementation = "responses_compact" | "responses_compaction_v2"
+
 export type RemoteCompactionMetadata = {
   providerID: "openai"
   endpoint: "codex"
-  implementation: "responses_compact"
+  implementation: RemoteCompactionImplementation
   modelID: string
   output: RemoteCompactionOutputItem[]
 }

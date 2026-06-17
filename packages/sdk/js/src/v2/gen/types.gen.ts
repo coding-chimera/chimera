@@ -709,7 +709,7 @@ export type CompactionPart = {
   remote?: {
     providerID: "openai"
     endpoint: "codex"
-    implementation: "responses_compact"
+    implementation: "responses_compact" | "responses_compaction_v2"
     modelID: string
     output: Array<{
       type: "compaction" | "compaction_summary"
@@ -719,10 +719,12 @@ export type CompactionPart = {
   remote_error?: {
     providerID: "openai"
     endpoint: "codex"
-    implementation: "responses_compact"
+    implementation: "responses_compact" | "responses_compaction_v2"
     modelID: string
     message: string
-    status?: number
+    status?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    retryable?: boolean
+    attempts?: number
     time: number
   }
 }
@@ -1263,6 +1265,7 @@ export type Config = {
     preserve_recent_tokens?: number
     reserved?: number
     remote?: "auto" | "on" | "off"
+    remote_protocol?: "auto" | "v2" | "legacy"
   }
   experimental?: {
     disable_paste_summary?: boolean
@@ -1792,6 +1795,37 @@ export type WorkspaceWarpError = {
   name: "WorkspaceWarpError"
   data: {
     message: string
+  }
+}
+
+export type CompactionPart1 = {
+  id: string
+  sessionID: string
+  messageID: string
+  type: "compaction"
+  auto: boolean
+  overflow?: boolean
+  tail_start_id?: string
+  remote?: {
+    providerID: "openai"
+    endpoint: "codex"
+    implementation: "responses_compact" | "responses_compaction_v2"
+    modelID: string
+    output: Array<{
+      type: "compaction" | "compaction_summary"
+      encrypted_content: string
+    }>
+  }
+  remote_error?: {
+    providerID: "openai"
+    endpoint: "codex"
+    implementation: "responses_compact" | "responses_compaction_v2"
+    modelID: string
+    message: string
+    status?: number | "NaN" | "Infinity" | "-Infinity"
+    retryable?: boolean
+    attempts?: number
+    time: number
   }
 }
 

@@ -10,14 +10,14 @@ import path from "path"
 import { createClient } from "@hey-api/openapi-ts"
 
 const openapiSource = process.env.OPENCODE_SDK_OPENAPI === "hono" ? "hono" : "httpapi"
-const opencode = path.resolve(dir, "../../opencode")
+const chimera = path.resolve(dir, "../../chimera")
 
 // `bun dev generate` now derives the spec from the Effect HttpApi contract by
 // default; pass `--hono` to fall back to the legacy Hono spec for parity diffs.
 if (openapiSource === "httpapi") {
-  await $`bun dev generate > ${dir}/openapi.json`.cwd(opencode)
+  await $`bun dev generate > ${dir}/openapi.json`.cwd(chimera)
 } else {
-  await $`bun dev generate --hono > ${dir}/openapi.json`.cwd(opencode)
+  await $`bun dev generate --hono > ${dir}/openapi.json`.cwd(chimera)
 }
 
 await createClient({

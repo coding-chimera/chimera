@@ -6,9 +6,9 @@ import { useSync } from "@tui/context/sync"
 import { useLocal } from "@tui/context/local"
 import { For, Match, Switch, Show, createMemo } from "solid-js"
 import {
-  openAIRemoteCompactionDescription,
   openAIRemoteCompactionEnabled,
-  openAIRemoteCompactionStatus,
+  openAIRemoteCompactionProtocolDescription,
+  openAIRemoteCompactionProtocolStatus,
 } from "@tui/util/remote-compaction"
 
 export type DialogStatusProps = {}
@@ -21,9 +21,9 @@ export function DialogStatus() {
 
   const enabledFormatters = createMemo(() => sync.data.formatter.filter((f) => f.enabled))
   const remoteCompactionEnabled = createMemo(() => openAIRemoteCompactionEnabled(sync.data.config, local.model.current()))
-  const remoteCompactionStatus = createMemo(() => openAIRemoteCompactionStatus(sync.data.config, local.model.current()))
+  const remoteCompactionStatus = createMemo(() => openAIRemoteCompactionProtocolStatus(sync.data.config, local.model.current()))
   const remoteCompactionDescription = createMemo(() =>
-    openAIRemoteCompactionDescription(sync.data.config, local.model.current()),
+    openAIRemoteCompactionProtocolDescription(sync.data.config, local.model.current()),
   )
 
   const plugins = createMemo(() => {
@@ -74,7 +74,7 @@ export function DialogStatus() {
             •
           </text>
           <text fg={theme.text} wrapMode="word">
-            <b>OpenAI remote compaction</b>{" "}
+            <b>OpenAI remote compaction protocol</b>{" "}
             <span style={{ fg: remoteCompactionEnabled() ? theme.success : theme.textMuted }}>
               {remoteCompactionStatus()}
             </span>{" "}

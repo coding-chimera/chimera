@@ -2,9 +2,16 @@ import { describe, expect, test } from "bun:test"
 
 const {
   nextOpenAIRemoteCompactionMode,
+  nextOpenAIRemoteCompactionProtocolStatus,
   openAIRemoteCompactionApplies,
   openAIRemoteCompactionDescription,
   openAIRemoteCompactionEnabled,
+  openAIRemoteCompactionProtocolConfig,
+  openAIRemoteCompactionProtocolDescription,
+  openAIRemoteCompactionProtocolStatus,
+  openAIRemoteCompactionProtocolStatusTitle,
+  openAIRemoteCompactionProtocolToggleDescription,
+  openAIRemoteCompactionProtocolToggleTitle,
   openAIRemoteCompactionStatus,
   openAIRemoteCompactionStatusTitle,
   openAIRemoteCompactionToggleDescription,
@@ -62,5 +69,31 @@ describe("TUI remote compaction helpers", () => {
     expect(openAIRemoteCompactionStatus(config, mirror)).toBe("on")
     expect(nextOpenAIRemoteCompactionMode(config, mirror)).toBe("off")
     expect(openAIRemoteCompactionDescription(config, mirror)).toContain("Forced on")
+  })
+
+  test("maps protocol status to v2 by default while remote is enabled", () => {
+    expect(openAIRemoteCompactionProtocolStatus({}, openai)).toBe("v2")
+    expect(openAIRemoteCompactionProtocolStatusTitle({}, openai)).toBe("OpenAI remote compaction protocol: v2")
+    expect(openAIRemoteCompactionProtocolDescription({}, openai)).toContain("Prefers v2")
+    expect(openAIRemoteCompactionProtocolToggleTitle({}, openai)).toBe(
+      "OpenAI remote compaction protocol: v2 (switch to legacy)",
+    )
+    expect(openAIRemoteCompactionProtocolToggleDescription({}, openai)).toContain("legacy")
+  })
+
+  test("cycles remote compaction protocol through v2 legacy and off", () => {
+    const v2 = { compaction: { remote: "auto" as const, remote_protocol: "v2" as const } }
+    const legacy = { compaction: { remote: "auto" as const, remote_protocol: "legacy" as const } }
+    const off = { compaction: { remote: "off" as const, remote_protocol: "legacy" as const } }
+
+    expect(nextOpenAIRemoteCompactionProtocolStatus(v2, openai)).toBe("legacy")
+    expect(nextOpenAIRemoteCompactionProtocolStatus(legacy, openai)).toBe("off")
+    expect(nextOpenAIRemoteCompactionProtocolStatus(off, openai)).toBe("v2")
+  })
+
+  test("builds protocol config patch with model-aware remote enablement", () => {
+    expect(openAIRemoteCompactionProtocolConfig("v2", openai)).toEqual({ remote: "auto", remote_protocol: "v2" })
+    expect(openAIRemoteCompactionProtocolConfig("legacy", mirror)).toEqual({ remote: "on", remote_protocol: "legacy" })
+    expect(openAIRemoteCompactionProtocolConfig("off", openai)).toEqual({ remote: "off", remote_protocol: "v2" })
   })
 })
