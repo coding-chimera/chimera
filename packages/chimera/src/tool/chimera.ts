@@ -24,6 +24,8 @@ import {
   type RelationEvidence as CodeGraphRelation,
   type RelationKind,
 } from "@/graph"
+import { deriveImpactLabels, type ImpactLabelResult } from "@/chimera/impact-label"
+import { dispatchMayImpactRule, mayImpactRuleEvidence, type MayImpactRule } from "@/chimera/may-impact-rules"
 import {
   provenanceRecordCount as storedProvenanceRecordCount,
   readChangeFacts,
@@ -411,6 +413,9 @@ type CauseLink = {
     | "added_relation"
     | "removed_relation"
     | "impact_radius"
+    | "impact_label"
+    | "may_impact_rule"
+    | "self_review"
     | "context_selection"
   target: string
   evidence: string
@@ -914,6 +919,37 @@ function factCause(changeFacts: ChangeFact[]) {
   }
 }
 
+function ruleFacts(changeFacts: ChangeFact[]) {
+  const precise = changeFacts.filter((fact) => fact.subjectKind !== "file")
+  return precise.length ? precise : changeFacts
+}
+
+function impactLabelCause(label: ImpactLabelResult): CauseLink {
+  return {
+    type: "impact_label",
+    target: `${label.label} ${label.fact.filePath}`,
+    evidence: `chimera:impact_label:${label.label}:confidence:${label.confidence}`,
+  }
+}
+
+function mayImpactRuleCause(rule: MayImpactRule, target: string): CauseLink {
+  return { type: "may_impact_rule", target, evidence: mayImpactRuleEvidence(rule) }
+}
+
+function ruleCauseChain(source: CauseLink, label: ImpactLabelResult, rule: MayImpactRule, target: string) {
+  return [source, factCause([label.fact]), impactLabelCause(label), mayImpactRuleCause(rule, target)].filter(
+    (item): item is CauseLink => Boolean(item),
+  )
+}
+
+function labelReason(label: ImpactLabelResult) {
+  return label.fallbackReason ? `${label.reason}; fallback: ${label.fallbackReason}` : label.reason
+}
+
+function factReviewTarget(label: ImpactLabelResult) {
+  return label.fact.nodeKey ?? label.fact.filePath
+}
+
 function relationDeltaCandidate(input: {
   state: ProjectGraphState
   snapshot: CodeGraphSnapshot
@@ -974,30 +1010,117 @@ function buildImpactEvidence(input: {
   depth: number
   limit: number
 }) {
-  const incomingRelations = input.seedNodes.flatMap((node) =>
-    input.state.graph.incomingRelations(node.id, { relations: DependentRelations }),
-  ).slice(0, input.limit)
-  const relationNodes = uniqueNodes(incomingRelations.map((relation) => relation.otherNode))
-  const relationNodeIDs = new Set(relationNodes.map((node) => node.id))
-  const impactedNodes = uniqueNodes([
-    ...relationNodes,
-    ...input.seedNodes.flatMap((node) => [...input.state.graph.impactRadius(node.id, input.depth).nodes.values()]),
-  ].slice(0, input.limit)).filter((node) => !input.seedNodes.some((seed) => seed.id === node.id) && !relationNodeIDs.has(node.id))
-  const selectedImpactNodes = uniqueNodes([...relationNodes, ...impactedNodes]).filter((node) => !input.seedNodes.some((seed) => seed.id === node.id))
-  const fileDependents = uniqueStrings(
-    [
-      ...(input.normalizedFile ? input.state.graph.fileDependents(input.normalizedFile) : []),
-      ...input.changedFiles.flatMap((file) => input.state.graph.fileDependents(file)),
-      ...input.seedNodes.flatMap((node) => input.state.graph.fileDependents(node.filePath)),
-    ].slice(0, input.limit),
-  )
   const seedNames = input.seedNodes.map((node) => node.qualifiedName || node.name).slice(0, 5)
   const cause = sourceCause(input.source, input.changedFiles, seedNames)
-  const changeFactCause = factCause(input.changeFacts)
-  const baseCauseChain = changeFactCause ? [cause, changeFactCause] : [cause]
+  const labels = deriveImpactLabels(ruleFacts(input.changeFacts))
+  if (labels.length === 0) {
+    const incomingRelations = input.seedNodes.flatMap((node) =>
+      input.state.graph.incomingRelations(node.id, { relations: DependentRelations }),
+    ).slice(0, input.limit)
+    const relationNodes = uniqueNodes(incomingRelations.map((relation) => relation.otherNode))
+    const relationNodeIDs = new Set(relationNodes.map((node) => node.id))
+    const impactedNodes = uniqueNodes([
+      ...relationNodes,
+      ...input.seedNodes.flatMap((node) => [...input.state.graph.impactRadius(node.id, input.depth).nodes.values()]),
+    ].slice(0, input.limit)).filter((node) => !input.seedNodes.some((seed) => seed.id === node.id) && !relationNodeIDs.has(node.id))
+    const selectedImpactNodes = uniqueNodes([...relationNodes, ...impactedNodes]).filter((node) => !input.seedNodes.some((seed) => seed.id === node.id))
+    const fileDependents = uniqueStrings(
+      [
+        ...(input.normalizedFile ? input.state.graph.fileDependents(input.normalizedFile) : []),
+        ...input.changedFiles.flatMap((file) => input.state.graph.fileDependents(file)),
+        ...input.seedNodes.flatMap((node) => input.state.graph.fileDependents(node.filePath)),
+      ].slice(0, input.limit),
+    )
+    const changeFactCause = factCause(input.changeFacts)
+    const baseCauseChain = changeFactCause ? [cause, changeFactCause] : [cause]
+    const evidence = uniqueCandidates([
+      ...relationDeltaCandidates({ state: input.state, snapshot: input.snapshot, changeFacts: input.changeFacts, sourceCause: cause }),
+      ...incomingRelations.map((relation) => {
+        const node = relation.otherNode
+        const classification = classifyFile(node.filePath).classification
+        const target = nodeTarget(node)
+        const relationLabel = relationEvidence(relation)
+        return {
+          target,
+          targetNode: input.state.graph.projectNode(node, input.snapshot),
+          reason: `${riskReasonForNode(node)}; relation ${relation.relation} (${relation.edgeKind}) points from ${target} to ${seedNames.join(", ") || "the changed seed"}`,
+          risk: riskForNode(node),
+          classification,
+          evidence: `codegraph:relation:${relation.relation}`,
+          causeChain: [...baseCauseChain, { type: "relation" as const, target, evidence: relationLabel }],
+        }
+      }),
+      ...fileDependents.map((file) => {
+        const classification = classifyFile(file).classification
+        return {
+          target: file,
+          reason: `dependent file may need review because it imports or depends on ${input.changedFiles.slice(0, 3).join(", ") || seedNames.join(", ") || "the changed seed"}`,
+          risk: riskForFile(file),
+          classification,
+          evidence: "codegraph:file_dependents",
+          causeChain: [...baseCauseChain, { type: "file_dependency" as const, target: file, evidence: "codegraph:file_dependents" }],
+        }
+      }),
+      ...impactedNodes.map((node) => {
+        const classification = classifyFile(node.filePath).classification
+        const target = nodeTarget(node)
+        return {
+          target,
+          targetNode: input.state.graph.projectNode(node, input.snapshot),
+          reason: `${riskReasonForNode(node)}; symbol is inside impact radius of ${seedNames.join(", ") || input.changedFiles.slice(0, 3).join(", ") || "the changed seed"}`,
+          risk: riskForNode(node),
+          classification,
+          evidence: "codegraph:impact_radius",
+          causeChain: [...baseCauseChain, { type: "impact_radius" as const, target, evidence: "codegraph:impact_radius" }],
+        }
+      }),
+    ]).slice(0, input.limit)
+    return { impactedNodes: selectedImpactNodes, fileDependents, evidence }
+  }
+  const ruleItems = labels.map((label) => ({ label, rule: dispatchMayImpactRule(label) }))
+  const ruleRelations = ruleItems.flatMap((item) =>
+    item.rule.relationKinds.length
+      ? input.seedNodes.flatMap((node) =>
+          input.state.graph.incomingRelations(node.id, { relations: item.rule.relationKinds }).map((relation) => ({ ...item, relation })),
+        )
+      : [],
+  ).slice(0, input.limit)
+  const relationNodes = uniqueNodes(ruleRelations.map((item) => item.relation.otherNode))
+  const relationNodeIDs = new Set(relationNodes.map((node) => node.id))
+  const includeImpactRadius = ruleItems.some((item) => item.rule.includeImpactRadius)
+  const impactedNodes = includeImpactRadius
+    ? uniqueNodes([
+        ...relationNodes,
+        ...input.seedNodes.flatMap((node) => [...input.state.graph.impactRadius(node.id, input.depth).nodes.values()]),
+      ].slice(0, input.limit)).filter((node) => !input.seedNodes.some((seed) => seed.id === node.id) && !relationNodeIDs.has(node.id))
+    : []
+  const selectedImpactNodes = uniqueNodes([...relationNodes, ...impactedNodes]).filter((node) => !input.seedNodes.some((seed) => seed.id === node.id))
+  const includeFileDependents = ruleItems.some((item) => item.rule.includeFileDependents)
+  const fileDependents = includeFileDependents
+    ? uniqueStrings(
+        [
+          ...(input.normalizedFile ? input.state.graph.fileDependents(input.normalizedFile) : []),
+          ...input.changedFiles.flatMap((file) => input.state.graph.fileDependents(file)),
+          ...input.seedNodes.flatMap((node) => input.state.graph.fileDependents(node.filePath)),
+        ].slice(0, input.limit),
+      )
+    : []
   const evidence = uniqueCandidates([
     ...relationDeltaCandidates({ state: input.state, snapshot: input.snapshot, changeFacts: input.changeFacts, sourceCause: cause }),
-    ...incomingRelations.map((relation) => {
+    ...ruleItems.filter((item) => item.rule.selfReviewOnly).map((item) => {
+      const target = factReviewTarget(item.label)
+      const classification = classifyFile(item.label.fact.filePath).classification
+      return {
+        target,
+        reason: `impact label ${item.label.label} matched rule ${item.rule.id}; ${item.rule.reason}; ${labelReason(item.label)}`,
+        risk: riskForFile(item.label.fact.filePath),
+        classification,
+        evidence: `${mayImpactRuleEvidence(item.rule)}:self_review`,
+        causeChain: [...ruleCauseChain(cause, item.label, item.rule, target), { type: "self_review" as const, target, evidence: "chimera:self_review" }],
+      }
+    }),
+    ...ruleRelations.map((item) => {
+      const relation = item.relation
       const node = relation.otherNode
       const classification = classifyFile(node.filePath).classification
       const target = nodeTarget(node)
@@ -1005,44 +1128,41 @@ function buildImpactEvidence(input: {
       return {
         target,
         targetNode: input.state.graph.projectNode(node, input.snapshot),
-        reason: `${riskReasonForNode(node)}; relation ${relation.relation} (${relation.edgeKind}) points from ${target} to ${seedNames.join(", ") || "the changed seed"}`,
+        reason: `${riskReasonForNode(node)}; impact label ${item.label.label} matched rule ${item.rule.id}; relation ${relation.relation} (${relation.edgeKind}) points from ${target} to ${seedNames.join(", ") || "the changed seed"}; ${labelReason(item.label)}`,
         risk: riskForNode(node),
         classification,
-        evidence: `codegraph:relation:${relation.relation}`,
-        causeChain: [...baseCauseChain, { type: "relation" as const, target, evidence: relationLabel }],
+        evidence: `${mayImpactRuleEvidence(item.rule)}:relation:${relation.relation}`,
+        causeChain: [...ruleCauseChain(cause, item.label, item.rule, target), { type: "relation" as const, target, evidence: relationLabel }],
       }
     }),
-    ...fileDependents.map((file) => {
-      const classification = classifyFile(file).classification
-      return {
-        target: file,
-        reason: `dependent file may need review because it imports or depends on ${input.changedFiles.slice(0, 3).join(", ") || seedNames.join(", ") || "the changed seed"}`,
-        risk: riskForFile(file),
-        classification,
-        evidence: "codegraph:file_dependents",
-        causeChain: [...baseCauseChain, { type: "file_dependency" as const, target: file, evidence: "codegraph:file_dependents" }],
-      }
-    }),
-    ...impactedNodes.map((node) => {
-      const classification = classifyFile(node.filePath).classification
-      const target = nodeTarget(node)
-      return {
-        target,
-        targetNode: input.state.graph.projectNode(node, input.snapshot),
-        reason: `${riskReasonForNode(node)}; symbol is inside impact radius of ${seedNames.join(", ") || input.changedFiles.slice(0, 3).join(", ") || "the changed seed"}`,
-        risk: riskForNode(node),
-        classification,
-        evidence: "codegraph:impact_radius",
-        causeChain: [
-          ...baseCauseChain,
-          {
-            type: "impact_radius" as const,
-            target,
-            evidence: "codegraph:impact_radius",
-          },
-        ],
-      }
-    }),
+    ...ruleItems.filter((item) => item.rule.includeFileDependents).flatMap((item) =>
+      fileDependents.map((file) => {
+        const classification = classifyFile(file).classification
+        return {
+          target: file,
+          reason: `impact label ${item.label.label} matched rule ${item.rule.id}; dependent file may need review because it imports or depends on ${input.changedFiles.slice(0, 3).join(", ") || seedNames.join(", ") || "the changed seed"}; ${labelReason(item.label)}`,
+          risk: riskForFile(file),
+          classification,
+          evidence: `${mayImpactRuleEvidence(item.rule)}:file_dependents`,
+          causeChain: [...ruleCauseChain(cause, item.label, item.rule, file), { type: "file_dependency" as const, target: file, evidence: "codegraph:file_dependents" }],
+        }
+      }),
+    ),
+    ...ruleItems.filter((item) => item.rule.includeImpactRadius).flatMap((item) =>
+      impactedNodes.map((node) => {
+        const classification = classifyFile(node.filePath).classification
+        const target = nodeTarget(node)
+        return {
+          target,
+          targetNode: input.state.graph.projectNode(node, input.snapshot),
+          reason: `${riskReasonForNode(node)}; impact label ${item.label.label} matched rule ${item.rule.id}; symbol is inside impact radius of ${seedNames.join(", ") || input.changedFiles.slice(0, 3).join(", ") || "the changed seed"}; ${labelReason(item.label)}`,
+          risk: riskForNode(node),
+          classification,
+          evidence: `${mayImpactRuleEvidence(item.rule)}:impact_radius`,
+          causeChain: [...ruleCauseChain(cause, item.label, item.rule, target), { type: "impact_radius" as const, target, evidence: "codegraph:impact_radius" }],
+        }
+      }),
+    ),
   ]).slice(0, input.limit)
   return { impactedNodes: selectedImpactNodes, fileDependents, evidence }
 }

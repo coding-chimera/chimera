@@ -6,6 +6,7 @@ import { Bus } from "@/bus"
 import { Chimera } from "@/chimera"
 import { ChimeraPromptContext } from "@/chimera/prompt-context"
 import { readPredesignRuns } from "@/chimera/store"
+import { DatabaseConnection, getDatabasePath } from "@/graph"
 import { Agent } from "@/agent/agent"
 import { MessageID, SessionID } from "@/session/schema"
 import {
@@ -337,6 +338,31 @@ describe("tool.chimera", () => {
     }),
   )
 
+  it.instance("audits dependent test files through usage-edge file projection", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "base.ts"), "export function base() { return 1 }\n"))
+      yield* Effect.promise(() =>
+        fs.writeFile(
+          path.join(test.directory, "base.test.ts"),
+          "import { base } from './base'\nexport function verifiesBase() { return base() }\n",
+        ),
+      )
+      yield* runStatus({ refresh: true })
+      const db = DatabaseConnection.open(getDatabasePath(test.directory))
+      try {
+        db.getDb().prepare("DELETE FROM edges WHERE kind = 'imports'").run()
+      } finally {
+        db.close()
+      }
+
+      const result = yield* runAudit({ filePath: "base.ts", refresh: false, depth: 2 })
+
+      expect(result.metadata.fileDependents).toContain("base.test.ts")
+      expect(result.metadata.obligations.some((item) => item.evidence.includes(":file_dependents") && item.target === "base.test.ts")).toBe(true)
+    }),
+  )
+
   it.instance("does not reuse recent provenance change facts for explicit audits", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
@@ -587,6 +613,42 @@ describe("tool.chimera", () => {
       expect(fact?.evidence.rule).toBe("codegraph.language.body.local_only")
       expect(fact?.evidence.languageSignals?.some((signal) => signal.kind === "local_only_change")).toBe(true)
       expect(result.output).toContain("codegraph_language_signal:local_only_change")
+    }),
+  )
+
+  it.instance("keeps local-only body audit findings at self review", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const base = path.join(test.directory, "body-local-dependent.ts")
+      yield* Effect.promise(() => fs.writeFile(base, "export function calculate(value: number) {\n  const local = value + 1\n  return value\n}\n"))
+      yield* Effect.promise(() =>
+        fs.writeFile(
+          path.join(test.directory, "body-local-consumer.ts"),
+          "import { calculate } from './body-local-dependent'\nexport function consumer() { return calculate(1) }\n",
+        ),
+      )
+
+      yield* trackWrite({
+        filePath: base,
+        content: "export function calculate(value: number) {\n  const local = value + 2\n  return value\n}\n",
+        callID: "call_chimera_language_signal_local_only_self_review",
+        patch: `--- body-local-dependent.ts
++++ body-local-dependent.ts
+@@ -1,4 +1,4 @@
+ export function calculate(value: number) {
+-  const local = value + 1
++  const local = value + 2
+   return value
+ }
+`,
+      })
+
+      const result = yield* runAuditRecent({ refresh: false })
+
+      expect(result.metadata.fileDependents).toHaveLength(0)
+      expect(result.metadata.obligations.some((item) => item.evidence === "chimera:may_impact_rule:method_body.local_self_review:self_review")).toBe(true)
+      expect(result.metadata.obligations.some((item) => item.target.includes("body-local-consumer"))).toBe(false)
+      expect(result.output).toContain("chimera:impact_label:method_body")
     }),
   )
 
