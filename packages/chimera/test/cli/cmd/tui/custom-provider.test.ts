@@ -34,18 +34,27 @@ describe("custom OpenAI-compatible provider helpers", () => {
   test("discovers models from fallback /v1 candidates", async () => {
     const calls: string[] = []
     const auth: (string | null)[] = []
+    const userAgent: (string | null)[] = []
     const fn = async (input: string, init: RequestInit) => {
       calls.push(String(input))
       auth.push(new Headers(init?.headers).get("authorization"))
+      userAgent.push(new Headers(init?.headers).get("User-Agent"))
       if (calls.length === 1) return new Response("{}", { status: 404 })
       return Response.json({ data: [{ id: "gpt-5.5" }] })
     }
 
     await expect(
-      discoverOpenAICompatibleModels({ baseURL: "https://api.example.com", token: "secret", fetch: fn, timeout: 1000 }),
+      discoverOpenAICompatibleModels({
+        baseURL: "https://api.example.com",
+        token: "secret",
+        userAgent: "custom-client/1.0",
+        fetch: fn,
+        timeout: 1000,
+      }),
     ).resolves.toEqual({ baseURL: "https://api.example.com/v1", models: ["gpt-5.5"] })
     expect(calls).toEqual(["https://api.example.com/models", "https://api.example.com/v1/models"])
     expect(auth).toEqual(["Bearer secret", "Bearer secret"])
+    expect(userAgent).toEqual(["custom-client/1.0", "custom-client/1.0"])
   })
 
   test("suggests stable provider ids", () => {

@@ -1019,6 +1019,7 @@ export type ProviderConfig = {
   env?: Array<string>
   id?: string
   npm?: string
+  userAgent?: string
   whitelist?: Array<string>
   blacklist?: Array<string>
   options?: {

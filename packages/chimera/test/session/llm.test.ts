@@ -3,6 +3,7 @@ import path from "path"
 import { tool, type ModelMessage } from "ai"
 import { Cause, Effect, Exit, Stream } from "effect"
 import z from "zod"
+import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { makeRuntime } from "../../src/effect/run-service"
 import { LLM } from "../../src/session/llm"
 import { Instance } from "../../src/project/instance"
@@ -380,6 +381,8 @@ describe("session.llm.stream", () => {
         expect(url.pathname.startsWith("/v1/")).toBe(true)
         expect(url.pathname.endsWith("/chat/completions")).toBe(true)
         expect(headers.get("Authorization")).toBe("Bearer test-key")
+        expect(headers.get("User-Agent")?.startsWith(`opencode/${InstallationVersion}`)).toBe(true)
+        expect(headers.get("User-Agent")).toContain("ai-sdk/provider-utils/")
 
         expect(body.model).toBe(resolved.api.id)
         expect(body.temperature).toBe(0.4)

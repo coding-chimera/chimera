@@ -49,6 +49,7 @@ import { FrecencyProvider } from "./component/prompt/frecency"
 import { PromptStashProvider } from "./component/prompt/stash"
 import { DialogAlert } from "./ui/dialog-alert"
 import { DialogConfirm } from "./ui/dialog-confirm"
+import { DialogPrompt } from "./ui/dialog-prompt"
 import { ToastProvider, useToast } from "./ui/toast"
 import { ExitProvider, useExit } from "./context/exit"
 import { Session as SessionApi } from "@/session/session"
@@ -527,6 +528,56 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     })
   }
 
+  const customOpenAICompatibleProviders = createMemo(() =>
+    Object.entries(sync.data.config.provider ?? {}).flatMap(([id, provider]) => {
+      if (provider.npm !== "@ai-sdk/openai-compatible") return []
+      return [
+        {
+          id,
+          name: provider.name ?? id,
+          userAgent: provider.userAgent ?? "",
+        },
+      ]
+    }),
+  )
+
+  async function setCustomProviderUserAgent(providerID: string) {
+    const provider = sync.data.config.provider?.[providerID]
+    if (!provider) {
+      toast.show({ variant: "error", message: `${providerID} is not configured`, duration: 5000 })
+      return
+    }
+    const value = await DialogPrompt.show(dialog, `User-Agent for ${provider.name ?? providerID}`, {
+      placeholder: "Default Chimera User-Agent",
+      value: provider.userAgent ?? "",
+      description: () => <text fg={theme.textMuted}>Leave empty to use Chimera's default User-Agent.</text>,
+    })
+    if (value === null) return
+    const result = await sdk.client.global.config
+      .update({
+        config: {
+          provider: {
+            [providerID]: {
+              userAgent: value.trim(),
+            },
+          },
+        },
+      })
+      .catch((error) => {
+        toast.show({ variant: "error", message: errorMessage(error), duration: 5000 })
+      })
+    if (!result) return
+    if (result.error) {
+      toast.show({ variant: "error", message: errorMessage(result.error), duration: 5000 })
+      return
+    }
+    await sdk.client.instance.dispose()
+    await sync.bootstrap({ fatal: false }).catch((error) => {
+      toast.show({ variant: "error", message: errorMessage(error), duration: 5000 })
+    })
+    toast.show({ variant: "info", message: `Updated User-Agent for ${providerID}` })
+  }
+
   const connected = useConnected()
   command.register(() => [
     {
@@ -690,6 +741,16 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       },
       category: "Provider",
     },
+    ...customOpenAICompatibleProviders().map((provider) => ({
+      title: `Set User-Agent for ${provider.name}`,
+      value: `provider.user_agent.${provider.id}`,
+      description: provider.userAgent ? provider.userAgent : "Using Chimera's default User-Agent",
+      category: "Provider",
+      onSelect: async () => {
+        await setCustomProviderUserAgent(provider.id)
+        dialog.clear()
+      },
+    })),
     ...(sync.data.console_state.switchableOrgCount > 1
       ? [
           {
