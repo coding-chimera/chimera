@@ -280,7 +280,7 @@ describe("tool.chimera", () => {
 
       expect(result.title).toBe("Chimera pre-design")
       expect(result.output).toContain("Chimera pre-design evidence recorded.")
-      expect(result.output).toContain("Mutation gate guidance")
+      expect(result.output).not.toContain("Mutation gate guidance")
       expect(result.metadata.runID).toEqual(expect.stringMatching(/^predesign_/))
       expect(runs[0]?.id).toBe(result.metadata.runID)
       expect(runs[0]?.intent).toBe("change source behavior")
@@ -347,7 +347,8 @@ describe("tool.chimera", () => {
       expect(result.output).toContain("Propagation findings")
       expect(result.output).toContain("Change classification")
       expect(result.output).toContain("Behavior-boundary evidence")
-      expect(result.output).toContain("Closeout guidance")
+      expect(result.output).not.toContain("Closeout guidance")
+      expect(result.output).not.toContain("Lifecycle guidance")
       expect(result.output).toContain("cause_chain")
       expect(result.output).not.toContain("required_action")
       expect(result.output).not.toContain("review_or_update")

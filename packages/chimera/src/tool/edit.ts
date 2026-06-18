@@ -14,7 +14,6 @@ import { assertExternalDirectoryEffect } from "./external-directory"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import * as Bom from "@/util/bom"
 import { Chimera } from "@/chimera"
-import { TOOL_MUTATION_AUDIT_HINT } from "@/chimera/guidance"
 import { ulid } from "ulid"
 import {
   DISPLAY_ALGORITHM,
@@ -433,8 +432,6 @@ export const EditTool = Tool.define(
             `- after: ${targetRange(path.relative(displayRoot, finalPath), afterRangeList)}`,
             "",
             changedBlock,
-            "",
-            TOOL_MUTATION_AUDIT_HINT,
           ].join("\n")
           if (!deleted) yield* lsp.touchFile(finalPath, "document")
           const diagnostics = yield* lsp.diagnostics()

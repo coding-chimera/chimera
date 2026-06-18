@@ -11,3 +11,5 @@ Usage:
 - The edit will FAIL if any Hashline anchor no longer matches the current file. Re-read the target range and retry with the new `LINE#ID`.
 - The edit will FAIL for overlapping ranges, empty anchored inserts, and no-op edits.
 - Legacy `oldString` / `newString` / `replaceAll` parameters are not supported.
+- If this tool reports Chimera pre-design is required, call `chimera_predesign` with intent and likely files/symbols, then retry the mutation.
+- After a successful mutation, run `chimera_audit_recent` before claiming a code-change task complete.

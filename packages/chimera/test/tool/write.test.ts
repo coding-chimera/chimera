@@ -85,7 +85,7 @@ describe("tool.write", () => {
         const result = yield* run({ filePath: filepath, content: "Hello, World!" })
 
         expect(result.output).toContain("File written successfully. 1 lines written.")
-        expect(result.output).toContain("chimera_audit_recent")
+        expect(result.output).not.toContain("chimera_audit_recent")
         expect(result.metadata.exists).toBe(false)
 
         const content = yield* Effect.promise(() => fs.readFile(filepath, "utf-8"))
@@ -164,6 +164,7 @@ describe("tool.write", () => {
 
         expect(result.title).toBe("Chimera pre-design required")
         expect(result.output).toContain("Chimera pre-design required before this mutation")
+        expect(result.output).not.toContain("Call chimera_predesign")
         expect(yield* Effect.promise(() => Bun.file(filepath).exists())).toBe(false)
       }),
     )

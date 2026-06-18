@@ -7,3 +7,5 @@ Usage:
 - ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
 - NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested by the User.
 - Only use emojis if the user explicitly requests it. Avoid writing emojis to files unless asked.
+- If this tool reports Chimera pre-design is required, call `chimera_predesign` with intent and likely files/symbols, then retry the mutation.
+- After a successful mutation, run `chimera_audit_recent` before claiming a code-change task complete.

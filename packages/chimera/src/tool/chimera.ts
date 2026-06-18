@@ -1600,12 +1600,6 @@ function formatAuditOutput(audit: AuditMetadata) {
     "",
     `Propagation findings (${audit.obligations.length}):`,
     ...(audit.obligations.length ? audit.obligations.map(formatEvidence) : ["- None found."]),
-    "",
-    "Closeout guidance:",
-    "- Treat findings as structural graph evidence, not commands or tracked obligations.",
-    "- Decide which findings are relevant to the current task before claiming completion.",
-    "- Run build/typecheck/test as oracle verification when correctness matters.",
-    "- Use chimera_obligations_sync only when findings need durable follow-up.",
   ].join("\n")
 }
 
@@ -2008,11 +2002,6 @@ export const ChimeraPredesignTool = Tool.define<typeof PredesignParameters, Pred
               "",
               `Impact evidence (${impact.evidence.length}):`,
               ...previewList(impact.evidence, "- None found.", "evidence items", formatPredesignEvidence),
-              "",
-              "Mutation gate guidance:",
-              "- Fresh pre-design evidence is now recorded for this session.",
-              "- Retry the intended edit/write/apply_patch mutation if it was blocked.",
-              "- Run chimera_audit_recent after successful mutation; pre-design evidence is not post-change verification.",
             ].join("\n"),
             metadata: {
               projectRoot: state.projectRoot,
@@ -2102,10 +2091,6 @@ export const ChimeraImpactTool = Tool.define<typeof ImpactParameters, ImpactMeta
             "",
             "Impact evidence:",
             ...(impact.evidence.length ? impact.evidence.map(formatEvidence) : ["- None found."]),
-            "",
-            "Closeout guidance:",
-            "- Treat impact evidence as structural graph evidence, not commands or oracle verification.",
-            "- Decide which impacted symbols/files are relevant before claiming the change is complete.",
           ].join("\n"),
           metadata: {
             projectRoot: state.projectRoot,
@@ -2258,9 +2243,6 @@ export const ChimeraObligationsListTool = Tool.define<typeof ObligationsListPara
             "",
             `Obligations (${obligations.length}):`,
             ...(obligations.length ? obligations.map(formatObligation) : ["- None found."]),
-            "",
-            "Lifecycle guidance:",
-            "- Active obligations should be reviewed, updated, resolved, or ignored with a reason before closeout.",
           ].join("\n"),
           metadata: {
             projectRoot: current.state.projectRoot,
@@ -2319,9 +2301,6 @@ export const ChimeraObligationsSyncTool = Tool.define<typeof ObligationsSyncPara
             "",
             `Obligations (${obligations.length}):`,
             ...(obligations.length ? obligations.map(formatObligation) : ["- None found."]),
-            "",
-            "Lifecycle guidance:",
-            "- Claim, resolve, or ignore each active obligation as you review the propagation surface.",
           ].join("\n"),
           metadata: {
             projectRoot: state.projectRoot,
