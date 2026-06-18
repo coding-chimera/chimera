@@ -160,10 +160,10 @@ describe('CodeGraph Foundation', () => {
   });
 
   describe('Uninitialize', () => {
-    it('should remove .CodeGraph directory', () => {
+    it('should remove .CodeGraph directory', async () => {
       const cg = CodeGraph.initSync(tempDir);
 
-      cg.uninitialize();
+      await cg.uninitialize();
 
       expect(fs.existsSync(getCodeGraphDir(tempDir))).toBe(false);
       expect(CodeGraph.isInitialized(tempDir)).toBe(false);

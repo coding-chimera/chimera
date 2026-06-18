@@ -655,7 +655,7 @@ describe('CLI uninit', () => {
     expect(CodeGraph.isInitialized(testDir)).toBe(true);
 
     // Uninitialize
-    cg.uninitialize();
+    await cg.uninitialize();
 
     // .codegraph directory should be removed
     expect(CodeGraph.isInitialized(testDir)).toBe(false);
