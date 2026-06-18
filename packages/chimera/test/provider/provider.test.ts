@@ -1677,6 +1677,121 @@ test("model headers are preserved", async () => {
   })
 })
 
+test("custom provider userAgent is applied to model headers", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "chimera.json"),
+        JSON.stringify({
+          $schema: "https://chimera.ai/config.json",
+          provider: {
+            "ua-provider": {
+              name: "UA Provider",
+              npm: "@ai-sdk/openai-compatible",
+              userAgent: "custom-client/1.0",
+              env: [],
+              models: {
+                model: {
+                  name: "Model",
+                  tool_call: true,
+                  limit: { context: 4000, output: 1000 },
+                },
+              },
+              options: { apiKey: "test" },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const providers = await list()
+      const model = providers[ProviderID.make("ua-provider")].models["model"]
+      expect(model.headers["User-Agent"]).toBe("custom-client/1.0")
+    },
+  })
+})
+
+test("custom provider userAgent does not override explicit model User-Agent header", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "chimera.json"),
+        JSON.stringify({
+          $schema: "https://chimera.ai/config.json",
+          provider: {
+            "ua-override-provider": {
+              name: "UA Override Provider",
+              npm: "@ai-sdk/openai-compatible",
+              userAgent: "provider-client/1.0",
+              env: [],
+              models: {
+                model: {
+                  name: "Model",
+                  tool_call: true,
+                  limit: { context: 4000, output: 1000 },
+                  headers: {
+                    "User-Agent": "model-client/1.0",
+                    "X-Custom-Header": "custom-value",
+                  },
+                },
+              },
+              options: { apiKey: "test" },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const providers = await list()
+      const model = providers[ProviderID.make("ua-override-provider")].models["model"]
+      expect(model.headers).toEqual({
+        "User-Agent": "model-client/1.0",
+        "X-Custom-Header": "custom-value",
+      })
+    },
+  })
+})
+
+test("built-in provider userAgent config is not applied to model headers", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "chimera.json"),
+        JSON.stringify({
+          $schema: "https://chimera.ai/config.json",
+          provider: {
+            anthropic: {
+              userAgent: "ignored-client/1.0",
+              options: {
+                apiKey: "config-api-key",
+              },
+              models: {
+                "ua-alias": {
+                  id: "claude-sonnet-4-20250514",
+                  name: "UA Alias",
+                },
+              },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const providers = await list()
+      expect(providers[ProviderID.anthropic].models["ua-alias"].headers["User-Agent"]).toBeUndefined()
+    },
+  })
+})
+
 test("provider env fallback - second env var used if first missing", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {

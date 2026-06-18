@@ -1341,6 +1341,9 @@ const layer: Layer.Layer<
         for (const [providerID, provider] of configProviders) {
           const existing = database[providerID]
           const id = ProviderID.make(providerID)
+          const isCustomProvider = !existing
+          const userAgentHeaders =
+            isCustomProvider && provider.userAgent ? { "User-Agent": provider.userAgent } : {}
           const parsed: Info = {
             id,
             name: provider.name ?? existing?.name ?? providerID,
@@ -1457,7 +1460,7 @@ const layer: Layer.Layer<
                 input: model.limit?.input ?? metadataModel?.limit?.input,
                 output: model.limit?.output ?? metadataModel?.limit?.output ?? 0,
               },
-              headers: mergeDeep(existingModel?.headers ?? {}, model.headers ?? {}),
+              headers: mergeDeep(mergeDeep(existingModel?.headers ?? {}, userAgentHeaders), model.headers ?? {}),
               family: model.family ?? metadataModel?.family ?? "",
               release_date: model.release_date ?? metadataModel?.release_date ?? "",
               variants: {},
