@@ -15,7 +15,6 @@ import { trimDiff } from "./edit"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import * as Bom from "@/util/bom"
 import { Chimera } from "@/chimera"
-import { TOOL_MUTATION_AUDIT_HINT } from "@/chimera/guidance"
 
 const MAX_PROJECT_DIAGNOSTICS_FILES = 5
 
@@ -91,7 +90,7 @@ export const WriteTool = Tool.define(
           )
 
           const lineCount = contentNew === "" ? 0 : contentNew.replace(/\n$/, "").split(/\r?\n/).length
-          let output = `File written successfully. ${lineCount} lines written.\n\n${TOOL_MUTATION_AUDIT_HINT}`
+          let output = `File written successfully. ${lineCount} lines written.`
           yield* lsp.touchFile(filepath, "document")
           const diagnostics = yield* lsp.diagnostics()
           const diagnosticCount = Chimera.countOracleDiagnostics(diagnostics)

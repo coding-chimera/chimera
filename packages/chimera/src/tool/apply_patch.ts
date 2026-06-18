@@ -15,7 +15,6 @@ import { File } from "../file"
 import { Format } from "../format"
 import * as Bom from "@/util/bom"
 import { Chimera } from "@/chimera"
-import { TOOL_MUTATION_AUDIT_HINT } from "@/chimera/guidance"
 
 export const Parameters = Schema.Struct({
   patchText: Schema.String.annotate({ description: "The full patch text that describes all changes to be made" }),
@@ -317,7 +316,7 @@ export const ApplyPatchTool = Tool.define(
         return `M ${path.relative(instance.worktree, target).replaceAll("\\", "/")}`
       })
       const title = `Success. Updated the following files:\n${summaryLines.join("\n")}`
-      let output = `${title}\n\n${TOOL_MUTATION_AUDIT_HINT}`
+      let output = title
 
       for (const change of fileChanges) {
         if (change.type === "delete") continue
