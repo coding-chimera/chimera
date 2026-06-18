@@ -2002,6 +2002,10 @@ export class CodeGraph {
     return this.traverser.getChildren(nodeId);
   }
 
+  getDependencyFilePaths(filePath: string): string[] {
+    return this.graphManager.getDependencyFilePaths(filePath);
+  }
+
   /**
    * Get dependencies of a file
    *
@@ -2009,7 +2013,11 @@ export class CodeGraph {
    * @returns Array of file paths this file depends on
    */
   getFileDependencies(filePath: string): string[] {
-    return this.graphManager.getFileDependencies(filePath);
+    return this.getDependencyFilePaths(filePath);
+  }
+
+  getDependentFilePaths(filePath: string): string[] {
+    return this.graphManager.getDependentFilePaths(filePath);
   }
 
   /**
@@ -2019,7 +2027,7 @@ export class CodeGraph {
    * @returns Array of file paths that depend on this file
    */
   getFileDependents(filePath: string): string[] {
-    return this.graphManager.getFileDependents(filePath);
+    return this.getDependentFilePaths(filePath);
   }
 
   /**

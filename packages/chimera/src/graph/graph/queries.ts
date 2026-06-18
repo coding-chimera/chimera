@@ -8,6 +8,19 @@ import { Node, Edge, Context, Subgraph, EdgeKind } from '../types';
 import { QueryBuilder } from '../db/queries';
 import { GraphTraverser } from './traversal';
 
+const FILE_PROJECTION_EDGE_KINDS: EdgeKind[] = [
+  'calls',
+  'imports',
+  'references',
+  'type_of',
+  'returns',
+  'instantiates',
+  'extends',
+  'implements',
+  'overrides',
+  'decorates',
+];
+
 /**
  * Graph query manager for complex queries
  */
@@ -107,73 +120,56 @@ export class GraphQueryManager {
     };
   }
 
+  private getFilePathsThroughUsageEdges(filePath: string, direction: 'incoming' | 'outgoing'): string[] {
+    const nodes = this.queries.getNodesByFile(filePath);
+    const edges = nodes.flatMap((node) =>
+      direction === 'incoming'
+        ? this.queries.getIncomingEdges(node.id, FILE_PROJECTION_EDGE_KINDS)
+        : this.queries.getOutgoingEdges(node.id, FILE_PROJECTION_EDGE_KINDS)
+    );
+    const related = this.queries.getNodesByIds(edges.map((edge) => direction === 'incoming' ? edge.source : edge.target));
+    const paths = new Set<string>();
+
+    for (const edge of edges) {
+      const node = related.get(direction === 'incoming' ? edge.source : edge.target);
+      if (node && node.filePath !== filePath) {
+        paths.add(node.filePath);
+      }
+    }
+
+    return Array.from(paths);
+  }
+
+  getDependencyFilePaths(filePath: string): string[] {
+    return this.getFilePathsThroughUsageEdges(filePath, 'outgoing');
+  }
+
   /**
    * Get dependencies of a file
    *
-   * Returns all files that this file imports from.
+   * Returns all files that this file depends on.
    *
    * @param filePath - Path to the file
    * @returns Array of file paths this file depends on
    */
   getFileDependencies(filePath: string): string[] {
-    const nodes = this.queries.getNodesByFile(filePath);
-    const fileNode = nodes.find((n) => n.kind === 'file');
+    return this.getDependencyFilePaths(filePath);
+  }
 
-    if (!fileNode) {
-      return [];
-    }
-
-    const dependencies = new Set<string>();
-    const importEdges = this.queries.getOutgoingEdges(fileNode.id, ['imports']);
-
-    for (const edge of importEdges) {
-      const targetNode = this.queries.getNodeById(edge.target);
-      if (targetNode && targetNode.filePath !== filePath) {
-        dependencies.add(targetNode.filePath);
-      }
-    }
-
-    return Array.from(dependencies);
+  getDependentFilePaths(filePath: string): string[] {
+    return this.getFilePathsThroughUsageEdges(filePath, 'incoming');
   }
 
   /**
    * Get dependents of a file
    *
-   * Returns all files that import from this file.
+   * Returns all files that depend on this file.
    *
    * @param filePath - Path to the file
    * @returns Array of file paths that depend on this file
    */
   getFileDependents(filePath: string): string[] {
-    const nodes = this.queries.getNodesByFile(filePath);
-    const dependents = new Set<string>();
-
-    // Check file-level incoming import edges (file:X imports file:Y)
-    const fileNode = nodes.find((n) => n.kind === 'file');
-    if (fileNode) {
-      const incomingFileEdges = this.queries.getIncomingEdges(fileNode.id, ['imports']);
-      for (const edge of incomingFileEdges) {
-        const sourceNode = this.queries.getNodeById(edge.source);
-        if (sourceNode && sourceNode.filePath !== filePath) {
-          dependents.add(sourceNode.filePath);
-        }
-      }
-    }
-
-    // Also check node-level imports of exported symbols
-    for (const node of nodes) {
-      if (node.isExported) {
-        const incomingEdges = this.queries.getIncomingEdges(node.id, ['imports']);
-        for (const edge of incomingEdges) {
-          const sourceNode = this.queries.getNodeById(edge.source);
-          if (sourceNode && sourceNode.filePath !== filePath) {
-            dependents.add(sourceNode.filePath);
-          }
-        }
-      }
-    }
-
-    return Array.from(dependents);
+    return this.getDependentFilePaths(filePath);
   }
 
   /**

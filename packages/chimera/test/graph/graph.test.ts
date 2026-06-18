@@ -812,6 +812,21 @@ export class LanguageEffects {
 
       expect(Array.isArray(dependents)).toBe(true);
     });
+
+    it('should project file dependencies through cross-file usage edges', () => {
+      const db = DatabaseConnection.open(getDatabasePath(testDir));
+      try {
+        db.getDb().prepare("DELETE FROM edges WHERE kind = 'imports'").run();
+      } finally {
+        db.close();
+      }
+
+      expect(cg.getFileDependents('src/utils.ts')).toContain('src/main.ts');
+      expect(cg.getDependentFilePaths('src/utils.ts')).toContain('src/main.ts');
+      expect(cg.getFileDependencies('src/main.ts')).toContain('src/utils.ts');
+      expect(cg.getDependencyFilePaths('src/main.ts')).toContain('src/utils.ts');
+      expect(cg.getFileDependents('src/utils.ts')).not.toContain('src/utils.ts');
+    });
   });
 
   describe('findCircularDependencies()', () => {
