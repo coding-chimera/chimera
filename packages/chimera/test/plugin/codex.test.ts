@@ -294,6 +294,67 @@ describe("plugin.codex", () => {
     expect(body?.input).toEqual([{ type: "compaction", encrypted_content: "encrypted" }])
   })
 
+  test("leaves ordinary text that mentions the remote compaction key alone", async () => {
+    let auth: { type: "oauth"; refresh: string; access: string; expires: number; accountId?: string } = {
+      type: "oauth" as const,
+      refresh: "refresh",
+      access: "access",
+      expires: Date.now() + 60_000,
+      accountId: "acc-123",
+    }
+    let body: Record<string, unknown> | undefined
+
+    using server = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        const url = new URL(request.url)
+        if (url.pathname === "/backend-api/codex/responses") {
+          body = JSON.parse(await request.text())
+          return new Response("{}", { status: 200 })
+        }
+        return new Response("unexpected request", { status: 500 })
+      },
+    })
+
+    const hooks = await CodexAuthPlugin(
+      {
+        client: {
+          auth: {
+            async set(input: { body: { refresh: string; access: string; expires: number; accountId?: string } }) {
+              auth = { type: "oauth", ...input.body }
+            },
+          },
+        } as never,
+        project: {} as never,
+        directory: "",
+        worktree: "",
+        experimental_workspace: {
+          register() {},
+        },
+        serverUrl: new URL("https://example.com"),
+        $: {} as never,
+      },
+      {
+        issuer: server.url.origin,
+        codexApiEndpoint: new URL("/backend-api/codex/responses", server.url).toString(),
+      },
+    )
+    const loaded = await hooks.auth!.loader!(async () => auth as never, {} as never)
+    const input = [
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: 'const ENVELOPE_KEY = "__chimera_remote_compaction"' }],
+      },
+    ]
+    await loaded.fetch!("https://api.openai.com/v1/responses", {
+      method: "POST",
+      body: JSON.stringify({ input }),
+    })
+
+    expect(body?.input).toEqual(input)
+  })
+
   test("blocks encoded remote compaction replay when rewrite fails", async () => {
     let auth: { type: "oauth"; refresh: string; access: string; expires: number; accountId?: string } = {
       type: "oauth" as const,

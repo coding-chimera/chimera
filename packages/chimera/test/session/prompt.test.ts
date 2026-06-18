@@ -1208,7 +1208,7 @@ it.live("concurrent loop callers get same result", () =>
         expect(a.info.role).toBe("assistant")
         yield* run.assertNotBusy(chat.id)
       }),
-    { git: true },
+    { git: true, config: cfg },
   ),
 )
 
