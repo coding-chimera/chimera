@@ -58,6 +58,7 @@ export function parseOpenAICompatibleModels(value: unknown) {
 export async function discoverOpenAICompatibleModels(input: {
   baseURL: string
   token?: string
+  userAgent?: string
   fetch?: ModelFetch
   timeout?: number
 }) {
@@ -70,6 +71,7 @@ export async function discoverOpenAICompatibleModels(input: {
         headers: {
           Accept: "application/json",
           ...(input.token ? { Authorization: `Bearer ${input.token}` } : {}),
+          ...(input.userAgent ? { "User-Agent": input.userAgent } : {}),
         },
         signal: AbortSignal.timeout(input.timeout ?? MODEL_TIMEOUT),
       })

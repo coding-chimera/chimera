@@ -1035,6 +1035,7 @@ export type ProviderConfig = {
   env?: Array<string>
   id?: string
   npm?: string
+  userAgent?: string
   models?: {
     [key: string]: {
       id?: string
