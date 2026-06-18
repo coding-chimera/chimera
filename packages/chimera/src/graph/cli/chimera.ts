@@ -542,7 +542,7 @@ program
 
       const { default: CodeGraph } = await loadCodeGraph();
       const cg = CodeGraph.openSync(projectPath);
-      cg.uninitialize();
+      await cg.uninitialize();
 
       // Clean up any git sync hooks we installed (no-op if none / not a repo).
       try {
