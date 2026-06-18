@@ -23,6 +23,23 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
+function decodeRemoteCompactionEnvelope(text: string):
+  | { status: "decoded"; output: RemoteCompactionOutputItem[] }
+  | { status: "invalid" }
+  | undefined {
+  try {
+    const parsed = JSON.parse(text)
+    if (!isRecord(parsed) || !(ENVELOPE_KEY in parsed)) return undefined
+    const envelope = parsed[ENVELOPE_KEY]
+    if (!isRecord(envelope) || envelope.version !== ENVELOPE_VERSION) return { status: "invalid" }
+    const output = decodeRemoteCompactionOutput(envelope.output)
+    if (!output) return { status: "invalid" }
+    return { status: "decoded", output }
+  } catch {
+    return undefined
+  }
+}
+
 export function decodeRemoteCompactionOutput(value: unknown) {
   if (!Array.isArray(value)) return undefined
   const output = value.flatMap((item): RemoteCompactionOutputItem[] =>
@@ -41,25 +58,18 @@ export function encodeRemoteCompactionInput(output: RemoteCompactionOutputItem[]
 }
 
 export function decodeRemoteCompactionInput(text: string) {
-  try {
-    const parsed = JSON.parse(text)
-    if (!isRecord(parsed)) return undefined
-    const envelope = parsed[ENVELOPE_KEY]
-    if (!isRecord(envelope) || envelope.version !== ENVELOPE_VERSION) return undefined
-    return decodeRemoteCompactionOutput(envelope.output)
-  } catch {
-    return undefined
-  }
+  const decoded = decodeRemoteCompactionEnvelope(text)
+  return decoded?.status === "decoded" ? decoded.output : undefined
 }
 
-function findRemoteCompactionOutput(value: unknown): RemoteCompactionOutputItem[] | undefined {
+function findRemoteCompactionEnvelope(value: unknown): ReturnType<typeof decodeRemoteCompactionEnvelope> {
   if (!isRecord(value)) return undefined
-  if (typeof value.text === "string") return decodeRemoteCompactionInput(value.text)
-  if (typeof value.content === "string") return decodeRemoteCompactionInput(value.content)
+  if (typeof value.text === "string") return decodeRemoteCompactionEnvelope(value.text)
+  if (typeof value.content === "string") return decodeRemoteCompactionEnvelope(value.content)
   if (!Array.isArray(value.content)) return undefined
   for (const item of value.content) {
-    const output = findRemoteCompactionOutput(item)
-    if (output) return output
+    const decoded = findRemoteCompactionEnvelope(item)
+    if (decoded) return decoded
   }
 }
 
@@ -76,12 +86,14 @@ export function rewriteRemoteCompactionInput(body: string) {
     }
     let changed = false
     const input = parsed.input.flatMap((item) => {
-      const output = findRemoteCompactionOutput(item)
-      if (!output) return [item]
+      const decoded = findRemoteCompactionEnvelope(item)
+      if (!decoded) return [item]
+      if (decoded.status === "invalid")
+        throw new RemoteCompactionRewriteError("remote compaction replay payload was not rewritten")
       changed = true
-      return output
+      return decoded.output
     })
-    if (!changed) throw new RemoteCompactionRewriteError("remote compaction replay payload was not rewritten")
+    if (!changed) return body
     return JSON.stringify({ ...parsed, input })
   } catch (cause) {
     if (cause instanceof RemoteCompactionRewriteError) throw cause
