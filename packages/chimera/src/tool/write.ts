@@ -94,6 +94,20 @@ export const WriteTool = Tool.define(
           let output = `File written successfully. ${lineCount} lines written.\n\n${TOOL_MUTATION_AUDIT_HINT}`
           yield* lsp.touchFile(filepath, "document")
           const diagnostics = yield* lsp.diagnostics()
+          const diagnosticCount = Chimera.countOracleDiagnostics(diagnostics)
+          yield* Chimera.recordToolOracle({
+            kind: "lsp",
+            toolID: "write",
+            ctx,
+            status: diagnosticCount === 0 ? "pass" : "fail",
+            payload: {
+              lsp: {
+                diagnostics,
+                files: [filepath],
+                diagnosticCount,
+              },
+            },
+          }).pipe(Effect.ignore)
           const normalizedFilepath = AppFileSystem.normalizePath(filepath)
           let projectDiagnosticsCount = 0
           for (const [file, issues] of Object.entries(diagnostics)) {

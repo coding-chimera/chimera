@@ -91,6 +91,55 @@ export type PredesignRunRecord = PredesignRunInput & {
   createdAt: string
 }
 
+export type OracleStatus = "pass" | "fail" | "unknown"
+
+export type OracleLinkedChange = {
+  id: string
+  toolID: string
+  status: ToolMutationRecord["status"]
+  finishedAt: string
+  beforeRevision: string
+  afterRevision: string
+  files: string[]
+  changeID?: string
+}
+
+export type OracleLinkWindow = {
+  source: "same_session_preceding_mutations"
+  sessionID: string
+  projectRoot: string
+  finishedBefore: string
+  maxChanges: number
+}
+
+export type OracleRecordInput = {
+  kind: "shell" | "lsp"
+  status: OracleStatus
+  tool: {
+    id: string
+    callID?: string
+    messageID: string
+    sessionID: string
+    agent: string
+  }
+  project: {
+    root: string
+    worktree: string
+    directory: string
+  }
+  startedAt?: string
+  finishedAt: string
+  linkWindow: OracleLinkWindow
+  linkedChanges: OracleLinkedChange[]
+  payload: unknown
+}
+
+export type OracleRecord = OracleRecordInput & {
+  schemaVersion: 1
+  id: string
+  createdAt: string
+}
+
 const CHIMERA_STORAGE_EXTENSION: StorageExtension = {
   id: "chimera",
   namespace: "chimera_",
@@ -263,6 +312,33 @@ CREATE TABLE IF NOT EXISTS chimera_predesign_run (
 
 CREATE INDEX IF NOT EXISTS chimera_predesign_run_session_created_idx ON chimera_predesign_run(session_id, created_at);
 CREATE INDEX IF NOT EXISTS chimera_predesign_run_snapshot_idx ON chimera_predesign_run(snapshot_revision);
+`,
+    },
+    {
+      version: 3,
+      description: "Create Chimera oracle result table",
+      sql: `
+CREATE TABLE IF NOT EXISTS chimera_oracle_result (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  status TEXT NOT NULL,
+  tool_id TEXT NOT NULL,
+  project_root TEXT NOT NULL,
+  worktree TEXT NOT NULL,
+  directory TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  message_id TEXT NOT NULL,
+  call_id TEXT,
+  agent TEXT NOT NULL,
+  started_at TEXT,
+  finished_at TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS chimera_oracle_result_session_finished_idx ON chimera_oracle_result(session_id, finished_at);
+CREATE INDEX IF NOT EXISTS chimera_oracle_result_kind_status_idx ON chimera_oracle_result(kind, status);
+CREATE INDEX IF NOT EXISTS chimera_oracle_result_tool_idx ON chimera_oracle_result(tool_id);
 `,
     },
   ],
@@ -911,6 +987,95 @@ export async function readPredesignRuns(projectRoot: string, artifact: string, o
     .toSorted((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))
     .slice(0, limit)
   return records ?? fallback
+}
+
+function oracleID(createdAt: string, payload: string) {
+  return `oracle_${createHash("sha256").update(`${createdAt}:${payload}`).digest("hex").slice(0, 16)}`
+}
+
+function writeOracleResultToDb(db: ChimeraDb, record: OracleRecord) {
+  db.prepare(`
+    INSERT OR REPLACE INTO chimera_oracle_result (
+      id,
+      kind,
+      status,
+      tool_id,
+      project_root,
+      worktree,
+      directory,
+      session_id,
+      message_id,
+      call_id,
+      agent,
+      started_at,
+      finished_at,
+      payload_json,
+      created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    record.id,
+    record.kind,
+    record.status,
+    record.tool.id,
+    record.project.root,
+    record.project.worktree,
+    record.project.directory,
+    record.tool.sessionID,
+    record.tool.messageID,
+    record.tool.callID ?? null,
+    record.tool.agent,
+    record.startedAt ?? null,
+    record.finishedAt,
+    safeJson(record),
+    record.createdAt,
+  )
+}
+
+export async function recordOracleResult(projectRoot: string, artifact: string, input: OracleRecordInput) {
+  const createdAt = new Date().toISOString()
+  const payload = safeJson(input.payload)
+  const record: OracleRecord = {
+    schemaVersion: 1,
+    id: oracleID(createdAt, payload),
+    ...input,
+    createdAt,
+  }
+  const wrote = await withDb(projectRoot, (db) => {
+    writeOracleResultToDb(db, record)
+    return true
+  })
+  if (!wrote) await appendJsonl(artifact, record)
+  return record
+}
+
+export async function readOracleResults(
+  projectRoot: string,
+  artifact: string,
+  options: { sessionID?: string; limit?: number; includePassing?: boolean } = {},
+) {
+  const legacy = await readJsonl<OracleRecord>(artifact)
+  const limit = Math.max(1, Math.min(100, Math.floor(options.limit ?? 20)))
+  const keep = (record: OracleRecord) =>
+    (!options.sessionID || record.tool.sessionID === options.sessionID) &&
+    (options.includePassing || record.status !== "pass")
+  const records = await withDb(projectRoot, (db) => {
+    for (const record of legacy) writeOracleResultToDb(db, record)
+    return (db.prepare("SELECT payload_json FROM chimera_oracle_result ORDER BY finished_at DESC, id DESC").all() as PayloadRow[])
+      .flatMap((row) => parseJson<OracleRecord>(row.payload_json))
+      .filter(keep)
+      .slice(0, limit)
+  })
+  return records ?? legacy.filter(keep).toSorted((a, b) => b.finishedAt.localeCompare(a.finishedAt) || b.id.localeCompare(a.id)).slice(0, limit)
+}
+
+export async function readOracleResult(projectRoot: string, artifact: string, oracleID: string) {
+  const legacy = await readJsonl<OracleRecord>(artifact)
+  const record = await withDb(projectRoot, (db) => {
+    for (const item of legacy) writeOracleResultToDb(db, item)
+    const row = db.prepare("SELECT payload_json FROM chimera_oracle_result WHERE id = ?").get(oracleID) as PayloadRow | undefined
+    return row ? parseJson<OracleRecord>(row.payload_json)[0] : undefined
+  })
+  return record ?? legacy.find((item) => item.id === oracleID)
 }
 
 function writeObligationToDb<T extends ObligationLike>(db: ChimeraDb, item: T, runID?: string, mode: "ignore" | "replace" = "replace") {

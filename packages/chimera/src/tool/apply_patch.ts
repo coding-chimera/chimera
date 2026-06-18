@@ -290,6 +290,20 @@ export const ApplyPatchTool = Tool.define(
         yield* lsp.touchFile(target, "document")
       }
       const diagnostics = yield* lsp.diagnostics()
+      const diagnosticCount = Chimera.countOracleDiagnostics(diagnostics)
+      yield* Chimera.recordToolOracle({
+        kind: "lsp",
+        toolID: "apply_patch",
+        ctx,
+        status: diagnosticCount === 0 ? "pass" : "fail",
+        payload: {
+          lsp: {
+            diagnostics,
+            files: fileChanges.flatMap((change) => change.type === "delete" ? [] : [change.movePath ?? change.filePath]),
+            diagnosticCount,
+          },
+        },
+      }).pipe(Effect.ignore)
 
       // Generate output summary
       const summaryLines = fileChanges.map((change) => {
