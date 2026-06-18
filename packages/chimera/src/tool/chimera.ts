@@ -31,9 +31,12 @@ import {
   readChangeFacts,
   recordPredesignRun,
   readProvenanceRecords,
+  readOracleResult,
+  readOracleResults,
   readPersistentObligationStore,
   recordAuditRun,
   writePersistentObligationStore,
+  type OracleRecord,
 } from "@/chimera/store"
 import * as Tool from "./tool"
 import STATUS_DESCRIPTION from "./chimera_status.txt"
@@ -44,6 +47,8 @@ import IMPACT_DESCRIPTION from "./chimera_impact.txt"
 import CONTEXT_DESCRIPTION from "./chimera_context.txt"
 import AUDIT_RECENT_DESCRIPTION from "./chimera_audit_recent.txt"
 import AUDIT_DESCRIPTION from "./chimera_audit.txt"
+import ORACLE_RECENT_DESCRIPTION from "./chimera_oracle_recent.txt"
+import ORACLE_GET_DESCRIPTION from "./chimera_oracle_get.txt"
 import OBLIGATIONS_LIST_DESCRIPTION from "./chimera_obligations_list.txt"
 import OBLIGATIONS_SYNC_DESCRIPTION from "./chimera_obligations_sync.txt"
 import OBLIGATION_CLAIM_DESCRIPTION from "./chimera_obligation_claim.txt"
@@ -216,6 +221,24 @@ export const RecentAuditParameters = Schema.Struct({
   }),
   refresh: Schema.optional(Schema.Boolean).annotate({
     description: RefreshDescription,
+  }),
+})
+
+export const OracleRecentParameters = Schema.Struct({
+  limit: Schema.optional(Schema.Number).annotate({
+    description: "Maximum oracle records to return. Defaults to 20, capped at 100.",
+  }),
+  includePassing: Schema.optional(Schema.Boolean).annotate({
+    description: "Include passing oracle records. Defaults to false, which returns failing and unknown records.",
+  }),
+})
+
+export const OracleGetParameters = Schema.Struct({
+  oracleID: Schema.String.annotate({
+    description: "Oracle record id to retrieve.",
+  }),
+  maxOutputChars: Schema.optional(Schema.Number).annotate({
+    description: "Maximum shell output characters to include in structured output. Defaults to 20000, capped at 200000.",
   }),
 })
 
@@ -443,6 +466,14 @@ type AuditMetadata = {
   fileDependents: string[]
   obligations: AuditCandidate[]
   provenance?: ToolMutationRecord
+}
+
+type OracleMetadata = {
+  projectRoot: string
+  artifact: string
+  action: "recent" | "get"
+  oracles: OracleRecord[]
+  oracle?: OracleRecord
 }
 
 type ObligationStatusValue = "pending" | "claimed" | "resolved" | "ignored" | "stale"
@@ -1274,6 +1305,8 @@ function uniqueCandidates(candidates: AuditCandidate[]) {
 
 type AuditParams = Schema.Schema.Type<typeof AuditParameters>
 type RecentAuditParams = Schema.Schema.Type<typeof RecentAuditParameters>
+type OracleRecentParams = Schema.Schema.Type<typeof OracleRecentParameters>
+type OracleGetParams = Schema.Schema.Type<typeof OracleGetParameters>
 type BuildAuditParams = AuditParams & RecentAuditParams & { recent?: boolean }
 
 type BuildAuditOptions = {
@@ -1289,6 +1322,10 @@ type ObligationIgnoreParams = Schema.Schema.Type<typeof ObligationIgnoreParamete
 
 function obligationsArtifact(provenanceArtifact: string) {
   return path.join(path.dirname(provenanceArtifact), "obligations.json")
+}
+
+function oracleArtifact(provenanceArtifact: string) {
+  return path.join(path.dirname(provenanceArtifact), "oracle-results.jsonl")
 }
 
 function predesignArtifact(provenanceArtifact: string) {
@@ -1570,6 +1607,48 @@ function formatAuditOutput(audit: AuditMetadata) {
     "- Run build/typecheck/test as oracle verification when correctness matters.",
     "- Use chimera_obligations_sync only when findings need durable follow-up.",
   ].join("\n")
+}
+
+function outputCharLimit(value: number | undefined) {
+  return Math.max(1, Math.min(200_000, Math.floor(value ?? 20_000)))
+}
+
+function objectRecord(input: unknown): input is Record<string, unknown> {
+  return typeof input === "object" && input !== null && !Array.isArray(input)
+}
+
+function compactOraclePayload(input: unknown, maxOutputChars: number) {
+  if (!objectRecord(input)) return input
+  if (!objectRecord(input.shell)) return input
+  if (typeof input.shell.output !== "string") return input
+  if (input.shell.output.length <= maxOutputChars) return input
+  return {
+    ...input,
+    shell: {
+      ...input.shell,
+      output: input.shell.output.slice(0, maxOutputChars),
+      outputTruncatedForDisplay: true,
+      outputOriginalChars: input.shell.output.length,
+    },
+  }
+}
+
+function oracleEnvelope(record: OracleRecord, maxOutputChars: number) {
+  return {
+    oracle: {
+      id: record.id,
+      kind: record.kind,
+      status: record.status,
+      tool: record.tool,
+      project: record.project,
+      startedAt: record.startedAt,
+      finishedAt: record.finishedAt,
+      createdAt: record.createdAt,
+      payload: compactOraclePayload(record.payload, maxOutputChars),
+    },
+    linkWindow: record.linkWindow,
+    linkedChanges: record.linkedChanges,
+  }
 }
 
 function hasExplicitAuditSeed(params: AuditParams) {
@@ -2085,6 +2164,71 @@ export const ChimeraAuditRecentTool = Tool.define<typeof RecentAuditParameters, 
           title: "Chimera audit",
           output: formatAuditOutput(audit),
           metadata: audit,
+        }
+      }).pipe(Effect.orDie),
+  }),
+)
+
+export const ChimeraOracleRecentTool = Tool.define<typeof OracleRecentParameters, OracleMetadata, never>(
+  "chimera_oracle_recent",
+  Effect.succeed({
+    description: ORACLE_RECENT_DESCRIPTION,
+    parameters: OracleRecentParameters,
+    execute: (params: OracleRecentParams, ctx: Tool.Context<OracleMetadata>) =>
+      Effect.gen(function* () {
+        yield* permission(ctx, "chimera_oracle_recent", {
+          limit: params.limit,
+          includePassing: params.includePassing ?? false,
+        })
+        const state = yield* openProjectGraphForTool(ctx as Tool.Context, false)
+        const artifact = oracleArtifact(state.artifact)
+        const oracles = yield* Effect.promise(() =>
+          readOracleResults(state.projectRoot, artifact, {
+            sessionID: ctx.sessionID,
+            limit: bounded(params.limit, 20, 100),
+            includePassing: params.includePassing ?? false,
+          }),
+        ).pipe(Effect.orDie)
+        const output = {
+          oracles: oracles.map((record) => oracleEnvelope(record, 2_000)),
+        }
+        return {
+          title: "Chimera oracle results",
+          output: JSON.stringify(output, null, 2),
+          metadata: {
+            projectRoot: state.projectRoot,
+            artifact,
+            action: "recent" as const,
+            oracles,
+          },
+        }
+      }).pipe(Effect.orDie),
+  }),
+)
+
+export const ChimeraOracleGetTool = Tool.define<typeof OracleGetParameters, OracleMetadata, never>(
+  "chimera_oracle_get",
+  Effect.succeed({
+    description: ORACLE_GET_DESCRIPTION,
+    parameters: OracleGetParameters,
+    execute: (params: OracleGetParams, ctx: Tool.Context<OracleMetadata>) =>
+      Effect.gen(function* () {
+        yield* permission(ctx, "chimera_oracle_get", { oracleID: params.oracleID })
+        const state = yield* openProjectGraphForTool(ctx as Tool.Context, false)
+        const artifact = oracleArtifact(state.artifact)
+        const oracle = yield* Effect.promise(() => readOracleResult(state.projectRoot, artifact, params.oracleID)).pipe(Effect.orDie)
+        if (!oracle) throw new Error(`unknown Chimera oracle result: ${params.oracleID}`)
+        const output = oracleEnvelope(oracle, outputCharLimit(params.maxOutputChars))
+        return {
+          title: "Chimera oracle result",
+          output: JSON.stringify(output, null, 2),
+          metadata: {
+            projectRoot: state.projectRoot,
+            artifact,
+            action: "get" as const,
+            oracle,
+            oracles: [oracle],
+          },
         }
       }).pipe(Effect.orDie),
   }),

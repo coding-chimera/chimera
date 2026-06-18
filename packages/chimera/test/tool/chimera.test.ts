@@ -14,6 +14,8 @@ import {
   ChimeraAuditTool,
   ChimeraFileSymbolsTool,
   ChimeraImpactTool,
+  ChimeraOracleGetTool,
+  ChimeraOracleRecentTool,
   ChimeraObligationClaimTool,
   ChimeraObligationResolveTool,
   ChimeraObligationsListTool,
@@ -103,6 +105,24 @@ const runAuditRecent = Effect.fn("ChimeraToolTest.runAuditRecent")(function* (
   next: Tool.Context = ctx,
 ) {
   const info = yield* ChimeraAuditRecentTool
+  const tool = yield* info.init()
+  return yield* tool.execute(args, next)
+})
+
+const runOracleRecent = Effect.fn("ChimeraToolTest.runOracleRecent")(function* (
+  args: Tool.InferParameters<typeof ChimeraOracleRecentTool>,
+  next: Tool.Context = ctx,
+) {
+  const info = yield* ChimeraOracleRecentTool
+  const tool = yield* info.init()
+  return yield* tool.execute(args, next)
+})
+
+const runOracleGet = Effect.fn("ChimeraToolTest.runOracleGet")(function* (
+  args: Tool.InferParameters<typeof ChimeraOracleGetTool>,
+  next: Tool.Context = ctx,
+) {
+  const info = yield* ChimeraOracleGetTool
   const tool = yield* info.init()
   return yield* tool.execute(args, next)
 })
@@ -389,6 +409,54 @@ describe("tool.chimera", () => {
       expect(result.metadata.changedFiles).toEqual(["explicit.ts"])
       expect(factFiles).toContain("explicit.ts")
       expect(factFiles).not.toContain("package.json")
+    }),
+  )
+
+  it.instance("recalls oracle results with linked mutation provenance", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filePath = path.join(test.directory, "oracle.ts")
+      yield* trackWrite({
+        filePath,
+        content: "export function oracleSubject() { return 2 }\n",
+        callID: "call_chimera_oracle_mutation",
+        patch: `--- oracle.ts
++++ oracle.ts
+@@ -0,0 +1,1 @@
++export function oracleSubject() { return 2 }
+`,
+      })
+      yield* Chimera.recordToolOracle({
+        kind: "shell",
+        toolID: "bash",
+        ctx: { ...ctx, callID: "call_chimera_oracle_shell" },
+        status: "fail",
+        payload: {
+          shell: {
+            command: "bun typecheck",
+            cwd: test.directory,
+            description: "typecheck",
+            exit: 1,
+            output: "type error",
+            truncated: false,
+          },
+        },
+      })
+
+      const recent = yield* runOracleRecent({ limit: 5 })
+      const oracle = recent.metadata.oracles[0]
+      const found = yield* runOracleGet({ oracleID: oracle.id })
+      const parsed = JSON.parse(found.output) as { oracle: { payload: { shell: { output: string } } }; linkedChanges: Array<{ files: string[] }> }
+
+      expect(recent.title).toBe("Chimera oracle results")
+      expect(recent.output).toContain("\"oracle\"")
+      expect(oracle.kind).toBe("shell")
+      expect(oracle.status).toBe("fail")
+      expect(oracle.linkedChanges[0]?.toolID).toBe("write")
+      expect(oracle.linkedChanges[0]?.files).toContain("oracle.ts")
+      expect(found.title).toBe("Chimera oracle result")
+      expect(parsed.oracle.payload.shell.output).toBe("type error")
+      expect(parsed.linkedChanges[0]?.files).toContain("oracle.ts")
     }),
   )
 

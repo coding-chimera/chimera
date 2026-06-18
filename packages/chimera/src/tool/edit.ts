@@ -438,6 +438,20 @@ export const EditTool = Tool.define(
           ].join("\n")
           if (!deleted) yield* lsp.touchFile(finalPath, "document")
           const diagnostics = yield* lsp.diagnostics()
+          const diagnosticCount = Chimera.countOracleDiagnostics(diagnostics)
+          yield* Chimera.recordToolOracle({
+            kind: "lsp",
+            toolID: "edit",
+            ctx,
+            status: diagnosticCount === 0 ? "pass" : "fail",
+            payload: {
+              lsp: {
+                diagnostics,
+                files: [finalPath],
+                diagnosticCount,
+              },
+            },
+          }).pipe(Effect.ignore)
           const normalizedFilePath = AppFileSystem.normalizePath(finalPath)
           const block = LSP.Diagnostic.report(finalPath, diagnostics[normalizedFilePath] ?? [])
           if (block) output += `\n\nLSP errors detected in this file, please fix:\n${block}`

@@ -16,6 +16,7 @@ import { SessionID, MessageID } from "../../src/session/schema"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { Plugin } from "../../src/plugin"
+import { readOracleResults } from "../../src/chimera/store"
 
 const runtime = ManagedRuntime.make(
   Layer.mergeAll(
@@ -183,6 +184,34 @@ describe("tool.shell", () => {
         )
         expect(result.metadata.exit).toBe(0)
         expect(result.output).toContain("fallback")
+      },
+    })
+  })
+
+  test("records raw shell oracle results", async () => {
+    await using tmp = await tmpdir()
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const bash = await initShell()
+        await Effect.runPromise(
+          bash.execute(
+            {
+              command: "echo shell-oracle",
+              description: "Echo shell oracle text",
+            },
+            ctx,
+          ),
+        )
+        const records = await readOracleResults(
+          tmp.path,
+          path.join(tmp.path, ".codegraph", "chimera", "oracle-results.jsonl"),
+          { sessionID: ctx.sessionID, includePassing: true },
+        )
+
+        expect(records[0]?.kind).toBe("shell")
+        expect(records[0]?.status).toBe("pass")
+        expect(JSON.stringify(records[0]?.payload)).toContain("shell-oracle")
       },
     })
   })

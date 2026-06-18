@@ -9,11 +9,12 @@ import type { Tool } from "@/tool/tool"
 import { classifyChangeRecord, classifyFileBoundary, collectFileProjections, collectIncidentRelations } from "./change-classifier"
 import { CodeGraphAdapter } from "./codegraph-adapter"
 import type { CodeGraphSnapshot, IndexProgress as CodeGraphIndexProgress, SyncResult as CodeGraphSyncResult } from "@/graph"
-import { appendProvenanceRecord, databaseStorePath, readPredesignRuns, readProvenanceRecords, writeChangeFacts } from "./store"
+import { appendProvenanceRecord, databaseStorePath, readPredesignRuns, readProvenanceRecords, recordOracleResult, writeChangeFacts, type OracleLinkedChange, type OracleStatus } from "./store"
 import { TOOL_MUTATION_PREDESIGN_REQUIRED } from "./guidance"
 
 const ARTIFACT_DIR = path.join(".codegraph", "chimera")
 const TOOL_PROVENANCE_FILE = "tool-provenance.jsonl"
+const ORACLE_RESULT_FILE = "oracle-results.jsonl"
 const TOOL_DEDUPE_WINDOW_MS = 15_000
 const EMPTY_GRAPH_RETRY_MS = 2_000
 
@@ -77,6 +78,17 @@ export interface MutationPredesignInput {
   destructive?: boolean
   multiFile?: boolean
   rename?: boolean
+}
+
+export interface ToolOracleInput {
+  kind: "shell" | "lsp"
+  toolID: string
+  ctx: Tool.Context
+  status: OracleStatus
+  startedAt?: string
+  finishedAt?: string
+  payload: unknown
+  maxChanges?: number
 }
 
 type MutationPredesignRisk = {
@@ -185,6 +197,14 @@ function predesignArtifact(root: string) {
   return path.join(root, ARTIFACT_DIR, "predesign-runs.jsonl")
 }
 
+function toolProvenanceArtifact(root: string) {
+  return path.join(root, ARTIFACT_DIR, TOOL_PROVENANCE_FILE)
+}
+
+function oracleArtifact(root: string) {
+  return path.join(root, ARTIFACT_DIR, ORACLE_RESULT_FILE)
+}
+
 function predesignRisk(file: ProvenanceFile) {
   const target = file.graphPath ?? file.absolutePath
   const classification = classifyFileBoundary(target).classification
@@ -233,6 +253,49 @@ function safeMetadata(input: ToolMutationInput["metadata"]) {
   } catch {
     return { unserializable: true }
   }
+}
+
+function metadataString(record: ToolMutationRecord, key: string) {
+  const value = record.metadata?.[key]
+  return typeof value === "string" ? value : undefined
+}
+
+function mutationSessionID(record: ToolMutationRecord) {
+  return record.actor?.sessionID ?? record.tool.sessionID
+}
+
+function mutationBefore(record: ToolMutationRecord, finishedAt: string) {
+  const mutationFinishedAt = Date.parse(record.finishedAt)
+  const oracleFinishedAt = Date.parse(finishedAt)
+  if (Number.isFinite(mutationFinishedAt) && Number.isFinite(oracleFinishedAt)) return mutationFinishedAt <= oracleFinishedAt
+  return record.finishedAt <= finishedAt
+}
+
+function oracleLinkedChange(record: ToolMutationRecord): OracleLinkedChange {
+  return {
+    id: record.id,
+    toolID: record.tool.id,
+    status: record.status,
+    finishedAt: record.finishedAt,
+    beforeRevision: record.graph.before.revision,
+    afterRevision: record.graph.after.revision,
+    files: record.files.map((file) => file.graphPath ?? file.absolutePath),
+    changeID: metadataString(record, "changeID"),
+  }
+}
+
+function linkedOracleChanges(input: { records: ToolMutationRecord[]; root: string; sessionID: string; finishedAt: string; maxChanges: number }) {
+  return input.records
+    .filter((record) => record.project.root === input.root)
+    .filter((record) => mutationSessionID(record) === input.sessionID)
+    .filter((record) => mutationBefore(record, input.finishedAt))
+    .toSorted((a, b) => a.finishedAt.localeCompare(b.finishedAt) || a.id.localeCompare(b.id))
+    .slice(-input.maxChanges)
+    .map(oracleLinkedChange)
+}
+
+export function countOracleDiagnostics(diagnostics: Record<string, readonly unknown[]>) {
+  return Object.values(diagnostics).reduce((sum, items) => sum + items.length, 0)
 }
 
 function recentToolKey(root: string, graphPath: string) {
@@ -484,7 +547,7 @@ function openGraphState(
       const state: ProjectGraphState = {
         graph,
         projectRoot: root,
-        artifact: path.join(root, ARTIFACT_DIR, TOOL_PROVENANCE_FILE),
+        artifact: toolProvenanceArtifact(root),
         storePath: databaseStorePath(root),
       }
       if (options.watch) startFilesystemWatcher(state)
@@ -496,6 +559,44 @@ function openGraphState(
   }
   return promise
 }
+
+export const recordToolOracle = Effect.fn("Chimera.recordToolOracle")(function* (input: ToolOracleInput) {
+  const instance = yield* InstanceState.context
+  const root = projectRoot(instance)
+  const finishedAt = input.finishedAt ?? new Date().toISOString()
+  const maxChanges = Math.max(1, Math.min(100, Math.floor(input.maxChanges ?? 20)))
+  const records = yield* Effect.promise(() => readProvenanceRecords(root, toolProvenanceArtifact(root)))
+  const linkedChanges = linkedOracleChanges({ records, root, sessionID: input.ctx.sessionID, finishedAt, maxChanges })
+  return yield* Effect.promise(() =>
+    recordOracleResult(root, oracleArtifact(root), {
+      kind: input.kind,
+      status: input.status,
+      tool: {
+        id: input.toolID,
+        callID: input.ctx.callID,
+        messageID: input.ctx.messageID,
+        sessionID: input.ctx.sessionID,
+        agent: input.ctx.agent,
+      },
+      project: {
+        root,
+        worktree: instance.worktree,
+        directory: instance.directory,
+      },
+      startedAt: input.startedAt,
+      finishedAt,
+      linkWindow: {
+        source: "same_session_preceding_mutations",
+        sessionID: input.ctx.sessionID,
+        projectRoot: root,
+        finishedBefore: finishedAt,
+        maxChanges,
+      },
+      linkedChanges,
+      payload: input.payload,
+    }),
+  )
+})
 
 export function trackToolMutation<A, E, R>(
   input: ToolMutationInput,

@@ -18,6 +18,8 @@ import {
   ChimeraAuditTool,
   ChimeraFileSymbolsTool,
   ChimeraImpactTool,
+  ChimeraOracleGetTool,
+  ChimeraOracleRecentTool,
   ChimeraObligationClaimTool,
   ChimeraObligationIgnoreTool,
   ChimeraObligationResolveTool,
@@ -139,6 +141,8 @@ export const layer: Layer.Layer<
     const chimeraImpactTool = yield* ChimeraImpactTool
     const chimeraAuditTool = yield* ChimeraAuditTool
     const chimeraAuditRecentTool = yield* ChimeraAuditRecentTool
+    const chimeraOracleRecentTool = yield* ChimeraOracleRecentTool
+    const chimeraOracleGetTool = yield* ChimeraOracleGetTool
     const chimeraObligationsListTool = yield* ChimeraObligationsListTool
     const chimeraObligationsSyncTool = yield* ChimeraObligationsSyncTool
     const chimeraObligationClaimTool = yield* ChimeraObligationClaimTool
@@ -249,6 +253,8 @@ export const layer: Layer.Layer<
           chimeraImpact: Tool.init(chimeraImpactTool),
           chimeraAudit: Tool.init(chimeraAuditTool),
           chimeraAuditRecent: Tool.init(chimeraAuditRecentTool),
+          chimeraOracleRecent: Tool.init(chimeraOracleRecentTool),
+          chimeraOracleGet: Tool.init(chimeraOracleGetTool),
           chimeraObligationsList: Tool.init(chimeraObligationsListTool),
           chimeraObligationsSync: Tool.init(chimeraObligationsSyncTool),
           chimeraObligationClaim: Tool.init(chimeraObligationClaimTool),
@@ -281,6 +287,8 @@ export const layer: Layer.Layer<
             tool.chimeraImpact,
             tool.chimeraAuditRecent,
             tool.chimeraAudit,
+            tool.chimeraOracleRecent,
+            tool.chimeraOracleGet,
             tool.chimeraObligationsList,
             tool.chimeraObligationsSync,
             tool.chimeraObligationClaim,

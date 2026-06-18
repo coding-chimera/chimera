@@ -22,6 +22,7 @@ import { ChildProcess } from "effect/unstable/process"
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
 import { ShellPrompt, type Parameters } from "./shell/prompt"
 import { BashArity } from "@/permission/arity"
+import { Chimera } from "@/chimera"
 
 export { Parameters } from "./shell/prompt"
 
@@ -433,6 +434,7 @@ export const ShellTool = Tool.define(
     ) {
       const limits = yield* trunc.limits()
       const keep = limits.maxBytes * 2
+      const startedAt = new Date().toISOString()
       let full = ""
       let last = ""
       const list: Chunk[] = []
@@ -566,7 +568,7 @@ export const ShellTool = Tool.define(
         )
       }
 
-      return {
+      const result = {
         title: input.description,
         metadata: {
           output: last || preview(output),
@@ -577,6 +579,30 @@ export const ShellTool = Tool.define(
         },
         output,
       }
+      const finishedAt = new Date().toISOString()
+      yield* Chimera.recordToolOracle({
+        kind: "shell",
+        toolID: ShellID.ToolID,
+        ctx,
+        status: code === 0 && !expired && !aborted ? "pass" : "fail",
+        startedAt,
+        finishedAt,
+        payload: {
+          shell: {
+            command: input.command,
+            cwd: input.cwd,
+            description: input.description,
+            exit: code,
+            output,
+            truncated: cut,
+            timeout: input.timeout,
+            expired,
+            aborted,
+            ...(cut && file ? { outputPath: file } : {}),
+          },
+        },
+      }).pipe(Effect.ignore)
+      return result
     })
 
     return () =>
