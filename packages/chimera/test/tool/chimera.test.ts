@@ -5,7 +5,7 @@ import { Effect, Layer } from "effect"
 import { Bus } from "@/bus"
 import { Chimera } from "@/chimera"
 import { ChimeraPromptContext } from "@/chimera/prompt-context"
-import { readPredesignRuns } from "@/chimera/store"
+import { readAuditRuns, readPredesignRuns } from "@/chimera/store"
 import { DatabaseConnection, getDatabasePath } from "@/graph"
 import { Agent } from "@/agent/agent"
 import { MessageID, SessionID } from "@/session/schema"
@@ -745,10 +745,13 @@ describe("tool.chimera", () => {
       const fact = result.metadata.changeFacts.find((item) => item.subjectKind === "body" && item.filePath === "body-visible.ts")
 
       expect(result.metadata.source).toBe("recent_provenance")
+      expect(result.metadata.auditRunID).toEqual(expect.any(String))
+      expect(result.output).toContain(`Audit run: ${result.metadata.auditRunID}`)
       expect(fact?.confidence).toBeGreaterThanOrEqual(0.8)
       expect(fact?.evidence.rule).toBe("codegraph.language.body.caller_visible")
       expect(fact?.evidence.languageSignals?.some((signal) => signal.kind === "return_value_changed")).toBe(true)
       expect(result.output).toContain("codegraph_language_signal:return_value_changed")
+      expect((yield* Effect.promise(() => readAuditRuns(test.directory, { provenanceID: result.metadata.provenance?.id }))).some((item) => item.id === result.metadata.auditRunID)).toBe(true)
     }),
   )
 
@@ -809,6 +812,9 @@ describe("tool.chimera", () => {
       const context = yield* promptContext.render(ctx.sessionID)
       expect(context).toContain("## Chimera Execution Context")
       expect(context).toContain("Active Obligations")
+      expect(context).toContain("Closeout Gate")
+      expect(context).toContain("ordinary:")
+      expect(context).toContain("apocalypse:")
       expect(context).toContain(obligation.id)
 
       const claimed = yield* runObligationClaim({ obligationID: obligation.id })

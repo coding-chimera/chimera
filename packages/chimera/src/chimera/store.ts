@@ -70,6 +70,11 @@ export type AuditRunInput = {
   payload: unknown
 }
 
+export type AuditRunRecord = AuditRunInput & {
+  id: string
+  createdAt: string
+}
+
 export type PredesignRunInput = {
   sessionID: string
   messageID: string
@@ -645,6 +650,17 @@ function readSemanticRelations(db: ChimeraDb, hashes: string[] | undefined) {
   })
 }
 
+function withReplayLifecycle(fact: ChangeFact, input: NonNullable<ChangeFact["evidence"]["replayLifecycle"]>): ChangeFact {
+  return {
+    ...fact,
+    evidence: {
+      ...fact.evidence,
+      replayLifecycle: input,
+      signals: unique([...fact.evidence.signals, `replay_lifecycle:${input.status}`]),
+    },
+  }
+}
+
 function hydrateFactFromSemanticSnapshots(db: ChimeraDb, fact: ChangeFact): ChangeFact {
   const refs = fact.evidence.semanticSnapshots
   if (!refs) return fact
@@ -652,13 +668,31 @@ function hydrateFactFromSemanticSnapshots(db: ChimeraDb, fact: ChangeFact): Chan
   if (expectedRelations === 0) return fact
   const beforeRelations = readSemanticRelations(db, refs.beforeRelationHashes)
   const afterRelations = readSemanticRelations(db, refs.afterRelationHashes)
-  if (beforeRelations.length + afterRelations.length !== expectedRelations) return fact
+  const foundRelations = beforeRelations.length + afterRelations.length
+  if (foundRelations !== expectedRelations) {
+    return withReplayLifecycle(fact, {
+      version: 1,
+      status: "missing_snapshot_refs",
+      reason: "semantic snapshot relation refs could not all be resolved from chimera_semantic_object",
+      sourceRevision: fact.evidence.graph.beforeRevision ?? fact.evidence.graph.afterRevision,
+      expectedRefs: expectedRelations,
+      foundRefs: foundRelations,
+    })
+  }
   return {
     ...fact,
     evidence: {
       ...fact.evidence,
       relationDelta: diffRelations(beforeRelations, afterRelations),
-      signals: unique(["semantic_snapshot_refs", ...fact.evidence.signals]),
+      replayLifecycle: {
+        version: 1 as const,
+        status: "replayable" as const,
+        reason: "relation delta hydrated from semantic snapshot refs",
+        sourceRevision: fact.evidence.graph.beforeRevision ?? fact.evidence.graph.afterRevision,
+        expectedRefs: expectedRelations,
+        foundRefs: foundRelations,
+      },
+      signals: unique(["semantic_snapshot_refs", "semantic_snapshot_refs_hydrated", "replay_lifecycle:replayable", ...fact.evidence.signals]),
     },
   }
 }
@@ -886,6 +920,48 @@ export async function recordAuditRun(projectRoot: string, input: AuditRunInput) 
     return true
   })
   return id
+}
+
+export async function readAuditRuns(projectRoot: string, options: { provenanceID?: string; limit?: number } = {}) {
+  const limit = Math.max(1, Math.min(100, Math.floor(options.limit ?? 20)))
+  const records = await withDb(projectRoot, (db) => {
+    const rows = options.provenanceID
+      ? db.prepare(`
+          SELECT id, source, provenance_id, changed_files_json, snapshot_revision, seed_nodes_json, obligations_json, payload_json, created_at
+          FROM chimera_audit_run
+          WHERE provenance_id = ?
+          ORDER BY created_at DESC, id DESC
+          LIMIT ?
+        `).all(options.provenanceID, limit)
+      : db.prepare(`
+          SELECT id, source, provenance_id, changed_files_json, snapshot_revision, seed_nodes_json, obligations_json, payload_json, created_at
+          FROM chimera_audit_run
+          ORDER BY created_at DESC, id DESC
+          LIMIT ?
+        `).all(limit)
+    return (rows as Array<{
+      id: string
+      source: string
+      provenance_id: string | null
+      changed_files_json: string
+      snapshot_revision: string
+      seed_nodes_json: string
+      obligations_json: string
+      payload_json: string
+      created_at: string
+    }>).map((row): AuditRunRecord => ({
+      id: row.id,
+      source: row.source,
+      provenanceID: row.provenance_id ?? undefined,
+      changedFiles: parseJson<string[]>(row.changed_files_json)[0] ?? [],
+      snapshotRevision: row.snapshot_revision,
+      seedNodes: parseJson<unknown[]>(row.seed_nodes_json)[0] ?? [],
+      obligations: parseJson<unknown[]>(row.obligations_json)[0] ?? [],
+      payload: parseJson<unknown>(row.payload_json)[0],
+      createdAt: row.created_at,
+    }))
+  })
+  return records ?? []
 }
 
 export async function recordPredesignRun(projectRoot: string, artifact: string, input: PredesignRunInput) {

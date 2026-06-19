@@ -1,7 +1,7 @@
 import path from "path"
 import { Context, Effect, Layer } from "effect"
 import { InstanceState } from "@/effect/instance-state"
-import { readPersistentObligationStore, readPredesignRuns, readProvenanceRecords, type PredesignRunRecord } from "./store"
+import { readAuditRuns, readOracleResults, readPersistentObligationStore, readPredesignRuns, readProvenanceRecords, type AuditRunRecord, type OracleRecord, type PredesignRunRecord } from "./store"
 import type { ToolMutationRecord } from "./provenance"
 import type { SessionID } from "@/session/schema"
 
@@ -21,6 +21,14 @@ type PromptObligation = {
   evidence: string
   createdAt: string
   updatedAt: string
+  staleReason?: string
+  replayLifecycle?: {
+    version: 1
+    status: string
+    reason: string
+    sourceRevision?: string
+    currentRevision?: string
+  }
 }
 
 type ObligationStore = {
@@ -113,8 +121,45 @@ function closeoutSignals(recent: ToolMutationRecord[], obligations: PromptObliga
   ]
 }
 
-function renderContext(recent: ToolMutationRecord[], obligations: PromptObligation[], predesigns: PredesignRunRecord[]) {
-  if (recent.length === 0 && obligations.length === 0 && predesigns.length === 0) return undefined
+function linkedToLatest(oracle: OracleRecord, latest: ToolMutationRecord | undefined) {
+  if (!latest) return false
+  return oracle.linkedChanges.some((change) => change.id === latest.id)
+}
+
+function latestAudit(audits: AuditRunRecord[], latest: ToolMutationRecord | undefined) {
+  if (!latest) return undefined
+  return audits.find((audit) => audit.provenanceID === latest.id)
+}
+
+function gateLine(mode: "ordinary" | "apocalypse", decision: "pass" | "warn" | "block", reasons: string[]) {
+  return `- ${mode}: ${decision}${reasons.length ? ` — ${reasons.join("; ")}` : ""}`
+}
+
+function closeoutGate(recent: ToolMutationRecord[], obligations: PromptObligation[], audits: AuditRunRecord[], oracles: OracleRecord[]) {
+  const latest = recent[0]
+  const audit = latestAudit(audits, latest)
+  const linkedOracles = oracles.filter((oracle) => linkedToLatest(oracle, latest))
+  const ordinaryReasons = [
+    latest && !audit ? "latest mutation still needs recorded chimera_audit_recent evidence" : undefined,
+    obligations.length ? "active obligations remain; review, resolve, ignore, or explicitly justify ordinary closeout" : undefined,
+    linkedOracles.length ? "failing/unknown oracle evidence is linked to the latest mutation; recall before closeout" : undefined,
+  ].filter((item): item is string => Boolean(item))
+  const apocalypseReasons = [
+    latest && !audit ? "latest mutation has no recorded audit run" : undefined,
+    obligations.length ? "all active obligations must be resolved or ignored" : undefined,
+    linkedOracles.length ? "linked failing/unknown oracle evidence must be recalled and addressed" : undefined,
+    latest && audit ? undefined : !latest ? undefined : "verification evidence or not-applicable rationale must be explicit",
+  ].filter((item): item is string => Boolean(item))
+
+  return [
+    gateLine("ordinary", ordinaryReasons.length ? "warn" : "pass", ordinaryReasons),
+    gateLine("apocalypse", apocalypseReasons.length ? "block" : "pass", apocalypseReasons),
+    audit ? `- latest audit evidence: ${audit.id} at ${audit.createdAt}` : "- latest audit evidence: none recorded for latest mutation",
+  ]
+}
+
+function renderContext(recent: ToolMutationRecord[], obligations: PromptObligation[], predesigns: PredesignRunRecord[], audits: AuditRunRecord[], oracles: OracleRecord[]) {
+  if (recent.length === 0 && obligations.length === 0 && predesigns.length === 0 && audits.length === 0 && oracles.length === 0) return undefined
   return [
     "## Chimera Execution Context",
     "",
@@ -143,10 +188,13 @@ function renderContext(recent: ToolMutationRecord[], obligations: PromptObligati
     "Active Obligations:",
     ...(obligations.length
       ? obligations.map(
-          (item) =>
-            `- ${item.id} [${item.status}] ${item.target}; risk: ${item.risk}; evidence: ${item.evidence}; reason: ${compact(item.reason)}`,
-        )
+        (item) =>
+            `- ${item.id} [${item.status}] ${item.target}; risk: ${item.risk}; evidence: ${item.evidence}; lifecycle: ${item.replayLifecycle?.status ?? "unknown"}; reason: ${compact(item.staleReason ?? item.reason)}`,
+      )
       : ["- None active."]),
+    "",
+    "Closeout Gate:",
+    ...closeoutGate(recent, obligations, audits, oracles),
     "",
     "Closeout Signals:",
     ...closeoutSignals(recent, obligations, predesigns),
@@ -170,7 +218,11 @@ export const layer = Layer.effect(
           obligations: [],
         }),
       )
-      return renderContext(recentMutations(records, sessionID), activeObligations(store), recentPredesigns(predesigns, sessionID))
+      const audits = yield* Effect.promise(() => readAuditRuns(root, { limit: 20 }))
+      const oracles = yield* Effect.promise(() =>
+        readOracleResults(root, path.join(dir, "oracle-results.jsonl"), { sessionID, limit: 20, includePassing: false }),
+      )
+      return renderContext(recentMutations(records, sessionID), activeObligations(store), recentPredesigns(predesigns, sessionID), audits, oracles)
     })
 
     return Service.of({ render })

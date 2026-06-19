@@ -75,6 +75,15 @@ export type ChangeFactEvidence = {
     beforeRelationHashes?: string[]
     afterRelationHashes?: string[]
   }
+  replayLifecycle?: {
+    version: 1
+    status: "current" | "replayable" | "missing_snapshot_refs" | "stale_revision" | "missing_target"
+    reason: string
+    sourceRevision?: string
+    currentRevision?: string
+    expectedRefs?: number
+    foundRefs?: number
+  }
   signals: string[]
 }
 
