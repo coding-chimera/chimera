@@ -30,13 +30,15 @@ function record(input: {
   patch?: string
   metadata?: Record<string, unknown>
   syncStatus?: "added" | "modified" | "removed"
+  origin?: ToolMutationRecord["origin"]
+  provenanceStrength?: ToolMutationRecord["provenanceStrength"]
 } = {}): ToolMutationRecord {
   const filePath = input.filePath ?? "sample.ts"
   return {
     schemaVersion: 1,
     id: `event:${filePath}`,
-    origin: "tool",
-    provenanceStrength: "strong",
+    origin: input.origin ?? "tool",
+    provenanceStrength: input.provenanceStrength ?? "strong",
     tool: {
       id: "write",
       messageID: "msg",
@@ -409,6 +411,76 @@ describe("change classifier", () => {
     expect(exported?.evidence.signals).toContain("source:codegraph:diff_classifier")
     expect(exported?.evidence.signals).not.toContain("temporary_heuristic")
     expect(facts.every((fact) => !fact.evidence.rule.startsWith("temporary_heuristic."))).toBe(true)
+  })
+
+  test("classifies route node mutations as route facts", () => {
+    const patch = `--- src/routes/users.ts
++++ src/routes/users.ts
+@@ -1,1 +1,1 @@
+-router.get('/users', listUsers)
++router.post('/users', listUsers)
+`
+    const before = node({ id: "before-route", kind: "route", name: "GET /users", filePath: "src/routes/users.ts", startLine: 1, endLine: 1 })
+    const after = node({ id: "after-route", kind: "route", name: "POST /users", filePath: "src/routes/users.ts", startLine: 1, endLine: 1 })
+    const facts = classifyChangeRecord({ record: record({ filePath: "src/routes/users.ts", patch }), beforeNodes: [before], afterNodes: [after] })
+
+    const route = facts.find((fact) => fact.subjectKind === "route" && fact.evidence.rule === "range.node.route")
+    expect(route?.subjectKind).toBe("route")
+    expect(route?.evidence.rule).toBe("range.node.route")
+    expect(route?.nodeKey).toContain(":route:POST /users")
+    expect(route?.evidence.signals).toContain("node_kind:route")
+  })
+
+  test("classifies schema node mutations as schema facts", () => {
+    const patch = `--- sample.ts
++++ sample.ts
+@@ -1,3 +1,3 @@
+ interface User {
+-name: string
++name: number
+ }
+`
+    const before = node({ id: "before-user", kind: "interface", name: "User", startLine: 1, endLine: 3, signature: "interface User { name: string }" })
+    const after = node({ id: "after-user", kind: "interface", name: "User", startLine: 1, endLine: 3, signature: "interface User { name: number }" })
+    const facts = classifyChangeRecord({ record: record({ patch }), beforeNodes: [before], afterNodes: [after] })
+
+    const schema = facts.find((fact) => fact.subjectKind === "schema")
+    expect(schema?.evidence.rule).toBe("range.node.schema")
+    expect(schema?.nodeKey).toContain(":interface:User")
+  })
+
+  test("preserves tool move metadata old path and move status", () => {
+    const patch = `--- old.ts
++++ new.ts
+@@ -1,1 +1,1 @@
+-export const value = 1
++export const value = 2
+`
+    const facts = classifyChangeRecord({
+      record: record({
+        filePath: "new.ts",
+        metadata: {
+          files: [{ type: "move", filePath: "/project/old.ts", movePath: "/project/new.ts", patch }],
+        },
+      }),
+    })
+
+    const file = facts.find((fact) => fact.filePath === "new.ts" && fact.subjectKind === "file")
+    const moved = facts.find((fact) => fact.filePath === "new.ts" && fact.oldPath === "old.ts" && fact.evidence.file.status === "move")
+    expect(file?.changeKind).toBe("move")
+    expect(moved?.evidence.file.oldPath).toBe("old.ts")
+    expect(moved?.evidence.file.status).toBe("move")
+  })
+
+  test("downgrades weak git provenance file facts", () => {
+    const facts = classifyChangeRecord({
+      record: record({ origin: "git", provenanceStrength: "weak", syncStatus: "modified" }),
+    })
+
+    const file = facts.find((fact) => fact.subjectKind === "file")
+    expect(file?.confidence).toBe(0.35)
+    expect(file?.evidence.source).toBe("git_diff")
+    expect(file?.evidence.signals).toContain("status_source:codegraph_sync")
   })
 
   test("stores CodeGraph relation delta evidence for deleted node facts", () => {

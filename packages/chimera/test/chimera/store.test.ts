@@ -161,7 +161,7 @@ function fact(input: { eventID: string; beforeNode: FrozenSemanticObject; relati
 }
 
 describe("Chimera store", () => {
-  test("creates audit and semantic snapshot tables through CodeGraph storage extension", async () => {
+  test("creates audit, semantic snapshot, and oracle tables through CodeGraph storage extension", async () => {
     await using tmp = await tmpdir()
     DatabaseConnection.initialize(getDatabasePath(tmp.path)).close()
 
@@ -174,11 +174,12 @@ describe("Chimera store", () => {
     const db = DatabaseConnection.open(getDatabasePath(tmp.path))
     try {
       const tables = (db.getDb().prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((row) => row.name)
-      expect(db.getStorageExtensionVersion("chimera")).toBe(2)
+      expect(db.getStorageExtensionVersion("chimera")).toBe(3)
       expect(tables).toContain("chimera_change_event")
       expect(tables).toContain("chimera_semantic_snapshot")
       expect(tables).toContain("chimera_semantic_object")
       expect(tables).toContain("chimera_semantic_snapshot_ref")
+      expect(tables).toContain("chimera_oracle_result")
     } finally {
       db.close()
     }

@@ -466,6 +466,7 @@ type AuditMetadata = {
   fileDependents: string[]
   obligations: AuditCandidate[]
   provenance?: ToolMutationRecord
+  auditRunID?: string
 }
 
 type OracleMetadata = {
@@ -484,6 +485,14 @@ type ObligationActor = {
   callID?: string
   agent: string
   at: string
+}
+
+type ObligationReplayLifecycle = {
+  version: 1
+  status: "current" | "replayable" | "missing_target" | "stale_revision"
+  reason: string
+  sourceRevision?: string
+  currentRevision?: string
 }
 
 type PersistentObligation = {
@@ -511,6 +520,8 @@ type PersistentObligation = {
   claimedBy?: ObligationActor
   resolvedBy?: ObligationActor & { note?: string }
   ignoredBy?: ObligationActor & { reason: string; note?: string }
+  staleReason?: string
+  replayLifecycle?: ObligationReplayLifecycle
 }
 
 type ObligationStore = {
@@ -918,6 +929,9 @@ function formatChangeFact(fact: ChangeFact) {
     `  reason: ${fact.evidence.confidenceReason}`,
     relationDelta
       ? `  relation_delta: +${relationDelta.addedRelations.length} -${relationDelta.removedRelations.length} before:${relationDelta.beforeRelations.length} after:${relationDelta.afterRelations.length}`
+      : undefined,
+    fact.evidence.replayLifecycle
+      ? `  replay_lifecycle: ${fact.evidence.replayLifecycle.status} (${fact.evidence.replayLifecycle.reason})`
       : undefined,
     fact.evidence.signals.length ? `  signals: ${fact.evidence.signals.join(", ")}` : undefined,
   ]
@@ -1420,6 +1434,13 @@ function makeObligation(audit: AuditMetadata, candidate: AuditCandidate, now: st
       seedNodes: audit.seedNodes,
       changeFacts: audit.changeFacts,
     },
+    replayLifecycle: {
+      version: 1,
+      status: "current",
+      reason: "obligation was created from the current audit snapshot",
+      sourceRevision: audit.snapshot.revision,
+      currentRevision: audit.snapshot.revision,
+    },
     createdAt: now,
     updatedAt: now,
   }
@@ -1463,16 +1484,44 @@ function upsertObligations(store: ObligationStore, audit: AuditMetadata, now: st
 
 function refreshStaleObligations(
   store: ObligationStore,
-  state: { graph: { node: (id: string) => CodeGraphNode | null | undefined } },
+  state: { graph: { node: (id: string) => CodeGraphNode | null | undefined; snapshot: () => CodeGraphSnapshot } },
   now: string,
 ) {
+  const currentRevision = state.graph.snapshot().revision
   return {
     schemaVersion: 1 as const,
     obligations: store.obligations.map((item) => {
       const codegraphID = item.targetNode?.source.codegraphId
       if (!codegraphID || item.status === "resolved" || item.status === "ignored") return item
-      if (state.graph.node(codegraphID)) return item
-      return { ...item, status: "stale" as const, updatedAt: now }
+      if (!state.graph.node(codegraphID)) {
+        return {
+          ...item,
+          status: "stale" as const,
+          staleReason: "target node is missing from the current CodeGraph index",
+          replayLifecycle: {
+            version: 1 as const,
+            status: "missing_target" as const,
+            reason: "target node is missing from the current CodeGraph index",
+            sourceRevision: item.source.snapshotRevision,
+            currentRevision,
+          },
+          updatedAt: now,
+        }
+      }
+      const lifecycleStatus: ObligationReplayLifecycle["status"] = item.source.snapshotRevision === currentRevision ? "current" : "replayable"
+      return {
+        ...item,
+        staleReason: lifecycleStatus === "current" ? undefined : item.staleReason,
+        replayLifecycle: {
+          version: 1 as const,
+          status: lifecycleStatus,
+          reason: lifecycleStatus === "current"
+            ? "source audit snapshot matches the current graph revision"
+            : "source audit snapshot differs, but target node still resolves in the current graph",
+          sourceRevision: item.source.snapshotRevision,
+          currentRevision,
+        },
+      }
     }),
   }
 }
@@ -1507,6 +1556,8 @@ function formatObligation(item: PersistentObligation) {
     `  risk: ${item.risk}`,
     item.classification ? `  classification: ${item.classification}` : undefined,
     `  evidence: ${item.evidence}`,
+    item.replayLifecycle ? `  lifecycle: ${item.replayLifecycle.status} (${item.replayLifecycle.reason})` : undefined,
+    item.staleReason ? `  stale_reason: ${item.staleReason}` : undefined,
     item.causeChain?.length ? `  cause_chain: ${formatCauseChain(item.causeChain)}` : undefined,
   ]
     .filter(Boolean)
@@ -1570,6 +1621,7 @@ function formatAuditOutput(audit: AuditMetadata) {
     "Chimera propagation audit (non-persistent first pass).",
     `Source: ${audit.source}`,
     `Graph revision: ${audit.snapshot.revision}`,
+    audit.auditRunID ? `Audit run: ${audit.auditRunID}` : undefined,
     "",
     `Changed files (${audit.changedFiles.length}):`,
     ...(audit.changedFiles.length ? audit.changedFiles.map((file) => `- ${file}`) : ["- None supplied or found."]),
@@ -1627,7 +1679,21 @@ function compactOraclePayload(input: unknown, maxOutputChars: number) {
   }
 }
 
-function oracleEnvelope(record: OracleRecord, maxOutputChars: number) {
+function oracleLinkedChangeLifecycle(change: OracleRecord["linkedChanges"][number], currentRevision?: string) {
+  if (!currentRevision) return undefined
+  const status = change.afterRevision === currentRevision ? "current" : "replayable"
+  return {
+    version: 1,
+    status,
+    reason: status === "current"
+      ? "linked mutation after-revision matches the current graph revision"
+      : "linked mutation revision differs, but oracle provenance remains replayable evidence",
+    sourceRevision: change.afterRevision,
+    currentRevision,
+  }
+}
+
+function oracleEnvelope(record: OracleRecord, maxOutputChars: number, currentRevision?: string) {
   return {
     oracle: {
       id: record.id,
@@ -1641,7 +1707,10 @@ function oracleEnvelope(record: OracleRecord, maxOutputChars: number) {
       payload: compactOraclePayload(record.payload, maxOutputChars),
     },
     linkWindow: record.linkWindow,
-    linkedChanges: record.linkedChanges,
+    linkedChanges: record.linkedChanges.map((change) => ({
+      ...change,
+      replayLifecycle: oracleLinkedChangeLifecycle(change, currentRevision),
+    })),
   }
 }
 
@@ -1723,6 +1792,20 @@ const buildAudit = Effect.fn("ChimeraTool.buildAudit")(function* (params: BuildA
     ...(source === "recent_provenance" && recent ? { provenance: recent } : {}),
   }
 })
+
+function persistAuditRun(audit: AuditMetadata) {
+  return Effect.promise(() =>
+    recordAuditRun(audit.projectRoot, {
+      source: audit.source,
+      provenanceID: audit.provenance?.id,
+      changedFiles: audit.changedFiles,
+      snapshotRevision: audit.snapshot.revision,
+      seedNodes: audit.seedNodes,
+      obligations: audit.obligations,
+      payload: audit,
+    }),
+  )
+}
 
 export const ChimeraStatusTool = Tool.define<typeof StatusParameters, StatusMetadata, never>(
   "chimera_status",
@@ -2123,11 +2206,13 @@ export const ChimeraAuditTool = Tool.define<typeof AuditParameters, AuditMetadat
           refresh: params.refresh !== false,
         })
         const audit = yield* buildAudit({ ...params, recent: false }, { ctx: ctx as Tool.Context })
+        const auditRunID = yield* persistAuditRun(audit)
+        const recorded = { ...audit, auditRunID }
 
         return {
           title: "Chimera audit",
-          output: formatAuditOutput(audit),
-          metadata: audit,
+          output: formatAuditOutput(recorded),
+          metadata: recorded,
         }
       }).pipe(Effect.orDie),
   }),
@@ -2144,11 +2229,13 @@ export const ChimeraAuditRecentTool = Tool.define<typeof RecentAuditParameters, 
           refresh: params.refresh !== false,
         })
         const audit = yield* buildAudit(params, { ctx: ctx as Tool.Context })
+        const auditRunID = yield* persistAuditRun(audit)
+        const recorded = { ...audit, auditRunID }
 
         return {
           title: "Chimera audit",
-          output: formatAuditOutput(audit),
-          metadata: audit,
+          output: formatAuditOutput(recorded),
+          metadata: recorded,
         }
       }).pipe(Effect.orDie),
   }),
@@ -2174,8 +2261,9 @@ export const ChimeraOracleRecentTool = Tool.define<typeof OracleRecentParameters
             includePassing: params.includePassing ?? false,
           }),
         ).pipe(Effect.orDie)
+        const currentRevision = state.graph.snapshot().revision
         const output = {
-          oracles: oracles.map((record) => oracleEnvelope(record, 2_000)),
+          oracles: oracles.map((record) => oracleEnvelope(record, 2_000, currentRevision)),
         }
         return {
           title: "Chimera oracle results",
@@ -2203,7 +2291,7 @@ export const ChimeraOracleGetTool = Tool.define<typeof OracleGetParameters, Orac
         const artifact = oracleArtifact(state.artifact)
         const oracle = yield* Effect.promise(() => readOracleResult(state.projectRoot, artifact, params.oracleID)).pipe(Effect.orDie)
         if (!oracle) throw new Error(`unknown Chimera oracle result: ${params.oracleID}`)
-        const output = oracleEnvelope(oracle, outputCharLimit(params.maxOutputChars))
+        const output = oracleEnvelope(oracle, outputCharLimit(params.maxOutputChars), state.graph.snapshot().revision)
         return {
           title: "Chimera oracle result",
           output: JSON.stringify(output, null, 2),
