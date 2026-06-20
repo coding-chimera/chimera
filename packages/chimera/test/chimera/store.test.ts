@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test"
+import fs from "fs/promises"
 import path from "path"
 import { DatabaseConnection, getDatabasePath, type FrozenRelation, type FrozenSemanticObject } from "@/graph"
-import { appendProvenanceRecord, readChangeFacts, writeChangeFacts } from "../../src/chimera/store"
+import { appendProvenanceRecord, readChangeFacts, readPersistentObligationStore, writeChangeFacts } from "../../src/chimera/store"
 import type { ChangeFact } from "../../src/chimera/change-classifier"
 import type { ToolMutationRecord } from "../../src/chimera/provenance"
 import { tmpdir } from "../fixture/fixture"
@@ -218,6 +219,10 @@ describe("Chimera store", () => {
     expect(stored?.evidence.signals).toContain("semantic_snapshot_refs")
     expect(stored?.evidence.relationDelta?.removedRelations).toHaveLength(1)
     expect(stored?.evidence.relationDelta?.removedRelations[0]?.payload.otherNode.name).toBe("caller")
+    expect(stored?.evidence.replayLifecycle?.status).toBe("replayable")
+    expect(stored?.evidence.replayLifecycle?.expectedRefs).toBe(1)
+    expect(stored?.evidence.replayLifecycle?.foundRefs).toBe(1)
+    expect(stored?.evidence.signals).toContain("replay_lifecycle:replayable")
   })
 
   test("keeps legacy compact relation evidence when semantic snapshot refs are absent", async () => {
@@ -252,5 +257,74 @@ describe("Chimera store", () => {
     expect(stored?.evidence.signals).not.toContain("semantic_snapshot_refs")
     expect(stored?.evidence.relationDelta?.removedRelations).toHaveLength(1)
     expect(stored?.evidence.relationDelta?.removedRelations[0]?.payload.otherNode.name).toBe("caller")
+  })
+
+  test("marks semantic snapshot refs missing when compact objects are absent", async () => {
+    await using tmp = await tmpdir()
+    DatabaseConnection.initialize(getDatabasePath(tmp.path)).close()
+    await appendProvenanceRecord(
+      tmp.path,
+      path.join(tmp.path, ".codegraph", "chimera", "tool-provenance.jsonl"),
+      record(tmp.path),
+    )
+
+    const focal = node("focal", "target")
+    const caller = node("caller", "caller")
+    await writeChangeFacts(tmp.path, [fact({ eventID: "event:store-test", beforeNode: focal, relation: relation(focal, caller) })])
+
+    const db = DatabaseConnection.open(getDatabasePath(tmp.path))
+    try {
+      const row = db.getDb().prepare("SELECT payload_json FROM chimera_change_fact WHERE id = ?").get("fact_store_test") as { payload_json: string }
+      const payload = JSON.parse(row.payload_json) as ChangeFact
+      delete payload.evidence.relationDelta
+      db.getDb().prepare("UPDATE chimera_change_fact SET payload_json = ?, evidence_json = ? WHERE id = ?").run(
+        JSON.stringify(payload),
+        JSON.stringify(payload.evidence),
+        payload.id,
+      )
+      db.getDb().prepare("DELETE FROM chimera_semantic_object WHERE kind = 'relation'").run()
+    } finally {
+      db.close()
+    }
+
+    const [stored] = await readChangeFacts(tmp.path, ["event:store-test"])
+    expect(stored?.evidence.relationDelta).toBeUndefined()
+    expect(stored?.evidence.replayLifecycle?.status).toBe("missing_snapshot_refs")
+    expect(stored?.evidence.replayLifecycle?.expectedRefs).toBe(1)
+    expect(stored?.evidence.replayLifecycle?.foundRefs).toBe(0)
+    expect(stored?.evidence.signals).toContain("replay_lifecycle:missing_snapshot_refs")
+  })
+
+  test("imports legacy persistent obligations into the database store", async () => {
+    await using tmp = await tmpdir()
+    DatabaseConnection.initialize(getDatabasePath(tmp.path)).close()
+    const artifact = path.join(tmp.path, ".codegraph", "chimera", "obligations.json")
+    const obligation = {
+      id: "obl_legacy",
+      fingerprint: "legacy:fingerprint",
+      status: "pending",
+      target: "legacy.ts",
+      risk: "behavior",
+      classification: "source",
+      reason: "legacy obligation artifact",
+      evidence: "legacy:evidence",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    }
+
+    await fs.mkdir(path.dirname(artifact), { recursive: true })
+    await Bun.write(artifact, `${JSON.stringify({ schemaVersion: 1, obligations: [obligation] })}\n`)
+
+    const store = await readPersistentObligationStore<typeof obligation>(tmp.path, artifact, { schemaVersion: 1, obligations: [] })
+    expect(store.obligations).toHaveLength(1)
+    expect(store.obligations[0]).toMatchObject({ id: "obl_legacy", target: "legacy.ts", status: "pending" })
+
+    const db = DatabaseConnection.open(getDatabasePath(tmp.path))
+    try {
+      const row = db.getDb().prepare("SELECT COUNT(*) as count FROM chimera_audit_obligation WHERE id = ?").get(obligation.id) as { count: number }
+      expect(row.count).toBe(1)
+    } finally {
+      db.close()
+    }
   })
 })
