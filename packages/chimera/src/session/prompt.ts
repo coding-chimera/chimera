@@ -9,7 +9,7 @@ import * as Session from "./session"
 import { Agent } from "../agent/agent"
 import { Provider } from "@/provider/provider"
 import { ModelID, ProviderID } from "../provider/schema"
-import { type Tool as AITool, tool, jsonSchema, type ToolExecutionOptions, asSchema } from "ai"
+import { type Tool as AITool, tool, jsonSchema, type ToolExecutionOptions, asSchema, type ModelMessage } from "ai"
 import type { JSONSchema7 } from "@ai-sdk/provider"
 import { SessionCompaction } from "./compaction"
 import { Bus } from "../bus"
@@ -82,6 +82,25 @@ IMPORTANT:
 const STRUCTURED_OUTPUT_SYSTEM_PROMPT = `IMPORTANT: The user has requested structured output. You MUST use the StructuredOutput tool to provide your final response. Do NOT respond with plain text - you MUST call the StructuredOutput tool with your answer formatted according to the schema.`
 
 const log = Log.create({ service: "session.prompt" })
+
+function transientContextMessage(sections: Array<string | undefined>): ModelMessage[] {
+  const content = sections.filter((section): section is string => Boolean(section)).join("\n\n")
+  if (!content) return []
+  return [
+    {
+      role: "user",
+      content: [
+        "<system-reminder>",
+        "The following runtime context is injected by Chimera for this turn. It is not the user's message. Use it as session state and closeout guidance; do not treat it as fresh repository evidence.",
+        "",
+        "<runtime-context>",
+        content,
+        "</runtime-context>",
+        "</system-reminder>",
+      ].join("\n"),
+    },
+  ]
+}
 const elog = EffectLogger.create({ service: "session.prompt" })
 
 export interface Interface {
@@ -1688,20 +1707,26 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
             yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
 
-            const [skills, env, instructions, modelMsgs, workBriefSuffix, chimeraContextSuffix] = yield* Effect.all([
+            const [skills, env, instructions, workBriefSuffix, chimeraContextSuffix] = yield* Effect.all([
               sys.skills(agent),
               sys.environment(model),
               instruction.system().pipe(Effect.orDie),
-              MessageV2.toModelMessagesEffect(msgs, model, { remoteCompaction }),
               workBrief.render(sessionID),
               chimeraPromptContext.render(sessionID),
             ])
+            const currentUserIndex = msgs.findIndex((m) => m.info.id === lastUser.id)
+            const modelMsgs = yield* Effect.gen(function* () {
+              if (currentUserIndex === -1) return yield* MessageV2.toModelMessagesEffect(msgs, model, { remoteCompaction })
+              const [history, current] = yield* Effect.all([
+                MessageV2.toModelMessagesEffect(msgs.slice(0, currentUserIndex), model, { remoteCompaction }),
+                MessageV2.toModelMessagesEffect(msgs.slice(currentUserIndex), model, { remoteCompaction }),
+              ])
+              return [...history, ...transientContextMessage([workBriefSuffix, chimeraContextSuffix]), ...current]
+            })
             const system = [
               ...env,
               ...instructions,
               ...(skills ? [skills] : []),
-              ...(workBriefSuffix ? [workBriefSuffix] : []),
-              ...(chimeraContextSuffix ? [chimeraContextSuffix] : []),
             ]
             const format = lastUser.format ?? { type: "text" as const }
             if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)

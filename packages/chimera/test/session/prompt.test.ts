@@ -537,9 +537,15 @@ it.live("injects current work brief into the LLM input", () =>
       yield* llm.text("world")
       yield* prompt.loop({ sessionID: session.id })
 
-      const body = JSON.stringify(yield* llm.inputs)
+      const input = (yield* llm.inputs).at(-1) as { messages?: Array<{ role?: string; content?: unknown }> } | undefined
+      const messages = input?.messages ?? []
+      const runtimeIndex = messages.findIndex((msg) => msg.role === "user" && JSON.stringify(msg).includes("ship prompt suffix"))
+      const userIndex = messages.findIndex((msg) => msg.role === "user" && JSON.stringify(msg).includes("hello"))
+      expect(runtimeIndex).toBeGreaterThan(-1)
+      expect(userIndex).toBeGreaterThan(runtimeIndex)
+      expect(JSON.stringify(messages.filter((msg) => msg.role === "system"))).not.toContain("ship prompt suffix")
+      const body = JSON.stringify(messages)
       expect(body).toContain("## Current Work Brief")
-      expect(body).toContain("ship prompt suffix")
       expect(body).toContain("Use mutable suffix instead of rewriting history.")
     }),
     { git: true, config: providerCfg },
@@ -620,8 +626,14 @@ it.live("injects Chimera execution context separately from work brief", () =>
         yield* llm.text("world")
         yield* prompt.loop({ sessionID: session.id })
 
-        const body = JSON.stringify(yield* llm.inputs)
-        expect(body).toContain("## Chimera Execution Context")
+        const input = (yield* llm.inputs).at(-1) as { messages?: Array<{ role?: string; content?: unknown }> } | undefined
+        const messages = input?.messages ?? []
+        const runtimeIndex = messages.findIndex((msg) => msg.role === "user" && JSON.stringify(msg).includes("## Chimera Execution Context"))
+        const userIndex = messages.findIndex((msg) => msg.role === "user" && JSON.stringify(msg).includes("hello"))
+        expect(runtimeIndex).toBeGreaterThan(-1)
+        expect(userIndex).toBeGreaterThan(runtimeIndex)
+        expect(JSON.stringify(messages.filter((msg) => msg.role === "system"))).not.toContain("## Chimera Execution Context")
+        const body = JSON.stringify(messages)
         expect(body).toContain("Recent Predesign Evidence")
         expect(body).toContain("predesign_prompt_context")
         expect(body).toContain("update the Chimera context suffix")
