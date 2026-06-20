@@ -27,6 +27,9 @@ import { InstanceState } from "@/effect/instance-state"
 import { ProviderID, ModelID } from "@/provider/schema"
 import { WebSearchTool } from "@/tool/websearch"
 import { Auth } from "@/auth"
+import { ApplyPatchTool } from "@/tool/apply_patch"
+import { EditTool } from "@/tool/edit"
+import { WriteTool } from "@/tool/write"
 
 const node = CrossSpawnSpawner.defaultLayer
 const configLayer = TestConfig.layer({
@@ -252,6 +255,22 @@ describe("tool.registry", () => {
       })
 
       expect(tools.map((tool) => tool.id)).not.toContain(WebSearchTool.id)
+    }),
+  )
+
+  it.instance("routes GPT models to Hashline edit tools", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const tools = yield* registry.tools({
+        providerID: ProviderID.openai,
+        modelID: ModelID.make("openai/gpt-5.5"),
+        agent: { name: "build", mode: "primary", permission: [{ permission: "task", pattern: "*", action: "allow" }], options: {} },
+      })
+      const ids = tools.map((tool) => tool.id)
+
+      expect(ids).toContain(EditTool.id)
+      expect(ids).toContain(WriteTool.id)
+      expect(ids).not.toContain(ApplyPatchTool.id)
     }),
   )
 
