@@ -461,6 +461,129 @@ describe("tool.chimera", () => {
     }),
   )
 
+
+  it.instance("filters passing oracle results and marks old linked changes replayable", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filePath = path.join(test.directory, "oracle-matrix.ts")
+      yield* trackWrite({
+        filePath,
+        content: "export function oracleMatrix() { return 2 }\n",
+        callID: "call_chimera_oracle_matrix_mutation",
+        patch: `--- oracle-matrix.ts
++++ oracle-matrix.ts
+@@ -0,0 +1,1 @@
++export function oracleMatrix() { return 2 }
+`,
+      })
+      yield* Chimera.recordToolOracle({
+        kind: "shell",
+        toolID: "bash",
+        ctx: { ...ctx, callID: "call_chimera_oracle_matrix_pass" },
+        status: "pass",
+        payload: {
+          shell: {
+            command: "bun test",
+            cwd: test.directory,
+            description: "passing test",
+            exit: 0,
+            output: "ok",
+            truncated: false,
+          },
+        },
+      })
+      yield* trackWrite({
+        filePath: path.join(test.directory, "post-oracle.ts"),
+        content: "export const postOracle = 1\n",
+        callID: "call_chimera_oracle_matrix_followup_mutation",
+        patch: `--- post-oracle.ts
++++ post-oracle.ts
+@@ -0,0 +1,1 @@
++export const postOracle = 1
+`,
+      })
+      yield* Chimera.recordToolOracle({
+        kind: "shell",
+        toolID: "bash",
+        ctx: { ...ctx, callID: "call_chimera_oracle_matrix_fail" },
+        status: "fail",
+        payload: {
+          shell: {
+            command: "bun typecheck",
+            cwd: test.directory,
+            description: "failing typecheck",
+            exit: 1,
+            output: "type error",
+            truncated: false,
+          },
+        },
+      })
+      yield* Chimera.recordToolOracle({
+        kind: "lsp",
+        toolID: "lsp",
+        ctx: { ...ctx, callID: "call_chimera_oracle_matrix_unknown" },
+        status: "unknown",
+        payload: {
+          lsp: {
+            diagnostics: { "oracle-matrix.ts": [{ message: "diagnostic" }] },
+            diagnosticCount: 1,
+          },
+        },
+      })
+
+      const filtered = yield* runOracleRecent({ limit: 10 })
+      const withPassing = yield* runOracleRecent({ limit: 10, includePassing: true })
+      const parsed = JSON.parse(withPassing.output) as {
+        oracles: Array<{
+          oracle: { status: "pass" | "fail" | "unknown" }
+          linkedChanges: Array<{ replayLifecycle?: { status: string; reason: string } }>
+        }>
+      }
+      const statuses = new Set(filtered.metadata.oracles.map((oracle) => oracle.status))
+      const passing = parsed.oracles.find((oracle) => oracle.oracle.status === "pass")
+      const failing = parsed.oracles.find((oracle) => oracle.oracle.status === "fail")
+
+      expect(statuses.has("pass")).toBe(false)
+      expect(statuses.has("fail")).toBe(true)
+      expect(statuses.has("unknown")).toBe(true)
+      expect(withPassing.metadata.oracles.some((oracle) => oracle.status === "pass")).toBe(true)
+      expect(passing?.linkedChanges[0]?.replayLifecycle?.status).toBe("replayable")
+      expect(failing?.linkedChanges[0]?.replayLifecycle?.status).toBe("replayable")
+      expect(failing?.linkedChanges[0]?.replayLifecycle?.reason).toContain("replayable evidence")
+
+      const promptContext = yield* ChimeraPromptContext.Service
+      const context = yield* promptContext.render(ctx.sessionID)
+      expect(context).toContain("failing/unknown oracle evidence is linked to the latest mutation")
+      expect(context).toContain("apocalypse: block")
+      expect(context).toContain("ordinary: warn")
+      expect(context).not.toContain("ordinary: block")
+    }),
+  )
+
+  it.instance("keeps ordinary closeout as a warning when latest mutation lacks audit evidence", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filePath = path.join(test.directory, "ordinary-closeout.ts")
+      yield* trackWrite({
+        filePath,
+        content: "export function ordinaryCloseout() { return 1 }\n",
+        callID: "call_chimera_ordinary_missing_audit",
+        patch: `--- ordinary-closeout.ts
++++ ordinary-closeout.ts
+@@ -0,0 +1,1 @@
++export function ordinaryCloseout() { return 1 }
+`,
+      })
+
+      const promptContext = yield* ChimeraPromptContext.Service
+      const context = yield* promptContext.render(ctx.sessionID)
+
+      expect(context).toContain("ordinary: warn — latest mutation still needs recorded chimera_audit_recent evidence")
+      expect(context).not.toContain("ordinary: block")
+      expect(context).toContain("apocalypse: block — latest mutation has no recorded audit run")
+      expect(context).toContain("latest audit evidence: none recorded for latest mutation")
+    }),
+  )
   it.instance("syncs an existing explicit file path before auditing", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
@@ -815,6 +938,9 @@ describe("tool.chimera", () => {
       expect(context).toContain("Closeout Gate")
       expect(context).toContain("ordinary:")
       expect(context).toContain("apocalypse:")
+      expect(context).toContain("ordinary: warn — active obligations remain; review, resolve, ignore, or explicitly justify ordinary closeout")
+      expect(context).not.toContain("ordinary: block")
+      expect(context).toContain("apocalypse: block — all active obligations must be resolved or ignored")
       expect(context).toContain(obligation.id)
 
       const claimed = yield* runObligationClaim({ obligationID: obligation.id })

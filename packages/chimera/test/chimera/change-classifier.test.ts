@@ -449,6 +449,96 @@ describe("change classifier", () => {
     expect(schema?.nodeKey).toContain(":interface:User")
   })
 
+
+  test("classifies route path boundaries without route node projections", () => {
+    const patch = `--- src/server/api/users/route.ts
++++ src/server/api/users/route.ts
+@@ -1,1 +1,1 @@
+-export const GET = listUsers
++export const POST = listUsers
+`
+    const facts = classifyChangeRecord({ record: record({ filePath: "src/server/api/users/route.ts", patch }) })
+
+    const route = facts.find((fact) => fact.subjectKind === "route" && fact.evidence.rule === "codegraph.file_role.api_route")
+    expect(route?.filePath).toBe("src/server/api/users/route.ts")
+    expect(route?.confidence).toBe(0.65)
+    expect(route?.evidence.fileSemantic?.role).toBe("api_route")
+    expect(route?.evidence.fileSemantic?.source).toBe("codegraph:file_classifier")
+    expect(route?.evidence.signals).toContain("codegraph_file_role:api_route")
+    expect(route?.evidence.signals).toContain("route_path")
+  })
+
+  test("keeps route node facts precise without duplicating handler body facts", () => {
+    const patch = `--- src/routes/users.ts
++++ src/routes/users.ts
+@@ -1,1 +1,1 @@
+-router.get('/users', listUsers)
++router.post('/users', listUsers)
+`
+    const beforeRoute = node({ id: "before-route", kind: "route", name: "GET /users", filePath: "src/routes/users.ts", startLine: 1, endLine: 1 })
+    const afterRoute = node({ id: "after-route", kind: "route", name: "POST /users", filePath: "src/routes/users.ts", startLine: 1, endLine: 1 })
+    const beforeHandler = node({ id: "before-handler", kind: "function", name: "listUsers", filePath: "src/routes/users.ts", startLine: 1, endLine: 1, signature: "function listUsers()" })
+    const afterHandler = node({ id: "after-handler", kind: "function", name: "listUsers", filePath: "src/routes/users.ts", startLine: 1, endLine: 1, signature: "function listUsers()" })
+    const facts = classifyChangeRecord({
+      record: record({ filePath: "src/routes/users.ts", patch }),
+      beforeNodes: [beforeRoute, beforeHandler],
+      afterNodes: [afterRoute, afterHandler],
+    })
+
+    expect(facts.some((fact) => fact.subjectKind === "route" && fact.nodeKey?.includes(":route:POST /users"))).toBe(true)
+    expect(facts.some((fact) => fact.subjectKind === "body" && fact.nodeKey?.includes(":function:listUsers"))).toBe(false)
+  })
+
+  test("preserves weak git rename old path from move metadata", () => {
+    const patch = `--- old.ts
++++ new.ts
+@@ -1,1 +1,1 @@
+-const value = 1
++const value = 2
+`
+    const facts = classifyChangeRecord({
+      record: record({
+        filePath: "new.ts",
+        patch: "",
+        origin: "git",
+        provenanceStrength: "weak",
+        metadata: {
+          files: [{ type: "renamed", filePath: "/project/old.ts", movePath: "/project/new.ts", patch }],
+        },
+      }),
+    })
+
+    const moved = facts.find((fact) => fact.oldPath === "old.ts" && fact.evidence.file.status === "renamed")
+    expect(moved?.changeKind).toBe("move")
+    expect(moved?.evidence.source).toBe("git_diff")
+    expect(moved?.evidence.file.oldPath).toBe("old.ts")
+    expect(moved?.evidence.signals).toContain("hunk_unmatched")
+  })
+
+  test("keeps weak watcher delete-node relation evidence for schema fields", () => {
+    const patch = `--- models/user.ts
++++ models/user.ts
+@@ -1,4 +1,3 @@
+ interface User {
+-  name: string
+   id: string
+ }
+`
+    const beforeField = node({ id: "before-name", kind: "property", name: "name", qualifiedName: "User.name", filePath: "models/user.ts", startLine: 2, endLine: 2 })
+    const reader = node({ id: "reader", kind: "function", name: "readUserName", filePath: "reader.ts", startLine: 1, endLine: 3, signature: "function readUserName(user: User)" })
+    const facts = classifyChangeRecord({
+      record: record({ filePath: "models/user.ts", patch, origin: "filesystem", provenanceStrength: "weak", syncStatus: "modified" }),
+      beforeNodes: [beforeField],
+      afterNodes: [],
+      beforeRelations: [relation({ focal: beforeField, other: reader })],
+      afterRelations: [],
+    })
+
+    const deleted = facts.find((fact) => fact.changeKind === "delete" && fact.subjectKind === "schema" && fact.nodeKey?.includes(":property:User.name"))
+    expect(deleted?.evidence.source).toBe("watcher")
+    expect(deleted?.evidence.relationDelta?.removedRelations[0]?.payload.otherNode.name).toBe("readUserName")
+    expect(deleted?.evidence.signals).toContain("missing_after_projection")
+  })
   test("preserves tool move metadata old path and move status", () => {
     const patch = `--- old.ts
 +++ new.ts
