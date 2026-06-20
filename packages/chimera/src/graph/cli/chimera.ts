@@ -20,6 +20,7 @@
  *   chimera callees <symbol>   Find what a function/method calls
  *   chimera impact <symbol>    Analyze what code is affected by changing a symbol
  *   chimera affected [files]   Find test files affected by changes
+ *   chimera compact-evidence   Compact verified committed Chimera evidence
  */
 
 import { Command } from 'commander';
@@ -825,6 +826,60 @@ program
       cg.destroy();
     } catch (err) {
       error(`Failed to get status: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  });
+
+/**
+ * chimera compact-evidence [path]
+ */
+program
+  .command('compact-evidence [path]')
+  .description('Compact verified committed Chimera evidence into commit-bound summaries')
+  .option('--dry-run', 'Show eligible evidence without deleting hot fact/evidence rows')
+  .option('--vacuum', 'Run SQLite VACUUM after compaction to physically shrink the database')
+  .option('--active-session <id>', 'Protect a currently active Chimera session from compaction')
+  .option('-j, --json', 'Output as JSON')
+  .action(async (pathArg: string | undefined, options: { dryRun?: boolean; vacuum?: boolean; activeSession?: string; json?: boolean }) => {
+    const projectPath = resolveProjectPath(pathArg);
+
+    try {
+      if (!isInitialized(projectPath)) {
+        error(`Chimera not initialized in ${projectPath}`);
+        process.exit(1);
+      }
+
+      const { compactCommittedChangeEvidence } = await import('../../chimera/store');
+      const result = await compactCommittedChangeEvidence(projectPath, {
+        dryRun: options.dryRun,
+        vacuum: options.vacuum,
+        activeSessionID: options.activeSession,
+      });
+
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+
+      console.log(chalk.bold('\nChimera Evidence Compaction\n'));
+      console.log(chalk.cyan('Project:'), result.projectRoot);
+      console.log(chalk.cyan('Database:'), result.dbPath);
+      if (result.commit) console.log(chalk.cyan('Commit:'), result.commit);
+      if (result.dryRun) warn('Dry run only; no rows were deleted.');
+      console.log();
+      console.log(`  Candidate events:       ${formatNumber(result.candidateEvents)}`);
+      console.log(`  Compacted events:       ${formatNumber(result.compactedEvents)}`);
+      console.log(`  Deleted change facts:   ${formatNumber(result.deletedFacts)}`);
+      console.log(`  Deleted snapshots:      ${formatNumber(result.deletedSemanticSnapshots)}`);
+      console.log(`  Deleted semantic objs:  ${formatNumber(result.deletedSemanticObjects)}`);
+      console.log(`  Rewritten fact payloads:${formatNumber(result.rewrittenFactPayloads).padStart(7)}`);
+      console.log(`  Summaries written:      ${formatNumber(result.summariesWritten)}`);
+      if (result.dbBytesBefore !== undefined && result.dbBytesAfter !== undefined) {
+        console.log(`  DB bytes:               ${formatNumber(result.dbBytesBefore)} -> ${formatNumber(result.dbBytesAfter)}`);
+      }
+      if (result.vacuum) info('VACUUM completed.');
+    } catch (err) {
+      error(`Failed to compact evidence: ${err instanceof Error ? err.message : String(err)}`);
       process.exit(1);
     }
   });

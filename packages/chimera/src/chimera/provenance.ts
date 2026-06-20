@@ -9,7 +9,7 @@ import type { Tool } from "@/tool/tool"
 import { classifyChangeRecord, classifyFileBoundary, collectFileProjections, collectIncidentRelations } from "./change-classifier"
 import { CodeGraphAdapter } from "./codegraph-adapter"
 import type { CodeGraphSnapshot, IndexProgress as CodeGraphIndexProgress, SyncResult as CodeGraphSyncResult } from "@/graph"
-import { appendProvenanceRecord, databaseStorePath, readPredesignRuns, readProvenanceRecords, recordOracleResult, writeChangeFacts, type OracleLinkedChange, type OracleStatus } from "./store"
+import { appendProvenanceRecord, databaseStorePath, readPredesignRuns, readProvenanceRecords, recordOracleResult, writeChangeFacts, type OracleLinkedChange, type OracleStatus, type OracleVerificationKind } from "./store"
 import { TOOL_MUTATION_PREDESIGN_REQUIRED } from "./guidance"
 
 const ARTIFACT_DIR = path.join(".codegraph", "chimera")
@@ -87,6 +87,8 @@ export interface ToolOracleInput {
   status: OracleStatus
   startedAt?: string
   finishedAt?: string
+  verificationKind?: OracleVerificationKind
+  trusted?: boolean
   payload: unknown
   maxChanges?: number
 }
@@ -593,6 +595,8 @@ export const recordToolOracle = Effect.fn("Chimera.recordToolOracle")(function* 
         maxChanges,
       },
       linkedChanges,
+      verificationKind: input.verificationKind,
+      trusted: input.trusted,
       payload: input.payload,
     }),
   )

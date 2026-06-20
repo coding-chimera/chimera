@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import fs from "fs/promises"
 import path from "path"
 import { DatabaseConnection, getDatabasePath, type FrozenRelation, type FrozenSemanticObject } from "@/graph"
-import { appendProvenanceRecord, readChangeFacts, readPersistentObligationStore, writeChangeFacts } from "../../src/chimera/store"
+import { appendProvenanceRecord, compactCommittedChangeEvidence, readChangeFacts, readCommitChangeSummaries, readPersistentObligationStore, recordOracleResult, writeChangeFacts } from "../../src/chimera/store"
 import type { ChangeFact } from "../../src/chimera/change-classifier"
 import type { ToolMutationRecord } from "../../src/chimera/provenance"
 import { tmpdir } from "../fixture/fixture"
@@ -161,6 +161,21 @@ function fact(input: { eventID: string; beforeNode: FrozenSemanticObject; relati
   }
 }
 
+async function git(cwd: string, args: string[]) {
+  const process = Bun.spawn(["git", ...args], {
+    cwd,
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(process.stdout).text(),
+    new Response(process.stderr).text(),
+    process.exited,
+  ])
+  if (code !== 0) throw new Error(`git ${args.join(" ")} failed: ${stderr || stdout}`)
+  return stdout.trim()
+}
+
 describe("Chimera store", () => {
   test("creates audit, semantic snapshot, and oracle tables through CodeGraph storage extension", async () => {
     await using tmp = await tmpdir()
@@ -175,12 +190,42 @@ describe("Chimera store", () => {
     const db = DatabaseConnection.open(getDatabasePath(tmp.path))
     try {
       const tables = (db.getDb().prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((row) => row.name)
-      expect(db.getStorageExtensionVersion("chimera")).toBe(3)
+      expect(db.getStorageExtensionVersion("chimera")).toBe(4)
       expect(tables).toContain("chimera_change_event")
       expect(tables).toContain("chimera_semantic_snapshot")
       expect(tables).toContain("chimera_semantic_object")
       expect(tables).toContain("chimera_semantic_snapshot_ref")
       expect(tables).toContain("chimera_oracle_result")
+      expect(tables).toContain("chimera_commit_change_summary")
+    } finally {
+      db.close()
+    }
+  })
+
+  test("stores raw change evidence outside payload_json to avoid duplicating large relation payloads", async () => {
+    await using tmp = await tmpdir()
+    DatabaseConnection.initialize(getDatabasePath(tmp.path)).close()
+    await appendProvenanceRecord(
+      tmp.path,
+      path.join(tmp.path, ".codegraph", "chimera", "tool-provenance.jsonl"),
+      record(tmp.path),
+    )
+
+    const focal = node("focal", "target")
+    const caller = node("caller", "caller")
+    await writeChangeFacts(tmp.path, [fact({ eventID: "event:store-test", beforeNode: focal, relation: relation(focal, caller) })])
+
+    const db = DatabaseConnection.open(getDatabasePath(tmp.path))
+    try {
+      const row = db.getDb().prepare("SELECT payload_json, evidence_json FROM chimera_change_fact WHERE id = ?").get("fact_store_test") as { payload_json: string; evidence_json: string }
+      const payload = JSON.parse(row.payload_json) as ChangeFact
+      const evidence = JSON.parse(row.evidence_json) as ChangeFact["evidence"]
+      expect(payload.evidence.beforeNode).toBeUndefined()
+      expect(payload.evidence.relationDelta).toBeUndefined()
+      expect(payload.evidence.semanticSnapshots?.beforeRelationHashes).toHaveLength(1)
+      expect(evidence.beforeNode?.payload.name).toBe("target")
+      expect(evidence.relationDelta?.removedRelations).toHaveLength(1)
+      expect(row.payload_json.length).toBeLessThan(row.evidence_json.length)
     } finally {
       db.close()
     }
@@ -240,8 +285,9 @@ describe("Chimera store", () => {
 
     const db = DatabaseConnection.open(getDatabasePath(tmp.path))
     try {
-      const row = db.getDb().prepare("SELECT payload_json FROM chimera_change_fact WHERE id = ?").get("fact_store_test") as { payload_json: string }
+      const row = db.getDb().prepare("SELECT payload_json, evidence_json FROM chimera_change_fact WHERE id = ?").get("fact_store_test") as { payload_json: string; evidence_json: string }
       const payload = JSON.parse(row.payload_json) as ChangeFact
+      payload.evidence = JSON.parse(row.evidence_json) as ChangeFact["evidence"]
       delete payload.evidence.semanticSnapshots
       payload.evidence.signals = payload.evidence.signals.filter((signal) => signal !== "semantic_snapshot_refs")
       db.getDb().prepare("UPDATE chimera_change_fact SET payload_json = ?, evidence_json = ? WHERE id = ?").run(
@@ -293,6 +339,97 @@ describe("Chimera store", () => {
     expect(stored?.evidence.replayLifecycle?.expectedRefs).toBe(1)
     expect(stored?.evidence.replayLifecycle?.foundRefs).toBe(0)
     expect(stored?.evidence.signals).toContain("replay_lifecycle:missing_snapshot_refs")
+  })
+
+  test("compacts trusted oracle-passed committed evidence into commit summaries", async () => {
+    await using tmp = await tmpdir()
+    DatabaseConnection.initialize(getDatabasePath(tmp.path)).close()
+    await fs.writeFile(path.join(tmp.path, "sample.ts"), "new\n")
+    await git(tmp.path, ["init"])
+    await git(tmp.path, ["config", "user.email", "chimera-test@example.com"])
+    await git(tmp.path, ["config", "user.name", "Chimera Test"])
+    await git(tmp.path, ["add", "sample.ts"])
+    await git(tmp.path, ["commit", "-m", "commit sample"])
+
+    const mutation = record(tmp.path)
+    await appendProvenanceRecord(
+      tmp.path,
+      path.join(tmp.path, ".codegraph", "chimera", "tool-provenance.jsonl"),
+      mutation,
+    )
+
+    const focal = node("focal", "target")
+    const caller = node("caller", "caller")
+    await writeChangeFacts(tmp.path, [fact({ eventID: mutation.id, beforeNode: focal, relation: relation(focal, caller) })])
+    await recordOracleResult(tmp.path, path.join(tmp.path, ".codegraph", "chimera", "oracle-results.jsonl"), {
+      kind: "lsp",
+      status: "pass",
+      tool: {
+        id: "edit",
+        messageID: "oracle-msg",
+        sessionID: "session",
+        callID: "oracle-call",
+        agent: "test",
+      },
+      project: {
+        root: tmp.path,
+        worktree: tmp.path,
+        directory: tmp.path,
+      },
+      finishedAt: "2026-01-01T00:00:02.000Z",
+      linkWindow: {
+        source: "same_session_preceding_mutations",
+        sessionID: "session",
+        projectRoot: tmp.path,
+        finishedBefore: "2026-01-01T00:00:02.000Z",
+        maxChanges: 20,
+      },
+      linkedChanges: [{
+        id: mutation.id,
+        toolID: "write",
+        status: "success",
+        finishedAt: mutation.finishedAt,
+        beforeRevision: mutation.graph.before.revision,
+        afterRevision: mutation.graph.after.revision,
+        files: ["sample.ts"],
+        changeID: "chg_store_test",
+      }],
+      payload: {
+        lsp: {
+          diagnostics: {},
+          files: [path.join(tmp.path, "sample.ts")],
+          diagnosticCount: 0,
+        },
+      },
+    })
+
+    const result = await compactCommittedChangeEvidence(tmp.path, { now: "2026-01-01T00:00:03.000Z" })
+    expect(result.candidateEvents).toBe(1)
+    expect(result.compactedEvents).toBe(1)
+    expect(result.deletedFacts).toBe(1)
+    expect(result.deletedSemanticSnapshots).toBe(1)
+    expect(result.summariesWritten).toBe(1)
+
+    expect(await readChangeFacts(tmp.path, [mutation.id])).toHaveLength(0)
+    const [summary] = await readCommitChangeSummaries(tmp.path)
+    expect(summary?.commit).toBe(await git(tmp.path, ["rev-parse", "HEAD"]))
+    expect(summary?.mutationIDs).toContain(mutation.id)
+    expect(summary?.oracleIDs).toHaveLength(1)
+    expect(summary?.changeIDs).toContain("chg_store_test")
+    expect(summary?.files).toContain("sample.ts")
+    expect(summary?.subjectCounts.signature).toBe(1)
+
+    const db = DatabaseConnection.open(getDatabasePath(tmp.path))
+    try {
+      const facts = db.getDb().prepare("SELECT COUNT(*) AS count FROM chimera_change_fact").get() as { count: number }
+      const objects = db.getDb().prepare("SELECT COUNT(*) AS count FROM chimera_semantic_object").get() as { count: number }
+      const events = db.getDb().prepare("SELECT COUNT(*) AS count FROM chimera_change_event").get() as { count: number }
+      expect(facts.count).toBe(0)
+      expect(objects.count).toBe(0)
+      expect(events.count).toBe(1)
+    } finally {
+      db.close()
+    }
   })
 
   test("imports legacy persistent obligations into the database store", async () => {
