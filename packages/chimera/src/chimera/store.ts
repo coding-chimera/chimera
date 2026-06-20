@@ -1,6 +1,6 @@
 import path from "path"
 import { createHash } from "crypto"
-import { appendFile, mkdir } from "fs/promises"
+import { appendFile, mkdir, stat } from "fs/promises"
 import { DatabaseConnection, diffRelations, getDatabasePath, type FrozenRelation, type FrozenSemanticObject, type StorageExtension } from "@/graph"
 import type { ChangeFact } from "./change-classifier"
 import type { ToolMutationRecord } from "./provenance"
@@ -9,6 +9,19 @@ type ChimeraDb = ReturnType<DatabaseConnection["getDb"]>
 
 type PayloadRow = {
   payload_json: string
+}
+
+type ChangeFactRow = {
+  id: string
+  event_id: string
+  file_path: string
+  node_key: string | null
+  change_kind: string
+  subject_kind: string
+  confidence: number
+  evidence_json: string
+  payload_json: string
+  created_at: string
 }
 
 type CountRow = {
@@ -97,6 +110,7 @@ export type PredesignRunRecord = PredesignRunInput & {
 }
 
 export type OracleStatus = "pass" | "fail" | "unknown"
+export type OracleVerificationKind = "lsp" | "test" | "typecheck" | "lint" | "build" | "explicit" | "unclassified_shell" | "unknown"
 
 export type OracleLinkedChange = {
   id: string
@@ -136,6 +150,8 @@ export type OracleRecordInput = {
   finishedAt: string
   linkWindow: OracleLinkWindow
   linkedChanges: OracleLinkedChange[]
+  verificationKind?: OracleVerificationKind
+  trusted?: boolean
   payload: unknown
 }
 
@@ -143,6 +159,50 @@ export type OracleRecord = OracleRecordInput & {
   schemaVersion: 1
   id: string
   createdAt: string
+}
+
+export type CommitChangeSummary = {
+  schemaVersion: 1
+  id: string
+  commit: string
+  tree: string
+  parents: string[]
+  oracleIDs: string[]
+  mutationIDs: string[]
+  changeIDs: string[]
+  files: string[]
+  subjectCounts: Record<string, number>
+  changeKindCounts: Record<string, number>
+  riskLabels: string[]
+  summary: string
+  graphRevision?: string
+  extractorVersion?: string
+  compactedAt: string
+}
+
+export type CommittedEvidenceCompactionOptions = {
+  activeSessionID?: string
+  dryRun?: boolean
+  vacuum?: boolean
+  now?: string
+}
+
+export type CommittedEvidenceCompactionResult = {
+  projectRoot: string
+  dbPath: string
+  dryRun: boolean
+  vacuum: boolean
+  commit?: string
+  tree?: string
+  candidateEvents: number
+  compactedEvents: number
+  deletedFacts: number
+  deletedSemanticSnapshots: number
+  deletedSemanticObjects: number
+  rewrittenFactPayloads: number
+  summariesWritten: number
+  dbBytesBefore?: number
+  dbBytesAfter?: number
 }
 
 const CHIMERA_STORAGE_EXTENSION: StorageExtension = {
@@ -346,6 +406,38 @@ CREATE INDEX IF NOT EXISTS chimera_oracle_result_kind_status_idx ON chimera_orac
 CREATE INDEX IF NOT EXISTS chimera_oracle_result_tool_idx ON chimera_oracle_result(tool_id);
 `,
     },
+    {
+      version: 4,
+      description: "Add oracle verification metadata and commit-bound change summaries",
+      sql: `
+ALTER TABLE chimera_oracle_result ADD COLUMN verification_kind TEXT NOT NULL DEFAULT 'unknown';
+ALTER TABLE chimera_oracle_result ADD COLUMN trusted INTEGER NOT NULL DEFAULT 0;
+
+CREATE INDEX IF NOT EXISTS chimera_oracle_result_verification_idx ON chimera_oracle_result(status, trusted, verification_kind);
+
+CREATE TABLE IF NOT EXISTS chimera_commit_change_summary (
+  id TEXT PRIMARY KEY,
+  commit_hash TEXT NOT NULL,
+  tree_hash TEXT NOT NULL,
+  parents_json TEXT NOT NULL,
+  oracle_ids_json TEXT NOT NULL,
+  mutation_ids_json TEXT NOT NULL,
+  change_ids_json TEXT NOT NULL,
+  files_json TEXT NOT NULL,
+  subject_counts_json TEXT NOT NULL,
+  change_kind_counts_json TEXT NOT NULL,
+  risk_labels_json TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  graph_revision TEXT,
+  extractor_version TEXT,
+  payload_json TEXT NOT NULL,
+  compacted_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS chimera_commit_change_summary_commit_idx ON chimera_commit_change_summary(commit_hash);
+CREATE INDEX IF NOT EXISTS chimera_commit_change_summary_compacted_idx ON chimera_commit_change_summary(compacted_at);
+`,
+    },
   ],
 }
 
@@ -422,6 +514,76 @@ function parseJson<T>(input: string) {
   } catch {
     return []
   }
+}
+
+function objectRecord(input: unknown) {
+  return input && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : undefined
+}
+
+function payloadShellCommand(payload: unknown) {
+  const shell = objectRecord(payload)?.shell
+  const command = objectRecord(shell)?.command
+  return typeof command === "string" ? command : undefined
+}
+
+function shellVerificationKind(command: string | undefined): OracleVerificationKind {
+  if (!command) return "unclassified_shell"
+  const value = command.toLowerCase()
+  if (/\b(typecheck|type-check|tsc|tsgo|mypy|pyright|flow|vue-tsc)\b/.test(value)) return "typecheck"
+  if (/\b(lint|eslint|biome\s+lint|ruff|clippy|staticcheck|ktlint|swiftlint)\b/.test(value)) return "lint"
+  if (/\b(build|compile|xcodebuild|gradle\s+assemble|mvn\s+package|cargo\s+build|go\s+build|swift\s+build)\b/.test(value)) return "build"
+  if (/\b(test|pytest|vitest|jest|mocha|cargo\s+test|go\s+test|swift\s+test|xcodebuild\b[\s\S]*\btest\b|gradle\b[\s\S]*\btest\b|mvn\s+test|bun\s+test|pnpm\s+test|npm\s+test|yarn\s+test|just\s+test)\b/.test(value)) return "test"
+  return "unclassified_shell"
+}
+
+function oracleVerification(input: Pick<OracleRecordInput, "kind" | "payload" | "verificationKind" | "trusted">) {
+  const verificationKind =
+    input.verificationKind ??
+    (input.kind === "lsp" ? "lsp" : shellVerificationKind(payloadShellCommand(input.payload)))
+  return {
+    verificationKind,
+    trusted: input.trusted ?? ["lsp", "test", "typecheck", "lint", "build", "explicit"].includes(verificationKind),
+  }
+}
+
+function normalizeOracleRecord(record: OracleRecord): OracleRecord {
+  const verification = oracleVerification(record)
+  return {
+    ...record,
+    verificationKind: record.verificationKind ?? verification.verificationKind,
+    trusted: record.trusted ?? verification.trusted,
+  }
+}
+
+function compactEvidenceForPayload(evidence: ChangeFact["evidence"]): ChangeFact["evidence"] {
+  return {
+    version: evidence.version,
+    source: evidence.source,
+    rule: evidence.rule,
+    confidenceReason: evidence.confidenceReason,
+    graph: evidence.graph,
+    file: evidence.file,
+    hunk: evidence.hunk,
+    languageSignals: evidence.languageSignals,
+    fileSemantic: evidence.fileSemantic,
+    semanticSnapshots: evidence.semanticSnapshots,
+    replayLifecycle: evidence.replayLifecycle,
+    signals: unique([...evidence.signals, "raw_evidence_stored_separately"]),
+  }
+}
+
+function compactFactPayload(fact: ChangeFact): ChangeFact {
+  return {
+    ...fact,
+    evidence: compactEvidenceForPayload(fact.evidence),
+  }
+}
+
+function factFromStorageRow(db: ChimeraDb, row: Pick<ChangeFactRow, "payload_json" | "evidence_json">) {
+  const payload = parseJson<ChangeFact>(row.payload_json)[0]
+  if (!payload) return undefined
+  const evidence = parseJson<ChangeFact["evidence"]>(row.evidence_json)[0]
+  return hydrateFactFromSemanticSnapshots(db, evidence ? { ...payload, evidence } : payload)
 }
 
 async function withDb<T>(projectRoot: string, fn: (db: ChimeraDb, dbPath: string) => T) {
@@ -869,7 +1031,7 @@ export async function writeChangeFacts(projectRoot: string, facts: ChangeFact[])
           fact.subjectKind,
           fact.confidence,
           safeJson(fact.evidence),
-          safeJson(fact),
+          safeJson(compactFactPayload(fact)),
           fact.createdAt,
         )
       }
@@ -878,14 +1040,29 @@ export async function writeChangeFacts(projectRoot: string, facts: ChangeFact[])
   })
 }
 
+function readChangeFactsFromDb(db: ChimeraDb, eventIDs?: string[]) {
+  const ids = eventIDs ? unique(eventIDs).filter(Boolean) : undefined
+  if (ids && ids.length === 0) return [] as ChangeFact[]
+  const rows = (ids
+    ? db.prepare(`
+        SELECT evidence_json, payload_json
+        FROM chimera_change_fact
+        WHERE event_id IN (${ids.map(() => "?").join(", ")})
+        ORDER BY created_at ASC, id ASC
+      `).all(...ids)
+    : db.prepare(`
+        SELECT evidence_json, payload_json
+        FROM chimera_change_fact
+        ORDER BY created_at ASC, id ASC
+      `).all()) as Array<Pick<ChangeFactRow, "evidence_json" | "payload_json">>
+  return rows.flatMap((row) => {
+    const fact = factFromStorageRow(db, row)
+    return fact ? [fact] : []
+  })
+}
+
 export async function readChangeFacts(projectRoot: string, eventIDs?: string[]) {
-  const filter = eventIDs ? new Set(eventIDs) : undefined
-  const facts = await withDb(projectRoot, (db) =>
-    (db.prepare("SELECT payload_json FROM chimera_change_fact ORDER BY created_at ASC, id ASC").all() as PayloadRow[])
-      .flatMap((row) => parseJson<ChangeFact>(row.payload_json))
-      .map((fact) => hydrateFactFromSemanticSnapshots(db, fact))
-      .filter((fact) => !filter || filter.has(fact.eventID)),
-  )
+  const facts = await withDb(projectRoot, (db) => readChangeFactsFromDb(db, eventIDs))
   return facts ?? []
 }
 
@@ -1070,6 +1247,7 @@ function oracleID(createdAt: string, payload: string) {
 }
 
 function writeOracleResultToDb(db: ChimeraDb, record: OracleRecord) {
+  const normalized = normalizeOracleRecord(record)
   db.prepare(`
     INSERT OR REPLACE INTO chimera_oracle_result (
       id,
@@ -1085,25 +1263,29 @@ function writeOracleResultToDb(db: ChimeraDb, record: OracleRecord) {
       agent,
       started_at,
       finished_at,
+      verification_kind,
+      trusted,
       payload_json,
       created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
-    record.id,
-    record.kind,
-    record.status,
-    record.tool.id,
-    record.project.root,
-    record.project.worktree,
-    record.project.directory,
-    record.tool.sessionID,
-    record.tool.messageID,
-    record.tool.callID ?? null,
-    record.tool.agent,
-    record.startedAt ?? null,
-    record.finishedAt,
-    safeJson(record),
-    record.createdAt,
+    normalized.id,
+    normalized.kind,
+    normalized.status,
+    normalized.tool.id,
+    normalized.project.root,
+    normalized.project.worktree,
+    normalized.project.directory,
+    normalized.tool.sessionID,
+    normalized.tool.messageID,
+    normalized.tool.callID ?? null,
+    normalized.tool.agent,
+    normalized.startedAt ?? null,
+    normalized.finishedAt,
+    normalized.verificationKind ?? "unknown",
+    normalized.trusted ? 1 : 0,
+    safeJson(normalized),
+    normalized.createdAt,
   )
 }
 
@@ -1116,12 +1298,13 @@ export async function recordOracleResult(projectRoot: string, artifact: string, 
     ...input,
     createdAt,
   }
+  const normalized = normalizeOracleRecord(record)
   const wrote = await withDb(projectRoot, (db) => {
-    writeOracleResultToDb(db, record)
+    writeOracleResultToDb(db, normalized)
     return true
   })
-  if (!wrote) await appendJsonl(artifact, record)
-  return record
+  if (!wrote) await appendJsonl(artifact, normalized)
+  return normalized
 }
 
 export async function readOracleResults(
@@ -1138,10 +1321,11 @@ export async function readOracleResults(
     for (const record of legacy) writeOracleResultToDb(db, record)
     return (db.prepare("SELECT payload_json FROM chimera_oracle_result ORDER BY finished_at DESC, id DESC").all() as PayloadRow[])
       .flatMap((row) => parseJson<OracleRecord>(row.payload_json))
+      .map(normalizeOracleRecord)
       .filter(keep)
       .slice(0, limit)
   })
-  return records ?? legacy.filter(keep).toSorted((a, b) => b.finishedAt.localeCompare(a.finishedAt) || b.id.localeCompare(a.id)).slice(0, limit)
+  return records ?? legacy.map(normalizeOracleRecord).filter(keep).toSorted((a, b) => b.finishedAt.localeCompare(a.finishedAt) || b.id.localeCompare(a.id)).slice(0, limit)
 }
 
 export async function readOracleResult(projectRoot: string, artifact: string, oracleID: string) {
@@ -1149,9 +1333,403 @@ export async function readOracleResult(projectRoot: string, artifact: string, or
   const record = await withDb(projectRoot, (db) => {
     for (const item of legacy) writeOracleResultToDb(db, item)
     const row = db.prepare("SELECT payload_json FROM chimera_oracle_result WHERE id = ?").get(oracleID) as PayloadRow | undefined
-    return row ? parseJson<OracleRecord>(row.payload_json)[0] : undefined
+    return row ? parseJson<OracleRecord>(row.payload_json).map(normalizeOracleRecord)[0] : undefined
   })
-  return record ?? legacy.find((item) => item.id === oracleID)
+  return record ?? legacy.map(normalizeOracleRecord).find((item) => item.id === oracleID)
+}
+
+async function fileBytes(file: string) {
+  try {
+    return (await stat(file)).size
+  } catch {
+    return undefined
+  }
+}
+
+async function gitText(projectRoot: string, args: string[]) {
+  const process = Bun.spawn(["git", ...args], {
+    cwd: projectRoot,
+    stdout: "pipe",
+    stderr: "ignore",
+  })
+  const [text, code] = await Promise.all([new Response(process.stdout).text(), process.exited])
+  return code === 0 ? text.trim() : undefined
+}
+
+async function gitOk(projectRoot: string, args: string[]) {
+  return (await Bun.spawn(["git", ...args], {
+    cwd: projectRoot,
+    stdout: "ignore",
+    stderr: "ignore",
+  }).exited) === 0
+}
+
+async function gitHead(projectRoot: string) {
+  const commit = await gitText(projectRoot, ["rev-parse", "HEAD"])
+  const tree = commit ? await gitText(projectRoot, ["rev-parse", "HEAD^{tree}"]) : undefined
+  const parents = commit ? await gitText(projectRoot, ["show", "-s", "--format=%P", "HEAD"]) : undefined
+  if (!commit || !tree || parents === undefined) return undefined
+  return {
+    commit,
+    tree,
+    parents: parents ? parents.split(/\s+/).filter(Boolean) : [],
+  }
+}
+
+function gitRelativePath(projectRoot: string, file: string) {
+  if (!path.isAbsolute(file)) return file
+  return path.relative(projectRoot, file).replaceAll("\\", "/")
+}
+
+async function gitFilesCommitted(projectRoot: string, files: string[]) {
+  const paths = unique(files.map((file) => gitRelativePath(projectRoot, file)).filter((file) => file && !file.startsWith("..") && !path.isAbsolute(file)))
+  if (paths.length === 0) return false
+  if (!(await gitOk(projectRoot, ["diff", "--quiet", "HEAD", "--", ...paths]))) return false
+  return gitOk(projectRoot, ["ls-files", "--error-unmatch", "--", ...paths])
+}
+
+function countBy(items: string[]) {
+  return items.reduce<Record<string, number>>((counts, item) => {
+    counts[item] = (counts[item] ?? 0) + 1
+    return counts
+  }, {})
+}
+
+function firstDefined<T>(items: T[]) {
+  return items.find((item) => item !== undefined && item !== null)
+}
+
+function compactSummaryID(summary: Omit<CommitChangeSummary, "schemaVersion" | "id">) {
+  return `commit_summary_${hashBytes("chimera-commit-summary:v1", stableJson({
+    commit: summary.commit,
+    oracleIDs: summary.oracleIDs,
+    mutationIDs: summary.mutationIDs,
+  })).slice(0, 16)}`
+}
+
+function commitChangeSummary(input: {
+  head: NonNullable<Awaited<ReturnType<typeof gitHead>>>
+  oracleIDs: string[]
+  mutationIDs: string[]
+  changeIDs: string[]
+  files: string[]
+  facts: ChangeFact[]
+  compactedAt: string
+}): CommitChangeSummary {
+  const graphRevision = firstDefined(input.facts.map((fact) => fact.evidence.graph.afterRevision))
+  const extractorVersion = firstDefined(input.facts.flatMap((fact) => [
+    fact.evidence.beforeNode?.source.codegraphVersion,
+    fact.evidence.afterNode?.source.codegraphVersion,
+  ]))
+  const summary = {
+    commit: input.head.commit,
+    tree: input.head.tree,
+    parents: input.head.parents,
+    oracleIDs: unique(input.oracleIDs).sort(),
+    mutationIDs: unique(input.mutationIDs).sort(),
+    changeIDs: unique(input.changeIDs).sort(),
+    files: unique(input.files).sort(),
+    subjectCounts: countBy(input.facts.map((fact) => fact.subjectKind)),
+    changeKindCounts: countBy(input.facts.map((fact) => fact.changeKind)),
+    riskLabels: unique(input.facts.map((fact) => `${fact.subjectKind}:${fact.changeKind}`)).sort(),
+    summary: `Verified committed Chimera changes for ${input.facts.length} fact(s), ${unique(input.files).length} file(s), ${unique(input.oracleIDs).length} oracle(s).`,
+    graphRevision,
+    extractorVersion,
+    compactedAt: input.compactedAt,
+  }
+  return {
+    schemaVersion: 1,
+    id: compactSummaryID(summary),
+    ...summary,
+  }
+}
+
+function writeCommitChangeSummary(db: ChimeraDb, summary: CommitChangeSummary) {
+  db.prepare(`
+    INSERT OR REPLACE INTO chimera_commit_change_summary (
+      id,
+      commit_hash,
+      tree_hash,
+      parents_json,
+      oracle_ids_json,
+      mutation_ids_json,
+      change_ids_json,
+      files_json,
+      subject_counts_json,
+      change_kind_counts_json,
+      risk_labels_json,
+      summary,
+      graph_revision,
+      extractor_version,
+      payload_json,
+      compacted_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    summary.id,
+    summary.commit,
+    summary.tree,
+    safeJson(summary.parents),
+    safeJson(summary.oracleIDs),
+    safeJson(summary.mutationIDs),
+    safeJson(summary.changeIDs),
+    safeJson(summary.files),
+    safeJson(summary.subjectCounts),
+    safeJson(summary.changeKindCounts),
+    safeJson(summary.riskLabels),
+    summary.summary,
+    summary.graphRevision ?? null,
+    summary.extractorVersion ?? null,
+    safeJson(summary),
+    summary.compactedAt,
+  )
+}
+
+function oracleRecordsFromDb(db: ChimeraDb) {
+  return (db.prepare("SELECT payload_json FROM chimera_oracle_result ORDER BY finished_at ASC, id ASC").all() as PayloadRow[])
+    .flatMap((row) => parseJson<OracleRecord>(row.payload_json))
+    .map(normalizeOracleRecord)
+}
+
+function activeObligationText(db: ChimeraDb) {
+  return (db.prepare(`
+    SELECT evidence, payload_json
+    FROM chimera_audit_obligation
+    WHERE status NOT IN ('resolved', 'ignored')
+  `).all() as Array<{ evidence: string; payload_json: string }>)
+    .map((row) => `${row.evidence}\n${row.payload_json}`)
+    .join("\n")
+}
+
+function compactionCandidates(db: ChimeraDb, options: CommittedEvidenceCompactionOptions) {
+  const records = oracleRecordsFromDb(db)
+  const protectedEvents = new Set<string>()
+  const candidates = new Map<string, { eventID: string; oracleIDs: Set<string>; changeIDs: Set<string>; files: Set<string> }>()
+  for (const record of records) {
+    if (record.status !== "pass" || record.linkWindow.sessionID === options.activeSessionID) {
+      for (const change of record.linkedChanges) protectedEvents.add(change.id)
+      continue
+    }
+    if (!record.trusted) continue
+    for (const change of record.linkedChanges.filter((item) => item.status === "success")) {
+      const existing = candidates.get(change.id) ?? { eventID: change.id, oracleIDs: new Set<string>(), changeIDs: new Set<string>(), files: new Set<string>() }
+      existing.oracleIDs.add(record.id)
+      if (change.changeID) existing.changeIDs.add(change.changeID)
+      for (const file of change.files) existing.files.add(file)
+      candidates.set(change.id, existing)
+    }
+  }
+  for (const id of protectedEvents) candidates.delete(id)
+
+  const eventIDs = [...candidates.keys()]
+  if (eventIDs.length === 0) return []
+  const eventRows = (db.prepare(`
+    SELECT id, actor_session_id, after_revision
+    FROM chimera_change_event
+    WHERE id IN (${eventIDs.map(() => "?").join(", ")})
+  `).all(...eventIDs) as Array<{ id: string; actor_session_id: string | null; after_revision: string }>)
+  const eventIDsInStore = new Set(eventRows
+    .filter((row) => row.actor_session_id !== options.activeSessionID)
+    .map((row) => row.id))
+  const obligationText = activeObligationText(db)
+  return eventIDs
+    .filter((id) => eventIDsInStore.has(id))
+    .map((id) => {
+      const candidate = candidates.get(id)
+      if (!candidate) return undefined
+      const facts = readChangeFactsFromDb(db, [id])
+      if (facts.length === 0) return undefined
+      if (facts.some((fact) => obligationText.includes(fact.id) || obligationText.includes(fact.eventID))) return undefined
+      for (const fact of facts) candidate.files.add(fact.filePath)
+      return {
+        ...candidate,
+        oracleIDs: [...candidate.oracleIDs],
+        changeIDs: [...candidate.changeIDs],
+        files: [...candidate.files],
+        facts,
+      }
+    })
+    .filter((item): item is {
+      eventID: string
+      oracleIDs: string[]
+      changeIDs: string[]
+      files: string[]
+      facts: ChangeFact[]
+    } => Boolean(item))
+}
+
+function deleteEvents(db: ChimeraDb, eventIDs: string[]) {
+  if (eventIDs.length === 0) return { facts: 0, snapshots: 0, semanticObjects: 0 }
+  const placeholders = eventIDs.map(() => "?").join(", ")
+  const snapshotRows = db.prepare(`SELECT id FROM chimera_semantic_snapshot WHERE event_id IN (${placeholders})`).all(...eventIDs) as Array<{ id: string }>
+  const snapshotIDs = snapshotRows.map((row) => row.id)
+  if (snapshotIDs.length > 0) {
+    db.prepare(`DELETE FROM chimera_semantic_snapshot_ref WHERE snapshot_id IN (${snapshotIDs.map(() => "?").join(", ")})`).run(...snapshotIDs)
+  }
+  const snapshots = (db.prepare(`DELETE FROM chimera_semantic_snapshot WHERE event_id IN (${placeholders})`).run(...eventIDs) as { changes?: number }).changes ?? 0
+  const facts = (db.prepare(`DELETE FROM chimera_change_fact WHERE event_id IN (${placeholders})`).run(...eventIDs) as { changes?: number }).changes ?? 0
+  const semanticObjects = (db.prepare(`
+    DELETE FROM chimera_semantic_object
+    WHERE hash NOT IN (SELECT object_hash FROM chimera_semantic_snapshot_ref)
+  `).run() as { changes?: number }).changes ?? 0
+  return { facts, snapshots, semanticObjects }
+}
+
+function rewriteStoredFactPayloads(db: ChimeraDb) {
+  const rows = db.prepare("SELECT id, evidence_json, payload_json FROM chimera_change_fact").all() as Array<Pick<ChangeFactRow, "id" | "evidence_json" | "payload_json">>
+  return rows.reduce((count, row) => {
+    const payload = parseJson<ChangeFact>(row.payload_json)[0]
+    if (!payload) return count
+    const evidence = parseJson<ChangeFact["evidence"]>(row.evidence_json)[0]
+    const compact = safeJson(compactFactPayload(evidence ? { ...payload, evidence } : payload))
+    if (compact === row.payload_json) return count
+    db.prepare("UPDATE chimera_change_fact SET payload_json = ? WHERE id = ?").run(compact, row.id)
+    return count + 1
+  }, 0)
+}
+
+export async function compactCommittedChangeEvidence(projectRoot: string, options: CommittedEvidenceCompactionOptions = {}): Promise<CommittedEvidenceCompactionResult> {
+  const dbPath = databaseStorePath(projectRoot)
+  const dryRun = options.dryRun ?? false
+  const vacuum = !dryRun && (options.vacuum ?? false)
+  const dbBytesBefore = await fileBytes(dbPath)
+  const head = await gitHead(projectRoot)
+  if (!head) {
+    return {
+      projectRoot,
+      dbPath,
+      dryRun,
+      vacuum,
+      candidateEvents: 0,
+      compactedEvents: 0,
+      deletedFacts: 0,
+      deletedSemanticSnapshots: 0,
+      deletedSemanticObjects: 0,
+      rewrittenFactPayloads: 0,
+      summariesWritten: 0,
+      dbBytesBefore,
+      dbBytesAfter: dbBytesBefore,
+    }
+  }
+
+  const result = await withDb(projectRoot, (db) => {
+    const candidates = compactionCandidates(db, options)
+    return { candidates }
+  })
+  const candidates = result?.candidates ?? []
+  const committed = [] as typeof candidates
+  for (const candidate of candidates) {
+    if (await gitFilesCommitted(projectRoot, candidate.files)) committed.push(candidate)
+  }
+
+  if (dryRun) {
+    return {
+      projectRoot,
+      dbPath,
+      dryRun,
+      vacuum,
+      commit: head.commit,
+      tree: head.tree,
+      candidateEvents: candidates.length,
+      compactedEvents: committed.length,
+      deletedFacts: 0,
+      deletedSemanticSnapshots: 0,
+      deletedSemanticObjects: 0,
+      rewrittenFactPayloads: 0,
+      summariesWritten: 0,
+      dbBytesBefore,
+      dbBytesAfter: dbBytesBefore,
+    }
+  }
+
+  if (committed.length === 0) {
+    const rewrittenFactPayloads = await withDb(projectRoot, (db) => db.transaction(() => rewriteStoredFactPayloads(db))()) ?? 0
+    if (vacuum) {
+      await withDb(projectRoot, (db) => {
+        db.exec("PRAGMA wal_checkpoint(TRUNCATE)")
+        db.exec("VACUUM")
+        return true
+      })
+    }
+    return {
+      projectRoot,
+      dbPath,
+      dryRun,
+      vacuum,
+      commit: head.commit,
+      tree: head.tree,
+      candidateEvents: candidates.length,
+      compactedEvents: 0,
+      deletedFacts: 0,
+      deletedSemanticSnapshots: 0,
+      deletedSemanticObjects: 0,
+      rewrittenFactPayloads,
+      summariesWritten: 0,
+      dbBytesBefore,
+      dbBytesAfter: await fileBytes(dbPath),
+    }
+  }
+
+  const compactedAt = options.now ?? new Date().toISOString()
+  const summary = commitChangeSummary({
+    head,
+    oracleIDs: committed.flatMap((candidate) => candidate.oracleIDs),
+    mutationIDs: committed.map((candidate) => candidate.eventID),
+    changeIDs: committed.flatMap((candidate) => candidate.changeIDs),
+    files: committed.flatMap((candidate) => candidate.files),
+    facts: committed.flatMap((candidate) => candidate.facts),
+    compactedAt,
+  })
+  const cleanup = await withDb(projectRoot, (db) => {
+    return db.transaction(() => {
+      const rewrittenFactPayloads = rewriteStoredFactPayloads(db)
+      writeCommitChangeSummary(db, summary)
+      return {
+        summariesWritten: 1,
+        rewrittenFactPayloads,
+        ...deleteEvents(db, committed.map((candidate) => candidate.eventID)),
+      }
+    })()
+  })
+
+  if (vacuum) {
+    await withDb(projectRoot, (db) => {
+      db.exec("PRAGMA wal_checkpoint(TRUNCATE)")
+      db.exec("VACUUM")
+      return true
+    })
+  }
+
+  return {
+    projectRoot,
+    dbPath,
+    dryRun,
+    vacuum,
+    commit: head.commit,
+    tree: head.tree,
+    candidateEvents: candidates.length,
+    compactedEvents: committed.length,
+    deletedFacts: cleanup?.facts ?? 0,
+    deletedSemanticSnapshots: cleanup?.snapshots ?? 0,
+    deletedSemanticObjects: cleanup?.semanticObjects ?? 0,
+    rewrittenFactPayloads: cleanup?.rewrittenFactPayloads ?? 0,
+    summariesWritten: cleanup?.summariesWritten ?? 0,
+    dbBytesBefore,
+    dbBytesAfter: await fileBytes(dbPath),
+  }
+}
+
+export async function readCommitChangeSummaries(projectRoot: string, options: { limit?: number } = {}) {
+  const limit = Math.max(1, Math.min(100, Math.floor(options.limit ?? 20)))
+  const records = await withDb(projectRoot, (db) =>
+    (db.prepare(`
+      SELECT payload_json
+      FROM chimera_commit_change_summary
+      ORDER BY compacted_at DESC, id DESC
+      LIMIT ?
+    `).all(limit) as PayloadRow[])
+      .flatMap((row) => parseJson<CommitChangeSummary>(row.payload_json)),
+  )
+  return records ?? []
 }
 
 function writeObligationToDb<T extends ObligationLike>(db: ChimeraDb, item: T, runID?: string, mode: "ignore" | "replace" = "replace") {
