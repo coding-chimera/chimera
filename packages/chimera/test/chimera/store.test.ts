@@ -303,6 +303,9 @@ describe("Chimera store", () => {
     expect(stored?.evidence.signals).not.toContain("semantic_snapshot_refs")
     expect(stored?.evidence.relationDelta?.removedRelations).toHaveLength(1)
     expect(stored?.evidence.relationDelta?.removedRelations[0]?.payload.otherNode.name).toBe("caller")
+    expect(stored?.evidence.replayLifecycle?.status).toBe("replayable")
+    expect(stored?.evidence.replayLifecycle?.reason).toContain("legacy embedded relation evidence")
+    expect(stored?.evidence.signals).toContain("replay_lifecycle:replayable")
   })
 
   test("marks semantic snapshot refs missing when compact objects are absent", async () => {

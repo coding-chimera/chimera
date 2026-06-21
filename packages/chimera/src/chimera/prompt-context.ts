@@ -4,6 +4,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { readAuditRuns, readOracleResults, readPersistentObligationStore, readPredesignRuns, readProvenanceRecords, type AuditRunRecord, type OracleRecord, type PredesignRunRecord } from "./store"
 import type { ToolMutationRecord } from "./provenance"
 import type { SessionID } from "@/session/schema"
+import { getGraphDataRootInfo } from "@/graph"
 
 const MAX_RECENT_MUTATIONS = 3
 const MAX_RECENT_PREDESIGNS = 3
@@ -44,6 +45,37 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/Ch
 
 function projectRoot(input: { directory: string; worktree: string }) {
   return input.worktree === "/" ? input.directory : input.worktree
+}
+
+function artifactPaths(root: string, file: string) {
+  const info = getGraphDataRootInfo(root)
+  const active = path.join(info.dataRoot, "chimera", file)
+  const legacy = path.join(info.legacyRoot, "chimera", file)
+  return active === legacy ? [active] : [active, legacy]
+}
+
+async function readProvenanceWithFallback(root: string) {
+  let records = [] as ToolMutationRecord[]
+  for (const artifact of artifactPaths(root, "tool-provenance.jsonl")) records = await readProvenanceRecords(root, artifact)
+  return records
+}
+
+async function readPredesignsWithFallback(root: string, sessionID: SessionID) {
+  let records = [] as PredesignRunRecord[]
+  for (const artifact of artifactPaths(root, "predesign-runs.jsonl")) records = await readPredesignRuns(root, artifact, { sessionID, limit: MAX_RECENT_PREDESIGNS })
+  return records
+}
+
+async function readObligationsWithFallback(root: string) {
+  let store: ObligationStore = { schemaVersion: 1, obligations: [] }
+  for (const artifact of artifactPaths(root, "obligations.json")) store = await readPersistentObligationStore<PromptObligation>(root, artifact, store)
+  return store
+}
+
+async function readOraclesWithFallback(root: string, sessionID: SessionID) {
+  let records = [] as OracleRecord[]
+  for (const artifact of artifactPaths(root, "oracle-results.jsonl")) records = await readOracleResults(root, artifact, { sessionID, limit: 20, includePassing: false })
+  return records
 }
 
 function compact(input: string) {
@@ -207,21 +239,11 @@ export const layer = Layer.effect(
     const render = Effect.fn("ChimeraPromptContext.render")(function* (sessionID: SessionID) {
       const instance = yield* InstanceState.context
       const root = projectRoot(instance)
-      const dir = path.join(root, ".codegraph", "chimera")
-      const records = yield* Effect.promise(() => readProvenanceRecords(root, path.join(dir, "tool-provenance.jsonl")))
-      const predesigns = yield* Effect.promise(() =>
-        readPredesignRuns(root, path.join(dir, "predesign-runs.jsonl"), { sessionID, limit: MAX_RECENT_PREDESIGNS }),
-      )
-      const store = yield* Effect.promise(() =>
-        readPersistentObligationStore<PromptObligation>(root, path.join(dir, "obligations.json"), {
-          schemaVersion: 1,
-          obligations: [],
-        }),
-      )
+      const records = yield* Effect.promise(() => readProvenanceWithFallback(root))
+      const predesigns = yield* Effect.promise(() => readPredesignsWithFallback(root, sessionID))
+      const store = yield* Effect.promise(() => readObligationsWithFallback(root))
       const audits = yield* Effect.promise(() => readAuditRuns(root, { limit: 20 }))
-      const oracles = yield* Effect.promise(() =>
-        readOracleResults(root, path.join(dir, "oracle-results.jsonl"), { sessionID, limit: 20, includePassing: false }),
-      )
+      const oracles = yield* Effect.promise(() => readOraclesWithFallback(root, sessionID))
       return renderContext(recentMutations(records, sessionID), activeObligations(store), recentPredesigns(predesigns, sessionID), audits, oracles)
     })
 

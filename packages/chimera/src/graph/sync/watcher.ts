@@ -191,7 +191,7 @@ function toSyncResult(result: SyncResult | WatchSyncSummary, batch: WatchBatch):
  *   registering an inotify watch — see module docs / #276)
  * - Debounced to avoid thrashing on rapid saves
  * - Filters to supported source files by extension
- * - Ignores .codegraph/ and .git/ regardless of .gitignore
+ * - Ignores .chimera/, .codegraph/, and .git/ regardless of .gitignore
  * - Tracks per-file pending state so MCP tools can flag stale results
  *   without blocking on a sync (issue #403)
  */
@@ -367,7 +367,7 @@ export class FileWatcher {
   /** Our own dirs are always ignored, regardless of .gitignore. */
   private isAlwaysIgnored(rel: string): boolean {
     const parts = rel.split('/');
-    return parts.includes('.codegraph') || parts.includes('.git');
+    return parts.includes('.chimera') || parts.includes('.codegraph') || parts.includes('.git');
   }
 
   /**

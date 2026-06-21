@@ -35,6 +35,7 @@ export interface OpenOptions {
   init?: boolean
   index?: boolean
   sync?: boolean
+  readOnly?: boolean
   onProgress?: (progress: IndexProgress) => void
 }
 
@@ -58,11 +59,11 @@ export class CodeGraphAdapter {
   static async open(projectRoot: string, options: OpenOptions = {}) {
     const root = path.resolve(projectRoot)
     if (CodeGraph.isInitialized(root)) {
-      const adapter = new CodeGraphAdapter(root, await CodeGraph.open(root, { sync: false }))
-      if (options.sync) await adapter.sync({ onProgress: options.onProgress })
+      const adapter = new CodeGraphAdapter(root, await CodeGraph.open(root, { sync: false, readOnly: options.readOnly }))
+      if (options.sync && !options.readOnly) await adapter.sync({ onProgress: options.onProgress })
       return adapter
     }
-    if (!options.init) {
+    if (!options.init || options.readOnly) {
       throw new Error(`CodeGraph is not initialized in ${root}`)
     }
     const adapter = new CodeGraphAdapter(root, await CodeGraph.init(root, { index: false }))

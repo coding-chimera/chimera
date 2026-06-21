@@ -27,6 +27,7 @@ target
 opencode-dev
 UPCOMING_CHANGELOG.md
 logs/
+.chimera/
 .codegraph/
 *.bun-build
 tsconfig.tsbuildinfo

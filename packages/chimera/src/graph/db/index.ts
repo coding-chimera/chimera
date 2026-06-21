@@ -16,6 +16,7 @@ import {
   getStorageExtensionHistory,
   getStorageExtensionVersion,
 } from './extensions';
+import { DATABASE_FILENAME, getGraphDataRootInfo } from '../directory';
 
 export type { SqliteDatabase, SqliteBackend } from './sqlite-adapter';
 export type {
@@ -311,14 +312,8 @@ export class DatabaseConnection {
   }
 }
 
-/**
- * Default database filename
- */
-export const DATABASE_FILENAME = 'codegraph.db';
+export { DATABASE_FILENAME } from '../directory';
 
-/**
- * Get the default database path for a project
- */
 export function getDatabasePath(projectRoot: string): string {
-  return path.join(projectRoot, '.codegraph', DATABASE_FILENAME);
+  return getGraphDataRootInfo(projectRoot).databasePath;
 }

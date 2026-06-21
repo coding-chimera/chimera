@@ -1,15 +1,17 @@
 Show Chimera and CodeGraph readiness for the current project.
 
-Use this tool when you need to know whether the graph is ready, what revision is indexed, which backend is active, or how many tracked obligations are pending.
+Use this tool when you need to know whether the graph is ready, what revision is indexed, which data root is active, which backend is active, or how many tracked obligations are pending.
 
 Do NOT use this tool to search symbols, audit propagation, or prove correctness. Use `chimera_search`, `chimera_file_symbols`, `chimera_impact`, or audit tools for those tasks.
 
 Parameter rules:
 - `refresh` defaults to true. Set it to false only when stale graph state is acceptable for a lightweight status check.
+- This is a read-only status probe. It must not initialize graph data, migrate legacy data, or create `.chimera/`, `.codegraph/`, DB, lock, job, or migration files when the graph is unavailable.
 
 Common calls:
 - Check graph readiness before graph-backed exploration.
 - Inspect pending obligation count during closeout.
+- Diagnose uninitialized/current/legacy/mixed/custom data-root state before using graph-backed tools.
 
 After this tool:
 - If pending obligations are reported and the user is asking for closeout, list or resolve them before claiming completion.

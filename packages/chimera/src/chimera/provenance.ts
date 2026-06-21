@@ -8,11 +8,11 @@ import { registerDisposer } from "@/effect/instance-registry"
 import type { Tool } from "@/tool/tool"
 import { classifyChangeRecord, classifyFileBoundary, collectFileProjections, collectIncidentRelations } from "./change-classifier"
 import { CodeGraphAdapter } from "./codegraph-adapter"
-import type { CodeGraphSnapshot, IndexProgress as CodeGraphIndexProgress, SyncResult as CodeGraphSyncResult } from "@/graph"
+import { getCodeGraphDir, isInitialized, type CodeGraphSnapshot, type IndexProgress as CodeGraphIndexProgress, type SyncResult as CodeGraphSyncResult } from "@/graph"
 import { appendProvenanceRecord, databaseStorePath, readPredesignRuns, readProvenanceRecords, recordOracleResult, writeChangeFacts, type OracleLinkedChange, type OracleStatus, type OracleVerificationKind } from "./store"
 import { TOOL_MUTATION_PREDESIGN_REQUIRED } from "./guidance"
 
-const ARTIFACT_DIR = path.join(".codegraph", "chimera")
+const ARTIFACT_SUBDIR = "chimera"
 const TOOL_PROVENANCE_FILE = "tool-provenance.jsonl"
 const ORACLE_RESULT_FILE = "oracle-results.jsonl"
 const TOOL_DEDUPE_WINDOW_MS = 15_000
@@ -69,6 +69,8 @@ export interface OpenProjectGraphInput {
   sync?: boolean
   watch?: boolean
   onProgress?: (progress: CodeGraphIndexProgress) => void
+  init?: boolean
+  readOnly?: boolean
 }
 
 export interface MutationPredesignInput {
@@ -195,16 +197,20 @@ function toProvenanceFile(root: string, filePath: string): ProvenanceFile {
   }
 }
 
+function artifactDir(root: string) {
+  return path.join(getCodeGraphDir(root), ARTIFACT_SUBDIR)
+}
+
 function predesignArtifact(root: string) {
-  return path.join(root, ARTIFACT_DIR, "predesign-runs.jsonl")
+  return path.join(artifactDir(root), "predesign-runs.jsonl")
 }
 
 function toolProvenanceArtifact(root: string) {
-  return path.join(root, ARTIFACT_DIR, TOOL_PROVENANCE_FILE)
+  return path.join(artifactDir(root), TOOL_PROVENANCE_FILE)
 }
 
 function oracleArtifact(root: string) {
-  return path.join(root, ARTIFACT_DIR, ORACLE_RESULT_FILE)
+  return path.join(artifactDir(root), ORACLE_RESULT_FILE)
 }
 
 function predesignRisk(file: ProvenanceFile) {
@@ -541,25 +547,38 @@ function startFilesystemWatcher(state: ProjectGraphState) {
 
 function openGraphState(
   root: string,
-  options: { watch?: boolean; onProgress?: (progress: CodeGraphIndexProgress) => void } = {},
+  options: { init?: boolean; readOnly?: boolean; watch?: boolean; onProgress?: (progress: CodeGraphIndexProgress) => void } = {},
 ): Promise<ProjectGraphState> {
-  let promise = graphStates.get(root)
-  if (!promise) {
-    promise = CodeGraphAdapter.open(root, { init: true, index: true, sync: false, onProgress: options.onProgress }).then((graph) => {
-      const state: ProjectGraphState = {
-        graph,
-        projectRoot: root,
-        artifact: toolProvenanceArtifact(root),
-        storePath: databaseStorePath(root),
-      }
-      if (options.watch) startFilesystemWatcher(state)
-      return state
-    })
-    graphStates.set(root, promise)
-  } else if (options.watch) {
-    promise.then(startFilesystemWatcher).catch(() => undefined)
+  const cached = options.readOnly ? undefined : graphStates.get(root)
+  if (cached) {
+    if (options.watch) cached.then(startFilesystemWatcher).catch(() => undefined)
+    return cached
   }
-  return promise
+
+  const init = options.init ?? false
+  const promise = CodeGraphAdapter.open(root, {
+    init,
+    index: init,
+    sync: false,
+    readOnly: options.readOnly,
+    onProgress: options.onProgress,
+  }).then((graph) => {
+    const state: ProjectGraphState = {
+      graph,
+      projectRoot: root,
+      artifact: toolProvenanceArtifact(root),
+      storePath: databaseStorePath(root),
+    }
+    if (options.watch && !options.readOnly) startFilesystemWatcher(state)
+    return state
+  })
+  if (options.readOnly) return promise
+  const tracked = promise.catch((error) => {
+    graphStates.delete(root)
+    throw error
+  })
+  graphStates.set(root, tracked)
+  return tracked
 }
 
 export const recordToolOracle = Effect.fn("Chimera.recordToolOracle")(function* (input: ToolOracleInput) {
@@ -609,7 +628,8 @@ export function trackToolMutation<A, E, R>(
   return Effect.gen(function* () {
     const instance = yield* InstanceState.context
     const root = projectRoot(instance)
-    const s = yield* Effect.promise(() => openGraphState(root)).pipe(Effect.orDie)
+    if (!isInitialized(root)) return yield* effect
+    const s = yield* Effect.promise(() => openGraphState(root, { init: false, watch: false })).pipe(Effect.orDie)
     const startedAt = new Date().toISOString()
     const files = stableFiles(
       s.projectRoot,
@@ -699,6 +719,7 @@ export const requirePredesignForMutation: (input: MutationPredesignInput) => Eff
   )
   const risks = files.map(predesignRisk)
   const risky = risks.filter((risk) => risk.highRisk)
+  if (!isInitialized(root)) return { required: false, allowed: true as const, files, risks }
   const destructiveRisk = Boolean(input.destructive || input.rename || input.multiFile) && risky.length > 0
   const required = risky.length > 0 || destructiveRisk
   if (!required) return { required, allowed: true as const, files, risks }
@@ -734,7 +755,7 @@ export const requirePredesignForMutation: (input: MutationPredesignInput) => Eff
 })
 
 export const initProjectGraph = Effect.fn("Chimera.initProjectGraph")(function* (input: InitProjectGraphInput = {}) {
-  const s = yield* openProjectGraph({ sync: true, watch: input.watch ?? true, onProgress: input.onProgress })
+  const s = yield* openProjectGraph({ init: true, sync: true, watch: input.watch ?? true, onProgress: input.onProgress })
   const snapshot = s.graph.snapshot()
   if (input.bus) {
     yield* input.bus.publish(GraphReady, {
@@ -755,8 +776,8 @@ export const openProjectGraph = Effect.fn("Chimera.openProjectGraph")(function* 
   const instance = yield* InstanceState.context
   const root = projectRoot(instance)
   yield* Effect.sync(() => rememberGraphRoot(instance.directory, root))
-  const s = yield* Effect.promise(() => openGraphState(root, { watch: input.watch ?? true, onProgress: input.onProgress })).pipe(Effect.orDie)
-  if (input.sync) yield* Effect.promise(() => refreshProjectGraph(s, input.onProgress)).pipe(Effect.orDie)
+  const s = yield* Effect.promise(() => openGraphState(root, { init: input.init, readOnly: input.readOnly, watch: input.watch ?? !input.readOnly, onProgress: input.onProgress })).pipe(Effect.orDie)
+  if (input.sync && !input.readOnly) yield* Effect.promise(() => refreshProjectGraph(s, input.onProgress)).pipe(Effect.orDie)
   return s
 })
 

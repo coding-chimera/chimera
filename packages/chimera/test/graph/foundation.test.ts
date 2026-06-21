@@ -10,9 +10,27 @@ import * as path from 'path';
 import * as os from 'os';
 import { CodeGraph } from '../../src/graph';
 import { Node, Edge } from '../../src/graph/types';
-import { isInitialized, getCodeGraphDir, validateDirectory } from '../../src/graph/directory';
+import { getCodeGraphDir, getGraphDataRootInfo, isInitialized, migrateLegacyGraphData, probeLegacyGraphDataRoot, readIndexJob, validateDirectory } from '../../src/graph/directory';
 import { DatabaseConnection, getDatabasePath } from '../../src/graph/db';
+import { createDatabase } from '../../src/graph/db/sqlite-adapter';
 import { CURRENT_SCHEMA_VERSION } from '../../src/graph/db/migrations';
+
+const GRAPH_CLI = path.resolve(__dirname, 'fixtures/graph-cli.ts');
+
+async function runGraphCli(args: string[], cwd: string) {
+  const child = Bun.spawn([process.execPath, GRAPH_CLI, ...args], {
+    cwd,
+    stdout: 'pipe',
+    stderr: 'pipe',
+    env: { ...process.env, CODEGRAPH_NO_DAEMON: '1' },
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  return { stdout, stderr, exitCode };
+}
 
 // Create a temporary directory for each test
 function createTempDir(): string {
@@ -46,6 +64,138 @@ describe('CodeGraph Foundation', () => {
       expect(fs.existsSync(getDatabasePath(tempDir))).toBe(true);
 
       cg.close();
+    });
+
+    it('should initialize graph data in .chimera', () => {
+      const cg = CodeGraph.initSync(tempDir);
+      const dataRoot = getGraphDataRootInfo(tempDir);
+
+      expect(dataRoot.dataRootStatus).toBe('current');
+      expect(dataRoot.dataRoot).toBe(path.join(path.resolve(tempDir), '.chimera'));
+      expect(fs.existsSync(path.join(tempDir, '.chimera', 'codegraph.db'))).toBe(true);
+      expect(fs.existsSync(path.join(tempDir, '.codegraph', 'codegraph.db'))).toBe(false);
+
+      cg.close();
+    });
+
+    it('should write init job status during bootstrap', () => {
+      const cg = CodeGraph.initSync(tempDir);
+      const job = readIndexJob(tempDir);
+
+      expect(job?.kind).toBe('init');
+      expect(job?.status).toBe('succeeded');
+      expect(job?.phase).toBe('bootstrap');
+
+      cg.close();
+    });
+
+    it('should open legacy .codegraph databases without migration', () => {
+      const legacyDb = path.join(tempDir, '.codegraph', 'codegraph.db');
+      DatabaseConnection.initialize(legacyDb).close();
+
+      const dataRoot = getGraphDataRootInfo(tempDir);
+      const cg = CodeGraph.openSync(tempDir);
+
+      expect(dataRoot.dataRootStatus).toBe('legacy');
+      expect(getCodeGraphDir(tempDir)).toBe(path.join(path.resolve(tempDir), '.codegraph'));
+      expect(cg.getProjectRoot()).toBe(path.resolve(tempDir));
+      expect(fs.existsSync(path.join(tempDir, '.chimera'))).toBe(false);
+
+      cg.close();
+    });
+
+    it('should not create graph data during read-only open of a fresh project', async () => {
+      await expect(CodeGraph.open(tempDir, { readOnly: true })).rejects.toThrow(/not initialized/i);
+      expect(fs.existsSync(path.join(tempDir, '.chimera'))).toBe(false);
+      expect(fs.existsSync(path.join(tempDir, '.codegraph'))).toBe(false);
+    });
+
+
+    it('graph index should require explicit initialization', async () => {
+      fs.writeFileSync(path.join(tempDir, 'subject.ts'), 'export const subject = 1\n');
+
+      const result = await runGraphCli(['index', tempDir, '--quiet'], tempDir);
+
+      expect(result.exitCode).toBe(1);
+      expect(`${result.stdout}\n${result.stderr}`).toContain('not initialized');
+      expect(fs.existsSync(path.join(tempDir, '.chimera', 'codegraph.db'))).toBe(false);
+      expect(fs.existsSync(path.join(tempDir, '.codegraph', 'codegraph.db'))).toBe(false);
+    });
+
+    it('graph sync should require explicit initialization', async () => {
+      fs.writeFileSync(path.join(tempDir, 'subject.ts'), 'export const subject = 1\n');
+
+      const result = await runGraphCli(['sync', tempDir], tempDir);
+
+      expect(result.exitCode).toBe(1);
+      expect(`${result.stdout}\n${result.stderr}`).toContain('run "chimera graph init" first');
+      expect(fs.existsSync(path.join(tempDir, '.chimera', 'codegraph.db'))).toBe(false);
+      expect(fs.existsSync(path.join(tempDir, '.codegraph', 'codegraph.db'))).toBe(false);
+    });
+
+    it('should dry-run compatible legacy migration without creating .chimera', () => {
+      const legacyDb = path.join(tempDir, '.codegraph', 'codegraph.db');
+      DatabaseConnection.initialize(legacyDb).close();
+
+      const result = migrateLegacyGraphData(tempDir, { dryRun: true, mode: 'copy' });
+
+      expect(result.success).toBe(true);
+      expect(result.dryRun).toBe(true);
+      expect(result.probe.status).toBe('compatible-chimera-legacy');
+      expect(fs.existsSync(path.join(tempDir, '.chimera'))).toBe(false);
+    });
+
+    it('should copy compatible legacy .codegraph data into .chimera', () => {
+      const legacyDb = path.join(tempDir, '.codegraph', 'codegraph.db');
+      DatabaseConnection.initialize(legacyDb).close();
+      fs.mkdirSync(path.join(tempDir, '.codegraph', 'chimera'), { recursive: true });
+      fs.writeFileSync(path.join(tempDir, '.codegraph', 'chimera', 'tool-provenance.jsonl'), '', 'utf-8');
+
+      const result = migrateLegacyGraphData(tempDir, { mode: 'copy', now: '2026-01-01T00:00:00.000Z' });
+
+      expect(result.success).toBe(true);
+      expect(result.copiedFiles).toContain('codegraph.db');
+      expect(fs.existsSync(path.join(tempDir, '.chimera', 'codegraph.db'))).toBe(true);
+      expect(fs.existsSync(path.join(tempDir, '.chimera', 'chimera', 'tool-provenance.jsonl'))).toBe(true);
+      expect(fs.existsSync(path.join(tempDir, '.codegraph', 'codegraph.db'))).toBe(true);
+      expect(JSON.parse(fs.readFileSync(path.join(tempDir, '.chimera', 'migration.json'), 'utf-8')).probe.status).toBe('compatible-chimera-legacy');
+      expect(getGraphDataRootInfo(tempDir).dataRootStatus).toBe('mixed');
+      const cg = CodeGraph.openSync(tempDir);
+      expect(cg.getProjectRoot()).toBe(path.resolve(tempDir));
+      cg.close();
+    });
+
+    it('should move compatible legacy .codegraph data by renaming the old root aside', () => {
+      const legacyDb = path.join(tempDir, '.codegraph', 'codegraph.db');
+      DatabaseConnection.initialize(legacyDb).close();
+
+      const result = migrateLegacyGraphData(tempDir, { mode: 'move', now: '2026-01-01T00:00:00.000Z' });
+
+      expect(result.success).toBe(true);
+      expect(result.movedLegacyTo).toBe(path.join(tempDir, '.codegraph.legacy-20260101000000'));
+      expect(fs.existsSync(path.join(tempDir, '.chimera', 'codegraph.db'))).toBe(true);
+      expect(fs.existsSync(path.join(tempDir, '.codegraph'))).toBe(false);
+      expect(fs.existsSync(result.movedLegacyTo!)).toBe(true);
+      expect(getGraphDataRootInfo(tempDir).dataRootStatus).toBe('current');
+    });
+
+    it('should reject original CodeGraph shaped .codegraph data', () => {
+      const originalDb = path.join(tempDir, '.codegraph', 'codegraph.db');
+      fs.mkdirSync(path.dirname(originalDb), { recursive: true });
+      const db = createDatabase(originalDb);
+      try {
+        db.db.exec('CREATE TABLE original_codegraph_nodes (id TEXT PRIMARY KEY, payload TEXT)');
+      } finally {
+        db.db.close();
+      }
+
+      const probe = probeLegacyGraphDataRoot(tempDir);
+      const result = migrateLegacyGraphData(tempDir, { mode: 'copy' });
+
+      expect(probe.status).toBe('incompatible-original-codegraph');
+      expect(result.success).toBe(false);
+      expect(result.reason).toContain('schema_versions');
+      expect(fs.existsSync(path.join(tempDir, '.chimera'))).toBe(false);
     });
 
     it('should create .gitignore in .CodeGraph directory', () => {
