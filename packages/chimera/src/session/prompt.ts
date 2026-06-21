@@ -37,6 +37,7 @@ import { Auth } from "@/auth"
 import { ConfigMarkdown } from "@/config/markdown"
 import { SessionSummary } from "./summary"
 import { WorkBrief } from "./work-brief"
+import { PromptStats } from "./prompt-stats"
 import { ChimeraPromptContext } from "@/chimera/prompt-context"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { SessionProcessor } from "./processor"
@@ -1715,14 +1716,21 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               chimeraPromptContext.render(sessionID),
             ])
             const currentUserIndex = msgs.findIndex((m) => m.info.id === lastUser.id)
-            const modelMsgs = yield* Effect.gen(function* () {
-              if (currentUserIndex === -1) return yield* MessageV2.toModelMessagesEffect(msgs, model, { remoteCompaction })
+            const splitModelMsgs = yield* Effect.gen(function* () {
+              if (currentUserIndex === -1) {
+                return {
+                  history: [] as ModelMessage[],
+                  runtime: [] as ModelMessage[],
+                  current: yield* MessageV2.toModelMessagesEffect(msgs, model, { remoteCompaction }),
+                }
+              }
               const [history, current] = yield* Effect.all([
                 MessageV2.toModelMessagesEffect(msgs.slice(0, currentUserIndex), model, { remoteCompaction }),
                 MessageV2.toModelMessagesEffect(msgs.slice(currentUserIndex), model, { remoteCompaction }),
               ])
-              return [...history, ...transientContextMessage([workBriefSuffix, chimeraContextSuffix]), ...current]
+              return { history, runtime: transientContextMessage([workBriefSuffix, chimeraContextSuffix]), current }
             })
+            const modelMsgs = [...splitModelMsgs.history, ...splitModelMsgs.runtime, ...splitModelMsgs.current]
             const system = [
               ...env,
               ...instructions,
@@ -1730,6 +1738,24 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             ]
             const format = lastUser.format ?? { type: "text" as const }
             if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
+            const extraModelMsgs = isLastStep ? [{ role: "assistant" as const, content: MAX_STEPS }] : []
+            yield* bus.publish(
+              PromptStats.Event.Updated,
+              PromptStats.summarizePreparedRequest({
+                sessionID,
+                messageID: handle.message.id,
+                step,
+                agent: agent.name,
+                providerID: model.providerID,
+                modelID: model.id,
+                system,
+                history: splitModelMsgs.history,
+                runtime: splitModelMsgs.runtime,
+                current: splitModelMsgs.current,
+                extra: extraModelMsgs,
+                tools,
+              }),
+            )
             const result = yield* handle.process({
               user: lastUser,
               agent,
@@ -1737,7 +1763,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               sessionID,
               parentSessionID: session.parentID,
               system,
-              messages: [...modelMsgs, ...(isLastStep ? [{ role: "assistant" as const, content: MAX_STEPS }] : [])],
+              messages: [...modelMsgs, ...extraModelMsgs],
               tools,
               model,
               toolChoice: format.type === "json_schema" ? "required" : undefined,
