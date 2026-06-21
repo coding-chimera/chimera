@@ -7,6 +7,15 @@
 - Do not add `opencode` or `codegraph` public bins. Graph commands route through `chimera graph ...` or `chimera --graph ...`.
 - If changing installer, MCP, tool, prompt, build, or publish behavior, keep user-facing guidance aligned with `npm install -g chimera` + `chimera`.
 
+## Graph data root and tool behavior
+
+- Current project-local graph data lives under `.chimera/`. Legacy `.codegraph/` is read for compatibility and explicit migration only.
+- Use `src/graph/directory.ts` helpers such as `getGraphDataRootInfo` and `getCodeGraphDir` instead of hard-coding graph data paths.
+- Read-only surfaces, including `status`, `query`/`search`, agent graph tools, prompt-context loading, and read-only `CodeGraph.open`, must not create `.chimera/`, `.codegraph/`, lock files, DBs, job files, or migration artifacts.
+- When a project is uninitialized, read-only graph tools should return structured status such as `initialized`, `dataRoot`, `dataRootStatus`, and `jobStatus` rather than initializing automatically.
+- Only explicit write flows (`chimera graph init`, `index`, `sync`, `migrate-data`) may create or migrate graph data. Never silently move, merge, or delete legacy `.codegraph/` data.
+- When changing graph CLI, Chimera tools, prompt context, storage paths, watcher/extraction ignores, or installer behavior, update agent-facing prompt/tool guidance and focused tests in the same change.
+
 # Database guide
 
 ## Database

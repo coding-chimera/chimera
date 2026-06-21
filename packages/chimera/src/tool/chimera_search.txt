@@ -8,12 +8,13 @@ Parameter rules:
 - `query` is required. Keep it focused on a symbol, module, route, API surface, or architecture term.
 - Use `kind` only when you know the CodeGraph node kind you want.
 - Use `limit` to keep results compact.
-- `refresh` controls whether stale graph signals may trigger a sync.
+- `refresh` controls whether stale graph signals may trigger a sync for an initialized graph; it must not initialize graph data or migrate legacy data when the project is unavailable.
 
 Common calls:
 - Find a symbol or component by name.
 - Find graph-indexed API or route terms.
 - Locate likely declarations before reading files.
+- If the graph is uninitialized, return the structured unavailable state and zero results rather than creating graph data.
 
 After this tool:
 - Use `chimera_impact` for dependency or caller impact.

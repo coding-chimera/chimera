@@ -1,7 +1,7 @@
 - To regenerate the JavaScript SDK, run `./packages/sdk/js/script/build.ts`.
 - ALWAYS USE PARALLEL TOOLS WHEN APPLICABLE.
-- The default branch in this repo is `dev`.
-- Local `main` ref may not exist; use `dev` or `origin/dev` for diffs.
+- The tracked branch for this checkout is `chimera/acp-pruning`; local worktrees may still be on `main`.
+- Check live git refs before choosing a diff base; do not assume `dev` or `main` is the intended base.
 - Prefer automation: execute requested actions without confirmation unless blocked by missing info or safety/irreversibility.
 
 ## Naming convention
@@ -10,6 +10,15 @@
 - `chimera` is the public npm package and public CLI command for the complete Chimera distribution: the opencode-derived agent runtime plus the Chimera/CodeGraph graph and audit runtime.
 - Do not add public `opencode` or `codegraph` bins; graph/runtime commands live under `chimera graph ...` and `chimera --graph ...`.
 - When referring to the original upstream project, say **upstream opencode** or **original opencode** explicitly.
+
+## Graph data root
+
+- New project-local Chimera graph data belongs under `.chimera/`; `.codegraph/` is legacy compatibility data only.
+- Do not hard-code `.codegraph/` or `.chimera/` paths when graph directory helpers can resolve the active data root.
+- `status`, `query`/`search`, agent tool probes, and other read-only opens must not initialize, migrate, or create graph data. They should report `uninitialized`, `current`, `legacy`, `mixed`, or `custom` data-root status instead.
+- Only explicit write flows such as `chimera graph init`, `chimera graph index`, `chimera graph sync`, or `chimera graph migrate-data` may create or migrate graph data.
+- Do not silently move, merge, or delete legacy `.codegraph/` data. Use `chimera graph migrate-data` and preserve user data unless an explicit mode says otherwise.
+- Watchers, extraction, git-status scans, and file traversal must ignore both `.chimera/` and `.codegraph/` during the compatibility window.
 
 ## Style Guide
 

@@ -5,14 +5,12 @@ import { File } from "../file"
 import { Snapshot } from "../snapshot"
 import * as Project from "./project"
 import * as Vcs from "./vcs"
-import { Bus } from "../bus"
 import { InstanceState } from "@/effect/instance-state"
 import { FileWatcher } from "@/file/watcher"
 import { ShareNext } from "@/share/share-next"
 import { Effect, Layer } from "effect"
 import { Config } from "@/config/config"
 import { Service } from "./bootstrap-service"
-import { Chimera } from "@/chimera"
 
 export { Service } from "./bootstrap-service"
 export type { Interface } from "./bootstrap-service"
@@ -32,7 +30,6 @@ export const layer = Layer.effect(
     const project = yield* Project.Service
     const shareNext = yield* ShareNext.Service
     const snapshot = yield* Snapshot.Service
-    const bus = yield* Bus.Service
     const vcs = yield* Vcs.Service
 
     const run = Effect.gen(function* () {
@@ -42,7 +39,6 @@ export const layer = Layer.effect(
       yield* config.get()
       // Plugin can mutate config so it has to be initialized before anything else.
       yield* plugin.init()
-      yield* Chimera.initProjectGraph({ bus, source: "project.init", watch: false })
       // Each service self-manages its own slow work via Effect.forkScoped against
       // its per-instance state scope. We just await materialization here.
       yield* Effect.forEach(
@@ -58,7 +54,6 @@ export const layer = Layer.effect(
 
 export const defaultLayer: Layer.Layer<Service> = layer.pipe(
   Layer.provide([
-    Bus.layer,
     Config.defaultLayer,
     File.defaultLayer,
     FileWatcher.defaultLayer,

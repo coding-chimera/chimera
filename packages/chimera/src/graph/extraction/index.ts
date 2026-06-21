@@ -455,8 +455,8 @@ function scanDirectoryWalk(
     }
 
     for (const entry of entries) {
-      // Never descend into git internals or our own data directory.
-      if (entry.name === '.git' || entry.name === '.codegraph') continue;
+      // Never descend into git internals or Chimera graph data directories.
+      if (entry.name === '.git' || entry.name === '.chimera' || entry.name === '.codegraph') continue;
 
       const fullPath = path.join(dir, entry.name);
       const relativePath = normalizePath(path.relative(rootDir, fullPath));

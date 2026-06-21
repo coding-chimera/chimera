@@ -64,6 +64,10 @@ const runSearch = Effect.fn("ChimeraToolTest.runSearch")(function* (
   return yield* tool.execute(args, next)
 })
 
+const initGraph = Effect.fn("ChimeraToolTest.initGraph")(function* () {
+  return yield* Chimera.initProjectGraph({ watch: false })
+})
+
 const runFileSymbols = Effect.fn("ChimeraToolTest.runFileSymbols")(function* (
   args: Tool.InferParameters<typeof ChimeraFileSymbolsTool>,
   next: Tool.Context = ctx,
@@ -168,7 +172,9 @@ const trackWrite = Effect.fn("ChimeraToolTest.trackWrite")(function* (input: {
   content: string
   patch: string
   callID: string
+  init?: boolean
 }) {
+  if (input.init !== false) yield* initGraph()
   yield* Chimera.trackToolMutation(
     {
       toolID: "write",
@@ -185,7 +191,7 @@ const trackWrite = Effect.fn("ChimeraToolTest.trackWrite")(function* (input: {
 })
 
 describe("tool.chimera", () => {
-  it.instance("reports graph status and initializes CodeGraph", () =>
+  it.instance("reports uninitialized status without creating graph data", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
       yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "tracked.ts"), "export const tracked = 1\n"))
@@ -193,15 +199,58 @@ describe("tool.chimera", () => {
       const result = yield* runStatus({ refresh: true })
 
       expect(result.title).toBe("Chimera status")
+      expect(result.output).toContain("Chimera graph surface is not initialized.")
+      expect(result.metadata.initialized).toBe(false)
+      expect(result.metadata.dataRootStatus).toBe("uninitialized")
+      expect(yield* Effect.promise(() => Bun.file(path.join(test.directory, ".chimera")).exists())).toBe(false)
+    }),
+  )
+
+  it.instance("runs tool mutations without initializing graph data", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filePath = path.join(test.directory, "mutation.ts")
+      const content = "export const mutation = 1\n"
+
+      yield* trackWrite({
+        filePath,
+        content,
+        callID: "call_chimera_mutation_without_init",
+        init: false,
+        patch: `--- mutation.ts
++++ mutation.ts
+@@ -0,0 +1,1 @@
++export const mutation = 1
+`,
+      })
+
+      expect(yield* Effect.promise(() => Bun.file(filePath).text())).toBe(content)
+      expect(yield* Effect.promise(() => Bun.file(path.join(test.directory, ".chimera", "codegraph.db")).exists())).toBe(false)
+      expect(yield* Effect.promise(() => Bun.file(path.join(test.directory, ".codegraph", "codegraph.db")).exists())).toBe(false)
+    }),
+  )
+
+  it.instance("reports ready status after explicit graph init", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "tracked.ts"), "export const tracked = 1\n"))
+      yield* initGraph()
+
+      const result = yield* runStatus({ refresh: true })
+
+      expect(result.title).toBe("Chimera status")
       expect(result.output).toContain("Chimera graph surface is ready.")
       expect(result.output).toContain("Pending obligations: 0")
-      expect(result.metadata.snapshot.fileCount).toBeGreaterThan(0)
-      expect(result.metadata.snapshot.nodeCount).toBeGreaterThan(0)
-      expect(result.metadata.snapshot.revision).toEqual(expect.any(String))
+      expect(result.metadata.initialized).toBe(true)
+      expect(result.metadata.snapshot?.fileCount).toBeGreaterThan(0)
+      expect(result.metadata.snapshot?.nodeCount).toBeGreaterThan(0)
+      expect(result.metadata.snapshot?.revision).toEqual(expect.any(String))
       expect(result.metadata.pendingObligations).toBe(0)
+      expect(result.metadata.dataRootStatus).toBe("current")
 
-      const marker = yield* Effect.promise(() => fs.stat(path.join(test.directory, ".codegraph", "codegraph.db")))
+      const marker = yield* Effect.promise(() => fs.stat(path.join(test.directory, ".chimera", "codegraph.db")))
       expect(marker.isFile()).toBe(true)
+      expect(yield* Effect.promise(() => Bun.file(path.join(test.directory, ".codegraph", "codegraph.db")).exists())).toBe(false)
     }),
   )
 
@@ -211,6 +260,7 @@ describe("tool.chimera", () => {
       yield* Effect.promise(() =>
         fs.writeFile(path.join(test.directory, "search.ts"), "export function trackedSearch() { return 1 }\n"),
       )
+      yield* initGraph()
 
       const result = yield* runSearch({ query: "trackedSearch" })
 
@@ -226,6 +276,7 @@ describe("tool.chimera", () => {
       yield* Effect.promise(() =>
         fs.writeFile(path.join(test.directory, "symbols.ts"), "export function trackedFileSymbol() { return 1 }\n"),
       )
+      yield* initGraph()
 
       const result = yield* runFileSymbols({ filePath: "symbols.ts" })
 
@@ -239,7 +290,7 @@ describe("tool.chimera", () => {
     Effect.gen(function* () {
       const test = yield* TestInstance
       yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "baseline.ts"), "export const baseline = 1\n"))
-      yield* runStatus({ refresh: true })
+      yield* initGraph()
       yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "late-symbol.ts"), "export function lateSymbol() { return 1 }\n"))
 
       const result = yield* runFileSymbols({ filePath: "late-symbol.ts", refresh: false })
@@ -259,6 +310,7 @@ describe("tool.chimera", () => {
           "import { source } from './source'\nexport function caller() { return source() }\n",
         ),
       )
+      yield* initGraph()
 
       const stages: string[] = []
       const result = yield* runPredesign(
@@ -273,7 +325,7 @@ describe("tool.chimera", () => {
         },
       )
       const runs = yield* Effect.promise(() =>
-        readPredesignRuns(test.directory, path.join(test.directory, ".codegraph", "chimera", "predesign-runs.jsonl"), {
+        readPredesignRuns(test.directory, path.join(test.directory, ".chimera", "chimera", "predesign-runs.jsonl"), {
           sessionID: ctx.sessionID,
         }),
       )
@@ -299,6 +351,7 @@ describe("tool.chimera", () => {
           symbols.map((symbol) => `export function ${symbol}() { return "${symbol}" }`).join("\n"),
         ),
       )
+      yield* initGraph()
 
       const result = yield* runPredesign({ intent: "review many seeds", files: ["source.ts"], symbols })
 
@@ -319,6 +372,7 @@ describe("tool.chimera", () => {
           "import { source } from './source'\nexport function caller() { return source() }\n",
         ),
       )
+      yield* initGraph()
 
       const result = yield* runImpact({ symbol: "source", depth: 2 })
 
@@ -340,6 +394,7 @@ describe("tool.chimera", () => {
           "import { base } from './base'\nexport function consumer() { return base() }\n",
         ),
       )
+      yield* initGraph()
 
       const result = yield* runAudit({ filePath: "base.ts", depth: 2 })
 
@@ -369,7 +424,7 @@ describe("tool.chimera", () => {
           "import { base } from './base'\nexport function verifiesBase() { return base() }\n",
         ),
       )
-      yield* runStatus({ refresh: true })
+      yield* initGraph()
       const db = DatabaseConnection.open(getDatabasePath(test.directory))
       try {
         db.getDb().prepare("DELETE FROM edges WHERE kind = 'imports'").run()
@@ -588,7 +643,7 @@ describe("tool.chimera", () => {
     Effect.gen(function* () {
       const test = yield* TestInstance
       yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "baseline.ts"), "export const baseline = 1\n"))
-      yield* runStatus({ refresh: true })
+      yield* initGraph()
       yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "late-audit.ts"), "export function lateAudit() { return 1 }\n"))
 
       const result = yield* runAudit({ filePath: "late-audit.ts", refresh: false })
@@ -892,7 +947,7 @@ describe("tool.chimera", () => {
         )
         yield* Effect.promise(() => Bun.$`git add base.ts consumer.ts`.cwd(test.directory).quiet())
         yield* Effect.promise(() => Bun.$`git commit -m baseline`.cwd(test.directory).quiet())
-        yield* runStatus({ refresh: true })
+        yield* initGraph()
         yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "base.ts"), "export function base() { return 2 }\n"))
 
         const result = yield* runAuditRecent({})
@@ -901,7 +956,7 @@ describe("tool.chimera", () => {
         expect(result.output).toContain("Source: git_diff")
         expect(result.metadata.source).toBe("git_diff")
         expect(result.metadata.changedFiles).toContain("base.ts")
-        expect(result.metadata.changedFiles.some((file) => file.startsWith(".codegraph/"))).toBe(false)
+        expect(result.metadata.changedFiles.some((file) => file.startsWith(".chimera/") || file.startsWith(".codegraph/"))).toBe(false)
       }),
     { git: true },
   )
@@ -916,6 +971,7 @@ describe("tool.chimera", () => {
           "import { base } from './base'\nexport function consumer() { return base() }\n",
         ),
       )
+      yield* initGraph()
 
       const synced = yield* runObligationsSync({ filePath: "base.ts", depth: 2 })
       const obligation = synced.metadata.obligations[0]
@@ -951,8 +1007,9 @@ describe("tool.chimera", () => {
 
       const listed = yield* runObligationsList({ status: "resolved" })
       expect(listed.metadata.obligations.some((item) => item.id === obligation.id)).toBe(true)
-      expect(yield* Effect.promise(() => Bun.file(path.join(test.directory, ".codegraph", "codegraph.db")).exists())).toBe(true)
-      expect(yield* Effect.promise(() => Bun.file(path.join(test.directory, ".codegraph", "chimera", "obligations.json")).exists())).toBe(false)
+      expect(yield* Effect.promise(() => Bun.file(path.join(test.directory, ".chimera", "codegraph.db")).exists())).toBe(true)
+      expect(yield* Effect.promise(() => Bun.file(path.join(test.directory, ".chimera", "chimera", "obligations.json")).exists())).toBe(false)
+      expect(yield* Effect.promise(() => Bun.file(path.join(test.directory, ".codegraph", "codegraph.db")).exists())).toBe(false)
     }),
   )
 })

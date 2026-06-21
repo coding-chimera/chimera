@@ -8,10 +8,11 @@
  *   chimera                    Run interactive installer (when no args)
  *   chimera install            Run interactive installer
  *   chimera uninstall          Remove Chimera from your agents
- *   chimera init [path]        Initialize Chimera in a project
- *   chimera uninit [path]      Remove Chimera from a project
- *   chimera index [path]       Index all files in the project
- *   chimera sync [path]        Sync changes since last index
+ *   chimera graph init [path]   Initialize Chimera graph data in a project
+ *   chimera graph uninit [path] Remove Chimera graph data from a project
+ *   chimera graph index [path]  Index all files in the project
+ *   chimera graph sync [path]   Sync changes since last index
+ *   chimera graph migrate-data [path]  Migrate legacy .codegraph data to .chimera
  *   chimera status [path]      Show index status
  *   chimera query <search>     Search for symbols
  *   chimera files [options]    Show project file structure
@@ -27,7 +28,7 @@ import { Command } from 'commander';
 import * as path from 'path';
 import * as fs from 'fs';
 import '../env';
-import { getCodeGraphDir, isInitialized } from '../directory';
+import { getCodeGraphDir, getGraphDataRootInfo, isInitialized, migrateLegacyGraphData, readIndexJob } from '../directory';
 import { detectWorktreeIndexMismatch, worktreeMismatchWarning } from '../sync/worktree';
 import { createShimmerProgress } from '../ui/shimmer-progress';
 import { getGlyphs } from '../ui/glyphs';
@@ -191,8 +192,7 @@ program
 
 /**
  * Resolve project path from argument or current directory
- * Walks up parent directories to find nearest initialized CodeGraph project
- * (must have .codegraph/codegraph.db, not just .codegraph/lessons.db)
+ * Walks up parent directories to find the nearest initialized Chimera graph project.
  */
 function resolveProjectPath(pathArg?: string): string {
   const absolutePath = path.resolve(pathArg || process.cwd());
@@ -202,8 +202,7 @@ function resolveProjectPath(pathArg?: string): string {
     return absolutePath;
   }
 
-  // Walk up to find nearest parent with CodeGraph initialized
-  // Note: findNearestCodeGraphRoot finds any .codegraph folder, but we need one with codegraph.db
+  // Walk up to find nearest initialized parent.
   let current = absolutePath;
   const root = path.parse(current).root;
 
@@ -381,14 +380,14 @@ function printIndexResult(clack: typeof import('@clack/prompts'), result: IndexR
 
     if (projectPath) {
       writeErrorLog(projectPath, result.errors);
-      clack.log.info('See .codegraph/errors.log for details');
+      clack.log.info(`See ${path.relative(projectPath, path.join(getCodeGraphDir(projectPath), 'errors.log'))} for details`);
     }
 
     if (result.filesIndexed > 0) {
       clack.log.info(`The index is fully usable ${getGlyphs().dash} only the failed files are missing.`);
     }
   } else if (projectPath) {
-    const logPath = path.join(projectPath, '.codegraph', 'errors.log');
+    const logPath = path.join(getCodeGraphDir(projectPath), 'errors.log');
     if (fs.existsSync(logPath)) {
       fs.unlinkSync(logPath);
     }
@@ -399,7 +398,7 @@ function printIndexResult(clack: typeof import('@clack/prompts'), result: IndexR
  * Write detailed error log to .codegraph/errors.log
  */
 function writeErrorLog(projectPath: string, errors: Array<{ message: string; filePath?: string; severity: string; code?: string }>): void {
-  const cgDir = path.join(projectPath, '.codegraph');
+  const cgDir = getCodeGraphDir(projectPath);
   if (!fs.existsSync(cgDir)) return;
 
   const logPath = path.join(cgDir, 'errors.log');
@@ -450,19 +449,19 @@ function writeErrorLog(projectPath: string, errors: Array<{ message: string; fil
  */
 program
   .command('init [path]')
-  .description('Initialize CodeGraph in a project directory and build the initial index')
-  .option('-i, --index', 'Deprecated: indexing now runs by default; flag accepted for backward compatibility')
-  .option('-v, --verbose', 'Show detailed worker lifecycle and memory info')
-  .action(async (pathArg: string | undefined, options: { index?: boolean; verbose?: boolean }) => {
+  .description('Initialize Chimera graph data in a project directory')
+  .option('-i, --index', 'Deprecated: initialization no longer runs a blocking index; run "chimera graph index" explicitly')
+  .option('-v, --verbose', 'Accepted for backward compatibility')
+  .action(async (pathArg: string | undefined, _options: { index?: boolean; verbose?: boolean }) => {
     const projectPath = path.resolve(pathArg || process.cwd());
     const clack = await loadClackPrompts();
 
-    clack.intro('Initializing CodeGraph');
+    clack.intro('Initializing Chimera graph data');
 
     try {
       if (isInitialized(projectPath)) {
         clack.log.warn(`Already initialized in ${projectPath}`);
-        clack.log.info('Use "chimera index" to re-index or "chimera sync" to update');
+        clack.log.info('Use "chimera graph index" to index or "chimera graph sync" to update');
         try {
           const { offerWatchFallback } = await import('../installer');
           await offerWatchFallback(clack, projectPath);
@@ -473,26 +472,9 @@ program
 
       const { default: CodeGraph } = await loadCodeGraph();
       const cg = await CodeGraph.init(projectPath, { index: false });
-      clack.log.success(`Initialized in ${projectPath}`);
-
-      // Indexing runs by default now. The legacy -i/--index flag is still
-      // accepted (so existing muscle memory and scripts don't break) but is a
-      // no-op — initializing always builds the initial index.
-      let result: IndexResult;
-      if (options.verbose) {
-        result = await cg.indexAll({
-          onProgress: createVerboseProgress(),
-          verbose: true,
-        });
-      } else {
-        process.stdout.write(`${colors.dim}${getGlyphs().rail}${colors.reset}\n`);
-        const progress = createShimmerProgress();
-        result = await cg.indexAll({
-          onProgress: progress.onProgress,
-        });
-        await progress.stop();
-      }
-      printIndexResult(clack, result, projectPath);
+      const dataRoot = getGraphDataRootInfo(projectPath);
+      clack.log.success(`Initialized graph data in ${dataRoot.dataRoot}`);
+      clack.log.info('Run "chimera graph index" to build the first index');
 
       try {
         const { offerWatchFallback } = await import('../installer');
@@ -508,11 +490,61 @@ program
   });
 
 /**
+ * chimera graph migrate-data [path]
+ */
+program
+  .command('migrate-data [path]')
+  .description('Migrate compatible legacy .codegraph data to .chimera')
+  .option('--dry-run', 'Inspect migration compatibility without copying data')
+  .option('--copy', 'Copy compatible legacy data to .chimera and keep .codegraph')
+  .option('--move', 'Copy compatible legacy data to .chimera and rename .codegraph aside')
+  .option('-f, --force', 'Replace an existing non-empty .chimera data root')
+  .action(async (pathArg: string | undefined, options: { dryRun?: boolean; copy?: boolean; move?: boolean; force?: boolean }) => {
+    const projectPath = path.resolve(pathArg || process.cwd());
+    const clack = await loadClackPrompts();
+    clack.intro('Migrating Chimera graph data');
+
+    try {
+      if (options.copy && options.move) {
+        clack.log.error('Choose only one migration mode: --copy or --move');
+        process.exit(1);
+      }
+      const dryRun = options.dryRun || (!options.copy && !options.move);
+      const mode = options.move ? 'move' as const : 'copy' as const;
+      const result = migrateLegacyGraphData(projectPath, { dryRun, mode, force: options.force });
+      clack.log.info(`Source: ${result.sourceRoot}`);
+      clack.log.info(`Target: ${result.targetRoot}`);
+      clack.log.info(`Probe: ${result.probe.status}${result.probe.schemaVersion ? ` (schema ${result.probe.schemaVersion})` : ''}`);
+
+      if (!result.success) {
+        clack.log.error(result.reason ?? result.probe.reason);
+        clack.outro('Migration not performed');
+        process.exit(1);
+      }
+
+      if (result.dryRun) {
+        clack.log.success('Dry-run passed: legacy data is compatible Chimera graph data');
+        clack.log.info('Re-run with --copy to migrate while keeping .codegraph, or --move to rename .codegraph aside after copy.');
+        clack.outro('Done');
+        return;
+      }
+
+      clack.log.success(`Migrated ${result.copiedFiles.length} file${result.copiedFiles.length === 1 ? '' : 's'} to .chimera`);
+      if (result.migrationPath) clack.log.info(`Wrote ${path.relative(projectPath, result.migrationPath)}`);
+      if (result.movedLegacyTo) clack.log.info(`Renamed legacy root to ${result.movedLegacyTo}`);
+      clack.outro('Done');
+    } catch (err) {
+      clack.log.error(`Failed: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  });
+
+/**
  * chimera uninit [path]
  */
 program
   .command('uninit [path]')
-  .description('Remove CodeGraph from a project (deletes .codegraph/ directory)')
+  .description('Remove Chimera graph data from a project (deletes the active data root)')
   .option('-f, --force', 'Skip confirmation prompt')
   .action(async (pathArg: string | undefined, options: { force?: boolean }) => {
     const projectPath = resolveProjectPath(pathArg);
@@ -562,7 +594,7 @@ program
   });
 
 /**
- * chimera index [path]
+ * chimera graph index [path]
  */
 program
   .command('index [path]')
@@ -574,13 +606,10 @@ program
     const projectPath = resolveProjectPath(pathArg);
 
     try {
-      if (!isInitialized(projectPath)) {
-        error(`Chimera not initialized in ${projectPath}`);
-        info('Run "chimera init" first');
-        process.exit(1);
-      }
-
       const { default: CodeGraph } = await loadCodeGraph();
+      if (!isInitialized(projectPath)) {
+        throw new Error(`Chimera graph is not initialized in ${projectPath}; run "chimera graph init" first`);
+      }
       const cg = await CodeGraph.open(projectPath);
 
       if (options.quiet) {
@@ -631,7 +660,7 @@ program
   });
 
 /**
- * chimera sync [path]
+ * chimera graph sync [path]
  */
 program
   .command('sync [path]')
@@ -641,14 +670,10 @@ program
     const projectPath = resolveProjectPath(pathArg);
 
     try {
-      if (!isInitialized(projectPath)) {
-        if (!options.quiet) {
-          error(`Chimera not initialized in ${projectPath}`);
-        }
-        process.exit(1);
-      }
-
       const { default: CodeGraph } = await loadCodeGraph();
+      if (!isInitialized(projectPath)) {
+        throw new Error(`Chimera graph is not initialized in ${projectPath}; run "chimera graph init" first`);
+      }
       const cg = await CodeGraph.open(projectPath);
 
       if (options.quiet) {
@@ -709,29 +734,43 @@ program
 
     try {
       if (!isInitialized(projectPath)) {
+        const dataRoot = getGraphDataRootInfo(projectPath);
+        const job = readIndexJob(projectPath);
         if (options.json) {
-          console.log(JSON.stringify({ initialized: false, projectPath }));
+          console.log(JSON.stringify({
+            initialized: false,
+            projectPath,
+            dataRoot: dataRoot.dataRoot,
+            dataRootStatus: dataRoot.dataRootStatus,
+            jobStatus: job ?? null,
+          }));
           return;
         }
         console.log(chalk.bold('\nChimera Status\n'));
         info(`Project: ${projectPath}`);
+        info(`Data root: ${dataRoot.dataRoot} (${dataRoot.dataRootStatus})`);
+        if (job) info(`Graph job: ${job.kind} ${job.status}${job.phase ? ` ${getGlyphs().dash} ${job.phase}` : ''}`);
         warn('Not initialized');
-        info('Run "chimera init" to initialize');
+        info('Run "chimera graph init" to initialize graph data');
         return;
       }
 
       const { default: CodeGraph } = await loadCodeGraph();
-      const cg = await CodeGraph.open(projectPath);
+      const cg = await CodeGraph.open(projectPath, { readOnly: true });
       const stats = cg.getStats();
       const changes = cg.getChangedFiles();
       const backend = cg.getBackend();
       const journalMode = cg.getJournalMode();
-
+      const dataRoot = getGraphDataRootInfo(projectPath);
+      const job = readIndexJob(projectPath);
       // JSON output mode
       if (options.json) {
         console.log(JSON.stringify({
           initialized: true,
           projectPath,
+          dataRoot: dataRoot.dataRoot,
+          dataRootStatus: dataRoot.dataRootStatus,
+          jobStatus: job ?? null,
           fileCount: stats.fileCount,
           nodeCount: stats.nodeCount,
           edgeCount: stats.edgeCount,
@@ -757,6 +796,8 @@ program
 
       // Project info
       console.log(chalk.cyan('Project:'), projectPath);
+      console.log(chalk.cyan('Data root:'), `${dataRoot.dataRoot} ${chalk.dim(`(${dataRoot.dataRootStatus})`)}`);
+      if (job) console.log(chalk.cyan('Graph job:'), `${job.kind} ${job.status}${job.phase ? ` ${getGlyphs().dash} ${job.phase}` : ''}`);
       if (worktreeMismatch) {
         warn(worktreeMismatchWarning(worktreeMismatch));
       }
@@ -899,12 +940,21 @@ program
 
     try {
       if (!isInitialized(projectPath)) {
-        error(`Chimera not initialized in ${projectPath}`);
-        process.exit(1);
+        const dataRoot = getGraphDataRootInfo(projectPath);
+        const job = readIndexJob(projectPath);
+        if (options.json) {
+          console.log(JSON.stringify({ initialized: false, projectPath, dataRoot: dataRoot.dataRoot, dataRootStatus: dataRoot.dataRootStatus, jobStatus: job ?? null, results: [] }, null, 2));
+          return;
+        }
+        warn(`Chimera graph is not initialized in ${projectPath}`);
+        info(`Data root: ${dataRoot.dataRoot} (${dataRoot.dataRootStatus})`);
+        if (job) info(`Graph job: ${job.kind} ${job.status}${job.phase ? ` ${getGlyphs().dash} ${job.phase}` : ''}`);
+        info('Run "chimera graph init" then "chimera graph index" to build the graph.');
+        return;
       }
 
       const { default: CodeGraph } = await loadCodeGraph();
-      const cg = await CodeGraph.open(projectPath);
+      const cg = await CodeGraph.open(projectPath, { readOnly: true });
 
       const limit = parseInt(options.limit || '10', 10);
       const rawResults = cg.searchNodes(search, {
@@ -982,16 +1032,25 @@ program
 
     try {
       if (!isInitialized(projectPath)) {
-        error(`Chimera not initialized in ${projectPath}`);
-        process.exit(1);
+        const dataRoot = getGraphDataRootInfo(projectPath);
+        const job = readIndexJob(projectPath);
+        if (options.json) {
+          console.log(JSON.stringify({ initialized: false, projectPath, dataRoot: dataRoot.dataRoot, dataRootStatus: dataRoot.dataRootStatus, jobStatus: job ?? null, files: [] }, null, 2));
+          return;
+        }
+        warn(`Chimera graph is not initialized in ${projectPath}`);
+        info(`Data root: ${dataRoot.dataRoot} (${dataRoot.dataRootStatus})`);
+        if (job) info(`Graph job: ${job.kind} ${job.status}${job.phase ? ` ${getGlyphs().dash} ${job.phase}` : ''}`);
+        info('Run "chimera graph init" then "chimera graph index" to build the graph.');
+        return;
       }
 
       const { default: CodeGraph } = await loadCodeGraph();
-      const cg = await CodeGraph.open(projectPath);
+      const cg = await CodeGraph.open(projectPath, { readOnly: true });
       let files = cg.getFiles();
 
       if (files.length === 0) {
-        info('No files indexed. Run "chimera index" first.');
+        info('No files indexed. Run "chimera graph index" first.');
         cg.destroy();
         return;
       }
@@ -1711,10 +1770,10 @@ program
 /**
  * chimera uninstall
  *
- * Inverse of `install`. Removes the codegraph MCP server entry,
+ * Inverse of `install`. Removes the Chimera MCP server entry,
  * instructions block, and permissions from every agent (or a
  * `--target` subset). Prompts global-vs-local when not given. Does NOT
- * delete the `.codegraph/` index — that's `codegraph uninit`.
+ * delete project graph data — that's `chimera graph uninit`.
  */
 program
   .command('uninstall')

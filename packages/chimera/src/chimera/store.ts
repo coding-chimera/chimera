@@ -825,7 +825,15 @@ function withReplayLifecycle(fact: ChangeFact, input: NonNullable<ChangeFact["ev
 
 function hydrateFactFromSemanticSnapshots(db: ChimeraDb, fact: ChangeFact): ChangeFact {
   const refs = fact.evidence.semanticSnapshots
-  if (!refs) return fact
+  if (!refs) {
+    if (!fact.evidence.relationDelta) return fact
+    return withReplayLifecycle(fact, {
+      version: 1,
+      status: "replayable",
+      reason: "legacy embedded relation evidence remains replayable without semantic snapshot refs",
+      sourceRevision: fact.evidence.graph.beforeRevision ?? fact.evidence.graph.afterRevision,
+    })
+  }
   const expectedRelations = (refs.beforeRelationHashes?.length ?? 0) + (refs.afterRelationHashes?.length ?? 0)
   if (expectedRelations === 0) return fact
   const beforeRelations = readSemanticRelations(db, refs.beforeRelationHashes)

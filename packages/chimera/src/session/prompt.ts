@@ -1896,18 +1896,18 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             sessionID: input.sessionID,
             questions: [
               {
-                header: "CodeGraph",
+                header: "Chimera graph",
                 question:
-                  "Run CodeGraph for this project before /init continues? This may create or update .codegraph in the current project root.",
+                  "Initialize or sync Chimera graph data for this project before /init continues? This may create or update .chimera in the current project root.",
                 custom: false,
                 options: [
                   {
-                    label: "Run CodeGraph",
-                    description: "Initialize or sync CodeGraph for this project root.",
+                    label: "Run Chimera graph",
+                    description: "Initialize or sync Chimera graph data for this project root.",
                   },
                   {
                     label: "Skip",
-                    description: "Continue /init without creating or updating CodeGraph.",
+                    description: "Continue /init without creating or updating Chimera graph data.",
                   },
                 ],
               },
@@ -1915,7 +1915,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           })
           .pipe(Effect.catchTag("QuestionRejectedError", () => Effect.succeed([["Skip"]])))
 
-        if (answers[0]?.[0] === "Run CodeGraph") {
+        if (answers[0]?.[0] === "Run Chimera graph") {
           yield* Chimera.initProjectGraph({
             bus,
             source: "command.init",

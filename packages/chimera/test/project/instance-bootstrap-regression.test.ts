@@ -57,7 +57,8 @@ test("Instance.provide runs InstanceBootstrap before fn (boundary invariant)", a
   })
 
   expect(existsSync(tmp.extra)).toBe(true)
-  expect(existsSync(path.join(tmp.path, ".codegraph", "codegraph.db"))).toBe(true)
+  expect(existsSync(path.join(tmp.path, ".chimera", "codegraph.db"))).toBe(false)
+  expect(existsSync(path.join(tmp.path, ".codegraph", "codegraph.db"))).toBe(false)
 })
 
 test("CLI bootstrap runs InstanceBootstrap before callback", async () => {

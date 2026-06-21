@@ -15,6 +15,9 @@ import {
   type ToolMutationRecord,
 } from "@/chimera"
 import {
+  CodeGraph,
+  getGraphDataRootInfo,
+  readIndexJob,
   NODE_KINDS,
   type CodeGraphSnapshot,
   type FrozenRelation,
@@ -350,10 +353,14 @@ type StatusMetadata = {
   artifact: string
   storePath: string
   obligationsArtifact: string
-  snapshot: CodeGraphSnapshot
-  stats: unknown
-  backend: string
-  journalMode: string
+  initialized?: boolean
+  dataRoot?: string
+  dataRootStatus?: string
+  jobStatus?: unknown
+  snapshot?: CodeGraphSnapshot
+  stats?: unknown
+  backend?: string
+  journalMode?: string
   provenanceRecords: number
   obligationCounts: ObligationCounts
   pendingObligations: number
@@ -361,7 +368,11 @@ type StatusMetadata = {
 
 type SearchMetadata = {
   projectRoot: string
-  snapshot: CodeGraphSnapshot
+  initialized?: boolean
+  dataRoot?: string
+  dataRootStatus?: string
+  jobStatus?: unknown
+  snapshot?: CodeGraphSnapshot
   results: Array<{ score?: number; node: CodeGraphNode; projection: FrozenSemanticObject | null }>
 }
 
@@ -648,11 +659,21 @@ function createSyncProgressReporter(ctx: Tool.Context, enabled: boolean) {
   }
 }
 
-function openProjectGraphForTool(ctx: Tool.Context, refresh: boolean) {
-  const reporter = createSyncProgressReporter(ctx, refresh)
-  return Chimera.openProjectGraph({ sync: refresh, watch: false, onProgress: reporter.onProgress }).pipe(
+function openProjectGraphForTool(ctx: Tool.Context, refresh: boolean, options: { init?: boolean; readOnly?: boolean } = {}) {
+  const reporter = createSyncProgressReporter(ctx, refresh && !options.readOnly)
+  return Chimera.openProjectGraph({
+    init: options.init ?? false,
+    readOnly: options.readOnly,
+    sync: refresh && !options.readOnly,
+    watch: false,
+    onProgress: reporter.onProgress,
+  }).pipe(
     Effect.ensuring(Effect.sync(() => reporter.done())),
   )
+}
+
+function contextProjectRoot(input: { directory: string; worktree: string }) {
+  return input.worktree === "/" ? input.directory : input.worktree
 }
 
 const PREDESIGN_STAGE_TIMEOUT_MS = 120_000
@@ -1251,7 +1272,7 @@ function gitStatusFiles(root: string) {
         .split("\0")
         .flatMap((item) => {
           const file = item.slice(3).replaceAll("\\", "/")
-          if (!file || file.startsWith(".codegraph/")) return []
+          if (!file || file.startsWith(".chimera/") || file.startsWith(".codegraph/")) return []
           return [file]
         }),
     )
@@ -1815,7 +1836,36 @@ export const ChimeraStatusTool = Tool.define<typeof StatusParameters, StatusMeta
     execute: (params: Schema.Schema.Type<typeof StatusParameters>, ctx: Tool.Context<StatusMetadata>) =>
       Effect.gen(function* () {
         yield* permission(ctx, "chimera_status", { refresh: params.refresh !== false })
-        const state = yield* openProjectGraphForTool(ctx as Tool.Context, params.refresh !== false)
+        const instance = yield* InstanceState.context
+        const root = contextProjectRoot(instance)
+        const dataRoot = getGraphDataRootInfo(root)
+        const job = readIndexJob(root)
+        if (!CodeGraph.isInitialized(root)) {
+          return {
+            title: "Chimera status",
+            output: [
+              "Chimera graph surface is not initialized.",
+              `Project: ${root}`,
+              `Data root: ${dataRoot.dataRoot}`,
+              `Data root status: ${dataRoot.dataRootStatus}`,
+              job ? `Graph job: ${job.kind} ${job.status}` : undefined,
+            ].filter(Boolean).join("\n"),
+            metadata: {
+              initialized: false,
+              projectRoot: root,
+              dataRoot: dataRoot.dataRoot,
+              dataRootStatus: dataRoot.dataRootStatus,
+              jobStatus: job,
+              artifact: "",
+              storePath: dataRoot.databasePath,
+              obligationsArtifact: "",
+              provenanceRecords: 0,
+              obligationCounts: { pending: 0, claimed: 0, resolved: 0, ignored: 0, stale: 0 },
+              pendingObligations: 0,
+            },
+          }
+        }
+        const state = yield* openProjectGraphForTool(ctx as Tool.Context, params.refresh !== false, { init: false, readOnly: true })
         const snapshot = state.graph.snapshot()
         const stats = state.graph.stats()
         const provenanceRecords = yield* provenanceRecordCount(state.projectRoot, state.artifact)
@@ -1826,6 +1876,9 @@ export const ChimeraStatusTool = Tool.define<typeof StatusParameters, StatusMeta
           output: [
             "Chimera graph surface is ready.",
             `Project: ${state.projectRoot}`,
+            `Data root: ${dataRoot.dataRoot}`,
+            `Data root status: ${dataRoot.dataRootStatus}`,
+            job ? `Graph job: ${job.kind} ${job.status}${job.phase ? ` — ${job.phase}` : ""}` : undefined,
             `Files: ${snapshot.fileCount}`,
             `Nodes: ${snapshot.nodeCount}`,
             `Edges: ${snapshot.edgeCount}`,
@@ -1836,9 +1889,13 @@ export const ChimeraStatusTool = Tool.define<typeof StatusParameters, StatusMeta
             `Chimera store: ${state.storePath}`,
             `Tool provenance records: ${provenanceRecords}`,
             `Pending obligations: ${obligations.counts.pending}`,
-          ].join("\n"),
+          ].filter(Boolean).join("\n"),
           metadata: {
+            initialized: true,
             projectRoot: state.projectRoot,
+            dataRoot: dataRoot.dataRoot,
+            dataRootStatus: dataRoot.dataRootStatus,
+            jobStatus: job,
             artifact: state.artifact,
             storePath: state.storePath,
             obligationsArtifact: obligations.artifact,
@@ -1867,7 +1924,28 @@ export const ChimeraSearchTool = Tool.define<typeof SearchParameters, SearchMeta
           refresh: params.refresh !== false,
         })
         if (!params.query.trim()) throw new Error("chimera_search requires a non-empty query")
-        const state = yield* openProjectGraphForTool(ctx as Tool.Context, params.refresh !== false)
+        const instance = yield* InstanceState.context
+        const root = contextProjectRoot(instance)
+        const dataRoot = getGraphDataRootInfo(root)
+        const job = readIndexJob(root)
+        if (!CodeGraph.isInitialized(root)) {
+          return {
+            title: "Chimera search",
+            output: [
+              "Static graph evidence (0 results):",
+              "- Chimera graph is not initialized; run `chimera graph init` then `chimera graph index` for this project.",
+            ].join("\n"),
+            metadata: {
+              initialized: false,
+              projectRoot: root,
+              dataRoot: dataRoot.dataRoot,
+              dataRootStatus: dataRoot.dataRootStatus,
+              jobStatus: job,
+              results: [],
+            },
+          }
+        }
+        const state = yield* openProjectGraphForTool(ctx as Tool.Context, params.refresh !== false, { init: false, readOnly: true })
         const limit = bounded(params.limit, 10, 50)
         const snapshot = state.graph.snapshot()
         const kinds = params.kind ? [params.kind] : undefined
@@ -1881,6 +1959,10 @@ export const ChimeraSearchTool = Tool.define<typeof SearchParameters, SearchMeta
           ].join("\n"),
           metadata: {
             projectRoot: state.projectRoot,
+            initialized: true,
+            dataRoot: dataRoot.dataRoot,
+            dataRootStatus: dataRoot.dataRootStatus,
+            jobStatus: job,
             snapshot,
             results: results.map((result) => ({
               ...result,
