@@ -1,6 +1,6 @@
 import { useProject } from "@tui/context/project"
 import { useSync } from "@tui/context/sync"
-import { createMemo, Show } from "solid-js"
+import { createMemo, For, Show } from "solid-js"
 import { useTheme } from "../../context/theme"
 import { useTuiConfig } from "../../context/tui-config"
 import { InstallationChannel, InstallationVersion } from "@opencode-ai/core/installation/version"
@@ -8,6 +8,8 @@ import { TuiPluginRuntime } from "@/cli/cmd/tui/plugin/runtime"
 
 import { getScrollAcceleration } from "../../util/scroll"
 import { WorkspaceLabel } from "../../component/workspace-label"
+import { Locale } from "@/util/locale"
+import type { AssistantMessage } from "@opencode-ai/sdk/v2"
 
 export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
   const project = useProject()
@@ -21,7 +23,20 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
     return project.workspace.get(workspaceID)
   }
   const scrollAcceleration = createMemo(() => getScrollAcceleration(tuiConfig))
-
+  const promptStats = createMemo(() => sync.data.prompt_stats[props.sessionID])
+  const promptBlocks = createMemo(() => promptStats()?.blocks.toSorted((a, b) => b.approxTokens - a.approxTokens).slice(0, 4) ?? [])
+  const lastUsage = createMemo(() => {
+    const messages = sync.data.message[props.sessionID] ?? []
+    const last = messages.findLast((item): item is AssistantMessage => item.role === "assistant" && item.tokens.input + item.tokens.cache.read + item.tokens.cache.write > 0)
+    if (!last) return
+    const promptTokens = last.tokens.input + last.tokens.cache.read + last.tokens.cache.write
+    return {
+      prompt: promptTokens,
+      cacheRead: last.tokens.cache.read,
+      cacheWrite: last.tokens.cache.write,
+      cachePct: promptTokens > 0 ? Math.round((last.tokens.cache.read / promptTokens) * 100) : 0,
+    }
+  })
   return (
     <Show when={session()}>
       <box
@@ -81,6 +96,49 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
                 </Show>
               </box>
             </TuiPluginRuntime.Slot>
+            <box border={["top"]} borderColor={theme.border} paddingTop={1} gap={1}>
+              <box flexDirection="row" justifyContent="space-between" gap={1}>
+                <text fg={theme.text}>
+                  <b>Prompt Stability</b>
+                </text>
+                <Show when={promptStats()} fallback={<text fg={theme.textMuted}>waiting</text>}>
+                  {(stats) => (
+                    <text fg={stats().warnings.length ? theme.warning : theme.success}>
+                      {stats().warnings.length ? "warn" : "ok"}
+                    </text>
+                  )}
+                </Show>
+              </box>
+              <Show when={promptStats()} fallback={<text fg={theme.textMuted}>Send a prompt to populate request stats.</text>}>
+                {(stats) => (
+                  <box gap={1}>
+                    <text fg={theme.textMuted} wrapMode="none">
+                      {stats().stage} · step {stats().step} · {stats().fingerprints.request}
+                    </text>
+                    <text fg={theme.textMuted}>
+                      ~{Locale.number(stats().totals.approxTokens)} tok · {formatBytes(stats().totals.bytes)} · {stats().totals.blocks} blocks
+                    </text>
+                    <Show when={lastUsage()}>
+                      {(usage) => (
+                        <text fg={theme.textMuted}>
+                          cache r/w {Locale.number(usage().cacheRead)}/{Locale.number(usage().cacheWrite)} · hit {usage().cachePct}%
+                        </text>
+                      )}
+                    </Show>
+                    <For each={promptBlocks()}>
+                      {(block) => (
+                        <text fg={theme.textMuted} wrapMode="none">
+                          {block.kind}: ~{Locale.number(block.approxTokens)} · {block.hash}
+                        </text>
+                      )}
+                    </For>
+                    <For each={stats().warnings}>
+                      {(warning) => <text fg={theme.warning}>! {warning}</text>}
+                    </For>
+                  </box>
+                )}
+              </Show>
+            </box>
             <TuiPluginRuntime.Slot name="sidebar_content" session_id={props.sessionID} />
           </box>
         </scrollbox>
@@ -99,4 +157,10 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
       </box>
     </Show>
   )
+}
+
+function formatBytes(value: number) {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}MB`
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}KB`
+  return `${value}B`
 }

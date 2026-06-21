@@ -32,6 +32,7 @@ import { batch, onMount } from "solid-js"
 import * as Log from "@opencode-ai/core/util/log"
 import { emptyConsoleState, type ConsoleState } from "@/config/console-state"
 import path from "path"
+import type { PromptStats } from "@/session/prompt-stats"
 import { useKV } from "./kv"
 
 export const { use: useSync, provider: SyncProvider } = createSimpleContext({
@@ -65,6 +66,9 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       }
       work_brief: {
         [sessionID: string]: WorkBrief
+      }
+      prompt_stats: {
+        [sessionID: string]: PromptStats.Info
       }
       message: {
         [sessionID: string]: Message[]
@@ -102,6 +106,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       session_diff: {},
       todo: {},
       work_brief: {},
+      prompt_stats: {},
       message: {},
       part: {},
       lsp: [],
@@ -136,6 +141,11 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
     }
 
     event.subscribe((event) => {
+      const promptStatsEvent = event as unknown as { type: string; properties?: PromptStats.Info }
+      if (promptStatsEvent.type === "session.prompt.stats" && promptStatsEvent.properties?.sessionID) {
+        setStore("prompt_stats", promptStatsEvent.properties.sessionID, reconcile(promptStatsEvent.properties))
+        return
+      }
       switch (event.type) {
         case "server.instance.disposed":
           void bootstrap()
