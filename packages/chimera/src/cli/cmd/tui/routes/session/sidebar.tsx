@@ -11,7 +11,7 @@ import { WorkspaceLabel } from "../../component/workspace-label"
 import { Locale } from "@/util/locale"
 import type { AssistantMessage } from "@opencode-ai/sdk/v2"
 
-export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
+export function Sidebar(props: { sessionID: string; overlay?: boolean; showPromptStability?: boolean }) {
   const project = useProject()
   const sync = useSync()
   const { theme } = useTheme()
@@ -96,49 +96,51 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
                 </Show>
               </box>
             </TuiPluginRuntime.Slot>
-            <box border={["top"]} borderColor={theme.border} paddingTop={1} gap={1}>
-              <box flexDirection="row" justifyContent="space-between" gap={1}>
-                <text fg={theme.text}>
-                  <b>Prompt Stability</b>
-                </text>
-                <Show when={promptStats()} fallback={<text fg={theme.textMuted}>waiting</text>}>
+            <Show when={props.showPromptStability}>
+              <box border={["top"]} borderColor={theme.border} paddingTop={1} gap={1}>
+                <box flexDirection="row" justifyContent="space-between" gap={1}>
+                  <text fg={theme.text}>
+                    <b>Prompt Stability</b>
+                  </text>
+                  <Show when={promptStats()} fallback={<text fg={theme.textMuted}>waiting</text>}>
+                    {(stats) => (
+                      <text fg={stats().warnings.length ? theme.warning : theme.success}>
+                        {stats().warnings.length ? "warn" : "ok"}
+                      </text>
+                    )}
+                  </Show>
+                </box>
+                <Show when={promptStats()} fallback={<text fg={theme.textMuted}>Send a prompt to populate request stats.</text>}>
                   {(stats) => (
-                    <text fg={stats().warnings.length ? theme.warning : theme.success}>
-                      {stats().warnings.length ? "warn" : "ok"}
-                    </text>
+                    <box gap={1}>
+                      <text fg={theme.textMuted} wrapMode="none">
+                        {stats().stage} · step {stats().step} · {stats().fingerprints.request}
+                      </text>
+                      <text fg={theme.textMuted}>
+                        ~{Locale.number(stats().totals.approxTokens)} tok · {formatBytes(stats().totals.bytes)} · {stats().totals.blocks} blocks
+                      </text>
+                      <Show when={lastUsage()}>
+                        {(usage) => (
+                          <text fg={theme.textMuted}>
+                            cache r/w {Locale.number(usage().cacheRead)}/{Locale.number(usage().cacheWrite)} · hit {usage().cachePct}%
+                          </text>
+                        )}
+                      </Show>
+                      <For each={promptBlocks()}>
+                        {(block) => (
+                          <text fg={theme.textMuted} wrapMode="none">
+                            {block.kind}: ~{Locale.number(block.approxTokens)} · {block.hash}
+                          </text>
+                        )}
+                      </For>
+                      <For each={stats().warnings}>
+                        {(warning) => <text fg={theme.warning}>! {warning}</text>}
+                      </For>
+                    </box>
                   )}
                 </Show>
               </box>
-              <Show when={promptStats()} fallback={<text fg={theme.textMuted}>Send a prompt to populate request stats.</text>}>
-                {(stats) => (
-                  <box gap={1}>
-                    <text fg={theme.textMuted} wrapMode="none">
-                      {stats().stage} · step {stats().step} · {stats().fingerprints.request}
-                    </text>
-                    <text fg={theme.textMuted}>
-                      ~{Locale.number(stats().totals.approxTokens)} tok · {formatBytes(stats().totals.bytes)} · {stats().totals.blocks} blocks
-                    </text>
-                    <Show when={lastUsage()}>
-                      {(usage) => (
-                        <text fg={theme.textMuted}>
-                          cache r/w {Locale.number(usage().cacheRead)}/{Locale.number(usage().cacheWrite)} · hit {usage().cachePct}%
-                        </text>
-                      )}
-                    </Show>
-                    <For each={promptBlocks()}>
-                      {(block) => (
-                        <text fg={theme.textMuted} wrapMode="none">
-                          {block.kind}: ~{Locale.number(block.approxTokens)} · {block.hash}
-                        </text>
-                      )}
-                    </For>
-                    <For each={stats().warnings}>
-                      {(warning) => <text fg={theme.warning}>! {warning}</text>}
-                    </For>
-                  </box>
-                )}
-              </Show>
-            </box>
+            </Show>
             <TuiPluginRuntime.Slot name="sidebar_content" session_id={props.sessionID} />
           </box>
         </scrollbox>
