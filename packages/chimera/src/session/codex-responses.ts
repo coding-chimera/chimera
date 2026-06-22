@@ -6,10 +6,12 @@ import { type Auth } from "@/auth"
 import { codexAuthHeaders, codexEndpointUrl } from "@/plugin/codex"
 import type { Provider } from "@/provider/provider"
 import type { Event as LLMEvent } from "./llm"
+import { decodeRemoteCompactionInput, type RemoteCompactionOutputItem } from "./remote-compaction-codec"
 
 type CodexOAuthAuth = Extract<Auth.Info, { type: "oauth" }>
 
 type ResponsesInputItem =
+  | RemoteCompactionOutputItem
   | { role: "system" | "developer"; content: string }
   | { role: "user"; content: Array<Record<string, unknown>> }
   | { role: "assistant"; content: Array<Record<string, unknown>>; id?: string }
@@ -425,21 +427,41 @@ function messageToResponsesItems(message: ModelMessage): ResponsesInputItem[] {
 
 function assistantItems(message: Extract<ModelMessage, { role: "assistant" }>): ResponsesInputItem[] {
   const content = (Array.isArray(message.content) ? message.content : [{ type: "text", text: message.content }]) as Array<Record<string, unknown>>
-  const text: Array<Record<string, unknown>> = content.flatMap((part) => (part.type === "text" ? [{ type: "output_text", text: String(part.text ?? "") }] : []))
-  return [
-    ...(text.length > 0 ? [{ role: "assistant" as const, content: text }] : []),
-    ...content.flatMap((part): ResponsesInputItem[] => {
-      if (!isRecord(part) || part.type !== "tool-call") return []
+  return content.flatMap((part): ResponsesInputItem[] => {
+    if (!isRecord(part)) return []
+    const openai = openaiProviderOptions(part)
+    if (part.type === "text") {
+      return [
+        stripUndefined({
+          role: "assistant" as const,
+          content: [{ type: "output_text", text: textValue(part.text) }],
+          id: stringOption(openai?.itemId),
+        }),
+      ]
+    }
+    if (part.type === "reasoning") {
+      const id = stringOption(openai?.itemId)
+      if (!id) return []
       return [
         {
-          type: "function_call",
-          call_id: String(part.toolCallId ?? ""),
-          name: String(part.toolName ?? ""),
-          arguments: typeof part.input === "string" ? part.input : JSON.stringify(part.input ?? {}),
+          type: "reasoning",
+          id,
+          encrypted_content: stringOption(openai?.reasoningEncryptedContent) ?? null,
+          summary: textValue(part.text) ? [{ type: "summary_text", text: textValue(part.text) }] : [],
         },
       ]
-    }),
-  ]
+    }
+    if (part.type !== "tool-call") return []
+    return [
+      stripUndefined({
+        type: "function_call" as const,
+        call_id: textValue(part.toolCallId),
+        name: textValue(part.toolName),
+        arguments: typeof part.input === "string" ? part.input : JSON.stringify(part.input ?? {}),
+        id: stringOption(openai?.itemId),
+      }),
+    ]
+  })
 }
 
 function toolResultItems(content: unknown): ResponsesInputItem[] {
@@ -449,7 +471,7 @@ function toolResultItems(content: unknown): ResponsesInputItem[] {
     return [
       {
         type: "function_call_output",
-        call_id: String(part.toolCallId ?? ""),
+        call_id: textValue(part.toolCallId),
         output: toolOutputText(part.output ?? part.result),
       },
     ]
@@ -457,28 +479,80 @@ function toolResultItems(content: unknown): ResponsesInputItem[] {
 }
 
 function userItems(content: unknown): ResponsesInputItem[] {
-  return [{ role: "user", content: userContentParts(content) }]
+  const items: ResponsesInputItem[] = []
+  const pending: Array<Record<string, unknown>> = []
+  const flush = () => {
+    if (!pending.length) return
+    items.push({ role: "user", content: [...pending] })
+    pending.length = 0
+  }
+  for (const part of userContentParts(content)) {
+    const remote = typeof part.text === "string" ? decodeRemoteCompactionInput(part.text) : undefined
+    if (remote) {
+      flush()
+      items.push(...remote)
+      continue
+    }
+    pending.push(part)
+  }
+  flush()
+  return items
 }
 
 function userContentParts(content: unknown): Array<Record<string, unknown>> {
   if (typeof content === "string") return [{ type: "input_text", text: content }]
-  if (!Array.isArray(content)) return [{ type: "input_text", text: String(content ?? "") }]
+  if (!Array.isArray(content)) return [{ type: "input_text", text: textValue(content) }]
   return content.flatMap((part): Array<Record<string, unknown>> => {
     if (!isRecord(part)) return []
-    if (part.type === "text") return [{ type: "input_text", text: String(part.text ?? "") }]
-    if (part.type === "file" && typeof part.data === "string" && String(part.mediaType ?? "").startsWith("image/")) {
-      return [{ type: "input_image", image_url: part.data }]
+    if (part.type === "text") return [{ type: "input_text", text: textValue(part.text) }]
+    if (part.type !== "file") return []
+    const mediaType = textValue(part.mediaType || part.mime)
+    const data = filePartData(part)
+    if (mediaType.startsWith("image/") && data) {
+      return [{ type: "input_image", image_url: mediaData(data, mediaType === "image/*" ? "image/jpeg" : mediaType) }]
     }
-    if (part.type === "file" && typeof part.data === "string") {
-      return [{ type: "input_file", filename: String(part.filename ?? "file"), file_data: part.data }]
+    if (mediaType === "application/pdf" && data) {
+      const url = urlString(data)
+      if (url) return [{ type: "input_file", file_url: url }]
+      return [{ type: "input_file", filename: textValue(part.filename) || "file.pdf", file_data: mediaData(data, mediaType) }]
     }
-    return []
+    return [{ type: "input_text", text: `[Attached ${mediaType || "file"}: ${textValue(part.filename) || "file"}]` }]
   })
 }
+
+function filePartData(part: Record<string, unknown>) {
+  return part.data ?? part.url
+}
+
+function mediaData(data: unknown, mediaType: string) {
+  const url = urlString(data)
+  if (url) return url
+  const base64 = typeof data === "string" ? data : data instanceof ArrayBuffer ? Buffer.from(data).toString("base64") : data instanceof Uint8Array ? Buffer.from(data).toString("base64") : textValue(data)
+  if (base64.startsWith("data:")) return base64
+  return `data:${mediaType};base64,${base64}`
+}
+
+function urlString(value: unknown) {
+  if (value instanceof URL) return value.toString()
+  if (typeof value !== "string") return undefined
+  return /^(data:|https?:|file:)/.test(value) ? value : undefined
+}
+
+function openaiProviderOptions(part: Record<string, unknown>) {
+  return recordOption(recordOption(part.providerOptions)?.openai) ?? recordOption(recordOption(part.providerMetadata)?.openai)
+}
+
+function textValue(value: unknown) {
+  if (typeof value === "string") return value
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") return String(value)
+  if (value == null) return ""
+  return JSON.stringify(value) ?? ""
+}
+
 function contentText(content: unknown) {
   if (typeof content === "string") return content
-  if (!Array.isArray(content)) return String(content ?? "")
-  return content.flatMap((part) => (isRecord(part) && part.type === "text" ? [String(part.text ?? "")] : [])).join("\n")
+  if (!Array.isArray(content)) return textValue(content)
+  return content.flatMap((part) => (isRecord(part) && part.type === "text" ? [textValue(part.text)] : [])).join("\n")
 }
 
 function toolOutputText(output: unknown): string {
