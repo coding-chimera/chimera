@@ -1,5 +1,7 @@
 # Chimera
 
+[English](README.md) | [简体中文](README.zh.md)
+
 Chimera is an AI coding agent distribution: an opencode-derived interactive CLI plus the built-in Chimera/CodeGraph graph and propagation-audit runtime.
 
 The public package and command name is `chimera`. Graph/runtime commands are part of the same CLI; there are no public `opencode` or `codegraph` bins for this distribution.
