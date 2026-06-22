@@ -15,6 +15,19 @@ Chimera 是一个 AI 编程 Agent 发行版：它包含源自 upstream opencode 
 
 当本仓库提到原始项目时，会明确使用 **upstream opencode** 或 **original opencode**。
 
+## 设计来源与引用
+
+Chimera 这个名字是有意为之：它像“奇美拉”一样，把多个 agent 和图谱运行时系统的长处组合进同一个发行版，同时保持公开包名和命令名都是 `chimera`。
+
+Chimera 明确致谢并引用这些设计来源：
+
+- [upstream opencode][upstream-opencode] 提供交互式 coding agent 底座和 CLI runtime 血统。
+- [Kimi Code][kimi-code] 为 Kimi 模型相关优化提供参考，包括针对 Kimi 模型的 provider prompt、工具、搜索和认证路径设计。
+- [Codex][codex] 为 OpenAI/Codex/GPT 模型路径提供参考，包括上下文纪律、Responses 直连和 OAuth 集成模式。
+- [CodeGraph][codegraph] 提供仓库图谱和语义证据底座，是 Chimera 影响面分析与传播审计方向的基础参考。
+
+这些引用说明的是架构血统和实现参考。Chimera 不自称 upstream opencode、Kimi Code、Codex 或 CodeGraph；它是在这些系统基础和启发上组合出的 Chimera 发行版。
+
 ## 安装和运行
 
 在包发布后，可以这样安装：
@@ -117,3 +130,8 @@ npm install -g --prefix "$prefix" dist/npm-tarballs/chimera-*.tgz
 ## 许可证
 
 MIT
+
+[upstream-opencode]: https://github.com/anomalyco/opencode
+[kimi-code]: https://github.com/MoonshotAI/kimi-code
+[codex]: https://github.com/coding-chimera/codex
+[codegraph]: https://github.com/colbymchenry/codegraph
