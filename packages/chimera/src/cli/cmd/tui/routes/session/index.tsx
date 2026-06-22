@@ -167,6 +167,7 @@ export function Session() {
   const [diffWrapMode] = kv.signal<"word" | "none">("diff_wrap_mode", "word")
   const [_animationsEnabled, _setAnimationsEnabled] = kv.signal("animations_enabled", true)
   const [showGenericToolOutput, setShowGenericToolOutput] = kv.signal("generic_tool_output_visibility", false)
+  const [showPromptStability, setShowPromptStability] = kv.signal("prompt_stability_visible", false)
 
   const wide = createMemo(() => dimensions().width > 120)
   const sidebarVisible = createMemo(() => {
@@ -617,6 +618,15 @@ export function Session() {
           setSidebar(() => (isVisible ? "hide" : "auto"))
           setSidebarOpen(!isVisible)
         })
+        dialog.clear()
+      },
+    },
+    {
+      title: showPromptStability() ? "Hide Prompt Stability" : "Show Prompt Stability",
+      value: "session.toggle.prompt_stability",
+      category: "Session",
+      onSelect: (dialog) => {
+        setShowPromptStability((prev) => !prev)
         dialog.clear()
       },
     },
@@ -1219,7 +1229,7 @@ export function Session() {
         <Show when={sidebarVisible()}>
           <Switch>
             <Match when={wide()}>
-              <Sidebar sessionID={route.sessionID} />
+              <Sidebar sessionID={route.sessionID} showPromptStability={showPromptStability()} />
             </Match>
             <Match when={!wide()}>
               <box
@@ -1231,7 +1241,7 @@ export function Session() {
                 alignItems="flex-end"
                 backgroundColor={RGBA.fromInts(0, 0, 0, 70)}
               >
-                <Sidebar sessionID={route.sessionID} />
+                <Sidebar sessionID={route.sessionID} showPromptStability={showPromptStability()} />
               </box>
             </Match>
           </Switch>
