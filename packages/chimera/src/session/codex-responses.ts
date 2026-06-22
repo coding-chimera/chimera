@@ -37,6 +37,8 @@ type ResponseItem = {
   arguments?: string
   encrypted_content?: string | null
   summary?: Array<{ text?: string }>
+  status?: string
+  action?: unknown
 }
 
 type StreamState = {
@@ -74,7 +76,8 @@ export type CodexResponsesInput = {
 
 export function buildRequestBody(input: CodexResponsesInput) {
   const reasoning = buildReasoning(input)
-  const include = buildInclude(input.params.options, reasoning !== undefined)
+  const hasWebSearch = hasHostedWebSearchTool(input.tools)
+  const include = buildInclude(input.params.options, reasoning !== undefined, hasWebSearch)
   return stripUndefined({
     model: input.model.api.id,
     instructions: input.system.join("\n"),
@@ -196,6 +199,11 @@ async function handleChunk(value: Record<string, unknown>, input: CodexResponses
       )
       return outputs
     }
+    if (item?.type === "web_search_call") {
+      const id = item.id ?? `web-search-${outputIndex}`
+      outputs.push(event({ type: "tool-input-start", id, toolName: "web_search", providerExecuted: true }))
+      return outputs
+    }
     if (item?.type === "function_call") {
       const callId = item.call_id ?? item.id ?? `call-${outputIndex}`
       const toolName = item.name ?? ""
@@ -277,6 +285,30 @@ async function handleChunk(value: Record<string, unknown>, input: CodexResponses
         delete state.reasoning[outputIndex]
         if (state.currentReasoningOutputIndex === outputIndex) state.currentReasoningOutputIndex = null
       }
+      return outputs
+    }
+    if (item?.type === "web_search_call") {
+      const toolCallId = item.id ?? `web-search-${outputIndex}`
+      outputs.push(event({ type: "tool-input-end", id: toolCallId }))
+      outputs.push(
+        event({
+          type: "tool-call",
+          toolCallId,
+          toolName: "web_search",
+          input: webSearchInput(item),
+          providerExecuted: true,
+          providerMetadata: { openai: stripUndefined({ itemId: item.id }) },
+        }),
+      )
+      outputs.push(
+        event({
+          type: "tool-result",
+          toolCallId,
+          toolName: "web_search",
+          output: webSearchOutput(item),
+          providerExecuted: true,
+        }),
+      )
       return outputs
     }
     if (item?.type === "function_call") {
@@ -377,9 +409,10 @@ function buildReasoning(input: CodexResponsesInput) {
   })
 }
 
-function buildInclude(options: Record<string, unknown>, hasReasoning: boolean) {
+function buildInclude(options: Record<string, unknown>, hasReasoning: boolean, hasWebSearch: boolean) {
   const include = Array.isArray(options.include) ? options.include.filter((item): item is string => typeof item === "string") : []
   if (hasReasoning && !include.includes("reasoning.encrypted_content")) include.push("reasoning.encrypted_content")
+  if (hasWebSearch && !include.includes("web_search_call.action.sources")) include.push("web_search_call.action.sources")
   return include
 }
 
@@ -391,15 +424,17 @@ function buildText(options: Record<string, unknown>) {
 }
 
 function toResponsesTools(tools: Record<string, Tool>) {
-  return Object.entries(tools).map(([name, item]) =>
-    stripUndefined({
+  return Object.entries(tools).map(([name, item]) => {
+    const hosted = hostedWebSearchTool(item)
+    if (hosted) return hosted
+    return stripUndefined({
       type: "function",
       name,
       description: stringOption((item as { description?: unknown }).description),
       parameters: toolSchema(item),
       strict: false,
-    }),
-  )
+    })
+  })
 }
 
 function toolSchema(tool: Tool): JSONSchema7 {
@@ -411,6 +446,38 @@ function toolSchema(tool: Tool): JSONSchema7 {
     } catch {}
   }
   return { type: "object", properties: {}, additionalProperties: false }
+}
+
+function hostedWebSearchTool(tool: Tool) {
+  const provider = tool as { type?: unknown; id?: unknown; args?: unknown }
+  if (provider.type !== "provider") return undefined
+  if (provider.id !== "openai.web_search" && provider.id !== "openai.web_search_preview") return undefined
+  const args = recordOption(provider.args)
+  const filters = recordOption(args?.filters)
+  const allowedDomains = Array.isArray(filters?.allowedDomains) ? filters.allowedDomains.filter((item): item is string => typeof item === "string") : undefined
+  return stripUndefined({
+    type: provider.id === "openai.web_search_preview" ? "web_search_preview" : "web_search",
+    external_web_access: provider.id === "openai.web_search" && typeof args?.externalWebAccess === "boolean" ? args.externalWebAccess : undefined,
+    filters: allowedDomains?.length ? { allowed_domains: allowedDomains } : undefined,
+    search_context_size: searchContextSize(args?.searchContextSize),
+    user_location: recordOption(args?.userLocation),
+  })
+}
+
+function hasHostedWebSearchTool(tools: Record<string, Tool>) {
+  return Object.values(tools).some((tool) => hostedWebSearchTool(tool) !== undefined)
+}
+
+function searchContextSize(value: unknown) {
+  return value === "low" || value === "medium" || value === "high" ? value : undefined
+}
+
+function webSearchInput(item: ResponseItem) {
+  return stripUndefined({ action: item.action })
+}
+
+function webSearchOutput(item: ResponseItem) {
+  return stripUndefined({ status: item.status, action: item.action })
 }
 
 function toResponsesInput(messages: ModelMessage[]): ResponsesInputItem[] {

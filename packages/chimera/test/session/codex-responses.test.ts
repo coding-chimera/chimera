@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { tool, type ModelMessage } from "ai"
+import { openai } from "@ai-sdk/openai"
 import z from "zod"
 import { CodexResponses, type CodexResponsesInput } from "../../src/session/codex-responses"
 import { encodeRemoteCompactionInput } from "../../src/session/remote-compaction-codec"
@@ -94,6 +95,23 @@ describe("session.codex-responses", () => {
     expect(body.tools[0].name).toBe("lookup")
   })
 
+  test("converts hosted web search tool into Responses request body", () => {
+    const body = CodexResponses.buildRequestBody(
+      baseInput({
+        tools: {
+          web_search: openai.tools.webSearch({ externalWebAccess: true, searchContextSize: "medium" }),
+        },
+      }),
+    ) as any
+
+    expect(body.tools).toContainEqual({
+      type: "web_search",
+      external_web_access: true,
+      search_context_size: "medium",
+    })
+    expect(body.include).toContain("web_search_call.action.sources")
+  })
+
   test("streams text events from Codex SSE", async () => {
     using server = Bun.serve({
       port: 0,
@@ -166,6 +184,31 @@ describe("session.codex-responses", () => {
     expect(events.find((event) => event.type === "tool-call")?.input).toEqual({ query: "weather" })
     expect(events.find((event) => event.type === "tool-result")?.output).toEqual({ output: "found weather" })
     expect(events.find((event) => event.type === "finish-step")?.finishReason).toBe("tool-calls")
+  })
+
+  test("maps hosted web search calls as provider-executed tool events", async () => {
+    using server = Bun.serve({
+      port: 0,
+      async fetch() {
+        return new Response(
+          responseStream([
+            { type: "response.output_item.added", output_index: 0, item: { id: "ws-1", type: "web_search_call", status: "in_progress" } },
+            { type: "response.output_item.done", output_index: 0, item: { id: "ws-1", type: "web_search_call", status: "completed", action: { type: "search", query: "weather" } } },
+            { type: "response.completed", response: { id: "resp-search", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+          ]),
+          { headers: { "Content-Type": "text/event-stream" } },
+        )
+      },
+    })
+
+    const events = await collect(baseInput({ endpoint: `${server.url.origin}/backend-api/codex/responses` }))
+
+    expect(events.map((event) => event.type)).toEqual(["start", "start-step", "tool-input-start", "tool-input-end", "tool-call", "tool-result", "finish-step", "finish"])
+    expect(events.find((event) => event.type === "tool-input-start")?.providerExecuted).toBe(true)
+    expect(events.find((event) => event.type === "tool-call")?.providerExecuted).toBe(true)
+    expect(events.find((event) => event.type === "tool-call")?.input).toEqual({ action: { type: "search", query: "weather" } })
+    expect(events.find((event) => event.type === "tool-result")?.output).toEqual({ status: "completed", action: { type: "search", query: "weather" } })
+    expect(events.find((event) => event.type === "finish-step")?.finishReason).toBe("stop")
   })
 
   test("converts function call replay into Responses input", () => {

@@ -37,13 +37,7 @@ const mergeOptions = (target: Record<string, any>, source: Record<string, any> |
   mergeDeep(target, source ?? {}) as Record<string, any>
 
 function supportsOpenAIHostedWebSearch(input: StreamRequest) {
-  return (
-    !input.small &&
-    input.toolChoice !== "required" &&
-    input.model.providerID === "openai" &&
-    input.model.api.npm === "@ai-sdk/openai" &&
-    input.model.capabilities.toolcall
-  )
+  return !input.small && input.toolChoice !== "required" && input.model.providerID === "openai" && input.model.capabilities.toolcall
 }
 
 export type StreamInput = {
@@ -195,7 +189,7 @@ const live: Layer.Layer<
       )
 
       const tools = resolveTools(input)
-      if (!isOpenaiOauth && supportsOpenAIHostedWebSearch(input) && tools[OPENAI_HOSTED_WEB_SEARCH_TOOL] === undefined) {
+      if (supportsOpenAIHostedWebSearch(input) && tools[OPENAI_HOSTED_WEB_SEARCH_TOOL] === undefined) {
         tools[OPENAI_HOSTED_WEB_SEARCH_TOOL] = openai.tools.webSearch({
           externalWebAccess: true,
           searchContextSize: "medium",
