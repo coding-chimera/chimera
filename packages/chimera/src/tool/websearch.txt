@@ -1,15 +1,15 @@
-- Search the web using Chimera's configured Kimi/Exa search provider.
-- For non-OpenAI/Codex models, use Kimi search when kimi-for-coding API-key auth is configured; otherwise fall back to Exa.
+- Search the web using Chimera's configured unified websearch providers.
+- For non-OpenAI/Codex models, prefer DeepSeek hosted web search when deepseek API-key auth or provider config is available.
+- If DeepSeek is unavailable or fails, fall back to Kimi search when kimi-for-coding API-key auth is configured.
+- Exa fallback is disabled; if neither DeepSeek nor Kimi can answer, report that web search is unavailable instead of trying an unrelated backend.
 - Provides up-to-date information for current events and recent data.
 - Supports configurable result counts and returns relevant web context when the selected provider supports it.
-- Use this tool for accessing information beyond knowledge cutoff
+- Use this tool for accessing information beyond knowledge cutoff.
 - If no supported search provider is configured or available, this tool will not automatically search with an unrelated fallback.
 - OpenAI/Codex hosted web_search is provider-native and is not used as a cross-provider aggregate search backend.
 
 Usage notes:
-  - Supports live crawling modes: 'fallback' (backup if cached unavailable) or 'preferred' (prioritize live crawling)
-  - Search types: 'auto' (balanced), 'fast' (quick results), 'deep' (comprehensive search)
-  - Configurable context length for optimal LLM integration
+  - Search types, live crawling modes, and context length are accepted for compatibility, but the selected provider may ignore them.
   - Provider-specific behavior is handled internally; do not add provider-specific options unless the schema exposes them
 
 The current year is {{year}}. You MUST use this year when searching for recent information or current events

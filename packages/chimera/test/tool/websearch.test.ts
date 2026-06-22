@@ -29,14 +29,75 @@ const baseCtx: Tool.Context = {
   ask: () => Effect.void,
 }
 
-function mockAuth(key?: string) {
+function mockAuth(keys: { kimi?: string; deepseek?: string } = {}) {
   return Layer.mock(Auth.Service)({
     get: (providerID: string) =>
-      Effect.succeed(providerID === "kimi-for-coding" && key ? { type: "api" as const, key } : undefined),
+      Effect.succeed(
+        providerID === "kimi-for-coding" && keys.kimi
+          ? { type: "api" as const, key: keys.kimi }
+          : providerID === "deepseek" && keys.deepseek
+            ? { type: "api" as const, key: keys.deepseek }
+            : undefined,
+      ),
     all: () => Effect.succeed({}),
     set: () => Effect.void,
     remove: () => Effect.void,
   })
+}
+
+function deepSeekResponse() {
+  return new Response(
+    JSON.stringify({
+      model: "deepseek-v4-flash",
+      content: [
+        {
+          type: "server_tool_use",
+          id: "call_search",
+          name: "web_search",
+          input: { query: "latest AI news" },
+        },
+        {
+          type: "web_search_tool_result",
+          tool_use_id: "call_search",
+          content: [
+            {
+              type: "web_search_result",
+              title: "DeepSeek source",
+              url: "https://example.com/deepseek",
+              encrypted_content: "encrypted",
+            },
+          ],
+        },
+        {
+          type: "text",
+          text: "DeepSeek answer",
+        },
+      ],
+      usage: {
+        server_tool_use: {
+          web_search_requests: 1,
+        },
+      },
+    }),
+    { headers: { "Content-Type": "application/json" } },
+  )
+}
+
+function kimiResponse(text = "Kimi content") {
+  return new Response(
+    JSON.stringify({
+      search_results: [
+        {
+          title: "Kimi result",
+          url: "https://example.com/kimi",
+          snippet: "Kimi snippet",
+          date: "2026-06-16",
+          content: text,
+        },
+      ],
+    }),
+    { headers: { "Content-Type": "application/json" } },
+  )
 }
 
 function execute(ctx: Tool.Context, http: Layer.Layer<HttpClient.HttpClient>, auth = mockAuth()) {
@@ -60,50 +121,9 @@ function execute(ctx: Tool.Context, http: Layer.Layer<HttpClient.HttpClient>, au
 }
 
 describe("tool.websearch", () => {
-  test("routes configured Kimi search through kimi-code API key", async () => {
+  test("routes configured DeepSeek search through stored deepseek API key", async () => {
     let url = ""
-    let authorization = ""
-    const result = await WithInstance.provide({
-      directory: projectRoot,
-      fn: () =>
-        execute(
-          {
-            ...baseCtx,
-            extra: { model: { providerID: "deepseek" } },
-          },
-          mockHttpClient((request) => {
-            url = request.url
-            authorization = request.headers.authorization ?? request.headers.Authorization ?? ""
-            return new Response(
-              JSON.stringify({
-                search_results: [
-                  {
-                    title: "Kimi result",
-                    url: "https://example.com/kimi",
-                    snippet: "Kimi snippet",
-                    date: "2026-06-16",
-                    content: "Kimi content",
-                  },
-                ],
-              }),
-              { headers: { "Content-Type": "application/json" } },
-            )
-          }),
-          mockAuth("kimi-test-key"),
-        ),
-    })
-
-    expect(url).toBe("https://api.kimi.com/coding/v1/search")
-    expect(authorization).toBe("Bearer kimi-test-key")
-    expect(result.output).toContain("Title: Kimi result")
-    expect(result.output).toContain("URL: https://example.com/kimi")
-    expect(result.output).toContain("Kimi content")
-    expect(result.metadata.provider).toBe("kimi-code")
-    expect(result.metadata.authMode).toBe("api-key")
-  })
-
-  test("falls back to Exa when Kimi is not configured", async () => {
-    let url = ""
+    let apiKey = ""
     const result = await WithInstance.provide({
       directory: projectRoot,
       fn: () =>
@@ -111,40 +131,121 @@ describe("tool.websearch", () => {
           baseCtx,
           mockHttpClient((request) => {
             url = request.url
-            return new Response('data: {"result":{"content":[{"type":"text","text":"search result"}]}}\n\n')
+            apiKey = request.headers["x-api-key"] ?? request.headers["X-Api-Key"] ?? ""
+            return deepSeekResponse()
           }),
+          mockAuth({ deepseek: "deepseek-test-key", kimi: "kimi-test-key" }),
         ),
     })
 
-    expect(url.startsWith("https://mcp.exa.ai/mcp")).toBe(true)
-    expect(result.output).toBe("search result")
-    expect(result.metadata.provider).toBe("opencode-exa")
-    expect(result.metadata.numResults).toBe(3)
+    expect(url).toBe("https://api.deepseek.com/anthropic/v1/messages")
+    expect(apiKey).toBe("deepseek-test-key")
+    expect(result.output).toContain("DeepSeek answer")
+    expect(result.output).toContain("DeepSeek source")
+    expect(result.output).toContain("https://example.com/deepseek")
+    expect(result.metadata.provider).toBe("deepseek-web-search")
+    expect(result.metadata.authMode).toBe("api-key")
+    expect(result.metadata.model).toBe("deepseek-v4-flash")
+    expect(result.metadata.webSearchRequests).toBe(1)
+    expect(result.metadata.sourceCount).toBe(1)
   })
 
-  test("falls back to Exa when Kimi search fails", async () => {
+  test("uses Kimi with explicit fallback when DeepSeek is not configured", async () => {
+    let url = ""
+    let authorization = ""
+    const result = await WithInstance.provide({
+      directory: projectRoot,
+      fn: () =>
+        execute(
+          baseCtx,
+          mockHttpClient((request) => {
+            url = request.url
+            authorization = request.headers.authorization ?? request.headers.Authorization ?? ""
+            return kimiResponse()
+          }),
+          mockAuth({ kimi: "kimi-test-key" }),
+        ),
+    })
+
+    expect(url).toBe("https://api.kimi.com/coding/v1/search")
+    expect(authorization).toBe("Bearer kimi-test-key")
+    expect(result.output).toContain("DeepSeek web search is not configured; used Kimi search instead.")
+    expect(result.output).toContain("Title: Kimi result")
+    expect(result.output).toContain("URL: https://example.com/kimi")
+    expect(result.output).toContain("Kimi content")
+    expect(result.metadata.provider).toBe("kimi-code")
+    expect(result.metadata.authMode).toBe("api-key")
+    expect(result.metadata.fallbackFrom).toBe("deepseek-web-search")
+    expect(result.metadata.fallbackReason).toBe("DeepSeek web search is not configured")
+  })
+
+  test("uses Kimi with explicit fallback when DeepSeek search fails", async () => {
     const urls: string[] = []
     const result = await WithInstance.provide({
       directory: projectRoot,
       fn: () =>
         execute(
-          {
-            ...baseCtx,
-            extra: { model: { providerID: "deepseek" } },
-          },
+          baseCtx,
           mockHttpClient((request) => {
             urls.push(request.url)
-            if (request.url === "https://api.kimi.com/coding/v1/search") return new Response("failed", { status: 500 })
-            return new Response('data: {"result":{"content":[{"type":"text","text":"exa fallback result"}]}}\n\n')
+            if (request.url === "https://api.deepseek.com/anthropic/v1/messages") return new Response("failed", { status: 500 })
+            return kimiResponse("kimi fallback result")
           }),
-          mockAuth("kimi-test-key"),
+          mockAuth({ deepseek: "deepseek-test-key", kimi: "kimi-test-key" }),
         ),
     })
 
-    expect(urls[0]).toBe("https://api.kimi.com/coding/v1/search")
-    expect(urls[1]?.startsWith("https://mcp.exa.ai/mcp")).toBe(true)
-    expect(result.output).toBe("exa fallback result")
-    expect(result.metadata.provider).toBe("opencode-exa")
+    expect(urls).toEqual(["https://api.deepseek.com/anthropic/v1/messages", "https://api.kimi.com/coding/v1/search"])
+    expect(result.output).toContain("DeepSeek web search failed; used Kimi search instead.")
+    expect(result.output).toContain("kimi fallback result")
+    expect(result.metadata.provider).toBe("kimi-code")
+    expect(result.metadata.fallbackFrom).toBe("deepseek-web-search")
+    expect(result.metadata.fallbackReason).toBe("DeepSeek web search failed")
+  })
+
+  test("does not call Exa when no preferred search provider is configured", async () => {
+    const result = await WithInstance.provide({
+      directory: projectRoot,
+      fn: () =>
+        execute(
+          baseCtx,
+          mockHttpClient(() => {
+            throw new Error("unexpected search request")
+          }),
+        ),
+    })
+
+    expect(result.output).toContain("Web search unavailable.")
+    expect(result.output).toContain("DeepSeek web search is not configured")
+    expect(result.output).toContain("Kimi search is not configured")
+    expect(result.output).toContain("Exa fallback is disabled")
+    expect(result.metadata.provider).toBeUndefined()
+    expect(result.metadata.fallbackErrors).toEqual([
+      "DeepSeek web search is not configured",
+      "Kimi search is not configured",
+    ])
+  })
+
+  test("does not call Exa when Kimi fails and DeepSeek is unavailable", async () => {
+    const urls: string[] = []
+    const result = await WithInstance.provide({
+      directory: projectRoot,
+      fn: () =>
+        execute(
+          baseCtx,
+          mockHttpClient((request) => {
+            urls.push(request.url)
+            return new Response("failed", { status: 500 })
+          }),
+          mockAuth({ kimi: "kimi-test-key" }),
+        ),
+    })
+
+    expect(urls).toEqual(["https://api.kimi.com/coding/v1/search"])
+    expect(result.output).toContain("DeepSeek web search is not configured")
+    expect(result.output).toContain("Kimi search failed")
+    expect(result.output).toContain("Exa fallback is disabled")
+    expect(result.metadata.provider).toBeUndefined()
   })
 
   test("does not use unified search for hosted OpenAI search models", async () => {
