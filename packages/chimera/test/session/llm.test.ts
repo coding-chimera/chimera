@@ -642,6 +642,113 @@ describe("session.llm.stream", () => {
     })
   })
 
+  test("routes OpenAI OAuth conversation streams directly to Codex Responses", async () => {
+    const server = state.server
+    if (!server) {
+      throw new Error("Server not initialized")
+    }
+
+    const source = await loadFixture("openai", "gpt-5.2")
+    const model = source.model
+    const request = waitRequest(
+      "/backend-api/codex/responses",
+      createEventResponse([
+        { type: "response.created", response: { id: "resp-direct", created_at: Math.floor(Date.now() / 1000), model: model.id } },
+        { type: "response.output_item.added", output_index: 0, item: { id: "msg-direct", type: "message" } },
+        { type: "response.output_text.delta", item_id: "msg-direct", delta: "Hello direct" },
+        { type: "response.output_item.done", output_index: 0, item: { id: "msg-direct", type: "message" } },
+        { type: "response.completed", response: { id: "resp-direct", usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 } } },
+      ], true),
+    )
+    const originalAuth = process.env.OPENCODE_AUTH_CONTENT
+    process.env.OPENCODE_AUTH_CONTENT = JSON.stringify({
+      openai: {
+        type: "oauth",
+        refresh: "refresh-direct",
+        access: "access-direct",
+        expires: Date.now() + 60_000,
+        accountId: "acc-direct",
+      },
+    })
+
+    try {
+      await using tmp = await tmpdir({
+        init: async (dir) => {
+          await Bun.write(
+            path.join(dir, "chimera.json"),
+            JSON.stringify({
+              $schema: "https://chimera.ai/config.json",
+              enabled_providers: ["openai"],
+              provider: {
+                openai: {
+                  name: "OpenAI",
+                  env: [],
+                  npm: "file:///tmp/chimera-missing-openai-provider.js",
+                  api: "https://api.openai.com/v1",
+                  models: {
+                    [model.id]: model,
+                  },
+                  options: {
+                    codexApiEndpoint: `${server.url.origin}/backend-api/codex/responses`,
+                  },
+                },
+              },
+            }),
+          )
+        },
+      })
+
+      await WithInstance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const resolved = await getModel(ProviderID.openai, ModelID.make(model.id))
+          const sessionID = SessionID.make("session-test-openai-oauth-direct")
+          const agent = {
+            name: "test",
+            mode: "primary",
+            prompt: "You are a helpful assistant.",
+            options: {},
+            permission: [{ permission: "*", pattern: "*", action: "allow" }],
+          } satisfies Agent.Info
+          const user = {
+            id: MessageID.make("user-openai-oauth-direct"),
+            sessionID,
+            role: "user",
+            time: { created: Date.now() },
+            agent: agent.name,
+            model: { providerID: ProviderID.make("openai"), modelID: resolved.id },
+          } satisfies MessageV2.User
+
+          await drain({
+            user,
+            sessionID,
+            model: resolved,
+            agent,
+            system: [],
+            messages: [{ role: "user", content: "Hello" }],
+            tools: {},
+          })
+
+          const capture = await request
+          const body = capture.body
+          expect(capture.url.pathname.endsWith("/backend-api/codex/responses")).toBe(true)
+          expect(capture.headers.get("authorization")).toBe("Bearer access-direct")
+          expect(capture.headers.get("ChatGPT-Account-ID")).toBe("acc-direct")
+          expect(body.model).toBe(resolved.api.id)
+          expect(body.instructions).toBe("You are a helpful assistant.")
+          expect(body.input).toEqual([{ role: "user", content: [{ type: "input_text", text: "Hello" }] }])
+          expect(body.stream).toBe(true)
+          expect(body.store).toBe(false)
+          expect(body.prompt_cache_key).toBe(sessionID)
+          expect(body.max_output_tokens).toBeUndefined()
+        },
+      })
+    } finally {
+      if (originalAuth === undefined) delete process.env.OPENCODE_AUTH_CONTENT
+      else process.env.OPENCODE_AUTH_CONTENT = originalAuth
+    }
+  })
+
   test("sends responses API payload for OpenAI models", async () => {
     const server = state.server
     if (!server) {

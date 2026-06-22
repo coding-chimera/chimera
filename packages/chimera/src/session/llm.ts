@@ -25,6 +25,7 @@ import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { EffectBridge } from "@/effect/bridge"
 import * as Option from "effect/Option"
 import * as OtelTracer from "@effect/opentelemetry/Tracer"
+import { CodexResponses } from "./codex-responses"
 
 const log = Log.create({ service: "llm" })
 export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
@@ -100,13 +101,8 @@ const live: Layer.Layer<
         providerID: input.model.providerID,
       })
 
-      const [language, cfg, item, info] = yield* Effect.all(
-        [
-          provider.getLanguage(input.model),
-          config.get(),
-          provider.getProvider(input.model.providerID),
-          auth.get(input.model.providerID),
-        ],
+      const [cfg, item, info] = yield* Effect.all(
+        [config.get(), provider.getProvider(input.model.providerID), auth.get(input.model.providerID)],
         { concurrency: "unbounded" },
       )
 
@@ -163,20 +159,6 @@ const live: Layer.Layer<
         options.instructions = system.join("\n")
       }
 
-      const isWorkflow = language instanceof GitLabWorkflowLanguageModel
-      const messages = isOpenaiOauth
-        ? input.messages
-        : isWorkflow
-          ? input.messages
-          : [
-              ...system.map(
-                (x): ModelMessage => ({
-                  role: "system",
-                  content: x,
-                }),
-              ),
-              ...input.messages,
-            ]
 
       const params = yield* plugin.trigger(
         "chat.params",
@@ -213,12 +195,54 @@ const live: Layer.Layer<
       )
 
       const tools = resolveTools(input)
-      if (supportsOpenAIHostedWebSearch(input) && tools[OPENAI_HOSTED_WEB_SEARCH_TOOL] === undefined) {
+      if (!isOpenaiOauth && supportsOpenAIHostedWebSearch(input) && tools[OPENAI_HOSTED_WEB_SEARCH_TOOL] === undefined) {
         tools[OPENAI_HOSTED_WEB_SEARCH_TOOL] = openai.tools.webSearch({
           externalWebAccess: true,
           searchContextSize: "medium",
         })
       }
+
+      if (isOpenaiOauth) {
+        if (info?.type !== "oauth") throw new Error("OpenAI OAuth auth missing")
+        const directHeaders = {
+          "x-session-affinity": input.sessionID,
+          ...(input.parentSessionID ? { "x-parent-session-id": input.parentSessionID } : {}),
+          "User-Agent": `opencode/${InstallationVersion}`,
+          ...input.model.headers,
+          ...headers,
+        }
+        return {
+          fullStream: CodexResponses.stream({
+            sessionID: input.sessionID,
+            parentSessionID: input.parentSessionID,
+            model: input.model,
+            system,
+            messages: input.messages,
+            tools,
+            toolChoice: input.toolChoice,
+            params,
+            headers: directHeaders,
+            auth: info,
+            setAuth: (next) => Effect.runPromise(auth.set("openai", next)),
+            endpoint: typeof item.options.codexApiEndpoint === "string" ? item.options.codexApiEndpoint : undefined,
+            abort: input.abort,
+          }),
+        } as Result
+      }
+
+      const language = yield* provider.getLanguage(input.model)
+      const isWorkflow = language instanceof GitLabWorkflowLanguageModel
+      const messages = isWorkflow
+        ? input.messages
+        : [
+            ...system.map(
+              (x): ModelMessage => ({
+                role: "system",
+                content: x,
+              }),
+            ),
+            ...input.messages,
+          ]
 
       // LiteLLM and some Anthropic proxies require the tools parameter to be present
       // when message history contains tool calls, even if no tools are being used.
