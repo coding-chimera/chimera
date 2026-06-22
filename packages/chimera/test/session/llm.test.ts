@@ -741,6 +741,12 @@ describe("session.llm.stream", () => {
           expect(body.store).toBe(false)
           expect(body.prompt_cache_key).toBe(sessionID)
           expect(body.max_output_tokens).toBeUndefined()
+          expect(body.tools).toContainEqual({
+            type: "web_search",
+            external_web_access: true,
+            search_context_size: "medium",
+          })
+          expect(body.include).toContain("web_search_call.action.sources")
         },
       })
     } finally {

@@ -819,6 +819,57 @@ it.live("loop continues when finish is stop but assistant has tool parts", () =>
   ),
 )
 
+it.live("loop exits when stop finish only has provider-executed tool parts", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({
+        title: "Provider executed",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      const parent = yield* user(session.id, "search")
+      const assistant = yield* sessions.updateMessage({
+        id: MessageID.ascending(),
+        role: "assistant",
+        parentID: parent.id,
+        sessionID: session.id,
+        mode: "build",
+        agent: "build",
+        cost: 0,
+        path: { cwd: "/tmp", root: "/tmp" },
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        modelID: ref.modelID,
+        providerID: ref.providerID,
+        time: { created: Date.now() },
+        finish: "stop",
+      } satisfies MessageV2.Assistant)
+      yield* sessions.updatePart({
+        id: PartID.ascending(),
+        messageID: assistant.id,
+        sessionID: session.id,
+        type: "tool",
+        tool: "web_search",
+        callID: "ws_1",
+        state: {
+          status: "completed",
+          input: { action: { type: "search", query: "weather" } },
+          output: '{"status":"completed"}',
+          title: "web_search result",
+          metadata: { providerOutput: { status: "completed" } },
+          time: { start: 0, end: 1 },
+        },
+        metadata: { providerExecuted: true },
+      } satisfies MessageV2.ToolPart)
+
+      const result = yield* prompt.loop({ sessionID: session.id })
+      expect(yield* llm.calls).toBe(0)
+      expect(result.info.id).toBe(assistant.id)
+    }),
+    { git: true, config: providerCfg },
+  ),
+)
+
 it.live("failed subtask preserves metadata on error tool state", () =>
   provideTmpdirServer(
     Effect.fnUntraced(function* ({ llm }) {
