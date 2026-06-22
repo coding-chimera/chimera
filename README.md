@@ -15,6 +15,19 @@ The public package and command name is `chimera`. Graph/runtime commands are par
 
 When this repository refers to the original project, it uses **upstream opencode** or **original opencode** explicitly.
 
+## Design lineage and references
+
+The name Chimera is intentional: this project combines strengths from several agent and graph-runtime systems into one distribution, while keeping the public package and command identity as `chimera`.
+
+Chimera acknowledges these design references:
+
+- [upstream opencode][upstream-opencode] provides the interactive coding-agent foundation and CLI runtime lineage.
+- [Kimi Code][kimi-code] informs Kimi-focused behavior, including provider-specific prompt, tool, search, and authentication considerations for Kimi models.
+- [Codex][codex] informs OpenAI/Codex/GPT-oriented behavior, including context discipline and direct Responses/OAuth integration patterns.
+- [CodeGraph][codegraph] provides the repository graph and semantic-evidence substrate behind Chimera's impact analysis and propagation-audit direction.
+
+These references describe architectural lineage and implementation influences. Chimera is not presented as upstream opencode, Kimi Code, Codex, or CodeGraph; it is the combined Chimera distribution built on and inspired by those systems.
+
 ## Install and run
 
 Install the published package when available:
@@ -117,3 +130,8 @@ When changing agent-facing tools, prompts, graph commands, installer behavior, o
 ## License
 
 MIT
+
+[upstream-opencode]: https://github.com/anomalyco/opencode
+[kimi-code]: https://github.com/MoonshotAI/kimi-code
+[codex]: https://github.com/coding-chimera/codex
+[codegraph]: https://github.com/colbymchenry/codegraph
