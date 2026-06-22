@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { tool, type ModelMessage } from "ai"
 import z from "zod"
 import { CodexResponses, type CodexResponsesInput } from "../../src/session/codex-responses"
+import { encodeRemoteCompactionInput } from "../../src/session/remote-compaction-codec"
 
 function model() {
   return {
@@ -180,4 +181,84 @@ describe("session.codex-responses", () => {
     ])
   })
 
+  test("converts reasoning encrypted replay into raw Responses input", () => {
+    const body = CodexResponses.buildRequestBody(
+      baseInput({
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "reasoning",
+                text: "thinking",
+                providerOptions: { openai: { itemId: "rs-1", reasoningEncryptedContent: "encrypted-reasoning" } },
+              },
+              { type: "text", text: "Answer", providerOptions: { openai: { itemId: "msg-1" } } },
+            ],
+          },
+        ] as ModelMessage[],
+      }),
+    ) as any
+
+    expect(body.input).toEqual([
+      {
+        type: "reasoning",
+        id: "rs-1",
+        encrypted_content: "encrypted-reasoning",
+        summary: [{ type: "summary_text", text: "thinking" }],
+      },
+      { role: "assistant", content: [{ type: "output_text", text: "Answer" }], id: "msg-1" },
+    ])
+  })
+
+  test("converts user image and PDF files into Responses input", () => {
+    const body = CodexResponses.buildRequestBody(
+      baseInput({
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "See attachments" },
+              { type: "file", mediaType: "image/png", data: "aW1n", filename: "img.png" },
+              { type: "file", mediaType: "application/pdf", data: "cGRm", filename: "doc.pdf" },
+              { type: "file", mediaType: "text/csv", data: "YSxi", filename: "data.csv" },
+            ],
+          },
+        ] as ModelMessage[],
+      }),
+    ) as any
+
+    expect(body.input).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "input_text", text: "See attachments" },
+          { type: "input_image", image_url: "data:image/png;base64,aW1n" },
+          { type: "input_file", filename: "doc.pdf", file_data: "data:application/pdf;base64,cGRm" },
+          { type: "input_text", text: "[Attached text/csv: data.csv]" },
+        ],
+      },
+    ])
+  })
+  test("converts encoded remote compaction replay into raw Responses input", () => {
+    const encoded = encodeRemoteCompactionInput([
+      { type: "compaction", encrypted_content: "encrypted-context" },
+      { type: "compaction_summary", encrypted_content: "encrypted-summary" },
+    ])
+    const body = CodexResponses.buildRequestBody(
+      baseInput({
+        messages: [
+          { role: "user", content: [{ type: "text", text: "Before compaction" }, { type: "text", text: encoded }, { type: "text", text: "After compaction" }] },
+        ] as ModelMessage[],
+      }),
+    ) as any
+
+    expect(JSON.stringify(body.input)).not.toContain("__chimera_remote_compaction")
+    expect(body.input).toEqual([
+      { role: "user", content: [{ type: "input_text", text: "Before compaction" }] },
+      { type: "compaction", encrypted_content: "encrypted-context" },
+      { type: "compaction_summary", encrypted_content: "encrypted-summary" },
+      { role: "user", content: [{ type: "input_text", text: "After compaction" }] },
+    ])
+  })
 })
