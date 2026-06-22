@@ -41,16 +41,34 @@ type ResponseItem = {
   action?: unknown
 }
 
+type RequestBody = ReturnType<typeof buildRequestBody>
+
+type WebSocketSessionState = {
+  socket?: WebSocket
+  lastRequest?: RequestBody
+  lastResponse?: { responseId: string; itemsAdded: ResponsesInputItem[] }
+  fallbackHttp?: boolean
+  prewarmed?: boolean
+  turnState?: string
+}
+
 type StreamState = {
   responseId: string | null
   currentTextId: string | null
   currentReasoningOutputIndex: number | null
   hasFunctionCall: boolean
+  completed: boolean
   usage: ResponseUsage | undefined
   serviceTier: string | undefined
+  itemsAdded: ResponsesInputItem[]
+  turnState: string | undefined
   toolCalls: Record<number, { id: string; name: string; arguments: string } | undefined>
   reasoning: Record<number, { id: string; encryptedContent?: string | null; summaryIndexes: number[] } | undefined>
 }
+
+const webSocketSessions = new Map<string, WebSocketSessionState>()
+const WEBSOCKET_CONNECT_TIMEOUT_MS = 3_000
+const TURN_STATE_HEADER = "x-codex-turn-state"
 
 export type CodexResponsesInput = {
   sessionID: string
@@ -101,6 +119,32 @@ export async function* stream(input: CodexResponsesInput): AsyncIterable<LLMEven
   const body = buildRequestBody(input)
   yield event({ type: "start" })
   yield event({ type: "start-step", request: { body } })
+  const headers = await buildHeaders(input)
+  const session = webSocketSession(input)
+  if (useWebSocket(input, session)) {
+    let emitted = false
+    try {
+      await prewarmWebSocket(input, body, headers, session)
+      for await (const output of streamWebSocket(input, body, headers, session)) {
+        emitted = true
+        yield output
+      }
+      return
+    } catch (error) {
+      resetWebSocketSession(session)
+      session.fallbackHttp = true
+      if (emitted) {
+        yield event({ type: "error", error })
+        return
+      }
+    }
+  }
+  for await (const output of streamHttp(input, body, headers, session)) {
+    yield output
+  }
+}
+
+async function buildHeaders(input: CodexResponsesInput) {
   const auth = await codexAuthHeaders({ auth: input.auth, setAuth: input.setAuth })
   const headers = new Headers(auth.headers)
   headers.set("Content-Type", "application/json")
@@ -108,9 +152,13 @@ export async function* stream(input: CodexResponsesInput): AsyncIterable<LLMEven
   for (const [key, value] of Object.entries(input.headers)) {
     if (value !== undefined) headers.set(key, value)
   }
+  return headers
+}
+
+async function* streamHttp(input: CodexResponsesInput, body: RequestBody, headers: Headers, session: WebSocketSessionState) {
   const response = await fetch(codexEndpointUrl("responses", input.endpoint), {
     method: "POST",
-    headers,
+    headers: headersWithTurnState(headers, session),
     body: JSON.stringify(body),
     signal: input.abort,
   })
@@ -122,33 +170,75 @@ export async function* stream(input: CodexResponsesInput): AsyncIterable<LLMEven
     yield event({ type: "error", error: new Error("Codex Responses stream missing response body") })
     return
   }
-
-  const state: StreamState = {
-    responseId: null,
-    currentTextId: null,
-    currentReasoningOutputIndex: null,
-    hasFunctionCall: false,
-    usage: undefined,
-    serviceTier: undefined,
-    toolCalls: {},
-    reasoning: {},
-  }
+  const state = createStreamState(session)
+  captureTurnState(state, response.headers.get(TURN_STATE_HEADER) ?? undefined)
   for await (const value of parseSSE(response.body)) {
     for (const output of await handleChunk(value, input, state)) {
       yield output
     }
   }
+  updateSessionTurnState(session, state)
+  for (const output of finishEvents(state)) {
+    yield output
+  }
+}
+
+async function prewarmWebSocket(input: CodexResponsesInput, body: RequestBody, headers: Headers, session: WebSocketSessionState) {
+  if (session.lastRequest || session.prewarmed) return
+  if (input.params.options.codexResponsesPrewarm === false) return
+  for await (const _ of streamWebSocket(input, body, headers, session, true)) {}
+  session.prewarmed = true
+}
+
+async function* streamWebSocket(input: CodexResponsesInput, body: RequestBody, headers: Headers, session: WebSocketSessionState, warmup = false) {
+  const state = createStreamState(session)
+  for await (const value of sendWebSocketRequest(input, headers, buildWebSocketRequest(session, body, warmup), session)) {
+    for (const output of await handleChunk(value, input, state)) {
+      if (!warmup) yield output
+    }
+  }
+  if (state.completed && state.responseId) {
+    session.lastRequest = body
+    session.lastResponse = { responseId: state.responseId, itemsAdded: state.itemsAdded }
+  }
+  updateSessionTurnState(session, state)
+  if (warmup) return
+  for (const output of finishEvents(state)) {
+    yield output
+  }
+}
+
+function createStreamState(session?: WebSocketSessionState): StreamState {
+  return {
+    responseId: null,
+    currentTextId: null,
+    currentReasoningOutputIndex: null,
+    hasFunctionCall: false,
+    completed: false,
+    usage: undefined,
+    serviceTier: undefined,
+    itemsAdded: [],
+    turnState: session?.turnState,
+    toolCalls: {},
+    reasoning: {},
+  }
+}
+
+function finishEvents(state: StreamState) {
+  const outputs: LLMEvent[] = []
   if (state.currentTextId) {
-    yield event({ type: "text-end", id: state.currentTextId })
+    outputs.push(event({ type: "text-end", id: state.currentTextId }))
   }
   for (const part of Object.values(state.reasoning)) {
     if (!part) continue
     for (const summaryIndex of part.summaryIndexes) {
-      yield event({
-        type: "reasoning-end",
-        id: `${part.id}:${summaryIndex}`,
-        providerMetadata: { openai: { itemId: part.id, reasoningEncryptedContent: part.encryptedContent ?? null } },
-      })
+      outputs.push(
+        event({
+          type: "reasoning-end",
+          id: `${part.id}:${summaryIndex}`,
+          providerMetadata: { openai: { itemId: part.id, reasoningEncryptedContent: part.encryptedContent ?? null } },
+        }),
+      )
     }
   }
   const providerMetadata = {
@@ -159,13 +249,245 @@ export async function* stream(input: CodexResponsesInput): AsyncIterable<LLMEven
   }
   const usage = toLanguageModelUsage(state.usage)
   const finishReason = state.hasFunctionCall ? "tool-calls" : "stop"
-  yield event({ type: "finish-step", finishReason, usage, providerMetadata })
-  yield event({ type: "finish", finishReason, usage, providerMetadata })
+  outputs.push(event({ type: "finish-step", finishReason, usage, providerMetadata }))
+  outputs.push(event({ type: "finish", finishReason, usage, providerMetadata }))
+  return outputs
+}
+
+function webSocketSession(input: CodexResponsesInput) {
+  const key = `${codexEndpointUrl("responses", input.endpoint)}:${input.auth.accountId ?? ""}:${input.sessionID}`
+  const existing = webSocketSessions.get(key)
+  if (existing) return existing
+  const session: WebSocketSessionState = {}
+  webSocketSessions.set(key, session)
+  return session
+}
+
+function useWebSocket(input: CodexResponsesInput, session: WebSocketSessionState) {
+  const transport = stringOption(input.params.options.codexResponsesTransport)
+  if (session.fallbackHttp) return false
+  if (transport === "http") return false
+  if (input.params.options.codexResponsesWebSocket === false) return false
+  return typeof globalThis.WebSocket === "function"
+}
+
+function resetWebSocketSession(session: WebSocketSessionState) {
+  if (session.socket && session.socket.readyState < 2) session.socket.close()
+  session.socket = undefined
+  session.lastRequest = undefined
+  session.lastResponse = undefined
+  session.prewarmed = false
+}
+
+function buildWebSocketRequest(session: WebSocketSessionState, body: RequestBody, warmup: boolean) {
+  const delta = warmup ? undefined : incrementalRequest(session, body)
+  return stripUndefined({
+    type: "response.create",
+    ...body,
+    client_metadata: turnStateClientMetadata(session),
+    previous_response_id: delta?.previousResponseId,
+    input: delta?.input ?? body.input,
+    generate: warmup ? false : undefined,
+  })
+}
+
+function incrementalRequest(session: WebSocketSessionState, body: RequestBody) {
+  if (!session.lastRequest || !session.lastResponse?.responseId) return undefined
+  if (!deepEqual(requestWithoutInput(session.lastRequest), requestWithoutInput(body))) return undefined
+  const baseline = [...session.lastRequest.input, ...session.lastResponse.itemsAdded]
+  if (!startsWithItems(body.input, baseline)) return undefined
+  return { previousResponseId: session.lastResponse.responseId, input: body.input.slice(baseline.length) }
+}
+
+function requestWithoutInput(body: RequestBody) {
+  return Object.fromEntries(Object.entries(body).filter(([key]) => key !== "input"))
+}
+
+function startsWithItems(input: ResponsesInputItem[], baseline: ResponsesInputItem[]) {
+  if (baseline.length > input.length) return false
+  return deepEqual(input.slice(0, baseline.length), baseline)
+}
+
+function deepEqual(left: unknown, right: unknown) {
+  return JSON.stringify(left) === JSON.stringify(right)
+}
+
+function headersWithTurnState(headers: Headers, session: WebSocketSessionState) {
+  const next = new Headers(headers)
+  if (session.turnState) next.set(TURN_STATE_HEADER, session.turnState)
+  return next
+}
+
+function turnStateClientMetadata(session: WebSocketSessionState) {
+  return session.turnState ? { [TURN_STATE_HEADER]: session.turnState } : undefined
+}
+
+function captureTurnState(state: StreamState, value: unknown) {
+  if (state.turnState || value === undefined || value === null) return
+  const text = typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? String(value) : undefined
+  if (text) state.turnState = text
+}
+
+function updateSessionTurnState(session: WebSocketSessionState, state: StreamState) {
+  if (!state.completed) return
+  if (state.hasFunctionCall && state.turnState) {
+    session.turnState = state.turnState
+    return
+  }
+  if (!state.hasFunctionCall) session.turnState = undefined
+}
+
+function recordHeaderValue(headers: Record<string, unknown> | undefined, name: string) {
+  const value = Object.entries(headers ?? {}).find(([key]) => key.toLowerCase() === name)?.[1]
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value)
+  return undefined
+}
+async function* sendWebSocketRequest(input: CodexResponsesInput, headers: Headers, request: Record<string, unknown>, session: WebSocketSessionState) {
+  const socket = await openWebSocket(input, headers, session)
+  const queue: Record<string, unknown>[] = []
+  let resume: (() => void) | undefined
+  let done = false
+  let failure: unknown
+  const wake = () => {
+    resume?.()
+    resume = undefined
+  }
+  const onMessage = (message: MessageEvent) => {
+    try {
+      const parsed = JSON.parse(webSocketDataText(message.data)) as Record<string, unknown>
+      queue.push(parsed)
+      done = done || isTerminalChunk(parsed)
+      wake()
+    } catch (error) {
+      failure = error
+      done = true
+      wake()
+    }
+  }
+  const onError = (value: Event) => {
+    failure = new Error(stringOption(recordOption(value)?.message) ?? "Codex Responses WebSocket failed")
+    done = true
+    wake()
+  }
+  const onClose = () => {
+    if (!done) failure = new Error("Codex Responses WebSocket closed before a terminal event")
+    done = true
+    wake()
+  }
+  const onAbort = () => {
+    failure = input.abort.reason instanceof Error ? input.abort.reason : new Error("Codex Responses WebSocket aborted")
+    done = true
+    socket.close()
+    wake()
+  }
+  socket.addEventListener("message", onMessage)
+  socket.addEventListener("error", onError)
+  socket.addEventListener("close", onClose)
+  input.abort.addEventListener("abort", onAbort, { once: true })
+  try {
+    socket.send(JSON.stringify(request))
+    while (true) {
+      const next = queue.shift()
+      if (next) {
+        yield next
+        continue
+      }
+      if (done) break
+      await new Promise<void>((resolve) => (resume = resolve))
+    }
+    if (failure) throw failure
+  } finally {
+    socket.removeEventListener("message", onMessage)
+    socket.removeEventListener("error", onError)
+    socket.removeEventListener("close", onClose)
+    input.abort.removeEventListener("abort", onAbort)
+  }
+}
+
+async function openWebSocket(input: CodexResponsesInput, headers: Headers, session: WebSocketSessionState) {
+  if (session.socket?.readyState === 1) return session.socket
+  if (session.socket) resetWebSocketSession(session)
+  const socket = newWebSocket(webSocketEndpointUrl(input), headers)
+  await waitWebSocketOpen(input, socket)
+  session.socket = socket
+  socket.addEventListener("close", () => {
+    if (session.socket === socket) session.socket = undefined
+  })
+  return socket
+}
+
+function newWebSocket(url: string, headers: Headers) {
+  const WebSocketClient = globalThis.WebSocket as unknown as new (url: string, init?: { headers: Record<string, string> }) => WebSocket
+  return new WebSocketClient(url, { headers: headerRecord(headers) })
+}
+
+async function waitWebSocketOpen(input: CodexResponsesInput, socket: WebSocket) {
+  if (socket.readyState === 1) return
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      cleanup()
+      socket.close()
+      reject(new Error("Codex Responses WebSocket connection timed out"))
+    }, numberOption(input.params.options.codexResponsesWebSocketConnectTimeoutMs) ?? WEBSOCKET_CONNECT_TIMEOUT_MS)
+    const cleanup = () => {
+      clearTimeout(timeout)
+      socket.removeEventListener("open", onOpen)
+      socket.removeEventListener("error", onError)
+      input.abort.removeEventListener("abort", onAbort)
+    }
+    const onOpen = () => {
+      cleanup()
+      resolve()
+    }
+    const onError = () => {
+      cleanup()
+      reject(new Error("Codex Responses WebSocket failed to open"))
+    }
+    const onAbort = () => {
+      cleanup()
+      socket.close()
+      reject(input.abort.reason instanceof Error ? input.abort.reason : new Error("Codex Responses WebSocket aborted"))
+    }
+    socket.addEventListener("open", onOpen)
+    socket.addEventListener("error", onError)
+    input.abort.addEventListener("abort", onAbort, { once: true })
+  })
+}
+
+function webSocketEndpointUrl(input: CodexResponsesInput) {
+  const url = new URL(codexEndpointUrl("responses", input.endpoint))
+  if (url.protocol === "https:") url.protocol = "wss:"
+  if (url.protocol === "http:") url.protocol = "ws:"
+  return url.toString()
+}
+
+function headerRecord(headers: Headers) {
+  const record: Record<string, string> = {}
+  headers.forEach((value, key) => {
+    record[key] = value
+  })
+  return record
+}
+
+function webSocketDataText(data: unknown) {
+  if (typeof data === "string") return data
+  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data)
+  if (data instanceof Uint8Array) return new TextDecoder().decode(data)
+  return textValue(data)
+}
+
+function isTerminalChunk(value: Record<string, unknown>) {
+  const type = stringOption(value.type)
+  return type === "response.completed" || type === "response.incomplete" || type === "response.failed" || type === "error"
 }
 
 async function handleChunk(value: Record<string, unknown>, input: CodexResponsesInput, state: StreamState) {
   const outputs: LLMEvent[] = []
   const type = stringOption(value.type)
+  if (type === "response.metadata") {
+    captureTurnState(state, recordHeaderValue(recordOption(value.headers), TURN_STATE_HEADER))
+    return outputs
+  }
   if (type === "response.created") {
     const response = recordOption(value.response)
     state.responseId = stringOption(response?.id) ?? state.responseId
@@ -265,6 +587,8 @@ async function handleChunk(value: Record<string, unknown>, input: CodexResponses
   if (type === "response.output_item.done") {
     const item = recordOption(value.item) as ResponseItem | undefined
     const outputIndex = numberOption(value.output_index) ?? 0
+    const replay = item ? responseItemToInputItem(item) : undefined
+    if (replay) state.itemsAdded.push(replay)
     if (item?.type === "message" && state.currentTextId) {
       outputs.push(event({ type: "text-end", id: state.currentTextId }))
       state.currentTextId = null
@@ -339,6 +663,7 @@ async function handleChunk(value: Record<string, unknown>, input: CodexResponses
     state.responseId = stringOption(response?.id) ?? state.responseId
     state.usage = recordOption(response?.usage) as ResponseUsage | undefined
     state.serviceTier = stringOption(response?.service_tier) ?? state.serviceTier
+    state.completed = type === "response.completed"
     return outputs
   }
   if (type === "response.failed" || type === "error") {
@@ -478,6 +803,34 @@ function webSearchInput(item: ResponseItem) {
 
 function webSearchOutput(item: ResponseItem) {
   return stripUndefined({ status: item.status, action: item.action })
+}
+
+function responseItemToInputItem(item: ResponseItem): ResponsesInputItem | undefined {
+  if (item.type === "message" && item.role === "assistant") {
+    return stripUndefined({
+      role: "assistant" as const,
+      content: Array.isArray(item.content) ? (item.content as Array<Record<string, unknown>>) : [],
+      id: item.id,
+    })
+  }
+  if (item.type === "function_call") {
+    return stripUndefined({
+      type: "function_call" as const,
+      call_id: item.call_id ?? item.id ?? "",
+      name: item.name ?? "",
+      arguments: item.arguments ?? "",
+      id: item.id,
+    })
+  }
+  if (item.type === "reasoning" && item.id) {
+    return {
+      type: "reasoning",
+      id: item.id,
+      encrypted_content: item.encrypted_content ?? null,
+      summary: Array.isArray(item.summary) ? item.summary.flatMap((part) => (part.text ? [{ type: "summary_text" as const, text: part.text }] : [])) : [],
+    }
+  }
+  return undefined
 }
 
 function toResponsesInput(messages: ModelMessage[]): ResponsesInputItem[] {
