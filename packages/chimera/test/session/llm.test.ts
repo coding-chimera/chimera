@@ -206,13 +206,16 @@ beforeAll(() => {
   state.server = Bun.serve({
     port: 0,
     async fetch(req) {
+      const url = new URL(req.url)
+      if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
+        return new Response("websocket upgrade not supported", { status: 426 })
+      }
       const next = state.queue.shift()
       if (!next) {
         return new Response("unexpected request", { status: 500 })
       }
 
-      const url = new URL(req.url)
-      const body = (await req.json()) as Record<string, unknown>
+      const body = req.method === "GET" ? {} : ((await req.json().catch(() => ({}))) as Record<string, unknown>)
       next.resolve({ url, headers: req.headers, body })
 
       if (!url.pathname.endsWith(next.path)) {

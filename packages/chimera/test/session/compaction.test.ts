@@ -1211,6 +1211,7 @@ describe("session.compaction.process", () => {
           expect(compactRequest?.headers.get("ChatGPT-Account-Id")).toBe("acc-123")
           expect(compactRequest?.headers.get("session_id")).toBe(session.id)
           expect(compactRequest?.body.stream).toBe(true)
+          expect(compactRequest?.body.store).toBe(false)
           expect(compactRequest?.body.tools).toEqual([])
           expect(Array.isArray(requestInput) ? requestInput.at(-1) : undefined).toEqual({ type: "compaction_trigger" })
           expect(part?.remote?.implementation).toBe("responses_compaction_v2")

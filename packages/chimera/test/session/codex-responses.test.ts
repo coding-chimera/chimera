@@ -43,7 +43,7 @@ function baseInput(input: Partial<CodexResponsesInput> = {}): CodexResponsesInpu
       topP: 0.8,
       topK: undefined,
       maxOutputTokens: undefined,
-      options: { reasoningEffort: "high", reasoningSummary: "auto", include: ["reasoning.encrypted_content"] },
+      options: { reasoningEffort: "high", reasoningSummary: "auto", include: ["reasoning.encrypted_content"], codexResponsesTransport: "http" },
     },
     headers: {},
     auth: { type: "oauth", refresh: "refresh", access: "access", expires: Date.now() + 60_000, accountId: "acc-123" },
@@ -66,6 +66,67 @@ async function collect(input: CodexResponsesInput) {
   const events: any[] = []
   for await (const event of CodexResponses.stream(input)) events.push(event)
   return events
+}
+
+function installFakeWebSocket(responses: unknown[][], options: { failOpen?: boolean } = {}) {
+  const original = globalThis.WebSocket
+  const sockets: Array<{ url: string; init?: { headers?: Record<string, string> }; sent: string[] }> = []
+  class FakeWebSocket extends EventTarget {
+    readyState = 0
+    url: string
+    init?: { headers?: Record<string, string> }
+    sent: string[] = []
+
+    constructor(url: string, init?: { headers?: Record<string, string> }) {
+      super()
+      this.url = url
+      this.init = init
+      sockets.push(this)
+      queueMicrotask(() => {
+        if (this.readyState !== 0) return
+        if (options.failOpen) {
+          this.readyState = 3
+          this.dispatchEvent(new Event("error"))
+          return
+        }
+        this.readyState = 1
+        this.dispatchEvent(new Event("open"))
+      })
+    }
+
+    send(data: string) {
+      this.sent.push(data)
+      const chunks = responses.shift() ?? []
+      queueMicrotask(() => {
+        for (const chunk of chunks) {
+          this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(chunk) }))
+        }
+      })
+    }
+
+    close() {
+      this.readyState = 3
+      this.dispatchEvent(new Event("close"))
+    }
+  }
+  globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket
+  return {
+    sockets,
+    restore() {
+      globalThis.WebSocket = original
+    },
+  }
+}
+
+function inputWithOptions(input: Partial<CodexResponsesInput>, options: Record<string, unknown>) {
+  const base = baseInput(input)
+  return {
+    ...base,
+    params: {
+      ...base.params,
+      options: { ...base.params.options, ...options },
+    },
+  }
 }
 
 describe("session.codex-responses", () => {
@@ -145,6 +206,244 @@ describe("session.codex-responses", () => {
     expect(events.find((event) => event.type === "text-delta")?.text).toBe("Hello")
     expect(events.find((event) => event.type === "finish-step")?.finishReason).toBe("stop")
     expect(events.find((event) => event.type === "finish-step")?.usage.inputTokenDetails.cacheReadTokens).toBe(1)
+  })
+
+
+  test("streams text events from Codex WebSocket", async () => {
+    const fake = installFakeWebSocket([
+      [
+        { type: "response.created", response: { id: "resp-ws-1", created_at: 1, model: "gpt-5.5" } },
+        { type: "response.output_item.added", output_index: 0, item: { id: "msg-ws-1", type: "message" } },
+        { type: "response.output_text.delta", item_id: "msg-ws-1", delta: "Hello over ws" },
+        { type: "response.output_item.done", output_index: 0, item: { id: "msg-ws-1", type: "message", role: "assistant", content: [{ type: "output_text", text: "Hello over ws" }] } },
+        { type: "response.completed", response: { id: "resp-ws-1", usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 } } },
+      ],
+    ])
+    try {
+      const events = await collect(
+        inputWithOptions(
+          { sessionID: "session-ws-text", endpoint: "http://codex.test/backend-api/codex/responses" },
+          { codexResponsesTransport: "websocket", codexResponsesPrewarm: false },
+        ),
+      )
+      const request = JSON.parse(fake.sockets[0].sent[0])
+
+      expect(fake.sockets[0].url).toBe("ws://codex.test/backend-api/codex/responses")
+      expect(fake.sockets[0].init?.headers?.authorization).toBe("Bearer access")
+      expect(request.type).toBe("response.create")
+      expect(request.stream).toBe(true)
+      expect(events.map((event) => event.type)).toEqual(["start", "start-step", "text-start", "text-delta", "text-end", "finish-step", "finish"])
+      expect(events.find((event) => event.type === "text-delta")?.text).toBe("Hello over ws")
+      expect(events.find((event) => event.type === "finish-step")?.providerMetadata.openai.responseId).toBe("resp-ws-1")
+    } finally {
+      fake.restore()
+    }
+  })
+
+  test("uses previous_response_id for WebSocket input deltas", async () => {
+    const fake = installFakeWebSocket([
+      [
+        { type: "response.output_item.added", output_index: 0, item: { id: "msg-delta-1", type: "message" } },
+        { type: "response.output_text.delta", item_id: "msg-delta-1", delta: "First" },
+        { type: "response.output_item.done", output_index: 0, item: { id: "msg-delta-1", type: "message", role: "assistant", content: [{ type: "output_text", text: "First" }] } },
+        { type: "response.completed", response: { id: "resp-delta-1", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+      ],
+      [
+        { type: "response.completed", response: { id: "resp-delta-2", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+      ],
+    ])
+    try {
+      await collect(
+        inputWithOptions(
+          { sessionID: "session-ws-delta", endpoint: "http://codex.test/backend-api/codex/responses", messages: [{ role: "user", content: "Hello" }] },
+          { codexResponsesTransport: "websocket", codexResponsesPrewarm: false },
+        ),
+      )
+      await collect(
+        inputWithOptions(
+          {
+            sessionID: "session-ws-delta",
+            endpoint: "http://codex.test/backend-api/codex/responses",
+            messages: [
+              { role: "user", content: "Hello" },
+              { role: "assistant", content: [{ type: "text", text: "First", providerOptions: { openai: { itemId: "msg-delta-1" } } }] },
+              { role: "user", content: "Second" },
+            ] as ModelMessage[],
+          },
+          { codexResponsesTransport: "websocket", codexResponsesPrewarm: false },
+        ),
+      )
+      const second = JSON.parse(fake.sockets[0].sent[1])
+
+      expect(second.previous_response_id).toBe("resp-delta-1")
+      expect(second.input).toEqual([{ role: "user", content: [{ type: "input_text", text: "Second" }] }])
+    } finally {
+      fake.restore()
+    }
+  })
+
+  test("prewarms WebSocket requests with generate false", async () => {
+    const fake = installFakeWebSocket([
+      [{ type: "response.completed", response: { id: "resp-warm", usage: { input_tokens: 1, output_tokens: 0, total_tokens: 1 } } }],
+      [{ type: "response.completed", response: { id: "resp-real", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } }],
+    ])
+    try {
+      await collect(inputWithOptions({ sessionID: "session-ws-prewarm", endpoint: "http://codex.test/backend-api/codex/responses" }, { codexResponsesTransport: "websocket" }))
+      const warmup = JSON.parse(fake.sockets[0].sent[0])
+      const real = JSON.parse(fake.sockets[0].sent[1])
+
+      expect(warmup.generate).toBe(false)
+      expect(warmup.input).toEqual([{ role: "user", content: [{ type: "input_text", text: "Hello" }] }])
+      expect(real.previous_response_id).toBe("resp-warm")
+      expect(real.input).toEqual([])
+    } finally {
+      fake.restore()
+    }
+  })
+
+  test("falls back to HTTP SSE when WebSocket cannot open", async () => {
+    const fake = installFakeWebSocket([], { failOpen: true })
+    using server = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        expect(request.method).toBe("POST")
+        return new Response(
+          responseStream([
+            { type: "response.output_item.added", output_index: 0, item: { id: "msg-fallback", type: "message" } },
+            { type: "response.output_text.delta", item_id: "msg-fallback", delta: "HTTP fallback" },
+            { type: "response.output_item.done", output_index: 0, item: { id: "msg-fallback", type: "message" } },
+            { type: "response.completed", response: { id: "resp-fallback", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+          ]),
+          { headers: { "Content-Type": "text/event-stream" } },
+        )
+      },
+    })
+    try {
+      const events = await collect(
+        inputWithOptions(
+          { sessionID: "session-ws-fallback", endpoint: `${server.url.origin}/backend-api/codex/responses` },
+          { codexResponsesTransport: "websocket" },
+        ),
+      )
+
+      expect(fake.sockets).toHaveLength(1)
+      expect(events.find((event) => event.type === "text-delta")?.text).toBe("HTTP fallback")
+      expect(events.find((event) => event.type === "finish-step")?.providerMetadata.openai.responseId).toBe("resp-fallback")
+    } finally {
+      fake.restore()
+    }
+  })
+
+  test("persists x-codex-turn-state across HTTP same-turn followups and clears after final response", async () => {
+    const seenTurnStates: Array<string | null> = []
+    const responses = [
+      {
+        headers: { "x-codex-turn-state": "ts-http-1" },
+        events: [
+          { type: "response.output_item.added", output_index: 0, item: { id: "fc-http", type: "function_call", call_id: "call-http", name: "lookup" } },
+          { type: "response.function_call_arguments.delta", output_index: 0, delta: "{\"query\":\"one\"}" },
+          { type: "response.output_item.done", output_index: 0, item: { id: "fc-http", type: "function_call", call_id: "call-http", name: "lookup", arguments: "{\"query\":\"one\"}" } },
+          { type: "response.completed", response: { id: "resp-http-turn-1", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+        ],
+      },
+      {
+        headers: {},
+        events: [
+          { type: "response.output_item.added", output_index: 0, item: { id: "msg-http-turn", type: "message" } },
+          { type: "response.output_text.delta", item_id: "msg-http-turn", delta: "Done" },
+          { type: "response.output_item.done", output_index: 0, item: { id: "msg-http-turn", type: "message", role: "assistant", content: [{ type: "output_text", text: "Done" }] } },
+          { type: "response.completed", response: { id: "resp-http-turn-2", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+        ],
+      },
+      {
+        headers: {},
+        events: [{ type: "response.completed", response: { id: "resp-http-turn-3", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } }],
+      },
+    ]
+    using server = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        seenTurnStates.push(request.headers.get("x-codex-turn-state"))
+        const next = responses.shift()
+        if (!next) return new Response("unexpected request", { status: 500 })
+        return new Response(responseStream(next.events), { headers: new Headers([["Content-Type", "text/event-stream"], ...Object.entries(next.headers)]) })
+      },
+    })
+    const endpoint = `${server.url.origin}/backend-api/codex/responses`
+    const tools = {
+      lookup: tool({
+        description: "Lookup data",
+        inputSchema: z.object({ query: z.string() }),
+        execute: async () => ({ output: "ok" }),
+      }),
+    }
+    await collect(baseInput({ sessionID: "session-http-turn-state", endpoint, tools }))
+    await collect(
+      baseInput({
+        sessionID: "session-http-turn-state",
+        endpoint,
+        messages: [
+          { role: "user", content: "Use lookup" },
+          { role: "assistant", content: [{ type: "tool-call", toolCallId: "call-http", toolName: "lookup", input: { query: "one" } }] },
+          { role: "tool", content: [{ type: "tool-result", toolCallId: "call-http", toolName: "lookup", output: "ok" }] },
+        ] as ModelMessage[],
+      }),
+    )
+    await collect(baseInput({ sessionID: "session-http-turn-state", endpoint, messages: [{ role: "user", content: "New turn" }] }))
+
+    expect(seenTurnStates).toEqual([null, "ts-http-1", null])
+  })
+
+  test("sends x-codex-turn-state in WebSocket client metadata only for same-turn followups", async () => {
+    const fake = installFakeWebSocket([
+      [
+        { type: "response.metadata", headers: { "x-codex-turn-state": "ts-ws-1" } },
+        { type: "response.output_item.added", output_index: 0, item: { id: "fc-ws-turn", type: "function_call", call_id: "call-ws-turn", name: "lookup" } },
+        { type: "response.function_call_arguments.delta", output_index: 0, delta: "{\"query\":\"one\"}" },
+        { type: "response.output_item.done", output_index: 0, item: { id: "fc-ws-turn", type: "function_call", call_id: "call-ws-turn", name: "lookup", arguments: "{\"query\":\"one\"}" } },
+        { type: "response.completed", response: { id: "resp-ws-turn-1", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+      ],
+      [
+        { type: "response.output_item.added", output_index: 0, item: { id: "msg-ws-turn", type: "message" } },
+        { type: "response.output_text.delta", item_id: "msg-ws-turn", delta: "Done" },
+        { type: "response.output_item.done", output_index: 0, item: { id: "msg-ws-turn", type: "message", role: "assistant", content: [{ type: "output_text", text: "Done" }] } },
+        { type: "response.completed", response: { id: "resp-ws-turn-2", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+      ],
+      [{ type: "response.completed", response: { id: "resp-ws-turn-3", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } }],
+    ])
+    const endpoint = "http://codex.test/backend-api/codex/responses"
+    const tools = {
+      lookup: tool({
+        description: "Lookup data",
+        inputSchema: z.object({ query: z.string() }),
+        execute: async () => ({ output: "ok" }),
+      }),
+    }
+    try {
+      await collect(inputWithOptions({ sessionID: "session-ws-turn-state", endpoint, tools }, { codexResponsesTransport: "websocket", codexResponsesPrewarm: false }))
+      await collect(
+        inputWithOptions(
+          {
+            sessionID: "session-ws-turn-state",
+            endpoint,
+            messages: [
+              { role: "user", content: "Use lookup" },
+              { role: "assistant", content: [{ type: "tool-call", toolCallId: "call-ws-turn", toolName: "lookup", input: { query: "one" } }] },
+              { role: "tool", content: [{ type: "tool-result", toolCallId: "call-ws-turn", toolName: "lookup", output: "ok" }] },
+            ] as ModelMessage[],
+          },
+          { codexResponsesTransport: "websocket", codexResponsesPrewarm: false },
+        ),
+      )
+      await collect(inputWithOptions({ sessionID: "session-ws-turn-state", endpoint, messages: [{ role: "user", content: "New turn" }] }, { codexResponsesTransport: "websocket", codexResponsesPrewarm: false }))
+      const requests = fake.sockets[0].sent.map((item) => JSON.parse(item))
+
+      expect(requests[0].client_metadata?.["x-codex-turn-state"]).toBeUndefined()
+      expect(requests[1].client_metadata?.["x-codex-turn-state"]).toBe("ts-ws-1")
+      expect(requests[2].client_metadata?.["x-codex-turn-state"]).toBeUndefined()
+    } finally {
+      fake.restore()
+    }
   })
 
   test("executes function calls and emits tool results", async () => {

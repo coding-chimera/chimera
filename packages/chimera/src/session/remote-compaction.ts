@@ -427,6 +427,7 @@ export const layerWithEndpoint = (endpoint = codexEndpointUrl("responses/compact
             {
               ...body,
               input: [...requestInput, { type: "compaction_trigger" } satisfies ResponsesCompactionTriggerItem],
+              store: false,
               stream: true,
             },
             V2_IMPLEMENTATION,
