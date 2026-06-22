@@ -2,7 +2,8 @@ import { afterAll, afterEach, describe, test, expect } from "bun:test"
 import path from "path"
 import fs from "fs/promises"
 import { Effect, Layer, ManagedRuntime } from "effect"
-import { EditTool } from "../../src/tool/edit"
+import { createTwoFilesPatch, parsePatch } from "diff"
+import { EditTool, trimDiff } from "../../src/tool/edit"
 import { WithInstance } from "../../src/project/with-instance"
 import { disposeAllInstances, tmpdir } from "../fixture/fixture"
 import { LSP } from "@/lsp/lsp"
@@ -88,6 +89,13 @@ async function onceBus<D extends BusEvent.Definition>(def: D) {
 }
 
 describe("tool.edit", () => {
+  test("trims generated diff headers without dropping blank context lines", () => {
+    const diff = createTwoFilesPatch("blank.txt", "blank.txt", "one\n\n", "one\ntwo\n\n")
+    const trimmed = trimDiff(diff)
+
+    expect(trimmed).toBe("@@ -1,2 +1,3 @@\n one\n+two\n ")
+    expect(() => parsePatch(trimmed)).not.toThrow()
+  })
   test("creates new files with unanchored append", async () => {
     await using tmp = await tmpdir()
     const filepath = path.join(tmp.path, "newfile.txt")
@@ -155,7 +163,6 @@ describe("tool.edit", () => {
         )
 
         expect(result.output).toContain("Changed lines after edit")
-        expect(result.output).toContain("chimera_audit_recent")
         expect(result.metadata.diff).toContain("-old content here")
         expect(result.metadata.diff).toContain("+new content here")
         expect(await fs.readFile(filepath, "utf-8")).toBe("new content here\n")

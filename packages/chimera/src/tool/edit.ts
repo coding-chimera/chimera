@@ -470,8 +470,11 @@ export const EditTool = Tool.define(
 )
 
 export function trimDiff(diff: string): string {
-  const lines = diff.split("\n")
+  const lines = diff.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n")
   const headerEndIndex = lines.findIndex((line) => line.startsWith("@@"))
   if (headerEndIndex === -1) return diff.trim()
-  return lines.slice(headerEndIndex).join("\n").trim()
+
+  const hunkLines = lines.slice(headerEndIndex)
+  const endIndex = hunkLines.findLastIndex((line) => line !== "")
+  return hunkLines.slice(0, endIndex + 1).join("\n")
 }
