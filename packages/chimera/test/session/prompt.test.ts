@@ -99,6 +99,12 @@ function toolPart(parts: MessageV2.Part[]) {
   return parts.find((part): part is MessageV2.ToolPart => part.type === "tool")
 }
 
+function runtimeContextParts(messages: MessageV2.WithParts[]) {
+  return messages
+    .flatMap((msg) => msg.parts)
+    .filter((part): part is MessageV2.TextPart => part.type === "text" && Boolean(part.metadata?.runtimeContext))
+}
+
 type CompletedToolPart = MessageV2.ToolPart & { state: MessageV2.ToolStateCompleted }
 type ErrorToolPart = MessageV2.ToolPart & { state: MessageV2.ToolStateError }
 
@@ -547,6 +553,62 @@ it.live("injects current work brief into the LLM input", () =>
       const body = JSON.stringify(messages)
       expect(body).toContain("## Current Work Brief")
       expect(body).toContain("Use mutable suffix instead of rewriting history.")
+    }),
+    { git: true, config: providerCfg },
+  ),
+)
+
+it.live("persists runtime context and appends updates only when it changes", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* () {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const workBrief = yield* WorkBrief.Service
+      const session = yield* sessions.create({
+        title: "Runtime context persistence",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      const runtimeParts = runtimeContextParts(yield* sessions.messages({ sessionID: session.id }))
+
+      expect(runtimeParts).toHaveLength(0)
+      yield* workBrief.update({
+        sessionID: session.id,
+        brief: WorkBrief.normalize({ intent: "first cache baseline" }),
+      })
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "first" }],
+      })
+      const first = runtimeContextParts(yield* sessions.messages({ sessionID: session.id }))
+      expect(first).toHaveLength(1)
+      expect(first[0]?.metadata?.runtimeContext.kind).toBe("snapshot")
+
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "second" }],
+      })
+      const unchanged = runtimeContextParts(yield* sessions.messages({ sessionID: session.id }))
+      expect(unchanged).toHaveLength(1)
+
+      yield* workBrief.update({
+        sessionID: session.id,
+        brief: WorkBrief.normalize({ intent: "second cache baseline" }),
+      })
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "third" }],
+      })
+      const changed = runtimeContextParts(yield* sessions.messages({ sessionID: session.id }))
+      expect(changed).toHaveLength(2)
+      expect(changed[1]?.metadata?.runtimeContext.kind).toBe("update")
+      expect(changed[1]?.text).toContain("Runtime Context Update")
+      expect(changed[1]?.text).toContain("second cache baseline")
     }),
     { git: true, config: providerCfg },
   ),
