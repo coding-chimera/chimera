@@ -1,5 +1,6 @@
 import type { JSONSchema7 } from "@ai-sdk/provider"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
+import * as Log from "@opencode-ai/core/util/log"
 import { type ModelMessage, type Tool } from "ai"
 import z from "zod"
 import { type Auth } from "@/auth"
@@ -10,14 +11,14 @@ import { decodeRemoteCompactionInput, type RemoteCompactionOutputItem } from "./
 
 type CodexOAuthAuth = Extract<Auth.Info, { type: "oauth" }>
 
-type ResponsesInputItem =
+export type ResponsesInputItem =
   | RemoteCompactionOutputItem
   | { role: "system" | "developer"; content: string }
   | { role: "user"; content: Array<Record<string, unknown>> }
-  | { role: "assistant"; content: Array<Record<string, unknown>>; id?: string }
-  | { type: "function_call"; call_id: string; name: string; arguments: string; id?: string }
+  | { role: "assistant"; content: Array<Record<string, unknown>> }
+  | { type: "function_call"; call_id: string; name: string; arguments: string }
   | { type: "function_call_output"; call_id: string; output: string }
-  | { type: "reasoning"; id: string; encrypted_content?: string | null; summary: Array<{ type: "summary_text"; text: string }> }
+  | { type: "reasoning"; encrypted_content?: string | null; summary: Array<{ type: "summary_text"; text: string }> }
 
 type ResponseUsage = {
   input_tokens?: number
@@ -41,7 +42,7 @@ type ResponseItem = {
   action?: unknown
 }
 
-type RequestBody = ReturnType<typeof buildRequestBody>
+export type RequestBody = ReturnType<typeof buildRequestBody>
 
 type WebSocketSessionState = {
   socket?: WebSocket
@@ -51,6 +52,32 @@ type WebSocketSessionState = {
   prewarmed?: boolean
   turnState?: string
 }
+
+export type WebSocketIncrementalMissReason =
+  | "missing_baseline"
+  | "request_without_input_mismatch"
+  | "tools_changed"
+  | "runtime_context_changed"
+  | "input_prefix_mismatch"
+
+export type WebSocketIncrementalDiagnostics =
+  | {
+      status: "reused"
+      previousResponseId: string
+      baselineInputCount: number
+      currentInputCount: number
+      deltaInputCount: number
+      responseItemsAddedCount: number
+    }
+  | {
+      status: "miss"
+      reason: WebSocketIncrementalMissReason
+      baselineInputCount?: number
+      currentInputCount: number
+      responseItemsAddedCount?: number
+      changedNonInputKeys?: string[]
+      firstMismatchIndex?: number
+    }
 
 type StreamState = {
   responseId: string | null
@@ -66,6 +93,7 @@ type StreamState = {
   reasoning: Record<number, { id: string; encryptedContent?: string | null; summaryIndexes: number[] } | undefined>
 }
 
+const log = Log.create({ service: "codex.responses" })
 const webSocketSessions = new Map<string, WebSocketSessionState>()
 const WEBSOCKET_CONNECT_TIMEOUT_MS = 3_000
 const TURN_STATE_HEADER = "x-codex-turn-state"
@@ -292,11 +320,53 @@ function buildWebSocketRequest(session: WebSocketSessionState, body: RequestBody
 }
 
 function incrementalRequest(session: WebSocketSessionState, body: RequestBody) {
-  if (!session.lastRequest || !session.lastResponse?.responseId) return undefined
-  if (!deepEqual(requestWithoutInput(session.lastRequest), requestWithoutInput(body))) return undefined
+  const diagnostics = diagnoseWebSocketIncrementalRequest(session, body)
+  if (diagnostics.status === "miss") {
+    if (diagnostics.reason === "missing_baseline") log.debug("websocket incremental miss", diagnostics)
+    else log.info("websocket incremental miss", diagnostics)
+    return undefined
+  }
+  log.debug("websocket incremental reused", diagnostics)
+  return { previousResponseId: diagnostics.previousResponseId, input: body.input.slice(diagnostics.baselineInputCount) }
+}
+
+export function diagnoseWebSocketIncrementalRequest(
+  session: { lastRequest?: RequestBody; lastResponse?: { responseId: string; itemsAdded: ResponsesInputItem[] } },
+  body: RequestBody,
+): WebSocketIncrementalDiagnostics {
+  const currentInputCount = body.input.length
+  if (!session.lastRequest || !session.lastResponse?.responseId) return { status: "miss", reason: "missing_baseline", currentInputCount }
   const baseline = [...session.lastRequest.input, ...session.lastResponse.itemsAdded]
-  if (!startsWithItems(body.input, baseline)) return undefined
-  return { previousResponseId: session.lastResponse.responseId, input: body.input.slice(baseline.length) }
+  const changedNonInputKeys = changedRequestKeys(requestWithoutInput(session.lastRequest), requestWithoutInput(body))
+  if (changedNonInputKeys.length) {
+    return {
+      status: "miss",
+      reason: changedNonInputKeys.includes("tools") ? "tools_changed" : "request_without_input_mismatch",
+      changedNonInputKeys,
+      baselineInputCount: baseline.length,
+      currentInputCount,
+      responseItemsAddedCount: session.lastResponse.itemsAdded.length,
+    }
+  }
+  if (!startsWithItems(body.input, baseline)) {
+    const firstMismatchIndex = firstInputMismatchIndex(body.input, baseline)
+    return {
+      status: "miss",
+      reason: runtimeContextPrefixMismatch(body.input, baseline, firstMismatchIndex) ? "runtime_context_changed" : "input_prefix_mismatch",
+      baselineInputCount: baseline.length,
+      currentInputCount,
+      responseItemsAddedCount: session.lastResponse.itemsAdded.length,
+      firstMismatchIndex,
+    }
+  }
+  return {
+    status: "reused",
+    previousResponseId: session.lastResponse.responseId,
+    baselineInputCount: baseline.length,
+    currentInputCount,
+    deltaInputCount: body.input.length - baseline.length,
+    responseItemsAddedCount: session.lastResponse.itemsAdded.length,
+  }
 }
 
 function requestWithoutInput(body: RequestBody) {
@@ -306,6 +376,33 @@ function requestWithoutInput(body: RequestBody) {
 function startsWithItems(input: ResponsesInputItem[], baseline: ResponsesInputItem[]) {
   if (baseline.length > input.length) return false
   return deepEqual(input.slice(0, baseline.length), baseline)
+}
+
+function changedRequestKeys(left: Record<string, unknown>, right: Record<string, unknown>) {
+  return Array.from(new Set([...Object.keys(left), ...Object.keys(right)]))
+    .sort()
+    .filter((key) => !deepEqual(left[key], right[key]))
+}
+
+function firstInputMismatchIndex(input: ResponsesInputItem[], baseline: ResponsesInputItem[]) {
+  const index = baseline.findIndex((item, i) => !deepEqual(input[i], item))
+  return index === -1 ? input.length : index
+}
+
+function runtimeContextPrefixMismatch(input: ResponsesInputItem[], baseline: ResponsesInputItem[], index: number) {
+  return runtimeContextInputItem(input[index]) || runtimeContextInputItem(baseline[index])
+}
+
+function runtimeContextInputItem(item: ResponsesInputItem | undefined) {
+  const text = inputItemText(item)
+  return text.includes("<runtime-context>") || text.includes("## Runtime Context Update") || text.includes("## Current Work Brief") || text.includes("## Chimera Execution Context")
+}
+
+function inputItemText(item: ResponsesInputItem | undefined): string {
+  if (!item) return ""
+  if ("content" in item && typeof item.content === "string") return item.content
+  if ("content" in item && Array.isArray(item.content)) return item.content.map((part) => textValue((part as Record<string, unknown>).text)).join("\n")
+  return ""
 }
 
 function deepEqual(left: unknown, right: unknown) {
@@ -668,9 +765,18 @@ async function handleChunk(value: Record<string, unknown>, input: CodexResponses
   }
   if (type === "response.failed" || type === "error") {
     const response = recordOption(value.response)
-    outputs.push(event({ type: "error", error: new Error(stringOption(value.message) ?? stringOption(recordOption(response?.error)?.message) ?? "Codex Responses stream failed") }))
+    outputs.push(event({ type: "error", error: new Error(responseErrorMessage(value, response)) }))
   }
   return outputs
+}
+
+function responseErrorMessage(value: Record<string, unknown>, response: Record<string, unknown> | undefined) {
+  return (
+    stringOption(value.message) ??
+    stringOption(recordOption(value.error)?.message) ??
+    stringOption(recordOption(response?.error)?.message) ??
+    "Codex Responses stream failed"
+  )
 }
 
 async function executeTool(input: CodexResponsesInput, toolName: string, args: unknown, toolCallId: string) {
@@ -807,25 +913,22 @@ function webSearchOutput(item: ResponseItem) {
 
 function responseItemToInputItem(item: ResponseItem): ResponsesInputItem | undefined {
   if (item.type === "message" && item.role === "assistant") {
-    return stripUndefined({
+    return {
       role: "assistant" as const,
       content: Array.isArray(item.content) ? (item.content as Array<Record<string, unknown>>) : [],
-      id: item.id,
-    })
+    }
   }
   if (item.type === "function_call") {
-    return stripUndefined({
+    return {
       type: "function_call" as const,
       call_id: item.call_id ?? item.id ?? "",
       name: item.name ?? "",
       arguments: item.arguments ?? "",
-      id: item.id,
-    })
+    }
   }
-  if (item.type === "reasoning" && item.id) {
+  if (item.type === "reasoning") {
     return {
       type: "reasoning",
-      id: item.id,
       encrypted_content: item.encrypted_content ?? null,
       summary: Array.isArray(item.summary) ? item.summary.flatMap((part) => (part.text ? [{ type: "summary_text" as const, text: part.text }] : [])) : [],
     }
@@ -852,42 +955,46 @@ function assistantItems(message: Extract<ModelMessage, { role: "assistant" }>): 
     const openai = openaiProviderOptions(part)
     if (part.type === "text") {
       return [
-        stripUndefined({
+        {
           role: "assistant" as const,
           content: [{ type: "output_text", text: textValue(part.text) }],
-          id: stringOption(openai?.itemId),
-        }),
+        },
       ]
     }
     if (part.type === "reasoning") {
-      const id = stringOption(openai?.itemId)
-      if (!id) return []
+      const encryptedContent = stringOption(openai?.reasoningEncryptedContent)
+      if (!stringOption(openai?.itemId) && !encryptedContent) return []
       return [
         {
           type: "reasoning",
-          id,
-          encrypted_content: stringOption(openai?.reasoningEncryptedContent) ?? null,
+          encrypted_content: encryptedContent ?? null,
           summary: textValue(part.text) ? [{ type: "summary_text", text: textValue(part.text) }] : [],
         },
       ]
     }
     if (part.type !== "tool-call") return []
+    if (isHostedWebSearchReplay(part)) return []
     return [
-      stripUndefined({
+      {
         type: "function_call" as const,
         call_id: textValue(part.toolCallId),
         name: textValue(part.toolName),
         arguments: typeof part.input === "string" ? part.input : JSON.stringify(part.input ?? {}),
-        id: stringOption(openai?.itemId),
-      }),
+      },
     ]
   })
+}
+
+function isHostedWebSearchReplay(part: Record<string, unknown>) {
+  if (textValue(part.toolName) !== "web_search") return false
+  const itemId = stringOption(openaiProviderOptions(part)?.itemId)
+  return part.providerExecuted === true || itemId?.startsWith("ws_") === true || textValue(part.toolCallId).startsWith("ws_")
 }
 
 function toolResultItems(content: unknown): ResponsesInputItem[] {
   if (!Array.isArray(content)) return []
   return content.flatMap((part): ResponsesInputItem[] => {
-    if (!isRecord(part) || part.type !== "tool-result") return []
+    if (!isRecord(part) || part.type !== "tool-result" || isHostedWebSearchReplay(part)) return []
     return [
       {
         type: "function_call_output",

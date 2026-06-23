@@ -1,5 +1,6 @@
 import path from "path"
 import os from "os"
+import { createHash } from "crypto"
 import * as EffectZod from "@/util/effect-zod"
 import { SessionID, MessageID, PartID } from "./schema"
 import { MessageV2 } from "./message-v2"
@@ -84,23 +85,82 @@ const STRUCTURED_OUTPUT_SYSTEM_PROMPT = `IMPORTANT: The user has requested struc
 
 const log = Log.create({ service: "session.prompt" })
 
-function transientContextMessage(sections: Array<string | undefined>): ModelMessage[] {
-  const content = sections.filter((section): section is string => Boolean(section)).join("\n\n")
-  if (!content) return []
+type RuntimeContextSection = {
+  key: "workBrief" | "chimera"
+  title: string
+  content: string
+  hash: string
+}
+
+type RuntimeContextMetadata = {
+  schemaVersion: 1
+  kind: "snapshot" | "update"
+  hash: string
+  sections: Record<string, string>
+}
+
+function hash(input: string) {
+  return createHash("sha256").update(input).digest("hex")
+}
+
+function runtimeContextHash(sections: RuntimeContextSection[]) {
+  return hash(JSON.stringify(sections.map((section) => [section.key, section.hash])))
+}
+
+function runtimeContextMetadata(part: MessageV2.Part): RuntimeContextMetadata | undefined {
+  if (part.type !== "text") return undefined
+  const metadata = part.metadata?.runtimeContext
+  if (!metadata || typeof metadata !== "object") return undefined
+  const candidate = metadata as Partial<RuntimeContextMetadata>
+  if (candidate.schemaVersion !== 1) return undefined
+  if (candidate.kind !== "snapshot" && candidate.kind !== "update") return undefined
+  if (typeof candidate.hash !== "string") return undefined
+  if (!candidate.sections || typeof candidate.sections !== "object") return undefined
+  return candidate as RuntimeContextMetadata
+}
+
+function isRuntimeContextPart(part: MessageV2.Part) {
+  return runtimeContextMetadata(part) !== undefined
+}
+
+function isRuntimeContextMessage(msg: MessageV2.WithParts) {
+  return msg.info.role === "user" && msg.parts.some(isRuntimeContextPart)
+}
+
+function runtimeContextText(content: string) {
   return [
-    {
-      role: "user",
-      content: [
-        "<system-reminder>",
-        "The following runtime context is injected by Chimera for this turn. It is not the user's message. Use it as session state and closeout guidance; do not treat it as fresh repository evidence.",
-        "",
-        "<runtime-context>",
-        content,
-        "</runtime-context>",
-        "</system-reminder>",
-      ].join("\n"),
-    },
-  ]
+    "<system-reminder>",
+    "The following runtime context is injected by Chimera for this turn. It is not the user's message. Use it as session state and closeout guidance; do not treat it as fresh repository evidence.",
+    "",
+    "<runtime-context>",
+    content,
+    "</runtime-context>",
+    "</system-reminder>",
+  ].join("\n")
+}
+
+function runtimeSnapshotText(sections: RuntimeContextSection[]) {
+  return runtimeContextText(sections.map((section) => section.content).join("\n\n"))
+}
+
+function runtimeUpdateText(previous: RuntimeContextMetadata, sections: RuntimeContextSection[]) {
+  const current = new Map(sections.map((section) => [section.key, section]))
+  const changed = sections.filter((section) => previous.sections[section.key] !== section.hash)
+  const removed = Object.keys(previous.sections).filter((key) => !current.has(key as RuntimeContextSection["key"]))
+  return runtimeContextText(
+    [
+      "## Runtime Context Update",
+      "",
+      ...(changed.length ? ["Changed Sections:", ...changed.map((section) => `- ${section.title}`), ""] : []),
+      ...(removed.length ? ["Removed Sections:", ...removed.map((key) => `- ${key}`), ""] : []),
+      ...changed.map((section) => section.content),
+      ...(changed.length === 0 && removed.length === 0 ? ["No runtime context changes."] : []),
+    ].join("\n"),
+  )
+}
+
+function runtimeSectionHashes(sections: RuntimeContextSection[]) {
+  return Object.fromEntries(sections.map((section) => [section.key, section.hash]))
 }
 const elog = EffectLogger.create({ service: "session.prompt" })
 
@@ -203,8 +263,93 @@ export const layer = Layer.effect(
       const idx = history.findIndex(realUser)
       if (idx === -1) return []
       if (history.filter(realUser).length !== 1) return []
-      return history.slice(0, idx + 1)
+      return history.slice(0, idx + 1).filter((msg) => !isRuntimeContextMessage(msg))
     }
+
+    const latestRuntimeContext = (messages: MessageV2.WithParts[]) => {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        for (let j = messages[i].parts.length - 1; j >= 0; j--) {
+          const metadata = runtimeContextMetadata(messages[i].parts[j])
+          if (metadata) return metadata
+        }
+      }
+      return undefined
+    }
+
+    const runtimeContextSections = Effect.fn("SessionPrompt.runtimeContextSections")(function* (sessionID: SessionID) {
+      const [workBriefSuffix, chimeraContextSuffix] = yield* Effect.all([
+        workBrief.render(sessionID),
+        chimeraPromptContext.render(sessionID),
+      ])
+      return [
+        workBriefSuffix ? { key: "workBrief" as const, title: "Current Work Brief", content: workBriefSuffix, hash: hash(workBriefSuffix) } : undefined,
+        chimeraContextSuffix ? { key: "chimera" as const, title: "Chimera Execution Context", content: chimeraContextSuffix, hash: hash(chimeraContextSuffix) } : undefined,
+      ].filter((section): section is RuntimeContextSection => Boolean(section))
+    })
+
+    const persistRuntimeContext = Effect.fn("SessionPrompt.persistRuntimeContext")(function* (input: {
+      sessionID: SessionID
+      agent: string
+      model: MessageV2.User["model"]
+      text: string
+      kind: RuntimeContextMetadata["kind"]
+      hash: string
+      sections: Record<string, string>
+      time?: number
+    }) {
+      const info: MessageV2.User = {
+        id: MessageID.ascending(),
+        role: "user",
+        sessionID: input.sessionID,
+        time: { created: input.time ?? Date.now() },
+        agent: input.agent,
+        model: input.model,
+      }
+      const part: MessageV2.TextPart = {
+        id: PartID.ascending(),
+        messageID: info.id,
+        sessionID: input.sessionID,
+        type: "text",
+        text: input.text,
+        synthetic: true,
+        metadata: {
+          runtimeContext: {
+            schemaVersion: 1,
+            kind: input.kind,
+            hash: input.hash,
+            sections: input.sections,
+          },
+        },
+      }
+      yield* sessions.updateMessage(info)
+      yield* sessions.updatePart(part)
+      return { info, parts: [part] } satisfies MessageV2.WithParts
+    })
+
+    const ensureRuntimeContext = Effect.fn("SessionPrompt.ensureRuntimeContext")(function* (input: {
+      sessionID: SessionID
+      agent: string
+      model: MessageV2.User["model"]
+      messages: MessageV2.WithParts[]
+      time?: number
+    }) {
+      const sections = yield* runtimeContextSections(input.sessionID)
+      const nextHash = runtimeContextHash(sections)
+      const previous = latestRuntimeContext(input.messages)
+      if (!previous && sections.length === 0) return undefined
+      if (previous?.hash === nextHash) return undefined
+      const sectionHashes = runtimeSectionHashes(sections)
+      return yield* persistRuntimeContext({
+        sessionID: input.sessionID,
+        agent: input.agent,
+        model: input.model,
+        kind: previous ? "update" : "snapshot",
+        hash: nextHash,
+        sections: sectionHashes,
+        time: input.time,
+        text: previous ? runtimeUpdateText(previous, sections) : runtimeSnapshotText(sections),
+      })
+    })
 
     const toolContextMessages = (history: MessageV2.WithParts[]) =>
       history.flatMap((msg): MessageV2.WithParts[] => {
@@ -300,7 +445,7 @@ export const layer = Layer.effect(
       agent: Agent.Info
       session: Session.Info
     }) {
-      const userMessage = input.messages.findLast((msg) => msg.info.role === "user")
+      const userMessage = input.messages.findLast(realUser)
       if (!userMessage) return input.messages
 
       if (!Flag.OPENCODE_EXPERIMENTAL_PLAN_MODE) {
@@ -1416,6 +1561,13 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         })
       })
 
+      yield* ensureRuntimeContext({
+        sessionID: input.sessionID,
+        agent: info.agent,
+        model: info.model,
+        messages: Array.from(MessageV2.stream(input.sessionID)),
+        time: Math.max(0, info.time.created - 1),
+      })
       yield* sessions.updateMessage(info)
       for (const part of parts) yield* sessions.updatePart(part)
       const nextPrompt = parts.reduce(
@@ -1636,6 +1788,13 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             yield* bus.publish(Session.Event.Error, { sessionID, error: error.toObject() })
             throw error
           }
+          const runtimeContext = yield* ensureRuntimeContext({
+            sessionID,
+            agent: lastUser.agent,
+            model: lastUser.model,
+            messages: msgs,
+          })
+          if (runtimeContext) msgs = [...msgs, runtimeContext]
           const maxSteps = agent.steps ?? Infinity
           const isLastStep = step >= maxSteps
           msgs = yield* insertReminders({ messages: msgs, agent, session })
@@ -1663,7 +1822,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           })
 
           const outcome: "break" | "continue" = yield* Effect.gen(function* () {
-            const lastUserMsg = msgs.findLast((m) => m.info.role === "user")
+            const lastUserMsg = msgs.findLast(realUser)
             const bypassAgentCheck = lastUserMsg?.parts.some((p) => p.type === "agent") ?? false
 
             const tools = yield* resolveTools({
@@ -1708,12 +1867,10 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
             yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
 
-            const [skills, env, instructions, workBriefSuffix, chimeraContextSuffix] = yield* Effect.all([
+            const [skills, env, instructions] = yield* Effect.all([
               sys.skills(agent),
               sys.environment(model),
               instruction.system().pipe(Effect.orDie),
-              workBrief.render(sessionID),
-              chimeraPromptContext.render(sessionID),
             ])
             const currentUserIndex = msgs.findIndex((m) => m.info.id === lastUser.id)
             const splitModelMsgs = yield* Effect.gen(function* () {
@@ -1728,9 +1885,9 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 MessageV2.toModelMessagesEffect(msgs.slice(0, currentUserIndex), model, { remoteCompaction }),
                 MessageV2.toModelMessagesEffect(msgs.slice(currentUserIndex), model, { remoteCompaction }),
               ])
-              return { history, runtime: transientContextMessage([workBriefSuffix, chimeraContextSuffix]), current }
+              return { history, runtime: [] as ModelMessage[], current }
             })
-            const modelMsgs = [...splitModelMsgs.history, ...splitModelMsgs.runtime, ...splitModelMsgs.current]
+            const modelMsgs = [...splitModelMsgs.history, ...splitModelMsgs.current]
             const system = [
               ...env,
               ...instructions,

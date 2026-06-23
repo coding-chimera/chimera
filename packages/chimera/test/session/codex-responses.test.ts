@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { tool, type ModelMessage } from "ai"
 import { openai } from "@ai-sdk/openai"
 import z from "zod"
-import { CodexResponses, type CodexResponsesInput } from "../../src/session/codex-responses"
+import { CodexResponses, type CodexResponsesInput, type RequestBody, type ResponsesInputItem } from "../../src/session/codex-responses"
 import { encodeRemoteCompactionInput } from "../../src/session/remote-compaction-codec"
 
 function model() {
@@ -208,6 +208,29 @@ describe("session.codex-responses", () => {
     expect(events.find((event) => event.type === "finish-step")?.usage.inputTokenDetails.cacheReadTokens).toBe(1)
   })
 
+  test("surfaces nested Responses error messages", async () => {
+    using server = Bun.serve({
+      port: 0,
+      async fetch() {
+        return new Response(
+          responseStream([
+            {
+              type: "error",
+              error: {
+                message: "Invalid 'input[9].id': 'ws_123'. Expected an ID that begins with 'fc'.",
+              },
+            },
+          ]),
+          { headers: { "Content-Type": "text/event-stream" } },
+        )
+      },
+    })
+
+    const events = await collect(baseInput({ endpoint: `${server.url.origin}/backend-api/codex/responses` }))
+
+    expect(events.find((event) => event.type === "error")?.error.message).toBe("Invalid 'input[9].id': 'ws_123'. Expected an ID that begins with 'fc'.")
+  })
+
 
   test("streams text events from Codex WebSocket", async () => {
     const fake = installFakeWebSocket([
@@ -238,6 +261,90 @@ describe("session.codex-responses", () => {
     } finally {
       fake.restore()
     }
+  })
+
+  test("classifies WebSocket incremental reuse diagnostics", () => {
+    const first = CodexResponses.buildRequestBody(baseInput({ messages: [{ role: "user", content: "First" }] }))
+    const assistant: ResponsesInputItem = { role: "assistant", content: [{ type: "output_text", text: "Answer" }] }
+    const second = CodexResponses.buildRequestBody(
+      baseInput({
+        messages: [
+          { role: "user", content: "First" },
+          { role: "assistant", content: [{ type: "text", text: "Answer", providerOptions: { openai: { itemId: "msg-diag-1" } } }] },
+          { role: "user", content: "Second" },
+        ] as ModelMessage[],
+      }),
+    )
+    const diagnostics = CodexResponses.diagnoseWebSocketIncrementalRequest(
+      { lastRequest: first, lastResponse: { responseId: "resp-diag-1", itemsAdded: [assistant] } },
+      second,
+    )
+
+    expect(diagnostics).toEqual({
+      status: "reused",
+      previousResponseId: "resp-diag-1",
+      baselineInputCount: 2,
+      currentInputCount: 3,
+      deltaInputCount: 1,
+      responseItemsAddedCount: 1,
+    })
+  })
+
+  test("classifies WebSocket incremental request non-input changes", () => {
+    const first = CodexResponses.buildRequestBody(baseInput({ messages: [{ role: "user", content: "First" }] }))
+    const changedTools = CodexResponses.buildRequestBody(
+      baseInput({
+        messages: [{ role: "user", content: "First" }],
+        tools: { lookup: tool({ inputSchema: z.object({ query: z.string() }) }) },
+      }),
+    )
+    const changedTemperature = { ...first, temperature: 0.3 } satisfies RequestBody
+
+    expect(
+      CodexResponses.diagnoseWebSocketIncrementalRequest(
+        { lastRequest: first, lastResponse: { responseId: "resp-diag-tools", itemsAdded: [] } },
+        changedTools,
+      ),
+    ).toMatchObject({ status: "miss", reason: "tools_changed", changedNonInputKeys: ["tools"] })
+    expect(
+      CodexResponses.diagnoseWebSocketIncrementalRequest(
+        { lastRequest: first, lastResponse: { responseId: "resp-diag-request", itemsAdded: [] } },
+        changedTemperature,
+      ),
+    ).toMatchObject({ status: "miss", reason: "request_without_input_mismatch", changedNonInputKeys: ["temperature"] })
+  })
+
+  test("classifies WebSocket incremental input prefix changes", () => {
+    const runtimeBefore = CodexResponses.buildRequestBody(
+      baseInput({
+        messages: [
+          { role: "user", content: "<system-reminder>\n<runtime-context>\n## Current Work Brief\nBefore\n</runtime-context>\n</system-reminder>" },
+          { role: "user", content: "First" },
+        ],
+      }),
+    )
+    const runtimeAfter = CodexResponses.buildRequestBody(
+      baseInput({
+        messages: [
+          { role: "user", content: "<system-reminder>\n<runtime-context>\n## Current Work Brief\nAfter\n</runtime-context>\n</system-reminder>" },
+          { role: "user", content: "First" },
+        ],
+      }),
+    )
+    const ordinaryAfter = CodexResponses.buildRequestBody(baseInput({ messages: [{ role: "user", content: "Changed" }] }))
+
+    expect(
+      CodexResponses.diagnoseWebSocketIncrementalRequest(
+        { lastRequest: runtimeBefore, lastResponse: { responseId: "resp-diag-runtime", itemsAdded: [] } },
+        runtimeAfter,
+      ),
+    ).toMatchObject({ status: "miss", reason: "runtime_context_changed", firstMismatchIndex: 0 })
+    expect(
+      CodexResponses.diagnoseWebSocketIncrementalRequest(
+        { lastRequest: CodexResponses.buildRequestBody(baseInput({ messages: [{ role: "user", content: "Original" }] })), lastResponse: { responseId: "resp-diag-prefix", itemsAdded: [] } },
+        ordinaryAfter,
+      ),
+    ).toMatchObject({ status: "miss", reason: "input_prefix_mismatch", firstMismatchIndex: 0 })
   })
 
   test("uses previous_response_id for WebSocket input deltas", async () => {
@@ -277,6 +384,60 @@ describe("session.codex-responses", () => {
 
       expect(second.previous_response_id).toBe("resp-delta-1")
       expect(second.input).toEqual([{ role: "user", content: [{ type: "input_text", text: "Second" }] }])
+    } finally {
+      fake.restore()
+    }
+  })
+
+  test("omits provider-executed hosted web search from WebSocket input deltas", async () => {
+    const fake = installFakeWebSocket([
+      [
+        { type: "response.output_item.added", output_index: 0, item: { id: "ws_0ca0", type: "web_search_call", status: "in_progress" } },
+        { type: "response.output_item.done", output_index: 0, item: { id: "ws_0ca0", type: "web_search_call", status: "completed", action: { type: "search", query: "weather" } } },
+        { type: "response.completed", response: { id: "resp-search-delta-1", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+      ],
+      [
+        { type: "response.completed", response: { id: "resp-search-delta-2", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+      ],
+    ])
+    try {
+      await collect(
+        inputWithOptions(
+          { sessionID: "session-ws-search-delta", endpoint: "http://codex.test/backend-api/codex/responses", messages: [{ role: "user", content: "Search" }] },
+          { codexResponsesTransport: "websocket", codexResponsesPrewarm: false },
+        ),
+      )
+      await collect(
+        inputWithOptions(
+          {
+            sessionID: "session-ws-search-delta",
+            endpoint: "http://codex.test/backend-api/codex/responses",
+            messages: [
+              { role: "user", content: "Search" },
+              {
+                role: "assistant",
+                content: [
+                  {
+                    type: "tool-call",
+                    toolCallId: "ws_0ca0",
+                    toolName: "web_search",
+                    input: { action: { type: "search", query: "weather" } },
+                    providerExecuted: true,
+                    providerOptions: { openai: { itemId: "ws_0ca0" } },
+                  },
+                ],
+              },
+              { role: "user", content: "Next" },
+            ] as ModelMessage[],
+          },
+          { codexResponsesTransport: "websocket", codexResponsesPrewarm: false },
+        ),
+      )
+      const second = JSON.parse(fake.sockets[0].sent[1])
+
+      expect(second.previous_response_id).toBe("resp-search-delta-1")
+      expect(second.input).toEqual([{ role: "user", content: [{ type: "input_text", text: "Next" }] }])
+      expect(JSON.stringify(second)).not.toContain("ws_0ca0")
     } finally {
       fake.restore()
     }
@@ -523,7 +684,45 @@ describe("session.codex-responses", () => {
     ])
   })
 
-  test("converts reasoning encrypted replay into raw Responses input", () => {
+  test("omits provider-executed hosted web search replay from Responses input", () => {
+    const messages: ModelMessage[] = [
+      { role: "user", content: "Search" },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "ws_0ca0b06cf5be6676016a3a5323185881998d9c0b9aefb9d96f",
+            toolName: "web_search",
+            input: { action: { type: "search", query: "weather" } },
+            providerExecuted: true,
+            providerOptions: { openai: { itemId: "ws_0ca0b06cf5be6676016a3a5323185881998d9c0b9aefb9d96f" } },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "ws_0ca0b06cf5be6676016a3a5323185881998d9c0b9aefb9d96f",
+            toolName: "web_search",
+            output: { status: "completed", action: { type: "search", query: "weather" } },
+          },
+        ],
+      },
+      { role: "user", content: "Next" },
+    ] as ModelMessage[]
+    const body = CodexResponses.buildRequestBody(baseInput({ messages })) as any
+
+    expect(body.input).toEqual([
+      { role: "user", content: [{ type: "input_text", text: "Search" }] },
+      { role: "user", content: [{ type: "input_text", text: "Next" }] },
+    ])
+    expect(JSON.stringify(body.input)).not.toContain("ws_0ca0b06cf5be6676016a3a5323185881998d9c0b9aefb9d96f")
+  })
+
+  test("converts stored assistant replay without item ids", () => {
     const body = CodexResponses.buildRequestBody(
       baseInput({
         messages: [
@@ -536,6 +735,13 @@ describe("session.codex-responses", () => {
                 providerOptions: { openai: { itemId: "rs-1", reasoningEncryptedContent: "encrypted-reasoning" } },
               },
               { type: "text", text: "Answer", providerOptions: { openai: { itemId: "msg-1" } } },
+              {
+                type: "tool-call",
+                toolCallId: "call-function-1",
+                toolName: "lookup",
+                input: { query: "weather" },
+                providerOptions: { openai: { itemId: "fc-1" } },
+              },
             ],
           },
         ] as ModelMessage[],
@@ -545,12 +751,16 @@ describe("session.codex-responses", () => {
     expect(body.input).toEqual([
       {
         type: "reasoning",
-        id: "rs-1",
         encrypted_content: "encrypted-reasoning",
         summary: [{ type: "summary_text", text: "thinking" }],
       },
-      { role: "assistant", content: [{ type: "output_text", text: "Answer" }], id: "msg-1" },
+      { role: "assistant", content: [{ type: "output_text", text: "Answer" }] },
+      { type: "function_call", call_id: "call-function-1", name: "lookup", arguments: JSON.stringify({ query: "weather" }) },
     ])
+    expect(JSON.stringify(body.input)).not.toContain('"id"')
+    expect(JSON.stringify(body.input)).not.toContain("rs-1")
+    expect(JSON.stringify(body.input)).not.toContain("msg-1")
+    expect(JSON.stringify(body.input)).not.toContain("fc-1")
   })
 
   test("converts user image and PDF files into Responses input", () => {
