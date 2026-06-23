@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { lineHash, normalizeInsertLines, normalizeReplaceLines } from "../../src/tool/hashline"
+import { lineHash, normalizeInsertLines, normalizeReplaceLines, normalizeReplacement } from "../../src/tool/hashline"
 
 describe("tool.hashline", () => {
   test("hashes significant lines with whitespace-sensitive omo-cid2 semantics", () => {
@@ -24,6 +24,13 @@ describe("tool.hashline", () => {
       "  return next",
     ])
     expect(normalizeReplaceLines(["  const value = old"], 1, 1, ["const value = next"])).toEqual(["  const value = next"])
+  })
+
+  test("normalizes replacement trailing blanks by input type", () => {
+    expect(normalizeReplacement("line\n")).toEqual(["line"])
+    expect(normalizeReplacement("line\n\n")).toEqual(["line", ""])
+    expect(normalizeReplacement(["line", ""])).toEqual(["line", ""])
+    expect(normalizeReplacement([""])).toEqual([""])
   })
 
   test("normalizes merged replacement lines and insert anchor echoes", () => {
