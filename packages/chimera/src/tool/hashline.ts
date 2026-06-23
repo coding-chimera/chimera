@@ -252,7 +252,7 @@ function maybeExpandSingleLineMerge(oldLines: string[], replacement: string[]) {
 export function normalizeReplacement(input: string | ReadonlyArray<string> | null | undefined) {
   if (input === null || input === undefined) return [] as string[]
   const raw = typeof input === "string" ? normalizeLineEndings(input).split("\n") : [...input]
-  const lines = raw.at(-1) === "" ? raw.slice(0, -1) : raw
+  const lines = typeof input === "string" && raw.at(-1) === "" ? raw.slice(0, -1) : raw
   const nonEmpty = lines.filter((line) => line.trim())
   const hashlinePrefixed = nonEmpty.filter((line) => /^(?:[>\s]*)?\d+\s*#\s*[A-Za-z0-9-]{2}\|/.test(line)).length
   const diffPrefixed = nonEmpty.filter((line) => /^\+(?!\+\+)/.test(line)).length

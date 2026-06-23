@@ -4,6 +4,7 @@ Usage:
 - Use your `Read` tool to get current `LINE#ID` anchors before editing existing file content. Anchored edits fail when a line's current text no longer matches the supplied hash.
 - Read output prefixes text lines as `<line>#<hash>|<content>`. Use only the `LINE#ID` portion as `pos` / `end`. Everything after `|` is actual file content.
 - The `lines` field must contain real file text, not diff text. Never include Hashline prefixes in `lines`; the tool strips common accidental prefixes, but you should not rely on that.
+- String `lines` input treats one final newline as a split sentinel; array input preserves explicit trailing `""` entries for blank lines.
 - Use `edits: [{ op: "replace" | "append" | "prepend", pos?, end?, lines }]`. `replace` requires `pos`; `end` extends the replaced range. `append` / `prepend` may omit anchors to insert at EOF/BOF or create a missing file.
 - Multiple edits for the same file should be sent in one call. All anchors are validated against the same pre-edit snapshot and then applied bottom-up.
 - ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
