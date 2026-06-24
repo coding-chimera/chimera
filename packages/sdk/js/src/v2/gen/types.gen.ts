@@ -34,6 +34,7 @@ export type Event =
   | EventMcpToolsChanged
   | EventMcpBrowserOpenFailed
   | EventCommandExecuted
+  | EventSessionPromptStats1
   | EventProjectUpdated
   | EventVcsBranchUpdated
   | EventWorkspaceReady
@@ -836,6 +837,7 @@ export type GlobalEvent = {
     | EventMcpToolsChanged
     | EventMcpBrowserOpenFailed
     | EventCommandExecuted
+    | EventSessionPromptStats
     | EventProjectUpdated
     | EventVcsBranchUpdated
     | EventWorkspaceReady
@@ -960,6 +962,8 @@ export type PermissionConfig =
       lsp?: PermissionRuleConfig
       doom_loop?: PermissionActionConfig
       skill?: PermissionRuleConfig
+      chimera_oracle_recent?: PermissionActionConfig
+      chimera_oracle_get?: PermissionActionConfig
       [key: string]: PermissionRuleConfig | PermissionActionConfig | undefined
     }
 
@@ -2621,6 +2625,44 @@ export type EventCommandExecuted = {
   }
 }
 
+export type EventSessionPromptStats = {
+  id: string
+  type: "session.prompt.stats"
+  properties: {
+    sessionID: string
+    messageID: string
+    stage: "prepared"
+    step: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    agent: string
+    providerID: string
+    modelID: string
+    createdAt: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    totals: {
+      chars: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      bytes: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      approxTokens: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      blocks: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    }
+    fingerprints: {
+      system: string
+      history: string
+      runtime: string
+      current: string
+      tools: string
+      request: string
+    }
+    blocks: Array<{
+      kind: string
+      role?: string
+      chars: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      bytes: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      approxTokens: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      hash: string
+    }>
+    warnings: Array<string>
+  }
+}
+
 export type EventProjectUpdated = {
   id: string
   type: "project.updated"
@@ -3407,6 +3449,44 @@ export type EventTuiToastShow1 = {
     message: string
     variant: "info" | "success" | "warning" | "error"
     duration?: number
+  }
+}
+
+export type EventSessionPromptStats1 = {
+  id: string
+  type: "session.prompt.stats"
+  properties: {
+    sessionID: string
+    messageID: string
+    stage: "prepared"
+    step: number | "NaN" | "Infinity" | "-Infinity"
+    agent: string
+    providerID: string
+    modelID: string
+    createdAt: number | "NaN" | "Infinity" | "-Infinity"
+    totals: {
+      chars: number | "NaN" | "Infinity" | "-Infinity"
+      bytes: number | "NaN" | "Infinity" | "-Infinity"
+      approxTokens: number | "NaN" | "Infinity" | "-Infinity"
+      blocks: number | "NaN" | "Infinity" | "-Infinity"
+    }
+    fingerprints: {
+      system: string
+      history: string
+      runtime: string
+      current: string
+      tools: string
+      request: string
+    }
+    blocks: Array<{
+      kind: string
+      role?: string
+      chars: number | "NaN" | "Infinity" | "-Infinity"
+      bytes: number | "NaN" | "Infinity" | "-Infinity"
+      approxTokens: number | "NaN" | "Infinity" | "-Infinity"
+      hash: string
+    }>
+    warnings: Array<string>
   }
 }
 
