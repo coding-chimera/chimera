@@ -5,6 +5,7 @@ import { Config } from "@/config/config"
 import { Provider } from "@/provider/provider"
 import { ModelsDev } from "@/provider/models"
 import { ProviderAuth } from "@/provider/auth"
+import { ProviderBalance } from "@/provider/balance"
 import { ProviderID } from "@/provider/schema"
 import { mapValues } from "remeda"
 import { errors } from "../../error"
@@ -78,6 +79,35 @@ export const ProviderRoutes = lazy(() =>
         jsonRequest("ProviderRoutes.auth", c, function* () {
           const svc = yield* ProviderAuth.Service
           return yield* svc.methods()
+        }),
+    )
+    .get(
+      "/:providerID/balance",
+      describeRoute({
+        summary: "Get provider balance",
+        description: "Retrieve account balance information for a supported AI provider.",
+        operationId: "provider.balance",
+        responses: {
+          200: {
+            description: "Provider balance",
+            content: {
+              "application/json": {
+                schema: resolver(ProviderBalance.Result.zod),
+              },
+            },
+          },
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          providerID: ProviderID.zod.meta({ description: "Provider ID" }),
+        }),
+      ),
+      async (c) =>
+        jsonRequest("ProviderRoutes.balance", c, function* () {
+          const svc = yield* ProviderBalance.Service
+          return yield* svc.get(c.req.valid("param").providerID)
         }),
     )
     .post(

@@ -1,4 +1,5 @@
 import { ProviderAuth } from "@/provider/auth"
+import { ProviderBalance } from "@/provider/balance"
 import { Provider } from "@/provider/provider"
 import { ProviderID } from "@/provider/schema"
 import { Schema } from "effect"
@@ -30,6 +31,16 @@ export const ProviderApi = HttpApi.make("provider")
             identifier: "provider.auth",
             summary: "Get provider auth methods",
             description: "Retrieve available authentication methods for all AI providers.",
+          }),
+        ),
+        HttpApiEndpoint.get("balance", `${root}/:providerID/balance`, {
+          params: { providerID: ProviderID },
+          success: described(ProviderBalance.Result, "Provider balance"),
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "provider.balance",
+            summary: "Get provider balance",
+            description: "Retrieve account balance information for a supported AI provider.",
           }),
         ),
         HttpApiEndpoint.post("authorize", `${root}/:providerID/oauth/authorize`, {

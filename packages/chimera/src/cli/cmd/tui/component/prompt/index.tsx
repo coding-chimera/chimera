@@ -53,6 +53,7 @@ import { useArgs } from "@tui/context/args"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { WorkspaceLabel, type WorkspaceStatus } from "../workspace-label"
 import { openAIRemoteCompactionEnabled, openAIRemoteCompactionProtocolStatus } from "@tui/util/remote-compaction"
+import { ProviderAccountStatus } from "../provider-account-status"
 
 export type PromptProps = {
   sessionID?: string
@@ -1659,6 +1660,7 @@ export function Prompt(props: PromptProps) {
                       </text>
                     </Match>
                   </Switch>
+                  <ProviderAccountStatus providerID={local.model.current()?.providerID} />
                   <text fg={theme.text}>
                     {keybind.print("command_list")} <span style={{ fg: theme.textMuted }}>commands</span>
                   </text>

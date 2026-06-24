@@ -1664,6 +1664,36 @@ export type ProviderAuthMethod = {
   >
 }
 
+export type ProviderBalanceResult =
+  | {
+      kind: "billing"
+      providerID: string
+      status: "available" | "unavailable" | "not_configured" | "unsupported" | "error"
+      is_available?: boolean
+      balance_infos: Array<{
+        currency: string
+        total_balance: string
+        granted_balance: string
+        topped_up_balance: string
+      }>
+      message?: string
+    }
+  | {
+      kind: "quota"
+      providerID: string
+      status: "available" | "unavailable" | "not_configured" | "unsupported" | "error"
+      label?: string
+      plan_type?: string
+      limits: Array<{
+        label: string
+        used_percent: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        remaining_percent: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        window_minutes?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        resets_at?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      }>
+      message?: string
+    }
+
 export type ProviderAuthAuthorization = {
   url: string
   method: "auto" | "code"
@@ -5110,6 +5140,27 @@ export type ProviderAuthResponses = {
 }
 
 export type ProviderAuthResponse = ProviderAuthResponses[keyof ProviderAuthResponses]
+
+export type ProviderBalanceData = {
+  body?: never
+  path: {
+    providerID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/provider/{providerID}/balance"
+}
+
+export type ProviderBalanceResponses = {
+  /**
+   * Provider balance
+   */
+  200: ProviderBalanceResult
+}
+
+export type ProviderBalanceResponse = ProviderBalanceResponses[keyof ProviderBalanceResponses]
 
 export type ProviderOauthAuthorizeData = {
   body?: {

@@ -22,6 +22,7 @@ import { InstanceLayer } from "@/project/instance-layer"
 import { Plugin } from "@/plugin"
 import { Project } from "@/project/project"
 import { ProviderAuth } from "@/provider/auth"
+import { ProviderBalance } from "@/provider/balance"
 import { ModelsDev } from "@/provider/models"
 import { Provider } from "@/provider/provider"
 import { Pty } from "@/pty"
@@ -165,6 +166,7 @@ export function createRoutes(corsOptions?: CorsOptions) {
       Plugin.defaultLayer,
       Project.defaultLayer,
       ProviderAuth.defaultLayer,
+      ProviderBalance.defaultLayer,
       Provider.defaultLayer,
       Pty.defaultLayer,
       PtyTicket.defaultLayer,

@@ -17,6 +17,7 @@ import { Plugin } from "@/plugin"
 import { ModelsDev } from "@/provider/models"
 import { Provider } from "@/provider/provider"
 import { ProviderAuth } from "@/provider/auth"
+import { ProviderBalance } from "@/provider/balance"
 import { Agent } from "@/agent/agent"
 import { Skill } from "@/skill"
 import { Discovery } from "@/skill/discovery"
@@ -72,6 +73,7 @@ export const AppLayer = Layer.mergeAll(
   ModelsDev.defaultLayer,
   Provider.defaultLayer,
   ProviderAuth.defaultLayer,
+  ProviderBalance.defaultLayer,
   Agent.defaultLayer,
   Skill.defaultLayer,
   Discovery.defaultLayer,
