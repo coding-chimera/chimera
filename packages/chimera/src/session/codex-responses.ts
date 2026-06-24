@@ -96,7 +96,15 @@ type StreamState = {
 const log = Log.create({ service: "codex.responses" })
 const webSocketSessions = new Map<string, WebSocketSessionState>()
 const WEBSOCKET_CONNECT_TIMEOUT_MS = 3_000
+const WEBSOCKET_STREAM_RETRIES = 5
 const TURN_STATE_HEADER = "x-codex-turn-state"
+
+class WebSocketResponseError extends Error {
+  constructor(message: string, readonly retryable: boolean, readonly fallback: boolean) {
+    super(message)
+    this.name = "WebSocketResponseError"
+  }
+}
 
 export type CodexResponsesInput = {
   sessionID: string
@@ -150,22 +158,10 @@ export async function* stream(input: CodexResponsesInput): AsyncIterable<LLMEven
   const headers = await buildHeaders(input)
   const session = webSocketSession(input)
   if (useWebSocket(input, session)) {
-    let emitted = false
-    try {
-      await prewarmWebSocket(input, body, headers, session)
-      for await (const output of streamWebSocket(input, body, headers, session)) {
-        emitted = true
-        yield output
-      }
-      return
-    } catch (error) {
-      resetWebSocketSession(session)
-      session.fallbackHttp = true
-      if (emitted) {
-        yield event({ type: "error", error })
-        return
-      }
+    for await (const output of streamWebSocketWithRetry(input, body, headers, session)) {
+      yield output
     }
+    if (!session.fallbackHttp) return
   }
   for await (const output of streamHttp(input, body, headers, session)) {
     yield output
@@ -211,16 +207,57 @@ async function* streamHttp(input: CodexResponsesInput, body: RequestBody, header
   }
 }
 
+async function* streamWebSocketWithRetry(input: CodexResponsesInput, body: RequestBody, headers: Headers, session: WebSocketSessionState) {
+  const retries = webSocketStreamRetries(input)
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await prewarmWebSocket(input, body, headers, session)
+      const outputs: LLMEvent[] = []
+      for await (const output of streamWebSocket(input, body, headers, session)) {
+        outputs.push(output)
+      }
+      for (const output of outputs) {
+        yield output
+      }
+      return
+    } catch (error) {
+      resetWebSocketSession(session)
+      if (!fallbackWebSocketFailure(error)) throw error
+      if (retryableWebSocketFailure(error) && attempt < retries) continue
+      session.fallbackHttp = true
+      return
+    }
+  }
+}
+
 async function prewarmWebSocket(input: CodexResponsesInput, body: RequestBody, headers: Headers, session: WebSocketSessionState) {
   if (session.lastRequest || session.prewarmed) return
   if (input.params.options.codexResponsesPrewarm === false) return
   for await (const _ of streamWebSocket(input, body, headers, session, true)) {}
   session.prewarmed = true
 }
+function webSocketStreamRetries(input: CodexResponsesInput) {
+  const value = numberOption(input.params.options.codexResponsesStreamRetries)
+  if (value === undefined) return WEBSOCKET_STREAM_RETRIES
+  if (!Number.isFinite(value)) return 0
+  return Math.max(0, Math.min(Math.floor(value), 100))
+}
+
+function fallbackWebSocketFailure(error: unknown) {
+  return error instanceof WebSocketResponseError && error.fallback
+}
+
+function retryableWebSocketFailure(error: unknown) {
+  return error instanceof WebSocketResponseError && error.retryable
+}
 
 async function* streamWebSocket(input: CodexResponsesInput, body: RequestBody, headers: Headers, session: WebSocketSessionState, warmup = false) {
-  const state = createStreamState(session)
+  const values: Record<string, unknown>[] = []
   for await (const value of sendWebSocketRequest(input, headers, buildWebSocketRequest(session, body, warmup), session)) {
+    values.push(value)
+  }
+  const state = createStreamState(session)
+  for (const value of values) {
     for (const output of await handleChunk(value, input, state)) {
       if (!warmup) yield output
     }
@@ -296,7 +333,7 @@ function useWebSocket(input: CodexResponsesInput, session: WebSocketSessionState
   if (session.fallbackHttp) return false
   if (transport === "http") return false
   if (input.params.options.codexResponsesWebSocket === false) return false
-  return typeof globalThis.WebSocket === "function"
+  return (transport === "websocket" || input.params.options.codexResponsesWebSocket === true) && typeof globalThis.WebSocket === "function"
 }
 
 function resetWebSocketSession(session: WebSocketSessionState) {
@@ -462,17 +499,17 @@ async function* sendWebSocketRequest(input: CodexResponsesInput, headers: Header
     }
   }
   const onError = (value: Event) => {
-    failure = new Error(stringOption(recordOption(value)?.message) ?? "Codex Responses WebSocket failed")
+    failure = new WebSocketResponseError(stringOption(recordOption(value)?.message) ?? "Codex Responses WebSocket failed", true, true)
     done = true
     wake()
   }
   const onClose = () => {
-    if (!done) failure = new Error("Codex Responses WebSocket closed before a terminal event")
+    if (!done) failure = new WebSocketResponseError("Codex Responses WebSocket closed before a terminal event", true, true)
     done = true
     wake()
   }
   const onAbort = () => {
-    failure = input.abort.reason instanceof Error ? input.abort.reason : new Error("Codex Responses WebSocket aborted")
+    failure = input.abort.reason instanceof Error ? input.abort.reason : new WebSocketResponseError("Codex Responses WebSocket aborted", false, false)
     done = true
     socket.close()
     wake()
@@ -524,7 +561,7 @@ async function waitWebSocketOpen(input: CodexResponsesInput, socket: WebSocket) 
     const timeout = setTimeout(() => {
       cleanup()
       socket.close()
-      reject(new Error("Codex Responses WebSocket connection timed out"))
+      reject(new WebSocketResponseError("Codex Responses WebSocket connection timed out", false, true))
     }, numberOption(input.params.options.codexResponsesWebSocketConnectTimeoutMs) ?? WEBSOCKET_CONNECT_TIMEOUT_MS)
     const cleanup = () => {
       clearTimeout(timeout)
@@ -538,12 +575,12 @@ async function waitWebSocketOpen(input: CodexResponsesInput, socket: WebSocket) 
     }
     const onError = () => {
       cleanup()
-      reject(new Error("Codex Responses WebSocket failed to open"))
+      reject(new WebSocketResponseError("Codex Responses WebSocket failed to open", false, true))
     }
     const onAbort = () => {
       cleanup()
       socket.close()
-      reject(input.abort.reason instanceof Error ? input.abort.reason : new Error("Codex Responses WebSocket aborted"))
+      reject(input.abort.reason instanceof Error ? input.abort.reason : new WebSocketResponseError("Codex Responses WebSocket aborted", false, false))
     }
     socket.addEventListener("open", onOpen)
     socket.addEventListener("error", onError)
