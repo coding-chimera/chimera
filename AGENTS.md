@@ -3,6 +3,7 @@
 - The tracked branch for this checkout is `chimera/acp-pruning`; local worktrees may still be on `main`.
 - Check live git refs before choosing a diff base; do not assume `dev` or `main` is the intended base.
 - Prefer automation: execute requested actions without confirmation unless blocked by missing info or safety/irreversibility.
+- `memory.md` is a temporary cross-session memory pad for this checkout. Read it when resuming interrupted local work, keep entries concise, remove stale notes, and never store secrets or durable project documentation there.
 
 ## Naming convention
 
