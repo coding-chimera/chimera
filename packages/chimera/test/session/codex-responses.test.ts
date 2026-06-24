@@ -43,7 +43,7 @@ function baseInput(input: Partial<CodexResponsesInput> = {}): CodexResponsesInpu
       topP: 0.8,
       topK: undefined,
       maxOutputTokens: undefined,
-      options: { reasoningEffort: "high", reasoningSummary: "auto", include: ["reasoning.encrypted_content"], codexResponsesTransport: "http" },
+      options: { reasoningEffort: "high", reasoningSummary: "auto", include: ["reasoning.encrypted_content"] },
     },
     headers: {},
     auth: { type: "oauth", refresh: "refresh", access: "access", expires: Date.now() + 60_000, accountId: "acc-123" },
@@ -68,9 +68,10 @@ async function collect(input: CodexResponsesInput) {
   return events
 }
 
-function installFakeWebSocket(responses: unknown[][], options: { failOpen?: boolean } = {}) {
+function installFakeWebSocket(responses: unknown[][], options: { failOpen?: boolean; closeAfterSend?: boolean | boolean[] } = {}) {
   const original = globalThis.WebSocket
   const sockets: Array<{ url: string; init?: { headers?: Record<string, string> }; sent: string[] }> = []
+  let sends = 0
   class FakeWebSocket extends EventTarget {
     readyState = 0
     url: string
@@ -96,11 +97,14 @@ function installFakeWebSocket(responses: unknown[][], options: { failOpen?: bool
 
     send(data: string) {
       this.sent.push(data)
+      const sendIndex = sends++
       const chunks = responses.shift() ?? []
       queueMicrotask(() => {
         for (const chunk of chunks) {
           this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(chunk) }))
         }
+        const close = Array.isArray(options.closeAfterSend) ? options.closeAfterSend[sendIndex] : options.closeAfterSend
+        if (close) this.close()
       })
     }
 
@@ -229,6 +233,33 @@ describe("session.codex-responses", () => {
     const events = await collect(baseInput({ endpoint: `${server.url.origin}/backend-api/codex/responses` }))
 
     expect(events.find((event) => event.type === "error")?.error.message).toBe("Invalid 'input[9].id': 'ws_123'. Expected an ID that begins with 'fc'.")
+  })
+
+  test("defaults to HTTP even when WebSocket is available", async () => {
+    const fake = installFakeWebSocket([], { failOpen: true })
+    using server = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        expect(request.method).toBe("POST")
+        return new Response(
+          responseStream([
+            { type: "response.output_item.added", output_index: 0, item: { id: "msg-default-http", type: "message" } },
+            { type: "response.output_text.delta", item_id: "msg-default-http", delta: "Default HTTP" },
+            { type: "response.output_item.done", output_index: 0, item: { id: "msg-default-http", type: "message" } },
+            { type: "response.completed", response: { id: "resp-default-http", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+          ]),
+          { headers: { "Content-Type": "text/event-stream" } },
+        )
+      },
+    })
+    try {
+      const events = await collect(baseInput({ sessionID: "session-default-http", endpoint: `${server.url.origin}/backend-api/codex/responses` }))
+
+      expect(fake.sockets).toHaveLength(0)
+      expect(events.find((event) => event.type === "text-delta")?.text).toBe("Default HTTP")
+    } finally {
+      fake.restore()
+    }
   })
 
 
@@ -490,6 +521,126 @@ describe("session.codex-responses", () => {
       expect(fake.sockets).toHaveLength(1)
       expect(events.find((event) => event.type === "text-delta")?.text).toBe("HTTP fallback")
       expect(events.find((event) => event.type === "finish-step")?.providerMetadata.openai.responseId).toBe("resp-fallback")
+    } finally {
+      fake.restore()
+    }
+  })
+
+  test("retries WebSocket close before terminal and succeeds", async () => {
+    const fake = installFakeWebSocket(
+      [
+        [
+          { type: "response.output_item.added", output_index: 0, item: { id: "msg-ws-lost", type: "message" } },
+          { type: "response.output_text.delta", item_id: "msg-ws-lost", delta: "Lost" },
+        ],
+        [
+          { type: "response.output_item.added", output_index: 0, item: { id: "msg-ws-retry", type: "message" } },
+          { type: "response.output_text.delta", item_id: "msg-ws-retry", delta: "Recovered" },
+          { type: "response.output_item.done", output_index: 0, item: { id: "msg-ws-retry", type: "message", role: "assistant", content: [{ type: "output_text", text: "Recovered" }] } },
+          { type: "response.completed", response: { id: "resp-ws-retry", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+        ],
+      ],
+      { closeAfterSend: [true, false] },
+    )
+    try {
+      const events = await collect(
+        inputWithOptions(
+          { sessionID: "session-ws-retry", endpoint: "http://codex.test/backend-api/codex/responses" },
+          { codexResponsesTransport: "websocket", codexResponsesPrewarm: false, codexResponsesStreamRetries: 1 },
+        ),
+      )
+
+      expect(fake.sockets).toHaveLength(2)
+      expect(events.find((event) => event.type === "text-delta")?.text).toBe("Recovered")
+      expect(events.map((event) => event.type)).toEqual(["start", "start-step", "text-start", "text-delta", "text-end", "finish-step", "finish"])
+    } finally {
+      fake.restore()
+    }
+  })
+
+  test("falls back to HTTP after WebSocket stream retries are exhausted", async () => {
+    const fake = installFakeWebSocket(
+      [
+        [
+          { type: "response.output_item.added", output_index: 0, item: { id: "msg-ws-partial-1", type: "message" } },
+          { type: "response.output_text.delta", item_id: "msg-ws-partial-1", delta: "Partial 1" },
+        ],
+        [
+          { type: "response.output_item.added", output_index: 0, item: { id: "msg-ws-partial-2", type: "message" } },
+          { type: "response.output_text.delta", item_id: "msg-ws-partial-2", delta: "Partial 2" },
+        ],
+      ],
+      { closeAfterSend: true },
+    )
+    let httpRequests = 0
+    using server = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        httpRequests++
+        expect(request.method).toBe("POST")
+        return new Response(
+          responseStream([
+            { type: "response.output_item.added", output_index: 0, item: { id: "msg-fallback-stream", type: "message" } },
+            { type: "response.output_text.delta", item_id: "msg-fallback-stream", delta: "HTTP after retry" },
+            { type: "response.output_item.done", output_index: 0, item: { id: "msg-fallback-stream", type: "message" } },
+            { type: "response.completed", response: { id: "resp-fallback-stream", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+          ]),
+          { headers: { "Content-Type": "text/event-stream" } },
+        )
+      },
+    })
+    try {
+      const events = await collect(
+        inputWithOptions(
+          { sessionID: "session-ws-stream-fallback", endpoint: `${server.url.origin}/backend-api/codex/responses` },
+          { codexResponsesTransport: "websocket", codexResponsesPrewarm: false, codexResponsesStreamRetries: 1 },
+        ),
+      )
+
+      expect(fake.sockets).toHaveLength(2)
+      expect(httpRequests).toBe(1)
+      expect(events.find((event) => event.type === "text-delta")?.text).toBe("HTTP after retry")
+      expect(events.map((event) => event.type)).toEqual(["start", "start-step", "text-start", "text-delta", "text-end", "finish-step", "finish"])
+    } finally {
+      fake.restore()
+    }
+  })
+
+  test("keeps HTTP fallback sticky after WebSocket stream retries are exhausted", async () => {
+    const fake = installFakeWebSocket([[]], { closeAfterSend: true })
+    let httpRequests = 0
+    using server = Bun.serve({
+      port: 0,
+      async fetch() {
+        httpRequests++
+        return new Response(
+          responseStream([
+            { type: "response.output_item.added", output_index: 0, item: { id: `msg-sticky-${httpRequests}`, type: "message" } },
+            { type: "response.output_text.delta", item_id: `msg-sticky-${httpRequests}`, delta: `HTTP sticky ${httpRequests}` },
+            { type: "response.output_item.done", output_index: 0, item: { id: `msg-sticky-${httpRequests}`, type: "message" } },
+            { type: "response.completed", response: { id: `resp-sticky-${httpRequests}`, usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+          ]),
+          { headers: { "Content-Type": "text/event-stream" } },
+        )
+      },
+    })
+    try {
+      await collect(
+        inputWithOptions(
+          { sessionID: "session-ws-sticky-fallback", endpoint: `${server.url.origin}/backend-api/codex/responses` },
+          { codexResponsesTransport: "websocket", codexResponsesPrewarm: false, codexResponsesStreamRetries: 0 },
+        ),
+      )
+      const second = await collect(
+        inputWithOptions(
+          { sessionID: "session-ws-sticky-fallback", endpoint: `${server.url.origin}/backend-api/codex/responses`, messages: [{ role: "user", content: "Second" }] },
+          { codexResponsesTransport: "websocket", codexResponsesPrewarm: false, codexResponsesStreamRetries: 0 },
+        ),
+      )
+
+      expect(fake.sockets).toHaveLength(1)
+      expect(httpRequests).toBe(2)
+      expect(second.find((event) => event.type === "text-delta")?.text).toBe("HTTP sticky 2")
     } finally {
       fake.restore()
     }
