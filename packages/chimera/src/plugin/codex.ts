@@ -169,9 +169,27 @@ export async function refreshAccessToken(refreshToken: string, issuer = ISSUER):
 
 const codexRefreshes = new Map<string, Promise<CodexOAuthAuth>>()
 
-export function codexEndpointUrl(kind: "responses" | "responses/compact", endpoint = CODEX_API_ENDPOINT) {
+export function codexEndpointUrl(kind: "responses" | "responses/compact" | "usage", endpoint = CODEX_API_ENDPOINT) {
+  const normalized = endpoint.replace(/\/+$/, "")
   if (kind === "responses") return endpoint
-  return `${endpoint.replace(/\/+$/, "")}/compact`
+  if (kind === "responses/compact") return `${normalized}/compact`
+
+  const url = new URL(normalized)
+  const path = url.pathname.replace(/\/+$/, "")
+  if (path.endsWith("/backend-api/codex/responses")) {
+    url.pathname = `${path.slice(0, -"/codex/responses".length)}/wham/usage`
+    return url.toString()
+  }
+  if (path.endsWith("/api/codex/responses") || path.endsWith("/codex/responses")) {
+    url.pathname = `${path.slice(0, -"/responses".length)}/usage`
+    return url.toString()
+  }
+  if (path.endsWith("/responses")) {
+    url.pathname = `${path.slice(0, -"/responses".length)}/usage`
+    return url.toString()
+  }
+  url.pathname = `${path}/usage`
+  return url.toString()
 }
 
 export async function codexAuthHeaders(input: {

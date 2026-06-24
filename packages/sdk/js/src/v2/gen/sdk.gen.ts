@@ -92,6 +92,7 @@ import type {
   ProjectUpdateResponses,
   Prompt,
   ProviderAuthResponses,
+  ProviderBalanceResponses,
   ProviderListResponses,
   ProviderOauthAuthorizeErrors,
   ProviderOauthAuthorizeResponses,
@@ -2896,6 +2897,38 @@ export class Provider extends HeyApiClient {
     )
     return (options?.client ?? this.client).get<ProviderAuthResponses, unknown, ThrowOnError>({
       url: "/provider/auth",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get provider balance
+   *
+   * Retrieve account balance information for a supported AI provider.
+   */
+  public balance<ThrowOnError extends boolean = false>(
+    parameters: {
+      providerID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "providerID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<ProviderBalanceResponses, unknown, ThrowOnError>({
+      url: "/provider/{providerID}/balance",
       ...options,
       ...params,
     })

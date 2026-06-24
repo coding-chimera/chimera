@@ -1,4 +1,5 @@
 import { ProviderAuth } from "@/provider/auth"
+import { ProviderBalance } from "@/provider/balance"
 import { Config } from "@/config/config"
 import { ModelsDev } from "@/provider/models"
 import { Provider } from "@/provider/provider"
@@ -14,6 +15,7 @@ export const providerHandlers = HttpApiBuilder.group(InstanceHttpApi, "provider"
     const cfg = yield* Config.Service
     const provider = yield* Provider.Service
     const svc = yield* ProviderAuth.Service
+    const balanceSvc = yield* ProviderBalance.Service
 
     const list = Effect.fn("ProviderHttpApi.list")(function* () {
       const config = yield* cfg.get()
@@ -38,6 +40,9 @@ export const providerHandlers = HttpApiBuilder.group(InstanceHttpApi, "provider"
 
     const auth = Effect.fn("ProviderHttpApi.auth")(function* () {
       return yield* svc.methods()
+    })
+    const balance = Effect.fn("ProviderHttpApi.balance")(function* (ctx: { params: { providerID: ProviderID } }) {
+      return yield* balanceSvc.get(ctx.params.providerID)
     })
 
     const authorize = Effect.fn("ProviderHttpApi.authorize")(function* (ctx: {
@@ -83,6 +88,7 @@ export const providerHandlers = HttpApiBuilder.group(InstanceHttpApi, "provider"
     return handlers
       .handle("list", list)
       .handle("auth", auth)
+      .handle("balance", balance)
       .handleRaw("authorize", authorizeRaw)
       .handle("callback", callback)
   }),

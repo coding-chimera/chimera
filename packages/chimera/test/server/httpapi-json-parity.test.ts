@@ -137,6 +137,7 @@ describe("HttpApi JSON parity", () => {
               { label: "project.current", path: "/project/current", headers },
               { label: "provider.list", path: "/provider", headers },
               { label: "provider.auth", path: "/provider/auth", headers },
+              { label: "provider.balance", path: "/provider/deepseek/balance", headers },
               { label: "permission.list", path: "/permission", headers },
               { label: "question.list", path: "/question", headers },
               { label: "mcp.status", path: McpPaths.status, headers },

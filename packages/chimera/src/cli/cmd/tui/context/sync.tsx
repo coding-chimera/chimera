@@ -18,6 +18,7 @@ import type {
   ProviderAuthMethod,
   VcsInfo,
   WorkBrief,
+  ProviderBalanceResult,
 } from "@opencode-ai/sdk/v2"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { useProject } from "@tui/context/project"
@@ -35,6 +36,30 @@ import path from "path"
 import type { PromptStats } from "@/session/prompt-stats"
 import { useKV } from "./kv"
 
+function providerBalanceFallback(providerID: string): ProviderBalanceResult {
+  if (providerID === "openai") {
+    return {
+      kind: "quota",
+      providerID,
+      status: "error",
+      label: "Codex Usage",
+      limits: [],
+      message: "Failed to load Codex usage.",
+    }
+  }
+  return {
+    kind: "billing",
+    providerID,
+    status: "error",
+    balance_infos: [],
+    message: "Failed to load provider balance.",
+  }
+}
+
+function providerAccountSupported(providerID: string) {
+  return providerID === "deepseek" || providerID === "openai"
+}
+
 export const { use: useSync, provider: SyncProvider } = createSimpleContext({
   name: "Sync",
   init: () => {
@@ -45,6 +70,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       provider_next: ProviderListResponse
       console_state: ConsoleState
       provider_auth: Record<string, ProviderAuthMethod[]>
+      provider_balance: Record<string, ProviderBalanceResult>
       agent: Agent[]
       command: Command[]
       permission: {
@@ -93,6 +119,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       },
       console_state: emptyConsoleState,
       provider_auth: {},
+      provider_balance: {},
       config: {},
       status: "loading",
       agent: [],
@@ -122,6 +149,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
     const kv = useKV()
 
     const fullSyncedSessions = new Set<string>()
+    const providerBalanceRequests = new Set<string>()
     let syncedWorkspace = project.workspace.current()
 
     function sessionListQuery(): { scope?: "project"; path?: string } {
@@ -138,6 +166,20 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       return sdk.client.session
         .list({ start: Date.now() - 30 * 24 * 60 * 60 * 1000, ...sessionListQuery() })
         .then((x) => (x.data ?? []).toSorted((a, b) => a.id.localeCompare(b.id)))
+    }
+
+    async function loadProviderBalance(providerID: string) {
+      if (!providerAccountSupported(providerID)) return
+      const workspace = project.workspace.current()
+      const key = `${workspace}:${providerID}`
+      if (providerBalanceRequests.has(key)) return
+      providerBalanceRequests.add(key)
+      await sdk.client.provider
+        .balance({ providerID, workspace })
+        .then((x) => {
+          if (x.data) setStore("provider_balance", providerID, reconcile(x.data as ProviderBalanceResult))
+        })
+        .catch(() => setStore("provider_balance", providerID, providerBalanceFallback(providerID)))
     }
 
     event.subscribe((event) => {
@@ -396,6 +438,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       const workspace = project.workspace.current()
       if (workspace !== syncedWorkspace) {
         fullSyncedSessions.clear()
+        providerBalanceRequests.clear()
         syncedWorkspace = workspace
       }
       const projectPromise = project.sync()
@@ -556,6 +599,9 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           )
           fullSyncedSessions.add(sessionID)
         },
+      },
+      providerBalance: {
+        load: loadProviderBalance,
       },
       bootstrap,
     }

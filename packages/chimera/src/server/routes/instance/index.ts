@@ -72,6 +72,7 @@ export const InstanceRoutes = (upgrade: UpgradeWebSocket, opts?: CorsOptions): H
     app.get(ExperimentalPaths.resource, (c) => handler(c.req.raw, context))
     app.get("/provider", (c) => handler(c.req.raw, context))
     app.get("/provider/auth", (c) => handler(c.req.raw, context))
+    app.get("/provider/:providerID/balance", (c) => handler(c.req.raw, context))
     app.post("/provider/:providerID/oauth/authorize", (c) => handler(c.req.raw, context))
     app.post("/provider/:providerID/oauth/callback", (c) => handler(c.req.raw, context))
     app.get("/project", (c) => handler(c.req.raw, context))
