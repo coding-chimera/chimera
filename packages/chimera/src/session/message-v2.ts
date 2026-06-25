@@ -299,22 +299,27 @@ export const StepStartPart = Schema.Struct({
   .pipe(withStatics((s) => ({ zod: zod(s) })))
 export type StepStartPart = Types.DeepMutable<Schema.Schema.Type<typeof StepStartPart>>
 
+export const TokenUsage = Schema.Struct({
+  total: Schema.optional(NonNegativeInt),
+  input: NonNegativeInt,
+  output: NonNegativeInt,
+  reasoning: NonNegativeInt,
+  cache: Schema.Struct({
+    read: NonNegativeInt,
+    write: NonNegativeInt,
+  }),
+})
+  .annotate({ identifier: "TokenUsage" })
+  .pipe(withStatics((s) => ({ zod: zod(s) })))
+export type TokenUsage = Types.DeepMutable<Schema.Schema.Type<typeof TokenUsage>>
+
 export const StepFinishPart = Schema.Struct({
   ...partBase,
   type: Schema.Literal("step-finish"),
   reason: Schema.String,
   snapshot: Schema.optional(Schema.String),
   cost: Schema.Finite,
-  tokens: Schema.Struct({
-    total: Schema.optional(NonNegativeInt),
-    input: NonNegativeInt,
-    output: NonNegativeInt,
-    reasoning: NonNegativeInt,
-    cache: Schema.Struct({
-      read: NonNegativeInt,
-      write: NonNegativeInt,
-    }),
-  }),
+  tokens: TokenUsage,
 })
   .annotate({ identifier: "StepFinishPart" })
   .pipe(withStatics((s) => ({ zod: zod(s) })))
@@ -601,16 +606,7 @@ export const Assistant = Schema.Struct({
   }),
   summary: Schema.optional(Schema.Boolean),
   cost: Schema.Finite,
-  tokens: Schema.Struct({
-    total: Schema.optional(NonNegativeInt),
-    input: NonNegativeInt,
-    output: NonNegativeInt,
-    reasoning: NonNegativeInt,
-    cache: Schema.Struct({
-      read: NonNegativeInt,
-      write: NonNegativeInt,
-    }),
-  }),
+  tokens: TokenUsage,
   structured: Schema.optional(Schema.Any),
   variant: Schema.optional(Schema.String),
   finish: Schema.optional(Schema.String),

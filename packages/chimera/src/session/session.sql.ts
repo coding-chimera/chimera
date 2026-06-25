@@ -3,6 +3,7 @@ import { ProjectTable } from "../project/project.sql"
 import type { MessageV2 } from "./message-v2"
 import type { SessionMessage } from "../v2/session-message"
 import type { Snapshot } from "../snapshot"
+import type { Session } from "./session"
 import type { Permission } from "../permission"
 import type { ProjectID } from "../project/schema"
 import type { SessionID, MessageID, PartID } from "./schema"
@@ -41,6 +42,7 @@ export const SessionTable = sqliteTable(
       providerID: string
       variant?: string
     }>(),
+    usage: text({ mode: "json" }).$type<Session.Usage>(),
     ...Timestamps,
     time_compacting: integer(),
     time_archived: integer(),

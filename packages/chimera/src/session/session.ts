@@ -87,6 +87,7 @@ export function fromRow(row: SessionRow): Info {
           variant: row.model.variant,
         }
       : undefined,
+    usage: row.usage ?? undefined,
     version: row.version,
     summary,
     share,
@@ -113,6 +114,7 @@ export function toRow(info: Info) {
     title: info.title,
     agent: info.agent,
     model: info.model,
+    usage: info.usage,
     version: info.version,
     share_url: info.share?.url,
     summary_additions: info.summary?.additions,
@@ -177,6 +179,28 @@ const Model = Schema.Struct({
   variant: optionalOmitUndefined(Schema.String),
 })
 
+const UsageCost = Schema.Struct({
+  total: Schema.Finite,
+  last: Schema.Finite,
+})
+
+export const Usage = Schema.Struct({
+  total: MessageV2.TokenUsage,
+  last: MessageV2.TokenUsage,
+  modelContextWindow: optionalOmitUndefined(NonNegativeInt),
+  cost: UsageCost,
+})
+  .annotate({ identifier: "SessionUsage" })
+  .pipe(withStatics((s) => ({ zod: zod(s) })))
+export type Usage = Types.DeepMutable<Schema.Schema.Type<typeof Usage>>
+
+export type RemoteCompactionLock = {
+  providerID: ProviderID
+  modelID: ModelID
+  messageID: MessageID
+  partID: PartID
+}
+
 export const Info = Schema.Struct({
   id: SessionID,
   slug: Schema.String,
@@ -191,6 +215,7 @@ export const Info = Schema.Struct({
   agent: optionalOmitUndefined(Schema.String),
   model: optionalOmitUndefined(Model),
   version: Schema.String,
+  usage: optionalOmitUndefined(Usage),
   time: Time,
   permission: optionalOmitUndefined(Permission.Ruleset),
   revert: optionalOmitUndefined(Revert),
@@ -296,6 +321,7 @@ const UpdatedInfo = Schema.Struct({
   agent: Schema.optional(Schema.NullOr(Schema.String)),
   model: Schema.optional(Schema.NullOr(Model)),
   version: Schema.optional(Schema.NullOr(Schema.String)),
+  usage: Schema.optional(Schema.NullOr(Usage)),
   time: Schema.optional(UpdatedTime),
   permission: Schema.optional(Schema.NullOr(Permission.Ruleset)),
   revert: Schema.optional(Schema.NullOr(Revert)),
@@ -416,6 +442,54 @@ export const getUsage = (input: { model: Provider.Model; usage: LanguageModelUsa
   }
 }
 
+function usageTotal(tokens: MessageV2.TokenUsage) {
+  return tokens.total ?? tokens.input + tokens.output + tokens.reasoning + tokens.cache.read + tokens.cache.write
+}
+
+function normalizeUsageTokens(tokens: MessageV2.TokenUsage): MessageV2.TokenUsage {
+  return {
+    total: usageTotal(tokens),
+    input: tokens.input,
+    output: tokens.output,
+    reasoning: tokens.reasoning,
+    cache: {
+      read: tokens.cache.read,
+      write: tokens.cache.write,
+    },
+  }
+}
+
+function addUsageTokens(left: MessageV2.TokenUsage, right: MessageV2.TokenUsage): MessageV2.TokenUsage {
+  return {
+    total: usageTotal(left) + usageTotal(right),
+    input: left.input + right.input,
+    output: left.output + right.output,
+    reasoning: left.reasoning + right.reasoning,
+    cache: {
+      read: left.cache.read + right.cache.read,
+      write: left.cache.write + right.cache.write,
+    },
+  }
+}
+
+export function appendUsage(
+  usage: Usage | undefined,
+  input: { tokens: MessageV2.TokenUsage; cost: number; modelContextWindow?: number },
+): Usage {
+  return {
+    total: addUsageTokens(
+      usage?.total ?? { total: 0, input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      input.tokens,
+    ),
+    last: normalizeUsageTokens(input.tokens),
+    modelContextWindow: input.modelContextWindow ?? usage?.modelContextWindow,
+    cost: {
+      total: new Decimal(usage?.cost.total ?? 0).add(input.cost).toNumber(),
+      last: input.cost,
+    },
+  }
+}
+
 export class BusyError extends Error {
   constructor(public readonly sessionID: string) {
     super(`Session ${sessionID} is busy`)
@@ -446,6 +520,7 @@ export interface Interface {
     summary: Info["summary"]
   }) => Effect.Effect<void>
   readonly clearRevert: (sessionID: SessionID) => Effect.Effect<void>
+  readonly recordUsage: (input: { sessionID: SessionID; tokens: MessageV2.TokenUsage; cost: number; modelContextWindow?: number }) => Effect.Effect<void, NotFound>
   readonly setSummary: (input: { sessionID: SessionID; summary: Info["summary"] }) => Effect.Effect<void>
   readonly diff: (sessionID: SessionID) => Effect.Effect<Snapshot.FileDiff[]>
   readonly messages: (input: { sessionID: SessionID; limit?: number }) => Effect.Effect<MessageV2.WithParts[]>
@@ -472,6 +547,7 @@ export interface Interface {
     sessionID: SessionID,
     predicate: (msg: MessageV2.WithParts) => boolean,
   ) => Effect.Effect<Option.Option<MessageV2.WithParts>>
+  readonly remoteCompactionLock: (sessionID: SessionID) => Effect.Effect<RemoteCompactionLock | undefined>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Session") {}
@@ -685,6 +761,18 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
 
     const patch = (sessionID: SessionID, info: Patch) => sync.run(Event.Updated, { sessionID, info })
 
+    const recordUsage = Effect.fn("Session.recordUsage")(function* (input: {
+      sessionID: SessionID
+      tokens: MessageV2.TokenUsage
+      cost: number
+      modelContextWindow?: number
+    }) {
+      const session = yield* get(input.sessionID)
+      yield* patch(input.sessionID, {
+        usage: appendUsage(session.usage, input),
+      })
+    })
+
     const touch = Effect.fn("Session.touch")(function* (sessionID: SessionID) {
       yield* patch(sessionID, { time: { updated: Date.now() } })
     })
@@ -781,6 +869,21 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
       return Option.none<MessageV2.WithParts>()
     })
 
+    const remoteCompactionLock = Effect.fn("Session.remoteCompactionLock")(function* (sessionID: SessionID) {
+      const match = yield* findMessage(sessionID, (msg) =>
+        msg.parts.some((part) => part.type === "compaction" && part.remote),
+      )
+      if (Option.isNone(match)) return undefined
+      const part = match.value.parts.find((item) => item.type === "compaction" && item.remote)
+      if (!part || part.type !== "compaction" || !part.remote) return undefined
+      return {
+        providerID: ProviderID.make(part.remote.providerID),
+        modelID: ModelID.make(part.remote.modelID),
+        messageID: part.messageID,
+        partID: part.id,
+      }
+    })
+
     return Service.of({
       list,
       create,
@@ -792,6 +895,7 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
       setPermission,
       setRevert,
       clearRevert,
+      recordUsage,
       setSummary,
       diff,
       messages,
@@ -804,6 +908,7 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
       getPart,
       updatePartDelta,
       findMessage,
+      remoteCompactionLock,
     })
   }),
 )

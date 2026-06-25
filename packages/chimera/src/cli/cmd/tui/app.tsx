@@ -621,6 +621,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         name: "models",
       },
       onSelect: () => {
+        if (local.model.warnRemoteCompactionLock()) return
         dialog.replace(() => <DialogModel />)
       },
     },
