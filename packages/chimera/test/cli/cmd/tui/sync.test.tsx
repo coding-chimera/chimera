@@ -9,6 +9,7 @@ import { KVProvider, useKV } from "../../../../src/cli/cmd/tui/context/kv"
 import { ProjectProvider } from "../../../../src/cli/cmd/tui/context/project"
 import { SDKProvider, type EventSource } from "../../../../src/cli/cmd/tui/context/sdk"
 import { SyncProvider, useSync } from "../../../../src/cli/cmd/tui/context/sync"
+import type { GlobalEvent } from "@opencode-ai/sdk/v2"
 import { tmpdir } from "../../../fixture/fixture"
 
 const worktree = "/tmp/chimera"
@@ -28,17 +29,38 @@ function json(data: unknown) {
   })
 }
 
-function eventSource(): EventSource {
+function eventSource() {
+  let handler: ((event: GlobalEvent) => void) | undefined
   return {
-    subscribe: async () => () => {},
+    source: {
+      subscribe: async (next) => {
+        handler = next
+        return () => {
+          handler = undefined
+        }
+      },
+    } satisfies EventSource,
+    emit(event: GlobalEvent) {
+      handler?.(event)
+    },
   }
 }
 
 function createFetch() {
   const session = [] as URL[]
+  const providerBalance = [] as URL[]
   const fetch = (async (input: RequestInfo | URL) => {
     const url = new URL(input instanceof Request ? input.url : String(input))
     if (url.pathname === "/session") session.push(url)
+    if (url.pathname === "/provider/openai/balance") {
+      providerBalance.push(url)
+      return json({
+        kind: "quota",
+        providerID: "openai",
+        status: "available",
+        limits: [{ label: "weekly", used_percent: 10, remaining_percent: 90 }],
+      })
+    }
 
     switch (url.pathname) {
       case "/agent":
@@ -73,11 +95,12 @@ function createFetch() {
     throw new Error(`unexpected request: ${url.pathname}`)
   }) as typeof globalThis.fetch
 
-  return { fetch, session }
+  return { fetch, session, providerBalance }
 }
 
 async function mount() {
   const calls = createFetch()
+  const events = eventSource()
   let sync!: ReturnType<typeof useSync>
   let kv!: ReturnType<typeof useKV>
   let done!: () => void
@@ -89,7 +112,7 @@ async function mount() {
     <ArgsProvider>
       <ExitProvider>
         <KVProvider>
-          <SDKProvider url="http://test" directory={directory} fetch={calls.fetch} events={eventSource()}>
+          <SDKProvider url="http://test" directory={directory} fetch={calls.fetch} events={events.source}>
             <ProjectProvider>
               <SyncProvider>
                 <Probe
@@ -109,7 +132,7 @@ async function mount() {
 
   await ready
   await wait(() => sync.status === "complete")
-  return { app, kv, sync, session: calls.session }
+  return { app, kv, sync, session: calls.session, providerBalance: calls.providerBalance, events }
 }
 
 function Probe(props: { onReady: (ctx: { kv: ReturnType<typeof useKV>; sync: ReturnType<typeof useSync> }) => void }) {
@@ -141,6 +164,37 @@ describe("tui sync", () => {
 
       expect(session.at(-1)?.searchParams.get("scope")).toBe("project")
       expect(session.at(-1)?.searchParams.get("path")).toBeNull()
+    } finally {
+      app.renderer.destroy()
+      Global.Path.state = previous
+    }
+  })
+
+  test("refreshes loaded provider balance when a session becomes idle", async () => {
+    const previous = Global.Path.state
+    await using tmp = await tmpdir()
+    Global.Path.state = tmp.path
+    await Bun.write(`${tmp.path}/kv.json`, "{}")
+    const { app, sync, providerBalance, events } = await mount()
+
+    try {
+      await sync.providerBalance.load("openai")
+      await wait(() => providerBalance.length === 1)
+
+      events.emit({
+        directory,
+        payload: {
+          id: "evt_idle",
+          type: "session.status",
+          properties: {
+            sessionID: "ses_test",
+            status: { type: "idle" },
+          },
+        },
+      })
+
+      await wait(() => providerBalance.length === 2)
+      expect(sync.data.provider_balance.openai?.status).toBe("available")
     } finally {
       app.renderer.destroy()
       Global.Path.state = previous

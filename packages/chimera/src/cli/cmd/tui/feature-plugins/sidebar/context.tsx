@@ -12,6 +12,9 @@ const money = new Intl.NumberFormat("en-US", {
 })
 
 type Tokens = AssistantMessage["tokens"]
+type SessionUsage = NonNullable<NonNullable<ReturnType<TuiPluginApi["state"]["session"]["get"]>>["usage"]>
+type UsageView = typeof empty
+type UsageSummary = { total: UsageView; current: UsageView }
 
 const empty = {
   input: 0,
@@ -29,10 +32,31 @@ const isAssistant = (item: ReturnType<TuiPluginApi["state"]["session"]["messages
 
 const isStepFinish = (part: Part): part is StepFinishPart => part.type === "step-finish"
 const inputTokens = (tokens: Tokens) => tokens.input + tokens.cache.read + tokens.cache.write
-const contextTokens = (tokens: Tokens) => inputTokens(tokens) + tokens.output + tokens.reasoning
+const contextTokens = (tokens: Tokens) => tokens.total ?? inputTokens(tokens) + tokens.output + tokens.reasoning
 const estimateTokens = (chars: number) => Math.ceil(chars / 4)
 const formatTokens = (tokens: number, estimated: boolean) => `${estimated ? "~" : ""}${Locale.number(tokens)}`
 
+export const usageFromTokens = (tokens: Tokens): UsageView => ({
+  input: inputTokens(tokens),
+  output: tokens.output,
+  reasoning: tokens.reasoning,
+  outputEstimated: false,
+  contextEstimated: false,
+  cacheRead: tokens.cache.read,
+  cacheReadEstimated: false,
+  context: contextTokens(tokens),
+})
+
+export const usageFromSessionSnapshot = (usage: SessionUsage | undefined): UsageSummary | undefined => {
+  if (!usage) return undefined
+  return {
+    total: usageFromTokens(usage.total),
+    current: usageFromTokens(usage.last),
+  }
+}
+
+export const resolveUsage = (usage: SessionUsage | undefined, fallback: () => UsageSummary) =>
+  usageFromSessionSnapshot(usage) ?? fallback()
 const formatCached = (usage: typeof empty) => {
   const cached = `${usage.cacheReadEstimated ? "~" : ""}${Locale.number(usage.cacheRead)} cached`
   return `${Locale.number(usage.input)} (${cached})`
@@ -59,8 +83,10 @@ const estimateStreamingTokens = (parts: readonly Part[]) => {
 
 function View(props: { api: TuiPluginApi; session_id: string }) {
   const theme = () => props.api.theme.current
+  const session = createMemo(() => props.api.state.session.get(props.session_id))
+  const sessionUsage = createMemo(() => session()?.usage)
   const msg = createMemo(() => props.api.state.session.messages(props.session_id))
-  const cost = createMemo(() => msg().reduce((sum, item) => sum + (item.role === "assistant" ? item.cost : 0), 0))
+  const cost = createMemo(() => sessionUsage()?.cost.total ?? msg().reduce((sum, item) => sum + (item.role === "assistant" ? item.cost : 0), 0))
 
   const requests = createMemo(() =>
     msg().flatMap((item) => {
@@ -89,7 +115,7 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
     }),
   )
 
-  const usage = createMemo(() => {
+  const fallbackUsage = createMemo(() => {
     const entries = requests()
     const enhanced = entries.map((entry, index) => {
       const previous = entries
@@ -156,8 +182,17 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
 
     return { total, current }
   })
+  const usage = createMemo(() => resolveUsage(sessionUsage(), fallbackUsage))
 
   const state = createMemo(() => {
+    const snapshot = sessionUsage()
+    if (snapshot) {
+      const tokens = contextTokens(snapshot.last)
+      return {
+        tokens,
+        percent: snapshot.modelContextWindow ? Math.round((tokens / snapshot.modelContextWindow) * 100) : null,
+      }
+    }
     const last = requests().findLast((item) => item.tokens.output > 0)
     if (!last) {
       return {

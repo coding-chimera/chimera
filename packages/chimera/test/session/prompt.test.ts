@@ -295,6 +295,36 @@ const user = Effect.fn("test.user")(function* (sessionID: SessionID, text: strin
   return msg
 })
 
+const remoteCompactionLock = Effect.fn("test.remoteCompactionLock")(function* (
+  sessionID: SessionID,
+  model = { providerID: ProviderID.make("openai"), modelID: ModelID.make("gpt-5") },
+) {
+  const session = yield* Session.Service
+  const msg = yield* session.updateMessage({
+    id: MessageID.ascending(),
+    role: "user",
+    sessionID,
+    agent: "build",
+    model,
+    time: { created: Date.now() },
+  })
+  yield* session.updatePart({
+    id: PartID.ascending(),
+    messageID: msg.id,
+    sessionID,
+    type: "compaction",
+    auto: true,
+    remote: {
+      providerID: "openai",
+      endpoint: "codex",
+      implementation: "responses_compaction_v2",
+      modelID: model.modelID,
+      output: [{ type: "compaction", encrypted_content: "encrypted" }],
+    },
+  })
+  return msg
+})
+
 const seed = Effect.fn("test.seed")(function* (sessionID: SessionID, opts?: { finish?: string }) {
   const session = yield* Session.Service
   const msg = yield* user(sessionID, "hello")
@@ -348,6 +378,68 @@ const boot = Effect.fn("test.boot")(function* (input?: { title?: string }) {
   const chat = yield* sessions.create(input ?? { title: "Pinned" })
   return { prompt, run, sessions, chat }
 })
+
+it.live("allows the locked remote compaction model", () =>
+  provideTmpdirInstance(
+    () =>
+      Effect.gen(function* () {
+        const { prompt, sessions, chat } = yield* boot()
+        const locked = { providerID: ProviderID.make("openai"), modelID: ModelID.make("gpt-5") }
+        yield* remoteCompactionLock(chat.id, locked)
+
+        const result = yield* prompt.prompt({
+          sessionID: chat.id,
+          agent: "build",
+          model: locked,
+          noReply: true,
+          parts: [{ type: "text", text: "continue" }],
+        })
+        const lock = yield* sessions.remoteCompactionLock(chat.id)
+
+        expect(result.info.role).toBe("user")
+        expect(result.info.role === "user" ? result.info.model.modelID : undefined).toBe(locked.modelID)
+        expect(lock?.modelID).toBe(locked.modelID)
+      }),
+    { git: true, config: cfg },
+  ),
+)
+
+it.live("rejects model changes after remote compaction", () =>
+  provideTmpdirInstance(
+    () =>
+      Effect.gen(function* () {
+        const { prompt, chat } = yield* boot()
+        yield* remoteCompactionLock(chat.id)
+
+        const promptExit = yield* prompt
+          .prompt({
+            sessionID: chat.id,
+            agent: "build",
+            model: ref,
+            noReply: true,
+            parts: [{ type: "text", text: "switch" }],
+          })
+          .pipe(Effect.exit)
+        expect(Exit.isFailure(promptExit)).toBe(true)
+        if (Exit.isFailure(promptExit)) {
+          const error = Cause.squash(promptExit.cause)
+          expect(error).toBeInstanceOf(NamedError.Unknown)
+          if (NamedError.Unknown.isInstance(error)) expect(error.data.message).toContain("locked to openai/gpt-5")
+        }
+
+        const shellExit = yield* prompt
+          .shell({ sessionID: chat.id, agent: "build", model: ref, command: "echo hi" })
+          .pipe(Effect.exit)
+        expect(Exit.isFailure(shellExit)).toBe(true)
+        if (Exit.isFailure(shellExit)) {
+          const error = Cause.squash(shellExit.cause)
+          expect(error).toBeInstanceOf(NamedError.Unknown)
+          if (NamedError.Unknown.isInstance(error)) expect(error.data.message).toContain("locked to openai/gpt-5")
+        }
+      }),
+    { git: true, config: cfg },
+  ),
+)
 
 // Loop semantics
 

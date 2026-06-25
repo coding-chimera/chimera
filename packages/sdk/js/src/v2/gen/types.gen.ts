@@ -416,6 +416,17 @@ export type UserMessage = {
   }
 }
 
+export type TokenUsage = {
+  total?: number
+  input: number
+  output: number
+  reasoning: number
+  cache: {
+    read: number
+    write: number
+  }
+}
+
 export type AssistantMessage = {
   id: string
   sessionID: string
@@ -443,16 +454,7 @@ export type AssistantMessage = {
   }
   summary?: boolean
   cost: number
-  tokens: {
-    total?: number
-    input: number
-    output: number
-    reasoning: number
-    cache: {
-      read: number
-      write: number
-    }
-  }
+  tokens: TokenUsage
   structured?: unknown
   variant?: string
   finish?: string
@@ -645,16 +647,7 @@ export type StepFinishPart = {
   reason: string
   snapshot?: string
   cost: number
-  tokens: {
-    total?: number
-    input: number
-    output: number
-    reasoning: number
-    cache: {
-      read: number
-      write: number
-    }
-  }
+  tokens: TokenUsage
 }
 
 export type SnapshotPart = {
@@ -747,6 +740,16 @@ export type Part =
   | RetryPart
   | CompactionPart
 
+export type SessionUsage = {
+  total: TokenUsage
+  last: TokenUsage
+  modelContextWindow?: number
+  cost: {
+    total: number
+    last: number
+  }
+}
+
 export type PermissionAction = "allow" | "deny" | "ask"
 
 export type PermissionRule = {
@@ -782,6 +785,7 @@ export type Session = {
     variant?: string
   }
   version: string
+  usage?: SessionUsage
   time: {
     created: number
     updated: number
@@ -1439,6 +1443,7 @@ export type GlobalSession = {
     variant?: string
   }
   version: string
+  usage?: SessionUsage
   time: {
     created: number
     updated: number
@@ -1965,6 +1970,7 @@ export type SyncEventSessionUpdated = {
         variant?: string
       } | null
       version?: string | null
+      usage?: SessionUsage | null
       time?: {
         created?: number | null
         updated?: number | null
