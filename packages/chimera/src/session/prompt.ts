@@ -1019,6 +1019,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               throw error
             }
             const model = input.model ?? agent.model ?? (yield* lastModel(input.sessionID))
+            yield* assertRemoteCompactionModelUnlocked({ sessionID: input.sessionID, model })
             const userMsg: MessageV2.User = {
               id: input.messageID ?? MessageID.ascending(),
               sessionID: input.sessionID,
@@ -1176,6 +1177,20 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       return yield* Effect.failCause(exit.cause)
     })
 
+    const assertRemoteCompactionModelUnlocked = Effect.fn("SessionPrompt.assertRemoteCompactionModelUnlocked")(function* (input: {
+      sessionID: SessionID
+      model: { providerID: ProviderID; modelID: ModelID }
+    }) {
+      const lock = yield* sessions.remoteCompactionLock(input.sessionID)
+      if (!lock) return
+      if (lock.providerID === input.model.providerID && lock.modelID === input.model.modelID) return
+      const error = new NamedError.Unknown({
+        message: `This session already installed Codex remote compaction and is locked to ${lock.providerID}/${lock.modelID}. Requested ${input.model.providerID}/${input.model.modelID}. Fork or start a new session to use another model.`,
+      })
+      yield* bus.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() })
+      throw error
+    })
+
     const lastModel = Effect.fnUntraced(function* (sessionID: SessionID) {
       const match = yield* sessions.findMessage(sessionID, (m) => m.info.role === "user" && !!m.info.model)
       if (Option.isSome(match) && match.value.info.role === "user") return match.value.info.model
@@ -1194,6 +1209,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       }
 
       const model = input.model ?? ag.model ?? (yield* lastModel(input.sessionID))
+      yield* assertRemoteCompactionModelUnlocked({ sessionID: input.sessionID, model })
       const same = ag.model && model.providerID === ag.model.providerID && model.modelID === ag.model.modelID
       const full =
         !input.variant && ag.variant && same

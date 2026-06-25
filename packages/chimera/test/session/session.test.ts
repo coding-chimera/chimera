@@ -33,6 +33,10 @@ function updatePart<T extends MessageV2.Part>(part: T) {
   return AppRuntime.runPromise(SessionNs.Service.use((svc) => svc.updatePart(part)))
 }
 
+function recordUsage(input: { sessionID: SessionID; tokens: MessageV2.TokenUsage; cost: number; modelContextWindow?: number }) {
+  return AppRuntime.runPromise(SessionNs.Service.use((svc) => svc.recordUsage(input)))
+}
+
 describe("session.created event", () => {
   test("should emit session.created event when session is created", async () => {
     await WithInstance.provide({
@@ -182,5 +186,51 @@ describe("Session", () => {
     })
 
     expect(missing).toBe(true)
+  })
+
+
+  test("recordUsage persists total and last token usage", async () => {
+    await WithInstance.provide({
+      directory: projectRoot,
+      fn: async () => {
+        const info = await create({})
+
+        await recordUsage({
+          sessionID: info.id,
+          tokens: { input: 10, output: 4, reasoning: 1, cache: { read: 2, write: 3 } },
+          cost: 0.01,
+          modelContextWindow: 1000,
+        })
+        await recordUsage({
+          sessionID: info.id,
+          tokens: { total: 50, input: 100, output: 20, reasoning: 5, cache: { read: 10, write: 0 } },
+          cost: 0.02,
+        })
+
+        expect((await get(info.id)).usage).toEqual({
+          total: {
+            total: 70,
+            input: 110,
+            output: 24,
+            reasoning: 6,
+            cache: { read: 12, write: 3 },
+          },
+          last: {
+            total: 50,
+            input: 100,
+            output: 20,
+            reasoning: 5,
+            cache: { read: 10, write: 0 },
+          },
+          modelContextWindow: 1000,
+          cost: {
+            total: 0.03,
+            last: 0.02,
+          },
+        })
+
+        await remove(info.id)
+      },
+    })
   })
 })

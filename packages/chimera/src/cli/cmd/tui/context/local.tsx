@@ -12,6 +12,8 @@ import { useArgs } from "./args"
 import { useSDK } from "./sdk"
 import { RGBA } from "@opentui/core"
 import { Filesystem } from "@/util/filesystem"
+import { useRoute } from "./route"
+import { remoteCompactionModelLocked, remoteCompactionModelLockMessage } from "../util/remote-compaction"
 
 export function parseModel(model: string) {
   const [providerID, ...rest] = model.split("/")
@@ -27,6 +29,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     const sync = useSync()
     const sdk = useSDK()
     const toast = useToast()
+    const route = useRoute()
 
     function isModelValid(model: { providerID: string; modelID: string }) {
       const provider = sync.data.provider.find((x) => x.id === model.providerID)
@@ -159,8 +162,29 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           if (state.pending) save()
       })
 
+      const remoteCompactionLock = createMemo(() => {
+        if (route.data.type !== "session") return undefined
+        return sync.data.remote_compaction_lock[route.data.sessionID]
+      })
+
+      function warnRemoteCompactionLock(target?: { providerID: string; modelID: string }) {
+        const lock = remoteCompactionLock()
+        if (!lock) return false
+        if (!target || remoteCompactionModelLocked(lock, target)) {
+          toast.show({
+            variant: "warning",
+            message: remoteCompactionModelLockMessage(lock, target),
+            duration: 5000,
+          })
+          return true
+        }
+        return false
+      }
+
       const args = useArgs()
       const currentModel = createMemo(() => {
+        const lock = remoteCompactionLock()
+        if (lock) return { providerID: lock.providerID, modelID: lock.modelID }
         const a = agent.current()
         return (
           getFirstValidModel(
@@ -226,6 +250,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           }
         }),
         cycle(direction: 1 | -1) {
+          if (warnRemoteCompactionLock()) return
           const current = currentModel()
           if (!current) return
           const recent = modelStore.recent
@@ -242,6 +267,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           save()
         },
         cycleFavorite(direction: 1 | -1) {
+          if (warnRemoteCompactionLock()) return
           const favorites = modelStore.favorite.filter((item) => isModelValid(item))
           if (!favorites.length) {
             toast.show({
@@ -277,17 +303,18 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           save()
         },
         set(model: { providerID: string; modelID: string }, options?: { recent?: boolean }) {
-          batch(() => {
+          if (warnRemoteCompactionLock(model)) return false
+          return batch(() => {
             if (!isModelValid(model)) {
               toast.show({
                 message: `Model ${model.providerID}/${model.modelID} is not valid`,
                 variant: "warning",
                 duration: 3000,
               })
-              return
+              return false
             }
             const a = agent.current()
-            if (!a) return
+            if (!a) return false
             setModelStore("model", a.name, model)
             if (options?.recent) {
               const uniq = uniqueBy([model, ...modelStore.recent], (x) => `${x.providerID}/${x.modelID}`)
@@ -298,6 +325,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
               )
             }
             save()
+            return true
           })
         },
         toggleFavorite(model: { providerID: string; modelID: string }) {
@@ -323,6 +351,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             save()
           })
         },
+        remoteCompactionLock,
+        warnRemoteCompactionLock,
         variant: {
           selected() {
             const m = currentModel()

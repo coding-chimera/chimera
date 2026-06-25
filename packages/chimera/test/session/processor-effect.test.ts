@@ -225,7 +225,7 @@ it.live("session.processor effect tests capture llm input cleanly", () =>
       Effect.gen(function* () {
         const { processors, session, provider } = yield* boot()
 
-        yield* llm.text("hello")
+        yield* llm.text("hello", { usage: { input: 5, output: 7 } })
 
         const chat = yield* session.create({})
         const parent = yield* user(chat.id, "hi")
@@ -261,6 +261,27 @@ it.live("session.processor effect tests capture llm input cleanly", () =>
         expect(value).toBe("continue")
         expect(calls).toBe(1)
         expect(parts.some((part) => part.type === "text" && part.text === "hello")).toBe(true)
+        expect((yield* session.get(chat.id)).usage).toEqual({
+          total: {
+            total: 12,
+            input: 5,
+            output: 7,
+            reasoning: 0,
+            cache: { read: 0, write: 0 },
+          },
+          last: {
+            total: 12,
+            input: 5,
+            output: 7,
+            reasoning: 0,
+            cache: { read: 0, write: 0 },
+          },
+          modelContextWindow: 100000,
+          cost: {
+            total: 0,
+            last: 0,
+          },
+        })
       }),
     { git: true, config: (url) => providerCfg(url) },
   ),

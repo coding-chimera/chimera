@@ -526,6 +526,12 @@ export const layer: Layer.Layer<
               tokens: usage.tokens,
               cost: usage.cost,
             })
+            yield* session.recordUsage({
+              sessionID: ctx.sessionID,
+              tokens: usage.tokens,
+              cost: usage.cost,
+              modelContextWindow: Math.max(0, Math.floor(ctx.model.limit.context)),
+            })
             yield* session.updateMessage(ctx.assistantMessage)
             if (ctx.snapshot) {
               const patch = yield* snapshot.patch(ctx.snapshot)

@@ -17,6 +17,50 @@ export type RemoteCompactionModel = {
   }
 }
 
+export type RemoteCompactionLock = {
+  providerID: string
+  modelID: string
+  messageID?: string
+  partID?: string
+}
+
+export type RemoteCompactionPart = {
+  id?: string
+  messageID?: string
+  type: string
+  remote?: {
+    providerID: string
+    modelID: string
+  }
+}
+
+export function remoteCompactionLockFromParts(parts: RemoteCompactionPart[]) {
+  const part = parts.find((item) => item.type === "compaction" && item.remote)
+  if (!part?.remote) return undefined
+  return {
+    providerID: part.remote.providerID,
+    modelID: part.remote.modelID,
+    messageID: part.messageID,
+    partID: part.id,
+  } satisfies RemoteCompactionLock
+}
+
+export function remoteCompactionModelLocked(
+  lock: RemoteCompactionLock | undefined,
+  model: { providerID: string; modelID: string } | undefined,
+) {
+  if (!lock || !model) return false
+  return lock.providerID !== model.providerID || lock.modelID !== model.modelID
+}
+
+export function remoteCompactionModelLockMessage(
+  lock: RemoteCompactionLock,
+  model?: { providerID: string; modelID: string },
+) {
+  const requested = model ? ` Requested ${model.providerID}/${model.modelID}.` : ""
+  return `This session already installed Codex remote compaction and is locked to ${lock.providerID}/${lock.modelID}.${requested} Fork or start a new session to use another model.`
+}
+
 function openAIRemoteCompactionCompatible(model: RemoteCompactionModel | undefined) {
   const id = (model?.api?.id ?? model?.id ?? "").toLowerCase()
   return openAIRemoteCompactionApplies(model) || /^(gpt-|o[1-9](?:-|$)|chatgpt-|codex-)/.test(id)

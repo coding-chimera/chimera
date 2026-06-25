@@ -16,6 +16,9 @@ const {
   openAIRemoteCompactionStatusTitle,
   openAIRemoteCompactionToggleDescription,
   openAIRemoteCompactionToggleTitle,
+  remoteCompactionLockFromParts,
+  remoteCompactionModelLockMessage,
+  remoteCompactionModelLocked,
 } = await import("../../../src/cli/cmd/tui/util/remote-compaction")
 
 describe("TUI remote compaction helpers", () => {
@@ -95,5 +98,24 @@ describe("TUI remote compaction helpers", () => {
     expect(openAIRemoteCompactionProtocolConfig("v2", openai)).toEqual({ remote: "auto", remote_protocol: "v2" })
     expect(openAIRemoteCompactionProtocolConfig("legacy", mirror)).toEqual({ remote: "on", remote_protocol: "legacy" })
     expect(openAIRemoteCompactionProtocolConfig("off", openai)).toEqual({ remote: "off", remote_protocol: "v2" })
+  })
+
+  test("detects and describes remote compaction model locks", () => {
+    const lock = remoteCompactionLockFromParts([
+      { id: "part-1", messageID: "msg-1", type: "text" },
+      {
+        id: "part-2",
+        messageID: "msg-2",
+        type: "compaction",
+        remote: { providerID: "openai", modelID: "gpt-5" },
+      },
+    ])
+
+    expect(lock).toEqual({ providerID: "openai", modelID: "gpt-5", messageID: "msg-2", partID: "part-2" })
+    expect(remoteCompactionModelLocked(lock, { providerID: "openai", modelID: "gpt-5" })).toBe(false)
+    expect(remoteCompactionModelLocked(lock, { providerID: "test", modelID: "test-model" })).toBe(true)
+    expect(remoteCompactionModelLockMessage(lock!, { providerID: "test", modelID: "test-model" })).toContain(
+      "locked to openai/gpt-5",
+    )
   })
 })
