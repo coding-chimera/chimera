@@ -10,8 +10,9 @@ import DESCRIPTION from "./read.txt"
 import { InstanceState } from "@/effect/instance-state"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { Instruction } from "../session/instruction"
+import type { ToolPart, WithParts } from "../session/message-v2"
 import { isPdfAttachment, sniffAttachmentMime } from "@/util/media"
-import { DISPLAY_ALGORITHM, SCHEMA_VERSION, formatLine, lineInfo } from "./hashline"
+import { DISPLAY_ALGORITHM, SCHEMA_VERSION, UNANCHORABLE_TOKEN, formatLine, lineInfo } from "./hashline"
 
 const DEFAULT_READ_LIMIT = 2000
 const MAX_LINE_LENGTH = 2000
@@ -20,6 +21,140 @@ const MAX_BYTES = 50 * 1024
 const MAX_BYTES_LABEL = `${MAX_BYTES / 1024} KB`
 const SAMPLE_BYTES = 4096
 const SUPPORTED_IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"])
+const READ_DEDUP_MESSAGES_EXTRA = "readDedupMessages"
+const HASHLINE_PREFIX = /^(\d+)#([A-Za-z0-9-]{2})\|/
+
+type ReadDedupWindow = {
+  windowID: string
+  anchors: Map<string, Set<string>>
+  seededParts: Set<string>
+}
+
+type ReadDedupState = {
+  sessions: Map<string, ReadDedupWindow>
+}
+
+function readDedupMessages(ctx: Tool.Context) {
+  const value = ctx.extra?.[READ_DEDUP_MESSAGES_EXTRA]
+  return Array.isArray(value) ? (value as WithParts[]) : ctx.messages
+}
+
+function contentSection(output: string) {
+  const start = output.indexOf("<content>")
+  if (start < 0) return ""
+  const end = output.indexOf("</content>", start)
+  if (end < 0) return ""
+  return output.slice(start + "<content>".length, end)
+}
+
+function outputPath(output: string) {
+  return output.match(/^<path>(.*)<\/path>$/m)?.[1]
+}
+
+function anchorKey(line: number, id: string) {
+  return `${line}#${id}`
+}
+
+function addAnchor(anchors: Map<string, Set<string>>, filepath: string, line: number, id: string) {
+  if (id === UNANCHORABLE_TOKEN) return
+  const normalized = path.normalize(filepath)
+  const existing = anchors.get(normalized) ?? new Set<string>()
+  existing.add(anchorKey(line, id))
+  anchors.set(normalized, existing)
+}
+
+function parseReadAnchors(output: string) {
+  return contentSection(output)
+    .split("\n")
+    .flatMap((line) => {
+      const match = HASHLINE_PREFIX.exec(line)
+      if (!match || match[2] === UNANCHORABLE_TOKEN) return []
+      return [{ line: Number(match[1]), id: match[2] }]
+    })
+}
+
+function readPartPath(part: ToolPart) {
+  if (part.state.status !== "completed") return undefined
+  return outputPath(part.state.output) ?? (typeof part.state.input.filePath === "string" ? part.state.input.filePath : undefined)
+}
+
+function readDedupWindowID(messages: WithParts[]) {
+  let compaction = "initial"
+  let compacted = 0
+  for (const msg of messages) {
+    for (const part of msg.parts) {
+      if (part.type === "compaction" && part.tail_start_id) compaction = msg.info.id
+      if (part.type !== "tool") continue
+      if (part.state.status !== "completed") continue
+      compacted = Math.max(compacted, part.state.time.compacted ?? 0)
+    }
+  }
+  return `${compaction}:${compacted}`
+}
+
+function makeReadDedupWindow(windowID: string): ReadDedupWindow {
+  return {
+    windowID,
+    anchors: new Map<string, Set<string>>(),
+    seededParts: new Set<string>(),
+  }
+}
+
+function seedReadDedupWindow(state: ReadDedupState, ctx: Tool.Context) {
+  const messages = readDedupMessages(ctx)
+  const windowID = readDedupWindowID(messages)
+  const sessionID = String(ctx.sessionID)
+  const current = state.sessions.get(sessionID)
+  const window = current?.windowID === windowID ? current : makeReadDedupWindow(windowID)
+  state.sessions.set(sessionID, window)
+  for (const msg of messages) {
+    for (const part of msg.parts) {
+      if (part.type !== "tool") continue
+      if (part.tool !== "read") continue
+      if (part.state.status !== "completed") continue
+      if (part.state.time.compacted) continue
+      if (window.seededParts.has(part.id)) continue
+      const filepath = readPartPath(part)
+      if (filepath) {
+        for (const anchor of parseReadAnchors(part.state.output)) addAnchor(window.anchors, filepath, anchor.line, anchor.id)
+      }
+      window.seededParts.add(part.id)
+    }
+  }
+  return window
+}
+
+function anchorSet(window: ReadDedupWindow, filepath: string) {
+  const normalized = path.normalize(filepath)
+  const existing = window.anchors.get(normalized) ?? new Set<string>()
+  window.anchors.set(normalized, existing)
+  return existing
+}
+
+function lineRanges(lines: number[]) {
+  const sorted = Array.from(new Set(lines)).sort((a, b) => a - b)
+  const ranges: string[] = []
+  let start = sorted[0]
+  let previous = sorted[0]
+  for (const line of sorted.slice(1)) {
+    if (line === previous + 1) {
+      previous = line
+      continue
+    }
+    ranges.push(start === previous ? String(start) : `${start}-${previous}`)
+    start = line
+    previous = line
+  }
+  if (start !== undefined && previous !== undefined) ranges.push(start === previous ? String(start) : `${start}-${previous}`)
+  return ranges.length > 12 ? `${ranges.slice(0, 12).join(", ")}, ...` : ranges.join(", ")
+}
+
+function readDedupNotice(skipped: number[], requested: number) {
+  if (skipped.length === requested) {
+    return `[Read dedup: all ${skipped.length} requested lines were already read in this compaction window with identical file_path+line+hash.]`
+  }
+  return `[Read dedup: skipped ${skipped.length} already-read lines (${lineRanges(skipped)}) in this compaction window with identical file_path+line+hash.]`
+}
 
 // `offset` and `limit` were originally `z.coerce.number()` — the runtime
 // coercion was useful when the tool was called from a shell but serves no
@@ -43,6 +178,13 @@ export const ReadTool = Tool.define(
     const instruction = yield* Instruction.Service
     const lsp = yield* LSP.Service
     const scope = yield* Scope.Scope
+    const readDedup = yield* InstanceState.make(
+      Effect.fn("ReadTool.dedupState")(() =>
+        Effect.succeed({
+          sessions: new Map<string, ReadDedupWindow>(),
+        }),
+      ),
+    )
 
     const miss = Effect.fn("ReadTool.miss")(function* (filepath: string) {
       const dir = path.dirname(filepath)
@@ -254,9 +396,25 @@ export const ReadTool = Tool.define(
         )
       }
 
-      let output = [`<path>${filepath}</path>`, `<type>file</type>`, "<content>\n"].join("\n")
-      output += file.raw.map((line, i) => formatLine(lineInfo(i + file.offset, line, !file.unanchorable.includes(i + file.offset)))).join("\n")
+      const window = seedReadDedupWindow(yield* InstanceState.get(readDedup), ctx)
+      const seen = anchorSet(window, filepath)
+      const skipped: number[] = []
+      const visible = file.raw.flatMap((line, i) => {
+        const info = lineInfo(i + file.offset, line, !file.unanchorable.includes(i + file.offset))
+        if (info.anchorable && info.id !== UNANCHORABLE_TOKEN && seen.has(anchorKey(info.line, info.id))) {
+          skipped.push(info.line)
+          return []
+        }
+        return [info]
+      })
+      for (const info of visible) addAnchor(window.anchors, filepath, info.line, info.id)
 
+      let output = [`<path>${filepath}</path>`, `<type>file</type>`, "<content>\n"].join("\n")
+      output += visible.map(formatLine).join("\n")
+      if (skipped.length > 0) {
+        if (visible.length > 0) output += "\n"
+        output += readDedupNotice(skipped, file.raw.length)
+      }
       const last = file.offset + file.raw.length - 1
       const next = last + 1
       const truncated = file.more || file.cut
@@ -279,15 +437,19 @@ export const ReadTool = Tool.define(
         title,
         output,
         metadata: {
-          preview: file.raw.slice(0, 20).join("\n"),
+          preview: visible.slice(0, 20).map((item) => item.content).join("\n"),
           truncated,
           loaded: loaded.map((item) => item.filepath),
           hashline: {
             schemaVersion: SCHEMA_VERSION,
             displayAlgorithm: DISPLAY_ALGORITHM,
-            anchors: file.raw.length - file.unanchorable.length,
+            anchors: visible.filter((item) => item.anchorable && item.id !== UNANCHORABLE_TOKEN).length,
             unanchorable: file.unanchorable,
           },
+          readDedup: {
+            skipped: skipped.length,
+            windowID: window.windowID,
+          }
         },
       }
     })

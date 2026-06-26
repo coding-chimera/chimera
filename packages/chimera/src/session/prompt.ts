@@ -603,7 +603,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         abort: options.abortSignal ?? fallbackAbort,
         messageID: processor.message.id,
         callID: options.toolCallId,
-        extra: { model, bypassAgentCheck, promptOps },
+        extra: { model, bypassAgentCheck, promptOps, readDedupMessages: messages },
         agent: agent.name,
         messages: contextMessages,
         metadata: (val) =>
