@@ -2,7 +2,7 @@ Run the default Chimera propagation audit for the latest successful tool mutatio
 
 Use this tool after successful `edit`, `write`, or `apply_patch` mutations before claiming a code-change task is complete.
 
-This returns non-persistent propagation findings from CodeGraph-backed structural evidence. Findings are not commands and are not tracked obligations.
+This returns non-persistent propagation findings from CodeGraph-backed structural evidence. Findings are not commands and are not tracked obligations. Default output is CodePlan-focused: change facts show atomic labels and statement effects, and propagation findings show relation clauses, impacted blocks, and cause chains; lower-level language/heuristic signals stay in metadata unless explicitly inspected.
 
 Do NOT pass file paths to this tool. If you need to audit explicit files, symbols, or node ids, use `chimera_audit`.
 
@@ -20,3 +20,11 @@ After this tool:
 - Intentional, irrelevant, duplicate, or temporary-cleanup findings can be skipped with a brief note when that matters for closeout.
 - Use build, typecheck, lint, or tests for oracle verification; this audit is structural graph evidence only.
 - Use `chimera_obligations_sync` when findings need tracked follow-up.
+
+CodePlan atomic label glossary:
+- Modification labels: `MMB` modified method body, `MMS` modified method signature, `MF` modified field, `MC` modified class declaration, `MCC` modified constructor signature, `MI` modified import/using statement.
+- Addition labels: `AM` added method, `AF` added field, `AC` added class declaration, `ACC` added constructor, `AI` added import/using statement.
+- Deletion labels: `DM` deleted method, `DF` deleted field, `DC` deleted class declaration, `DCC` deleted constructor, `DI` deleted import/using statement.
+- When audit output shows `codeplan_atomic_label`, use it as the paper-style atomic-change classification that selects relation-clause propagation rules.
+- When output shows `statement_effect`, use it as the CodeGraph-backed method-body escape/effect summary.
+- When output shows `relation_clause` and `impacted_block`, treat them as the CodePlan propagation clause and affected block selected by the may-impact rule.
