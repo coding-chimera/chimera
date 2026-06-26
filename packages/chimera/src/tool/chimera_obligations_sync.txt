@@ -6,7 +6,8 @@ Do NOT use this tool to claim, resolve, or ignore an existing obligation. Use th
 
 Parameter rules:
 - With no explicit seed, sync from the latest successful Chimera tool mutation or git diff fallback.
-- Provide `files`, `filePath`, `symbol`, or `nodeID` to sync explicit audit seeds.
+- Provide `files`, `filePath`, `symbol`, `ref`, or legacy `nodeID` to sync explicit audit seeds.
+- Prefer `ref` copied from `Ref: node:<id>` output when targeting a specific graph node.
 - Existing explicit `files` / `filePath` seeds are synced from the filesystem before audit seed resolution, even when they are not yet tracked by git.
 - Use `range` only with `filePath`.
 - `depth` and `limit` bound audit traversal and output size.
@@ -17,6 +18,7 @@ Common calls:
 - Persist explicit audit findings for a changed file or symbol.
 
 After this tool:
+- Copy `Ref: obligation:<id>` from output when calling `chimera_obligation_claim`, `chimera_obligation_resolve`, or `chimera_obligation_ignore`.
 - Use `chimera_obligation_claim`, `chimera_obligation_resolve`, or `chimera_obligation_ignore` as each active obligation is handled.
 
 CodePlan atomic label glossary:

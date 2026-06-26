@@ -9,7 +9,8 @@ Do NOT use this tool as post-change verification. After a successful mutation, s
 Parameter rules:
 - `intent` is required and should state what you intend to mutate and why.
 - Provide `files` when you know likely mutation targets; this gives mutation gates precise coverage.
-- Provide `symbols` or `nodeIDs` when the risk is best represented by an API, function, component, route, or other graph seed.
+- Provide `symbols` or `refs` when the risk is best represented by an API, function, component, route, or other graph seed.
+- Prefer `refs` copied from `Ref: node:<id>` output over legacy `nodeIDs`; `nodeIDs` remains accepted for compatibility.
 - `depth` defaults to 2 and is capped at 5.
 - `limit` defaults to 30 and is capped at 100.
 - `refresh` defaults to true and controls whether stale graph signals may trigger a sync.

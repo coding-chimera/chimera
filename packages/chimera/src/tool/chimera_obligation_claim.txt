@@ -5,7 +5,8 @@ Use this tool when you are taking responsibility for reviewing or updating a spe
 Do NOT use this tool to create obligations or choose from candidates. Use `chimera_obligations_sync` first when findings need tracking.
 
 Parameter rules:
-- `obligationID` is required and must refer to an existing tracked obligation.
+- Prefer `ref` copied from `Ref: obligation:<id>` output.
+- `obligationID` remains accepted as a legacy raw obligation id.
 
 Common calls:
 - Claim a pending obligation before editing or reviewing its target.
