@@ -29,15 +29,16 @@ function label(input: Partial<ImpactLabelResult> & Pick<ImpactLabelResult, "labe
       },
       createdAt: "2026-01-01T00:00:00.000Z",
     },
+    codePlanAtomicLabel: input.codePlanAtomicLabel,
   }
 }
 
 describe("may impact rules", () => {
-  test("dispatches all first-pass impact labels", () => {
+  test("keeps legacy impact label fallback dispatch", () => {
     expect(dispatchMayImpactRule(label({ label: "method_signature" })).id).toBe("method_signature.callers")
-    expect(dispatchMayImpactRule(label({ label: "method_body", bodyEffect: "local_only" })).id).toBe("method_body.local_self_review")
-    expect(dispatchMayImpactRule(label({ label: "method_body", bodyEffect: "caller_visible" })).id).toBe("method_body.caller_visible")
-    expect(dispatchMayImpactRule(label({ label: "method_body", bodyEffect: "unknown_body_effect" })).id).toBe("method_body.unknown_fallback")
+    expect(dispatchMayImpactRule(label({ label: "method_body", bodyEffect: "local_only" })).id).toBe("method_body.self_review")
+    expect(dispatchMayImpactRule(label({ label: "method_body", bodyEffect: "caller_visible" })).id).toBe("method_body.relations")
+    expect(dispatchMayImpactRule(label({ label: "method_body", bodyEffect: "unknown_body_effect" })).id).toBe("method_body.fallback")
     expect(dispatchMayImpactRule(label({ label: "field" })).id).toBe("field.usages")
     expect(dispatchMayImpactRule(label({ label: "class_declaration" })).id).toBe("class_declaration.contract")
     expect(dispatchMayImpactRule(label({ label: "constructor_signature" })).id).toBe("constructor_signature.instantiations")
@@ -50,5 +51,24 @@ describe("may impact rules", () => {
     expect(dispatchMayImpactRule(label({ label: "doc_contract" })).id).toBe("doc_contract.self_review")
     expect(dispatchMayImpactRule(label({ label: "file_boundary" })).id).toBe("file_boundary.dependents_fallback")
     expect(dispatchMayImpactRule(label({ label: "unknown" })).id).toBe("unknown.conservative_fallback")
+  })
+
+  test("dispatches CodePlan atomic labels to relation clauses", () => {
+    const methodSignature = dispatchMayImpactRule(label({ label: "method_signature", codePlanAtomicLabel: "MMS" }))
+    const localBody = dispatchMayImpactRule(label({ label: "method_body", bodyEffect: "local_only", codePlanAtomicLabel: "MMB" }))
+    const unknownBody = dispatchMayImpactRule(label({ label: "method_body", bodyEffect: "unknown_body_effect", codePlanAtomicLabel: "MMB" }))
+    const field = dispatchMayImpactRule(label({ label: "field", codePlanAtomicLabel: "MF" }))
+    const addedMethod = dispatchMayImpactRule(label({ label: "method_signature", codePlanAtomicLabel: "AM" }))
+
+    expect(methodSignature.id).toBe("codeplan.MMS.relation_clauses")
+    expect(methodSignature.relationClauses).toContainEqual({ graph: "D", relation: "CalledBy" })
+    expect(methodSignature.relationClauses).toContainEqual({ graph: "D'", relation: "OverriddenBy" })
+    expect(methodSignature.relationKinds).toEqual([])
+    expect(localBody.id).toBe("codeplan.MMB.self_review")
+    expect(localBody.selfReviewOnly).toBe(true)
+    expect(unknownBody.includeImpactRadius).toBe(true)
+    expect(unknownBody.relationClauses).toContainEqual({ graph: "D", relation: "CalledBy" })
+    expect(field.relationClauses).toContainEqual({ graph: "D", relation: "ConstructedBy" })
+    expect(addedMethod.relationClauses).toContainEqual({ graph: "D'", relation: "CalledBy" })
   })
 })

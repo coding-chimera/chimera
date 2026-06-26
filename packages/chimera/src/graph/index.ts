@@ -37,12 +37,16 @@ import type {
   FileSemanticSignal,
   FileSemanticSignalKind,
   FrozenRelation,
+  FrozenCodePlanRelation,
   RelationEvidence,
   CodePlanRelationEvidence,
   RelationDeltaEvidence,
+  CodePlanRelationDeltaEvidence,
   RelationKind,
   CodePlanRelationKind,
+  CodePlanRelationGraphSide,
   RelationProjectionOptions,
+  CodePlanRelationProjectionOptions,
   RelationQueryOptions,
   CodePlanRelationQueryOptions,
   TaskInput,
@@ -650,6 +654,56 @@ function freezeRelationEvidence(relation: RelationEvidence, focal: Node, snapsho
   };
 }
 
+function codePlanGraphLabel(graphSide: CodePlanRelationGraphSide) {
+  return graphSide === 'before' ? 'D' : "D'";
+}
+
+function freezeCodePlanRelationEvidence(
+  relation: CodePlanRelationEvidence,
+  focal: Node,
+  snapshot: CodeGraphSnapshot,
+  graphSide: CodePlanRelationGraphSide
+): FrozenCodePlanRelation {
+  const focalNode = relationNodeKey(focal, snapshot);
+  const otherNode = relationNodeKey(relation.otherNode, snapshot);
+  const sourceNode = relationNodeKey(relation.sourceNode, snapshot);
+  const targetNode = relationNodeKey(relation.targetNode, snapshot);
+  const graphLabel = codePlanGraphLabel(graphSide);
+
+  return {
+    schemaVersion: 1,
+    objectType: 'codeplan_relation',
+    source: {
+      system: 'codegraph',
+      codegraphVersion: snapshot.codegraphVersion,
+      graphRevision: snapshot.revision,
+      schemaVersion: snapshot.schemaVersion,
+    },
+    payload: {
+      relation: relation.relation,
+      direction: relation.direction,
+      edgeKind: relation.edgeKind,
+      focalNode,
+      otherNode,
+      sourceNode,
+      targetNode,
+      provenance: relation.provenance,
+      quality: relation.quality,
+      edgeLocation: relation.edge.line || relation.edge.column ? { line: relation.edge.line, column: relation.edge.column } : undefined,
+      metadata: relation.edge.metadata,
+      graphSide,
+      graphLabel,
+      clause: {
+        graph: graphLabel,
+        blockNode: focalNode,
+        dependencyNode: otherNode,
+        relation: relation.relation,
+        expression: `Rel(${graphLabel}, ${focalNode.nodeKey}, ${relation.relation})`,
+      },
+    },
+  };
+}
+
 function relationDeltaKey(relation: FrozenRelation) {
   return [
     relation.payload.direction,
@@ -675,6 +729,48 @@ export function diffRelations(
   const afterByKey = new Map(afterRelations.map((relation) => [relationDeltaKey(relation), relation]));
   const beforeSource = firstRelation(beforeRelations[0]);
   const afterSource = firstRelation(afterRelations[0]);
+
+  return {
+    schemaVersion: 1,
+    source: {
+      system: 'codegraph',
+      beforeRevision: beforeSource?.graphRevision,
+      afterRevision: afterSource?.graphRevision,
+      beforeCodeGraphVersion: beforeSource?.codegraphVersion,
+      afterCodeGraphVersion: afterSource?.codegraphVersion,
+    },
+    beforeRelations: [...beforeRelations],
+    afterRelations: [...afterRelations],
+    addedRelations: [...afterByKey].flatMap(([key, relation]) => beforeByKey.has(key) ? [] : [relation]),
+    removedRelations: [...beforeByKey].flatMap(([key, relation]) => afterByKey.has(key) ? [] : [relation]),
+  };
+}
+
+function codePlanRelationDeltaKey(relation: FrozenCodePlanRelation) {
+  return [
+    relation.payload.direction,
+    relation.payload.relation,
+    relation.payload.edgeKind,
+    relation.payload.focalNode.nodeKey,
+    relation.payload.otherNode.nodeKey,
+    relation.payload.sourceNode.nodeKey,
+    relation.payload.targetNode.nodeKey,
+    relation.payload.provenance ?? '',
+  ].join('\0');
+}
+
+function firstCodePlanRelation(relation: FrozenCodePlanRelation | undefined) {
+  return relation?.source;
+}
+
+export function diffCodePlanRelations(
+  beforeRelations: readonly FrozenCodePlanRelation[] = [],
+  afterRelations: readonly FrozenCodePlanRelation[] = []
+): CodePlanRelationDeltaEvidence {
+  const beforeByKey = new Map(beforeRelations.map((relation) => [codePlanRelationDeltaKey(relation), relation]));
+  const afterByKey = new Map(afterRelations.map((relation) => [codePlanRelationDeltaKey(relation), relation]));
+  const beforeSource = firstCodePlanRelation(beforeRelations[0]);
+  const afterSource = firstCodePlanRelation(afterRelations[0]);
 
   return {
     schemaVersion: 1,
@@ -1046,6 +1142,14 @@ export class CodeGraph {
     afterRelations: readonly FrozenRelation[] = []
   ): RelationDeltaEvidence {
     return diffRelations(beforeRelations, afterRelations);
+  }
+
+
+  static diffCodePlanRelations(
+    beforeRelations: readonly FrozenCodePlanRelation[] = [],
+    afterRelations: readonly FrozenCodePlanRelation[] = []
+  ): CodePlanRelationDeltaEvidence {
+    return diffCodePlanRelations(beforeRelations, afterRelations);
   }
 
   private readNodeSource(node: Node): string | undefined {
@@ -1728,6 +1832,14 @@ export class CodeGraph {
     return diffRelations(beforeRelations, afterRelations);
   }
 
+
+  diffCodePlanRelations(
+    beforeRelations: readonly FrozenCodePlanRelation[] = [],
+    afterRelations: readonly FrozenCodePlanRelation[] = []
+  ): CodePlanRelationDeltaEvidence {
+    return diffCodePlanRelations(beforeRelations, afterRelations);
+  }
+
   /**
    * Active SQLite backend for this project's connection (`node-sqlite` or
    * `bun-sqlite`). Surfaced via `chimera status` and the `codegraph_status`
@@ -1923,6 +2035,32 @@ export class CodeGraph {
       ...(directions.has('incoming') ? this.getIncomingRelations(node.id, relationOptions) : []),
       ...(directions.has('outgoing') ? this.getOutgoingRelations(node.id, relationOptions) : []),
     ].map((relation) => freezeRelationEvidence(relation, node, snapshot));
+  }
+
+
+  projectIncidentCodePlanRelations(
+    nodeOrId: Node | FrozenSemanticObject | string,
+    snapshot: CodeGraphSnapshot = this.getSnapshot(),
+    options: CodePlanRelationProjectionOptions = {}
+  ): FrozenCodePlanRelation[] {
+    const node = typeof nodeOrId === 'string'
+      ? this.getNode(nodeOrId)
+      : 'objectType' in nodeOrId
+        ? this.getNode(nodeOrId.source.codegraphId)
+        : nodeOrId;
+    if (!node) return [];
+
+    const directions = new Set(options.directions ?? ['incoming', 'outgoing']);
+    const relationOptions: CodePlanRelationQueryOptions = {
+      relations: options.relations,
+      edgeKinds: options.edgeKinds,
+      provenance: options.provenance,
+    };
+
+    return [
+      ...(directions.has('incoming') ? this.getIncomingCodePlanRelations(node.id, relationOptions) : []),
+      ...(directions.has('outgoing') ? this.getOutgoingCodePlanRelations(node.id, relationOptions) : []),
+    ].map((relation) => freezeCodePlanRelationEvidence(relation, node, snapshot, options.graphSide ?? 'after'));
   }
 
   private projectRelations(

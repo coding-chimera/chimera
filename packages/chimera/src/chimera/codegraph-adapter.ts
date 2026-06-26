@@ -3,12 +3,15 @@ import {
   CodeGraph,
   type BuildContextOptions,
   type CodeGraphSnapshot,
+  type CodePlanRelationDeltaEvidence,
+  type CodePlanRelationProjectionOptions,
   type Edge as CodeGraphEdge,
   type EdgeKind,
   type FileSemanticDiffInput,
   type FileSemanticInfo,
   type FileSemanticInputNode,
   type FileSemanticSignal,
+  type FrozenCodePlanRelation,
   type FrozenRelation,
   type FrozenSemanticObject,
   type IndexProgress,
@@ -185,8 +188,18 @@ export class CodeGraphAdapter {
     return this.graph.projectIncidentRelations(nodeOrId, snapshot, options)
   }
 
+
+  incidentCodePlanRelations(nodeOrId: CodeGraphNode | FrozenSemanticObject | string, snapshot = this.snapshot(), options: CodePlanRelationProjectionOptions = {}): FrozenCodePlanRelation[] {
+    return this.graph.projectIncidentCodePlanRelations(nodeOrId, snapshot, options)
+  }
+
   relationDiff(beforeRelations: readonly FrozenRelation[] = [], afterRelations: readonly FrozenRelation[] = []): RelationDeltaEvidence {
     return this.graph.diffRelations(beforeRelations, afterRelations)
+  }
+
+
+  codePlanRelationDiff(beforeRelations: readonly FrozenCodePlanRelation[] = [], afterRelations: readonly FrozenCodePlanRelation[] = []): CodePlanRelationDeltaEvidence {
+    return this.graph.diffCodePlanRelations(beforeRelations, afterRelations)
   }
 
   async buildContext(input: TaskInput, options: BuildContextOptions = {}) {

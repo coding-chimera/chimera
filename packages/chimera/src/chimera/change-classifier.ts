@@ -8,6 +8,9 @@ import {
   diffRelations,
   getFileSemanticInfo,
   type CodeGraphSnapshot,
+  type CodePlanStatementEffectEvidence,
+  type CodePlanStatementEffectKind,
+  type CodePlanStatementEffectNode,
   type FileSemanticInfo,
   type FileSemanticInputNode,
   type FileSemanticSignal,
@@ -64,6 +67,7 @@ export type ChangeFactEvidence = {
   semanticDiff?: NodeSemanticDiff
   relationDelta?: RelationDeltaEvidence
   languageSignals?: LanguageAwareSignal[]
+  statementEffect?: CodePlanStatementEffectEvidence
   fileSemantic?: FileSemanticInfo
   semanticSnapshots?: {
     version: 1
@@ -385,13 +389,19 @@ function isCallableNode(node: FrozenSemanticObject) {
   return node.payload.semantic?.attributes.isCallable ?? CALLABLE_KINDS.has(node.payload.kind)
 }
 
+const DEFAULT_LANGUAGE_SIGNAL_KINDS = new Set<LanguageAwareSignal["kind"]>([
+  "constructor_like",
+  "override_like",
+  "route_handler_like",
+])
+
 function languageSignalSignals(signals: LanguageAwareSignal[] | undefined) {
-  return (signals ?? []).flatMap((signal) => [
+  return (signals ?? []).filter((signal) => DEFAULT_LANGUAGE_SIGNAL_KINDS.has(signal.kind)).flatMap((signal) => [
     `codegraph_language_signal:${signal.kind}`,
     `language:${signal.language}`,
     `source:${signal.source}`,
     `quality:${signal.quality}`,
-    ...signal.signals,
+    ...signal.signals.filter((item) => !item.startsWith("codegraph_language_signal:") || item === `codegraph_language_signal:${signal.kind}`),
   ])
 }
 
@@ -408,28 +418,34 @@ function bodyLanguageContext(node: FrozenSemanticObject | null | undefined) {
   return nodeLanguageSignals(node).filter((signal) => context.has(signal.kind))
 }
 
-function bodySignalConfidence(signals: LanguageAwareSignal[], node: FrozenSemanticObject | null | undefined) {
+function bodySignalConfidence(signals: LanguageAwareSignal[], node: FrozenSemanticObject | null | undefined, statementEffect?: CodePlanStatementEffectEvidence) {
+  if (statementEffect?.effect === "local_only") return 0.25
+  if (statementEffect?.effect === "unknown_fallback") return 0.5
   const kinds = new Set(signals.map((signal) => signal.kind))
   if (kinds.has("local_only_change")) return 0.25
   if (kinds.has("unknown_body_effect")) return 0.5
   const callerVisible = signals.length > 0
   if (callerVisible && bodyLanguageContext(node).length > 0) return 0.9
-  if (callerVisible) return 0.85
-  return 0.5
+  if (callerVisible) return Math.max(0.85, statementEffect?.confidence ?? 0)
+  return statementEffect?.confidence ?? 0.5
 }
 
-function bodySignalRule(signals: LanguageAwareSignal[]) {
+function bodySignalRule(signals: LanguageAwareSignal[], statementEffect?: CodePlanStatementEffectEvidence) {
+  if (statementEffect?.effect === "local_only") return "method_body.self_review"
+  if (statementEffect?.effect === "unknown_fallback") return "method_body.fallback"
+  if (statementEffect) return "method_body.statement_effect"
   const kinds = new Set(signals.map((signal) => signal.kind))
-  if (kinds.has("local_only_change")) return "codegraph.language.body.local_only"
-  if (kinds.has("unknown_body_effect")) return "codegraph.language.body.unknown"
-  if (signals.length > 0) return "codegraph.language.body.caller_visible"
+  if (kinds.has("local_only_change")) return "method_body.self_review"
+  if (kinds.has("unknown_body_effect")) return "method_body.fallback"
+  if (signals.length > 0) return "method_body.relations"
   return "range.node.body"
 }
 
-function bodySignalReason(signals: LanguageAwareSignal[], node: FrozenSemanticObject | null | undefined, fallback: string) {
-  if (signals.length === 0) return fallback
+function bodySignalReason(signals: LanguageAwareSignal[], node: FrozenSemanticObject | null | undefined, fallback: string, statementEffect?: CodePlanStatementEffectEvidence) {
+  if (signals.length === 0 && !statementEffect) return fallback
   const context = bodyLanguageContext(node).map((signal) => signal.kind)
   return [
+    statementEffect?.reason,
     signals.map((signal) => signal.reason).join("; "),
     context.length ? `node context: ${context.join(", ")}` : undefined,
   ].filter(Boolean).join("; ")
@@ -512,6 +528,69 @@ function touched(nodes: FrozenSemanticObject[], filePath: string, sourceRange: S
   )
 }
 
+const BODY_EFFECT_BY_SIGNAL = {
+  local_only_change: "local_only",
+  this_field_write: "receiver_field_write",
+  parameter_mutation: "parameter_object_mutation",
+  global_or_module_state_write: "module_or_global_state_write",
+  return_value_changed: "return_value_change",
+  unknown_body_effect: "unknown_fallback",
+} satisfies Partial<Record<LanguageAwareSignal["kind"], CodePlanStatementEffectKind>>
+
+function statementEffectKind(signals: LanguageAwareSignal[]): CodePlanStatementEffectKind {
+  const kinds = new Set(signals.map((signal) => signal.kind))
+  if (kinds.has("unknown_body_effect")) return "unknown_fallback"
+  if (kinds.has("this_field_write")) return "receiver_field_write"
+  if (kinds.has("parameter_mutation")) return "parameter_object_mutation"
+  if (kinds.has("global_or_module_state_write")) return "module_or_global_state_write"
+  if (kinds.has("return_value_changed")) return "return_value_change"
+  if (kinds.has("local_only_change")) return "local_only"
+  return "unknown_fallback"
+}
+
+function statementEffectNodes(nodes: FrozenSemanticObject[], filePath: string, hunk: SourceHunk | undefined): CodePlanStatementEffectNode[] {
+  const oldRange = hunk?.oldRange
+  const newRange = hunk?.newRange
+  return nodes
+    .filter((node) => node.payload.kind === "statement" && node.payload.filePath === filePath && (nodeRangeIntersects(node, newRange) || nodeRangeIntersects(node, oldRange)))
+    .map((node) => ({
+      nodeKey: nodeKey(node),
+      filePath: node.payload.filePath,
+      range: node.payload.range,
+      signature: node.payload.signature,
+    }))
+}
+
+function codePlanStatementEffect(input: {
+  beforeNodes: FrozenSemanticObject[]
+  afterNodes: FrozenSemanticObject[]
+  filePath: string
+  hunk: SourceHunk | undefined
+  languageSignals: LanguageAwareSignal[]
+}): CodePlanStatementEffectEvidence {
+  const effect = statementEffectKind(input.languageSignals)
+  const nodes = statementEffectNodes([...input.beforeNodes, ...input.afterNodes], input.filePath, input.hunk)
+  const signalKinds = input.languageSignals.flatMap((signal) => signal.kind in BODY_EFFECT_BY_SIGNAL ? [signal.kind] : [])
+  return {
+    schemaVersion: 1,
+    source: "codegraph:statement_effect",
+    effect,
+    graphBacked: nodes.length > 0 || input.languageSignals.some((signal) => signal.source.startsWith("codegraph:")),
+    confidence: input.languageSignals.reduce((max, signal) => Math.max(max, signal.confidence), effect === "unknown_fallback" ? 0.45 : 0.7),
+    signalKinds,
+    statementNodes: nodes,
+    reason: nodes.length
+      ? `CodeGraph statement nodes and language signals classify method body effect as ${effect}`
+      : `CodeGraph language signals classify method body effect as ${effect}`,
+    signals: [
+      `codeplan_statement_effect:${effect}`,
+      `source:codegraph:statement_effect`,
+      `graph_backed:${nodes.length > 0 || input.languageSignals.some((signal) => signal.source.startsWith("codegraph:"))}`,
+      ...nodes.map((node) => `codegraph_statement_node:${node.nodeKey}`),
+    ],
+  }
+}
+
 function evidence(input: {
   record: ToolMutationRecord
   rule: string
@@ -525,6 +604,7 @@ function evidence(input: {
   semanticDiff?: NodeSemanticDiff
   relationDelta?: RelationDeltaEvidence
   languageSignals?: LanguageAwareSignal[]
+  statementEffect?: CodePlanStatementEffectEvidence
   fileSemantic?: FileSemanticInfo
   signals: string[]
 }): ChangeFactEvidence {
@@ -548,6 +628,7 @@ function evidence(input: {
     semanticDiff: input.semanticDiff,
     relationDelta: input.relationDelta,
     languageSignals: input.languageSignals,
+    statementEffect: input.statementEffect,
     fileSemantic: input.fileSemantic,
     signals: input.signals,
   }
@@ -570,6 +651,7 @@ function fact(input: {
   semanticDiff?: NodeSemanticDiff
   relationDelta?: RelationDeltaEvidence
   languageSignals?: LanguageAwareSignal[]
+  statementEffect?: CodePlanStatementEffectEvidence
   fileSemantic?: FileSemanticInfo
   signals: string[]
 }): ChangeFact {
@@ -607,6 +689,7 @@ function fact(input: {
       semanticDiff: input.semanticDiff,
       relationDelta: input.relationDelta,
       languageSignals: input.languageSignals,
+      statementEffect: input.statementEffect,
       fileSemantic: input.fileSemantic,
       signals: input.signals,
     }),
@@ -760,6 +843,7 @@ export function classifyChangeRecord(input: {
           continue
         }
         const languageSignals = isBody ? bodyLanguageSignals(before, after, hunk) : []
+        const statementEffect = isBody ? codePlanStatementEffect({ beforeNodes, afterNodes, filePath: diff.filePath, hunk, languageSignals }) : undefined
         facts.push(fact({
           record,
           filePath: diff.filePath,
@@ -769,17 +853,18 @@ export function classifyChangeRecord(input: {
           afterNode: after,
           changeKind: "modify",
           subjectKind: isBody ? "body" : subject,
-          confidence: isBody ? bodySignalConfidence(languageSignals, after) : 0.85,
-          rule: isBody ? bodySignalRule(languageSignals) : `range.node.${subject}`,
+          confidence: isBody ? bodySignalConfidence(languageSignals, after, statementEffect) : 0.85,
+          rule: isBody ? bodySignalRule(languageSignals, statementEffect) : `range.node.${subject}`,
           confidenceReason: isBody
-            ? bodySignalReason(languageSignals, after, "changed hunk intersects callable node but CodeGraph semantic diff fields were stable")
+            ? bodySignalReason(languageSignals, after, "changed hunk intersects callable node but CodeGraph semantic diff fields were stable", statementEffect)
             : "changed hunk intersects a CodeGraph node",
           status,
           hunk,
           semanticDiff,
           relationDelta: relationDeltaFor(before, after),
           languageSignals: isBody ? languageSignals : undefined,
-          signals: isBody ? [...semanticSignals(after), ...languageSignalSignals(languageSignals)] : semanticSignals(after),
+          statementEffect,
+          signals: isBody ? [...semanticSignals(after), ...(statementEffect?.signals ?? []), ...languageSignalSignals(languageSignals)] : semanticSignals(after),
         }))
         emitted.add(nodeKey(after))
       }
@@ -811,6 +896,7 @@ export function classifyChangeRecord(input: {
           }
           if (isCallableNode(after) && !hasBoundaryNode) {
             const languageSignals = bodyLanguageSignals(before, after, hunk)
+            const statementEffect = codePlanStatementEffect({ beforeNodes, afterNodes, filePath: diff.filePath, hunk, languageSignals })
             facts.push(fact({
               record,
               filePath: diff.filePath,
@@ -820,15 +906,16 @@ export function classifyChangeRecord(input: {
               afterNode: after,
               changeKind: "modify",
               subjectKind: "body",
-              confidence: bodySignalConfidence(languageSignals, after),
-              rule: bodySignalRule(languageSignals),
-              confidenceReason: bodySignalReason(languageSignals, after, "deleted changed lines intersect callable node but CodeGraph semantic diff fields were stable"),
+              confidence: bodySignalConfidence(languageSignals, after, statementEffect),
+              rule: bodySignalRule(languageSignals, statementEffect),
+              confidenceReason: bodySignalReason(languageSignals, after, "deleted changed lines intersect callable node but CodeGraph semantic diff fields were stable", statementEffect),
               status,
               hunk,
               semanticDiff,
               relationDelta: relationDeltaFor(before, after),
               languageSignals,
-              signals: [...semanticSignals(after), ...languageSignalSignals(languageSignals)],
+              statementEffect,
+              signals: [...semanticSignals(after), ...statementEffect.signals, ...languageSignalSignals(languageSignals)],
             }))
           }
           continue

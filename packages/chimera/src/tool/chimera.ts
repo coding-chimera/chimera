@@ -20,6 +20,11 @@ import {
   readIndexJob,
   NODE_KINDS,
   type CodeGraphSnapshot,
+  type CodePlanAtomicLabel,
+  type CodePlanRelationGraphLabel,
+  type CodePlanRelationKind,
+  type CodePlanStatementEffectKind,
+  type FrozenCodePlanRelation,
   type FrozenRelation,
   type FrozenSemanticObject,
   type IndexProgress as CodeGraphIndexProgress,
@@ -442,6 +447,7 @@ type CauseLink = {
     | "change_fact"
     | "file_dependency"
     | "relation"
+    | "relation_clause"
     | "before_relation"
     | "after_relation"
     | "added_relation"
@@ -463,6 +469,10 @@ type AuditCandidate = {
   classification: ChangeClassification
   evidence: string
   causeChain: CauseLink[]
+  atomicLabel?: CodePlanAtomicLabel
+  statementEffect?: CodePlanStatementEffectKind
+  relationClause?: string
+  impactedBlock?: string
 }
 
 type AuditMetadata = {
@@ -518,6 +528,10 @@ type PersistentObligation = {
   classification?: ChangeClassification
   evidence: string
   causeChain?: CauseLink[]
+  atomicLabel?: CodePlanAtomicLabel
+  statementEffect?: CodePlanStatementEffectKind
+  relationClause?: string
+  impactedBlock?: string
   source: {
     type: AuditMetadata["source"]
     provenanceID?: string
@@ -940,21 +954,26 @@ function formatClassification(item: { file: string; classification: ChangeClassi
   return `- ${item.file}: ${item.classification}\n  reason: ${item.reason}`
 }
 
+function codePlanAtomicLabelLine(label: ImpactLabelResult["codePlanAtomicLabel"] | undefined) {
+  return label ? `  codeplan_atomic_label: ${label}` : undefined
+}
 function formatChangeFact(fact: ChangeFact) {
   const relationDelta = fact.evidence.relationDelta
+  const defaultRule = fact.subjectKind === "body" ? undefined : `  rule: ${fact.evidence.rule}`
+  const label = deriveImpactLabels([fact])[0]
   return [
     `- ${fact.id}: ${fact.subjectKind}/${fact.changeKind} ${fact.filePath}`,
     fact.nodeKey ? `  node: ${fact.nodeKey}` : undefined,
     `  confidence: ${fact.confidence}`,
-    `  rule: ${fact.evidence.rule}`,
-    `  reason: ${fact.evidence.confidenceReason}`,
+    defaultRule,
+    codePlanAtomicLabelLine(label?.codePlanAtomicLabel),
+    fact.evidence.statementEffect ? `  statement_effect: ${fact.evidence.statementEffect.effect}` : undefined,
     relationDelta
       ? `  relation_delta: +${relationDelta.addedRelations.length} -${relationDelta.removedRelations.length} before:${relationDelta.beforeRelations.length} after:${relationDelta.afterRelations.length}`
       : undefined,
     fact.evidence.replayLifecycle
       ? `  replay_lifecycle: ${fact.evidence.replayLifecycle.status} (${fact.evidence.replayLifecycle.reason})`
       : undefined,
-    fact.evidence.signals.length ? `  signals: ${fact.evidence.signals.join(", ")}` : undefined,
   ]
     .filter(Boolean)
     .join("\n")
@@ -994,7 +1013,7 @@ function impactLabelCause(label: ImpactLabelResult): CauseLink {
   return {
     type: "impact_label",
     target: `${label.label} ${label.fact.filePath}`,
-    evidence: `chimera:impact_label:${label.label}:confidence:${label.confidence}`,
+    evidence: `chimera:impact_label:${label.label}${label.codePlanAtomicLabel ? `:codeplan_atomic:${label.codePlanAtomicLabel}` : ""}:confidence:${label.confidence}`,
   }
 }
 
@@ -1016,6 +1035,106 @@ function factReviewTarget(label: ImpactLabelResult) {
   return label.fact.nodeKey ?? label.fact.filePath
 }
 
+const CodePlanRelationKinds = new Set<CodePlanRelationKind>([
+  "ParentOf",
+  "ChildOf",
+  "Construct",
+  "ConstructedBy",
+  "Imports",
+  "ImportedBy",
+  "BaseClassOf",
+  "DerivedClassOf",
+  "Overrides",
+  "OverriddenBy",
+  "Calls",
+  "CalledBy",
+  "Instantiates",
+  "InstantiatedBy",
+  "Uses",
+  "UsedBy",
+])
+
+function codePlanRelationKind(relation: string): CodePlanRelationKind | undefined {
+  return CodePlanRelationKinds.has(relation as CodePlanRelationKind) ? relation as CodePlanRelationKind : undefined
+}
+
+function relationClauseExpression(graph: CodePlanRelationGraphLabel, blockNode: { nodeKey: string }, relation: CodePlanRelationKind) {
+  return `Rel(${graph}, ${blockNode.nodeKey}, ${relation})`
+}
+
+function relationClauseFromFrozen(relation: FrozenCodePlanRelation) {
+  return relation.payload.clause.expression
+}
+
+function relationClauseCause(target: string, expression: string, evidence: string): CauseLink {
+  return { type: "relation_clause", target, evidence: `${evidence}:${expression}` }
+}
+
+function codePlanRelationEvidence(relation: FrozenCodePlanRelation) {
+  return `codegraph:relation_clause:${relation.payload.clause.expression}:${relation.payload.edgeKind}:${relation.payload.quality}`
+}
+
+function codePlanRelationCandidate(input: {
+  state: ProjectGraphState
+  snapshot: CodeGraphSnapshot
+  label: ImpactLabelResult
+  rule: MayImpactRule
+  relation: FrozenCodePlanRelation
+  sourceCause: CauseLink
+  seedNames: string[]
+}): AuditCandidate {
+  const node = input.state.graph.node(input.relation.payload.otherNode.codegraphId)
+  const target = node ? nodeTarget(node) : frozenRelationNodeTarget(input.relation.payload.otherNode)
+  const classification = classifyFile(node?.filePath ?? input.relation.payload.otherNode.filePath).classification
+  const expression = relationClauseFromFrozen(input.relation)
+  return {
+    target,
+    targetNode: node ? input.state.graph.projectNode(node, input.snapshot) : undefined,
+    reason: `${node ? riskReasonForNode(node) : classifyFile(input.relation.payload.otherNode.filePath).reason}; ${input.rule.id} selected ${expression}`,
+    risk: node ? riskForNode(node) : riskForFrozenRelationNode(input.relation.payload.otherNode),
+    classification,
+    evidence: `${mayImpactRuleEvidence(input.rule)}:relation_clause:${expression}`,
+    causeChain: [
+      ...ruleCauseChain(input.sourceCause, input.label, input.rule, target),
+      relationClauseCause(target, expression, codePlanRelationEvidence(input.relation)),
+    ],
+    atomicLabel: input.label.codePlanAtomicLabel,
+    statementEffect: input.label.fact.evidence.statementEffect?.effect,
+    relationClause: expression,
+    impactedBlock: target,
+  }
+}
+
+function relationClauseCandidates(input: {
+  state: ProjectGraphState
+  snapshot: CodeGraphSnapshot
+  seedNodes: CodeGraphNode[]
+  ruleItems: Array<{ label: ImpactLabelResult; rule: MayImpactRule }>
+  sourceCause: CauseLink
+  seedNames: string[]
+  limit: number
+}) {
+  return input.ruleItems.flatMap((item) =>
+    item.rule.relationClauses.flatMap((clause) =>
+      input.seedNodes.flatMap((node) =>
+        input.state.graph.incidentCodePlanRelations(node.id, input.snapshot, {
+          directions: ["incoming"],
+          graphSide: clause.graph === "D" ? "before" : "after",
+          relations: [clause.relation],
+        }).map((relation) => codePlanRelationCandidate({
+          state: input.state,
+          snapshot: input.snapshot,
+          label: item.label,
+          rule: item.rule,
+          relation,
+          sourceCause: input.sourceCause,
+          seedNames: input.seedNames,
+        })),
+      ),
+    ),
+  ).slice(0, input.limit)
+}
+
 function relationDeltaCandidate(input: {
   state: ProjectGraphState
   snapshot: CodeGraphSnapshot
@@ -1028,6 +1147,8 @@ function relationDeltaCandidate(input: {
   const classification = classifyFile(current?.filePath ?? input.relation.payload.otherNode.filePath).classification
   const change = input.type === "added_relation" ? "added" : "removed"
   const graphSide = input.type === "added_relation" ? "after graph" : "before graph"
+  const relationKind = codePlanRelationKind(input.relation.payload.relation)
+  const relationClause = relationKind ? relationClauseExpression(input.type === "added_relation" ? "D'" : "D", input.relation.payload.focalNode, relationKind) : undefined
   return {
     target,
     targetNode: current ? input.state.graph.projectNode(current, input.snapshot) : undefined,
@@ -1038,7 +1159,10 @@ function relationDeltaCandidate(input: {
     causeChain: [
       ...input.baseCauseChain,
       { type: input.type, target, evidence: frozenRelationEvidence(input.relation, input.type) },
+      ...(relationClause ? [relationClauseCause(target, relationClause, `codegraph:relation_delta:${change}`)] : []),
     ],
+    relationClause,
+    impactedBlock: target,
   }
 }
 
@@ -1151,7 +1275,13 @@ function buildImpactEvidence(input: {
         )
       : [],
   ).slice(0, input.limit)
-  const relationNodes = uniqueNodes(ruleRelations.map((item) => item.relation.otherNode))
+  const ruleClauseEvidence = relationClauseCandidates({ state: input.state, snapshot: input.snapshot, seedNodes: input.seedNodes, ruleItems, sourceCause: cause, seedNames, limit: input.limit })
+  const ruleClauseNodes = uniqueNodes(ruleClauseEvidence.flatMap((item) => {
+    const id = item.targetNode?.source.codegraphId
+    const node = id ? input.state.graph.node(id) : undefined
+    return node ? [node] : []
+  }))
+  const relationNodes = uniqueNodes([...ruleRelations.map((item) => item.relation.otherNode), ...ruleClauseNodes])
   const relationNodeIDs = new Set(relationNodes.map((node) => node.id))
   const includeImpactRadius = ruleItems.some((item) => item.rule.includeImpactRadius)
   const impactedNodes = includeImpactRadius
@@ -1173,6 +1303,7 @@ function buildImpactEvidence(input: {
     : []
   const evidence = uniqueCandidates([
     ...relationDeltaCandidates({ state: input.state, snapshot: input.snapshot, changeFacts: input.changeFacts, sourceCause: cause }),
+    ...ruleClauseEvidence,
     ...ruleItems.filter((item) => item.rule.selfReviewOnly).map((item) => {
       const target = factReviewTarget(item.label)
       const classification = classifyFile(item.label.fact.filePath).classification
@@ -1183,6 +1314,9 @@ function buildImpactEvidence(input: {
         classification,
         evidence: `${mayImpactRuleEvidence(item.rule)}:self_review`,
         causeChain: [...ruleCauseChain(cause, item.label, item.rule, target), { type: "self_review" as const, target, evidence: "chimera:self_review" }],
+        atomicLabel: item.label.codePlanAtomicLabel,
+        statementEffect: item.label.fact.evidence.statementEffect?.effect,
+        impactedBlock: target,
       }
     }),
     ...ruleRelations.map((item) => {
@@ -1199,6 +1333,9 @@ function buildImpactEvidence(input: {
         classification,
         evidence: `${mayImpactRuleEvidence(item.rule)}:relation:${relation.relation}`,
         causeChain: [...ruleCauseChain(cause, item.label, item.rule, target), { type: "relation" as const, target, evidence: relationLabel }],
+        atomicLabel: item.label.codePlanAtomicLabel,
+        statementEffect: item.label.fact.evidence.statementEffect?.effect,
+        impactedBlock: target,
       }
     }),
     ...ruleItems.filter((item) => item.rule.includeFileDependents).flatMap((item) =>
@@ -1211,6 +1348,9 @@ function buildImpactEvidence(input: {
           classification,
           evidence: `${mayImpactRuleEvidence(item.rule)}:file_dependents`,
           causeChain: [...ruleCauseChain(cause, item.label, item.rule, file), { type: "file_dependency" as const, target: file, evidence: "codegraph:file_dependents" }],
+          atomicLabel: item.label.codePlanAtomicLabel,
+          statementEffect: item.label.fact.evidence.statementEffect?.effect,
+          impactedBlock: file,
         }
       }),
     ),
@@ -1226,6 +1366,9 @@ function buildImpactEvidence(input: {
           classification,
           evidence: `${mayImpactRuleEvidence(item.rule)}:impact_radius`,
           causeChain: [...ruleCauseChain(cause, item.label, item.rule, target), { type: "impact_radius" as const, target, evidence: "codegraph:impact_radius" }],
+          atomicLabel: item.label.codePlanAtomicLabel,
+          statementEffect: item.label.fact.evidence.statementEffect?.effect,
+          impactedBlock: target,
         }
       }),
     ),
@@ -1447,6 +1590,10 @@ function makeObligation(audit: AuditMetadata, candidate: AuditCandidate, now: st
     classification: candidate.classification,
     evidence: candidate.evidence,
     causeChain: candidate.causeChain,
+    atomicLabel: candidate.atomicLabel,
+    statementEffect: candidate.statementEffect,
+    relationClause: candidate.relationClause,
+    impactedBlock: candidate.impactedBlock,
     source: {
       type: audit.source,
       provenanceID: audit.provenance?.id,
@@ -1489,6 +1636,10 @@ function upsertObligations(store: ObligationStore, audit: AuditMetadata, now: st
       classification: next.classification,
       evidence: next.evidence,
       causeChain: next.causeChain,
+      atomicLabel: next.atomicLabel,
+      statementEffect: next.statementEffect,
+      relationClause: next.relationClause,
+      impactedBlock: next.impactedBlock,
       source: next.source,
       updatedAt: now,
     }
@@ -1573,7 +1724,10 @@ function obligationContext(ctx: Tool.Context, refresh: boolean) {
 function formatObligation(item: PersistentObligation) {
   return [
     `- ${item.id} [${item.status}] ${item.target}`,
-    `  reason: ${item.reason}`,
+    item.atomicLabel ? `  codeplan_atomic_label: ${item.atomicLabel}` : undefined,
+    item.statementEffect ? `  statement_effect: ${item.statementEffect}` : undefined,
+    item.relationClause ? `  relation_clause: ${item.relationClause}` : undefined,
+    item.impactedBlock ? `  impacted_block: ${item.impactedBlock}` : undefined,
     `  risk: ${item.risk}`,
     item.classification ? `  classification: ${item.classification}` : undefined,
     `  evidence: ${item.evidence}`,
@@ -1588,19 +1742,21 @@ function formatObligation(item: PersistentObligation) {
 function formatEvidence(item: AuditCandidate) {
   return [
     `- target: ${item.target}`,
-    `  reason: ${item.reason}`,
+    item.atomicLabel ? `  codeplan_atomic_label: ${item.atomicLabel}` : undefined,
+    item.statementEffect ? `  statement_effect: ${item.statementEffect}` : undefined,
+    item.relationClause ? `  relation_clause: ${item.relationClause}` : undefined,
+    item.impactedBlock ? `  impacted_block: ${item.impactedBlock}` : undefined,
     `  risk: ${item.risk}`,
     `  classification: ${item.classification}`,
     `  evidence: ${item.evidence}`,
     `  cause_chain: ${formatCauseChain(item.causeChain)}`,
-  ].join("\n")
+  ].filter(Boolean).join("\n")
 }
 
 function formatPredesignEvidence(item: AuditCandidate) {
   return [
     `- ${item.target}: ${item.classification} / ${item.risk}`,
     `  evidence: ${item.evidence}`,
-    `  reason: ${compactText(item.reason)}`,
     `  cause_chain: ${compactText(formatCauseChain(item.causeChain))}`,
   ].join("\n")
 }
@@ -1668,7 +1824,7 @@ function formatAuditOutput(audit: AuditMetadata) {
     "",
     "Behavior-boundary evidence:",
     ...(audit.obligations.length
-      ? audit.obligations.map((item) => `- ${item.target}: ${item.classification} / ${item.risk}`)
+      ? audit.obligations.map((item) => `- ${item.target}: ${[item.atomicLabel ? `atomic ${item.atomicLabel}` : undefined, item.relationClause, item.impactedBlock ? `block ${item.impactedBlock}` : undefined].filter(Boolean).join(" / ") || `${item.classification} / ${item.risk}`}`)
       : ["- None found."]),
     "",
     `Propagation findings (${audit.obligations.length}):`,
