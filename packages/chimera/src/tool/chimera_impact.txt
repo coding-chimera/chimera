@@ -15,16 +15,17 @@ Use this tool when you have a concrete seed and need to understand what may be a
 
 ## Seed Selection Rules
 
-Pass at least one concrete, non-empty seed: `nodeID`, `symbol`, or `filePath`.
+Pass at least one concrete, non-empty seed: `ref`, `nodeID`, `symbol`, or `filePath`.
 
-1. Prefer `nodeID` when you have an exact CodeGraph node id from `chimera_search`, `chimera_file_symbols`, or prior tool metadata.
-2. Use `filePath` for file-level dependents and importers. Existing explicit `filePath` seeds are synced from the filesystem before impact seed resolution, even when the file is not yet tracked by git.
-3. Use `filePath` plus `range` when the relevant code is in a known line range. This resolves seed symbols intersecting that range.
-4. Use `symbol` only when the name is specific enough to identify the intended seed. Generic names such as `run`, `handler`, `options`, `transform`, or `variants` may match unrelated symbols across packages or languages.
-5. If a symbol name is generic, duplicated, or known to live in a specific file, first call `chimera_file_symbols` with `filePath` and optional `range`, then call `chimera_impact` with the exact `nodeID`.
-6. Use `kind` only as a narrowing filter when you know the CodeGraph node kind you want.
+1. Prefer `ref` when a previous Chimera output printed `Ref: node:<id>`; copy it exactly instead of extracting the raw id.
+2. Use legacy `nodeID` only when you already have an exact CodeGraph node id without a typed ref.
+3. Use `filePath` for file-level dependents and importers. Existing explicit `filePath` seeds are synced from the filesystem before impact seed resolution, even when the file is not yet tracked by git.
+4. Use `filePath` plus `range` when the relevant code is in a known line range. This resolves seed symbols intersecting that range.
+5. Use `symbol` only when the name is specific enough to identify the intended seed. Generic names such as `run`, `handler`, `options`, `transform`, or `variants` may match unrelated symbols across packages or languages.
+6. If a symbol name is generic, duplicated, or known to live in a specific file, first call `chimera_file_symbols` with `filePath` and optional `range`, then call `chimera_impact` with the copied `Ref: node:<id>` value as `ref`.
+7. Use `kind` only as a narrowing filter when you know the CodeGraph node kind you want.
 
-Omit seed fields you do not know. Do not pass empty strings for `nodeID`, `symbol`, or `filePath`. A call with blank seed fields is not a valid impact query and will fail.
+Omit seed fields you do not know. Do not pass empty strings for `ref`, `nodeID`, `symbol`, or `filePath`. A call with blank seed fields is not a valid impact query and will fail.
 
 ## When NOT to Use This Tool
 
@@ -37,7 +38,8 @@ Skip this tool when:
 
 ## Parameters
 
-- `nodeID`: exact CodeGraph node id to analyze; best choice when available.
+- `ref`: typed Chimera ref such as `node:<id>` copied from prior output; preferred exact node seed.
+- `nodeID`: legacy exact CodeGraph node id to analyze when no typed ref is available.
 - `symbol`: symbol name to resolve and analyze; use only when specific enough.
 - `filePath`: absolute or project-relative file path for file-level impact.
 - `range`: optional source range inside `filePath`; meaningful only with `filePath`.

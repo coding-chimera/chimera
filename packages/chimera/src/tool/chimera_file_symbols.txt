@@ -17,4 +17,5 @@ Common calls:
 - Resolve the smallest graph seeds for a line range before impact or audit.
 
 After this tool:
+- Copy `Ref: node:<id>` from symbol output when a later Chimera tool accepts `ref` or `refs`; prefer that over raw `nodeID`.
 - Use `chimera_impact` or `chimera_audit` when the listed symbols may propagate behavior.

@@ -5,7 +5,8 @@ Use this tool when the required review or update has been completed for a specif
 Do NOT use this tool for skipped or irrelevant obligations. Use `chimera_obligation_ignore` with a reason instead.
 
 Parameter rules:
-- `obligationID` is required and must refer to an existing tracked obligation.
+- Prefer `ref` copied from `Ref: obligation:<id>` output.
+- `obligationID` remains accepted as a legacy raw obligation id.
 - `note` is optional and should briefly state the evidence or update that resolved it.
 
 Common calls:

@@ -19,6 +19,7 @@ import {
   ObligationResolveParameters as ChimeraObligationResolve,
   ObligationsListParameters as ChimeraObligationsList,
   ObligationsSyncParameters as ChimeraObligationsSync,
+  OracleGetParameters as ChimeraOracleGet,
   PredesignParameters as ChimeraPredesign,
   RecentAuditParameters as ChimeraAuditRecent,
   SearchParameters as ChimeraSearch,
@@ -60,6 +61,7 @@ describe("tool parameters", () => {
     test("chimera_obligation_resolve", () => expect(toJsonSchema(ChimeraObligationResolve)).toMatchSnapshot())
     test("chimera_obligations_list", () => expect(toJsonSchema(ChimeraObligationsList)).toMatchSnapshot())
     test("chimera_obligations_sync", () => expect(toJsonSchema(ChimeraObligationsSync)).toMatchSnapshot())
+    test("chimera_oracle_get", () => expect(toJsonSchema(ChimeraOracleGet)).toMatchSnapshot())
     test("chimera_search", () => expect(toJsonSchema(ChimeraSearch)).toMatchSnapshot())
     test("chimera_status", () => expect(toJsonSchema(ChimeraStatus)).toMatchSnapshot())
     test("edit", () => expect(toJsonSchema(Edit)).toMatchSnapshot())
@@ -159,7 +161,8 @@ describe("tool parameters", () => {
           intent: "update shared API",
           files: ["src/api.ts"],
           symbols: ["sharedApi"],
-          nodeIDs: ["node_1"],
+          refs: ["node:node_1"],
+          nodeIDs: ["node_2"],
           depth: 3,
           limit: 40,
           refresh: false,
@@ -168,7 +171,8 @@ describe("tool parameters", () => {
         intent: "update shared API",
         files: ["src/api.ts"],
         symbols: ["sharedApi"],
-        nodeIDs: ["node_1"],
+        refs: ["node:node_1"],
+        nodeIDs: ["node_2"],
         depth: 3,
         limit: 40,
         refresh: false,
@@ -178,18 +182,21 @@ describe("tool parameters", () => {
 
     test("audit selector combination is runtime-level, not JSON-schema-level", () => {
       expect(accepts(ChimeraAudit, {})).toBe(true)
-      expect(parse(ChimeraAudit, { filePath: "src/tool/chimera.ts" }).filePath).toBe("src/tool/chimera.ts")
+      expect(parse(ChimeraAudit, { ref: "node:abc", filePath: "src/tool/chimera.ts" }).ref).toBe("node:abc")
     })
 
-    test("obligation lifecycle tools require ids and ignore reason", () => {
-      expect(accepts(ChimeraObligationClaim, {})).toBe(false)
+    test("id ref fields are runtime-level where alternatives are allowed", () => {
+      expect(accepts(ChimeraOracleGet, {})).toBe(true)
+      expect(parse(ChimeraOracleGet, { ref: "oracle:ora_1", oracleID: "ora_2" }).ref).toBe("oracle:ora_1")
+      expect(accepts(ChimeraObligationClaim, {})).toBe(true)
+      expect(parse(ChimeraObligationClaim, { ref: "obligation:obl_1" }).ref).toBe("obligation:obl_1")
       expect(parse(ChimeraObligationClaim, { obligationID: "obl_1" }).obligationID).toBe("obl_1")
-      expect(accepts(ChimeraObligationResolve, {})).toBe(false)
-      expect(parse(ChimeraObligationResolve, { obligationID: "obl_1", note: "reviewed caller" }).note).toBe(
+      expect(accepts(ChimeraObligationResolve, {})).toBe(true)
+      expect(parse(ChimeraObligationResolve, { ref: "obligation:obl_1", note: "reviewed caller" }).note).toBe(
         "reviewed caller",
       )
       expect(accepts(ChimeraObligationIgnore, { obligationID: "obl_1" })).toBe(false)
-      expect(parse(ChimeraObligationIgnore, { obligationID: "obl_1", reason: "out of scope" }).reason).toBe(
+      expect(parse(ChimeraObligationIgnore, { ref: "obligation:obl_1", reason: "out of scope" }).reason).toBe(
         "out of scope",
       )
     })
