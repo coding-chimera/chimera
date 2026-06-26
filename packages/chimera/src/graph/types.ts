@@ -34,6 +34,7 @@ export const NODE_KINDS = [
   'type_alias',
   'namespace',
   'parameter',
+  'statement',
   'import',
   'export',
   'route',
@@ -158,6 +159,27 @@ export const RELATION_KINDS = [
 ] as const;
 
 export type RelationKind = (typeof RELATION_KINDS)[number];
+
+export const CODEPLAN_RELATION_KINDS = [
+  'ParentOf',
+  'ChildOf',
+  'Construct',
+  'ConstructedBy',
+  'Imports',
+  'ImportedBy',
+  'BaseClassOf',
+  'DerivedClassOf',
+  'Overrides',
+  'OverriddenBy',
+  'Calls',
+  'CalledBy',
+  'Instantiates',
+  'InstantiatedBy',
+  'Uses',
+  'UsedBy',
+] as const;
+
+export type CodePlanRelationKind = (typeof CODEPLAN_RELATION_KINDS)[number];
 export type RelationDirection = 'incoming' | 'outgoing';
 export type RelationQuality = 'exact' | 'heuristic' | 'fallback';
 
@@ -165,6 +187,10 @@ export interface RelationQueryOptions {
   relations?: RelationKind[];
   edgeKinds?: EdgeKind[];
   provenance?: Edge['provenance'];
+}
+
+export interface CodePlanRelationQueryOptions extends Omit<RelationQueryOptions, 'relations'> {
+  relations?: CodePlanRelationKind[];
 }
 
 export interface RelationEvidence {
@@ -177,6 +203,10 @@ export interface RelationEvidence {
   targetNode: Node;
   provenance?: Edge['provenance'];
   quality: RelationQuality;
+}
+
+export interface CodePlanRelationEvidence extends Omit<RelationEvidence, 'relation'> {
+  relation: CodePlanRelationKind;
 }
 
 export interface RelationProjectionOptions extends RelationQueryOptions {

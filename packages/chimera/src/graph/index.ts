@@ -38,10 +38,13 @@ import type {
   FileSemanticSignalKind,
   FrozenRelation,
   RelationEvidence,
+  CodePlanRelationEvidence,
   RelationDeltaEvidence,
   RelationKind,
+  CodePlanRelationKind,
   RelationProjectionOptions,
   RelationQueryOptions,
+  CodePlanRelationQueryOptions,
   TaskInput,
   TaskContext,
   BuildContextOptions,
@@ -203,6 +206,7 @@ function nodeSpanSize(node: Node): number {
 const CALLABLE_NODE_KINDS = new Set<Node['kind']>(['function', 'method', 'component']);
 const CONTAINER_NODE_KINDS = new Set<Node['kind']>(['file', 'module']);
 const SCHEMA_NODE_KINDS = new Set<Node['kind']>(['interface', 'type_alias', 'enum', 'field', 'class', 'struct', 'property']);
+const BODY_NODE_KINDS = new Set<Node['kind']>(['statement']);
 const SEMANTIC_DIFF_FIELDS: NodeSemanticDiffField[] = [
   'kind',
   'name',
@@ -431,11 +435,13 @@ function nodeSemanticInfo(node: Node): NodeSemanticInfo {
         ? 'route'
         : node.isExported
           ? 'export'
-          : isSchema
-            ? 'schema'
-            : isCallable
-              ? 'signature'
-              : 'unknown';
+          : BODY_NODE_KINDS.has(node.kind)
+            ? 'body'
+            : isSchema
+              ? 'schema'
+              : isCallable
+                ? 'signature'
+                : 'unknown';
 
   return {
     role,
@@ -570,6 +576,29 @@ function relationForEdge(edgeKind: Edge['kind'], direction: 'incoming' | 'outgoi
   if (edgeKind === 'overrides') return direction === 'incoming' ? 'OverriddenBy' : 'Overrides';
   if (edgeKind === 'decorates') return direction === 'incoming' ? 'DecoratedBy' : 'Decorates';
   return direction === 'incoming' ? 'ContainedBy' : 'Contains';
+}
+
+const CODEPLAN_CONSTRUCTABLE_NODE_KINDS = new Set<Node['kind']>(['class', 'struct']);
+const CODEPLAN_FIELD_NODE_KINDS = new Set<Node['kind']>(['field', 'property']);
+
+function isCodePlanConstructorNode(node: Node) {
+  return node.kind === 'method' && node.name === 'constructor';
+}
+
+export function codePlanRelationForEdge(edgeKind: Edge['kind'], direction: 'incoming' | 'outgoing', sourceNode: Node, targetNode: Node): CodePlanRelationKind | undefined {
+  if (edgeKind === 'contains') {
+    if (CODEPLAN_CONSTRUCTABLE_NODE_KINDS.has(sourceNode.kind) && isCodePlanConstructorNode(targetNode)) {
+      return direction === 'incoming' ? 'Construct' : 'ConstructedBy';
+    }
+    return direction === 'incoming' ? 'ChildOf' : 'ParentOf';
+  }
+  if (edgeKind === 'calls') return direction === 'incoming' ? 'CalledBy' : 'Calls';
+  if (edgeKind === 'imports') return direction === 'incoming' ? 'ImportedBy' : 'Imports';
+  if (edgeKind === 'references' && CODEPLAN_FIELD_NODE_KINDS.has(targetNode.kind)) return direction === 'incoming' ? 'UsedBy' : 'Uses';
+  if (edgeKind === 'instantiates') return direction === 'incoming' ? 'InstantiatedBy' : 'Instantiates';
+  if (edgeKind === 'extends' || edgeKind === 'implements') return direction === 'incoming' ? 'BaseClassOf' : 'DerivedClassOf';
+  if (edgeKind === 'overrides') return direction === 'incoming' ? 'OverriddenBy' : 'Overrides';
+  return undefined;
 }
 
 function relationQuality(edge: Edge): RelationEvidence['quality'] {
@@ -1854,6 +1883,18 @@ export class CodeGraph {
     return this.projectRelations(focal, 'incoming', this.queries.getIncomingEdges(nodeId, options.edgeKinds, options.provenance), options.relations);
   }
 
+  getOutgoingCodePlanRelations(nodeId: string, options: CodePlanRelationQueryOptions = {}): CodePlanRelationEvidence[] {
+    const focal = this.getNode(nodeId);
+    if (!focal) return [];
+    return this.projectCodePlanRelations(focal, 'outgoing', this.queries.getOutgoingEdges(nodeId, options.edgeKinds, options.provenance), options.relations);
+  }
+
+  getIncomingCodePlanRelations(nodeId: string, options: CodePlanRelationQueryOptions = {}): CodePlanRelationEvidence[] {
+    const focal = this.getNode(nodeId);
+    if (!focal) return [];
+    return this.projectCodePlanRelations(focal, 'incoming', this.queries.getIncomingEdges(nodeId, options.edgeKinds, options.provenance), options.relations);
+  }
+
   /**
    * Freeze incoming/outgoing relation evidence for a node at a graph snapshot.
    * This gives consumers D/D' relation evidence without copying relation
@@ -1906,6 +1947,36 @@ export class CodeGraph {
         otherNode,
         sourceNode: direction === 'incoming' ? otherNode : focal,
         targetNode: direction === 'incoming' ? focal : otherNode,
+        provenance: edge.provenance,
+        quality: relationQuality(edge),
+      }];
+    });
+  }
+
+  private projectCodePlanRelations(
+    focal: Node,
+    direction: 'incoming' | 'outgoing',
+    edges: Edge[],
+    relations?: CodePlanRelationKind[]
+  ): CodePlanRelationEvidence[] {
+    const relationFilter = relations ? new Set(relations) : null;
+    const otherNodes = this.queries.getNodesByIds(edges.map((edge) => direction === 'incoming' ? edge.source : edge.target));
+
+    return edges.flatMap((edge) => {
+      const otherNode = otherNodes.get(direction === 'incoming' ? edge.source : edge.target);
+      if (!otherNode) return [];
+      const sourceNode = direction === 'incoming' ? otherNode : focal;
+      const targetNode = direction === 'incoming' ? focal : otherNode;
+      const relation = codePlanRelationForEdge(edge.kind, direction, sourceNode, targetNode);
+      if (!relation || (relationFilter && !relationFilter.has(relation))) return [];
+      return [{
+        relation,
+        direction,
+        edgeKind: edge.kind,
+        edge,
+        otherNode,
+        sourceNode,
+        targetNode,
         provenance: edge.provenance,
         quality: relationQuality(edge),
       }];
