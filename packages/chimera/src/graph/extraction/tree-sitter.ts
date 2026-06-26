@@ -126,6 +126,26 @@ const INSTANTIATION_KINDS: ReadonlySet<string> = new Set([
   'instance_creation_expression',    // some grammars
 ]);
 
+const CODEPLAN_STATEMENT_LANGUAGES: ReadonlySet<Language> = new Set(['typescript', 'javascript', 'tsx', 'jsx']);
+
+const CODEPLAN_DEPENDENCY_STATEMENT_KINDS: ReadonlySet<string> = new Set([
+  'expression_statement',
+  'return_statement',
+  'lexical_declaration',
+  'variable_declaration',
+  'if_statement',
+  'for_statement',
+  'for_in_statement',
+  'for_of_statement',
+  'while_statement',
+  'do_statement',
+  'switch_statement',
+  'try_statement',
+  'throw_statement',
+  'with_statement',
+  'labeled_statement',
+]);
+
 /**
  * TreeSitterExtractor - Main extraction class
  */
@@ -2083,6 +2103,81 @@ export class TreeSitterExtractor {
     }
   }
 
+  private currentStackNode() {
+    const id = this.nodeStack[this.nodeStack.length - 1];
+    return id ? this.nodes.find((node) => node.id === id) : undefined;
+  }
+
+  private hasCodePlanStatementDependency(node: SyntaxNode): boolean {
+    if (!this.extractor) return false;
+
+    const visit = (current: SyntaxNode): boolean => {
+      if (current !== node && this.extractor!.functionTypes.includes(current.type)) return false;
+      if (this.extractor!.callTypes.includes(current.type) || INSTANTIATION_KINDS.has(current.type)) return true;
+      if (this.extractor!.extractBareCall?.(current, this.source)) return true;
+
+      for (let i = 0; i < current.namedChildCount; i++) {
+        const child = current.namedChild(i);
+        if (child && visit(child)) return true;
+      }
+
+      return false;
+    };
+
+    return visit(node);
+  }
+
+  private extractCodePlanStatementDependencies(root: SyntaxNode): void {
+    if (!this.extractor) return;
+
+    const visit = (node: SyntaxNode): void => {
+      if (node !== root && this.extractor!.functionTypes.includes(node.type)) return;
+
+      if (this.extractor!.callTypes.includes(node.type)) {
+        this.extractCall(node);
+      } else if (INSTANTIATION_KINDS.has(node.type)) {
+        this.extractInstantiation(node);
+      } else if (this.extractor!.extractBareCall) {
+        const calleeName = this.extractor!.extractBareCall(node, this.source);
+        const callerId = this.nodeStack[this.nodeStack.length - 1];
+        if (calleeName && callerId) {
+          this.unresolvedReferences.push({
+            fromNodeId: callerId,
+            referenceName: calleeName,
+            referenceKind: 'calls',
+            line: node.startPosition.row + 1,
+            column: node.startPosition.column,
+          });
+        }
+      }
+
+      for (let i = 0; i < node.namedChildCount; i++) {
+        const child = node.namedChild(i);
+        if (child) visit(child);
+      }
+    };
+
+    visit(root);
+  }
+
+  private extractCodePlanStatement(node: SyntaxNode): void {
+    if (!CODEPLAN_STATEMENT_LANGUAGES.has(this.language)) return;
+    if (!CODEPLAN_DEPENDENCY_STATEMENT_KINDS.has(node.type)) return;
+
+    const parent = this.currentStackNode();
+    if (!parent || (parent.kind !== 'function' && parent.kind !== 'method' && parent.kind !== 'component')) return;
+    if (!this.hasCodePlanStatementDependency(node)) return;
+
+    const statementNode = this.createNode('statement', `stmt@${node.startPosition.row + 1}:${node.startPosition.column}`, node, {
+      signature: getNodeText(node, this.source).trim().replace(/\s+/g, ' ').slice(0, 240),
+    });
+    if (!statementNode) return;
+
+    this.nodeStack.push(statementNode.id);
+    this.extractCodePlanStatementDependencies(node);
+    this.nodeStack.pop();
+  }
+
   /**
    * Visit function body and extract calls (and structural nodes).
    *
@@ -2098,6 +2193,8 @@ export class TreeSitterExtractor {
 
     const visitForCallsAndStructure = (node: SyntaxNode): void => {
       const nodeType = node.type;
+
+      this.extractCodePlanStatement(node);
 
       if (this.extractor!.callTypes.includes(nodeType)) {
         this.extractCall(node);
