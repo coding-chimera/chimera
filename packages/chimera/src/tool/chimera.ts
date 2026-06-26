@@ -96,7 +96,10 @@ const Range = Schema.Struct({
 
 const RefreshDescription =
   "Refresh CodeGraph when stale: the index is empty, watcher has pending files, or git reports dirty source files. Defaults to true."
-
+const ChimeraRefDescription =
+  "Typed Chimera ref copied from a previous tool output, formatted like `node:<id>`, `audit:<id>`, `predesign:<id>`, `oracle:<id>`, `obligation:<id>`, or `change:<id>`. Prefer this over legacy raw id fields when available."
+const ChimeraRefsDescription =
+  "Typed Chimera refs copied from previous tool outputs. Currently `node:<id>` refs are accepted here; prefer refs over legacy nodeIDs when available."
 export const StatusParameters = Schema.Struct({
   refresh: Schema.optional(Schema.Boolean).annotate({
     description: RefreshDescription,
@@ -146,8 +149,11 @@ export const PredesignParameters = Schema.Struct({
   symbols: Schema.optional(Schema.Array(Schema.String)).annotate({
     description: "Known relevant symbols to resolve as pre-edit graph seeds.",
   }),
+  refs: Schema.optional(Schema.Array(Schema.String)).annotate({
+    description: ChimeraRefsDescription,
+  }),
   nodeIDs: Schema.optional(Schema.Array(Schema.String)).annotate({
-    description: "Exact CodeGraph node ids to use as pre-edit graph seeds.",
+    description: "Legacy exact CodeGraph node ids to use as pre-edit graph seeds. Prefer refs when available.",
   }),
   depth: Schema.optional(Schema.Number).annotate({
     description: "Graph traversal depth for pre-edit impact discovery. Defaults to 2, capped at 5.",
@@ -163,11 +169,14 @@ export const PredesignParameters = Schema.Struct({
 })
 
 export const ImpactParameters = Schema.Struct({
+  ref: Schema.optional(Schema.String).annotate({
+    description: ChimeraRefDescription,
+  }),
   symbol: Schema.optional(Schema.String).annotate({
-    description: "Symbol name to analyze. Used when nodeID is not supplied.",
+    description: "Symbol name to analyze. Used when ref/nodeID is not supplied.",
   }),
   nodeID: Schema.optional(Schema.String).annotate({
-    description: "Exact CodeGraph node id to analyze.",
+    description: "Legacy exact CodeGraph node id to analyze. Prefer ref when available.",
   }),
   filePath: Schema.optional(Schema.String).annotate({
     description: "File to analyze for file-level dependents; absolute or project-relative.",
@@ -188,7 +197,7 @@ export const ImpactParameters = Schema.Struct({
     description: RefreshDescription,
   }),
 }).annotate({
-  description: "Provide at least one impact seed: nodeID, symbol, or filePath. Use range only with filePath.",
+  description: "Provide at least one impact seed: ref, nodeID, symbol, or filePath. Use range only with filePath.",
 })
 
 export const ContextParameters = Schema.Struct({
@@ -198,11 +207,14 @@ export const ContextParameters = Schema.Struct({
   symbol: Schema.optional(Schema.String).annotate({
     description: "Symbol name to use as the context query when query is omitted.",
   }),
+  ref: Schema.optional(Schema.String).annotate({
+    description: ChimeraRefDescription,
+  }),
   nodeID: Schema.optional(Schema.String).annotate({
-    description: "Exact CodeGraph node id to use as the context focus when query and symbol are omitted.",
+    description: "Legacy exact CodeGraph node id to use as the context focus when query and symbol are omitted. Prefer ref when available.",
   }),
   filePath: Schema.optional(Schema.String).annotate({
-    description: "File path to use as the context query when query, symbol, and nodeID are omitted.",
+    description: "File path to use as the context query when query, symbol, and ref/nodeID are omitted.",
   }),
   mode: Schema.optional(ContextMode).annotate({
     description: "Context mode. arch produces an architecture-oriented query; defaults to search.",
@@ -220,7 +232,7 @@ export const ContextParameters = Schema.Struct({
     description: RefreshDescription,
   }),
 }).annotate({
-  description: "Provide query, symbol, nodeID, filePath, or mode=arch.",
+  description: "Provide query, symbol, ref, nodeID, filePath, or mode=arch.",
 })
 
 export const RecentAuditParameters = Schema.Struct({
@@ -242,8 +254,11 @@ export const OracleRecentParameters = Schema.Struct({
 })
 
 export const OracleGetParameters = Schema.Struct({
-  oracleID: Schema.String.annotate({
-    description: "Oracle record id to retrieve.",
+  ref: Schema.optional(Schema.String).annotate({
+    description: ChimeraRefDescription,
+  }),
+  oracleID: Schema.optional(Schema.String).annotate({
+    description: "Legacy oracle record id to retrieve. Prefer ref when available.",
   }),
   maxOutputChars: Schema.optional(Schema.Number).annotate({
     description: "Maximum shell output characters to include in structured output. Defaults to 20000, capped at 200000.",
@@ -263,8 +278,11 @@ export const AuditParameters = Schema.Struct({
   symbol: Schema.optional(Schema.String).annotate({
     description: "Changed symbol to audit when file/range is not precise enough.",
   }),
+  ref: Schema.optional(Schema.String).annotate({
+    description: ChimeraRefDescription,
+  }),
   nodeID: Schema.optional(Schema.String).annotate({
-    description: "Exact CodeGraph node id to use as an audit seed.",
+    description: "Legacy exact CodeGraph node id to use as an audit seed. Prefer ref when available.",
   }),
   kind: Schema.optional(NodeKind).annotate({
     description: "Optional node kind filter when resolving audit seed symbols.",
@@ -279,7 +297,7 @@ export const AuditParameters = Schema.Struct({
     description: RefreshDescription,
   }),
 }).annotate({
-  description: "Provide at least one explicit audit seed: files, filePath, symbol, or nodeID. Use chimera_audit_recent for the latest mutation.",
+  description: "Provide at least one explicit audit seed: files, filePath, symbol, ref, or nodeID. Use chimera_audit_recent for the latest mutation.",
 })
 
 export const ObligationsListParameters = Schema.Struct({
@@ -307,8 +325,11 @@ export const ObligationsSyncParameters = Schema.Struct({
   symbol: Schema.optional(Schema.String).annotate({
     description: "Changed symbol to audit and sync into obligations.",
   }),
+  ref: Schema.optional(Schema.String).annotate({
+    description: ChimeraRefDescription,
+  }),
   nodeID: Schema.optional(Schema.String).annotate({
-    description: "Exact CodeGraph node id to audit and sync into obligations.",
+    description: "Legacy exact CodeGraph node id to audit and sync into obligations. Prefer ref when available.",
   }),
   kind: Schema.optional(NodeKind).annotate({
     description: "Optional CodeGraph node kind filter when resolving sync seed symbols.",
@@ -327,14 +348,20 @@ export const ObligationsSyncParameters = Schema.Struct({
 })
 
 export const ObligationClaimParameters = Schema.Struct({
-  obligationID: Schema.String.annotate({
-    description: "Obligation id to claim.",
+  ref: Schema.optional(Schema.String).annotate({
+    description: ChimeraRefDescription,
+  }),
+  obligationID: Schema.optional(Schema.String).annotate({
+    description: "Legacy obligation id to claim. Prefer ref when available.",
   }),
 })
 
 export const ObligationResolveParameters = Schema.Struct({
-  obligationID: Schema.String.annotate({
-    description: "Obligation id to resolve.",
+  ref: Schema.optional(Schema.String).annotate({
+    description: ChimeraRefDescription,
+  }),
+  obligationID: Schema.optional(Schema.String).annotate({
+    description: "Legacy obligation id to resolve. Prefer ref when available.",
   }),
   note: Schema.optional(Schema.String).annotate({
     description: "Optional short note stating the evidence or update that resolved the obligation.",
@@ -342,8 +369,11 @@ export const ObligationResolveParameters = Schema.Struct({
 })
 
 export const ObligationIgnoreParameters = Schema.Struct({
-  obligationID: Schema.String.annotate({
-    description: "Obligation id to ignore.",
+  ref: Schema.optional(Schema.String).annotate({
+    description: ChimeraRefDescription,
+  }),
+  obligationID: Schema.optional(Schema.String).annotate({
+    description: "Legacy obligation id to ignore. Prefer ref when available.",
   }),
   reason: Schema.String.annotate({
     description: "Required reason for ignoring the obligation.",
@@ -394,6 +424,7 @@ type PredesignMetadata = {
   projectRoot: string
   snapshot: CodeGraphSnapshot
   runID: string
+  ref: string
   intent: string
   files: string[]
   seeds: Array<FrozenSemanticObject | null>
@@ -488,6 +519,7 @@ type AuditMetadata = {
   obligations: AuditCandidate[]
   provenance?: ToolMutationRecord
   auditRunID?: string
+  ref?: string
 }
 
 type OracleMetadata = {
@@ -811,6 +843,7 @@ function graphFilesFromPaths(root: string, base: string, files: string[]) {
 function formatNode(node: CodeGraphNode) {
   return [
     `- ${node.qualifiedName || node.name} (${node.kind})`,
+    `  Ref: ${chimeraRef("node", node.id)}`,
     `  ${node.filePath}:${node.startLine}-${node.endLine}`,
     node.signature ? `  ${node.signature}` : undefined,
   ]
@@ -847,7 +880,7 @@ function previewList<T>(items: T[], empty: string, label: string, format: (item:
 }
 
 function formatNodePreview(node: CodeGraphNode) {
-  return `- ${node.qualifiedName || node.name} (${node.kind}) ${node.filePath}:${node.startLine}-${node.endLine}`
+  return `- ${node.qualifiedName || node.name} (${node.kind}) ${node.filePath}:${node.startLine}-${node.endLine}\n  Ref: ${chimeraRef("node", node.id)}`
 }
 
 function nodeMatchesQuery(node: CodeGraphNode, query: string | undefined) {
@@ -1514,6 +1547,49 @@ function cleanStrings(items: readonly string[] | undefined) {
   return uniqueStrings((items ?? []).map((item) => item.trim()).filter(Boolean))
 }
 
+const ChimeraRefKinds = ["node", "audit", "predesign", "oracle", "obligation", "change"] as const
+
+type ChimeraRefKind = (typeof ChimeraRefKinds)[number]
+
+function chimeraRef(kind: ChimeraRefKind, id: string) {
+  return `${kind}:${id}`
+}
+
+function parseChimeraRef(ref: string | undefined, expected: ChimeraRefKind[]) {
+  const value = ref?.trim()
+  if (!value) return undefined
+  const separator = value.indexOf(":")
+  if (separator <= 0 || separator === value.length - 1) {
+    throw new Error(`invalid Chimera ref: ${value}. Expected ${expected.map((kind) => `${kind}:<id>`).join(" or ")}`)
+  }
+  const kind = value.slice(0, separator) as ChimeraRefKind
+  const id = value.slice(separator + 1)
+  if (!ChimeraRefKinds.includes(kind)) {
+    throw new Error(`unknown Chimera ref kind: ${kind}`)
+  }
+  if (!expected.includes(kind)) {
+    throw new Error(`Chimera ref ${value} is not valid here; expected ${expected.map((item) => `${item}:<id>`).join(" or ")}`)
+  }
+  return { kind, id, raw: value }
+}
+
+function chimeraRefID(ref: string | undefined, expected: ChimeraRefKind[]) {
+  return parseChimeraRef(ref, expected)?.id
+}
+
+function chimeraRefIDs(refs: readonly string[] | undefined, expected: ChimeraRefKind[]) {
+  return cleanStrings(refs).flatMap((ref) => {
+    const parsed = parseChimeraRef(ref, expected)
+    return parsed ? [parsed.id] : []
+  })
+}
+
+function requiredChimeraID(input: { ref?: string; legacy?: string; legacyName: string; expected: ChimeraRefKind; label: string }) {
+  const id = chimeraRefID(input.ref, [input.expected]) ?? input.legacy?.trim()
+  if (id) return id
+  throw new Error(`${input.label} requires ref (${input.expected}:<id>) or ${input.legacyName}`)
+}
+
 function emptyObligationStore(): ObligationStore {
   return { schemaVersion: 1, obligations: [] }
 }
@@ -1724,6 +1800,7 @@ function obligationContext(ctx: Tool.Context, refresh: boolean) {
 function formatObligation(item: PersistentObligation) {
   return [
     `- ${item.id} [${item.status}] ${item.target}`,
+    `  Ref: ${chimeraRef("obligation", item.id)}`,
     item.atomicLabel ? `  codeplan_atomic_label: ${item.atomicLabel}` : undefined,
     item.statementEffect ? `  statement_effect: ${item.statementEffect}` : undefined,
     item.relationClause ? `  relation_clause: ${item.relationClause}` : undefined,
@@ -1766,6 +1843,7 @@ function formatProvenance(record: ContextOverlay["provenance"]) {
   return [
     "Current provenance:",
     `- ${record.id}`,
+    `  Ref: ${chimeraRef("change", record.id)}`,
     `  tool: ${record.toolID}`,
     `  status: ${record.status}`,
     `  finished_at: ${record.finishedAt}`,
@@ -1799,6 +1877,7 @@ function formatAuditOutput(audit: AuditMetadata) {
     `Source: ${audit.source}`,
     `Graph revision: ${audit.snapshot.revision}`,
     audit.auditRunID ? `Audit run: ${audit.auditRunID}` : undefined,
+    audit.auditRunID ? `Ref: ${chimeraRef("audit", audit.auditRunID)}` : undefined,
     "",
     `Changed files (${audit.changedFiles.length}):`,
     ...(audit.changedFiles.length ? audit.changedFiles.map((file) => `- ${file}`) : ["- None supplied or found."]),
@@ -1813,7 +1892,7 @@ function formatAuditOutput(audit: AuditMetadata) {
     ...(audit.seedNodes.length
       ? audit.seedNodes.map((node) =>
           node
-            ? `- ${node.payload.qualifiedName || node.payload.name} (${node.payload.kind})\n  ${node.payload.filePath}:${node.payload.range.startLine}-${node.payload.range.endLine}${node.payload.signature ? `\n  ${node.payload.signature}` : ""}`
+            ? `- ${node.payload.qualifiedName || node.payload.name} (${node.payload.kind})\n  Ref: ${chimeraRef("node", node.source.codegraphId)}\n  ${node.payload.filePath}:${node.payload.range.startLine}-${node.payload.range.endLine}${node.payload.signature ? `\n  ${node.payload.signature}` : ""}`
             : "- Unknown projected seed",
         )
       : ["- No symbol seeds; file-level audit only."]),
@@ -1874,6 +1953,7 @@ function oracleEnvelope(record: OracleRecord, maxOutputChars: number, currentRev
   return {
     oracle: {
       id: record.id,
+      ref: chimeraRef("oracle", record.id),
       kind: record.kind,
       status: record.status,
       tool: record.tool,
@@ -1886,13 +1966,15 @@ function oracleEnvelope(record: OracleRecord, maxOutputChars: number, currentRev
     linkWindow: record.linkWindow,
     linkedChanges: record.linkedChanges.map((change) => ({
       ...change,
+      ref: chimeraRef("change", change.id),
+      ...(change.changeID ? { changeRef: chimeraRef("change", change.changeID) } : {}),
       replayLifecycle: oracleLinkedChangeLifecycle(change, currentRevision),
     })),
   }
 }
 
 function hasExplicitAuditSeed(params: AuditParams) {
-  return Boolean(params.files?.length || params.filePath || params.symbol || params.nodeID)
+  return Boolean(params.files?.length || params.filePath || params.symbol || params.ref || params.nodeID)
 }
 
 const buildAudit = Effect.fn("ChimeraTool.buildAudit")(function* (params: BuildAuditParams, options: BuildAuditOptions = {}) {
@@ -1902,11 +1984,12 @@ const buildAudit = Effect.fn("ChimeraTool.buildAudit")(function* (params: BuildA
   const recent = latestSuccessfulProvenance(records)
   const explicitFileSeeds = graphFilesFromPaths(state.projectRoot, instance.directory, [...(params.files ?? []), ...(params.filePath ? [params.filePath] : [])])
   const explicitFiles = explicitFileSeeds.map((file) => file.graphPath)
-  const recentFiles = params.recent === false || explicitFiles.length || params.symbol || params.nodeID ? [] : uniqueStrings(provenanceGraphFiles(recent))
-  const gitFiles = params.recent === false || explicitFiles.length || params.symbol || params.nodeID || recentFiles.length ? [] : yield* gitStatusFiles(state.projectRoot)
+  const nodeID = chimeraRefID(params.ref, ["node"]) ?? params.nodeID?.trim()
+  const recentFiles = params.recent === false || explicitFiles.length || params.symbol || nodeID ? [] : uniqueStrings(provenanceGraphFiles(recent))
+  const gitFiles = params.recent === false || explicitFiles.length || params.symbol || nodeID || recentFiles.length ? [] : yield* gitStatusFiles(state.projectRoot)
   const changedFiles = explicitFiles.length ? explicitFiles : recentFiles.length ? recentFiles : gitFiles
   const source: AuditMetadata["source"] =
-    explicitFiles.length || params.symbol || params.nodeID ? "input" : recentFiles.length ? "recent_provenance" : "git_diff"
+    explicitFiles.length || params.symbol || nodeID ? "input" : recentFiles.length ? "recent_provenance" : "git_diff"
   const depth = bounded(params.depth, 2, 5)
   const limit = bounded(params.limit, 30, 100)
   if (explicitFileSeeds.length > 0) {
@@ -1944,13 +2027,13 @@ const buildAudit = Effect.fn("ChimeraTool.buildAudit")(function* (params: BuildA
           .slice(0, fileSeedBudget),
   )
   const seedNodes = uniqueNodes([
-    ...(params.nodeID ? [state.graph.node(params.nodeID)].filter((node): node is CodeGraphNode => Boolean(node)) : []),
+    ...(nodeID ? [state.graph.node(nodeID)].filter((node): node is CodeGraphNode => Boolean(node)) : []),
     ...(params.symbol ? state.graph.searchNodes(params.symbol, { kinds, limit: 5 }).map((result) => result.node) : []),
     ...fileSeedNodes,
   ])
 
   if (changedFiles.length === 0 && seedNodes.length === 0) {
-    throw new Error("chimera_audit requires files/filePath, symbol/nodeID, a recent successful Chimera tool mutation, or git diff changes")
+    throw new Error("chimera_audit requires files/filePath, symbol/ref/nodeID, a recent successful Chimera tool mutation, or git diff changes")
   }
 
   const impact = buildImpactEvidence({ state, snapshot, seedNodes, changedFiles, changeFacts, source, depth, limit })
@@ -2190,7 +2273,8 @@ export const ChimeraPredesignTool = Tool.define<typeof PredesignParameters, Pred
         if (!intent) throw new Error("chimera_predesign requires a non-empty intent")
         const files = cleanStrings(params.files)
         const symbols = cleanStrings(params.symbols)
-        const nodeIDs = cleanStrings(params.nodeIDs)
+        const refs = cleanStrings(params.refs)
+        const nodeIDs = uniqueStrings([...cleanStrings(params.nodeIDs), ...chimeraRefIDs(refs, ["node"])])
         yield* predesignStage(
           ctx,
           "permission",
@@ -2198,6 +2282,7 @@ export const ChimeraPredesignTool = Tool.define<typeof PredesignParameters, Pred
             intent,
             files,
             symbols,
+            refs,
             nodeIDs,
             refresh: params.refresh !== false,
           }),
@@ -2278,6 +2363,7 @@ export const ChimeraPredesignTool = Tool.define<typeof PredesignParameters, Pred
                 depth,
                 limit,
                 symbols,
+                refs,
                 nodeIDs,
               },
             }),
@@ -2292,12 +2378,14 @@ export const ChimeraPredesignTool = Tool.define<typeof PredesignParameters, Pred
             output: [
               "Chimera pre-design evidence recorded.",
               `Run: ${record.id}`,
+              `Ref: ${chimeraRef("predesign", record.id)}`,
               `Intent: ${intent}`,
               `Graph revision: ${snapshot.revision}`,
               "",
               "Coverage:",
               `- files: ${inlinePreview(normalizedFiles)}`,
               `- symbols: ${inlinePreview(symbols)}`,
+              `- refs: ${inlinePreview(refs)}`,
               `- nodeIDs: ${inlinePreview(nodeIDs)}`,
               coverage.preciseFiles ? "- file coverage: explicit" : "- file coverage: session-level only; rerun with files for stricter coverage.",
               `- detailed sections show up to ${PREDESIGN_OUTPUT_PREVIEW_LIMIT} items each; full evidence remains in metadata and the recorded run.`,
@@ -2328,6 +2416,7 @@ export const ChimeraPredesignTool = Tool.define<typeof PredesignParameters, Pred
               projectRoot: state.projectRoot,
               snapshot,
               runID: record.id,
+              ref: chimeraRef("predesign", record.id),
               intent,
               files: normalizedFiles,
               seeds: projectedSeeds,
@@ -2350,6 +2439,7 @@ export const ChimeraImpactTool = Tool.define<typeof ImpactParameters, ImpactMeta
     execute: (params: Schema.Schema.Type<typeof ImpactParameters>, ctx: Tool.Context<ImpactMetadata>) =>
       Effect.gen(function* () {
         yield* permission(ctx, "chimera_impact", {
+          ref: params.ref,
           symbol: params.symbol,
           nodeID: params.nodeID,
           filePath: params.filePath,
@@ -2364,9 +2454,10 @@ export const ChimeraImpactTool = Tool.define<typeof ImpactParameters, ImpactMeta
         const snapshot = state.graph.snapshot()
         const normalizedFile = file?.graphPath
         const kinds = params.kind ? [params.kind] : undefined
+        const nodeID = chimeraRefID(params.ref, ["node"]) ?? params.nodeID?.trim()
         const seedNodes = uniqueNodes(
-          params.nodeID
-            ? [state.graph.node(params.nodeID)].filter((node): node is CodeGraphNode => Boolean(node))
+          nodeID
+            ? [state.graph.node(nodeID)].filter((node): node is CodeGraphNode => Boolean(node))
             : normalizedFile && params.range
               ? state.graph.nodesIntersectingRange(normalizedFile, params.range, { kinds, smallestOnly: false })
               : params.symbol
@@ -2376,7 +2467,7 @@ export const ChimeraImpactTool = Tool.define<typeof ImpactParameters, ImpactMeta
                   : [],
         )
         if (seedNodes.length === 0 && !normalizedFile) {
-          throw new Error("chimera_impact requires nodeID, symbol, or filePath that resolves to at least one graph seed")
+          throw new Error("chimera_impact requires ref, nodeID, symbol, or filePath that resolves to at least one graph seed")
         }
 
         const impact = buildImpactEvidence({
@@ -2434,18 +2525,19 @@ export const ChimeraAuditTool = Tool.define<typeof AuditParameters, AuditMetadat
     execute: (params: Schema.Schema.Type<typeof AuditParameters>, ctx: Tool.Context<AuditMetadata>) =>
       Effect.gen(function* () {
         if (!hasExplicitAuditSeed(params)) {
-          throw new Error("chimera_audit requires files/filePath, symbol, or nodeID. Use chimera_audit_recent after a tool mutation.")
+          throw new Error("chimera_audit requires files/filePath, symbol, ref, or nodeID. Use chimera_audit_recent after a tool mutation.")
         }
         yield* permission(ctx, "chimera_audit", {
           files: params.files,
           filePath: params.filePath,
           symbol: params.symbol,
+          ref: params.ref,
           nodeID: params.nodeID,
           refresh: params.refresh !== false,
         })
         const audit = yield* buildAudit({ ...params, recent: false }, { ctx: ctx as Tool.Context })
         const auditRunID = yield* persistAuditRun(audit)
-        const recorded = { ...audit, auditRunID }
+        const recorded = { ...audit, auditRunID, ref: chimeraRef("audit", auditRunID) }
 
         return {
           title: "Chimera audit",
@@ -2468,7 +2560,7 @@ export const ChimeraAuditRecentTool = Tool.define<typeof RecentAuditParameters, 
         })
         const audit = yield* buildAudit(params, { ctx: ctx as Tool.Context })
         const auditRunID = yield* persistAuditRun(audit)
-        const recorded = { ...audit, auditRunID }
+        const recorded = { ...audit, auditRunID, ref: chimeraRef("audit", auditRunID) }
 
         return {
           title: "Chimera audit",
@@ -2524,11 +2616,18 @@ export const ChimeraOracleGetTool = Tool.define<typeof OracleGetParameters, Orac
     parameters: OracleGetParameters,
     execute: (params: OracleGetParams, ctx: Tool.Context<OracleMetadata>) =>
       Effect.gen(function* () {
-        yield* permission(ctx, "chimera_oracle_get", { oracleID: params.oracleID })
+        const oracleID = requiredChimeraID({
+          ref: params.ref,
+          legacy: params.oracleID,
+          legacyName: "oracleID",
+          expected: "oracle",
+          label: "chimera_oracle_get",
+        })
+        yield* permission(ctx, "chimera_oracle_get", { ref: params.ref, oracleID: params.oracleID })
         const state = yield* openProjectGraphForTool(ctx as Tool.Context, false)
         const artifact = oracleArtifact(state.artifact)
-        const oracle = yield* Effect.promise(() => readOracleResult(state.projectRoot, artifact, params.oracleID)).pipe(Effect.orDie)
-        if (!oracle) throw new Error(`unknown Chimera oracle result: ${params.oracleID}`)
+        const oracle = yield* Effect.promise(() => readOracleResult(state.projectRoot, artifact, oracleID)).pipe(Effect.orDie)
+        if (!oracle) throw new Error(`unknown Chimera oracle result: ${oracleID}`)
         const output = oracleEnvelope(oracle, outputCharLimit(params.maxOutputChars), state.graph.snapshot().revision)
         return {
           title: "Chimera oracle result",
@@ -2594,6 +2693,7 @@ export const ChimeraObligationsSyncTool = Tool.define<typeof ObligationsSyncPara
           files: params.files,
           filePath: params.filePath,
           symbol: params.symbol,
+          ref: params.ref,
           nodeID: params.nodeID,
           refresh: params.refresh !== false,
         })
@@ -2651,21 +2751,28 @@ export const ChimeraObligationClaimTool = Tool.define<typeof ObligationClaimPara
     parameters: ObligationClaimParameters,
     execute: (params: ObligationClaimParams, ctx: Tool.Context<ObligationsMetadata>) =>
       Effect.gen(function* () {
-        yield* permission(ctx, "chimera_obligation_claim", { obligationID: params.obligationID })
+        const obligationID = requiredChimeraID({
+          ref: params.ref,
+          legacy: params.obligationID,
+          legacyName: "obligationID",
+          expected: "obligation",
+          label: "chimera_obligation_claim",
+        })
+        yield* permission(ctx, "chimera_obligation_claim", { ref: params.ref, obligationID: params.obligationID })
         const current = yield* obligationContext(ctx as Tool.Context, true)
         const next = {
           schemaVersion: 1 as const,
           obligations: current.refreshed.obligations.map((item) =>
-            item.id === params.obligationID
+            item.id === obligationID
               ? { ...item, status: "claimed" as const, claimedBy: actor(ctx, current.now), updatedAt: current.now }
               : item,
           ),
         }
-        if (!current.refreshed.obligations.some((item) => item.id === params.obligationID)) {
-          throw new Error(`unknown Chimera obligation: ${params.obligationID}`)
+        if (!current.refreshed.obligations.some((item) => item.id === obligationID)) {
+          throw new Error(`unknown Chimera obligation: ${obligationID}`)
         }
         yield* writeObligationStore(current.state.projectRoot, current.artifact, next)
-        const obligations = next.obligations.filter((item) => item.id === params.obligationID)
+        const obligations = next.obligations.filter((item) => item.id === obligationID)
         return {
           title: "Chimera obligations",
           output: ["Chimera obligation claimed.", `Artifact: ${current.artifact}`, "", ...obligations.map(formatObligation)].join("\n"),
@@ -2689,12 +2796,19 @@ export const ChimeraObligationResolveTool = Tool.define<typeof ObligationResolve
     parameters: ObligationResolveParameters,
     execute: (params: ObligationResolveParams, ctx: Tool.Context<ObligationsMetadata>) =>
       Effect.gen(function* () {
-        yield* permission(ctx, "chimera_obligation_resolve", { obligationID: params.obligationID })
+        const obligationID = requiredChimeraID({
+          ref: params.ref,
+          legacy: params.obligationID,
+          legacyName: "obligationID",
+          expected: "obligation",
+          label: "chimera_obligation_resolve",
+        })
+        yield* permission(ctx, "chimera_obligation_resolve", { ref: params.ref, obligationID: params.obligationID })
         const current = yield* obligationContext(ctx as Tool.Context, true)
         const next = {
           schemaVersion: 1 as const,
           obligations: current.refreshed.obligations.map((item) =>
-            item.id === params.obligationID
+            item.id === obligationID
               ? {
                   ...item,
                   status: "resolved" as const,
@@ -2704,11 +2818,11 @@ export const ChimeraObligationResolveTool = Tool.define<typeof ObligationResolve
               : item,
           ),
         }
-        if (!current.refreshed.obligations.some((item) => item.id === params.obligationID)) {
-          throw new Error(`unknown Chimera obligation: ${params.obligationID}`)
+        if (!current.refreshed.obligations.some((item) => item.id === obligationID)) {
+          throw new Error(`unknown Chimera obligation: ${obligationID}`)
         }
         yield* writeObligationStore(current.state.projectRoot, current.artifact, next)
-        const obligations = next.obligations.filter((item) => item.id === params.obligationID)
+        const obligations = next.obligations.filter((item) => item.id === obligationID)
         return {
           title: "Chimera obligations",
           output: ["Chimera obligation resolved.", `Artifact: ${current.artifact}`, "", ...obligations.map(formatObligation)].join("\n"),
@@ -2732,12 +2846,19 @@ export const ChimeraObligationIgnoreTool = Tool.define<typeof ObligationIgnorePa
     parameters: ObligationIgnoreParameters,
     execute: (params: ObligationIgnoreParams, ctx: Tool.Context<ObligationsMetadata>) =>
       Effect.gen(function* () {
-        yield* permission(ctx, "chimera_obligation_ignore", { obligationID: params.obligationID })
+        const obligationID = requiredChimeraID({
+          ref: params.ref,
+          legacy: params.obligationID,
+          legacyName: "obligationID",
+          expected: "obligation",
+          label: "chimera_obligation_ignore",
+        })
+        yield* permission(ctx, "chimera_obligation_ignore", { ref: params.ref, obligationID: params.obligationID })
         const current = yield* obligationContext(ctx as Tool.Context, true)
         const next = {
           schemaVersion: 1 as const,
           obligations: current.refreshed.obligations.map((item) =>
-            item.id === params.obligationID
+            item.id === obligationID
               ? {
                   ...item,
                   status: "ignored" as const,
@@ -2747,11 +2868,11 @@ export const ChimeraObligationIgnoreTool = Tool.define<typeof ObligationIgnorePa
               : item,
           ),
         }
-        if (!current.refreshed.obligations.some((item) => item.id === params.obligationID)) {
-          throw new Error(`unknown Chimera obligation: ${params.obligationID}`)
+        if (!current.refreshed.obligations.some((item) => item.id === obligationID)) {
+          throw new Error(`unknown Chimera obligation: ${obligationID}`)
         }
         yield* writeObligationStore(current.state.projectRoot, current.artifact, next)
-        const obligations = next.obligations.filter((item) => item.id === params.obligationID)
+        const obligations = next.obligations.filter((item) => item.id === obligationID)
         return {
           title: "Chimera obligations",
           output: ["Chimera obligation ignored.", `Artifact: ${current.artifact}`, "", ...obligations.map(formatObligation)].join("\n"),
@@ -2778,6 +2899,7 @@ export const ChimeraContextTool = Tool.define<typeof ContextParameters, ContextM
         yield* permission(ctx, "chimera_context", {
           query: params.query,
           symbol: params.symbol,
+          ref: params.ref,
           nodeID: params.nodeID,
           filePath: params.filePath,
           mode: params.mode ?? "search",
@@ -2786,7 +2908,8 @@ export const ChimeraContextTool = Tool.define<typeof ContextParameters, ContextM
         const instance = yield* InstanceState.context
         const state = yield* openProjectGraphForTool(ctx as Tool.Context, params.refresh !== false)
         const mode: ContextMetadata["mode"] = params.mode ?? "search"
-        const node = params.nodeID ? state.graph.node(params.nodeID) : undefined
+        const nodeID = chimeraRefID(params.ref, ["node"]) ?? params.nodeID?.trim()
+        const node = nodeID ? state.graph.node(nodeID) : undefined
         const file = params.filePath ? graphFile(state.projectRoot, instance.directory, params.filePath) : undefined
         if (file) yield* Effect.promise(() => syncExistingGraphFiles(state, [file], "force")).pipe(Effect.orDie)
         const normalizedFile = file?.graphPath
@@ -2797,7 +2920,7 @@ export const ChimeraContextTool = Tool.define<typeof ContextParameters, ContextM
           normalizedFile ??
           (mode === "arch" ? "architecture overview main modules project structure" : undefined)
 
-        if (!query) throw new Error("chimera_context requires query, symbol, nodeID, filePath, or mode=arch")
+        if (!query) throw new Error("chimera_context requires query, symbol, ref, nodeID, filePath, or mode=arch")
 
         const snapshot = state.graph.snapshot()
         const context = yield* Effect.promise(() =>

@@ -5,7 +5,8 @@ Use this tool when an active obligation is intentionally not pursued because it 
 Do NOT use this tool for obligations you reviewed and completed. Use `chimera_obligation_resolve` for completed work.
 
 Parameter rules:
-- `obligationID` is required and must refer to an existing tracked obligation.
+- Prefer `ref` copied from `Ref: obligation:<id>` output.
+- `obligationID` remains accepted as a legacy raw obligation id.
 - `reason` is required.
 - `note` is optional supporting context.
 

@@ -33,6 +33,7 @@
 - Avoid "large schema, thin description" designs. If a tool needs several optional seeds or modes, either split it into narrower tools, make the intended seed required where possible, or add strong description text that tells the model which field to choose and which fields to omit.
 - Prefer one model-facing action per tool. Avoid teaching multi-mode tools that require `action`, `mode`, `recent`, or broad optional selector combinations when a workflow-specific tool name can carry the intent.
 - For Chimera tools, prefer `chimera_audit_recent` for post-mutation closeout, `chimera_audit` for explicit audit seeds, and split obligation tools (`chimera_obligations_list`, `chimera_obligations_sync`, `chimera_obligation_claim`, `chimera_obligation_resolve`, `chimera_obligation_ignore`) over action-based umbrella tools.
+- For Chimera graph/runtime references exposed to agents, prefer typed refs such as `node:<id>`, `audit:<id>`, `predesign:<id>`, `oracle:<id>`, `obligation:<id>`, and `change:<id>` in `ref` / `refs` fields; keep raw `nodeID`, `oracleID`, and `obligationID` fields as legacy compatibility paths when needed.
 
 ### General Principles
 

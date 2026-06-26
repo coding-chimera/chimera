@@ -7,7 +7,8 @@ Findings are not commands and are not tracked obligations. Default output is Cod
 Do NOT use this as the default post-mutation audit. Use `chimera_audit_recent` after successful file mutations.
 
 Parameter rules:
-- Provide at least one of `files`, `filePath`, `symbol`, or `nodeID`.
+- Provide at least one of `files`, `filePath`, `symbol`, `ref`, or legacy `nodeID`.
+- Prefer `ref` when prior output printed `Ref: node:<id>`; copy it exactly rather than extracting raw ids.
 - Existing explicit `files` / `filePath` seeds are synced from the filesystem before audit seed resolution, even when they are not yet tracked by git.
 - Use `range` only with `filePath`.
 - Use `kind` only when resolving seed symbols needs a node-kind filter.

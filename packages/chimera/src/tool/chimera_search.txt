@@ -17,5 +17,6 @@ Common calls:
 - If the graph is uninitialized, return the structured unavailable state and zero results rather than creating graph data.
 
 After this tool:
+- Copy `Ref: node:<id>` from result output when a later Chimera tool accepts `ref` or `refs`; prefer that over raw `nodeID`.
 - Use `chimera_impact` for dependency or caller impact.
 - Use `read` only after graph evidence points to concrete files.
