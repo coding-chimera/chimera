@@ -284,6 +284,147 @@ describe("tool.read truncation", () => {
     }),
   )
 
+  it.instance("folds repeated Hashline rows from the same compaction window", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "dedup.txt")
+      yield* put(filepath, "alpha\nbeta\ngamma")
+      const tool = yield* init()
+      const first = yield* tool.execute({ filePath: filepath }, ctx)
+      const second = yield* tool.execute(
+        { filePath: filepath },
+        {
+          ...ctx,
+          extra: {
+            readDedupMessages: [
+              {
+                info: { id: MessageID.make("msg_history") },
+                parts: [
+                  {
+                    id: "prt_history",
+                    sessionID: ctx.sessionID,
+                    messageID: ctx.messageID,
+                    type: "tool",
+                    callID: "call_history",
+                    tool: "read",
+                    state: {
+                      status: "completed",
+                      input: { filePath: filepath },
+                      output: first.output,
+                      title: first.title,
+                      metadata: first.metadata,
+                      time: { start: 1, end: 2 },
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      )
+
+      expect(second.output).toContain("Read dedup: all 3 requested lines were already read")
+      expect(second.output).not.toContain(`1#${lineHash(1, "alpha")}|alpha`)
+      expect(second.output).not.toContain(`2#${lineHash(2, "beta")}|beta`)
+      expect(second.metadata.hashline?.anchors).toBe(0)
+      expect(second.metadata.readDedup?.skipped).toBe(3)
+    }),
+  )
+
+  it.instance("outputs changed same-number lines when the Hashline hash changes", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "dedup-change.txt")
+      yield* put(filepath, "alpha\nbeta\ngamma")
+      const tool = yield* init()
+      const first = yield* tool.execute({ filePath: filepath }, ctx)
+      yield* put(filepath, "alpha\nchanged\ngamma")
+      const second = yield* tool.execute(
+        { filePath: filepath },
+        {
+          ...ctx,
+          extra: {
+            readDedupMessages: [
+              {
+                info: { id: MessageID.make("msg_history") },
+                parts: [
+                  {
+                    id: "prt_history",
+                    sessionID: ctx.sessionID,
+                    messageID: ctx.messageID,
+                    type: "tool",
+                    callID: "call_history",
+                    tool: "read",
+                    state: {
+                      status: "completed",
+                      input: { filePath: filepath },
+                      output: first.output,
+                      title: first.title,
+                      metadata: first.metadata,
+                      time: { start: 1, end: 2 },
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      )
+
+      expect(second.output).toContain(`2#${lineHash(2, "changed")}|changed`)
+      expect(second.output).toContain("Read dedup: skipped 2 already-read lines (1, 3)")
+      expect(second.output).not.toContain(`1#${lineHash(1, "alpha")}|alpha`)
+      expect(second.metadata.hashline?.anchors).toBe(1)
+      expect(second.metadata.readDedup?.skipped).toBe(2)
+    }),
+  )
+
+  it.instance("does not fold read rows from compacted tool output", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "dedup-compacted.txt")
+      yield* put(filepath, "alpha\nbeta\ngamma")
+      const tool = yield* init()
+      const first = yield* tool.execute({ filePath: filepath }, ctx)
+      const second = yield* tool.execute(
+        { filePath: filepath },
+        {
+          ...ctx,
+          extra: {
+            readDedupMessages: [
+              {
+                info: { id: MessageID.make("msg_history") },
+                parts: [
+                  {
+                    id: "prt_history",
+                    sessionID: ctx.sessionID,
+                    messageID: ctx.messageID,
+                    type: "tool",
+                    callID: "call_history",
+                    tool: "read",
+                    state: {
+                      status: "completed",
+                      input: { filePath: filepath },
+                      output: first.output,
+                      title: first.title,
+                      metadata: first.metadata,
+                      time: { start: 1, end: 2, compacted: 3 },
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      )
+
+      expect(second.output).toContain(`1#${lineHash(1, "alpha")}|alpha`)
+      expect(second.output).not.toContain("Read dedup")
+      expect(second.metadata.hashline?.anchors).toBe(3)
+      expect(second.metadata.readDedup?.skipped).toBe(0)
+    }),
+  )
+
   it.instance("truncates large file by bytes and sets truncated metadata", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
