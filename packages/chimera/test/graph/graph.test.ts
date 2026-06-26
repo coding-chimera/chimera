@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, afterEach } from './vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import CodeGraph, { DatabaseConnection, getDatabasePath } from '../../src/graph/index';
+import CodeGraph, { DatabaseConnection, codePlanRelationForEdge, getDatabasePath } from '../../src/graph/index';
 import { Node, Edge, FrozenSemanticObject, LanguageAwareSignal } from '../../src/graph/types';
 import { projectLanguageAwareSignals } from '../../src/graph/semantic/language-signals';
 
@@ -561,6 +561,103 @@ export class LanguageEffects {
         expect(relation.edgeKind).toBe('calls');
         expect(relation.targetNode.id).toBe(formatValue.id);
       }
+    });
+
+    it('should expose CodePlan relation projection', () => {
+      const derivedClass = cg.getNodesByKind('class').find((node) => node.name === 'DerivedClass');
+      const baseClass = cg.getNodesByKind('class').find((node) => node.name === 'BaseClass');
+      const constructor = cg.getNodesByName('constructor').find((node) => node.qualifiedName === 'DerivedClass::constructor');
+      const printMethod = cg.getNodesByName('print').find((node) => node.qualifiedName === 'DerivedClass::print');
+      const formatValue = cg.getNodesByName('formatValue').find((node) => node.filePath === 'src/utils.ts');
+      const processValue = cg.getNodesByName('processValue').find((node) => node.filePath === 'src/utils.ts');
+      const main = cg.getNodesByName('main').find((node) => node.filePath === 'src/main.ts');
+
+      expect(derivedClass).toBeTruthy();
+      expect(baseClass).toBeTruthy();
+      expect(constructor).toBeTruthy();
+      expect(printMethod).toBeTruthy();
+      expect(formatValue).toBeTruthy();
+      expect(processValue).toBeTruthy();
+      expect(main).toBeTruthy();
+
+      expect(cg.getOutgoingCodePlanRelations(derivedClass!.id, { relations: ['ParentOf'] }).some((relation) => relation.otherNode.id === printMethod!.id)).toBe(true);
+      expect(cg.getOutgoingCodePlanRelations(derivedClass!.id, { relations: ['ConstructedBy'] }).some((relation) => relation.otherNode.id === constructor!.id)).toBe(true);
+      expect(cg.getIncomingCodePlanRelations(constructor!.id, { relations: ['Construct'] }).some((relation) => relation.otherNode.id === derivedClass!.id)).toBe(true);
+      expect(cg.getIncomingCodePlanRelations(baseClass!.id, { relations: ['BaseClassOf'] }).some((relation) => relation.otherNode.id === derivedClass!.id)).toBe(true);
+      expect(cg.getIncomingCodePlanRelations(formatValue!.id, { relations: ['CalledBy'] }).some((relation) => relation.otherNode.id === processValue!.id)).toBe(true);
+      expect(cg.getIncomingCodePlanRelations(derivedClass!.id, { relations: ['InstantiatedBy'] }).some((relation) => relation.otherNode.id === main!.id)).toBe(true);
+    });
+
+    it('should restrict CodePlan Uses projection to field and property targets', () => {
+      const sourceNode = { kind: 'method' } as Node;
+
+      expect(codePlanRelationForEdge('references', 'outgoing', sourceNode, { kind: 'field' } as Node)).toBe('Uses');
+      expect(codePlanRelationForEdge('references', 'incoming', sourceNode, { kind: 'property' } as Node)).toBe('UsedBy');
+      expect(codePlanRelationForEdge('references', 'outgoing', sourceNode, { kind: 'class' } as Node)).toBeUndefined();
+      expect(codePlanRelationForEdge('type_of', 'outgoing', sourceNode, { kind: 'field' } as Node)).toBeUndefined();
+      expect(codePlanRelationForEdge('returns', 'outgoing', sourceNode, { kind: 'field' } as Node)).toBeUndefined();
+    });
+
+    it('should emit TypeScript CodePlan statement relation seeds', async () => {
+      const statementPath = path.join(testDir, 'src', 'statements.ts');
+      fs.writeFileSync(statementPath, `export function helper(value: number) {
+  return value + 1;
+}
+
+export class Widget {
+  value = 1;
+}
+
+export function runStatements() {
+  const instance = new Widget();
+  return helper(instance.value);
+}
+`);
+      await cg.syncFiles([statementPath]);
+
+      const run = cg.getNodesByName('runStatements').find((node) => node.filePath === 'src/statements.ts');
+      const helper = cg.getNodesByName('helper').find((node) => node.filePath === 'src/statements.ts');
+      const widget = cg.getNodesByName('Widget').find((node) => node.filePath === 'src/statements.ts');
+      const statements = cg.getNodesByKind('statement').filter((node) => node.filePath === 'src/statements.ts');
+
+      expect(run).toBeTruthy();
+      expect(helper).toBeTruthy();
+      expect(widget).toBeTruthy();
+      expect(statements.length).toBeGreaterThanOrEqual(2);
+      expect(cg.getNodeSemanticInfo(statements[0]!)?.changeSubject).toBe('body');
+      expect(cg.getOutgoingCodePlanRelations(run!.id, { relations: ['ParentOf'] }).some((relation) => relation.otherNode.kind === 'statement')).toBe(true);
+      expect(statements.some((statement) => cg.getOutgoingCodePlanRelations(statement.id, { relations: ['Instantiates'] }).some((relation) => relation.otherNode.id === widget!.id))).toBe(true);
+      expect(statements.some((statement) => cg.getOutgoingCodePlanRelations(statement.id, { relations: ['Calls'] }).some((relation) => relation.otherNode.id === helper!.id))).toBe(true);
+      expect(cg.getOutgoingCodePlanRelations(run!.id, { relations: ['Instantiates'] }).some((relation) => relation.otherNode.id === widget!.id)).toBe(true);
+    });
+
+    it('should emit JavaScript CodePlan statement relation seeds', async () => {
+      const statementPath = path.join(testDir, 'src', 'statements.js');
+      fs.writeFileSync(statementPath, `export function buildThing(value) {
+  return value + 1;
+}
+
+export class Thing {}
+
+export function runJsStatements() {
+  const thing = new Thing();
+  return buildThing(thing);
+}
+`);
+      await cg.syncFiles([statementPath]);
+
+      const run = cg.getNodesByName('runJsStatements').find((node) => node.filePath === 'src/statements.js');
+      const buildThing = cg.getNodesByName('buildThing').find((node) => node.filePath === 'src/statements.js');
+      const thing = cg.getNodesByName('Thing').find((node) => node.filePath === 'src/statements.js');
+      const statements = cg.getNodesByKind('statement').filter((node) => node.filePath === 'src/statements.js');
+
+      expect(run).toBeTruthy();
+      expect(buildThing).toBeTruthy();
+      expect(thing).toBeTruthy();
+      expect(statements.length).toBeGreaterThanOrEqual(2);
+      expect(cg.getOutgoingCodePlanRelations(run!.id, { relations: ['ParentOf'] }).some((relation) => relation.otherNode.kind === 'statement')).toBe(true);
+      expect(statements.some((statement) => cg.getOutgoingCodePlanRelations(statement.id, { relations: ['Instantiates'] }).some((relation) => relation.otherNode.id === thing!.id))).toBe(true);
+      expect(statements.some((statement) => cg.getOutgoingCodePlanRelations(statement.id, { relations: ['Calls'] }).some((relation) => relation.otherNode.id === buildThing!.id))).toBe(true);
     });
 
     it('should project and diff incident relation snapshots', () => {
