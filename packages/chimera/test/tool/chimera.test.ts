@@ -191,6 +191,20 @@ const trackWrite = Effect.fn("ChimeraToolTest.trackWrite")(function* (input: {
 })
 
 describe("tool.chimera", () => {
+  it.instance("documents CodePlan atomic label glossary for audit workflows", () =>
+    Effect.gen(function* () {
+      const audit = yield* ChimeraAuditTool.pipe(Effect.flatMap((info) => info.init()))
+      const auditRecent = yield* ChimeraAuditRecentTool.pipe(Effect.flatMap((info) => info.init()))
+      const obligationsSync = yield* ChimeraObligationsSyncTool.pipe(Effect.flatMap((info) => info.init()))
+
+      for (const description of [audit.description, auditRecent.description, obligationsSync.description]) {
+        expect(description).toContain("CodePlan atomic label glossary")
+        expect(description).toContain("`MMS` modified method signature")
+        expect(description).toContain("`MMB` modified method body")
+        expect(description).toContain("`DI` deleted import/using statement")
+      }
+    }),
+  )
   it.instance("reports uninitialized status without creating graph data", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
@@ -823,15 +837,16 @@ describe("tool.chimera", () => {
       )
 
       expect(result.metadata.source).toBe("recent_provenance")
-      expect(fact?.evidence.relationDelta?.addedRelations).toHaveLength(0)
-      expect(fact?.evidence.relationDelta?.removedRelations).toHaveLength(0)
       expect(fact?.evidence.relationDelta?.beforeRelations.some((relation) => relation.payload.otherNode.name === "render")).toBe(true)
       expect(fact?.evidence.relationDelta?.afterRelations.some((relation) => relation.payload.otherNode.name === "render")).toBe(true)
-      expect(result.output).toContain("relation_delta: +0 -0 before:")
+      expect(result.output).toContain("relation_delta:")
+      expect(result.output).toContain("codeplan_atomic_label: MMS")
+      expect(result.output).not.toContain("codeplan_atomic_label: MMS (modified method signature)")
+      expect(result.output).toContain("chimera:impact_label:method_signature:codeplan_atomic:MMS")
     }),
   )
 
-  it.instance("downgrades local-only TS body changes with CodeGraph language signals", () =>
+  it.instance("keeps local-only TS body signal details out of default audit output", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
       const base = path.join(test.directory, "body-local.ts")
@@ -857,9 +872,13 @@ describe("tool.chimera", () => {
 
       expect(result.metadata.source).toBe("recent_provenance")
       expect(fact?.confidence).toBeLessThan(0.5)
-      expect(fact?.evidence.rule).toBe("codegraph.language.body.local_only")
+      expect(fact?.evidence.rule).toBe("method_body.self_review")
       expect(fact?.evidence.languageSignals?.some((signal) => signal.kind === "local_only_change")).toBe(true)
-      expect(result.output).toContain("codegraph_language_signal:local_only_change")
+      expect(result.output).not.toContain("codegraph_language_signal:local_only_change")
+      expect(result.output).not.toContain("codegraph.language.body.local_only")
+      expect(result.output).toContain("codeplan_atomic_label: MMB")
+      expect(result.output).toContain("statement_effect: local_only")
+      expect(result.output).not.toContain("codeplan_atomic_label: MMB (modified method body)")
     }),
   )
 
@@ -893,13 +912,16 @@ describe("tool.chimera", () => {
       const result = yield* runAuditRecent({ refresh: false })
 
       expect(result.metadata.fileDependents).toHaveLength(0)
-      expect(result.metadata.obligations.some((item) => item.evidence === "chimera:may_impact_rule:method_body.local_self_review:self_review")).toBe(true)
+      expect(result.metadata.obligations.some((item) => item.evidence === "chimera:may_impact_rule:codeplan.MMB.self_review:self_review")).toBe(true)
       expect(result.metadata.obligations.some((item) => item.target.includes("body-local-consumer"))).toBe(false)
       expect(result.output).toContain("chimera:impact_label:method_body")
+      expect(result.output).toContain("chimera:impact_label:method_body:codeplan_atomic:MMB")
+      expect(result.output).toContain("codeplan.MMB.self_review")
+      expect(result.output).not.toContain("method_body.local_self_review")
     }),
   )
 
-  it.instance("upgrades caller-visible TS body changes with CodeGraph language signals", () =>
+  it.instance("keeps caller-visible TS body signal details out of default audit output", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
       const base = path.join(test.directory, "body-visible.ts")
@@ -926,9 +948,12 @@ describe("tool.chimera", () => {
       expect(result.metadata.auditRunID).toEqual(expect.any(String))
       expect(result.output).toContain(`Audit run: ${result.metadata.auditRunID}`)
       expect(fact?.confidence).toBeGreaterThanOrEqual(0.8)
-      expect(fact?.evidence.rule).toBe("codegraph.language.body.caller_visible")
+      expect(fact?.evidence.rule).toBe("method_body.statement_effect")
+      expect(fact?.evidence.statementEffect?.effect).toBe("return_value_change")
       expect(fact?.evidence.languageSignals?.some((signal) => signal.kind === "return_value_changed")).toBe(true)
-      expect(result.output).toContain("codegraph_language_signal:return_value_changed")
+      expect(result.output).toContain("statement_effect: return_value_change")
+      expect(result.output).not.toContain("codegraph_language_signal:return_value_changed")
+      expect(result.output).not.toContain("codegraph.language.body.caller_visible")
       expect((yield* Effect.promise(() => readAuditRuns(test.directory, { provenanceID: result.metadata.provenance?.id }))).some((item) => item.id === result.metadata.auditRunID)).toBe(true)
     }),
   )

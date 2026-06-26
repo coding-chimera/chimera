@@ -130,6 +130,36 @@ export interface LanguageAwareSignal {
   signals: string[];
 }
 
+export const CODEPLAN_STATEMENT_EFFECT_KINDS = [
+  'local_only',
+  'receiver_field_write',
+  'parameter_object_mutation',
+  'module_or_global_state_write',
+  'return_value_change',
+  'unknown_fallback',
+] as const;
+
+export type CodePlanStatementEffectKind = (typeof CODEPLAN_STATEMENT_EFFECT_KINDS)[number];
+
+export interface CodePlanStatementEffectNode {
+  nodeKey: string;
+  filePath: string;
+  range: SourceRange;
+  signature?: string;
+}
+
+export interface CodePlanStatementEffectEvidence {
+  schemaVersion: 1;
+  source: 'codegraph:statement_effect';
+  effect: CodePlanStatementEffectKind;
+  graphBacked: boolean;
+  confidence: number;
+  signalKinds: LanguageAwareSignalKind[];
+  statementNodes: CodePlanStatementEffectNode[];
+  reason: string;
+  signals: string[];
+}
+
 export interface LanguageAwareSignalDiffInput {
   before?: FrozenSemanticObject | null;
   after?: FrozenSemanticObject | null;
@@ -180,8 +210,31 @@ export const CODEPLAN_RELATION_KINDS = [
 ] as const;
 
 export type CodePlanRelationKind = (typeof CODEPLAN_RELATION_KINDS)[number];
+export type CodePlanRelationGraphSide = 'before' | 'after';
+export type CodePlanRelationGraphLabel = 'D' | "D'";
 export type RelationDirection = 'incoming' | 'outgoing';
 export type RelationQuality = 'exact' | 'heuristic' | 'fallback';
+
+export const CODEPLAN_ATOMIC_LABELS = [
+  'MMB',
+  'MMS',
+  'MF',
+  'MC',
+  'MCC',
+  'MI',
+  'AM',
+  'AF',
+  'AC',
+  'ACC',
+  'AI',
+  'DM',
+  'DF',
+  'DC',
+  'DCC',
+  'DI',
+] as const;
+
+export type CodePlanAtomicLabel = (typeof CODEPLAN_ATOMIC_LABELS)[number];
 
 export interface RelationQueryOptions {
   relations?: RelationKind[];
@@ -211,6 +264,11 @@ export interface CodePlanRelationEvidence extends Omit<RelationEvidence, 'relati
 
 export interface RelationProjectionOptions extends RelationQueryOptions {
   directions?: RelationDirection[];
+}
+
+export interface CodePlanRelationProjectionOptions extends CodePlanRelationQueryOptions {
+  directions?: RelationDirection[];
+  graphSide?: CodePlanRelationGraphSide;
 }
 
 export interface FrozenRelationNode {
@@ -256,6 +314,22 @@ export interface FrozenRelation {
   };
 }
 
+export interface FrozenCodePlanRelation extends Omit<FrozenRelation, 'objectType' | 'payload'> {
+  objectType: 'codeplan_relation';
+  payload: Omit<FrozenRelation['payload'], 'relation'> & {
+    relation: CodePlanRelationKind;
+    graphSide: CodePlanRelationGraphSide;
+    graphLabel: CodePlanRelationGraphLabel;
+    clause: {
+      graph: CodePlanRelationGraphLabel;
+      blockNode: FrozenRelationNode;
+      dependencyNode: FrozenRelationNode;
+      relation: CodePlanRelationKind;
+      expression: string;
+    };
+  };
+}
+
 export interface RelationDeltaEvidence {
   schemaVersion: 1;
   source: {
@@ -269,6 +343,21 @@ export interface RelationDeltaEvidence {
   afterRelations: FrozenRelation[];
   addedRelations: FrozenRelation[];
   removedRelations: FrozenRelation[];
+}
+
+export interface CodePlanRelationDeltaEvidence {
+  schemaVersion: 1;
+  source: {
+    system: 'codegraph';
+    beforeRevision?: string;
+    afterRevision?: string;
+    beforeCodeGraphVersion?: string;
+    afterCodeGraphVersion?: string;
+  };
+  beforeRelations: FrozenCodePlanRelation[];
+  afterRelations: FrozenCodePlanRelation[];
+  addedRelations: FrozenCodePlanRelation[];
+  removedRelations: FrozenCodePlanRelation[];
 }
 
 export type NodeSemanticDiffKind = 'add' | 'delete' | 'modify' | 'move' | 'rename' | 'unchanged';

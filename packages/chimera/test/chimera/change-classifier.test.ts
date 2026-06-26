@@ -266,7 +266,7 @@ describe("change classifier", () => {
     expect(facts.some((fact) => fact.subjectKind === "schema" && fact.nodeKey?.includes(":class:Sample"))).toBe(false)
   })
 
-  test("uses CodeGraph local-only language signals for body confidence", () => {
+  test("keeps local-only body signal details internal", () => {
     const patch = `--- sample.ts
 +++ sample.ts
 @@ -1,4 +1,4 @@
@@ -279,13 +279,18 @@ describe("change classifier", () => {
     const languageSignals = [languageSignal({ kind: "return_value_changed", line: 3 })]
     const before = node({ id: "before-calculate", kind: "function", name: "calculate", startLine: 1, endLine: 4, signature: "function calculate(value: number)", languageSignals })
     const after = node({ id: "after-calculate", kind: "function", name: "calculate", startLine: 1, endLine: 4, signature: "function calculate(value: number)", languageSignals })
-    const facts = classifyChangeRecord({ record: record({ patch }), beforeNodes: [before], afterNodes: [after] })
+    const beforeStatement = node({ id: "before-local", kind: "statement", name: "local", startLine: 2, endLine: 2 })
+    const afterStatement = node({ id: "after-local", kind: "statement", name: "local", startLine: 2, endLine: 2 })
+    const facts = classifyChangeRecord({ record: record({ patch }), beforeNodes: [before, beforeStatement], afterNodes: [after, afterStatement] })
 
     const body = facts.find((fact) => fact.subjectKind === "body" && fact.nodeKey?.includes(":function:calculate"))
     expect(body?.confidence).toBe(0.25)
-    expect(body?.evidence.rule).toBe("codegraph.language.body.local_only")
+    expect(body?.evidence.rule).toBe("method_body.self_review")
     expect(body?.evidence.languageSignals?.map((signal) => signal.kind)).toEqual(["local_only_change"])
-    expect(body?.evidence.signals).toContain("codegraph_language_signal:local_only_change")
+    expect(body?.evidence.statementEffect?.effect).toBe("local_only")
+    expect(body?.evidence.statementEffect?.statementNodes[0]?.nodeKey).toContain(":statement:local")
+    expect(body?.evidence.signals).toContain("codeplan_statement_effect:local_only")
+    expect(body?.evidence.signals).not.toContain("codegraph_language_signal:local_only_change")
   })
 
   test("uses caller-visible language signals and preserves constructor override route context", () => {
@@ -301,9 +306,12 @@ describe("change classifier", () => {
 
     const body = facts.find((fact) => fact.subjectKind === "body" && fact.nodeKey?.includes(":function:visible"))
     expect(body?.confidence).toBe(0.9)
-    expect(body?.evidence.rule).toBe("codegraph.language.body.caller_visible")
+    expect(body?.evidence.rule).toBe("method_body.statement_effect")
     expect(body?.evidence.confidenceReason).toContain("node context: constructor_like, override_like, route_handler_like")
     expect(body?.evidence.languageSignals?.map((signal) => signal.kind)).toEqual(["return_value_changed"])
+    expect(body?.evidence.statementEffect?.effect).toBe("return_value_change")
+    expect(body?.evidence.signals).toContain("codeplan_statement_effect:return_value_change")
+    expect(body?.evidence.signals).not.toContain("codegraph_language_signal:return_value_changed")
     expect(body?.evidence.signals).toContain("codegraph_language_signal:constructor_like")
     expect(body?.evidence.signals).toContain("codegraph_language_signal:override_like")
     expect(body?.evidence.signals).toContain("codegraph_language_signal:route_handler_like")
@@ -317,8 +325,11 @@ describe("change classifier", () => {
 
     const body = facts.find((fact) => fact.subjectKind === "body" && fact.nodeKey?.includes(":function:calculate"))
     expect(body?.confidence).toBe(0.5)
-    expect(body?.evidence.rule).toBe("codegraph.language.body.unknown")
+    expect(body?.evidence.rule).toBe("method_body.fallback")
     expect(body?.evidence.languageSignals?.map((signal) => signal.kind)).toEqual(["unknown_body_effect"])
+    expect(body?.evidence.statementEffect?.effect).toBe("unknown_fallback")
+    expect(body?.evidence.signals).toContain("codeplan_statement_effect:unknown_fallback")
+    expect(body?.evidence.signals).not.toContain("codegraph_language_signal:unknown_body_effect")
     expect(body?.evidence.signals).not.toContain("codegraph_language_signal:local_only_change")
   })
 

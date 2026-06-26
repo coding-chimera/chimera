@@ -683,6 +683,42 @@ export function runJsStatements() {
       expect(added.addedRelations.length).toBe(beforeRelations.length);
     });
 
+
+    it('should project and diff CodePlan relation clauses across graph sides', () => {
+      const formatValue = cg.getNodesByName('formatValue').find((node) => node.filePath === 'src/utils.ts');
+
+      expect(formatValue).toBeTruthy();
+      const snapshot = cg.getSnapshot();
+      const beforeRelations = cg.projectIncidentCodePlanRelations(formatValue!.id, snapshot, {
+        directions: ['incoming'],
+        relations: ['CalledBy'],
+        graphSide: 'before',
+      });
+      const afterRelations = cg.projectIncidentCodePlanRelations(formatValue!.id, snapshot, {
+        directions: ['incoming'],
+        relations: ['CalledBy'],
+        graphSide: 'after',
+      });
+      const removed = CodeGraph.diffCodePlanRelations(beforeRelations, []);
+      const stable = cg.diffCodePlanRelations(beforeRelations, afterRelations);
+      const added = cg.diffCodePlanRelations([], afterRelations);
+
+      expect(beforeRelations.some((relation) => relation.payload.otherNode.name === 'processValue')).toBe(true);
+      expect(beforeRelations.every((relation) => relation.objectType === 'codeplan_relation')).toBe(true);
+      expect(beforeRelations.every((relation) => relation.payload.graphSide === 'before')).toBe(true);
+      expect(beforeRelations.every((relation) => relation.payload.graphLabel === 'D')).toBe(true);
+      expect(beforeRelations[0]?.payload.clause.expression).toContain('Rel(D,');
+      expect(afterRelations.every((relation) => relation.payload.graphSide === 'after')).toBe(true);
+      expect(afterRelations.every((relation) => relation.payload.graphLabel === "D'")).toBe(true);
+      expect(afterRelations[0]?.payload.clause.expression).toContain("Rel(D',");
+      expect(removed.removedRelations.length).toBe(beforeRelations.length);
+      expect(removed.removedRelations[0]?.payload.clause.graph).toBe('D');
+      expect(stable.addedRelations).toHaveLength(0);
+      expect(stable.removedRelations).toHaveLength(0);
+      expect(added.addedRelations.length).toBe(afterRelations.length);
+      expect(added.addedRelations[0]?.payload.clause.graph).toBe("D'");
+    });
+
     it('should preserve caller relations across scoped signature sync', async () => {
       const apiPath = path.join(testDir, 'src', 'api.ts');
       const consumerPath = path.join(testDir, 'src', 'api-consumer.ts');
