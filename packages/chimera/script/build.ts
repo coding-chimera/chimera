@@ -7,6 +7,7 @@ import path from "path"
 import { fileURLToPath } from "url"
 import { createSolidTransformPlugin } from "@opentui/solid/bun-plugin"
 import { resolveVersion } from "./version"
+import { packNpmTarballs } from "./pack-local"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -294,6 +295,8 @@ for (const item of targets) {
   )
   binaries[name] = buildVersion
 }
+
+await packNpmTarballs()
 
 if (Script.release) {
   for (const key of Object.keys(binaries)) {
