@@ -458,6 +458,24 @@ jobs:
           opencode-app-id: ${{ vars.OPENCODE_APP_ID }}
           opencode-app-secret: ${{ secrets.OPENCODE_APP_SECRET }}
 
+      - name: Pack npm tarballs
+        run: bun run --cwd packages/chimera pack:local
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chimera-npm-tarballs
+          path: packages/chimera/dist/npm-tarballs/*.tgz
+
+      - name: Upload npm tarballs release assets
+        if: needs.version.outputs.release != ''
+        env:
+          GH_TOKEN: ${{ steps.committer.outputs.token }}
+        run: |
+          gh release upload "v${{ needs.version.outputs.version }}" \
+            packages/chimera/dist/npm-tarballs/*.tgz \
+            --clobber \
+            --repo "${{ needs.version.outputs.repo }}"
+
       - name: Cache apt packages (AUR)
         uses: actions/cache@v4
         with:
