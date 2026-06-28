@@ -1197,6 +1197,80 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       return yield* provider.defaultModel()
     })
 
+    const commandModel = Effect.fnUntraced(function* (input: CommandInput) {
+      if (input.model) return Provider.parseModel(input.model)
+      return yield* lastModel(input.sessionID).pipe(
+        Effect.catchCause(() =>
+          Effect.succeed({ providerID: ProviderID.make("chimera"), modelID: ModelID.make("init-graph") }),
+        ),
+      )
+    })
+
+    const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (input: CommandInput) {
+      const ctx = yield* InstanceState.context
+      const agentName = input.agent ?? (yield* agents.defaultAgent())
+      const model = yield* commandModel(input)
+      const userMsg = yield* sessions.updateMessage({
+        id: input.messageID ?? MessageID.ascending(),
+        sessionID: input.sessionID,
+        time: { created: Date.now() },
+        role: "user",
+        agent: agentName,
+        model,
+      } satisfies MessageV2.User)
+      yield* sessions.updatePart({
+        id: PartID.ascending(),
+        messageID: userMsg.id,
+        sessionID: input.sessionID,
+        type: "text",
+        text: input.arguments.trim() ? `/init-graph ${input.arguments}` : "/init-graph",
+      } satisfies MessageV2.TextPart)
+      const started = Date.now()
+      const snapshot = yield* Chimera.initProjectGraph({
+        bus,
+        source: "command.init-graph",
+        sessionID: input.sessionID,
+        watch: false,
+      })
+      const assistant = yield* sessions.updateMessage({
+        id: MessageID.ascending(),
+        sessionID: input.sessionID,
+        parentID: userMsg.id,
+        mode: agentName,
+        agent: agentName,
+        cost: 0,
+        path: { cwd: ctx.directory, root: ctx.worktree },
+        time: { created: started, completed: Date.now() },
+        role: "assistant",
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        modelID: model.modelID,
+        providerID: model.providerID,
+        finish: "stop",
+      } satisfies MessageV2.Assistant)
+      const part = yield* sessions.updatePart({
+        id: PartID.ascending(),
+        messageID: assistant.id,
+        sessionID: input.sessionID,
+        type: "text",
+        text: [
+          "Chimera graph initialized.",
+          `Project root: ${ctx.worktree}`,
+          `Revision: ${snapshot.revision}`,
+          `Files: ${snapshot.fileCount}`,
+          `Nodes: ${snapshot.nodeCount}`,
+          `Edges: ${snapshot.edgeCount}`,
+        ].join("\n"),
+      } satisfies MessageV2.TextPart)
+      yield* sessions.touch(input.sessionID)
+      yield* bus.publish(Command.Event.Executed, {
+        name: input.command,
+        sessionID: input.sessionID,
+        arguments: input.arguments,
+        messageID: assistant.id,
+      })
+      return { info: assistant, parts: [part] }
+    })
+
     const createUserMessage = Effect.fn("SessionPrompt.createUserMessage")(function* (input: PromptInput) {
       const agentName = input.agent || (yield* agents.defaultAgent())
       const ag = yield* agents.get(agentName)
@@ -2005,6 +2079,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         yield* bus.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() })
         throw error
       }
+      if (input.command === Command.Default.INIT_GRAPH) return yield* initGraphCommand(input)
       const agentName = cmd.agent ?? input.agent ?? (yield* agents.defaultAgent())
 
       const raw = input.arguments.match(argsRegex) ?? []
