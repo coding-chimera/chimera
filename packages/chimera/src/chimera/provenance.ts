@@ -9,7 +9,7 @@ import type { Tool } from "@/tool/tool"
 import { classifyChangeRecord, classifyFileBoundary, collectFileProjections, collectIncidentRelations } from "./change-classifier"
 import { CodeGraphAdapter } from "./codegraph-adapter"
 import { getCodeGraphDir, isInitialized, type CodeGraphSnapshot, type IndexProgress as CodeGraphIndexProgress, type SyncResult as CodeGraphSyncResult } from "@/graph"
-import { appendProvenanceRecord, databaseStorePath, readPredesignRuns, readProvenanceRecords, recordOracleResult, writeChangeFacts, type OracleLinkedChange, type OracleStatus, type OracleVerificationKind } from "./store"
+import { appendProvenanceRecord, databaseStorePath, readPredesignRuns, readProvenanceRecords, readRecentProvenanceRecords, recordOracleResult, writeChangeFacts, type OracleLinkedChange, type OracleStatus, type OracleVerificationKind } from "./store"
 import { TOOL_MUTATION_PREDESIGN_REQUIRED } from "./guidance"
 
 const ARTIFACT_SUBDIR = "chimera"
@@ -368,7 +368,7 @@ async function hasRecentToolProvenance(artifact: string, root: string, files: st
   })
   if (memoryHit) return true
 
-  const records = await readProvenanceRecords(root, artifact)
+  const records = await readRecentProvenanceRecords(root, artifact, { limit: 20 })
   return records
     .slice(-20)
     .some((record) => {
@@ -586,7 +586,7 @@ export const recordToolOracle = Effect.fn("Chimera.recordToolOracle")(function* 
   const root = projectRoot(instance)
   const finishedAt = input.finishedAt ?? new Date().toISOString()
   const maxChanges = Math.max(1, Math.min(100, Math.floor(input.maxChanges ?? 20)))
-  const records = yield* Effect.promise(() => readProvenanceRecords(root, toolProvenanceArtifact(root)))
+  const records = yield* Effect.promise(() => readRecentProvenanceRecords(root, toolProvenanceArtifact(root), { sessionID: input.ctx.sessionID, finishedBefore: finishedAt, limit: maxChanges }))
   const linkedChanges = linkedOracleChanges({ records, root, sessionID: input.ctx.sessionID, finishedAt, maxChanges })
   return yield* Effect.promise(() =>
     recordOracleResult(root, oracleArtifact(root), {
