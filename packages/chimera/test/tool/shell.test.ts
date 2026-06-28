@@ -17,6 +17,7 @@ import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { Plugin } from "../../src/plugin"
 import { readOracleResults } from "../../src/chimera/store"
+import { getCodeGraphDir } from "../../src/graph"
 
 const runtime = ManagedRuntime.make(
   Layer.mergeAll(
@@ -205,7 +206,7 @@ describe("tool.shell", () => {
         )
         const records = await readOracleResults(
           tmp.path,
-          path.join(tmp.path, ".codegraph", "chimera", "oracle-results.jsonl"),
+          path.join(getCodeGraphDir(tmp.path), "chimera", "oracle-results.jsonl"),
           { sessionID: ctx.sessionID, includePassing: true },
         )
 
