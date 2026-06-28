@@ -64,6 +64,19 @@ function unquoteGitPath(input: string) {
   return Buffer.from(bytes).toString()
 }
 
+const MAX_MESSAGE_SUMMARY_DIFFS = 200
+const MAX_MESSAGE_SUMMARY_DIFF_BYTES = 1024 * 1024
+
+function estimatedDiffBytes(diffs: Snapshot.FileDiff[]) {
+  return diffs.reduce((sum, item) => sum + item.file.length + item.patch.length + 80, 2)
+}
+
+function messageSummaryDiffs(diffs: Snapshot.FileDiff[]) {
+  if (diffs.length > MAX_MESSAGE_SUMMARY_DIFFS) return undefined
+  if (estimatedDiffBytes(diffs) > MAX_MESSAGE_SUMMARY_DIFF_BYTES) return undefined
+  return diffs
+
+}
 export interface Interface {
   readonly summarize: (input: { sessionID: SessionID; messageID: MessageID }) => Effect.Effect<void>
   readonly diff: (input: { sessionID: SessionID; messageID?: MessageID }) => Effect.Effect<Snapshot.FileDiff[]>
@@ -124,8 +137,9 @@ export const layer = Layer.effect(
       )
       const target = messages.find((m) => m.info.id === input.messageID)
       if (!target || target.info.role !== "user") return
-      const msgDiffs = yield* computeDiff({ messages })
-      target.info.summary = { ...target.info.summary, diffs: msgDiffs }
+      const msgDiffs = messageSummaryDiffs(yield* computeDiff({ messages }))
+      const summary = target.info.summary ?? { diffs: [] }
+      target.info.summary = msgDiffs ? { ...summary, diffs: msgDiffs } : { ...summary, diffs: [] }
       yield* sessions.updateMessage(target.info)
     })
 
