@@ -7,6 +7,13 @@
 - Do not add `opencode` or `codegraph` public bins. Graph commands route through `chimera graph ...` or `chimera --graph ...`.
 - If changing installer, MCP, tool, prompt, build, or publish behavior, keep user-facing guidance aligned with `npm install -g chimera` + `chimera`.
 
+## Install and release-matrix validation
+
+- Use Bun for package-internal development commands in this checkout: build, test, typecheck, pack, and dependency installation while developing.
+- Use npm for user-facing global install validation and release-matrix install smoke tests. Published-package validation should exercise `npm install -g chimera`, then run the npm-installed `chimera` binary.
+- For local release tarballs, install both the platform tarball and main tarball with npm, e.g. `npm install -g ./chimera-darwin-arm64-<version>.tgz ./chimera-<version>.tgz`.
+- Verify npm installs with `command -v chimera`, `chimera --version`, and `npm ls -g --depth=0 chimera`; do not use `bun install -g` as release-matrix or user-install evidence.
+
 ## Graph data root and tool behavior
 
 - Current project-local graph data lives under `.chimera/`. Legacy `.codegraph/` is read for compatibility and explicit migration only.

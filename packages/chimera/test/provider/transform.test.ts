@@ -2965,6 +2965,30 @@ describe("ProviderTransform.variants", () => {
       expect(result.low).toEqual({ reasoningEffort: "low" })
       expect(result.high).toEqual({ reasoningEffort: "high" })
     })
+
+    test("Claude Opus 4 models include max reasoning effort", () => {
+      for (const apiID of [
+        "claude-opus-4",
+        "claude-opus-4-20250514",
+        "claude-opus-4-1",
+        "claude-opus-4-1-20250805",
+        "claude-4-opus",
+        "claude-4.1-opus",
+      ]) {
+        const model = createMockModel({
+          id: `custom-provider/${apiID}`,
+          providerID: "custom-provider",
+          api: {
+            id: apiID,
+            url: "https://api.custom.com",
+            npm: "@ai-sdk/openai-compatible",
+          },
+        })
+        const result = ProviderTransform.variants(model)
+        expect(Object.keys(result)).toEqual(["low", "medium", "high", "max"])
+        expect(result.max).toEqual({ reasoningEffort: "max" })
+      }
+    })
   })
 
   describe("@ai-sdk/azure", () => {

@@ -438,6 +438,112 @@ test("known model metadata lookup normalizes provider-prefixed GPT-5.5 ids", () 
   })
 })
 
+test("known model metadata lookup normalizes DeepSeek V4 max aliases", () => {
+  const provider = Provider.fromModelsDevProvider({
+    id: "deepseek",
+    name: "DeepSeek",
+    env: [],
+    api: "https://api.deepseek.com/v1",
+    models: {
+      "deepseek-v4-pro": {
+        id: "deepseek-v4-pro",
+        name: "DeepSeek V4 Pro",
+        family: "deepseek-thinking",
+        release_date: "2026-04-24",
+        reasoning: true,
+        temperature: true,
+        tool_call: true,
+        modalities: {
+          input: ["text"],
+          output: ["text"],
+        },
+        limit: {
+          context: 1_000_000,
+          output: 384_000,
+        },
+        cost: {
+          input: 1.74,
+          output: 3.84,
+        },
+      },
+      "deepseek-v4-flash": {
+        id: "deepseek-v4-flash",
+        name: "DeepSeek V4 Flash",
+        family: "deepseek-flash",
+        release_date: "2026-04-24",
+        reasoning: true,
+        temperature: true,
+        tool_call: true,
+        modalities: {
+          input: ["text"],
+          output: ["text"],
+        },
+        limit: {
+          context: 1_000_000,
+          output: 384_000,
+        },
+        cost: {
+          input: 0.14,
+          output: 0.28,
+        },
+      },
+    },
+  } as unknown as ModelsDev.Provider)
+
+  const proMax = Provider.findKnownModelMetadata({ deepseek: provider }, "deepseek-v4-pro-max")
+  const flashMax = Provider.findKnownModelMetadata({ deepseek: provider }, "deepseek/deepseek-v4-flash-max")
+
+  expect(proMax?.name).toBe("DeepSeek V4 Pro")
+  expect(proMax?.capabilities.reasoning).toBe(true)
+  expect(proMax?.variants).toBeDefined()
+  expect(proMax?.variants?.max).toEqual({ reasoningEffort: "max" })
+  expect(flashMax?.name).toBe("DeepSeek V4 Flash")
+  expect(flashMax?.capabilities.reasoning).toBe(true)
+  expect(flashMax?.variants).toBeDefined()
+  expect(flashMax?.variants?.max).toEqual({ reasoningEffort: "max" })
+})
+
+test("known model metadata lookup normalizes Claude Opus wrapper aliases", () => {
+  const provider = Provider.fromModelsDevProvider({
+    id: "anthropic",
+    name: "Anthropic",
+    env: [],
+    api: "https://api.anthropic.com/v1",
+    models: {
+      "claude-opus-4-7": {
+        id: "claude-opus-4-7",
+        name: "Claude Opus 4.7",
+        family: "claude-opus",
+        release_date: "2026-05-01",
+        reasoning: true,
+        temperature: true,
+        tool_call: true,
+        modalities: {
+          input: ["text"],
+          output: ["text"],
+        },
+        limit: {
+          context: 200_000,
+          output: 32_000,
+        },
+        cost: {
+          input: 15,
+          output: 75,
+        },
+      },
+    },
+  } as unknown as ModelsDev.Provider)
+
+  const wrapper = Provider.findKnownModelMetadata({ anthropic: provider }, "evomap-claude-opus-4-7")
+  const routed = Provider.findKnownModelMetadata({ anthropic: provider }, "Claude-Opus-4-7/Antigravity")
+
+  expect(wrapper?.name).toBe("Claude Opus 4.7")
+  expect(wrapper?.capabilities.reasoning).toBe(true)
+  expect(wrapper?.variants?.max).toEqual({ reasoningEffort: "max" })
+  expect(routed?.name).toBe("Claude Opus 4.7")
+  expect(routed?.variants?.max).toEqual({ reasoningEffort: "max" })
+})
+
 test("config provider model cost parses over-200k pricing", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {

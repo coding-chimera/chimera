@@ -21,6 +21,13 @@
 - Do not silently move, merge, or delete legacy `.codegraph/` data. Use `chimera graph migrate-data` and preserve user data unless an explicit mode says otherwise.
 - Watchers, extraction, git-status scans, and file traversal must ignore both `.chimera/` and `.codegraph/` during the compatibility window.
 
+## Install and release-matrix validation
+
+- Bun remains the package development toolchain for this checkout: use it for local install/build/test/typecheck/pack commands inside package directories.
+- User-facing global installs and release-matrix install validation must use npm, not Bun. Published package validation should exercise `npm install -g chimera`.
+- For local tarball smoke tests, install both the platform tarball and the main tarball with npm, e.g. `npm install -g ./chimera-darwin-arm64-<version>.tgz ./chimera-<version>.tgz`, then verify the npm-installed binary with `command -v chimera`, `chimera --version`, and `npm ls -g --depth=0 chimera`.
+- Do not use `bun install -g` as evidence for release-matrix or user-install behavior; it tests Bun's global store and can miss npm postinstall/optional-dependency issues.
+
 ## Style Guide
 
 ### Agent-Facing Tools

@@ -1119,10 +1119,42 @@ const MODEL_METADATA_PROVIDER_PRIORITY = [
   ProviderID.githubCopilot,
 ]
 
+function deepSeekV4MaxAliasCandidates(value: string) {
+  const match = value.match(/^(.*deepseek-v4-(?:flash|pro))-max$/)
+  if (!match?.[1]) return []
+  return [match[1]]
+}
+
+function claudeOpusAliasCandidates(value: string) {
+  return Array.from(
+    new Set(
+      [
+        ...Array.from(value.matchAll(/claude-opus-4-\d{8}/g), (match) => match[0]),
+        ...Array.from(value.matchAll(/claude-opus-4[-.]\d(?!\d)(?:-\d{8})?/g), (match) => match[0]),
+        ...Array.from(value.matchAll(/claude-opus-4(?![-.]\d|-\d{8})/g), (match) => match[0]),
+      ].flatMap((id) => [
+        id,
+        id.replace(/^(claude-opus-4)-(\d)(.*)$/, "$1.$2$3"),
+        id.replace(/^(claude-opus-4)\.(\d)(.*)$/, "$1-$2$3"),
+      ]),
+    ),
+  )
+}
+
 function knownModelIDCandidates(value: string) {
   const lower = value.trim().toLowerCase()
   const last = lower.split("/").at(-1) ?? lower
-  return [lower, last, last.replace(/^(openai|codex)[-_.:]+/, "")]
+  return Array.from(
+    new Set([
+      lower,
+      last,
+      last.replace(/^(openai|codex)[-_.:]+/, ""),
+      ...deepSeekV4MaxAliasCandidates(lower),
+      ...deepSeekV4MaxAliasCandidates(last),
+      ...claudeOpusAliasCandidates(lower),
+      ...claudeOpusAliasCandidates(last),
+    ]),
+  )
 }
 
 function modelMetadataProviders(database: Record<string, Info>) {
