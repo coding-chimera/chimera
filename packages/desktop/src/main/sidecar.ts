@@ -38,6 +38,7 @@ type Listener = {
   stop(close?: boolean): void | Promise<void>
 }
 
+const DEFAULT_SERVER_USERNAME = "chimera"
 const parentPort = getParentPort()
 let listener: Listener | undefined
 
@@ -78,7 +79,7 @@ async function start(command: StartCommand) {
     listener = await Server.listen({
       port: command.port,
       hostname: command.hostname,
-      username: "opencode",
+      username: DEFAULT_SERVER_USERNAME,
       password: command.password,
       cors: ["oc://renderer"],
     })
@@ -101,7 +102,7 @@ async function stop() {
 
 function prepareSidecarEnv(password: string, userDataPath: string) {
   Object.assign(process.env, {
-    OPENCODE_SERVER_USERNAME: "opencode",
+    OPENCODE_SERVER_USERNAME: DEFAULT_SERVER_USERNAME,
     OPENCODE_SERVER_PASSWORD: password,
     XDG_STATE_HOME: process.env.XDG_STATE_HOME ?? userDataPath,
   })
