@@ -16,8 +16,7 @@ import { useLanguage } from "@/context/language"
 import { usePlatform } from "@/context/platform"
 import { normalizeServerUrl, ServerConnection, useServer } from "@/context/server"
 import { type ServerHealth, useCheckServerHealth } from "@/utils/server-health"
-
-const DEFAULT_USERNAME = "opencode"
+import { DEFAULT_SERVER_USERNAME } from "@/utils/server"
 
 interface ServerFormProps {
   value: string
@@ -185,7 +184,7 @@ export function DialogSelectServer() {
     addServer: {
       url: "",
       name: "",
-      username: DEFAULT_USERNAME,
+      username: DEFAULT_SERVER_USERNAME,
       password: "",
       error: "",
       showForm: false,
@@ -206,7 +205,7 @@ export function DialogSelectServer() {
     setStore("addServer", {
       url: "",
       name: "",
-      username: DEFAULT_USERNAME,
+      username: DEFAULT_SERVER_USERNAME,
       password: "",
       error: "",
       showForm: false,
@@ -441,7 +440,7 @@ export function DialogSelectServer() {
       showForm: true,
       url: "",
       name: "",
-      username: DEFAULT_USERNAME,
+      username: DEFAULT_SERVER_USERNAME,
       password: "",
       error: "",
       status: undefined,
