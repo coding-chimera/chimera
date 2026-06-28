@@ -705,7 +705,12 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
     // https://docs.venice.ai/overview/guides/reasoning-models#reasoning-effort
     case "@ai-sdk/openai-compatible":
       const efforts = [...WIDELY_SUPPORTED_EFFORTS]
-      if (model.api.id.toLowerCase().includes("deepseek-v4")) {
+      const apiID = model.api.id.toLowerCase()
+      if (
+        apiID.includes("deepseek-v4") ||
+        apiID.includes("claude-opus-4") ||
+        /claude-4(?:[.-]\d)?-opus/.test(apiID)
+      ) {
         efforts.push("max")
       }
       return Object.fromEntries(efforts.map((effort) => [effort, { reasoningEffort: effort }]))

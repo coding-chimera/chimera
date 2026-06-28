@@ -115,6 +115,7 @@ const MAX_FILE_SIZE = 1024 * 1024;
  * recognized source extensions, so they produce no symbols regardless.
  */
 const DEFAULT_IGNORE_DIRS: ReadonlySet<string> = new Set([
+  '.chimera', '.codegraph',
   // JS / TS — dependency directories
   'node_modules', 'bower_components', 'jspm_packages', 'web_modules',
   '.yarn', '.pnpm-store',

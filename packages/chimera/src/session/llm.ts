@@ -108,6 +108,7 @@ const live: Layer.Layer<
         [
           // use agent prompt otherwise provider prompt
           ...(input.agent.prompt ? [input.agent.prompt] : SystemPrompt.provider(input.model)),
+          ...SystemPrompt.overlay(input.model),
           // any custom prompt passed into this call
           ...input.system,
           // any custom prompt from last user message

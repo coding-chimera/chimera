@@ -152,13 +152,17 @@ describe('CodeGraph Foundation', () => {
       fs.writeFileSync(path.join(tempDir, '.codegraph', 'chimera', 'tool-provenance.jsonl'), '', 'utf-8');
 
       const result = migrateLegacyGraphData(tempDir, { mode: 'copy', now: '2026-01-01T00:00:00.000Z' });
+      const migration = JSON.parse(fs.readFileSync(path.join(tempDir, '.chimera', 'migration.json'), 'utf-8'));
 
       expect(result.success).toBe(true);
       expect(result.copiedFiles).toContain('codegraph.db');
+      expect(result.verification?.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+      expect(result.verification?.integrityCheck).toBe('ok');
       expect(fs.existsSync(path.join(tempDir, '.chimera', 'codegraph.db'))).toBe(true);
       expect(fs.existsSync(path.join(tempDir, '.chimera', 'chimera', 'tool-provenance.jsonl'))).toBe(true);
       expect(fs.existsSync(path.join(tempDir, '.codegraph', 'codegraph.db'))).toBe(true);
-      expect(JSON.parse(fs.readFileSync(path.join(tempDir, '.chimera', 'migration.json'), 'utf-8')).probe.status).toBe('compatible-chimera-legacy');
+      expect(migration.probe.status).toBe('compatible-chimera-legacy');
+      expect(migration.verification.integrityCheck).toBe('ok');
       expect(getGraphDataRootInfo(tempDir).dataRootStatus).toBe('mixed');
       const cg = CodeGraph.openSync(tempDir);
       expect(cg.getProjectRoot()).toBe(path.resolve(tempDir));

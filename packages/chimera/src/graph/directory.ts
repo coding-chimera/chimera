@@ -7,7 +7,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { createDatabase } from './db/sqlite-adapter';
-import { CURRENT_SCHEMA_VERSION } from './db/migrations';
+import { CURRENT_SCHEMA_VERSION, getCurrentVersion, runMigrations } from './db/migrations';
 import { FileLock } from './utils';
 
 export const CHIMERA_DIR = '.chimera';
@@ -35,6 +35,12 @@ export interface LegacyGraphDataProbe {
   reason: string;
 }
 
+export interface GraphDataMigrationVerification {
+  databasePath: string;
+  schemaVersion: number;
+  integrityCheck: string;
+}
+
 export interface GraphDataMigrationResult {
   success: boolean;
   dryRun: boolean;
@@ -43,6 +49,7 @@ export interface GraphDataMigrationResult {
   targetRoot: string;
   probe: LegacyGraphDataProbe;
   copiedFiles: string[];
+  verification?: GraphDataMigrationVerification;
   migrationPath?: string;
   movedLegacyTo?: string;
   reason?: string;
@@ -299,6 +306,42 @@ function readTableNames(dbPath: string) {
   }
 }
 
+function quickCheckResult(value: unknown) {
+  if (typeof value === 'string') return value;
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const entry = record.quick_check ?? record.integrity_check;
+    if (typeof entry === 'string') return entry;
+  }
+  return String(value ?? 'unknown');
+}
+
+function verifyMigratedGraphDataRoot(targetRoot: string): GraphDataMigrationVerification {
+  const databasePath = path.join(targetRoot, DATABASE_FILENAME);
+  if (!fs.existsSync(databasePath)) throw new Error(`migrated ${DATABASE_FILENAME} is missing`);
+  const connection = createDatabase(databasePath);
+  try {
+    const currentVersion = getCurrentVersion(connection.db);
+    if (currentVersion < CURRENT_SCHEMA_VERSION) runMigrations(connection.db, currentVersion);
+    const integrityCheck = quickCheckResult(connection.db.prepare('PRAGMA quick_check').get());
+    if (integrityCheck !== 'ok') throw new Error(`quick_check returned ${integrityCheck}`);
+  } finally {
+    connection.db.close();
+  }
+
+  const probe = readTableNames(databasePath);
+  if (probe.schemaVersion <= 0) throw new Error('database does not contain Chimera schema_versions metadata');
+  if (probe.missingTables.length > 0 || Object.keys(probe.missingColumns).length > 0) {
+    throw new Error('database schema does not match Chimera graph schema after migration');
+  }
+
+  return {
+    databasePath,
+    schemaVersion: probe.schemaVersion,
+    integrityCheck: 'ok',
+  };
+}
+
 function nonEmptyDirectory(dir: string) {
   return fs.existsSync(dir) && fs.readdirSync(dir).length > 0;
 }
@@ -443,6 +486,19 @@ export function migrateLegacyGraphData(projectRoot: string, options: { dryRun?: 
     lock.release();
   }
 
+  let verification: GraphDataMigrationVerification;
+  try {
+    verification = verifyMigratedGraphDataRoot(targetRoot);
+  } catch (error) {
+    fs.rmSync(targetRoot, { recursive: true, force: true });
+    return {
+      ...baseResult,
+      success: false,
+      copiedFiles,
+      reason: `Migrated data verification failed: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+
   const now = options.now ?? new Date().toISOString();
   const movedLegacyTo = mode === 'move' ? uniqueLegacyBackupPath(probe.legacyRoot, now) : undefined;
   if (movedLegacyTo) fs.renameSync(probe.legacyRoot, movedLegacyTo);
@@ -458,6 +514,7 @@ export function migrateLegacyGraphData(projectRoot: string, options: { dryRun?: 
       movedLegacyTo,
       probe,
       copiedFiles,
+      verification,
     }, null, 2) + '\n',
     'utf-8',
   );
@@ -467,6 +524,7 @@ export function migrateLegacyGraphData(projectRoot: string, options: { dryRun?: 
     ...baseResult,
     success: true,
     copiedFiles,
+    verification,
     migrationPath,
     movedLegacyTo,
   };

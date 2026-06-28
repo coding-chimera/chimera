@@ -3382,6 +3382,47 @@ describe('Directory Exclusion', () => {
     expect(files.every((f) => !f.includes('.git'))).toBe(true);
   });
 
+  it('should always skip Chimera graph data directories', () => {
+    const srcDir = path.join(tempDir, 'src');
+    const chimeraDir = path.join(tempDir, '.chimera', 'generated');
+    const codegraphDir = path.join(tempDir, '.codegraph', 'generated');
+    fs.mkdirSync(srcDir, { recursive: true });
+    fs.mkdirSync(chimeraDir, { recursive: true });
+    fs.mkdirSync(codegraphDir, { recursive: true });
+    fs.writeFileSync(path.join(srcDir, 'index.ts'), 'export const x = 1;');
+    fs.writeFileSync(path.join(chimeraDir, 'shadow.ts'), 'export const y = 2;');
+    fs.writeFileSync(path.join(codegraphDir, 'shadow.ts'), 'export const z = 3;');
+
+    const files = scanDirectory(tempDir);
+
+    expect(files).toContain('src/index.ts');
+    expect(files.every((f) => !f.startsWith('.chimera/') && !f.startsWith('.codegraph/'))).toBe(true);
+  });
+
+  it('should ignore tracked Chimera graph data in git projects', async () => {
+    const { execFileSync } = await import('child_process');
+    const git = (...args: string[]) =>
+      execFileSync('git', args, { cwd: tempDir, stdio: 'pipe' });
+
+    git('init', '-q');
+    git('config', 'user.email', 'test@test.com');
+    git('config', 'user.name', 'Test');
+    fs.mkdirSync(path.join(tempDir, 'src'), { recursive: true });
+    fs.mkdirSync(path.join(tempDir, '.chimera', 'generated'), { recursive: true });
+    fs.mkdirSync(path.join(tempDir, '.codegraph', 'generated'), { recursive: true });
+    fs.writeFileSync(path.join(tempDir, 'src', 'index.ts'), 'export const x = 1;');
+    fs.writeFileSync(path.join(tempDir, '.chimera', 'generated', 'shadow.ts'), 'export const y = 2;');
+    fs.writeFileSync(path.join(tempDir, '.codegraph', 'generated', 'shadow.ts'), 'export const z = 3;');
+    git('add', '-f', 'src/index.ts', '.chimera/generated/shadow.ts', '.codegraph/generated/shadow.ts');
+    git('commit', '-q', '-m', 'track files');
+
+    const files = scanDirectory(tempDir);
+
+    expect(files).toContain('src/index.ts');
+    expect(files).not.toContain('.chimera/generated/shadow.ts');
+    expect(files).not.toContain('.codegraph/generated/shadow.ts');
+  });
+
   it('should return forward-slash paths on all platforms', () => {
     const srcDir = path.join(tempDir, 'src', 'components');
     fs.mkdirSync(srcDir, { recursive: true });
