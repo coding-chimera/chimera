@@ -33,6 +33,9 @@ export type FileDiff = typeof FileDiff.Type
 const log = Log.create({ service: "snapshot" })
 const prune = "7.days"
 const limit = 2 * 1024 * 1024
+const diffFullFileLimit = 500
+const diffFullFileBytesLimit = 1024 * 1024
+const diffFullTotalPatchBytesLimit = 8 * 1024 * 1024
 const core = ["-c", "core.longpaths=true", "-c", "core.symlinks=true"]
 const cfg = ["-c", "core.autocrlf=false", ...core]
 const quote = [...cfg, "-c", "core.quotepath=false"]
@@ -699,9 +702,26 @@ export const layer: Layer.Layer<
                 rows.push(...filtered)
               }
 
+              if (rows.length > diffFullFileLimit) {
+                return rows.map((row) => ({
+                  file: row.file,
+                  patch: "",
+                  additions: row.additions,
+                  deletions: row.deletions,
+                  status: row.status,
+                }))
+              }
+
               const step = 100
-              const patch = (file: string, before: string, after: string) =>
-                formatPatch(structuredPatch(file, file, before, after, "", "", { context: Number.MAX_SAFE_INTEGER }))
+              let totalPatchBytes = 0
+              const patch = (file: string, before: string, after: string) => {
+                if (before.length + after.length > diffFullFileBytesLimit) return ""
+                if (totalPatchBytes > diffFullTotalPatchBytesLimit) return ""
+                const value = formatPatch(structuredPatch(file, file, before, after, "", "", { context: Number.MAX_SAFE_INTEGER }))
+                totalPatchBytes += value.length
+                if (totalPatchBytes > diffFullTotalPatchBytesLimit) return ""
+                return value
+              }
 
               for (let i = 0; i < rows.length; i += step) {
                 const run = rows.slice(i, i + step)
