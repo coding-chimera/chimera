@@ -8,12 +8,7 @@ import { Snapshot } from "@/snapshot"
 import { SyncEvent } from "../sync"
 import { Database } from "@/storage/db"
 import { NotFoundError } from "@/storage/storage"
-import { and } from "drizzle-orm"
-import { desc } from "drizzle-orm"
-import { eq } from "drizzle-orm"
-import { inArray } from "drizzle-orm"
-import { lt } from "drizzle-orm"
-import { or } from "drizzle-orm"
+import { and, desc, eq, inArray, lt, or, sql } from "drizzle-orm"
 import { MessageTable, PartTable, SessionTable } from "./session.sql"
 import * as ProviderError from "@/provider/error"
 import { iife } from "@/util/iife"
@@ -40,6 +35,20 @@ export const SYNTHETIC_ATTACHMENT_PROMPT = "Attached image(s) from tool result:"
 export { isMedia }
 
 export const OutputLengthError = namedSchemaError("MessageOutputLengthError", {})
+
+const MAX_STORED_MESSAGE_SUMMARY_BYTES = 1024 * 1024
+
+function trimOversizedStoredSummaries(sessionID: SessionID) {
+  Database.use((db) =>
+    db.run(sql`
+      UPDATE message
+      SET data = json_set(data, '$.summary.diffs', json('[]'))
+      WHERE session_id = ${sessionID}
+        AND json_type(data, '$.summary.diffs') IS NOT NULL
+        AND length(json_extract(data, '$.summary.diffs')) > ${MAX_STORED_MESSAGE_SUMMARY_BYTES}
+    `),
+  )
+}
 export const AbortedError = namedSchemaError("MessageAbortedError", { message: Schema.String })
 export const StructuredOutputError = namedSchemaError("StructuredOutputError", {
   message: Schema.String,
@@ -1064,6 +1073,7 @@ export function toModelMessages(
 }
 
 export function page(input: { sessionID: SessionID; limit: number; before?: string }) {
+  trimOversizedStoredSummaries(input.sessionID)
   const before = input.before ? cursor.decode(input.before) : undefined
   const where = before
     ? and(eq(MessageTable.session_id, input.sessionID), older(before))
@@ -1130,6 +1140,7 @@ export function parts(message_id: MessageID) {
 }
 
 export function get(input: { sessionID: SessionID; messageID: MessageID }): WithParts {
+  trimOversizedStoredSummaries(input.sessionID)
   const row = Database.use((db) =>
     db
       .select()
