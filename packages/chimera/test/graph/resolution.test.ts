@@ -16,7 +16,7 @@ import { resolveImportPath, extractImportMappings, resolveJvmImport, loadCppIncl
 import type { UnresolvedRef } from '../../src/graph/resolution/types';
 import { detectFrameworks, getAllFrameworkResolvers } from '../../src/graph/resolution/frameworks';
 import { QueryBuilder } from '../../src/graph/db/queries';
-import { DatabaseConnection } from '../../src/graph/db';
+import { DatabaseConnection, getDatabasePath } from '../../src/graph/db';
 
 const baseContext: ResolutionContext = {
   getNodesInFile: () => [],
@@ -1612,7 +1612,7 @@ func main() {
         // The `#include "utils.h"` edge should target the real
         // `include/utils.h` file node — not a floating `import` node
         // living inside main.cpp.
-        const db = DatabaseConnection.open(path.join(tempProject, '.codegraph', 'codegraph.db'));
+        const db = DatabaseConnection.open(getDatabasePath(tempProject));
         const rows = db.getDb().prepare(`
           select dst.kind as dstKind, dst.file_path as dstPath
           from edges e
