@@ -13,6 +13,7 @@ import { Agent } from "../../src/agent/agent"
 import { Bus } from "../../src/bus"
 import { BusEvent } from "../../src/bus/bus-event"
 import { recordPredesignRun } from "@/chimera/store"
+import { getCodeGraphDir } from "../../src/graph"
 import { Truncate } from "@/tool/truncate"
 import { SessionID, MessageID } from "../../src/session/schema"
 import { lineHash } from "../../src/tool/hashline"
@@ -58,7 +59,7 @@ const resolve = () =>
 const anchor = (line: number, content: string) => `${line}#${lineHash(line, content)}`
 
 const predesign = (root: string, files: string[]) =>
-  recordPredesignRun(root, path.join(root, ".codegraph", "chimera", "predesign-runs.jsonl"), {
+  recordPredesignRun(root, path.join(getCodeGraphDir(root), "chimera", "predesign-runs.jsonl"), {
     sessionID: ctx.sessionID,
     messageID: ctx.messageID,
     callID: "call_predesign_edit_test",

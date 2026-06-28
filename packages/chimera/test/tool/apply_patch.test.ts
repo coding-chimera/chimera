@@ -113,7 +113,7 @@ describe("tool.apply_patch freeform", () => {
 
         expect(result.title).toContain("Success. Updated the following files")
         expect(result.output).toContain("Success. Updated the following files")
-        expect(result.output).toContain("chimera_audit_recent")
+        expect(result.output).not.toContain("chimera_audit_recent")
         // Strict formatting assertions for slashes
         expect(result.output).toMatch(/A nested\/new\.txt/)
         expect(result.output).toMatch(/D delete\.txt/)

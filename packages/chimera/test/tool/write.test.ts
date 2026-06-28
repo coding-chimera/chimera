@@ -16,6 +16,7 @@ import { SessionID, MessageID } from "../../src/session/schema"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { disposeAllInstances, provideTmpdirInstance, TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
+import { CodeGraph, getCodeGraphDir } from "../../src/graph"
 
 const ctx = {
   sessionID: SessionID.make("ses_test-write-session"),
@@ -59,7 +60,7 @@ const run = Effect.fn("WriteToolTest.run")(function* (
 
 const predesign = Effect.fn("WriteToolTest.predesign")(function* (root: string, files: string[]) {
   yield* Effect.promise(() =>
-    recordPredesignRun(root, path.join(root, ".codegraph", "chimera", "predesign-runs.jsonl"), {
+    recordPredesignRun(root, path.join(getCodeGraphDir(root), "chimera", "predesign-runs.jsonl"), {
       sessionID: ctx.sessionID,
       messageID: ctx.messageID,
       callID: "call_predesign_write_test",
@@ -118,13 +119,15 @@ describe("tool.write", () => {
       Effect.gen(function* () {
         const test = yield* TestInstance
         const filepath = path.join(test.directory, "tracked.ts")
+        const graph = yield* Effect.promise(() => CodeGraph.init(test.directory))
+        graph.close()
         yield* predesign(test.directory, ["tracked.ts"])
         yield* run(
           { filePath: filepath, content: "export const tracked = 1\n" },
           { ...ctx, callID: "call_write_provenance" },
         )
 
-        const artifact = path.join(test.directory, ".codegraph", "chimera", "tool-provenance.jsonl")
+        const artifact = path.join(getCodeGraphDir(test.directory), "chimera", "tool-provenance.jsonl")
         const records = yield* Effect.promise(() => readProvenanceRecords(test.directory, artifact))
         const record = records[records.length - 1]!
 
@@ -160,6 +163,8 @@ describe("tool.write", () => {
       Effect.gen(function* () {
         const test = yield* TestInstance
         const filepath = path.join(test.directory, "blocked.ts")
+        const graph = yield* Effect.promise(() => CodeGraph.init(test.directory))
+        graph.close()
         const result = yield* run({ filePath: filepath, content: "export const blocked = 1\n" })
 
         expect(result.title).toBe("Chimera pre-design required")
@@ -173,6 +178,8 @@ describe("tool.write", () => {
       Effect.gen(function* () {
         const test = yield* TestInstance
         const filepath = path.join(test.directory, "src/session/prompt/chimera.txt")
+        const graph = yield* Effect.promise(() => CodeGraph.init(test.directory))
+        graph.close()
         const result = yield* run({ filePath: filepath, content: "Prompt guidance\n" })
 
         expect(result.title).toBe("Chimera pre-design required")

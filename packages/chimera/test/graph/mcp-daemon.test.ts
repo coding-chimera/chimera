@@ -21,8 +21,8 @@
  *
  * These tests intentionally spawn real `node dist/cli/chimera.js` processes
  * over real sockets/pipes — the same surface a Claude Code / Cursor / Codex
- * install exercises. The daemon logs to `.codegraph/daemon.log` (it has no
- * client stderr of its own), so daemon-side assertions read that file.
+ * install exercises. The daemon has no client stderr of its own, so
+ * daemon-side assertions read the daemon log file.
  *
  * `realRoot` vs `tempDir`: processes are spawned with the (possibly symlinked)
  * `tempDir` as cwd/rootUri — on macOS `os.tmpdir()` lives under `/var`, a
@@ -38,7 +38,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { CodeGraph } from '../../src/graph';
-import { getDaemonSocketPath } from '../../src/graph/mcp/daemon-paths';
+import { getCodeGraphDir } from '../../src/graph/directory';
+import { getDaemonPidPath, getDaemonSocketPath } from '../../src/graph/mcp/daemon-paths';
 
 const BIN = path.resolve(__dirname, 'fixtures/graph-cli.ts');
 
@@ -137,14 +138,14 @@ function isAlive(pid: number): boolean {
 
 function readLockPid(root: string): number | null {
   try {
-    const raw = fs.readFileSync(path.join(root, '.codegraph', 'daemon.pid'), 'utf8');
+    const raw = fs.readFileSync(getDaemonPidPath(root), 'utf8');
     const info = JSON.parse(raw);
     return typeof info.pid === 'number' ? info.pid : null;
   } catch { return null; }
 }
 
 function readDaemonLog(root: string): string {
-  try { return fs.readFileSync(path.join(root, '.codegraph', 'daemon.log'), 'utf8'); }
+  try { return fs.readFileSync(path.join(getCodeGraphDir(root), 'daemon.log'), 'utf8'); }
   catch { return ''; }
 }
 
@@ -160,6 +161,21 @@ function killTree(...procs: ChildProcessWithoutNullStreams[]): void {
 
 async function waitProcessExit(pid: number, timeoutMs: number): Promise<boolean> {
   return waitFor(() => !isAlive(pid), timeoutMs).then(() => true).catch(() => false);
+}
+
+async function waitChildExit(child: ChildProcessWithoutNullStreams, timeoutMs: number): Promise<boolean> {
+  if (child.exitCode !== null || child.signalCode !== null) return true;
+  return new Promise((resolve) => {
+    const onExit = () => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    const timer = setTimeout(() => {
+      child.off('exit', onExit);
+      resolve(false);
+    }, timeoutMs);
+    child.once('exit', onExit);
+  });
 }
 
 describe('Shared MCP daemon (issue #411)', () => {
@@ -202,7 +218,7 @@ describe('Shared MCP daemon (issue #411)', () => {
     await waitFor(() => first.stderr.some((l) => l.includes('Attached to shared daemon')), 8000);
 
     // A detached daemon came up and recorded itself.
-    await waitFor(() => fs.existsSync(path.join(realRoot, '.codegraph', 'daemon.pid')), 8000);
+    await waitFor(() => fs.existsSync(getDaemonPidPath(realRoot)), 8000);
     await waitFor(() => countListeningLines(realRoot) >= 1, 8000);
     const daemonPid = readLockPid(realRoot);
     expect(daemonPid).toBeTruthy();
@@ -296,14 +312,14 @@ describe('Shared MCP daemon (issue #411)', () => {
     await waitFor(() => findResponse(first.stdout, 1), 10000);
     // Direct mode — no daemon machinery touched.
     expect(first.stderr.some((l) => l.includes('Attached to shared daemon'))).toBe(false);
-    expect(fs.existsSync(path.join(realRoot, '.codegraph', 'daemon.pid'))).toBe(false);
-    expect(fs.existsSync(path.join(realRoot, '.codegraph', 'daemon.log'))).toBe(false);
+    expect(fs.existsSync(getDaemonPidPath(realRoot))).toBe(false);
+    expect(fs.existsSync(path.join(getCodeGraphDir(realRoot), 'daemon.log'))).toBe(false);
   }, 20000);
 
   it('clears a stale (dead-pid) lockfile and a fresh daemon takes over', async () => {
     // Plant a lockfile pointing at a definitely-dead pid + the real socket path.
     fs.writeFileSync(
-      path.join(realRoot, '.codegraph', 'daemon.pid'),
+      getDaemonPidPath(realRoot),
       JSON.stringify({
         pid: 999_999,
         version: '0.0.0-fake',
@@ -333,7 +349,7 @@ describe('Shared MCP daemon (issue #411)', () => {
     // Plant a live-pid lockfile so the launcher treats the lock as held, and a
     // mini-server that answers with a mismatched-version hello.
     fs.writeFileSync(
-      path.join(realRoot, '.codegraph', 'daemon.pid'),
+      getDaemonPidPath(realRoot),
       JSON.stringify({ pid: process.pid, version: '0.0.0-mismatch', socketPath: sockPath, startedAt: Date.now() }),
     );
     const miniServer = net.createServer((sock) => {
@@ -368,11 +384,13 @@ describe('Shared MCP daemon (issue #411)', () => {
     await waitFor(() => (readLockPid(realRoot) ?? 0) > 0, 8000);
     const daemonPid = readLockPid(realRoot)!;
 
-    // Close the only client's stdin → proxy exits → daemon refcount hits 0 →
-    // idle timer fires → daemon exits and cleans up its lockfile.
+    // Close the only client's stdin; wait for the proxy to observe EOF before
+    // starting the daemon idle-exit assertion so a busy full-suite worker does
+    // not spend the daemon timeout budget on proxy teardown.
     server.child.stdin.end();
+    expect(await waitChildExit(server.child, 10000)).toBe(true);
 
     expect(await waitProcessExit(daemonPid, 10000)).toBe(true);
-    expect(fs.existsSync(path.join(realRoot, '.codegraph', 'daemon.pid'))).toBe(false);
+    expect(fs.existsSync(getDaemonPidPath(realRoot))).toBe(false);
   }, 30000);
 });
