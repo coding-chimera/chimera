@@ -75,6 +75,7 @@ const loadingComplete = defer<void>()
 const pendingDeepLinks: string[] = []
 
 const serverReady = defer<ServerReadyData>()
+const DEFAULT_SERVER_USERNAME = "chimera"
 
 useSystemCertificates()
 
@@ -228,7 +229,7 @@ async function initialize() {
     server = listener
     serverReady.resolve({
       url,
-      username: "opencode",
+      username: DEFAULT_SERVER_USERNAME,
       password,
     })
 
