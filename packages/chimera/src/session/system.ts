@@ -10,6 +10,8 @@ import PROMPT_GEMINI from "./prompt/gemini.txt"
 import PROMPT_GPT from "./prompt/gpt.txt"
 import PROMPT_GPT55 from "./prompt/gpt55.txt"
 import PROMPT_KIMI from "./prompt/kimi.txt"
+import PROMPT_DEEPSEEK from "./prompt/deepseek.txt"
+import PROMPT_DEEPSEEK_OVERLAY from "./prompt/deepseek-overlay.txt"
 
 import PROMPT_CODEX from "./prompt/codex.txt"
 import PROMPT_TRINITY from "./prompt/trinity.txt"
@@ -18,29 +20,45 @@ import type { Agent } from "@/agent/agent"
 import { Permission } from "@/permission"
 import { Skill } from "@/skill"
 
-function specialization(model: Provider.Model) {
+function ids(model: Provider.Model) {
   const apiID = model.api.id.toLowerCase()
   const providerID = model.providerID.toLowerCase()
   const modelSlug = apiID.split("/").at(-1) ?? apiID
+  return { apiID, providerID, modelSlug }
+}
 
-  if (apiID.includes("gpt-4") || apiID.includes("o1") || apiID.includes("o3"))
+function isDeepSeek(model: Provider.Model) {
+  const modelIDs = ids(model)
+  return modelIDs.providerID.includes("deepseek") || modelIDs.apiID.includes("deepseek")
+}
+
+function specialization(model: Provider.Model) {
+  const modelIDs = ids(model)
+
+  if (modelIDs.apiID.includes("gpt-4") || modelIDs.apiID.includes("o1") || modelIDs.apiID.includes("o3"))
     return PROMPT_BEAST
-  if (apiID.includes("gpt")) {
-    if (modelSlug === "gpt-5.5") return PROMPT_GPT55
-    if (apiID.includes("codex")) {
+  if (modelIDs.apiID.includes("gpt")) {
+    if (modelIDs.modelSlug === "gpt-5.5") return PROMPT_GPT55
+    if (modelIDs.apiID.includes("codex")) {
       return PROMPT_CODEX
     }
     return PROMPT_GPT
   }
-  if (apiID.includes("gemini-")) return PROMPT_GEMINI
-  if (apiID.includes("claude")) return PROMPT_ANTHROPIC
-  if (apiID.includes("trinity")) return PROMPT_TRINITY
-  if (providerID.includes("kimi") || apiID.includes("kimi")) return PROMPT_KIMI
+  if (modelIDs.apiID.includes("gemini-")) return PROMPT_GEMINI
+  if (modelIDs.apiID.includes("claude")) return PROMPT_ANTHROPIC
+  if (modelIDs.apiID.includes("trinity")) return PROMPT_TRINITY
+  if (modelIDs.providerID.includes("kimi") || modelIDs.apiID.includes("kimi")) return PROMPT_KIMI
+  if (isDeepSeek(model)) return PROMPT_DEEPSEEK
 }
 
 export function provider(model: Provider.Model) {
   const tuned = specialization(model)
   return [PROMPT_DEFAULT, ...(tuned ? [tuned] : [])]
+}
+
+export function overlay(model: Provider.Model) {
+  if (isDeepSeek(model)) return [PROMPT_DEEPSEEK_OVERLAY]
+  return []
 }
 
 export interface Interface {

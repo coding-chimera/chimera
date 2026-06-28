@@ -281,6 +281,82 @@ async function loadFixture(providerID: string, modelID: string) {
   return { provider, model }
 }
 
+function systemPromptFrom(body: Record<string, unknown>) {
+  const messages = body.messages as Array<{ role?: string; content?: unknown }> | undefined
+  const system = messages?.find((msg) => msg.role === "system")
+  if (typeof system?.content !== "string") throw new Error("Missing system prompt")
+  return system.content
+}
+
+async function capturePromptRoutingSystem(input: { providerID: string; modelID: string; agentPrompt?: string }) {
+  const server = state.server
+  if (!server) throw new Error("Server not initialized")
+
+  const fixture = await loadFixture(input.providerID, input.modelID)
+  const request = waitRequest(
+    "/chat/completions",
+    new Response(createChatStream("Hello"), {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    }),
+  )
+
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "chimera.json"),
+        JSON.stringify({
+          $schema: "https://chimera.ai/config.json",
+          enabled_providers: [input.providerID],
+          provider: {
+            [input.providerID]: {
+              options: {
+                apiKey: "test-key",
+                baseURL: `${server.url.origin}/v1`,
+              },
+            },
+          },
+        }),
+      )
+    },
+  })
+
+  return await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const resolved = await getModel(ProviderID.make(input.providerID), ModelID.make(fixture.model.id))
+      const sessionID = SessionID.make("session-prompt-routing")
+      const agent = {
+        name: "test",
+        mode: "primary",
+        options: {},
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        ...(input.agentPrompt ? { prompt: input.agentPrompt } : {}),
+      } satisfies Agent.Info
+      const user = {
+        id: MessageID.make("user-prompt-routing"),
+        sessionID,
+        role: "user",
+        time: { created: Date.now() },
+        agent: agent.name,
+        model: { providerID: ProviderID.make(input.providerID), modelID: resolved.id },
+      } satisfies MessageV2.User
+
+      await drain({
+        user,
+        sessionID,
+        model: resolved,
+        agent,
+        system: ["runtime-system"],
+        messages: [{ role: "user", content: "Hello" }],
+        tools: {},
+      })
+
+      return systemPromptFrom((await request).body)
+    },
+  })
+}
+
 function createEventStream(chunks: unknown[], includeDone = false) {
   const lines = chunks.map((chunk) => `data: ${typeof chunk === "string" ? chunk : JSON.stringify(chunk)}`)
   if (includeDone) {
@@ -304,6 +380,42 @@ function createEventResponse(chunks: unknown[], includeDone = false) {
 }
 
 describe("session.llm.stream", () => {
+  test("injects DeepSeek overlay when an agent prompt replaces provider prompt", async () => {
+    const system = await capturePromptRoutingSystem({
+      providerID: "deepseek",
+      modelID: "deepseek-chat",
+      agentPrompt: "custom-agent-prompt",
+    })
+
+    expect(system).toContain("custom-agent-prompt")
+    expect(system).toContain("# DeepSeek runtime overlay")
+    expect(system).not.toContain("你是运行在 DeepSeek 上的 Chimera 代理")
+    expect(system).toContain("runtime-system")
+  })
+
+  test("does not inject DeepSeek overlay for non-DeepSeek models with agent prompt", async () => {
+    const system = await capturePromptRoutingSystem({
+      providerID: "alibaba",
+      modelID: "qwen-plus",
+      agentPrompt: "custom-agent-prompt",
+    })
+
+    expect(system).toContain("custom-agent-prompt")
+    expect(system).not.toContain("# DeepSeek runtime overlay")
+    expect(system).toContain("runtime-system")
+  })
+
+  test("keeps DeepSeek provider prompt and overlay without agent prompt", async () => {
+    const system = await capturePromptRoutingSystem({
+      providerID: "deepseek",
+      modelID: "deepseek-chat",
+    })
+
+    expect(system).toContain("You are Chimera")
+    expect(system).toContain("你是运行在 DeepSeek 上的 Chimera 代理")
+    expect(system).toContain("# DeepSeek runtime overlay")
+    expect(system).toContain("runtime-system")
+  })
   test("sends temperature, tokens, and reasoning options for openai-compatible models", async () => {
     const server = state.server
     if (!server) {
