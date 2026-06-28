@@ -1,7 +1,7 @@
 import path from "path"
 import { Context, Effect, Layer } from "effect"
 import { InstanceState } from "@/effect/instance-state"
-import { readAuditRuns, readOracleResults, readPersistentObligationStore, readPredesignRuns, readProvenanceRecords, type AuditRunRecord, type OracleRecord, type PredesignRunRecord } from "./store"
+import { readAuditRuns, readOracleResults, readPersistentObligationStore, readPredesignRuns, readRecentProvenanceRecords, type AuditRunRecord, type OracleRecord, type PredesignRunRecord } from "./store"
 import type { ToolMutationRecord } from "./provenance"
 import type { SessionID } from "@/session/schema"
 import { getGraphDataRootInfo } from "@/graph"
@@ -56,7 +56,7 @@ function artifactPaths(root: string, file: string) {
 
 async function readProvenanceWithFallback(root: string) {
   let records = [] as ToolMutationRecord[]
-  for (const artifact of artifactPaths(root, "tool-provenance.jsonl")) records = await readProvenanceRecords(root, artifact)
+  for (const artifact of artifactPaths(root, "tool-provenance.jsonl")) records = await readRecentProvenanceRecords(root, artifact, { limit: MAX_RECENT_MUTATIONS * 20 })
   return records
 }
 

@@ -11,6 +11,8 @@ type PayloadRow = {
   payload_json: string
 }
 
+const MAX_RECENT_JSONL_BYTES = 4 * 1024 * 1024
+
 type ChangeFactRow = {
   id: string
   event_id: string
@@ -612,6 +614,17 @@ async function readJsonl<T>(file: string) {
     .flatMap((line) => parseJson<T>(line))
 }
 
+
+async function readRecentJsonl<T>(file: string, limit: number) {
+  if (!(await Bun.file(file).exists())) return [] as T[]
+  const size = (await stat(file)).size
+  if (size === 0) return [] as T[]
+  const start = Math.max(0, size - MAX_RECENT_JSONL_BYTES)
+  const text = await Bun.file(file).slice(start, size).text()
+  const lines = text.trim().split("\n").filter(Boolean)
+  return (start === 0 ? lines : lines.slice(1)).slice(-limit).flatMap((line) => parseJson<T>(line))
+}
+
 async function readJson<T>(file: string, fallback: T) {
   if (!(await Bun.file(file).exists())) return fallback
   try {
@@ -984,7 +997,7 @@ export async function appendProvenanceRecord(projectRoot: string, artifact: stri
   await appendJsonl(artifact, normalizeProvenanceRecord(record))
 }
 
-export async function readProvenanceRecords(projectRoot: string, artifact: string) {
+export async function readProvenanceRecords(projectRoot: string, artifact: string): Promise<ToolMutationRecord[]> {
   const legacy = (await readLegacyProvenanceRecords(artifact)).map(normalizeProvenanceRecord)
   const records = await withDb(projectRoot, (db) => {
     for (const record of legacy) writeProvenanceRecordToDb(db, record, artifact)
@@ -993,6 +1006,40 @@ export async function readProvenanceRecords(projectRoot: string, artifact: strin
       .map(normalizeProvenanceRecord)
   })
   return records ?? legacy
+}
+
+export async function readRecentProvenanceRecords(
+  projectRoot: string,
+  artifact: string,
+  options: { sessionID?: string; finishedBefore?: string; limit?: number } = {},
+): Promise<ToolMutationRecord[]> {
+  const limit = Math.max(1, Math.min(1000, Math.floor(options.limit ?? 20)))
+  const records = await withDb(projectRoot, (db) => {
+    const clauses: string[] = []
+    const params: unknown[] = []
+    if (options.sessionID) {
+      clauses.push("(actor_session_id = ? OR json_extract(payload_json, '$.tool.sessionID') = ?)")
+      params.push(options.sessionID, options.sessionID)
+    }
+    if (options.finishedBefore) {
+      clauses.push("finished_at <= ?")
+      params.push(options.finishedBefore)
+    }
+    const rows = db.prepare(`
+      SELECT payload_json
+      FROM chimera_change_event
+      ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""}
+      ORDER BY finished_at DESC, id DESC
+      LIMIT ?
+    `).all(...params, limit) as PayloadRow[]
+    return rows.toReversed().flatMap((row) => parseJson<ToolMutationRecord>(row.payload_json)).map(normalizeProvenanceRecord)
+  })
+  if (records) return records
+  return (await readRecentJsonl<ToolMutationRecord>(artifact, limit))
+    .map(normalizeProvenanceRecord)
+    .filter((record) => !options.sessionID || (record.actor?.sessionID ?? record.tool.sessionID) === options.sessionID)
+    .filter((record) => !options.finishedBefore || record.finishedAt <= options.finishedBefore)
+    .slice(-limit)
 }
 
 export async function provenanceRecordCount(projectRoot: string, artifact: string) {
