@@ -58,6 +58,7 @@ export function hints(template: string) {
 
 export const Default = {
   INIT: "init",
+  INIT_GRAPH: "init-graph",
   REVIEW: "review",
 } as const
 
@@ -88,6 +89,13 @@ export const layer = Layer.effect(
           return PROMPT_INITIALIZE.replace("${path}", ctx.worktree)
         },
         hints: hints(PROMPT_INITIALIZE),
+      }
+      commands[Default.INIT_GRAPH] = {
+        name: Default.INIT_GRAPH,
+        description: "initialize or sync Chimera graph data without editing AGENTS.md",
+        source: "command",
+        template: "",
+        hints: [],
       }
       commands[Default.REVIEW] = {
         name: Default.REVIEW,

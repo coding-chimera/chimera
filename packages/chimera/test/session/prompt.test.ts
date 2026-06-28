@@ -2512,6 +2512,39 @@ it.live(
 )
 
 it.live(
+  "init-graph command initializes graph without editing AGENTS.md",
+  () =>
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          const prompt = yield* SessionPrompt.Service
+          const commands = yield* Command.Service
+          const sessions = yield* Session.Service
+          const agentsPath = path.join(dir, "AGENTS.md")
+          yield* Effect.promise(() => fs.writeFile(agentsPath, "existing instructions\n"))
+
+          const listed = yield* commands.list()
+          expect(listed.some((command) => command.name === Command.Default.INIT_GRAPH)).toBe(true)
+
+          const session = yield* sessions.create({})
+          const result = yield* prompt.command({
+            sessionID: session.id,
+            command: Command.Default.INIT_GRAPH,
+            model: "test/test-model",
+            arguments: "",
+          })
+
+          expect(result.info.role).toBe("assistant")
+          expect(result.parts.find((part) => part.type === "text")?.text).toContain("Chimera graph initialized.")
+          expect(yield* Effect.promise(() => Bun.file(path.join(dir, ".chimera", "codegraph.db")).exists())).toBe(true)
+          expect(yield* Effect.promise(() => fs.readFile(agentsPath, "utf8"))).toBe("existing instructions\n")
+        }),
+      { git: true },
+    ),
+  30_000,
+)
+
+it.live(
   "unknown command throws typed error with available names",
   () =>
     provideTmpdirInstance(
