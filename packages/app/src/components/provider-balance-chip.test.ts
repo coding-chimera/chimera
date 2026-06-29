@@ -33,13 +33,15 @@ describe("provider balance helpers", () => {
     expect(providerBalanceSummary(account)?.label).toBe("Codex 25% left")
   })
 
-  test("discovers supported balance providers", () => {
-    expect(
-      providerBalanceProviders([
-        provider("openai", { codexApiEndpoint: "https://codex.example.com" }),
-        provider("deepseek", { baseURL: "https://api.deepseek.com/v1" }),
-        provider("anthropic"),
-      ]).map((item) => item.id),
-    ).toEqual(["openai", "deepseek"])
+  test("discovers and filters supported balance providers", () => {
+    const providers = [
+      provider("openai", { codexApiEndpoint: "https://codex.example.com" }),
+      provider("deepseek", { baseURL: "https://api.deepseek.com/v1" }),
+      provider("anthropic"),
+    ]
+
+    expect(providerBalanceProviders(providers).map((item) => item.id)).toEqual(["openai", "deepseek"])
+    expect(providerBalanceProviders(providers, "openai").map((item) => item.id)).toEqual(["openai"])
+    expect(providerBalanceProviders(providers, "deepseek").map((item) => item.id)).toEqual(["deepseek"])
   })
 })
