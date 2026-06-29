@@ -497,6 +497,7 @@ export const dict = {
 
   "session.tab.session": "เซสชัน",
   "session.tab.review": "ตรวจสอบ",
+  "session.tab.status": "สถานะ",
   "session.tab.context": "บริบท",
   "session.panel.reviewAndFiles": "ตรวจสอบและไฟล์",
   "session.review.filesChanged": "{{count}} ไฟล์ที่เปลี่ยนแปลง",

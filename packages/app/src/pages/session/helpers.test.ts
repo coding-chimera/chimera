@@ -138,7 +138,7 @@ describe("createSessionTabs", () => {
     })
   })
 
-  test("prefers context and review fallbacks when no file tab is active", () => {
+  test("prefers context and status fallbacks when no file tab is active", () => {
     createRoot((dispose) => {
       const [state] = createStore({
         active: undefined as string | undefined,
@@ -149,8 +149,8 @@ describe("createSessionTabs", () => {
         tabs,
         pathFromTab: () => undefined,
         normalizeTab: (tab) => tab,
-        review: () => true,
-        hasReview: () => true,
+        status: () => true,
+        hasStatus: () => true,
       })
 
       expect(result.activeTab()).toBe("context")
@@ -168,13 +168,34 @@ describe("createSessionTabs", () => {
         tabs,
         pathFromTab: () => undefined,
         normalizeTab: (tab) => tab,
-        review: () => true,
-        hasReview: () => true,
+        status: () => true,
+        hasStatus: () => true,
       })
 
-      expect(result.activeTab()).toBe("review")
+      expect(result.activeTab()).toBe("status")
       expect(result.activeFileTab()).toBeUndefined()
       expect(result.closableTab()).toBeUndefined()
+      dispose()
+    })
+  })
+
+  test("maps legacy review tab state to status", () => {
+    createRoot((dispose) => {
+      const [state] = createStore({
+        active: "review" as string | undefined,
+        all: ["review"],
+      })
+      const tabs = createMemo(() => ({ active: () => state.active, all: () => state.all }))
+      const result = createSessionTabs({
+        tabs,
+        pathFromTab: () => undefined,
+        normalizeTab: (tab) => tab,
+        status: () => true,
+        hasStatus: () => true,
+      })
+
+      expect(result.activeTab()).toBe("status")
+      expect(result.openedTabs()).toEqual([])
       dispose()
     })
   })

@@ -454,6 +454,7 @@ export const dict = {
   "home.empty.description": "Commencez par ouvrir un projet local",
   "session.tab.session": "Session",
   "session.tab.review": "Revue",
+  "session.tab.status": "Statut",
   "session.tab.context": "Contexte",
   "session.panel.reviewAndFiles": "Revue et fichiers",
   "session.review.filesChanged": "{{count}} fichiers modifiés",
