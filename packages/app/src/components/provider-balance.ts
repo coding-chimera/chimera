@@ -20,10 +20,11 @@ export type BalanceProvider = {
   provider: Provider
 }
 
-export function providerBalanceProviders(providers: Provider[]): BalanceProvider[] {
+export function providerBalanceProviders(providers: Provider[], providerID?: string): BalanceProvider[] {
   return providers
     .map((provider) => ({ provider, id: providerBalanceID(provider.id, providers) }))
     .filter((item): item is BalanceProvider => !!item.id)
+    .filter((item) => !providerID || item.id === providerID)
 }
 
 export function providerBalanceID(providerID: string | undefined, providers: Provider[]) {

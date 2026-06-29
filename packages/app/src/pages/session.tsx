@@ -55,6 +55,7 @@ import { type DiffStyle, SessionReviewTab, type SessionReviewTabProps } from "@/
 import { useSessionLayout } from "@/pages/session/session-layout"
 import { syncSessionModel } from "@/pages/session/session-model-helpers"
 import { SessionSidePanel } from "@/pages/session/session-side-panel"
+import { SessionStatusPanel } from "@/pages/session/session-status-panel"
 import { TerminalPanel } from "@/pages/session/terminal-panel"
 import { useSessionCommands } from "@/pages/session/use-session-commands"
 import { useSessionHashScroll } from "@/pages/session/use-session-hash-scroll"
@@ -1814,9 +1815,12 @@ export default function Page() {
                 classes={{ button: "w-full" }}
                 onClick={() => setStore("mobileTab", "changes")}
               >
-                {hasReview()
-                  ? language.t("session.review.filesChanged", { count: reviewCount() })
-                  : language.t("session.review.change.other")}
+                <div class="flex items-center justify-center gap-1.5">
+                  <div>{language.t("session.tab.status")}</div>
+                  <Show when={hasReview()}>
+                    <div>{reviewCount()}</div>
+                  </Show>
+                </div>
               </Tabs.Trigger>
             </Tabs.List>
           </Tabs>
@@ -1839,16 +1843,22 @@ export default function Page() {
                 <Show when={messagesReady()}>
                   <MessageTimeline
                     mobileChanges={mobileChanges()}
-                    mobileFallback={reviewContent({
-                      diffStyle: "unified",
-                      classes: {
-                        root: "pb-8",
-                        header: "px-4",
-                        container: "px-4",
-                      },
-                      loadingClass: "px-4 py-4 text-text-weak",
-                      emptyClass: "h-full pb-64 -mt-4 flex flex-col items-center justify-center text-center gap-6",
-                    })}
+                    mobileFallback={
+                      <SessionStatusPanel
+                        sessionID={params.id}
+                        active={mobileChanges()}
+                        review={reviewContent({
+                          diffStyle: "unified",
+                          classes: {
+                            root: "pb-8",
+                            header: "px-4",
+                            container: "px-4",
+                          },
+                          loadingClass: "px-4 py-4 text-text-weak",
+                          emptyClass: "h-full pb-64 -mt-4 flex flex-col items-center justify-center text-center gap-6",
+                        })}
+                      />
+                    }
                     actions={actions}
                     scroll={ui.scroll}
                     onResumeScroll={resumeScroll}
