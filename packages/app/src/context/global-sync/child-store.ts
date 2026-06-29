@@ -214,6 +214,7 @@ export function createChildStoreManager(input: {
             session_status: {},
             session_diff: {},
             todo: {},
+            work_brief: {},
             permission: {},
             question: {},
             get mcp_ready() {

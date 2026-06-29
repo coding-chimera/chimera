@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import type { Message, Part, PermissionRequest, Project, QuestionRequest, Session } from "@opencode-ai/sdk/v2/client"
+import type { Message, Part, PermissionRequest, Project, QuestionRequest, Session, WorkBrief } from "@opencode-ai/sdk/v2/client"
 import { createStore } from "solid-js/store"
 import type { State } from "./types"
 import { applyDirectoryEvent, applyGlobalEvent, cleanupDroppedSessionCaches } from "./event-reducer"
@@ -57,6 +57,17 @@ const questionRequest = (id: string, sessionID: string, title = id) =>
     ],
   }) as QuestionRequest
 
+const workBrief = (intent: string) =>
+  ({
+    intent,
+    confirmedDecisions: [],
+    constraints: [],
+    acceptanceCriteria: [],
+    openQuestions: [],
+    relevantEvidence: [],
+    closeout: [],
+  }) as WorkBrief
+
 const baseState = (input: Partial<State> = {}) =>
   ({
     status: "complete",
@@ -73,6 +84,7 @@ const baseState = (input: Partial<State> = {}) =>
     session_status: {},
     session_diff: {},
     todo: {},
+    work_brief: {},
     permission: {},
     question: {},
     mcp: {},
@@ -175,6 +187,7 @@ describe("applyDirectoryEvent", () => {
         part: { [message.id]: [textPart("prt_1", "ses_1", message.id)] },
         session_diff: { ses_1: [] },
         todo: { ses_1: [] },
+        work_brief: { ses_1: workBrief("active") },
         permission: { ses_1: [] },
         question: { ses_1: [] },
         session_status: { ses_1: { type: "busy" } },
@@ -196,6 +209,7 @@ describe("applyDirectoryEvent", () => {
     expect(store.part[message.id]).toBeUndefined()
     expect(store.session_diff.ses_1).toBeUndefined()
     expect(store.todo.ses_1).toBeUndefined()
+    expect(store.work_brief.ses_1).toBeUndefined()
     expect(store.permission.ses_1).toBeUndefined()
     expect(store.question.ses_1).toBeUndefined()
     expect(store.session_status.ses_1).toBeUndefined()
@@ -221,6 +235,7 @@ describe("applyDirectoryEvent", () => {
           part: { [message.id]: [textPart("prt_1", item.info.id, message.id)] },
           session_diff: { [item.info.id]: [] },
           todo: { [item.info.id]: [] },
+          work_brief: { [item.info.id]: workBrief("active") },
           permission: { [item.info.id]: [] },
           question: { [item.info.id]: [] },
           session_status: { [item.info.id]: { type: "busy" } },
@@ -242,6 +257,7 @@ describe("applyDirectoryEvent", () => {
       expect(store.part[message.id]).toBeUndefined()
       expect(store.session_diff[item.info.id]).toBeUndefined()
       expect(store.todo[item.info.id]).toBeUndefined()
+      expect(store.work_brief[item.info.id]).toBeUndefined()
       expect(store.permission[item.info.id]).toBeUndefined()
       expect(store.question[item.info.id]).toBeUndefined()
       expect(store.session_status[item.info.id]).toBeUndefined()
@@ -261,6 +277,7 @@ describe("applyDirectoryEvent", () => {
         part: { [message.id]: [textPart("prt_1", dropped.id, message.id)] },
         session_diff: { [dropped.id]: [] },
         todo: { [dropped.id]: [] },
+        work_brief: { [dropped.id]: workBrief("active") },
         permission: { [dropped.id]: [] },
         question: { [dropped.id]: [] },
         session_status: { [dropped.id]: { type: "busy" } },
@@ -285,6 +302,7 @@ describe("applyDirectoryEvent", () => {
     expect(store.part[message.id]).toBeUndefined()
     expect(store.session_diff[dropped.id]).toBeUndefined()
     expect(store.todo[dropped.id]).toBeUndefined()
+    expect(store.work_brief[dropped.id]).toBeUndefined()
     expect(store.permission[dropped.id]).toBeUndefined()
     expect(store.question[dropped.id]).toBeUndefined()
     expect(store.session_status[dropped.id]).toBeUndefined()
@@ -302,6 +320,21 @@ describe("applyDirectoryEvent", () => {
     cleanupDroppedSessionCaches(store, setStore, store.session)
 
     expect(store.part.msg_1).toBeUndefined()
+  })
+
+  test("updates work brief state", () => {
+    const [store, setStore] = createStore(baseState())
+
+    applyDirectoryEvent({
+      event: { type: "work_brief.updated", properties: { sessionID: "ses_1", brief: workBrief("ship it") } },
+      store,
+      setStore,
+      push() {},
+      directory: "/tmp",
+      loadLsp() {},
+    })
+
+    expect(store.work_brief.ses_1?.intent).toBe("ship it")
   })
 
   test("upserts and removes messages while clearing orphaned parts", () => {

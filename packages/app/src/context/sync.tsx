@@ -186,6 +186,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
     const inflight = new Map<string, Promise<void>>()
     const inflightDiff = new Map<string, Promise<void>>()
     const inflightTodo = new Map<string, Promise<void>>()
+    const inflightWorkBrief = new Map<string, Promise<void>>()
     const optimistic = new Map<string, Map<string, OptimisticItem>>()
     const maxDirs = 30
     const seen = new Map<string, Set<string>>()
@@ -539,6 +540,22 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
               const list = todo.data ?? []
               setStore("todo", sessionID, reconcile(list, { key: "id" }))
               globalSync.todo.set(sessionID, list)
+            }),
+          )
+        },
+        async workBrief(sessionID: string, opts?: { force?: boolean }) {
+          const directory = sdk.directory
+          const client = sdk.client
+          const [store, setStore] = globalSync.child(directory)
+          touch(directory, setStore, sessionID)
+          if (store.work_brief[sessionID] !== undefined && !opts?.force) return
+
+          const key = keyFor(directory, sessionID)
+          return runInflight(inflightWorkBrief, key, () =>
+            retry(() => client.session.workBrief({ sessionID })).then((brief) => {
+              if (!tracked(directory, sessionID)) return
+              if (!brief.data) return
+              setStore("work_brief", sessionID, reconcile(brief.data))
             }),
           )
         },

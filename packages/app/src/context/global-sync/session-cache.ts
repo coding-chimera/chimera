@@ -6,6 +6,7 @@ import type {
   SessionStatus,
   SnapshotFileDiff,
   Todo,
+  WorkBrief,
 } from "@opencode-ai/sdk/v2/client"
 
 export const SESSION_CACHE_LIMIT = 40
@@ -14,6 +15,7 @@ type SessionCache = {
   session_status: Record<string, SessionStatus | undefined>
   session_diff: Record<string, SnapshotFileDiff[] | undefined>
   todo: Record<string, Todo[] | undefined>
+  work_brief: Record<string, WorkBrief | undefined>
   message: Record<string, Message[] | undefined>
   part: Record<string, Part[] | undefined>
   permission: Record<string, PermissionRequest[] | undefined>
@@ -33,6 +35,7 @@ export function dropSessionCaches(store: SessionCache, sessionIDs: Iterable<stri
   for (const sessionID of stale) {
     delete store.message[sessionID]
     delete store.todo[sessionID]
+    delete store.work_brief[sessionID]
     delete store.session_diff[sessionID]
     delete store.session_status[sessionID]
     delete store.permission[sessionID]
