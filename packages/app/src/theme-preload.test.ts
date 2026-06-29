@@ -28,7 +28,10 @@ describe("theme preload", () => {
 
     expect(document.documentElement.dataset.theme).toBe("oc-2")
     expect(document.documentElement.dataset.colorScheme).toBe("light")
-    expect(localStorage.getItem("opencode-theme-id")).toBe("oc-2")
+    expect(localStorage.getItem("chimera-theme-id")).toBe("oc-2")
+    expect(localStorage.getItem("opencode-theme-id")).toBeNull()
+    expect(localStorage.getItem("chimera-theme-css-light")).toBeNull()
+    expect(localStorage.getItem("chimera-theme-css-dark")).toBeNull()
     expect(localStorage.getItem("opencode-theme-css-light")).toBeNull()
     expect(localStorage.getItem("opencode-theme-css-dark")).toBeNull()
     expect(document.getElementById("oc-theme-preload")).toBeNull()
@@ -42,5 +45,6 @@ describe("theme preload", () => {
 
     expect(document.documentElement.dataset.theme).toBe("nightowl")
     expect(document.getElementById("oc-theme-preload")?.textContent).toContain("--background-base:#fff;")
+    expect(localStorage.getItem("chimera-theme-id")).toBe("nightowl")
   })
 })

@@ -16,6 +16,9 @@ import type {
   CommandListResponses,
   Config as Config3,
   ConfigGetResponses,
+  ConfigModelSelectionGetResponses,
+  ConfigModelSelectionUpdateErrors,
+  ConfigModelSelectionUpdateResponses,
   ConfigProvidersResponses,
   ConfigUpdateErrors,
   ConfigUpdateResponses,
@@ -55,6 +58,12 @@ import type {
   GlobalHealthResponses,
   GlobalUpgradeErrors,
   GlobalUpgradeResponses,
+  GraphFilesResponses,
+  GraphFileSymbolsResponses,
+  GraphImpactResponses,
+  GraphNodeResponses,
+  GraphSearchResponses,
+  GraphStatusResponses,
   InstanceDisposeResponses,
   LspStatusResponses,
   McpAddErrors,
@@ -72,6 +81,7 @@ import type {
   McpLocalConfig,
   McpRemoteConfig,
   McpStatusResponses,
+  ModelSelectionPatch,
   OutputFormat,
   Part as Part2,
   PartDeleteErrors,
@@ -566,6 +576,79 @@ export class Event extends HeyApiClient {
   }
 }
 
+export class ModelSelection extends HeyApiClient {
+  /**
+   * Get model selection
+   *
+   * Retrieve shared model selection state used by the Web UI and TUI.
+   */
+  public get<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<ConfigModelSelectionGetResponses, unknown, ThrowOnError>({
+      url: "/config/model-selection",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Update model selection
+   *
+   * Update shared model selection state used by the Web UI and TUI.
+   */
+  public update<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      modelSelectionPatch?: ModelSelectionPatch
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "modelSelectionPatch", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).patch<
+      ConfigModelSelectionUpdateResponses,
+      ConfigModelSelectionUpdateErrors,
+      ThrowOnError
+    >({
+      url: "/config/model-selection",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
 export class Config2 extends HeyApiClient {
   /**
    * Get configuration
@@ -662,6 +745,11 @@ export class Config2 extends HeyApiClient {
       ...options,
       ...params,
     })
+  }
+
+  private _modelSelection?: ModelSelection
+  get modelSelection(): ModelSelection {
+    return (this._modelSelection ??= new ModelSelection({ client: this.client }))
   }
 }
 
@@ -1497,6 +1585,219 @@ export class File extends HeyApiClient {
       ...options,
       ...params,
     })
+  }
+}
+
+export class File2 extends HeyApiClient {
+  /**
+   * List Chimera graph symbols for a file
+   *
+   * Return indexed CodeGraph symbols for a project file or source range without initializing or syncing graph data.
+   */
+  public symbols<ThrowOnError extends boolean = false>(
+    parameters: {
+      directory?: string
+      workspace?: string
+      path: string
+      kind?: string
+      startLine?: string
+      endLine?: string
+      limit?: number
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "query", key: "path" },
+            { in: "query", key: "kind" },
+            { in: "query", key: "startLine" },
+            { in: "query", key: "endLine" },
+            { in: "query", key: "limit" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<GraphFileSymbolsResponses, unknown, ThrowOnError>({
+      url: "/graph/file/symbols",
+      ...options,
+      ...params,
+    })
+  }
+}
+
+export class Graph extends HeyApiClient {
+  /**
+   * Get Chimera graph status
+   *
+   * Return read-only CodeGraph initialization, data-root, job, and snapshot status for the current project.
+   */
+  public status<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<GraphStatusResponses, unknown, ThrowOnError>({
+      url: "/graph/status",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Search Chimera graph nodes
+   *
+   * Search indexed CodeGraph nodes in the current project without initializing or syncing graph data.
+   */
+  public search<ThrowOnError extends boolean = false>(
+    parameters: {
+      directory?: string
+      workspace?: string
+      query: string
+      kind?: string
+      limit?: number
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "query", key: "query" },
+            { in: "query", key: "kind" },
+            { in: "query", key: "limit" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<GraphSearchResponses, unknown, ThrowOnError>({
+      url: "/graph/search",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get Chimera graph node
+   *
+   * Return an indexed CodeGraph node and semantic projection by node ID without initializing or syncing graph data.
+   */
+  public node<ThrowOnError extends boolean = false>(
+    parameters: {
+      nodeID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "nodeID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<GraphNodeResponses, unknown, ThrowOnError>({
+      url: "/graph/node/{nodeID}",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * List Chimera graph files
+   *
+   * Return indexed files for the current project without initializing or syncing graph data.
+   */
+  public files<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<GraphFilesResponses, unknown, ThrowOnError>({
+      url: "/graph/files",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get Chimera graph impact
+   *
+   * Return node impact radius or file dependents for the current project without initializing or syncing graph data.
+   */
+  public impact<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      nodeID?: string
+      path?: string
+      depth?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "query", key: "nodeID" },
+            { in: "query", key: "path" },
+            { in: "query", key: "depth" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<GraphImpactResponses, unknown, ThrowOnError>({
+      url: "/graph/impact",
+      ...options,
+      ...params,
+    })
+  }
+
+  private _file?: File2
+  get file(): File2 {
+    return (this._file ??= new File2({ client: this.client }))
   }
 }
 
@@ -4890,6 +5191,11 @@ export class OpencodeClient extends HeyApiClient {
   private _file?: File
   get file(): File {
     return (this._file ??= new File({ client: this.client }))
+  }
+
+  private _graph?: Graph
+  get graph(): Graph {
+    return (this._graph ??= new Graph({ client: this.client }))
   }
 
   private _instance?: Instance

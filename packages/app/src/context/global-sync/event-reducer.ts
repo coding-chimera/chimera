@@ -99,6 +99,7 @@ export function applyDirectoryEvent(input: {
   loadLsp: () => void
   vcsCache?: VcsCache
   setSessionTodo?: (sessionID: string, todos: Todo[] | undefined) => void
+  refreshProviderBalances?: () => void
 }) {
   const event = input.event
   switch (event.type) {
@@ -179,6 +180,7 @@ export function applyDirectoryEvent(input: {
     case "session.status": {
       const props = event.properties as { sessionID: string; status: SessionStatus }
       input.setStore("session_status", props.sessionID, reconcile(props.status))
+      if (props.status.type === "idle") input.refreshProviderBalances?.()
       break
     }
     case "message.updated": {

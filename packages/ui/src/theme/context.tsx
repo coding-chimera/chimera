@@ -9,6 +9,13 @@ import type { DesktopTheme } from "./types"
 export type ColorScheme = "light" | "dark" | "system"
 
 const STORAGE_KEYS = {
+  THEME_ID: "chimera-theme-id",
+  COLOR_SCHEME: "chimera-color-scheme",
+  THEME_CSS_LIGHT: "chimera-theme-css-light",
+  THEME_CSS_DARK: "chimera-theme-css-dark",
+} as const
+
+const LEGACY_STORAGE_KEYS = {
   THEME_ID: "opencode-theme-id",
   COLOR_SCHEME: "opencode-color-scheme",
   THEME_CSS_LIGHT: "opencode-theme-css-light",
@@ -108,9 +115,21 @@ function drop(key: string) {
   } catch {}
 }
 
+function readWithLegacy(key: string, legacyKey: string) {
+  const current = read(key)
+  if (current !== null) return current
+  const legacy = read(legacyKey)
+  if (legacy === null) return null
+  write(key, legacy)
+  drop(legacyKey)
+  return legacy
+}
+
 function clear() {
   drop(STORAGE_KEYS.THEME_CSS_LIGHT)
   drop(STORAGE_KEYS.THEME_CSS_DARK)
+  drop(LEGACY_STORAGE_KEYS.THEME_CSS_LIGHT)
+  drop(LEGACY_STORAGE_KEYS.THEME_CSS_DARK)
 }
 
 function ensureThemeStyleElement(): HTMLStyleElement {
@@ -163,8 +182,8 @@ function cacheThemeVariants(theme: DesktopTheme, themeId: string) {
 export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
   name: "Theme",
   init: (props: { defaultTheme?: string; onThemeApplied?: (theme: DesktopTheme, mode: "light" | "dark") => void }) => {
-    const themeId = normalize(read(STORAGE_KEYS.THEME_ID) ?? props.defaultTheme) ?? "oc-2"
-    const colorScheme = (read(STORAGE_KEYS.COLOR_SCHEME) as ColorScheme | null) ?? "system"
+    const themeId = normalize(readWithLegacy(STORAGE_KEYS.THEME_ID, LEGACY_STORAGE_KEYS.THEME_ID) ?? props.defaultTheme) ?? "oc-2"
+    const colorScheme = (readWithLegacy(STORAGE_KEYS.COLOR_SCHEME, LEGACY_STORAGE_KEYS.COLOR_SCHEME) as ColorScheme | null) ?? "system"
     const mode = colorScheme === "system" ? getSystemMode() : colorScheme
     const [store, setStore] = createStore({
       themes: {
@@ -248,9 +267,9 @@ export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
       }
       makeEventListener(mediaQuery, "change", onMedia)
 
-      const rawTheme = read(STORAGE_KEYS.THEME_ID)
+      const rawTheme = readWithLegacy(STORAGE_KEYS.THEME_ID, LEGACY_STORAGE_KEYS.THEME_ID)
       const savedTheme = normalize(rawTheme ?? props.defaultTheme) ?? "oc-2"
-      const savedScheme = (read(STORAGE_KEYS.COLOR_SCHEME) as ColorScheme | null) ?? "system"
+      const savedScheme = (readWithLegacy(STORAGE_KEYS.COLOR_SCHEME, LEGACY_STORAGE_KEYS.COLOR_SCHEME) as ColorScheme | null) ?? "system"
       if (rawTheme && rawTheme !== savedTheme) {
         write(STORAGE_KEYS.THEME_ID, savedTheme)
         clear()

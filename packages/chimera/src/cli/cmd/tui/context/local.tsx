@@ -1,19 +1,18 @@
 import { createStore } from "solid-js/store"
 import { createSimpleContext } from "./helper"
-import { batch, createEffect, createMemo } from "solid-js"
+import { batch, createEffect, createMemo, onCleanup } from "solid-js"
 import { useSync } from "@tui/context/sync"
 import { useTheme } from "@tui/context/theme"
 import { uniqueBy } from "remeda"
-import path from "path"
-import { Global } from "@opencode-ai/core/global"
+import { ConfigModelSelection } from "@/config/model-selection"
 import { iife } from "@/util/iife"
 import { useToast } from "../ui/toast"
 import { useArgs } from "./args"
 import { useSDK } from "./sdk"
 import { RGBA } from "@opentui/core"
-import { Filesystem } from "@/util/filesystem"
 import { useRoute } from "./route"
 import { remoteCompactionModelLocked, remoteCompactionModelLockMessage } from "../util/remote-compaction"
+import { useEvent } from "./event"
 
 export function parseModel(model: string) {
   const [providerID, ...rest] = model.split("/")
@@ -30,6 +29,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     const sdk = useSDK()
     const toast = useToast()
     const route = useRoute()
+    const event = useEvent()
 
     function isModelValid(model: { providerID: string; modelID: string }) {
       const provider = sync.data.provider.find((x) => x.id === model.providerID)
@@ -121,7 +121,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           providerID: string
           modelID: string
         }[]
-        variant: Record<string, string | undefined>
+        variant: Record<string, string>
       }>({
         ready: false,
         model: {},
@@ -130,9 +130,17 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         variant: {},
       })
 
-      const filePath = path.join(Global.Path.state, "model.json")
       const state = {
         pending: false,
+      }
+
+      function applySelection(next: ConfigModelSelection.Info) {
+        batch(() => {
+          setModelStore("model", next.model)
+          setModelStore("recent", next.recent)
+          setModelStore("favorite", next.favorite)
+          setModelStore("variant", next.variant)
+        })
       }
 
       function save() {
@@ -141,26 +149,28 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           return
         }
         state.pending = false
-        void Filesystem.writeJson(filePath, {
+        const next = {
           model: modelStore.model,
           recent: modelStore.recent,
           favorite: modelStore.favorite,
           variant: modelStore.variant,
-        })
+        }
+        void sdk.client.config.modelSelection.update({ modelSelectionPatch: next }).catch(() => ConfigModelSelection.write(next))
       }
 
-      Filesystem.readJson(filePath)
-        .then((x: any) => {
-          if (typeof x.model === "object" && x.model !== null) setModelStore("model", x.model)
-          if (Array.isArray(x.recent)) setModelStore("recent", x.recent)
-          if (Array.isArray(x.favorite)) setModelStore("favorite", x.favorite)
-          if (typeof x.variant === "object" && x.variant !== null) setModelStore("variant", x.variant)
-        })
+      sdk.client.config.modelSelection
+        .get()
+        .then((x) => x.data ?? ConfigModelSelection.empty)
+        .catch(() => ConfigModelSelection.read())
+        .then(applySelection)
         .catch(() => {})
         .finally(() => {
           setModelStore("ready", true)
           if (state.pending) save()
-      })
+        })
+
+      const unsubscribeModelSelection = event.on("config.model_selection.updated", (msg) => applySelection(msg.properties))
+      onCleanup(unsubscribeModelSelection)
 
       const remoteCompactionLock = createMemo(() => {
         if (route.data.type !== "session") return undefined

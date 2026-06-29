@@ -8,6 +8,7 @@ import { Format } from "@/format"
 import { TuiRoutes } from "./tui"
 import { Instance } from "@/project/instance"
 import { InstanceRuntime } from "@/project/instance-runtime"
+import { GraphRoutes } from "./graph"
 import { Vcs } from "@/project/vcs"
 import { Agent } from "@/agent/agent"
 import { Skill } from "@/skill"
@@ -33,6 +34,7 @@ import { EventPaths } from "./httpapi/event"
 import { ExperimentalPaths } from "./httpapi/groups/experimental"
 import { FilePaths } from "./httpapi/groups/file"
 import { InstancePaths } from "./httpapi/groups/instance"
+import { GraphPaths } from "./httpapi/groups/graph"
 import { McpPaths } from "./httpapi/groups/mcp"
 import { PtyPaths } from "./httpapi/groups/pty"
 import { SessionPaths } from "./httpapi/groups/session"
@@ -85,6 +87,12 @@ export const InstanceRoutes = (upgrade: UpgradeWebSocket, opts?: CorsOptions): H
     app.get(FilePaths.list, (c) => handler(c.req.raw, context))
     app.get(FilePaths.content, (c) => handler(c.req.raw, context))
     app.get(FilePaths.status, (c) => handler(c.req.raw, context))
+    app.get(GraphPaths.status, (c) => handler(c.req.raw, context))
+    app.get(GraphPaths.search, (c) => handler(c.req.raw, context))
+    app.get(GraphPaths.node, (c) => handler(c.req.raw, context))
+    app.get(GraphPaths.fileSymbols, (c) => handler(c.req.raw, context))
+    app.get(GraphPaths.files, (c) => handler(c.req.raw, context))
+    app.get(GraphPaths.impact, (c) => handler(c.req.raw, context))
     app.get(InstancePaths.path, (c) => handler(c.req.raw, context))
     app.post(InstancePaths.dispose, (c) => handler(c.req.raw, context))
     app.get(InstancePaths.vcs, (c) => handler(c.req.raw, context))
@@ -176,6 +184,7 @@ export const InstanceRoutes = (upgrade: UpgradeWebSocket, opts?: CorsOptions): H
     .route("/", FileRoutes())
     .route("/", EventRoutes())
     .route("/mcp", McpRoutes())
+    .route("/graph", GraphRoutes())
     .route("/tui", TuiRoutes())
     .post(
       "/instance/dispose",
