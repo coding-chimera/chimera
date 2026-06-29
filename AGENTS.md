@@ -23,10 +23,13 @@
 
 ## Install and release-matrix validation
 
-- Bun remains the package development toolchain for this checkout: use it for local install/build/test/typecheck/pack commands inside package directories.
-- User-facing global installs and release-matrix install validation must use npm, not Bun. Published package validation should exercise `npm install -g chimera`.
-- For local tarball smoke tests, install both the platform tarball and the main tarball with npm, e.g. `npm install -g ./chimera-darwin-arm64-<version>.tgz ./chimera-<version>.tgz`, then verify the npm-installed binary with `command -v chimera`, `chimera --version`, and `npm ls -g --depth=0 chimera`.
-- Do not use `bun install -g` as evidence for release-matrix or user-install behavior; it tests Bun's global store and can miss npm postinstall/optional-dependency issues.
+- Bun remains the package development toolchain for this checkout: use it for local install/build/test/typecheck/pack commands inside package directories, usually `packages/chimera`; do not run build, test, lint, or typecheck commands from the repository root.
+- For source validation in `packages/chimera`, use `bun typecheck` and focused `bun test --timeout 30000 <test-file>` as needed. Do not run `tsc` directly.
+- For local tarball/user-install validation, build from `packages/chimera` with `bun run build --single --skip-install`. This creates `dist/npm-tarballs/chimera-<version>.tgz` and the current-platform tarball such as `chimera-darwin-arm64-<version>.tgz`.
+- Local/release packaging embeds `packages/newweb` by default. Do not pass `--skip-embed-web-ui` or `--skip-embed-newweb-ui` unless the explicit goal is to test the no-web/fallback path.
+- User-facing and release-matrix global install validation must use npm, not Bun. Published package validation should exercise `npm install -g chimera`; local tarball smoke tests should install both the platform tarball and the main tarball with npm, e.g. `npm install -g ./dist/npm-tarballs/chimera-darwin-arm64-<version>.tgz ./dist/npm-tarballs/chimera-<version>.tgz`.
+- Verify the npm-installed `chimera` with `command -v chimera`, `chimera --version`, and `npm ls -g --depth=0 chimera chimera-darwin-arm64`. When validating NewWeb packaging, also start `chimera newweb --open=false` and request `/newweb/` using Basic auth user `chimera` if `OPENCODE_SERVER_PASSWORD` is set; confirm it does not return the missing-assets message.
+- Do not use `bun install -g` as evidence for release-matrix or user-install behavior; it tests Bun's global store and can miss npm install/postinstall issues.
 
 ## Style Guide
 
