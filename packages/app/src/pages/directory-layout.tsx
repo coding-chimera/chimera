@@ -4,6 +4,7 @@ import { base64Encode } from "@opencode-ai/core/util/encode"
 import { useLocation, useNavigate, useParams } from "@solidjs/router"
 import { createEffect, createMemo, createResource, type ParentProps, Show } from "solid-js"
 import { useLanguage } from "@/context/language"
+import { GraphProvider } from "@/context/graph"
 import { LocalProvider } from "@/context/local"
 import { SDKProvider } from "@/context/sdk"
 import { SyncProvider, useSync } from "@/context/sync"
@@ -72,9 +73,11 @@ export default function Layout(props: ParentProps) {
     <Show when={resolved()} keyed>
       {(resolved) => (
         <SDKProvider directory={() => resolved}>
-          <SyncProvider>
-            <DirectoryDataProvider directory={resolved}>{props.children}</DirectoryDataProvider>
-          </SyncProvider>
+          <GraphProvider>
+            <SyncProvider>
+              <DirectoryDataProvider directory={resolved}>{props.children}</DirectoryDataProvider>
+            </SyncProvider>
+          </GraphProvider>
         </SDKProvider>
       )}
     </Show>

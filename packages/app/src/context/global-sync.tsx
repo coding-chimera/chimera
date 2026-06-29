@@ -5,6 +5,7 @@ import type {
   Project,
   ProviderAuthResponse,
   ProviderListResponse,
+  ProviderBalanceResult,
   Todo,
 } from "@opencode-ai/sdk/v2/client"
 import { showToast } from "@opencode-ai/ui/toast"
@@ -57,6 +58,30 @@ function chimeraGraphReadySummary(properties: unknown) {
   return "CodeGraph is ready for this project."
 }
 
+function providerBalanceFallback(providerID: string): ProviderBalanceResult {
+  if (providerID === "openai") {
+    return {
+      kind: "quota",
+      providerID,
+      status: "error",
+      label: "Codex Usage",
+      limits: [],
+      message: "Failed to load Codex usage.",
+    }
+  }
+  return {
+    kind: "billing",
+    providerID,
+    status: "error",
+    balance_infos: [],
+    message: "Failed to load provider balance.",
+  }
+}
+
+function providerBalanceSupported(providerID: string) {
+  return providerID === "deepseek" || providerID === "openai"
+}
+
 type GlobalStore = {
   ready: boolean
   error?: InitError
@@ -99,6 +124,7 @@ function createGlobalSync() {
   const booting = new Map<string, Promise<void>>()
   const sessionLoads = new Map<string, Promise<void>>()
   const sessionMeta = new Map<string, { limit: number }>()
+  const providerBalanceInFlight = new Set<string>()
 
   const [configQuery, providerQuery, pathQuery] = useQueries(() => ({
     queries: [
@@ -237,6 +263,40 @@ function createGlobalSync() {
       provider: globalStore.provider,
     },
   })
+
+  async function loadProviderBalance(input: { directory: string; providerID: string; force?: boolean }) {
+    const directory = directoryKey(input.directory)
+    if (!directory) return
+    if (!providerBalanceSupported(input.providerID)) return
+    const [store] = children.peek(directory, { bootstrap: false })
+    if (store.provider_balance[input.providerID] && !input.force) return
+    const key = `${directory}:${input.providerID}`
+    if (providerBalanceInFlight.has(key)) return
+    providerBalanceInFlight.add(key)
+    await sdkFor(directory).provider
+      .balance({ providerID: input.providerID })
+      .then((x) => {
+        const child = children.children[directory]
+        if (!child || !x.data) return
+        child[1]("provider_balance", input.providerID, reconcile(x.data as ProviderBalanceResult))
+      })
+      .catch(() => {
+        const child = children.children[directory]
+        if (!child) return
+        child[1]("provider_balance", input.providerID, providerBalanceFallback(input.providerID))
+      })
+      .finally(() => {
+        providerBalanceInFlight.delete(key)
+      })
+  }
+
+  async function refreshProviderBalances(directory: string) {
+    const key = directoryKey(directory)
+    if (!key) return
+    const child = children.children[key]
+    if (!child) return
+    await Promise.all(Object.keys(child[0].provider_balance).map((providerID) => loadProviderBalance({ directory: key, providerID, force: true })))
+  }
 
   async function loadSessions(directory: string) {
     const key = directoryKey(directory)
@@ -411,6 +471,9 @@ function createGlobalSync() {
       loadLsp: () => {
         void queryClient.fetchQuery(loadLspQuery(key, sdkFor(directory)))
       },
+      refreshProviderBalances: () => {
+        void refreshProviderBalances(directory)
+      },
     })
   })
 
@@ -472,6 +535,10 @@ function createGlobalSync() {
     project: projectApi,
     todo: {
       set: setSessionTodo,
+    },
+    providerBalance: {
+      load: loadProviderBalance,
+      refresh: refreshProviderBalances,
     },
   }
 }

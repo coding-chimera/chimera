@@ -200,6 +200,7 @@ export function createChildStoreManager(input: {
               return providerQuery.data ?? EMPTY
             },
             config: {},
+            provider_balance: {},
             get path() {
               if (pathQuery.isLoading || !pathQuery.data)
                 return { state: "", config: "", worktree: "", directory: "", home: "" }

@@ -22,8 +22,10 @@ type PersistTarget = {
 }
 
 const LEGACY_STORAGE = "default.dat"
-const GLOBAL_STORAGE = "opencode.global.dat"
-const LOCAL_PREFIX = "opencode."
+const LEGACY_GLOBAL_STORAGE = "opencode.global.dat"
+const GLOBAL_STORAGE = "chimera.global.dat"
+const LEGACY_LOCAL_PREFIX = "opencode."
+const LOCAL_PREFIX = "chimera."
 const fallback = new Map<string, boolean>()
 
 const CACHE_MAX_ENTRIES = 500
@@ -334,22 +336,27 @@ async function migrateLegacyAsync(input: {
   return null
 }
 
-function workspaceStorage(dir: string) {
+function legacyWorkspaceStorageName(dir: string) {
   const head = (dir.slice(0, 12) || "workspace").replace(/[^a-zA-Z0-9._-]/g, "-")
   const sum = checksum(dir) ?? "0"
   return `opencode.workspace.${head}.${sum}.dat`
+}
+function workspaceStorage(dir: string) {
+  const head = (dir.slice(0, 12) || "workspace").replace(/[^a-zA-Z0-9._-]/g, "-")
+  const sum = checksum(dir) ?? "0"
+  return `chimera.workspace.${head}.${sum}.dat`
 }
 
 function legacyWorkspaceStorage(dir: string) {
   const storage = workspaceStorage(pathKey(dir))
   const result = new Set<string>()
-  const raw = workspaceStorage(dir)
+  const raw = legacyWorkspaceStorageName(dir)
   if (raw !== storage) result.add(raw)
 
   const key = pathKey(dir)
   const drive = key.length >= 3 && key[1] === ":" && key[2] === "/"
   if (drive) {
-    const backslash = workspaceStorage(key.replaceAll("/", "\\"))
+    const backslash = legacyWorkspaceStorageName(key.replaceAll("/", "\\"))
     if (backslash !== storage) result.add(backslash)
   }
 
@@ -454,7 +461,7 @@ export const PersistTesting = {
 
 export const Persist = {
   global(key: string, legacy?: string[]): PersistTarget {
-    return { storage: GLOBAL_STORAGE, key, legacy }
+    return { storage: GLOBAL_STORAGE, legacyStorageNames: [LEGACY_GLOBAL_STORAGE], key, legacy }
   },
   workspace(dir: string, key: string, legacy?: string[]): PersistTarget {
     const storage = workspaceStorage(pathKey(dir))

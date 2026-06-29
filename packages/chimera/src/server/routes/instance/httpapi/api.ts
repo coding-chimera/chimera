@@ -8,6 +8,7 @@ import { EventApi } from "./event"
 import { ExperimentalApi } from "./groups/experimental"
 import { FileApi } from "./groups/file"
 import { GlobalApi } from "./groups/global"
+import { GraphApi } from "./groups/graph"
 import { InstanceApi } from "./groups/instance"
 import { McpApi } from "./groups/mcp"
 import { PermissionApi } from "./groups/permission"
@@ -32,6 +33,7 @@ export const InstanceHttpApi = HttpApi.make("chimera-instance")
   .addHttpApi(ConfigApi)
   .addHttpApi(ExperimentalApi)
   .addHttpApi(FileApi)
+  .addHttpApi(GraphApi)
   .addHttpApi(InstanceApi)
   .addHttpApi(McpApi)
   .addHttpApi(ProjectApi)

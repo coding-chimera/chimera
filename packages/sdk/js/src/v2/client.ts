@@ -3,7 +3,12 @@ export * from "./gen/types.gen.js"
 import { createClient } from "./gen/client/client.gen.js"
 import { type Config } from "./gen/client/types.gen.js"
 import { OpencodeClient } from "./gen/sdk.gen.js"
-export { type Config as OpencodeClientConfig, OpencodeClient }
+export {
+  type Config as OpencodeClientConfig,
+  type Config as ChimeraClientConfig,
+  OpencodeClient,
+  OpencodeClient as ChimeraClient,
+}
 
 function pick(value: string | null, fallback?: string, encode?: (value: string) => string) {
   if (!value) return
@@ -19,12 +24,12 @@ function rewrite(request: Request, values: { directory?: string; workspace?: str
   const url = new URL(request.url)
   let changed = false
 
-  for (const [name, key] of [
-    ["x-opencode-directory", "directory"],
-    ["x-opencode-workspace", "workspace"],
+  for (const [name, legacyName, key] of [
+    ["x-chimera-directory", "x-opencode-directory", "directory"],
+    ["x-chimera-workspace", "x-opencode-workspace", "workspace"],
   ] as const) {
     const value = pick(
-      request.headers.get(name),
+      request.headers.get(name) ?? request.headers.get(legacyName),
       key === "directory" ? values.directory : values.workspace,
       key === "directory" ? encodeURIComponent : undefined,
     )
@@ -38,12 +43,14 @@ function rewrite(request: Request, values: { directory?: string; workspace?: str
   if (!changed) return request
 
   const next = new Request(url, request)
+  next.headers.delete("x-chimera-directory")
   next.headers.delete("x-opencode-directory")
+  next.headers.delete("x-chimera-workspace")
   next.headers.delete("x-opencode-workspace")
   return next
 }
 
-export function createOpencodeClient(config?: Config & { directory?: string; experimental_workspaceID?: string }) {
+export function createChimeraClient(config?: Config & { directory?: string; experimental_workspaceID?: string }) {
   if (!config?.fetch) {
     const customFetch: any = (req: any) => {
       // @ts-ignore
@@ -59,14 +66,14 @@ export function createOpencodeClient(config?: Config & { directory?: string; exp
   if (config?.directory) {
     config.headers = {
       ...config.headers,
-      "x-opencode-directory": encodeURIComponent(config.directory),
+      "x-chimera-directory": encodeURIComponent(config.directory),
     }
   }
 
   if (config?.experimental_workspaceID) {
     config.headers = {
       ...config.headers,
-      "x-opencode-workspace": config.experimental_workspaceID,
+      "x-chimera-workspace": config.experimental_workspaceID,
     }
   }
 
@@ -80,7 +87,7 @@ export function createOpencodeClient(config?: Config & { directory?: string; exp
   client.interceptors.response.use((response) => {
     const contentType = response.headers.get("content-type")
     if (contentType === "text/html")
-      throw new Error("Request is not supported by this version of OpenCode Server (Server responded with text/html)")
+      throw new Error("Request is not supported by this version of Chimera Server (Server responded with text/html)")
 
     return response
   })
@@ -98,10 +105,14 @@ export function createOpencodeClient(config?: Config & { directory?: string; exp
     if (!isEmpty) return error
     const method = request?.method ?? "?"
     const url = request?.url ?? "?"
-    if (!response) return new Error(`opencode server ${method} ${url}: network error (no response)`)
+    if (!response) return new Error(`chimera server ${method} ${url}: network error (no response)`)
     const status = response.status
     const statusText = response.statusText ? " " + response.statusText : ""
-    return new Error(`opencode server ${method} ${url} → ${status}${statusText}: (empty response body)`)
+    return new Error(`chimera server ${method} ${url} → ${status}${statusText}: (empty response body)`)
   })
   return new OpencodeClient({ client })
+}
+
+export function createOpencodeClient(config?: Parameters<typeof createChimeraClient>[0]) {
+  return createChimeraClient(config)
 }
