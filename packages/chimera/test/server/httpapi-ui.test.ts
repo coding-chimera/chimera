@@ -4,13 +4,10 @@ import { Flag } from "@opencode-ai/core/flag/flag"
 import * as Log from "@opencode-ai/core/util/log"
 import { ConfigProvider, Effect, Layer } from "effect"
 import {
-  HttpClient,
-  HttpClientRequest,
-  HttpClientResponse,
-  HttpRouter,
   HttpServer,
   HttpServerRequest,
   HttpServerResponse,
+  HttpRouter,
 } from "effect/unstable/http"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { ServerAuth } from "../../src/server/auth"
@@ -71,19 +68,17 @@ function app(input?: { password?: string; username?: string }) {
   }
 }
 
-function uiApp(input?: { password?: string; username?: string; client?: Layer.Layer<HttpClient.HttpClient> }) {
+function uiApp(input?: { password?: string; username?: string }) {
   const handler = HttpRouter.toWebHandler(
     HttpRouter.use((router) =>
       Effect.gen(function* () {
         const fs = yield* AppFileSystem.Service
-        const client = yield* HttpClient.HttpClient
-        yield* router.add("*", "/*", (request) => serveUIEffect(request, { fs, client }))
+        yield* router.add("*", "/*", (request) => serveUIEffect(request, { fs }))
       }),
     ).pipe(
       Layer.provide(authorizationRouterMiddleware.layer.pipe(Layer.provide(ServerAuth.Config.defaultLayer))),
       Layer.provide([
         AppFileSystem.defaultLayer,
-        input?.client ?? httpClient(new Response("ui")),
         HttpServer.layerServices,
         ConfigProvider.layer(
           ConfigProvider.fromUnknown({
@@ -105,130 +100,17 @@ function uiApp(input?: { password?: string; username?: string; client?: Layer.La
   }
 }
 
-function httpClient(response: Response, onRequest?: (request: HttpClientRequest.HttpClientRequest) => void) {
-  return Layer.succeed(
-    HttpClient.HttpClient,
-    HttpClient.make((request) => {
-      onRequest?.(request)
-      return Effect.succeed(HttpClientResponse.fromWeb(request, response))
-    }),
-  )
-}
 
 describe("HttpApi UI fallback", () => {
-  test("serves the web UI through the experimental backend", async () => {
-    Flag.OPENCODE_EXPERIMENTAL_HTTPAPI = true
-    Flag.OPENCODE_DISABLE_EMBEDDED_WEB_UI = true
-    let proxiedUrl: string | undefined
-
-    const response = await uiApp({
-      client: httpClient(
-        new Response("<html>opencode</html>", { headers: { "content-type": "text/html" } }),
-        (request) => {
-          proxiedUrl = request.url
-        },
-      ),
-    }).request("/")
-
-    expect(response.status).toBe(200)
-    expect(response.headers.get("content-type")).toContain("text/html")
-    expect(await response.text()).toBe("<html>opencode</html>")
-    expect(proxiedUrl).toBe("https://app.opencode.ai/")
-  })
-
-  test("strips upstream transfer encoding headers from proxied assets", async () => {
-    Flag.OPENCODE_EXPERIMENTAL_HTTPAPI = true
-    Flag.OPENCODE_DISABLE_EMBEDDED_WEB_UI = true
-    let proxiedUrl: string | undefined
-
-    const response = await Effect.runPromise(
-      Effect.gen(function* () {
-        const fs = yield* AppFileSystem.Service
-        const client = yield* HttpClient.HttpClient
-        return yield* serveUIEffect(HttpServerRequest.fromWeb(new Request("http://localhost/assets/app.js")), {
-          fs,
-          client,
-        })
-      }).pipe(
-        Effect.provide(
-          Layer.mergeAll(
-            AppFileSystem.defaultLayer,
-            Layer.succeed(
-              HttpClient.HttpClient,
-              HttpClient.make((request) => {
-                proxiedUrl = request.url
-                return Effect.succeed(
-                  HttpClientResponse.fromWeb(
-                    request,
-                    new Response("console.log('ok')", {
-                      headers: {
-                        "content-encoding": "br",
-                        "content-length": "999",
-                        "content-type": "text/javascript",
-                      },
-                    }),
-                  ),
-                )
-              }),
-            ),
-          ),
-        ),
-        Effect.map(HttpServerResponse.toWeb),
-      ),
-    )
-
-    expect(response.status).toBe(200)
-    expect(proxiedUrl).toBe("https://app.opencode.ai/assets/app.js")
-    expect(response.headers.get("content-encoding")).toBeNull()
-    expect(response.headers.get("content-length")).not.toBe("999")
-    expect(response.headers.get("content-type")).toContain("text/javascript")
-    expect(await response.text()).toBe("console.log('ok')")
-  })
-
-  // Regression for #25698 (Ope): upstream `transfer-encoding: chunked` was
-  // forwarded through the proxy while the proxy itself re-frames the body,
-  // causing browsers to fail with `ERR_INVALID_CHUNKED_ENCODING`.
-  test("strips upstream transfer-encoding header from proxied assets", async () => {
+  test("returns a local unavailable response when embedded UI assets are disabled", async () => {
     Flag.OPENCODE_EXPERIMENTAL_HTTPAPI = true
     Flag.OPENCODE_DISABLE_EMBEDDED_WEB_UI = true
 
-    const response = await Effect.runPromise(
-      Effect.gen(function* () {
-        const fs = yield* AppFileSystem.Service
-        const client = yield* HttpClient.HttpClient
-        return yield* serveUIEffect(HttpServerRequest.fromWeb(new Request("http://localhost/")), {
-          fs,
-          client,
-        })
-      }).pipe(
-        Effect.provide(
-          Layer.mergeAll(
-            AppFileSystem.defaultLayer,
-            Layer.succeed(
-              HttpClient.HttpClient,
-              HttpClient.make((request) =>
-                Effect.succeed(
-                  HttpClientResponse.fromWeb(
-                    request,
-                    new Response("<html>opencode</html>", {
-                      headers: {
-                        "transfer-encoding": "chunked",
-                        "content-type": "text/html",
-                      },
-                    }),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-        Effect.map(HttpServerResponse.toWeb),
-      ),
-    )
+    const response = await uiApp().request("/")
 
-    expect(response.status).toBe(200)
-    expect(response.headers.get("transfer-encoding")).toBeNull()
-    expect(await response.text()).toBe("<html>opencode</html>")
+    expect(response.status).toBe(503)
+    expect(response.headers.get("content-type")).toContain("text/plain")
+    expect(await response.text()).toContain("Chimera WebUI assets are not embedded")
   })
 
   test("serves embedded UI assets when Bun can read them but access reports missing", async () => {
@@ -318,11 +200,10 @@ describe("HttpApi UI fallback", () => {
     const response = await uiApp({
       password: "secret",
       username: "chimera",
-      client: httpClient(new Response("<html>opencode</html>", { headers: { "content-type": "text/html" } })),
     }).request(`/?auth_token=${btoa("chimera:secret")}`)
 
-    expect(response.status).toBe(200)
-    expect(await response.text()).toBe("<html>opencode</html>")
+    expect(response.status).toBe(503)
+    expect(await response.text()).toContain("Chimera WebUI assets are not embedded")
   })
 
   test("accepts basic auth for the web UI", async () => {
@@ -333,7 +214,7 @@ describe("HttpApi UI fallback", () => {
       headers: { authorization: `Basic ${btoa("chimera:secret")}` },
     })
 
-    expect(response.status).toBe(200)
+    expect(response.status).toBe(503)
   })
 
   // Regression for #25698 (Ope): the browser fetches the PWA manifest and
@@ -349,7 +230,6 @@ describe("HttpApi UI fallback", () => {
       const response = await uiApp({
         password: "secret",
         username: "chimera",
-        client: httpClient(new Response("ok")),
       }).request(path)
       expect(response.status).not.toBe(401)
     }

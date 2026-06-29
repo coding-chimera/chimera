@@ -1,9 +1,9 @@
 import fs from "node:fs/promises"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { Hono } from "hono"
-import { proxy } from "hono/proxy"
-import { ProxyUtil } from "../proxy-util"
-import { UI_UPSTREAM, csp, cspForHtml, embeddedUI, upstreamURL } from "../shared/ui"
+import { csp, cspForHtml, embeddedUI } from "../shared/ui"
+
+const MISSING_EMBEDDED_UI_MESSAGE = "Chimera WebUI assets are not embedded in this build. Run the WebUI dev server separately or rebuild Chimera with embedded WebUI assets."
 
 export async function serveUI(request: Request) {
   const embeddedWebUI = await embeddedUI()
@@ -26,15 +26,13 @@ export async function serveUI(request: Request) {
     return Response.json({ error: "Not Found" }, { status: 404 })
   }
 
-  const response = await proxy(upstreamURL(path), {
-    raw: request,
-    headers: ProxyUtil.headers(request, { host: UI_UPSTREAM.host }),
+  return new Response(MISSING_EMBEDDED_UI_MESSAGE, {
+    status: 503,
+    headers: {
+      "content-type": "text/plain; charset=utf-8",
+      "content-security-policy": csp(),
+    },
   })
-  response.headers.set(
-    "Content-Security-Policy",
-    response.headers.get("content-type")?.includes("text/html") ? cspForHtml(await response.clone().text()) : csp(),
-  )
-  return response
 }
 
 export const UIRoutes = (): Hono => new Hono().all("/*", (c) => serveUI(c.req.raw))

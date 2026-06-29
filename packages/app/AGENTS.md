@@ -4,7 +4,7 @@
 
 ## Local Dev
 
-- `chimera dev web` proxies `https://app.opencode.ai`, so local UI/CSS changes will not show there.
+- `chimera dev web` uses embedded WebUI assets when present and otherwise returns a local 503 instead of proxying upstream opencode assets.
 - For local UI changes, run the backend and app dev servers separately.
 - Backend (from `packages/chimera`): `bun run --conditions=browser ./src/index.ts serve --port 4096`
 - App (from `packages/app`): `bun dev -- --port 4444`

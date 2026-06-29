@@ -1,4 +1,5 @@
 import { Config } from "@/config/config"
+import { ConfigModelSelection } from "@/config/model-selection"
 import { Provider } from "@/provider/provider"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
 import { Authorization } from "../middleware/authorization"
@@ -30,6 +31,26 @@ export const ConfigApi = HttpApi.make("config")
             identifier: "config.update",
             summary: "Update configuration",
             description: "Update OpenCode configuration settings and preferences.",
+          }),
+        ),
+        HttpApiEndpoint.get("modelSelectionGet", `${root}/model-selection`, {
+          success: described(ConfigModelSelection.Info, "Get model selection"),
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "config.modelSelection.get",
+            summary: "Get model selection",
+            description: "Retrieve shared model selection state used by the Web UI and TUI.",
+          }),
+        ),
+        HttpApiEndpoint.patch("modelSelectionUpdate", `${root}/model-selection`, {
+          payload: ConfigModelSelection.Patch,
+          success: described(ConfigModelSelection.Info, "Successfully updated model selection"),
+          error: HttpApiError.BadRequest,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "config.modelSelection.update",
+            summary: "Update model selection",
+            description: "Update shared model selection state used by the Web UI and TUI.",
           }),
         ),
         HttpApiEndpoint.get("providers", `${root}/providers`, {

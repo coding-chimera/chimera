@@ -79,6 +79,7 @@ export type Event =
   | EventSessionNextCompactionStarted
   | EventSessionNextCompactionDelta
   | EventSessionNextCompactionEnded
+  | EventConfigModelSelectionUpdated
   | EventServerConnected
   | EventGlobalDisposed
 
@@ -807,6 +808,22 @@ export type Prompt = {
   agents?: Array<PromptAgentAttachment>
 }
 
+export type ModelSelectionKey = {
+  providerID: string
+  modelID: string
+}
+
+export type ModelSelection = {
+  model: {
+    [key: string]: ModelSelectionKey
+  }
+  recent: Array<ModelSelectionKey>
+  favorite: Array<ModelSelectionKey>
+  variant: {
+    [key: string]: string
+  }
+}
+
 export type GlobalEvent = {
   directory: string
   project?: string
@@ -886,6 +903,7 @@ export type GlobalEvent = {
     | EventSessionNextCompactionStarted
     | EventSessionNextCompactionDelta
     | EventSessionNextCompactionEnded
+    | EventConfigModelSelectionUpdated
     | EventServerConnected
     | EventGlobalDisposed
     | SyncEventMessageUpdated
@@ -1286,6 +1304,17 @@ export type Config = {
     primary_tools?: Array<string>
     continue_loop_on_deny?: boolean
     mcp_timeout?: number
+  }
+}
+
+export type ModelSelectionPatch = {
+  model?: {
+    [key: string]: ModelSelectionKey
+  }
+  recent?: Array<ModelSelectionKey>
+  favorite?: Array<ModelSelectionKey>
+  variant?: {
+    [key: string]: string
   }
 }
 
@@ -3192,6 +3221,12 @@ export type EventSessionNextCompactionEnded = {
   }
 }
 
+export type EventConfigModelSelectionUpdated = {
+  id: string
+  type: "config.model_selection.updated"
+  properties: ModelSelection
+}
+
 export type EventServerConnected = {
   id: string
   type: "server.connected"
@@ -3795,6 +3830,54 @@ export type ConfigUpdateResponses = {
 
 export type ConfigUpdateResponse = ConfigUpdateResponses[keyof ConfigUpdateResponses]
 
+export type ConfigModelSelectionGetData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/config/model-selection"
+}
+
+export type ConfigModelSelectionGetResponses = {
+  /**
+   * Get model selection
+   */
+  200: ModelSelection
+}
+
+export type ConfigModelSelectionGetResponse = ConfigModelSelectionGetResponses[keyof ConfigModelSelectionGetResponses]
+
+export type ConfigModelSelectionUpdateData = {
+  body?: ModelSelectionPatch
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/config/model-selection"
+}
+
+export type ConfigModelSelectionUpdateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ConfigModelSelectionUpdateError = ConfigModelSelectionUpdateErrors[keyof ConfigModelSelectionUpdateErrors]
+
+export type ConfigModelSelectionUpdateResponses = {
+  /**
+   * Successfully updated model selection
+   */
+  200: ModelSelection
+}
+
+export type ConfigModelSelectionUpdateResponse =
+  ConfigModelSelectionUpdateResponses[keyof ConfigModelSelectionUpdateResponses]
+
 export type ConfigProvidersData = {
   body?: never
   path?: never
@@ -4235,6 +4318,193 @@ export type FileStatusResponses = {
 }
 
 export type FileStatusResponse = FileStatusResponses[keyof FileStatusResponses]
+
+export type GraphStatusData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/graph/status"
+}
+
+export type GraphStatusResponses = {
+  /**
+   * Graph status
+   */
+  200: {
+    initialized: boolean
+    projectRoot: string
+    dataRoot: string
+    dataRootStatus: string
+    jobStatus: unknown
+    snapshot?: unknown
+    stats?: unknown
+    backend?: string
+    journalMode?: string
+  }
+}
+
+export type GraphStatusResponse = GraphStatusResponses[keyof GraphStatusResponses]
+
+export type GraphSearchData = {
+  body?: never
+  path?: never
+  query: {
+    directory?: string
+    workspace?: string
+    query: string
+    kind?: string
+    limit?: number
+  }
+  url: "/graph/search"
+}
+
+export type GraphSearchResponses = {
+  /**
+   * Graph search results
+   */
+  200: {
+    initialized: boolean
+    projectRoot: string
+    dataRoot: string
+    dataRootStatus: string
+    jobStatus: unknown
+    snapshot?: unknown
+    results: Array<{
+      score?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      node: unknown
+      projection?: unknown
+    }>
+  }
+}
+
+export type GraphSearchResponse = GraphSearchResponses[keyof GraphSearchResponses]
+
+export type GraphNodeData = {
+  body?: never
+  path: {
+    nodeID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/graph/node/{nodeID}"
+}
+
+export type GraphNodeResponses = {
+  /**
+   * Graph node
+   */
+  200: {
+    initialized: boolean
+    projectRoot: string
+    dataRoot: string
+    dataRootStatus: string
+    jobStatus: unknown
+    snapshot?: unknown
+    node: unknown
+    projection: unknown
+  }
+}
+
+export type GraphNodeResponse = GraphNodeResponses[keyof GraphNodeResponses]
+
+export type GraphFileSymbolsData = {
+  body?: never
+  path?: never
+  query: {
+    directory?: string
+    workspace?: string
+    path: string
+    kind?: string
+    startLine?: string
+    endLine?: string
+    limit?: number
+  }
+  url: "/graph/file/symbols"
+}
+
+export type GraphFileSymbolsResponses = {
+  /**
+   * Graph file symbols
+   */
+  200: {
+    initialized: boolean
+    projectRoot: string
+    dataRoot: string
+    dataRootStatus: string
+    jobStatus: unknown
+    snapshot?: unknown
+    path: string
+    results: Array<{
+      score?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      node: unknown
+      projection?: unknown
+    }>
+  }
+}
+
+export type GraphFileSymbolsResponse = GraphFileSymbolsResponses[keyof GraphFileSymbolsResponses]
+
+export type GraphFilesData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/graph/files"
+}
+
+export type GraphFilesResponses = {
+  /**
+   * Graph files
+   */
+  200: {
+    initialized: boolean
+    projectRoot: string
+    dataRoot: string
+    dataRootStatus: string
+    jobStatus: unknown
+    snapshot?: unknown
+    files: Array<unknown>
+  }
+}
+
+export type GraphFilesResponse = GraphFilesResponses[keyof GraphFilesResponses]
+
+export type GraphImpactData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+    nodeID?: string
+    path?: string
+    depth?: string
+  }
+  url: "/graph/impact"
+}
+
+export type GraphImpactResponses = {
+  /**
+   * Graph impact results
+   */
+  200: {
+    initialized: boolean
+    projectRoot: string
+    dataRoot: string
+    dataRootStatus: string
+    jobStatus: unknown
+    snapshot?: unknown
+    results: unknown
+  }
+}
+
+export type GraphImpactResponse = GraphImpactResponses[keyof GraphImpactResponses]
 
 export type InstanceDisposeData = {
   body?: never

@@ -1,7 +1,7 @@
 import { Context } from "effect"
 
 const chimeraOrigin = /^https:\/\/([a-z0-9-]+\.)*chimera\.ai$/
-const opencodeOrigin = /^https:\/\/([a-z0-9-]+\.)*opencode\.ai$/
+const legacyOpencodeOrigin = /^https:\/\/([a-z0-9-]+\.)*opencode\.ai$/
 
 export type CorsOptions = { readonly cors?: ReadonlyArray<string> }
 
@@ -17,7 +17,7 @@ export function isAllowedCorsOrigin(input: string | undefined, opts?: CorsOption
   if (input === "tauri://localhost" || input === "http://tauri.localhost" || input === "https://tauri.localhost")
     return true
   if (chimeraOrigin.test(input)) return true
-  if (opencodeOrigin.test(input)) return true
+  if (process.env.CHIMERA_ALLOW_LEGACY_OPENCODE_ORIGIN === "true" && legacyOpencodeOrigin.test(input)) return true
   return opts?.cors?.includes(input) ?? false
 }
 

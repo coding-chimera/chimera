@@ -1,6 +1,8 @@
 import { Hono } from "hono"
 import { describeRoute, validator, resolver } from "hono-openapi"
+import { Bus } from "@/bus"
 import { Config } from "@/config/config"
+import { ConfigModelSelection } from "@/config/model-selection"
 import { InstanceState } from "@/effect/instance-state"
 import { InstanceStore } from "@/project/instance-store"
 import { Provider } from "@/provider/provider"
@@ -78,6 +80,55 @@ export const ConfigRoutes = lazy(() =>
         )
         return response
       },
+    )
+    .get(
+      "/model-selection",
+      describeRoute({
+        summary: "Get model selection",
+        description: "Retrieve shared model selection state used by the Web UI and TUI.",
+        operationId: "config.modelSelection.get",
+        responses: {
+          200: {
+            description: "Get model selection",
+            content: {
+              "application/json": {
+                schema: resolver(ConfigModelSelection.Info.zod),
+              },
+            },
+          },
+        },
+      }),
+      async (c) =>
+        jsonRequest("ConfigRoutes.modelSelection.get", c, function* () {
+          return yield* Effect.promise(() => ConfigModelSelection.read())
+        }),
+    )
+    .patch(
+      "/model-selection",
+      describeRoute({
+        summary: "Update model selection",
+        description: "Update shared model selection state used by the Web UI and TUI.",
+        operationId: "config.modelSelection.update",
+        responses: {
+          200: {
+            description: "Successfully updated model selection",
+            content: {
+              "application/json": {
+                schema: resolver(ConfigModelSelection.Info.zod),
+              },
+            },
+          },
+          ...errors(400),
+        },
+      }),
+      validator("json", ConfigModelSelection.Patch.zod),
+      async (c) =>
+        jsonRequest("ConfigRoutes.modelSelection.update", c, function* () {
+          const next = yield* Effect.promise(() => ConfigModelSelection.update(c.req.valid("json")))
+          const bus = yield* Bus.Service
+          yield* bus.publish(ConfigModelSelection.Updated, next)
+          return next
+        }),
     )
     .get(
       "/providers",

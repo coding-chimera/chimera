@@ -9,6 +9,7 @@ import type {
   Path,
   PermissionRequest,
   ProviderListResponse,
+  ProviderBalanceResult,
   QuestionRequest,
   Session,
   SessionStatus,
@@ -39,6 +40,9 @@ export type State = {
   icon: string | undefined
   provider_ready: boolean
   provider: ProviderListResponse
+  provider_balance: {
+    [providerID: string]: ProviderBalanceResult
+  }
   config: Config
   path: Path
   session: Session[]

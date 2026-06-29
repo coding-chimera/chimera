@@ -1,7 +1,7 @@
 import { createSimpleContext } from "@opencode-ai/ui/context"
 import { base64Encode } from "@opencode-ai/core/util/encode"
 import { useParams } from "@solidjs/router"
-import { batch, createEffect, createMemo } from "solid-js"
+import { batch, createEffect, createMemo, onCleanup } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useModels } from "@/context/models"
 import { useProviders } from "@/hooks/use-providers"
@@ -9,6 +9,7 @@ import { Persist, persisted } from "@/utils/persist"
 import { cycleModelVariant, getConfiguredAgentVariant, resolveModelVariant } from "./model-variant"
 import { useSDK } from "./sdk"
 import { useSync } from "./sync"
+import { uniqueBy } from "remeda"
 
 export type ModelKey = { providerID: string; modelID: string; variant?: string }
 
@@ -22,10 +23,29 @@ type Saved = {
   session: Record<string, State | undefined>
 }
 
+type Shared = {
+  ready: boolean
+  model: Record<string, ModelKey>
+  recent: ModelKey[]
+  favorite: ModelKey[]
+  variant: Record<string, string>
+}
+
+type SharedPatch = {
+  model?: Record<string, ModelKey>
+  recent?: ModelKey[]
+  favorite?: ModelKey[]
+  variant?: Record<string, string>
+}
+
 const WORKSPACE_KEY = "__workspace__"
 const handoff = new Map<string, State>()
 
 const handoffKey = (dir: string, id: string) => `${dir}\n${id}`
+
+const SHARED_RECENT_LIMIT = 10
+const sharedModelKey = (model: ModelKey) => `${model.providerID}/${model.modelID}`
+const storedModel = (model: ModelKey) => ({ providerID: model.providerID, modelID: model.modelID })
 
 const migrate = (value: unknown) => {
   if (!value || typeof value !== "object") return { session: {} }
@@ -89,6 +109,49 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       last: undefined,
     })
 
+    const [shared, setShared] = createStore<Shared>({
+      ready: false,
+      model: {},
+      recent: [],
+      favorite: [],
+      variant: {},
+    })
+
+    const applyShared = (next: Omit<Shared, "ready">) => {
+      batch(() => {
+        setShared("model", next.model ?? {})
+        setShared("recent", next.recent ?? [])
+        setShared("favorite", next.favorite ?? [])
+        setShared("variant", next.variant ?? {})
+        setShared("ready", true)
+      })
+    }
+
+    const updateShared = (patch: SharedPatch) => {
+      batch(() => {
+        Object.entries(patch.model ?? {}).forEach(([key, value]) => setShared("model", key, value))
+        if (patch.recent) setShared("recent", patch.recent)
+        if (patch.favorite) setShared("favorite", patch.favorite)
+        Object.entries(patch.variant ?? {}).forEach(([key, value]) => setShared("variant", key, value))
+      })
+      void sdk.client.config.modelSelection
+        .update({ modelSelectionPatch: patch })
+        .then((response) => {
+          if (response.data) applyShared(response.data)
+        })
+        .catch(() => {})
+    }
+
+    sdk.client.config.modelSelection
+      .get()
+      .then((response) => {
+        if (response.data) applyShared(response.data)
+      })
+      .catch(() => setShared("ready", true))
+
+    const unsubscribeModelSelection = sdk.event.on("config.model_selection.updated", (event) => applyShared(event.properties))
+    onCleanup(unsubscribeModelSelection)
+
     const validModel = (model: ModelKey) => {
       const provider = providers.all().find((item) => item.id === model.providerID)
       return !!provider?.models[model.modelID] && connected().has(model.providerID)
@@ -148,7 +211,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     }
 
     const recentModel = () => {
-      for (const item of models.recent.list()) {
+      for (const item of shared.recent.length ? shared.recent : models.recent.list()) {
         if (validModel(item)) return item
       }
     }
@@ -223,6 +286,10 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
 
     const current = () => {
       const item = firstModel(
+        () => {
+          const current = agent.current()
+          return current ? shared.model[current.name] : undefined
+        },
         () => scope()?.model,
         () => agent.current()?.model,
         fallback,
@@ -241,7 +308,12 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       })
     }
 
-    const selected = () => scope()?.variant
+    const selected = () => {
+      const item = current()
+      const sharedVariant = item ? shared.variant[sharedModelKey({ providerID: item.provider.id, modelID: item.id })] : undefined
+      if (sharedVariant === "default") return null
+      return sharedVariant ?? scope()?.variant
+    }
 
     const snapshot = () => {
       const model = current()
@@ -266,10 +338,10 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       setStore("draft", state)
     }
 
-    const recent = createMemo(() => models.recent.list().map(models.find).filter(Boolean))
+    const recent = createMemo(() => (shared.recent.length ? shared.recent : models.recent.list()).map(models.find).filter(Boolean))
 
     const model = {
-      ready: models.ready,
+      ready: createMemo(() => models.ready() && shared.ready),
       current,
       recent,
       list: models.list,
@@ -291,15 +363,25 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       },
       set(item: ModelKey | undefined, options?: { recent?: boolean }) {
         batch(() => {
+          const current = agent.current()
+          const recent = item
+            ? uniqueBy([storedModel(item), ...shared.recent], sharedModelKey).slice(0, SHARED_RECENT_LIMIT)
+            : shared.recent
           setStore("last", {
             type: "model",
-            agent: agent.current()?.name,
+            agent: current?.name,
             model: item ?? null,
             variant: selected(),
           })
           write({ model: item })
           if (!item) return
           models.setVisibility(item, true)
+          if (current) {
+            updateShared({
+              model: { [current.name]: storedModel(item) },
+              recent: options?.recent ? recent : undefined,
+            })
+          }
           if (!options?.recent) return
           models.recent.push(item)
         })
@@ -335,6 +417,13 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
               variant: value ?? null,
             })
             write({ variant: value ?? null })
+            if (model) {
+              updateShared({
+                variant: {
+                  [sharedModelKey({ providerID: model.provider.id, modelID: model.id })]: value ?? "default",
+                },
+              })
+            }
           })
         },
         cycle() {

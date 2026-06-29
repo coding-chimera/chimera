@@ -610,6 +610,14 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           )
         },
       },
+      providerBalance: {
+        load(providerID: string, opts?: { force?: boolean }) {
+          return globalSync.providerBalance.load({ directory: sdk.directory, providerID, force: opts?.force })
+        },
+        refresh() {
+          return globalSync.providerBalance.refresh(sdk.directory)
+        },
+      },
       absolute,
       get directory() {
         return current()[0].path.directory
