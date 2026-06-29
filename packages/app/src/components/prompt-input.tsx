@@ -28,7 +28,6 @@ import { IconButton } from "@opencode-ai/ui/icon-button"
 import { Select } from "@opencode-ai/ui/select"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { ModelSelectorPopover } from "@/components/dialog-select-model"
-import { ProviderBalanceChip } from "@/components/provider-balance-chip"
 import { useProviders } from "@/hooks/use-providers"
 import { useCommand } from "@/context/command"
 import { Persist, persisted } from "@/utils/persist"
@@ -1581,7 +1580,6 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                         </TooltipKeybind>
                       </Show>
                     </div>
-                    <ProviderBalanceChip providerID={local.model.current()?.provider?.id} />
                     <Show when={variants().length > 2}>
                       <div
                         data-component="prompt-variant-control"
