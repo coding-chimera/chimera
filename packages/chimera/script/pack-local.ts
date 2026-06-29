@@ -14,7 +14,7 @@ export async function packNpmTarballs() {
   process.chdir(dir)
 
   const entries = await fs.readdir(dist, { withFileTypes: true }).catch(() => {
-    throw new Error("dist directory not found. Run `bun run build --single --skip-install --skip-embed-web-ui` first.")
+    throw new Error("dist directory not found. Run `bun run build --single --skip-install` first.")
   })
 
   const platformPackages = await Promise.all(
