@@ -11,6 +11,7 @@ import type {
 import { showToast } from "@opencode-ai/ui/toast"
 import { getFilename } from "@opencode-ai/core/util/path"
 import { batch, createContext, getOwner, onCleanup, onMount, type ParentProps, untrack, useContext } from "solid-js"
+import { makeEventListener } from "@solid-primitives/event-listener"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { useLanguage } from "@/context/language"
 import type { InitError } from "../pages/error"
@@ -37,6 +38,9 @@ import { directoryKey } from "./global-sync/utils"
 
 const CHIMERA_TOOL_MUTATION_RECORDED = "chimera.tool.mutation.recorded"
 const CHIMERA_GRAPH_READY = "chimera.graph.ready"
+const RESUME_REFRESH_BACKGROUND_MS = 5_000
+const RESUME_REFRESH_MIN_INTERVAL_MS = 5_000
+const ACTIVE_STATUS_POLL_MS = 5_000
 
 function chimeraMutationSummary(properties: unknown) {
   if (!properties || typeof properties !== "object") return undefined
@@ -165,10 +169,19 @@ function createGlobalSync() {
   let bootingRoot = false
   let eventFrame: number | undefined
   let eventTimer: ReturnType<typeof setTimeout> | undefined
+  let resumeFrame: number | undefined
+  let resumeTimer: ReturnType<typeof setTimeout> | undefined
+  let backgroundedAt = typeof document !== "undefined" && document.visibilityState === "hidden" ? Date.now() : undefined
+  let lastResumeRefreshAt = 0
+  let activeStatusPollTimer: ReturnType<typeof setInterval> | undefined
+  let activeStatusPollInFlight = false
 
   onCleanup(() => {
     if (eventFrame !== undefined) cancelAnimationFrame(eventFrame)
     if (eventTimer !== undefined) clearTimeout(eventTimer)
+    if (resumeFrame !== undefined) cancelAnimationFrame(resumeFrame)
+    if (resumeTimer !== undefined) clearTimeout(resumeTimer)
+    if (activeStatusPollTimer !== undefined) clearInterval(activeStatusPollTimer)
   })
 
   const setProjects = (next: Project[] | ((draft: Project[]) => Project[])) => {
@@ -487,6 +500,71 @@ function createGlobalSync() {
     }
   })
 
+  const refreshActiveSessionStatus = async () => {
+    if (paused()) return
+    if (typeof document !== "undefined" && document.visibilityState !== "visible") return
+    const directories = Object.keys(children.children).filter((directory) =>
+      Object.values(children.children[directory]?.[0].session_status ?? {}).some((status) => status.type !== "idle"),
+    )
+    if (directories.length === 0) return
+    await Promise.all(
+      directories.map((directory) =>
+        sdkFor(directory)
+          .session.status()
+          .then((x) => {
+            const child = children.children[directory]
+            if (!child || !x.data) return
+            child[1]("session_status", reconcile(x.data))
+          })
+          .catch((err) => {
+            console.error("Failed to refresh session status", err)
+          }),
+      ),
+    )
+  }
+
+  onMount(() => {
+    activeStatusPollTimer = setInterval(() => {
+      if (activeStatusPollInFlight) return
+      activeStatusPollInFlight = true
+      void refreshActiveSessionStatus().finally(() => {
+        activeStatusPollInFlight = false
+      })
+    }, ACTIVE_STATUS_POLL_MS)
+  })
+
+  const queueMountedRefresh = () => {
+    queue.refresh()
+    for (const directory of Object.keys(children.children)) {
+      children.mark(directory)
+      queue.push(directory)
+    }
+  }
+
+  const scheduleResumeRefresh = (force?: boolean) => {
+    if (typeof document !== "undefined" && document.visibilityState !== "visible") return
+    const now = Date.now()
+    const slept = backgroundedAt === undefined ? 0 : now - backgroundedAt
+    backgroundedAt = undefined
+    if (!force && slept < RESUME_REFRESH_BACKGROUND_MS) return
+    if (now - bootedAt < RESUME_REFRESH_BACKGROUND_MS) return
+    if (now - lastResumeRefreshAt < RESUME_REFRESH_MIN_INTERVAL_MS) return
+    lastResumeRefreshAt = now
+    if (resumeFrame !== undefined || resumeTimer !== undefined) return
+    resumeFrame = requestAnimationFrame(() => {
+      resumeFrame = undefined
+      resumeTimer = setTimeout(() => {
+        resumeTimer = undefined
+        if (typeof document !== "undefined" && document.visibilityState !== "visible") return
+        queueMountedRefresh()
+      }, 0)
+    })
+  }
+
+  const markBackgrounded = () => {
+    backgroundedAt = backgroundedAt ?? Date.now()
+  }
+
   onMount(() => {
     if (typeof requestAnimationFrame === "function") {
       eventFrame = requestAnimationFrame(() => {
@@ -502,6 +580,18 @@ function createGlobalSync() {
         void globalSDK.event.start()
       }, 0)
     }
+    makeEventListener(document, "visibilitychange", () => {
+      if (document.visibilityState === "hidden") {
+        markBackgrounded()
+        return
+      }
+      scheduleResumeRefresh()
+    })
+    makeEventListener(window, "blur", markBackgrounded)
+    makeEventListener(window, "pagehide", markBackgrounded)
+    makeEventListener(window, "focus", () => scheduleResumeRefresh())
+    makeEventListener(window, "online", () => scheduleResumeRefresh(true))
+    makeEventListener(window, "pageshow", (event) => scheduleResumeRefresh(event.persisted))
   })
 
   const projectApi = {
