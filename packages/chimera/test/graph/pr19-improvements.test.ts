@@ -409,27 +409,54 @@ describe('Database Layer Improvements', () => {
     db.close();
   });
 
-  it.skipIf(!HAS_SQLITE)('should set performance pragmas on initialization', async () => {
+  it.skipIf(!HAS_SQLITE)('should set low-rss pragmas on initialization', async () => {
     const { DatabaseConnection } = await import('../../src/graph/db');
 
     const dbPath = path.join(testDir, 'codegraph.db');
     const db = DatabaseConnection.initialize(dbPath);
     const rawDb = db.getDb();
 
-    // Check pragmas were set
     const synchronous = rawDb.pragma('synchronous', { simple: true });
-    expect(synchronous).toBe(1); // NORMAL = 1
+    expect(synchronous).toBe(1);
 
     const cacheSize = rawDb.pragma('cache_size', { simple: true }) as number;
-    expect(cacheSize).toBe(-64000);
+    expect(cacheSize).toBe(-8192);
 
     const tempStore = rawDb.pragma('temp_store', { simple: true });
-    expect(tempStore).toBe(2); // MEMORY = 2
+    expect(tempStore).toBe(1);
 
     const mmapSize = rawDb.pragma('mmap_size', { simple: true }) as number;
-    expect(mmapSize).toBe(268435456); // 256 MB
+    expect(mmapSize).toBe(0);
 
     db.close();
+  });
+
+  it.skipIf(!HAS_SQLITE)('should allow sqlite memory pragmas to be overridden', async () => {
+    const { DatabaseConnection } = await import('../../src/graph/db');
+
+    const originalCache = process.env.CHIMERA_SQLITE_CACHE_MB;
+    const originalMmap = process.env.CHIMERA_SQLITE_MMAP_MB;
+    const originalTempStore = process.env.CHIMERA_SQLITE_TEMP_STORE;
+
+    process.env.CHIMERA_SQLITE_CACHE_MB = '4';
+    process.env.CHIMERA_SQLITE_MMAP_MB = '16';
+    process.env.CHIMERA_SQLITE_TEMP_STORE = 'memory';
+
+    const db = DatabaseConnection.initialize(path.join(testDir, 'override.db'));
+    const rawDb = db.getDb();
+
+    expect(rawDb.pragma('cache_size', { simple: true })).toBe(-4096);
+    expect(rawDb.pragma('mmap_size', { simple: true })).toBe(16777216);
+    expect(rawDb.pragma('temp_store', { simple: true })).toBe(2);
+
+    db.close();
+
+    if (originalCache === undefined) delete process.env.CHIMERA_SQLITE_CACHE_MB;
+    else process.env.CHIMERA_SQLITE_CACHE_MB = originalCache;
+    if (originalMmap === undefined) delete process.env.CHIMERA_SQLITE_MMAP_MB;
+    else process.env.CHIMERA_SQLITE_MMAP_MB = originalMmap;
+    if (originalTempStore === undefined) delete process.env.CHIMERA_SQLITE_TEMP_STORE;
+    else process.env.CHIMERA_SQLITE_TEMP_STORE = originalTempStore;
   });
 
   it.skipIf(!HAS_SQLITE)('should handle empty batch insert gracefully', async () => {
