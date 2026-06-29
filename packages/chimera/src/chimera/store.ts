@@ -1367,18 +1367,30 @@ export async function readOracleResults(
   artifact: string,
   options: { sessionID?: string; limit?: number; includePassing?: boolean } = {},
 ) {
-  const legacy = await readJsonl<OracleRecord>(artifact)
   const limit = Math.max(1, Math.min(100, Math.floor(options.limit ?? 20)))
+  const legacy = await readRecentJsonl<OracleRecord>(artifact, Math.max(limit * 5, 100))
   const keep = (record: OracleRecord) =>
     (!options.sessionID || record.tool.sessionID === options.sessionID) &&
     (options.includePassing || record.status !== "pass")
   const records = await withDb(projectRoot, (db) => {
     for (const record of legacy) writeOracleResultToDb(db, record)
-    return (db.prepare("SELECT payload_json FROM chimera_oracle_result ORDER BY finished_at DESC, id DESC").all() as PayloadRow[])
+    const where = [
+      ...(options.sessionID ? ["session_id = ?"] : []),
+      ...(!options.includePassing ? ["status != 'pass'"] : []),
+    ]
+    const params = [
+      ...(options.sessionID ? [options.sessionID] : []),
+      limit,
+    ]
+    return (db.prepare(`
+      SELECT payload_json
+      FROM chimera_oracle_result
+      ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
+      ORDER BY finished_at DESC, id DESC
+      LIMIT ?
+    `).all(...params) as PayloadRow[])
       .flatMap((row) => parseJson<OracleRecord>(row.payload_json))
       .map(normalizeOracleRecord)
-      .filter(keep)
-      .slice(0, limit)
   })
   return records ?? legacy.map(normalizeOracleRecord).filter(keep).toSorted((a, b) => b.finishedAt.localeCompare(a.finishedAt) || b.id.localeCompare(a.id)).slice(0, limit)
 }
