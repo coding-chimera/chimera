@@ -32,6 +32,14 @@ import {
 // Re-export for backward compatibility
 export { generateNodeId } from './tree-sitter-helpers';
 
+function countLines(source: string): number {
+  let lines = 1;
+  for (let i = 0; i < source.length; i++) {
+    if (source.charCodeAt(i) === 10) lines++;
+  }
+  return lines;
+}
+
 /**
  * Extract the name from a node based on language
  */
@@ -225,7 +233,7 @@ export class TreeSitterExtractor {
         filePath: this.filePath,
         language: this.language,
         startLine: 1,
-        endLine: this.source.split('\n').length,
+        endLine: countLines(this.source),
         startColumn: 0,
         endColumn: 0,
         isExported: false,

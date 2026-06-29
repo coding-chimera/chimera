@@ -833,7 +833,6 @@ export class ExtractionOrchestrator {
 
       const batch = files.slice(i, i + FILE_IO_BATCH_SIZE);
 
-      // Read files in parallel (with path validation before any I/O)
       const fileContents = await Promise.all(
         batch.map(async (fp) => {
           try {
@@ -842,8 +841,11 @@ export class ExtractionOrchestrator {
               logWarn('Path traversal blocked in batch reader', { filePath: fp });
               return { filePath: fp, content: null as string | null, stats: null as fs.Stats | null, error: new Error('Path traversal blocked') };
             }
-            const content = await fsp.readFile(fullPath, 'utf-8');
             const stats = await fsp.stat(fullPath);
+            if (stats.size > MAX_FILE_SIZE) {
+              return { filePath: fp, content: '', stats, error: null as Error | null };
+            }
+            const content = await fsp.readFile(fullPath, 'utf-8');
             return { filePath: fp, content, stats, error: null as Error | null };
           } catch (err) {
             return { filePath: fp, content: null as string | null, stats: null as fs.Stats | null, error: err as Error };
