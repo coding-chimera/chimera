@@ -502,6 +502,7 @@ export const dict = {
 
   "session.tab.session": "Сессия",
   "session.tab.review": "Обзор",
+  "session.tab.status": "Статус",
   "session.tab.context": "Контекст",
   "session.panel.reviewAndFiles": "Обзор и файлы",
   "session.review.filesChanged": "{{count}} файлов изменено",

@@ -447,6 +447,7 @@ export const dict = {
   "home.empty.description": "ローカルプロジェクトを開いて始めましょう",
   "session.tab.session": "セッション",
   "session.tab.review": "レビュー",
+  "session.tab.status": "状態",
   "session.tab.context": "コンテキスト",
   "session.panel.reviewAndFiles": "レビューとファイル",
   "session.review.filesChanged": "{{count}} ファイル変更",
