@@ -1,6 +1,10 @@
-import { createHash } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
+import { rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import { afterEach, describe, expect, test } from "bun:test"
 import { Flag } from "@opencode-ai/core/flag/flag"
+import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import * as Log from "@opencode-ai/core/util/log"
 import { ConfigProvider, Effect, Layer } from "effect"
 import {
@@ -9,11 +13,11 @@ import {
   HttpServerResponse,
   HttpRouter,
 } from "effect/unstable/http"
-import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { ServerAuth } from "../../src/server/auth"
 import { authorizationRouterMiddleware } from "../../src/server/routes/instance/httpapi/middleware/authorization"
 import { ExperimentalHttpApiServer } from "../../src/server/routes/instance/httpapi/server"
 import { serveEmbeddedUIEffect, serveUIEffect } from "../../src/server/shared/ui"
+import { serveEmbeddedNewWebUIEffect } from "../../src/server/shared/newweb-ui"
 import { Server } from "../../src/server/server"
 
 void Log.init({ print: false })
@@ -70,15 +74,9 @@ function app(input?: { password?: string; username?: string }) {
 
 function uiApp(input?: { password?: string; username?: string }) {
   const handler = HttpRouter.toWebHandler(
-    HttpRouter.use((router) =>
-      Effect.gen(function* () {
-        const fs = yield* AppFileSystem.Service
-        yield* router.add("*", "/*", (request) => serveUIEffect(request, { fs }))
-      }),
-    ).pipe(
+    HttpRouter.use((router) => router.add("*", "/*", serveUIEffect)).pipe(
       Layer.provide(authorizationRouterMiddleware.layer.pipe(Layer.provide(ServerAuth.Config.defaultLayer))),
       Layer.provide([
-        AppFileSystem.defaultLayer,
         HttpServer.layerServices,
         ConfigProvider.layer(
           ConfigProvider.fromUnknown({
@@ -100,6 +98,15 @@ function uiApp(input?: { password?: string; username?: string }) {
   }
 }
 
+function embeddedNewWebResponse(requestPath: string, embeddedWebUI: Record<string, string>) {
+  return Effect.runPromise(
+    Effect.gen(function* () {
+      const fs = yield* AppFileSystem.Service
+      return yield* serveEmbeddedNewWebUIEffect(requestPath, fs, embeddedWebUI).pipe(Effect.map(HttpServerResponse.toWeb))
+    }).pipe(Effect.provide(AppFileSystem.defaultLayer)),
+  )
+}
+
 
 describe("HttpApi UI fallback", () => {
   test("returns a local unavailable response when embedded UI assets are disabled", async () => {
@@ -113,66 +120,87 @@ describe("HttpApi UI fallback", () => {
     expect(await response.text()).toContain("Chimera WebUI assets are not embedded")
   })
 
-  test("serves embedded UI assets when Bun can read them but access reports missing", async () => {
+  test("serves embedded UI assets from Bun-readable file paths", async () => {
     Flag.OPENCODE_EXPERIMENTAL_HTTPAPI = true
-    let readPath: string | undefined
+    const file = path.join(tmpdir(), `chimera-ui-${randomUUID()}.js`)
+    await Bun.write(file, "console.log('embedded')")
 
-    const response = await Effect.runPromise(
-      Effect.gen(function* () {
-        const fs = yield* AppFileSystem.Service
-        return yield* serveEmbeddedUIEffect(
-          "/assets/app.js",
-          {
-            ...fs,
-            existsSafe: () => Effect.die("embedded UI should not rely on filesystem access checks"),
-            readFile: (path) => {
-              readPath = path
-              return path === "/$bunfs/root/assets/app.js"
-                ? Effect.succeed(new TextEncoder().encode("console.log('embedded')"))
-                : Effect.die(`unexpected embedded UI path: ${path}`)
-            },
-          },
-          { "assets/app.js": "/$bunfs/root/assets/app.js" },
-        )
-      }).pipe(Effect.provide(AppFileSystem.defaultLayer), Effect.map(HttpServerResponse.toWeb)),
-    )
+    try {
+      const response = await Effect.runPromise(
+        serveEmbeddedUIEffect("/assets/app.js", { "assets/app.js": file }).pipe(Effect.map(HttpServerResponse.toWeb)),
+      )
 
-    expect(response.status).toBe(200)
-    expect(readPath).toBe("/$bunfs/root/assets/app.js")
-    expect(response.headers.get("content-type")).toContain("text/javascript")
-    expect(await response.text()).toBe("console.log('embedded')")
+      expect(response.status).toBe(200)
+      expect(response.headers.get("content-type")).toContain("text/javascript")
+      expect(await response.text()).toBe("console.log('embedded')")
+    } finally {
+      await rm(file, { force: true })
+    }
   })
 
   test("allows embedded UI terminal wasm and theme preload CSP", async () => {
     Flag.OPENCODE_EXPERIMENTAL_HTTPAPI = true
     const script = 'document.documentElement.dataset.theme = "dark"'
+    const file = path.join(tmpdir(), `chimera-ui-${randomUUID()}.html`)
+    await Bun.write(file, `<html><head><script id="oc-theme-preload-script">${script}</script></head></html>`)
 
-    const response = await Effect.runPromise(
-      Effect.gen(function* () {
-        const fs = yield* AppFileSystem.Service
-        return yield* serveEmbeddedUIEffect(
-          "/",
-          {
-            ...fs,
-            readFile: (path) => {
-              return path === "/$bunfs/root/index.html"
-                ? Effect.succeed(
-                    new TextEncoder().encode(
-                      `<html><head><script id="oc-theme-preload-script">${script}</script></head></html>`,
-                    ),
-                  )
-                : Effect.die(`unexpected embedded UI path: ${path}`)
-            },
-          },
-          { "index.html": "/$bunfs/root/index.html" },
-        )
-      }).pipe(Effect.provide(AppFileSystem.defaultLayer), Effect.map(HttpServerResponse.toWeb)),
-    )
+    try {
+      const response = await Effect.runPromise(
+        serveEmbeddedUIEffect("/", { "index.html": file }).pipe(Effect.map(HttpServerResponse.toWeb)),
+      )
+      const csp = response.headers.get("content-security-policy") ?? ""
 
-    const csp = response.headers.get("content-security-policy") ?? ""
-    expect(csp).toContain("script-src 'self' 'wasm-unsafe-eval'")
-    expect(csp).toContain(`'sha256-${createHash("sha256").update(script).digest("base64")}'`)
-    expect(csp).toContain("connect-src * data:")
+      expect(csp).toContain("script-src 'self' 'wasm-unsafe-eval'")
+      expect(csp).toContain(`'sha256-${createHash("sha256").update(script).digest("base64")}'`)
+      expect(csp).toContain("connect-src * data:")
+    } finally {
+      await rm(file, { force: true })
+    }
+  })
+
+
+  test("serves embedded NewWeb assets from Bun-readable file paths", async () => {
+    Flag.OPENCODE_EXPERIMENTAL_HTTPAPI = true
+    const file = path.join(tmpdir(), `chimera-newweb-${randomUUID()}.js`)
+    await Bun.write(file, "console.log('newweb')")
+
+    try {
+      const response = await embeddedNewWebResponse("/newweb/assets/app.js", { "assets/app.js": file })
+
+      expect(response.status).toBe(200)
+      expect(response.headers.get("content-type")).toContain("text/javascript")
+      expect(await response.text()).toBe("console.log('newweb')")
+    } finally {
+      await rm(file, { force: true })
+    }
+  })
+
+  test("keeps missing NewWeb static assets from falling back to the app document", async () => {
+    Flag.OPENCODE_EXPERIMENTAL_HTTPAPI = true
+    const file = path.join(tmpdir(), `chimera-newweb-${randomUUID()}.html`)
+    await Bun.write(file, "<html>newweb</html>")
+
+    try {
+      const appRoute = await embeddedNewWebResponse("/newweb/projects/demo", { "index.html": file })
+      const asset = await embeddedNewWebResponse("/newweb/assets/missing.js", { "index.html": file })
+
+      expect(appRoute.status).toBe(200)
+      expect(await appRoute.text()).toContain("newweb")
+      expect(asset.status).toBe(404)
+      expect(await asset.json()).toEqual({ error: "Not Found" })
+    } finally {
+      await rm(file, { force: true })
+    }
+  })
+
+  test("routes /newweb to the lightweight UI before the existing WebUI fallback", async () => {
+    Flag.OPENCODE_EXPERIMENTAL_HTTPAPI = true
+    Flag.OPENCODE_DISABLE_EMBEDDED_WEB_UI = true
+
+    const response = await Server.Default().app.request("/newweb/")
+
+    expect(response.status).toBe(503)
+    expect(await response.text()).toContain("Chimera NewWeb assets are not embedded")
   })
 
   test("keeps matched API routes ahead of the UI fallback", async () => {
@@ -183,14 +211,14 @@ describe("HttpApi UI fallback", () => {
     expect(response.status).toBe(404)
   })
 
-  test("requires server password for the web UI", async () => {
+  test("serves web UI document and module assets without auth when a server password is set", async () => {
     Flag.OPENCODE_EXPERIMENTAL_HTTPAPI = true
     Flag.OPENCODE_DISABLE_EMBEDDED_WEB_UI = true
 
-    const response = await uiApp({ password: "secret", username: "opencode" }).request("/")
-
-    expect(response.status).toBe(401)
-    expect(response.headers.get("www-authenticate")).toBe('Basic realm="Secure Area"')
+    for (const path of ["/", "/index.html", "/assets/session.js"]) {
+      const response = await uiApp({ password: "secret", username: "opencode" }).request(path)
+      expect(response.status).not.toBe(401)
+    }
   })
 
   test("accepts auth token for the web UI", async () => {
