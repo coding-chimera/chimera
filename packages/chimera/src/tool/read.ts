@@ -1,3 +1,4 @@
+import { createHash } from "crypto"
 import { Effect, Option, Schema, Scope } from "effect"
 import { NonNegativeInt } from "@/util/schema"
 import { createReadStream } from "fs"
@@ -24,9 +25,35 @@ const SUPPORTED_IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "
 const READ_DEDUP_MESSAGES_EXTRA = "readDedupMessages"
 const HASHLINE_PREFIX = /^(\d+)#([A-Za-z0-9-]{2})\|/
 
+type ReadSpanLine = {
+  line: number
+  id: string
+  content: string
+}
+
+type ReadSpanRef = {
+  ref: string
+  filepath: string
+  start: number
+  end: number
+  contentHash: string
+}
+
+type ReadAnchorSource = {
+  line: number
+  id: string
+  span: ReadSpanRef
+}
+
+type ReadDedupHit = {
+  span: ReadSpanRef
+  start: number
+  end: number
+}
+
 type ReadDedupWindow = {
   windowID: string
-  anchors: Map<string, Set<string>>
+  anchors: Map<string, Map<string, ReadAnchorSource>>
   seededParts: Set<string>
 }
 
@@ -39,12 +66,21 @@ function readDedupMessages(ctx: Tool.Context) {
   return Array.isArray(value) ? (value as WithParts[]) : ctx.messages
 }
 
-function contentSection(output: string) {
-  const start = output.indexOf("<content>")
+function section(output: string, tag: string) {
+  const start = output.indexOf(`<${tag}>`)
   if (start < 0) return ""
-  const end = output.indexOf("</content>", start)
+  const body = start + tag.length + 2
+  const end = output.indexOf(`</${tag}>`, body)
   if (end < 0) return ""
-  return output.slice(start + "<content>".length, end)
+  return output.slice(body, end)
+}
+
+function contentSection(output: string) {
+  return section(output, "content")
+}
+
+function readRefsSection(output: string) {
+  return section(output, "read_refs")
 }
 
 function outputPath(output: string) {
@@ -55,21 +91,104 @@ function anchorKey(line: number, id: string) {
   return `${line}#${id}`
 }
 
-function addAnchor(anchors: Map<string, Set<string>>, filepath: string, line: number, id: string) {
+function normalizeReadRefPath(filepath: string, worktree?: string) {
+  const relative = worktree ? path.relative(worktree, filepath) : ""
+  const insideWorktree =
+    relative.length > 0 && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
+  const target = insideWorktree ? relative : path.normalize(filepath)
+  return target.replaceAll(path.sep, "/").replaceAll("\\", "/")
+}
+
+function readSpanContentHash(filepath: string, lines: ReadSpanLine[]) {
+  const hash = createHash("sha256")
+  hash.update(path.normalize(filepath))
+  for (const line of lines) hash.update(`\n${line.line}#${line.id}|${line.content}`)
+  return `sha256:${hash.digest("hex")}`
+}
+
+function readRefLineRange(start: number, end: number) {
+  return `L${start}-L${end}`
+}
+
+function formatLineRange(start: number, end: number) {
+  if (start === end) return `L${start}`
+  return `L${start}-L${end}`
+}
+
+function contiguousLineGroups<T extends { line: number }>(items: T[]) {
+  return [...items]
+    .sort((a, b) => a.line - b.line)
+    .reduce<T[][]>((groups, item) => {
+      const last = groups.at(-1)
+      if (last?.at(-1)?.line === item.line - 1) {
+        last.push(item)
+        return groups
+      }
+      groups.push([item])
+      return groups
+    }, [])
+}
+
+function readSpanRefs(filepath: string, worktree: string | undefined, lines: ReadSpanLine[]): ReadSpanRef[] {
+  return contiguousLineGroups(lines.filter((line) => line.id !== UNANCHORABLE_TOKEN)).map((group) => {
+    const start = group[0]?.line ?? 0
+    const end = group.at(-1)?.line ?? start
+    const contentHash = readSpanContentHash(filepath, group)
+    const shortHash = contentHash.slice("sha256:".length, "sha256:".length + 12)
+    return {
+      ref: `readref://${normalizeReadRefPath(filepath, worktree)}@${shortHash}#${readRefLineRange(start, end)}`,
+      filepath: normalizeReadRefPath(filepath, worktree),
+      start,
+      end,
+      contentHash,
+    }
+  })
+}
+
+function parseReadRefs(output: string, filepath: string): ReadSpanRef[] {
+  return readRefsSection(output)
+    .split("\n")
+    .flatMap((line) => {
+      const match = line.match(/^\s*-\s+ref:\s+(readref:\/\/.+#L(\d+)-L(\d+))\s*$/)
+      if (!match) return []
+      const contentHash = match[1].match(/@([^@#]+)#L\d+-L\d+$/)?.[1] ?? ""
+      return [
+        {
+          ref: match[1],
+          filepath,
+          start: Number(match[2]),
+          end: Number(match[3]),
+          contentHash: contentHash.length > 0 ? `sha256:${contentHash}` : "",
+        },
+      ]
+    })
+}
+
+function spanForLine(spans: ReadSpanRef[], line: number) {
+  return spans.find((span) => line >= span.start && line <= span.end)
+}
+
+function addAnchor(
+  anchors: Map<string, Map<string, ReadAnchorSource>>,
+  filepath: string,
+  line: number,
+  id: string,
+  span: ReadSpanRef,
+) {
   if (id === UNANCHORABLE_TOKEN) return
   const normalized = path.normalize(filepath)
-  const existing = anchors.get(normalized) ?? new Set<string>()
-  existing.add(anchorKey(line, id))
+  const existing = anchors.get(normalized) ?? new Map<string, ReadAnchorSource>()
+  existing.set(anchorKey(line, id), { line, id, span })
   anchors.set(normalized, existing)
 }
 
-function parseReadAnchors(output: string) {
+function parseReadAnchors(output: string): ReadSpanLine[] {
   return contentSection(output)
     .split("\n")
     .flatMap((line) => {
       const match = HASHLINE_PREFIX.exec(line)
       if (!match || match[2] === UNANCHORABLE_TOKEN) return []
-      return [{ line: Number(match[1]), id: match[2] }]
+      return [{ line: Number(match[1]), id: match[2], content: line.slice(match[0].length) }]
     })
 }
 
@@ -83,7 +202,7 @@ function readDedupWindowID(messages: WithParts[]) {
   let compacted = 0
   for (const msg of messages) {
     for (const part of msg.parts) {
-      if (part.type === "compaction" && part.tail_start_id) compaction = msg.info.id
+      if (part.type === "compaction") compaction = `${msg.info.id}:${part.id}`
       if (part.type !== "tool") continue
       if (part.state.status !== "completed") continue
       compacted = Math.max(compacted, part.state.time.compacted ?? 0)
@@ -95,7 +214,7 @@ function readDedupWindowID(messages: WithParts[]) {
 function makeReadDedupWindow(windowID: string): ReadDedupWindow {
   return {
     windowID,
-    anchors: new Map<string, Set<string>>(),
+    anchors: new Map<string, Map<string, ReadAnchorSource>>(),
     seededParts: new Set<string>(),
   }
 }
@@ -106,9 +225,20 @@ function seedReadDedupWindow(state: ReadDedupState, ctx: Tool.Context) {
   const sessionID = String(ctx.sessionID)
   const current = state.sessions.get(sessionID)
   const window = current?.windowID === windowID ? current : makeReadDedupWindow(windowID)
+  let startMessage = 0
+  let startPart = 0
   state.sessions.set(sessionID, window)
-  for (const msg of messages) {
-    for (const part of msg.parts) {
+  for (const [messageIndex, msg] of messages.entries()) {
+    for (const [partIndex, part] of msg.parts.entries()) {
+      if (part.type !== "compaction") continue
+      startMessage = messageIndex
+      startPart = partIndex + 1
+    }
+  }
+  for (const [messageIndex, msg] of messages.entries()) {
+    if (messageIndex < startMessage) continue
+    for (const [partIndex, part] of msg.parts.entries()) {
+      if (messageIndex === startMessage && partIndex < startPart) continue
       if (part.type !== "tool") continue
       if (part.tool !== "read") continue
       if (part.state.status !== "completed") continue
@@ -116,7 +246,13 @@ function seedReadDedupWindow(state: ReadDedupState, ctx: Tool.Context) {
       if (window.seededParts.has(part.id)) continue
       const filepath = readPartPath(part)
       if (filepath) {
-        for (const anchor of parseReadAnchors(part.state.output)) addAnchor(window.anchors, filepath, anchor.line, anchor.id)
+        const anchors = parseReadAnchors(part.state.output)
+        const spans = parseReadRefs(part.state.output, filepath)
+        const fallbackSpans = spans.length > 0 ? spans : readSpanRefs(filepath, undefined, anchors)
+        for (const anchor of anchors) {
+          const span = spanForLine(fallbackSpans, anchor.line)
+          if (span) addAnchor(window.anchors, filepath, anchor.line, anchor.id, span)
+        }
       }
       window.seededParts.add(part.id)
     }
@@ -124,36 +260,99 @@ function seedReadDedupWindow(state: ReadDedupState, ctx: Tool.Context) {
   return window
 }
 
-function anchorSet(window: ReadDedupWindow, filepath: string) {
+function anchorSources(window: ReadDedupWindow, filepath: string) {
   const normalized = path.normalize(filepath)
-  const existing = window.anchors.get(normalized) ?? new Set<string>()
+  const existing = window.anchors.get(normalized) ?? new Map<string, ReadAnchorSource>()
   window.anchors.set(normalized, existing)
   return existing
 }
 
-function lineRanges(lines: number[]) {
+function lineRangeSegments(lines: number[]) {
   const sorted = Array.from(new Set(lines)).sort((a, b) => a - b)
-  const ranges: string[] = []
-  let start = sorted[0]
-  let previous = sorted[0]
-  for (const line of sorted.slice(1)) {
-    if (line === previous + 1) {
-      previous = line
+  const ranges: Array<{ start: number; end: number }> = []
+  for (const line of sorted) {
+    const last = ranges.at(-1)
+    if (last && line === last.end + 1) {
+      last.end = line
       continue
     }
-    ranges.push(start === previous ? String(start) : `${start}-${previous}`)
-    start = line
-    previous = line
+    ranges.push({ start: line, end: line })
   }
-  if (start !== undefined && previous !== undefined) ranges.push(start === previous ? String(start) : `${start}-${previous}`)
+  return ranges
+}
+
+function lineRanges(lines: number[]) {
+  const ranges = lineRangeSegments(lines).map((range) =>
+    range.start === range.end ? String(range.start) : `${range.start}-${range.end}`,
+  )
   return ranges.length > 12 ? `${ranges.slice(0, 12).join(", ")}, ...` : ranges.join(", ")
+}
+
+function readDedupHits(skipped: ReadAnchorSource[]): ReadDedupHit[] {
+  const grouped = new Map<string, { span: ReadSpanRef; lines: number[] }>()
+  for (const source of skipped) {
+    const existing = grouped.get(source.span.ref) ?? { span: source.span, lines: [] }
+    existing.lines.push(source.line)
+    grouped.set(source.span.ref, existing)
+  }
+  return Array.from(grouped.values())
+    .flatMap((item) => lineRangeSegments(item.lines).map((range) => ({ span: item.span, ...range })))
+    .sort((a, b) => a.start - b.start)
+}
+
+function readDedupBlock(hits: ReadDedupHit[], requestedStart: number, requestedEnd: number, newSpans: ReadSpanRef[]) {
+  if (hits.length === 0) return ""
+  const continuity = newSpans.flatMap((span) => {
+    const hit = hits.find((hit) => hit.end + 1 === span.start)
+    if (!hit) return []
+    return [
+      `- Treat ${hit.span.ref} ${formatLineRange(hit.start, hit.end)} as immediate preceding context for ${formatLineRange(span.start, span.start)}.`,
+    ]
+  })
+  return [
+    "<read_dedup>",
+    `Requested range: ${formatLineRange(requestedStart, requestedEnd)}`,
+    "Folded ranges:",
+    ...hits.flatMap((hit) => [
+      `- ${formatLineRange(hit.start, hit.end)} already read in:`,
+      `  ref: ${hit.span.ref}`,
+      `  subrange: ${formatLineRange(hit.start, hit.end)}`,
+    ]),
+    ...(continuity.length > 0 ? ["Continuity:", ...continuity] : []),
+    "</read_dedup>",
+  ].join("\n")
+}
+
+function readRefsBlock(spans: ReadSpanRef[]) {
+  if (spans.length === 0) return ["<read_refs>", "New: none", "</read_refs>"].join("\n")
+  return [
+    "<read_refs>",
+    "New:",
+    ...spans.flatMap((span) => [
+      `- ref: ${span.ref}`,
+      `  file: ${span.filepath}`,
+      `  lines: ${formatLineRange(span.start, span.end)}`,
+      `  content_hash: ${span.contentHash}`,
+    ]),
+    "</read_refs>",
+  ].join("\n")
+}
+
+function readSpanMetadata(span: ReadSpanRef) {
+  return {
+    ref: span.ref,
+    file: span.filepath,
+    start: span.start,
+    end: span.end,
+    contentHash: span.contentHash,
+  }
 }
 
 function readDedupNotice(skipped: number[], requested: number) {
   if (skipped.length === requested) {
-    return `[Read dedup: all ${skipped.length} requested lines were already read in this compaction window with identical file_path+line+hash.]`
+    return `[Read dedup: all ${skipped.length} requested lines were already read in this compaction window with identical file_path+line+hash; see <read_dedup> refs.]`
   }
-  return `[Read dedup: skipped ${skipped.length} already-read lines (${lineRanges(skipped)}) in this compaction window with identical file_path+line+hash.]`
+  return `[Read dedup: skipped ${skipped.length} already-read lines (${lineRanges(skipped)}) in this compaction window with identical file_path+line+hash; see <read_dedup> refs.]`
 }
 
 // `offset` and `limit` were originally `z.coerce.number()` — the runtime
@@ -397,23 +596,30 @@ export const ReadTool = Tool.define(
       }
 
       const window = seedReadDedupWindow(yield* InstanceState.get(readDedup), ctx)
-      const seen = anchorSet(window, filepath)
-      const skipped: number[] = []
+      const seen = anchorSources(window, filepath)
+      const skipped: ReadAnchorSource[] = []
       const visible = file.raw.flatMap((line, i) => {
         const info = lineInfo(i + file.offset, line, !file.unanchorable.includes(i + file.offset))
-        if (info.anchorable && info.id !== UNANCHORABLE_TOKEN && seen.has(anchorKey(info.line, info.id))) {
-          skipped.push(info.line)
+        const source = seen.get(anchorKey(info.line, info.id))
+        if (info.anchorable && info.id !== UNANCHORABLE_TOKEN && source) {
+          skipped.push(source)
           return []
         }
         return [info]
       })
-      for (const info of visible) addAnchor(window.anchors, filepath, info.line, info.id)
+      const newSpans = readSpanRefs(filepath, instance.worktree, visible)
+      for (const info of visible) {
+        const span = spanForLine(newSpans, info.line)
+        if (span) addAnchor(window.anchors, filepath, info.line, info.id, span)
+      }
 
+      const skippedLines = skipped.map((item) => item.line)
+      const dedupHits = readDedupHits(skipped)
       let output = [`<path>${filepath}</path>`, `<type>file</type>`, "<content>\n"].join("\n")
       output += visible.map(formatLine).join("\n")
-      if (skipped.length > 0) {
+      if (skippedLines.length > 0) {
         if (visible.length > 0) output += "\n"
-        output += readDedupNotice(skipped, file.raw.length)
+        output += readDedupNotice(skippedLines, file.raw.length)
       }
       const last = file.offset + file.raw.length - 1
       const next = last + 1
@@ -426,6 +632,9 @@ export const ReadTool = Tool.define(
         output += `\n\n(End of file - total ${file.count} lines)`
       }
       output += "\n</content>"
+      const dedupBlock = readDedupBlock(dedupHits, file.offset, last, newSpans)
+      if (dedupBlock.length > 0) output += `\n\n${dedupBlock}`
+      output += `\n\n${readRefsBlock(newSpans)}`
 
       yield* warm(filepath)
 
@@ -440,6 +649,7 @@ export const ReadTool = Tool.define(
           preview: visible.slice(0, 20).map((item) => item.content).join("\n"),
           truncated,
           loaded: loaded.map((item) => item.filepath),
+          readRefs: newSpans.map(readSpanMetadata),
           hashline: {
             schemaVersion: SCHEMA_VERSION,
             displayAlgorithm: DISPLAY_ALGORITHM,
@@ -447,8 +657,16 @@ export const ReadTool = Tool.define(
             unanchorable: file.unanchorable,
           },
           readDedup: {
-            skipped: skipped.length,
+            skipped: skippedLines.length,
             windowID: window.windowID,
+            hits: dedupHits.map((hit) => ({
+              ref: hit.span.ref,
+              file: hit.span.filepath,
+              start: hit.start,
+              end: hit.end,
+              sourceStart: hit.span.start,
+              sourceEnd: hit.span.end,
+            })),
           }
         },
       }

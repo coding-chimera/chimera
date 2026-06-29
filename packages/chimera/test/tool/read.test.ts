@@ -279,8 +279,13 @@ describe("tool.read truncation", () => {
       expect(result.output).toContain(`1#${lineHash(1, "hello")}|hello`)
       expect(result.output).toContain(`2#${lineHash(2, "")}|`)
       expect(result.output).toContain(`3#${lineHash(3, "world")}|world`)
+      expect(result.output).toContain("<read_refs>")
+      expect(result.output).toContain("ref: readref://")
+      expect(result.output).toContain("hashline.txt@")
+      expect(result.output).toContain("lines: L1-L3")
       expect(result.metadata.hashline?.displayAlgorithm).toBe("omo-cid2")
       expect(result.metadata.hashline?.anchors).toBe(3)
+      expect(result.metadata.readRefs).toHaveLength(1)
     }),
   )
 
@@ -324,10 +329,18 @@ describe("tool.read truncation", () => {
       )
 
       expect(second.output).toContain("Read dedup: all 3 requested lines were already read")
+      expect(second.output).toContain("<read_dedup>")
+      expect(second.output).toContain("L1-L3 already read in:")
+      expect(second.output).toContain("ref: readref://")
+      expect(second.output).toContain("dedup.txt@")
+      expect(second.output).toContain("subrange: L1-L3")
+      expect(second.output).toContain("New: none")
       expect(second.output).not.toContain(`1#${lineHash(1, "alpha")}|alpha`)
       expect(second.output).not.toContain(`2#${lineHash(2, "beta")}|beta`)
       expect(second.metadata.hashline?.anchors).toBe(0)
       expect(second.metadata.readDedup?.skipped).toBe(3)
+      expect(second.metadata.readDedup?.hits).toHaveLength(1)
+      expect(second.metadata.readDedup?.hits[0]?.ref).toContain("dedup.txt@")
     }),
   )
 
@@ -373,9 +386,19 @@ describe("tool.read truncation", () => {
 
       expect(second.output).toContain(`2#${lineHash(2, "changed")}|changed`)
       expect(second.output).toContain("Read dedup: skipped 2 already-read lines (1, 3)")
+      expect(second.output).toContain("L1 already read in:")
+      expect(second.output).toContain("L3 already read in:")
+      expect(second.output).toContain("ref: readref://")
+      expect(second.output).toContain("dedup-change.txt@")
+      expect(second.output).toContain("subrange: L1")
+      expect(second.output).toContain("subrange: L3")
+      expect(second.output).toContain("Treat readref://")
+      expect(second.output).toContain("lines: L2")
       expect(second.output).not.toContain(`1#${lineHash(1, "alpha")}|alpha`)
       expect(second.metadata.hashline?.anchors).toBe(1)
       expect(second.metadata.readDedup?.skipped).toBe(2)
+      expect(second.metadata.readDedup?.hits).toHaveLength(2)
+      expect(second.metadata.readRefs).toHaveLength(1)
     }),
   )
 
@@ -422,6 +445,68 @@ describe("tool.read truncation", () => {
       expect(second.output).not.toContain("Read dedup")
       expect(second.metadata.hashline?.anchors).toBe(3)
       expect(second.metadata.readDedup?.skipped).toBe(0)
+    }),
+  )
+
+  it.instance("resets repeated read rows after compaction without tail_start_id", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "dedup-tail-fallback.txt")
+      yield* put(filepath, "alpha\nbeta\ngamma")
+      const tool = yield* init()
+      const first = yield* tool.execute({ filePath: filepath }, ctx)
+      const second = yield* tool.execute(
+        { filePath: filepath },
+        {
+          ...ctx,
+          extra: {
+            readDedupMessages: [
+              {
+                info: { id: MessageID.make("msg_history") },
+                parts: [
+                  {
+                    id: "prt_history",
+                    sessionID: ctx.sessionID,
+                    messageID: ctx.messageID,
+                    type: "tool",
+                    callID: "call_history",
+                    tool: "read",
+                    state: {
+                      status: "completed",
+                      input: { filePath: filepath },
+                      output: first.output,
+                      title: first.title,
+                      metadata: first.metadata,
+                      time: { start: 1, end: 2 },
+                    },
+                  },
+                ],
+              },
+              {
+                info: { id: MessageID.make("msg_compaction") },
+                parts: [
+                  {
+                    id: "prt_compaction",
+                    sessionID: ctx.sessionID,
+                    messageID: ctx.messageID,
+                    type: "compaction",
+                    auto: true,
+                    overflow: false,
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      )
+
+      expect(second.output).toContain(`1#${lineHash(1, "alpha")}|alpha`)
+      expect(second.output).toContain(`2#${lineHash(2, "beta")}|beta`)
+      expect(second.output).toContain(`3#${lineHash(3, "gamma")}|gamma`)
+      expect(second.output).not.toContain("Read dedup")
+      expect(second.metadata.hashline?.anchors).toBe(3)
+      expect(second.metadata.readDedup?.skipped).toBe(0)
+      expect(second.metadata.readDedup?.windowID).toBe("msg_compaction:prt_compaction:0")
     }),
   )
 
