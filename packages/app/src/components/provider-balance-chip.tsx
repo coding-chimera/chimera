@@ -52,10 +52,10 @@ export function ProviderBalanceChip(props: { providerID?: string }) {
   )
 }
 
-export function ProviderBalanceStatusPanel() {
+export function ProviderBalanceStatusPanel(props: { providerID?: string }) {
   const sync = useSync()
   const providers = useProviders()
-  const items = createMemo(() => providerBalanceProviders(providers.all()))
+  const items = createMemo(() => providerBalanceProviders(providers.all(), props.providerID))
 
   createEffect(() => {
     for (const item of items()) {
