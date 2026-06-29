@@ -16,6 +16,7 @@ import type {
   SnapshotFileDiff,
   Todo,
   VcsInfo,
+  WorkBrief,
 } from "@opencode-ai/sdk/v2/client"
 import type { Accessor } from "solid-js"
 import type { SetStoreFunction, Store } from "solid-js/store"
@@ -55,6 +56,9 @@ export type State = {
   }
   todo: {
     [sessionID: string]: Todo[]
+  }
+  work_brief: {
+    [sessionID: string]: WorkBrief
   }
   permission: {
     [sessionID: string]: PermissionRequest[]

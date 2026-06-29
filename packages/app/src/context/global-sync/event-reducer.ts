@@ -10,6 +10,7 @@ import type {
   SessionStatus,
   SnapshotFileDiff,
   Todo,
+  WorkBrief,
 } from "@opencode-ai/sdk/v2/client"
 import type { State, VcsCache } from "./types"
 import { trimSessions } from "./session-trim"
@@ -72,6 +73,7 @@ export function cleanupDroppedSessionCaches(
     ...Object.keys(store.message),
     ...Object.keys(store.session_diff),
     ...Object.keys(store.todo),
+    ...Object.keys(store.work_brief),
     ...Object.keys(store.permission),
     ...Object.keys(store.question),
     ...Object.keys(store.session_status),
@@ -175,6 +177,11 @@ export function applyDirectoryEvent(input: {
       const props = event.properties as { sessionID: string; todos: Todo[] }
       input.setStore("todo", props.sessionID, reconcile(props.todos, { key: "id" }))
       input.setSessionTodo?.(props.sessionID, props.todos)
+      break
+    }
+    case "work_brief.updated": {
+      const props = event.properties as { sessionID: string; brief: WorkBrief }
+      input.setStore("work_brief", props.sessionID, reconcile(props.brief))
       break
     }
     case "session.status": {
