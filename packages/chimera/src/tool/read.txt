@@ -9,7 +9,8 @@ Usage:
 - If you are unsure of the correct file path, use the glob tool to look up filenames by glob pattern.
 - Text file contents are returned with each line prefixed as `<line>#<hash>|<content>`. For example, if a file has contents "foo\n", you will receive `1#AB|foo`. The prefix is not file content.
 - Use the `LINE#ID` prefix from read output as the `edit` anchor. Never copy the Hashline prefix into edit `lines`.
-- Within the same session compaction window, lines already returned with the same file path, line number, and hash may be folded out of later read output; trust the `[Read dedup: ...]` notice and avoid re-reading solely to recover those identical lines.
+- Text file reads also include `<read_refs>` blocks. Each `readref://file@hash#Lx-Ly` names a returned file span for later context reference; it is not an edit anchor.
+- Within the same session compaction window, lines already returned with the same file path, line number, and hash may be folded out of later read output. Use `<read_dedup>` to see which readref and subrange already contains the folded lines, and treat those refs as loaded context instead of re-reading solely to recover them.
 - For directories, entries are returned one per line (without Hashline prefixes) with a trailing `/` for subdirectories.
 - Any line longer than 2000 characters is truncated and is not safe to use as an edit anchor.
 - Call this tool in parallel when you know there are multiple files you want to read.
