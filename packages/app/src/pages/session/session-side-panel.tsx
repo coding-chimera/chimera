@@ -14,6 +14,7 @@ import { useDialog } from "@opencode-ai/ui/context/dialog"
 
 import FileTree from "@/components/file-tree"
 import { SessionContextUsage } from "@/components/session-context-usage"
+import { ProviderBalanceStatusPanel } from "@/components/provider-balance-chip"
 import { SessionContextTab, SortableTab, FileVisual } from "@/components/session"
 import { useCommand } from "@/context/command"
 import { useFile, type SelectedLineRange } from "@/context/file"
@@ -374,6 +375,7 @@ export function SessionSidePanel(props: {
                       <Show when={activeTab() === "status"}>
                         <div class="flex h-full flex-col overflow-hidden bg-background-stronger contain-strict">
                           {workBriefPanel()}
+                          <ProviderBalanceStatusPanel />
                           <div class="min-h-0 flex-1 overflow-hidden">
                             <Show when={props.canReview()} fallback={empty(props.empty())}>
                               {props.reviewPanel()}

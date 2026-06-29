@@ -1,16 +1,15 @@
-import type { Provider, ProviderBalanceResult } from "@opencode-ai/sdk/v2/client"
-import { createEffect, createMemo, Show } from "solid-js"
+import { createEffect, createMemo, For, Show } from "solid-js"
 import { Tooltip } from "@opencode-ai/ui/tooltip"
+import { ProviderIcon } from "@opencode-ai/ui/provider-icon"
 import { useSync } from "@/context/sync"
 import { useProviders } from "@/hooks/use-providers"
-
-type BalanceAccount = ProviderBalanceResult
-
-type BalanceStatus = {
-  label: string
-  tooltip: string
-  status: BalanceAccount["status"]
-}
+import {
+  providerBalanceDetails,
+  providerBalanceID,
+  providerBalanceName,
+  providerBalanceProviders,
+  providerBalanceSummary,
+} from "./provider-balance"
 
 export function ProviderBalanceChip(props: { providerID?: string }) {
   const sync = useSync()
@@ -22,17 +21,17 @@ export function ProviderBalanceChip(props: { providerID?: string }) {
     if (current) void sync.providerBalance.load(current)
   })
 
-  const status = createMemo(() => {
+  const summary = createMemo(() => {
     const current = providerID()
     if (!current) return
     const account = sync.data.provider_balance[current]
     if (!account) return
     if (account.status === "not_configured" || account.status === "unsupported") return
-    return providerBalanceStatus(account)
+    return providerBalanceSummary(account)
   })
 
   return (
-    <Show when={status()}>
+    <Show when={summary()}>
       {(item) => (
         <div data-component="provider-balance-chip" class="hidden sm:block min-w-0 shrink-0">
           <Tooltip value={item().tooltip} placement="top">
@@ -53,70 +52,78 @@ export function ProviderBalanceChip(props: { providerID?: string }) {
   )
 }
 
-function providerBalanceID(providerID: string | undefined, providers: Provider[]) {
-  if (!providerID) return
-  if (providerBalanceApplies(providerID, providers.find((provider) => provider.id === providerID))) return providerID
-}
+export function ProviderBalanceStatusPanel() {
+  const sync = useSync()
+  const providers = useProviders()
+  const items = createMemo(() => providerBalanceProviders(providers.all()))
 
-function providerBalanceApplies(providerID: string, provider: Provider | undefined) {
-  if (providerID === "openai") return typeof provider?.options.codexApiEndpoint === "string"
-  if (providerID === "deepseek") return officialProviderEndpoint(provider, "api.deepseek.com")
-  return false
-}
-
-function officialProviderEndpoint(provider: Provider | undefined, host: string) {
-  const endpoint = stringOption(provider?.options.baseURL) ?? stringOption(provider?.options.endpoint)
-  if (!endpoint) return provider !== undefined
-  return endpoint.replace(/^https?:\/\//, "").split("/")[0]?.split(":")[0]?.toLowerCase() === host
-}
-
-function stringOption(value: unknown) {
-  if (typeof value !== "string") return
-  const trimmed = value.trim()
-  if (!trimmed) return
-  return trimmed
-}
-
-function providerBalanceStatus(account: BalanceAccount): BalanceStatus | undefined {
-  if (account.kind === "quota") {
-    if (account.limits.length === 0) {
-      const message = account.message ?? "Codex usage unavailable"
-      return { label: message, tooltip: message, status: account.status }
+  createEffect(() => {
+    for (const item of items()) {
+      void sync.providerBalance.load(item.id)
     }
-    const details = account.limits.map((limit) => `${quotaLimitLabel(limit.label)} ${formatPercent(limit.remaining_percent)} left`)
-    return {
-      label: `Codex ${details.join(" · ")}`,
-      tooltip: `${account.label ?? "Codex Usage"}: ${details.join(" · ")}`,
-      status: account.status,
-    }
-  }
+  })
 
-  const info = account.balance_infos[0]
-  if (!info) {
-    const message = account.message ?? `${account.providerID} balance unavailable`
-    return { label: message, tooltip: message, status: account.status }
-  }
+  const rows = createMemo(() =>
+    items().map((item) => {
+      const account = sync.data.provider_balance[item.id]
+      return {
+        ...item,
+        account,
+        summary: account ? providerBalanceSummary(account) : undefined,
+        details: account ? providerBalanceDetails(account) : [],
+      }
+    }),
+  )
 
-  const label = `${account.providerID === "deepseek" ? "DeepSeek" : account.providerID} ${info.currency} ${formatBalance(info.total_balance)}`
-  return {
-    label,
-    tooltip: label,
-    status: account.status,
-  }
-}
-
-function quotaLimitLabel(label: string) {
-  if (label === "weekly") return "W"
-  return label
-}
-
-function formatPercent(value: unknown) {
-  if (typeof value !== "number" || !Number.isFinite(value)) return "0%"
-  return `${Math.round(value)}%`
-}
-
-function formatBalance(value: string) {
-  const number = Number(value)
-  if (!Number.isFinite(number)) return value
-  return number.toFixed(2)
+  return (
+    <div class="shrink-0 border-b border-border-weaker-base bg-background-stronger px-4 py-3">
+      <div class="flex items-center justify-between gap-2">
+        <div class="text-12-medium text-text-strong">Provider Balance</div>
+        <Show when={rows().length > 0}>
+          <div class="text-11-regular text-text-weaker">{rows().length}</div>
+        </Show>
+      </div>
+      <Show
+        when={rows().length > 0}
+        fallback={<div class="mt-2 text-12-regular text-text-weak">No provider balance sources are configured.</div>}
+      >
+        <div class="mt-2 flex flex-col gap-2">
+          <For each={rows()}>
+            {(row) => (
+              <div class="rounded-md border border-border-weaker-base bg-surface-base px-3 py-2">
+                <div class="flex items-start gap-2">
+                  <ProviderIcon id={row.id} class="mt-0.5 size-4 shrink-0 opacity-70" />
+                  <div class="min-w-0 flex-1">
+                    <div class="truncate text-12-medium text-text-strong">{providerBalanceName(row.id, row.provider)}</div>
+                    <div
+                      class="truncate text-12-regular"
+                      classList={{
+                        "text-text-weak": !row.summary || row.summary.status === "available",
+                        "text-text-base": row.summary?.status === "unavailable",
+                        "text-icon-critical-base": row.summary?.status === "error",
+                      }}
+                    >
+                      {row.summary?.label ?? "Loading balance..."}
+                    </div>
+                  </div>
+                </div>
+                <Show when={row.details.length > 0}>
+                  <div class="mt-2 grid grid-cols-2 gap-2">
+                    <For each={row.details}>
+                      {(detail) => (
+                        <div class="min-w-0 rounded-md bg-background-base px-2 py-1">
+                          <div class="truncate text-11-regular text-text-weaker">{detail.label}</div>
+                          <div class="truncate text-12-regular text-text-base">{detail.value}</div>
+                        </div>
+                      )}
+                    </For>
+                  </div>
+                </Show>
+              </div>
+            )}
+          </For>
+        </div>
+      </Show>
+    </div>
+  )
 }
