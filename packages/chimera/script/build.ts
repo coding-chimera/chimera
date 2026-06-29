@@ -83,11 +83,12 @@ const skipInstall = process.argv.includes("--skip-install")
 const sourcemapsFlag = process.argv.includes("--sourcemaps")
 const plugin = createSolidTransformPlugin()
 const skipEmbedWebUi = process.argv.includes("--skip-embed-web-ui")
+const skipEmbedNewWebUi = skipEmbedWebUi || process.argv.includes("--skip-embed-newweb-ui")
 const buildVersion = resolveVersion({ currentVersion: pkg.version })
 
-const createEmbeddedWebUIBundle = async () => {
-  console.log(`Building Web UI to embed in the binary`)
-  const appDir = path.join(import.meta.dirname, "../../app")
+const createEmbeddedWebUIBundle = async (input: { label: string; packageDir: string }) => {
+  console.log(`Building ${input.label} UI to embed in the binary`)
+  const appDir = path.join(import.meta.dirname, input.packageDir)
   const dist = path.join(appDir, "dist")
   await $`bun run --cwd ${appDir} build`
   const files = (await Array.fromAsync(new Bun.Glob("**/*").scan({ cwd: dist })))
@@ -99,17 +100,15 @@ const createEmbeddedWebUIBundle = async () => {
     return `import file_${i} from ${JSON.stringify(spec.startsWith(".") ? spec : `./${spec}`)} with { type: "file" };`
   })
   const entries = files.map((file, i) => `  ${JSON.stringify(file)}: file_${i},`)
-  return [
-    `// Import all files as file_$i with type: "file"`,
-    ...imports,
-    `// Export with original mappings`,
-    `export default {`,
-    ...entries,
-    `}`,
-  ].join("\n")
+  return [`// Import all files as file_$i with type: "file"`, ...imports, `// Export with original mappings`, `export default {`, ...entries, `}`].join("\n")
 }
 
-const embeddedFileMap = skipEmbedWebUi ? null : await createEmbeddedWebUIBundle()
+const embeddedWebUIFileMap = skipEmbedWebUi
+  ? null
+  : await createEmbeddedWebUIBundle({ label: "Web", packageDir: "../../app" })
+const embeddedNewWebUIFileMap = skipEmbedNewWebUi
+  ? null
+  : await createEmbeddedWebUIBundle({ label: "NewWeb", packageDir: "../../newweb" })
 
 const allTargets: {
   os: string
@@ -227,6 +226,7 @@ for (const item of targets) {
 
   const binaryName = item.os === "win32" ? "chimera.exe" : "chimera"
   const embeddedWebUIEntrypoint = "chimera-web-ui.gen.ts"
+  const embeddedNewWebUIEntrypoint = "chimera-newweb-ui.gen.ts"
 
   await Bun.build({
     conditions: ["node"],
@@ -247,8 +247,17 @@ for (const item of targets) {
       execArgv: ["--liftoff-only", `--user-agent=chimera/${buildVersion}`, "--use-system-ca", "--"],
       windows: {},
     },
-    files: embeddedFileMap ? { [embeddedWebUIEntrypoint]: embeddedFileMap } : {},
-    entrypoints: ["./src/index.ts", parserWorker, workerPath, ...(embeddedFileMap ? [embeddedWebUIEntrypoint] : [])],
+    files: {
+      ...(embeddedWebUIFileMap ? { [embeddedWebUIEntrypoint]: embeddedWebUIFileMap } : {}),
+      ...(embeddedNewWebUIFileMap ? { [embeddedNewWebUIEntrypoint]: embeddedNewWebUIFileMap } : {}),
+    },
+    entrypoints: [
+      "./src/index.ts",
+      parserWorker,
+      workerPath,
+      ...(embeddedWebUIFileMap ? [embeddedWebUIEntrypoint] : []),
+      ...(embeddedNewWebUIFileMap ? [embeddedNewWebUIEntrypoint] : []),
+    ],
     define: {
       OPENCODE_VERSION: `'${buildVersion}'`,
       OPENCODE_MIGRATIONS: JSON.stringify(migrations),

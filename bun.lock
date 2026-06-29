@@ -473,6 +473,23 @@
         "typescript": "catalog:",
       },
     },
+    "packages/newweb": {
+      "name": "@opencode-ai/newweb",
+      "version": "1.14.41",
+      "dependencies": {
+        "@opencode-ai/sdk": "workspace:*",
+        "solid-js": "catalog:",
+      },
+      "devDependencies": {
+        "@tsconfig/bun": "catalog:",
+        "@types/bun": "catalog:",
+        "@types/node": "catalog:",
+        "@typescript/native-preview": "catalog:",
+        "typescript": "catalog:",
+        "vite": "catalog:",
+        "vite-plugin-solid": "catalog:",
+      },
+    },
     "packages/plugin": {
       "name": "@opencode-ai/plugin",
       "version": "1.14.41",
@@ -1491,6 +1508,8 @@
     "@opencode-ai/enterprise": ["@opencode-ai/enterprise@workspace:packages/enterprise"],
 
     "@opencode-ai/function": ["@opencode-ai/function@workspace:packages/function"],
+
+    "@opencode-ai/newweb": ["@opencode-ai/newweb@workspace:packages/newweb"],
 
     "@opencode-ai/plugin": ["@opencode-ai/plugin@workspace:packages/plugin"],
 
