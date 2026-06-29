@@ -506,6 +506,7 @@ export const dict = {
 
   "session.tab.session": "Oturum",
   "session.tab.review": "İnceleme",
+  "session.tab.status": "Durum",
   "session.tab.context": "Bağlam",
   "session.panel.reviewAndFiles": "İnceleme ve dosyalar",
   "session.review.filesChanged": "{{count}} Dosya Değişti",

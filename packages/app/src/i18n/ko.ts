@@ -445,6 +445,7 @@ export const dict = {
   "home.empty.description": "로컬 프로젝트를 열어 시작하세요",
   "session.tab.session": "세션",
   "session.tab.review": "검토",
+  "session.tab.status": "상태",
   "session.tab.context": "컨텍스트",
   "session.panel.reviewAndFiles": "검토 및 파일",
   "session.review.filesChanged": "{{count}}개 파일 변경됨",

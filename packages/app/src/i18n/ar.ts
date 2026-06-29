@@ -446,6 +446,7 @@ export const dict = {
   "home.empty.description": "ابدأ بفتح مشروع محلي",
   "session.tab.session": "جلسة",
   "session.tab.review": "مراجعة",
+  "session.tab.status": "الحالة",
   "session.tab.context": "سياق",
   "session.panel.reviewAndFiles": "المراجعة والملفات",
   "session.review.filesChanged": "تم تغيير {{count}} ملفات",

@@ -134,8 +134,8 @@ export function SessionSidePanel(props: {
     tabs,
     pathFromTab: file.pathFromTab,
     normalizeTab,
-    review: reviewTab,
-    hasReview: props.canReview,
+    status: reviewTab,
+    hasStatus: reviewTab,
   })
   const contextOpen = tabState.contextOpen
   const openedTabs = tabState.openedTabs
@@ -240,10 +240,10 @@ export function SessionSidePanel(props: {
                         onCleanup(stop)
                       }}
                     >
-                      <Show when={reviewTab() && props.canReview()}>
-                        <Tabs.Trigger value="review">
+                      <Show when={reviewTab()}>
+                        <Tabs.Trigger value="status">
                           <div class="flex items-center gap-1.5">
-                            <div>{language.t("session.tab.review")}</div>
+                            <div>{language.t("session.tab.status")}</div>
                             <Show when={props.hasReview()}>
                               <div>{props.reviewCount()}</div>
                             </Show>
@@ -304,9 +304,13 @@ export function SessionSidePanel(props: {
                     </Tabs.List>
                   </div>
 
-                  <Show when={reviewTab() && props.canReview()}>
-                    <Tabs.Content value="review" class="flex flex-col h-full overflow-hidden contain-strict">
-                      <Show when={activeTab() === "review"}>{props.reviewPanel()}</Show>
+                  <Show when={reviewTab()}>
+                    <Tabs.Content value="status" class="flex flex-col h-full overflow-hidden contain-strict">
+                      <Show when={activeTab() === "status"}>
+                        <Show when={props.canReview()} fallback={empty(props.empty())}>
+                          {props.reviewPanel()}
+                        </Show>
+                      </Show>
                     </Tabs.Content>
                   </Show>
 
