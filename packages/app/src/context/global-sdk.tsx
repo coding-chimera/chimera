@@ -213,13 +213,18 @@ export const { use: useGlobalSDK, provider: GlobalSDKProvider } = createSimpleCo
       clearHeartbeat()
     }
 
+    const abortStaleStream = () => {
+      if (document.visibilityState !== "visible") return
+      if (!started) return
+      if (Date.now() - lastEventAt < HEARTBEAT_TIMEOUT_MS) return
+      attempt?.abort()
+    }
+
     onMount(() => {
-      makeEventListener(document, "visibilitychange", () => {
-        if (document.visibilityState !== "visible") return
-        if (!started) return
-        if (Date.now() - lastEventAt < HEARTBEAT_TIMEOUT_MS) return
-        attempt?.abort()
-      })
+      makeEventListener(document, "visibilitychange", abortStaleStream)
+      makeEventListener(window, "focus", abortStaleStream)
+      makeEventListener(window, "online", abortStaleStream)
+      makeEventListener(window, "pageshow", abortStaleStream)
     })
 
     onCleanup(() => {

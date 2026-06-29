@@ -549,6 +549,10 @@ export default function Page() {
   let reviewFrame: number | undefined
   let refreshFrame: number | undefined
   let refreshTimer: number | undefined
+  let resumeSyncFrame: number | undefined
+  let resumeSyncTimer: number | undefined
+  let resumeSyncBackgroundedAt = typeof document !== "undefined" && document.visibilityState === "hidden" ? Date.now() : undefined
+  let lastResumeSyncAt = 0
   let todoFrame: number | undefined
   let todoTimer: number | undefined
   let diffFrame: number | undefined
@@ -756,6 +760,49 @@ export default function Page() {
 
   const hasScrollGesture = () => Date.now() - ui.scrollGesture < scrollGestureWindowMs
 
+  const scheduleResumeSessionSync = (force?: boolean) => {
+    if (typeof document !== "undefined" && document.visibilityState !== "visible") return
+    const id = params.id
+    if (!id) return
+    const now = Date.now()
+    const slept = resumeSyncBackgroundedAt === undefined ? 0 : now - resumeSyncBackgroundedAt
+    resumeSyncBackgroundedAt = undefined
+    if (!force && slept < 5_000) return
+    if (now - lastResumeSyncAt < 5_000) return
+    lastResumeSyncAt = now
+    if (resumeSyncFrame !== undefined || resumeSyncTimer !== undefined) return
+    const directory = sdk.directory
+    resumeSyncFrame = requestAnimationFrame(() => {
+      resumeSyncFrame = undefined
+      resumeSyncTimer = window.setTimeout(() => {
+        resumeSyncTimer = undefined
+        if (params.id !== id || sdk.directory !== directory) return
+        if (typeof document !== "undefined" && document.visibilityState !== "visible") return
+        untrack(() => {
+          void sync.session.sync(id, { force: true })
+        })
+      }, 0)
+    })
+  }
+
+  const markResumeSessionBackgrounded = () => {
+    resumeSyncBackgroundedAt = resumeSyncBackgroundedAt ?? Date.now()
+  }
+
+  onMount(() => {
+    makeEventListener(document, "visibilitychange", () => {
+      if (document.visibilityState === "hidden") {
+        markResumeSessionBackgrounded()
+        return
+      }
+      scheduleResumeSessionSync()
+    })
+    makeEventListener(window, "blur", markResumeSessionBackgrounded)
+    makeEventListener(window, "pagehide", markResumeSessionBackgrounded)
+    makeEventListener(window, "focus", () => scheduleResumeSessionSync())
+    makeEventListener(window, "online", () => scheduleResumeSessionSync(true))
+    makeEventListener(window, "pageshow", (event) => scheduleResumeSessionSync(event.persisted))
+  })
   const [sessionSync] = createResource(
     () => [sdk.directory, params.id] as const,
     ([directory, id]) => {
@@ -1785,6 +1832,8 @@ export default function Page() {
     if (reviewFrame !== undefined) cancelAnimationFrame(reviewFrame)
     if (refreshFrame !== undefined) cancelAnimationFrame(refreshFrame)
     if (refreshTimer !== undefined) window.clearTimeout(refreshTimer)
+    if (resumeSyncFrame !== undefined) cancelAnimationFrame(resumeSyncFrame)
+    if (resumeSyncTimer !== undefined) window.clearTimeout(resumeSyncTimer)
     if (todoFrame !== undefined) cancelAnimationFrame(todoFrame)
     if (todoTimer !== undefined) window.clearTimeout(todoTimer)
     if (diffFrame !== undefined) cancelAnimationFrame(diffFrame)
