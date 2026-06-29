@@ -83,7 +83,8 @@ const skipInstall = process.argv.includes("--skip-install")
 const sourcemapsFlag = process.argv.includes("--sourcemaps")
 const plugin = createSolidTransformPlugin()
 const skipEmbedWebUi = process.argv.includes("--skip-embed-web-ui")
-const skipEmbedNewWebUi = skipEmbedWebUi || process.argv.includes("--skip-embed-newweb-ui")
+const embedNewWebUi =
+  process.argv.includes("--embed-newweb-ui") && !skipEmbedWebUi && !process.argv.includes("--skip-embed-newweb-ui")
 const buildVersion = resolveVersion({ currentVersion: pkg.version })
 
 const createEmbeddedWebUIBundle = async (input: { label: string; packageDir: string }) => {
@@ -106,9 +107,9 @@ const createEmbeddedWebUIBundle = async (input: { label: string; packageDir: str
 const embeddedWebUIFileMap = skipEmbedWebUi
   ? null
   : await createEmbeddedWebUIBundle({ label: "Web", packageDir: "../../app" })
-const embeddedNewWebUIFileMap = skipEmbedNewWebUi
-  ? null
-  : await createEmbeddedWebUIBundle({ label: "NewWeb", packageDir: "../../newweb" })
+const embeddedNewWebUIFileMap = embedNewWebUi
+  ? await createEmbeddedWebUIBundle({ label: "NewWeb", packageDir: "../../newweb" })
+  : null
 
 const allTargets: {
   os: string
