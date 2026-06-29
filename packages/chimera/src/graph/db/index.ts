@@ -33,32 +33,28 @@ export interface DatabaseOpenOptions {
   storageExtensions?: readonly StorageExtension[];
 }
 
-/**
- * Apply connection-level PRAGMAs. Shared by `initialize` and `open` so the two
- * paths can't drift.
- *
- * `busy_timeout` is set FIRST, before any pragma that might touch the database
- * file (notably `journal_mode`). If another process holds a write lock at open
- * time, the later pragmas — and the connection's first query — then wait out
- * the lock instead of throwing "database is locked" immediately. See issue #238.
- *
- * The 5s window (was 120s) rides out a normal incremental sync; the old
- * 2-minute wait presented as a frozen, hung agent. With WAL, reads never block
- * on a writer, so this timeout only governs cross-process write contention
- * (e.g. the git-hook `chimera sync` running while the MCP server writes).
- */
+const sqlitePragmaMB = (name: string, fallback: number) => {
+  const raw = process.env[name];
+  const value = raw === undefined ? fallback : Number(raw);
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : fallback;
+};
+
+const sqliteCacheKiB = () => Math.max(1024, sqlitePragmaMB('CHIMERA_SQLITE_CACHE_MB', 8) * 1024);
+const sqliteMmapBytes = () => sqlitePragmaMB('CHIMERA_SQLITE_MMAP_MB', 0) * 1024 * 1024;
+const sqliteTempStore = () => process.env.CHIMERA_SQLITE_TEMP_STORE?.toUpperCase() === 'MEMORY' ? 'MEMORY' : 'FILE';
+
 function configureConnection(db: SqliteDatabase, options: DatabaseOpenOptions = {}): void {
-  db.pragma('busy_timeout = 5000');      // MUST be first — see above
+  db.pragma('busy_timeout = 5000');
   db.pragma('foreign_keys = ON');
+  db.pragma(`cache_size = -${sqliteCacheKiB()}`);
+  db.pragma(`mmap_size = ${sqliteMmapBytes()}`);
   if (options.readOnly) {
     db.pragma('query_only = ON');
     return;
   }
-  db.pragma('journal_mode = WAL');       // real SQLite backends support WAL
-  db.pragma('synchronous = NORMAL');     // safe with WAL mode
-  db.pragma('cache_size = -64000');      // 64 MB page cache
-  db.pragma('temp_store = MEMORY');      // temp tables in memory
-  db.pragma('mmap_size = 268435456');    // 256 MB memory-mapped I/O
+  db.pragma('journal_mode = WAL');
+  db.pragma('synchronous = NORMAL');
+  db.pragma(`temp_store = ${sqliteTempStore()}`);
 }
 
 function loadInitialSchema(): string {

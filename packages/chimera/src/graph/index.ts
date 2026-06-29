@@ -86,6 +86,8 @@ import {
   projectLanguageAwareSignals,
 } from './semantic/language-signals';
 
+const WATCH_INCREMENTAL_SYNC_FILE_LIMIT = 200;
+
 // Re-export types for consumers
 export * from './types';
 // Storage building blocks for embedded/SDK consumers that drive the graph
@@ -1560,13 +1562,10 @@ export class CodeGraph {
 
     this.watcher = new FileWatcher(
       this.projectRoot,
-      async (_batch: WatchBatch) => {
-        const result = await this.sync();
-        // sync() returns this exact zero-shape iff it failed to acquire the
-        // file lock (a real empty sync always has filesChecked > 0 because
-        // scanDirectory ran). Surface that to the watcher as a typed error
-        // so it keeps pendingFiles + reschedules instead of clearing them
-        // (#449).
+      async (batch: WatchBatch) => {
+        const result = batch.source === 'filesystem' && batch.files.length > 0 && batch.files.length <= WATCH_INCREMENTAL_SYNC_FILE_LIMIT
+          ? await this.syncFiles(batch.files)
+          : await this.sync();
         if (result.filesChecked === 0 && result.durationMs === 0) {
           throw new LockUnavailableError();
         }
