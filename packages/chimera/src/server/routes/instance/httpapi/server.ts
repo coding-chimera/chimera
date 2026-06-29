@@ -49,6 +49,7 @@ import { Worktree } from "@/worktree"
 import { Workspace } from "@/control-plane/workspace"
 import { CorsConfig, isAllowedCorsOrigin, type CorsOptions } from "@/server/cors"
 import { serveUIEffect } from "@/server/shared/ui"
+import { serveNewWebUIEffect } from "@/server/shared/newweb-ui"
 import { ServerAuth } from "@/server/auth"
 import { InstanceHttpApi, RootHttpApi } from "./api"
 import { authorizationLayer, authorizationRouterMiddleware } from "./middleware/authorization"
@@ -138,15 +139,18 @@ const instanceRoutes = Layer.mergeAll(rawInstanceRoutes, instanceApiRoutes).pipe
   ]),
 )
 
-const uiRoute = HttpRouter.use((router) =>
+const newwebUiRoute = HttpRouter.use((router) =>
   Effect.gen(function* () {
     const fs = yield* AppFileSystem.Service
-    yield* router.add("*", "/*", (request) => serveUIEffect(request, { fs }))
+    yield* router.add("*", "/newweb/*", (request) => serveNewWebUIEffect(request, { fs }))
   }),
 ).pipe(Layer.provide(authorizationRouterMiddleware.layer.pipe(Layer.provide(ServerAuth.Config.defaultLayer))))
+const uiRoute = HttpRouter.use((router) => router.add("*", "/*", serveUIEffect)).pipe(
+  Layer.provide(authorizationRouterMiddleware.layer.pipe(Layer.provide(ServerAuth.Config.defaultLayer))),
+)
 
 export function createRoutes(corsOptions?: CorsOptions) {
-  return Layer.mergeAll(rootApiRoutes, eventApiRoutes, instanceRoutes, uiRoute).pipe(
+  return Layer.mergeAll(rootApiRoutes, eventApiRoutes, instanceRoutes, newwebUiRoute, uiRoute).pipe(
     Layer.provide([
       errorLayer,
       cors(corsOptions),

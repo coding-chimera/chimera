@@ -16,6 +16,7 @@ import { initProjectors } from "./projectors"
 import { InstanceRoutes } from "./routes/instance"
 import { ControlPlaneRoutes } from "./routes/control"
 import { UIRoutes } from "./routes/ui"
+import { NewWebUIRoutes } from "./routes/newweb-ui"
 import { GlobalRoutes } from "./routes/global"
 import { WorkspaceRouterMiddleware } from "./workspace"
 import { InstanceMiddleware } from "./routes/instance/middleware"
@@ -137,6 +138,7 @@ function createHono(opts: CorsOptions, selection: ServerBackend.Selection = Serv
       .route("/", ControlPlaneRoutes())
       .route("/", workspaceApp)
       .route("/", InstanceRoutes(runtime.upgradeWebSocket, opts))
+      .route("/newweb", NewWebUIRoutes())
       .route("/", UIRoutes()),
     runtime,
   }

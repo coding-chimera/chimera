@@ -24,6 +24,12 @@ export function cspForHtml(body: string) {
   return csp(match ? createHash("sha256").update(match[2]).digest("base64") : "")
 }
 
+export async function readEmbeddedUIFile(file: string) {
+  const embeddedFile = Bun.file(file)
+  if (!(await embeddedFile.exists())) return undefined
+  return new Uint8Array(await embeddedFile.arrayBuffer())
+}
+
 function missingEmbeddedUI() {
   const headers = new Headers({
     "content-type": "text/plain; charset=utf-8",
@@ -50,29 +56,22 @@ function embeddedUIResponse(file: string, body: Uint8Array) {
   return HttpServerResponse.raw(body, { headers })
 }
 
-export function serveEmbeddedUIEffect(
-  requestPath: string,
-  fs: AppFileSystem.Interface,
-  embeddedWebUI: Record<string, string>,
-) {
+export function serveEmbeddedUIEffect(requestPath: string, embeddedWebUI: Record<string, string>) {
   const file = embeddedWebUI[requestPath.replace(/^\//, "")] ?? embeddedWebUI["index.html"] ?? null
   if (!file) return Effect.succeed(notFound())
 
-  return fs.readFile(file).pipe(
-    Effect.map((body) => embeddedUIResponse(file, body)),
-    Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed(notFound())),
+  return Effect.tryPromise(() => readEmbeddedUIFile(file)).pipe(
+    Effect.map((body) => (body ? embeddedUIResponse(file, body) : notFound())),
+    Effect.catch(() => Effect.succeed(notFound())),
   )
 }
 
-export function serveUIEffect(
-  request: { url: string },
-  services: { fs: AppFileSystem.Interface },
-) {
+export function serveUIEffect(request: { url: string }) {
   return Effect.gen(function* () {
     const embeddedWebUI = yield* Effect.promise(() => embeddedUI())
     const path = new URL(request.url, "http://localhost").pathname
 
-    if (embeddedWebUI) return yield* serveEmbeddedUIEffect(path, services.fs, embeddedWebUI)
+    if (embeddedWebUI) return yield* serveEmbeddedUIEffect(path, embeddedWebUI)
 
     return missingEmbeddedUI()
   })
