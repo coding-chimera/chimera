@@ -1,4 +1,4 @@
-import { afterEach, describe, expect } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Effect, Fiber, Layer } from "effect"
 import { InstanceRef } from "../../src/effect/instance-ref"
@@ -7,7 +7,7 @@ import { InstanceBootstrap } from "../../src/project/bootstrap-service"
 import { Instance } from "../../src/project/instance"
 import { WithInstance } from "../../src/project/with-instance"
 import { InstanceStore } from "../../src/project/instance-store"
-import { disposeAllInstances, tmpdirScoped } from "../fixture/fixture"
+import { disposeAllInstances, tmpdir, tmpdirScoped } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
 let bootstrapRun: Effect.Effect<void> = Effect.void
@@ -16,9 +16,25 @@ const noopBootstrap = Layer.succeed(
   InstanceBootstrap.Service.of({ run: Effect.suspend(() => bootstrapRun) }),
 )
 
-const it = testEffect(
-  Layer.mergeAll(InstanceStore.defaultLayer, CrossSpawnSpawner.defaultLayer).pipe(Layer.provide(noopBootstrap)),
+const instanceStoreLayer = Layer.mergeAll(InstanceStore.defaultLayer, CrossSpawnSpawner.defaultLayer).pipe(
+  Layer.provide(noopBootstrap),
 )
+
+const it = testEffect(instanceStoreLayer)
+
+const runIsolatedStore = <A>(effect: Effect.Effect<A, never, InstanceStore.Service>) =>
+  Effect.runPromise(effect.pipe(Effect.scoped, Effect.provide(instanceStoreLayer)))
+
+function withInstanceStoreEnv(values: Record<string, string>) {
+  const previous = new Map(Object.keys(values).map((key) => [key, process.env[key]]))
+  for (const [key, value] of Object.entries(values)) process.env[key] = value
+  return () => {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+}
 
 afterEach(async () => {
   bootstrapRun = Effect.void
@@ -200,6 +216,98 @@ describe("InstanceStore", () => {
     }),
   )
 
+  test("idle sweeper disposes inactive instances after TTL", async () => {
+    const restore = withInstanceStoreEnv({
+      CHIMERA_INSTANCE_IDLE_TTL_MS: "5",
+      CHIMERA_INSTANCE_IDLE_SWEEP_MS: "5",
+      CHIMERA_INSTANCE_MAX_ACTIVE_INSTANCES: "10",
+    })
+    const disposed: string[] = []
+    const off = registerDisposer(async (directory) => {
+      disposed.push(directory)
+    }, "test-idle-instance-disposer")
+    try {
+      await using dir = await tmpdir({ git: true })
+      await runIsolatedStore(
+        Effect.gen(function* () {
+          const store = yield* InstanceStore.Service
+          yield* store.load({ directory: dir.path })
+          yield* Effect.sleep("50 millis")
+          expect(disposed).toContain(dir.path)
+        }),
+      )
+    } finally {
+      off()
+      restore()
+    }
+  })
+
+  test("LRU evicts inactive instances beyond active cap", async () => {
+    const restore = withInstanceStoreEnv({
+      CHIMERA_INSTANCE_IDLE_TTL_MS: "600000",
+      CHIMERA_INSTANCE_IDLE_SWEEP_MS: "600000",
+      CHIMERA_INSTANCE_MAX_ACTIVE_INSTANCES: "2",
+    })
+    const disposed: string[] = []
+    const off = registerDisposer(async (directory) => {
+      disposed.push(directory)
+    }, "test-lru-instance-disposer")
+    try {
+      await using dir1 = await tmpdir({ git: true })
+      await using dir2 = await tmpdir({ git: true })
+      await using dir3 = await tmpdir({ git: true })
+      await using dir4 = await tmpdir({ git: true })
+      await runIsolatedStore(
+        Effect.gen(function* () {
+          const store = yield* InstanceStore.Service
+          yield* store.load({ directory: dir1.path })
+          yield* store.load({ directory: dir2.path })
+          yield* store.load({ directory: dir3.path })
+          yield* store.load({ directory: dir4.path })
+          yield* Effect.sleep("50 millis")
+          expect(disposed).toContain(dir1.path)
+          expect(disposed).toContain(dir2.path)
+          expect(disposed).not.toContain(dir4.path)
+        }),
+      )
+    } finally {
+      off()
+      restore()
+    }
+  })
+
+  test("active provide lease is not evicted by LRU", async () => {
+    const restore = withInstanceStoreEnv({
+      CHIMERA_INSTANCE_IDLE_TTL_MS: "600000",
+      CHIMERA_INSTANCE_IDLE_SWEEP_MS: "600000",
+      CHIMERA_INSTANCE_MAX_ACTIVE_INSTANCES: "1",
+    })
+    const disposed: string[] = []
+    const off = registerDisposer(async (directory) => {
+      disposed.push(directory)
+    }, "test-active-instance-disposer")
+    try {
+      await using active = await tmpdir({ git: true })
+      await using inactive = await tmpdir({ git: true })
+      await runIsolatedStore(
+        Effect.gen(function* () {
+          const store = yield* InstanceStore.Service
+          yield* store.provide(
+            { directory: active.path },
+            Effect.gen(function* () {
+              yield* store.load({ directory: inactive.path })
+              yield* Effect.sleep("50 millis")
+              expect(disposed).toContain(inactive.path)
+              expect(disposed).not.toContain(active.path)
+            }),
+          )
+        }),
+      )
+    } finally {
+      off()
+      restore()
+    }
+  })
   it.live("reports failing instance disposers", () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped({ git: true })
