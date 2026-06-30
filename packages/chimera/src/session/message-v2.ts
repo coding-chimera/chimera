@@ -37,6 +37,8 @@ export { isMedia }
 export const OutputLengthError = namedSchemaError("MessageOutputLengthError", {})
 
 const MAX_STORED_MESSAGE_SUMMARY_BYTES = 1024 * 1024
+const DEFAULT_PROMPT_WINDOW_LIMIT = 80
+export const DEFAULT_MESSAGE_PAGE_LIMIT = 100
 
 function trimOversizedStoredSummaries(sessionID: SessionID) {
   Database.use((db) =>
@@ -1155,12 +1157,17 @@ export function get(input: { sessionID: SessionID; messageID: MessageID }): With
   }
 }
 
-export function filterCompacted(msgs: Iterable<WithParts>, options?: { remoteCompaction?: RemoteCompactionReplay }) {
+export function filterCompacted(
+  msgs: Iterable<WithParts>,
+  options?: { remoteCompaction?: RemoteCompactionReplay; maxUncompactedMessages?: number },
+) {
   const result = [] as WithParts[]
   const completed = new Map<MessageID, MessageID>()
   const skipped = new Set<MessageID>()
   let retain: MessageID | undefined
+  let seen = 0
   for (const msg of msgs) {
+    seen++
     result.push(msg)
     if (retain) {
       if (msg.info.id === retain) break
@@ -1180,8 +1187,11 @@ export function filterCompacted(msgs: Iterable<WithParts>, options?: { remoteCom
       if (msg.info.id === retain) break
       continue
     }
-    if (msg.info.role === "assistant" && msg.info.summary && msg.info.finish && !msg.info.error)
+    if (msg.info.role === "assistant" && msg.info.summary && msg.info.finish && !msg.info.error) {
       completed.set(msg.info.parentID, msg.info.id)
+      continue
+    }
+    if (options?.maxUncompactedMessages && completed.size === 0 && seen >= options.maxUncompactedMessages) break
   }
   result.reverse()
   const filtered = skipped.size ? result.filter((msg) => !skipped.has(msg.info.id)) : result
@@ -1212,6 +1222,21 @@ export function filterCompacted(msgs: Iterable<WithParts>, options?: { remoteCom
     ]
   }
   return filtered
+}
+
+export function promptWindow(input: {
+  sessionID: SessionID
+  limit?: number
+  remoteCompaction?: RemoteCompactionReplay
+}) {
+  return filterCompacted(stream(input.sessionID), {
+    remoteCompaction: input.remoteCompaction,
+    maxUncompactedMessages: input.limit ?? DEFAULT_PROMPT_WINDOW_LIMIT,
+  })
+}
+
+export function summaryDiffs(message?: User) {
+  return message?.summary?.diffs ?? []
 }
 
 export const filterCompactedEffect = Effect.fnUntraced(function* (

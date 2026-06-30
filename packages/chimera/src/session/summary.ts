@@ -1,4 +1,4 @@
-import { Effect, Layer, Context, Schema } from "effect"
+import { Effect, Layer, Context, Schema, Option } from "effect"
 import { Bus } from "@/bus"
 import { Snapshot } from "@/snapshot"
 import { Storage } from "@/storage/storage"
@@ -79,7 +79,7 @@ function messageSummaryDiffs(diffs: Snapshot.FileDiff[]) {
 }
 export interface Interface {
   readonly summarize: (input: { sessionID: SessionID; messageID: MessageID }) => Effect.Effect<void>
-  readonly diff: (input: { sessionID: SessionID; messageID?: MessageID }) => Effect.Effect<Snapshot.FileDiff[]>
+  readonly diff: (input: { sessionID: SessionID; messageID?: MessageID; lastVisible?: boolean }) => Effect.Effect<Snapshot.FileDiff[]>
   readonly computeDiff: (input: { messages: MessageV2.WithParts[] }) => Effect.Effect<Snapshot.FileDiff[]>
 }
 
@@ -117,7 +117,7 @@ export const layer = Layer.effect(
       sessionID: SessionID
       messageID: MessageID
     }) {
-      const all = yield* sessions.messages({ sessionID: input.sessionID })
+      const all = yield* sessions.messages({ sessionID: input.sessionID, all: true })
       if (!all.length) return
 
       const diffs = yield* computeDiff({ messages: all })
@@ -143,7 +143,21 @@ export const layer = Layer.effect(
       yield* sessions.updateMessage(target.info)
     })
 
-    const diff = Effect.fn("SessionSummary.diff")(function* (input: { sessionID: SessionID; messageID?: MessageID }) {
+    const diff = Effect.fn("SessionSummary.diff")(function* (input: {
+      sessionID: SessionID
+      messageID?: MessageID
+      lastVisible?: boolean
+    }) {
+      if (input.lastVisible) {
+        const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+        const match = yield* sessions.findMessage(input.sessionID, (msg) => {
+          if (msg.info.role !== "user") return false
+          if (session.revert?.messageID && msg.info.id >= session.revert.messageID) return false
+          return true
+        })
+        return MessageV2.summaryDiffs(Option.isSome(match) && match.value.info.role === "user" ? match.value.info : undefined)
+      }
+
       const diffs = yield* storage
         .read<Snapshot.FileDiff[]>(["session_diff", input.sessionID])
         .pipe(Effect.catch(() => Effect.succeed([] as Snapshot.FileDiff[])))
@@ -173,6 +187,7 @@ export const defaultLayer = Layer.suspend(() =>
 export const DiffInput = Schema.Struct({
   sessionID: SessionID,
   messageID: Schema.optional(MessageID),
+  lastVisible: Schema.optional(Schema.Boolean),
 }).pipe(withStatics((s) => ({ zod: zod(s) })))
 export type DiffInput = Schema.Schema.Type<typeof DiffInput>
 

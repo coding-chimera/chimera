@@ -523,7 +523,7 @@ export interface Interface {
   readonly recordUsage: (input: { sessionID: SessionID; tokens: MessageV2.TokenUsage; cost: number; modelContextWindow?: number }) => Effect.Effect<void, NotFound>
   readonly setSummary: (input: { sessionID: SessionID; summary: Info["summary"] }) => Effect.Effect<void>
   readonly diff: (sessionID: SessionID) => Effect.Effect<Snapshot.FileDiff[]>
-  readonly messages: (input: { sessionID: SessionID; limit?: number }) => Effect.Effect<MessageV2.WithParts[]>
+  readonly messages: (input: { sessionID: SessionID; limit?: number; before?: string; all?: boolean }) => Effect.Effect<MessageV2.WithParts[]>
   readonly children: (parentID: SessionID) => Effect.Effect<Info[]>
   readonly remove: (sessionID: SessionID) => Effect.Effect<void, NotFound>
   readonly updateMessage: <T extends MessageV2.Info>(msg: T) => Effect.Effect<T>
@@ -727,7 +727,7 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
         workspaceID: original.workspaceID,
         title,
       })
-      const msgs = yield* messages({ sessionID: input.sessionID })
+      const msgs = yield* messages({ sessionID: input.sessionID, all: true })
       const idMap = new Map<string, MessageID>()
 
       for (const msg of msgs) {
@@ -817,11 +817,18 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
         .pipe(Effect.orElseSucceed((): Snapshot.FileDiff[] => []))
     })
 
-    const messages = Effect.fn("Session.messages")(function* (input: { sessionID: SessionID; limit?: number }) {
-      if (input.limit) {
-        return MessageV2.page({ sessionID: input.sessionID, limit: input.limit }).items
-      }
-      return Array.from(MessageV2.stream(input.sessionID)).reverse()
+    const messages = Effect.fn("Session.messages")(function* (input: {
+      sessionID: SessionID
+      limit?: number
+      before?: string
+      all?: boolean
+    }) {
+      if (input.all) return Array.from(MessageV2.stream(input.sessionID)).reverse()
+      return MessageV2.page({
+        sessionID: input.sessionID,
+        limit: input.limit ?? MessageV2.DEFAULT_MESSAGE_PAGE_LIMIT,
+        before: input.before,
+      }).items
     })
 
     const removeMessage = Effect.fn("Session.removeMessage")(function* (input: {

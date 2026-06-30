@@ -93,7 +93,11 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       params: { sessionID: SessionID }
       query: typeof DiffQuery.Type
     }) {
-      return yield* summary.diff({ sessionID: ctx.params.sessionID, messageID: ctx.query.messageID })
+      return yield* summary.diff({
+        sessionID: ctx.params.sessionID,
+        messageID: ctx.query.messageID,
+        lastVisible: ctx.query.lastVisible,
+      })
     })
 
     const messages = Effect.fn("SessionHttpApi.messages")(function* (ctx: {
@@ -109,13 +113,11 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
         })
       }
       yield* SessionError.mapStorageNotFound(session.get(ctx.params.sessionID))
-      if (ctx.query.limit === undefined || ctx.query.limit === 0) {
-        return yield* session.messages({ sessionID: ctx.params.sessionID })
-      }
+      if (ctx.query.all) return yield* session.messages({ sessionID: ctx.params.sessionID, all: true })
 
       const page = MessageV2.page({
         sessionID: ctx.params.sessionID,
-        limit: ctx.query.limit,
+        limit: ctx.query.limit ?? MessageV2.DEFAULT_MESSAGE_PAGE_LIMIT,
         before: ctx.query.before,
       })
       if (!page.cursor) return page.items
@@ -124,7 +126,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       // toURL() honors the Host + x-forwarded-proto headers, so the Link
       // header echoes the real origin instead of a hard-coded localhost.
       const url = Option.getOrElse(HttpServerRequest.toURL(request), () => new URL(request.url, "http://localhost"))
-      url.searchParams.set("limit", ctx.query.limit.toString())
+      url.searchParams.set("limit", (ctx.query.limit ?? MessageV2.DEFAULT_MESSAGE_PAGE_LIMIT).toString())
       url.searchParams.set("before", page.cursor)
       return HttpServerResponse.jsonUnsafe(page.items, {
         headers: {
@@ -234,7 +236,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       payload: typeof SummarizePayload.Type
     }) {
       yield* revertSvc.cleanup(yield* SessionError.mapStorageNotFound(session.get(ctx.params.sessionID)))
-      const messages = yield* session.messages({ sessionID: ctx.params.sessionID })
+      const messages = yield* session.messages({ sessionID: ctx.params.sessionID, all: true })
       const defaultAgent = yield* agentSvc.defaultAgent()
       const currentAgent = messages.findLast((message) => message.info.role === "user")?.info.agent ?? defaultAgent
 

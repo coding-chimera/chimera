@@ -311,7 +311,7 @@ export const layer: Layer.Layer<
       log.info("pruning")
 
       const msgs = yield* session
-        .messages({ sessionID: input.sessionID })
+        .messages({ sessionID: input.sessionID, all: true })
         .pipe(Effect.catchIf(NotFoundError.isInstance, () => Effect.succeed(undefined)))
       if (!msgs) return
 
@@ -653,7 +653,7 @@ export const layer: Layer.Layer<
       if (processor.message.error) return "stop"
       if (result === "continue") {
         const summary = summaryText(
-          (yield* session.messages({ sessionID: input.sessionID })).find((item) => item.info.id === msg.id) ?? {
+          (yield* session.messages({ sessionID: input.sessionID, all: true })).find((item) => item.info.id === msg.id) ?? {
             info: msg,
             parts: [],
           },

@@ -281,7 +281,7 @@ const run = Effect.fn("Cli.export.body")(function* (args: { sessionID?: string; 
   // (Session.Service.get throws NotFoundError as a defect, not a typed E).
   return yield* Effect.gen(function* () {
     const sessionInfo = yield* svc.get(sessionID!)
-    const messages = yield* svc.messages({ sessionID: sessionInfo.id })
+    const messages = yield* svc.messages({ sessionID: sessionInfo.id, all: true })
 
     const exportData = { info: sessionInfo, messages }
 

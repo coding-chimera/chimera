@@ -545,6 +545,7 @@ export const SessionRoutes = lazy(() =>
           return yield* summary.diff({
             sessionID: params.sessionID,
             messageID: query.messageID,
+            lastVisible: query.lastVisible,
           })
         }),
     )
@@ -624,7 +625,7 @@ export const SessionRoutes = lazy(() =>
           const agent = yield* Agent.Service
 
           yield* revert.cleanup(yield* session.get(sessionID))
-          const msgs = yield* session.messages({ sessionID })
+          const msgs = yield* session.messages({ sessionID, all: true })
           const defaultAgent = yield* agent.defaultAgent()
           let currentAgent = defaultAgent
           for (let i = msgs.length - 1; i >= 0; i--) {
@@ -682,6 +683,7 @@ export const SessionRoutes = lazy(() =>
               .min(0)
               .optional()
               .meta({ description: "Maximum number of messages to return" }),
+            all: QueryBoolean.optional().meta({ description: "Return all messages; defaults to false for paginated responses" }),
             before: z
               .string()
               .optional()
@@ -707,27 +709,36 @@ export const SessionRoutes = lazy(() =>
       async (c) => {
         const query = c.req.valid("query")
         const sessionID = c.req.valid("param").sessionID
-        if (query.limit === undefined || query.limit === 0) {
+        if (query.all) {
           const messages = await runRequest(
             "SessionRoutes.messages",
             c,
             Effect.gen(function* () {
               const session = yield* Session.Service
               yield* session.get(sessionID)
-              return yield* session.messages({ sessionID })
+              return yield* session.messages({ sessionID, all: true })
             }),
           )
           return c.json(messages)
         }
 
+        await runRequest(
+          "SessionRoutes.messages.exists",
+          c,
+          Effect.gen(function* () {
+            const session = yield* Session.Service
+            yield* session.get(sessionID)
+          }),
+        )
+
         const page = await MessageV2.page({
           sessionID,
-          limit: query.limit,
+          limit: query.limit ?? MessageV2.DEFAULT_MESSAGE_PAGE_LIMIT,
           before: query.before,
         })
         if (page.cursor) {
           const url = new URL(c.req.url)
-          url.searchParams.set("limit", query.limit.toString())
+          url.searchParams.set("limit", (query.limit ?? MessageV2.DEFAULT_MESSAGE_PAGE_LIMIT).toString())
           url.searchParams.set("before", page.cursor)
           c.header("Access-Control-Expose-Headers", "Link, X-Next-Cursor")
           c.header("Link", `<${url.toString()}>; rel="next"`)

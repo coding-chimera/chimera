@@ -1655,7 +1655,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         sessionID: input.sessionID,
         agent: info.agent,
         model: info.model,
-        messages: Array.from(MessageV2.stream(input.sessionID)),
+        messages: MessageV2.promptWindow({ sessionID: input.sessionID }),
         time: Math.max(0, info.time.created - 1),
       })
       yield* sessions.updateMessage(info)
@@ -1799,15 +1799,14 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           yield* status.set(sessionID, { type: "busy" })
           yield* slog.info("loop", { step })
 
-          const rawMsgs = Array.from(MessageV2.stream(sessionID))
-          let msgs = MessageV2.filterCompacted(rawMsgs)
+          let msgs = MessageV2.promptWindow({ sessionID })
           let loopState = inspectLoopMessages(msgs)
 
           if (!loopState.lastUser) throw new Error("No user message found in stream. This should never happen.")
           const model = yield* getModel(loopState.lastUser.model.providerID, loopState.lastUser.model.modelID, sessionID)
           const remoteCompaction = yield* remoteCompactionReplay(model)
           if (remoteCompaction === "text") {
-            msgs = MessageV2.filterCompacted(rawMsgs, { remoteCompaction })
+            msgs = MessageV2.promptWindow({ sessionID, remoteCompaction })
             loopState = inspectLoopMessages(msgs)
           }
           const { lastUser, lastAssistant, lastFinished, tasks } = loopState

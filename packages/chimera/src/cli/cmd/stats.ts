@@ -162,7 +162,7 @@ const aggregateSessionStats = Effect.fn("Cli.stats.aggregate")(function* (
     filteredSessions,
     (session) =>
       Effect.gen(function* () {
-        const messages = yield* svc.messages({ sessionID: session.id })
+        const messages = yield* svc.messages({ sessionID: session.id, all: true })
 
         let sessionCost = 0
         let sessionTokens = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
