@@ -85,16 +85,16 @@ The root `test` script intentionally blocks root-level test runs.
 
 ## Build and package
 
-Build the current-platform package from `packages/chimera`:
+Build the default current-platform no-WebUI package from `packages/chimera`:
 
 ```bash
-bun run build --single --skip-install --skip-embed-web-ui
+bun run build --single --skip-install
 ```
 
-Create local npm tarballs for the main package and current platform package:
+The default package intentionally does not embed the GPL-licensed NewWeb/OpenCodeUI-derived assets. To also produce a clearly separated with-WebUI variant for release assets, run a second build:
 
 ```bash
-bun run pack:local
+bun run build --single --skip-install --with-webui --preserve-npm-tarballs
 ```
 
 Tarballs are written to:
@@ -103,11 +103,13 @@ Tarballs are written to:
 dist/npm-tarballs/
 ```
 
-A locally packed install can be smoke-tested with a temporary npm prefix:
+No-WebUI tarballs are named like `chimera-no-webui-<version>.tgz`; with-WebUI tarballs use `with-webui` in the same position.
+
+A locally packed install can be smoke-tested with a temporary npm prefix, one variant at a time:
 
 ```bash
 prefix="$(mktemp -d)"
-npm install -g --prefix "$prefix" dist/npm-tarballs/chimera-*.tgz
+npm install -g --prefix "$prefix" dist/npm-tarballs/chimera-darwin-arm64-no-webui-*.tgz dist/npm-tarballs/chimera-no-webui-*.tgz
 "$prefix/bin/chimera" --version
 "$prefix/bin/chimera" --graph --help
 ```

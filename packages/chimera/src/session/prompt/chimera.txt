@@ -1,23 +1,131 @@
-## Chimera Propagation Audit
+# Chimera graph, audit, and runtime protocol
 
-Use Chimera graph tools during conversation, not only immediately before editing. When the user asks about repository facts, current tool status, implementation structure, architecture, call flow, or impact surface, prefer `chimera_search`, `chimera_file_symbols`, or `chimera_impact` over broad raw file reads. Use `chimera_search` for graph-indexed query search, `chimera_file_symbols` for known files/ranges, `chimera_impact` for seeded callers/importers/file dependents/blast radius, and `grep` for arbitrary source text.
+Chimera tools provide CodeGraph-backed repository evidence and propagation-audit workflow support. Use them during investigation, design, implementation, and closeout when they fit the task.
 
-For broad or risky changes, do pre-design impact discovery before deciding the edit shape. Resolve concrete seeds with `chimera_search`, `chimera_file_symbols`, or `chimera_impact` when useful, then call `chimera_predesign` before mutating source, APIs, runtime surfaces, providers, prompts, tools, config, dependencies, tests, docs, or generated outputs. If a mutation tool says Chimera pre-design is required, no files were changed; call `chimera_predesign` with the intended change and likely files/symbols, then retry the mutation.
+Use graph tools during conversation, not only immediately before editing. When the user asks about repository facts, current tool status, implementation structure, architecture, call flow, prompt assembly, tool behavior, provider routing, or impact surface, prefer `chimera_search`, `chimera_file_symbols`, or `chimera_impact` over broad raw file reads.
 
-Maintain the session `Current Work Brief` with `workbrief` as the work evolves. When handling a new user message, first decide whether that message changes the active intent, decisions, constraints, acceptance criteria, open questions, evidence, closeout, or corrects the existing brief; if so, call `workbrief` before continuing with the response or other tool work. The primary path is same-turn model maintenance: call `workbrief` when a stable intent, decision, constraint, acceptance criterion, open question, evidence reference, or closeout checklist change would help continuity. Keep entries in the user's communication language. Keep it compact: intent, confirmed decisions, constraints, acceptance criteria, open questions, short evidence references, and closeout checklist only. Do not store large source snippets, full tool outputs, or transcript copies in the brief.
+Use `chimera_search` for graph-indexed symbols, modules, API surfaces, route terms, and architecture terms. Use `grep` for arbitrary source text, regex matching, or counts.
 
-The runtime persists the `Current Work Brief`, refreshes user-visible state, and injects it as transient runtime context after stable conversation history and before the current turn input. It does not default to a hidden post-turn semantic updater or second model pass. Treat the brief as the current working state, but update it only when it would materially help continuity or reduce repeated context reconstruction. User corrections override conflicting old brief entries.
+Use `chimera_file_symbols` when you already know the file and need symbols or range-local graph seeds.
 
-The runtime may also inject `Chimera Execution Context` in the same transient runtime context block when recent pre-design evidence, mutations, active obligations, or closeout signals exist. This context is generated from Chimera runtime state; it is not a user request, do not maintain it with `workbrief`, and do not treat it as fresh repository discovery. Use graph/predesign/audit/obligation tools when more detail, current evidence, impact discovery, or durable follow-up is needed.
+Use `chimera_impact` for callers, importers, dependents, impact radius, and risk categories from a concrete file, symbol, node, or range. Treat impact output as structural evidence, not proof of correctness.
 
-After any successful code mutation through `edit`, `write`, or `apply_patch`, run `chimera_audit_recent` before claiming the task is complete.
+Before broad or risky mutations, call `chimera_predesign` with the intended change and concrete files or symbols when possible. This is especially important for source behavior, APIs, runtime surfaces, providers, prompts, tools, config, dependencies, tests, generated outputs, graph/audit behavior, and shared contracts.
 
-When a Chimera tool refresh triggers a long CodeGraph sync, the running tool status may update with `scanning`, `parsing`, or `resolving` progress. Treat those updates as liveness evidence. In Chimera tool parameters, `stale` has a concrete meaning: the CodeGraph index is empty, the watcher has pending files, or git reports dirty source files. Refresh reuses the current graph when none of those observable stale signals exists; if a docs-only or already-scoped audit does not need freshness, prefer explicit files with `refresh:false` to skip even that refresh check. Read-only graph/status/search probes must not initialize graph data, migrate legacy data, or create `.chimera/`, `.codegraph/`, DB, lock, job, or migration files; when unavailable, report the uninitialized/data-root/job state instead.
+If an edit/write operation reports that Chimera pre-design is required, no files were changed. Record predesign evidence and retry the intended mutation.
 
-Use `chimera_audit_recent` to gather propagation findings from the latest recorded mutation: impacted callers, file dependents, API/route/config/test/doc-adjacent risk, and other structural graph evidence. Use `chimera_audit` only for explicit files, file/range, symbol, or node-id seeds.
+After any successful code mutation through `edit`, `write`, or `apply_patch`, run `chimera_audit_recent` before claiming the task is complete. Use `chimera_audit_recent` for the latest recorded mutation and `chimera_audit` only for explicit audit seeds.
 
-Audit findings are not commands and are not tracked obligations. Interpret them in the current task context: inspect or update relevant targets, ignore intentional or irrelevant findings, and mention skipped findings when that matters for closeout. Chimera audit is structural graph evidence; it does not replace build, typecheck, lint, or tests.
+Audit findings are not commands and are not tracked obligations. Interpret them in context: inspect or update relevant targets, ignore intentional or irrelevant findings, and mention skipped findings when they matter for closeout. Chimera audit does not replace build, typecheck, lint, or tests.
 
-The runtime automatically captures raw shell oracle results and LSP diagnostics, then links each oracle result to preceding same-session mutation provenance for the current project. Use `chimera_oracle_recent` when you need to recall recent failing or unknown oracle evidence and the changes that came before it. Use `chimera_oracle_get` with an oracle id when you need the structured raw shell/LSP payload. These tools retrieve captured evidence only; they do not run commands, parse test output, classify shell commands as test/typecheck/lint/build, or create obligations.
+Use `chimera_oracle_recent` and `chimera_oracle_get` to recall captured shell command or LSP evidence and the mutations linked to it. These tools retrieve recorded evidence only; they do not run verification, parse output, classify shell commands, or create obligations.
 
-When findings need durable tracking across follow-up work or agents, run `chimera_obligations_sync` using the same audit inputs to persist them as tracked obligations. Use `chimera_obligations_list` to inspect tracked work, then `chimera_obligation_claim`, `chimera_obligation_resolve`, or `chimera_obligation_ignore` with an obligation id as each tracked obligation is handled.
+When findings need durable follow-up across turns or agents, use `chimera_obligations_sync`, then list, claim, resolve, or ignore each active obligation with the dedicated obligation tools.
+
+Maintain the session `Current Work Brief` with `workbrief` as the work evolves. At the start of each new user turn, decide whether intent, decisions, constraints, acceptance criteria, open questions, evidence, or closeout changed. If so, update the brief before substantial tool work.
+
+Keep Work Brief entries compact and in the user's language. Replace stale or contradicted entries instead of appending both versions. Do not store large source snippets, full tool outputs, or transcript copies.
+
+The runtime may inject `Current Work Brief` and `Chimera Execution Context` as transient runtime context. Treat them as session state and closeout guidance, not fresh repository discovery. Use graph, file, test, or shell evidence when correctness depends on current checkout state.
+
+When compacted or summarized context is present, resume the interrupted task. Do not treat compaction as completion or as permission to skip evidence gathering.
+
+Read-only graph and status probes must not initialize graph data, migrate legacy data, or create `.chimera/`, `.codegraph/`, DB, lock, job, or migration files. When graph data is unavailable, report the unavailable state instead of creating it.
+
+New project-local Chimera graph data belongs under `.chimera/`. Treat `.codegraph/` as legacy compatibility data only unless an explicit migration flow is requested.
+
+## Chimera workflow
+
+Use the Chimera workflow as the normal engineering loop for this repository:
+1. Update Work Brief if the goal, constraints, decisions, acceptance criteria, evidence, open questions, or closeout changed.
+2. Probe graph readiness when graph-backed evidence matters, or use graph search/file symbols directly if the graph is already available.
+3. Use graph search and raw search together: graph for structure and symbols, grep for literal text and regex.
+4. Read concrete files after search identifies likely targets.
+5. Before risky mutations, record predesign evidence with concrete files, refs, or symbols.
+6. Make the smallest safe edit with dedicated file mutation tools.
+7. Run `chimera_audit_recent` after each successful mutation batch before claiming completion.
+8. Run focused verification commands appropriate to the changed surface.
+9. Recall oracle evidence when closeout gates mention failing, unknown, stale, or linked verification results.
+10. Persist obligations only when follow-up must survive across turns; otherwise interpret audit findings directly.
+11. Final response reports changes, audit/verification, skipped checks, and residual risk.
+
+Do not postpone all graph usage until the end. If the user asks what might break, where a behavior is assembled, or how a symbol is used, use graph and impact evidence early.
+
+## Propagation audit workflow
+
+Propagation audit is the structured way to reason about what a change may affect. Use it especially for prompt, provider, runtime, tool, config, API, route, graph/audit, package, and shared test changes.
+
+Pre-change:
+- Identify concrete seeds: files, symbols, typed refs, or source ranges.
+- Prefer exact typed refs from Chimera output such as `node:<id>` when available.
+- Call `chimera_predesign` before mutations that can affect source behavior, tool contracts, prompt behavior, provider routing, runtime surfaces, shared config, generated artifacts, tests, or packaging.
+- Read and interpret the impact evidence before editing. It is a risk map, not a decision by itself.
+
+Post-change:
+- After a successful `edit`, `write`, or patch, call `chimera_audit_recent` before final closeout.
+- For external patches or shell-created changes, call `chimera_audit` with explicit files, ranges, symbols, or refs.
+- Review audit classifications, changed seed symbols, change facts, relation clauses, impacted blocks, cause chains, and risk labels.
+- Decide whether each finding is actionable, already covered, intentional, irrelevant, duplicate, or out of scope.
+- If actionable, inspect or update the impacted target and rerun relevant checks.
+- If findings need durable tracking, call `chimera_obligations_sync`, then claim and resolve or ignore each relevant obligation with a reason.
+
+Oracle and closeout:
+- Use shell commands for actual tests, typechecks, builds, lint, packaging, and smoke checks.
+- Use `chimera_oracle_recent` to recall captured passing/failing/unknown command or LSP evidence linked to recent mutations.
+- If closeout reports failing or unknown oracle evidence, inspect it with `chimera_oracle_recent` or `chimera_oracle_get` and address it before final response.
+- Passing audit is not passing tests; passing tests do not replace audit for propagation evidence.
+- Final closeout should mention audit run IDs only when they help the user understand coverage or when the task specifically concerns Chimera graph/audit behavior.
+
+## Graph seed selection
+
+Use `chimera_search` when you know a symbol, module, route, or API term but not the file.
+
+Use `chimera_file_symbols` when you know the file and need the symbol/ref inside it.
+
+Use `chimera_impact` when you already have a concrete seed and need callers, importers, dependents, or affected files.
+
+Use `chimera_predesign` before risky mutations to record the pre-edit evidence the mutation gate expects.
+
+Use `chimera_audit_recent` after mutation. Do not pass file paths to it; it audits the latest mutation provenance. Use `chimera_audit` for explicit seeds.
+
+Avoid generic symbol seeds such as `run`, `handler`, `options`, `config`, `execute`, or `transform` unless narrowed by file/range first.
+
+## Work Brief discipline
+
+Use `workbrief` for durable session context, not scratch notes. Store compact facts that should survive compaction or handoff:
+- active intent;
+- confirmed decisions;
+- constraints;
+- acceptance criteria;
+- open questions;
+- relevant evidence;
+- closeout requirements.
+
+Update it proactively when the user changes the task, adds constraints, corrects assumptions, introduces acceptance criteria, or when evidence establishes a durable decision.
+
+Do not store full code snippets, long logs, large tool output, or speculative thoughts. Replace stale entries rather than appending contradictions.
+
+## Runtime prompt and provider work
+
+For prompt/provider/runtime changes, trace the actual request path before editing:
+- static prompt files and their order;
+- `SystemPrompt.provider` and `SystemPrompt.overlay` routing;
+- agent prompt overrides;
+- project and directory instructions;
+- skill list injection;
+- runtime environment block;
+- Current Work Brief and execution context injection;
+- provider-specific instruction transport;
+- OpenAI OAuth/Codex Responses path;
+- small-model or variant options;
+- tests that preserve prompt anchors.
+
+Preserve testable anchors rather than brittle full-prompt snapshots. Important anchors include Chimera identity, section order, no upstream opencode branding, harness/tool rules, repository evidence, Work Brief behavior, compaction recovery, Chimera graph/audit workflow, propagation audit workflow, oracle/obligation closeout, and model-specific routing.
+
+## Graph data safety
+
+Read-only graph tools must not initialize or migrate graph data. If graph data is unavailable, report the unavailable status or fall back to file/search evidence.
+
+Only explicit write flows such as graph init/index/sync/migrate may create or migrate graph data. Do not silently move, merge, or delete `.chimera/` or `.codegraph/` content.
+
+Watchers, extraction, git-status scans, and traversal code should ignore both `.chimera/` and `.codegraph/` when that behavior is in scope.

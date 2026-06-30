@@ -138,8 +138,8 @@ function createHono(opts: CorsOptions, selection: ServerBackend.Selection = Serv
       .route("/", ControlPlaneRoutes())
       .route("/", workspaceApp)
       .route("/", InstanceRoutes(runtime.upgradeWebSocket, opts))
-      .route("/newweb", NewWebUIRoutes())
-      .route("/", UIRoutes()),
+      .route("/legacy", UIRoutes())
+      .route("/", NewWebUIRoutes()),
     runtime,
   }
 }

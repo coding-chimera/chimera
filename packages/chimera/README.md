@@ -40,16 +40,16 @@ bun typecheck
 
 ## Build And Package
 
-Build the current platform binary package from this package directory:
+Build the default current-platform no-WebUI package from this package directory:
 
 ```bash
-bun run build --single --skip-install --skip-embed-web-ui
+bun run build --single --skip-install
 ```
 
-Create local npm tarballs for the main `chimera` package and the current platform package:
+The default package intentionally does not embed the GPL-licensed NewWeb/OpenCodeUI-derived assets. To also build a clearly separated with-WebUI variant for release assets, run a second build and preserve the first variant's npm tarballs:
 
 ```bash
-bun run pack:local
+bun run build --single --skip-install --with-webui --preserve-npm-tarballs
 ```
 
 The tarballs are written under:
@@ -58,11 +58,13 @@ The tarballs are written under:
 dist/npm-tarballs/
 ```
 
-Install the locally built package into a temporary npm prefix:
+The no-WebUI tarballs are named like `chimera-no-webui-<version>.tgz` and `chimera-darwin-arm64-no-webui-<version>.tgz`. The with-WebUI tarballs use `with-webui` in the same position.
+
+Install one locally built variant into a temporary npm prefix:
 
 ```bash
 prefix="$(mktemp -d)"
-npm install -g --prefix "$prefix" dist/npm-tarballs/chimera-*.tgz
+npm install -g --prefix "$prefix" dist/npm-tarballs/chimera-darwin-arm64-no-webui-*.tgz dist/npm-tarballs/chimera-no-webui-*.tgz
 "$prefix/bin/chimera" --version
 "$prefix/bin/chimera" --graph --help
 ```
@@ -77,7 +79,7 @@ printf 'export function add(a: number, b: number) { return a + b }\n' > "$projec
 "$prefix/bin/chimera" graph query add --path "$project"
 ```
 
-The generated main tarball has `package.json.name === "chimera"` and exposes only the `chimera` bin. The platform tarball is named `chimera-<os>-<arch>` and contains the compiled `bin/chimera` binary plus graph runtime assets.
+The generated main tarball has `package.json.name === "chimera"` and exposes only the `chimera` bin. The platform tarball is named `chimera-<os>-<arch>` internally and contains the compiled `bin/chimera` binary plus graph runtime assets; the tarball filename carries the packaging variant.
 
 ## Platform verification help wanted
 

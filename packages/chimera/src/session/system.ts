@@ -5,6 +5,8 @@ import { InstanceState } from "@/effect/instance-state"
 import PROMPT_ANTHROPIC from "./prompt/anthropic.txt"
 import PROMPT_CHIMERA from "./prompt/chimera.txt"
 import PROMPT_DEFAULT from "./prompt/default.txt"
+import PROMPT_HARNESS from "./prompt/harness.txt"
+import PROMPT_WORKFLOW from "./prompt/workflow.txt"
 import PROMPT_BEAST from "./prompt/beast.txt"
 import PROMPT_GEMINI from "./prompt/gemini.txt"
 import PROMPT_GPT from "./prompt/gpt.txt"
@@ -53,7 +55,7 @@ function specialization(model: Provider.Model) {
 
 export function provider(model: Provider.Model) {
   const tuned = specialization(model)
-  return [PROMPT_DEFAULT, ...(tuned ? [tuned] : [])]
+  return [PROMPT_DEFAULT, PROMPT_HARNESS, PROMPT_WORKFLOW, PROMPT_CHIMERA, ...(tuned ? [tuned] : [])]
 }
 
 export function overlay(model: Provider.Model) {
@@ -88,7 +90,6 @@ export const layer = Layer.effect(
             `  Today's date: ${new Date().toDateString()}`,
             `</env>`,
           ].join("\n"),
-          PROMPT_CHIMERA,
         ]
       }),
 

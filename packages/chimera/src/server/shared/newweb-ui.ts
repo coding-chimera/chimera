@@ -17,7 +17,7 @@ export function embeddedNewWebUI() {
 }
 
 export function newWebAssetPath(path: string) {
-  const stripped = path.replace(/^\/newweb\/?/, "")
+  const stripped = path.replace(/^\//, "")
   if (!stripped) return "index.html"
   return stripped
 }
