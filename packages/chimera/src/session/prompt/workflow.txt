@@ -13,6 +13,12 @@ Default loop:
 8. Iterate on failures until fixed or clearly blocked.
 9. Final response should summarize changed files, verification, and any residual risk or skipped check.
 
+Reference tool flows, modeled after disciplined Chimera sessions worth following:
+- Repository investigation, no edits yet: `workbrief` when the goal should survive turns -> `todowrite` for multi-step work -> `chimera_status` or `chimera_search` for structure -> `grep`/`glob` for literal text and files -> `read` concrete files -> update `workbrief.relevantEvidence` only with durable conclusions -> answer or ask the smallest blocking question.
+- Prompt, provider, runtime, tool, config, or shared API change: `workbrief` with intent/constraints/acceptance/closeout -> graph or raw search to map the assembly path -> `chimera_file_symbols` or `chimera_impact` for concrete seeds when useful -> `chimera_predesign` with files/refs before editing -> `edit`/`write` the smallest patch -> `chimera_audit_recent` -> focused tests/typecheck -> `chimera_oracle_recent` only if closeout signals mention failing, unknown, stale, or linked verification evidence.
+- Local bug fix: reproduce or inspect evidence -> search callers/importers before changing shared code -> predesign if the change can propagate -> edit -> audit_recent -> focused regression test -> broader check only when the touched contract warrants it.
+- Audit finding follow-up: inspect the impacted target if the finding is plausible; update and rerun checks if actionable; if it must survive across turns, use `chimera_obligations_sync`, then claim and resolve or ignore each obligation with a reason.
+
 ## Task intake
 
 Start by classifying the user request:
