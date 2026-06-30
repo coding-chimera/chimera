@@ -55,10 +55,10 @@ interface EffectCmdOpts<Args, A> {
  * Effect-native CLI command builder. Wraps yargs `cmd()` so the handler body is
  * an `Effect` with `InstanceRef` provided and any `AppServices` yieldable.
  *
- * The handler is wrapped in `Effect.ensuring(store.dispose(ctx))` so the loaded
- * InstanceContext is disposed (runDisposers + IPC `server.instance.disposed`)
- * on every Exit — success, typed failure, defect, or interruption. Matches the
- * legacy `bootstrap()` finally-disposal semantics without per-handler boilerplate.
+ * Instance-backed handlers run under `InstanceStore.Service.provide({directory})`, so
+ * long-running command bodies keep the instance active while the idle/LRU sweeper
+ * is enabled. The handler still disposes the instance on every Exit to match the
+ * legacy `bootstrap()` finally-disposal semantics.
  *
  * Errors propagate to the existing top-level handler in `src/index.ts`; use
  * `fail("...")` for user-visible domain failures (clean exit, formatted message).
@@ -83,21 +83,21 @@ export const effectCmd = <Args, A>(opts: EffectCmdOpts<Args, A>) =>
         return
       }
       const directory = opts.directory?.(args) ?? process.cwd()
-      // Two-phase: load ctx, then run body inside Instance.current ALS.
-      // Effect's InstanceRef is provided via fiber context, but that context is
-      // lost across `await` inside `Effect.promise(async () => ...)` callbacks
-      // — when handlers re-enter Effect via `AppRuntime.runPromise(svc.method())`
-      // there, attach() falls back to Instance.current ALS, which Node preserves
-      // across awaits. Matches the pre-effectCmd `bootstrap()` behavior.
-      const { store, ctx } = await AppRuntime.runPromise(
-        InstanceStore.Service.use((store) => store.load({ directory }).pipe(Effect.map((ctx) => ({ store, ctx })))),
+      await AppRuntime.runPromise(
+        InstanceStore.Service.use((store) =>
+          store.provide(
+            { directory },
+            Effect.gen(function* () {
+              const ctx = yield* InstanceRef
+              if (!ctx) throw new Error("InstanceStore did not provide InstanceRef")
+              return yield* Effect.promise(() =>
+                Instance.restore(ctx, () =>
+                  AppRuntime.runPromise(opts.handler(args).pipe(Effect.provideService(InstanceRef, ctx))),
+                ),
+              ).pipe(Effect.ensuring(store.dispose(ctx)))
+            }),
+          ),
+        ),
       )
-      try {
-        await Instance.restore(ctx, () =>
-          AppRuntime.runPromise(opts.handler(args).pipe(Effect.provideService(InstanceRef, ctx))),
-        )
-      } finally {
-        await AppRuntime.runPromise(store.dispose(ctx))
-      }
     },
   })
