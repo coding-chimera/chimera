@@ -142,10 +142,10 @@ const instanceRoutes = Layer.mergeAll(rawInstanceRoutes, instanceApiRoutes).pipe
 const newwebUiRoute = HttpRouter.use((router) =>
   Effect.gen(function* () {
     const fs = yield* AppFileSystem.Service
-    yield* router.add("*", "/newweb/*", (request) => serveNewWebUIEffect(request, { fs }))
+    yield* router.add("*", "/*", (request) => serveNewWebUIEffect(request, { fs }))
   }),
 ).pipe(Layer.provide(authorizationRouterMiddleware.layer.pipe(Layer.provide(ServerAuth.Config.defaultLayer))))
-const uiRoute = HttpRouter.use((router) => router.add("*", "/*", serveUIEffect)).pipe(
+const uiRoute = HttpRouter.use((router) => router.add("*", "/legacy/*", serveUIEffect)).pipe(
   Layer.provide(authorizationRouterMiddleware.layer.pipe(Layer.provide(ServerAuth.Config.defaultLayer))),
 )
 

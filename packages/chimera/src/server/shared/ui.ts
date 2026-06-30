@@ -56,8 +56,15 @@ function embeddedUIResponse(file: string, body: Uint8Array) {
   return HttpServerResponse.raw(body, { headers })
 }
 
+export function legacyAssetPath(path: string) {
+  const stripped = path.replace(/^\/legacy\//, "").replace(/^\//, "")
+  if (!stripped) return "index.html"
+  return stripped
+}
+
 export function serveEmbeddedUIEffect(requestPath: string, embeddedWebUI: Record<string, string>) {
-  const file = embeddedWebUI[requestPath.replace(/^\//, "")] ?? embeddedWebUI["index.html"] ?? null
+  const assetPath = legacyAssetPath(requestPath)
+  const file = embeddedWebUI[assetPath] ?? embeddedWebUI["index.html"] ?? null
   if (!file) return Effect.succeed(notFound())
 
   return Effect.tryPromise(() => readEmbeddedUIFile(file)).pipe(

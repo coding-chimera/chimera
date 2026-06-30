@@ -27,7 +27,6 @@ import { AttachCommand } from "./cli/cmd/tui/attach"
 import { TuiThreadCommand } from "./cli/cmd/tui/thread"
 import { EOL } from "os"
 import { WebCommand } from "./cli/cmd/web"
-import { NewWebCommand } from "./cli/cmd/newweb"
 import { PrCommand } from "./cli/cmd/pr"
 import { SessionCommand } from "./cli/cmd/session"
 import { DbCommand } from "./cli/cmd/db"
@@ -174,7 +173,6 @@ const cli = yargs(args)
   .command(UninstallCommand)
   .command(ServeCommand)
   .command(WebCommand)
-  .command(NewWebCommand)
   .command(ModelsCommand)
   .command(StatsCommand)
   .command(ExportCommand)

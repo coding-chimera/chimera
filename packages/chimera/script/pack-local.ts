@@ -6,11 +6,19 @@ import path from "path"
 
 const dir = path.resolve(import.meta.dir, "..")
 
-export async function packNpmTarballs() {
+function renameTarballForVariant(file: string, variant: string) {
+  return file.replace(/-(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?\.tgz)$/, `-${variant}-$1`)
+}
+
+export async function packNpmTarballs(input: { variant?: string } = {}) {
   const dist = path.join(dir, "dist")
   const tarballDir = path.join(dist, "npm-tarballs")
   const pkg = await Bun.file(path.join(dir, "package.json")).json()
-
+  const metadata = await Bun.file(path.join(dist, "package-variant.json")).json().catch(() => null)
+  const variant = input.variant ?? metadata?.variant ?? "no-webui"
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(variant)) {
+    throw new Error(`Invalid package variant: ${variant}`)
+  }
   process.chdir(dir)
 
   const entries = await fs.readdir(dist, { withFileTypes: true }).catch(() => {
@@ -69,10 +77,19 @@ export async function packNpmTarballs() {
   await fs.rm(tarballDir, { recursive: true, force: true })
   await fs.mkdir(tarballDir, { recursive: true })
 
-  for (const item of platformPackages) {
-    await $`bun pm pack --destination ${tarballDir}`.cwd(item.dir)
+  const pack = async (packageDir: string) => {
+    const before = new Set(await fs.readdir(tarballDir))
+    await $`bun pm pack --destination ${tarballDir}`.cwd(packageDir)
+    const packed = (await fs.readdir(tarballDir)).filter((item) => item.endsWith(".tgz") && !before.has(item))
+    for (const file of packed) {
+      await fs.rename(path.join(tarballDir, file), path.join(tarballDir, renameTarballForVariant(file, variant)))
+    }
   }
-  await $`bun pm pack --destination ${tarballDir}`.cwd(mainDir)
+
+  for (const item of platformPackages) {
+    await pack(item.dir)
+  }
+  await pack(mainDir)
 
   const tarballs = (await fs.readdir(tarballDir)).filter((item) => item.endsWith(".tgz")).sort()
   console.log("Local npm tarballs:")
