@@ -1,6 +1,6 @@
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { Hono } from "hono"
-import { csp, cspForHtml, embeddedUI, readEmbeddedUIFile } from "../shared/ui"
+import { csp, cspForHtml, embeddedUI, readEmbeddedUIFile, legacyAssetPath } from "../shared/ui"
 
 const MISSING_EMBEDDED_UI_MESSAGE = "Chimera WebUI assets are not embedded in this build. Run the WebUI dev server separately or rebuild Chimera with embedded WebUI assets."
 
@@ -9,7 +9,7 @@ export async function serveUI(request: Request) {
   const path = new URL(request.url).pathname
 
   if (embeddedWebUI) {
-    const match = embeddedWebUI[path.replace(/^\//, "")] ?? embeddedWebUI["index.html"] ?? null
+    const match = embeddedWebUI[legacyAssetPath(path)] ?? embeddedWebUI["index.html"] ?? null
     if (!match) return Response.json({ error: "Not Found" }, { status: 404 })
 
     const body = await readEmbeddedUIFile(match)

@@ -165,7 +165,7 @@ describe("HttpApi UI fallback", () => {
     await Bun.write(file, "console.log('newweb')")
 
     try {
-      const response = await embeddedNewWebResponse("/newweb/assets/app.js", { "assets/app.js": file })
+      const response = await embeddedNewWebResponse("/assets/app.js", { "assets/app.js": file })
 
       expect(response.status).toBe(200)
       expect(response.headers.get("content-type")).toContain("text/javascript")
@@ -181,8 +181,8 @@ describe("HttpApi UI fallback", () => {
     await Bun.write(file, "<html>newweb</html>")
 
     try {
-      const appRoute = await embeddedNewWebResponse("/newweb/projects/demo", { "index.html": file })
-      const asset = await embeddedNewWebResponse("/newweb/assets/missing.js", { "index.html": file })
+      const appRoute = await embeddedNewWebResponse("/projects/demo", { "index.html": file })
+      const asset = await embeddedNewWebResponse("/assets/missing.js", { "index.html": file })
 
       expect(appRoute.status).toBe(200)
       expect(await appRoute.text()).toContain("newweb")
@@ -193,14 +193,63 @@ describe("HttpApi UI fallback", () => {
     }
   })
 
-  test("routes /newweb to the lightweight UI before the existing WebUI fallback", async () => {
+  test("routes / to the lightweight UI before the legacy WebUI fallback", async () => {
     Flag.OPENCODE_EXPERIMENTAL_HTTPAPI = true
     Flag.OPENCODE_DISABLE_EMBEDDED_WEB_UI = true
 
-    const response = await Server.Default().app.request("/newweb/")
+    const response = await Server.Default().app.request("/")
 
     expect(response.status).toBe(503)
     expect(await response.text()).toContain("Chimera NewWeb assets are not embedded")
+  })
+
+  test("routes / to the lightweight UI on the Hono backend", async () => {
+    Flag.OPENCODE_EXPERIMENTAL_HTTPAPI = false
+    Flag.OPENCODE_DISABLE_EMBEDDED_WEB_UI = true
+
+    const response = await Server.Legacy().app.request("/")
+
+    expect(response.status).toBe(503)
+    expect(await response.text()).toContain("Chimera NewWeb assets are not embedded")
+  })
+
+  test("serves NewWeb public assets without auth when a server password is set", async () => {
+    Flag.OPENCODE_EXPERIMENTAL_HTTPAPI = true
+    Flag.OPENCODE_DISABLE_EMBEDDED_WEB_UI = true
+    const httpApi = app({ password: "secret", username: "chimera" })
+
+    for (const path of ["/manifest.json", "/opencode.svg", "/notification-sw.js", "/material-icons/folder.svg"]) {
+      const response = await httpApi.request(path)
+      expect(response.status).not.toBe(401)
+    }
+  })
+
+  test("serves NewWeb public assets without auth on the Hono backend", async () => {
+    Flag.OPENCODE_EXPERIMENTAL_HTTPAPI = false
+    Flag.OPENCODE_DISABLE_EMBEDDED_WEB_UI = true
+    Flag.OPENCODE_SERVER_PASSWORD = "secret"
+    Flag.OPENCODE_SERVER_USERNAME = "chimera"
+    const server = Server.Legacy()
+
+    for (const path of ["/manifest.json", "/opencode.svg", "/notification-sw.js", "/material-icons/folder.svg"]) {
+      const response = await server.app.request(path)
+      expect(response.status).not.toBe(401)
+    }
+  })
+
+  test("keeps legacy UI as an authenticated internal route", async () => {
+    Flag.OPENCODE_EXPERIMENTAL_HTTPAPI = true
+    Flag.OPENCODE_DISABLE_EMBEDDED_WEB_UI = true
+    const httpApi = app({ password: "secret", username: "chimera" })
+
+    const response = await httpApi.request("/legacy/")
+    expect(response.status).toBe(401)
+
+    const authorized = await httpApi.request("/legacy/", {
+      headers: { authorization: `Basic ${btoa("chimera:secret")}` },
+    })
+    expect(authorized.status).toBe(503)
+    expect(await authorized.text()).toContain("Chimera WebUI assets are not embedded")
   })
 
   test("keeps matched API routes ahead of the UI fallback", async () => {

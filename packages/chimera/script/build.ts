@@ -82,8 +82,27 @@ const baselineFlag = process.argv.includes("--baseline")
 const skipInstall = process.argv.includes("--skip-install")
 const sourcemapsFlag = process.argv.includes("--sourcemaps")
 const plugin = createSolidTransformPlugin()
+const packageVariantFlag = process.argv.find((arg) => arg.startsWith("--package-variant="))
+const withWebUiFlag = process.argv.includes("--with-webui") || process.argv.includes("--embed-web-ui")
+const embedLegacyWebUiFlag = withWebUiFlag || process.argv.includes("--embed-legacy-web-ui")
+const embedNewWebUiFlag = withWebUiFlag || process.argv.includes("--embed-newweb-ui")
 const skipEmbedWebUi = process.argv.includes("--skip-embed-web-ui")
-const embedNewWebUi = !skipEmbedWebUi && !process.argv.includes("--skip-embed-newweb-ui")
+const skipEmbedNewWebUi = process.argv.includes("--skip-embed-newweb-ui")
+const embedLegacyWebUi = !skipEmbedWebUi && embedLegacyWebUiFlag
+const embedNewWebUi = !skipEmbedWebUi && !skipEmbedNewWebUi && embedNewWebUiFlag
+const packageVariant = packageVariantFlag?.slice("--package-variant=".length) ??
+  (embedLegacyWebUi || embedNewWebUi ? "with-webui" : "no-webui")
+if (!/^[a-z0-9][a-z0-9-]*$/.test(packageVariant)) {
+  throw new Error(`Invalid package variant: ${packageVariant}`)
+}
+if (packageVariant === "no-webui" && (embedLegacyWebUi || embedNewWebUi)) {
+  throw new Error("no-webui package variant cannot embed WebUI assets")
+}
+if (packageVariant === "with-webui" && !embedLegacyWebUi && !embedNewWebUi) {
+  throw new Error("with-webui package variant requires --with-webui, --embed-web-ui, --embed-legacy-web-ui, or --embed-newweb-ui")
+}
+const preserveNpmTarballs = process.argv.includes("--preserve-npm-tarballs")
+console.log(`Package variant: ${packageVariant}`)
 const buildVersion = resolveVersion({ currentVersion: pkg.version })
 
 const createEmbeddedWebUIBundle = async (input: { label: string; packageDir: string }) => {
@@ -103,9 +122,9 @@ const createEmbeddedWebUIBundle = async (input: { label: string; packageDir: str
   return [`// Import all files as file_$i with type: "file"`, ...imports, `// Export with original mappings`, `export default {`, ...entries, `}`].join("\n")
 }
 
-const embeddedWebUIFileMap = skipEmbedWebUi
-  ? null
-  : await createEmbeddedWebUIBundle({ label: "Web", packageDir: "../../app" })
+const embeddedWebUIFileMap = embedLegacyWebUi
+  ? await createEmbeddedWebUIBundle({ label: "Web", packageDir: "../../app" })
+  : null
 const embeddedNewWebUIFileMap = embedNewWebUi
   ? await createEmbeddedWebUIBundle({ label: "NewWeb", packageDir: "../../newweb" })
   : null
@@ -194,7 +213,27 @@ const targets = singleFlag
     })
   : allTargets
 
+const preservedTarballDir = preserveNpmTarballs ? await fs.promises.mkdtemp(path.join(os.tmpdir(), "chimera-npm-tarballs-")) : undefined
+const existingTarballDir = path.join(dir, "dist", "npm-tarballs")
+if (preservedTarballDir && fs.existsSync(existingTarballDir)) {
+  for (const file of (await fs.promises.readdir(existingTarballDir)).filter((item) => item.endsWith(".tgz"))) {
+    await fs.promises.copyFile(path.join(existingTarballDir, file), path.join(preservedTarballDir, file))
+  }
+}
+
 await $`rm -rf dist`
+await fs.promises.mkdir(path.join(dir, "dist"), { recursive: true })
+await Bun.file(path.join(dir, "dist", "package-variant.json")).write(
+  JSON.stringify(
+    {
+      variant: packageVariant,
+      embedLegacyWebUi,
+      embedNewWebUi,
+    },
+    null,
+    2,
+  ),
+)
 
 const binaries: Record<string, string> = {}
 if (!skipInstall) {
@@ -305,14 +344,25 @@ for (const item of targets) {
   binaries[name] = buildVersion
 }
 
-await packNpmTarballs()
+await packNpmTarballs({ variant: packageVariant })
+if (preservedTarballDir) {
+  const tarballDir = path.join(dir, "dist", "npm-tarballs")
+  await fs.promises.mkdir(tarballDir, { recursive: true })
+  for (const file of await fs.promises.readdir(preservedTarballDir)) {
+    const target = path.join(tarballDir, file)
+    if (!fs.existsSync(target)) await fs.promises.copyFile(path.join(preservedTarballDir, file), target)
+  }
+  await fs.promises.rm(preservedTarballDir, { recursive: true, force: true })
+}
 
 if (Script.release) {
+  const archiveVariantSuffix = packageVariant === "with-webui" ? `-${packageVariant}` : ""
   for (const key of Object.keys(binaries)) {
+    const archiveName = `${key}${archiveVariantSuffix}`
     if (key.includes("linux")) {
-      await $`tar -czf ../../${key}.tar.gz *`.cwd(`dist/${key}/bin`)
+      await $`tar -czf ../../${archiveName}.tar.gz *`.cwd(`dist/${key}/bin`)
     } else {
-      await $`zip -r ../../${key}.zip *`.cwd(`dist/${key}/bin`)
+      await $`zip -r ../../${archiveName}.zip *`.cwd(`dist/${key}/bin`)
     }
   }
   await $`gh release upload v${buildVersion} ./dist/*.zip ./dist/*.tar.gz --clobber --repo ${process.env.GH_REPO}`

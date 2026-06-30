@@ -52,7 +52,7 @@ const it = testEffect(
 )
 
 describe("session.system", () => {
-  it.effect("always includes the default prompt before model-specific tuning", () =>
+  it.effect("assembles base, harness, workflow, Chimera protocol, then model overlay", () =>
     Effect.gen(function* () {
       const unknown = SystemPrompt.provider({
         providerID: "local",
@@ -63,23 +63,39 @@ describe("session.system", () => {
         api: { id: "k2p6" },
       } as unknown as Parameters<typeof SystemPrompt.provider>[0]).join("\n")
 
-      expect(unknown).toContain("# Chimera tools")
-      expect(unknown).toContain("# Work Brief")
+      expect(unknown).toContain("# Harness and tool boundary")
+      expect(unknown).toContain("## Tool selection")
+      expect(unknown).toContain("# Software engineering workflow")
+      expect(unknown).toContain("## Verification strategy")
+      expect(unknown).toContain("# Chimera graph, audit, and runtime protocol")
+      expect(unknown).toContain("## Chimera workflow")
+      expect(unknown).toContain("## Propagation audit workflow")
       expect(unknown).toContain("You are Chimera")
-      expect(unknown).toContain("Concision applies to visible communication")
-      expect(unknown).toContain("After compaction or a synthetic continuation prompt")
+      expect(unknown).toContain("# Response contract")
+      expect(unknown).toContain("# Planning and task tracking")
+      expect(unknown).toContain("When compacted or summarized context is present")
       expect(unknown).toContain("workbrief")
+      expect(unknown).toContain("chimera_predesign")
       expect(unknown).toContain("chimera_audit_recent")
+      expect(unknown).toContain("chimera_oracle_recent")
+      expect(unknown).toContain("chimera_obligations_sync")
       expect(unknown).toContain("When the user names a concrete file")
-      expect(unknown).toContain("The todo tool tracks the current coding session's step list")
+      expect(unknown).toContain("The todo tool is session-local progress state")
+      expect(unknown).toContain("Do not create, modify, or populate `.env`")
       expect(unknown).not.toContain("You are opencode")
       expect(unknown).not.toContain("github.com/anomalyco/opencode")
-      expect(unknown).not.toContain("fewer than 4 lines")
+      expect(unknown.indexOf("# Harness and tool boundary")).toBeLessThan(
+        unknown.indexOf("# Software engineering workflow"),
+      )
+      expect(unknown.indexOf("# Software engineering workflow")).toBeLessThan(
+        unknown.indexOf("# Chimera graph, audit, and runtime protocol"),
+      )
       expect(unknown).not.toContain("kimi-for-coding（Kimi-K2.7）")
-      expect(kimi).toContain("# Chimera tools")
-      expect(kimi).toContain("# Work Brief")
+      expect(kimi).toContain("# Chimera graph, audit, and runtime protocol")
       expect(kimi).toContain("kimi-for-coding（Kimi-K2.7）")
-      expect(kimi.indexOf("# Chimera tools")).toBeLessThan(kimi.indexOf("kimi-for-coding（Kimi-K2.7）"))
+      expect(kimi.indexOf("# Chimera graph, audit, and runtime protocol")).toBeLessThan(
+        kimi.indexOf("kimi-for-coding（Kimi-K2.7）"),
+      )
       yield* Effect.void
     }),
   )
@@ -103,25 +119,31 @@ describe("session.system", () => {
         api: { id: "gpt-5.4" },
       } as unknown as Parameters<typeof SystemPrompt.provider>[0]).join("\n")
 
-      expect(raw).toContain("# Chimera tools")
-      expect(raw).toContain("lightweight model-specific overlay")
+      expect(raw).toContain("# Chimera graph, audit, and runtime protocol")
+      expect(raw).toContain("model-specific overlay")
       expect(raw).toContain("actual model slug")
       expect(raw).toContain("When compacted or summarized context is present")
-      expect(raw).toContain("After compaction or a synthetic continuation prompt")
+      expect(raw).toContain("request path")
       expect(raw).toContain("Codex OAuth and OpenAI API")
-      expect(namespaced).toContain("# Chimera tools")
-      expect(namespaced).toContain("lightweight model-specific overlay")
+      expect(raw).toContain("propagation audit workflow")
+      expect(raw).toContain("prompt/provider/runtime request path tracing")
+      expect(namespaced).toContain("# Chimera graph, audit, and runtime protocol")
+      expect(namespaced).toContain("model-specific overlay")
       expect(namespaced).toContain("actual model slug")
       expect(namespaced).toContain("When compacted or summarized context is present")
-      expect(namespaced).toContain("After compaction or a synthetic continuation prompt")
+      expect(namespaced).toContain("request path")
       expect(namespaced).toContain("Codex OAuth and OpenAI API")
-      expect(codexNamespaced).toContain("# Chimera tools")
-      expect(codexNamespaced).toContain("lightweight model-specific overlay")
+      expect(namespaced).toContain("propagation audit workflow")
+      expect(namespaced).toContain("prompt/provider/runtime request path tracing")
+      expect(codexNamespaced).toContain("# Chimera graph, audit, and runtime protocol")
+      expect(codexNamespaced).toContain("model-specific overlay")
       expect(codexNamespaced).toContain("actual model slug")
       expect(codexNamespaced).toContain("When compacted or summarized context is present")
-      expect(codexNamespaced).toContain("After compaction or a synthetic continuation prompt")
+      expect(codexNamespaced).toContain("request path")
       expect(codexNamespaced).toContain("Codex OAuth and OpenAI API")
-      expect(fallback).toContain("# Chimera tools")
+      expect(codexNamespaced).toContain("propagation audit workflow")
+      expect(codexNamespaced).toContain("prompt/provider/runtime request path tracing")
+      expect(fallback).toContain("# Chimera graph, audit, and runtime protocol")
       expect(fallback).not.toContain("Codex OAuth and OpenAI API")
       yield* Effect.void
     }),
@@ -154,11 +176,11 @@ describe("session.system", () => {
       expect(stable).toContain("chimera_predesign")
       expect(stable).toContain("chimera_audit_recent")
       expect(stable).toContain("最终回复契约")
-      expect(stable).toContain("# Chimera tools")
+      expect(stable).toContain("# Chimera graph, audit, and runtime protocol")
       expect(legacyAlias).toContain("kimi-for-coding（Kimi-K2.7）")
-      expect(legacyAlias).toContain("# Chimera tools")
+      expect(legacyAlias).toContain("# Chimera graph, audit, and runtime protocol")
       expect(apiNamed).toContain("kimi-for-coding（Kimi-K2.7）")
-      expect(apiNamed).toContain("# Chimera tools")
+      expect(apiNamed).toContain("# Chimera graph, audit, and runtime protocol")
       yield* Effect.void
     }),
   )
@@ -180,28 +202,28 @@ describe("session.system", () => {
           api: { id: item.apiID },
         } as unknown as Parameters<typeof SystemPrompt.provider>[0]).join("\n")
 
-        expect(prompt).toContain("# Chimera tools")
+        expect(prompt).toContain("# Chimera graph, audit, and runtime protocol")
         expect(prompt).toContain(item.marker)
-        expect(prompt.indexOf("# Chimera tools")).toBeLessThan(prompt.indexOf(item.marker))
+        expect(prompt.indexOf("# Chimera graph, audit, and runtime protocol")).toBeLessThan(prompt.indexOf(item.marker))
       }
 
       yield* Effect.void
     }),
   )
 
-  it.instance("environment includes Chimera propagation audit guidance", () =>
+  it.instance("environment only returns model and local runtime facts", () =>
     Effect.gen(function* () {
       const prompt = yield* SystemPrompt.Service
       const output = yield* prompt.environment({
         providerID: "test",
         api: { id: "test-model" },
       } as unknown as Parameters<SystemPrompt.Interface["environment"]>[0])
+      const joined = output.join("\n")
 
-      expect(output.join("\n")).toContain("chimera_audit")
-      expect(output.join("\n")).toContain("chimera_audit_recent")
-      expect(output.join("\n")).toContain("chimera_predesign")
-      expect(output.join("\n")).toContain("chimera_obligations_sync")
-      expect(output.join("\n")).toContain("After any successful code mutation")
+      expect(joined).toContain("You are powered by the model named test-model")
+      expect(joined).toContain("<env>")
+      expect(joined).not.toContain("chimera_audit_recent")
+      expect(joined).not.toContain("chimera_predesign")
     }),
   )
 

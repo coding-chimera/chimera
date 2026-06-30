@@ -85,16 +85,16 @@ bun test --timeout 30000
 
 ## 构建和打包
 
-从 `packages/chimera` 构建当前平台包：
+从 `packages/chimera` 构建默认的当前平台 no-WebUI 包：
 
 ```bash
-bun run build --single --skip-install --skip-embed-web-ui
+bun run build --single --skip-install
 ```
 
-为主包和当前平台包创建本地 npm tarball：
+默认包不会嵌入 GPL 许可的 NewWeb/OpenCodeUI 衍生资源。如需为 release asset 同时生成明确分离的 with-WebUI 变体，再运行第二次构建：
 
 ```bash
-bun run pack:local
+bun run build --single --skip-install --with-webui --preserve-npm-tarballs
 ```
 
 tarball 会写入：
@@ -103,11 +103,13 @@ tarball 会写入：
 dist/npm-tarballs/
 ```
 
-可以用临时 npm prefix 对本地打包结果做 smoke test：
+no-WebUI tarball 名称类似 `chimera-no-webui-<version>.tgz`；with-WebUI tarball 在同一位置使用 `with-webui`。
+
+可以用临时 npm prefix 对本地打包结果做 smoke test，每次只安装一个变体：
 
 ```bash
 prefix="$(mktemp -d)"
-npm install -g --prefix "$prefix" dist/npm-tarballs/chimera-*.tgz
+npm install -g --prefix "$prefix" dist/npm-tarballs/chimera-darwin-arm64-no-webui-*.tgz dist/npm-tarballs/chimera-no-webui-*.tgz
 "$prefix/bin/chimera" --version
 "$prefix/bin/chimera" --graph --help
 ```
