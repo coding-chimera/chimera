@@ -4,6 +4,12 @@ Use this tool when you need graph evidence for symbol names, qualified names, si
 
 Do NOT use this tool for arbitrary source-code literals, regex searches, or counting matches. Use `grep` for raw source text and `glob` for filename patterns.
 
+Query phrasing:
+- Multi-word queries are OR-of-prefix: each whitespace-separated word is matched as a prefix and the results are unioned. "session prompt" finds symbols matching `session*` OR `prompt*`.
+- Prefer separate concept words over fake glued compounds. Type "system prompt" for broad concept discovery; use "SystemPrompt" only when searching for a real compound identifier, because compound queries require their identifier parts together.
+- Real compound identifiers are also matched by their parts, so "prompt" finds `SystemPrompt`/`buildSystemPrompt`. Prefer real symbol words over long natural-language phrases.
+- Field filters narrow results and compose with the text: `kind:function`, `lang:typescript` (alias `language:`), `path:src/api` (substring of file path), `name:auth` (substring of symbol name). Example: `kind:method name:send transport`.
+
 Parameter rules:
 - `query` is required. Keep it focused on a symbol, module, route, API surface, or architecture term.
 - Use `kind` only when you know the CodeGraph node kind you want.

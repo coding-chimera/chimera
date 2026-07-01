@@ -83,6 +83,8 @@ describe("session.system", () => {
       expect(unknown).toContain("Reference tool flows, modeled after disciplined Chimera sessions worth following")
       expect(unknown).toContain("workbrief.relevantEvidence")
       expect(unknown).toContain("chimera_file_symbols` or `chimera_impact")
+      expect(unknown).toContain("when you want to know where a concept, behavior")
+      expect(unknown).toContain("graph-backed discovery")
       expect(unknown).toContain("chimera_obligations_sync")
       expect(unknown).toContain("durable session ledger")
       expect(unknown).toContain("state memory; Chimera graph/audit tools are repository evidence")
