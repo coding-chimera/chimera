@@ -5,11 +5,12 @@
  */
 
 import { SqliteDatabase } from './sqlite-adapter';
+import { buildSearchText } from '../search/query-utils';
 
 /**
  * Current schema version
  */
-export const CURRENT_SCHEMA_VERSION = 5;
+export const CURRENT_SCHEMA_VERSION = 6;
 
 /**
  * Migration definition
@@ -86,6 +87,70 @@ const migrations: Migration[] = [
         CREATE INDEX IF NOT EXISTS idx_file_semantics_role ON file_semantics(role);
         CREATE INDEX IF NOT EXISTS idx_file_semantics_classifier_version ON file_semantics(classifier_version);
         CREATE INDEX IF NOT EXISTS idx_file_semantics_content_hash ON file_semantics(content_hash);
+      `);
+    },
+  },
+  {
+    version: 6,
+    description: 'Add nodes.search_text (split identifier words) and re-index nodes_fts for compound-symbol recall',
+    up: (db) => {
+      // 1. Add the column. Existing rows get NULL until backfilled below.
+      //    `ALTER TABLE ... ADD COLUMN` is a no-op-safe metadata change.
+      const columns = (db.prepare('PRAGMA table_info(nodes)').all() as Array<{ name: string }>).map((row) => row.name);
+      if (!columns.includes('search_text')) {
+        db.exec('ALTER TABLE nodes ADD COLUMN search_text TEXT;');
+      }
+
+      // 2. Backfill search_text in TS. The split (camelCase/snake/qualifier)
+      //    cannot be expressed in SQLite, so stream rows through buildSearchText.
+      //    Drop the FTS sync triggers first so each UPDATE doesn't thrash the
+      //    (about-to-be-rebuilt) FTS index; we recreate them afterward.
+      db.exec(`
+        DROP TRIGGER IF EXISTS nodes_ai;
+        DROP TRIGGER IF EXISTS nodes_ad;
+        DROP TRIGGER IF EXISTS nodes_au;
+      `);
+      const update = db.prepare('UPDATE nodes SET search_text = ? WHERE id = ?');
+      const rows = db.prepare('SELECT id, name, qualified_name FROM nodes').all() as Array<{
+        id: string;
+        name: string;
+        qualified_name: string | null;
+      }>;
+      for (const row of rows) {
+        update.run(buildSearchText(row.name, row.qualified_name ?? undefined), row.id);
+      }
+
+      // 3. Recreate nodes_fts with the new search_text column. FTS5 has no
+      //    ADD COLUMN, so drop and recreate the contentless-synced table,
+      //    then `rebuild` to repopulate it from the nodes content table.
+      db.exec(`
+        DROP TABLE IF EXISTS nodes_fts;
+        CREATE VIRTUAL TABLE nodes_fts USING fts5(
+            id,
+            name,
+            qualified_name,
+            docstring,
+            signature,
+            search_text,
+            content='nodes',
+            content_rowid='rowid'
+        );
+        INSERT INTO nodes_fts(nodes_fts) VALUES ('rebuild');
+
+        CREATE TRIGGER IF NOT EXISTS nodes_ai AFTER INSERT ON nodes BEGIN
+            INSERT INTO nodes_fts(rowid, id, name, qualified_name, docstring, signature, search_text)
+            VALUES (NEW.rowid, NEW.id, NEW.name, NEW.qualified_name, NEW.docstring, NEW.signature, NEW.search_text);
+        END;
+        CREATE TRIGGER IF NOT EXISTS nodes_ad AFTER DELETE ON nodes BEGIN
+            INSERT INTO nodes_fts(nodes_fts, rowid, id, name, qualified_name, docstring, signature, search_text)
+            VALUES ('delete', OLD.rowid, OLD.id, OLD.name, OLD.qualified_name, OLD.docstring, OLD.signature, OLD.search_text);
+        END;
+        CREATE TRIGGER IF NOT EXISTS nodes_au AFTER UPDATE ON nodes BEGIN
+            INSERT INTO nodes_fts(nodes_fts, rowid, id, name, qualified_name, docstring, signature, search_text)
+            VALUES ('delete', OLD.rowid, OLD.id, OLD.name, OLD.qualified_name, OLD.docstring, OLD.signature, OLD.search_text);
+            INSERT INTO nodes_fts(rowid, id, name, qualified_name, docstring, signature, search_text)
+            VALUES (NEW.rowid, NEW.id, NEW.name, NEW.qualified_name, NEW.docstring, NEW.signature, NEW.search_text);
+        END;
       `);
     },
   },

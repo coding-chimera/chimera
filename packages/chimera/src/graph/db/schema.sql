@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS nodes (
     is_abstract INTEGER DEFAULT 0,
     decorators TEXT, -- JSON array
     type_parameters TEXT, -- JSON array
+    search_text TEXT, -- identifier split into component words for FTS (see query-utils.buildSearchText)
     updated_at INTEGER NOT NULL
 );
 
@@ -108,33 +109,36 @@ CREATE INDEX IF NOT EXISTS idx_nodes_language ON nodes(language);
 CREATE INDEX IF NOT EXISTS idx_nodes_file_line ON nodes(file_path, start_line);
 CREATE INDEX IF NOT EXISTS idx_nodes_lower_name ON nodes(lower(name));
 
--- Full-text search index on node names, docstrings, and signatures
+-- Full-text search index on node names, docstrings, signatures, and the
+-- pre-split identifier words (search_text) that let prefix search match
+-- compound symbols by their parts (e.g. "prompt" finds "SystemPrompt").
 CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
     id,
     name,
     qualified_name,
     docstring,
     signature,
+    search_text,
     content='nodes',
     content_rowid='rowid'
 );
 
 -- Triggers to keep FTS index in sync
 CREATE TRIGGER IF NOT EXISTS nodes_ai AFTER INSERT ON nodes BEGIN
-    INSERT INTO nodes_fts(rowid, id, name, qualified_name, docstring, signature)
-    VALUES (NEW.rowid, NEW.id, NEW.name, NEW.qualified_name, NEW.docstring, NEW.signature);
+    INSERT INTO nodes_fts(rowid, id, name, qualified_name, docstring, signature, search_text)
+    VALUES (NEW.rowid, NEW.id, NEW.name, NEW.qualified_name, NEW.docstring, NEW.signature, NEW.search_text);
 END;
 
 CREATE TRIGGER IF NOT EXISTS nodes_ad AFTER DELETE ON nodes BEGIN
-    INSERT INTO nodes_fts(nodes_fts, rowid, id, name, qualified_name, docstring, signature)
-    VALUES ('delete', OLD.rowid, OLD.id, OLD.name, OLD.qualified_name, OLD.docstring, OLD.signature);
+    INSERT INTO nodes_fts(nodes_fts, rowid, id, name, qualified_name, docstring, signature, search_text)
+    VALUES ('delete', OLD.rowid, OLD.id, OLD.name, OLD.qualified_name, OLD.docstring, OLD.signature, OLD.search_text);
 END;
 
 CREATE TRIGGER IF NOT EXISTS nodes_au AFTER UPDATE ON nodes BEGIN
-    INSERT INTO nodes_fts(nodes_fts, rowid, id, name, qualified_name, docstring, signature)
-    VALUES ('delete', OLD.rowid, OLD.id, OLD.name, OLD.qualified_name, OLD.docstring, OLD.signature);
-    INSERT INTO nodes_fts(rowid, id, name, qualified_name, docstring, signature)
-    VALUES (NEW.rowid, NEW.id, NEW.name, NEW.qualified_name, NEW.docstring, NEW.signature);
+    INSERT INTO nodes_fts(nodes_fts, rowid, id, name, qualified_name, docstring, signature, search_text)
+    VALUES ('delete', OLD.rowid, OLD.id, OLD.name, OLD.qualified_name, OLD.docstring, OLD.signature, OLD.search_text);
+    INSERT INTO nodes_fts(rowid, id, name, qualified_name, docstring, signature, search_text)
+    VALUES (NEW.rowid, NEW.id, NEW.name, NEW.qualified_name, NEW.docstring, NEW.signature, NEW.search_text);
 END;
 
 -- Edge indexes.

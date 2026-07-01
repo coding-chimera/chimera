@@ -399,6 +399,93 @@ describe('Database Connection', () => {
     db.close();
   });
 
+  it('should migrate schema v5 databases to v6 and backfill node search text', () => {
+    const dbPath = path.join(tempDir, 'test.db');
+    const created = createDatabase(dbPath);
+    const raw = created.db;
+    raw.exec(`
+      CREATE TABLE schema_versions (
+        version INTEGER PRIMARY KEY,
+        applied_at INTEGER NOT NULL,
+        description TEXT
+      );
+      INSERT INTO schema_versions (version, applied_at, description)
+      VALUES (5, 0, 'Simulated v5 schema');
+
+      CREATE TABLE nodes (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        name TEXT NOT NULL,
+        qualified_name TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        language TEXT NOT NULL,
+        start_line INTEGER NOT NULL,
+        end_line INTEGER NOT NULL,
+        start_column INTEGER NOT NULL,
+        end_column INTEGER NOT NULL,
+        docstring TEXT,
+        signature TEXT,
+        visibility TEXT,
+        is_exported INTEGER DEFAULT 0,
+        is_async INTEGER DEFAULT 0,
+        is_static INTEGER DEFAULT 0,
+        is_abstract INTEGER DEFAULT 0,
+        decorators TEXT,
+        type_parameters TEXT,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE VIRTUAL TABLE nodes_fts USING fts5(
+        id,
+        name,
+        qualified_name,
+        docstring,
+        signature,
+        content='nodes',
+        content_rowid='rowid'
+      );
+    `);
+    raw.prepare(`
+      INSERT INTO nodes (
+        id, kind, name, qualified_name, file_path, language,
+        start_line, end_line, start_column, end_column,
+        docstring, signature, visibility,
+        is_exported, is_async, is_static, is_abstract,
+        decorators, type_parameters, updated_at
+      ) VALUES (
+        'node:1', 'function', 'buildSystemPrompt', 'prompt.buildSystemPrompt', 'src/prompt.ts', 'typescript',
+        1, 1, 0, 0,
+        NULL, NULL, NULL,
+        1, 0, 0, 0,
+        NULL, NULL, 0
+      )
+    `).run();
+    raw.close();
+
+    const db = DatabaseConnection.open(dbPath);
+    const columns = (db.getDb().prepare('PRAGMA table_info(nodes)').all() as Array<{ name: string }>)
+      .map((row) => row.name);
+    expect(columns).toContain('search_text');
+    expect(db.getSchemaVersion()?.version).toBe(CURRENT_SCHEMA_VERSION);
+
+    const row = db.getDb()
+      .prepare("SELECT search_text FROM nodes WHERE id = 'node:1'")
+      .get() as { search_text: string };
+    expect(row.search_text).toContain('system');
+    expect(row.search_text).toContain('prompt');
+
+    const ftsRows = db.getDb()
+      .prepare(`
+        SELECT nodes.name
+        FROM nodes_fts
+        JOIN nodes ON nodes_fts.id = nodes.id
+        WHERE nodes_fts MATCH ?
+      `)
+      .all('"prompt"*') as Array<{ name: string }>;
+    expect(ftsRows.map((item) => item.name)).toContain('buildSystemPrompt');
+
+    db.close();
+  });
+
   it('should support transactions', () => {
     const dbPath = path.join(tempDir, 'test.db');
     const db = DatabaseConnection.initialize(dbPath);
