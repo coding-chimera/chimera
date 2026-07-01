@@ -4,7 +4,7 @@ Chimera tools provide CodeGraph-backed repository evidence and propagation-audit
 
 Use graph tools during conversation, not only immediately before editing. When the user asks about repository facts, current tool status, implementation structure, architecture, call flow, prompt assembly, tool behavior, provider routing, or impact surface, prefer `chimera_search`, `chimera_file_symbols`, or `chimera_impact` over broad raw file reads.
 
-Use `chimera_search` for graph-indexed symbols, modules, API surfaces, route terms, and architecture terms. Use `grep` for arbitrary source text, regex matching, or counts.
+Use `chimera_search` for query-based graph discovery when you want to know where a concept, behavior, symbol, module, route, API surface, or architecture term lives. Use `grep` for arbitrary source text, regex matching, or counts.
 
 Use `chimera_file_symbols` when you already know the file and need symbols or range-local graph seeds.
 
@@ -78,7 +78,7 @@ Oracle and closeout:
 
 ## Graph seed selection
 
-Use `chimera_search` when you know a symbol, module, route, or API term but not the file.
+Use `chimera_search` when you want to know where a concept, behavior, symbol, module, route, API term, or architecture term may live and you do not yet have the file or exact seed. Treat it as graph-backed discovery, not only exact symbol lookup.
 
 Use `chimera_file_symbols` when you know the file and need the symbol/ref inside it.
 
