@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { resolveNetworkOptionsNoConfig, type NetworkOptions } from "../../src/cli/network"
 
 const defaults = {
-  port: 4096,
+  port: 0,
   hostname: "127.0.0.1",
   mdns: false,
   "mdns-domain": "chimera.local",
@@ -20,11 +20,11 @@ function withArgs<T>(argv: string[], fn: () => T) {
 }
 
 describe("cli.network", () => {
-  test("defaults to the stable Chimera web port", () => {
-    expect(withArgs([], () => resolveNetworkOptionsNoConfig(defaults).port)).toBe(4096)
+  test("defaults to port 0 so Server.listen can choose the stable fallback", () => {
+    expect(withArgs([], () => resolveNetworkOptionsNoConfig(defaults).port)).toBe(0)
   })
 
-  test("preserves explicit --port 0 for random available port", () => {
+  test("preserves explicit --port 0", () => {
     expect(withArgs(["--port", "0"], () => resolveNetworkOptionsNoConfig({ ...defaults, port: 0 }).port)).toBe(0)
   })
 })

@@ -22,6 +22,7 @@ import {
   sanitizedProcessEnv,
 } from "@opencode-ai/core/util/opencode-process"
 import { validateSession } from "./validate-session"
+import { ServerAuth } from "@/server/auth"
 
 declare global {
   const OPENCODE_WORKER_PATH: string
@@ -214,11 +215,13 @@ export const TuiThreadCommand = cmd({
             url: (await client.call("server", network)).url,
             fetch: undefined,
             events: undefined,
+            headers: ServerAuth.headers(),
           }
         : {
             url: "http://opencode.internal",
             fetch: createWorkerFetch(client),
             events: createEventSource(client),
+            headers: undefined,
           }
 
       try {
@@ -227,6 +230,7 @@ export const TuiThreadCommand = cmd({
           sessionID: args.session,
           directory: cwd,
           fetch: transport.fetch,
+          headers: transport.headers,
         })
       } catch (error) {
         UI.error(errorMessage(error))
@@ -250,6 +254,7 @@ export const TuiThreadCommand = cmd({
           directory: cwd,
           fetch: transport.fetch,
           events: transport.events,
+          headers: transport.headers,
           args: {
             continue: args.continue,
             sessionID: args.session,
