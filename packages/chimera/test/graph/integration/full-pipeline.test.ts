@@ -174,6 +174,31 @@ describe('Integration: full pipeline', () => {
     }
   }, 60_000);
 
+  it('splits a glued compound query into its parts ("SystemPrompt" finds buildSystemPrompt)', async () => {
+    // Regression for the tool search path: the default FTS5 tokenizer stores
+    // `buildSystemPrompt` as ONE token, so a naive `"systemprompt"*` prefix
+    // matches nothing. searchNodesFTS now splits each query token into its
+    // identifier component words, so a glued compound still resolves — while
+    // AND-of-parts keeps an unrelated `helper` out of the results.
+    const srcDir = path.join(tempDir, 'src');
+    fs.mkdirSync(srcDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(srcDir, 'prompt.ts'),
+      `export function buildSystemPrompt(): string { return 'sys'; }\n` +
+        `export function helper(): number { return 1; }\n`
+    );
+
+    const cg = await CodeGraph.init(tempDir);
+    try {
+      await cg.indexAll();
+      const names = cg.searchNodes('SystemPrompt', { limit: 20 }).map((r) => r.node.name);
+      expect(names).toContain('buildSystemPrompt');
+      expect(names).not.toContain('helper');
+    } finally {
+      cg.destroy();
+    }
+  }, 30_000);
+
   it('keeps indexing files when one file has a parse error', async () => {
     const srcDir = path.join(tempDir, 'src');
     fs.mkdirSync(srcDir, { recursive: true });

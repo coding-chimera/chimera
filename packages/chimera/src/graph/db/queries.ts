@@ -20,7 +20,7 @@ import {
   SearchResult,
 } from '../types';
 import { safeJsonParse } from '../utils';
-import { kindBonus, nameMatchBonus, scorePathRelevance } from '../search/query-utils';
+import { buildSearchText, kindBonus, nameMatchBonus, scorePathRelevance, splitIdentifierWords } from '../search/query-utils';
 import { parseQuery, boundedEditDistance } from '../search/query-parser';
 import { isGeneratedFile } from '../extraction/generated-detection';
 
@@ -266,13 +266,13 @@ export class QueryBuilder {
           start_line, end_line, start_column, end_column,
           docstring, signature, visibility,
           is_exported, is_async, is_static, is_abstract,
-          decorators, type_parameters, updated_at
+          decorators, type_parameters, search_text, updated_at
         ) VALUES (
           @id, @kind, @name, @qualifiedName, @filePath, @language,
           @startLine, @endLine, @startColumn, @endColumn,
           @docstring, @signature, @visibility,
           @isExported, @isAsync, @isStatic, @isAbstract,
-          @decorators, @typeParameters, @updatedAt
+          @decorators, @typeParameters, @searchText, @updatedAt
         )
       `);
     }
@@ -315,6 +315,7 @@ export class QueryBuilder {
       isAbstract: node.isAbstract ? 1 : 0,
       decorators: node.decorators ? JSON.stringify(node.decorators) : null,
       typeParameters: node.typeParameters ? JSON.stringify(node.typeParameters) : null,
+      searchText: buildSearchText(node.name, node.qualifiedName ?? node.name),
       updatedAt: node.updatedAt ?? Date.now(),
     });
   }
@@ -355,6 +356,7 @@ export class QueryBuilder {
           is_abstract = @isAbstract,
           decorators = @decorators,
           type_parameters = @typeParameters,
+          search_text = @searchText,
           updated_at = @updatedAt
         WHERE id = @id
       `);
@@ -389,6 +391,7 @@ export class QueryBuilder {
       isAbstract: node.isAbstract ? 1 : 0,
       decorators: node.decorators ? JSON.stringify(node.decorators) : null,
       typeParameters: node.typeParameters ? JSON.stringify(node.typeParameters) : null,
+      searchText: buildSearchText(node.name, node.qualifiedName ?? node.name),
       updatedAt: node.updatedAt ?? Date.now(),
     });
   }
@@ -985,36 +988,57 @@ export class QueryBuilder {
   private searchNodesFTS(query: string, options: SearchOptions): SearchResult[] {
     const { kinds, languages, limit = 100, offset = 0 } = options;
 
-    // Add prefix wildcard for better matching (e.g., "auth" matches "AuthService", "authenticate")
-    // Escape special FTS5 characters and add prefix wildcard.
-    //
     // `::` is a qualifier separator in Rust/C++/Ruby, not a token char,
     // so treat it as whitespace before the strip step. Otherwise queries
     // like `stage_apply::run` collapse to `stage_applyrun` (the colons
     // are stripped without splitting) and find nothing. See #173.
-    const ftsQuery = query
+    // Tokenise like the context path: each whitespace token is ALSO split
+    // into its identifier component words, so a glued compound ("SystemPrompt")
+    // still matches a symbol named `system` or `prompt`. The default FTS5
+    // tokenizer treats `SystemPrompt` as ONE token, so a left-anchored
+    // `"systemprompt"*` prefix can never reach the `system`/`prompt` parts
+    // stored in search_text. This realigns searchNodes (the tool path) with
+    // findRelevantContext (the context path), which already splits compounds.
+    const tokens = query
       .replace(/::/g, ' ') // Rust/C++/Ruby qualifier separator
       .replace(/['"*():^]/g, '') // Remove FTS5 special chars
       .split(/\s+/)
       .filter(term => term.length > 0)
       // Strip FTS5 boolean operators to prevent query manipulation
-      .filter(term => !/^(AND|OR|NOT|NEAR)$/i.test(term))
-      .map(term => `"${term}"*`) // Prefix match each term
+      .filter(term => !/^(AND|OR|NOT|NEAR)$/i.test(term));
+
+    // Per token, OR the whole-token prefix with an AND-of-parts group:
+    //   SystemPrompt -> ("SystemPrompt"* OR ("system"* AND "prompt"*))
+    // AND (not a flat OR over the parts) keeps precision: `newFunc` becomes
+    // ("newFunc"* OR ("new"* AND "func"*)) and so cannot match an unrelated
+    // `renamedFunc`, preserving the rename guard in sync.test.ts.
+    const ftsQuery = tokens
+      .map(token => {
+        const whole = `"${token}"*`;
+        const parts = splitIdentifierWords(token)
+          .filter(part => !/^(AND|OR|NOT|NEAR)$/i.test(part));
+        if (parts.length < 2) return whole;
+        const andGroup = parts.map(part => `"${part}"*`).join(' AND ');
+        return `(${whole} OR (${andGroup}))`;
+      })
       .join(' OR ');
 
     if (!ftsQuery) {
       return [];
     }
 
-    // BM25 column weights: id=0, name=20, qualified_name=5, docstring=1, signature=2
+    // BM25 column weights: id=0, name=20, qualified_name=5, docstring=1, signature=2, search_text=3
     // Heavy name weight ensures exact/prefix name matches rank above incidental
-    // mentions in long docstrings or qualified names of nested symbols.
+    // mentions in long docstrings or qualified names of nested symbols. search_text
+    // (split identifier words) carries a modest weight so compound-part matches
+    // ("prompt" → "SystemPrompt") surface as candidates without outranking real
+    // name hits; post-hoc nameMatchBonus does the final ranking.
     // Fetch 5x requested limit so post-hoc rescoring (kindBonus, pathRelevance,
     // nameMatchBonus) can promote results that BM25 alone undervalues.
     const ftsLimit = Math.max(limit * 5, 100);
 
     let sql = `
-      SELECT nodes.*, bm25(nodes_fts, 0, 20, 5, 1, 2) as score
+      SELECT nodes.*, bm25(nodes_fts, 0, 20, 5, 1, 2, 3) as score
       FROM nodes_fts
       JOIN nodes ON nodes_fts.id = nodes.id
       WHERE nodes_fts MATCH ?
@@ -1054,6 +1078,18 @@ export class QueryBuilder {
   private searchNodesLike(query: string, options: SearchOptions): SearchResult[] {
     const { kinds, languages, limit = 100, offset = 0 } = options;
 
+    // Split into terms and match each independently. The previous version
+    // LIKE-matched the entire raw string including spaces (`%cache builder%`),
+    // which no symbol name ever contains, so every multi-word query silently
+    // fell through to zero results. Match each term and require all of them.
+    const terms = query.split(/\s+/).map((t) => t.trim()).filter((t) => t.length >= 2);
+    if (terms.length === 0) return [];
+
+    // Compacted form lets a multi-word query still exact/prefix match a
+    // compound symbol, e.g. "cache builder" -> "cachebuilder" -> CacheBuilder.
+    const compact = terms.join('');
+    const whereTerms = terms.map(() => '(name LIKE ? OR qualified_name LIKE ?)').join(' AND ');
+
     let sql = `
       SELECT nodes.*,
         CASE
@@ -1064,27 +1100,21 @@ export class QueryBuilder {
           ELSE 0.5
         END as score
       FROM nodes
-      WHERE (
-        name LIKE ? OR
-        qualified_name LIKE ? OR
-        name LIKE ?
-      )
+      WHERE (${whereTerms})
     `;
 
-    // Pattern variants for better matching
-    const exactMatch = query;
-    const startsWith = `${query}%`;
-    const contains = `%${query}%`;
-
+    // Scoring patterns use the compacted query; the per-term patterns below
+    // gate the WHERE clause. The outer searchNodes() rescoring layer
+    // (nameMatchBonus/pathRelevance/kindBonus) refines this base ordering.
     const params: (string | number)[] = [
-      exactMatch,     // Exact match score
-      startsWith,     // Starts with score
-      contains,       // Contains score
-      contains,       // Qualified name score
-      contains,       // WHERE: name contains
-      contains,       // WHERE: qualified_name contains
-      startsWith,     // WHERE: name starts with
+      compact,            // exact (compacted) match
+      `${compact}%`,      // starts with
+      `%${compact}%`,     // name contains
+      `%${compact}%`,     // qualified_name contains
     ];
+    for (const term of terms) {
+      params.push(`%${term}%`, `%${term}%`); // WHERE: name / qualified_name contains term
+    }
 
     if (kinds && kinds.length > 0) {
       sql += ` AND kind IN (${kinds.map(() => '?').join(',')})`;

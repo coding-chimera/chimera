@@ -169,6 +169,49 @@ export function extractSearchTerms(query: string, options?: { stems?: boolean })
 }
 
 /**
+ * Build the FTS `search_text` value for a node: the identifier split into
+ * its component words so compound symbols are findable by their parts.
+ *
+ * The default FTS5 tokenizer treats `buildSystemPrompt` as ONE token, so a
+ * prefix search for `prompt` can never match it. Pre-splitting at index time
+ * (`build system prompt`) gives FTS the word-level tokens that prefix search
+ * needs. This is index-side recall only; `name`/`qualified_name` stay indexed
+ * separately and keep outranking part matches via their heavier BM25 weights.
+ *
+ * Unlike `extractSearchTerms`, this does NOT drop stop words or add stem
+ * variants — the stored column holds the literal identifier parts; stemming
+ * and noise-word handling belong at query time.
+ */
+export function buildSearchText(name: string, qualifiedName?: string): string {
+  const words = new Set<string>();
+  for (const word of splitIdentifierWords(name)) words.add(word);
+  if (qualifiedName && qualifiedName !== name) {
+    for (const word of splitIdentifierWords(qualifiedName)) words.add(word);
+  }
+  return [...words].join(' ');
+}
+
+/**
+ * Split a single identifier into lowercase component words across camelCase,
+ * PascalCase, snake_case, SCREAMING_SNAKE, dot.notation, and qualifier
+ * separators (`::`, `/`, `#`). Acronym runs split on the trailing capital
+ * (`HTTPServer` → `http server`). Parts shorter than 2 chars are dropped.
+ */
+export function splitIdentifierWords(identifier: string): string[] {
+  if (!identifier) return [];
+  const spaced = identifier
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/[^a-zA-Z0-9]+/g, ' ');
+  const words = new Set<string>();
+  for (const word of spaced.split(/\s+/)) {
+    const lower = word.toLowerCase();
+    if (lower.length >= 2) words.add(lower);
+  }
+  return [...words];
+}
+
+/**
  * Score path relevance to a query
  * Higher score = more relevant path
  */
