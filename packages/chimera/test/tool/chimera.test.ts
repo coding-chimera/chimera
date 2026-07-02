@@ -268,6 +268,27 @@ describe("tool.chimera", () => {
     }),
   )
 
+
+  it.instance("closes read-only scoped graph state without closing cached graph state", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "scoped.ts"), "export const scoped = 1\n"))
+      yield* initGraph()
+
+      const readOnlyState = yield* Chimera.withProjectGraph(
+        { readOnly: true, watch: false, sync: false },
+        (state) => Effect.succeed(state),
+      )
+      expect(() => readOnlyState.graph.snapshot()).toThrow()
+
+      const cachedState = yield* Chimera.withProjectGraph(
+        { watch: false, sync: false },
+        (state) => Effect.succeed(state),
+      )
+      expect(cachedState.graph.snapshot().fileCount).toBeGreaterThan(0)
+    }),
+  )
+
   it.instance("searches indexed symbols", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
