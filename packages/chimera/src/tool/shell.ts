@@ -68,6 +68,25 @@ const CMD_FILES = new Set([
 const FLAGS = new Set(["-destination", "-literalpath", "-path"])
 const SWITCHES = new Set(["-confirm", "-debug", "-force", "-nonewline", "-recurse", "-verbose", "-whatif"])
 
+function isExpectedDiffInspectionExit(command: string, code: number | null) {
+  if (code !== 1) return false
+  const statements = command
+    .split(/;|&&|\|\|/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+  if (statements.length === 0) return false
+  return statements.every(
+    (statement) =>
+      /^git(?:\s+-C\s+(?:"[^"]+"|'[^']+'|\S+))?\s+diff\b/.test(statement) && /\s--no-index(?:\s|$)/.test(statement),
+  )
+}
+
+function shellOracleStatus(command: string, code: number | null, expired: boolean, aborted: boolean) {
+  if (expired || aborted) return "fail"
+  if (code === 0 || isExpectedDiffInspectionExit(command, code)) return "pass"
+  return "fail"
+}
+
 type Part = {
   type: string
   text: string
@@ -584,7 +603,7 @@ export const ShellTool = Tool.define(
         kind: "shell",
         toolID: ShellID.ToolID,
         ctx,
-        status: code === 0 && !expired && !aborted ? "pass" : "fail",
+        status: shellOracleStatus(input.command, code, expired, aborted),
         startedAt,
         finishedAt,
         payload: {
