@@ -7,6 +7,7 @@ import { GlobTool } from "./glob"
 import { GrepTool } from "./grep"
 import { ReadTool } from "./read"
 import { TaskTool } from "./task"
+import { ChimeraSwarmTool } from "./swarm"
 import { TodoWriteTool } from "./todo"
 import { WebFetchTool } from "./webfetch"
 import { WriteTool } from "./write"
@@ -148,6 +149,7 @@ export const layer: Layer.Layer<
     const chimeraObligationClaimTool = yield* ChimeraObligationClaimTool
     const chimeraObligationResolveTool = yield* ChimeraObligationResolveTool
     const chimeraObligationIgnoreTool = yield* ChimeraObligationIgnoreTool
+    const chimeraSwarmTool = yield* ChimeraSwarmTool
     const agent = yield* Agent.Service
 
     const state = yield* InstanceState.make<State>(
@@ -260,6 +262,7 @@ export const layer: Layer.Layer<
           chimeraObligationClaim: Tool.init(chimeraObligationClaimTool),
           chimeraObligationResolve: Tool.init(chimeraObligationResolveTool),
           chimeraObligationIgnore: Tool.init(chimeraObligationIgnoreTool),
+          chimeraSwarm: Tool.init(chimeraSwarmTool),
         })
 
         return {
@@ -275,6 +278,7 @@ export const layer: Layer.Layer<
             tool.write,
             tool.workbrief,
             tool.task,
+            tool.chimeraSwarm,
             tool.fetch,
             tool.todo,
             tool.search,
