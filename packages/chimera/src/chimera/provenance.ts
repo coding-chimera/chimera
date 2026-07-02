@@ -781,4 +781,16 @@ export const openProjectGraph = Effect.fn("Chimera.openProjectGraph")(function* 
   return s
 })
 
+export function withProjectGraph<A, E, R>(
+  input: OpenProjectGraphInput,
+  use: (state: ProjectGraphState) => Effect.Effect<A, E, R>,
+) {
+  const readOnly = input.readOnly === true
+  return Effect.acquireUseRelease(
+    openProjectGraph(input),
+    use,
+    (state) => readOnly ? Effect.promise(() => state.graph.close()).pipe(Effect.ignore) : Effect.void,
+  )
+}
+
 export * as Chimera from "./provenance"
