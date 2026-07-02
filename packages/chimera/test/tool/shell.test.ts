@@ -216,6 +216,40 @@ describe("tool.shell", () => {
       },
     })
   })
+
+  test("records git diff --no-index differences as passing shell oracle evidence", async () => {
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(path.join(dir, "before.txt"), "before\n")
+        await Bun.write(path.join(dir, "after.txt"), "after\n")
+      },
+    })
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const bash = await initShell()
+        const result = await Effect.runPromise(
+          bash.execute(
+            {
+              command: `git diff --no-index -- ${quote(path.join(tmp.path, "before.txt"))} ${quote(path.join(tmp.path, "after.txt"))}`,
+              description: "Shows expected no-index diff",
+            },
+            ctx,
+          ),
+        )
+        const records = await readOracleResults(
+          tmp.path,
+          path.join(getCodeGraphDir(tmp.path), "chimera", "oracle-results.jsonl"),
+          { sessionID: ctx.sessionID, includePassing: true },
+        )
+
+        expect(result.metadata.exit).toBe(1)
+        expect(records[0]?.kind).toBe("shell")
+        expect(records[0]?.status).toBe("pass")
+        expect(JSON.stringify(records[0]?.payload)).toContain("git diff --no-index")
+      },
+    })
+  })
 })
 
 describe("tool.shell permissions", () => {
