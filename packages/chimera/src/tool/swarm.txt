@@ -1,0 +1,26 @@
+Run a bounded set of subagent tasks from one prompt template.
+
+Use this tool when you already have a small frontier of independent work items and want parallel subagent review or repair. Common Chimera v1 flow is audit evidence -> swarm template+items -> bounded subagent fan-out:
+1. Gather evidence with `chimera_audit_recent`, `chimera_audit`, `chimera_obligations_list`, or `chimera_oracle_recent`.
+2. Call this tool with either explicit `items` or a supported `from` source.
+3. Use a focused `prompt_template` that contains `{{item}}`; the tool expands one child task per item.
+4. Summarize child results yourself, apply any needed edits, then run audit/tests/oracles separately.
+
+This is a thin fan-out helper, not a planner or automatic repair loop. It does not build PlanGraph, lock files, claim obligations, apply edits, rerun audits, or decide convergence for you.
+
+Prompt templates support:
+- `{{item}}`: formatted item text or JSON
+- `{{index}}`: 1-based item index
+- `{{total}}`: total item count
+
+Supported `preset` values:
+- `audit-repair`: ask each subagent to inspect one audit/obligation item and propose or apply a narrowly scoped fix if appropriate.
+- `audit-review`: ask each subagent to review one audit/obligation item and report whether it is actionable, irrelevant, duplicate, or out of scope.
+- `oracle-followup`: ask each subagent to investigate one failing/unknown oracle and explain the likely cause and next check.
+- `file-review`: ask each subagent to review one explicit file/item for risks or follow-up.
+
+Supported `from` sources:
+- `pending_obligations`, `claimed_obligations`, `stale_obligations`, `active_obligations`
+- `failing_oracles`, `unknown_oracles`, `failing_or_unknown_oracles`
+
+Prefer explicit `items` when you need precise control. Use `from` only for the listed Chimera evidence sources. Unsupported or empty sources return a clear error rather than fabricating work.
