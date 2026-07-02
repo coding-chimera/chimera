@@ -30,6 +30,7 @@ import { ConfigFormatter } from "./formatter"
 import { ConfigLayout } from "./layout"
 import { ConfigLSP } from "./lsp"
 import { ConfigManaged } from "./managed"
+import { ConfigMemory } from "./memory"
 import { ConfigMCP } from "./mcp"
 import { ConfigModelID } from "./model-id"
 import { ConfigParse } from "./parse"
@@ -282,6 +283,9 @@ export const Info = Schema.Struct({
       }),
     }),
   ),
+  memories: Schema.optional(ConfigMemory.Info).annotate({
+    description: "Cross-session memory configuration. Disabled unless explicitly enabled.",
+  }),
   experimental: Schema.optional(
     Schema.Struct({
       disable_paste_summary: Schema.optional(Schema.Boolean),

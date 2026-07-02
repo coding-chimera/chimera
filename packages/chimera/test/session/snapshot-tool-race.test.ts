@@ -34,9 +34,11 @@ import { Bus } from "../../src/bus"
 import { Command } from "../../src/command"
 import { ChimeraPromptContext } from "@/chimera/prompt-context"
 import { Config } from "@/config/config"
+import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
 import { Auth } from "@/auth"
 import { LSP } from "@/lsp/lsp"
 import { MCP } from "../../src/mcp"
+import { Memory } from "@/memory/memory"
 import { Permission } from "../../src/permission"
 import { Plugin } from "../../src/plugin"
 import { Provider as ProviderSvc } from "@/provider/provider"
@@ -142,6 +144,7 @@ function makeHttp() {
     Layer.provideMerge(question),
     Layer.provideMerge(deps),
   )
+  const memory = Memory.layer.pipe(Layer.provide(EffectFlock.defaultLayer), Layer.provideMerge(deps))
   const trunc = Truncate.layer.pipe(Layer.provideMerge(deps))
   const proc = SessionProcessor.layer.pipe(Layer.provide(SessionSummary.defaultLayer), Layer.provideMerge(deps))
   const compact = SessionCompaction.layer.pipe(
@@ -161,6 +164,7 @@ function makeHttp() {
       Layer.provideMerge(registry),
       Layer.provideMerge(trunc),
       Layer.provideMerge(workBrief),
+      Layer.provideMerge(memory),
       Layer.provideMerge(chimeraPromptContext),
       Layer.provide(Instruction.defaultLayer),
       Layer.provide(SystemPrompt.defaultLayer),

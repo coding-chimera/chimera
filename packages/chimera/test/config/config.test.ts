@@ -597,6 +597,34 @@ test("loads remote compaction protocol config", async () => {
   })
 })
 
+test("loads cross-session memory config", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await writeConfig(dir, {
+        $schema: "https://chimera.ai/config.json",
+        memories: {
+          enabled: true,
+          use_memories: true,
+          generate_memories: false,
+          dedicated_tools: false,
+          disable_on_external_context: true,
+          max_summary_chars: 2048,
+        },
+      })
+    },
+  })
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const config = await load()
+      expect(config.memories?.enabled).toBe(true)
+      expect(config.memories?.use_memories).toBe(true)
+      expect(config.memories?.generate_memories).toBe(false)
+      expect(config.memories?.max_summary_chars).toBe(2048)
+    },
+  })
+})
+
 test("throws error for invalid JSON", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {

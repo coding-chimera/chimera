@@ -5,7 +5,7 @@ import { Schema } from "effect"
 import type { ModelMessage, Tool } from "ai"
 
 const ContextMarker = "<runtime-context>"
-const RuntimeContextTerms = ["## Current Work Brief", "## Chimera Execution Context", ContextMarker]
+const RuntimeContextTerms = ["## Current Work Brief", "## Chimera Execution Context", "## Cross-Session Memory", ContextMarker]
 
 export const Block = Schema.Struct({
   kind: Schema.String,

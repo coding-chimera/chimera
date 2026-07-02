@@ -10,10 +10,12 @@ import { Agent as AgentSvc } from "../../src/agent/agent"
 import { Bus } from "../../src/bus"
 import { Command } from "../../src/command"
 import { ChimeraPromptContext } from "@/chimera/prompt-context"
+import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
 import { Config } from "@/config/config"
 import { Auth } from "@/auth"
 import { LSP } from "@/lsp/lsp"
 import { MCP } from "../../src/mcp"
+import { Memory } from "@/memory/memory"
 import { Permission } from "../../src/permission"
 import { Plugin } from "../../src/plugin"
 import { Provider as ProviderSvc } from "@/provider/provider"
@@ -199,6 +201,7 @@ function makeHttp() {
     Layer.provideMerge(question),
     Layer.provideMerge(deps),
   )
+  const memory = Memory.layer.pipe(Layer.provide(EffectFlock.defaultLayer), Layer.provideMerge(deps))
   const trunc = Truncate.layer.pipe(Layer.provideMerge(deps))
   const proc = SessionProcessor.layer.pipe(Layer.provide(summary), Layer.provideMerge(deps))
   const compact = SessionCompaction.layer.pipe(
@@ -217,6 +220,7 @@ function makeHttp() {
       Layer.provideMerge(registry),
       Layer.provideMerge(trunc),
       Layer.provideMerge(workBrief),
+      Layer.provideMerge(memory),
       Layer.provideMerge(chimeraPromptContext),
       Layer.provide(Instruction.defaultLayer),
       Layer.provide(SystemPrompt.defaultLayer),
@@ -271,6 +275,18 @@ function providerCfg(url: string) {
           baseURL: url,
         },
       },
+    },
+  }
+}
+
+function memoryProviderCfg(url: string) {
+  return {
+    ...providerCfg(url),
+    memories: {
+      enabled: true,
+      use_memories: true,
+      generate_memories: true,
+      disable_on_external_context: true,
     },
   }
 }
@@ -647,6 +663,106 @@ it.live("injects current work brief into the LLM input", () =>
       expect(body).toContain("Use mutable suffix instead of rewriting history.")
     }),
     { git: true, config: providerCfg },
+  ),
+)
+
+it.live("does not inject cross-session memory unless enabled", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const memory = yield* Memory.Service
+      const session = yield* sessions.create({
+        title: "Memory disabled",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      const roots = yield* memory.paths()
+      yield* Effect.promise(() => fs.mkdir(roots.project, { recursive: true }))
+      yield* Effect.promise(() => Bun.write(path.join(roots.project, "memory_summary.md"), "hidden saved preference"))
+
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "hello memory disabled" }],
+      })
+      yield* llm.text("world")
+      yield* prompt.loop({ sessionID: session.id })
+
+      const input = (yield* llm.inputs).at(-1) as { messages?: Array<{ role?: string; content?: unknown }> } | undefined
+      const body = JSON.stringify(input?.messages ?? [])
+      expect(body).not.toContain("## Cross-Session Memory")
+      expect(body).not.toContain("hidden saved preference")
+    }),
+    { git: true, config: providerCfg },
+  ),
+)
+
+it.live("injects enabled cross-session memory as runtime user context", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const memory = yield* Memory.Service
+      const session = yield* sessions.create({
+        title: "Memory enabled",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* memory.appendNote({ text: "Prefer small focused diffs for this project." })
+
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "hello memory enabled" }],
+      })
+      yield* llm.text("world")
+      yield* prompt.loop({ sessionID: session.id })
+
+      const input = (yield* llm.inputs).at(-1) as { messages?: Array<{ role?: string; content?: unknown }> } | undefined
+      const messages = input?.messages ?? []
+      const memoryIndex = messages.findIndex((msg) => msg.role === "user" && JSON.stringify(msg).includes("## Cross-Session Memory"))
+      const userIndex = messages.findIndex((msg) => msg.role === "user" && JSON.stringify(msg).includes("hello memory enabled"))
+      expect(memoryIndex).toBeGreaterThan(-1)
+      expect(userIndex).toBeGreaterThan(memoryIndex)
+      expect(JSON.stringify(messages.filter((msg) => msg.role === "system"))).not.toContain("## Cross-Session Memory")
+      expect(JSON.stringify(messages)).toContain("Prefer small focused diffs for this project.")
+    }),
+    { git: true, config: memoryProviderCfg },
+  ),
+)
+
+it.live("captures explicit memory directives and skips external-context turns", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* () {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const memory = yield* Memory.Service
+      const session = yield* sessions.create({
+        title: "Memory capture",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "remember: Prefer deterministic memory tests" }],
+      })
+      expect(yield* memory.readSummary()).toContain("Prefer deterministic memory tests")
+
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [
+          { type: "text", text: "remember: Do not save this file-derived note" },
+          { type: "file", mime: "text/plain", filename: "context.txt", url: "file:///tmp/context.txt" },
+        ],
+      })
+      expect(yield* memory.readSummary()).not.toContain("Do not save this file-derived note")
+    }),
+    { git: true, config: memoryProviderCfg },
   ),
 )
 

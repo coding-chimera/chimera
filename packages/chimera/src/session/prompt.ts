@@ -40,6 +40,7 @@ import { SessionSummary } from "./summary"
 import { WorkBrief } from "./work-brief"
 import { PromptStats } from "./prompt-stats"
 import { ChimeraPromptContext } from "@/chimera/prompt-context"
+import { Memory } from "@/memory/memory"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { SessionProcessor } from "./processor"
 import { Tool } from "@/tool/tool"
@@ -203,6 +204,7 @@ export const layer = Layer.effect(
     const summary = yield* SessionSummary.Service
     const workBrief = yield* WorkBrief.Service
     const chimeraPromptContext = yield* ChimeraPromptContext.Service
+    const memory = yield* Memory.Service
     const sys = yield* SystemPrompt.Service
     const llm = yield* LLM.Service
     const question = yield* Question.Service
@@ -1732,6 +1734,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
         yield* revert.cleanup(session)
         const message = yield* createUserMessage(input)
+        yield* memory.captureFromUserMessage(message).pipe(Effect.ignore)
         yield* sessions.touch(input.sessionID)
 
         const permissions: Permission.Ruleset = []
@@ -1956,17 +1959,21 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
             yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
 
-            const [skills, env, instructions] = yield* Effect.all([
+            const [skills, env, instructions, memoryFragment] = yield* Effect.all([
               sys.skills(agent),
               sys.environment(model),
               instruction.system().pipe(Effect.orDie),
+              memory.renderPromptFragment(),
             ])
             const currentUserIndex = msgs.findIndex((m) => m.info.id === lastUser.id)
             const splitModelMsgs = yield* Effect.gen(function* () {
+              const runtime = memoryFragment
+                ? ([{ role: "user" as const, content: memoryFragment }] satisfies ModelMessage[])
+                : ([] as ModelMessage[])
               if (currentUserIndex === -1) {
                 return {
                   history: [] as ModelMessage[],
-                  runtime: [] as ModelMessage[],
+                  runtime,
                   current: yield* MessageV2.toModelMessagesEffect(msgs, model, { remoteCompaction }),
                 }
               }
@@ -1974,9 +1981,9 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 MessageV2.toModelMessagesEffect(msgs.slice(0, currentUserIndex), model, { remoteCompaction }),
                 MessageV2.toModelMessagesEffect(msgs.slice(currentUserIndex), model, { remoteCompaction }),
               ])
-              return { history, runtime: [] as ModelMessage[], current }
+              return { history, runtime, current }
             })
-            const modelMsgs = [...splitModelMsgs.history, ...splitModelMsgs.current]
+            const modelMsgs = [...splitModelMsgs.history, ...splitModelMsgs.runtime, ...splitModelMsgs.current]
             const system = [
               ...env,
               ...instructions,
@@ -2259,7 +2266,9 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(Question.defaultLayer),
     Layer.provide(Session.defaultLayer),
     Layer.provide(SessionRevert.defaultLayer),
-    Layer.provide(Layer.mergeAll(SessionSummary.defaultLayer, WorkBrief.defaultLayer, ChimeraPromptContext.defaultLayer)),
+    Layer.provide(
+      Layer.mergeAll(SessionSummary.defaultLayer, WorkBrief.defaultLayer, ChimeraPromptContext.defaultLayer, Memory.defaultLayer),
+    ),
     Layer.provide(
       Layer.mergeAll(
         Agent.defaultLayer,
