@@ -718,6 +718,27 @@ function openProjectGraphForTool(ctx: Tool.Context, refresh: boolean, options: {
   )
 }
 
+function withProjectGraphForTool<A, E, R>(
+  ctx: Tool.Context,
+  refresh: boolean,
+  options: { init?: boolean; readOnly?: boolean },
+  use: (state: ProjectGraphState) => Effect.Effect<A, E, R>,
+) {
+  const reporter = createSyncProgressReporter(ctx, refresh && !options.readOnly)
+  return Chimera.withProjectGraph(
+    {
+      init: options.init ?? false,
+      readOnly: options.readOnly,
+      sync: refresh && !options.readOnly,
+      watch: false,
+      onProgress: reporter.onProgress,
+    },
+    use,
+  ).pipe(
+    Effect.ensuring(Effect.sync(() => reporter.done())),
+  )
+}
+
 function contextProjectRoot(input: { directory: string; worktree: string }) {
   return input.worktree === "/" ? input.directory : input.worktree
 }
@@ -2104,49 +2125,56 @@ export const ChimeraStatusTool = Tool.define<typeof StatusParameters, StatusMeta
             },
           }
         }
-        const state = yield* openProjectGraphForTool(ctx as Tool.Context, params.refresh !== false, { init: false, readOnly: true })
-        const snapshot = state.graph.snapshot()
-        const stats = state.graph.stats()
-        const provenanceRecords = yield* provenanceRecordCount(state.projectRoot, state.artifact)
-        const obligations = yield* readObligationSummary(state.projectRoot, state.artifact, state.storePath, 0)
+        return yield* withProjectGraphForTool(
+          ctx as Tool.Context,
+          params.refresh !== false,
+          { init: false, readOnly: true },
+          (state) =>
+            Effect.gen(function* () {
+              const snapshot = state.graph.snapshot()
+              const stats = state.graph.stats()
+              const provenanceRecords = yield* provenanceRecordCount(state.projectRoot, state.artifact)
+              const obligations = yield* readObligationSummary(state.projectRoot, state.artifact, state.storePath, 0)
 
-        return {
-          title: "Chimera status",
-          output: [
-            "Chimera graph surface is ready.",
-            `Project: ${state.projectRoot}`,
-            `Data root: ${dataRoot.dataRoot}`,
-            `Data root status: ${dataRoot.dataRootStatus}`,
-            job ? `Graph job: ${job.kind} ${job.status}${job.phase ? ` — ${job.phase}` : ""}` : undefined,
-            `Files: ${snapshot.fileCount}`,
-            `Nodes: ${snapshot.nodeCount}`,
-            `Edges: ${snapshot.edgeCount}`,
-            `Revision: ${snapshot.revision}`,
-            `Indexed at: ${snapshot.indexedAt}`,
-            `Backend: ${state.graph.backend()}`,
-            `Journal mode: ${state.graph.journalMode()}`,
-            `Chimera store: ${state.storePath}`,
-            `Tool provenance records: ${provenanceRecords}`,
-            `Pending obligations: ${obligations.counts.pending}`,
-          ].filter(Boolean).join("\n"),
-          metadata: {
-            initialized: true,
-            projectRoot: state.projectRoot,
-            dataRoot: dataRoot.dataRoot,
-            dataRootStatus: dataRoot.dataRootStatus,
-            jobStatus: job,
-            artifact: state.artifact,
-            storePath: state.storePath,
-            obligationsArtifact: obligations.artifact,
-            snapshot,
-            stats,
-            backend: String(state.graph.backend()),
-            journalMode: state.graph.journalMode(),
-            provenanceRecords,
-            obligationCounts: obligations.counts,
-            pendingObligations: obligations.counts.pending,
-          },
-        }
+              return {
+                title: "Chimera status",
+                output: [
+                  "Chimera graph surface is ready.",
+                  `Project: ${state.projectRoot}`,
+                  `Data root: ${dataRoot.dataRoot}`,
+                  `Data root status: ${dataRoot.dataRootStatus}`,
+                  job ? `Graph job: ${job.kind} ${job.status}${job.phase ? ` — ${job.phase}` : ""}` : undefined,
+                  `Files: ${snapshot.fileCount}`,
+                  `Nodes: ${snapshot.nodeCount}`,
+                  `Edges: ${snapshot.edgeCount}`,
+                  `Revision: ${snapshot.revision}`,
+                  `Indexed at: ${snapshot.indexedAt}`,
+                  `Backend: ${state.graph.backend()}`,
+                  `Journal mode: ${state.graph.journalMode()}`,
+                  `Chimera store: ${state.storePath}`,
+                  `Tool provenance records: ${provenanceRecords}`,
+                  `Pending obligations: ${obligations.counts.pending}`,
+                ].filter(Boolean).join("\n"),
+                metadata: {
+                  initialized: true,
+                  projectRoot: state.projectRoot,
+                  dataRoot: dataRoot.dataRoot,
+                  dataRootStatus: dataRoot.dataRootStatus,
+                  jobStatus: job,
+                  artifact: state.artifact,
+                  storePath: state.storePath,
+                  obligationsArtifact: obligations.artifact,
+                  snapshot,
+                  stats,
+                  backend: String(state.graph.backend()),
+                  journalMode: state.graph.journalMode(),
+                  provenanceRecords,
+                  obligationCounts: obligations.counts,
+                  pendingObligations: obligations.counts.pending,
+                },
+              }
+            }),
+        )
       }).pipe(Effect.orDie),
   }),
 )
@@ -2184,31 +2212,38 @@ export const ChimeraSearchTool = Tool.define<typeof SearchParameters, SearchMeta
             },
           }
         }
-        const state = yield* openProjectGraphForTool(ctx as Tool.Context, params.refresh !== false, { init: false, readOnly: true })
-        const limit = bounded(params.limit, 10, 50)
-        const snapshot = state.graph.snapshot()
-        const kinds = params.kind ? [params.kind] : undefined
-        const results = state.graph.searchNodes(params.query, { kinds, limit })
+        return yield* withProjectGraphForTool(
+          ctx as Tool.Context,
+          params.refresh !== false,
+          { init: false, readOnly: true },
+          (state) =>
+            Effect.sync(() => {
+              const limit = bounded(params.limit, 10, 50)
+              const snapshot = state.graph.snapshot()
+              const kinds = params.kind ? [params.kind] : undefined
+              const results = state.graph.searchNodes(params.query, { kinds, limit })
 
-        return {
-          title: "Chimera search",
-          output: [
-            `Static graph evidence (${results.length} result${results.length === 1 ? "" : "s"}):`,
-            ...results.map((result) => formatNode(result.node)),
-          ].join("\n"),
-          metadata: {
-            projectRoot: state.projectRoot,
-            initialized: true,
-            dataRoot: dataRoot.dataRoot,
-            dataRootStatus: dataRoot.dataRootStatus,
-            jobStatus: job,
-            snapshot,
-            results: results.map((result) => ({
-              ...result,
-              projection: state.graph.projectNode(result.node, snapshot),
-            })),
-          },
-        }
+              return {
+                title: "Chimera search",
+                output: [
+                  `Static graph evidence (${results.length} result${results.length === 1 ? "" : "s"}):`,
+                  ...results.map((result) => formatNode(result.node)),
+                ].join("\n"),
+                metadata: {
+                  projectRoot: state.projectRoot,
+                  initialized: true,
+                  dataRoot: dataRoot.dataRoot,
+                  dataRootStatus: dataRoot.dataRootStatus,
+                  jobStatus: job,
+                  snapshot,
+                  results: results.map((result) => ({
+                    ...result,
+                    projection: state.graph.projectNode(result.node, snapshot),
+                  })),
+                },
+              }
+            }),
+        )
       }).pipe(Effect.orDie),
   }),
 )
