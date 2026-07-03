@@ -145,9 +145,13 @@ describe("tool.chimera_swarm", () => {
       expect(result.metadata.failureCount).toBe(0)
       expect(prompts).toEqual(["Review 1/2: alpha", 'Review 2/2: {\n  "target": "beta"\n}'])
       expect(yield* sessions.children(parent.chat.id)).toHaveLength(2)
-      expect(result.output).toContain("success: 2")
-      expect(result.output).toContain("Parent closeout recommendations")
-      expect(result.output).toContain("Changed files")
+
+      const output = JSON.parse(result.output)
+      expect(output.success).toBe(2)
+      expect(output.failure).toBe(0)
+      expect(output.results).toHaveLength(2)
+      expect(output.parentCloseout.length).toBeGreaterThan(0)
+      expect(output.results.every((r: { outputFile?: string }) => typeof r.outputFile === "string")).toBe(true)
     }),
   )
 
@@ -171,8 +175,10 @@ describe("tool.chimera_swarm", () => {
       )
 
       expect(result.metadata.scopeWarningCount).toBe(1)
-      expect(result.output).toContain("Scope warnings")
-      expect(result.output).toContain("src/shared.ts appears in items 1, 2")
+
+      const output = JSON.parse(result.output)
+      expect(output.scopeWarnings).toHaveLength(1)
+      expect(output.scopeWarnings[0].message).toContain("src/shared.ts appears in items 1, 2")
       expect(prompts[0]).toContain("Scope warning")
       expect(prompts[1]).toContain("Scope warning")
       expect(result.metadata.successCount).toBe(2)
@@ -337,6 +343,43 @@ describe("tool.chimera_swarm", () => {
       expect(tool?.description).toContain("scope warnings")
       expect(tool?.description).toContain("Status, Changed files, Verification")
       expect(tool?.description).toContain("parent agent owns conflict handling")
+    }),
+  )
+
+  it.instance("extracts structured summaries from child results", () =>
+    Effect.gen(function* () {
+      const parent = yield* seed()
+      const tool = yield* ChimeraSwarmTool
+      const def = yield* tool.init()
+      const result = yield* def.execute(
+        {
+          prompt_template: "Handle {{item}}",
+          items: ["first", "second"],
+          subagent_type: "general",
+          concurrency: 2,
+        },
+        ctx(
+          parent,
+          stubOps({
+            text: [
+              "Status: actionable",
+              "Changed files: src/first.ts",
+              "Verification: bun test passed",
+              "Remaining risk: low",
+              "Parent follow-up: closeout",
+            ].join("\n"),
+          }),
+        ),
+      )
+
+      const output = JSON.parse(result.output)
+      expect(output.results).toHaveLength(2)
+      expect(output.results[0].summary.status).toBe("actionable")
+      expect(output.results[0].summary.changedFiles).toBe("src/first.ts")
+      expect(output.results[0].summary.verification).toBe("bun test passed")
+      expect(output.results[0].summary.remainingRisk).toBe("low")
+      expect(output.results[0].summary.parentFollowUp).toBe("closeout")
+      expect(typeof output.results[0].outputFile).toBe("string")
     }),
   )
 })

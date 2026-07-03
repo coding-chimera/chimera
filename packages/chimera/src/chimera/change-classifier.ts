@@ -1,6 +1,7 @@
 import path from "path"
 import { createHash } from "crypto"
 import type { CodeGraphAdapter } from "./codegraph-adapter"
+import { ProjectionMemo } from "./projection-memo"
 import {
   diffFileSemantics,
   diffNodeLanguageSignals,
@@ -114,7 +115,7 @@ type DiffInfo = {
   hunks: SourceHunk[]
 }
 
-type ProjectionGraph = Pick<CodeGraphAdapter, "nodesInFile" | "projectNode" | "incidentRelations">
+type ProjectionGraph = Pick<CodeGraphAdapter, "nodesInFile" | "projectNode" | "projectNodeWithMemo" | "incidentRelations">
 
 const CALLABLE_KINDS = new Set(["function", "method", "component"])
 const CONTAINER_KINDS = new Set(["file", "module"])
@@ -347,9 +348,17 @@ function metadataDiffs(record: ToolMutationRecord): DiffInfo[] {
   return [...directDiffs, ...fileDiffs]
 }
 
-export function collectFileProjections(graph: ProjectionGraph, files: ProvenanceFile[], snapshot: CodeGraphSnapshot) {
+export function collectFileProjections(graph: ProjectionGraph, files: ProvenanceFile[], snapshot: CodeGraphSnapshot, memo?: ProjectionMemo) {
   return files.flatMap((file) =>
-    file.graphPath ? graph.nodesInFile(file.graphPath).flatMap((node) => graph.projectNode(node, snapshot) ?? []) : [],
+    file.graphPath
+      ? graph.nodesInFile(file.graphPath).flatMap((node) => {
+          if (memo) {
+            const projection = graph.projectNodeWithMemo(node, memo, snapshot)
+            return projection ? [projection] : []
+          }
+          return graph.projectNode(node, snapshot) ?? []
+        })
+      : [],
   )
 }
 
