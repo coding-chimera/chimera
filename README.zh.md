@@ -25,6 +25,7 @@ Chimera 明确致谢并引用这些设计来源：
 - [Kimi Code][kimi-code] 为 Kimi 模型相关优化提供参考，包括针对 Kimi 模型的 provider prompt、工具、搜索和认证路径设计。
 - [Codex][codex] 为 OpenAI/Codex/GPT 模型路径提供参考，包括上下文纪律、Responses 直连和 OAuth 集成模式。
 - [CodeGraph][codegraph] 提供仓库图谱和语义证据底座，是 Chimera 影响面分析与传播审计方向的基础参考。
+- [OpenCodeUI][opencode-ui] 提供 Web 用户界面（`packages/newweb`），其许可为 GPL-3.0。
 
 这些引用说明的是架构血统和实现参考。Chimera 不自称 upstream opencode、Kimi Code、Codex 或 CodeGraph；它是在这些系统基础和启发上组合出的 Chimera 发行版。
 
@@ -131,9 +132,14 @@ npm install -g --prefix "$prefix" dist/npm-tarballs/chimera-darwin-arm64-no-webu
 
 ## 许可证
 
+Chimera 核心发行版（含 CLI、图谱运行时和 Agent 包）采用 MIT 许可。
+
+WebUI 组件（`packages/newweb`）采用 GPL-3.0 许可，源自 [OpenCodeUI][opencode-ui]。使用 `--with-webui` 构建的版本会嵌入该组件，受两种许可条款约束。
+
 MIT
 
 [upstream-opencode]: https://github.com/anomalyco/opencode
 [kimi-code]: https://github.com/MoonshotAI/kimi-code
 [codex]: https://github.com/coding-chimera/codex
 [codegraph]: https://github.com/colbymchenry/codegraph
+[opencode-ui]: https://github.com/lehhair/OpenCodeUI
