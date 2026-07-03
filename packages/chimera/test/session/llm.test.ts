@@ -306,7 +306,7 @@ async function capturePromptRoutingSystem(input: { providerID: string; modelID: 
       await Bun.write(
         path.join(dir, "chimera.json"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           enabled_providers: [input.providerID],
           provider: {
             [input.providerID]: {
@@ -440,7 +440,7 @@ describe("session.llm.stream", () => {
         await Bun.write(
           path.join(dir, "chimera.json"),
           JSON.stringify({
-            $schema: "https://chimera.ai/config.json",
+            $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
             enabled_providers: [providerID],
             provider: {
               [providerID]: {
@@ -529,7 +529,7 @@ describe("session.llm.stream", () => {
         await Bun.write(
           path.join(dir, "chimera.json"),
           JSON.stringify({
-            $schema: "https://chimera.ai/config.json",
+            $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
             enabled_providers: [providerID],
             provider: {
               [providerID]: {
@@ -610,7 +610,7 @@ describe("session.llm.stream", () => {
         await Bun.write(
           path.join(dir, "chimera.json"),
           JSON.stringify({
-            $schema: "https://chimera.ai/config.json",
+            $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
             enabled_providers: [providerID],
             provider: {
               [providerID]: {
@@ -695,7 +695,7 @@ describe("session.llm.stream", () => {
         await Bun.write(
           path.join(dir, "chimera.json"),
           JSON.stringify({
-            $schema: "https://chimera.ai/config.json",
+            $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
             enabled_providers: [providerID],
             provider: {
               [providerID]: {
@@ -792,7 +792,7 @@ describe("session.llm.stream", () => {
           await Bun.write(
             path.join(dir, "chimera.json"),
             JSON.stringify({
-              $schema: "https://chimera.ai/config.json",
+              $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
               enabled_providers: ["openai"],
               provider: {
                 openai: {
@@ -916,7 +916,7 @@ describe("session.llm.stream", () => {
         await Bun.write(
           path.join(dir, "chimera.json"),
           JSON.stringify({
-            $schema: "https://chimera.ai/config.json",
+            $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
             enabled_providers: ["openai"],
             provider: {
               openai: {
@@ -1038,7 +1038,7 @@ describe("session.llm.stream", () => {
         await Bun.write(
           path.join(dir, "chimera.json"),
           JSON.stringify({
-            $schema: "https://chimera.ai/config.json",
+            $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
             enabled_providers: ["openai"],
             provider: {
               openai: {
@@ -1164,7 +1164,7 @@ describe("session.llm.stream", () => {
         await Bun.write(
           path.join(dir, "chimera.json"),
           JSON.stringify({
-            $schema: "https://chimera.ai/config.json",
+            $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
             enabled_providers: [providerID],
             provider: {
               [providerID]: {
@@ -1275,7 +1275,7 @@ describe("session.llm.stream", () => {
         await Bun.write(
           path.join(dir, "chimera.json"),
           JSON.stringify({
-            $schema: "https://chimera.ai/config.json",
+            $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
             enabled_providers: ["anthropic"],
             provider: {
               anthropic: {
@@ -1523,7 +1523,7 @@ describe("session.llm.stream", () => {
         await Bun.write(
           path.join(dir, "chimera.json"),
           JSON.stringify({
-            $schema: "https://chimera.ai/config.json",
+            $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
             enabled_providers: [providerID],
             provider: {
               [providerID]: {

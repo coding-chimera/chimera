@@ -58,7 +58,7 @@ test("headers are passed to transports when oauth is enabled (default)", async (
       await Bun.write(
         `${dir}/chimera.json`,
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           mcp: {
             "test-server": {
               type: "remote",

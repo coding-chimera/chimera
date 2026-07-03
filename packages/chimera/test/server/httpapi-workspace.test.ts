@@ -342,7 +342,7 @@ describe("workspace HttpApi", () => {
             "content-type": "application/json",
             "x-chimera-workspace": "internal",
           },
-          body: JSON.stringify({ $schema: "https://chimera.ai/config.json" }),
+          body: JSON.stringify({ $schema: "https://coding-chimera.github.io/chimera/schemas/config.json" }),
         })
 
         const responseBody = yield* Effect.promise(() => response.text())
@@ -359,7 +359,7 @@ describe("workspace HttpApi", () => {
               "content-type": "application/json",
               "x-target-auth": "secret",
             }),
-            body: JSON.stringify({ $schema: "https://chimera.ai/config.json" }),
+            body: JSON.stringify({ $schema: "https://coding-chimera.github.io/chimera/schemas/config.json" }),
           },
         ])
         expect(forwarded[0]?.headers).not.toHaveProperty("x-chimera-directory")

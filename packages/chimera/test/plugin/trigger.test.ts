@@ -34,7 +34,7 @@ function withProject<A, E, R>(source: string, self: Effect.Effect<A, E, R>) {
               path.join(dir, "chimera.json"),
               JSON.stringify(
                 {
-                  $schema: "https://chimera.ai/config.json",
+                  $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
                   plugin: [pathToFileURL(file).href],
                 },
                 null,

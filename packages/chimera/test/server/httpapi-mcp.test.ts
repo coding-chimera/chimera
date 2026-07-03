@@ -46,7 +46,7 @@ function withMcpProject<A, E, R>(self: (dir: string) => Effect.Effect<A, E, R>) 
     yield* fs.writeFileString(
       path.join(dir, "chimera.json"),
       JSON.stringify({
-        $schema: "https://chimera.ai/config.json",
+        $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
         formatter: false,
         lsp: false,
         mcp: {

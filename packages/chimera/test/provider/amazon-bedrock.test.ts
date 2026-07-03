@@ -32,7 +32,7 @@ test("Bedrock: config region takes precedence over AWS_REGION env var", async ()
       await Filesystem.write(
         path.join(dir, "chimera.json"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           provider: {
             "amazon-bedrock": {
               options: {
@@ -62,7 +62,7 @@ test("Bedrock: falls back to AWS_REGION env var when no config region", async ()
       await Filesystem.write(
         path.join(dir, "chimera.json"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
         }),
       )
     },
@@ -85,7 +85,7 @@ test("Bedrock: loads when bearer token from auth.json is present", async () => {
       await Filesystem.write(
         path.join(dir, "chimera.json"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           provider: {
             "amazon-bedrock": {
               options: {
@@ -151,7 +151,7 @@ test("Bedrock: config profile takes precedence over AWS_PROFILE env var", async 
       await Filesystem.write(
         path.join(dir, "chimera.json"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           provider: {
             "amazon-bedrock": {
               options: {
@@ -182,7 +182,7 @@ test("Bedrock: includes custom endpoint in options when specified", async () => 
       await Filesystem.write(
         path.join(dir, "chimera.json"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           provider: {
             "amazon-bedrock": {
               options: {
@@ -213,7 +213,7 @@ test("Bedrock: autoloads when AWS_WEB_IDENTITY_TOKEN_FILE is present", async () 
       await Filesystem.write(
         path.join(dir, "chimera.json"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           provider: {
             "amazon-bedrock": {
               options: {
@@ -249,7 +249,7 @@ test("Bedrock: model with us. prefix should not be double-prefixed", async () =>
       await Filesystem.write(
         path.join(dir, "chimera.json"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           provider: {
             "amazon-bedrock": {
               options: {
@@ -284,7 +284,7 @@ test("Bedrock: model with global. prefix should not be prefixed", async () => {
       await Filesystem.write(
         path.join(dir, "chimera.json"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           provider: {
             "amazon-bedrock": {
               options: {
@@ -318,7 +318,7 @@ test("Bedrock: model with eu. prefix should not be double-prefixed", async () =>
       await Filesystem.write(
         path.join(dir, "chimera.json"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           provider: {
             "amazon-bedrock": {
               options: {
@@ -352,7 +352,7 @@ test("Bedrock: model without prefix in US region should get us. prefix added", a
       await Filesystem.write(
         path.join(dir, "chimera.json"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           provider: {
             "amazon-bedrock": {
               options: {

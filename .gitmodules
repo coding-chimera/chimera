@@ -1,3 +1,3 @@
 [submodule "packages/newweb"]
 	path = packages/newweb
-	url = ssh://git@ssh.github.com:443/logic10492/chimeraUI.git
+	url = git@github.com:logic10492/chimeraUI.git
