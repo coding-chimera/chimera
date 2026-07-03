@@ -111,7 +111,7 @@ async function check(map: (dir: string) => string) {
   await clear()
   try {
     await writeConfig(globalTmp.path, {
-      $schema: "https://chimera.ai/config.json",
+      $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
       snapshot: false,
     })
     await WithInstance.provide({
@@ -145,7 +145,7 @@ test("loads JSON config file", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
       await writeConfig(dir, {
-        $schema: "https://chimera.ai/config.json",
+        $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
         model: "test/model",
         username: "testuser",
       })
@@ -165,7 +165,7 @@ test("loads shell config field", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
       await writeConfig(dir, {
-        $schema: "https://chimera.ai/config.json",
+        $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
         shell: "bash",
       })
     },
@@ -185,7 +185,7 @@ test("updates config and preserves empty shell sentinel", async () => {
       await writeConfig(
         dir,
         {
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           shell: "bash",
         },
         "config.json",
@@ -207,7 +207,7 @@ test("updates global config and omits empty shell key in json", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
       await writeConfig(dir, {
-        $schema: "https://chimera.ai/config.json",
+        $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
         shell: "bash",
       })
     },
@@ -234,7 +234,7 @@ test("updates global config and omits empty shell key in jsonc", async () => {
       await Filesystem.write(
         path.join(dir, "chimera.jsonc"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           shell: "bash",
           model: "test/model",
         }),
@@ -265,7 +265,7 @@ test("loads formatter boolean config", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
       await writeConfig(dir, {
-        $schema: "https://chimera.ai/config.json",
+        $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
         formatter: true,
       })
     },
@@ -283,7 +283,7 @@ test("loads lsp boolean config", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
       await writeConfig(dir, {
-        $schema: "https://chimera.ai/config.json",
+        $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
         lsp: true,
       })
     },
@@ -318,7 +318,7 @@ test("ignores legacy tui keys in opencode config", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
       await writeConfig(dir, {
-        $schema: "https://chimera.ai/config.json",
+        $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
         model: "test/model",
         theme: "legacy",
         tui: { scroll_speed: 4 },
@@ -343,7 +343,7 @@ test("loads JSONC config file", async () => {
         path.join(dir, "chimera.jsonc"),
         `{
         // This is a comment
-        "$schema": "https://chimera.ai/config.json",
+        "$schema": "https://coding-chimera.github.io/chimera/schemas/config.json",
         "model": "test/model",
         "username": "testuser"
       }`,
@@ -366,14 +366,14 @@ test("jsonc overrides json in the same directory", async () => {
       await writeConfig(
         dir,
         {
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           model: "base",
           username: "base",
         },
         "chimera.jsonc",
       )
       await writeConfig(dir, {
-        $schema: "https://chimera.ai/config.json",
+        $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
         model: "override",
       })
     },
@@ -396,7 +396,7 @@ test("handles environment variable substitution", async () => {
     await using tmp = await tmpdir({
       init: async (dir) => {
         await writeConfig(dir, {
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           username: "{env:TEST_VAR}",
         })
       },
@@ -525,7 +525,7 @@ test("handles file inclusion substitution", async () => {
     init: async (dir) => {
       await Filesystem.write(path.join(dir, "included.txt"), "test-user")
       await writeConfig(dir, {
-        $schema: "https://chimera.ai/config.json",
+        $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
         username: "{file:included.txt}",
       })
     },
@@ -544,7 +544,7 @@ test("handles file inclusion with replacement tokens", async () => {
     init: async (dir) => {
       await Filesystem.write(path.join(dir, "included.md"), "const out = await Bun.$`echo hi`")
       await writeConfig(dir, {
-        $schema: "https://chimera.ai/config.json",
+        $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
         username: "{file:included.md}",
       })
     },
@@ -562,7 +562,7 @@ test("validates config schema and throws on invalid fields", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
       await writeConfig(dir, {
-        $schema: "https://chimera.ai/config.json",
+        $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
         invalid_field: "should cause error",
       })
     },
@@ -580,7 +580,7 @@ test("loads remote compaction protocol config", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
       await writeConfig(dir, {
-        $schema: "https://chimera.ai/config.json",
+        $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
         compaction: {
           remote: "auto",
           remote_protocol: "v2",
@@ -615,7 +615,7 @@ test("handles agent configuration", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
       await writeConfig(dir, {
-        $schema: "https://chimera.ai/config.json",
+        $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
         agent: {
           test_agent: {
             model: "test/model",
@@ -645,7 +645,7 @@ test("treats agent variant as model-scoped setting (not provider option)", async
   await using tmp = await tmpdir({
     init: async (dir) => {
       await writeConfig(dir, {
-        $schema: "https://chimera.ai/config.json",
+        $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
         agent: {
           test_agent: {
             model: "openai/gpt-5.2",
@@ -676,7 +676,7 @@ test("handles command configuration", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
       await writeConfig(dir, {
-        $schema: "https://chimera.ai/config.json",
+        $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
         command: {
           test_command: {
             template: "test template",
@@ -706,7 +706,7 @@ test("migrates autoshare to share field", async () => {
       await Filesystem.write(
         path.join(dir, "chimera.json"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           autoshare: true,
         }),
       )
@@ -728,7 +728,7 @@ test("migrates mode field to agent field", async () => {
       await Filesystem.write(
         path.join(dir, "chimera.json"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           mode: {
             test_mode: {
               model: "test/model",
@@ -1089,7 +1089,7 @@ test("resolves scoped npm plugins in config", async () => {
 
       await Filesystem.write(
         path.join(dir, "chimera.json"),
-        JSON.stringify({ $schema: "https://chimera.ai/config.json", plugin: ["@scope/plugin"] }, null, 2),
+        JSON.stringify({ $schema: "https://coding-chimera.github.io/chimera/schemas/config.json", plugin: ["@scope/plugin"] }, null, 2),
       )
     },
   })
@@ -1116,7 +1116,7 @@ test("merges plugin arrays from global and local configs", async () => {
       await Filesystem.write(
         path.join(dir, "chimera.json"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           plugin: ["global-plugin-1", "global-plugin-2"],
         }),
       )
@@ -1125,7 +1125,7 @@ test("merges plugin arrays from global and local configs", async () => {
       await Filesystem.write(
         path.join(opencodeDir, "chimera.json"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           plugin: ["local-plugin-1"],
         }),
       )
@@ -1192,7 +1192,7 @@ test("merges instructions arrays from global and local configs", async () => {
       await Filesystem.write(
         path.join(dir, "chimera.json"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           instructions: ["global-instructions.md", "shared-rules.md"],
         }),
       )
@@ -1200,7 +1200,7 @@ test("merges instructions arrays from global and local configs", async () => {
       await Filesystem.write(
         path.join(opencodeDir, "chimera.json"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           instructions: ["local-instructions.md"],
         }),
       )
@@ -1231,7 +1231,7 @@ test("deduplicates duplicate instructions from global and local configs", async 
       await Filesystem.write(
         path.join(dir, "chimera.json"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           instructions: ["duplicate.md", "global-only.md"],
         }),
       )
@@ -1239,7 +1239,7 @@ test("deduplicates duplicate instructions from global and local configs", async 
       await Filesystem.write(
         path.join(opencodeDir, "chimera.json"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           instructions: ["duplicate.md", "local-only.md"],
         }),
       )
@@ -1275,7 +1275,7 @@ test("deduplicates duplicate plugins from global and local configs", async () =>
       await Filesystem.write(
         path.join(dir, "chimera.json"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           plugin: ["duplicate-plugin", "global-plugin-1"],
         }),
       )
@@ -1284,7 +1284,7 @@ test("deduplicates duplicate plugins from global and local configs", async () =>
       await Filesystem.write(
         path.join(opencodeDir, "chimera.json"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           plugin: ["duplicate-plugin", "local-plugin-1"],
         }),
       )
@@ -1325,7 +1325,7 @@ test("keeps plugin origins aligned with merged plugin list", async () => {
       await Filesystem.write(
         path.join(dir, "chimera.json"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           plugin: [["shared-plugin@1.0.0", { source: "global" }], "global-only@1.0.0"],
         }),
       )
@@ -1333,7 +1333,7 @@ test("keeps plugin origins aligned with merged plugin list", async () => {
       await Filesystem.write(
         path.join(local, "chimera.json"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           plugin: [["shared-plugin@2.0.0", { source: "local" }], "local-only@1.0.0"],
         }),
       )
@@ -1368,7 +1368,7 @@ test("migrates legacy tools config to permissions - allow", async () => {
       await Filesystem.write(
         path.join(dir, "chimera.json"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           agent: {
             test: {
               tools: {
@@ -1399,7 +1399,7 @@ test("migrates legacy tools config to permissions - deny", async () => {
       await Filesystem.write(
         path.join(dir, "chimera.json"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           agent: {
             test: {
               tools: {
@@ -1430,7 +1430,7 @@ test("migrates legacy write tool to edit permission", async () => {
       await Filesystem.write(
         path.join(dir, "chimera.json"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           agent: {
             test: {
               tools: {
@@ -1460,7 +1460,7 @@ test("managed settings override user settings", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
       await writeConfig(dir, {
-        $schema: "https://chimera.ai/config.json",
+        $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
         model: "user/model",
         share: "auto",
         username: "testuser",
@@ -1469,7 +1469,7 @@ test("managed settings override user settings", async () => {
   })
 
   await writeManagedSettings({
-    $schema: "https://chimera.ai/config.json",
+    $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
     model: "managed/model",
     share: "disabled",
   })
@@ -1489,7 +1489,7 @@ test("managed settings override project settings", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
       await writeConfig(dir, {
-        $schema: "https://chimera.ai/config.json",
+        $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
         autoupdate: true,
         disabled_providers: [],
       })
@@ -1497,7 +1497,7 @@ test("managed settings override project settings", async () => {
   })
 
   await writeManagedSettings({
-    $schema: "https://chimera.ai/config.json",
+    $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
     autoupdate: false,
     disabled_providers: ["openai"],
   })
@@ -1516,7 +1516,7 @@ test("missing managed settings file is not an error", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
       await writeConfig(dir, {
-        $schema: "https://chimera.ai/config.json",
+        $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
         model: "user/model",
       })
     },
@@ -1537,7 +1537,7 @@ test("migrates legacy edit tool to edit permission", async () => {
       await Filesystem.write(
         path.join(dir, "chimera.json"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           agent: {
             test: {
               tools: {
@@ -1566,7 +1566,7 @@ test("migrates legacy patch tool to edit permission", async () => {
       await Filesystem.write(
         path.join(dir, "chimera.json"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           agent: {
             test: {
               tools: {
@@ -1595,7 +1595,7 @@ test("migrates mixed legacy tools config", async () => {
       await Filesystem.write(
         path.join(dir, "chimera.json"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           agent: {
             test: {
               tools: {
@@ -1630,7 +1630,7 @@ test("merges legacy tools with existing permission config", async () => {
       await Filesystem.write(
         path.join(dir, "chimera.json"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           agent: {
             test: {
               permission: {
@@ -1665,7 +1665,7 @@ test("permission config preserves user key order", async () => {
       await Filesystem.write(
         path.join(dir, "chimera.json"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           permission: {
             "*": "deny",
             edit: "ask",
@@ -1734,7 +1734,7 @@ test("project config can override MCP server enabled status", async () => {
       await Filesystem.write(
         path.join(dir, "chimera.json"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           mcp: {
             jira: {
               type: "remote",
@@ -1753,7 +1753,7 @@ test("project config can override MCP server enabled status", async () => {
       await Filesystem.write(
         path.join(dir, "chimera.jsonc"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           mcp: {
             jira: {
               type: "remote",
@@ -1792,7 +1792,7 @@ test("MCP config deep merges preserving base config properties", async () => {
       await Filesystem.write(
         path.join(dir, "chimera.json"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           mcp: {
             myserver: {
               type: "remote",
@@ -1809,7 +1809,7 @@ test("MCP config deep merges preserving base config properties", async () => {
       await Filesystem.write(
         path.join(dir, "chimera.jsonc"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           mcp: {
             myserver: {
               type: "remote",
@@ -1844,7 +1844,7 @@ test("local .chimera config can override MCP from project config", async () => {
       await Filesystem.write(
         path.join(dir, "chimera.json"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           mcp: {
             docs: {
               type: "remote",
@@ -1860,7 +1860,7 @@ test("local .chimera config can override MCP from project config", async () => {
       await Filesystem.write(
         path.join(opencodeDir, "chimera.json"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           mcp: {
             docs: {
               type: "remote",
@@ -2197,7 +2197,7 @@ describe("deduplicatePluginOrigins", () => {
         await Filesystem.write(
           path.join(dir, "chimera.json"),
           JSON.stringify({
-            $schema: "https://chimera.ai/config.json",
+            $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
             plugin: ["my-plugin@1.0.0"],
           }),
         )
@@ -2231,7 +2231,7 @@ describe("OPENCODE_DISABLE_PROJECT_CONFIG", () => {
           await Filesystem.write(
             path.join(dir, "chimera.json"),
             JSON.stringify({
-              $schema: "https://chimera.ai/config.json",
+              $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
               model: "project/model",
               username: "project-user",
             }),
@@ -2326,7 +2326,7 @@ describe("OPENCODE_DISABLE_PROJECT_CONFIG", () => {
           await Filesystem.write(
             path.join(dir, "chimera.json"),
             JSON.stringify({
-              $schema: "https://chimera.ai/config.json",
+              $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
               instructions: ["./CUSTOM.md"],
             }),
           )
@@ -2372,7 +2372,7 @@ describe("OPENCODE_DISABLE_PROJECT_CONFIG", () => {
           await Filesystem.write(
             path.join(dir, "chimera.json"),
             JSON.stringify({
-              $schema: "https://chimera.ai/config.json",
+              $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
               model: "configdir/model",
             }),
           )
@@ -2385,7 +2385,7 @@ describe("OPENCODE_DISABLE_PROJECT_CONFIG", () => {
           await Filesystem.write(
             path.join(dir, "chimera.json"),
             JSON.stringify({
-              $schema: "https://chimera.ai/config.json",
+              $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
               model: "project/model",
             }),
           )
@@ -2424,7 +2424,7 @@ describe("OPENCODE_CONFIG_CONTENT token substitution", () => {
     const originalTestVar = process.env["TEST_CONFIG_VAR"]
     process.env["TEST_CONFIG_VAR"] = "test_api_key_12345"
     process.env["OPENCODE_CONFIG_CONTENT"] = JSON.stringify({
-      $schema: "https://chimera.ai/config.json",
+      $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
       username: "{env:TEST_CONFIG_VAR}",
     })
 
@@ -2459,7 +2459,7 @@ describe("OPENCODE_CONFIG_CONTENT token substitution", () => {
         init: async (dir) => {
           await Filesystem.write(path.join(dir, "api_key.txt"), "secret_key_from_file")
           process.env["OPENCODE_CONFIG_CONTENT"] = JSON.stringify({
-            $schema: "https://chimera.ai/config.json",
+            $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
             username: "{file:./api_key.txt}",
           })
         },
@@ -2517,7 +2517,7 @@ test("parseManagedPlist parses server settings", async () => {
     ConfigParse.jsonc(
       await ConfigManaged.parseManagedPlist(
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           server: { hostname: "127.0.0.1", mdns: false },
           autoupdate: true,
         }),
@@ -2537,7 +2537,7 @@ test("parseManagedPlist parses permission rules", async () => {
     ConfigParse.jsonc(
       await ConfigManaged.parseManagedPlist(
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           permission: {
             "*": "ask",
             bash: { "*": "ask", "rm -rf *": "deny", "curl *": "deny" },
@@ -2567,7 +2567,7 @@ test("parseManagedPlist parses enabled_providers", async () => {
     ConfigParse.jsonc(
       await ConfigManaged.parseManagedPlist(
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           enabled_providers: ["anthropic", "google"],
         }),
       ),
@@ -2582,10 +2582,10 @@ test("parseManagedPlist handles empty config", async () => {
   const config = ConfigParse.effectSchema(
     Config.Info,
     ConfigParse.jsonc(
-      await ConfigManaged.parseManagedPlist(JSON.stringify({ $schema: "https://chimera.ai/config.json" })),
+      await ConfigManaged.parseManagedPlist(JSON.stringify({ $schema: "https://coding-chimera.github.io/chimera/schemas/config.json" })),
       "test:mobileconfig",
     ),
     "test:mobileconfig",
   )
-  expect(config.$schema).toBe("https://chimera.ai/config.json")
+  expect(config.$schema).toBe("https://coding-chimera.github.io/chimera/schemas/config.json")
 })
