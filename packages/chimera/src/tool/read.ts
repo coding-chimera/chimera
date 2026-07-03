@@ -13,7 +13,7 @@ import { assertExternalDirectoryEffect } from "./external-directory"
 import { Instruction } from "../session/instruction"
 import type { ToolPart, WithParts } from "../session/message-v2"
 import { isPdfAttachment, sniffAttachmentMime } from "@/util/media"
-import { DISPLAY_ALGORITHM, SCHEMA_VERSION, UNANCHORABLE_TOKEN, formatLine, lineInfo } from "./hashline"
+import { DISPLAY_ALGORITHM, SCHEMA_VERSION, UNANCHORABLE_TOKEN, formatLine, lineInfo, type LineInfo } from "./hashline"
 
 const DEFAULT_READ_LIMIT = 2000
 const MAX_LINE_LENGTH = 2000
@@ -24,6 +24,31 @@ const SAMPLE_BYTES = 4096
 const SUPPORTED_IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"])
 const READ_DEDUP_MESSAGES_EXTRA = "readDedupMessages"
 const HASHLINE_PREFIX = /^(\d+)#([A-Za-z0-9-]{2})\|/
+
+function isDedupCapable(modelID: string): boolean {
+  const gptMatch = /^gpt-(\d+)\.(\d+)/.exec(modelID)
+  if (gptMatch) {
+    const major = Number(gptMatch[1])
+    const minor = Number(gptMatch[2])
+    return major > 5 || (major === 5 && minor >= 4)
+  }
+  const opusMatch = /^claude-opus[-.]?(\d+)[-.]?(\d+)?/.exec(modelID)
+  if (opusMatch) {
+    const major = Number(opusMatch[1])
+    const minor = opusMatch[2] ? Number(opusMatch[2]) : 0
+    return major > 4 || (major === 4 && minor >= 6)
+  }
+  const sonnetMatch = /^claude-sonnet[-.]?(\d+)[-.]?(\d+)?/.exec(modelID)
+  if (sonnetMatch) {
+    const major = Number(sonnetMatch[1])
+    const minor = sonnetMatch[2] ? Number(sonnetMatch[2]) : 0
+    return major > 4 || (major === 4 && minor >= 6)
+  }
+  if (/^claude-fable[-.]?5/.test(modelID)) return true
+  if (/^deepseek-v4-pro/.test(modelID)) return true
+  return false
+}
+
 
 type ReadSpanLine = {
   line: number
@@ -595,22 +620,34 @@ export const ReadTool = Tool.define(
         )
       }
 
-      const window = seedReadDedupWindow(yield* InstanceState.get(readDedup), ctx)
-      const seen = anchorSources(window, filepath)
+      const useDedup = isDedupCapable(String((ctx.extra?.model as any)?.id ?? ""))
       const skipped: ReadAnchorSource[] = []
-      const visible = file.raw.flatMap((line, i) => {
-        const info = lineInfo(i + file.offset, line, !file.unanchorable.includes(i + file.offset))
-        const source = seen.get(anchorKey(info.line, info.id))
-        if (info.anchorable && info.id !== UNANCHORABLE_TOKEN && source) {
-          skipped.push(source)
-          return []
+      let window: ReadDedupWindow | undefined
+      let visible: LineInfo[]
+      let newSpans: ReadSpanRef[]
+
+      if (useDedup) {
+        window = seedReadDedupWindow(yield* InstanceState.get(readDedup), ctx)
+        const seen = anchorSources(window, filepath)
+        visible = file.raw.flatMap((line, i) => {
+          const info = lineInfo(i + file.offset, line, !file.unanchorable.includes(i + file.offset))
+          const source = seen.get(anchorKey(info.line, info.id))
+          if (info.anchorable && info.id !== UNANCHORABLE_TOKEN && source) {
+            skipped.push(source)
+            return []
+          }
+          return [info]
+        })
+        newSpans = readSpanRefs(filepath, instance.worktree, visible)
+        for (const info of visible) {
+          const span = spanForLine(newSpans, info.line)
+          if (span) addAnchor(window.anchors, filepath, info.line, info.id, span)
         }
-        return [info]
-      })
-      const newSpans = readSpanRefs(filepath, instance.worktree, visible)
-      for (const info of visible) {
-        const span = spanForLine(newSpans, info.line)
-        if (span) addAnchor(window.anchors, filepath, info.line, info.id, span)
+      } else {
+        visible = file.raw.map((line, i) =>
+          lineInfo(i + file.offset, line, !file.unanchorable.includes(i + file.offset)),
+        )
+        newSpans = readSpanRefs(filepath, instance.worktree, visible)
       }
 
       const skippedLines = skipped.map((item) => item.line)
@@ -658,7 +695,7 @@ export const ReadTool = Tool.define(
           },
           readDedup: {
             skipped: skippedLines.length,
-            windowID: window.windowID,
+            windowID: window?.windowID ?? "disabled",
             hits: dedupHits.map((hit) => ({
               ref: hit.span.ref,
               file: hit.span.filepath,
