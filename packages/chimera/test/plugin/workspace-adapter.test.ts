@@ -78,7 +78,7 @@ describe("plugin.workspace", () => {
             path.join(dir, "chimera.json"),
             JSON.stringify(
               {
-                $schema: "https://chimera.ai/config.json",
+                $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
                 plugin: [pathToFileURL(file).href],
               },
               null,

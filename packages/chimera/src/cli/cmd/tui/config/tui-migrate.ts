@@ -11,7 +11,7 @@ import * as ConfigPaths from "@/config/paths"
 
 const log = Log.create({ service: "tui.migrate" })
 
-const TUI_SCHEMA_URL = "https://chimera.ai/tui.json"
+const TUI_SCHEMA_URL = "https://coding-chimera.github.io/chimera/schemas/tui.json"
 
 const LegacyTheme = TuiInfo.shape.theme.optional()
 const LegacyRecord = z.record(z.string(), z.unknown()).optional()

@@ -87,7 +87,7 @@ function withProviderProject<A, E, R>(self: (dir: string) => Effect.Effect<A, E,
 
     yield* fs.writeFileString(
       path.join(dir, "chimera.json"),
-      JSON.stringify({ $schema: "https://chimera.ai/config.json", formatter: false, lsp: false }),
+      JSON.stringify({ $schema: "https://coding-chimera.github.io/chimera/schemas/config.json", formatter: false, lsp: false }),
     )
     yield* writeProviderAuthPlugin(dir)
     yield* Effect.addFinalizer(() =>

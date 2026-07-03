@@ -39,7 +39,7 @@ async function bootstrapFixture() {
       await Bun.write(
         path.join(dir, "chimera.json"),
         JSON.stringify({
-          $schema: "https://chimera.ai/config.json",
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
           plugin: [pathToFileURL(pluginFile).href],
         }),
       )
