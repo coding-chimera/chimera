@@ -18,7 +18,7 @@ Prompt templates support:
 Explicit object items may include conventional scope hints such as `files`, `file`, `path`, `target`, or `scope.files`. When multiple explicit items mention the same file, the tool emits advisory scope warnings and prefixes affected worker prompts. Warnings do not lock files, deny execution, or prove a conflict; the parent agent must decide whether to lower concurrency, split items, or proceed.
 
 Supported `preset` values:
-- `audit-followup`: handle one audit/obligation item. If there is a clear narrow fix, the worker may make scoped edits, run focused verification, and report changed files; otherwise it should classify the item as already covered, irrelevant, duplicate, out of scope, or blocked.
+- `audit-followup`: handle one audit/obligation item. If there is a clear narrow fix, the worker may make scoped edits, run focused verification, and report changed files; otherwise it should classify the item as actionable, covered, irrelevant, duplicate, blocked, or no-issue.
 - `audit-review`: read-only review of one audit/obligation item; classify whether it is actionable, irrelevant, duplicate, stale, or out of scope.
 - `oracle-followup`: investigate one failing/unknown oracle and explain or fix the likely cause within a narrow scope.
 - `file-review`: read-only review of one explicit file/item for risks or follow-up.
