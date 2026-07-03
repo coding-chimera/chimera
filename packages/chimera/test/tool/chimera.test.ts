@@ -429,6 +429,12 @@ describe("tool.chimera", () => {
           "import { base } from './base'\nexport function consumer() { return base() }\n",
         ),
       )
+      yield* Effect.promise(() =>
+        fs.writeFile(
+          path.join(test.directory, "consumer-two.ts"),
+          "import { base } from './base'\nexport function consumerTwo() { return base() + 1 }\n",
+        ),
+      )
       yield* initGraph()
 
       const result = yield* runAudit({ filePath: "base.ts", depth: 2 })
@@ -442,6 +448,9 @@ describe("tool.chimera", () => {
       expect(result.output).toContain("cause_chain")
       expect(result.output).not.toContain("required_action")
       expect(result.output).not.toContain("review_or_update")
+      expect(result.output).toContain("Swarm follow-up")
+      expect(result.output).toContain("chimera_swarm")
+      expect(result.output).toContain('preset: "audit-followup"')
       expect(result.metadata.changedFiles).toContain("base.ts")
       expect(result.metadata.classifications[0].classification).toBe("source")
       expect(result.metadata.obligations.length).toBeGreaterThan(0)
@@ -628,6 +637,7 @@ describe("tool.chimera", () => {
           oracle: { status: "pass" | "fail" | "unknown" }
           linkedChanges: Array<{ replayLifecycle?: { status: string; reason: string } }>
         }>
+        swarmFollowup?: { tool: string; preset: string; from?: string; reason: string }
       }
       const statuses = new Set(filtered.metadata.oracles.map((oracle) => oracle.status))
       const passing = parsed.oracles.find((oracle) => oracle.oracle.status === "pass")
@@ -640,6 +650,9 @@ describe("tool.chimera", () => {
       expect(passing?.linkedChanges[0]?.replayLifecycle?.status).toBe("replayable")
       expect(failing?.linkedChanges[0]?.replayLifecycle?.status).toBe("replayable")
       expect(failing?.linkedChanges[0]?.replayLifecycle?.reason).toContain("replayable evidence")
+      expect(parsed.swarmFollowup?.tool).toBe("chimera_swarm")
+      expect(parsed.swarmFollowup?.preset).toBe("oracle-followup")
+      expect(parsed.swarmFollowup?.from).toBe("failing_or_unknown_oracles")
 
       const promptContext = yield* ChimeraPromptContext.Service
       const context = yield* promptContext.render(ctx.sessionID)
@@ -1017,6 +1030,12 @@ describe("tool.chimera", () => {
           "import { base } from './base'\nexport function consumer() { return base() }\n",
         ),
       )
+      yield* Effect.promise(() =>
+        fs.writeFile(
+          path.join(test.directory, "consumer-two.ts"),
+          "import { base } from './base'\nexport function consumerTwo() { return base() + 1 }\n",
+        ),
+      )
       yield* initGraph()
 
       const synced = yield* runObligationsSync({ filePath: "base.ts", depth: 2 })
@@ -1028,6 +1047,13 @@ describe("tool.chimera", () => {
       expect(obligation.status).toBe("pending")
       expect(obligation.classification).toBe("source")
       expect(obligation.causeChain?.length).toBeGreaterThan(0)
+      expect(synced.output).toContain("Swarm follow-up")
+      expect(synced.output).toContain("chimera_swarm")
+      expect(synced.output).toContain('preset: "audit-followup"')
+
+      const active = yield* runObligationsList({ refresh: false })
+      expect(active.output).toContain("Swarm follow-up")
+      expect(active.output).toContain('from: "active_obligations"')
 
       const status = yield* runStatus({ refresh: false })
       expect(status.output).toContain(`Pending obligations: ${synced.metadata.obligations.length}`)
@@ -1050,6 +1076,9 @@ describe("tool.chimera", () => {
 
       const resolved = yield* runObligationResolve({ obligationID: obligation.id, note: "reviewed caller" })
       expect(resolved.metadata.obligations[0].status).toBe("resolved")
+      yield* Effect.forEach(synced.metadata.obligations.slice(1), (item) =>
+        runObligationResolve({ obligationID: item.id, note: "reviewed caller" }),
+      )
 
       const listed = yield* runObligationsList({ status: "resolved" })
       expect(listed.metadata.obligations.some((item) => item.id === obligation.id)).toBe(true)

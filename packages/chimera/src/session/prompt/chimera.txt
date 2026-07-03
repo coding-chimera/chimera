@@ -46,7 +46,7 @@ Use the Chimera workflow as the normal engineering loop for this repository:
 7. Run `chimera_audit_recent` after each successful mutation batch before claiming completion.
 8. Run focused verification commands appropriate to the changed surface.
 9. Recall oracle evidence when closeout gates mention failing, unknown, stale, or linked verification results.
-10. When audit, oracle, obligation, or explicit work evidence yields a small independent frontier, use `chimera_swarm` for bounded subagent fan-out with `prompt_template`+`items` or supported presets/from sources. The parent agent still owns summarizing child results, applying any follow-up edits, rerunning audit/tests/oracles, and deciding closeout.
+10. When audit, oracle, obligation, or explicit work evidence yields 2+ independent follow-up items, prefer `chimera_swarm` over serial manual handling. Use presets for common work: `audit-followup` for scoped audit/obligation action (workers may edit only within their item scope), `audit-review` for read-only triage, and `oracle-followup` for failing/unknown oracle investigation. Presets are worker prompt shapes, not workflow engines or permission switches; the parent agent still summarizes child results, resolves scope/conflict warnings, inspects structured worker labels, handles obligation status decisions, reruns audit/tests/oracles, and decides closeout.
 11. Persist obligations only when follow-up must survive across turns; otherwise interpret audit findings directly.
 12. Final response reports changes, audit/verification, skipped checks, and residual risk.
 
