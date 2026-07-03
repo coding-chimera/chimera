@@ -1650,6 +1650,31 @@ function formatCounts(counts: ObligationCounts) {
   return `Counts: pending ${counts.pending}, claimed ${counts.claimed}, stale ${counts.stale}, resolved ${counts.resolved}, ignored ${counts.ignored}`
 }
 
+function swarmFollowupData(input: { count: number; source: "audit" | "obligation" | "oracle"; preset: "audit-followup" | "audit-review" | "oracle-followup" }) {
+  if (input.count < 2) return undefined
+  const source = input.source === "oracle" ? "failing/unknown oracles" : input.source === "obligation" ? "active obligations" : "propagation findings"
+  const from = input.source === "oracle" ? "failing_or_unknown_oracles" : input.source === "obligation" ? "active_obligations" : undefined
+  return {
+    tool: "chimera_swarm",
+    preset: input.preset,
+    from,
+    reason: `${input.count} ${source} look like an independent follow-up frontier; consider chimera_swarm with preset: "${input.preset}" instead of serial manual handling.`,
+    guidance: "Keep each item scoped; workers may edit only when the preset/prompt allows it, while the parent reruns audit/tests/oracles and handles conflicts.",
+  }
+}
+
+function swarmFollowupGuidance(input: { count: number; source: "audit" | "obligation" | "oracle"; preset: "audit-followup" | "audit-review" | "oracle-followup" }) {
+  const data = swarmFollowupData(input)
+  if (!data) return []
+  return [
+    "",
+    "Swarm follow-up:",
+    `- ${data.reason}`,
+    data.from ? `- Source shortcut: \`from: \"${data.from}\"\`.` : "- For transient audit findings, pass selected findings as explicit `items`.",
+    `- ${data.guidance}`,
+  ]
+}
+
 function actor(ctx: Tool.Context, at: string): ObligationActor {
   return {
     sessionID: String(ctx.sessionID),
@@ -1929,6 +1954,7 @@ function formatAuditOutput(audit: AuditMetadata) {
     "",
     `Propagation findings (${audit.obligations.length}):`,
     ...(audit.obligations.length ? audit.obligations.map(formatEvidence) : ["- None found."]),
+    ...swarmFollowupGuidance({ count: audit.obligations.length, source: "audit", preset: "audit-followup" }),
   ].join("\n")
 }
 
@@ -2627,8 +2653,11 @@ export const ChimeraOracleRecentTool = Tool.define<typeof OracleRecentParameters
           }),
         ).pipe(Effect.orDie)
         const currentRevision = state.graph.snapshot().revision
+        const failingOrUnknown = oracles.filter((oracle) => oracle.status === "fail" || oracle.status === "unknown")
+        const followup = swarmFollowupData({ count: failingOrUnknown.length, source: "oracle", preset: "oracle-followup" })
         const output = {
           oracles: oracles.map((record) => oracleEnvelope(record, 2_000, currentRevision)),
+          ...(followup ? { swarmFollowup: followup } : {}),
         }
         return {
           title: "Chimera oracle results",
@@ -2703,6 +2732,7 @@ export const ChimeraObligationsListTool = Tool.define<typeof ObligationsListPara
             "",
             `Obligations (${obligations.length}):`,
             ...(obligations.length ? obligations.map(formatObligation) : ["- None found."]),
+            ...swarmFollowupGuidance({ count: obligations.filter((item) => item.status !== "stale").length, source: "obligation", preset: "audit-followup" }),
           ].join("\n"),
           metadata: {
             projectRoot: current.state.projectRoot,
@@ -2762,6 +2792,7 @@ export const ChimeraObligationsSyncTool = Tool.define<typeof ObligationsSyncPara
             "",
             `Obligations (${obligations.length}):`,
             ...(obligations.length ? obligations.map(formatObligation) : ["- None found."]),
+            ...swarmFollowupGuidance({ count: obligations.filter((item) => item.status !== "stale").length, source: "obligation", preset: "audit-followup" }),
           ].join("\n"),
           metadata: {
             projectRoot: state.projectRoot,

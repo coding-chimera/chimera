@@ -146,6 +146,36 @@ describe("tool.chimera_swarm", () => {
       expect(prompts).toEqual(["Review 1/2: alpha", 'Review 2/2: {\n  "target": "beta"\n}'])
       expect(yield* sessions.children(parent.chat.id)).toHaveLength(2)
       expect(result.output).toContain("success: 2")
+      expect(result.output).toContain("Parent closeout recommendations")
+      expect(result.output).toContain("Changed files")
+    }),
+  )
+
+  it.instance("adds soft scope warnings for explicit item file conflicts", () =>
+    Effect.gen(function* () {
+      const parent = yield* seed()
+      const tool = yield* ChimeraSwarmTool
+      const def = yield* tool.init()
+      const prompts: string[] = []
+      const result = yield* def.execute(
+        {
+          prompt_template: "Handle {{item}}",
+          items: [
+            { files: ["src/shared.ts"], task: "first" },
+            { files: ["src/shared.ts"], task: "second" },
+          ],
+          subagent_type: "general",
+          concurrency: 2,
+        },
+        ctx(parent, stubOps({ onPrompt: (input) => prompts.push(input.parts[0]?.type === "text" ? input.parts[0].text : "") })),
+      )
+
+      expect(result.metadata.scopeWarningCount).toBe(1)
+      expect(result.output).toContain("Scope warnings")
+      expect(result.output).toContain("src/shared.ts appears in items 1, 2")
+      expect(prompts[0]).toContain("Scope warning")
+      expect(prompts[1]).toContain("Scope warning")
+      expect(result.metadata.successCount).toBe(2)
     }),
   )
 
@@ -183,7 +213,7 @@ describe("tool.chimera_swarm", () => {
     }),
   )
 
-  it.instance("materializes pending obligations as audit-review items", () =>
+  it.instance("materializes pending obligations as audit-followup items", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
       const parent = yield* seed()
@@ -236,7 +266,9 @@ describe("tool.chimera_swarm", () => {
       expect(result.metadata.itemCount).toBe(1)
       expect(prompts[0]).toContain("obl_pending")
       expect(prompts[0]).not.toContain("obl_resolved")
-      expect(prompts[0]).toContain("audit-review")
+      expect(prompts[0]).toContain("audit-followup")
+      expect(prompts[0]).toContain("scoped edits")
+      expect(prompts[0]).toContain("changed files")
     }),
   )
 
@@ -299,7 +331,12 @@ describe("tool.chimera_swarm", () => {
       const tool = (yield* registry.tools({ ...ref, agent: build })).find((item) => item.id === "chimera_swarm")
 
       expect(tool?.description).toContain("audit evidence")
+      expect(tool?.description).toContain("worker prompt shape")
+      expect(tool?.description).toContain("audit-followup")
       expect(tool?.description).toContain("prompt_template")
+      expect(tool?.description).toContain("scope warnings")
+      expect(tool?.description).toContain("Status, Changed files, Verification")
+      expect(tool?.description).toContain("parent agent owns conflict handling")
     }),
   )
 })
