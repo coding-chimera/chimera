@@ -854,10 +854,10 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       category: "System",
     },
     {
-      title: "Open docs",
+      title: "Open docs (not yet available)",
       value: "docs.open",
       onSelect: () => {
-        open("https://chimera.ai/docs").catch(() => {})
+        // docs domain not yet available
         dialog.clear()
       },
       category: "System",

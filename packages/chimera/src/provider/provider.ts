@@ -487,9 +487,9 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         autoload: false,
         options: {
           headers: {
-            "HTTP-Referer": "https://opencode.ai/",
-            "X-Title": "opencode",
-            "X-Source": "opencode",
+            "HTTP-Referer": "https://coding-chimera.github.io/chimera/",
+            "X-Title": "chimera",
+            "X-Source": "chimera",
           },
         },
       }),
@@ -498,8 +498,8 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         autoload: false,
         options: {
           headers: {
-            "HTTP-Referer": "https://opencode.ai/",
-            "X-Title": "opencode",
+            "HTTP-Referer": "https://coding-chimera.github.io/chimera/",
+            "X-Title": "chimera",
           },
         },
       }),
@@ -508,8 +508,8 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         autoload: false,
         options: {
           headers: {
-            "HTTP-Referer": "https://opencode.ai/",
-            "X-Title": "opencode",
+            "HTTP-Referer": "https://coding-chimera.github.io/chimera/",
+            "X-Title": "chimera",
           },
         },
       }),
@@ -518,8 +518,8 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         autoload: false,
         options: {
           headers: {
-            "http-referer": "https://opencode.ai/",
-            "x-title": "opencode",
+            "http-referer": "https://coding-chimera.github.io/chimera/",
+            "x-title": "chimera",
           },
         },
       }),
@@ -616,8 +616,8 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         autoload: false,
         options: {
           headers: {
-            "HTTP-Referer": "https://opencode.ai/",
-            "X-Title": "opencode",
+            "HTTP-Referer": "https://coding-chimera.github.io/chimera/",
+            "X-Title": "chimera",
           },
         },
       }),
@@ -901,8 +901,8 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         autoload: false,
         options: {
           headers: {
-            "HTTP-Referer": "https://opencode.ai/",
-            "X-Title": "opencode",
+            "HTTP-Referer": "https://coding-chimera.github.io/chimera/",
+            "X-Title": "chimera",
           },
         },
       }),

@@ -55,7 +55,7 @@ export const Info = z
   })
 export type Info = z.infer<typeof Info>
 
-export const USER_AGENT = `opencode/${InstallationChannel}/${InstallationVersion}/${Flag.OPENCODE_CLIENT}`
+export const USER_AGENT = `chimera/${InstallationChannel}/${InstallationVersion}/${Flag.OPENCODE_CLIENT}`
 const NPM_PACKAGE = "chimera"
 
 export function isPreview() {
@@ -142,27 +142,7 @@ export const layer: Layer.Layer<Service, never, HttpClient.HttpClient | ChildPro
         return "opencode"
       })
 
-      const upgradeCurl = Effect.fnUntraced(
-        function* (target: string) {
-          const response = yield* httpOk.execute(HttpClientRequest.get("https://opencode.ai/install"))
-          const body = yield* response.text
-          const bodyBytes = new TextEncoder().encode(body)
-          const proc = ChildProcess.make("bash", [], {
-            stdin: Stream.make(bodyBytes),
-            env: { VERSION: target },
-            extendEnv: true,
-          })
-          const handle = yield* spawner.spawn(proc)
-          const [stdout, stderr] = yield* Effect.all(
-            [Stream.mkString(Stream.decodeText(handle.stdout)), Stream.mkString(Stream.decodeText(handle.stderr))],
-            { concurrency: 2 },
-          )
-          const code = yield* handle.exitCode
-          return { code, stdout, stderr }
-        },
-        Effect.scoped,
-        Effect.orDie,
-      )
+
 
       const result: Interface = {
         info: Effect.fn("Installation.info")(function* () {
@@ -267,8 +247,7 @@ export const layer: Layer.Layer<Service, never, HttpClient.HttpClient | ChildPro
           let upgradeResult: { code: ChildProcessSpawner.ExitCode; stdout: string; stderr: string } | undefined
           switch (m) {
             case "curl":
-              upgradeResult = yield* upgradeCurl(target)
-              break
+              return yield* new UpgradeFailedError({ stderr: "curl upgrade is no longer supported" })
             case "npm":
               upgradeResult = yield* run(["npm", "install", "-g", `${NPM_PACKAGE}@${target}`])
               break
