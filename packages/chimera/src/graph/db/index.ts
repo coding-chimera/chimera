@@ -301,6 +301,15 @@ export class DatabaseConnection {
   }
 
   /**
+   * Release SQLite memory caches without closing the connection (PRAGMA shrink_memory).
+   * Useful for freeing heap after a tool call while keeping the connection open for reuse.
+   */
+  shrinkMemory(): void {
+    this.db.pragma("shrink_memory");
+  }
+
+
+  /**
    * Check if the database connection is open
    */
   isOpen(): boolean {

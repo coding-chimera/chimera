@@ -7,6 +7,7 @@ import { getCodeGraphDir } from "@/graph/directory"
 import { readOracleResults, readPersistentObligationStore, type OracleRecord, type ObligationStoreLike } from "@/chimera/store"
 import path from "path"
 import { Cause, Effect, Schema } from "effect"
+import * as Truncate from "./truncate"
 
 const id = "chimera_swarm"
 
@@ -73,15 +74,23 @@ type SwarmObligation = {
   updatedAt: string
 }
 
+type SwarmSummary = {
+  status?: string
+  changedFiles?: string
+  verification?: string
+  remainingRisk?: string
+  parentFollowUp?: string
+}
+
 type SwarmResult = {
   index: number
   status: "success" | "failure"
   title: string
   sessionId?: string
-  output?: string
+  outputPath?: string
+  summary?: SwarmSummary
   error?: string
 }
-
 type ScopeWarning = {
   file: string
   itemIndexes: number[]
@@ -300,39 +309,62 @@ function materializeSource(source: SourceName, limit: number) {
   })
 }
 
-function outputResult(result: SwarmResult) {
-  return [
-    `## Item ${result.index}: ${result.status}`,
-    result.sessionId ? `task_id: ${result.sessionId}` : undefined,
-    result.error ? `error: ${result.error}` : undefined,
-    result.output,
-  ]
-    .filter(Boolean)
-    .join("\n")
+function clamp(text: string, max: number) {
+  if (text.length <= max) return text
+  return text.slice(0, max) + "..."
 }
 
-function outputScopeWarnings(warnings: ScopeWarning[]) {
-  if (warnings.length === 0) return []
-  return ["", "Scope warnings:", ...warnings.map((warning) => `- ${warning.message}`)]
+const SUMMARY_LABELS = [
+  ["status", "Status:"],
+  ["changedFiles", "Changed files:"],
+  ["verification", "Verification:"],
+  ["remainingRisk", "Remaining risk:"],
+  ["parentFollowUp", "Parent follow-up:"],
+] as const
+
+type SummaryKey = (typeof SUMMARY_LABELS)[number][0]
+
+function extractSummary(output: string): { [K in SummaryKey]?: string } {
+  const text = output.replace(/<task_result>|<\/task_result>/g, "")
+  const positions = SUMMARY_LABELS.map(([key, label]) => ({
+    key,
+    label,
+    index: text.indexOf(label),
+  }))
+    .filter((item) => item.index !== -1)
+    .sort((a, b) => a.index - b.index)
+
+  const summary: { [K in SummaryKey]?: string } = {}
+  for (let i = 0; i < positions.length; i++) {
+    const current = positions[i]
+    const next = positions[i + 1]
+    const start = current.index + current.label.length
+    const end = next ? next.index : text.length
+    const value = text
+      .slice(start, end)
+      .replace(/\n+/g, " ")
+      .trim()
+    if (value.length > 0) summary[current.key] = clamp(value, 1000)
+  }
+  return summary
 }
 
-function parentCloseoutRecommendations() {
-  return [
-    "",
-    "Parent closeout recommendations:",
-    "- Inspect each worker's Status, Changed files, Verification, Remaining risk, and Parent follow-up labels.",
-    "- If any worker changed files or reports actionable follow-up, resolve conflicts, run `chimera_audit_recent`, and run focused verification before closeout.",
-    "- Recall `chimera_oracle_recent` after verification when failures or unknown oracle evidence may be linked to the swarm work.",
-  ]
+function writeChildOutput(result: Tool.ExecuteResult, truncate: Truncate.Interface) {
+  return Effect.gen(function* () {
+    const existing = (result.metadata as { outputPath?: unknown }).outputPath
+    if (typeof existing === "string") return existing
+    if (typeof result.output !== "string" || result.output.length === 0) return undefined
+    return yield* truncate.write(result.output)
+  })
 }
 
 export const ChimeraSwarmTool = Tool.define(
   id,
   Effect.gen(function* () {
     const agents = yield* Agent.Service
+    const truncate = yield* Truncate.Service
     const taskInfo = yield* TaskTool
     const task = yield* taskInfo.init()
-
     const run = Effect.fn("ChimeraSwarmTool.execute")(function* (params: Params, ctx: Tool.Context) {
       if (params.items && params.from) return yield* Effect.fail(new Error("Provide either explicit items or from, not both."))
       const sourceLimit = bounded(params.limit, 20, 100)
@@ -380,7 +412,7 @@ export const ChimeraSwarmTool = Tool.define(
         },
       })
 
-      const results = yield* Effect.forEach(
+      const results: SwarmResult[] = yield* Effect.forEach(
         items.map((item, index) => ({
           item,
           index: index + 1,
@@ -388,8 +420,8 @@ export const ChimeraSwarmTool = Tool.define(
           prompt: renderTemplate(template, item, index + 1, items.length, scopeWarnings),
         })),
         (item) =>
-          task
-            .execute(
+          Effect.gen(function* () {
+            const result = yield* task.execute(
               {
                 description: item.title,
                 prompt: item.prompt,
@@ -404,29 +436,67 @@ export const ChimeraSwarmTool = Tool.define(
                 },
               },
             )
-            .pipe(
-              Effect.map((result): SwarmResult => ({
-                index: item.index,
-                status: "success",
-                title: item.title,
-                sessionId: typeof result.metadata.sessionId === "string" ? result.metadata.sessionId : undefined,
-                output: result.output,
-              })),
-              Effect.catchCause((cause) =>
-                Effect.succeed({
+            const outputPath = yield* writeChildOutput(result, truncate)
+            const summary = extractSummary(result.output)
+            return {
+              index: item.index,
+              status: "success" as const,
+              title: item.title,
+              sessionId: typeof result.metadata.sessionId === "string" ? result.metadata.sessionId : undefined,
+              outputPath,
+              summary,
+            } satisfies SwarmResult
+          }).pipe(
+            Effect.catchCause((cause) =>
+              Effect.gen(function* () {
+                const error = Cause.pretty(cause)
+                const outputPath = error.length > 0 ? yield* truncate.write(error) : undefined
+                return {
                   index: item.index,
                   status: "failure" as const,
                   title: item.title,
                   sessionId: undefined,
-                  error: Cause.pretty(cause),
-                } satisfies SwarmResult),
-              ),
+                  outputPath,
+                  error,
+                } satisfies SwarmResult
+              }),
             ),
+          ),
         { concurrency },
       )
 
       const successes = results.filter((result) => result.status === "success").length
       const failures = results.length - successes
+      const outputObject = {
+        preset: preset ?? "custom",
+        source: params.from ?? "items",
+        subagent_type: subagent,
+        items: items.length,
+        concurrency,
+        success: successes,
+        failure: failures,
+        scopeWarnings: scopeWarnings.map((warning) => ({
+          file: warning.file,
+          itemIndexes: warning.itemIndexes,
+          message: warning.message,
+        })),
+        parentCloseout: [
+          "Inspect each worker's Status, Changed files, Verification, Remaining risk, and Parent follow-up labels.",
+          "If any worker changed files or reports actionable follow-up, resolve conflicts, run `chimera_audit_recent`, and run focused verification before closeout.",
+          "Recall `chimera_oracle_recent` after verification when failures or unknown oracle evidence may be linked to the swarm work.",
+        ],
+        results: results.map((result) => ({
+          index: result.index,
+          status: result.status,
+          title: result.title,
+          sessionId: result.sessionId,
+          outputFile: result.outputPath,
+          summary: result.summary ?? {},
+          error: result.error ? clamp(result.error, 500) : undefined,
+        })),
+        note: "Each child result was saved to its own file. Use Read with the outputFile path to view the full output.",
+      }
+
       return {
         title: params.description ?? `chimera swarm (${items.length})`,
         metadata: {
@@ -448,22 +518,12 @@ export const ChimeraSwarmTool = Tool.define(
             status: result.status,
             title: result.title,
             sessionId: result.sessionId,
+            outputPath: result.outputPath,
+            summary: result.summary,
             error: result.error,
           })),
         },
-        output: [
-          `preset: ${preset ?? "custom"}`,
-          `source: ${params.from ?? "items"}`,
-          `subagent_type: ${subagent}`,
-          `items: ${items.length}`,
-          `concurrency: ${concurrency}`,
-          `success: ${successes}`,
-          `failure: ${failures}`,
-          ...outputScopeWarnings(scopeWarnings),
-          "",
-          ...results.map(outputResult),
-          ...parentCloseoutRecommendations(),
-        ].join("\n"),
+        output: JSON.stringify(outputObject, null, 2),
       }
     })
 
