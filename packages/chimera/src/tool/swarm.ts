@@ -165,6 +165,11 @@ function inferPreset(source: SourceName | undefined): PresetName | undefined {
   return "audit-followup"
 }
 
+function inferSubagent(preset: PresetName | undefined): string {
+  if (preset === "file-review") return "explore"
+  return "general"
+}
+
 function renderItem(item: ExplicitItem) {
   if (typeof item === "string") return item
   return JSON.stringify(item, null, 2) ?? "{}"
@@ -378,7 +383,7 @@ export const ChimeraSwarmTool = Tool.define(
       if (!template) return yield* Effect.fail(new Error("Provide prompt_template or choose a preset."))
       if (!template.includes("{{item}}")) return yield* Effect.fail(new Error("prompt_template must include the {{item}} placeholder."))
 
-      const subagent = params.subagent_type ?? "general"
+      const subagent = params.subagent_type ?? inferSubagent(preset)
       if (!(yield* agents.get(subagent))) return yield* Effect.fail(new Error(`Unknown agent type: ${subagent} is not a valid agent type`))
 
       if (!ctx.extra?.bypassAgentCheck) {
