@@ -1,26 +1,33 @@
-Run a bounded set of subagent tasks from one prompt template.
+Run a bounded set of subagent tasks from one worker prompt shape.
 
-Use this tool when you already have a small frontier of independent work items and want parallel subagent review or repair. Common Chimera v1 flow is audit evidence -> swarm template+items -> bounded subagent fan-out:
+Use this tool when you already have a small frontier of independent work items and want parallel subagent review or scoped follow-up. Common Chimera v1 flow is audit evidence -> preset/template + items -> bounded subagent fan-out:
 1. Gather evidence with `chimera_audit_recent`, `chimera_audit`, `chimera_obligations_list`, or `chimera_oracle_recent`.
 2. Call this tool with either explicit `items` or a supported `from` source.
-3. Use a focused `prompt_template` that contains `{{item}}`; the tool expands one child task per item.
-4. Summarize child results yourself, apply any needed edits, then run audit/tests/oracles separately.
+3. Prefer a `preset` for common Chimera work; use raw `prompt_template` only when the preset shape does not fit.
+4. Summarize child results yourself, resolve any scope/conflict warnings, apply any parent-side follow-up, then rerun audit/tests/oracles as needed.
 
-This is a thin fan-out helper, not a planner or automatic repair loop. It does not build PlanGraph, lock files, claim obligations, apply edits, rerun audits, or decide convergence for you.
+Presets are worker prompt shapes. They are not workflow engines, permission switches, file locks, automatic repair loops, or proof that work is complete. A child subagent may edit only when its normal tools and the chosen preset/prompt allow it.
+
+This is a thin fan-out helper. It does not build PlanGraph, lock files, claim obligations, apply edits itself, rerun audits, or decide convergence for you. The parent agent owns conflict handling, final audit/test/oracle verification, and closeout. Tool output includes parent closeout recommendations after each run.
 
 Prompt templates support:
 - `{{item}}`: formatted item text or JSON
 - `{{index}}`: 1-based item index
 - `{{total}}`: total item count
 
+Explicit object items may include conventional scope hints such as `files`, `file`, `path`, `target`, or `scope.files`. When multiple explicit items mention the same file, the tool emits advisory scope warnings and prefixes affected worker prompts. Warnings do not lock files, deny execution, or prove a conflict; the parent agent must decide whether to lower concurrency, split items, or proceed.
+
 Supported `preset` values:
-- `audit-repair`: ask each subagent to inspect one audit/obligation item and propose or apply a narrowly scoped fix if appropriate.
-- `audit-review`: ask each subagent to review one audit/obligation item and report whether it is actionable, irrelevant, duplicate, or out of scope.
-- `oracle-followup`: ask each subagent to investigate one failing/unknown oracle and explain the likely cause and next check.
-- `file-review`: ask each subagent to review one explicit file/item for risks or follow-up.
+- `audit-followup`: handle one audit/obligation item. If there is a clear narrow fix, the worker may make scoped edits, run focused verification, and report changed files; otherwise it should classify the item as already covered, irrelevant, duplicate, out of scope, or blocked.
+- `audit-review`: read-only review of one audit/obligation item; classify whether it is actionable, irrelevant, duplicate, stale, or out of scope.
+- `oracle-followup`: investigate one failing/unknown oracle and explain or fix the likely cause within a narrow scope.
+- `file-review`: read-only review of one explicit file/item for risks or follow-up.
+
+Preset worker prompts ask for structured labels: Status, Changed files, Verification, Remaining risk, and Parent follow-up. Treat these labels as child reports for the parent to inspect, not as automatic obligation resolution.
 
 Supported `from` sources:
-- `pending_obligations`, `claimed_obligations`, `stale_obligations`, `active_obligations`
-- `failing_oracles`, `unknown_oracles`, `failing_or_unknown_oracles`
+- `pending_obligations`, `claimed_obligations`, `active_obligations`: default to `audit-followup`.
+- `stale_obligations`: defaults to `audit-review`.
+- `failing_oracles`, `unknown_oracles`, `failing_or_unknown_oracles`: default to `oracle-followup`.
 
-Prefer explicit `items` when you need precise control. Use `from` only for the listed Chimera evidence sources. Unsupported or empty sources return a clear error rather than fabricating work.
+For parallel editing, keep items independent and scoped by file/range/symbol when possible. Workers must not broaden into unrelated refactors or take over other swarm items; the parent agent must rerun relevant checks, resolve conflicts, inspect structured child reports, and handle obligation claim/resolve/ignore decisions explicitly.

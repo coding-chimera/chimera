@@ -10,7 +10,7 @@ import { Cause, Effect, Schema } from "effect"
 
 const id = "chimera_swarm"
 
-const Preset = Schema.Literals(["audit-repair", "audit-review", "oracle-followup", "file-review"])
+const Preset = Schema.Literals(["audit-followup", "audit-review", "oracle-followup", "file-review"])
 const Source = Schema.Literals([
   "pending_obligations",
   "claimed_obligations",
@@ -33,7 +33,7 @@ export const Parameters = Schema.Struct({
     description: "Optional Chimera evidence source to materialize into items instead of passing explicit items.",
   }),
   preset: Schema.optional(Preset).annotate({
-    description: "Optional default prompt shape for audit repair, audit review, oracle follow-up, or file review.",
+    description: "Optional worker prompt shape for audit follow-up, audit review, oracle follow-up, or file review.",
   }),
   subagent_type: Schema.optional(Schema.String).annotate({
     description: "Subagent type to run for each item. Defaults to general.",
@@ -82,11 +82,28 @@ type SwarmResult = {
   error?: string
 }
 
+type ScopeWarning = {
+  file: string
+  itemIndexes: number[]
+  message: string
+}
+
+const RETURN_CONTRACT = [
+  "Return a concise structured report with these labels:",
+  "Status: actionable | covered | irrelevant | duplicate | blocked | no-issue",
+  "Changed files: <paths or none>",
+  "Verification: <commands/results or not run>",
+  "Remaining risk: <risk or none>",
+  "Parent follow-up: <recommended parent action or none>",
+]
+
 const DEFAULT_TEMPLATES: Record<PresetName, string> = {
-  "audit-repair": [
-    "You are a Chimera audit-repair subagent. Review exactly one audit or obligation item.",
-    "If it is actionable and narrowly scoped, make the smallest safe fix. If not, explain why it should be skipped.",
-    "Do not run a broad repair loop. Return changed files, verification you ran, and residual risk.",
+  "audit-followup": [
+    "You are a Chimera audit-followup subagent. Handle exactly one audit or obligation item.",
+    "Presets are worker prompt shapes, not workflow engines or permission switches; use the tools available to your subagent normally.",
+    "If the item has a clear, narrow fix and you have edit tools, make scoped edits only for this item, run focused verification when you edit, and report changed files.",
+    "Do not broaden into unrelated refactors, do not take over other swarm items, and surface already-covered, irrelevant, duplicate, out-of-scope, or blocked items explicitly.",
+    ...RETURN_CONTRACT,
     "",
     "Item {{index}}/{{total}}:",
     "{{item}}",
@@ -95,6 +112,7 @@ const DEFAULT_TEMPLATES: Record<PresetName, string> = {
     "You are a Chimera audit-review subagent. Review exactly one audit or obligation item.",
     "Classify it as actionable, already covered, irrelevant, duplicate, stale, or out of scope.",
     "Do not edit unless the parent prompt explicitly tells you to. Return concise evidence and next action.",
+    ...RETURN_CONTRACT,
     "",
     "Item {{index}}/{{total}}:",
     "{{item}}",
@@ -103,6 +121,7 @@ const DEFAULT_TEMPLATES: Record<PresetName, string> = {
     "You are a Chimera oracle-followup subagent. Investigate exactly one failing or unknown verification oracle.",
     "Explain the likely cause, whether it is linked to recent changes, and the next focused check or fix.",
     "Do not rerun broad checks unless clearly necessary.",
+    ...RETURN_CONTRACT,
     "",
     "Item {{index}}/{{total}}:",
     "{{item}}",
@@ -110,6 +129,7 @@ const DEFAULT_TEMPLATES: Record<PresetName, string> = {
   "file-review": [
     "You are a Chimera file-review subagent. Review exactly one file or work item.",
     "Report concrete risks, missing tests, or follow-up edits. Keep the result concise and evidence-backed.",
+    ...RETURN_CONTRACT,
     "",
     "Item {{index}}/{{total}}:",
     "{{item}}",
@@ -132,7 +152,8 @@ function chimeraArtifactDir(root: string) {
 function inferPreset(source: SourceName | undefined): PresetName | undefined {
   if (!source) return undefined
   if (source.includes("oracle")) return "oracle-followup"
-  return "audit-review"
+  if (source === "stale_obligations") return "audit-review"
+  return "audit-followup"
 }
 
 function renderItem(item: ExplicitItem) {
@@ -140,11 +161,52 @@ function renderItem(item: ExplicitItem) {
   return JSON.stringify(item, null, 2) ?? "{}"
 }
 
-function renderTemplate(template: string, item: ExplicitItem, index: number, total: number) {
-  return template
-    .replaceAll("{{item}}", renderItem(item))
-    .replaceAll("{{index}}", String(index))
-    .replaceAll("{{total}}", String(total))
+function objectRecord(input: unknown): input is Record<string, unknown> {
+  return Boolean(input && typeof input === "object" && !Array.isArray(input))
+}
+
+function stringValues(input: unknown) {
+  if (typeof input === "string" && input.length > 0) return [input]
+  if (!Array.isArray(input)) return []
+  return input.filter((item): item is string => typeof item === "string" && item.length > 0)
+}
+
+function itemScopeFiles(item: ExplicitItem) {
+  if (!objectRecord(item)) return []
+  return [
+    ...stringValues(item.files),
+    ...stringValues(item.file),
+    ...stringValues(item.path),
+    ...stringValues(item.target),
+    ...(objectRecord(item.scope)
+      ? [...stringValues(item.scope.files), ...stringValues(item.scope.file), ...stringValues(item.scope.path), ...stringValues(item.scope.target)]
+      : []),
+  ]
+}
+
+function collectScopeWarnings(items: ReadonlyArray<ExplicitItem>) {
+  const byFile = new Map<string, number[]>()
+  items.forEach((item, index) => itemScopeFiles(item).forEach((file) => byFile.set(file, [...(byFile.get(file) ?? []), index + 1])))
+  return Array.from(byFile.entries())
+    .filter(([, itemIndexes]) => itemIndexes.length > 1)
+    .map(([file, itemIndexes]): ScopeWarning => ({
+      file,
+      itemIndexes,
+      message: `Possible scope conflict: ${file} appears in items ${itemIndexes.join(", ")}; keep edits scoped, resolve conflicts in the parent, or lower concurrency.`,
+    }))
+}
+
+function scopeWarningPrompt(index: number, warnings: ScopeWarning[]) {
+  return warnings
+    .filter((warning) => warning.itemIndexes.includes(index))
+    .map((warning) => `Scope warning: ${warning.message}`)
+    .join("\n")
+}
+
+function renderTemplate(template: string, item: ExplicitItem, index: number, total: number, warnings: ScopeWarning[]) {
+  return [scopeWarningPrompt(index, warnings), template.replaceAll("{{item}}", renderItem(item)).replaceAll("{{index}}", String(index)).replaceAll("{{total}}", String(total))]
+    .filter(Boolean)
+    .join("\n\n")
 }
 
 function formatObligation(item: SwarmObligation) {
@@ -167,9 +229,7 @@ function formatObligation(item: SwarmObligation) {
   }
 }
 
-function objectRecord(input: unknown): input is Record<string, unknown> {
-  return Boolean(input && typeof input === "object" && !Array.isArray(input))
-}
+
 
 function compactOraclePayload(input: unknown) {
   if (!objectRecord(input)) return input
@@ -251,6 +311,21 @@ function outputResult(result: SwarmResult) {
     .join("\n")
 }
 
+function outputScopeWarnings(warnings: ScopeWarning[]) {
+  if (warnings.length === 0) return []
+  return ["", "Scope warnings:", ...warnings.map((warning) => `- ${warning.message}`)]
+}
+
+function parentCloseoutRecommendations() {
+  return [
+    "",
+    "Parent closeout recommendations:",
+    "- Inspect each worker's Status, Changed files, Verification, Remaining risk, and Parent follow-up labels.",
+    "- If any worker changed files or reports actionable follow-up, resolve conflicts, run `chimera_audit_recent`, and run focused verification before closeout.",
+    "- Recall `chimera_oracle_recent` after verification when failures or unknown oracle evidence may be linked to the swarm work.",
+  ]
+}
+
 export const ChimeraSwarmTool = Tool.define(
   id,
   Effect.gen(function* () {
@@ -264,6 +339,7 @@ export const ChimeraSwarmTool = Tool.define(
       const sourceItems = params.from ? yield* materializeSource(params.from, sourceLimit) : undefined
       const items = params.items ?? sourceItems
       if (!items?.length) return yield* Effect.fail(new Error(params.from ? `No swarm items found from source: ${params.from}` : "Provide at least one swarm item."))
+      const scopeWarnings = params.items ? collectScopeWarnings(items) : []
 
       const preset = params.preset ?? inferPreset(params.from)
       const template = params.prompt_template ?? (preset ? DEFAULT_TEMPLATES[preset] : undefined)
@@ -295,6 +371,12 @@ export const ChimeraSwarmTool = Tool.define(
           itemCount: items.length,
           concurrency,
           subagent_type: subagent,
+          scopeWarningCount: scopeWarnings.length,
+          scopeWarnings: scopeWarnings.map((warning) => ({
+            file: warning.file,
+            itemIndexes: warning.itemIndexes,
+            message: warning.message,
+          })),
         },
       })
 
@@ -303,7 +385,7 @@ export const ChimeraSwarmTool = Tool.define(
           item,
           index: index + 1,
           title: `${params.description ?? preset ?? "swarm item"} ${index + 1}/${items.length}`,
-          prompt: renderTemplate(template, item, index + 1, items.length),
+          prompt: renderTemplate(template, item, index + 1, items.length, scopeWarnings),
         })),
         (item) =>
           task
@@ -353,6 +435,12 @@ export const ChimeraSwarmTool = Tool.define(
           itemCount: items.length,
           concurrency,
           subagent_type: subagent,
+          scopeWarningCount: scopeWarnings.length,
+          scopeWarnings: scopeWarnings.map((warning) => ({
+            file: warning.file,
+            itemIndexes: warning.itemIndexes,
+            message: warning.message,
+          })),
           successCount: successes,
           failureCount: failures,
           results: results.map((result) => ({
@@ -371,8 +459,10 @@ export const ChimeraSwarmTool = Tool.define(
           `concurrency: ${concurrency}`,
           `success: ${successes}`,
           `failure: ${failures}`,
+          ...outputScopeWarnings(scopeWarnings),
           "",
           ...results.map(outputResult),
+          ...parentCloseoutRecommendations(),
         ].join("\n"),
       }
     })
