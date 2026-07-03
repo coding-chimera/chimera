@@ -382,4 +382,35 @@ describe("tool.chimera_swarm", () => {
       expect(typeof output.results[0].outputFile).toBe("string")
     }),
   )
+
+  it.instance("defaults file-review preset to explore subagent", () =>
+    Effect.gen(function* () {
+      const parent = yield* seed()
+      const tool = yield* ChimeraSwarmTool
+      const def = yield* tool.init()
+      const prompts: { subagent_type: string; prompt: string }[] = []
+      const result = yield* def.execute(
+        {
+          preset: "file-review",
+          items: ["src/a.ts"],
+          concurrency: 1,
+        },
+        ctx(
+          parent,
+          stubOps({
+            onPrompt: (input) =>
+              prompts.push({
+                subagent_type: input.agent ?? "general",
+                prompt: input.parts[0]?.type === "text" ? input.parts[0].text : "",
+              }),
+          }),
+        ),
+      )
+
+      expect(result.metadata.successCount).toBe(1)
+      expect(prompts).toHaveLength(1)
+      expect(prompts[0].subagent_type).toBe("explore")
+      expect(prompts[0].prompt).toContain("file-review subagent")
+    }),
+  )
 })
