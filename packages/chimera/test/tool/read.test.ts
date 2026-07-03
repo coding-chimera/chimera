@@ -301,6 +301,7 @@ describe("tool.read truncation", () => {
         {
           ...ctx,
           extra: {
+            model: { id: "gpt-5.4" },
             readDedupMessages: [
               {
                 info: { id: MessageID.make("msg_history") },
@@ -357,6 +358,7 @@ describe("tool.read truncation", () => {
         {
           ...ctx,
           extra: {
+            model: { id: "gpt-5.4" },
             readDedupMessages: [
               {
                 info: { id: MessageID.make("msg_history") },
@@ -414,6 +416,7 @@ describe("tool.read truncation", () => {
         {
           ...ctx,
           extra: {
+            model: { id: "gpt-5.4" },
             readDedupMessages: [
               {
                 info: { id: MessageID.make("msg_history") },
@@ -460,6 +463,7 @@ describe("tool.read truncation", () => {
         {
           ...ctx,
           extra: {
+            model: { id: "gpt-5.4" },
             readDedupMessages: [
               {
                 info: { id: MessageID.make("msg_history") },
