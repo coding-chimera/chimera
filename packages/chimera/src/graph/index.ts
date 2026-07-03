@@ -1223,6 +1223,15 @@ export class CodeGraph {
   }
 
   /**
+   * Release SQLite memory caches without closing the database (PRAGMA shrink_memory).
+   * Useful after a tool call to free accumulated query cache while keeping the
+   * connection open for fast reuse by the next call.
+   */
+  shrink(): void {
+    this.db.shrinkMemory();
+  }
+
+  /**
    * Get the project root directory
    */
   getProjectRoot(): string {
