@@ -789,7 +789,7 @@ export function withProjectGraph<A, E, R>(
   return Effect.acquireUseRelease(
     openProjectGraph(input),
     use,
-    (state) => readOnly ? Effect.promise(() => state.graph.close()).pipe(Effect.ignore) : Effect.void,
+    (state) => readOnly ? Effect.promise(() => state.graph.close()).pipe(Effect.ignore) : Effect.sync(() => state.graph.shrink()),
   )
 }
 

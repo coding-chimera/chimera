@@ -33,6 +33,7 @@ import {
   type TaskInput,
   type WatchOptions,
 } from "@/graph"
+import { ProjectionMemo } from "./projection-memo"
 
 export interface OpenOptions {
   init?: boolean
@@ -78,6 +79,17 @@ export class CodeGraphAdapter {
   close() {
     return this.graph.close()
   }
+
+  /**
+   * Release SQLite memory caches without closing the connection (PRAGMA shrink_memory).
+   * Useful after a tool call to free accumulated query cache.
+   */
+  shrink() {
+    this.graph.shrink()
+  }
+
+
+
 
   snapshot(): CodeGraphSnapshot {
     return this.graph.getSnapshot()
@@ -220,5 +232,22 @@ export class CodeGraphAdapter {
 
   projectNode(nodeOrId: CodeGraphNode | string, snapshot = this.snapshot()): FrozenSemanticObject | null {
     return this.graph.projectNode(nodeOrId, snapshot)
+  }
+
+  projectNodeWithMemo(
+    nodeOrId: CodeGraphNode | string,
+    memo: ProjectionMemo,
+    snapshot = this.snapshot(),
+  ): FrozenSemanticObject | null {
+    const id = typeof nodeOrId === "string" ? nodeOrId : nodeOrId.id
+    const cached = memo.get(id)
+    if (cached) return cached
+    const projection = this.projectNode(nodeOrId, snapshot)
+    if (projection) memo.set(id, projection)
+    return projection
+  }
+
+  optimize(): void {
+    this.graph.optimize()
   }
 }
