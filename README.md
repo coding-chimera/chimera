@@ -25,6 +25,7 @@ Chimera acknowledges these design references:
 - [Kimi Code][kimi-code] informs Kimi-focused behavior, including provider-specific prompt, tool, search, and authentication considerations for Kimi models.
 - [Codex][codex] informs OpenAI/Codex/GPT-oriented behavior, including context discipline and direct Responses/OAuth integration patterns.
 - [CodeGraph][codegraph] provides the repository graph and semantic-evidence substrate behind Chimera's impact analysis and propagation-audit direction.
+- [OpenCodeUI][opencode-ui] provides the web-based user interface (`packages/newweb`), which is licensed under GPL-3.0.
 
 These references describe architectural lineage and implementation influences. Chimera is not presented as upstream opencode, Kimi Code, Codex, or CodeGraph; it is the combined Chimera distribution built on and inspired by those systems.
 
@@ -131,9 +132,14 @@ When changing agent-facing tools, prompts, graph commands, installer behavior, o
 
 ## License
 
+The core Chimera distribution (including the CLI, graph runtime, and agent package) is licensed under MIT.
+
+The WebUI component (`packages/newweb`) is licensed under GPL-3.0, derived from [OpenCodeUI][opencode-ui]. Builds with `--with-webui` embed this component and are subject to the terms of both licenses.
+
 MIT
 
 [upstream-opencode]: https://github.com/anomalyco/opencode
 [kimi-code]: https://github.com/MoonshotAI/kimi-code
 [codex]: https://github.com/coding-chimera/codex
 [codegraph]: https://github.com/colbymchenry/codegraph
+[opencode-ui]: https://github.com/lehhair/OpenCodeUI
