@@ -5,7 +5,7 @@
   "type": "module",
   "license": "MIT",
   "private": false,
-  "description": "AI coding agent CLI with built-in CodeGraph-powered impact analysis and propagation audit",
+  "description": "AI coding agent CLI with built-in CodeGraph-powered impact analysis and propagation audit, harness tooling, native-agent experience, and tailored adapters for GPT and DeepSeek.",
   "keywords": [
     "ai",
     "coding-agent",
