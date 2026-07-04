@@ -35,11 +35,15 @@ Chimera 致谢并引用以下设计参考：
 
 ## 安装与运行
 
-在包已发布后，按以下方式安装：
+Chimera 尚未发布到 npm registry。请从 [GitHub Releases](https://github.com/coding-chimera/chimera/releases)
+下载最新 release tarball，通过 npm 安装。
+
+选择 `no-webui`（MIT）或 `with-webui`（MIT + GPL-3.0）变体。
+查看 releases 页面获取最新版本号和准确的 tarball 文件名。
 
 ```bash
-npm install -g chimera
-chimera
+npm install -g ./chimera-darwin-arm64-no-webui-0.0.5-patch1.tgz ./chimera-no-webui-0.0.5-patch1.tgz
+chimera --version
 ```
 
 在 CLI 内使用 `/help` 获取交互式帮助。

@@ -35,16 +35,22 @@ These references describe architectural lineage and implementation influences. C
 
 ## Install and run
 
-Install the published package when available:
+Chimera is not yet published to the npm registry. Download the latest release
+tarballs from [GitHub Releases](https://github.com/coding-chimera/chimera/releases)
+and install with npm.
+
+Choose `no-webui` (MIT) or `with-webui` (MIT + GPL-3.0) variants.
+Check the releases page for the latest version and exact tarball filenames.
 
 ```bash
-npm install -g chimera
-chimera
+npm install -g ./chimera-darwin-arm64-no-webui-0.0.5-patch1.tgz ./chimera-no-webui-0.0.5-patch1.tgz
+chimera --version
 ```
 
 Inside the CLI, use `/help` for interactive help.
 
 For local development builds, see [Build and package](#build-and-package).
+
 
 ## Graph runtime
 
