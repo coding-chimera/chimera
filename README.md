@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="Chimera logo" width="240">
+</p>
+
 # Chimera
 
 [English](README.md) | [简体中文](README.zh.md)
