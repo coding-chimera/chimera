@@ -5,6 +5,26 @@
   "type": "module",
   "license": "MIT",
   "private": false,
+  "description": "AI coding agent CLI with built-in CodeGraph-powered impact analysis and propagation audit",
+  "keywords": [
+    "ai",
+    "coding-agent",
+    "cli",
+    "codegraph",
+    "repository-graph",
+    "impact-analysis",
+    "propagation-audit",
+    "opencode"
+  ],
+  "homepage": "https://github.com/coding-chimera/chimera#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coding-chimera/chimera.git",
+    "directory": "packages/chimera"
+  },
+  "bugs": {
+    "url": "https://github.com/coding-chimera/chimera/issues"
+  },
   "scripts": {
     "typecheck": "tsgo --noEmit",
     "test": "bun test --timeout 30000",
