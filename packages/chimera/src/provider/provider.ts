@@ -1747,6 +1747,9 @@ const layer: Layer.Layer<
               opts.body = JSON.stringify(body)
             }
           }
+          if (provider.source === "config" && model.headers?.["User-Agent"]) {
+            opts.headers = { ...opts.headers, "User-Agent": model.headers["User-Agent"] }
+          }
 
           const res = await fetchFn(input, {
             ...opts,
