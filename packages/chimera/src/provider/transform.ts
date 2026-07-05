@@ -713,6 +713,9 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
       ) {
         efforts.push("max")
       }
+      if (model.release_date >= "2025-12-04" || GPT5_FAMILY_RE.test(apiID)) {
+        efforts.push("xhigh")
+      }
       return Object.fromEntries(efforts.map((effort) => [effort, { reasoningEffort: effort }]))
 
     case "@ai-sdk/azure":
