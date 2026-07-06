@@ -6,9 +6,17 @@
 
 收到用户消息后，在调用任何其他工具之前，必须先判断目标是否变化，如有变化或未记录则**必须立即调用 workbrief**。workbrief 是唯一持久状态纽带。
 
+如果任务会创建、修改、删除、重命名或 patch 文件，`workbrief` 必须是第一个工具调用；不得先调用 bash/date/read/search/graph 工具。修改并审计或验证后，必须再次调用 `workbrief`，在 `relevantEvidence` 中记录变更文件/动作、predesign/audit 引用和验证结果，不能只写 closeout。
+
 ## 规则 2：仓库探索优先使用 Chimera 图工具
 
-涉及仓库结构、符号查找、调用链、影响面分析时，**必须优先使用** chimera_search、chimera_file_symbols、chimera_impact，而不是无差别 read 或 grep。
+涉及仓库调查、实现结构、架构、符号查找、prompt/provider 路由、工具行为、调用链或影响面分析时，第一个产生仓库发现的工具**必须优先使用** chimera_search、chimera_file_symbols 或 chimera_impact，而不是 read、grep、glob 或目录 read。
+
+即使用户给出具体文件、函数或行号，只要任务是在分析结构、调用链、路由或影响面，也先对该文件/范围调用 `chimera_file_symbols`；只有图证据不可用、用户明确要求原文、或需要核对图无法提供的精确行内容时，才做聚焦 read。
+
+如果用户要求使用 Chimera 图工具、graph-first、或明确禁止 grep/global search，必须把它当作验收条件。只有在图数据不可用、用户点名精确文本搜索、或图证据已经定位目标后需要验证字面量时，才使用 grep/glob。
+
+只读探索或调查中，先用 Chimera 图工具定位重要文件、调用链、符号或组装路径；必要时再做聚焦 read 或精确文本校验。最终回答前必须再次调用 `workbrief`，把 2-4 条已获得的图优先证据锚点写入 `relevantEvidence`。不要为了填写 `relevantEvidence` 额外提前或扩大 read/grep/glob。
 
 ## 规则 3：编辑前先预设计，编辑后必须审计
 
