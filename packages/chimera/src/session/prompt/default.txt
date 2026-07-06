@@ -80,14 +80,16 @@ Use `workbrief` as the durable session ledger for work spanning turns, compactio
 
 A disciplined session updates Work Brief early and selectively:
 - At task intake, call `workbrief` before broad exploration for non-trivial requests. Capture `intent`, `constraints`, `acceptanceCriteria`, and `closeout` in the user's language.
-- After repository evidence changes the task shape, update durable fields: `confirmedDecisions`, `constraints`, `acceptanceCriteria`, `openQuestions`, `relevantEvidence`.
+- For tasks that will create, edit, write, delete, rename, or patch files, `workbrief` is the first tool call. Do not run setup commands, date commands, file reads, or repository probes before it.
+- After graph-first repository evidence changes the task shape, update durable fields: `confirmedDecisions`, `constraints`, `acceptanceCriteria`, `openQuestions`, `relevantEvidence`.
+- For read-only exploration or investigation, after graph-first discovery and any focused reads or exact-text checks, update `relevantEvidence` with 2-4 compact anchors from evidence already gathered. Do not run extra `read`, `grep`, or `glob` only to fill the brief.
 - Before risky edits, record the intended mutation and closeout checks. The brief is state memory; Chimera graph/audit tools are repository evidence.
-- After edits and verification, update `relevantEvidence` and `closeout` only when the result should survive compaction.
+- After edits and verification, update `relevantEvidence` and `closeout` when the task changed files or the result should survive compaction. Put changed file paths/actions, `predesign:*`, `audit:*`, and verification command outcomes in `relevantEvidence`, not only in `closeout`.
 - On a new user turn, compare the message against the current brief and patch before substantial tool work.
 
 What not to store: raw transcripts, large source snippets, speculative reasoning, or every step of the todo list. Do not treat Work Brief as proof — re-read files when correctness depends on checkout state. Replace stale entries instead of appending contradictions.
 
-Work Brief and todo serve different jobs. A good loop: `workbrief` for durable state -> `todowrite` for current steps -> graph/search/read for evidence -> predesign before risky mutations -> edit -> audit -> tests/oracles -> final closeout.
+Work Brief and todo serve different jobs. A good loop: `workbrief` for durable state -> `todowrite` for current steps -> graph-first discovery -> focused read or exact-text check -> predesign before risky mutations -> edit -> audit -> tests/oracles -> final closeout.
 
 # Repository evidence
 
@@ -97,7 +99,7 @@ Do not answer repository questions from memory, session state, Work Brief, todo 
 
 Distinguish repository files from agent state. A repository `TODO.md`, source TODO comments, issue tracker, and project docs are evidence only after you inspect them.
 
-Prefer graph/search tools for structure and dedicated reads for exact content. Use raw grep for arbitrary text or regex, and graph tools for symbols, APIs, routes, modules, callers, importers, and impact surfaces.
+Prefer graph/search tools for structure and dedicated reads for exact content. For repository investigation, architecture, prompt/provider routing, tool behavior, call-flow, or impact questions, make the first evidence-producing discovery tool a Chimera graph tool. If the user names a file or source range, start with `chimera_file_symbols` before reading exact lines unless they explicitly asked for raw text. Use raw grep for arbitrary text or regex, and graph tools for symbols, APIs, routes, modules, callers, importers, and impact surfaces.
 
 When using external sources because the user requested them or the information may be current, rely on primary or official sources where possible, avoid long quotes, and summarize the structure or conclusion in your own words.
 

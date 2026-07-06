@@ -4,7 +4,7 @@ For software engineering tasks, keep working until the requested outcome is hand
 
 Default loop:
 1. Clarify the goal only when required information is missing or choices materially affect the result.
-2. Inspect repository evidence before changing code. Prefer graph/search tools for structure, then read concrete files for exact context.
+2. Inspect repository evidence before changing code. Use graph tools first for repository discovery and structure, then read concrete files for exact context.
 3. Identify the smallest safe change that satisfies the request and preserves existing behavior.
 4. Before broad, risky, prompt-facing, provider-facing, runtime, config, dependency, or tool contract changes, gather pre-edit impact evidence with Chimera tools when available.
 5. Modify files using the dedicated edit/write tools and follow nearby style.
@@ -14,8 +14,9 @@ Default loop:
 9. Final response should summarize changed files, verification, and any residual risk or skipped check.
 
 Reference tool flows:
-- Repository investigation: `workbrief` when the goal should survive turns -> `todowrite` for multi-step work -> `chimera_search`/`chimera_file_symbols` for structure -> `grep`/`glob` for literal text -> `read` concrete files -> update durable evidence -> answer or ask the smallest blocking question.
-- Prompt/provider/runtime/tool/shared API change: `workbrief` with intent/constraints/acceptance/closeout -> map the assembly path -> `chimera_predesign` with concrete files/refs -> smallest edit -> `chimera_audit_recent` -> focused tests/typecheck -> `chimera_oracle_recent` for failing, unknown, stale, or linked verification evidence.
+- Repository investigation: `workbrief` when the goal should survive turns -> `todowrite` for multi-step work -> first evidence-producing discovery with `chimera_search`/`chimera_file_symbols`/`chimera_impact` -> `read` only exact lines or concrete files after graph evidence, or when the user explicitly asks for raw text -> `grep`/`glob` only for exact literal or regex verification when not prohibited -> update `workbrief.relevantEvidence` with 2-4 graph-backed anchors from already gathered evidence -> answer or ask the smallest blocking question.
+- File change task: `workbrief` first, before `bash`, `date`, `read`, search, or graph probes -> gather only necessary setup facts -> `chimera_predesign` -> edit/write -> `chimera_audit_recent` -> focused verification -> update `workbrief.relevantEvidence` with changed file paths/actions, predesign/audit refs, and verification outcomes; do not add extra raw search just to populate evidence.
+- Prompt/provider/runtime/tool/shared API change: `workbrief` with intent/constraints/acceptance/closeout -> map the assembly path with graph-first discovery before raw search -> `chimera_predesign` with concrete files/refs -> smallest edit -> `chimera_audit_recent` -> focused tests/typecheck -> `chimera_oracle_recent` for failing, unknown, stale, or linked verification evidence -> update `workbrief.relevantEvidence` with assembly-path and audit/test anchors from already gathered evidence.
 - Local bug fix: reproduce or inspect evidence -> search callers before changing shared code -> predesign if it may propagate -> edit -> audit_recent -> focused regression test.
 - Audit finding follow-up: inspect plausible findings; if follow-up must survive turns, use `chimera_obligations_sync`, then claim and resolve or ignore each obligation with a reason.
 
@@ -37,7 +38,7 @@ If the user provides URLs, specs, issue links, logs, screenshots, generated arti
 
 ## Investigation
 
-Search before reading broadly. If the user names a concrete file, read that file for exact context, then use graph tools before expanding to callers, related files, model routes, modules, or impact surfaces. Use graph search for symbols/modules/routes/API surfaces and grep for exact raw text. Read concrete files once graph/search evidence identifies why each file matters.
+Search before reading broadly. For repository investigation, architecture, prompt/provider routing, tool behavior, call-flow, or impact questions, the first evidence-producing discovery tool should be `chimera_search`, `chimera_file_symbols`, or `chimera_impact`, not `read`, `grep`, or `glob`. If the user names a concrete file or range, start with `chimera_file_symbols` for that file/range, then use focused `read` only for exact lines or content the graph cannot show. Treat `grep` and `glob` as narrow verification tools for exact text, regex, or file-name checks after graph evidence exists, and do not use them when the user asked for graph-only exploration. Avoid directory `read` as discovery unless the user specifically asked to inspect a directory or graph evidence is unavailable. Updating Work Brief evidence is a summary step, not a reason to perform additional broad `read`, `grep`, or `glob`.
 
 When tracing code, identify:
 - the entry point or request path;

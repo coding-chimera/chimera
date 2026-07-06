@@ -2,11 +2,11 @@
 
 Chimera tools provide CodeGraph-backed repository evidence and propagation-audit workflow support. Use them during investigation, design, implementation, and closeout when they fit the task.
 
-Use graph tools during conversation, not only immediately before editing. When the user asks about repository facts, current tool status, implementation structure, architecture, call flow, prompt assembly, tool behavior, provider routing, or impact surface, prefer `chimera_search`, `chimera_file_symbols`, or `chimera_impact` over broad raw file reads.
+Use graph tools during conversation, not only immediately before editing. When the user asks about repository facts, current tool status, implementation structure, architecture, call flow, prompt assembly, tool behavior, provider routing, or impact surface, make the first evidence-producing discovery tool a Chimera graph tool: `chimera_search`, `chimera_file_symbols`, or `chimera_impact`. Do this before raw `read`, `grep`, `glob`, or directory reads unless graph data is unavailable or the user explicitly asks for exact raw text.
 
-Use `chimera_search` for query-based graph discovery when you want to know where a concept, behavior, symbol, module, route, API surface, or architecture term lives. Use `grep` for arbitrary source text, regex matching, or counts.
+Use `chimera_search` for query-based graph discovery when you want to know where a concept, behavior, symbol, module, route, API surface, or architecture term lives. Use `grep` only for exact source text, regex matching, or counts after graph evidence has narrowed the target, and only if the user's tool constraints allow it.
 
-Use `chimera_file_symbols` when you already know the file and need symbols or range-local graph seeds.
+Use `chimera_file_symbols` when you already know the file or source range and need symbols or range-local graph seeds. For repository investigation or architecture questions, named files should usually start with `chimera_file_symbols`, then a focused `read` only for exact lines or content the graph evidence cannot provide.
 
 Use `chimera_impact` for callers, importers, dependents, impact radius, and risk categories from a concrete file, symbol, node, or range. Treat impact output as structural evidence, not proof of correctness.
 
@@ -24,6 +24,10 @@ When findings need durable follow-up across turns or agents, use `chimera_obliga
 
 Maintain the session `Current Work Brief` with `workbrief` as the work evolves. At the start of each new user turn, decide whether intent, decisions, constraints, acceptance criteria, open questions, evidence, or closeout changed. If so, update the brief before substantial tool work.
 
+For read-only investigation, after graph-first discovery and any focused reads or exact-text checks, update `workbrief.relevantEvidence` with compact anchors before the final answer. Include paths, symbols, refs, command names, or source-backed conclusions already gathered; do not run extra broad `read`, `grep`, or `glob` just to populate the brief.
+
+For any task that may mutate files, call `workbrief` before all other tools, including `bash`, date lookup, reads, graph probes, and searches. After a successful edit/write plus audit or verification, update `workbrief` again with `relevantEvidence` containing changed file paths/actions, `predesign:*`, `audit:*`, and verification outcomes, plus closeout state.
+
 Keep Work Brief entries compact and in the user's language. Replace stale or contradicted entries instead of appending both versions. Do not store large source snippets, full tool outputs, or transcript copies.
 
 The runtime may inject `Current Work Brief` and `Chimera Execution Context` as transient runtime context. Treat them as session state and closeout guidance, not fresh repository discovery. Use graph, file, test, or shell evidence when correctness depends on current checkout state.
@@ -39,7 +43,7 @@ New project-local Chimera graph data belongs under `.chimera/`. Treat `.codegrap
 Use the Chimera workflow as the normal engineering loop:
 1. Update Work Brief if the goal, constraints, decisions, acceptance criteria, evidence, open questions, or closeout changed.
 2. Probe graph readiness when graph-backed evidence matters, or use graph search/file symbols directly if the graph is already available.
-3. Use graph search and raw search together: graph for structure and symbols, grep for literal text and regex.
+3. Use graph search for structure, symbols, call flow, and impact. After graph evidence exists, use raw search only for exact literal, regex, or file-name verification; otherwise continue structural investigation with `chimera_search`, `chimera_file_symbols`, or `chimera_impact`.
 4. Read concrete files after search identifies likely targets.
 5. Before risky mutations, record predesign evidence with concrete files, refs, or symbols.
 6. Make the smallest safe edit with dedicated file mutation tools.
@@ -51,6 +55,8 @@ Use the Chimera workflow as the normal engineering loop:
 12. Final response reports changes, audit/verification, skipped checks, and residual risk.
 
 Do not postpone all graph usage until the end. If the user asks what might break, where a behavior is assembled, or how a symbol is used, use graph and impact evidence early.
+
+If the user explicitly asks to use Chimera graph tools, graph-backed exploration is an acceptance criterion. Do not substitute broad `read`, `grep`, `glob`, or directory `read` for that discovery unless graph data is unavailable, the user named an exact raw-text search, or the task requires verifying a literal after graph evidence has identified the target.
 
 ## Propagation audit workflow
 
@@ -102,7 +108,7 @@ Use `workbrief` for durable session context, not scratch notes. Store compact fa
 - relevant evidence;
 - closeout requirements.
 
-Update it proactively when the user changes the task, adds constraints, corrects assumptions, introduces acceptance criteria, or when evidence establishes a durable decision.
+Update it proactively when the user changes the task, adds constraints, corrects assumptions, introduces acceptance criteria, or when graph-first evidence establishes a durable decision. Evidence updates belong in `relevantEvidence`; `closeout` is for remaining or completed checks, not the only place to store changed files or audit refs.
 
 Do not store full code snippets, long logs, large tool output, or speculative thoughts. Replace stale entries rather than appending contradictions.
 
