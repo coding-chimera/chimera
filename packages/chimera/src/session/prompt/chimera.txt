@@ -36,7 +36,7 @@ New project-local Chimera graph data belongs under `.chimera/`. Treat `.codegrap
 
 ## Chimera workflow
 
-Use the Chimera workflow as the normal engineering loop for this repository:
+Use the Chimera workflow as the normal engineering loop:
 1. Update Work Brief if the goal, constraints, decisions, acceptance criteria, evidence, open questions, or closeout changed.
 2. Probe graph readiness when graph-backed evidence matters, or use graph search/file symbols directly if the graph is already available.
 3. Use graph search and raw search together: graph for structure and symbols, grep for literal text and regex.
