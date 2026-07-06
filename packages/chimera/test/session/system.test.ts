@@ -52,7 +52,7 @@ const it = testEffect(
 )
 
 describe("session.system", () => {
-  it.effect("assembles base, harness, workflow, Chimera protocol, then model overlay", () =>
+  it.effect("assembles base, workflow, Chimera protocol, then model overlay", () =>
     Effect.gen(function* () {
       const unknown = SystemPrompt.provider({
         providerID: "local",
@@ -63,8 +63,9 @@ describe("session.system", () => {
         api: { id: "k2p6" },
       } as unknown as Parameters<typeof SystemPrompt.provider>[0]).join("\n")
 
-      expect(unknown).toContain("# Harness and tool boundary")
-      expect(unknown).toContain("## Tool selection")
+      expect(unknown).not.toContain("# Harness and tool boundary")
+      expect(unknown).toContain("# Tool selection and harness boundary")
+      expect(unknown).toContain("Tool results, injected context")
       expect(unknown).toContain("# Software engineering workflow")
       expect(unknown).toContain("## Verification strategy")
       expect(unknown).toContain("# Chimera graph, audit, and runtime protocol")
@@ -84,14 +85,12 @@ describe("session.system", () => {
       expect(unknown).toContain("audit-followup")
       expect(unknown).toContain("worker prompt shapes")
       expect(unknown).toContain("parent agent still summarizes child results")
-      expect(unknown).toContain("resolves scope/conflict warnings")
-      expect(unknown).toContain("inspects structured worker labels")
-      expect(unknown).toContain("handles obligation status decisions")
       expect(unknown).toContain("reruns audit/tests/oracles")
       expect(unknown).toContain("## Chimera-style Work Brief operating model")
-      expect(unknown).toContain("Reference tool flows, modeled after disciplined Chimera sessions worth following")
-      expect(unknown).toContain("workbrief.relevantEvidence")
-      expect(unknown).toContain("chimera_file_symbols` or `chimera_impact")
+      expect(unknown).toContain("Reference tool flows:")
+      expect(unknown).toContain("base prompt, workflow prompt, Chimera protocol prompt")
+      expect(unknown).not.toContain("base prompt, harness prompt")
+      expect(unknown).toContain("relevantEvidence")
       expect(unknown).toContain("when you want to know where a concept, behavior")
       expect(unknown).toContain("graph-backed discovery")
       expect(unknown).toContain("chimera_obligations_sync")
@@ -104,7 +103,7 @@ describe("session.system", () => {
       expect(unknown).toContain("Do not create, modify, or populate `.env`")
       expect(unknown).not.toContain("You are opencode")
       expect(unknown).not.toContain("github.com/anomalyco/opencode")
-      expect(unknown.indexOf("# Harness and tool boundary")).toBeLessThan(
+      expect(unknown.indexOf("# Tool selection and harness boundary")).toBeLessThan(
         unknown.indexOf("# Software engineering workflow"),
       )
       expect(unknown.indexOf("# Software engineering workflow")).toBeLessThan(
@@ -116,6 +115,25 @@ describe("session.system", () => {
       expect(kimi.indexOf("# Chimera graph, audit, and runtime protocol")).toBeLessThan(
         kimi.indexOf("kimi-for-coding（Kimi-K2.7）"),
       )
+      yield* Effect.void
+    }),
+  )
+
+  it.effect("routes DeepSeek-named models through the DeepSeek prompt and overlay", () =>
+    Effect.gen(function* () {
+      const model = {
+        providerID: "dahetao",
+        api: { id: "deepseek-v4-pro-max" },
+      } as unknown as Parameters<typeof SystemPrompt.provider>[0]
+      const provider = SystemPrompt.provider(model).join("\n")
+      const overlay = SystemPrompt.overlay(model).join("\n")
+
+      expect(provider).toContain("DeepSeek 专用强制规则")
+      expect(provider).toContain("每个新用户回合")
+      expect(provider).toContain("chimera_predesign")
+      expect(provider).toContain("# Chimera graph, audit, and runtime protocol")
+      expect(overlay).toContain("# DeepSeek runtime overlay")
+      expect(overlay).toContain("DeepSeek 使用提示")
       yield* Effect.void
     }),
   )
