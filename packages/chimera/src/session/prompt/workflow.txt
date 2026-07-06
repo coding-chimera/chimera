@@ -13,11 +13,11 @@ Default loop:
 8. Iterate on failures until fixed or clearly blocked.
 9. Final response should summarize changed files, verification, and any residual risk or skipped check.
 
-Reference tool flows, modeled after disciplined Chimera sessions worth following:
-- Repository investigation, no edits yet: `workbrief` when the goal should survive turns -> `todowrite` for multi-step work -> `chimera_status` or `chimera_search` for structure -> `grep`/`glob` for literal text and files -> `read` concrete files -> update `workbrief.relevantEvidence` only with durable conclusions -> answer or ask the smallest blocking question.
-- Prompt, provider, runtime, tool, config, or shared API change: `workbrief` with intent/constraints/acceptance/closeout -> graph or raw search to map the assembly path -> `chimera_file_symbols` or `chimera_impact` for concrete seeds when useful -> `chimera_predesign` with files/refs before editing -> `edit`/`write` the smallest patch -> `chimera_audit_recent` -> focused tests/typecheck -> `chimera_oracle_recent` only if closeout signals mention failing, unknown, stale, or linked verification evidence.
-- Local bug fix: reproduce or inspect evidence -> search callers/importers before changing shared code -> predesign if the change can propagate -> edit -> audit_recent -> focused regression test -> broader check only when the touched contract warrants it.
-- Audit finding follow-up: inspect the impacted target if the finding is plausible; update and rerun checks if actionable; if it must survive across turns, use `chimera_obligations_sync`, then claim and resolve or ignore each obligation with a reason.
+Reference tool flows:
+- Repository investigation: `workbrief` when the goal should survive turns -> `todowrite` for multi-step work -> `chimera_search`/`chimera_file_symbols` for structure -> `grep`/`glob` for literal text -> `read` concrete files -> update durable evidence -> answer or ask the smallest blocking question.
+- Prompt/provider/runtime/tool/shared API change: `workbrief` with intent/constraints/acceptance/closeout -> map the assembly path -> `chimera_predesign` with concrete files/refs -> smallest edit -> `chimera_audit_recent` -> focused tests/typecheck -> `chimera_oracle_recent` for failing, unknown, stale, or linked verification evidence.
+- Local bug fix: reproduce or inspect evidence -> search callers before changing shared code -> predesign if it may propagate -> edit -> audit_recent -> focused regression test.
+- Audit finding follow-up: inspect plausible findings; if follow-up must survive turns, use `chimera_obligations_sync`, then claim and resolve or ignore each obligation with a reason.
 
 ## Task intake
 
@@ -37,7 +37,7 @@ If the user provides URLs, specs, issue links, logs, screenshots, generated arti
 
 ## Investigation
 
-Search before reading broadly. Use graph search for symbols/modules/routes/API surfaces and grep for exact raw text. Read concrete files once you know which files matter.
+Search before reading broadly. If the user names a concrete file, read that file for exact context, then use graph tools before expanding to callers, related files, model routes, modules, or impact surfaces. Use graph search for symbols/modules/routes/API surfaces and grep for exact raw text. Read concrete files once graph/search evidence identifies why each file matters.
 
 When tracing code, identify:
 - the entry point or request path;
@@ -58,7 +58,7 @@ Prefer small, incremental edits with clear intent. Preserve existing public beha
 
 When modifying public APIs, prompts, tools, provider transforms, runtime request paths, config, packaging, graph/audit logic, or shared tests, first map the actual assembly path and impact surface.
 
-For prompt-facing work, verify the actual prompt assembly path: base prompt, harness prompt, workflow prompt, Chimera protocol prompt, model overlay, agent prompt override, project instructions, skills, runtime environment, Work Brief/context injection, provider-specific instruction transport, and OpenAI OAuth/Codex Responses behavior.
+For prompt-facing work, verify the actual prompt assembly path: base prompt, workflow prompt, Chimera protocol prompt, model overlay, agent prompt override, project instructions, skills, runtime environment, Work Brief/context injection, provider-specific instruction transport, and OpenAI OAuth/Codex Responses behavior.
 
 For provider-facing work, verify the normal provider path and any special path such as OAuth, Responses API, streaming transforms, tool schema conversion, provider options, and model slug routing.
 
