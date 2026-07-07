@@ -1,5 +1,5 @@
 import { afterEach, describe, expect } from "bun:test"
-import { Effect, Layer } from "effect"
+import { Deferred, Effect, Exit, Fiber, Layer } from "effect"
 import { Agent } from "../../src/agent/agent"
 import { Config } from "@/config/config"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
@@ -155,6 +155,40 @@ describe("tool.chimera_swarm", () => {
     }),
   )
 
+  it.instance("keeps child task metadata from overwriting swarm metadata", () =>
+    Effect.gen(function* () {
+      const parent = yield* seed()
+      const tool = yield* ChimeraSwarmTool
+      const def = yield* tool.init()
+      const metadata: Array<{ title?: string; metadata?: Record<string, unknown> }> = []
+
+      yield* def.execute(
+        {
+          prompt_template: "Review {{item}}",
+          items: ["alpha", "beta"],
+          subagent_type: "general",
+          description: "review shard",
+          concurrency: 2,
+        },
+        {
+          ...ctx(parent, stubOps()),
+          metadata: (input) =>
+            Effect.sync(() => {
+              metadata.push(input)
+            }),
+        },
+      )
+
+      expect(metadata.length).toBeGreaterThan(1)
+      expect(metadata.every((item) => item.title === "review shard")).toBe(true)
+      const last = metadata.at(-1)?.metadata
+      expect(last?.itemCount).toBe(2)
+      expect(last?.concurrency).toBe(2)
+      expect(last?.sessionId).toBeUndefined()
+      expect(last?.childSessions).toHaveLength(2)
+    }),
+  )
+
   it.instance("adds soft scope warnings for explicit item file conflicts", () =>
     Effect.gen(function* () {
       const parent = yield* seed()
@@ -216,6 +250,51 @@ describe("tool.chimera_swarm", () => {
 
       expect(maxActive).toBeGreaterThan(1)
       expect(maxActive).toBeLessThanOrEqual(2)
+    }),
+  )
+
+  it.instance("cancels created child sessions when interrupted", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const parent = yield* seed()
+      const tool = yield* ChimeraSwarmTool
+      const def = yield* tool.init()
+      const started = yield* Deferred.make<void>()
+      const cancelled: string[] = []
+      let active = 0
+      const promptOps: TaskPromptOps = {
+        cancel: (sessionID) =>
+          Effect.sync(() => {
+            cancelled.push(sessionID)
+          }),
+        resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+        prompt: () =>
+          Effect.gen(function* () {
+            active++
+            if (active === 2) yield* Deferred.succeed(started, undefined)
+            return yield* Effect.never
+          }),
+      }
+
+      const fiber = yield* def
+        .execute(
+          {
+            prompt_template: "Handle {{item}}",
+            items: ["a", "b"],
+            subagent_type: "general",
+            concurrency: 2,
+          },
+          ctx(parent, promptOps),
+        )
+        .pipe(Effect.forkChild)
+
+      yield* Deferred.await(started)
+      yield* Fiber.interrupt(fiber)
+      const exit = yield* Fiber.await(fiber)
+      expect(Exit.isFailure(exit)).toBe(true)
+
+      const childIDs = (yield* sessions.children(parent.chat.id)).map((item) => item.id).sort()
+      expect(cancelled.sort()).toEqual(childIDs)
     }),
   )
 
