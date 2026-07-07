@@ -501,6 +501,7 @@ export function topK(model: Provider.Model) {
 const WIDELY_SUPPORTED_EFFORTS = ["low", "medium", "high"]
 const OPENAI_EFFORTS = ["none", "minimal", ...WIDELY_SUPPORTED_EFFORTS, "xhigh"]
 const NVIDIA_KIMI_K26_EFFORTS = ["none", "minimal", ...WIDELY_SUPPORTED_EFFORTS, "xhigh", "max"]
+const TENCENT_GLM52_EFFORTS = ["high", "max"]
 
 // OpenAI rolled out the `none` reasoning_effort tier on this date (Responses API).
 // Models released before it 400 on `reasoning_effort: "none"`, so we only expose
@@ -552,12 +553,27 @@ function isNvidiaKimiK26(model: Provider.Model) {
 }
 
 export function variants(model: Provider.Model): Record<string, Record<string, any>> {
-  if (!model.capabilities.reasoning) return {}
+  // Tencent TokenHub GLM-5.2 is discovered via the /models endpoint without
+  // capability metadata, so capabilities.reasoning defaults to false. It does
+  // support reasoning_effort, so let it through the guard below.
+  const isTencentGlm52 =
+    model.providerID.includes("tencent") &&
+    model.api.id.toLowerCase().includes("glm-5.2") &&
+    model.api.npm === "@ai-sdk/openai-compatible"
+  if (!model.capabilities.reasoning && !isTencentGlm52) return {}
 
   const id = model.id.toLowerCase()
   const adaptiveEfforts = anthropicAdaptiveEfforts(model.api.id)
   if (isNvidiaKimiK26(model)) {
     return Object.fromEntries(NVIDIA_KIMI_K26_EFFORTS.map((effort) => [effort, { reasoningEffort: effort }]))
+  }
+
+  if (
+    model.providerID.includes("tencent") &&
+    model.api.id.toLowerCase().includes("glm-5.2") &&
+    model.api.npm === "@ai-sdk/openai-compatible"
+  ) {
+    return Object.fromEntries(TENCENT_GLM52_EFFORTS.map((effort) => [effort, { reasoningEffort: effort }]))
   }
   if (
     id.includes("deepseek-chat") ||
@@ -1016,8 +1032,11 @@ export function options(input: {
     result["chat_template_args"] = { enable_thinking: true }
   }
 
+  const modelId = input.model.api.id.toLowerCase()
+
   if (
-    ["zai", "zhipuai"].some((id) => input.model.providerID.includes(id)) &&
+    (["zai", "zhipuai"].some((id) => input.model.providerID.includes(id)) ||
+      (input.model.providerID.includes("tencent") && modelId.includes("glm"))) &&
     input.model.api.npm === "@ai-sdk/openai-compatible"
   ) {
     result["thinking"] = {
@@ -1042,7 +1061,6 @@ export function options(input: {
   }
 
   // Enable thinking by default for kimi models using anthropic SDK
-  const modelId = input.model.api.id.toLowerCase()
   if (isNvidiaKimiK26(input.model)) {
     result["reasoningEffort"] = "medium"
   }

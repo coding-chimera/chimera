@@ -347,7 +347,7 @@ test("custom OpenAI-compatible provider discovers models when omitted from confi
     fetch(request) {
       const url = new URL(request.url)
       calls.push({ path: url.pathname, auth: request.headers.get("authorization") })
-      if (url.pathname === "/v1/models") return Response.json({ data: [{ id: "gpt-5.5" }] })
+      if (url.pathname === "/v1/models") return Response.json({ data: [{ id: "gpt-5.5" }, { id: "bge-m3" }] })
       return new Response("not found", { status: 404 })
     },
   })
@@ -381,6 +381,65 @@ test("custom OpenAI-compatible provider discovers models when omitted from confi
       expect(provider.options.baseURL).toBe(`${server.url.origin}/v1`)
       expect(provider.models["gpt-5.5"]).toBeDefined()
       expect(provider.models["gpt-5.5"].api.npm).toBe("@ai-sdk/openai-compatible")
+      expect(provider.models["bge-m3"]).toBeDefined()
+    },
+  })
+  expect(calls).toEqual([
+    { path: "/models", auth: "Bearer test-key" },
+    { path: "/v1/models", auth: "Bearer test-key" },
+  ])
+})
+test("Tencent TokenHub discovery filters non-coding models", async () => {
+  const calls: { path: string; auth: string | null }[] = []
+  using server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      const url = new URL(request.url)
+      calls.push({ path: url.pathname, auth: request.headers.get("authorization") })
+      if (url.pathname === "/v1/models")
+        return Response.json({
+          data: [
+            { id: "glm-5" },
+            { id: "kimi-k2.5" },
+            { id: "hunyuan-mt-7b" },
+            { id: "bge-m3" },
+            { id: "text-embedding-v3" },
+            { id: "flux.1" },
+            { id: "reranker-v2" },
+          ],
+        })
+      return new Response("not found", { status: 404 })
+    },
+  })
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "chimera.json"),
+        JSON.stringify({
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+          provider: {
+            "tencent-tokenhub": {
+              name: "Tencent TokenHub",
+              npm: "@ai-sdk/openai-compatible",
+              env: [],
+              options: {
+                apiKey: "test-key",
+                baseURL: server.url.origin,
+              },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const providers = await list()
+      const provider = providers[ProviderID.make("tencent-tokenhub")]
+      expect(provider).toBeDefined()
+      expect(provider.options.baseURL).toBe(`${server.url.origin}/v1`)
+      expect(Object.keys(provider.models).sort()).toEqual(["glm-5", "kimi-k2.5"])
     },
   })
   expect(calls).toEqual([

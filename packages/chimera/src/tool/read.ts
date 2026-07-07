@@ -46,6 +46,7 @@ function isDedupCapable(modelID: string): boolean {
   }
   if (/^claude-fable[-.]?5/.test(modelID)) return true
   if (/^deepseek-v4-pro/.test(modelID)) return true
+  if (/(^|\/)hy3($|[.\-])/.test(modelID)) return true
   return false
 }
 

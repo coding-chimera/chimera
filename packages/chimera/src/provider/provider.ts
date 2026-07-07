@@ -193,6 +193,30 @@ function parseOpenAICompatibleModelIDs(value: unknown) {
   ).filter(Boolean)
 }
 
+const TENCENT_TOKENHUB_NON_CODING_MODEL_PATTERNS = [
+  /(?:^|[-_/])(?:bge|e5|gte|jina|mt|asr|tts|ocr)(?:[-_/]|$)/,
+  /embed|embedding|rerank|re-rank|reranker/,
+  /whisper|speech|audio|voice|translate|translation/,
+  /(?:^|[-_/])image(?:[-_/]|$)|image-generation|text-to-image|stable-diffusion|sdxl|flux|kolors|sora|veo|wan/,
+  /moderation|safety|guard/,
+]
+
+const TENCENT_TOKENHUB_CODING_MODEL_PATTERNS = [
+  /glm|deepseek|qwen|kimi|hunyuan|gpt|claude|gemini|minimax|mistral|llama|doubao|ernie|baichuan/,
+  /coder|coding|code-latest|tc-code/,
+]
+
+function isTencentTokenHubCodingModel(modelID: string) {
+  const normalized = modelID.toLowerCase()
+  if (TENCENT_TOKENHUB_NON_CODING_MODEL_PATTERNS.some((pattern) => pattern.test(normalized))) return false
+  return TENCENT_TOKENHUB_CODING_MODEL_PATTERNS.some((pattern) => pattern.test(normalized))
+}
+
+function filterDiscoveredOpenAICompatibleModels(providerID: ProviderID, models: string[]) {
+  if (providerID !== ProviderID.make("tencent-tokenhub")) return models
+  return models.filter(isTencentTokenHubCodingModel)
+}
+
 async function discoverOpenAICompatibleModelIDs(input: { baseURL: string; apiKey?: string }) {
   for (const baseURL of openAICompatibleModelBaseURLCandidates(input.baseURL)) {
     const response = await fetch(`${baseURL.replace(/\/+$/, "")}/models`, {
@@ -1388,7 +1412,6 @@ const layer: Layer.Layer<
           if (
             isProviderAllowed(id) &&
             Object.keys(configuredModels).length === 0 &&
-            Object.keys(parsed.models).length === 0 &&
             (provider.npm ?? "@ai-sdk/openai-compatible") === "@ai-sdk/openai-compatible"
           ) {
             const baseURL = nonEmptyString(provider.options?.baseURL) ?? nonEmptyString(provider.api)
@@ -1398,11 +1421,17 @@ const layer: Layer.Layer<
                 nonEmptyString(provider.options?.apiKey) ??
                 nonEmptyString(stored?.type === "api" ? stored.key : undefined) ??
                 parsed.env.map((item) => nonEmptyString(envs[item])).find(Boolean)
-              const discovered = yield* Effect.promise(() => discoverOpenAICompatibleModelIDs({ baseURL, apiKey }))
-              if (discovered) {
-                parsed.options.baseURL = discovered.baseURL
-                discoveredBaseURLs[providerID] = discovered.baseURL
-                for (const modelID of discovered.models) configuredModels[modelID] = {}
+              const hasStaticModels = Object.keys(parsed.models).length > 0
+              if (!hasStaticModels || apiKey) {
+                const discovered = yield* Effect.promise(() => discoverOpenAICompatibleModelIDs({ baseURL, apiKey }))
+                if (discovered) {
+                  const discoveredModels = filterDiscoveredOpenAICompatibleModels(id, discovered.models)
+                  if (discoveredModels.length > 0) {
+                    parsed.options.baseURL = discovered.baseURL
+                    discoveredBaseURLs[providerID] = discovered.baseURL
+                    for (const modelID of discoveredModels) configuredModels[modelID] = {}
+                  }
+                }
               }
             }
           }
@@ -1530,6 +1559,80 @@ const layer: Layer.Layer<
               key: provider.key,
             })
           }
+
+        // discover models for OpenAI-compatible providers that have API keys
+        // but were not configured with explicit custom models
+        for (const [providerID, provider] of Object.entries(providers)) {
+          const id = ProviderID.make(providerID)
+          if (!isProviderAllowed(id)) continue
+          const apiKey = provider.key
+          if (!apiKey) continue
+
+          const devEntry = modelsDev[providerID]
+          if (!devEntry) continue
+          const npm = devEntry.npm ?? "@ai-sdk/openai-compatible"
+          if (npm !== "@ai-sdk/openai-compatible") continue
+
+          // skip if user already configured custom models for this provider
+          if (Object.keys(cfg.provider?.[providerID]?.models ?? {}).length > 0) continue
+
+          const baseURL =
+            nonEmptyString(provider.options?.baseURL) ??
+            nonEmptyString(devEntry.api)
+          if (!baseURL) continue
+
+          const discovered = yield* Effect.promise(() =>
+            discoverOpenAICompatibleModelIDs({ baseURL, apiKey }),
+          )
+          if (!discovered) continue
+          const discoveredModels = filterDiscoveredOpenAICompatibleModels(id, discovered.models)
+          if (discoveredModels.length === 0) continue
+
+          provider.options = { ...provider.options, baseURL: discovered.baseURL }
+
+          for (const modelID of discoveredModels) {
+            if (provider.models[modelID]) continue
+            const metadataModel = findKnownModelMetadata(database, modelID)
+            provider.models[modelID] = {
+              id: ModelID.make(modelID),
+              providerID: id,
+              name: metadataModel?.name ?? modelID,
+              family: metadataModel?.family ?? "",
+              api: { id: modelID, url: devEntry.api ?? "", npm },
+              status: "active",
+              headers: {},
+              options: {},
+              cost: metadataModel?.cost ?? { input: 0, output: 0, cache: { read: 0, write: 0 } },
+              limit: {
+                context: metadataModel?.limit?.context ?? 131072,
+                output: metadataModel?.limit?.output ?? 16384,
+              },
+              capabilities: {
+                temperature: metadataModel?.capabilities?.temperature ?? true,
+                reasoning: metadataModel?.capabilities?.reasoning ?? false,
+                attachment: metadataModel?.capabilities?.attachment ?? false,
+                toolcall: metadataModel?.capabilities?.toolcall ?? true,
+                input: {
+                  text: metadataModel?.capabilities?.input?.text ?? true,
+                  audio: metadataModel?.capabilities?.input?.audio ?? false,
+                  image: metadataModel?.capabilities?.input?.image ?? false,
+                  video: metadataModel?.capabilities?.input?.video ?? false,
+                  pdf: metadataModel?.capabilities?.input?.pdf ?? false,
+                },
+                output: {
+                  text: metadataModel?.capabilities?.output?.text ?? true,
+                  audio: metadataModel?.capabilities?.output?.audio ?? false,
+                  image: metadataModel?.capabilities?.output?.image ?? false,
+                  video: metadataModel?.capabilities?.output?.video ?? false,
+                  pdf: metadataModel?.capabilities?.output?.pdf ?? false,
+                },
+                interleaved: metadataModel?.capabilities?.interleaved ?? false,
+              },
+              release_date: metadataModel?.release_date ?? "",
+              variants: {},
+            }
+          }
+        }
         }
 
         // plugin auth loader - database now has entries for config providers
