@@ -172,6 +172,69 @@ describe("ProviderTransform.options - zai/zhipuai thinking", () => {
   }
 })
 
+
+describe("ProviderTransform.options - tencent GLM thinking", () => {
+  const sessionID = "test-session-123"
+
+  const createModel = (providerID: string, modelId: string) =>
+    ({
+      id: `${providerID}/${modelId}`,
+      providerID,
+      api: {
+        id: modelId,
+        url: "https://api.lkeap.cloud.tencent.com/coding/v3",
+        npm: "@ai-sdk/openai-compatible",
+      },
+      name: modelId,
+      capabilities: {
+        temperature: true,
+        reasoning: true,
+        attachment: true,
+        toolcall: true,
+        input: { text: true, audio: false, image: true, video: false, pdf: true },
+        output: { text: true, audio: false, image: false, video: false, pdf: false },
+        interleaved: false,
+      },
+      cost: {
+        input: 0.001,
+        output: 0.002,
+        cache: { read: 0.0001, write: 0.0002 },
+      },
+      limit: {
+        context: 128000,
+        output: 8192,
+      },
+      status: "active",
+      options: {},
+      headers: {},
+    }) as any
+
+  for (const providerID of ["tencent-coding-plan", "tencent-tokenhub", "tencent-token-plan"]) {
+    test(`${providerID} should set thinking cfg for GLM`, () => {
+      const result = ProviderTransform.options({
+        model: createModel(providerID, "glm-5"),
+        sessionID,
+        providerOptions: {},
+      })
+
+      expect(result.thinking).toEqual({
+        type: "enabled",
+        clear_thinking: false,
+      })
+    })
+  }
+
+  test("tencent-coding-plan should NOT set thinking cfg for non-GLM model", () => {
+    const result = ProviderTransform.options({
+      model: createModel("tencent-coding-plan", "hunyuan-2.0-thinking"),
+      sessionID,
+      providerOptions: {},
+    })
+
+    expect(result.thinking).toBeUndefined()
+  })
+})
+
 describe("ProviderTransform.options - nvidia Kimi K2.6 thinking", () => {
   const sessionID = "test-session-123"
 
@@ -2431,6 +2494,55 @@ describe("ProviderTransform.variants", () => {
       api: {
         id: "glm-4",
         url: "https://api.glm.com",
+        npm: "@ai-sdk/openai-compatible",
+      },
+    })
+    const result = ProviderTransform.variants(model)
+    expect(result).toEqual({})
+  })
+
+  test("tencent GLM-5.2 returns official reasoning effort variants", () => {
+    const model = createMockModel({
+      id: "tencent-tokenhub/glm-5.2",
+      providerID: "tencent-tokenhub",
+      api: {
+        id: "glm-5.2",
+        url: "https://api.lkeap.cloud.tencent.com/coding/v3",
+        npm: "@ai-sdk/openai-compatible",
+      },
+    })
+    const result = ProviderTransform.variants(model)
+    expect(result).toEqual({
+      high: { reasoningEffort: "high" },
+      max: { reasoningEffort: "max" },
+    })
+  })
+
+  test("tencent GLM-5.2 returns variants even when capabilities.reasoning is false", () => {
+    const model = createMockModel({
+      id: "tencent-tokenhub/glm-5.2",
+      providerID: "tencent-tokenhub",
+      api: {
+        id: "glm-5.2",
+        url: "https://api.lkeap.cloud.tencent.com/coding/v3",
+        npm: "@ai-sdk/openai-compatible",
+      },
+      capabilities: { reasoning: false },
+    })
+    const result = ProviderTransform.variants(model)
+    expect(result).toEqual({
+      high: { reasoningEffort: "high" },
+      max: { reasoningEffort: "max" },
+    })
+  })
+
+  test("other tencent GLM models return empty variants", () => {
+    const model = createMockModel({
+      id: "tencent-tokenhub/glm-5",
+      providerID: "tencent-tokenhub",
+      api: {
+        id: "glm-5",
+        url: "https://api.lkeap.cloud.tencent.com/coding/v3",
         npm: "@ai-sdk/openai-compatible",
       },
     })

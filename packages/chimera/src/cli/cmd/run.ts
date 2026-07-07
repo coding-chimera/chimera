@@ -460,6 +460,17 @@ export const RunCommand = effectCmd({
           const toggles = new Map<string, boolean>()
 
           for await (const event of events.stream) {
+            const promptStatsEvent = event as unknown as {
+              type: string
+              properties?: { sessionID?: string }
+            }
+            if (
+              promptStatsEvent.type === "session.prompt.stats" &&
+              promptStatsEvent.properties?.sessionID === sessionID
+            ) {
+              if (emit("prompt_stats", { stats: promptStatsEvent.properties })) continue
+            }
+
             if (
               event.type === "message.updated" &&
               event.properties.info.role === "assistant" &&
