@@ -10,6 +10,8 @@ Presets are worker prompt shapes. They are not workflow engines, permission swit
 
 This is a thin fan-out helper. It does not build PlanGraph, lock files, claim obligations, apply edits itself, rerun audits, or decide convergence for you. The parent agent owns conflict handling, final audit/test/oracle verification, and closeout. Tool output includes parent closeout recommendations after each run.
 
+The tool tracks child session IDs in its metadata and output. If the parent swarm is aborted, already-created child sessions are cancelled as part of the same abort flow. Treat any interrupted child report as incomplete evidence that the parent must re-check or rerun deliberately.
+
 Prompt templates support:
 - `{{item}}`: formatted item text or JSON
 - `{{index}}`: 1-based item index
