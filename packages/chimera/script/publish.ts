@@ -1,5 +1,7 @@
 #!/usr/bin/env bun
 import { $ } from "bun"
+import fs from "fs"
+import path from "path"
 import pkg from "../package.json"
 import { Script } from "@opencode-ai/script"
 import { fileURLToPath } from "url"
@@ -27,13 +29,20 @@ async function publish(dir: string, name: string, version: string) {
   }
   await $`npm publish *.tgz --access public --tag ${Script.channel}`.cwd(dir)
 }
+const variantMeta = await Bun.file("./dist/package-variant.json").json().catch(() => null)
+const packageVariant = variantMeta?.variant ?? "no-webui"
+const effectivePkgName = packageVariant === "with-webui" ? pkg.name + "-webui" : pkg.name
 
 const binaries: Record<string, string> = {}
-for (const filepath of new Bun.Glob(`${pkg.name}-*/package.json`).scanSync({ cwd: "./dist" })) {
-  const binaryPkg = await Bun.file(`./dist/${filepath}`).json()
+
+for (const { dir: packageDir, json: binaryPkg } of findPlatformPackages("./dist", effectivePkgName)) {
+
   binaries[binaryPkg.name] = binaryPkg.version
+
 }
+
 console.log("binaries", binaries)
+
 const versions = [...new Set(Object.values(binaries))]
 if (versions.length === 0) {
   throw new Error("No platform packages found in dist. Run the build before publishing.")
@@ -43,17 +52,17 @@ if (versions.length !== 1) {
 }
 const version = versions[0]
 
-await $`rm -rf ./dist/${pkg.name}`
-await $`mkdir -p ./dist/${pkg.name}`
-await $`cp -r ./bin ./dist/${pkg.name}/bin`
-await $`cp ./script/postinstall.mjs ./dist/${pkg.name}/postinstall.mjs`
-await $`cp ./README.md ./dist/${pkg.name}/README.md`
-await Bun.file(`./dist/${pkg.name}/LICENSE`).write(await Bun.file("../../LICENSE").text())
+await $`rm -rf ./dist/${effectivePkgName}`
+await $`mkdir -p ./dist/${effectivePkgName}`
+await $`cp -r ./bin ./dist/${effectivePkgName}/bin`
+await $`cp ./script/postinstall.mjs ./dist/${effectivePkgName}/postinstall.mjs`
+await $`cp ./README.md ./dist/${effectivePkgName}/README.md`
+await Bun.file(`./dist/${effectivePkgName}/LICENSE`).write(await Bun.file("../../LICENSE").text())
 
-await Bun.file(`./dist/${pkg.name}/package.json`).write(
+await Bun.file(`./dist/${effectivePkgName}/package.json`).write(
   JSON.stringify(
     {
-      name: pkg.name,
+      name: effectivePkgName,
       version: version,
       type: "module",
       license: pkg.license,
@@ -74,9 +83,9 @@ const tasks = Object.entries(binaries).map(async ([name]) => {
   await publish(`./dist/${name}`, name, binaries[name])
 })
 await Promise.all(tasks)
-await publish(`./dist/${pkg.name}`, pkg.name, version)
+await publish(`./dist/${effectivePkgName}`, effectivePkgName, version)
 
-const releaseName = pkg.name
+const releaseName = effectivePkgName
 const repo = "anomalyco/coding-chimera"
 const image = `ghcr.io/anomalyco/${releaseName}`
 const platforms = "linux/amd64,linux/arm64"
@@ -211,3 +220,35 @@ if (!Script.preview && !dryRun) {
     await $`cd ./dist/homebrew-tap && git push`
   }
 }
+
+
+function* findPlatformPackages(dist: string, pkgName: string): Generator<{ dir: string; json: any }> {
+
+  for (const entry of fs.readdirSync(dist, { withFileTypes: true })) {
+
+    if (!entry.isDirectory()) continue
+
+    const packageDir = path.join(dist, entry.name)
+
+    const packageJsonPath = path.join(packageDir, "package.json")
+
+    if (fs.existsSync(packageJsonPath)) {
+
+      const json = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"))
+
+      if (json.name && String(json.name).startsWith(`${pkgName}-`)) {
+
+        yield { dir: packageDir, json }
+
+        continue
+
+      }
+
+    }
+
+    yield* findPlatformPackages(packageDir, pkgName)
+
+  }
+
+}
+

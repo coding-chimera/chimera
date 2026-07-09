@@ -6,6 +6,8 @@ import os from "os"
 import { fileURLToPath } from "url"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const ownPkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"))
+const pkgShortName = (ownPkg.name || "@coding-chimera/chimera").split("/").pop()
 
 function detectPlatformAndArch() {
   // Map platform names
@@ -46,7 +48,7 @@ function detectPlatformAndArch() {
 }
 
 function candidatePackageNames(platform, arch) {
-  const base = `chimera-${platform}-${arch}`
+  const base = `${pkgShortName}-${platform}-${arch}`
   if (platform !== "linux") return arch === "x64" ? [base, `${base}-baseline`] : [base]
   if (arch !== "x64") return [base, `${base}-musl`]
   return [base, `${base}-baseline`, `${base}-musl`, `${base}-baseline-musl`]
