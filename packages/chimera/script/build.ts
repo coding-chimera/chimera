@@ -97,7 +97,8 @@ if (!/^[a-z0-9][a-z0-9-]*$/.test(packageVariant)) {
 }
 if (packageVariant === "no-webui" && (embedLegacyWebUi || embedNewWebUi)) {
   throw new Error("no-webui package variant cannot embed WebUI assets")
-}
+  }
+const effectivePkgName = packageVariant === "with-webui" ? pkg.name + "-webui" : pkg.name
 if (packageVariant === "with-webui" && !embedLegacyWebUi && !embedNewWebUi) {
   throw new Error("with-webui package variant requires --with-webui, --embed-web-ui, --embed-legacy-web-ui, or --embed-newweb-ui")
 }
@@ -242,7 +243,7 @@ if (!skipInstall) {
 }
 for (const item of targets) {
   const name = [
-    pkg.name,
+    effectivePkgName,
     // changing to win32 flags npm for some reason
     item.os === "win32" ? "windows" : item.os,
     item.arch,
@@ -281,7 +282,7 @@ for (const item of targets) {
       autoloadDotenv: false,
       autoloadTsconfig: true,
       autoloadPackageJson: true,
-      target: name.replace(pkg.name, "bun") as any,
+      target: name.replace(effectivePkgName, "bun") as any,
       outfile: `dist/${name}/bin/${binaryName}`,
       execArgv: ["--liftoff-only", `--user-agent=chimera/${buildVersion}`, "--use-system-ca", "--"],
       windows: {},
@@ -356,7 +357,7 @@ if (preservedTarballDir) {
 }
 
 if (Script.release) {
-  const archiveVariantSuffix = packageVariant === "with-webui" ? `-${packageVariant}` : ""
+  const archiveVariantSuffix = ""
   for (const key of Object.keys(binaries)) {
     const archiveName = `${key}${archiveVariantSuffix}`
     if (key.includes("linux")) {

@@ -34,6 +34,8 @@ if (envPath) {
 
 const scriptPath = fs.realpathSync(fileURLToPath(import.meta.url))
 const scriptDir = path.dirname(scriptPath)
+const ownPkg = JSON.parse(fs.readFileSync(path.join(scriptDir, "..", "package.json"), "utf8"))
+const pkgShortName = (ownPkg.name || "@coding-chimera/chimera").split("/").pop()
 
 const cached = path.join(scriptDir, ".chimera")
 if (fs.existsSync(cached)) {
@@ -64,7 +66,7 @@ let arch = archMap[os.arch()]
 if (!arch) {
   arch = os.arch()
 }
-const base = "chimera-" + platform + "-" + arch
+const base = pkgShortName + "-" + platform + "-" + arch
 const binary = platform === "windows" ? "chimera.exe" : "chimera"
 
 function supportsAvx2() {

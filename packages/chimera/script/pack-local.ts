@@ -16,36 +16,33 @@ export async function packNpmTarballs(input: { variant?: string } = {}) {
   const pkg = await Bun.file(path.join(dir, "package.json")).json()
   const metadata = await Bun.file(path.join(dist, "package-variant.json")).json().catch(() => null)
   const variant = input.variant ?? metadata?.variant ?? "no-webui"
+  const baseName = variant === "with-webui" ? `${pkg.name}-webui` : pkg.name
   if (!/^[a-z0-9][a-z0-9-]*$/.test(variant)) {
     throw new Error(`Invalid package variant: ${variant}`)
   }
   process.chdir(dir)
 
-  const entries = await fs.readdir(dist, { withFileTypes: true }).catch(() => {
-    throw new Error("dist directory not found. Run `bun run build --single --skip-install` first.")
-  })
+  const platformPackages = await findPlatformPackages(dist, baseName)
 
-  const platformPackages = await Promise.all(
-    entries
-      .filter((entry) => entry.isDirectory() && entry.name.startsWith(`${pkg.name}-`))
-      .map(async (entry) => {
-        const packageDir = path.join(dist, entry.name)
-        const packageJson = await Bun.file(path.join(packageDir, "package.json")).json()
-        return { dir: packageDir, json: packageJson }
-      }),
-  )
+
 
   if (platformPackages.length === 0) {
+
     throw new Error("No platform packages found in dist. Run the build before packing.")
+
   }
+
+
 
   const versions = new Set(platformPackages.map((item) => item.json.version))
-  if (versions.size !== 1) {
-    throw new Error(`Platform package versions do not match: ${[...versions].join(", ")}`)
-  }
 
+  if (versions.size !== 1) {
+
+    throw new Error(`Platform package versions do not match: ${[...versions].join(", ")}`)
+
+  }
   const version = platformPackages[0].json.version
-  const mainDir = path.join(dist, pkg.name)
+  const mainDir = path.join(dist, baseName)
   await fs.rm(mainDir, { recursive: true, force: true })
   await fs.mkdir(mainDir, { recursive: true })
 
@@ -57,7 +54,7 @@ export async function packNpmTarballs(input: { variant?: string } = {}) {
   await Bun.file(path.join(mainDir, "package.json")).write(
     JSON.stringify(
       {
-        name: pkg.name,
+        name: baseName,
         version,
         type: "module",
         license: pkg.license,
@@ -97,6 +94,56 @@ export async function packNpmTarballs(input: { variant?: string } = {}) {
     console.log(path.relative(dir, path.join(tarballDir, tarball)))
   }
 }
+
+
+async function findPlatformPackages(dist: string, pkgName: string): Promise<{ dir: string; json: any }[]> {
+
+  const results: { dir: string; json: any }[] = []
+
+
+
+  async function scan(currentDir: string) {
+
+    const entries = await fs.readdir(currentDir, { withFileTypes: true }).catch(() => [])
+
+    for (const entry of entries) {
+
+      if (!entry.isDirectory()) continue
+
+      const packageDir = path.join(currentDir, entry.name)
+
+      const packageJsonPath = path.join(packageDir, "package.json")
+
+      const hasPackageJson = await fs.access(packageJsonPath).then(() => true).catch(() => false)
+
+      if (hasPackageJson) {
+
+        const json = await Bun.file(packageJsonPath).json()
+
+        if (json.name && String(json.name).startsWith(`${pkgName}-`)) {
+
+          results.push({ dir: packageDir, json })
+
+          continue
+
+        }
+
+      }
+
+      await scan(packageDir)
+
+    }
+
+  }
+
+
+
+  await scan(dist)
+
+  return results
+
+}
+
 
 if (import.meta.main) {
   await packNpmTarballs()
