@@ -206,6 +206,37 @@ describe("session.system", () => {
     }),
   )
 
+  it.effect("keeps gpt-5.6 on generic GPT/Codex overlays instead of GPT-5.5", () =>
+    Effect.gen(function* () {
+      const raw = SystemPrompt.provider({
+        providerID: "openai",
+        api: { id: "gpt-5.6-sol" },
+      } as unknown as Parameters<typeof SystemPrompt.provider>[0]).join("\n")
+      const namespaced = SystemPrompt.provider({
+        providerID: "openai",
+        api: { id: "openai/gpt-5.6-sol" },
+      } as unknown as Parameters<typeof SystemPrompt.provider>[0]).join("\n")
+      const codexNamespaced = SystemPrompt.provider({
+        providerID: "openai",
+        api: { id: "codex/gpt-5.6-sol" },
+      } as unknown as Parameters<typeof SystemPrompt.provider>[0]).join("\n")
+
+      expect(raw).toContain("## GPT Overlay")
+      expect(raw).toContain("Act like a pragmatic senior engineer.")
+      expect(raw).not.toContain("You are running on GPT-5.5.")
+      expect(raw).not.toContain("Codex OAuth and OpenAI API")
+      expect(namespaced).toContain("## GPT Overlay")
+      expect(namespaced).toContain("Act like a pragmatic senior engineer.")
+      expect(namespaced).not.toContain("You are running on GPT-5.5.")
+      expect(namespaced).not.toContain("Codex OAuth and OpenAI API")
+      expect(codexNamespaced).toContain("## Codex Overlay")
+      expect(codexNamespaced).toContain("Use Codex-style engineering discipline")
+      expect(codexNamespaced).not.toContain("You are running on GPT-5.5.")
+      expect(codexNamespaced).not.toContain("Codex OAuth and OpenAI API")
+      yield* Effect.void
+    }),
+  )
+
   it.effect("routes Kimi For Coding provider models to the Kimi prompt", () =>
     Effect.gen(function* () {
       const stable = SystemPrompt.provider({
