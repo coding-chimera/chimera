@@ -8,6 +8,7 @@ import { Instance } from "../../src/project/instance"
 import { WithInstance } from "../../src/project/with-instance"
 import { Plugin } from "../../src/plugin/index"
 import { ModelsDev } from "@/provider/models"
+import { snapshot } from "../../src/provider/models-snapshot.js"
 import { Provider } from "@/provider/provider"
 import { ProviderID, ModelID } from "../../src/provider/schema"
 import { Filesystem } from "@/util/filesystem"
@@ -495,6 +496,18 @@ test("known model metadata lookup normalizes provider-prefixed GPT-5.5 ids", () 
       write: 0,
     },
   })
+})
+
+test("known model metadata lookup resolves GPT-5.6 snapshot metadata", () => {
+  const openai = (snapshot as Record<string, ModelsDev.Provider>).openai
+  const model = Provider.findKnownModelMetadata(
+    { openai: Provider.fromModelsDevProvider(openai) },
+    "openai/gpt-5.6-sol",
+  )
+  expect(model?.api.id).toBe("gpt-5.6-sol")
+  expect(model?.limit.context).toBe(1_050_000)
+  expect(model?.limit.input).toBe(922_000)
+  expect(model?.limit.output).toBe(128_000)
 })
 
 test("known model metadata lookup normalizes DeepSeek V4 max aliases", () => {

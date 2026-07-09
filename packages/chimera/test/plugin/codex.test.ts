@@ -32,6 +32,74 @@ describe("plugin.codex", () => {
     expect(CODEX_OAUTH_SCOPE.split(" ")).not.toContain("api.responses.write")
   })
 
+  test("filters OAuth models and remaps GPT-5.5/GPT-5.6 limits for Codex", async () => {
+    const hooks = await CodexAuthPlugin({
+      client: {} as never,
+      project: {} as never,
+      directory: "",
+      worktree: "",
+      experimental_workspace: {
+        register() {},
+      },
+      serverUrl: new URL("https://example.com"),
+      $: {} as never,
+    })
+
+    const models = await hooks.provider!.models!(
+      {
+        id: "openai",
+        models: {
+          "gpt-5.5": {
+            id: "gpt-5.5",
+            providerID: "openai",
+            api: { id: "gpt-5.5" },
+            limit: { context: 1_050_000, input: 922_000, output: 128_000 },
+            cost: { input: 5, output: 30, cache: { read: 0.5, write: 0 } },
+          },
+          "gpt-5.6-sol": {
+            id: "gpt-5.6-sol",
+            providerID: "openai",
+            api: { id: "gpt-5.6-sol" },
+            limit: { context: 1_050_000, input: 922_000, output: 128_000 },
+            cost: { input: 5, output: 30, cache: { read: 0.5, write: 0 } },
+          },
+          "gpt-5.5-pro": {
+            id: "gpt-5.5-pro",
+            providerID: "openai",
+            api: { id: "gpt-5.5-pro" },
+            limit: { context: 1_050_000, input: 922_000, output: 128_000 },
+            cost: { input: 5, output: 30, cache: { read: 0.5, write: 0 } },
+          },
+        },
+      } as never,
+      {
+        auth: {
+          type: "oauth",
+          refresh: "token",
+          access: "token",
+          expires: Date.now() + 60_000,
+        } as never,
+      },
+    )
+
+    expect(Object.keys(models).sort()).toEqual(["gpt-5.5", "gpt-5.6-sol"])
+    expect(models["gpt-5.5"]?.limit).toEqual({
+      context: 400_000,
+      input: 272_000,
+      output: 128_000,
+    })
+    expect(models["gpt-5.6-sol"]?.limit).toEqual({
+      context: 500_000,
+      input: 372_000,
+      output: 128_000,
+    })
+    expect(models["gpt-5.6-sol"]?.cost).toEqual({
+      input: 0,
+      output: 0,
+      cache: { read: 0, write: 0 },
+    })
+  })
+
   describe("parseJwtClaims", () => {
     test("parses valid JWT with claims", () => {
       const payload = { email: "test@example.com", chatgpt_account_id: "acc-123" }
