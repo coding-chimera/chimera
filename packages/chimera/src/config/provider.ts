@@ -3,6 +3,7 @@ import { zod } from "@/util/effect-zod"
 import { PositiveInt, withStatics } from "@/util/schema"
 
 const BackendSemantics = Schema.Literals(["openai", "codex"])
+const WireAPI = Schema.Literals(["chat", "responses"])
 
 export const Model = Schema.Struct({
   id: Schema.optional(Schema.String),
@@ -79,6 +80,9 @@ export const Info = Schema.Struct({
   env: Schema.optional(Schema.mutable(Schema.Array(Schema.String))),
   id: Schema.optional(Schema.String),
   npm: Schema.optional(Schema.String),
+  wire_api: Schema.optional(WireAPI).annotate({
+    description: "Wire protocol for model requests; independent of backend_semantics",
+  }),
   backend_semantics: Schema.optional(BackendSemantics).annotate({
     description: "Default capability semantics for models in this provider; model values take precedence",
   }),
