@@ -410,12 +410,13 @@ describe("ProviderTransform.options - gpt-5 textVerbosity", () => {
     expect(result.textVerbosity).toBeUndefined()
   })
 
-  test("gpt-5 openai-compatible does not receive reasoningSummary", () => {
+  test("gpt-5 openai-compatible with codex semantics does not receive transport-only reasoning fields", () => {
     const model = {
-      ...createGpt5Model("gpt-5.2"),
+      ...createGpt5Model("gpt-5.6-sol"),
       providerID: "custom-provider",
+      backend_semantics: "codex" as const,
       api: {
-        id: "gpt-5.2",
+        id: "gpt-5.6-sol",
         url: "https://api.custom.com",
         npm: "@ai-sdk/openai-compatible",
       },
@@ -538,6 +539,22 @@ describe("ProviderTransform.providerOptions", () => {
 
     expect(ProviderTransform.providerOptions(model, { cachePoint: { type: "default" } })).toEqual({
       bedrock: { cachePoint: { type: "default" } },
+    })
+  })
+
+  test("backend semantics does not change providerOptions routing", () => {
+    const model = createModel({
+      providerID: "my-proxy",
+      backend_semantics: "codex",
+      api: {
+        id: "gpt-5.6-sol",
+        url: "https://api.proxy.test",
+        npm: "@ai-sdk/openai-compatible",
+      },
+    })
+
+    expect(ProviderTransform.providerOptions(model, { reasoningEffort: "high" })).toEqual({
+      "my-proxy": { reasoningEffort: "high" },
     })
   })
 
@@ -2449,6 +2466,91 @@ describe("ProviderTransform.variants", () => {
     headers: {},
     release_date: "2024-01-01",
     ...overrides,
+  })
+
+  test("codex semantics exposes Codex efforts over openai-compatible transport", () => {
+    const model = createMockModel({
+      id: "custom/gpt-5.6-sol",
+      providerID: "custom",
+      backend_semantics: "codex",
+      api: {
+        id: "gpt-5.6-sol",
+        url: "https://api.custom.test",
+        npm: "@ai-sdk/openai-compatible",
+      },
+    })
+    const result = ProviderTransform.variants(model)
+    expect(Object.keys(result)).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"])
+    expect(result.ultra).toEqual({ reasoningEffort: "ultra" })
+    expect(result.ultra.reasoningSummary).toBeUndefined()
+    expect(result.ultra.include).toBeUndefined()
+    expect(ProviderTransform.smallOptions(model)).toEqual({ reasoningEffort: "low" })
+  })
+
+  test("codex semantics supplies known efforts when discovery omits reasoning metadata", () => {
+    const model = createMockModel({
+      id: "custom/gpt-5.6-luna",
+      providerID: "custom",
+      backend_semantics: "codex",
+      capabilities: { reasoning: false },
+      api: {
+        id: "gpt-5.6-luna",
+        url: "https://api.custom.test",
+        npm: "@ai-sdk/openai-compatible",
+      },
+    })
+    expect(Object.keys(ProviderTransform.variants(model))).toEqual(["low", "medium", "high", "xhigh", "max"])
+  })
+
+
+  test("codex small options preserve OpenAI transport defaults", () => {
+    const model = createMockModel({
+      id: "openai/gpt-5.6-sol",
+      providerID: "openai",
+      backend_semantics: "codex",
+      api: {
+        id: "gpt-5.6-sol",
+        url: "https://api.openai.com/v1",
+        npm: "@ai-sdk/openai",
+      },
+    })
+    expect(ProviderTransform.smallOptions(model)).toEqual({ store: false, reasoningEffort: "low" })
+  })
+
+  test("openai semantics keeps the legacy openai-compatible effort set", () => {
+    const model = createMockModel({
+      id: "custom/gpt-5.6-sol",
+      providerID: "custom",
+      backend_semantics: "openai",
+      api: {
+        id: "gpt-5.6-sol",
+        url: "https://api.custom.test",
+        npm: "@ai-sdk/openai-compatible",
+      },
+    })
+    const result = ProviderTransform.variants(model)
+    expect(Object.keys(result)).toEqual(["low", "medium", "high", "xhigh"])
+    expect(result.max).toBeUndefined()
+    expect(result.ultra).toBeUndefined()
+  })
+
+  test("codex semantics is a no-op for unknown model families", () => {
+    const model = createMockModel({
+      backend_semantics: "codex",
+      api: {
+        id: "unknown-reasoning-model",
+        url: "https://api.custom.test",
+        npm: "@ai-sdk/openai-compatible",
+      },
+    })
+    const legacy = createMockModel({
+      api: {
+        id: "unknown-reasoning-model",
+        url: "https://api.custom.test",
+        npm: "@ai-sdk/openai-compatible",
+      },
+    })
+    expect(ProviderTransform.variants(model)).toEqual(ProviderTransform.variants(legacy))
   })
 
   test("returns empty object when model has no reasoning capabilities", () => {

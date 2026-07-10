@@ -341,6 +341,61 @@ test("custom OpenAI-compatible provider reuses known model metadata", async () =
   })
 })
 
+test("backend semantics resolves model over provider and preserves explicit variants", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "chimera.json"),
+        JSON.stringify({
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+          provider: {
+            "custom-codex": {
+              name: "Custom Codex Proxy",
+              npm: "@ai-sdk/openai-compatible",
+              backend_semantics: "codex",
+              env: [],
+              models: {
+                "gpt-5.6-sol": {
+                  variants: {
+                    max: { disabled: true },
+                    ultra: { reasoningEffort: "ultra", custom: true },
+                  },
+                },
+                "gpt-5.6-luna": {
+                  backend_semantics: "openai",
+                },
+              },
+              options: {
+                apiKey: "test-key",
+                baseURL: "https://api.custom.test/v1",
+              },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const providers = await list()
+      const provider = providers[ProviderID.make("custom-codex")]
+      const sol = provider.models["gpt-5.6-sol"]
+      const luna = provider.models["gpt-5.6-luna"]
+
+      expect(provider.backend_semantics).toBe("codex")
+      expect(sol.api.npm).toBe("@ai-sdk/openai-compatible")
+      expect(sol.backend_semantics).toBe("codex")
+      expect(sol.variants?.max).toBeUndefined()
+      expect(sol.variants?.ultra).toEqual({ reasoningEffort: "ultra", custom: true })
+      expect(sol.variants?.ultra.reasoningSummary).toBeUndefined()
+      expect(sol.variants?.ultra.include).toBeUndefined()
+      expect(luna.backend_semantics).toBe("openai")
+      expect(luna.variants?.max).toBeUndefined()
+    },
+  })
+})
+
 test("custom OpenAI-compatible provider discovers models when omitted from config", async () => {
   const calls: { path: string; auth: string | null }[] = []
   using server = Bun.serve({

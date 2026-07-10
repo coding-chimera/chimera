@@ -28,6 +28,13 @@ const ALLOWED_MODELS = new Set([
   "gpt-5.6-luna",
 ])
 
+const CODEX_REASONING_EFFORTS = {
+  "gpt-5.5": ["low", "medium", "high", "xhigh"],
+  "gpt-5.6-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
+  "gpt-5.6-terra": ["low", "medium", "high", "xhigh", "max", "ultra"],
+  "gpt-5.6-luna": ["low", "medium", "high", "xhigh", "max"],
+} as const
+
 function isAllowedModel(modelID: string) {
   if (ALLOWED_MODELS.has(modelID)) return true
   const match = modelID.match(/^gpt-(\d+\.\d+)$/)
@@ -37,6 +44,21 @@ function isAllowedModel(modelID: string) {
 function codexInputLimit(modelID: string) {
   if (modelID === "gpt-5.5") return 272_000
   if (modelID === "gpt-5.6-sol" || modelID === "gpt-5.6-terra" || modelID === "gpt-5.6-luna") return 372_000
+}
+
+function codexReasoningVariants(modelID: string) {
+  const efforts = CODEX_REASONING_EFFORTS[modelID as keyof typeof CODEX_REASONING_EFFORTS]
+  if (!efforts) return
+  return Object.fromEntries(
+    efforts.map((effort) => [
+      effort,
+      {
+        reasoningEffort: effort,
+        reasoningSummary: "auto",
+        include: ["reasoning.encrypted_content"],
+      },
+    ]),
+  )
 }
 
 interface PkceCodes {
@@ -467,6 +489,7 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
             .filter(([, model]) => isAllowedModel(model.api.id))
             .map(([modelID, model]) => {
               const input = codexInputLimit(model.api.id)
+              const variants = codexReasoningVariants(model.api.id)
               return [
                 modelID,
                 {
@@ -483,6 +506,7 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
                         output: model.limit.output,
                       }
                     : model.limit,
+                  variants: variants ?? model.variants ?? {},
                 },
               ]
             }),
