@@ -160,6 +160,34 @@ describe("session.codex-responses", () => {
     expect(body.tools[0].name).toBe("lookup")
   })
 
+  test("passes through Codex-only higher reasoning efforts", () => {
+    const body = CodexResponses.buildRequestBody(
+      inputWithOptions(
+        {
+          model: {
+            ...model(),
+            id: "gpt-5.6-sol",
+            name: "GPT 5.6 Sol",
+            api: { id: "gpt-5.6-sol", npm: "@ai-sdk/openai", url: "" },
+            limit: { context: 500_000, input: 372_000, output: 128_000 },
+            release_date: "2026-07-01",
+            variants: {
+              ultra: {
+                reasoningEffort: "ultra",
+                reasoningSummary: "auto",
+                include: ["reasoning.encrypted_content"],
+              },
+            },
+          } as unknown as CodexResponsesInput["model"],
+        },
+        { reasoningEffort: "ultra" },
+      ),
+    ) as any
+
+    expect(body.reasoning).toEqual({ effort: "ultra", summary: "auto" })
+    expect(body.include).toEqual(["reasoning.encrypted_content"])
+  })
+
   test("converts hosted web search tool into Responses request body", () => {
     const body = CodexResponses.buildRequestBody(
       baseInput({

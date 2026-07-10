@@ -2,10 +2,15 @@ import { Schema } from "effect"
 import { zod } from "@/util/effect-zod"
 import { PositiveInt, withStatics } from "@/util/schema"
 
+const BackendSemantics = Schema.Literals(["openai", "codex"])
+
 export const Model = Schema.Struct({
   id: Schema.optional(Schema.String),
   name: Schema.optional(Schema.String),
   family: Schema.optional(Schema.String),
+  backend_semantics: Schema.optional(BackendSemantics).annotate({
+    description: "Capability semantics to apply independently of the configured transport",
+  }),
   release_date: Schema.optional(Schema.String),
   attachment: Schema.optional(Schema.Boolean),
   reasoning: Schema.optional(Schema.Boolean),
@@ -74,6 +79,9 @@ export const Info = Schema.Struct({
   env: Schema.optional(Schema.mutable(Schema.Array(Schema.String))),
   id: Schema.optional(Schema.String),
   npm: Schema.optional(Schema.String),
+  backend_semantics: Schema.optional(BackendSemantics).annotate({
+    description: "Default capability semantics for models in this provider; model values take precedence",
+  }),
   userAgent: Schema.optional(Schema.String),
   whitelist: Schema.optional(Schema.mutable(Schema.Array(Schema.String))),
   blacklist: Schema.optional(Schema.mutable(Schema.Array(Schema.String))),
