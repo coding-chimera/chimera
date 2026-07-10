@@ -988,12 +988,15 @@ const ProviderLimit = Schema.Struct({
   output: Schema.Finite,
 })
 
+const BackendSemantics = Schema.Literals(["openai", "codex"])
+
 export const Model = Schema.Struct({
   id: ModelID,
   providerID: ProviderID,
   api: ProviderApiInfo,
   name: Schema.String,
   family: optionalOmitUndefined(Schema.String),
+  backend_semantics: optionalOmitUndefined(BackendSemantics),
   capabilities: ProviderCapabilities,
   cost: ProviderCost,
   limit: ProviderLimit,
@@ -1011,6 +1014,7 @@ export const Info = Schema.Struct({
   id: ProviderID,
   name: Schema.String,
   source: Schema.Literals(["env", "config", "custom", "api"]),
+  backend_semantics: optionalOmitUndefined(BackendSemantics),
   env: Schema.Array(Schema.String),
   key: optionalOmitUndefined(Schema.String),
   options: Schema.Record(Schema.String, Schema.Any),
@@ -1406,6 +1410,7 @@ const layer: Layer.Layer<
             env: provider.env ?? existing?.env ?? [],
             options: mergeDeep(existing?.options ?? {}, provider.options ?? {}),
             source: "config",
+            backend_semantics: provider.backend_semantics ?? existing?.backend_semantics,
             models: existing?.models ?? {},
           }
           const configuredModels = { ...(provider.models ?? {}) }
@@ -1461,6 +1466,7 @@ const layer: Layer.Layer<
               status: model.status ?? metadataModel?.status ?? "active",
               name,
               providerID: ProviderID.make(providerID),
+              backend_semantics: model.backend_semantics ?? provider.backend_semantics ?? existingModel?.backend_semantics,
               capabilities: {
                 temperature: model.temperature ?? metadataModel?.capabilities.temperature ?? false,
                 reasoning: model.reasoning ?? metadataModel?.capabilities.reasoning ?? false,
@@ -1681,6 +1687,7 @@ const layer: Layer.Layer<
           const partial: Partial<Info> = { source: "config" }
           if (provider.env) partial.env = provider.env
           if (provider.name) partial.name = provider.name
+          if (provider.backend_semantics) partial.backend_semantics = provider.backend_semantics
           if (provider.options || discoveredBaseURLs[id])
             partial.options = mergeDeep(provider.options ?? {}, discoveredBaseURLs[id] ? { baseURL: discoveredBaseURLs[id] } : {})
           mergeProvider(providerID, partial)
@@ -1726,7 +1733,12 @@ const layer: Layer.Layer<
             )
               delete provider.models[modelID]
 
-            if (!model.variants || Object.keys(model.variants).length === 0) {
+            const configuredBackendSemantics =
+              configProvider?.models?.[modelID]?.backend_semantics ?? configProvider?.backend_semantics
+            if (configuredBackendSemantics) {
+              model.backend_semantics = configuredBackendSemantics
+              model.variants = mapValues(ProviderTransform.variants(model), (v) => v)
+            } else if (!model.variants || Object.keys(model.variants).length === 0) {
               model.variants = mapValues(ProviderTransform.variants(model), (v) => v)
             }
 

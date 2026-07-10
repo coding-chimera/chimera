@@ -502,6 +502,12 @@ const WIDELY_SUPPORTED_EFFORTS = ["low", "medium", "high"]
 const OPENAI_EFFORTS = ["none", "minimal", ...WIDELY_SUPPORTED_EFFORTS, "xhigh"]
 const NVIDIA_KIMI_K26_EFFORTS = ["none", "minimal", ...WIDELY_SUPPORTED_EFFORTS, "xhigh", "max"]
 const TENCENT_GLM52_EFFORTS = ["high", "max"]
+const CODEX_REASONING_EFFORTS = {
+  "gpt-5.5": ["low", "medium", "high", "xhigh"],
+  "gpt-5.6-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
+  "gpt-5.6-terra": ["low", "medium", "high", "xhigh", "max", "ultra"],
+  "gpt-5.6-luna": ["low", "medium", "high", "xhigh", "max"],
+} as const
 
 // OpenAI rolled out the `none` reasoning_effort tier on this date (Responses API).
 // Models released before it 400 on `reasoning_effort: "none"`, so we only expose
@@ -543,6 +549,11 @@ function anthropicAdaptiveEfforts(apiId: string): string[] | null {
   return null
 }
 
+function codexReasoningEfforts(apiId: string) {
+  const id = apiId.toLowerCase().split("/").at(-1) ?? apiId.toLowerCase()
+  return CODEX_REASONING_EFFORTS[id as keyof typeof CODEX_REASONING_EFFORTS]
+}
+
 function isNvidiaKimiK26(model: Provider.Model) {
   return (
     model.providerID === "nvidia" &&
@@ -560,7 +571,11 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
     model.providerID.includes("tencent") &&
     model.api.id.toLowerCase().includes("glm-5.2") &&
     model.api.npm === "@ai-sdk/openai-compatible"
-  if (!model.capabilities.reasoning && !isTencentGlm52) return {}
+  const codexEfforts = model.backend_semantics === "codex" ? codexReasoningEfforts(model.api.id) : undefined
+  if (!model.capabilities.reasoning && !isTencentGlm52 && !codexEfforts) return {}
+  if (codexEfforts) {
+    return Object.fromEntries(codexEfforts.map((effort) => [effort, { reasoningEffort: effort }]))
+  }
 
   const id = model.id.toLowerCase()
   const adaptiveEfforts = anthropicAdaptiveEfforts(model.api.id)
@@ -1142,12 +1157,14 @@ export function options(input: {
 }
 
 export function smallOptions(model: Provider.Model) {
+  const codexEffort = model.backend_semantics === "codex" ? codexReasoningEfforts(model.api.id)?.[0] : undefined
   if (
     model.providerID === "openai" ||
     model.api.npm === "@ai-sdk/openai" ||
     model.api.npm === "@ai-sdk/github-copilot"
   ) {
     if (model.api.id.includes("gpt-5")) {
+      if (codexEffort) return { store: false, reasoningEffort: codexEffort }
       if (model.api.id.includes("5.") || model.api.id.includes("5-mini")) {
         return { store: false, reasoningEffort: "low" }
       }
@@ -1155,6 +1172,7 @@ export function smallOptions(model: Provider.Model) {
     }
     return { store: false }
   }
+  if (codexEffort) return { reasoningEffort: codexEffort }
   if (model.providerID === "google") {
     // gemini-3 uses thinkingLevel, gemini-2.5 uses thinkingBudget
     if (model.api.id.includes("gemini-3")) {

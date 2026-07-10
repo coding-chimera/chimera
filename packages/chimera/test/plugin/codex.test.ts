@@ -63,6 +63,13 @@ describe("plugin.codex", () => {
             limit: { context: 1_050_000, input: 922_000, output: 128_000 },
             cost: { input: 5, output: 30, cache: { read: 0.5, write: 0 } },
           },
+          "gpt-5.6-luna": {
+            id: "gpt-5.6-luna",
+            providerID: "openai",
+            api: { id: "gpt-5.6-luna" },
+            limit: { context: 1_050_000, input: 922_000, output: 128_000 },
+            cost: { input: 5, output: 30, cache: { read: 0.5, write: 0 } },
+          },
           "gpt-5.5-pro": {
             id: "gpt-5.5-pro",
             providerID: "openai",
@@ -82,7 +89,7 @@ describe("plugin.codex", () => {
       },
     )
 
-    expect(Object.keys(models).sort()).toEqual(["gpt-5.5", "gpt-5.6-sol"])
+    expect(Object.keys(models).sort()).toEqual(["gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol"])
     expect(models["gpt-5.5"]?.limit).toEqual({
       context: 400_000,
       input: 272_000,
@@ -98,6 +105,32 @@ describe("plugin.codex", () => {
       output: 0,
       cache: { read: 0, write: 0 },
     })
+    expect(Object.keys(models["gpt-5.5"]?.variants ?? {})).toEqual(["low", "medium", "high", "xhigh"])
+    expect(Object.keys(models["gpt-5.6-sol"]?.variants ?? {})).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra",
+    ])
+    expect(models["gpt-5.6-sol"]?.variants?.max).toEqual({
+      reasoningEffort: "max",
+      reasoningSummary: "auto",
+      include: ["reasoning.encrypted_content"],
+    })
+    expect(models["gpt-5.6-sol"]?.variants?.ultra).toEqual({
+      reasoningEffort: "ultra",
+      reasoningSummary: "auto",
+      include: ["reasoning.encrypted_content"],
+    })
+    expect(Object.keys(models["gpt-5.6-luna"]?.variants ?? {})).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+    ])
   })
 
   describe("parseJwtClaims", () => {
