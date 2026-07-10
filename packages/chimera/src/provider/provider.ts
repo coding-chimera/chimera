@@ -2,7 +2,7 @@ import os from "os"
 import fuzzysort from "fuzzysort"
 import { Config } from "@/config/config"
 import { mapValues, mergeDeep, omit, pickBy, sortBy } from "remeda"
-import { NoSuchModelError, type Provider as SDK } from "ai"
+import { NoSuchModelError } from "ai"
 import * as Log from "@opencode-ai/core/util/log"
 import { Npm } from "@opencode-ai/core/npm"
 import { Hash } from "@opencode-ai/core/util/hash"
@@ -90,6 +90,9 @@ function wrapSSE(res: Response, ms: number, ctl: AbortController) {
 
 type BundledSDK = {
   languageModel(modelId: string): LanguageModelV3
+  responses?(modelId: string): LanguageModelV3
+  chat?(modelId: string): LanguageModelV3
+  chatModel?(modelId: string): LanguageModelV3
 }
 
 const BUNDLED_PROVIDERS: Record<string, () => Promise<(opts: any) => BundledSDK>> = {
@@ -148,6 +151,13 @@ function nonEmptyString(value: unknown) {
   return trimmed
 }
 
+function defaultProviderNpm(wireAPI: "chat" | "responses" | undefined) {
+  return wireAPI === "responses" ? "@ai-sdk/openai" : "@ai-sdk/openai-compatible"
+}
+
+function supportsOpenAICompatibleModelDiscovery(npm: string) {
+  return npm === "@ai-sdk/openai" || npm === "@ai-sdk/openai-compatible"
+}
 function cleanOpenAICompatibleBaseURL(value: unknown) {
   const trimmed = nonEmptyString(value)?.replace(/\/+$/, "")
   if (!trimmed) return
@@ -989,6 +999,7 @@ const ProviderLimit = Schema.Struct({
 })
 
 const BackendSemantics = Schema.Literals(["openai", "codex"])
+const WireAPI = Schema.Literals(["chat", "responses"])
 
 export const Model = Schema.Struct({
   id: ModelID,
@@ -1014,6 +1025,7 @@ export const Info = Schema.Struct({
   id: ProviderID,
   name: Schema.String,
   source: Schema.Literals(["env", "config", "custom", "api"]),
+  wire_api: optionalOmitUndefined(WireAPI),
   backend_semantics: optionalOmitUndefined(BackendSemantics),
   env: Schema.Array(Schema.String),
   key: optionalOmitUndefined(Schema.String),
@@ -1410,6 +1422,7 @@ const layer: Layer.Layer<
             env: provider.env ?? existing?.env ?? [],
             options: mergeDeep(existing?.options ?? {}, provider.options ?? {}),
             source: "config",
+            wire_api: provider.wire_api ?? existing?.wire_api,
             backend_semantics: provider.backend_semantics ?? existing?.backend_semantics,
             models: existing?.models ?? {},
           }
@@ -1417,7 +1430,7 @@ const layer: Layer.Layer<
           if (
             isProviderAllowed(id) &&
             Object.keys(configuredModels).length === 0 &&
-            (provider.npm ?? "@ai-sdk/openai-compatible") === "@ai-sdk/openai-compatible"
+            supportsOpenAICompatibleModelDiscovery(provider.npm ?? defaultProviderNpm(provider.wire_api))
           ) {
             const baseURL = nonEmptyString(provider.options?.baseURL) ?? nonEmptyString(provider.api)
             if (baseURL) {
@@ -1448,9 +1461,9 @@ const layer: Layer.Layer<
             const apiNpm =
               model.provider?.npm ??
               provider.npm ??
-              existingModel?.api.npm ??
-              modelsDev[providerID]?.npm ??
-              "@ai-sdk/openai-compatible"
+              (provider.wire_api === "responses"
+                ? "@ai-sdk/openai"
+                : existingModel?.api.npm ?? modelsDev[providerID]?.npm ?? defaultProviderNpm(provider.wire_api))
             const name = iife(() => {
               if (model.name) return model.name
               if (model.id && model.id !== modelID) return modelID
@@ -1576,8 +1589,12 @@ const layer: Layer.Layer<
 
           const devEntry = modelsDev[providerID]
           if (!devEntry) continue
-          const npm = devEntry.npm ?? "@ai-sdk/openai-compatible"
-          if (npm !== "@ai-sdk/openai-compatible") continue
+          const npm =
+            cfg.provider?.[providerID]?.npm ??
+            (provider.wire_api === "responses"
+              ? "@ai-sdk/openai"
+              : devEntry.npm ?? defaultProviderNpm(provider.wire_api))
+          if (!supportsOpenAICompatibleModelDiscovery(npm)) continue
 
           // skip if user already configured custom models for this provider
           if (Object.keys(cfg.provider?.[providerID]?.models ?? {}).length > 0) continue
@@ -1687,6 +1704,7 @@ const layer: Layer.Layer<
           const partial: Partial<Info> = { source: "config" }
           if (provider.env) partial.env = provider.env
           if (provider.name) partial.name = provider.name
+          if (provider.wire_api) partial.wire_api = provider.wire_api
           if (provider.backend_semantics) partial.backend_semantics = provider.backend_semantics
           if (provider.options || discoveredBaseURLs[id])
             partial.options = mergeDeep(provider.options ?? {}, discoveredBaseURLs[id] ? { baseURL: discoveredBaseURLs[id] } : {})
@@ -1733,8 +1751,8 @@ const layer: Layer.Layer<
             )
               delete provider.models[modelID]
 
-            const configuredBackendSemantics =
-              configProvider?.models?.[modelID]?.backend_semantics ?? configProvider?.backend_semantics
+            const configModel = configProvider?.models?.[modelID]
+            const configuredBackendSemantics = configModel?.backend_semantics ?? configProvider?.backend_semantics
             if (configuredBackendSemantics) {
               model.backend_semantics = configuredBackendSemantics
               model.variants = mapValues(ProviderTransform.variants(model), (v) => v)
@@ -1742,9 +1760,14 @@ const layer: Layer.Layer<
               model.variants = mapValues(ProviderTransform.variants(model), (v) => v)
             }
 
-            const configVariants = configProvider?.models?.[modelID]?.variants
-            if (configVariants && model.variants) {
-              const merged = mergeDeep(model.variants, configVariants)
+            const codexLimit =
+              model.backend_semantics === "codex" && !configModel?.limit
+                ? ProviderTransform.codexLimit(model.api.id)
+                : undefined
+            if (codexLimit) model.limit = codexLimit
+
+            if (configModel?.variants && model.variants) {
+              const merged = mergeDeep(model.variants, configModel.variants)
               model.variants = mapValues(
                 pickBy(merged, (v) => !v.disabled),
                 (v) => omit(v, ["disabled"]),
@@ -1888,7 +1911,7 @@ const layer: Layer.Layer<
             ...options,
           })
           s.sdk.set(key, loaded)
-          return loaded as SDK
+          return loaded as BundledSDK
         }
 
         let installedPath: string
@@ -1912,7 +1935,7 @@ const layer: Layer.Layer<
           ...options,
         })
         s.sdk.set(key, loaded)
-        return loaded as SDK
+        return loaded as BundledSDK
       } catch (e) {
         throw new InitError({ providerID: model.providerID }, { cause: e })
       }
@@ -1951,12 +1974,26 @@ const layer: Layer.Layer<
         const sdk = await resolveSDK(model, s, envs)
 
         try {
-          const language = s.modelLoaders[model.providerID]
-            ? await s.modelLoaders[model.providerID](sdk, model.api.id, {
+          const language = await (async () => {
+            if (provider.wire_api === "responses") {
+              if (!sdk.responses)
+                throw new Error(
+                  `Provider ${model.providerID} uses wire_api \"responses\", but ${model.api.npm} does not expose a responses model`,
+                )
+              return sdk.responses(model.api.id)
+            }
+            if (provider.wire_api === "chat") {
+              if (sdk.chat) return sdk.chat(model.api.id)
+              if (sdk.chatModel) return sdk.chatModel(model.api.id)
+              return sdk.languageModel(model.api.id)
+            }
+            if (s.modelLoaders[model.providerID])
+              return s.modelLoaders[model.providerID](sdk, model.api.id, {
                 ...provider.options,
                 ...model.options,
               })
-            : sdk.languageModel(model.api.id)
+            return sdk.languageModel(model.api.id)
+          })()
           s.models.set(key, language)
           return language
         } catch (e) {

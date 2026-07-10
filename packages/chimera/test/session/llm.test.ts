@@ -210,6 +210,9 @@ beforeAll(() => {
       if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
         return new Response("websocket upgrade not supported", { status: 426 })
       }
+      if (req.method === "GET" && url.pathname.endsWith("/models")) {
+        return Response.json(url.pathname.includes("/v1beta/") ? { models: [] } : { data: [] })
+      }
       const next = state.queue.shift()
       if (!next) {
         return new Response("unexpected request", { status: 500 })
@@ -989,6 +992,129 @@ describe("session.llm.stream", () => {
       },
     })
   })
+
+  test("sends max reasoning effort through custom Responses providers", async () => {
+    const server = state.server
+    if (!server) throw new Error("Server not initialized")
+
+    const providerID = "custom-responses"
+    const modelID = "gpt-5.6-sol"
+    const request = waitRequest(
+      "/responses",
+      createEventResponse(
+        [
+          {
+            type: "response.created",
+            response: {
+              id: "resp-custom",
+              created_at: Math.floor(Date.now() / 1000),
+              model: modelID,
+              service_tier: null,
+            },
+          },
+          {
+            type: "response.output_text.delta",
+            item_id: "item-custom",
+            delta: "Hello custom",
+            logprobs: null,
+          },
+          {
+            type: "response.completed",
+            response: {
+              incomplete_details: null,
+              usage: {
+                input_tokens: 1,
+                input_tokens_details: null,
+                output_tokens: 2,
+                output_tokens_details: null,
+              },
+              service_tier: null,
+            },
+          },
+        ],
+        true,
+      ),
+    )
+
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(
+          path.join(dir, "chimera.json"),
+          JSON.stringify({
+            $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+            enabled_providers: [providerID],
+            provider: {
+              [providerID]: {
+                name: "Custom Responses",
+                wire_api: "responses",
+                backend_semantics: "codex",
+                env: [],
+                models: {
+                  [modelID]: {
+                    reasoning: true,
+                  },
+                },
+                options: {
+                  apiKey: "test-custom-key",
+                  baseURL: `${server.url.origin}/v1`,
+                },
+              },
+            },
+          }),
+        )
+      },
+    })
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const resolved = await getModel(ProviderID.make(providerID), ModelID.make(modelID))
+        const sessionID = SessionID.make("session-test-custom-responses")
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        } satisfies Agent.Info
+        const user = {
+          id: MessageID.make("user-custom-responses"),
+          sessionID,
+          role: "user",
+          time: { created: Date.now() },
+          agent: agent.name,
+          model: { providerID: ProviderID.make(providerID), modelID: resolved.id, variant: "max" },
+        } satisfies MessageV2.User
+
+        const events = await llm.runPromise((svc) =>
+          svc
+            .stream({
+              user,
+              sessionID,
+              model: resolved,
+              agent,
+              system: ["You are a helpful assistant."],
+              messages: [{ role: "user", content: "Hello" }],
+              tools: {},
+            })
+            .pipe(
+              Stream.runCollect,
+              Effect.map((items) => [...items]),
+            ),
+        )
+
+        const capture = await request
+        expect(capture.url.pathname).toBe("/v1/responses")
+        expect(capture.headers.get("authorization")).toBe("Bearer test-custom-key")
+        expect(capture.body.model).toBe(modelID)
+        expect(capture.body.stream).toBe(true)
+        expect(capture.body.store).toBe(false)
+        expect((capture.body.reasoning as { effort?: string } | undefined)?.effort).toBe("max")
+        expect(events.some((event) => event.type === "text-delta" && event.text === "Hello custom")).toBe(true)
+        expect(events.some((event) => event.type === "finish")).toBe(true)
+      },
+    })
+  })
+
 
   test("accepts user image attachments as data URLs for OpenAI models", async () => {
     const server = state.server

@@ -7,6 +7,7 @@ import os from "os"
 import { setTimeout as sleep } from "node:timers/promises"
 import { createServer } from "http"
 import { rewriteRemoteCompactionInput } from "../session/remote-compaction-codec"
+import { codexLimit } from "../provider/transform"
 
 const log = Log.create({ service: "plugin.codex" })
 
@@ -39,11 +40,6 @@ function isAllowedModel(modelID: string) {
   if (ALLOWED_MODELS.has(modelID)) return true
   const match = modelID.match(/^gpt-(\d+\.\d+)$/)
   return match ? parseFloat(match[1]) > 5.4 : false
-}
-
-function codexInputLimit(modelID: string) {
-  if (modelID === "gpt-5.5") return 272_000
-  if (modelID === "gpt-5.6-sol" || modelID === "gpt-5.6-terra" || modelID === "gpt-5.6-luna") return 372_000
 }
 
 function codexReasoningVariants(modelID: string) {
@@ -488,7 +484,7 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
           Object.entries(provider.models)
             .filter(([, model]) => isAllowedModel(model.api.id))
             .map(([modelID, model]) => {
-              const input = codexInputLimit(model.api.id)
+              const limit = codexLimit(model.api.id)
               const variants = codexReasoningVariants(model.api.id)
               return [
                 modelID,
@@ -499,13 +495,7 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
                     output: 0,
                     cache: { read: 0, write: 0 },
                   },
-                  limit: input
-                    ? {
-                        context: input + model.limit.output,
-                        input,
-                        output: model.limit.output,
-                      }
-                    : model.limit,
+                  limit: limit ?? model.limit,
                   variants: variants ?? model.variants ?? {},
                 },
               ]
