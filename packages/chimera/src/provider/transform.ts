@@ -549,8 +549,24 @@ function anthropicAdaptiveEfforts(apiId: string): string[] | null {
   return null
 }
 
+function codexModelID(apiId: string) {
+  return apiId.toLowerCase().split("/").at(-1) ?? apiId.toLowerCase()
+}
+
+export function codexLimit(apiId: string) {
+  const id = codexModelID(apiId)
+  const nextInput =
+    id === "gpt-5.5"
+      ? 272_000
+      : ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"].includes(id)
+        ? 372_000
+        : undefined
+  if (!nextInput) return
+  return { context: nextInput + 128_000, input: nextInput, output: 128_000 }
+}
+
 function codexReasoningEfforts(apiId: string) {
-  const id = apiId.toLowerCase().split("/").at(-1) ?? apiId.toLowerCase()
+  const id = codexModelID(apiId)
   return CODEX_REASONING_EFFORTS[id as keyof typeof CODEX_REASONING_EFFORTS]
 }
 

@@ -2481,6 +2481,7 @@ describe("ProviderTransform.variants", () => {
     })
     const result = ProviderTransform.variants(model)
     expect(Object.keys(result)).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"])
+    expect(result.max).toEqual({ reasoningEffort: "max" })
     expect(result.ultra).toEqual({ reasoningEffort: "ultra" })
     expect(result.ultra.reasoningSummary).toBeUndefined()
     expect(result.ultra.include).toBeUndefined()

@@ -363,6 +363,18 @@ test("backend semantics resolves model over provider and preserves explicit vari
                 },
                 "gpt-5.6-luna": {
                   backend_semantics: "openai",
+                  limit: {
+                    context: 1_050_000,
+                    input: 922_000,
+                    output: 128_000,
+                  },
+                },
+                "gpt-5.5": {
+                  limit: {
+                    context: 144_000,
+                    input: 128_000,
+                    output: 16_000,
+                  },
                 },
               },
               options: {
@@ -382,19 +394,150 @@ test("backend semantics resolves model over provider and preserves explicit vari
       const provider = providers[ProviderID.make("custom-codex")]
       const sol = provider.models["gpt-5.6-sol"]
       const luna = provider.models["gpt-5.6-luna"]
-
+      const explicit = provider.models["gpt-5.5"]
       expect(provider.backend_semantics).toBe("codex")
       expect(sol.api.npm).toBe("@ai-sdk/openai-compatible")
       expect(sol.backend_semantics).toBe("codex")
+      expect(sol.limit).toEqual({ context: 500_000, input: 372_000, output: 128_000 })
       expect(sol.variants?.max).toBeUndefined()
       expect(sol.variants?.ultra).toEqual({ reasoningEffort: "ultra", custom: true })
       expect(sol.variants?.ultra.reasoningSummary).toBeUndefined()
       expect(sol.variants?.ultra.include).toBeUndefined()
       expect(luna.backend_semantics).toBe("openai")
+      expect(luna.limit).toEqual({ context: 1_050_000, input: 922_000, output: 128_000 })
       expect(luna.variants?.max).toBeUndefined()
+      expect(explicit.backend_semantics).toBe("codex")
+      expect(explicit.limit).toEqual({ context: 144_000, input: 128_000, output: 16_000 })
     },
   })
 })
+
+test("custom Responses provider selects the Responses SDK and preserves Codex variants", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "chimera.json"),
+        JSON.stringify({
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+          provider: {
+            "custom-responses": {
+              name: "Custom Responses",
+              wire_api: "responses",
+              backend_semantics: "codex",
+              env: [],
+              models: {
+                "gpt-5.6-sol": {
+                  reasoning: true,
+                },
+              },
+              options: {
+                apiKey: "test-key",
+                baseURL: "https://api.custom.test/v1",
+              },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const provider = (await list())[ProviderID.make("custom-responses")]
+      const model = provider.models["gpt-5.6-sol"]
+      expect(provider.wire_api).toBe("responses")
+      expect(model.api.npm).toBe("@ai-sdk/openai")
+      expect(model.variants?.max).toEqual({ reasoningEffort: "max" })
+      expect((await getLanguage(model)).provider).toBe("custom-responses.responses")
+    },
+  })
+})
+
+test("custom Responses provider does not fall back to a Chat-only SDK", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "chimera.json"),
+        JSON.stringify({
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+          provider: {
+            "chat-only-responses": {
+              name: "Chat-only Responses",
+              npm: "@ai-sdk/openai-compatible",
+              wire_api: "responses",
+              env: [],
+              models: {
+                model: {},
+              },
+              options: {
+                apiKey: "test-key",
+                baseURL: "https://api.custom.test/v1",
+              },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const model = (await list())[ProviderID.make("chat-only-responses")].models.model
+      await expect(getLanguage(model)).rejects.toThrow("does not expose a responses model")
+    },
+  })
+})
+
+test("custom Responses provider discovers models with the Responses SDK", async () => {
+  const calls: { path: string; auth: string | null }[] = []
+  using server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      const url = new URL(request.url)
+      calls.push({ path: url.pathname, auth: request.headers.get("authorization") })
+      if (url.pathname === "/v1/models") return Response.json({ data: [{ id: "gpt-5.6-sol" }] })
+      return new Response("not found", { status: 404 })
+    },
+  })
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "chimera.json"),
+        JSON.stringify({
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+          provider: {
+            "custom-responses-discovery": {
+              name: "Custom Responses Discovery",
+              wire_api: "responses",
+              backend_semantics: "codex",
+              env: [],
+              options: {
+                apiKey: "test-key",
+                baseURL: server.url.origin,
+              },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const provider = (await list())[ProviderID.make("custom-responses-discovery")]
+      const model = provider.models["gpt-5.6-sol"]
+      expect(provider.options.baseURL).toBe(`${server.url.origin}/v1`)
+      expect(model.api.npm).toBe("@ai-sdk/openai")
+      expect(model.variants?.max).toEqual({ reasoningEffort: "max" })
+      expect((await getLanguage(model)).provider).toBe("custom-responses-discovery.responses")
+    },
+  })
+  expect(calls).toEqual([
+    { path: "/models", auth: "Bearer test-key" },
+    { path: "/v1/models", auth: "Bearer test-key" },
+  ])
+})
+
 
 test("custom OpenAI-compatible provider discovers models when omitted from config", async () => {
   const calls: { path: string; auth: string | null }[] = []
