@@ -481,7 +481,7 @@
         "@codemirror/search": "6.7.1",
         "@codemirror/state": "6.7.0",
         "@codemirror/view": "6.43.4",
-        "@opencode-ai/sdk": "1.16.0",
+        "@opencode-ai/sdk": "1.14.41",
         "@streamdown/math": "1.0.2",
         "@tauri-apps/api": "2.10.1",
         "@tauri-apps/plugin-dialog": "2.6.0",
@@ -6492,8 +6492,6 @@
     "opencode-gitlab-auth/open": ["open@10.2.0", "https://registry.npmmirror.com/open/-/open-10.2.0.tgz", { "dependencies": { "default-browser": "^5.2.1", "define-lazy-prop": "^3.0.0", "is-inside-container": "^1.0.0", "wsl-utils": "^0.1.0" } }, "sha512-YgBpdJHPyQ2UE5x+hlSXcnejzAvD0b22U2OuAP+8OnlJT+PjWPxtgmGqKKc+RgTM63U9gN0YzrYc71R2WT/hTA=="],
 
     "opencode-poe-auth/open": ["open@10.2.0", "https://registry.npmmirror.com/open/-/open-10.2.0.tgz", { "dependencies": { "default-browser": "^5.2.1", "define-lazy-prop": "^3.0.0", "is-inside-container": "^1.0.0", "wsl-utils": "^0.1.0" } }, "sha512-YgBpdJHPyQ2UE5x+hlSXcnejzAvD0b22U2OuAP+8OnlJT+PjWPxtgmGqKKc+RgTM63U9gN0YzrYc71R2WT/hTA=="],
-
-    "opencodeui/@opencode-ai/sdk": ["@opencode-ai/sdk@1.16.0", "https://registry.npmmirror.com/@opencode-ai/sdk/-/sdk-1.16.0.tgz", { "dependencies": { "cross-spawn": "7.0.6" } }, "sha512-S4H2e9j4rdHs5BQOCjmVEdqdXmKwPFKjXPbPUaWiRJpAjBcZ/uIBpoZkmV+x9BLzc+vrE6WAffMZieQgukt4DA=="],
 
     "opencodeui/@tailwindcss/vite": ["@tailwindcss/vite@4.2.2", "https://registry.npmmirror.com/@tailwindcss/vite/-/vite-4.2.2.tgz", { "dependencies": { "@tailwindcss/node": "4.2.2", "@tailwindcss/oxide": "4.2.2", "tailwindcss": "4.2.2" }, "peerDependencies": { "vite": "^5.2.0 || ^6 || ^7 || ^8" } }, "sha512-mEiF5HO1QqCLXoNEfXVA1Tzo+cYsrqV7w9Juj2wdUFyW07JRenqMG225MvPwr3ZD9N1bFQj46X7r33iHxLUW0w=="],
 

@@ -26,6 +26,10 @@ const ShellItem = z.object({
   name: z.string(),
   acceptable: z.boolean(),
 })
+const ConnectQuery = z.object({
+  cursor: z.string().optional(),
+  [PTY_CONNECT_TICKET_QUERY]: z.string().optional(),
+})
 const decodePtyID = Schema.decodeUnknownSync(PtyID)
 
 function validOrigin(c: Context, opts?: CorsOptions) {
@@ -245,6 +249,7 @@ export function PtyRoutes(upgradeWebSocket: UpgradeWebSocket, opts?: CorsOptions
         },
       }),
       validator("param", z.object({ ptyID: PtyID.zod })),
+      validator("query", ConnectQuery),
       upgradeWebSocket(async (c) => {
         type Handler = {
           onMessage: (message: string | ArrayBuffer) => void
@@ -252,6 +257,7 @@ export function PtyRoutes(upgradeWebSocket: UpgradeWebSocket, opts?: CorsOptions
         }
 
         const id = decodePtyID(c.req.param("ptyID"))
+        const query = ConnectQuery.parse(c.req.query())
         if (
           !(await runRequest(
             "PtyRoutes.connect",
@@ -264,7 +270,7 @@ export function PtyRoutes(upgradeWebSocket: UpgradeWebSocket, opts?: CorsOptions
         ) {
           throw new NotFoundError({ message: "Session not found" })
         }
-        const ticket = c.req.query(PTY_CONNECT_TICKET_QUERY)
+        const ticket = query[PTY_CONNECT_TICKET_QUERY]
         if (ticket) {
           if (!validOrigin(c, opts)) throw new HTTPException(403)
           const valid = await runRequest(
@@ -278,7 +284,7 @@ export function PtyRoutes(upgradeWebSocket: UpgradeWebSocket, opts?: CorsOptions
           if (!valid) throw new HTTPException(403)
         }
         const cursor = (() => {
-          const value = c.req.query("cursor")
+          const value = query.cursor
           if (!value) return
           const parsed = Number(value)
           if (!Number.isSafeInteger(parsed) || parsed < -1) return

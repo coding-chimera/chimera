@@ -6,12 +6,16 @@ import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, OpenApi } from "e
 import { Authorization } from "../middleware/authorization"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
 import { WorkspaceRoutingMiddleware } from "../middleware/workspace-routing"
+import { PTY_CONNECT_TICKET_QUERY } from "@/server/shared/pty-ticket"
 import { ApiNotFoundError } from "../errors"
 import { described } from "./metadata"
 
 const root = "/pty"
 export const Params = Schema.Struct({ ptyID: PtyID })
-export const CursorQuery = Schema.Struct({ cursor: Schema.optional(Schema.String) })
+export const ConnectQuery = Schema.Struct({
+  cursor: Schema.optional(Schema.String),
+  [PTY_CONNECT_TICKET_QUERY]: Schema.optional(Schema.String),
+})
 export const ShellItem = Schema.Struct({
   path: Schema.String,
   name: Schema.String,
@@ -126,6 +130,7 @@ export const PtyConnectApi = HttpApi.make("pty-connect").add(
     .add(
       HttpApiEndpoint.get("connect", PtyPaths.connect, {
         params: Params,
+        query: ConnectQuery,
         success: described(Schema.Boolean, "Connected session"),
         error: [HttpApiError.Forbidden, HttpApiError.NotFound],
       }).annotateMerge(
