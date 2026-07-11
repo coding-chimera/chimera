@@ -7372,6 +7372,8 @@ export type PtyConnectData = {
   query?: {
     directory?: string
     workspace?: string
+    cursor?: number
+    ticket?: string
   }
   url: "/pty/{ptyID}/connect"
 }

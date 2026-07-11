@@ -16,7 +16,7 @@ import { HttpApiBuilder, HttpApiError } from "effect/unstable/httpapi"
 import * as Socket from "effect/unstable/socket/Socket"
 import { InstanceHttpApi } from "../api"
 import * as ApiError from "../errors"
-import { CursorQuery, Params, PtyPaths } from "../groups/pty"
+import { ConnectQuery, Params, PtyPaths } from "../groups/pty"
 import { WebSocketTracker } from "../websocket-tracker"
 
 function validOrigin(request: HttpServerRequest.HttpServerRequest, opts: CorsOptions | undefined) {
@@ -99,9 +99,9 @@ export const ptyConnectRoute = HttpRouter.use((router) =>
         const params = yield* HttpRouter.schemaPathParams(Params)
         if (!(yield* pty.get(params.ptyID))) return HttpServerResponse.empty({ status: 404 })
 
-        const query = yield* HttpServerRequest.schemaSearchParams(CursorQuery)
+        const query = yield* HttpServerRequest.schemaSearchParams(ConnectQuery)
         const request = yield* HttpServerRequest.HttpServerRequest
-        const ticket = new URL(request.url, "http://localhost").searchParams.get(PTY_CONNECT_TICKET_QUERY)
+        const ticket = query[PTY_CONNECT_TICKET_QUERY]
         if (ticket) {
           const valid = validOrigin(request, cors)
             ? yield* tickets.consume({ ticket, ptyID: params.ptyID, ...(yield* PtyTicket.scope) })
