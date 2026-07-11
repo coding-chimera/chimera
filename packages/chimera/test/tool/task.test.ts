@@ -130,6 +130,10 @@ describe("tool.task", () => {
         const second = yield* get()
 
         expect(first).toBe(second)
+        expect(first).toContain("Concrete file paths do not disqualify delegation.")
+        expect(first).toContain("single, straightforward read or search")
+        expect(first).toContain("Do not fan out by item count alone.")
+        expect(first).not.toContain("If you want to read a specific file path")
 
         const alpha = first.indexOf("- alpha: Alpha agent")
         const explore = first.indexOf("- explore:")
@@ -276,7 +280,7 @@ describe("tool.task", () => {
     }),
   )
 
-  it.instance("execute cancels child session when abort signal fires", () =>
+  it.instance("execute cancels child session and remains interrupted when abort signal fires", () =>
     Effect.gen(function* () {
       const { chat, assistant } = yield* seed()
       const tool = yield* TaskTool
@@ -322,7 +326,61 @@ describe("tool.task", () => {
       expect(yield* Effect.promise(() => cancelled.promise)).toBe(input.sessionID)
 
       const exit = yield* Fiber.await(fiber)
-      expect(Exit.isSuccess(exit)).toBe(true)
+      expect(Exit.hasInterrupts(exit)).toBe(true)
+    }),
+  )
+
+  it.instance("execute cancels without starting the child prompt when already aborted", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const cancelled = defer<SessionID>()
+      const abort = new AbortController()
+      let prompted = false
+      abort.abort()
+
+      const promptOps: TaskPromptOps = {
+        cancel: (sessionID) =>
+          Effect.sync(() => {
+            cancelled.resolve(sessionID)
+          }),
+        resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+        prompt: (input) =>
+          Effect.sync(() => {
+            prompted = true
+            return reply(input, "unexpected")
+          }),
+      }
+
+      const fiber = yield* def
+        .execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: abort.signal,
+            extra: { promptOps },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        .pipe(Effect.forkChild)
+
+      const exit = yield* Fiber.await(fiber)
+      const kids = yield* sessions.children(chat.id)
+
+      expect(Exit.hasInterrupts(exit)).toBe(true)
+      expect(prompted).toBe(false)
+      expect(kids).toHaveLength(1)
+      expect(yield* Effect.promise(() => cancelled.promise)).toBe(kids[0]?.id)
     }),
   )
 

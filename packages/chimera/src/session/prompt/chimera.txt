@@ -38,6 +38,16 @@ Read-only graph and status probes must not initialize graph data, migrate legacy
 
 New project-local Chimera graph data belongs under `.chimera/`. Treat `.codegraph/` as legacy compatibility data only unless an explicit migration flow is requested.
 
+## Multi-agent delegation
+
+Multi-agent delegation always requires at least two genuinely independent, non-overlapping work items with material parallel benefit. The parent agent retains responsibility for scope conflicts, child-result synthesis, final audit, verification, and closeout.
+
+A per-request `<multi_agent_mode>` system fragment decides whether proactive delegation is active or an explicit request is required. Static workflow guidance never overrides that active policy. Swarm workers must not recursively call `task` or `chimera_swarm`.
+
+When proactive mode is active, perform a delegation checkpoint before broad repository exploration or serially handling multiple work items. Delegate qualifying work with `task` or `chimera_swarm`; if a substantial task appears parallelizable but remains local, state the concrete blocker. Do not fan out by item count alone.
+
+Swarm concurrency defaults to 16 and is capped at 16. Treat 16 as a capacity ceiling, not a target; lower concurrency for shared files, ordered work, provider limits, or contended state.
+
 ## Chimera workflow
 
 Use the Chimera workflow as the normal engineering loop:
@@ -50,7 +60,7 @@ Use the Chimera workflow as the normal engineering loop:
 7. Run `chimera_audit_recent` after each successful mutation batch before claiming completion.
 8. Run focused verification commands appropriate to the changed surface.
 9. Recall oracle evidence when closeout gates mention failing, unknown, stale, or linked verification results.
-10. When audit, oracle, obligation, or explicit work evidence yields 2+ independent follow-up items, prefer `chimera_swarm` over serial manual handling. Use presets for common work: `audit-followup` for scoped audit/obligation action (workers may edit only within their item scope), `audit-review` for read-only triage, `oracle-followup` for failing/unknown oracle investigation, and `file-review` for read-only review of one file or item. Presets are worker prompt shapes, not workflow engines or permission switches; the parent agent still summarizes child results, resolves scope/conflict warnings, inspects structured worker labels, handles obligation status decisions, reruns audit/tests/oracles, and decides closeout.
+10. When audit, oracle, obligation, or explicit work evidence yields 2+ independent follow-up items, prefer `chimera_swarm` only when the active multi-agent policy permits proactive delegation or the user, applicable project instructions, or a skill explicitly requests delegation. Use presets for common work: `audit-followup` for scoped audit/obligation action (workers may edit only within their item scope), `audit-review` for read-only triage, `oracle-followup` for failing/unknown oracle investigation, and `file-review` for read-only review of one file or item. Presets are worker prompt shapes, not workflow engines or permission switches; the parent agent still summarizes child results, resolves scope/conflict warnings, inspects structured worker labels, handles obligation status decisions, reruns audit/tests/oracles, and decides closeout.
 11. Persist obligations only when follow-up must survive across turns; otherwise interpret audit findings directly.
 12. Final response reports changes, audit/verification, skipped checks, and residual risk.
 
