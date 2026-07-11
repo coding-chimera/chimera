@@ -1,6 +1,6 @@
 Run a bounded set of subagent tasks from one worker prompt shape.
 
-Use this tool when you already have a small frontier of independent work items and want parallel subagent review or scoped follow-up. Common Chimera v1 flow is audit evidence -> preset/template + items -> bounded subagent fan-out:
+Use this tool only when the active multi-agent policy permits delegation and you already have at least two genuinely independent, non-overlapping work items that benefit from parallel execution. Common Chimera v1 flow is audit evidence -> preset/template + items -> bounded subagent fan-out:
 1. Gather evidence with `chimera_audit_recent`, `chimera_audit`, `chimera_obligations_list`, or `chimera_oracle_recent`.
 2. Call this tool with either explicit `items` or a supported `from` source.
 3. Prefer a `preset` for common Chimera work; use raw `prompt_template` only when the preset shape does not fit.
@@ -11,6 +11,10 @@ Presets are worker prompt shapes. They are not workflow engines, permission swit
 This is a thin fan-out helper. It does not build PlanGraph, lock files, claim obligations, apply edits itself, rerun audits, or decide convergence for you. The parent agent owns conflict handling, final audit/test/oracle verification, and closeout. Tool output includes parent closeout recommendations after each run.
 
 The tool tracks child session IDs in its metadata and output. If the parent swarm is aborted, already-created child sessions are cancelled as part of the same abort flow. Treat any interrupted child report as incomplete evidence that the parent must re-check or rerun deliberately.
+
+Concurrency defaults to 16 and is capped at 16. Treat 16 as a capacity ceiling, not a target: use full concurrency only for independent work with disjoint scopes, and lower it for shared files, ordered dependencies, provider limits, or contended state.
+
+Swarm workers cannot call `task` or `chimera_swarm`; nested fan-out is disabled so one parent swarm cannot recursively multiply its concurrency.
 
 Prompt templates support:
 - `{{item}}`: formatted item text or JSON

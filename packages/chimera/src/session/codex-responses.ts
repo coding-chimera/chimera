@@ -871,8 +871,9 @@ function parseSSEBlock(raw: string) {
 
 function buildReasoning(input: CodexResponsesInput) {
   if (!input.model.capabilities.reasoning) return undefined
+  const effort = stringOption(input.params.options.reasoningEffort) ?? "medium"
   return stripUndefined({
-    effort: stringOption(input.params.options.reasoningEffort) ?? "medium",
+    effort: effort === "ultra" ? "max" : effort,
     summary: stringOption(input.params.options.reasoningSummary) ?? "auto",
   })
 }

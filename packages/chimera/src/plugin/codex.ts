@@ -490,6 +490,7 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
                 modelID,
                 {
                   ...model,
+                  backend_semantics: "codex" as const,
                   cost: {
                     input: 0,
                     output: 0,

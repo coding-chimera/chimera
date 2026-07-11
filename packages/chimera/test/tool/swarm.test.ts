@@ -155,6 +155,49 @@ describe("tool.chimera_swarm", () => {
     }),
   )
 
+  it.instance("defaults concurrent child prompts to sixteen", () =>
+    Effect.gen(function* () {
+      const parent = yield* seed()
+      const tool = yield* ChimeraSwarmTool
+      const def = yield* tool.init()
+      const started = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      let active = 0
+      let maxActive = 0
+      const promptOps: TaskPromptOps = {
+        cancel: () => Effect.void,
+        resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+        prompt: (input) =>
+          Effect.gen(function* () {
+            active++
+            maxActive = Math.max(maxActive, active)
+            if (active === 16) yield* Deferred.succeed(started, undefined)
+            yield* Deferred.await(release)
+            active--
+            return reply(input, "done")
+          }),
+      }
+
+      const fiber = yield* def
+        .execute(
+          {
+            prompt_template: "Review {{item}}",
+            items: Array.from({ length: 17 }, (_, index) => `item-${index + 1}`),
+            subagent_type: "general",
+          },
+          ctx(parent, promptOps),
+        )
+        .pipe(Effect.forkChild)
+
+      yield* Deferred.await(started)
+      expect(maxActive).toBe(16)
+      yield* Deferred.succeed(release, undefined)
+      const result = yield* Fiber.join(fiber)
+      expect(result.metadata.concurrency).toBe(16)
+      expect(JSON.parse(result.output).concurrency).toBe(16)
+    }),
+  )
+
   it.instance("keeps child task metadata from overwriting swarm metadata", () =>
     Effect.gen(function* () {
       const parent = yield* seed()
@@ -189,6 +232,34 @@ describe("tool.chimera_swarm", () => {
     }),
   )
 
+  it.instance("disables nested fan-out for swarm workers", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const parent = yield* seed()
+      const tool = yield* ChimeraSwarmTool
+      const def = yield* tool.init()
+      const prompts: SessionPrompt.PromptInput[] = []
+
+      yield* def.execute(
+        {
+          prompt_template: "Review {{item}}",
+          items: ["alpha"],
+          subagent_type: "general",
+          concurrency: 1,
+        },
+        ctx(parent, stubOps({ onPrompt: (input) => prompts.push(input) })),
+      )
+
+      expect(prompts[0].tools).toMatchObject({ task: false, chimera_swarm: false })
+      const children = yield* sessions.children(parent.chat.id)
+      expect(children).toHaveLength(1)
+      expect(children[0].permission?.slice(-2)).toEqual([
+        { pattern: "*", action: "deny", permission: "task" },
+        { pattern: "*", action: "deny", permission: "chimera_swarm" },
+      ])
+    }),
+  )
+
   it.instance("adds soft scope warnings for explicit item file conflicts", () =>
     Effect.gen(function* () {
       const parent = yield* seed()
@@ -219,41 +290,49 @@ describe("tool.chimera_swarm", () => {
     }),
   )
 
-  it.instance("bounds concurrent child prompts", () =>
+  it.instance("caps explicitly oversized concurrency at sixteen", () =>
     Effect.gen(function* () {
       const parent = yield* seed()
       const tool = yield* ChimeraSwarmTool
       const def = yield* tool.init()
+      const started = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
       let active = 0
       let maxActive = 0
       const promptOps: TaskPromptOps = {
         cancel: () => Effect.void,
         resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
         prompt: (input) =>
-          Effect.promise(async () => {
+          Effect.gen(function* () {
             active++
             maxActive = Math.max(maxActive, active)
-            await new Promise((resolve) => setTimeout(resolve, 20))
+            if (active === 16) yield* Deferred.succeed(started, undefined)
+            yield* Deferred.await(release)
             active--
             return reply(input, "done")
           }),
       }
 
-      yield* def.execute(
-        {
-          prompt_template: "Handle {{item}}",
-          items: ["a", "b", "c", "d", "e"],
-          concurrency: 2,
-        },
-        ctx(parent, promptOps),
-      )
+      const fiber = yield* def
+        .execute(
+          {
+            prompt_template: "Handle {{item}}",
+            items: Array.from({ length: 17 }, (_, index) => `item-${index + 1}`),
+            concurrency: 100,
+          },
+          ctx(parent, promptOps),
+        )
+        .pipe(Effect.forkChild)
 
-      expect(maxActive).toBeGreaterThan(1)
-      expect(maxActive).toBeLessThanOrEqual(2)
+      yield* Deferred.await(started)
+      expect(maxActive).toBe(16)
+      yield* Deferred.succeed(release, undefined)
+      const result = yield* Fiber.join(fiber)
+      expect(result.metadata.concurrency).toBe(16)
     }),
   )
 
-  it.instance("cancels created child sessions when interrupted", () =>
+  it.instance("cancels sixteen created child sessions when interrupted", () =>
     Effect.gen(function* () {
       const sessions = yield* Session.Service
       const parent = yield* seed()
@@ -271,7 +350,7 @@ describe("tool.chimera_swarm", () => {
         prompt: () =>
           Effect.gen(function* () {
             active++
-            if (active === 2) yield* Deferred.succeed(started, undefined)
+            if (active === 16) yield* Deferred.succeed(started, undefined)
             return yield* Effect.never
           }),
       }
@@ -280,9 +359,9 @@ describe("tool.chimera_swarm", () => {
         .execute(
           {
             prompt_template: "Handle {{item}}",
-            items: ["a", "b"],
+            items: Array.from({ length: 16 }, (_, index) => `item-${index + 1}`),
             subagent_type: "general",
-            concurrency: 2,
+            concurrency: 16,
           },
           ctx(parent, promptOps),
         )
@@ -294,6 +373,7 @@ describe("tool.chimera_swarm", () => {
       expect(Exit.isFailure(exit)).toBe(true)
 
       const childIDs = (yield* sessions.children(parent.chat.id)).map((item) => item.id).sort()
+      expect(childIDs).toHaveLength(16)
       expect(cancelled.sort()).toEqual(childIDs)
     }),
   )
@@ -422,6 +502,10 @@ describe("tool.chimera_swarm", () => {
       expect(tool?.description).toContain("scope warnings")
       expect(tool?.description).toContain("Status, Changed files, Verification")
       expect(tool?.description).toContain("parent agent owns conflict handling")
+      expect(tool?.description).toContain("defaults to 16")
+      expect(tool?.description).toContain("capped at 16")
+      expect(tool?.description).toContain("capacity ceiling")
+      expect(tool?.description).toContain("cannot call `task` or `chimera_swarm`")
     }),
   )
 

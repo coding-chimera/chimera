@@ -396,6 +396,8 @@ test("backend semantics resolves model over provider and preserves explicit vari
       const luna = provider.models["gpt-5.6-luna"]
       const explicit = provider.models["gpt-5.5"]
       expect(provider.backend_semantics).toBe("codex")
+      expect(provider.wire_api).toBeUndefined()
+      expect((await getLanguage(sol)).provider).toBe("custom-codex.chat")
       expect(sol.api.npm).toBe("@ai-sdk/openai-compatible")
       expect(sol.backend_semantics).toBe("codex")
       expect(sol.limit).toEqual({ context: 500_000, input: 372_000, output: 128_000 })
@@ -408,6 +410,47 @@ test("backend semantics resolves model over provider and preserves explicit vari
       expect(luna.variants?.max).toBeUndefined()
       expect(explicit.backend_semantics).toBe("codex")
       expect(explicit.limit).toEqual({ context: 144_000, input: 128_000, output: 16_000 })
+    },
+  })
+})
+
+test("custom Chat provider selects the Chat SDK explicitly", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "chimera.json"),
+        JSON.stringify({
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+          provider: {
+            "custom-chat": {
+              name: "Custom Chat",
+              wire_api: "chat",
+              backend_semantics: "codex",
+              env: [],
+              models: {
+                "gpt-5.6-sol": {
+                  reasoning: true,
+                },
+              },
+              options: {
+                apiKey: "test-key",
+                baseURL: "https://api.custom.test/v1",
+              },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const provider = (await list())[ProviderID.make("custom-chat")]
+      const model = provider.models["gpt-5.6-sol"]
+      expect(provider.wire_api).toBe("chat")
+      expect(model.api.npm).toBe("@ai-sdk/openai-compatible")
+      expect(model.variants?.max).toEqual({ reasoningEffort: "max" })
+      expect((await getLanguage(model)).provider).toBe("custom-chat.chat")
     },
   })
 })
@@ -483,7 +526,12 @@ test("custom Responses provider does not fall back to a Chat-only SDK", async ()
     directory: tmp.path,
     fn: async () => {
       const model = (await list())[ProviderID.make("chat-only-responses")].models.model
-      await expect(getLanguage(model)).rejects.toThrow("does not expose a responses model")
+      const error = await getLanguage(model).catch((cause) => cause)
+      expect(error).toBeInstanceOf(Error)
+      if (!(error instanceof Error)) throw error
+      expect(error.message).toContain("Provider chat-only-responses")
+      expect(error.message).toContain('wire_api "responses"')
+      expect(error.message).toContain("@ai-sdk/openai-compatible")
     },
   })
 })

@@ -588,19 +588,19 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       >
       bypassAgentCheck: boolean
       messages: MessageV2.WithParts[]
+      abort: AbortSignal
     }) {
       using _ = log.time("resolveTools")
       const { agent, model, session, processor, bypassAgentCheck, messages } = input
       const tools: Record<string, AITool> = {}
       const run = yield* runner()
       const promptOps = yield* ops()
-      const fallbackAbort = AbortSignal.any([])
       const toolAbortGraceMs = 1000
       const contextMessages = toolContextMessages(messages)
 
       const context = (args: any, options: ToolExecutionOptions): Tool.Context => ({
         sessionID: session.id,
-        abort: options.abortSignal ?? fallbackAbort,
+        abort: options.abortSignal ? AbortSignal.any([input.abort, options.abortSignal]) : input.abort,
         messageID: processor.message.id,
         callID: options.toolCallId,
         extra: { model, bypassAgentCheck, promptOps, readDedupMessages: messages },
@@ -1911,6 +1911,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             model,
           })
 
+          const toolAbort = new AbortController()
           const outcome: "break" | "continue" = yield* Effect.gen(function* () {
             const lastUserMsg = msgs.findLast(realUser)
             const bypassAgentCheck = lastUserMsg?.parts.some((p) => p.type === "agent") ?? false
@@ -1923,6 +1924,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               processor: handle,
               bypassAgentCheck,
               messages: msgs,
+              abort: toolAbort.signal,
             })
 
             if (lastUser.format?.type === "json_schema") {
@@ -2046,7 +2048,10 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               })
             }
             return "continue" as const
-          }).pipe(Effect.ensuring(instruction.clear(handle.message.id)))
+          }).pipe(
+            Effect.onInterrupt(() => Effect.sync(() => toolAbort.abort())),
+            Effect.ensuring(instruction.clear(handle.message.id)),
+          )
           if (outcome === "break") break
           continue
         }

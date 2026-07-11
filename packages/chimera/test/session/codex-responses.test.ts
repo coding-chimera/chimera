@@ -160,7 +160,7 @@ describe("session.codex-responses", () => {
     expect(body.tools[0].name).toBe("lookup")
   })
 
-  test("passes through Codex-only higher reasoning efforts", () => {
+  test("maps Codex Ultra to the maximum wire effort", () => {
     const body = CodexResponses.buildRequestBody(
       inputWithOptions(
         {
@@ -184,7 +184,7 @@ describe("session.codex-responses", () => {
       ),
     ) as any
 
-    expect(body.reasoning).toEqual({ effort: "ultra", summary: "auto" })
+    expect(body.reasoning).toEqual({ effort: "max", summary: "auto" })
     expect(body.include).toEqual(["reasoning.encrypted_content"])
   })
 

@@ -542,7 +542,7 @@ describe("ProviderTransform.providerOptions", () => {
     })
   })
 
-  test("backend semantics does not change providerOptions routing", () => {
+  test("backend semantics preserves non-Ultra providerOptions routing", () => {
     const model = createModel({
       providerID: "my-proxy",
       backend_semantics: "codex",
@@ -556,6 +556,45 @@ describe("ProviderTransform.providerOptions", () => {
     expect(ProviderTransform.providerOptions(model, { reasoningEffort: "high" })).toEqual({
       "my-proxy": { reasoningEffort: "high" },
     })
+  })
+
+  test("normalizes Codex Ultra across AI SDK provider option branches without mutating input", () => {
+    const options = { reasoningEffort: "ultra", trace: "keep" }
+    const compatible = createModel({
+      providerID: "my-proxy",
+      backend_semantics: "codex",
+      api: { id: "gpt-5.6-sol", url: "https://api.proxy.test", npm: "@ai-sdk/openai-compatible" },
+    })
+    const openai = createModel({
+      providerID: "custom-openai",
+      backend_semantics: "codex",
+      api: { id: "gpt-5.6-sol", url: "https://api.openai.test", npm: "@ai-sdk/openai" },
+    })
+    const gateway = createModel({
+      providerID: "vercel",
+      backend_semantics: "codex",
+      api: { id: "openai/gpt-5.6-sol", url: "https://ai-gateway.vercel.sh", npm: "@ai-sdk/gateway" },
+    })
+    const azure = createModel({
+      providerID: "azure",
+      backend_semantics: "codex",
+      api: { id: "gpt-5.6-sol", url: "https://azure.openai.test", npm: "@ai-sdk/azure" },
+    })
+
+    expect(ProviderTransform.providerOptions(compatible, options)).toEqual({
+      "my-proxy": { reasoningEffort: "max", trace: "keep" },
+    })
+    expect(ProviderTransform.providerOptions(openai, options)).toEqual({
+      openai: { reasoningEffort: "max", trace: "keep" },
+    })
+    expect(ProviderTransform.providerOptions(gateway, options)).toEqual({
+      openai: { reasoningEffort: "max", trace: "keep" },
+    })
+    expect(ProviderTransform.providerOptions(azure, options)).toEqual({
+      openai: { reasoningEffort: "max", trace: "keep" },
+      azure: { reasoningEffort: "max", trace: "keep" },
+    })
+    expect(options).toEqual({ reasoningEffort: "ultra", trace: "keep" })
   })
 
   test("uses gateway model provider slug for gateway models", () => {

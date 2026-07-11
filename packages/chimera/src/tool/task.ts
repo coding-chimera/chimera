@@ -41,6 +41,7 @@ export const TaskTool = Tool.define(
       ctx: Tool.Context,
     ) {
       const cfg = yield* config.get()
+      const swarmWorker = ctx.extra?.swarmWorker === true
 
       if (!ctx.extra?.bypassAgentCheck) {
         yield* ctx.ask({
@@ -83,6 +84,12 @@ export const TaskTool = Tool.define(
               action: "allow" as const,
               permission: item,
             })) ?? []),
+            ...(swarmWorker
+              ? [
+                  { pattern: "*", action: "deny" as const, permission: id },
+                  { pattern: "*", action: "deny" as const, permission: "chimera_swarm" },
+                ]
+              : []),
           ],
         }))
 
@@ -115,10 +122,11 @@ export const TaskTool = Tool.define(
 
       return yield* Effect.acquireUseRelease(
         Effect.sync(() => {
-          ctx.abort.addEventListener("abort", onAbort)
+          ctx.abort.addEventListener("abort", onAbort, { once: true })
         }),
         () =>
           Effect.gen(function* () {
+            if (ctx.abort.aborted) return yield* Effect.interrupt
             const parts = yield* ops.resolvePromptParts(params.prompt)
             const result = yield* ops.prompt({
               messageID,
@@ -132,9 +140,11 @@ export const TaskTool = Tool.define(
                 ...(next.permission.some((rule) => rule.permission === "todowrite") ? {} : { todowrite: false }),
                 ...(next.permission.some((rule) => rule.permission === id) ? {} : { task: false }),
                 ...Object.fromEntries((cfg.experimental?.primary_tools ?? []).map((item) => [item, false])),
+                ...(swarmWorker ? { task: false, chimera_swarm: false } : {}),
               },
               parts,
             })
+            if (ctx.abort.aborted) return yield* Effect.interrupt
 
             return {
               title: params.description,
