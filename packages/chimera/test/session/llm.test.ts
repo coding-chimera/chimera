@@ -291,6 +291,13 @@ function systemPromptFrom(body: Record<string, unknown>) {
   return system.content
 }
 
+function promptForRole(body: Record<string, unknown>, role: string) {
+  const messages = (body.messages ?? body.input) as Array<{ role?: string; content?: unknown }> | undefined
+  const content = messages?.find((message) => message.role === role)?.content
+  if (content === undefined) throw new Error(`Missing ${role} prompt`)
+  return typeof content === "string" ? content : (JSON.stringify(content) ?? "")
+}
+
 async function capturePromptRoutingSystem(input: { providerID: string; modelID: string; agentPrompt?: string }) {
   const server = state.server
   if (!server) throw new Error("Server not initialized")
@@ -419,7 +426,7 @@ describe("session.llm.stream", () => {
     expect(system).toContain("# DeepSeek runtime overlay")
     expect(system).toContain("runtime-system")
   })
-  test("sends temperature, tokens, and reasoning options for openai-compatible models", async () => {
+  test("keeps Codex semantics on OpenAI-compatible Chat requests", async () => {
     const server = state.server
     if (!server) {
       throw new Error("Server not initialized")
@@ -447,6 +454,7 @@ describe("session.llm.stream", () => {
             enabled_providers: [providerID],
             provider: {
               [providerID]: {
+                backend_semantics: "codex",
                 options: {
                   apiKey: "test-key",
                   baseURL: `${server.url.origin}/v1`,
@@ -462,6 +470,7 @@ describe("session.llm.stream", () => {
       directory: tmp.path,
       fn: async () => {
         const resolved = await getModel(ProviderID.make(providerID), ModelID.make(model.id))
+        expect(resolved.backend_semantics).toBe("codex")
         const sessionID = SessionID.make("session-test-1")
         const agent = {
           name: "test",
@@ -507,12 +516,201 @@ describe("session.llm.stream", () => {
         expect(body.top_p).toBe(0.8)
         expect(body.stream).toBe(true)
 
-        const maxTokens = (body.max_tokens as number | undefined) ?? (body.max_output_tokens as number | undefined)
         const expectedMaxTokens = ProviderTransform.maxOutputTokens(resolved)
-        expect(maxTokens).toBe(expectedMaxTokens)
+        expect(body.max_tokens).toBe(expectedMaxTokens)
+        expect(body).not.toHaveProperty("max_output_tokens")
+        expect(body.reasoning_effort).toBe("high")
+        expect(body).not.toHaveProperty("reasoningEffort")
+      },
+    })
+  })
 
-        const reasoning = (body.reasoningEffort as string | undefined) ?? (body.reasoning_effort as string | undefined)
-        expect(reasoning).toBe("high")
+  test("encodes Codex modes and Ultra effort on OpenAI-compatible Chat", async () => {
+    const server = state.server
+    if (!server) throw new Error("Server not initialized")
+
+    const providerID = "custom-compatible-chat"
+    const modelID = "gpt-5.6-sol"
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(
+          path.join(dir, "chimera.json"),
+          JSON.stringify({
+            $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+            enabled_providers: [providerID],
+            provider: {
+              [providerID]: {
+                name: "Custom Compatible Chat",
+                npm: "@ai-sdk/openai-compatible",
+                wire_api: "chat",
+                backend_semantics: "codex",
+                env: [],
+                models: { [modelID]: { reasoning: true } },
+                options: {
+                  apiKey: "test-compatible-key",
+                  baseURL: `${server.url.origin}/v1`,
+                },
+              },
+            },
+          }),
+        )
+      },
+    })
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const resolved = await getModel(ProviderID.make(providerID), ModelID.make(modelID))
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        } satisfies Agent.Info
+        const capture = async (variant: string, label: string, parentSessionID?: string) => {
+          const request = waitRequest(
+            "/chat/completions",
+            new Response(createChatStream(label), {
+              status: 200,
+              headers: { "Content-Type": "text/event-stream" },
+            }),
+          )
+          const sessionID = SessionID.make(`session-compatible-${label}`)
+          const user = {
+            id: MessageID.make(`user-compatible-${label}`),
+            sessionID,
+            role: "user",
+            time: { created: Date.now() },
+            agent: agent.name,
+            model: { providerID: ProviderID.make(providerID), modelID: resolved.id, variant },
+          } satisfies MessageV2.User
+
+          await drain({
+            user,
+            sessionID,
+            parentSessionID,
+            model: resolved,
+            agent,
+            system: ["runtime-system"],
+            messages: [{ role: "user", content: "Hello" }],
+            tools: {},
+          })
+          return (await request).body
+        }
+
+        const ultra = await capture("ultra", "ultra")
+        expect(ultra.reasoning_effort).toBe("max")
+        const ultraPrompt = promptForRole(ultra, "system")
+        expect(ultraPrompt).toContain("Proactive multi-agent delegation is active for this root session.")
+        expect(ultraPrompt).toContain("perform a delegation checkpoint")
+        expect(ultraPrompt).toContain("state the concrete blocker")
+        expect(ultraPrompt).toContain("Do not fan out by item count alone.")
+        expect((ultra.messages as Array<{ role?: string }>).some((message) => message.role === "developer")).toBe(false)
+
+        const max = await capture("max", "max")
+        expect(max.reasoning_effort).toBe("max")
+        expect(promptForRole(max, "system")).toContain("Explicit-request-only multi-agent mode is active.")
+
+        const child = await capture("ultra", "child", SessionID.make("session-compatible-parent"))
+        expect(child.reasoning_effort).toBe("max")
+        expect(promptForRole(child, "system")).toContain("active for this child session")
+        expect(promptForRole(child, "system")).not.toContain("active for this root session")
+      },
+    })
+  })
+
+  test("uses developer policy on OpenAI Chat and rejects unsupported Codex maximum efforts", async () => {
+    const server = state.server
+    if (!server) throw new Error("Server not initialized")
+
+    const providerID = "custom-openai-chat"
+    const modelID = "gpt-5.6-sol"
+    const request = waitRequest(
+      "/chat/completions",
+      new Response(createChatStream("high"), {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      }),
+    )
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(
+          path.join(dir, "chimera.json"),
+          JSON.stringify({
+            $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+            enabled_providers: [providerID],
+            provider: {
+              [providerID]: {
+                name: "Custom OpenAI Chat",
+                npm: "@ai-sdk/openai",
+                wire_api: "chat",
+                backend_semantics: "codex",
+                env: [],
+                models: { [modelID]: { reasoning: true } },
+                options: {
+                  apiKey: "test-openai-chat-key",
+                  baseURL: `${server.url.origin}/v1`,
+                },
+              },
+            },
+          }),
+        )
+      },
+    })
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const resolved = await getModel(ProviderID.make(providerID), ModelID.make(modelID))
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        } satisfies Agent.Info
+        const highSessionID = SessionID.make("session-openai-chat-high")
+        const highUser = {
+          id: MessageID.make("user-openai-chat-high"),
+          sessionID: highSessionID,
+          role: "user",
+          time: { created: Date.now() },
+          agent: agent.name,
+          model: { providerID: ProviderID.make(providerID), modelID: resolved.id, variant: "high" },
+        } satisfies MessageV2.User
+
+        await drain({
+          user: highUser,
+          sessionID: highSessionID,
+          model: resolved,
+          agent,
+          system: ["runtime-system"],
+          messages: [{ role: "user", content: "Hello" }],
+          tools: {},
+        })
+
+        const high = (await request).body
+        expect(high.reasoning_effort).toBe("high")
+        expect(promptForRole(high, "developer")).toContain("Explicit-request-only multi-agent mode is active.")
+        expect((high.messages as Array<{ role?: string }>).some((message) => message.role === "system")).toBe(false)
+
+        const ultraSessionID = SessionID.make("session-openai-chat-ultra")
+        const ultraUser = {
+          ...highUser,
+          id: MessageID.make("user-openai-chat-ultra"),
+          sessionID: ultraSessionID,
+          model: { providerID: ProviderID.make(providerID), modelID: resolved.id, variant: "ultra" },
+        } satisfies MessageV2.User
+        await expect(
+          drain({
+            user: ultraUser,
+            sessionID: ultraSessionID,
+            model: resolved,
+            agent,
+            system: ["runtime-system"],
+            messages: [{ role: "user", content: "Hello" }],
+            tools: {},
+          }),
+        ).rejects.toThrow('does not support Codex reasoning effort "ultra". Use wire_api "responses" or @ai-sdk/openai-compatible Chat.')
       },
     })
   })
@@ -804,7 +1002,10 @@ describe("session.llm.stream", () => {
                   npm: "file:///tmp/chimera-missing-openai-provider.js",
                   api: "https://api.openai.com/v1",
                   models: {
-                    [model.id]: model,
+                    [model.id]: {
+                      ...model,
+                      variants: { ultra: { reasoningEffort: "ultra" } },
+                    },
                   },
                   options: {
                     codexApiEndpoint: `${server.url.origin}/backend-api/codex/responses`,
@@ -820,6 +1021,7 @@ describe("session.llm.stream", () => {
         directory: tmp.path,
         fn: async () => {
           const resolved = await getModel(ProviderID.openai, ModelID.make(model.id))
+          expect(resolved.backend_semantics).toBe("codex")
           const sessionID = SessionID.make("session-test-openai-oauth-direct")
           const agent = {
             name: "test",
@@ -834,7 +1036,7 @@ describe("session.llm.stream", () => {
             role: "user",
             time: { created: Date.now() },
             agent: agent.name,
-            model: { providerID: ProviderID.make("openai"), modelID: resolved.id },
+            model: { providerID: ProviderID.make("openai"), modelID: resolved.id, variant: "ultra" },
           } satisfies MessageV2.User
 
           await drain({
@@ -853,11 +1055,15 @@ describe("session.llm.stream", () => {
           expect(capture.headers.get("authorization")).toBe("Bearer access-direct")
           expect(capture.headers.get("ChatGPT-Account-ID")).toBe("acc-direct")
           expect(body.model).toBe(resolved.api.id)
-          expect(body.instructions).toBe("You are a helpful assistant.")
+          const instructions = body.instructions as string
+          expect(instructions).toContain("You are a helpful assistant.")
+          expect(instructions).toContain("<multi_agent_mode>")
+          expect(instructions).toContain("Proactive multi-agent delegation is active for this root session.")
           expect(body.input).toEqual([{ role: "user", content: [{ type: "input_text", text: "Hello" }] }])
           expect(body.stream).toBe(true)
           expect(body.store).toBe(false)
           expect(body.prompt_cache_key).toBe(sessionID)
+          expect((body.reasoning as { effort?: string } | undefined)?.effort).toBe("max")
           expect(body.max_output_tokens).toBeUndefined()
           expect(body.tools).toContainEqual({
             type: "web_search",
@@ -993,7 +1199,7 @@ describe("session.llm.stream", () => {
     })
   })
 
-  test("sends max reasoning effort through custom Responses providers", async () => {
+  test("maps Ultra to max through custom Responses providers", async () => {
     const server = state.server
     if (!server) throw new Error("Server not initialized")
 
@@ -1082,7 +1288,7 @@ describe("session.llm.stream", () => {
           role: "user",
           time: { created: Date.now() },
           agent: agent.name,
-          model: { providerID: ProviderID.make(providerID), modelID: resolved.id, variant: "max" },
+          model: { providerID: ProviderID.make(providerID), modelID: resolved.id, variant: "ultra" },
         } satisfies MessageV2.User
 
         const events = await llm.runPromise((svc) =>
@@ -1108,6 +1314,8 @@ describe("session.llm.stream", () => {
         expect(capture.body.model).toBe(modelID)
         expect(capture.body.stream).toBe(true)
         expect(capture.body.store).toBe(false)
+        expect(promptForRole(capture.body, "developer")).toContain("Proactive multi-agent delegation is active for this root session.")
+        expect((capture.body.input as Array<{ role?: string }>).some((message) => message.role === "system")).toBe(false)
         expect((capture.body.reasoning as { effort?: string } | undefined)?.effort).toBe("max")
         expect(events.some((event) => event.type === "text-delta" && event.text === "Hello custom")).toBe(true)
         expect(events.some((event) => event.type === "finish")).toBe(true)

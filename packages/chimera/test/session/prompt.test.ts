@@ -1113,12 +1113,13 @@ it.live(
 )
 
 it.live(
-  "running task tool preserves metadata after tool-call transition",
+  "canceling a running task preserves metadata and stops the child session",
   () =>
     provideTmpdirServer(
       Effect.fnUntraced(function* ({ llm }) {
         const prompt = yield* SessionPrompt.Service
         const sessions = yield* Session.Service
+        const statuses = yield* SessionStatus.Service
         const chat = yield* sessions.create({
           title: "Pinned",
           permission: [{ permission: "*", pattern: "*", action: "allow" }],
@@ -1148,12 +1149,18 @@ it.live(
         })
 
         if (tool.state.status !== "running") return
-        expect(typeof tool.state.metadata?.sessionId).toBe("string")
+        const child = tool.state.metadata?.sessionId
+        expect(typeof child).toBe("string")
+        if (typeof child !== "string") return
+        const childID = SessionID.make(child)
         expect(tool.state.title).toBe("inspect bug")
         expect(tool.state.metadata?.model).toBeDefined()
+        yield* llm.wait(2)
+        expect((yield* statuses.get(childID)).type).toBe("busy")
 
         yield* prompt.cancel(chat.id)
         yield* Fiber.await(fiber)
+        expect((yield* statuses.get(childID)).type).toBe("idle")
       }),
       { git: true, config: providerCfg },
     ),

@@ -12,6 +12,8 @@ import { Cause, Effect, Exit, Schema } from "effect"
 import * as Truncate from "./truncate"
 
 const id = "chimera_swarm"
+const DEFAULT_CONCURRENCY = 16
+const MAX_CONCURRENCY = 16
 
 const Preset = Schema.Literals(["audit-followup", "audit-review", "oracle-followup", "file-review"])
 const Source = Schema.Literals([
@@ -45,7 +47,7 @@ export const Parameters = Schema.Struct({
     description: "Short base description for child task titles.",
   }),
   concurrency: Schema.optional(Schema.Number).annotate({
-    description: "Maximum child tasks to run at once. Defaults to 3 and is capped at 10.",
+    description: `Maximum child tasks to run at once. Defaults to ${DEFAULT_CONCURRENCY} and is capped at ${MAX_CONCURRENCY}.`,
   }),
   limit: Schema.optional(Schema.Number).annotate({
     description: "Maximum items to read from a Chimera evidence source. Defaults to 20 and is capped at 100.",
@@ -407,7 +409,7 @@ export const ChimeraSwarmTool = Tool.define(
         })
       }
 
-      const concurrency = bounded(params.concurrency, 3, 10)
+      const concurrency = bounded(params.concurrency, DEFAULT_CONCURRENCY, MAX_CONCURRENCY)
       const title = params.description ?? `chimera swarm (${items.length})`
       const promptOps = ctx.extra?.promptOps as TaskPromptOps | undefined
       const childSessions = new Map<number, ChildSession>()
@@ -487,6 +489,7 @@ export const ChimeraSwarmTool = Tool.define(
                     extra: {
                       ...ctx.extra,
                       bypassAgentCheck: true,
+                      swarmWorker: true,
                     },
                   },
                 )

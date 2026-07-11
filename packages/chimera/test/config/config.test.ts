@@ -1725,6 +1725,40 @@ test("Effect config parser preserves permission order while rejecting unknown to
   }
 })
 
+test("validates provider wire API placement and values", () => {
+  const config = ConfigParse.effectSchema(
+    Config.Info,
+    {
+      provider: {
+        responses: { wire_api: "responses" },
+        chat: { wire_api: "chat" },
+      },
+    },
+    "test",
+  )
+
+  expect(config.provider?.responses?.wire_api).toBe("responses")
+  expect(config.provider?.chat?.wire_api).toBe("chat")
+  const invalidWireAPI = (() => {
+    try {
+      ConfigParse.effectSchema(Config.Info, { provider: { invalid: { wire_api: "completions" } } }, "test")
+    } catch (error) {
+      return error as { data?: { issues?: Array<{ path?: string[]; message?: string }> } }
+    }
+  })()
+  const issue = invalidWireAPI?.data?.issues?.[0]
+  expect(issue?.path).toEqual(["provider", "invalid", "wire_api"])
+  expect(issue?.message).toContain('"chat"')
+  expect(issue?.message).toContain('"responses"')
+  expect(issue?.message).toContain('"completions"')
+  const modelOverride = ConfigParse.effectSchema(
+    Config.Info,
+    { provider: { invalid: { models: { model: { wire_api: "responses" } } } } },
+    "test",
+  )
+  expect(modelOverride.provider?.invalid?.models?.model).toEqual({})
+})
+
 // MCP config merging tests
 
 test("project config can override MCP server enabled status", async () => {

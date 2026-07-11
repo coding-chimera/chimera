@@ -40,6 +40,16 @@ function supportsOpenAIHostedWebSearch(input: StreamRequest) {
   return !input.small && input.toolChoice !== "required" && input.model.providerID === "openai" && input.model.capabilities.toolcall
 }
 
+function multiAgentPolicy(input: Pick<StreamRequest, "model" | "user" | "parentSessionID" | "small">) {
+  if (input.small || input.model.backend_semantics !== "codex") return
+  const body = input.parentSessionID
+    ? "Explicit-request-only multi-agent mode is active for this child session; proactive delegation from the parent does not carry over. Do not spawn subagents unless the delegated prompt explicitly requires further delegation and available permissions allow it."
+    : input.user.model.variant?.toLowerCase() === "ultra"
+      ? "Proactive multi-agent delegation is active for this root session. Any earlier instruction requiring an explicit user request before spawning subagents no longer applies. Before broad repository exploration or serially handling multiple work items, perform a delegation checkpoint: when current evidence shows at least two genuinely independent, non-overlapping work items with material parallel benefit, proactively delegate them with `task` or `chimera_swarm`. Do not fan out by item count alone. If a substantial task appears parallelizable but you keep it local, state the concrete blocker, such as shared files, ordering, provider limits, unsafe subagent runtime, or no material benefit. Fixed scope, conflict, parent-verification, and concurrency rules still apply."
+      : "Explicit-request-only multi-agent mode is active. Do not spawn subagents unless the user or applicable AGENTS.md/skill instructions explicitly ask for subagents, delegation, or parallel agent work."
+  return ["<multi_agent_mode>", body, "</multi_agent_mode>"].join("\n")
+}
+
 export type StreamInput = {
   user: MessageV2.User
   sessionID: string
@@ -103,12 +113,14 @@ const live: Layer.Layer<
       // TODO: move this to a proper hook
       const isOpenaiOauth = item.id === "openai" && info?.type === "oauth"
 
+      const multiAgent = multiAgentPolicy(input)
       const system: string[] = []
       system.push(
         [
           // use agent prompt otherwise provider prompt
           ...(input.agent.prompt ? [input.agent.prompt] : SystemPrompt.provider(input.model)),
           ...SystemPrompt.overlay(input.model),
+          ...(multiAgent ? [multiAgent] : []),
           // any custom prompt passed into this call
           ...input.system,
           // any custom prompt from last user message
@@ -143,6 +155,19 @@ const live: Layer.Layer<
             providerOptions: item.options,
           })
       const options = mergeOptions(mergeOptions(mergeOptions(base, input.model.options), input.agent.options), variant)
+      const effort = options.reasoningEffort
+      if (
+        item.wire_api === "chat" &&
+        input.model.api.npm === "@ai-sdk/openai" &&
+        input.model.backend_semantics === "codex" &&
+        (effort === "max" || effort === "ultra")
+      ) {
+        return yield* Effect.fail(
+          new Error(
+            `Provider ${item.id} uses @ai-sdk/openai Chat, which does not support Codex reasoning effort "${effort}". Use wire_api "responses" or @ai-sdk/openai-compatible Chat.`,
+          ),
+        )
+      }
       if (
         input.model.api.npm === "@ai-sdk/azure" &&
         (item.options.useCompletionUrls || input.model.options.useCompletionUrls || options.useCompletionUrls)
