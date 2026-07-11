@@ -68,6 +68,15 @@ afterEach(async () => {
 })
 
 describe("pty HttpApi bridge", () => {
+  test("documents PTY websocket query contract", async () => {
+    const operation = (await Server.openapi()).paths["/pty/{ptyID}/connect"]?.get
+    const query = (operation?.parameters ?? []).flatMap((parameter) =>
+      "$ref" in parameter || parameter.in !== "query" ? [] : [parameter.name],
+    )
+
+    expect(query).toEqual(expect.arrayContaining(["directory", "workspace", "cursor", "ticket"]))
+  })
+
   test("serves available shell list through experimental Effect routes", async () => {
     await using tmp = await tmpdir({ git: true, config: { formatter: false, lsp: false } })
     const response = await app().request(PtyPaths.shells, { headers: { "x-chimera-directory": tmp.path } })

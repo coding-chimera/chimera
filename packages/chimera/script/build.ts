@@ -109,6 +109,13 @@ const buildVersion = resolveVersion({ currentVersion: pkg.version })
 const createEmbeddedWebUIBundle = async (input: { label: string; packageDir: string }) => {
   console.log(`Building ${input.label} UI to embed in the binary`)
   const appDir = path.join(import.meta.dirname, input.packageDir)
+  if (input.label === "NewWeb") {
+    const checkoutSdk = fs.realpathSync(path.resolve(appDir, "../sdk/js"))
+    const resolvedSdk = fs.realpathSync(Bun.resolveSync("@opencode-ai/sdk/v2/client", appDir))
+    if (!resolvedSdk.startsWith(checkoutSdk + path.sep)) {
+      throw new Error(`NewWeb must resolve @opencode-ai/sdk from the checkout (${checkoutSdk}), received ${resolvedSdk}`)
+    }
+  }
   const dist = path.join(appDir, "dist")
   await $`bun run --cwd ${appDir} build`
   const files = (await Array.fromAsync(new Bun.Glob("**/*").scan({ cwd: dist })))
