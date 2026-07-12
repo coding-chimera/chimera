@@ -1,5 +1,7 @@
+import { InstanceRef } from "@/effect/instance-ref"
 import { InstanceState } from "@/effect/instance-state"
 import { Runner } from "@/effect/runner"
+import { InstanceStore } from "@/project/instance-store"
 import { Effect, Latch, Layer, Scope, Context } from "effect"
 import * as Session from "./session"
 import { MessageV2 } from "./message-v2"
@@ -28,7 +30,7 @@ export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const status = yield* SessionStatus.Service
-
+    const store = yield* Effect.serviceOption(InstanceStore.Service)
     const state = yield* InstanceState.make(
       Effect.fn("SessionRunState.state")(function* () {
         const scope = yield* Scope.Scope
@@ -53,12 +55,21 @@ export const layer = Layer.effect(
       const data = yield* InstanceState.get(state)
       const existing = data.runners.get(sessionID)
       if (existing) return existing
+      const instance = yield* InstanceRef
+      if (!instance) return yield* Effect.die(new Error("Session runner requires an instance"))
+      const leases: Array<InstanceStore.Lease | undefined> = []
       const next = Runner.make<MessageV2.WithParts>(data.scope, {
         onIdle: Effect.gen(function* () {
-          data.runners.delete(sessionID)
+          const lease = leases.shift()
+          if (lease) yield* lease.release
+          if (leases.length > 0) return
+          if (data.runners.get(sessionID) === next) data.runners.delete(sessionID)
           yield* status.set(sessionID, { type: "idle" })
         }),
-        onBusy: status.set(sessionID, { type: "busy" }),
+        onBusy: Effect.gen(function* () {
+          leases.push(store._tag === "Some" ? yield* store.value.pin(instance) : undefined)
+          yield* status.set(sessionID, { type: "busy" })
+        }),
         onInterrupt,
         busy: () => {
           throw new Session.BusyError(sessionID)

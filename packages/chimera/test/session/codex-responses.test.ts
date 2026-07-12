@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { tool, type ModelMessage } from "ai"
+import { APICallError, tool, type ModelMessage } from "ai"
 import { openai } from "@ai-sdk/openai"
 import z from "zod"
 import { CodexResponses, type CodexResponsesInput, type RequestBody, type ResponsesInputItem } from "../../src/session/codex-responses"
@@ -66,6 +66,31 @@ async function collect(input: CodexResponsesInput) {
   const events: any[] = []
   for await (const event of CodexResponses.stream(input)) events.push(event)
   return events
+}
+
+function apiError(events: any[]) {
+  const error = events.find((event) => event.type === "error")?.error
+  if (!APICallError.isInstance(error)) throw new Error("expected APICallError")
+  return error
+}
+
+async function nextEvent(iterator: AsyncIterator<any>) {
+  const timeout = Promise.withResolvers<never>()
+  const timer = setTimeout(() => timeout.reject(new Error("Timed out waiting for Codex Responses event")), 2_000)
+  try {
+    const next = await Promise.race([iterator.next(), timeout.promise])
+    if (next.done) throw new Error("Codex Responses stream ended before the expected event")
+    return next.value
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function eventOfType(iterator: AsyncIterator<any>, type: string) {
+  while (true) {
+    const value = await nextEvent(iterator)
+    if (value.type === type) return value
+  }
 }
 
 function installFakeWebSocket(responses: unknown[][], options: { failOpen?: boolean; closeAfterSend?: boolean | boolean[] } = {}) {
@@ -261,6 +286,161 @@ describe("session.codex-responses", () => {
     const events = await collect(baseInput({ endpoint: `${server.url.origin}/backend-api/codex/responses` }))
 
     expect(events.find((event) => event.type === "error")?.error.message).toBe("Invalid 'input[9].id': 'ws_123'. Expected an ID that begins with 'fc'.")
+  })
+
+  test("classifies retryable HTTP failures and preserves retry hints", async () => {
+    using server = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Response("temporarily unavailable", {
+          status: 503,
+          headers: { "Retry-After": "3", "x-request-id": "req-retry" },
+        })
+      },
+    })
+    const events = await collect(baseInput({ endpoint: `${server.url.origin}/backend-api/codex/responses` }))
+    const error = apiError(events)
+    const data = error.data as Record<string, string>
+
+    expect(error.statusCode).toBe(503)
+    expect(error.isRetryable).toBe(true)
+    expect(error.responseHeaders?.["retry-after"]).toBe("3")
+    expect(data.source).toBe("codex-responses")
+    expect(data.replaySafe).toBe("true")
+    expect(data.retryLimit).toBe("2")
+    expect(events.map((event) => event.type)).toEqual(["error"])
+    expect(events.some((event) => event.type === "finish")).toBe(false)
+  })
+
+  test("does not retry permanent HTTP failures", async () => {
+    using server = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Response("unauthorized", { status: 401 })
+      },
+    })
+    const error = apiError(await collect(baseInput({ endpoint: `${server.url.origin}/backend-api/codex/responses` })))
+
+    expect(error.statusCode).toBe(401)
+    expect(error.isRetryable).toBe(false)
+  })
+
+  test("classifies transient transport and TLS verification errors", () => {
+    const timeout = Object.assign(new Error("connect timed out"), { code: "ETIMEDOUT" })
+    const wrapped = new Error("fetch failed", { cause: timeout })
+    const expired = Object.assign(new Error("certificate expired"), { code: "CERT_HAS_EXPIRED" })
+
+    expect(CodexResponses.classifyTransportError(wrapped)).toMatchObject({ code: "ETIMEDOUT", retryable: true })
+    expect(CodexResponses.classifyTransportError(new Error("unknown certificate verification error"))).toMatchObject({
+      code: "TLS_CERT_VERIFY_UNKNOWN",
+      retryable: true,
+    })
+    expect(CodexResponses.classifyTransportError(expired)).toMatchObject({ code: "CERT_HAS_EXPIRED", retryable: false })
+  })
+
+  test("retries unexpected EOF only before provider output", async () => {
+    const responses = [
+      [{ type: "response.created", response: { id: "resp-eof-empty" } }],
+      [
+        { type: "response.output_item.added", output_index: 0, item: { id: "msg-eof-partial", type: "message" } },
+        { type: "response.output_text.delta", item_id: "msg-eof-partial", delta: "partial" },
+      ],
+    ]
+    using server = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Response(responseStream(responses.shift() ?? []), { headers: { "Content-Type": "text/event-stream" } })
+      },
+    })
+    const endpoint = `${server.url.origin}/backend-api/codex/responses`
+    const empty = await collect(baseInput({ sessionID: "session-eof-empty", endpoint }))
+    const partial = await collect(baseInput({ sessionID: "session-eof-partial", endpoint }))
+    const emptyError = apiError(empty)
+    const partialError = apiError(partial)
+
+    expect(emptyError.isRetryable).toBe(true)
+    expect((emptyError.data as Record<string, string>).code).toBe("unexpected_eof")
+    expect(empty.map((event) => event.type)).toEqual(["error"])
+    expect(partial.find((event) => event.type === "text-delta")?.text).toBe("partial")
+    expect(partial.filter((event) => event.type === "start-step")).toHaveLength(1)
+    expect(partialError.isRetryable).toBe(false)
+    expect((partialError.data as Record<string, string>).replaySafe).toBe("false")
+    expect(partial.some((event) => event.type === "finish")).toBe(false)
+  })
+
+  test("classifies a truncated SSE frame as replay-safe unexpected EOF", async () => {
+    const encoder = new TextEncoder()
+    using server = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(encoder.encode('data: {"type":"response.created","response":{"id":"resp-truncated"}'))
+              controller.close()
+            },
+          }),
+          { headers: { "Content-Type": "text/event-stream" } },
+        )
+      },
+    })
+    const events = await collect(baseInput({ endpoint: `${server.url.origin}/backend-api/codex/responses` }))
+    const error = apiError(events)
+    const data = error.data as Record<string, string>
+
+    expect(error.isRetryable).toBe(true)
+    expect(data.code).toBe("unexpected_eof")
+    expect(data.replaySafe).toBe("true")
+    expect(events.map((event) => event.type)).toEqual(["error"])
+  })
+
+  test("reports incomplete responses instead of synthesizing success", async () => {
+    using server = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Response(
+          responseStream([
+            {
+              type: "response.incomplete",
+              response: { id: "resp-incomplete", incomplete_details: { reason: "max_output_tokens" } },
+            },
+          ]),
+          { headers: { "Content-Type": "text/event-stream" } },
+        )
+      },
+    })
+    const events = await collect(baseInput({ endpoint: `${server.url.origin}/backend-api/codex/responses` }))
+    const error = apiError(events)
+
+    expect(error.isRetryable).toBe(false)
+    expect((error.data as Record<string, string>).code).toBe("max_output_tokens")
+    expect(events.some((event) => event.type === "finish")).toBe(false)
+  })
+
+  test("retries transient response failures only before provider output", async () => {
+    const responses = [
+      [{ type: "response.failed", response: { error: { code: "server_error", message: "temporary" } } }],
+      [
+        { type: "response.output_item.added", output_index: 0, item: { id: "msg-failed-partial", type: "message" } },
+        { type: "response.output_text.delta", item_id: "msg-failed-partial", delta: "partial" },
+        { type: "response.failed", response: { error: { code: "server_error", message: "temporary" } } },
+      ],
+    ]
+    using server = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Response(responseStream(responses.shift() ?? []), { headers: { "Content-Type": "text/event-stream" } })
+      },
+    })
+    const endpoint = `${server.url.origin}/backend-api/codex/responses`
+    const emptyError = apiError(await collect(baseInput({ sessionID: "session-failed-empty", endpoint })))
+    const partialEvents = await collect(baseInput({ sessionID: "session-failed-partial", endpoint }))
+    const partialError = apiError(partialEvents)
+
+    expect(emptyError.isRetryable).toBe(true)
+    expect(partialEvents.find((event) => event.type === "text-delta")?.text).toBe("partial")
+    expect(partialError.isRetryable).toBe(false)
+    expect(partialEvents.some((event) => event.type === "finish")).toBe(false)
   })
 
   test("defaults to HTTP even when WebSocket is available", async () => {
@@ -823,6 +1003,103 @@ describe("session.codex-responses", () => {
     expect(events.find((event) => event.type === "tool-call")?.input).toEqual({ query: "weather" })
     expect(events.find((event) => event.type === "tool-result")?.output).toEqual({ output: "found weather" })
     expect(events.find((event) => event.type === "finish-step")?.finishReason).toBe("tool-calls")
+  })
+
+  test("emits HTTP tool-call input before failed execution settles", async () => {
+    const execution = Promise.withResolvers<{ output: string }>()
+    let started = false
+    using server = Bun.serve({
+      port: 0,
+      async fetch() {
+        return new Response(
+          responseStream([
+            { type: "response.output_item.added", output_index: 0, item: { id: "fc-http-fail", type: "function_call", call_id: "call-http-fail", name: "lookup" } },
+            {
+              type: "response.output_item.done",
+              output_index: 0,
+              item: { id: "fc-http-fail", type: "function_call", call_id: "call-http-fail", name: "lookup", arguments: "{\"query\":\"weather\"}" },
+            },
+            { type: "response.completed", response: { id: "resp-http-fail", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+          ]),
+          { headers: { "Content-Type": "text/event-stream" } },
+        )
+      },
+    })
+    const iterator = CodexResponses.stream(
+      baseInput({
+        sessionID: "session-http-tool-fail",
+        endpoint: `${server.url.origin}/backend-api/codex/responses`,
+        tools: {
+          lookup: tool({
+            inputSchema: z.object({ query: z.string() }),
+            execute: async () => {
+              started = true
+              return execution.promise
+            },
+          }),
+        },
+      }),
+    )[Symbol.asyncIterator]()
+
+    const call = await eventOfType(iterator, "tool-call")
+    expect(call.input).toEqual({ query: "weather" })
+    expect(started).toBe(false)
+
+    const failure = eventOfType(iterator, "tool-error")
+    for (let attempt = 0; attempt < 10 && !started; attempt++) await Bun.sleep(0)
+    expect(started).toBe(true)
+    execution.reject(new Error("lookup failed"))
+    expect((await failure).error.message).toBe("lookup failed")
+    await iterator.return?.()
+  })
+
+  test("emits WebSocket tool-call input before failed execution settles", async () => {
+    const execution = Promise.withResolvers<{ output: string }>()
+    let started = false
+    const fake = installFakeWebSocket([
+      [
+        { type: "response.output_item.added", output_index: 0, item: { id: "fc-ws-fail", type: "function_call", call_id: "call-ws-fail", name: "lookup" } },
+        {
+          type: "response.output_item.done",
+          output_index: 0,
+          item: { id: "fc-ws-fail", type: "function_call", call_id: "call-ws-fail", name: "lookup", arguments: "{\"query\":\"weather\"}" },
+        },
+        { type: "response.completed", response: { id: "resp-ws-fail", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+      ],
+    ])
+    try {
+      const iterator = CodexResponses.stream(
+        inputWithOptions(
+          {
+            sessionID: "session-ws-tool-fail",
+            endpoint: "http://codex.test/backend-api/codex/responses",
+            tools: {
+              lookup: tool({
+                inputSchema: z.object({ query: z.string() }),
+                execute: async () => {
+                  started = true
+                  return execution.promise
+                },
+              }),
+            },
+          },
+          { codexResponsesTransport: "websocket", codexResponsesPrewarm: false },
+        ),
+      )[Symbol.asyncIterator]()
+
+      const call = await eventOfType(iterator, "tool-call")
+      expect(call.input).toEqual({ query: "weather" })
+      expect(started).toBe(false)
+
+      const failure = eventOfType(iterator, "tool-error")
+      for (let attempt = 0; attempt < 10 && !started; attempt++) await Bun.sleep(0)
+      expect(started).toBe(true)
+      execution.reject(new Error("lookup failed"))
+      expect((await failure).error.message).toBe("lookup failed")
+      await iterator.return?.()
+    } finally {
+      fake.restore()
+    }
   })
 
   test("maps hosted web search calls as provider-executed tool events", async () => {

@@ -205,9 +205,13 @@ describe("Runner", () => {
       const hit = yield* Deferred.make<void>()
       const hold = yield* Deferred.make<void>()
       const done = yield* Deferred.make<void>()
+      const events = yield* Ref.make<string[]>([])
 
       yield* Effect.gen(function* () {
-        const runner = Runner.make<string>(s)
+        const runner = Runner.make<string>(s, {
+          onBusy: Ref.update(events, (items) => [...items, "busy"]),
+          onIdle: Ref.update(events, (items) => [...items, "idle"]),
+        })
         const first = Effect.never.pipe(
           Effect.onInterrupt(() => Deferred.succeed(hit, undefined)),
           Effect.ensuring(Deferred.await(hold)),
@@ -223,15 +227,18 @@ describe("Runner", () => {
         const b = yield* runner.ensureRunning(Deferred.await(done).pipe(Effect.as("second"))).pipe(Effect.forkChild)
         yield* Effect.yieldNow
         expect(runner.busy).toBe(true)
+        expect(yield* Ref.get(events)).toEqual(["busy", "busy"])
 
         yield* Deferred.succeed(hold, undefined)
         const stopExit = yield* Fiber.await(stop).pipe(Effect.timeout("250 millis"))
         expect(Exit.isSuccess(stopExit)).toBe(true)
 
         expect(runner.busy).toBe(true)
+        expect(yield* Ref.get(events)).toEqual(["busy", "busy", "idle"])
         yield* Deferred.succeed(done, undefined)
         expect(yield* Fiber.join(b).pipe(Effect.timeout("250 millis"))).toBe("second")
         expect(runner.busy).toBe(false)
+        expect(yield* Ref.get(events)).toEqual(["busy", "busy", "idle", "idle"])
 
         const exit = yield* Fiber.join(a)
         expect(Exit.isFailure(exit)).toBe(true)
@@ -453,6 +460,49 @@ describe("Runner", () => {
       })
       yield* runner.ensureRunning(Effect.succeed("ok"))
       expect(yield* Ref.get(count)).toBe(1)
+    }),
+  )
+
+  it.live(
+    "ensureRunning pairs onBusy and onIdle",
+    Effect.gen(function* () {
+      const s = yield* Scope.Scope
+      const events = yield* Ref.make<string[]>([])
+      const runner = Runner.make<string>(s, {
+        onBusy: Ref.update(events, (items) => [...items, "busy"]),
+        onIdle: Ref.update(events, (items) => [...items, "idle"]),
+      })
+
+      yield* runner.ensureRunning(Effect.succeed("ok"))
+
+      expect(yield* Ref.get(events)).toEqual(["busy", "idle"])
+    }),
+  )
+
+  it.live(
+    "cancel pairs onBusy and onIdle exactly once",
+    Effect.gen(function* () {
+      const s = yield* Scope.Scope
+      const events = yield* Ref.make<string[]>([])
+      const started = yield* Deferred.make<void>()
+      const runner = Runner.make<string>(s, {
+        onBusy: Ref.update(events, (items) => [...items, "busy"]),
+        onIdle: Ref.update(events, (items) => [...items, "idle"]),
+      })
+      const running = yield* runner
+        .ensureRunning(
+          Deferred.succeed(started, undefined).pipe(
+            Effect.andThen(Effect.never),
+            Effect.as("never"),
+          ),
+        )
+        .pipe(Effect.forkChild)
+
+      yield* Deferred.await(started)
+      yield* runner.cancel
+      yield* Fiber.await(running)
+
+      expect(yield* Ref.get(events)).toEqual(["busy", "idle"])
     }),
   )
 
