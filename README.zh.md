@@ -38,7 +38,7 @@ Chimera 致谢并引用以下设计参考：
 Chimera 尚未发布到 npm registry。请从 [GitHub Releases](https://github.com/coding-chimera/chimera/releases)
 下载最新 release tarball，通过 npm 安装。
 
-选择 `no-webui`（MIT）或 `with-webui`（MIT + GPL-3.0）变体。
+选择 `no-webui`（MIT）或 `with-webui`（整体标记为 GPL-3.0-only，并单独保留 MIT runtime 许可）变体。两种变体使用相同的 `chimera` 与 `chimera-<platform>` npm 包身份，因此一次只能安装一种变体。
 查看 releases 页面获取最新版本号和准确的 tarball 文件名。
 
 ```bash
@@ -97,13 +97,13 @@ bun test --timeout 30000
 从 `packages/chimera` 构建默认的当前平台 no-WebUI 包：
 
 ```bash
-bun run build --single --skip-install
+OPENCODE_CHANNEL=latest bun run build --single --skip-install
 ```
 
 默认包有意不嵌入 GPL 许可的 NewWeb/OpenCodeUI 衍生资源。如需为 release asset 额外生成明确分离的 with-WebUI 变体，再运行第二次构建：
 
 ```bash
-bun run build --single --skip-install --with-webui --preserve-npm-tarballs
+OPENCODE_CHANNEL=latest bun run build --single --skip-install --with-webui --preserve-npm-tarballs
 ```
 
 tarball 写入：
@@ -112,9 +112,11 @@ tarball 写入：
 dist/npm-tarballs/
 ```
 
-no-WebUI tarball 名称形如 `chimera-no-webui-<version>.tgz`；with-WebUI tarball 在相同位置使用 `with-webui` 命名。
+no-WebUI tarball 名称形如 `chimera-no-webui-<version>.tgz`；with-WebUI tarball 在相同位置使用 `with-webui` 命名。variant 不进入 npm package name。
 
-可以用临时 npm prefix 对本地打包结果做 smoke test，每次只安装一个变体：
+独立 no-WebUI CLI archive 继续使用 `chimera-darwin-arm64.zip` 等兼容名称；with-WebUI archive 增加 `-with-webui`。每个独立 archive 的根目录都包含该变体对应的许可文件。
+
+可以用临时 npm prefix 对本地打包结果做 smoke test；每次只安装同一变体的主包与平台包：
 
 ```bash
 prefix="$(mktemp -d)"
@@ -140,9 +142,9 @@ npm install -g --prefix "$prefix" dist/npm-tarballs/chimera-darwin-arm64-no-webu
 
 ## 许可证
 
-Chimera 核心发行版（含 CLI、图谱运行时和 Agent 包）以 MIT 许可发布。
+no-WebUI 主包和平台包使用 MIT 许可，包含仓库根 MIT `LICENSE`，且不包含 NewWeb payload。
 
-WebUI 组件（`packages/newweb`）以 GPL-3.0 许可发布，源自 [OpenCodeUI][opencode-ui]。使用 `--with-webui` 构建的版本会嵌入该组件，受两种许可条款约束。
+with-WebUI 主包和平台包整体标记为 `GPL-3.0-only`：`LICENSE` 为 GPLv3，`LICENSE-MIT` 保留 Chimera runtime 的 MIT 许可，`NOTICE` 清晰说明组件、源码位置和边界。该变体嵌入 `packages/newweb` 中 GPL 许可的 NewWeb/OpenCodeUI 衍生 payload。
 
 MIT
 
