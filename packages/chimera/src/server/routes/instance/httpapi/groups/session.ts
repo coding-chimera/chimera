@@ -31,6 +31,7 @@ export const ListQuery = Schema.Struct({
   scope: Schema.optional(Schema.Literals(["project"])),
   path: Schema.optional(Schema.String),
   roots: Schema.optional(QueryBoolean),
+  archived: Schema.optional(QueryBoolean),
   start: Schema.optional(Schema.NumberFromString),
   search: Schema.optional(Schema.String),
   limit: Schema.optional(Schema.NumberFromString),
@@ -46,7 +47,7 @@ export const UpdatePayload = Schema.Struct({
   permission: Schema.optional(Permission.Ruleset),
   time: Schema.optional(
     Schema.Struct({
-      archived: Schema.optional(Session.ArchivedTimestamp),
+      archived: Schema.optional(Schema.NullOr(Session.ArchivedTimestamp)),
     }),
   ),
 })

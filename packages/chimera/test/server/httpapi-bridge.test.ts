@@ -264,6 +264,9 @@ describe("HttpApi server", () => {
     expect(parameterSchema({ spec: effect, path: "/session", method: "get", name: "roots" })).toEqual({
       anyOf: [{ type: "boolean" }, { type: "string", enum: ["true", "false"] }],
     })
+    expect(parameterSchema({ spec: effect, path: "/session", method: "get", name: "archived" })).toEqual({
+      anyOf: [{ type: "boolean" }, { type: "string", enum: ["true", "false"] }],
+    })
     expect(parameterSchema({ spec: effect, path: "/session", method: "get", name: "start" })).toEqual({
       type: "number",
     })
@@ -290,7 +293,7 @@ describe("HttpApi server", () => {
         : undefined
     const sessionUpdateProperties = sessionUpdateSchema?.properties as Record<string, OpenApiSchema> | undefined
     const time = sessionUpdateProperties?.time
-    expect(time?.properties?.archived).toEqual({ type: "number" })
+    expect(time?.properties?.archived).toEqual({ anyOf: [{ type: "number" }, { type: "null" }] })
   })
 
   test("documents event routes as server-sent events", () => {
