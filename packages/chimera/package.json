@@ -187,6 +187,8 @@
     "opentui-spinner": "catalog:",
     "partial-json": "0.1.7",
     "picomatch": "^4.0.3",
+    "playwright-core": "catalog:",
+    "chromium-bidi": "catalog:",
     "remeda": "catalog:",
     "semver": "^7.6.3",
     "sisteransi": "^1.0.5",

@@ -10,6 +10,12 @@ import { TaskTool } from "./task"
 import { ChimeraSwarmTool } from "./swarm"
 import { TodoWriteTool } from "./todo"
 import { WebFetchTool } from "./webfetch"
+import { BrowserOpenTool } from "./browser_open"
+import { BrowserSnapshotTool } from "./browser_snapshot"
+import { BrowserClickTool } from "./browser_click"
+import { BrowserTypeTool } from "./browser_type"
+import { BrowserScreenshotTool } from "./browser_screenshot"
+import { BrowserCloseTool } from "./browser_close"
 import { WriteTool } from "./write"
 import { WorkBriefTool } from "./workbrief"
 import { InvalidTool } from "./invalid"
@@ -66,6 +72,7 @@ import { Agent } from "../agent/agent"
 import { Skill } from "../skill"
 import { Permission } from "@/permission"
 import { Auth } from "@/auth"
+import { BrowserRuntime } from "@/browser/runtime"
 
 const log = Log.create({ service: "tool.registry" })
 
@@ -110,6 +117,7 @@ export const layer: Layer.Layer<
   | Format.Service
   | Truncate.Service
   | Auth.Service
+  | BrowserRuntime.Service
 > = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -127,6 +135,12 @@ export const layer: Layer.Layer<
     const plan = yield* PlanExitTool
     const webfetch = yield* WebFetchTool
     const websearch = yield* WebSearchTool
+    const browserOpen = yield* BrowserOpenTool
+    const browserSnapshot = yield* BrowserSnapshotTool
+    const browserClick = yield* BrowserClickTool
+    const browserType = yield* BrowserTypeTool
+    const browserScreenshot = yield* BrowserScreenshotTool
+    const browserClose = yield* BrowserCloseTool
     const shell = yield* ShellTool
     const globtool = yield* GlobTool
     const writetool = yield* WriteTool
@@ -243,6 +257,12 @@ export const layer: Layer.Layer<
           fetch: Tool.init(webfetch),
           todo: Tool.init(todo),
           search: Tool.init(websearch),
+          browserOpen: Tool.init(browserOpen),
+          browserSnapshot: Tool.init(browserSnapshot),
+          browserClick: Tool.init(browserClick),
+          browserType: Tool.init(browserType),
+          browserScreenshot: Tool.init(browserScreenshot),
+          browserClose: Tool.init(browserClose),
           skill: Tool.init(skilltool),
           patch: Tool.init(patchtool),
           question: Tool.init(question),
@@ -282,6 +302,12 @@ export const layer: Layer.Layer<
             tool.fetch,
             tool.todo,
             tool.search,
+            tool.browserOpen,
+            tool.browserSnapshot,
+            tool.browserClick,
+            tool.browserType,
+            tool.browserScreenshot,
+            tool.browserClose,
             tool.skill,
             tool.patch,
             tool.chimeraStatus,
@@ -419,6 +445,7 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(CrossSpawnSpawner.defaultLayer),
     Layer.provide(Ripgrep.defaultLayer),
     Layer.provide(Truncate.defaultLayer),
+    Layer.provide(BrowserRuntime.defaultLayer),
   ),
 )
 

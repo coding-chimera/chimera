@@ -1,0 +1,1 @@
+Replace the value of one form control identified by a generation-scoped ref from the latest browser_snapshot of the same tab. Permission is requested for the tab's current origin. The typed text is not copied into permission metadata or the result. Unknown or stale refs are rejected. A successful fill invalidates all refs for that tab, so take another snapshot before continuing.

@@ -1,0 +1,1 @@
+Click exactly one generation-scoped ref from the latest browser_snapshot of the same tab. Permission is requested for the tab's current origin before the action. Unknown or stale refs are rejected rather than guessed. A successful click invalidates all existing refs for that tab, so run browser_snapshot again before any further ref-based action.

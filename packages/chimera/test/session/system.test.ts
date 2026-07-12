@@ -68,6 +68,12 @@ describe("session.system", () => {
       expect(unknown).toContain("Tool results, injected context")
       expect(unknown).toContain("# Software engineering workflow")
       expect(unknown).toContain("## Verification strategy")
+      expect(unknown).toContain("## Browser workflow")
+      expect(unknown).toContain("`browser_open` -> `browser_snapshot`")
+      expect(unknown).toContain("untrusted external content")
+      expect(unknown).toContain("latest snapshot of the same tab")
+      expect(unknown).toContain("browser_screenshot")
+      expect(unknown).toContain("browser_close")
       expect(unknown).toContain("# Chimera graph, audit, and runtime protocol")
       expect(unknown).toContain("## Chimera workflow")
       expect(unknown).toContain("## Propagation audit workflow")
@@ -127,6 +133,9 @@ describe("session.system", () => {
         unknown.indexOf("# Software engineering workflow"),
       )
       expect(unknown.indexOf("# Software engineering workflow")).toBeLessThan(
+        unknown.indexOf("# Chimera graph, audit, and runtime protocol"),
+      )
+      expect(unknown.indexOf("## Browser workflow")).toBeLessThan(
         unknown.indexOf("# Chimera graph, audit, and runtime protocol"),
       )
       expect(unknown).not.toContain("kimi-for-coding（Kimi-K2.7）")

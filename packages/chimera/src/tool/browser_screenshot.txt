@@ -1,0 +1,1 @@
+Capture a PNG screenshot of the current browser tab and return it as a file attachment from the managed browser-artifact directory. Permission is requested for the tab's current origin. Use screenshots for visual evidence only; use browser_snapshot to inspect page structure and obtain refs. Do not infer hidden state or click coordinates from the image.

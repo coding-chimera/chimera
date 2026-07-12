@@ -91,6 +91,12 @@ export const layer = Layer.effect(
         const defaults = Permission.fromConfig({
           "*": "allow",
           doom_loop: "ask",
+          browser_open: "ask",
+          browser_snapshot: "ask",
+          browser_click: "ask",
+          browser_type: "ask",
+          browser_screenshot: "ask",
+          browser_close: "ask",
           external_directory: {
             "*": "ask",
             ...Object.fromEntries(whitelistedDirs.map((dir) => [dir, "allow"])),
