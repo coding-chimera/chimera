@@ -63,6 +63,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
         scope: ctx.query.scope,
         path: ctx.query.path,
         roots: ctx.query.roots,
+        archived: ctx.query.archived,
         start: ctx.query.start,
         search: ctx.query.search,
         limit: ctx.query.limit,
@@ -185,7 +186,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
           permission: Permission.merge(current.permission ?? [], ctx.payload.permission),
         })
       }
-      if (ctx.payload.time?.archived !== undefined) {
+      if (ctx.payload.time && Object.hasOwn(ctx.payload.time, "archived")) {
         yield* session.setArchived({ sessionID: ctx.params.sessionID, time: ctx.payload.time.archived })
       }
       return yield* SessionError.mapStorageNotFound(session.get(ctx.params.sessionID))

@@ -69,6 +69,7 @@ export const SessionRoutes = lazy(() =>
           scope: z.enum(["project"]).optional().meta({ description: "List all sessions for the current project" }),
           path: z.string().optional().meta({ description: "Filter sessions by project-relative path" }),
           roots: QueryBoolean.optional().meta({ description: "Only return root sessions (no parentID)" }),
+          archived: QueryBoolean.optional().meta({ description: "Return archived sessions instead of active sessions" }),
           start: z.coerce
             .number()
             .optional()
@@ -88,6 +89,7 @@ export const SessionRoutes = lazy(() =>
                 directory: query.scope === "project" ? undefined : query.directory,
                 path: query.path,
                 roots: queryBoolean(query.roots),
+                archived: queryBoolean(query.archived),
                 start: query.start,
                 search: query.search,
                 limit: query.limit,
@@ -340,7 +342,7 @@ export const SessionRoutes = lazy(() =>
           permission: Permission.Ruleset.zod.optional(),
           time: z
             .object({
-              archived: z.number().optional(),
+              archived: z.number().nullable().optional(),
             })
             .optional(),
         }),
@@ -361,7 +363,7 @@ export const SessionRoutes = lazy(() =>
               permission: Permission.merge(current.permission ?? [], updates.permission),
             })
           }
-          if (updates.time?.archived !== undefined) {
+          if (updates.time && Object.hasOwn(updates.time, "archived")) {
             yield* session.setArchived({ sessionID, time: updates.time.archived })
           }
 

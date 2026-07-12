@@ -485,6 +485,15 @@ describe("HttpApi SDK", () => {
         const update = yield* capture(() => sdk.session.update({ sessionID: parentID, title: "renamed" }))
         const roots = yield* capture(() => sdk.session.list({ roots: true, limit: 10 }))
         const all = yield* capture(() => sdk.session.list({ roots: false, limit: 10 }))
+        const archivedUpdate = yield* capture(() =>
+          sdk.session.update({ sessionID: parentID, time: { archived: Date.now() } }),
+        )
+        const archived = yield* capture(() => sdk.session.list({ roots: true, archived: true, limit: 10 }))
+        const activeAfterArchive = yield* capture(() => sdk.session.list({ roots: true, limit: 10 }))
+        const restoredUpdate = yield* capture(() =>
+          sdk.session.update({ sessionID: parentID, time: { archived: null } }),
+        )
+        const activeAfterRestore = yield* capture(() => sdk.session.list({ roots: true, limit: 10 }))
         const children = yield* capture(() => sdk.session.children({ sessionID: parentID }))
         const todo = yield* capture(() => sdk.session.todo({ sessionID: parentID }))
         const workBrief = yield* capture(() => sdk.session.workBrief({ sessionID: parentID }))
@@ -506,6 +515,11 @@ describe("HttpApi SDK", () => {
             update,
             roots,
             all,
+            archivedUpdate,
+            archived,
+            activeAfterArchive,
+            restoredUpdate,
+            activeAfterRestore,
             children,
             todo,
             workBrief,
@@ -521,6 +535,10 @@ describe("HttpApi SDK", () => {
           updatedTitle: record(update.data).title,
           rootTitles: sessionTitles(roots.data),
           allTitles: sessionTitles(all.data),
+          archivedTitles: sessionTitles(archived.data),
+          activeAfterArchiveTitles: sessionTitles(activeAfterArchive.data),
+          restoredArchivedTime: record(record(restoredUpdate.data).time).archived ?? null,
+          activeAfterRestoreTitles: sessionTitles(activeAfterRestore.data),
           childCount: array(children.data).length,
           todoCount: array(todo.data).length,
           workBriefCloseoutCount: array(record(workBrief.data).closeout).length,

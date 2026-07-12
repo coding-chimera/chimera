@@ -5627,6 +5627,7 @@ export type SessionListData = {
     scope?: "project"
     path?: string
     roots?: boolean | "true" | "false"
+    archived?: boolean | "true" | "false"
     start?: number
     search?: string
     limit?: number
@@ -5785,7 +5786,7 @@ export type SessionUpdateData = {
     title?: string
     permission?: PermissionRuleset
     time?: {
-      archived?: number
+      archived?: number | null
     }
   }
   path: {

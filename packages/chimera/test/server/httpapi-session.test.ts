@@ -389,6 +389,76 @@ describe("session HttpApi", () => {
   )
 
   it.live(
+    "matches legacy archived list and restore behavior",
+    withTmp({ git: true, config: { formatter: false, lsp: false } }, (tmp) =>
+      Effect.gen(function* () {
+        const headers = { "x-chimera-directory": tmp.path, "content-type": "application/json" }
+
+        for (const effectBackend of [false, true]) {
+          const created = yield* createSession(tmp.path, { title: effectBackend ? "effect archive" : "legacy archive" })
+          const updatePath = pathFor(SessionPaths.update, { sessionID: created.id })
+
+          const archivedResponse = yield* requestWithBackend(effectBackend, updatePath, {
+            method: "PATCH",
+            headers,
+            body: JSON.stringify({ time: { archived: 1 } }),
+          })
+          expect(archivedResponse.status).toBe(200)
+
+          const activeResponse = yield* requestWithBackend(effectBackend, `${SessionPaths.list}?roots=true`, { headers })
+          expect((yield* json<Session.Info[]>(activeResponse)).map((session) => session.id)).not.toContain(created.id)
+
+          const archivedListResponse = yield* requestWithBackend(
+            effectBackend,
+            `${SessionPaths.list}?roots=true&archived=true`,
+            { headers },
+          )
+          expect((yield* json<Session.Info[]>(archivedListResponse)).map((session) => session.id)).toContain(created.id)
+
+          const explicitActiveResponse = yield* requestWithBackend(
+            effectBackend,
+            `${SessionPaths.list}?roots=true&archived=false`,
+            { headers },
+          )
+          expect((yield* json<Session.Info[]>(explicitActiveResponse)).map((session) => session.id)).not.toContain(created.id)
+
+          const archivedSearchResponse = yield* requestWithBackend(
+            effectBackend,
+            `${SessionPaths.list}?roots=true&archived=true&search=${encodeURIComponent(created.title)}`,
+            { headers },
+          )
+          expect((yield* json<Session.Info[]>(archivedSearchResponse)).map((session) => session.id)).toContain(created.id)
+
+          const omittedArchivedResponse = yield* requestWithBackend(effectBackend, updatePath, {
+            method: "PATCH",
+            headers,
+            body: JSON.stringify({ time: {} }),
+          })
+          expect((yield* json<Session.Info>(omittedArchivedResponse)).time.archived).toBe(1)
+
+          const omittedTimeResponse = yield* requestWithBackend(effectBackend, updatePath, {
+            method: "PATCH",
+            headers,
+            body: JSON.stringify({}),
+          })
+          expect((yield* json<Session.Info>(omittedTimeResponse)).time.archived).toBe(1)
+
+          const restoredResponse = yield* requestWithBackend(effectBackend, updatePath, {
+            method: "PATCH",
+            headers,
+            body: JSON.stringify({ time: { archived: null } }),
+          })
+          expect(restoredResponse.status).toBe(200)
+          expect((yield* json<Session.Info>(restoredResponse)).time.archived).toBeUndefined()
+
+          const restoredActiveResponse = yield* requestWithBackend(effectBackend, `${SessionPaths.list}?roots=true`, { headers })
+          expect((yield* json<Session.Info[]>(restoredActiveResponse)).map((session) => session.id)).toContain(created.id)
+        }
+      }),
+    ),
+  )
+
+  it.live(
     "matches legacy archived timestamp validation",
     withTmp({ git: true, config: { formatter: false, lsp: false } }, (tmp) =>
       Effect.gen(function* () {
