@@ -1406,7 +1406,7 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
           )
         }}
       </For>
-      <Show when={props.parts.some((x) => x.type === "tool" && x.tool === "task")}>
+      <Show when={hasSubagentSessions(props.parts)}>
         <box paddingTop={1} paddingLeft={3}>
           <text fg={theme.text}>
             {keybind.print("session_child_first")}
@@ -1631,6 +1631,9 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
         </Match>
         <Match when={props.part.tool === "task"}>
           <Task {...toolprops} />
+        </Match>
+        <Match when={props.part.tool === "chimera_swarm"}>
+          <Swarm {...toolprops} />
         </Match>
         <Match when={props.part.tool === "apply_patch"}>
           <ApplyPatch {...toolprops} />
@@ -2019,13 +2022,47 @@ function HostedWebSearch(props: ToolProps<typeof WebSearchTool>) {
   )
 }
 
+type SwarmChildRun = {
+  index: number
+  title?: string
+  subagentType?: string
+  subagent_type?: string
+  status?: "queued" | "running" | "completed" | "error" | "cancelled" | "success" | "failure"
+  sessionId?: string
+  error?: string
+}
+
+type SwarmMetadata = {
+  title?: string
+  itemCount?: number
+  subagent_type?: string
+  childRuns?: SwarmChildRun[]
+  childSessions?: Array<SwarmChildRun | string>
+  results?: SwarmChildRun[]
+}
+
+function hasSubagentSessions(parts: Part[]) {
+  return parts.some((part) => {
+    if (part.type !== "tool" || part.state.status === "pending") return false
+    const metadata = (part.state.metadata ?? {}) as SwarmMetadata & { sessionId?: string }
+    if (part.tool === "task") return !!metadata.sessionId
+    if (part.tool !== "chimera_swarm") return false
+    return [...(metadata.childRuns ?? []), ...(metadata.childSessions ?? []), ...(metadata.results ?? [])].some((child) =>
+      typeof child === "string" ? child.length > 0 : !!child.sessionId,
+    )
+  })
+}
+
 function Task(props: ToolProps<typeof TaskTool>) {
   const { navigate } = useRoute()
   const sync = useSync()
+  const synced = new Set<string>()
 
-  onMount(() => {
-    if (props.metadata.sessionId && !sync.data.message[props.metadata.sessionId]?.length)
-      void sync.session.sync(props.metadata.sessionId)
+  createEffect(() => {
+    const sessionId = props.metadata.sessionId
+    if (!sessionId || synced.has(sessionId) || sync.data.message[sessionId]?.length) return
+    synced.add(sessionId)
+    void sync.session.sync(sessionId)
   })
 
   const messages = createMemo(() => sync.data.message[props.metadata.sessionId ?? ""] ?? [])
@@ -2053,10 +2090,9 @@ function Task(props: ToolProps<typeof TaskTool>) {
 
   const content = createMemo(() => {
     if (!props.input.description) return ""
-    let content = [`${Locale.titlecase(props.input.subagent_type ?? "General")} Task — ${props.input.description}`]
+    const content = [`${Locale.titlecase(props.input.subagent_type ?? "General")} Task — ${props.input.description}`]
 
     if (isRunning() && tools().length > 0) {
-      // content[0] += ` · ${tools().length} toolcalls`
       if (current()) {
         const state = current()!.state
         const title = state.status === "running" || state.status === "completed" ? state.title : undefined
@@ -2086,6 +2122,113 @@ function Task(props: ToolProps<typeof TaskTool>) {
     >
       {content()}
     </InlineTool>
+  )
+}
+
+function Swarm(props: ToolProps<any>) {
+  const { navigate } = useRoute()
+  const sync = useSync()
+  const sdk = useSDK()
+  const { theme } = useTheme()
+  const synced = new Set<string>()
+  const metadata = createMemo(() => props.metadata as SwarmMetadata)
+  const runs = createMemo(() => {
+    if (metadata().childRuns?.length) return metadata().childRuns!.toSorted((a, b) => a.index - b.index)
+    const results = new Map((metadata().results ?? []).map((result) => [result.index, result]))
+    return (metadata().childSessions ?? [])
+      .map((child, index) => {
+        if (typeof child === "string") return { index: index + 1, sessionId: child } satisfies SwarmChildRun
+        return { ...child, ...results.get(child.index) }
+      })
+      .toSorted((a, b) => a.index - b.index)
+  })
+
+  createEffect(() => {
+    runs().forEach((run) => {
+      if (!run.sessionId || synced.has(run.sessionId) || sync.data.message[run.sessionId]?.length) return
+      synced.add(run.sessionId)
+      void sync.session.sync(run.sessionId)
+    })
+  })
+
+  const status = (run: SwarmChildRun) => {
+    if (run.status === "success") return "completed"
+    if (run.status === "failure") return "error"
+    if (run.status) return run.status
+    if (props.part.state.status === "running") return run.sessionId ? "running" : "queued"
+    if (props.part.state.status === "error") return "error"
+    return "completed"
+  }
+
+  const progress = (run: SwarmChildRun) => {
+    if (!run.sessionId) return undefined
+    const tools = (sync.data.message[run.sessionId] ?? []).flatMap((message) =>
+      (sync.data.part[message.id] ?? []).filter((part): part is ToolPart => part.type === "tool"),
+    )
+    const current = tools.findLast(
+      (part) => (part.state.status === "running" || part.state.status === "completed") && part.state.title,
+    )
+    if (current && (current.state.status === "running" || current.state.status === "completed"))
+      return `${Locale.titlecase(current.tool)} ${current.state.title}`
+    if (tools.length) return `${tools.length} toolcalls`
+  }
+
+  const color = (value: ReturnType<typeof status>) => {
+    if (value === "error") return theme.error
+    if (value === "cancelled") return theme.textMuted
+    if (value === "completed") return theme.success
+    if (value === "running") return theme.accent
+    return theme.textMuted
+  }
+
+  return (
+    <BlockTool
+      title={`# ${metadata().title ?? `Chimera swarm (${metadata().itemCount ?? runs().length})`}`}
+      spinner={props.part.state.status === "running"}
+      part={props.part}
+    >
+      <box gap={1}>
+        <For each={runs()}>
+          {(run) => (
+            <box paddingLeft={3}>
+              <box flexDirection="row" gap={1}>
+                <text
+                  fg={theme.text}
+                  onMouseUp={() => run.sessionId && navigate({ type: "session", sessionID: run.sessionId })}
+                >
+                  <span style={{ fg: color(status(run)) }}>[{status(run)}]</span> {run.index}. {run.title ?? "Subagent"}
+                  <Show when={progress(run)}>
+                    <span style={{ fg: theme.textMuted }}> · {progress(run)}</span>
+                  </Show>
+                </text>
+                <Show when={status(run) === "running" && run.sessionId}>
+                  <text
+                    fg={theme.error}
+                    onMouseUp={(event) => {
+                      event.stopPropagation()
+                      if (!run.sessionId) return
+                      void sdk.client.session.abort({ sessionID: run.sessionId }).catch(() => {})
+                    }}
+                  >
+                    [stop]
+                  </text>
+                </Show>
+              </box>
+              <Show when={run.error}>
+                <text paddingLeft={3} fg={theme.error}>
+                  {run.error}
+                </text>
+              </Show>
+            </box>
+          )}
+        </For>
+        <Show when={runs().length === 0}>
+          <text paddingLeft={3} fg={theme.textMuted}>
+            Waiting for subagents...
+          </text>
+        </Show>
+      </box>
+    </BlockTool>
   )
 }
 
