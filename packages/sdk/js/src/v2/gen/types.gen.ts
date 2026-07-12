@@ -24,9 +24,6 @@ export type Event =
   | EventWorkBriefUpdated
   | EventSessionStatus
   | EventSessionIdle
-  | EventSessionCompacted
-  | EventChimeraToolMutationRecorded
-  | EventChimeraGraphReady1
   | EventTuiPromptAppend
   | EventTuiCommandExecute
   | EventTuiToastShow1
@@ -34,8 +31,11 @@ export type Event =
   | EventMcpToolsChanged
   | EventMcpBrowserOpenFailed
   | EventCommandExecuted
-  | EventSessionPromptStats1
   | EventProjectUpdated
+  | EventSessionCompacted
+  | EventChimeraToolMutationRecorded
+  | EventChimeraGraphReady1
+  | EventSessionPromptStats1
   | EventVcsBranchUpdated
   | EventWorkspaceReady
   | EventWorkspaceFailed
@@ -81,6 +81,8 @@ export type Event =
   | EventSessionNextCompactionEnded
   | EventConfigModelSelectionUpdated
   | EventServerConnected
+  | EventServerHeartbeat
+  | EventServerEventGap
   | EventGlobalDisposed
 
 export type OAuth = {
@@ -848,9 +850,6 @@ export type GlobalEvent = {
     | EventWorkBriefUpdated
     | EventSessionStatus
     | EventSessionIdle
-    | EventSessionCompacted
-    | EventChimeraToolMutationRecorded
-    | EventChimeraGraphReady
     | EventTuiPromptAppend
     | EventTuiCommandExecute
     | EventTuiToastShow
@@ -858,8 +857,11 @@ export type GlobalEvent = {
     | EventMcpToolsChanged
     | EventMcpBrowserOpenFailed
     | EventCommandExecuted
-    | EventSessionPromptStats
     | EventProjectUpdated
+    | EventSessionCompacted
+    | EventChimeraToolMutationRecorded
+    | EventChimeraGraphReady
+    | EventSessionPromptStats
     | EventVcsBranchUpdated
     | EventWorkspaceReady
     | EventWorkspaceFailed
@@ -905,6 +907,8 @@ export type GlobalEvent = {
     | EventSessionNextCompactionEnded
     | EventConfigModelSelectionUpdated
     | EventServerConnected
+    | EventServerHeartbeat
+    | EventServerEventGap
     | EventGlobalDisposed
     | SyncEventMessageUpdated
     | SyncEventMessageRemoved
@@ -1045,6 +1049,8 @@ export type ProviderConfig = {
   env?: Array<string>
   id?: string
   npm?: string
+  wire_api?: "chat" | "responses"
+  backend_semantics?: "openai" | "codex"
   userAgent?: string
   whitelist?: Array<string>
   blacklist?: Array<string>
@@ -1065,6 +1071,7 @@ export type ProviderConfig = {
       id?: string
       name?: string
       family?: string
+      backend_semantics?: "openai" | "codex"
       release_date?: string
       attachment?: boolean
       reasoning?: boolean
@@ -1328,6 +1335,7 @@ export type Model = {
   }
   name: string
   family?: string
+  backend_semantics?: "openai" | "codex"
   capabilities: {
     temperature: boolean
     reasoning: boolean
@@ -1393,6 +1401,8 @@ export type Provider = {
   id: string
   name: string
   source: "env" | "config" | "custom" | "api"
+  wire_api?: "chat" | "responses"
+  backend_semantics?: "openai" | "codex"
   env: Array<string>
   key?: string
   options: {
@@ -2591,6 +2601,40 @@ export type EventSessionIdle = {
   }
 }
 
+export type EventMcpToolsChanged = {
+  id: string
+  type: "mcp.tools.changed"
+  properties: {
+    server: string
+  }
+}
+
+export type EventMcpBrowserOpenFailed = {
+  id: string
+  type: "mcp.browser.open.failed"
+  properties: {
+    mcpName: string
+    url: string
+  }
+}
+
+export type EventCommandExecuted = {
+  id: string
+  type: "command.executed"
+  properties: {
+    name: string
+    sessionID: string
+    arguments: string
+    messageID: string
+  }
+}
+
+export type EventProjectUpdated = {
+  id: string
+  type: "project.updated"
+  properties: Project
+}
+
 export type EventSessionCompacted = {
   id: string
   type: "session.compacted"
@@ -2632,34 +2676,6 @@ export type EventChimeraGraphReady = {
   }
 }
 
-export type EventMcpToolsChanged = {
-  id: string
-  type: "mcp.tools.changed"
-  properties: {
-    server: string
-  }
-}
-
-export type EventMcpBrowserOpenFailed = {
-  id: string
-  type: "mcp.browser.open.failed"
-  properties: {
-    mcpName: string
-    url: string
-  }
-}
-
-export type EventCommandExecuted = {
-  id: string
-  type: "command.executed"
-  properties: {
-    name: string
-    sessionID: string
-    arguments: string
-    messageID: string
-  }
-}
-
 export type EventSessionPromptStats = {
   id: string
   type: "session.prompt.stats"
@@ -2696,12 +2712,6 @@ export type EventSessionPromptStats = {
     }>
     warnings: Array<string>
   }
-}
-
-export type EventProjectUpdated = {
-  id: string
-  type: "project.updated"
-  properties: Project
 }
 
 export type EventVcsBranchUpdated = {
@@ -3235,6 +3245,22 @@ export type EventServerConnected = {
   }
 }
 
+export type EventServerHeartbeat = {
+  id: string
+  type: "server.heartbeat"
+  properties: {
+    [key: string]: unknown
+  }
+}
+
+export type EventServerEventGap = {
+  id: string
+  type: "server.event-gap"
+  properties: {
+    dropped: number
+  }
+}
+
 export type EventGlobalDisposed = {
   id: string
   type: "global.disposed"
@@ -3467,6 +3493,17 @@ export type SessionMessage =
   | SessionMessageAssistant
   | SessionMessageCompaction
 
+export type EventTuiToastShow1 = {
+  id: string
+  type: "tui.toast.show"
+  properties: {
+    title?: string
+    message: string
+    variant: "info" | "success" | "warning" | "error"
+    duration?: number
+  }
+}
+
 export type EventChimeraGraphReady1 = {
   id: string
   type: "chimera.graph.ready"
@@ -3479,17 +3516,6 @@ export type EventChimeraGraphReady1 = {
     edgeCount: number | "NaN" | "Infinity" | "-Infinity"
     source: string
     sessionID?: string
-  }
-}
-
-export type EventTuiToastShow1 = {
-  id: string
-  type: "tui.toast.show"
-  properties: {
-    title?: string
-    message: string
-    variant: "info" | "success" | "warning" | "error"
-    duration?: number
   }
 }
 
