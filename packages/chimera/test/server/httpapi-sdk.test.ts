@@ -291,6 +291,7 @@ describe("HttpApi SDK", () => {
       expect(health.response.status).toBe(200)
       expect(health.data).toMatchObject({ healthy: true })
       expect(yield* firstEvent(() => sdk.global.event({ signal: AbortSignal.timeout(1_000) }))).toMatchObject({
+        directory: "global",
         payload: { type: "server.connected" },
       })
       expect(log.response.status).toBe(200)
@@ -341,7 +342,10 @@ describe("HttpApi SDK", () => {
 
   parity("matches generated SDK global event stream across backends", (backend) =>
     firstEvent(() => client(backend).global.event({ signal: AbortSignal.timeout(1_000) })).pipe(
-      Effect.map((event) => ({ type: record(record(event).payload).type })),
+      Effect.map((event) => ({
+        directory: record(event).directory,
+        type: record(record(event).payload).type,
+      })),
     ),
   )
 

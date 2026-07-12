@@ -1,12 +1,12 @@
 import { Config } from "@/config/config"
-import { GlobalBus, type GlobalEvent as GlobalBusEvent } from "@/bus/global"
+import { GlobalBus } from "@/bus/global"
 import { EffectBridge } from "@/effect/bridge"
-import { Bus } from "@/bus"
 import { Installation } from "@/installation"
+import { createGlobalEventStream } from "@/server/global-event-stream"
 import { disposeAllInstancesAndEmitGlobalDisposed } from "@/server/global-lifecycle"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import * as Log from "@opencode-ai/core/util/log"
-import { Effect, Queue, Schema } from "effect"
+import { Effect, Schema } from "effect"
 import * as Stream from "effect/Stream"
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
@@ -35,25 +35,21 @@ function parseBody(body: string) {
 
 function eventResponse() {
   log.info("global event connected")
-  const events = Stream.callback<GlobalBusEvent>((queue) => {
-    const handler = (event: GlobalBusEvent) => Queue.offerUnsafe(queue, event)
-    return Effect.acquireRelease(
-      Effect.sync(() => GlobalBus.on("event", handler)),
-      () => Effect.sync(() => GlobalBus.off("event", handler)),
-    )
-  })
-  const heartbeat = Stream.tick("10 seconds").pipe(
-    Stream.drop(1),
-    Stream.map(() => ({ payload: { id: Bus.createID(), type: "server.heartbeat", properties: {} } })),
-  )
+  const subscription = createGlobalEventStream()
 
   return HttpServerResponse.stream(
-    Stream.make({ payload: { id: Bus.createID(), type: "server.connected", properties: {} } }).pipe(
-      Stream.concat(events.pipe(Stream.merge(heartbeat, { haltStrategy: "left" }))),
+    Stream.fromAsyncIterable(subscription.events, (error) =>
+      error instanceof Error ? error : new Error(String(error)),
+    ).pipe(
       Stream.map(eventData),
       Stream.pipeThroughChannel(Sse.encode()),
       Stream.encodeText,
-      Stream.ensuring(Effect.sync(() => log.info("global event disconnected"))),
+      Stream.ensuring(
+        Effect.sync(() => {
+          subscription.close()
+          log.info("global event disconnected")
+        }),
+      ),
     ),
     {
       contentType: "text/event-stream",

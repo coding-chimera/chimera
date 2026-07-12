@@ -406,6 +406,7 @@ describe("HttpApi server", () => {
 
     expect(response.status).toBe(200)
     expect(response.headers.get("content-type")).toContain("text/event-stream")
+    expect(new TextDecoder().decode(chunk.value)).toContain('"directory":"global"')
     expect(new TextDecoder().decode(chunk.value)).toContain("server.connected")
   })
 
