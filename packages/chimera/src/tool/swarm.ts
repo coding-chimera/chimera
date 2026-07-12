@@ -1,14 +1,13 @@
 import * as Tool from "./tool"
 import DESCRIPTION from "./swarm.txt"
-import { TaskTool, type TaskPromptOps } from "./task"
+import { SubagentDispatch, type SubagentPromptOps } from "../agent/subagent-dispatch"
 import { Agent } from "../agent/agent"
 import { InstanceState } from "@/effect/instance-state"
 import { getCodeGraphDir } from "@/graph/directory"
 import { readOracleResults, readPersistentObligationStore, type OracleRecord, type ObligationStoreLike } from "@/chimera/store"
-import { EffectBridge } from "@/effect/bridge"
 import { SessionID } from "@/session/schema"
 import path from "path"
-import { Cause, Effect, Exit, Schema } from "effect"
+import { Cause, Effect, Schema } from "effect"
 import * as Truncate from "./truncate"
 
 const id = "chimera_swarm"
@@ -105,6 +104,17 @@ type ChildSession = {
   title: string
   sessionId: string
   model?: unknown
+}
+type SwarmChildRun = {
+  index: number
+  title: string
+  subagentType: string
+  status: "queued" | "running" | "completed" | "error" | "cancelled"
+  sessionId?: string
+  model?: unknown
+  outputPath?: string
+  summary?: SwarmSummary
+  error?: string
 }
 
 const RETURN_CONTRACT = [
@@ -378,14 +388,17 @@ export const ChimeraSwarmTool = Tool.define(
   Effect.gen(function* () {
     const agents = yield* Agent.Service
     const truncate = yield* Truncate.Service
-    const taskInfo = yield* TaskTool
-    const task = yield* taskInfo.init()
+    const dispatch = yield* SubagentDispatch
+
     const run = Effect.fn("ChimeraSwarmTool.execute")(function* (params: Params, ctx: Tool.Context) {
       if (params.items && params.from) return yield* Effect.fail(new Error("Provide either explicit items or from, not both."))
       const sourceLimit = bounded(params.limit, 20, 100)
       const sourceItems = params.from ? yield* materializeSource(params.from, sourceLimit) : undefined
       const items = params.items ?? sourceItems
-      if (!items?.length) return yield* Effect.fail(new Error(params.from ? `No swarm items found from source: ${params.from}` : "Provide at least one swarm item."))
+      if (!items?.length)
+        return yield* Effect.fail(
+          new Error(params.from ? `No swarm items found from source: ${params.from}` : "Provide at least one swarm item."),
+        )
       const scopeWarnings = params.items ? collectScopeWarnings(items) : []
 
       const preset = params.preset ?? inferPreset(params.from)
@@ -409,10 +422,28 @@ export const ChimeraSwarmTool = Tool.define(
         })
       }
 
+      const promptOps = ctx.extra?.promptOps as SubagentPromptOps | undefined
+      if (!promptOps) return yield* Effect.fail(new Error("ChimeraSwarmTool requires promptOps in ctx.extra"))
+
       const concurrency = bounded(params.concurrency, DEFAULT_CONCURRENCY, MAX_CONCURRENCY)
       const title = params.description ?? `chimera swarm (${items.length})`
-      const promptOps = ctx.extra?.promptOps as TaskPromptOps | undefined
-      const childSessions = new Map<number, ChildSession>()
+      const workItems = items.map((item, index) => ({
+        item,
+        index: index + 1,
+        title: `${params.description ?? preset ?? "swarm item"} ${index + 1}/${items.length}`,
+        prompt: renderTemplate(template, item, index + 1, items.length, scopeWarnings),
+      }))
+      const childRuns = new Map<number, SwarmChildRun>(
+        workItems.map((item) => [
+          item.index,
+          {
+            index: item.index,
+            title: item.title,
+            subagentType: subagent,
+            status: "queued" as const,
+          },
+        ]),
+      )
       const baseMetadata = {
         preset,
         source: params.from,
@@ -426,114 +457,118 @@ export const ChimeraSwarmTool = Tool.define(
           message: warning.message,
         })),
       }
-      const childSessionList = () => Array.from(childSessions.values()).sort((a, b) => a.index - b.index)
+      const childRunList = () => Array.from(childRuns.values()).sort((a, b) => a.index - b.index)
+      const childSessionList = (): ChildSession[] =>
+        childRunList().flatMap((run) =>
+          run.sessionId
+            ? [
+                {
+                  index: run.index,
+                  title: run.title,
+                  sessionId: run.sessionId,
+                  model: run.model,
+                },
+              ]
+            : [],
+        )
       const publishMetadata = () =>
         ctx.metadata({
           title,
           metadata: {
             ...baseMetadata,
+            childRuns: childRunList(),
             childSessions: childSessionList(),
           },
         })
+      const updateChildRun = Effect.fn("ChimeraSwarmTool.updateChildRun")(function* (
+        index: number,
+        update: Partial<SwarmChildRun>,
+      ) {
+        const current = childRuns.get(index)
+        if (!current) return
+        childRuns.set(index, { ...current, ...update })
+        yield* publishMetadata()
+      })
       const cancelChildren = Effect.fn("ChimeraSwarmTool.cancelChildren")(function* () {
-        if (!promptOps || childSessions.size === 0) return
+        let metadataChanged = false
+        childRuns.forEach((run, index) => {
+          if (run.status !== "queued" && run.status !== "running") return
+          childRuns.set(index, { ...run, status: "cancelled" })
+          metadataChanged = true
+        })
+        if (metadataChanged) yield* publishMetadata()
         yield* Effect.forEach(
           childSessionList(),
           (child) => promptOps.cancel(SessionID.make(child.sessionId)).pipe(Effect.ignore),
           { concurrency: "unbounded", discard: true },
         )
       })
-      const bridge = yield* EffectBridge.make()
-      function onAbort() {
-        bridge.fork(cancelChildren())
-      }
 
       yield* publishMetadata()
 
-      const results: SwarmResult[] = yield* Effect.acquireUseRelease(
-        Effect.sync(() => {
-          ctx.abort.addEventListener("abort", onAbort)
-        }),
-        () =>
-          Effect.forEach(
-            items.map((item, index) => ({
-              item,
-              index: index + 1,
-              title: `${params.description ?? preset ?? "swarm item"} ${index + 1}/${items.length}`,
-              prompt: renderTemplate(template, item, index + 1, items.length, scopeWarnings),
-            })),
-            (item) =>
+      const results: SwarmResult[] = yield* Effect.forEach(
+        workItems,
+        (item) =>
+          Effect.gen(function* () {
+            if (ctx.abort.aborted) return yield* Effect.interrupt
+            const result = yield* dispatch.run({
+              parentSessionID: ctx.sessionID,
+              parentMessageID: ctx.messageID,
+              description: item.title,
+              prompt: item.prompt,
+              subagentType: subagent,
+              promptOps,
+              abort: ctx.abort,
+              nestedDelegation: "deny",
+              onStarted: ({ sessionId, model }) =>
+                updateChildRun(item.index, {
+                  status: "running",
+                  sessionId,
+                  model,
+                }),
+            })
+            const outputPath = yield* writeChildOutput(result, truncate)
+            const summary = extractSummary(result.output)
+            yield* updateChildRun(item.index, {
+              status: "completed",
+              sessionId: result.sessionId,
+              model: result.model,
+              outputPath,
+              summary,
+              error: undefined,
+            })
+            return {
+              index: item.index,
+              status: "success" as const,
+              title: item.title,
+              sessionId: result.sessionId,
+              outputPath,
+              summary,
+            } satisfies SwarmResult
+          }).pipe(
+            Effect.catchCause((cause) =>
               Effect.gen(function* () {
-                const result = yield* task.execute(
-                  {
-                    description: item.title,
-                    prompt: item.prompt,
-                    subagent_type: subagent,
-                    command: id,
-                  },
-                  {
-                    ...ctx,
-                    metadata: (val: { title?: string; metadata?: Record<string, unknown> }) =>
-                      Effect.gen(function* () {
-                        const sessionId = val.metadata?.sessionId
-                        if (typeof sessionId === "string") {
-                          childSessions.set(item.index, {
-                            index: item.index,
-                            title: item.title,
-                            sessionId,
-                            model: val.metadata?.model,
-                          })
-                          yield* publishMetadata()
-                        }
-                      }),
-                    extra: {
-                      ...ctx.extra,
-                      bypassAgentCheck: true,
-                      swarmWorker: true,
-                    },
-                  },
-                )
-                const outputPath = yield* writeChildOutput(result, truncate)
-                const summary = extractSummary(result.output)
+                const error = Cause.pretty(cause)
+                const outputPath = error.length > 0 ? yield* truncate.write(error) : undefined
+                const current = childRuns.get(item.index)
+                yield* updateChildRun(item.index, {
+                  status: Cause.hasInterrupts(cause) ? "cancelled" : "error",
+                  outputPath,
+                  error,
+                })
                 return {
                   index: item.index,
-                  status: "success" as const,
+                  status: "failure" as const,
                   title: item.title,
-                  sessionId: typeof result.metadata.sessionId === "string" ? result.metadata.sessionId : undefined,
+                  sessionId: current?.sessionId,
                   outputPath,
-                  summary,
+                  error,
                 } satisfies SwarmResult
-              }).pipe(
-                Effect.catchCause((cause) =>
-                  Effect.gen(function* () {
-                    const error = Cause.pretty(cause)
-                    const outputPath = error.length > 0 ? yield* truncate.write(error) : undefined
-                    return {
-                      index: item.index,
-                      status: "failure" as const,
-                      title: item.title,
-                      sessionId: childSessions.get(item.index)?.sessionId,
-                      outputPath,
-                      error,
-                    } satisfies SwarmResult
-                  }),
-                ),
-              ),
-            { concurrency },
-          ),
-        (_, exit) =>
-          Effect.gen(function* () {
-            if (Exit.hasInterrupts(exit)) yield* cancelChildren()
-          }).pipe(
-            Effect.ensuring(
-              Effect.sync(() => {
-                ctx.abort.removeEventListener("abort", onAbort)
               }),
             ),
           ),
-      )
-
-      yield* publishMetadata()
+        { concurrency },
+      ).pipe(Effect.onInterrupt(() => cancelChildren()))
 
       const successes = results.filter((result) => result.status === "success").length
       const failures = results.length - successes
@@ -543,6 +578,7 @@ export const ChimeraSwarmTool = Tool.define(
         subagent_type: subagent,
         items: items.length,
         concurrency,
+        childRuns: childRunList(),
         childSessions: childSessionList(),
         success: successes,
         failure: failures,
@@ -572,6 +608,7 @@ export const ChimeraSwarmTool = Tool.define(
         title,
         metadata: {
           ...baseMetadata,
+          childRuns: childRunList(),
           childSessions: childSessionList(),
           successCount: successes,
           failureCount: failures,

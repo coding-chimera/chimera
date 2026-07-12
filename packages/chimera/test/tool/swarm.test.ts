@@ -223,12 +223,61 @@ describe("tool.chimera_swarm", () => {
       )
 
       expect(metadata.length).toBeGreaterThan(1)
+      const first = metadata[0]?.metadata
+      const firstRuns = first?.childRuns as Array<{ status: string }> | undefined
+      expect(firstRuns?.map((item) => item.status)).toEqual(["queued", "queued"])
+      expect(first?.childSessions).toHaveLength(0)
+      expect(
+        metadata.some((item) =>
+          (item.metadata?.childRuns as Array<{ status: string }> | undefined)?.some((run) => run.status === "running"),
+        ),
+      ).toBe(true)
       expect(metadata.every((item) => item.title === "review shard")).toBe(true)
       const last = metadata.at(-1)?.metadata
       expect(last?.itemCount).toBe(2)
       expect(last?.concurrency).toBe(2)
       expect(last?.sessionId).toBeUndefined()
       expect(last?.childSessions).toHaveLength(2)
+      const lastRuns = last?.childRuns as Array<{ status: string; sessionId?: string }> | undefined
+      expect(lastRuns?.map((item) => item.status)).toEqual(["completed", "completed"])
+      expect(lastRuns?.every((item) => typeof item.sessionId === "string")).toBe(true)
+    }),
+  )
+
+  it.instance("isolates failed children and publishes final child run states", () =>
+    Effect.gen(function* () {
+      const parent = yield* seed()
+      const tool = yield* ChimeraSwarmTool
+      const def = yield* tool.init()
+      const promptOps: TaskPromptOps = {
+        cancel: () => Effect.void,
+        resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+        prompt: (input) =>
+          Effect.gen(function* () {
+            const text = input.parts.find((part) => part.type === "text")?.text ?? ""
+            if (text.includes("beta")) return yield* Effect.die(new Error("beta failed"))
+            return reply(input, "done")
+          }),
+      }
+
+      const result = yield* def.execute(
+        {
+          prompt_template: "Review {{item}}",
+          items: ["alpha", "beta"],
+          subagent_type: "general",
+          concurrency: 2,
+        },
+        ctx(parent, promptOps),
+      )
+
+      const runs = result.metadata.childRuns as Array<{ status: string; sessionId?: string; error?: string }>
+      expect(runs.map((run) => run.status)).toEqual(["completed", "error"])
+      expect(runs.every((run) => typeof run.sessionId === "string")).toBe(true)
+      expect(runs[1].error).toContain("beta failed")
+      expect(result.metadata.childSessions).toHaveLength(2)
+      expect(result.metadata.successCount).toBe(1)
+      expect(result.metadata.failureCount).toBe(1)
+      expect(JSON.parse(result.output).results.map((item: { status: string }) => item.status)).toEqual(["success", "failure"])
     }),
   )
 
@@ -340,6 +389,7 @@ describe("tool.chimera_swarm", () => {
       const def = yield* tool.init()
       const started = yield* Deferred.make<void>()
       const cancelled: string[] = []
+      const metadata: Array<Record<string, unknown>> = []
       let active = 0
       const promptOps: TaskPromptOps = {
         cancel: (sessionID) =>
@@ -363,7 +413,13 @@ describe("tool.chimera_swarm", () => {
             subagent_type: "general",
             concurrency: 16,
           },
-          ctx(parent, promptOps),
+          {
+            ...ctx(parent, promptOps),
+            metadata: (input) =>
+              Effect.sync(() => {
+                metadata.push(input.metadata ?? {})
+              }),
+          },
         )
         .pipe(Effect.forkChild)
 
@@ -375,6 +431,8 @@ describe("tool.chimera_swarm", () => {
       const childIDs = (yield* sessions.children(parent.chat.id)).map((item) => item.id).sort()
       expect(childIDs).toHaveLength(16)
       expect(cancelled.sort()).toEqual(childIDs)
+      const runs = metadata.at(-1)?.childRuns as Array<{ status: string }> | undefined
+      expect(runs?.map((run) => run.status)).toEqual(Array.from({ length: 16 }, () => "cancelled"))
     }),
   )
 
