@@ -208,6 +208,35 @@ const providerExecutedDeps = Layer.mergeAll(
 const providerExecutedEnv = SessionProcessor.layer.pipe(Layer.provide(summary), Layer.provideMerge(providerExecutedDeps))
 const providerExecutedIt = testEffect(providerExecutedEnv)
 
+const failedToolInput = { filePath: "/tmp/example.ts", edits: [{ op: "replace", pos: "1#AA", lines: "next" }] }
+const failedToolLLM = Layer.succeed(
+  LLM.Service,
+  LLM.Service.of({
+    stream: () =>
+      Stream.fromIterable([
+        { type: "start" },
+        { type: "tool-input-start", id: "call_failed", toolName: "edit" },
+        { type: "tool-input-end", id: "call_failed" },
+        { type: "tool-call", toolCallId: "call_failed", toolName: "edit", input: failedToolInput },
+        { type: "tool-error", toolCallId: "call_failed", toolName: "edit", error: new Error("edit failed") },
+        { type: "finish" },
+      ] as LLM.Event[]),
+  }),
+)
+const failedToolDeps = Layer.mergeAll(
+  Session.defaultLayer,
+  Snapshot.defaultLayer,
+  AgentSvc.defaultLayer,
+  Permission.defaultLayer,
+  Plugin.defaultLayer,
+  Config.defaultLayer,
+  failedToolLLM,
+  Provider.defaultLayer,
+  status,
+).pipe(Layer.provideMerge(infra))
+const failedToolEnv = SessionProcessor.layer.pipe(Layer.provide(summary), Layer.provideMerge(failedToolDeps))
+const failedToolIt = testEffect(failedToolEnv)
+
 const boot = Effect.fn("test.boot")(function* () {
   const processors = yield* SessionProcessor.Service
   const session = yield* Session.Service
@@ -329,6 +358,52 @@ providerExecutedIt.live("session.processor normalizes provider-executed tool res
         if (toolPart?.state.status !== "completed") throw new Error("provider tool result was not completed")
         expect(toolPart.state.output).toBe('{"action":{"type":"search"}}')
         expect(toolPart.state.metadata.providerOutput).toEqual({ action: { type: "search" } })
+      }),
+    { git: true, config: providerCfg("http://localhost:1/v1") },
+  ),
+)
+
+failedToolIt.live("session.processor retains tool input when execution fails", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "edit")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+        })
+
+        const value = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies MessageV2.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "edit" }],
+          tools: {},
+        })
+        const toolPart = MessageV2.parts(msg.id).find(
+          (part): part is MessageV2.ToolPart => part.type === "tool" && part.callID === "call_failed",
+        )
+
+        expect(value).toBe("continue")
+        expect(toolPart?.state.status).toBe("error")
+        if (toolPart?.state.status !== "error") throw new Error("failed tool part was not persisted")
+        expect(toolPart.state.input).toEqual(failedToolInput)
+        expect(toolPart.state.error).toBe("edit failed")
       }),
     { git: true, config: providerCfg("http://localhost:1/v1") },
   ),

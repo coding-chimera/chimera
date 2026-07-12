@@ -1,7 +1,7 @@
 import type { JSONSchema7 } from "@ai-sdk/provider"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import * as Log from "@opencode-ai/core/util/log"
-import { type ModelMessage, type Tool } from "ai"
+import { APICallError, type ModelMessage, type Tool } from "ai"
 import z from "zod"
 import { type Auth } from "@/auth"
 import { codexAuthHeaders, codexEndpointUrl } from "@/plugin/codex"
@@ -85,6 +85,8 @@ type StreamState = {
   currentReasoningOutputIndex: number | null
   hasFunctionCall: boolean
   completed: boolean
+  terminal: "completed" | "incomplete" | "failed" | "error" | undefined
+  replaySafe: boolean
   usage: ResponseUsage | undefined
   serviceTier: string | undefined
   itemsAdded: ResponsesInputItem[]
@@ -93,16 +95,80 @@ type StreamState = {
   reasoning: Record<number, { id: string; encryptedContent?: string | null; summaryIndexes: number[] } | undefined>
 }
 
+type ChunkOutput = LLMEvent | (() => Promise<LLMEvent>)
+
 const log = Log.create({ service: "codex.responses" })
 const webSocketSessions = new Map<string, WebSocketSessionState>()
 const WEBSOCKET_CONNECT_TIMEOUT_MS = 3_000
 const WEBSOCKET_STREAM_RETRIES = 5
+const CODEX_RESPONSE_RETRY_LIMIT = 2
 const TURN_STATE_HEADER = "x-codex-turn-state"
+const RETRYABLE_HTTP_STATUS = new Set([408, 409, 425, 429])
+const RETRYABLE_RESPONSE_ERRORS = new Set([
+  "internal_error",
+  "rate_limit_exceeded",
+  "request_timeout",
+  "server_error",
+  "server_is_overloaded",
+  "temporarily_unavailable",
+  "timeout",
+  "too_many_requests",
+])
+const NON_RETRYABLE_INCOMPLETE_REASONS = new Set(["content_filter", "max_output_tokens", "max_tool_calls"])
+const RETRYABLE_TRANSPORT_ERROR_CODES = new Set([
+  "ECONNABORTED",
+  "ECONNRESET",
+  "EAI_AGAIN",
+  "EPIPE",
+  "ETIMEDOUT",
+  "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_SOCKET",
+  "UNABLE_TO_GET_ISSUER_CERT",
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+])
+const NON_RETRYABLE_TLS_ERROR_CODES = new Set([
+  "CERT_HAS_EXPIRED",
+  "CERT_NOT_YET_VALID",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+  "SELF_SIGNED_CERT_IN_CHAIN",
+])
+
+export function classifyTransportError(error: unknown) {
+  const chain: Record<string, unknown>[] = []
+  let current = error
+  for (let depth = 0; depth < 6 && isRecord(current); depth++) {
+    chain.push(current)
+    const next = current.cause
+    if (next === current) break
+    current = next
+  }
+  const messages = chain.flatMap((item) => (typeof item.message === "string" ? [item.message] : []))
+  const message = messages.find((item) => !/^fetch failed$/i.test(item)) ?? messages[0] ?? String(error)
+  const code = chain.map((item) => stringOption(item.code)).find((item) => item)
+  const normalized = code?.toUpperCase()
+  if (normalized && NON_RETRYABLE_TLS_ERROR_CODES.has(normalized)) return { message, code, retryable: false }
+  if (normalized && RETRYABLE_TRANSPORT_ERROR_CODES.has(normalized)) return { message, code, retryable: true }
+  if (/unknown certificate verification error|certificate verify failed/i.test(message)) {
+    return { message, code: code ?? "TLS_CERT_VERIFY_UNKNOWN", retryable: true }
+  }
+  return { message, code: code ?? "transport_error", retryable: false }
+}
 
 class WebSocketResponseError extends Error {
   constructor(message: string, readonly retryable: boolean, readonly fallback: boolean) {
     super(message)
     this.name = "WebSocketResponseError"
+  }
+}
+
+class UnexpectedSSEEOFError extends Error {
+  constructor(cause: unknown) {
+    super("Codex Responses stream ended in a partial SSE event", { cause })
+    this.name = "UnexpectedSSEEOFError"
   }
 }
 
@@ -153,17 +219,28 @@ export function buildRequestBody(input: CodexResponsesInput) {
 
 export async function* stream(input: CodexResponsesInput): AsyncIterable<LLMEvent> {
   const body = buildRequestBody(input)
-  yield event({ type: "start" })
-  yield event({ type: "start-step", request: { body } })
   const headers = await buildHeaders(input)
   const session = webSocketSession(input)
+  let started = false
+  const forward = async function* (source: AsyncIterable<LLMEvent>) {
+    for await (const output of source) {
+      const retryable = output.type === "error" && APICallError.isInstance(output.error) && output.error.isRetryable
+      if (!started && !retryable) {
+        started = true
+        yield event({ type: "start" })
+        yield event({ type: "start-step", request: { body } })
+      }
+      yield output
+    }
+  }
+
   if (useWebSocket(input, session)) {
-    for await (const output of streamWebSocketWithRetry(input, body, headers, session)) {
+    for await (const output of forward(streamWebSocketWithRetry(input, body, headers, session))) {
       yield output
     }
     if (!session.fallbackHttp) return
   }
-  for await (const output of streamHttp(input, body, headers, session)) {
+  for await (const output of forward(streamHttp(input, body, headers, session))) {
     yield output
   }
 }
@@ -180,28 +257,53 @@ async function buildHeaders(input: CodexResponsesInput) {
 }
 
 async function* streamHttp(input: CodexResponsesInput, body: RequestBody, headers: Headers, session: WebSocketSessionState) {
-  const response = await fetch(codexEndpointUrl("responses", input.endpoint), {
-    method: "POST",
-    headers: headersWithTurnState(headers, session),
-    body: JSON.stringify(body),
-    signal: input.abort,
-  })
+  const url = codexEndpointUrl("responses", input.endpoint)
+  let response: Response
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: headersWithTurnState(headers, session),
+      body: JSON.stringify(body),
+      signal: input.abort,
+    })
+  } catch (error) {
+    if (input.abort.aborted) throw abortReason(input.abort)
+    yield event({ type: "error", error: transportError(input, error, "connect", true) })
+    return
+  }
   if (!response.ok) {
-    yield event({ type: "error", error: new Error(await response.text().catch(() => response.statusText)) })
+    const responseBody = await response.text().catch(() => response.statusText)
+    yield event({ type: "error", error: httpError(input, response, responseBody) })
     return
   }
   if (!response.body) {
-    yield event({ type: "error", error: new Error("Codex Responses stream missing response body") })
+    yield event({ type: "error", error: missingBodyError(input) })
     return
   }
   const state = createStreamState(session)
   captureTurnState(state, response.headers.get(TURN_STATE_HEADER) ?? undefined)
-  for await (const value of parseSSE(response.body)) {
-    for (const output of await handleChunk(value, input, state)) {
-      yield output
+  try {
+    for await (const value of parseSSE(response.body)) {
+      for (const output of handleChunk(value, input, state)) {
+        const resolved = typeof output === "function" ? await output() : output
+        if (resolved.type !== "error") state.replaySafe = false
+        yield resolved
+      }
     }
+  } catch (error) {
+    if (input.abort.aborted) throw abortReason(input.abort)
+    const failure =
+      error instanceof UnexpectedSSEEOFError
+        ? unexpectedEofError(input, state.replaySafe, error)
+        : transportError(input, error, "stream", state.replaySafe)
+    yield event({ type: "error", error: failure })
+    return
   }
   updateSessionTurnState(session, state)
+  if (!state.completed) {
+    if (!state.terminal) yield event({ type: "error", error: unexpectedEofError(input, state.replaySafe) })
+    return
+  }
   for (const output of finishEvents(state)) {
     yield output
   }
@@ -212,11 +314,7 @@ async function* streamWebSocketWithRetry(input: CodexResponsesInput, body: Reque
   for (let attempt = 0; ; attempt++) {
     try {
       await prewarmWebSocket(input, body, headers, session)
-      const outputs: LLMEvent[] = []
       for await (const output of streamWebSocket(input, body, headers, session)) {
-        outputs.push(output)
-      }
-      for (const output of outputs) {
         yield output
       }
       return
@@ -258,8 +356,10 @@ async function* streamWebSocket(input: CodexResponsesInput, body: RequestBody, h
   }
   const state = createStreamState(session)
   for (const value of values) {
-    for (const output of await handleChunk(value, input, state)) {
-      if (!warmup) yield output
+    for (const output of handleChunk(value, input, state)) {
+      const resolved = typeof output === "function" ? await output() : output
+      if (resolved.type !== "error") state.replaySafe = false
+      if (!warmup) yield resolved
     }
   }
   if (state.completed && state.responseId) {
@@ -267,7 +367,10 @@ async function* streamWebSocket(input: CodexResponsesInput, body: RequestBody, h
     session.lastResponse = { responseId: state.responseId, itemsAdded: state.itemsAdded }
   }
   updateSessionTurnState(session, state)
-  if (warmup) return
+  if (warmup || !state.completed) {
+    if (!warmup && !state.terminal) yield event({ type: "error", error: unexpectedEofError(input, state.replaySafe) })
+    return
+  }
   for (const output of finishEvents(state)) {
     yield output
   }
@@ -280,6 +383,8 @@ function createStreamState(session?: WebSocketSessionState): StreamState {
     currentReasoningOutputIndex: null,
     hasFunctionCall: false,
     completed: false,
+    terminal: undefined,
+    replaySafe: true,
     usage: undefined,
     serviceTier: undefined,
     itemsAdded: [],
@@ -615,8 +720,8 @@ function isTerminalChunk(value: Record<string, unknown>) {
   return type === "response.completed" || type === "response.incomplete" || type === "response.failed" || type === "error"
 }
 
-async function handleChunk(value: Record<string, unknown>, input: CodexResponsesInput, state: StreamState) {
-  const outputs: LLMEvent[] = []
+function handleChunk(value: Record<string, unknown>, input: CodexResponsesInput, state: StreamState) {
+  const outputs: ChunkOutput[] = []
   const type = stringOption(value.type)
   if (type === "response.metadata") {
     captureTurnState(state, recordHeaderValue(recordOption(value.headers), TURN_STATE_HEADER))
@@ -787,8 +892,7 @@ async function handleChunk(value: Record<string, unknown>, input: CodexResponses
           providerMetadata: { openai: { itemId: item.id } },
         }),
       )
-      const result = await executeTool(input, toolName, parsedInput, toolCallId)
-      outputs.push(result)
+      outputs.push(() => executeTool(input, toolName, parsedInput, toolCallId))
     }
     return outputs
   }
@@ -798,11 +902,14 @@ async function handleChunk(value: Record<string, unknown>, input: CodexResponses
     state.usage = recordOption(response?.usage) as ResponseUsage | undefined
     state.serviceTier = stringOption(response?.service_tier) ?? state.serviceTier
     state.completed = type === "response.completed"
+    state.terminal = type === "response.completed" ? "completed" : "incomplete"
+    if (!state.completed) outputs.push(event({ type: "error", error: incompleteError(input, response, state.replaySafe) }))
     return outputs
   }
   if (type === "response.failed" || type === "error") {
     const response = recordOption(value.response)
-    outputs.push(event({ type: "error", error: new Error(responseErrorMessage(value, response)) }))
+    state.terminal = type === "response.failed" ? "failed" : "error"
+    outputs.push(event({ type: "error", error: responseFailureError(input, value, response, state.replaySafe) }))
   }
   return outputs
 }
@@ -814,6 +921,139 @@ function responseErrorMessage(value: Record<string, unknown>, response: Record<s
     stringOption(recordOption(response?.error)?.message) ??
     "Codex Responses stream failed"
   )
+}
+
+function responseErrorDetails(value: Record<string, unknown>, response: Record<string, unknown> | undefined) {
+  const details = recordOption(value.error) ?? recordOption(response?.error)
+  return {
+    message: responseErrorMessage(value, response),
+    code: stringOption(details?.code),
+    type: stringOption(details?.type),
+  }
+}
+
+function codexError(
+  input: CodexResponsesInput,
+  details: {
+    message: string
+    phase: "connect" | "http" | "stream" | "terminal"
+    code: string
+    type: string
+    replaySafe: boolean
+    retryable: boolean
+    statusCode?: number
+    responseHeaders?: Record<string, string>
+    responseBody?: string
+    cause?: unknown
+  },
+) {
+  return new APICallError({
+    message: details.message,
+    url: codexEndpointUrl("responses", input.endpoint),
+    requestBodyValues: { model: input.model.api.id },
+    statusCode: details.statusCode,
+    responseHeaders: details.responseHeaders,
+    responseBody: details.responseBody,
+    cause: details.cause,
+    isRetryable: details.retryable && details.replaySafe && !input.abort.aborted,
+    data: {
+      source: "codex-responses",
+      phase: details.phase,
+      code: details.code,
+      type: details.type,
+      replaySafe: String(details.replaySafe),
+      retryLimit: String(CODEX_RESPONSE_RETRY_LIMIT),
+    },
+  })
+}
+
+function httpError(input: CodexResponsesInput, response: Response, responseBody: string) {
+  return codexError(input, {
+    message: responseBody.trim() || response.statusText || `Codex Responses request failed with status ${response.status}`,
+    phase: "http",
+    code: `http_${response.status}`,
+    type: "http_error",
+    replaySafe: true,
+    retryable: RETRYABLE_HTTP_STATUS.has(response.status) || response.status >= 500,
+    statusCode: response.status,
+    responseHeaders: headerRecord(response.headers),
+    responseBody,
+  })
+}
+
+function missingBodyError(input: CodexResponsesInput) {
+  return codexError(input, {
+    message: "Codex Responses stream missing response body",
+    phase: "http",
+    code: "missing_response_body",
+    type: "http_error",
+    replaySafe: true,
+    retryable: true,
+  })
+}
+
+function transportError(input: CodexResponsesInput, error: unknown, phase: "connect" | "stream", replaySafe: boolean) {
+  const classified = classifyTransportError(error)
+  return codexError(input, {
+    message: classified.message,
+    phase,
+    code: classified.code ?? "transport_error",
+    type: "transport_error",
+    replaySafe,
+    retryable: classified.retryable,
+    cause: error,
+  })
+}
+
+function unexpectedEofError(input: CodexResponsesInput, replaySafe: boolean, cause?: unknown) {
+  return codexError(input, {
+    message: "Codex Responses stream ended before response.completed",
+    phase: "stream",
+    code: "unexpected_eof",
+    type: "stream_error",
+    replaySafe,
+    retryable: true,
+    cause,
+  })
+}
+
+function incompleteError(input: CodexResponsesInput, response: Record<string, unknown> | undefined, replaySafe: boolean) {
+  const reason = stringOption(recordOption(response?.incomplete_details)?.reason)
+  const code = reason ?? "response_incomplete"
+  const message = reason ? `Codex Responses incomplete: ${reason}` : "Codex Responses incomplete"
+  return codexError(input, {
+    message,
+    phase: "terminal",
+    code,
+    type: "response_incomplete",
+    replaySafe,
+    retryable: !reason || !NON_RETRYABLE_INCOMPLETE_REASONS.has(reason),
+    responseBody: JSON.stringify({ type: "error", error: { code, message } }),
+  })
+}
+
+function responseFailureError(
+  input: CodexResponsesInput,
+  value: Record<string, unknown>,
+  response: Record<string, unknown> | undefined,
+  replaySafe: boolean,
+) {
+  const details = responseErrorDetails(value, response)
+  const code = details.code ?? details.type ?? "response_failed"
+  const type = details.type ?? "response_error"
+  return codexError(input, {
+    message: details.message,
+    phase: "terminal",
+    code,
+    type,
+    replaySafe,
+    retryable: RETRYABLE_RESPONSE_ERRORS.has(code) || RETRYABLE_RESPONSE_ERRORS.has(type),
+    responseBody: JSON.stringify({ type: "error", error: stripUndefined({ code: details.code, type: details.type, message: details.message }) }),
+  })
+}
+
+function abortReason(signal: AbortSignal) {
+  return signal.reason instanceof Error ? signal.reason : new DOMException("Aborted", "AbortError")
 }
 
 async function executeTool(input: CodexResponsesInput, toolName: string, args: unknown, toolCallId: string) {
@@ -852,8 +1092,13 @@ async function* parseSSE(body: ReadableStream<Uint8Array>) {
       }
     }
     buffer += decoder.decode()
-    const parsed = parseSSEBlock(buffer)
-    if (parsed) yield parsed
+    if (!buffer.trim()) return
+    try {
+      const parsed = parseSSEBlock(buffer)
+      if (parsed) yield parsed
+    } catch (error) {
+      throw new UnexpectedSSEEOFError(error)
+    }
   } finally {
     reader.releaseLock()
   }

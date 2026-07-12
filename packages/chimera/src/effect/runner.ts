@@ -64,9 +64,6 @@ export const make = <A, E = never>(
   const awaitDone = (done: Deferred.Deferred<A, E | Cancelled>) =>
     Deferred.await(done).pipe(Effect.catchTag("RunnerCancelled", (e) => onInterrupt ?? Effect.die(e)))
 
-  const idleIfCurrent = () =>
-    SynchronizedRef.modify(ref, (st) => [st._tag === "Idle" ? idle : Effect.void, st] as const).pipe(Effect.flatten)
-
   const finishRun = (id: number, done: Deferred.Deferred<A, E | Cancelled>, exit: Exit.Exit<A, E>) =>
     SynchronizedRef.modify(
       ref,
@@ -129,8 +126,9 @@ export const make = <A, E = never>(
             return [awaitDone(run.done), { _tag: "ShellThenRun", shell: st.shell, run }] as const
           }
           case "Idle": {
+            yield* busy
             const done = yield* Deferred.make<A, E | Cancelled>()
-            const run = yield* startRun(work, done)
+            const run = yield* startRun(work, done).pipe(Effect.onError(() => idle))
             return [awaitDone(done), { _tag: "Running", run }] as const
           }
         }
@@ -182,7 +180,7 @@ export const make = <A, E = never>(
           Effect.gen(function* () {
             yield* Fiber.interrupt(st.run.fiber)
             yield* Deferred.await(st.run.done).pipe(Effect.exit, Effect.asVoid)
-            yield* idleIfCurrent()
+            yield* idle
           }),
           { _tag: "Idle" } as const,
         ] as const
@@ -190,7 +188,7 @@ export const make = <A, E = never>(
         return [
           Effect.gen(function* () {
             yield* stopShell(st.shell)
-            yield* idleIfCurrent()
+            yield* idle
           }),
           { _tag: "Idle" } as const,
         ] as const
@@ -199,7 +197,7 @@ export const make = <A, E = never>(
           Effect.gen(function* () {
             yield* stopShell(st.shell)
             yield* Deferred.fail(st.run.done, new Cancelled()).pipe(Effect.asVoid)
-            yield* idleIfCurrent()
+            yield* idle
           }),
           { _tag: "Idle" } as const,
         ] as const
