@@ -49,7 +49,7 @@ function statusBase(root: string) {
     projectRoot: root,
     dataRoot: dataRoot.dataRoot,
     dataRootStatus: dataRoot.dataRootStatus,
-    jobStatus: readIndexJob(root),
+    jobStatus: readIndexJob(root) ?? null,
   }
 }
 

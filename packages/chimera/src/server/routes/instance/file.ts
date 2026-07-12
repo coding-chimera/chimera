@@ -102,9 +102,11 @@ export const FileRoutes = lazy(() =>
           query: z.string(),
         }),
       ),
-      async (c) => {
-        return c.json([])
-      },
+      async (c) =>
+        jsonRequest("FileRoutes.findSymbol", c, function* () {
+          const svc = yield* LSP.Service
+          return yield* svc.workspaceSymbol(c.req.valid("query").query)
+        }),
     )
     .get(
       "/file",
