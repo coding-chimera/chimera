@@ -861,7 +861,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       }
       yield* plugin.trigger(
         "tool.execute.before",
-        { tool: TaskTool.id, sessionID, callID: part.id },
+        { tool: TaskTool.id, sessionID, callID: part.callID },
         { args: taskArgs },
       )
 
@@ -940,7 +940,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
       yield* plugin.trigger(
         "tool.execute.after",
-        { tool: TaskTool.id, sessionID, callID: part.id, args: taskArgs },
+        { tool: TaskTool.id, sessionID, callID: part.callID, args: taskArgs },
         result,
       )
 

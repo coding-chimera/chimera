@@ -10,7 +10,7 @@ Presets are worker prompt shapes. They are not workflow engines, permission swit
 
 This is a thin fan-out helper. It does not build PlanGraph, lock files, claim obligations, apply edits itself, rerun audits, or decide convergence for you. The parent agent owns conflict handling, final audit/test/oracle verification, and closeout. Tool output includes parent closeout recommendations after each run.
 
-The tool tracks child session IDs in its metadata and output. If the parent swarm is aborted, already-created child sessions are cancelled as part of the same abort flow. Treat any interrupted child report as incomplete evidence that the parent must re-check or rerun deliberately.
+The tool publishes each worker incrementally through `metadata.childRuns` (`queued`, `running`, `completed`, `error`, or `cancelled`) and keeps `childSessions` plus final output for compatibility. Child sessions are normal subagent sessions that frontends can display, enter, and stop individually. If the parent swarm is aborted, already-created child sessions are cancelled as part of the same abort flow. Treat any interrupted child report as incomplete evidence that the parent must re-check or rerun deliberately.
 
 Concurrency defaults to 16 and is capped at 16. Treat 16 as a capacity ceiling, not a target: use full concurrency only for independent work with disjoint scopes, and lower it for shared files, ordered dependencies, provider limits, or contended state.
 
