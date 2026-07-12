@@ -474,6 +474,43 @@ describe("HttpApi SDK", () => {
     ),
   )
 
+  parity("matches generated SDK symbol search across backends", (backend) =>
+    withStandardProject(backend, ({ sdk }) =>
+      capture(() => sdk.find.symbols({ query: "needle" })).pipe(
+        Effect.tap((result) => Effect.sync(() => expect(result.status).toBe(200))),
+        Effect.map((result) => array(result.data)),
+      ),
+    ),
+  )
+
+  httpapi(
+    "uses generated SDK graph reads without initializing graph data",
+    withStandardProject("httpapi", ({ directory }) =>
+      Effect.gen(function* () {
+        const graphPaths = [path.join(directory, ".chimera"), path.join(directory, ".codegraph")]
+        const sdk = client("httpapi", undefined, { headers: { "x-chimera-directory": directory } })
+        expect(yield* Effect.all(graphPaths.map((item) => call(() => Bun.file(item).exists())))).toEqual([false, false])
+
+        const status = yield* capture(() => sdk.graph.status({}))
+        const search = yield* capture(() => sdk.graph.search({ query: "needle" }))
+        const fileSymbols = yield* capture(() => sdk.graph.file.symbols({ path: "needle.ts" }))
+        const impact = yield* capture(() => sdk.graph.impact({ path: "needle.ts" }))
+
+        expect(status.status).toBe(200)
+        expect(search.status).toBe(200)
+        expect(fileSymbols.status).toBe(200)
+        expect(impact.status).toBe(200)
+        for (const result of [status, search, fileSymbols, impact]) {
+          expect(result.data).toMatchObject({ initialized: false, dataRootStatus: "uninitialized" })
+        }
+        expect(record(search.data).results).toEqual([])
+        expect(record(fileSymbols.data).results).toEqual([])
+        expect(record(impact.data).results).toEqual([])
+        expect(yield* Effect.all(graphPaths.map((item) => call(() => Bun.file(item).exists())))).toEqual([false, false])
+      }),
+    ),
+  )
+
   parity("matches generated SDK session lifecycle routes across backends", (backend) =>
     withStandardProject(backend, ({ sdk }) =>
       Effect.gen(function* () {
