@@ -4,6 +4,7 @@ import fs from "fs/promises"
 import { Effect, Layer } from "effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { ToolRegistry } from "@/tool/registry"
+import { BrowserRuntime } from "@/browser/runtime"
 import { disposeAllInstances, TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { TestConfig } from "../fixture/config"
@@ -60,6 +61,7 @@ const makeRegistryLayer = () =>
   Layer.provide(FetchHttpClient.layer),
   Layer.provide(Format.defaultLayer),
   Layer.provide(node),
+  Layer.provide(BrowserRuntime.defaultLayer),
   Layer.provide(Ripgrep.defaultLayer),
   Layer.provide(Truncate.defaultLayer),
   )
@@ -112,6 +114,12 @@ describe("tool.registry", () => {
       expect(ids).toContain("chimera_obligation_resolve")
       expect(ids).toContain("chimera_obligation_ignore")
       expect(ids).toContain("workbrief")
+      expect(ids).toContain("browser_open")
+      expect(ids).toContain("browser_snapshot")
+      expect(ids).toContain("browser_click")
+      expect(ids).toContain("browser_type")
+      expect(ids).toContain("browser_screenshot")
+      expect(ids).toContain("browser_close")
       expect(ids).toContain("hello")
     }),
   )
