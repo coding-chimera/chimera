@@ -39,7 +39,7 @@ Chimera is not yet published to the npm registry. Download the latest release
 tarballs from [GitHub Releases](https://github.com/coding-chimera/chimera/releases)
 and install with npm.
 
-Choose `no-webui` (MIT) or `with-webui` (MIT + GPL-3.0) variants.
+Choose `no-webui` (MIT) or `with-webui` (GPL-3.0-only aggregate, with the MIT runtime license included separately). Both variants install the same `chimera` and `chimera-<platform>` package identities, so install only one variant at a time.
 Check the releases page for the latest version and exact tarball filenames.
 
 ```bash
@@ -50,7 +50,6 @@ chimera --version
 Inside the CLI, use `/help` for interactive help.
 
 For local development builds, see [Build and package](#build-and-package).
-
 
 ## Graph runtime
 
@@ -99,13 +98,13 @@ The root `test` script intentionally blocks root-level test runs.
 Build the default current-platform no-WebUI package from `packages/chimera`:
 
 ```bash
-bun run build --single --skip-install
+OPENCODE_CHANNEL=latest bun run build --single --skip-install
 ```
 
 The default package intentionally does not embed the GPL-licensed NewWeb/OpenCodeUI-derived assets. To also produce a clearly separated with-WebUI variant for release assets, run a second build:
 
 ```bash
-bun run build --single --skip-install --with-webui --preserve-npm-tarballs
+OPENCODE_CHANNEL=latest bun run build --single --skip-install --with-webui --preserve-npm-tarballs
 ```
 
 Tarballs are written to:
@@ -114,9 +113,11 @@ Tarballs are written to:
 dist/npm-tarballs/
 ```
 
-No-WebUI tarballs are named like `chimera-no-webui-<version>.tgz`; with-WebUI tarballs use `with-webui` in the same position.
+No-WebUI tarballs are named like `chimera-no-webui-<version>.tgz`; with-WebUI tarballs use `with-webui` in the same position. The variant is not part of the npm package name.
 
-A locally packed install can be smoke-tested with a temporary npm prefix, one variant at a time:
+Standalone no-WebUI CLI archives keep the compatibility names such as `chimera-darwin-arm64.zip`; with-WebUI archives add `-with-webui`. Every standalone archive includes the license files for its variant at the archive root.
+
+A locally packed install can be smoke-tested with a temporary npm prefix. Install the matching main and platform tarballs for exactly one variant at a time:
 
 ```bash
 prefix="$(mktemp -d)"
@@ -142,9 +143,9 @@ When changing agent-facing tools, prompts, graph commands, installer behavior, o
 
 ## License
 
-The core Chimera distribution (including the CLI, graph runtime, and agent package) is licensed under MIT.
+The no-WebUI main and platform packages are licensed under MIT, include the repository MIT `LICENSE`, and do not contain the NewWeb payload.
 
-The WebUI component (`packages/newweb`) is licensed under GPL-3.0, derived from [OpenCodeUI][opencode-ui]. Builds with `--with-webui` embed this component and are subject to the terms of both licenses.
+The with-WebUI main and platform packages are distributed as `GPL-3.0-only`: `LICENSE` contains GPLv3, `LICENSE-MIT` preserves the Chimera runtime's MIT license, and `NOTICE` describes the component/source boundary. It embeds the GPL-licensed NewWeb/OpenCodeUI-derived payload from `packages/newweb`.
 
 MIT
 

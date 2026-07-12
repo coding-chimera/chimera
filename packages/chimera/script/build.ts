@@ -8,6 +8,13 @@ import { fileURLToPath } from "url"
 import { createSolidTransformPlugin } from "@opentui/solid/bun-plugin"
 import { resolveVersion } from "./version"
 import { packNpmTarballs } from "./pack-local"
+import {
+  packageLicense,
+  packageLicenseFiles,
+  parsePackageVariant,
+  platformPackageName,
+  writePackageLicenseFiles,
+} from "./package-variant"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -90,17 +97,17 @@ const skipEmbedWebUi = process.argv.includes("--skip-embed-web-ui")
 const skipEmbedNewWebUi = process.argv.includes("--skip-embed-newweb-ui")
 const embedLegacyWebUi = !skipEmbedWebUi && embedLegacyWebUiFlag
 const embedNewWebUi = !skipEmbedWebUi && !skipEmbedNewWebUi && embedNewWebUiFlag
-const packageVariant = packageVariantFlag?.slice("--package-variant=".length) ??
-  (embedLegacyWebUi || embedNewWebUi ? "with-webui" : "no-webui")
-if (!/^[a-z0-9][a-z0-9-]*$/.test(packageVariant)) {
-  throw new Error(`Invalid package variant: ${packageVariant}`)
-}
+const packageVariant = parsePackageVariant(
+  packageVariantFlag?.slice("--package-variant=".length) ??
+    (embedLegacyWebUi || embedNewWebUi ? "with-webui" : "no-webui"),
+)
 if (packageVariant === "no-webui" && (embedLegacyWebUi || embedNewWebUi)) {
   throw new Error("no-webui package variant cannot embed WebUI assets")
-  }
-const effectivePkgName = packageVariant === "with-webui" ? pkg.name + "-webui" : pkg.name
+}
 if (packageVariant === "with-webui" && !embedLegacyWebUi && !embedNewWebUi) {
-  throw new Error("with-webui package variant requires --with-webui, --embed-web-ui, --embed-legacy-web-ui, or --embed-newweb-ui")
+  throw new Error(
+    "with-webui package variant requires --with-webui, --embed-web-ui, --embed-legacy-web-ui, or --embed-newweb-ui",
+  )
 }
 const preserveNpmTarballs = process.argv.includes("--preserve-npm-tarballs")
 console.log(`Package variant: ${packageVariant}`)
@@ -113,11 +120,19 @@ const createEmbeddedWebUIBundle = async (input: { label: string; packageDir: str
     const checkoutSdk = fs.realpathSync(path.resolve(appDir, "../sdk/js"))
     const resolvedSdk = fs.realpathSync(Bun.resolveSync("@opencode-ai/sdk/v2/client", appDir))
     if (!resolvedSdk.startsWith(checkoutSdk + path.sep)) {
-      throw new Error(`NewWeb must resolve @opencode-ai/sdk from the checkout (${checkoutSdk}), received ${resolvedSdk}`)
+      throw new Error(
+        `NewWeb must resolve @opencode-ai/sdk from the checkout (${checkoutSdk}), received ${resolvedSdk}`,
+      )
     }
   }
   const dist = path.join(appDir, "dist")
-  await $`bun run --cwd ${appDir} build`
+  await $`bun run --cwd ${appDir} build`.env({
+    ...process.env,
+    CHIMERA_VERSION: buildVersion,
+    CHIMERA_CHANNEL: Script.channel,
+    OPENCODE_VERSION: buildVersion,
+    OPENCODE_CHANNEL: Script.channel,
+  })
   const files = (await Array.fromAsync(new Bun.Glob("**/*").scan({ cwd: dist })))
     .map((file) => file.replaceAll("\\", "/"))
     .filter((file) => !file.endsWith(".map"))
@@ -127,7 +142,14 @@ const createEmbeddedWebUIBundle = async (input: { label: string; packageDir: str
     return `import file_${i} from ${JSON.stringify(spec.startsWith(".") ? spec : `./${spec}`)} with { type: "file" };`
   })
   const entries = files.map((file, i) => `  ${JSON.stringify(file)}: file_${i},`)
-  return [`// Import all files as file_$i with type: "file"`, ...imports, `// Export with original mappings`, `export default {`, ...entries, `}`].join("\n")
+  return [
+    `// Import all files as file_$i with type: "file"`,
+    ...imports,
+    `// Export with original mappings`,
+    `export default {`,
+    ...entries,
+    `}`,
+  ].join("\n")
 }
 
 const embeddedWebUIFileMap = embedLegacyWebUi
@@ -221,7 +243,9 @@ const targets = singleFlag
     })
   : allTargets
 
-const preservedTarballDir = preserveNpmTarballs ? await fs.promises.mkdtemp(path.join(os.tmpdir(), "chimera-npm-tarballs-")) : undefined
+const preservedTarballDir = preserveNpmTarballs
+  ? await fs.promises.mkdtemp(path.join(os.tmpdir(), "chimera-npm-tarballs-"))
+  : undefined
 const existingTarballDir = path.join(dir, "dist", "npm-tarballs")
 if (preservedTarballDir && fs.existsSync(existingTarballDir)) {
   for (const file of (await fs.promises.readdir(existingTarballDir)).filter((item) => item.endsWith(".tgz"))) {
@@ -249,16 +273,7 @@ if (!skipInstall) {
   await $`bun install --os="*" --cpu="*" @parcel/watcher@${pkg.dependencies["@parcel/watcher"]}`
 }
 for (const item of targets) {
-  const name = [
-    effectivePkgName,
-    // changing to win32 flags npm for some reason
-    item.os === "win32" ? "windows" : item.os,
-    item.arch,
-    item.avx2 === false ? "baseline" : undefined,
-    item.abi === undefined ? undefined : item.abi,
-  ]
-    .filter(Boolean)
-    .join("-")
+  const name = platformPackageName(pkg.name, item)
   console.log(`building ${name}`)
   await $`mkdir -p dist/${name}/bin`
 
@@ -289,7 +304,7 @@ for (const item of targets) {
       autoloadDotenv: false,
       autoloadTsconfig: true,
       autoloadPackageJson: true,
-      target: name.replace(effectivePkgName, "bun") as any,
+      target: name.replace(pkg.name, "bun") as any,
       outfile: `dist/${name}/bin/${binaryName}`,
       execArgv: ["--liftoff-only", `--user-agent=chimera/${buildVersion}`, "--use-system-ca", "--"],
       windows: {},
@@ -337,6 +352,7 @@ for (const item of targets) {
   }
 
   await $`rm -rf ./dist/${name}/bin/tui`
+  await writePackageLicenseFiles({ packageDir: path.join(dir, "dist", name), variant: packageVariant, projectDir: dir })
   await Bun.file(`dist/${name}/package.json`).write(
     JSON.stringify(
       {
@@ -344,6 +360,7 @@ for (const item of targets) {
         version: buildVersion,
         os: [item.os],
         cpu: [item.arch],
+        license: packageLicense(packageVariant),
       },
       null,
       2,
@@ -364,16 +381,29 @@ if (preservedTarballDir) {
 }
 
 if (Script.release) {
-  const archiveVariantSuffix = ""
+  const archiveVariantSuffix = packageVariant === "with-webui" ? "-with-webui" : ""
   for (const key of Object.keys(binaries)) {
     const archiveName = `${key}${archiveVariantSuffix}`
-    if (key.includes("linux")) {
-      await $`tar -czf ../../${archiveName}.tar.gz *`.cwd(`dist/${key}/bin`)
-    } else {
-      await $`zip -r ../../${archiveName}.zip *`.cwd(`dist/${key}/bin`)
+    const packageDir = path.join(dir, "dist", key)
+    const binDir = path.join(packageDir, "bin")
+    const licenseFiles = packageLicenseFiles(packageVariant)
+    await Promise.all(
+      licenseFiles.map((file) => fs.promises.copyFile(path.join(packageDir, file), path.join(binDir, file))),
+    )
+    try {
+      if (key.includes("linux")) {
+        await $`tar -czf ../../${archiveName}.tar.gz *`.cwd(binDir)
+      } else {
+        await $`zip -r ../../${archiveName}.zip *`.cwd(binDir)
+      }
+    } finally {
+      await Promise.all(licenseFiles.map((file) => fs.promises.rm(path.join(binDir, file), { force: true })))
     }
   }
-  await $`gh release upload v${buildVersion} ./dist/*.zip ./dist/*.tar.gz --clobber --repo ${process.env.GH_REPO}`
+  const releaseArchives = (await fs.promises.readdir(path.join(dir, "dist")))
+    .filter((file) => file.endsWith(".zip") || file.endsWith(".tar.gz"))
+    .map((file) => path.join(dir, "dist", file))
+  await $`gh release upload v${buildVersion} ${releaseArchives} --clobber --repo ${process.env.GH_REPO}`
 }
 
 export { binaries }

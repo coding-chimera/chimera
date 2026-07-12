@@ -3,61 +3,52 @@
 import { $ } from "bun"
 import fs from "fs/promises"
 import path from "path"
+import {
+  packageLicense,
+  parsePackageVariant,
+  tarballNameForVariant,
+  writePackageLicenseFiles,
+  type PackageVariant,
+} from "./package-variant"
 
 const dir = path.resolve(import.meta.dir, "..")
 
-function renameTarballForVariant(file: string, variant: string) {
-  return file.replace(/-(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?\.tgz)$/, `-${variant}-$1`)
-}
-
-export async function packNpmTarballs(input: { variant?: string } = {}) {
+export async function packNpmTarballs(input: { variant?: PackageVariant } = {}) {
   const dist = path.join(dir, "dist")
   const tarballDir = path.join(dist, "npm-tarballs")
   const pkg = await Bun.file(path.join(dir, "package.json")).json()
-  const metadata = await Bun.file(path.join(dist, "package-variant.json")).json().catch(() => null)
-  const variant = input.variant ?? metadata?.variant ?? "no-webui"
-  const baseName = variant === "with-webui" ? `${pkg.name}-webui` : pkg.name
-  if (!/^[a-z0-9][a-z0-9-]*$/.test(variant)) {
-    throw new Error(`Invalid package variant: ${variant}`)
-  }
+  const metadata = await Bun.file(path.join(dist, "package-variant.json"))
+    .json()
+    .catch(() => null)
+  const variant = parsePackageVariant(input.variant ?? metadata?.variant ?? "no-webui")
   process.chdir(dir)
 
-  const platformPackages = await findPlatformPackages(dist, baseName)
-
-
-
+  const platformPackages = await findPlatformPackages(dist, pkg.name)
   if (platformPackages.length === 0) {
-
     throw new Error("No platform packages found in dist. Run the build before packing.")
-
   }
-
-
 
   const versions = new Set(platformPackages.map((item) => item.json.version))
-
   if (versions.size !== 1) {
-
     throw new Error(`Platform package versions do not match: ${[...versions].join(", ")}`)
-
   }
   const version = platformPackages[0].json.version
-  const mainDir = path.join(dist, baseName)
+  const mainDir = path.join(dist, pkg.name)
   await fs.rm(mainDir, { recursive: true, force: true })
   await fs.mkdir(mainDir, { recursive: true })
 
   await fs.cp(path.join(dir, "bin"), path.join(mainDir, "bin"), { recursive: true })
   await fs.copyFile(path.join(dir, "script", "postinstall.mjs"), path.join(mainDir, "postinstall.mjs"))
   await fs.copyFile(path.join(dir, "README.md"), path.join(mainDir, "README.md"))
-  await fs.copyFile(path.join(dir, "..", "..", "LICENSE"), path.join(mainDir, "LICENSE"))
+  await writePackageLicenseFiles({ packageDir: mainDir, variant, projectDir: dir })
 
   await Bun.file(path.join(mainDir, "package.json")).write(
     JSON.stringify(
       {
-        name: baseName,
+        name: pkg.name,
         version,
         type: "module",
-        license: pkg.license,
+        license: packageLicense(variant),
         bin: {
           chimera: "./bin/chimera",
         },
@@ -79,11 +70,14 @@ export async function packNpmTarballs(input: { variant?: string } = {}) {
     await $`bun pm pack --destination ${tarballDir}`.cwd(packageDir)
     const packed = (await fs.readdir(tarballDir)).filter((item) => item.endsWith(".tgz") && !before.has(item))
     for (const file of packed) {
-      await fs.rename(path.join(tarballDir, file), path.join(tarballDir, renameTarballForVariant(file, variant)))
+      await fs.rename(path.join(tarballDir, file), path.join(tarballDir, tarballNameForVariant(file, variant)))
     }
   }
 
   for (const item of platformPackages) {
+    await writePackageLicenseFiles({ packageDir: item.dir, variant, projectDir: dir })
+    const json = { ...item.json, license: packageLicense(variant) }
+    await Bun.file(path.join(item.dir, "package.json")).write(JSON.stringify(json, null, 2))
     await pack(item.dir)
   }
   await pack(mainDir)
@@ -95,55 +89,33 @@ export async function packNpmTarballs(input: { variant?: string } = {}) {
   }
 }
 
-
 async function findPlatformPackages(dist: string, pkgName: string): Promise<{ dir: string; json: any }[]> {
-
   const results: { dir: string; json: any }[] = []
 
-
-
   async function scan(currentDir: string) {
-
     const entries = await fs.readdir(currentDir, { withFileTypes: true }).catch(() => [])
-
     for (const entry of entries) {
-
       if (!entry.isDirectory()) continue
-
       const packageDir = path.join(currentDir, entry.name)
-
       const packageJsonPath = path.join(packageDir, "package.json")
-
-      const hasPackageJson = await fs.access(packageJsonPath).then(() => true).catch(() => false)
-
+      const hasPackageJson = await fs
+        .access(packageJsonPath)
+        .then(() => true)
+        .catch(() => false)
       if (hasPackageJson) {
-
         const json = await Bun.file(packageJsonPath).json()
-
         if (json.name && String(json.name).startsWith(`${pkgName}-`)) {
-
           results.push({ dir: packageDir, json })
-
           continue
-
         }
-
       }
-
       await scan(packageDir)
-
     }
-
   }
 
-
-
   await scan(dist)
-
   return results
-
 }
-
 
 if (import.meta.main) {
   await packNpmTarballs()

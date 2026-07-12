@@ -43,13 +43,13 @@ bun typecheck
 Build the default current-platform no-WebUI package from this package directory:
 
 ```bash
-bun run build --single --skip-install
+OPENCODE_CHANNEL=latest bun run build --single --skip-install
 ```
 
-The default package intentionally does not embed the GPL-licensed NewWeb/OpenCodeUI-derived assets. To also build a clearly separated with-WebUI variant for release assets, run a second build and preserve the first variant's npm tarballs:
+The default package intentionally does not embed the GPL-licensed NewWeb/OpenCodeUI-derived assets. To also build the with-WebUI release variant, run a second build and preserve the first variant's npm tarballs. Both variants retain the same `chimera` and `chimera-<platform>` package names, so they must be installed one at a time:
 
 ```bash
-bun run build --single --skip-install --with-webui --preserve-npm-tarballs
+OPENCODE_CHANNEL=latest bun run build --single --skip-install --with-webui --preserve-npm-tarballs
 ```
 
 The tarballs are written under:
@@ -58,9 +58,11 @@ The tarballs are written under:
 dist/npm-tarballs/
 ```
 
-The no-WebUI tarballs are named like `chimera-no-webui-<version>.tgz` and `chimera-darwin-arm64-no-webui-<version>.tgz`. The with-WebUI tarballs use `with-webui` in the same position.
+The no-WebUI tarballs are named like `chimera-no-webui-<version>.tgz` and `chimera-darwin-arm64-no-webui-<version>.tgz`. The with-WebUI tarballs use `with-webui` in the same position; the variant appears only in the tarball filename.
 
-Install one locally built variant into a temporary npm prefix:
+Standalone no-WebUI CLI archives keep compatibility names such as `chimera-darwin-arm64.zip`; with-WebUI archives add `-with-webui`. Each archive includes its variant's license files at the archive root.
+
+Install the matching main and platform tarballs for exactly one locally built variant into a temporary npm prefix:
 
 ```bash
 prefix="$(mktemp -d)"
@@ -80,6 +82,12 @@ printf 'export function add(a: number, b: number) { return a + b }\n' > "$projec
 ```
 
 The generated main tarball has `package.json.name === "chimera"` and exposes only the `chimera` bin. The platform tarball is named `chimera-<os>-<arch>` internally and contains the compiled `bin/chimera` binary plus graph runtime assets; the tarball filename carries the packaging variant.
+
+## Variant licenses
+
+The no-WebUI main and platform packages use `license: MIT`, include the repository root MIT `LICENSE`, and contain no NewWeb payload.
+
+The with-WebUI main and platform packages use `license: GPL-3.0-only`. Their primary `LICENSE` is GPLv3, `LICENSE-MIT` preserves the MIT terms for the Chimera runtime, and `NOTICE` identifies the embedded `packages/newweb` OpenCodeUI-derived payload and its source boundary.
 
 ## Platform verification help wanted
 

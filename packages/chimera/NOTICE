@@ -1,0 +1,8 @@
+Chimera with-WebUI distribution notice
+
+This package combines separately licensed components:
+
+- The Chimera runtime, CLI, graph runtime, audit runtime, packaging scripts, and other code outside the embedded NewWeb payload are licensed under the MIT License. A copy is included as LICENSE-MIT. Source: https://github.com/coding-chimera/chimera, primarily outside packages/newweb.
+- The embedded NewWeb user interface is derived from OpenCodeUI and is licensed under GPL-3.0-only. The GPL license is included as LICENSE. Source and modification boundary: https://github.com/coding-chimera/chimera/tree/main/packages/newweb.
+
+The with-WebUI package as distributed is marked GPL-3.0-only because it embeds the GPL-covered NewWeb payload. The no-WebUI package does not contain that payload and is distributed under MIT.

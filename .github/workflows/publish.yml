@@ -74,6 +74,7 @@ jobs:
       - uses: actions/checkout@v3
         with:
           fetch-tags: true
+          submodules: recursive
 
       - uses: ./.github/actions/setup-bun
 
@@ -84,11 +85,12 @@ jobs:
           opencode-app-id: ${{ vars.OPENCODE_APP_ID }}
           opencode-app-secret: ${{ secrets.OPENCODE_APP_SECRET }}
 
-      - name: Build
+      - name: Build no-WebUI CLI and npm tarballs
         id: build
         run: |
           ./packages/chimera/script/build.ts
         env:
+          OPENCODE_CHANNEL: latest
           OPENCODE_VERSION: ${{ needs.version.outputs.version }}
           OPENCODE_RELEASE: ${{ needs.version.outputs.release }}
           GH_REPO: ${{ needs.version.outputs.repo }}
@@ -96,15 +98,41 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: chimera-cli
+          name: chimera-cli-no-webui
           path: |
             packages/chimera/dist/chimera-darwin*
             packages/chimera/dist/chimera-linux*
 
       - uses: actions/upload-artifact@v4
         with:
-          name: chimera-cli-windows
+          name: chimera-cli-windows-no-webui
           path: packages/chimera/dist/chimera-windows*
+
+      - name: Build with-WebUI CLI and preserve both npm variants
+        run: ./packages/chimera/script/build.ts --with-webui --preserve-npm-tarballs
+        env:
+          OPENCODE_VERSION: ${{ needs.version.outputs.version }}
+          OPENCODE_RELEASE: ${{ needs.version.outputs.release }}
+          OPENCODE_CHANNEL: latest
+          GH_REPO: ${{ needs.version.outputs.repo }}
+          GH_TOKEN: ${{ steps.committer.outputs.token }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chimera-cli-with-webui
+          path: |
+            packages/chimera/dist/chimera-darwin*
+            packages/chimera/dist/chimera-linux*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chimera-cli-windows-with-webui
+          path: packages/chimera/dist/chimera-windows*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chimera-npm-tarballs
+          path: packages/chimera/dist/npm-tarballs/*.tgz
     outputs:
       version: ${{ needs.version.outputs.version }}
 
@@ -126,8 +154,13 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: chimera-cli-windows
-          path: packages/chimera/dist
+          name: chimera-cli-windows-no-webui
+          path: packages/chimera/dist/no-webui
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: chimera-cli-windows-with-webui
+          path: packages/chimera/dist/with-webui
 
       - name: Setup git committer
         id: committer
@@ -149,9 +182,12 @@ jobs:
           signing-account-name: ${{ env.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
           certificate-profile-name: ${{ env.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE }}
           files: |
-            ${{ github.workspace }}\packages\chimera\dist\chimera-windows-arm64\bin\chimera.exe
-            ${{ github.workspace }}\packages\chimera\dist\chimera-windows-x64\bin\chimera.exe
-            ${{ github.workspace }}\packages\chimera\dist\chimera-windows-x64-baseline\bin\chimera.exe
+            ${{ github.workspace }}\packages\chimera\dist\no-webui\chimera-windows-arm64\bin\chimera.exe
+            ${{ github.workspace }}\packages\chimera\dist\no-webui\chimera-windows-x64\bin\chimera.exe
+            ${{ github.workspace }}\packages\chimera\dist\no-webui\chimera-windows-x64-baseline\bin\chimera.exe
+            ${{ github.workspace }}\packages\chimera\dist\with-webui\chimera-windows-arm64\bin\chimera.exe
+            ${{ github.workspace }}\packages\chimera\dist\with-webui\chimera-windows-x64\bin\chimera.exe
+            ${{ github.workspace }}\packages\chimera\dist\with-webui\chimera-windows-x64-baseline\bin\chimera.exe
           exclude-environment-credential: true
           exclude-workload-identity-credential: true
           exclude-managed-identity-credential: true
@@ -167,9 +203,12 @@ jobs:
         shell: pwsh
         run: |
           $files = @(
-            "${{ github.workspace }}\packages\chimera\dist\chimera-windows-arm64\bin\chimera.exe",
-            "${{ github.workspace }}\packages\chimera\dist\chimera-windows-x64\bin\chimera.exe",
-            "${{ github.workspace }}\packages\chimera\dist\chimera-windows-x64-baseline\bin\chimera.exe"
+            "${{ github.workspace }}\packages\chimera\dist\no-webui\chimera-windows-arm64\bin\chimera.exe",
+            "${{ github.workspace }}\packages\chimera\dist\no-webui\chimera-windows-x64\bin\chimera.exe",
+            "${{ github.workspace }}\packages\chimera\dist\no-webui\chimera-windows-x64-baseline\bin\chimera.exe",
+            "${{ github.workspace }}\packages\chimera\dist\with-webui\chimera-windows-arm64\bin\chimera.exe",
+            "${{ github.workspace }}\packages\chimera\dist\with-webui\chimera-windows-x64\bin\chimera.exe",
+            "${{ github.workspace }}\packages\chimera\dist\with-webui\chimera-windows-x64-baseline\bin\chimera.exe"
           )
 
           foreach ($file in $files) {
@@ -179,13 +218,33 @@ jobs:
             }
           }
 
-      - name: Repack Windows CLI archives
-        working-directory: packages/chimera/dist
+      - name: Repack signed Windows CLI archives
         shell: pwsh
         run: |
-          Compress-Archive -Path "chimera-windows-arm64\bin\*" -DestinationPath "chimera-windows-arm64.zip" -Force
-          Compress-Archive -Path "chimera-windows-x64\bin\*" -DestinationPath "chimera-windows-x64.zip" -Force
-          Compress-Archive -Path "chimera-windows-x64-baseline\bin\*" -DestinationPath "chimera-windows-x64-baseline.zip" -Force
+          function Repack-Variant {
+            param([string]$Root, [string]$Suffix)
+            $packages = @("chimera-windows-arm64", "chimera-windows-x64", "chimera-windows-x64-baseline")
+
+            foreach ($package in $packages) {
+              $packageDir = Join-Path $Root $package
+              $binDir = Join-Path $packageDir "bin"
+              $licenseFiles = Get-ChildItem $packageDir -File | Where-Object { $_.Name -in @("LICENSE", "LICENSE-MIT", "NOTICE") }
+              foreach ($license in $licenseFiles) {
+                Copy-Item $license.FullName (Join-Path $binDir $license.Name) -Force
+              }
+
+              try {
+                Compress-Archive -Path (Join-Path $binDir "*") -DestinationPath (Join-Path $Root "${package}${Suffix}.zip") -Force
+              } finally {
+                foreach ($license in $licenseFiles) {
+                  Remove-Item (Join-Path $binDir $license.Name) -Force -ErrorAction SilentlyContinue
+                }
+              }
+            }
+          }
+
+          Repack-Variant -Root "${{ github.workspace }}\packages\chimera\dist\no-webui" -Suffix ""
+          Repack-Variant -Root "${{ github.workspace }}\packages\chimera\dist\with-webui" -Suffix "-with-webui"
 
       - name: Upload signed Windows CLI release assets
         if: needs.version.outputs.release != ''
@@ -194,19 +253,24 @@ jobs:
           GH_TOKEN: ${{ steps.committer.outputs.token }}
         run: |
           gh release upload "v${{ needs.version.outputs.version }}" `
-            "${{ github.workspace }}\packages\chimera\dist\chimera-windows-arm64.zip" `
-            "${{ github.workspace }}\packages\chimera\dist\chimera-windows-x64.zip" `
-            "${{ github.workspace }}\packages\chimera\dist\chimera-windows-x64-baseline.zip" `
+            "${{ github.workspace }}\packages\chimera\dist\no-webui\chimera-windows-arm64.zip" `
+            "${{ github.workspace }}\packages\chimera\dist\no-webui\chimera-windows-x64.zip" `
+            "${{ github.workspace }}\packages\chimera\dist\no-webui\chimera-windows-x64-baseline.zip" `
+            "${{ github.workspace }}\packages\chimera\dist\with-webui\chimera-windows-arm64-with-webui.zip" `
+            "${{ github.workspace }}\packages\chimera\dist\with-webui\chimera-windows-x64-with-webui.zip" `
+            "${{ github.workspace }}\packages\chimera\dist\with-webui\chimera-windows-x64-baseline-with-webui.zip" `
             --clobber `
             --repo "${{ needs.version.outputs.repo }}"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: chimera-cli-signed-windows
-          path: |
-            packages/chimera/dist/chimera-windows-arm64
-            packages/chimera/dist/chimera-windows-x64
-            packages/chimera/dist/chimera-windows-x64-baseline
+          name: chimera-cli-signed-windows-no-webui
+          path: packages/chimera/dist/no-webui/chimera-windows*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chimera-cli-signed-windows-with-webui
+          path: packages/chimera/dist/with-webui/chimera-windows*
 
   build-electron:
     needs:
@@ -307,7 +371,7 @@ jobs:
         env:
           OPENCODE_VERSION: ${{ needs.version.outputs.version }}
           OPENCODE_CHANNEL: prod
-          OPENCODE_CLI_ARTIFACT: ${{ (runner.os == 'Windows' && 'chimera-cli-windows') || 'chimera-cli' }}
+          OPENCODE_CLI_ARTIFACT: ${{ (runner.os == 'Windows' && 'chimera-cli-windows-no-webui') || 'chimera-cli-no-webui' }}
           RUST_TARGET: ${{ matrix.settings.target }}
           GH_TOKEN: ${{ github.token }}
           GITHUB_RUN_ID: ${{ github.run_id }}
@@ -431,18 +495,23 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: chimera-cli
+          name: chimera-cli-no-webui
           path: packages/chimera/dist
 
       - uses: actions/download-artifact@v4
         with:
-          name: chimera-cli-windows
+          name: chimera-cli-windows-no-webui
           path: packages/chimera/dist
 
       - uses: actions/download-artifact@v4
         with:
-          name: chimera-cli-signed-windows
+          name: chimera-cli-signed-windows-no-webui
           path: packages/chimera/dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: chimera-npm-tarballs
+          path: packages/chimera/dist/npm-tarballs
 
       - uses: actions/download-artifact@v4
         if: needs.version.outputs.release
@@ -457,21 +526,14 @@ jobs:
           opencode-app-id: ${{ vars.OPENCODE_APP_ID }}
           opencode-app-secret: ${{ secrets.OPENCODE_APP_SECRET }}
 
-      - name: Pack no-WebUI npm tarballs
-        run: bun run --cwd packages/chimera pack:local
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: chimera-npm-tarballs-no-webui
-          path: packages/chimera/dist/npm-tarballs/*-no-webui-*.tgz
-
-      - name: Upload no-WebUI npm tarball release assets
+      - name: Upload npm tarball release assets
         if: needs.version.outputs.release != ''
         env:
           GH_TOKEN: ${{ steps.committer.outputs.token }}
         run: |
           gh release upload "v${{ needs.version.outputs.version }}" \
             packages/chimera/dist/npm-tarballs/*-no-webui-*.tgz \
+            packages/chimera/dist/npm-tarballs/*-with-webui-*.tgz \
             --clobber \
             --repo "${{ needs.version.outputs.repo }}"
 
@@ -501,6 +563,7 @@ jobs:
           AUR_KEY: ${{ secrets.AUR_KEY }}
           GITHUB_TOKEN: ${{ steps.committer.outputs.token }}
           GH_REPO: ${{ needs.version.outputs.repo }}
+          HOMEBREW_TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO }}
           NPM_CONFIG_PROVENANCE: false
           LATEST_YML_DIR: /tmp/latest-yml
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
