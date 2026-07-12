@@ -171,6 +171,37 @@ describe("tool.edit", () => {
     })
   })
 
+  test("applies explicit multiline-to-single-line range replacements", async () => {
+    await using tmp = await tmpdir()
+    const filepath = path.join(tmp.path, "single-line.txt")
+    await fs.writeFile(filepath, "const a = 1;\nconst b = 2;\n", "utf-8")
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const edit = await resolve()
+        await Effect.runPromise(
+          edit.execute(
+            {
+              filePath: filepath,
+              edits: [
+                {
+                  op: "replace",
+                  pos: anchor(1, "const a = 1;"),
+                  end: anchor(2, "const b = 2;"),
+                  lines: "const a = 1; const b = 2;",
+                },
+              ],
+            },
+            ctx,
+          ),
+        )
+
+        expect(await fs.readFile(filepath, "utf-8")).toBe("const a = 1; const b = 2;\n")
+      },
+    })
+  })
+
   test("replaces anchored ranges and applies batch edits bottom-up", async () => {
     await using tmp = await tmpdir()
     const filepath = path.join(tmp.path, "batch.txt")
