@@ -445,6 +445,22 @@ test("default permission includes doom_loop and external_directory as ask", asyn
   })
 })
 
+test("browser tools ask for permission by default", async () => {
+  await using tmp = await tmpdir()
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const build = await load(tmp.path, (svc) => svc.get("build"))
+      expect(evalPerm(build, "browser_open")).toBe("ask")
+      expect(evalPerm(build, "browser_snapshot")).toBe("ask")
+      expect(evalPerm(build, "browser_click")).toBe("ask")
+      expect(evalPerm(build, "browser_type")).toBe("ask")
+      expect(evalPerm(build, "browser_screenshot")).toBe("ask")
+      expect(evalPerm(build, "browser_close")).toBe("ask")
+    },
+  })
+})
+
 test("webfetch is allowed by default", async () => {
   await using tmp = await tmpdir()
   await WithInstance.provide({

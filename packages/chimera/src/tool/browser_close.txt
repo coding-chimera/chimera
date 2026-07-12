@@ -1,0 +1,1 @@
+Close controlled browser state for the current agent session. Provide a tab ID to close only that tab; omit it to close every tab and the browser context for the session. A low-risk cleanup permission is still requested for the current or target tab origin. Use this when browser interaction is complete so pages and session state do not remain open.

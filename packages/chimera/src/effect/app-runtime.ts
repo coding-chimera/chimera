@@ -39,6 +39,7 @@ import { LSP } from "@/lsp/lsp"
 import { MCP } from "@/mcp"
 import { McpAuth } from "@/mcp/auth"
 import { Command } from "@/command"
+import { BrowserRuntime } from "@/browser/runtime"
 import { Truncate } from "@/tool/truncate"
 import { ToolRegistry } from "@/tool/registry"
 import { Format } from "@/format"
@@ -94,6 +95,7 @@ export const AppLayer = Layer.mergeAll(
   MCP.defaultLayer,
   McpAuth.defaultLayer,
   Command.defaultLayer,
+  BrowserRuntime.defaultLayer,
   Truncate.defaultLayer,
   ToolRegistry.defaultLayer,
   Format.defaultLayer,
