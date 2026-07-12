@@ -41,4 +41,13 @@ describe("tool.hashline", () => {
     expect(normalizeInsertLines(["one"], 1, "append", ["one", "two"])).toEqual(["two"])
     expect(normalizeInsertLines(["three"], 1, "prepend", ["two", "three"])).toEqual(["two"])
   })
+
+  test("preserves explicit multiline-to-single-line replacements", () => {
+    expect(normalizeReplaceLines(["const a = 1;", "const b = 2;"], 1, 2, ["const a = 1; const b = 2;"])).toEqual([
+      "const a = 1; const b = 2;",
+    ])
+    expect(normalizeReplaceLines(["  const a = 1;", "  const b = 2;"], 1, 2, ["  const a = 1; const b = 2;"])).toEqual([
+      "  const a = 1; const b = 2;",
+    ])
+  })
 })
