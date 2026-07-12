@@ -182,6 +182,10 @@ function restoreIndentForPairedReplacement(oldLines: string[], replacement: stri
   return replacement.map((line, index) => restoreLeadingIndent(oldLines[index], line))
 }
 
+function matchesOldLinesIgnoringWhitespace(oldLines: string[], replacement: string[]) {
+  return oldLines.length === replacement.length && oldLines.every((line, index) => equalsIgnoringWhitespace(line, replacement[index]))
+}
+
 function stripTrailingContinuationTokens(text: string) {
   return text.replace(/(?:&&|\|\||\?\?|\?|:|=|,|\+|-|\*|\/|\.|\()\s*$/u, "")
 }
@@ -237,14 +241,20 @@ function maybeExpandSingleLineMerge(oldLines: string[], replacement: string[]) {
   const expanded = orderedMatch
     ? indices.map((start, index) => merged.slice(start, index + 1 < indices.length ? indices[index + 1] : merged.length).trim())
     : []
-  if (expanded.length === oldLines.length && expanded.every((line) => line.length > 0)) return expanded
+  if (expanded.length === oldLines.length && expanded.every((line) => line.length > 0)) {
+    if (matchesOldLinesIgnoringWhitespace(oldLines, expanded)) return replacement
+    return expanded
+  }
 
   const semicolonSplit = merged
     .split(/;\s+/)
     .map((line, index, lines) => (index < lines.length - 1 && !line.endsWith(";") ? `${line};` : line))
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
-  if (semicolonSplit.length === oldLines.length) return semicolonSplit
+  if (semicolonSplit.length === oldLines.length) {
+    if (matchesOldLinesIgnoringWhitespace(oldLines, semicolonSplit)) return replacement
+    return semicolonSplit
+  }
 
   return replacement
 }
