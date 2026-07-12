@@ -175,10 +175,12 @@ describe("Session input schemas", () => {
     expect(() => Session.SetTitleInput.zod.parse({ sessionID })).toThrow()
   })
 
-  test("SetArchivedInput accepts both with and without time", () => {
+  test("SetArchivedInput accepts archive, restore, and omitted time", () => {
     const decode = decodeUnknown(Session.SetArchivedInput)
     expect(decode({ sessionID })).toEqual({ sessionID })
     expect(decode({ sessionID, time: 123 })).toEqual({ sessionID, time: 123 })
+    expect(decode({ sessionID, time: null })).toEqual({ sessionID, time: null })
+    expect(Session.SetArchivedInput.zod.parse({ sessionID, time: null })).toEqual({ sessionID, time: null })
   })
 
   test("SetPermissionInput requires a ruleset", () => {
