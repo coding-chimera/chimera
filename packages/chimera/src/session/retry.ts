@@ -55,6 +55,7 @@ export function retryable(error: Err) {
   // context overflow errors should not be retried
   if (MessageV2.ContextOverflowError.isInstance(error)) return undefined
   if (MessageV2.APIError.isInstance(error)) {
+    if (error.data.metadata?.replaySafe === "false") return undefined
     const status = error.data.statusCode
     // 5xx errors are transient server failures and should always be retried,
     // even when the provider SDK doesn't explicitly mark them as retryable.
@@ -103,6 +104,13 @@ export function retryable(error: Err) {
   return undefined
 }
 
+function retryLimit(error: Err) {
+  if (!MessageV2.APIError.isInstance(error)) return undefined
+  const value = Number(error.data.metadata?.retryLimit)
+  if (!Number.isSafeInteger(value) || value < 0) return undefined
+  return value
+}
+
 export function policy(opts: {
   parse: (error: unknown) => Err
   set: (input: { attempt: number; message: string; next: number }) => Effect.Effect<void>
@@ -110,6 +118,8 @@ export function policy(opts: {
   return Schedule.fromStepWithMetadata(
     Effect.succeed((meta: Schedule.InputMetadata<unknown>) => {
       const error = opts.parse(meta.input)
+      const limit = retryLimit(error)
+      if (limit !== undefined && meta.attempt > limit) return Cause.done(meta.attempt)
       const message = retryable(error)
       if (!message) return Cause.done(meta.attempt)
       return Effect.gen(function* () {

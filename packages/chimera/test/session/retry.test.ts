@@ -113,6 +113,35 @@ describe("session.retry.delay", () => {
       }),
     ),
   )
+
+  it.live("policy stops after the configured retry limit", () =>
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const attempts: number[] = []
+        const error = MessageV2.APIError.Schema.parse(
+          new MessageV2.APIError({
+            message: "temporary",
+            isRetryable: true,
+            metadata: { retryLimit: "2", replaySafe: "true" },
+          }).toObject(),
+        )
+        const step = yield* Schedule.toStepWithMetadata(
+          SessionRetry.policy({
+            parse: (err) => MessageV2.APIError.Schema.parse(err),
+            set: (info) =>
+              Effect.sync(() => {
+                attempts.push(info.attempt)
+              }),
+          }),
+        )
+        yield* step(error)
+        yield* step(error)
+        yield* step(error).pipe(Effect.ignore)
+
+        expect(attempts).toEqual([1, 2])
+      }),
+    ),
+  )
 })
 
 describe("session.retry.retryable", () => {
@@ -205,6 +234,19 @@ describe("session.retry.retryable", () => {
     )
 
     expect(SessionRetry.retryable(error)).toBe("Service unavailable")
+  })
+
+  test("does not retry replay-unsafe 5xx errors", () => {
+    const error = MessageV2.APIError.Schema.parse(
+      new MessageV2.APIError({
+        message: "Partial response failed",
+        isRetryable: true,
+        statusCode: 503,
+        metadata: { replaySafe: "false", retryLimit: "2" },
+      }).toObject(),
+    )
+
+    expect(SessionRetry.retryable(error)).toBeUndefined()
   })
 
   test("does not retry 4xx errors when isRetryable is false", () => {
@@ -323,4 +365,64 @@ describe("session.message-v2.fromError", () => {
     expect(result.data.isRetryable).toBe(true)
     expect(SessionRetry.retryable(result)).toBe("An error occurred while processing your request.")
   })
+  test("preserves Codex retry metadata and explicit retryability", () => {
+    const error = new APICallError({
+      message: "temporarily unavailable",
+      url: "https://chatgpt.com/backend-api/codex/responses",
+      requestBodyValues: { model: "gpt-5.6-sol" },
+      statusCode: 503,
+      responseHeaders: { "retry-after": "2" },
+      responseBody: '{"error":{"code":"server_error"}}',
+      isRetryable: true,
+      data: {
+        source: "codex-responses",
+        phase: "http",
+        code: "http_503",
+        type: "http_error",
+        replaySafe: "true",
+        retryLimit: "2",
+      },
+    })
+    const result = MessageV2.fromError(error, { providerID: ProviderID.make("openai") })
+    if (!MessageV2.APIError.isInstance(result)) throw new Error("expected APIError")
+
+    expect(result.data.isRetryable).toBe(true)
+    expect(result.data.responseHeaders?.["retry-after"]).toBe("2")
+    expect(result.data.metadata).toMatchObject({
+      source: "codex-responses",
+      phase: "http",
+      code: "http_503",
+      replaySafe: "true",
+      retryLimit: "2",
+    })
+  })
+
+  test("does not apply the OpenAI 404 retry exception to Codex errors", () => {
+    const error = new APICallError({
+      message: "not found",
+      url: "https://chatgpt.com/backend-api/codex/responses",
+      requestBodyValues: { model: "gpt-5.6-sol" },
+      statusCode: 404,
+      isRetryable: false,
+      data: { source: "codex-responses", replaySafe: "true", retryLimit: "2" },
+    })
+    const result = MessageV2.fromError(error, { providerID: ProviderID.make("openai") })
+    if (!MessageV2.APIError.isInstance(result)) throw new Error("expected APIError")
+
+    expect(result.data.isRetryable).toBe(false)
+  })
+
+  test("user cancellation takes precedence over retryable Codex errors", () => {
+    const error = new APICallError({
+      message: "connection reset",
+      url: "https://chatgpt.com/backend-api/codex/responses",
+      requestBodyValues: { model: "gpt-5.6-sol" },
+      isRetryable: true,
+      data: { source: "codex-responses", replaySafe: "true", retryLimit: "2" },
+    })
+    const result = MessageV2.fromError(error, { providerID: ProviderID.make("openai"), aborted: true })
+
+    expect(result.name).toBe("MessageAbortedError")
+  })
+
 })

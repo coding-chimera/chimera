@@ -14,8 +14,15 @@ export interface LoadInput {
   project?: Project.Info
 }
 
+export interface Lease {
+  readonly ctx: InstanceContext
+  readonly release: Effect.Effect<void>
+}
+
 export interface Interface {
   readonly load: (input: LoadInput) => Effect.Effect<InstanceContext>
+  readonly lease: (input: LoadInput) => Effect.Effect<Lease>
+  readonly pin: (ctx: InstanceContext) => Effect.Effect<Lease>
   readonly reload: (input: LoadInput) => Effect.Effect<InstanceContext>
   readonly dispose: (ctx: InstanceContext) => Effect.Effect<void>
   readonly disposeAll: () => Effect.Effect<void>
@@ -253,22 +260,37 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
       ).pipe(Effect.withSpan("InstanceStore.load"))
     }
 
-    const acquireEntry = (input: LoadInput) =>
-      Effect.gen(function* () {
-        const loaded = yield* loadEntry(input)
-        loaded.entry.active++
-        loaded.entry.lastUsedAt = Date.now()
-        return loaded
-      })
+    const acquireEntry = (loaded: { directory: string; entry: ReadyEntry }): Lease => {
+      loaded.entry.active++
+      loaded.entry.lastUsedAt = Date.now()
+      let released = false
+      return {
+        ctx: loaded.entry.ctx,
+        release: Effect.gen(function* () {
+          if (released) return
+          released = true
+          yield* Effect.sync(() => {
+            if (cache.get(loaded.directory) !== loaded.entry) return
+            loaded.entry.active = Math.max(0, loaded.entry.active - 1)
+            loaded.entry.lastUsedAt = Date.now()
+          })
+          yield* requestSweep("post-request-lru")
+        }),
+      }
+    }
 
-    const releaseEntry = (loaded: { directory: string; entry: ReadyEntry }) =>
+    const lease = (input: LoadInput): Effect.Effect<Lease> => loadEntry(input).pipe(Effect.map(acquireEntry))
+
+    const pin = (ctx: InstanceContext): Effect.Effect<Lease> =>
       Effect.gen(function* () {
-        yield* Effect.sync(() => {
-          if (cache.get(loaded.directory) !== loaded.entry) return
-          loaded.entry.active = Math.max(0, loaded.entry.active - 1)
-          loaded.entry.lastUsedAt = Date.now()
-        })
-        yield* requestSweep("post-request-lru")
+        const directory = AppFileSystem.resolve(ctx.directory)
+        const entry = cache.get(directory)
+        if (!entry || entry.disposing) return yield* Effect.die(new Error("Cannot pin inactive instance"))
+        const exit = yield* Deferred.await(entry.deferred).pipe(Effect.exit)
+        if (Exit.isFailure(exit) || exit.value !== ctx || cache.get(directory) !== entry) {
+          return yield* Effect.die(new Error("Cannot pin stale instance"))
+        }
+        return acquireEntry({ directory, entry: entry as ReadyEntry })
       })
 
     const load = (input: LoadInput): Effect.Effect<InstanceContext> =>
@@ -335,9 +357,9 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
 
     const provide = <A, E, R>(input: LoadInput, effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
       Effect.acquireUseRelease(
-        acquireEntry(input),
-        (loaded) => effect.pipe(Effect.provideService(InstanceRef, loaded.entry.ctx)),
-        releaseEntry,
+        lease(input),
+        (acquired) => effect.pipe(Effect.provideService(InstanceRef, acquired.ctx)),
+        (acquired) => acquired.release,
       )
 
     yield* sweepIdle("idle-sweep").pipe(
@@ -350,6 +372,8 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
 
     return Service.of({
       load,
+      lease,
+      pin,
       reload,
       dispose,
       disposeAll,

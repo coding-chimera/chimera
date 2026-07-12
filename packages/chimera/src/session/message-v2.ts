@@ -1221,14 +1221,25 @@ export const filterCompactedEffect = Effect.fnUntraced(function* (
   return filterCompacted(stream(sessionID), options)
 })
 
+function codexResponsesMetadata(value: unknown) {
+  if (!isRecord(value) || value.source !== "codex-responses") return undefined
+  return Object.fromEntries(
+    Object.entries(value).flatMap(([key, item]) =>
+      typeof item === "string" || typeof item === "number" || typeof item === "boolean" ? [[key, String(item)]] : [],
+    ),
+  )
+}
+
 export function fromError(
   e: unknown,
   ctx: { providerID: ProviderID; aborted?: boolean },
 ): NonNullable<Assistant["error"]> {
   switch (true) {
+    case ctx.aborted:
     case e instanceof DOMException && e.name === "AbortError":
+    case e instanceof Error && e.name === "AbortError":
       return new AbortedError(
-        { message: e.message },
+        { message: errorMessage(e) },
         {
           cause: e,
         },
@@ -1285,15 +1296,15 @@ export function fromError(
           { cause: e },
         ).toObject()
       }
-
+      const codexMetadata = codexResponsesMetadata(e.data)
       return new APIError(
         {
           message: parsed.message,
           statusCode: parsed.statusCode,
-          isRetryable: parsed.isRetryable,
+          isRetryable: codexMetadata ? e.isRetryable && codexMetadata.replaySafe !== "false" : parsed.isRetryable,
           responseHeaders: parsed.responseHeaders,
           responseBody: parsed.responseBody,
-          metadata: parsed.metadata,
+          metadata: codexMetadata ? { ...parsed.metadata, ...codexMetadata } : parsed.metadata,
         },
         { cause: e },
       ).toObject()

@@ -308,6 +308,76 @@ describe("InstanceStore", () => {
       restore()
     }
   })
+
+  test("active lease is not disposed by TTL", async () => {
+    const restore = withInstanceStoreEnv({
+      CHIMERA_INSTANCE_IDLE_TTL_MS: "5",
+      CHIMERA_INSTANCE_IDLE_SWEEP_MS: "5",
+      CHIMERA_INSTANCE_MAX_ACTIVE_INSTANCES: "10",
+    })
+    const disposed: string[] = []
+    const off = registerDisposer(async (directory) => {
+      disposed.push(directory)
+    }, "test-leased-ttl-instance-disposer")
+    try {
+      await using dir = await tmpdir({ git: true })
+      await runIsolatedStore(
+        Effect.gen(function* () {
+          const store = yield* InstanceStore.Service
+          const lease = yield* store.lease({ directory: dir.path })
+          yield* Effect.sleep("50 millis")
+          expect(disposed).not.toContain(dir.path)
+
+          yield* lease.release
+          yield* lease.release
+          yield* Effect.sleep("50 millis")
+          expect(disposed).toContain(dir.path)
+        }),
+      )
+    } finally {
+      off()
+      restore()
+    }
+  })
+
+  test("stale lease release does not unpin a reloaded replacement", async () => {
+    const restore = withInstanceStoreEnv({
+      CHIMERA_INSTANCE_IDLE_TTL_MS: "600000",
+      CHIMERA_INSTANCE_IDLE_SWEEP_MS: "600000",
+      CHIMERA_INSTANCE_MAX_ACTIVE_INSTANCES: "1",
+    })
+    const disposed: string[] = []
+    const off = registerDisposer(async (directory) => {
+      disposed.push(directory)
+    }, "test-reload-lease-instance-disposer")
+    try {
+      await using active = await tmpdir({ git: true })
+      await using inactive = await tmpdir({ git: true })
+      await runIsolatedStore(
+        Effect.gen(function* () {
+          const store = yield* InstanceStore.Service
+          const stale = yield* store.lease({ directory: active.path })
+          const replacement = yield* store.reload({ directory: active.path })
+          const current = yield* store.pin(replacement)
+          const reloadDisposals = disposed.filter((directory) => directory === active.path).length
+
+          yield* stale.release
+          yield* stale.release
+          yield* store.load({ directory: inactive.path })
+          yield* Effect.sleep("50 millis")
+
+          expect(yield* store.load({ directory: active.path })).toBe(replacement)
+          expect(disposed.filter((directory) => directory === active.path)).toHaveLength(reloadDisposals)
+          expect(disposed).toContain(inactive.path)
+          yield* current.release
+        }),
+      )
+    } finally {
+      off()
+      restore()
+    }
+  })
+
   it.live("reports failing instance disposers", () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped({ git: true })
