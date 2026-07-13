@@ -1,6 +1,6 @@
 import { NodeFileSystem } from "@effect/platform-node"
 import { FetchHttpClient } from "effect/unstable/http"
-import { expect } from "bun:test"
+import { expect, test } from "bun:test"
 import { Cause, Effect, Exit, Fiber, Layer } from "effect"
 import path from "path"
 import fs from "fs/promises"
@@ -105,6 +105,41 @@ function runtimeContextParts(messages: MessageV2.WithParts[]) {
     .flatMap((msg) => msg.parts)
     .filter((part): part is MessageV2.TextPart => part.type === "text" && Boolean(part.metadata?.runtimeContext))
 }
+
+test("pre-save runtime-context lookup finds the newest metadata without consuming older history", () => {
+  const sessionID = SessionID.make("session-runtime-context-lazy-history")
+  const messageID = MessageID.ascending()
+  const runtimePart = (hash: string): MessageV2.TextPart => ({
+    id: PartID.ascending(),
+    sessionID,
+    messageID,
+    type: "text",
+    text: hash,
+    metadata: {
+      runtimeContext: {
+        schemaVersion: 1,
+        kind: "update",
+        hash,
+        sections: { workBrief: hash },
+      },
+    },
+  })
+  const consumed: string[] = []
+  const history: Iterable<MessageV2.WithParts> = {
+    *[Symbol.iterator]() {
+      consumed.push("newest")
+      yield {
+        info: {} as MessageV2.Info,
+        parts: [runtimePart("older-in-message"), runtimePart("newest")],
+      }
+      consumed.push("older")
+      throw new Error("consumed older history")
+    },
+  }
+
+  expect(SessionPrompt.latestRuntimeContext(history, true)?.hash).toBe("newest")
+  expect(consumed).toEqual(["newest"])
+})
 
 type CompletedToolPart = MessageV2.ToolPart & { state: MessageV2.ToolStateCompleted }
 type ErrorToolPart = MessageV2.ToolPart & { state: MessageV2.ToolStateError }

@@ -796,7 +796,7 @@ describe("MessageV2.filterCompacted", () => {
     })
   })
 
-  test("retains original tail when compaction stores tail_start_id", async () => {
+  test("stops consuming newest-first history at the active compaction tail and preserves chronological order", async () => {
     await WithInstance.provide({
       directory: root,
       fn: async () => {
@@ -843,8 +843,19 @@ describe("MessageV2.filterCompacted", () => {
           text: "third reply",
         })
 
-        const result = MessageV2.filterCompacted(MessageV2.stream(session.id))
+        const consumed: MessageID[] = []
+        const history: Iterable<MessageV2.WithParts> = {
+          *[Symbol.iterator]() {
+            for (const message of MessageV2.stream(session.id)) {
+              if (message.info.id === a1 || message.info.id === u1) throw new Error("consumed history before active tail")
+              consumed.push(message.info.id)
+              yield message
+            }
+          },
+        }
+        const result = MessageV2.filterCompacted(history)
 
+        expect(consumed).toEqual([a3, u3, s1, c1, a2, u2])
         expect(result.map((item) => item.info.id)).toEqual([c1, s1, u2, a2, u3, a3])
 
         await svc.remove(session.id)
@@ -852,7 +863,7 @@ describe("MessageV2.filterCompacted", () => {
     })
   })
 
-  test("does not fold remote-only compaction when replaying as text", async () => {
+  test("preserves full provider history when replaying remote compaction as text", async () => {
     await WithInstance.provide({
       directory: root,
       fn: async () => {
