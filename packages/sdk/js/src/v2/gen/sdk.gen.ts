@@ -148,6 +148,7 @@ import type {
   SessionGetResponses,
   SessionInitErrors,
   SessionInitResponses,
+  SessionListErrors,
   SessionListResponses,
   SessionMessageErrors,
   SessionMessageResponses,
@@ -3261,6 +3262,7 @@ export class Session2 extends HeyApiClient {
       archived?: boolean | "true" | "false"
       start?: number
       search?: string
+      cursor?: string
       limit?: number
     },
     options?: Options<never, ThrowOnError>,
@@ -3278,12 +3280,13 @@ export class Session2 extends HeyApiClient {
             { in: "query", key: "archived" },
             { in: "query", key: "start" },
             { in: "query", key: "search" },
+            { in: "query", key: "cursor" },
             { in: "query", key: "limit" },
           ],
         },
       ],
     )
-    return (options?.client ?? this.client).get<SessionListResponses, unknown, ThrowOnError>({
+    return (options?.client ?? this.client).get<SessionListResponses, SessionListErrors, ThrowOnError>({
       url: "/session",
       ...options,
       ...params,
