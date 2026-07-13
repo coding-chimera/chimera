@@ -5,11 +5,14 @@ import path from "path"
 import type { Agent } from "../../src/agent/agent"
 import { Agent as AgentSvc } from "../../src/agent/agent"
 import { Bus } from "../../src/bus"
+import { SessionToolMetadata } from "@/chimera/session-tool-metadata"
+import { recordAuditRun } from "@/chimera/store"
 import { Config } from "@/config/config"
 import { Permission } from "../../src/permission"
 import { Plugin } from "../../src/plugin"
 import { Provider } from "@/provider/provider"
 import { ModelID, ProviderID } from "../../src/provider/schema"
+import { DatabaseConnection, getDatabasePath } from "@/graph"
 import { Session } from "@/session/session"
 import { LLM } from "../../src/session/llm"
 import { MessageV2 } from "../../src/session/message-v2"
@@ -17,9 +20,12 @@ import { SessionProcessor } from "../../src/session/processor"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionStatus } from "../../src/session/status"
 import { SessionSummary } from "../../src/session/summary"
+import { Database } from "@/storage/db"
+import { EventTable } from "../../src/sync/event.sql"
 import { Snapshot } from "../../src/snapshot"
 import * as Log from "@opencode-ai/core/util/log"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
+import { Flag } from "@opencode-ai/core/flag/flag"
 import { provideTmpdirInstance, provideTmpdirServer } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { raw, reply, TestLLMServer } from "../lib/llm-server"
@@ -208,6 +214,67 @@ const providerExecutedDeps = Layer.mergeAll(
 const providerExecutedEnv = SessionProcessor.layer.pipe(Layer.provide(summary), Layer.provideMerge(providerExecutedDeps))
 const providerExecutedIt = testEffect(providerExecutedEnv)
 
+const metadataToolMetadata = defer<Record<string, unknown>>()
+const metadataToolResult = defer<void>()
+const metadataToolLLM = Layer.succeed(
+  LLM.Service,
+  LLM.Service.of({
+    stream: () =>
+      Stream.fromEffect(Effect.promise(() => metadataToolMetadata.promise)).pipe(
+        Stream.flatMap((metadata) =>
+          Stream.concat(
+            Stream.fromIterable([
+              { type: "start" },
+              {
+                type: "tool-input-start",
+                id: "call_metadata",
+                toolName: "chimera_audit_recent",
+                providerExecuted: true,
+              },
+              { type: "tool-input-end", id: "call_metadata" },
+              {
+                type: "tool-call",
+                toolCallId: "call_metadata",
+                toolName: "chimera_audit_recent",
+                input: {},
+                providerExecuted: true,
+                providerMetadata: metadata,
+              },
+            ] as LLM.Event[]),
+            Stream.fromEffect(Effect.promise(() => metadataToolResult.promise)).pipe(
+              Stream.flatMap(() =>
+                Stream.fromIterable([
+                  {
+                    type: "tool-result",
+                    toolCallId: "call_metadata",
+                    toolName: "chimera_audit_recent",
+                    input: {},
+                    output: { title: "Chimera audit", output: "audit complete", metadata },
+                    providerExecuted: true,
+                  },
+                  { type: "finish" },
+                ] as LLM.Event[]),
+              ),
+            ),
+          ),
+        ),
+      ),
+  }),
+)
+const metadataToolDeps = Layer.mergeAll(
+  Session.defaultLayer,
+  Snapshot.defaultLayer,
+  AgentSvc.defaultLayer,
+  Permission.defaultLayer,
+  Plugin.defaultLayer,
+  Config.defaultLayer,
+  metadataToolLLM,
+  Provider.defaultLayer,
+  status,
+).pipe(Layer.provideMerge(infra))
+const metadataToolEnv = SessionProcessor.layer.pipe(Layer.provide(summary), Layer.provideMerge(metadataToolDeps))
+const metadataToolIt = testEffect(metadataToolEnv)
+
 const failedToolInput = { filePath: "/tmp/example.ts", edits: [{ op: "replace", pos: "1#AA", lines: "next" }] }
 const failedToolLLM = Layer.succeed(
   LLM.Service,
@@ -358,6 +425,114 @@ providerExecutedIt.live("session.processor normalizes provider-executed tool res
         if (toolPart?.state.status !== "completed") throw new Error("provider tool result was not completed")
         expect(toolPart.state.output).toBe('{"action":{"type":"search"}}')
         expect(toolPart.state.metadata.providerOutput).toEqual({ action: { type: "search" } })
+      }),
+    { git: true, config: providerCfg("http://localhost:1/v1") },
+  ),
+)
+
+metadataToolIt.live("session.processor compacts completed Chimera metadata without hiding running metadata", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const originalWorkspaces = Flag.OPENCODE_EXPERIMENTAL_WORKSPACES
+        Flag.OPENCODE_EXPERIMENTAL_WORKSPACES = true
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            Flag.OPENCODE_EXPERIMENTAL_WORKSPACES = originalWorkspaces
+          }),
+        )
+        DatabaseConnection.initialize(getDatabasePath(dir)).close()
+        const payload = {
+          projectRoot: dir,
+          source: "recent_provenance",
+          label: "processor-metadata",
+          detail: "x".repeat(512),
+        }
+        const auditRunID = yield* Effect.promise(() =>
+          recordAuditRun(dir, {
+            source: payload.source,
+            changedFiles: ["processor-metadata.ts"],
+            snapshotRevision: "processor-metadata-revision",
+            seedNodes: [],
+            obligations: [],
+            payload,
+          }),
+        )
+        const metadata = { ...payload, auditRunID, ref: `audit:${auditRunID}` }
+        metadataToolMetadata.resolve(metadata)
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "audit")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+        })
+        const run = yield* handle
+          .process({
+            user: {
+              id: parent.id,
+              sessionID: chat.id,
+              role: "user",
+              time: parent.time,
+              agent: parent.agent,
+              model: { providerID: ref.providerID, modelID: ref.modelID },
+            } satisfies MessageV2.User,
+            sessionID: chat.id,
+            model: mdl,
+            agent: agent(),
+            system: [],
+            messages: [{ role: "user", content: "audit" }],
+            tools: {},
+          })
+          .pipe(Effect.forkChild)
+
+        const running = yield* Effect.promise(async () => {
+          const stop = Date.now() + 500
+          while (Date.now() < stop) {
+            const part = MessageV2.parts(msg.id).find(
+              (item): item is MessageV2.ToolPart => item.type === "tool" && item.callID === "call_metadata",
+            )
+            if (part?.state.status === "running") return part
+            await Bun.sleep(10)
+          }
+          throw new Error("timed out waiting for running Chimera tool part")
+        })
+        expect(running.metadata).toEqual({ ...metadata, providerExecuted: true })
+
+        metadataToolResult.resolve()
+        const exit = yield* Fiber.await(run)
+
+        const completed = MessageV2.parts(msg.id).find(
+          (item): item is MessageV2.ToolPart => item.type === "tool" && item.callID === "call_metadata",
+        )
+        expect(Exit.isSuccess(exit)).toBe(true)
+        expect(completed?.metadata?.providerExecuted).toBe(true)
+        expect(completed?.state.status).toBe("completed")
+        if (completed?.state.status !== "completed") throw new Error("Chimera tool result was not completed")
+        const completedMetadata = completed.state.metadata
+        expect(SessionToolMetadata.isPersisted(completedMetadata)).toBe(true)
+        const success = Database.use((db) =>
+          db
+            .select()
+            .from(EventTable)
+            .all()
+            .find((event) => event.type === "session.next.tool.success.1" && event.aggregate_id === chat.id),
+        )
+        expect(success).toBeDefined()
+        const successData = success?.data as { structured: unknown; provider: { executed: boolean } } | undefined
+        expect(SessionToolMetadata.isPersisted(successData?.structured)).toBe(true)
+        expect(successData?.provider.executed).toBe(true)
+
+        const recoveredPart = yield* Effect.promise(() => SessionToolMetadata.recover(completedMetadata))
+        const recoveredEvent = yield* Effect.promise(() => SessionToolMetadata.recover(successData?.structured))
+        expect(recoveredPart.status).toBe("recovered")
+        expect(recoveredEvent.status).toBe("recovered")
+        if (recoveredPart.status === "recovered") expect(recoveredPart.metadata).toEqual(metadata)
+        if (recoveredEvent.status === "recovered") expect(recoveredEvent.metadata).toEqual(metadata)
       }),
     { git: true, config: providerCfg("http://localhost:1/v1") },
   ),
