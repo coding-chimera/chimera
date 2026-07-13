@@ -8,6 +8,7 @@ import { cmd } from "./cmd"
 import { JsonMigration } from "@/storage/json-migration"
 import { EOL } from "os"
 import { errorMessage } from "../../util/error"
+import { ToolMetadataMaintenance } from "@/session/tool-metadata-maintenance"
 
 const QueryCommand = cmd({
   command: "$0 [query]",
@@ -62,6 +63,41 @@ const PathCommand = cmd({
   },
 })
 
+const CompactToolMetadataCommand = cmd({
+  command: "compact-tool-metadata",
+  describe: "analyze recoverable Chimera tool metadata and compact it only with --apply",
+  builder: (yargs: Argv) =>
+    yargs
+      .option("apply", {
+        type: "boolean",
+        default: false,
+        describe: "rewrite validated Legacy part and V2 tool-success metadata",
+      })
+      .option("session", {
+        type: "string",
+        describe: "limit analysis to one session ID",
+      }),
+  handler: async (args: { apply: boolean; session?: string }) => {
+    try {
+      console.log(
+        JSON.stringify(
+          await ToolMetadataMaintenance.run({
+            dbPath: Database.Path,
+            apply: args.apply,
+            sessionID: args.session,
+          }),
+          null,
+          2,
+        ),
+      )
+    } catch (err) {
+      UI.error(`Tool metadata maintenance failed: ${errorMessage(err)}`)
+      process.exit(1)
+    }
+  },
+})
+
+
 const MigrateCommand = cmd({
   command: "migrate",
   describe: "migrate JSON data to SQLite (merges with existing data)",
@@ -114,7 +150,7 @@ export const DbCommand = cmd({
   command: "db",
   describe: "database tools",
   builder: (yargs: Argv) => {
-    return yargs.command(QueryCommand).command(PathCommand).command(MigrateCommand).demandCommand()
+    return yargs.command(QueryCommand).command(PathCommand).command(MigrateCommand).command(CompactToolMetadataCommand).demandCommand()
   },
   handler: () => {},
 })

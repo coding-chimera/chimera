@@ -2426,6 +2426,7 @@ export const ChimeraPredesignTool = Tool.define<typeof PredesignParameters, Pred
                 symbols,
                 refs,
                 nodeIDs,
+                sessionMetadata: { snapshot, coverage },
               },
             }),
           ).pipe(Effect.orDie),
