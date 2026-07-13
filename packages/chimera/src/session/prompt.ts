@@ -119,6 +119,24 @@ function runtimeContextMetadata(part: MessageV2.Part): RuntimeContextMetadata | 
   return candidate as RuntimeContextMetadata
 }
 
+export function latestRuntimeContext(messages: Iterable<MessageV2.WithParts>, newestFirst = false) {
+  let latest: RuntimeContextMetadata | undefined
+  for (const message of messages) {
+    if (newestFirst) {
+      for (let i = message.parts.length - 1; i >= 0; i--) {
+        const metadata = runtimeContextMetadata(message.parts[i])
+        if (metadata) return metadata
+      }
+      continue
+    }
+    for (const part of message.parts) {
+      const metadata = runtimeContextMetadata(part)
+      if (metadata) latest = metadata
+    }
+  }
+  return latest
+}
+
 function isRuntimeContextPart(part: MessageV2.Part) {
   return runtimeContextMetadata(part) !== undefined
 }
@@ -266,15 +284,6 @@ export const layer = Layer.effect(
       return history.slice(0, idx + 1).filter((msg) => !isRuntimeContextMessage(msg))
     }
 
-    const latestRuntimeContext = (messages: MessageV2.WithParts[]) => {
-      for (let i = messages.length - 1; i >= 0; i--) {
-        for (let j = messages[i].parts.length - 1; j >= 0; j--) {
-          const metadata = runtimeContextMetadata(messages[i].parts[j])
-          if (metadata) return metadata
-        }
-      }
-      return undefined
-    }
 
     const runtimeContextSections = Effect.fn("SessionPrompt.runtimeContextSections")(function* (sessionID: SessionID) {
       const [workBriefSuffix, chimeraContextSuffix] = yield* Effect.all([
@@ -330,12 +339,13 @@ export const layer = Layer.effect(
       sessionID: SessionID
       agent: string
       model: MessageV2.User["model"]
-      messages: MessageV2.WithParts[]
+      messages: Iterable<MessageV2.WithParts>
+      newestFirst?: boolean
       time?: number
     }) {
       const sections = yield* runtimeContextSections(input.sessionID)
       const nextHash = runtimeContextHash(sections)
-      const previous = latestRuntimeContext(input.messages)
+      const previous = latestRuntimeContext(input.messages, input.newestFirst)
       if (!previous && sections.length === 0) return undefined
       if (previous?.hash === nextHash) return undefined
       const sectionHashes = runtimeSectionHashes(sections)
@@ -1655,7 +1665,8 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         sessionID: input.sessionID,
         agent: info.agent,
         model: info.model,
-        messages: Array.from(MessageV2.stream(input.sessionID)),
+        messages: MessageV2.stream(input.sessionID),
+        newestFirst: true,
         time: Math.max(0, info.time.created - 1),
       })
       yield* sessions.updateMessage(info)
@@ -1799,15 +1810,14 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           yield* status.set(sessionID, { type: "busy" })
           yield* slog.info("loop", { step })
 
-          const rawMsgs = Array.from(MessageV2.stream(sessionID))
-          let msgs = MessageV2.filterCompacted(rawMsgs)
+          let msgs = yield* MessageV2.filterCompactedEffect(sessionID)
           let loopState = inspectLoopMessages(msgs)
 
           if (!loopState.lastUser) throw new Error("No user message found in stream. This should never happen.")
           const model = yield* getModel(loopState.lastUser.model.providerID, loopState.lastUser.model.modelID, sessionID)
           const remoteCompaction = yield* remoteCompactionReplay(model)
           if (remoteCompaction === "text") {
-            msgs = MessageV2.filterCompacted(rawMsgs, { remoteCompaction })
+            msgs = yield* MessageV2.filterCompactedEffect(sessionID, { remoteCompaction })
             loopState = inspectLoopMessages(msgs)
           }
           const { lastUser, lastAssistant, lastFinished, tasks } = loopState
