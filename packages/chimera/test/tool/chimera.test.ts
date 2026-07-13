@@ -6,6 +6,7 @@ import { Bus } from "@/bus"
 import { Chimera } from "@/chimera"
 import { ChimeraPromptContext } from "@/chimera/prompt-context"
 import { readAuditRuns, readPredesignRuns } from "@/chimera/store"
+import { SessionToolMetadata } from "@/chimera/session-tool-metadata"
 import { DatabaseConnection, getDatabasePath } from "@/graph"
 import { Agent } from "@/agent/agent"
 import { MessageID, SessionID } from "@/session/schema"
@@ -364,6 +365,8 @@ describe("tool.chimera", () => {
           sessionID: ctx.sessionID,
         }),
       )
+      const persisted = SessionToolMetadata.forPersistence("chimera_predesign", result.metadata)
+      const recovered = yield* Effect.promise(() => SessionToolMetadata.recover(persisted))
 
       expect(result.title).toBe("Chimera pre-design")
       expect(result.output).toContain("Chimera pre-design evidence recorded.")
@@ -373,6 +376,9 @@ describe("tool.chimera", () => {
       expect(runs[0]?.intent).toBe("change source behavior")
       expect(runs[0]?.files).toContain("source.ts")
       expect(stages).toEqual(["permission", "open graph", "sync files", "build impact", "record run", "return result"])
+      expect(SessionToolMetadata.isPersisted(persisted)).toBe(true)
+      expect(JSON.stringify(persisted).length).toBeLessThan(JSON.stringify(result.metadata).length)
+      expect(recovered).toMatchObject({ status: "recovered", metadata: JSON.parse(JSON.stringify(result.metadata)) })
     }),
   )
 
@@ -977,6 +983,8 @@ describe("tool.chimera", () => {
 
       const result = yield* runAuditRecent({ refresh: false })
       const fact = result.metadata.changeFacts.find((item) => item.subjectKind === "body" && item.filePath === "body-visible.ts")
+      const persisted = SessionToolMetadata.forPersistence("chimera_audit_recent", result.metadata)
+      const recovered = yield* Effect.promise(() => SessionToolMetadata.recover(persisted))
 
       expect(result.metadata.source).toBe("recent_provenance")
       expect(result.metadata.auditRunID).toEqual(expect.any(String))
@@ -989,6 +997,9 @@ describe("tool.chimera", () => {
       expect(result.output).not.toContain("codegraph_language_signal:return_value_changed")
       expect(result.output).not.toContain("codegraph.language.body.caller_visible")
       expect((yield* Effect.promise(() => readAuditRuns(test.directory, { provenanceID: result.metadata.provenance?.id }))).some((item) => item.id === result.metadata.auditRunID)).toBe(true)
+      expect(SessionToolMetadata.isPersisted(persisted)).toBe(true)
+      expect(JSON.stringify(persisted).length).toBeLessThan(JSON.stringify(result.metadata).length)
+      expect(recovered).toMatchObject({ status: "recovered", metadata: JSON.parse(JSON.stringify(result.metadata)) })
     }),
   )
 

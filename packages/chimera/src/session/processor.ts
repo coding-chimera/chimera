@@ -20,6 +20,7 @@ import { Question } from "@/question"
 import { errorMessage } from "@/util/error"
 import * as Log from "@opencode-ai/core/util/log"
 import { isRecord } from "@/util/record"
+import { SessionToolMetadata } from "@/chimera/session-tool-metadata"
 import { EventV2 } from "@/v2/event"
 import { SessionEvent } from "@/v2/session-event"
 import { Modelv2 } from "@/v2/model"
@@ -241,7 +242,7 @@ export const layer: Layer.Layer<
             status: "completed",
             input: match.part.state.input,
             output: normalized.output,
-            metadata: normalized.metadata,
+            metadata: SessionToolMetadata.forPersistence(match.part.tool, normalized.metadata),
             title: normalized.title,
             time: { start: match.part.state.time.start, end: Date.now() },
             attachments: normalized.attachments,
@@ -426,7 +427,7 @@ export const layer: Layer.Layer<
             EventV2.run(SessionEvent.Tool.Success.Sync, {
               sessionID: ctx.sessionID,
               callID: value.toolCallId,
-              structured: output.metadata,
+              structured: SessionToolMetadata.forPersistence(toolCall?.part.tool ?? value.toolName, output.metadata),
               content: [
                 {
                   type: "text",

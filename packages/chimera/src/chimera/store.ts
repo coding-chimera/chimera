@@ -11,6 +11,18 @@ type PayloadRow = {
   payload_json: string
 }
 
+type AuditRunRow = {
+  id: string
+  source: string
+  provenance_id: string | null
+  changed_files_json: string
+  snapshot_revision: string
+  seed_nodes_json: string
+  obligations_json: string
+  payload_json: string
+  created_at: string
+}
+
 const MAX_RECENT_JSONL_BYTES = 4 * 1024 * 1024
 
 type ChangeFactRow = {
@@ -518,6 +530,20 @@ function parseJson<T>(input: string) {
   }
 }
 
+function auditRunRecord(row: AuditRunRow): AuditRunRecord {
+  return {
+    id: row.id,
+    source: row.source,
+    provenanceID: row.provenance_id ?? undefined,
+    changedFiles: parseJson<string[]>(row.changed_files_json)[0] ?? [],
+    snapshotRevision: row.snapshot_revision,
+    seedNodes: parseJson<unknown[]>(row.seed_nodes_json)[0] ?? [],
+    obligations: parseJson<unknown[]>(row.obligations_json)[0] ?? [],
+    payload: parseJson<unknown>(row.payload_json)[0],
+    createdAt: row.created_at,
+  }
+}
+
 function objectRecord(input: unknown) {
   return input && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : undefined
 }
@@ -596,6 +622,21 @@ async function withDb<T>(projectRoot: string, fn: (db: ChimeraDb, dbPath: string
     try {
       const db = connection.getDb()
       return fn(db, dbPath)
+    } finally {
+      connection.close()
+    }
+  } catch {
+    return undefined
+  }
+}
+
+async function withReadOnlyDb<T>(projectRoot: string, fn: (db: ChimeraDb, dbPath: string) => T) {
+  const dbPath = databaseStorePath(projectRoot)
+  if (!(await Bun.file(dbPath).exists())) return undefined
+  try {
+    const connection = DatabaseConnection.open(dbPath, { readOnly: true, storageExtensions: [CHIMERA_STORAGE_EXTENSION] })
+    try {
+      return fn(connection.getDb(), dbPath)
     } finally {
       connection.close()
     }
@@ -1171,29 +1212,20 @@ export async function readAuditRuns(projectRoot: string, options: { provenanceID
           ORDER BY created_at DESC, id DESC
           LIMIT ?
         `).all(limit)
-    return (rows as Array<{
-      id: string
-      source: string
-      provenance_id: string | null
-      changed_files_json: string
-      snapshot_revision: string
-      seed_nodes_json: string
-      obligations_json: string
-      payload_json: string
-      created_at: string
-    }>).map((row): AuditRunRecord => ({
-      id: row.id,
-      source: row.source,
-      provenanceID: row.provenance_id ?? undefined,
-      changedFiles: parseJson<string[]>(row.changed_files_json)[0] ?? [],
-      snapshotRevision: row.snapshot_revision,
-      seedNodes: parseJson<unknown[]>(row.seed_nodes_json)[0] ?? [],
-      obligations: parseJson<unknown[]>(row.obligations_json)[0] ?? [],
-      payload: parseJson<unknown>(row.payload_json)[0],
-      createdAt: row.created_at,
-    }))
+    return (rows as AuditRunRow[]).map(auditRunRecord)
   })
   return records ?? []
+}
+
+export async function readAuditRunReadonly(projectRoot: string, auditID: string) {
+  return withReadOnlyDb(projectRoot, (db) => {
+    const row = db.prepare(`
+      SELECT id, source, provenance_id, changed_files_json, snapshot_revision, seed_nodes_json, obligations_json, payload_json, created_at
+      FROM chimera_audit_run
+      WHERE id = ?
+    `).get(auditID) as AuditRunRow | undefined
+    return row ? auditRunRecord(row) : undefined
+  })
 }
 
 export async function recordPredesignRun(projectRoot: string, artifact: string, input: PredesignRunInput) {
@@ -1295,6 +1327,15 @@ export async function readPredesignRuns(projectRoot: string, artifact: string, o
     .toSorted((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))
     .slice(0, limit)
   return records ?? fallback
+}
+
+export async function readPredesignRunReadonly(projectRoot: string, artifact: string, predesignID: string) {
+  const record = await withReadOnlyDb(projectRoot, (db) => {
+    const row = db.prepare("SELECT payload_json FROM chimera_predesign_run WHERE id = ?").get(predesignID) as PayloadRow | undefined
+    return row ? parseJson<PredesignRunRecord>(row.payload_json)[0] : undefined
+  })
+  if (record) return record
+  return (await readJsonl<PredesignRunRecord>(artifact)).find((item) => item.id === predesignID)
 }
 
 function oracleID(createdAt: string, payload: string) {
@@ -1403,6 +1444,15 @@ export async function readOracleResult(projectRoot: string, artifact: string, or
     return row ? parseJson<OracleRecord>(row.payload_json).map(normalizeOracleRecord)[0] : undefined
   })
   return record ?? legacy.map(normalizeOracleRecord).find((item) => item.id === oracleID)
+}
+
+export async function readOracleResultReadonly(projectRoot: string, artifact: string, oracleID: string) {
+  const record = await withReadOnlyDb(projectRoot, (db) => {
+    const row = db.prepare("SELECT payload_json FROM chimera_oracle_result WHERE id = ?").get(oracleID) as PayloadRow | undefined
+    return row ? parseJson<OracleRecord>(row.payload_json).map(normalizeOracleRecord)[0] : undefined
+  })
+  if (record) return record
+  return (await readJsonl<OracleRecord>(artifact)).map(normalizeOracleRecord).find((item) => item.id === oracleID)
 }
 
 async function fileBytes(file: string) {
