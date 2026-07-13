@@ -58,15 +58,38 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const scope = yield* Scope.Scope
 
     const list = Effect.fn("SessionHttpApi.list")(function* (ctx: { query: typeof ListQuery.Type }) {
-      return yield* session.list({
+      const cursor = yield* Effect.try({
+        try: () => (ctx.query.cursor ? Session.listCursor.decode(ctx.query.cursor) : undefined),
+        catch: () => new HttpApiError.BadRequest({}),
+      })
+      const limit = ctx.query.limit ?? 100
+      const sessions = yield* session.list({
         directory: ctx.query.scope === "project" ? undefined : ctx.query.directory,
         scope: ctx.query.scope,
         path: ctx.query.path,
         roots: ctx.query.roots,
         archived: ctx.query.archived,
         start: ctx.query.start,
+        cursor,
         search: ctx.query.search,
-        limit: ctx.query.limit,
+        limit: limit + 1,
+      })
+      const hasMore = sessions.length > limit
+      const items = hasMore ? sessions.slice(0, limit) : sessions
+      const last = items.at(-1)
+      if (!hasMore || !last) return items
+
+      const next = Session.listCursor.encode({ id: last.id, time: last.time.updated })
+      const request = yield* HttpServerRequest.HttpServerRequest
+      const url = Option.getOrElse(HttpServerRequest.toURL(request), () => new URL(request.url, "http://localhost"))
+      url.searchParams.set("limit", limit.toString())
+      url.searchParams.set("cursor", next)
+      return HttpServerResponse.jsonUnsafe(items, {
+        headers: {
+          "Access-Control-Expose-Headers": "Link, X-Next-Cursor",
+          Link: `<${url.toString()}>; rel="next"`,
+          "X-Next-Cursor": next,
+        },
       })
     })
 

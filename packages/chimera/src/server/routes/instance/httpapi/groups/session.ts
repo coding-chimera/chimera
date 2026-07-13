@@ -34,6 +34,7 @@ export const ListQuery = Schema.Struct({
   archived: Schema.optional(QueryBoolean),
   start: Schema.optional(Schema.NumberFromString),
   search: Schema.optional(Schema.String),
+  cursor: Schema.optional(Schema.String),
   limit: Schema.optional(Schema.NumberFromString),
 })
 export const DiffQuery = Schema.Struct(Struct.omit(SessionSummary.DiffInput.fields, ["sessionID"]))
@@ -107,6 +108,7 @@ export const SessionApi = HttpApi.make("session")
         HttpApiEndpoint.get("list", SessionPaths.list, {
           query: ListQuery,
           success: described(Schema.Array(Session.Info), "List of sessions"),
+          error: HttpApiError.BadRequest,
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "session.list",

@@ -5630,10 +5630,20 @@ export type SessionListData = {
     archived?: boolean | "true" | "false"
     start?: number
     search?: string
+    cursor?: string
     limit?: number
   }
   url: "/session"
 }
+
+export type SessionListErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type SessionListError = SessionListErrors[keyof SessionListErrors]
 
 export type SessionListResponses = {
   /**
