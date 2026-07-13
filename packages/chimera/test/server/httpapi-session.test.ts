@@ -405,7 +405,9 @@ describe("session HttpApi", () => {
           })
           expect(archivedResponse.status).toBe(200)
 
-          const activeResponse = yield* requestWithBackend(effectBackend, `${SessionPaths.list}?roots=true`, { headers })
+          const activeResponse = yield* requestWithBackend(effectBackend, `${SessionPaths.list}?roots=true`, {
+            headers,
+          })
           expect((yield* json<Session.Info[]>(activeResponse)).map((session) => session.id)).not.toContain(created.id)
 
           const archivedListResponse = yield* requestWithBackend(
@@ -420,14 +422,18 @@ describe("session HttpApi", () => {
             `${SessionPaths.list}?roots=true&archived=false`,
             { headers },
           )
-          expect((yield* json<Session.Info[]>(explicitActiveResponse)).map((session) => session.id)).not.toContain(created.id)
+          expect((yield* json<Session.Info[]>(explicitActiveResponse)).map((session) => session.id)).not.toContain(
+            created.id,
+          )
 
           const archivedSearchResponse = yield* requestWithBackend(
             effectBackend,
             `${SessionPaths.list}?roots=true&archived=true&search=${encodeURIComponent(created.title)}`,
             { headers },
           )
-          expect((yield* json<Session.Info[]>(archivedSearchResponse)).map((session) => session.id)).toContain(created.id)
+          expect((yield* json<Session.Info[]>(archivedSearchResponse)).map((session) => session.id)).toContain(
+            created.id,
+          )
 
           const omittedArchivedResponse = yield* requestWithBackend(effectBackend, updatePath, {
             method: "PATCH",
@@ -451,8 +457,12 @@ describe("session HttpApi", () => {
           expect(restoredResponse.status).toBe(200)
           expect((yield* json<Session.Info>(restoredResponse)).time.archived).toBeUndefined()
 
-          const restoredActiveResponse = yield* requestWithBackend(effectBackend, `${SessionPaths.list}?roots=true`, { headers })
-          expect((yield* json<Session.Info[]>(restoredActiveResponse)).map((session) => session.id)).toContain(created.id)
+          const restoredActiveResponse = yield* requestWithBackend(effectBackend, `${SessionPaths.list}?roots=true`, {
+            headers,
+          })
+          expect((yield* json<Session.Info[]>(restoredActiveResponse)).map((session) => session.id)).toContain(
+            created.id,
+          )
         }
       }),
     ),
@@ -520,6 +530,85 @@ describe("session HttpApi", () => {
 
         expect(legacy).toContain(pathSession.id)
         expect(legacy).not.toContain(pathlessSession.id)
+        expect(effect).toEqual(legacy)
+      }),
+    ),
+  )
+
+  it.live(
+    "paginates session lists with matching opaque cursor headers",
+    withTmp({ git: true, config: { formatter: false, lsp: false } }, (tmp) =>
+      Effect.gen(function* () {
+        const headers = { "x-chimera-directory": tmp.path }
+        yield* createSession(tmp.path, { title: "one" })
+        yield* createSession(tmp.path, { title: "two" })
+        yield* createSession(tmp.path, { title: "three" })
+        const route = `${SessionPaths.list}?roots=true&limit=1`
+
+        const legacy = yield* requestWithBackend(false, route, { headers })
+        const effect = yield* requestWithBackend(true, route, { headers })
+        const cursor = legacy.headers.get("x-next-cursor")
+
+        expect(cursor).toBeTruthy()
+        expect(effect.headers.get("x-next-cursor")).toBe(cursor)
+        expect(effect.headers.get("link")).toBe(legacy.headers.get("link"))
+        expect(effect.headers.get("access-control-expose-headers")).toBe(
+          legacy.headers.get("access-control-expose-headers"),
+        )
+
+        const first = yield* json<Session.Info[]>(legacy)
+        const second = yield* requestJson<Session.Info[]>(
+          `${SessionPaths.list}?roots=true&limit=1&cursor=${encodeURIComponent(cursor!)}`,
+          { headers },
+        )
+        expect(second).toHaveLength(1)
+        expect(second[0]?.id).not.toBe(first[0]?.id)
+        expect((yield* request(`${SessionPaths.list}?limit=1&cursor=invalid`, { headers })).status).toBe(400)
+      }),
+    ),
+  )
+
+  it.live(
+    "traverses equal-timestamp session pages without gaps or duplicates",
+    withTmp({ git: true, config: { formatter: false, lsp: false } }, (tmp) =>
+      Effect.gen(function* () {
+        const headers = { "x-chimera-directory": tmp.path }
+        const sessions = [
+          yield* createSession(tmp.path, { title: "one" }),
+          yield* createSession(tmp.path, { title: "two" }),
+          yield* createSession(tmp.path, { title: "three" }),
+        ]
+        yield* Effect.sync(() =>
+          Database.use((db) =>
+            sessions.map((session) =>
+              db.update(SessionTable).set({ time_updated: 123 }).where(eq(SessionTable.id, session.id)).run(),
+            ),
+          ),
+        )
+
+        const collect = (experimental: boolean) =>
+          Effect.gen(function* () {
+            const ids: SessionIDType[] = []
+            let cursor: string | null = null
+            do {
+              const query = new URLSearchParams({ roots: "true", limit: "1" })
+              if (cursor) query.set("cursor", cursor)
+              const response = yield* requestWithBackend(experimental, `${SessionPaths.list}?${query}`, { headers })
+              ids.push(...(yield* json<Session.Info[]>(response)).map((session) => session.id))
+              cursor = response.headers.get("x-next-cursor")
+            } while (cursor)
+            return ids
+          })
+
+        const expected = sessions
+          .map((session) => session.id)
+          .sort()
+          .reverse()
+        const legacy = yield* collect(false)
+        const effect = yield* collect(true)
+
+        expect(legacy).toEqual(expected)
+        expect(new Set(legacy).size).toBe(sessions.length)
         expect(effect).toEqual(legacy)
       }),
     ),

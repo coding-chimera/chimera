@@ -517,11 +517,21 @@ describe("HttpApi SDK", () => {
         const parent = yield* capture(() => sdk.session.create({ title: "parent" }))
         const parentID = String(record(parent.data).id)
         const child = yield* capture(() => sdk.session.create({ title: "child", parentID }))
+        const other = yield* capture(() => sdk.session.create({ title: "other" }))
         const childID = String(record(child.data).id)
         const get = yield* capture(() => sdk.session.get({ sessionID: parentID }))
         const update = yield* capture(() => sdk.session.update({ sessionID: parentID, title: "renamed" }))
         const roots = yield* capture(() => sdk.session.list({ roots: true, limit: 10 }))
         const all = yield* capture(() => sdk.session.list({ roots: false, limit: 10 }))
+        const firstPageResult = yield* call(() => sdk.session.list({ roots: true, limit: 1 }))
+        const sessionCursor = firstPageResult.response.headers.get("x-next-cursor")
+        const firstPage = {
+          status: firstPageResult.response.status,
+          data: firstPageResult.data,
+          error: firstPageResult.error,
+        }
+        const nextPage = yield* capture(() => sdk.session.list({ roots: true, limit: 1, cursor: sessionCursor! }))
+        const invalidSessionCursor = yield* capture(() => sdk.session.list({ roots: true, limit: 1, cursor: "bad" }))
         const archivedUpdate = yield* capture(() =>
           sdk.session.update({ sessionID: parentID, time: { archived: Date.now() } }),
         )
@@ -548,10 +558,14 @@ describe("HttpApi SDK", () => {
           statuses: statuses({
             parent,
             child,
+            other,
             get,
             update,
             roots,
             all,
+            firstPage,
+            nextPage,
+            invalidSessionCursor,
             archivedUpdate,
             archived,
             activeAfterArchive,

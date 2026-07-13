@@ -69,34 +69,66 @@ export const SessionRoutes = lazy(() =>
           scope: z.enum(["project"]).optional().meta({ description: "List all sessions for the current project" }),
           path: z.string().optional().meta({ description: "Filter sessions by project-relative path" }),
           roots: QueryBoolean.optional().meta({ description: "Only return root sessions (no parentID)" }),
-          archived: QueryBoolean.optional().meta({ description: "Return archived sessions instead of active sessions" }),
+          archived: QueryBoolean.optional().meta({
+            description: "Return archived sessions instead of active sessions",
+          }),
           start: z.coerce
             .number()
             .optional()
             .meta({ description: "Filter sessions updated on or after this timestamp (milliseconds since epoch)" }),
           search: z.string().optional().meta({ description: "Filter sessions by title (case-insensitive)" }),
+          cursor: z
+            .string()
+            .optional()
+            .meta({ description: "Opaque cursor for loading older sessions" })
+            .refine(
+              (value) => {
+                if (!value) return true
+                try {
+                  Session.listCursor.decode(value)
+                  return true
+                } catch {
+                  return false
+                }
+              },
+              { message: "Invalid cursor" },
+            ),
           limit: z.coerce.number().optional().meta({ description: "Maximum number of sessions to return" }),
         }),
       ),
       async (c) => {
         const query = c.req.valid("query")
-        return c.json(
-          await runRequest(
-            "SessionRoutes.list",
-            c,
-            Session.Service.use((svc) =>
-              svc.list({
-                directory: query.scope === "project" ? undefined : query.directory,
-                path: query.path,
-                roots: queryBoolean(query.roots),
-                archived: queryBoolean(query.archived),
-                start: query.start,
-                search: query.search,
-                limit: query.limit,
-              }),
-            ),
+        const limit = query.limit ?? 100
+        const sessions = await runRequest(
+          "SessionRoutes.list",
+          c,
+          Session.Service.use((svc) =>
+            svc.list({
+              directory: query.scope === "project" ? undefined : query.directory,
+              scope: query.scope,
+              path: query.path,
+              roots: queryBoolean(query.roots),
+              archived: queryBoolean(query.archived),
+              start: query.start,
+              cursor: query.cursor ? Session.listCursor.decode(query.cursor) : undefined,
+              search: query.search,
+              limit: limit + 1,
+            }),
           ),
         )
+        const hasMore = sessions.length > limit
+        const items = hasMore ? sessions.slice(0, limit) : sessions
+        const last = items.at(-1)
+        if (hasMore && last) {
+          const cursor = Session.listCursor.encode({ id: last.id, time: last.time.updated })
+          const url = new URL(c.req.url)
+          url.searchParams.set("limit", limit.toString())
+          url.searchParams.set("cursor", cursor)
+          c.header("Access-Control-Expose-Headers", "Link, X-Next-Cursor")
+          c.header("Link", `<${url.toString()}>; rel="next"`)
+          c.header("X-Next-Cursor", cursor)
+        }
+        return c.json(items)
       },
     )
     .get(

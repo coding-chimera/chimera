@@ -281,6 +281,21 @@ export const MessagesInput = Schema.Struct({
   sessionID: SessionID,
   limit: Schema.optional(NonNegativeInt),
 }).pipe(withStatics((s) => ({ zod: zod(s) })))
+export const ListCursor = Schema.Struct({
+  id: SessionID,
+  time: Schema.Finite,
+})
+export type ListCursor = typeof ListCursor.Type
+const decodeListCursor = Schema.decodeUnknownSync(ListCursor)
+export const listCursor = {
+  encode(value: ListCursor) {
+    return Buffer.from(JSON.stringify(value)).toString("base64url")
+  },
+  decode(value: string) {
+    return decodeListCursor(JSON.parse(Buffer.from(value, "base64url").toString("utf8")))
+  },
+}
+
 export type ListInput = {
   directory?: string
   scope?: "project"
@@ -288,6 +303,7 @@ export type ListInput = {
   workspaceID?: WorkspaceID
   roots?: boolean
   start?: number
+  cursor?: ListCursor
   search?: string
   limit?: number
   archived?: boolean
@@ -522,7 +538,12 @@ export interface Interface {
     summary: Info["summary"]
   }) => Effect.Effect<void>
   readonly clearRevert: (sessionID: SessionID) => Effect.Effect<void>
-  readonly recordUsage: (input: { sessionID: SessionID; tokens: MessageV2.TokenUsage; cost: number; modelContextWindow?: number }) => Effect.Effect<void, NotFound>
+  readonly recordUsage: (input: {
+    sessionID: SessionID
+    tokens: MessageV2.TokenUsage
+    cost: number
+    modelContextWindow?: number
+  }) => Effect.Effect<void, NotFound>
   readonly setSummary: (input: { sessionID: SessionID; summary: Info["summary"] }) => Effect.Effect<void>
   readonly diff: (sessionID: SessionID) => Effect.Effect<Snapshot.FileDiff[]>
   readonly messages: (input: { sessionID: SessionID; limit?: number }) => Effect.Effect<MessageV2.WithParts[]>
@@ -783,7 +804,10 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
       yield* patch(input.sessionID, { title: input.title })
     })
 
-    const setArchived = Effect.fn("Session.setArchived")(function* (input: { sessionID: SessionID; time?: number | null }) {
+    const setArchived = Effect.fn("Session.setArchived")(function* (input: {
+      sessionID: SessionID
+      time?: number | null
+    }) {
       yield* patch(input.sessionID, { time: { archived: input.time ?? null } })
     })
 
@@ -952,6 +976,14 @@ function* listByProject(
   if (input.start) {
     conditions.push(gte(SessionTable.time_updated, input.start))
   }
+  if (input.cursor) {
+    conditions.push(
+      or(
+        lt(SessionTable.time_updated, input.cursor.time),
+        and(eq(SessionTable.time_updated, input.cursor.time), lt(SessionTable.id, input.cursor.id))!,
+      )!,
+    )
+  }
   if (input.search) {
     conditions.push(like(SessionTable.title, `%${input.search}%`))
   }
@@ -964,7 +996,7 @@ function* listByProject(
       .select()
       .from(SessionTable)
       .where(and(...conditions))
-      .orderBy(desc(SessionTable.time_updated))
+      .orderBy(desc(SessionTable.time_updated), desc(SessionTable.id))
       .limit(limit)
       .all(),
   )
