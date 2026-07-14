@@ -2,6 +2,7 @@ import { test, expect, describe, mock, afterEach, beforeEach } from "bun:test"
 import { Effect, Layer, Option } from "effect"
 import { NodeFileSystem, NodePath } from "@effect/platform-node"
 import { Config } from "@/config/config"
+import { ConfigMemory } from "@/config/memory"
 import { ConfigManaged } from "@/config/managed"
 import { ConfigParse } from "../../src/config/parse"
 import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
@@ -1723,6 +1724,53 @@ test("Effect config parser preserves permission order while rejecting unknown to
     const error = err as { data?: { issues?: Array<{ code?: string; keys?: string[]; path?: string[] }> } }
     expect(error.data?.issues?.[0]).toMatchObject({ code: "unrecognized_keys", keys: ["invalid_field"], path: [] })
   }
+})
+
+test("decodes cross-session memory config", () => {
+  const config = ConfigParse.effectSchema(
+    Config.Info,
+    {
+      memories: {
+        enabled: true,
+        use_memories: false,
+        generate_memories: true,
+        disable_on_external_context: false,
+      },
+    },
+    "test",
+  )
+
+  expect(config.memories).toEqual({
+    enabled: true,
+    use_memories: false,
+    generate_memories: true,
+    disable_on_external_context: false,
+  })
+})
+
+test("defines safe cross-session memory defaults", () => {
+  expect(ConfigMemory.Defaults).toEqual({
+    enabled: false,
+    use_memories: true,
+    generate_memories: true,
+    disable_on_external_context: true,
+  })
+})
+
+test("accepts compatibility memory settings and rejects unknown keys", () => {
+  const config = ConfigParse.effectSchema(
+    Config.Info,
+    {
+      memories: {
+        dedicated_tools: true,
+        max_summary_chars: 4096,
+      },
+    },
+    "test",
+  )
+
+  expect(config.memories).toEqual({ dedicated_tools: true, max_summary_chars: 4096 })
+  expect(Config.Info.zod.safeParse({ memories: { unexpected: true } }).success).toBe(false)
 })
 
 test("validates provider wire API placement and values", () => {
