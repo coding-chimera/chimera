@@ -402,11 +402,18 @@ describe("HttpApi SDK", () => {
       Effect.gen(function* () {
         const auth = { username: "opencode", password: "secret" }
         const missing = yield* capture(() => client(backend, directory, auth).file.read({ path: "hello.txt" }))
+        const missingMemory = yield* capture(() => client(backend, directory, auth).memory.status())
         const bad = yield* capture(() =>
           client(backend, directory, {
             ...auth,
             headers: { authorization: authorization("opencode", "wrong") },
           }).file.read({ path: "hello.txt" }),
+        )
+        const badMemory = yield* capture(() =>
+          client(backend, directory, {
+            ...auth,
+            headers: { authorization: authorization("opencode", "wrong") },
+          }).memory.status(),
         )
         const good = yield* capture(() =>
           client(backend, directory, {
@@ -414,12 +421,72 @@ describe("HttpApi SDK", () => {
             headers: { authorization: authorization("opencode", "secret") },
           }).file.read({ path: "hello.txt" }),
         )
+        const goodMemory = yield* capture(() =>
+          client(backend, directory, {
+            ...auth,
+            headers: { authorization: authorization("opencode", "secret") },
+          }).memory.status(),
+        )
 
         return {
-          statuses: statuses({ missing, bad, good }),
+          statuses: statuses({ missing, bad, good, missingMemory, badMemory, goodMemory }),
           content: record(good.data).content,
         }
       }),
+    ),
+  )
+
+
+  parity("matches generated SDK memory management across backends", (backend) =>
+    withProject(
+      backend,
+      { config: { memories: { enabled: true, generate_memories: true } } },
+      ({ sdk }) =>
+        Effect.gen(function* () {
+          const status = yield* capture(() => sdk.memory.status({ scope: "all" }))
+          const remembered = yield* capture(() =>
+            sdk.memory.remember({ memoryCreateInput: { text: "SDK memory note", scope: "project" } }),
+          )
+          const id = record(remembered.data).id as string
+          const listed = yield* capture(() => sdk.memory.notes({ scope: "project" }))
+          const updated = yield* capture(() =>
+            sdk.memory.update({ id, memoryUpdateInput: { text: "Updated SDK memory note" } }),
+          )
+          const imported = yield* capture(() =>
+            sdk.memory.import({
+              legacyMemoryFileV1: {
+                schemaVersion: 1,
+                notes: [
+                  {
+                    id: "sdk-legacy",
+                    text: "Imported SDK note",
+                    scope: "project",
+                    source: { kind: "manual" },
+                    time_created: 1_700_000_000_000,
+                  },
+                ],
+              },
+            }),
+          )
+          const rebuilt = yield* capture(() =>
+            sdk.memory.rebuild({ memoryRebuildInput: { scope: "project" } }),
+          )
+          const forgotten = yield* capture(() => sdk.memory.forget({ id }))
+          const reset = yield* capture(() =>
+            sdk.memory.reset({ memoryResetInput: { scope: "project", confirm: true } }),
+          )
+
+          return {
+            statuses: statuses({ status, remembered, listed, updated, imported, rebuilt, forgotten, reset }),
+            enabled: record(status.data).enabled,
+            listed: array(listed.data).map((note) => record(note).text),
+            updated: record(updated.data).text,
+            imported: record(imported.data).imported,
+            rebuilt: record(rebuilt.data).queued,
+            forgotten: record(forgotten.data).deleted,
+            resetScope: record(reset.data).scope,
+          }
+        }),
     ),
   )
 

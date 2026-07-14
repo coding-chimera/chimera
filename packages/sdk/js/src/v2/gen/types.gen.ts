@@ -17,13 +17,13 @@ export type Event =
   | EventSessionError
   | EventInstallationUpdated
   | EventInstallationUpdateAvailable
+  | EventSessionStatus
+  | EventSessionIdle
   | EventQuestionAsked
   | EventQuestionReplied
   | EventQuestionRejected
   | EventTodoUpdated
   | EventWorkBriefUpdated
-  | EventSessionStatus
-  | EventSessionIdle
   | EventTuiPromptAppend
   | EventTuiCommandExecute
   | EventTuiToastShow1
@@ -84,6 +84,7 @@ export type Event =
   | EventServerHeartbeat
   | EventServerEventGap
   | EventGlobalDisposed
+  | EventGlobalPreferencesUpdated
 
 export type OAuth = {
   type: "oauth"
@@ -194,6 +195,20 @@ export type ApiError = {
   }
 }
 
+export type SessionStatus =
+  | {
+      type: "idle"
+    }
+  | {
+      type: "retry"
+      attempt: number
+      message: string
+      next: number
+    }
+  | {
+      type: "busy"
+    }
+
 export type QuestionOption = {
   /**
    * Display text (1-5 words, concise)
@@ -274,20 +289,6 @@ export type WorkBrief = {
   relevantEvidence: Array<string>
   closeout: Array<string>
 }
-
-export type SessionStatus =
-  | {
-      type: "idle"
-    }
-  | {
-      type: "retry"
-      attempt: number
-      message: string
-      next: number
-    }
-  | {
-      type: "busy"
-    }
 
 export type EventTuiPromptAppend = {
   id: string
@@ -459,6 +460,18 @@ export type AssistantMessage = {
   cost: number
   tokens: TokenUsage
   structured?: unknown
+  memory?: {
+    version: 1
+    entries: Array<{
+      path: string
+      lineStart: number
+      lineEnd: number
+      note: string
+    }>
+    rolloutIDs: Array<string>
+    sessionIDs: Array<string>
+    noteIDs: Array<string>
+  }
   variant?: string
   finish?: string
 }
@@ -826,6 +839,25 @@ export type ModelSelection = {
   }
 }
 
+export type WebUiPreferences = {
+  appearance?: {
+    presetId?: string
+    colorMode?: "system" | "light" | "dark"
+  }
+  chat?: {
+    collapseUserMessages?: boolean
+    renderUserMarkdown?: boolean
+    reasoningDisplayMode?: "capsule" | "italic" | "markdown"
+  }
+}
+
+export type WebUiPreferencesSnapshot = {
+  schemaVersion: 1
+  revision: number
+  initialized: boolean
+  preferences: WebUiPreferences
+}
+
 export type GlobalEvent = {
   directory: string
   project?: string
@@ -843,13 +875,13 @@ export type GlobalEvent = {
     | EventSessionError
     | EventInstallationUpdated
     | EventInstallationUpdateAvailable
+    | EventSessionStatus
+    | EventSessionIdle
     | EventQuestionAsked
     | EventQuestionReplied
     | EventQuestionRejected
     | EventTodoUpdated
     | EventWorkBriefUpdated
-    | EventSessionStatus
-    | EventSessionIdle
     | EventTuiPromptAppend
     | EventTuiCommandExecute
     | EventTuiToastShow
@@ -910,6 +942,7 @@ export type GlobalEvent = {
     | EventServerHeartbeat
     | EventServerEventGap
     | EventGlobalDisposed
+    | EventGlobalPreferencesUpdated
     | SyncEventMessageUpdated
     | SyncEventMessageRemoved
     | SyncEventMessagePartUpdated
@@ -943,6 +976,19 @@ export type GlobalEvent = {
     | SyncEventSessionNextCompactionStarted
     | SyncEventSessionNextCompactionDelta
     | SyncEventSessionNextCompactionEnded
+}
+
+export type WebUiPreferencesUpdate = {
+  revision: number
+  preferences: WebUiPreferences
+}
+
+export type WebUiPreferencesRevisionConflictError = {
+  name: "WebUIPreferencesRevisionConflictError"
+  data: {
+    expectedRevision: number
+    actualRevision: number
+  }
 }
 
 /**
@@ -1303,6 +1349,14 @@ export type Config = {
     reserved?: number
     remote?: "auto" | "on" | "off"
     remote_protocol?: "auto" | "v2" | "legacy"
+  }
+  memories?: {
+    enabled?: boolean
+    use_memories?: boolean
+    generate_memories?: boolean
+    disable_on_external_context?: boolean
+    dedicated_tools?: boolean
+    max_summary_chars?: number
   }
   experimental?: {
     disable_paste_summary?: boolean
@@ -1666,6 +1720,115 @@ export type McpStatus =
 
 export type McpUnsupportedOAuthError = {
   error: string
+}
+
+export type MemoryScopeStats = {
+  notes: {
+    total: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    active: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    deleted: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  }
+  outputs: {
+    total: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    active: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    tombstoned: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  }
+  jobs: {
+    [key: string]: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  }
+}
+
+export type MemoryStatus = {
+  scope: "global" | "project" | "all"
+  enabled: boolean
+  useMemories: boolean
+  generateMemories: boolean
+  global?: MemoryScopeStats
+  project?: MemoryScopeStats
+}
+
+export type MemoryNote = {
+  id: string
+  text: string
+  scope: "global" | "project"
+  sourceKind: "explicit" | "automatic" | "manual" | "legacy_import"
+  sourceSessionID?: string
+  sourceMessageID?: string
+  timeCreated: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  timeUpdated: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+}
+
+export type MemoryCreateInput = {
+  text: string
+  scope?: "global" | "project"
+}
+
+export type MemoryBadRequestError = {
+  name: "MemoryBadRequestError"
+  data: {
+    message: string
+  }
+}
+
+export type MemoryUpdateInput = {
+  text: string
+}
+
+export type MemoryNotFoundError = {
+  name: "MemoryNotFoundError"
+  data: {
+    message: string
+  }
+}
+
+export type MemoryDeleteResult = {
+  deleted: true
+}
+
+export type MemoryResetInput = {
+  scope: "global" | "project"
+  confirm: true
+}
+
+export type MemoryResetResult = {
+  scope: "global" | "project"
+  notes: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  outputs: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  stage1Jobs: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  stage2Jobs: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  sessions: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+}
+
+export type LegacyMemoryNote = {
+  id: string
+  text: string
+  scope: "global" | "project"
+  source: {
+    kind: "explicit-user-directive" | "manual"
+    sessionID?: string
+    messageID?: string
+  }
+  time_created: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+}
+
+export type LegacyMemoryFileV1 = {
+  schemaVersion: 1
+  notes: Array<LegacyMemoryNote>
+}
+
+export type MemoryImportResult = {
+  imported: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  skipped: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  total: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+}
+
+export type MemoryRebuildInput = {
+  scope: "global" | "project"
+}
+
+export type MemoryRebuildResult = {
+  scope: "global" | "project"
+  queued: true
 }
 
 export type NotFoundError = {
@@ -2548,6 +2711,23 @@ export type EventInstallationUpdateAvailable = {
   }
 }
 
+export type EventSessionStatus = {
+  id: string
+  type: "session.status"
+  properties: {
+    sessionID: string
+    status: SessionStatus
+  }
+}
+
+export type EventSessionIdle = {
+  id: string
+  type: "session.idle"
+  properties: {
+    sessionID: string
+  }
+}
+
 export type EventQuestionAsked = {
   id: string
   type: "question.asked"
@@ -2581,23 +2761,6 @@ export type EventWorkBriefUpdated = {
   properties: {
     sessionID: string
     brief: WorkBrief
-  }
-}
-
-export type EventSessionStatus = {
-  id: string
-  type: "session.status"
-  properties: {
-    sessionID: string
-    status: SessionStatus
-  }
-}
-
-export type EventSessionIdle = {
-  id: string
-  type: "session.idle"
-  properties: {
-    sessionID: string
   }
 }
 
@@ -2699,6 +2862,7 @@ export type EventSessionPromptStats = {
       history: string
       runtime: string
       current: string
+      memory: string
       tools: string
       request: string
     }
@@ -3269,6 +3433,12 @@ export type EventGlobalDisposed = {
   }
 }
 
+export type EventGlobalPreferencesUpdated = {
+  id: string
+  type: "global.preferences.updated"
+  properties: WebUiPreferencesSnapshot
+}
+
 export type SessionInfo = {
   id: string
   parentID?: string
@@ -3542,6 +3712,7 @@ export type EventSessionPromptStats1 = {
       history: string
       runtime: string
       current: string
+      memory: string
       tools: string
       request: string
     }
@@ -3697,6 +3868,51 @@ export type GlobalEventResponses = {
 }
 
 export type GlobalEventResponse = GlobalEventResponses[keyof GlobalEventResponses]
+
+export type GlobalPreferencesGetData = {
+  body?: never
+  path?: never
+  query?: never
+  url: "/global/preferences"
+}
+
+export type GlobalPreferencesGetResponses = {
+  /**
+   * WebUI preferences snapshot
+   */
+  200: WebUiPreferencesSnapshot
+}
+
+export type GlobalPreferencesGetResponse = GlobalPreferencesGetResponses[keyof GlobalPreferencesGetResponses]
+
+export type GlobalPreferencesUpdateData = {
+  body?: WebUiPreferencesUpdate
+  path?: never
+  query?: never
+  url: "/global/preferences"
+}
+
+export type GlobalPreferencesUpdateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * WebUIPreferencesRevisionConflictError
+   */
+  409: WebUiPreferencesRevisionConflictError
+}
+
+export type GlobalPreferencesUpdateError = GlobalPreferencesUpdateErrors[keyof GlobalPreferencesUpdateErrors]
+
+export type GlobalPreferencesUpdateResponses = {
+  /**
+   * Updated WebUI preferences snapshot
+   */
+  200: WebUiPreferencesSnapshot
+}
+
+export type GlobalPreferencesUpdateResponse = GlobalPreferencesUpdateResponses[keyof GlobalPreferencesUpdateResponses]
 
 export type GlobalConfigGetData = {
   body?: never
@@ -5013,6 +5229,222 @@ export type McpDisconnectResponses = {
 }
 
 export type McpDisconnectResponse = McpDisconnectResponses[keyof McpDisconnectResponses]
+
+export type MemoryStatusData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+    scope?: "global" | "project" | "all"
+  }
+  url: "/memory/status"
+}
+
+export type MemoryStatusResponses = {
+  /**
+   * Memory status
+   */
+  200: MemoryStatus
+}
+
+export type MemoryStatusResponse = MemoryStatusResponses[keyof MemoryStatusResponses]
+
+export type MemoryNotesData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+    scope?: "global" | "project"
+  }
+  url: "/memory/notes"
+}
+
+export type MemoryNotesResponses = {
+  /**
+   * Memory notes
+   */
+  200: Array<MemoryNote>
+}
+
+export type MemoryNotesResponse = MemoryNotesResponses[keyof MemoryNotesResponses]
+
+export type MemoryRememberData = {
+  body?: MemoryCreateInput
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/memory/notes"
+}
+
+export type MemoryRememberErrors = {
+  /**
+   * MemoryBadRequestError
+   */
+  400: MemoryBadRequestError
+}
+
+export type MemoryRememberError = MemoryRememberErrors[keyof MemoryRememberErrors]
+
+export type MemoryRememberResponses = {
+  /**
+   * Created memory note
+   */
+  200: MemoryNote
+}
+
+export type MemoryRememberResponse = MemoryRememberResponses[keyof MemoryRememberResponses]
+
+export type MemoryForgetData = {
+  body?: never
+  path: {
+    id: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/memory/notes/{id}"
+}
+
+export type MemoryForgetErrors = {
+  /**
+   * MemoryNotFoundError
+   */
+  404: MemoryNotFoundError
+}
+
+export type MemoryForgetError = MemoryForgetErrors[keyof MemoryForgetErrors]
+
+export type MemoryForgetResponses = {
+  /**
+   * Memory note forgotten
+   */
+  200: MemoryDeleteResult
+}
+
+export type MemoryForgetResponse = MemoryForgetResponses[keyof MemoryForgetResponses]
+
+export type MemoryUpdateData = {
+  body?: MemoryUpdateInput
+  path: {
+    id: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/memory/notes/{id}"
+}
+
+export type MemoryUpdateErrors = {
+  /**
+   * MemoryBadRequestError
+   */
+  400: MemoryBadRequestError
+  /**
+   * MemoryNotFoundError
+   */
+  404: MemoryNotFoundError
+}
+
+export type MemoryUpdateError = MemoryUpdateErrors[keyof MemoryUpdateErrors]
+
+export type MemoryUpdateResponses = {
+  /**
+   * Updated memory note
+   */
+  200: MemoryNote
+}
+
+export type MemoryUpdateResponse = MemoryUpdateResponses[keyof MemoryUpdateResponses]
+
+export type MemoryResetData = {
+  body?: MemoryResetInput
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/memory/reset"
+}
+
+export type MemoryResetErrors = {
+  /**
+   * MemoryBadRequestError
+   */
+  400: MemoryBadRequestError
+}
+
+export type MemoryResetError = MemoryResetErrors[keyof MemoryResetErrors]
+
+export type MemoryResetResponses = {
+  /**
+   * Memory scope reset
+   */
+  200: MemoryResetResult
+}
+
+export type MemoryResetResponse = MemoryResetResponses[keyof MemoryResetResponses]
+
+export type MemoryImportData = {
+  body?: LegacyMemoryFileV1
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/memory/import"
+}
+
+export type MemoryImportErrors = {
+  /**
+   * MemoryBadRequestError
+   */
+  400: MemoryBadRequestError
+}
+
+export type MemoryImportError = MemoryImportErrors[keyof MemoryImportErrors]
+
+export type MemoryImportResponses = {
+  /**
+   * Legacy memory import result
+   */
+  200: MemoryImportResult
+}
+
+export type MemoryImportResponse = MemoryImportResponses[keyof MemoryImportResponses]
+
+export type MemoryRebuildData = {
+  body?: MemoryRebuildInput
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/memory/rebuild"
+}
+
+export type MemoryRebuildErrors = {
+  /**
+   * MemoryBadRequestError
+   */
+  400: MemoryBadRequestError
+}
+
+export type MemoryRebuildError = MemoryRebuildErrors[keyof MemoryRebuildErrors]
+
+export type MemoryRebuildResponses = {
+  /**
+   * Memory rebuild queued
+   */
+  200: MemoryRebuildResult
+}
+
+export type MemoryRebuildResponse = MemoryRebuildResponses[keyof MemoryRebuildResponses]
 
 export type ProjectListData = {
   body?: never

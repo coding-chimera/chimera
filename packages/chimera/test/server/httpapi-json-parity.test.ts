@@ -1,5 +1,6 @@
-import { afterEach, describe, expect } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { Effect } from "effect"
+import { OpenApi } from "effect/unstable/httpapi"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { ModelID, ProviderID } from "../../src/provider/schema"
 import { Instance } from "../../src/project/instance"
@@ -9,6 +10,8 @@ import { FilePaths } from "../../src/server/routes/instance/httpapi/groups/file"
 import { GlobalPaths } from "../../src/server/routes/instance/httpapi/groups/global"
 import { InstancePaths } from "../../src/server/routes/instance/httpapi/groups/instance"
 import { McpPaths } from "../../src/server/routes/instance/httpapi/groups/mcp"
+import { MemoryPaths } from "../../src/server/routes/instance/httpapi/groups/memory"
+import { PublicApi } from "../../src/server/routes/instance/httpapi/public"
 import { PtyPaths } from "../../src/server/routes/instance/httpapi/groups/pty"
 import { SessionPaths } from "../../src/server/routes/instance/httpapi/groups/session"
 import { MessageID, PartID } from "../../src/session/schema"
@@ -93,6 +96,18 @@ afterEach(async () => {
   await resetDatabase()
 })
 
+test("publishes memory update 400 and 404 errors in both OpenAPI contracts", async () => {
+  const contracts = [await Server.openapiHono(), OpenApi.fromApi(PublicApi)]
+  for (const contract of contracts) {
+    const update = contract.paths["/memory/notes/{id}"]?.patch
+    const statuses = Object.keys(update?.responses ?? {})
+    expect(update?.operationId).toBe("memory.update")
+    expect(statuses).toContain("400")
+    expect(statuses).toContain("404")
+    expect(statuses).not.toContain("500")
+  }
+})
+
 describe("HttpApi JSON parity", () => {
   it.live(
     "matches legacy JSON shape for safe GET endpoints",
@@ -141,6 +156,8 @@ describe("HttpApi JSON parity", () => {
               { label: "permission.list", path: "/permission", headers },
               { label: "question.list", path: "/question", headers },
               { label: "mcp.status", path: McpPaths.status, headers },
+              { label: "memory.status", path: MemoryPaths.status, headers },
+              { label: "memory.notes", path: MemoryPaths.notes, headers },
               { label: "pty.shells", path: PtyPaths.shells, headers },
               { label: "pty.list", path: PtyPaths.list, headers },
               { label: "file.list", path: `${FilePaths.list}?${new URLSearchParams({ path: "." })}`, headers },
