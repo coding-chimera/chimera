@@ -273,6 +273,78 @@ describe("ProviderTransform.options - nvidia Kimi K2.6 thinking", () => {
   })
 })
 
+describe("ProviderTransform.options - grok-4.5 reasoning effort", () => {
+  const sessionID = "test-session-123"
+
+  test("aijws openai-compatible defaults to high", () => {
+    const result = ProviderTransform.options({
+      model: {
+        id: "grok-4.5",
+        providerID: "aijws",
+        api: {
+          id: "grok-4.5",
+          url: "https://api.aijws.com/v1",
+          npm: "@ai-sdk/openai-compatible",
+        },
+        name: "Grok 4.5",
+        capabilities: {
+          temperature: true,
+          reasoning: true,
+          attachment: true,
+          toolcall: true,
+          input: { text: true, audio: false, image: true, video: false, pdf: false },
+          output: { text: true, audio: false, image: false, video: false, pdf: false },
+          interleaved: false,
+        },
+        cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+        limit: { context: 500_000, output: 64_000 },
+        status: "active",
+        options: {},
+        headers: {},
+        release_date: "2026-07-08",
+      } as any,
+      sessionID,
+      providerOptions: {},
+    })
+
+    expect(result.reasoningEffort).toBe("high")
+  })
+
+  test("openrouter defaults to reasoning.effort high", () => {
+    const result = ProviderTransform.options({
+      model: {
+        id: "x-ai/grok-4.5",
+        providerID: "openrouter",
+        api: {
+          id: "x-ai/grok-4.5",
+          url: "https://openrouter.ai",
+          npm: "@openrouter/ai-sdk-provider",
+        },
+        name: "Grok 4.5",
+        capabilities: {
+          temperature: true,
+          reasoning: true,
+          attachment: true,
+          toolcall: true,
+          input: { text: true, audio: false, image: true, video: false, pdf: false },
+          output: { text: true, audio: false, image: false, video: false, pdf: false },
+          interleaved: false,
+        },
+        cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+        limit: { context: 500_000, output: 64_000 },
+        status: "active",
+        options: {},
+        headers: {},
+        release_date: "2026-07-08",
+      } as any,
+      sessionID,
+      providerOptions: {},
+    })
+
+    expect(result.reasoning).toEqual({ effort: "high" })
+  })
+})
+
 describe("ProviderTransform.options - google thinkingConfig gating", () => {
   const sessionID = "test-session-123"
 
@@ -2831,6 +2903,23 @@ describe("ProviderTransform.variants", () => {
       expect(result).toEqual({})
     })
 
+    test("grok-4.5 returns low medium high with reasoning", () => {
+      const model = createMockModel({
+        id: "openrouter/x-ai/grok-4.5",
+        providerID: "openrouter",
+        api: {
+          id: "x-ai/grok-4.5",
+          url: "https://openrouter.ai",
+          npm: "@openrouter/ai-sdk-provider",
+        },
+      })
+      const result = ProviderTransform.variants(model)
+      expect(Object.keys(result)).toEqual(["low", "medium", "high"])
+      expect(result.low).toEqual({ reasoning: { effort: "low" } })
+      expect(result.medium).toEqual({ reasoning: { effort: "medium" } })
+      expect(result.high).toEqual({ reasoning: { effort: "high" } })
+    })
+
     test("grok-3-mini returns low and high with reasoning", () => {
       const model = createMockModel({
         id: "openrouter/grok-3-mini",
@@ -3181,6 +3270,66 @@ describe("ProviderTransform.variants", () => {
       const result = ProviderTransform.variants(model)
       expect(Object.keys(result)).toEqual(["low", "high"])
       expect(result.low).toEqual({ reasoningEffort: "low" })
+      expect(result.high).toEqual({ reasoningEffort: "high" })
+    })
+
+    test("grok-4.5 returns low medium high with reasoningEffort", () => {
+      const model = createMockModel({
+        id: "xai/grok-4.5",
+        providerID: "xai",
+        api: {
+          id: "grok-4.5",
+          url: "https://api.x.ai",
+          npm: "@ai-sdk/xai",
+        },
+      })
+      const result = ProviderTransform.variants(model)
+      expect(Object.keys(result)).toEqual(["low", "medium", "high"])
+      expect(result.low).toEqual({ reasoningEffort: "low" })
+      expect(result.medium).toEqual({ reasoningEffort: "medium" })
+      expect(result.high).toEqual({ reasoningEffort: "high" })
+    })
+  })
+
+  describe("@ai-sdk/openai-compatible grok-4.5", () => {
+    test("aijws grok-4.5 returns low medium high with reasoningEffort", () => {
+      const model = createMockModel({
+        id: "grok-4.5",
+        providerID: "aijws",
+        api: {
+          id: "grok-4.5",
+          url: "https://api.aijws.com/v1",
+          npm: "@ai-sdk/openai-compatible",
+        },
+      })
+      const result = ProviderTransform.variants(model)
+      expect(Object.keys(result)).toEqual(["low", "medium", "high"])
+      expect(result.low).toEqual({ reasoningEffort: "low" })
+      expect(result.medium).toEqual({ reasoningEffort: "medium" })
+      expect(result.high).toEqual({ reasoningEffort: "high" })
+    })
+
+    test("aijws grok-4.5 still exposes efforts when discovery omits reasoning", () => {
+      const model = createMockModel({
+        id: "grok-4.5",
+        providerID: "aijws",
+        capabilities: {
+          temperature: true,
+          reasoning: false,
+          attachment: true,
+          toolcall: true,
+          input: { text: true, audio: false, image: true, video: false, pdf: false },
+          output: { text: true, audio: false, image: false, video: false, pdf: false },
+          interleaved: false,
+        },
+        api: {
+          id: "grok-4.5",
+          url: "https://api.aijws.com/v1",
+          npm: "@ai-sdk/openai-compatible",
+        },
+      })
+      const result = ProviderTransform.variants(model)
+      expect(Object.keys(result)).toEqual(["low", "medium", "high"])
       expect(result.high).toEqual({ reasoningEffort: "high" })
     })
   })

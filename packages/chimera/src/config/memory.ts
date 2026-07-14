@@ -19,10 +19,11 @@ export const Info = Schema.Struct({
     description: "Skip automatic memory generation for sessions containing external context. Defaults to true.",
   }),
   dedicated_tools: Schema.optional(Schema.Boolean).annotate({
-    description: "Compatibility setting for dedicated memory tools. Defaults to false.",
+    description:
+      "Expose agent-facing memory tools (memory_remember, memory_list, memory_forget, memory_read) when memory is enabled. Defaults to false."
   }),
   max_summary_chars: Schema.optional(PositiveInt).annotate({
-    description: "Compatibility limit for injected memory summary characters. Defaults to 12000.",
+    description: "Limit for injected memory summary characters. Defaults to 12000."
   }),
 }).pipe(
   withStatics((s) => ({
@@ -37,4 +38,8 @@ export const Defaults = {
   use_memories: true,
   generate_memories: true,
   disable_on_external_context: true,
-} satisfies Pick<Required<Info>, "enabled" | "use_memories" | "generate_memories" | "disable_on_external_context">
+  dedicated_tools: false,
+} satisfies Pick<
+  Required<Info>,
+  "enabled" | "use_memories" | "generate_memories" | "disable_on_external_context" | "dedicated_tools"
+>
