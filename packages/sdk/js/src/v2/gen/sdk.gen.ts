@@ -56,6 +56,9 @@ import type {
   GlobalDisposeResponses,
   GlobalEventResponses,
   GlobalHealthResponses,
+  GlobalPreferencesGetResponses,
+  GlobalPreferencesUpdateErrors,
+  GlobalPreferencesUpdateResponses,
   GlobalUpgradeErrors,
   GlobalUpgradeResponses,
   GraphFilesResponses,
@@ -65,6 +68,7 @@ import type {
   GraphSearchResponses,
   GraphStatusResponses,
   InstanceDisposeResponses,
+  LegacyMemoryFileV1,
   LspStatusResponses,
   McpAddErrors,
   McpAddResponses,
@@ -81,6 +85,24 @@ import type {
   McpLocalConfig,
   McpRemoteConfig,
   McpStatusResponses,
+  MemoryCreateInput,
+  MemoryForgetErrors,
+  MemoryForgetResponses,
+  MemoryImportErrors,
+  MemoryImportResponses,
+  MemoryNotesResponses,
+  MemoryRebuildErrors,
+  MemoryRebuildInput,
+  MemoryRebuildResponses,
+  MemoryRememberErrors,
+  MemoryRememberResponses,
+  MemoryResetErrors,
+  MemoryResetInput,
+  MemoryResetResponses,
+  MemoryStatusResponses,
+  MemoryUpdateErrors,
+  MemoryUpdateInput,
+  MemoryUpdateResponses,
   ModelSelectionPatch,
   OutputFormat,
   Part as Part2,
@@ -222,6 +244,7 @@ import type {
   VcsDiffResponses,
   VcsGetResponses,
   VcsStatusResponses,
+  WebUiPreferencesUpdate,
   WorktreeCreateErrors,
   WorktreeCreateInput,
   WorktreeCreateResponses,
@@ -440,6 +463,48 @@ export class App extends HeyApiClient {
   }
 }
 
+export class Preferences extends HeyApiClient {
+  /**
+   * Get WebUI preferences
+   *
+   * Retrieve the server-global shared WebUI preferences snapshot.
+   */
+  public get<ThrowOnError extends boolean = false>(options?: Options<never, ThrowOnError>) {
+    return (options?.client ?? this.client).get<GlobalPreferencesGetResponses, unknown, ThrowOnError>({
+      url: "/global/preferences",
+      ...options,
+    })
+  }
+
+  /**
+   * Update WebUI preferences
+   *
+   * Replace the server-global shared WebUI preferences using revision compare-and-swap.
+   */
+  public update<ThrowOnError extends boolean = false>(
+    parameters?: {
+      webUiPreferencesUpdate?: WebUiPreferencesUpdate
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ key: "webUiPreferencesUpdate", map: "body" }] }])
+    return (options?.client ?? this.client).put<
+      GlobalPreferencesUpdateResponses,
+      GlobalPreferencesUpdateErrors,
+      ThrowOnError
+    >({
+      url: "/global/preferences",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
 export class Config extends HeyApiClient {
   /**
    * Get global configuration
@@ -537,6 +602,11 @@ export class Global extends HeyApiClient {
         ...params.headers,
       },
     })
+  }
+
+  private _preferences?: Preferences
+  get preferences(): Preferences {
+    return (this._preferences ??= new Preferences({ client: this.client }))
   }
 
   private _config?: Config
@@ -2402,6 +2472,291 @@ export class Mcp extends HeyApiClient {
   private _auth?: Auth2
   get auth(): Auth2 {
     return (this._auth ??= new Auth2({ client: this.client }))
+  }
+}
+
+export class Memory extends HeyApiClient {
+  /**
+   * Get memory status
+   *
+   * Return current memory settings and scope statistics without exposing storage paths.
+   */
+  public status<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      scope?: "global" | "project" | "all"
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "query", key: "scope" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<MemoryStatusResponses, unknown, ThrowOnError>({
+      url: "/memory/status",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * List memory notes
+   *
+   * List active notes in the global or current-project memory scope.
+   */
+  public notes<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      scope?: "global" | "project"
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "query", key: "scope" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<MemoryNotesResponses, unknown, ThrowOnError>({
+      url: "/memory/notes",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Remember a memory note
+   *
+   * Create a normalized note in the global or current-project memory scope and queue consolidation.
+   */
+  public remember<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      memoryCreateInput?: MemoryCreateInput
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "memoryCreateInput", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<MemoryRememberResponses, MemoryRememberErrors, ThrowOnError>({
+      url: "/memory/notes",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Forget a memory note
+   *
+   * Forget a visible global or current-project note and queue consolidation.
+   */
+  public forget<ThrowOnError extends boolean = false>(
+    parameters: {
+      id: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "id" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).delete<MemoryForgetResponses, MemoryForgetErrors, ThrowOnError>({
+      url: "/memory/notes/{id}",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Update a memory note
+   *
+   * Update a visible global or current-project note and queue consolidation.
+   */
+  public update<ThrowOnError extends boolean = false>(
+    parameters: {
+      id: string
+      directory?: string
+      workspace?: string
+      memoryUpdateInput?: MemoryUpdateInput
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "id" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "memoryUpdateInput", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).patch<MemoryUpdateResponses, MemoryUpdateErrors, ThrowOnError>({
+      url: "/memory/notes/{id}",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Reset memory scope
+   *
+   * Clear database records and generated artifacts for one scope without changing configuration.
+   */
+  public reset<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      memoryResetInput?: MemoryResetInput
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "memoryResetInput", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<MemoryResetResponses, MemoryResetErrors, ThrowOnError>({
+      url: "/memory/reset",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Import legacy memory notes
+   *
+   * Idempotently import legacy schemaVersion 1 notes into global or current-project scopes.
+   */
+  public import<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      legacyMemoryFileV1?: LegacyMemoryFileV1
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "legacyMemoryFileV1", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<MemoryImportResponses, MemoryImportErrors, ThrowOnError>({
+      url: "/memory/import",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Queue memory rebuild
+   *
+   * Queue asynchronous Stage 2 consolidation for one memory scope.
+   */
+  public rebuild<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      memoryRebuildInput?: MemoryRebuildInput
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "memoryRebuildInput", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<MemoryRebuildResponses, MemoryRebuildErrors, ThrowOnError>({
+      url: "/memory/rebuild",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
   }
 }
 
@@ -5240,6 +5595,11 @@ export class OpencodeClient extends HeyApiClient {
   private _mcp?: Mcp
   get mcp(): Mcp {
     return (this._mcp ??= new Mcp({ client: this.client }))
+  }
+
+  private _memory?: Memory
+  get memory(): Memory {
+    return (this._memory ??= new Memory({ client: this.client }))
   }
 
   private _project?: Project
