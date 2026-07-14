@@ -102,7 +102,11 @@ export const SubagentDispatch = Effect.gen(function* () {
       () =>
         Effect.gen(function* () {
           if (input.abort.aborted) return yield* Effect.interrupt
-          const parts = yield* input.promptOps.resolvePromptParts(input.prompt)
+          const parts = (yield* input.promptOps.resolvePromptParts(input.prompt)).map((part) =>
+            part.type === "text"
+              ? { ...part, metadata: { ...part.metadata, memorySource: "delegated" } }
+              : part,
+          )
           const result = yield* input.promptOps.prompt({
             messageID,
             sessionID: nextSession.id,

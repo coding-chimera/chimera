@@ -11,6 +11,7 @@ import { ShareNext } from "@/share/share-next"
 import { Effect, Layer } from "effect"
 import { Config } from "@/config/config"
 import { Service } from "./bootstrap-service"
+import { Memory } from "@/memory/memory"
 
 export { Service } from "./bootstrap-service"
 export type { Interface } from "./bootstrap-service"
@@ -31,6 +32,7 @@ export const layer = Layer.effect(
     const shareNext = yield* ShareNext.Service
     const snapshot = yield* Snapshot.Service
     const vcs = yield* Vcs.Service
+    const memory = yield* Memory.Service
 
     const run = Effect.gen(function* () {
       const ctx = yield* InstanceState.context
@@ -42,7 +44,7 @@ export const layer = Layer.effect(
       // Each service self-manages its own slow work via Effect.forkScoped against
       // its per-instance state scope. We just await materialization here.
       yield* Effect.forEach(
-        [lsp, shareNext, format, file, fileWatcher, vcs, snapshot, project],
+        [lsp, shareNext, format, file, fileWatcher, vcs, snapshot, project, memory],
         (s) => s.init().pipe(Effect.catchCause((cause) => Effect.logWarning("init failed", { cause }))),
         { concurrency: "unbounded", discard: true },
       ).pipe(Effect.withSpan("InstanceBootstrap.init"))
@@ -61,6 +63,7 @@ export const defaultLayer: Layer.Layer<Service> = layer.pipe(
     LSP.defaultLayer,
     Plugin.defaultLayer,
     Project.defaultLayer,
+    Memory.defaultLayer,
     ShareNext.defaultLayer,
     Snapshot.defaultLayer,
     Vcs.defaultLayer,
