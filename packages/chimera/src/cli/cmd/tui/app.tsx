@@ -76,6 +76,16 @@ import {
   openAIRemoteCompactionToggleDescription,
   openAIRemoteCompactionToggleTitle,
 } from "@tui/util/remote-compaction"
+import {
+  memoryDedicatedToolsStatus,
+  memoryDedicatedToolsToggleDescription,
+  memoryDedicatedToolsToggleTitle,
+  memoryEnabledStatus,
+  memoryEnabledToggleDescription,
+  memoryEnabledToggleTitle,
+  nextMemoryDedicatedTools,
+  nextMemoryEnabled,
+} from "@tui/util/memory-settings"
 
 import type { EventSource } from "./context/sdk"
 import { DialogVariant } from "./component/dialog-variant"
@@ -528,6 +538,90 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     })
   }
 
+  async function toggleMemoryEnabled() {
+    const enabled = nextMemoryEnabled(sync.data.config)
+    const memories = { ...sync.data.config.memories, enabled }
+    const result = await sdk.client.config
+      .update({
+        workspace: project.workspace.current(),
+        config: {
+          memories,
+        },
+      })
+      .catch((error) => {
+        toast.show({
+          variant: "error",
+          message: errorMessage(error),
+          duration: 5000,
+        })
+      })
+    if (!result) return
+    if (result.error) {
+      toast.show({
+        variant: "error",
+        message: errorMessage(result.error),
+        duration: 5000,
+      })
+      return
+    }
+    sync.set("config", "memories", memories)
+    await sync.bootstrap({ fatal: false }).catch((error) => {
+      toast.show({
+        variant: "error",
+        message: errorMessage(error),
+        duration: 5000,
+      })
+    })
+    sync.set("config", "memories", memories)
+    toast.show({
+      variant: "info",
+      message: `Memory system: ${memoryEnabledStatus(sync.data.config)}`,
+      duration: 3000,
+    })
+  }
+
+  async function toggleMemoryDedicatedTools() {
+    const dedicated_tools = nextMemoryDedicatedTools(sync.data.config)
+    const memories = { ...sync.data.config.memories, dedicated_tools }
+    const result = await sdk.client.config
+      .update({
+        workspace: project.workspace.current(),
+        config: {
+          memories,
+        },
+      })
+      .catch((error) => {
+        toast.show({
+          variant: "error",
+          message: errorMessage(error),
+          duration: 5000,
+        })
+      })
+    if (!result) return
+    if (result.error) {
+      toast.show({
+        variant: "error",
+        message: errorMessage(result.error),
+        duration: 5000,
+      })
+      return
+    }
+    sync.set("config", "memories", memories)
+    await sync.bootstrap({ fatal: false }).catch((error) => {
+      toast.show({
+        variant: "error",
+        message: errorMessage(error),
+        duration: 5000,
+      })
+    })
+    sync.set("config", "memories", memories)
+    toast.show({
+      variant: "info",
+      message: `Memory dedicated tools: ${memoryDedicatedToolsStatus(sync.data.config)}`,
+      duration: 3000,
+    })
+  }
+
   const customOpenAICompatibleProviders = createMemo(() =>
     Object.entries(sync.data.config.provider ?? {}).flatMap(([id, provider]) => {
       if (provider.npm !== "@ai-sdk/openai-compatible") return []
@@ -807,6 +901,36 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       },
       onSelect: async (dialog) => {
         await toggleOpenAIRemoteCompactionProtocol()
+        dialog.clear()
+      },
+      category: "System",
+    },
+    {
+      title: memoryEnabledToggleTitle(sync.data.config),
+      description: memoryEnabledToggleDescription(sync.data.config),
+      value: "app.toggle.memory_enabled",
+      suggested: true,
+      slash: {
+        name: "memory",
+        aliases: ["memories", "toggle-memory"],
+      },
+      onSelect: async (dialog) => {
+        await toggleMemoryEnabled()
+        dialog.clear()
+      },
+      category: "System",
+    },
+    {
+      title: memoryDedicatedToolsToggleTitle(sync.data.config),
+      description: memoryDedicatedToolsToggleDescription(sync.data.config),
+      value: "app.toggle.memory_dedicated_tools",
+      suggested: true,
+      slash: {
+        name: "memory-tools",
+        aliases: ["dedicated-tools", "memory-dedicated-tools"],
+      },
+      onSelect: async (dialog) => {
+        await toggleMemoryDedicatedTools()
         dialog.clear()
       },
       category: "System",

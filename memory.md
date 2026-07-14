@@ -12,4 +12,22 @@ Guidelines:
 
 ## Notes
 
-- None yet.
+### P0 plan: aijws/grok-4.5 thinking intensity (DONE)
+
+Status: implemented and verified 2026-07-14.
+
+Changes:
+- `chimera/packages/chimera/src/provider/transform.ts`
+  - `grokReasoningEfforts` / `isGrok45Family` / `grokEffortOptions`
+  - variants: grok-4.5 family → low/medium/high
+  - options default high for grok-4.5
+  - discovery without reasoning still allowed for grok effort models
+- `chimera/packages/chimera/test/provider/transform.test.ts` aijws/xai/openrouter coverage
+
+Verify:
+- `bun test --timeout 30000 test/provider/transform.test.ts` → 173 pass
+- `bun typecheck` → pass
+
+Out of scope (P1 later): Ultra multi-agent, llm.ts codex decoupling.
+
+

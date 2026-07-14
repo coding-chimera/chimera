@@ -1754,6 +1754,7 @@ test("defines safe cross-session memory defaults", () => {
     use_memories: true,
     generate_memories: true,
     disable_on_external_context: true,
+    dedicated_tools: false,
   })
 })
 

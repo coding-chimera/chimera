@@ -28,6 +28,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { ProviderID, ModelID } from "@/provider/schema"
 import { WebSearchTool } from "@/tool/websearch"
 import { Auth } from "@/auth"
+import { MemoryManagement } from "@/memory/management"
 import { ApplyPatchTool } from "@/tool/apply_patch"
 import { EditTool } from "@/tool/edit"
 import { WriteTool } from "@/tool/write"
@@ -43,27 +44,30 @@ const authLayer = Layer.mock(Auth.Service)({
   remove: () => Effect.void,
 })
 const makeRegistryLayer = () =>
-  ToolRegistry.layer.pipe(
-  Layer.provide(configLayer),
-  Layer.provide(authLayer),
-  Layer.provide(Plugin.defaultLayer),
-  Layer.provide(Question.defaultLayer),
-  Layer.provide(Todo.defaultLayer),
-  Layer.provide(WorkBrief.defaultLayer),
-  Layer.provide(Skill.defaultLayer),
-  Layer.provide(Agent.defaultLayer),
-  Layer.provide(Session.defaultLayer),
-  Layer.provide(Provider.defaultLayer),
-  Layer.provide(LSP.defaultLayer),
-  Layer.provide(Instruction.defaultLayer),
-  Layer.provide(AppFileSystem.defaultLayer),
-  Layer.provide(Bus.layer),
-  Layer.provide(FetchHttpClient.layer),
-  Layer.provide(Format.defaultLayer),
-  Layer.provide(node),
-  Layer.provide(BrowserRuntime.defaultLayer),
-  Layer.provide(Ripgrep.defaultLayer),
-  Layer.provide(Truncate.defaultLayer),
+  Layer.provide(
+    ToolRegistry.layer.pipe(
+      Layer.provide(configLayer),
+      Layer.provide(authLayer),
+      Layer.provide(Plugin.defaultLayer),
+      Layer.provide(Question.defaultLayer),
+      Layer.provide(Todo.defaultLayer),
+      Layer.provide(WorkBrief.defaultLayer),
+      Layer.provide(Skill.defaultLayer),
+      Layer.provide(Agent.defaultLayer),
+      Layer.provide(Session.defaultLayer),
+      Layer.provide(Provider.defaultLayer),
+      Layer.provide(LSP.defaultLayer),
+      Layer.provide(Instruction.defaultLayer),
+      Layer.provide(AppFileSystem.defaultLayer),
+      Layer.provide(Bus.layer),
+      Layer.provide(FetchHttpClient.layer),
+      Layer.provide(Format.defaultLayer),
+      Layer.provide(node),
+      Layer.provide(BrowserRuntime.defaultLayer),
+      Layer.provide(Ripgrep.defaultLayer),
+      Layer.provide(Truncate.defaultLayer),
+    ),
+    MemoryManagement.defaultLayer,
   )
 
 const registryLayer = makeRegistryLayer()

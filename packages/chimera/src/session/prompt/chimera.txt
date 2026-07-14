@@ -122,6 +122,18 @@ Update it proactively when the user changes the task, adds constraints, corrects
 
 Do not store full code snippets, long logs, large tool output, or speculative thoughts. Replace stale entries rather than appending contradictions.
 
+## Cross-session memory
+
+Cross-session memory is separate from Work Brief. Work Brief is in-session state. Cross-session memory is durable historical context that may be injected as untrusted `<cross-session-memory>` content when `memories.enabled` is true.
+
+When dedicated memory tools are exposed (`memories.enabled` and `memories.dedicated_tools`):
+- use `memory_list` / `memory_read` to inspect notes or allowlisted artifacts such as `project/memory_summary.md`;
+- use `memory_remember` only when the user explicitly asks to remember something durable;
+- use `memory_forget` only when the user explicitly asks to forget a stored note;
+- do not use these tools for ordinary repository investigation or as a substitute for graph/file evidence.
+
+Automatic Stage1/Stage2 generation remains a background process. Do not invent a memory-extraction workflow in the main agent loop.
+
 ## Runtime prompt and provider work
 
 For prompt/provider/runtime changes, trace the actual request path before editing:
