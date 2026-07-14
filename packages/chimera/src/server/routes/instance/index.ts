@@ -27,6 +27,7 @@ import { ExperimentalRoutes } from "./experimental"
 import { ProviderRoutes } from "./provider"
 import { EventRoutes } from "./event"
 import { SyncRoutes } from "./sync"
+import { MemoryRoutes } from "./memory"
 import { InstanceMiddleware } from "./middleware"
 import { jsonRequest, runRequest } from "./trace"
 import { ExperimentalHttpApiServer } from "./httpapi/server"
@@ -36,6 +37,7 @@ import { FilePaths } from "./httpapi/groups/file"
 import { InstancePaths } from "./httpapi/groups/instance"
 import { GraphPaths } from "./httpapi/groups/graph"
 import { McpPaths } from "./httpapi/groups/mcp"
+import { MemoryPaths } from "./httpapi/groups/memory"
 import { PtyPaths } from "./httpapi/groups/pty"
 import { SessionPaths } from "./httpapi/groups/session"
 import { SyncPaths } from "./httpapi/groups/sync"
@@ -106,6 +108,14 @@ export const InstanceRoutes = (upgrade: UpgradeWebSocket, opts?: CorsOptions): H
     app.get(InstancePaths.lsp, (c) => handler(c.req.raw, context))
     app.get(InstancePaths.formatter, (c) => handler(c.req.raw, context))
     app.get(McpPaths.status, (c) => handler(c.req.raw, context))
+    app.get(MemoryPaths.status, (c) => handler(c.req.raw, context))
+    app.get(MemoryPaths.notes, (c) => handler(c.req.raw, context))
+    app.post(MemoryPaths.notes, (c) => handler(c.req.raw, context))
+    app.patch(MemoryPaths.note, (c) => handler(c.req.raw, context))
+    app.delete(MemoryPaths.note, (c) => handler(c.req.raw, context))
+    app.post(MemoryPaths.reset, (c) => handler(c.req.raw, context))
+    app.post(MemoryPaths.import, (c) => handler(c.req.raw, context))
+    app.post(MemoryPaths.rebuild, (c) => handler(c.req.raw, context))
     app.post(McpPaths.status, (c) => handler(c.req.raw, context))
     app.post(McpPaths.auth, (c) => handler(c.req.raw, context))
     app.post(McpPaths.authCallback, (c) => handler(c.req.raw, context))
@@ -185,6 +195,7 @@ export const InstanceRoutes = (upgrade: UpgradeWebSocket, opts?: CorsOptions): H
     .route("/", EventRoutes())
     .route("/mcp", McpRoutes())
     .route("/graph", GraphRoutes())
+    .route("/memory", MemoryRoutes())
     .route("/tui", TuiRoutes())
     .post(
       "/instance/dispose",

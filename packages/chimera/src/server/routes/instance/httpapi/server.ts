@@ -16,6 +16,7 @@ import { Ripgrep } from "@/file/ripgrep"
 import { Format } from "@/format"
 import { LSP } from "@/lsp/lsp"
 import { MCP } from "@/mcp"
+import { MemoryManagement } from "@/memory/management"
 import { Permission } from "@/permission"
 import { Installation } from "@/installation"
 import { InstanceLayer } from "@/project/instance-layer"
@@ -51,6 +52,7 @@ import { CorsConfig, isAllowedCorsOrigin, type CorsOptions } from "@/server/cors
 import { serveUIEffect } from "@/server/shared/ui"
 import { serveNewWebUIEffect } from "@/server/shared/newweb-ui"
 import { ServerAuth } from "@/server/auth"
+import { WebUIPreferences } from "@/server/webui-preferences"
 import { InstanceHttpApi, RootHttpApi } from "./api"
 import { authorizationLayer, authorizationRouterMiddleware } from "./middleware/authorization"
 import { EventApi, eventHandlers } from "./event"
@@ -62,6 +64,7 @@ import { globalHandlers } from "./handlers/global"
 import { graphHandlers } from "./handlers/graph"
 import { instanceHandlers } from "./handlers/instance"
 import { mcpHandlers } from "./handlers/mcp"
+import { memoryHandlers } from "./handlers/memory"
 import { permissionHandlers } from "./handlers/permission"
 import { projectHandlers } from "./handlers/project"
 import { providerHandlers } from "./handlers/provider"
@@ -100,7 +103,10 @@ const cors = (corsOptions?: CorsOptions) =>
     { global: true },
   )
 
-const rootApiRoutes = HttpApiBuilder.layer(RootHttpApi).pipe(Layer.provide([controlHandlers, globalHandlers]))
+const rootApiRoutes = HttpApiBuilder.layer(RootHttpApi).pipe(
+  Layer.provide([controlHandlers, globalHandlers]),
+  Layer.provide(authorizationRouterMiddleware.layer.pipe(Layer.provide(ServerAuth.Config.defaultLayer))),
+)
 const instanceRouterLayer = authorizationRouterMiddleware
   .combine(instanceRouterMiddleware)
   .combine(workspaceRouterMiddleware)
@@ -117,6 +123,7 @@ const instanceApiRoutes = HttpApiBuilder.layer(InstanceHttpApi).pipe(
     graphHandlers,
     instanceHandlers,
     mcpHandlers,
+    memoryHandlers,
     projectHandlers,
     ptyHandlers,
     questionHandlers,
@@ -167,6 +174,7 @@ export function createRoutes(corsOptions?: CorsOptions) {
       Installation.defaultLayer,
       MCP.defaultLayer,
       ModelsDev.defaultLayer,
+      MemoryManagement.defaultLayer,
       Permission.defaultLayer,
       Plugin.defaultLayer,
       Project.defaultLayer,
@@ -188,6 +196,7 @@ export function createRoutes(corsOptions?: CorsOptions) {
       ShareNext.defaultLayer,
       Snapshot.defaultLayer,
       SyncEvent.defaultLayer,
+      WebUIPreferences.defaultLayer,
       Skill.defaultLayer,
       Todo.defaultLayer,
       WorkBrief.defaultLayer,

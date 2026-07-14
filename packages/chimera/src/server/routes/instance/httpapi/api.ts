@@ -11,6 +11,7 @@ import { GlobalApi } from "./groups/global"
 import { GraphApi } from "./groups/graph"
 import { InstanceApi } from "./groups/instance"
 import { McpApi } from "./groups/mcp"
+import { MemoryApi } from "./groups/memory"
 import { PermissionApi } from "./groups/permission"
 import { ProjectApi } from "./groups/project"
 import { ProviderApi } from "./groups/provider"
@@ -36,6 +37,7 @@ export const InstanceHttpApi = HttpApi.make("chimera-instance")
   .addHttpApi(GraphApi)
   .addHttpApi(InstanceApi)
   .addHttpApi(McpApi)
+  .addHttpApi(MemoryApi)
   .addHttpApi(ProjectApi)
   .addHttpApi(PtyApi)
   .addHttpApi(QuestionApi)
