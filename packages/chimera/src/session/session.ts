@@ -33,11 +33,13 @@ import { ProjectID } from "../project/schema"
 import { WorkspaceID } from "../control-plane/schema"
 import { SessionID, MessageID, PartID } from "./schema"
 import { ModelID, ProviderID } from "@/provider/schema"
+import { Config } from "@/config/config"
 import { ConfigPaths } from "@/config/paths"
 
 import type { Provider } from "@/provider/provider"
 import { Permission } from "@/permission"
 import { Global } from "@opencode-ai/core/global"
+import { copySessionState, deleteSessionMemory, ensureSessionState } from "@/memory/store"
 import { Effect, Layer, Option, Context, Schema, Types } from "effect"
 import { zod } from "@/util/effect-zod"
 import { NonNegativeInt, optionalOmitUndefined, withStatics } from "@/util/schema"
@@ -580,12 +582,13 @@ export type Patch = Types.DeepMutable<SyncEvent.Event<typeof Event.Updated>["dat
 const db = <T>(fn: (d: Parameters<typeof Database.use>[0] extends (trx: infer D) => any ? D : never) => T) =>
   Effect.sync(() => Database.use(fn))
 
-export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | SyncEvent.Service> = Layer.effect(
+export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | SyncEvent.Service | Config.Service> = Layer.effect(
   Service,
   Effect.gen(function* () {
     const bus = yield* Bus.Service
     const storage = yield* Storage.Service
     const sync = yield* SyncEvent.Service
+    const config = yield* Config.Service
 
     const createNext = Effect.fn("Session.createNext")(function* (input: {
       id?: SessionID
@@ -627,6 +630,13 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
         yield* bus.publish(Event.Updated, {
           sessionID: result.id,
           info: result,
+        })
+      }
+      if ((yield* config.get()).memories?.enabled === true) {
+        ensureSessionState({
+          sessionID: result.id,
+          watermark: result.time.updated,
+          mode: input.parentID ? "disabled" : "enabled",
         })
       }
 
@@ -672,6 +682,7 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
           Effect.catchCause(() => Effect.succeed(false)),
         )
 
+        deleteSessionMemory({ sessionID })
         yield* sync.run(Event.Deleted, { sessionID, info: session }, { publish: hasInstance })
         yield* sync.remove(sessionID)
       } catch (e) {
@@ -779,6 +790,7 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
           yield* updatePart(p)
         }
       }
+      copySessionState({ sourceSessionID: original.id, targetSessionID: session.id, watermark: session.time.updated })
       return session
     })
 
@@ -943,6 +955,7 @@ export const defaultLayer = layer.pipe(
   Layer.provide(Bus.layer),
   Layer.provide(Storage.defaultLayer),
   Layer.provide(SyncEvent.defaultLayer),
+  Layer.provide(Config.defaultLayer),
 )
 
 function* listByProject(

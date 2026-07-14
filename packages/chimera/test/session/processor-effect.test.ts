@@ -383,6 +383,109 @@ it.live("session.processor effect tests capture llm input cleanly", () =>
   ),
 )
 
+it.live("session.processor hides memory citation markup from deltas and stored text", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const bus = yield* Bus.Service
+        yield* llm.text(`remembered answer
+<chimera-memory-citation version="1">
+<entries>project/MEMORY.md:1-1|note=[used]</entries>
+</chimera-memory-citation>`)
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "use memory")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const deltas: string[] = []
+        const unsubscribe = yield* bus.subscribeCallback(MessageV2.Event.PartDelta, (event) => {
+          if (event.properties.messageID === msg.id) deltas.push(event.properties.delta)
+        })
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+          memory: { projectID: chat.projectID, allowedAliases: new Map([["project/MEMORY.md", 1]]) },
+        })
+        try {
+          yield* handle.process({
+            user: {
+              id: parent.id,
+              sessionID: chat.id,
+              role: "user",
+              time: parent.time,
+              agent: parent.agent,
+              model: { providerID: ref.providerID, modelID: ref.modelID },
+            },
+            sessionID: chat.id,
+            model: mdl,
+            agent: agent(),
+            system: [],
+            messages: [{ role: "user", content: "use memory" }],
+            tools: {},
+          })
+        } finally {
+          unsubscribe()
+        }
+        const text = MessageV2.parts(msg.id).find((part) => part.type === "text")
+        expect(text?.text).toBe("remembered answer")
+        expect(deltas.join("")).toBe("remembered answer")
+        expect(deltas.join("")).not.toContain("chimera-memory-citation")
+        expect(msg.memory).toEqual({
+          version: 1,
+          entries: [{ path: "project/MEMORY.md", lineStart: 1, lineEnd: 1, note: "used" }],
+          rolloutIDs: [],
+          sessionIDs: [],
+          noteIDs: [],
+        })
+      }),
+    { git: true, config: (url) => ({ ...providerCfg(url), memories: { enabled: true } }) },
+  ),
+)
+
+it.live("session.processor retains an empty memory marker when a citation is invalid", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        yield* llm.text(`uncited answer
+<chimera-memory-citation version="1">
+<entries>project/UNKNOWN.md:1-1|note=[invalid]</entries>
+</chimera-memory-citation>`)
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "use memory")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+          memory: { projectID: chat.projectID, allowedAliases: new Map([["project/MEMORY.md", 1]]) },
+        })
+        yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          },
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "use memory" }],
+          tools: {},
+        })
+        const text = MessageV2.parts(msg.id).find((part) => part.type === "text")
+        expect(text?.text).toBe("uncited answer")
+        expect(msg.memory).toEqual({ version: 1, entries: [], rolloutIDs: [], sessionIDs: [], noteIDs: [] })
+      }),
+    { git: true, config: (url) => ({ ...providerCfg(url), memories: { enabled: true } }) },
+  ),
+)
+
 providerExecutedIt.live("session.processor normalizes provider-executed tool results", () =>
   provideTmpdirInstance(
     (dir) =>
