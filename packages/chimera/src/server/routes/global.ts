@@ -15,6 +15,8 @@ import { lazy } from "../../util/lazy"
 import { Config } from "@/config/config"
 import { errors } from "../error"
 import { disposeAllInstancesAndEmitGlobalDisposed } from "../global-lifecycle"
+import { WebUIPreferences } from "@/server/webui-preferences"
+import "@/server/event"
 
 const log = Log.create({ service: "server" })
 
@@ -92,6 +94,67 @@ export const GlobalRoutes = lazy(() =>
         c.header("X-Content-Type-Options", "nosniff")
 
         return streamEvents(c)
+      },
+    )
+    .get(
+      "/preferences",
+      describeRoute({
+        summary: "Get WebUI preferences",
+        description: "Retrieve the server-global shared WebUI preferences snapshot.",
+        operationId: "global.preferences.get",
+        responses: {
+          200: {
+            description: "WebUI preferences snapshot",
+            content: {
+              "application/json": {
+                schema: resolver(WebUIPreferences.Snapshot.zod),
+              },
+            },
+          },
+        },
+      }),
+      async (c) =>
+        c.json(await AppRuntime.runPromise(WebUIPreferences.Service.use((preferences) => preferences.get()))),
+    )
+    .put(
+      "/preferences",
+      describeRoute({
+        summary: "Update WebUI preferences",
+        description: "Replace the server-global shared WebUI preferences using revision compare-and-swap.",
+        operationId: "global.preferences.update",
+        responses: {
+          200: {
+            description: "Updated WebUI preferences snapshot",
+            content: {
+              "application/json": {
+                schema: resolver(WebUIPreferences.Snapshot.zod),
+              },
+            },
+          },
+          409: {
+            description: "WebUI preferences revision conflict",
+            content: {
+              "application/json": {
+                schema: resolver(WebUIPreferences.RevisionConflictError.zod),
+              },
+            },
+          },
+          ...errors(400),
+        },
+      }),
+      validator("json", WebUIPreferences.Update.zod),
+      async (c) => {
+        const result = await AppRuntime.runPromise(
+          WebUIPreferences.Service.use((preferences) => preferences.update(c.req.valid("json"))).pipe(
+            Effect.map((snapshot) => ({ success: true as const, snapshot })),
+            Effect.catchIf(
+              (error) => error instanceof WebUIPreferences.RevisionConflictError,
+              (error) => Effect.succeed({ success: false as const, error }),
+            ),
+          ),
+        )
+        if (!result.success) return c.json(result.error, 409)
+        return c.json(result.snapshot)
       },
     )
     .get(

@@ -2,6 +2,7 @@ import { Config } from "@/config/config"
 import { BusEvent } from "@/bus/bus-event"
 import { SyncEvent } from "@/sync"
 import "@/server/event"
+import { WebUIPreferences } from "@/server/webui-preferences"
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
 import { described } from "./metadata"
@@ -36,6 +37,7 @@ const GlobalUpgradeResult = Schema.Union([
 export const GlobalPaths = {
   health: "/global/health",
   event: "/global/event",
+  preferences: "/global/preferences",
   config: "/global/config",
   dispose: "/global/dispose",
   upgrade: "/global/upgrade",
@@ -60,6 +62,26 @@ export const GlobalApi = HttpApi.make("global").add(
           identifier: "global.event",
           summary: "Get global events",
           description: "Subscribe to global events from the OpenCode system using server-sent events.",
+        }),
+      ),
+      HttpApiEndpoint.get("preferencesGet", GlobalPaths.preferences, {
+        success: described(WebUIPreferences.Snapshot, "WebUI preferences snapshot"),
+      }).annotateMerge(
+        OpenApi.annotations({
+          identifier: "global.preferences.get",
+          summary: "Get WebUI preferences",
+          description: "Retrieve the server-global shared WebUI preferences snapshot.",
+        }),
+      ),
+      HttpApiEndpoint.put("preferencesUpdate", GlobalPaths.preferences, {
+        payload: WebUIPreferences.Update,
+        success: described(WebUIPreferences.Snapshot, "Updated WebUI preferences snapshot"),
+        error: [HttpApiError.BadRequest, WebUIPreferences.RevisionConflictError],
+      }).annotateMerge(
+        OpenApi.annotations({
+          identifier: "global.preferences.update",
+          summary: "Update WebUI preferences",
+          description: "Replace the server-global shared WebUI preferences using revision compare-and-swap.",
         }),
       ),
       HttpApiEndpoint.get("configGet", GlobalPaths.config, {

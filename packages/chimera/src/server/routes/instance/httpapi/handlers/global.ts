@@ -4,6 +4,7 @@ import { EffectBridge } from "@/effect/bridge"
 import { Installation } from "@/installation"
 import { createGlobalEventStream } from "@/server/global-event-stream"
 import { disposeAllInstancesAndEmitGlobalDisposed } from "@/server/global-lifecycle"
+import { WebUIPreferences } from "@/server/webui-preferences"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import * as Log from "@opencode-ai/core/util/log"
 import { Effect, Schema } from "effect"
@@ -66,6 +67,7 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
   Effect.gen(function* () {
     const config = yield* Config.Service
     const installation = yield* Installation.Service
+    const preferences = yield* WebUIPreferences.Service
     const bridge = yield* EffectBridge.make()
 
     const health = Effect.fn("GlobalHttpApi.health")(function* () {
@@ -74,6 +76,36 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
 
     const event = Effect.fn("GlobalHttpApi.event")(function* () {
       return eventResponse()
+    })
+
+    const preferencesGet = Effect.fn("GlobalHttpApi.preferencesGet")(function* () {
+      return yield* preferences.get()
+    })
+
+    const preferencesUpdateRaw = Effect.fn("GlobalHttpApi.preferencesUpdateRaw")(function* (ctx: {
+      request: HttpServerRequest.HttpServerRequest
+    }) {
+      const contentType = ctx.request.headers["content-type"]
+      const json = contentType?.includes("application/json")
+        ? parseBody(yield* Effect.orDie(ctx.request.text))
+        : {}
+      if (json === undefined) return HttpServerResponse.text("Malformed JSON in request body", { status: 400 })
+      const payload = WebUIPreferences.Update.zod.safeParse(json)
+      if (!payload.success) {
+        return HttpServerResponse.jsonUnsafe(
+          { data: json, error: payload.error.issues, success: false },
+          { status: 400 },
+        )
+      }
+      const result = yield* preferences.update(payload.data).pipe(
+        Effect.map((snapshot) => ({ success: true as const, snapshot })),
+        Effect.catchIf(
+          (error) => error instanceof WebUIPreferences.RevisionConflictError,
+          (error) => Effect.succeed({ success: false as const, error }),
+        ),
+      )
+      if (!result.success) return HttpServerResponse.jsonUnsafe(result.error, { status: 409 })
+      return HttpServerResponse.jsonUnsafe(result.snapshot)
     })
 
     const configGet = Effect.fn("GlobalHttpApi.configGet")(function* () {
@@ -145,6 +177,8 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
     return handlers
       .handle("health", health)
       .handleRaw("event", event)
+      .handle("preferencesGet", preferencesGet)
+      .handleRaw("preferencesUpdate", preferencesUpdateRaw)
       .handle("configGet", configGet)
       .handle("configUpdate", configUpdate)
       .handle("dispose", dispose)
