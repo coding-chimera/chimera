@@ -18,6 +18,12 @@ import { BrowserScreenshotTool } from "./browser_screenshot"
 import { BrowserCloseTool } from "./browser_close"
 import { WriteTool } from "./write"
 import { WorkBriefTool } from "./workbrief"
+import {
+  MemoryForgetTool,
+  MemoryListTool,
+  MemoryReadTool,
+  MemoryRememberTool,
+} from "./memory"
 import { InvalidTool } from "./invalid"
 import { SkillTool } from "./skill"
 import {
@@ -73,6 +79,7 @@ import { Skill } from "../skill"
 import { Permission } from "@/permission"
 import { Auth } from "@/auth"
 import { BrowserRuntime } from "@/browser/runtime"
+import { MemoryManagement } from "@/memory/management"
 
 const log = Log.create({ service: "tool.registry" })
 
@@ -95,30 +102,7 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/ToolRegistry") {}
 
-export const layer: Layer.Layer<
-  Service,
-  never,
-  | Config.Service
-  | Plugin.Service
-  | Question.Service
-  | Todo.Service
-  | WorkBrief.Service
-  | Agent.Service
-  | Skill.Service
-  | Session.Service
-  | Provider.Service
-  | LSP.Service
-  | Instruction.Service
-  | AppFileSystem.Service
-  | Bus.Service
-  | HttpClient.HttpClient
-  | ChildProcessSpawner
-  | Ripgrep.Service
-  | Format.Service
-  | Truncate.Service
-  | Auth.Service
-  | BrowserRuntime.Service
-> = Layer.effect(
+export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const config = yield* Config.Service
@@ -164,6 +148,10 @@ export const layer: Layer.Layer<
     const chimeraObligationResolveTool = yield* ChimeraObligationResolveTool
     const chimeraObligationIgnoreTool = yield* ChimeraObligationIgnoreTool
     const chimeraSwarmTool = yield* ChimeraSwarmTool
+    const memoryRemember = yield* MemoryRememberTool
+    const memoryList = yield* MemoryListTool
+    const memoryForget = yield* MemoryForgetTool
+    const memoryRead = yield* MemoryReadTool
     const agent = yield* Agent.Service
 
     const state = yield* InstanceState.make<State>(
@@ -243,6 +231,8 @@ export const layer: Layer.Layer<
         yield* config.get()
         const questionEnabled =
           ["app", "cli", "desktop"].includes(Flag.OPENCODE_CLIENT) || Flag.OPENCODE_ENABLE_QUESTION_TOOL
+        const memories = (yield* config.get()).memories
+        const memoryToolsEnabled = memories?.enabled === true && memories?.dedicated_tools === true
 
         const tool = yield* Effect.all({
           invalid: Tool.init(invalid),
@@ -283,6 +273,10 @@ export const layer: Layer.Layer<
           chimeraObligationResolve: Tool.init(chimeraObligationResolveTool),
           chimeraObligationIgnore: Tool.init(chimeraObligationIgnoreTool),
           chimeraSwarm: Tool.init(chimeraSwarmTool),
+          memoryRemember: Tool.init(memoryRemember),
+          memoryList: Tool.init(memoryList),
+          memoryForget: Tool.init(memoryForget),
+          memoryRead: Tool.init(memoryRead),
         })
 
         return {
@@ -324,6 +318,9 @@ export const layer: Layer.Layer<
             tool.chimeraObligationClaim,
             tool.chimeraObligationResolve,
             tool.chimeraObligationIgnore,
+            ...(memoryToolsEnabled
+              ? [tool.memoryRemember, tool.memoryList, tool.memoryForget, tool.memoryRead]
+              : []),
             ...(Flag.OPENCODE_EXPERIMENTAL_LSP_TOOL ? [tool.lsp] : []),
             ...(Flag.OPENCODE_EXPERIMENTAL_PLAN_MODE && Flag.OPENCODE_CLIENT === "cli" ? [tool.plan] : []),
           ],
@@ -425,27 +422,30 @@ export const layer: Layer.Layer<
 )
 
 export const defaultLayer = Layer.suspend(() =>
-  layer.pipe(
-    Layer.provide(Config.defaultLayer),
-    Layer.provide(Auth.defaultLayer),
-    Layer.provide(Plugin.defaultLayer),
-    Layer.provide(Question.defaultLayer),
-    Layer.provide(Todo.defaultLayer),
-    Layer.provide(WorkBrief.defaultLayer),
-    Layer.provide(Skill.defaultLayer),
-    Layer.provide(Agent.defaultLayer),
-    Layer.provide(Session.defaultLayer),
-    Layer.provide(Provider.defaultLayer),
-    Layer.provide(LSP.defaultLayer),
-    Layer.provide(Instruction.defaultLayer),
-    Layer.provide(AppFileSystem.defaultLayer),
-    Layer.provide(Bus.layer),
-    Layer.provide(FetchHttpClient.layer),
-    Layer.provide(Format.defaultLayer),
-    Layer.provide(CrossSpawnSpawner.defaultLayer),
-    Layer.provide(Ripgrep.defaultLayer),
-    Layer.provide(Truncate.defaultLayer),
-    Layer.provide(BrowserRuntime.defaultLayer),
+  Layer.provide(
+    layer.pipe(
+      Layer.provide(Config.defaultLayer),
+      Layer.provide(Auth.defaultLayer),
+      Layer.provide(Plugin.defaultLayer),
+      Layer.provide(Question.defaultLayer),
+      Layer.provide(Todo.defaultLayer),
+      Layer.provide(WorkBrief.defaultLayer),
+      Layer.provide(Skill.defaultLayer),
+      Layer.provide(Agent.defaultLayer),
+      Layer.provide(Session.defaultLayer),
+      Layer.provide(Provider.defaultLayer),
+      Layer.provide(LSP.defaultLayer),
+      Layer.provide(Instruction.defaultLayer),
+      Layer.provide(AppFileSystem.defaultLayer),
+      Layer.provide(Bus.layer),
+      Layer.provide(FetchHttpClient.layer),
+      Layer.provide(Format.defaultLayer),
+      Layer.provide(CrossSpawnSpawner.defaultLayer),
+      Layer.provide(Ripgrep.defaultLayer),
+      Layer.provide(Truncate.defaultLayer),
+      Layer.provide(BrowserRuntime.defaultLayer),
+    ),
+    MemoryManagement.defaultLayer,
   ),
 )
 

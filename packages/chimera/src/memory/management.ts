@@ -56,6 +56,7 @@ export class Status extends Schema.Class<Status>("MemoryStatus")({
   enabled: Schema.Boolean,
   useMemories: Schema.Boolean,
   generateMemories: Schema.Boolean,
+  dedicatedTools: Schema.Boolean,
   global: Schema.optional(ScopeStats),
   project: Schema.optional(ScopeStats),
 }) {
@@ -157,9 +158,11 @@ export type Error = BadRequestError | NotFoundError
 export interface Interface {
   readonly status: (scope?: StatusScope) => Effect.Effect<Status>
   readonly list: (scope?: Scope) => Effect.Effect<Note[]>
+  readonly get: (id: string) => Effect.Effect<Note, NotFoundError>
   readonly create: (input: CreateInput) => Effect.Effect<Note, BadRequestError>
   readonly update: (id: string, input: UpdateInput) => Effect.Effect<Note, Error>
   readonly forget: (id: string) => Effect.Effect<DeleteResult, NotFoundError>
+  readonly readArtifact: (path: string) => Effect.Effect<{ path: string; content: string; lineCount: number }, Error>
   readonly reset: (input: ResetInput) => Effect.Effect<ResetResult, BadRequestError>
   readonly importLegacy: (input: unknown) => Effect.Effect<ImportResult, BadRequestError>
   readonly rebuild: (input: RebuildInput) => Effect.Effect<RebuildResult, BadRequestError>
@@ -240,6 +243,7 @@ export const layer = Layer.effect(
         enabled: settings.enabled,
         useMemories: settings.useMemories,
         generateMemories: settings.generateMemories,
+        dedicatedTools: settings.dedicatedTools,
         ...(scope === "global" || scope === "all"
           ? { global: new ScopeStats(MemoryStore.getStats(current.global)) }
           : {}),
@@ -251,6 +255,11 @@ export const layer = Layer.effect(
 
     const list = Effect.fn("MemoryManagement.list")(function* (scope: Scope = "project") {
       return MemoryStore.listNotes(yield* selectedScope(scope)).map(publicNote)
+    })
+
+    const get = Effect.fn("MemoryManagement.get")(function* (id: string) {
+      const current = yield* find(id)
+      return publicNote(current.note)
     })
 
     const create = Effect.fn("MemoryManagement.create")(function* (input: CreateInput) {
@@ -278,6 +287,22 @@ export const layer = Layer.effect(
       const current = yield* find(id)
       if (!MemoryStore.forgetNoteAndEnqueue(current.scope, id)) return yield* notFound()
       return new DeleteResult({ deleted: true })
+    })
+
+    const readArtifact = Effect.fn("MemoryManagement.readArtifact")(function* (input: string) {
+      const path = input.trim()
+      const match = path.match(/^(global|project)\/(.+)$/)
+      if (!match) return yield* badRequest("Memory path must look like global/... or project/...")
+      const ctx = yield* InstanceState.context
+      const allowed = yield* Effect.promise(() => MemoryArtifacts.listAllowedAliases(ctx.project.id))
+      if (!allowed.has(path)) return yield* notFound()
+      const scope = match[1] === "global" ? MemoryStore.globalScope() : MemoryStore.projectScope(ctx.project.id)
+      const content = yield* Effect.promise(() => MemoryArtifacts.readArtifact(scope, match[2]))
+      if (content === undefined) return yield* notFound()
+      const lineCount = content.endsWith("\n")
+        ? content.slice(0, -1).split(/\r?\n/).length
+        : content.split(/\r?\n/).length
+      return { path, content, lineCount }
     })
 
     const reset = Effect.fn("MemoryManagement.reset")(function* (input: ResetInput) {
@@ -327,7 +352,7 @@ export const layer = Layer.effect(
       return new RebuildResult({ scope: input.scope, queued: true })
     })
 
-    return Service.of({ status, list, create, update, forget, reset, importLegacy, rebuild })
+    return Service.of({ status, list, get, create, update, forget, readArtifact, reset, importLegacy, rebuild })
   }),
 )
 

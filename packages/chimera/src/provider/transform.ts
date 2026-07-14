@@ -579,6 +579,39 @@ function isNvidiaKimiK26(model: Provider.Model) {
   )
 }
 
+// xAI reasoning effort knobs differ by Grok generation:
+// - grok-3-mini: low/high
+// - grok-4.5 / grok-4.20-multi-agent: low/medium/high (default high; cannot disable)
+// - other grok: no tunable effort in Chimera today
+// see: https://docs.x.ai/docs/guides/reasoning#control-how-hard-the-model-thinks
+function grokModelKey(model: Provider.Model) {
+  return `${model.id} ${model.api.id}`.toLowerCase()
+}
+
+function isGrok45Family(key: string) {
+  return (
+    key.includes("grok-4.5") ||
+    key.includes("grok-4-5") ||
+    key.includes("grok-4.20-multi-agent") ||
+    key.includes("grok-4-20-multi-agent")
+  )
+}
+
+function grokReasoningEfforts(model: Provider.Model): string[] | null {
+  const key = grokModelKey(model)
+  if (!key.includes("grok")) return null
+  if (key.includes("grok-3-mini")) return ["low", "high"]
+  if (isGrok45Family(key)) return [...WIDELY_SUPPORTED_EFFORTS]
+  return null
+}
+
+function grokEffortOptions(model: Provider.Model, effort: string) {
+  if (model.api.npm === "@openrouter/ai-sdk-provider") {
+    return { reasoning: { effort } }
+  }
+  return { reasoningEffort: effort }
+}
+
 export function variants(model: Provider.Model): Record<string, Record<string, any>> {
   // Tencent TokenHub GLM-5.2 is discovered via the /models endpoint without
   // capability metadata, so capabilities.reasoning defaults to false. It does
@@ -587,8 +620,11 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
     model.providerID.includes("tencent") &&
     model.api.id.toLowerCase().includes("glm-5.2") &&
     model.api.npm === "@ai-sdk/openai-compatible"
+  // Same discovery gap for custom openai-compatible proxies (e.g. aijws/grok-4.5).
+  const grokEfforts = grokReasoningEfforts(model)
+  const isGrokEffortModel = grokEfforts !== null
   const codexEfforts = model.backend_semantics === "codex" ? codexReasoningEfforts(model.api.id) : undefined
-  if (!model.capabilities.reasoning && !isTencentGlm52 && !codexEfforts) return {}
+  if (!model.capabilities.reasoning && !isTencentGlm52 && !isGrokEffortModel && !codexEfforts) return {}
   if (codexEfforts) {
     return Object.fromEntries(codexEfforts.map((effort) => [effort, { reasoningEffort: effort }]))
   }
@@ -620,20 +656,10 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
   )
     return {}
 
-  // see: https://docs.x.ai/docs/guides/reasoning#control-how-hard-the-model-thinks
-  if (id.includes("grok") && id.includes("grok-3-mini")) {
-    if (model.api.npm === "@openrouter/ai-sdk-provider") {
-      return {
-        low: { reasoning: { effort: "low" } },
-        high: { reasoning: { effort: "high" } },
-      }
-    }
-    return {
-      low: { reasoningEffort: "low" },
-      high: { reasoningEffort: "high" },
-    }
+  if (grokEfforts) {
+    return Object.fromEntries(grokEfforts.map((effort) => [effort, grokEffortOptions(model, effort)]))
   }
-  if (id.includes("grok")) return {}
+  if (id.includes("grok") || model.api.id.toLowerCase().includes("grok")) return {}
 
   switch (model.api.npm) {
     case "@openrouter/ai-sdk-provider":
@@ -1117,6 +1143,16 @@ export function options(input: {
     !modelId.includes("kimi-k2-thinking")
   ) {
     result["enable_thinking"] = true
+  }
+
+  // grok-4.5 defaults to high effort when no variant is selected.
+  // Compatible proxies (aijws) and xAI map reasoningEffort -> reasoning_effort.
+  if (isGrok45Family(grokModelKey(input.model))) {
+    if (input.model.api.npm === "@openrouter/ai-sdk-provider") {
+      result["reasoning"] = { effort: "high" }
+    } else {
+      result["reasoningEffort"] = "high"
+    }
   }
 
   if (input.model.api.id.includes("gpt-5") && !input.model.api.id.includes("gpt-5-chat")) {
