@@ -617,6 +617,22 @@ export const Assistant = Schema.Struct({
   cost: Schema.Finite,
   tokens: TokenUsage,
   structured: Schema.optional(Schema.Any),
+  memory: Schema.optional(
+    Schema.Struct({
+      version: Schema.Literal(1),
+      entries: Schema.Array(
+        Schema.Struct({
+          path: Schema.String,
+          lineStart: NonNegativeInt,
+          lineEnd: NonNegativeInt,
+          note: Schema.String,
+        }),
+      ),
+      rolloutIDs: Schema.Array(Schema.String),
+      sessionIDs: Schema.Array(Schema.String),
+      noteIDs: Schema.Array(Schema.String),
+    }),
+  ),
   variant: Schema.optional(Schema.String),
   finish: Schema.optional(Schema.String),
 })

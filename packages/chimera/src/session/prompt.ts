@@ -69,6 +69,7 @@ import * as DateTime from "effect/DateTime"
 import { eq } from "@/storage/db"
 import * as Database from "@/storage/db"
 import { SessionTable } from "./session.sql"
+import { Memory } from "@/memory/memory"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -223,6 +224,11 @@ export const layer = Layer.effect(
     const chimeraPromptContext = yield* ChimeraPromptContext.Service
     const sys = yield* SystemPrompt.Service
     const llm = yield* LLM.Service
+    const memory = Option.getOrElse(yield* Effect.serviceOption(Memory.Service), () => ({
+      promptContext: () => Effect.succeed(undefined),
+      captureDirectives: () => Effect.succeed(0),
+      markPolluted: () => Effect.void,
+    }))
     const question = yield* Question.Service
     const runner = Effect.fn("SessionPrompt.runner")(function* () {
       return yield* EffectBridge.make()
@@ -696,6 +702,9 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                     { tool: item.id, sessionID: ctx.sessionID, callID: ctx.callID },
                     { args },
                   )
+                  if (/^(?:webfetch|websearch|browser(?:_|$)|hosted[_-]?search)/i.test(item.id)) {
+                    yield* memory.markPolluted(ctx.sessionID, `external tool: ${item.id}`)
+                  }
                   const result = yield* item.execute(args, ctx)
                   const output = {
                     ...result,
@@ -741,6 +750,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                   { tool: key, sessionID: ctx.sessionID, callID: opts.toolCallId },
                   { args },
                 )
+                yield* memory.markPolluted(ctx.sessionID, `MCP tool: ${key}`)
                 const result: Awaited<ReturnType<NonNullable<typeof execute>>> = yield* Effect.gen(function* () {
                   yield* ctx.ask({ permission: key, metadata: {}, patterns: ["*"], always: ["*"] })
                   return yield* Effect.promise(() => execute(args, opts))
@@ -953,6 +963,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         { tool: TaskTool.id, sessionID, callID: part.callID, args: taskArgs },
         result,
       )
+      if (result) yield* memory.markPolluted(sessionID, "delegated external context")
 
       assistantMessage.finish = "tool-calls"
       assistantMessage.time.completed = Date.now()
@@ -1671,6 +1682,10 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       })
       yield* sessions.updateMessage(info)
       for (const part of parts) yield* sessions.updatePart(part)
+      yield* memory.captureDirectives({ sessionID: input.sessionID, messageID: info.id, parts: input.parts })
+      if (input.parts.some((part) => part.type === "file" || part.type === "agent")) {
+        yield* memory.markPolluted(input.sessionID, "user file or agent attachment")
+      }
       const nextPrompt = parts.reduce(
         (result, part) => {
           if (part.type === "text") {
@@ -1898,6 +1913,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           const maxSteps = agent.steps ?? Infinity
           const isLastStep = step >= maxSteps
           msgs = yield* insertReminders({ messages: msgs, agent, session })
+          const memoryContext = yield* memory.promptContext()
 
           const msg: MessageV2.Assistant = {
             id: MessageID.ascending(),
@@ -1913,12 +1929,18 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             providerID: model.providerID,
             time: { created: Date.now() },
             sessionID,
+            ...(memoryContext
+              ? { memory: { version: 1 as const, entries: [], rolloutIDs: [], sessionIDs: [], noteIDs: [] } }
+              : {}),
           }
           yield* sessions.updateMessage(msg)
           const handle = yield* processor.create({
             assistantMessage: msg,
             sessionID,
             model,
+            memory: memoryContext
+              ? { projectID: memoryContext.projectID, allowedAliases: memoryContext.allowedAliases }
+              : undefined,
           })
 
           const toolAbort = new AbortController()
@@ -1980,6 +2002,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 return {
                   history: [] as ModelMessage[],
                   runtime: [] as ModelMessage[],
+                  memory: memoryContext ? [memoryContext.message] : [],
                   current: yield* MessageV2.toModelMessagesEffect(msgs, model, { remoteCompaction }),
                 }
               }
@@ -1987,12 +2010,17 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 MessageV2.toModelMessagesEffect(msgs.slice(0, currentUserIndex), model, { remoteCompaction }),
                 MessageV2.toModelMessagesEffect(msgs.slice(currentUserIndex), model, { remoteCompaction }),
               ])
-              return { history, runtime: [] as ModelMessage[], current }
+              return { history, runtime: [] as ModelMessage[], memory: memoryContext ? [memoryContext.message] : [], current }
             })
-            const modelMsgs = [...splitModelMsgs.history, ...splitModelMsgs.current]
+            const modelMsgs = [
+              ...splitModelMsgs.history,
+              ...splitModelMsgs.memory,
+              ...splitModelMsgs.current,
+            ]
             const system = [
               ...env,
               ...instructions,
+              ...(memoryContext ? [memoryContext.guidance] : []),
               ...(skills ? [skills] : []),
             ]
             const format = lastUser.format ?? { type: "text" as const }
@@ -2010,6 +2038,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 system,
                 history: splitModelMsgs.history,
                 runtime: splitModelMsgs.runtime,
+                memory: splitModelMsgs.memory,
                 current: splitModelMsgs.current,
                 extra: extraModelMsgs,
                 tools,
@@ -2159,7 +2188,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
       const templateParts = yield* resolvePromptParts(template)
       const isSubtask = (agent.mode === "subagent" && cmd.subtask !== false) || cmd.subtask === true
-      const parts = isSubtask
+      const parts = (isSubtask
         ? [
             {
               type: "subtask" as const,
@@ -2171,6 +2200,11 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             },
           ]
         : [...templateParts, ...(input.parts ?? [])]
+      ).map((part) =>
+        part.type === "text"
+          ? { ...part, metadata: { ...part.metadata, memorySource: "command" } }
+          : part,
+      )
 
       const userAgent = isSubtask ? (input.agent ?? (yield* agents.defaultAgent())) : agentName
       const userModel = isSubtask
@@ -2275,7 +2309,9 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(Question.defaultLayer),
     Layer.provide(Session.defaultLayer),
     Layer.provide(SessionRevert.defaultLayer),
-    Layer.provide(Layer.mergeAll(SessionSummary.defaultLayer, WorkBrief.defaultLayer, ChimeraPromptContext.defaultLayer)),
+    Layer.provide(
+      Layer.mergeAll(SessionSummary.defaultLayer, WorkBrief.defaultLayer, ChimeraPromptContext.defaultLayer, Memory.defaultLayer),
+    ),
     Layer.provide(
       Layer.mergeAll(
         Agent.defaultLayer,
