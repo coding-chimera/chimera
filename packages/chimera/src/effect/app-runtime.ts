@@ -15,6 +15,7 @@ import { Storage } from "@/storage/storage"
 import { Snapshot } from "@/snapshot"
 import { Plugin } from "@/plugin"
 import { ModelsDev } from "@/provider/models"
+import { MemoryManagement } from "@/memory/management"
 import { Provider } from "@/provider/provider"
 import { ProviderAuth } from "@/provider/auth"
 import { ProviderBalance } from "@/provider/balance"
@@ -56,6 +57,7 @@ import { SessionShare } from "@/share/session"
 import { SyncEvent } from "@/sync"
 import { Npm } from "@opencode-ai/core/npm"
 import { memoMap } from "@opencode-ai/core/effect/memo-map"
+import { WebUIPreferences } from "@/server/webui-preferences"
 
 export const AppLayer = Layer.mergeAll(
   Npm.defaultLayer,
@@ -72,6 +74,7 @@ export const AppLayer = Layer.mergeAll(
   Snapshot.defaultLayer,
   Plugin.defaultLayer,
   ModelsDev.defaultLayer,
+  MemoryManagement.defaultLayer,
   Provider.defaultLayer,
   ProviderAuth.defaultLayer,
   ProviderBalance.defaultLayer,
@@ -109,6 +112,7 @@ export const AppLayer = Layer.mergeAll(
   ShareNext.defaultLayer,
   SessionShare.defaultLayer,
   SyncEvent.defaultLayer,
+  WebUIPreferences.defaultLayer,
 ).pipe(Layer.provideMerge(InstanceLayer.layer), Layer.provideMerge(Observability.layer))
 
 const rt = ManagedRuntime.make(AppLayer, { memoMap })
