@@ -43,6 +43,7 @@ import { SystemPrompt } from "../../src/session/system"
 import { Shell } from "../../src/shell/shell"
 import { Snapshot } from "../../src/snapshot"
 import { ToolRegistry } from "@/tool/registry"
+import { MemoryManagement } from "@/memory/management"
 import { BrowserRuntime } from "@/browser/runtime"
 import { Truncate } from "@/tool/truncate"
 import * as Log from "@opencode-ai/core/util/log"
@@ -231,6 +232,7 @@ function makeHttp() {
     Layer.provide(BrowserRuntime.defaultLayer),
     Layer.provide(Ripgrep.defaultLayer),
     Layer.provide(Format.defaultLayer),
+    Layer.provide(MemoryManagement.defaultLayer),
     Layer.provideMerge(todo),
     Layer.provideMerge(workBrief),
     Layer.provideMerge(question),
