@@ -25,12 +25,35 @@ import { EventV2 } from "@/v2/event"
 import { SessionEvent } from "@/v2/session-event"
 import { Modelv2 } from "@/v2/model"
 import * as DateTime from "effect/DateTime"
+import { MemoryCitation } from "@/memory/citation"
+import { getNote, markSessionPolluted, projectScope, recordNoteUsage, recordStage1Usage } from "@/memory/store"
+import type { ProjectID } from "@/project/schema"
 
 const DOOM_LOOP_THRESHOLD = 3
 const log = Log.create({ service: "session.processor" })
 
 function isAbortError(error: unknown) {
   return error instanceof Error && error.name === "AbortError"
+}
+
+function mergeMemoryMetadata(
+  current: MessageV2.Assistant["memory"],
+  next: NonNullable<MessageV2.Assistant["memory"]>,
+) {
+  return {
+    version: 1 as const,
+    entries: [
+      ...new Map(
+        [...(current?.entries ?? []), ...next.entries].map((entry) => [
+          `${entry.path}\0${entry.lineStart}\0${entry.lineEnd}\0${entry.note}`,
+          entry,
+        ]),
+      ).values(),
+    ],
+    rolloutIDs: [...new Set([...(current?.rolloutIDs ?? []), ...next.rolloutIDs])],
+    sessionIDs: [...new Set([...(current?.sessionIDs ?? []), ...next.sessionIDs])],
+    noteIDs: [...new Set([...(current?.noteIDs ?? []), ...next.noteIDs])],
+  }
 }
 
 type CompleteToolOutput = {
@@ -111,6 +134,10 @@ type Input = {
   assistantMessage: MessageV2.Assistant
   sessionID: SessionID
   model: Provider.Model
+  memory?: {
+    projectID: ProjectID
+    allowedAliases: ReadonlyMap<string, number>
+  }
 }
 
 export interface Interface {
@@ -131,6 +158,7 @@ interface ProcessorContext extends Input {
   blocked: boolean
   needsCompaction: boolean
   currentText: MessageV2.TextPart | undefined
+  currentTextRaw: string | undefined
   reasoningMap: Record<string, MessageV2.ReasoningPart>
 }
 
@@ -167,6 +195,9 @@ export const layer: Layer.Layer<
     const status = yield* SessionStatus.Service
 
     const create = Effect.fn("SessionProcessor.create")(function* (input: Input) {
+      if (input.memory && !input.assistantMessage.memory) {
+        input.assistantMessage.memory = { version: 1, entries: [], rolloutIDs: [], sessionIDs: [], noteIDs: [] }
+      }
       // Pre-capture snapshot before the LLM stream starts. The AI SDK
       // may execute tools internally before emitting start-step events,
       // so capturing inside the event handler can be too late.
@@ -175,12 +206,14 @@ export const layer: Layer.Layer<
         assistantMessage: input.assistantMessage,
         sessionID: input.sessionID,
         model: input.model,
+        memory: input.memory,
         toolcalls: {},
         shouldBreak: false,
         snapshot: initialSnapshot,
         blocked: false,
         needsCompaction: false,
         currentText: undefined,
+        currentTextRaw: undefined,
         reasoningMap: {},
       }
       let aborted = false
@@ -329,6 +362,12 @@ export const layer: Layer.Layer<
               name: value.toolName,
               timestamp: DateTime.makeUnsafe(Date.now()),
             })
+            if (value.providerExecuted && /(?:web|search|browser|fetch)/i.test(value.toolName)) {
+              const cfg = yield* config.get()
+              if (cfg.memories?.enabled === true && cfg.memories.disable_on_external_context !== false) {
+                markSessionPolluted({ sessionID: ctx.sessionID, watermark: Date.now(), reason: `provider tool: ${value.toolName}` })
+              }
+            }
             const part = yield* session.updatePart({
               id: ctx.toolcalls[value.id]?.partID ?? PartID.ascending(),
               messageID: ctx.assistantMessage.id,
@@ -581,34 +620,64 @@ export const layer: Layer.Layer<
               metadata: value.providerMetadata,
             }
             yield* session.updatePart(ctx.currentText)
+            ctx.currentTextRaw = ""
             return
 
-          case "text-delta":
+          case "text-delta": {
             if (!ctx.currentText) return
-            ctx.currentText.text += value.text
+            const raw = (ctx.currentTextRaw ?? ctx.currentText.text) + value.text
+            const text = ctx.memory ? MemoryCitation.visibleText(raw).trimEnd() : raw
+            const delta = text.slice(ctx.currentText.text.length)
+            ctx.currentTextRaw = raw
+            ctx.currentText.text = text
             if (value.providerMetadata) ctx.currentText.metadata = value.providerMetadata
+            if (!delta) return
             yield* session.updatePartDelta({
               sessionID: ctx.currentText.sessionID,
               messageID: ctx.currentText.messageID,
               partID: ctx.currentText.id,
               field: "text",
-              delta: value.text,
+              delta,
             })
             return
+          }
 
           case "text-end":
             if (!ctx.currentText) return
             // oxlint-disable-next-line no-self-assign -- reactivity trigger
             ctx.currentText.text = ctx.currentText.text
-            ctx.currentText.text = (yield* plugin.trigger(
-              "experimental.text.complete",
-              {
-                sessionID: ctx.sessionID,
-                messageID: ctx.assistantMessage.id,
-                partID: ctx.currentText.id,
-              },
-              { text: ctx.currentText.text },
-            )).text
+            {
+              const raw = ctx.currentTextRaw ?? ctx.currentText.text
+              const citation = ctx.memory ? MemoryCitation.strip(raw) : undefined
+              const completed = (yield* plugin.trigger(
+                "experimental.text.complete",
+                {
+                  sessionID: ctx.sessionID,
+                  messageID: ctx.assistantMessage.id,
+                  partID: ctx.currentText.id,
+                },
+                { text: citation?.text ?? raw },
+              )).text
+              ctx.currentText.text = ctx.memory ? MemoryCitation.visibleText(completed).trimEnd() : completed
+              if (ctx.memory && citation) {
+                const validCitation = MemoryCitation.validate(citation, ctx.memory.allowedAliases)
+                if (validCitation) {
+                  const previous = ctx.assistantMessage.memory
+                  const previousSourceIDs = new Set([...(previous?.sessionIDs ?? []), ...(previous?.rolloutIDs ?? [])])
+                  const previousNoteIDs = new Set(previous?.noteIDs ?? [])
+                  const project = projectScope(ctx.memory.projectID)
+                  const sourceIDs = [...validCitation.sessionIDs, ...validCitation.rolloutIDs].filter(
+                    (id): id is SessionID => !previousSourceIDs.has(id),
+                  )
+                  const noteIDs = validCitation.noteIDs.filter((id) => !previousNoteIDs.has(id))
+                  recordStage1Usage({ scope: "global" }, sourceIDs)
+                  recordStage1Usage(project, sourceIDs)
+                  recordNoteUsage({ scope: "global" }, noteIDs.filter((id) => getNote({ scope: "global" }, id) !== undefined))
+                  recordNoteUsage(project, noteIDs.filter((id) => getNote(project, id) !== undefined))
+                  ctx.assistantMessage.memory = mergeMemoryMetadata(previous, validCitation)
+                }
+              }
+            }
             if (!ctx.assistantMessage.summary) {
               // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
               EventV2.run(SessionEvent.Text.Ended.Sync, {
@@ -623,6 +692,7 @@ export const layer: Layer.Layer<
             }
             if (value.providerMetadata) ctx.currentText.metadata = value.providerMetadata
             yield* session.updatePart(ctx.currentText)
+            ctx.currentTextRaw = undefined
             ctx.currentText = undefined
             return
 
@@ -653,9 +723,15 @@ export const layer: Layer.Layer<
 
         if (ctx.currentText) {
           const end = Date.now()
+          if (ctx.memory) {
+            ctx.currentText.text = MemoryCitation.visibleText(
+              MemoryCitation.strip(ctx.currentTextRaw ?? ctx.currentText.text).text,
+            )
+          }
           ctx.currentText.time = { start: ctx.currentText.time?.start ?? end, end }
           yield* session.updatePart(ctx.currentText)
           ctx.currentText = undefined
+          ctx.currentTextRaw = undefined
         }
 
         for (const part of Object.values(ctx.reasoningMap)) {
@@ -720,6 +796,7 @@ export const layer: Layer.Layer<
         return yield* Effect.gen(function* () {
           yield* Effect.gen(function* () {
             ctx.currentText = undefined
+            ctx.currentTextRaw = undefined
             ctx.reasoningMap = {}
             const stream = llm.stream(streamInput)
 

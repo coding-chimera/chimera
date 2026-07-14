@@ -37,6 +37,7 @@ export const Info = Schema.Struct({
     history: Schema.String,
     runtime: Schema.String,
     current: Schema.String,
+    memory: Schema.String,
     tools: Schema.String,
     request: Schema.String,
   }),
@@ -97,13 +98,16 @@ export function summarizePreparedRequest(input: {
   history: ModelMessage[]
   runtime: ModelMessage[]
   current: ModelMessage[]
+  memory?: ModelMessage[]
   extra: ModelMessage[]
   tools: Record<string, Tool>
 }): Info {
+  const memory = input.memory ?? []
   const blocks = [
     summarizeBlock("system", "system", input.system),
     summarizeBlock("history", undefined, input.history),
     summarizeBlock("runtime_context", "user", input.runtime),
+    summarizeBlock("memory_context", "user", memory),
     summarizeBlock("current_turn", "user", input.current),
     summarizeBlock("extra", undefined, input.extra),
     summarizeBlock("tools", undefined, toolSummary(input.tools)),
@@ -121,6 +125,7 @@ export function summarizePreparedRequest(input: {
     containsRuntimeContext(input.system) ? "runtime context leaked into system" : undefined,
     input.runtime.length > 1 ? "multiple runtime context messages" : undefined,
     countRuntimeSections(input.runtime) > 1 ? "duplicated runtime context markers" : undefined,
+    memory.length > 1 ? "multiple memory context messages" : undefined,
     summarizeBlock("runtime_context", "user", input.runtime).bytes > 16_000 ? "runtime context over 16KB" : undefined,
     summarizeBlock("tools", undefined, toolSummary(input.tools)).bytes > 200_000 ? "tool schemas over 200KB" : undefined,
   ].filter((warning): warning is string => Boolean(warning))
@@ -138,9 +143,10 @@ export function summarizePreparedRequest(input: {
       system: hash(serialize(input.system)),
       history: hash(serialize(input.history)),
       runtime: hash(serialize(input.runtime)),
+      memory: hash(serialize(memory)),
       current: hash(serialize(input.current)),
       tools: hash(serialize(toolSummary(input.tools))),
-      request: hash(serialize({ system: input.system, history: input.history, runtime: input.runtime, current: input.current, extra: input.extra, tools: toolSummary(input.tools) })),
+      request: hash(serialize({ system: input.system, history: input.history, runtime: input.runtime, memory, current: input.current, extra: input.extra, tools: toolSummary(input.tools) })),
     },
     blocks,
     warnings,
