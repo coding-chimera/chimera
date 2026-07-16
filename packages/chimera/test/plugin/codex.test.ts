@@ -49,6 +49,14 @@ describe("plugin.codex", () => {
       {
         id: "openai",
         models: {
+          "gpt-5.6": {
+            id: "gpt-5.6",
+            providerID: "openai",
+            api: { id: "gpt-5.6" },
+            reasoning_efforts: ["low", "max"],
+            limit: { context: 1_050_000, input: 922_000, output: 128_000 },
+            cost: { input: 5, output: 30, cache: { read: 0.5, write: 0 } },
+          },
           "gpt-5.5": {
             id: "gpt-5.5",
             providerID: "openai",
@@ -89,7 +97,7 @@ describe("plugin.codex", () => {
       },
     )
 
-    expect(Object.keys(models).sort()).toEqual(["gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol"])
+    expect(Object.keys(models).sort()).toEqual(["gpt-5.5", "gpt-5.6", "gpt-5.6-luna", "gpt-5.6-sol"])
     expect(models["gpt-5.5"]?.limit).toEqual({
       context: 400_000,
       input: 272_000,
@@ -105,6 +113,8 @@ describe("plugin.codex", () => {
       output: 0,
       cache: { read: 0, write: 0 },
     })
+    expect(Object.keys(models["gpt-5.6"]?.variants ?? {})).toEqual(["low", "max"])
+    expect(models["gpt-5.6"]?.variants?.ultra).toBeUndefined()
     expect(Object.keys(models["gpt-5.5"]?.variants ?? {})).toEqual(["low", "medium", "high", "xhigh"])
     expect(Object.keys(models["gpt-5.6-sol"]?.variants ?? {})).toEqual([
       "low",
@@ -120,7 +130,7 @@ describe("plugin.codex", () => {
       include: ["reasoning.encrypted_content"],
     })
     expect(models["gpt-5.6-sol"]?.variants?.ultra).toEqual({
-      reasoningEffort: "ultra",
+      reasoningEffort: "max",
       reasoningSummary: "auto",
       include: ["reasoning.encrypted_content"],
     })

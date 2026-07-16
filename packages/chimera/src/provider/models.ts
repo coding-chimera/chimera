@@ -8,6 +8,7 @@ import { Flock } from "@opencode-ai/core/util/flock"
 import { Hash } from "@opencode-ai/core/util/hash"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { withTransientReadRetry } from "@/util/effect-http-client"
+import { CodexModel } from "./codex-model"
 
 const Cost = Schema.Struct({
   input: Schema.Finite,
@@ -24,15 +25,26 @@ const Cost = Schema.Struct({
   ),
 })
 
+const BackendSemantics = Schema.Literals(["openai", "codex"])
+const ReasoningEffort = Schema.Literals(CodexModel.REASONING_EFFORTS)
+const ReasoningOption = Schema.Struct({
+  type: Schema.String,
+  values: Schema.optional(Schema.Array(Schema.NullOr(Schema.String))),
+})
+
 export const Model = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
   family: Schema.optional(Schema.String),
+  backend_semantics: Schema.optional(BackendSemantics),
+  capability_model_id: Schema.optional(Schema.String),
   release_date: Schema.String,
   attachment: Schema.Boolean,
   reasoning: Schema.Boolean,
   temperature: Schema.Boolean,
   tool_call: Schema.Boolean,
+  reasoning_options: Schema.optional(Schema.Array(ReasoningOption)),
+  reasoning_efforts: Schema.optional(Schema.Array(ReasoningEffort)),
   interleaved: Schema.optional(
     Schema.Union([
       Schema.Literal(true),
@@ -88,6 +100,44 @@ export const Provider = Schema.Struct({
 })
 
 export type Provider = Schema.Schema.Type<typeof Provider>
+
+export function normalizeCatalog(catalog: Record<string, Provider>) {
+  return Object.fromEntries(
+    Object.entries(catalog).map(([providerID, provider]) => [
+      providerID,
+      {
+        ...provider,
+        models: Object.fromEntries(
+          Object.entries(provider.models).map(([modelID, model]) => {
+            const capabilityModelID = model.capability_model_id ?? CodexModel.capabilityModelID(model.id)
+            const effortOption = model.reasoning_options?.find((option) => option.type === "effort")
+            const reasoningEfforts =
+              model.reasoning_efforts ??
+              (effortOption ? CodexModel.normalizeReasoningEfforts(effortOption.values) : undefined)
+            const npm = model.provider?.npm ?? provider.npm ?? "@ai-sdk/openai-compatible"
+            const backendSemantics =
+              model.backend_semantics ??
+              (capabilityModelID &&
+              reasoningEfforts?.includes("max") &&
+              ["@ai-sdk/openai", "@ai-sdk/openai-compatible"].includes(npm) &&
+              CodexModel.supportsCatalogSemantics(capabilityModelID)
+                ? "codex"
+                : undefined)
+            return [
+              modelID,
+              {
+                ...model,
+                ...(backendSemantics ? { backend_semantics: backendSemantics } : {}),
+                ...(capabilityModelID ? { capability_model_id: capabilityModelID } : {}),
+                ...(reasoningEfforts ? { reasoning_efforts: reasoningEfforts } : {}),
+              },
+            ]
+          }),
+        ),
+      },
+    ]),
+  )
+}
 
 export interface Interface {
   readonly get: () => Effect.Effect<Record<string, Provider>>
@@ -160,7 +210,10 @@ export const layer: Layer.Layer<Service, never, AppFileSystem.Service | HttpClie
       return JSON.parse(text) as Record<string, Provider>
     }).pipe(Effect.withSpan("ModelsDev.populate"), Effect.orDie)
 
-    const [cachedGet, invalidate] = yield* Effect.cachedInvalidateWithTTL(populate, Duration.infinity)
+    const [cachedGet, invalidate] = yield* Effect.cachedInvalidateWithTTL(
+      populate.pipe(Effect.map(normalizeCatalog)),
+      Duration.infinity,
+    )
 
     const get = (): Effect.Effect<Record<string, Provider>> => cachedGet
 

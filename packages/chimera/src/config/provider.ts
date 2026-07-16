@@ -1,6 +1,7 @@
 import { Schema } from "effect"
 import { zod } from "@/util/effect-zod"
 import { PositiveInt, withStatics } from "@/util/schema"
+import { CodexModel } from "@/provider/codex-model"
 
 const BackendSemantics = Schema.Literals(["openai", "codex"])
 const WireAPI = Schema.Literals(["chat", "responses"])
@@ -11,6 +12,14 @@ export const Model = Schema.Struct({
   family: Schema.optional(Schema.String),
   backend_semantics: Schema.optional(BackendSemantics).annotate({
     description: "Capability semantics to apply independently of the configured transport",
+  }),
+  capability_model_id: Schema.optional(Schema.String).annotate({
+    description: "Canonical model ID used for capability lookup without changing the request model ID",
+  }),
+  reasoning_efforts: Schema.optional(
+    Schema.mutable(Schema.Array(Schema.Literals(CodexModel.REASONING_EFFORTS))),
+  ).annotate({
+    description: "Reasoning effort values supported by this provider model",
   }),
   release_date: Schema.optional(Schema.String),
   attachment: Schema.optional(Schema.Boolean),
