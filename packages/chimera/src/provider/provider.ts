@@ -28,10 +28,15 @@ import { optionalOmitUndefined, withStatics } from "@/util/schema"
 
 import * as ProviderTransform from "./transform"
 import { ModelID, ProviderID } from "./schema"
+import { CodexModel } from "./codex-model"
 
 const log = Log.create({ service: "provider" })
 const KIMI_FOR_CODING_ID = "kimi-for-coding"
 const KIMI_FOR_CODING_NAME = "kimi-for-coding（Kimi-K2.7）"
+const KIMI_FOR_CODING_FAST_ID = "kimi-for-coding-fast"
+const KIMI_FOR_CODING_FAST_NAME = "kimi-for-coding-fast"
+const K3_ID = "k3"
+const K3_NAME = "k3"
 const MODEL_DISCOVERY_TIMEOUT = 5_000
 
 function shouldUseCopilotResponsesApi(modelID: string): boolean {
@@ -1008,6 +1013,8 @@ export const Model = Schema.Struct({
   name: Schema.String,
   family: optionalOmitUndefined(Schema.String),
   backend_semantics: optionalOmitUndefined(BackendSemantics),
+  capability_model_id: optionalOmitUndefined(Schema.String),
+  reasoning_efforts: optionalOmitUndefined(Schema.Array(Schema.Literals(CodexModel.REASONING_EFFORTS))),
   capabilities: ProviderCapabilities,
   cost: ProviderCost,
   limit: ProviderLimit,
@@ -1106,6 +1113,9 @@ function fromModelsDevModel(provider: ModelsDev.Provider, model: ModelsDev.Model
     providerID: ProviderID.make(provider.id),
     name: model.name,
     family: model.family,
+    backend_semantics: model.backend_semantics,
+    capability_model_id: model.capability_model_id,
+    reasoning_efforts: model.reasoning_efforts ? [...model.reasoning_efforts] : undefined,
     api: {
       id: model.id,
       url: model.provider?.api ?? provider.api ?? "",
@@ -1221,15 +1231,21 @@ export function findKnownModelMetadata(database: Record<string, Info>, ...ids: (
 function exposeKimiForCodingModel(provider: ModelsDev.Provider, models: Record<string, Model>) {
   if (provider.id !== KIMI_FOR_CODING_ID) return
 
-  function normalize(model: Model, id: ModelID, status: Model["status"]): Model {
+  function normalize(
+    model: Model,
+    id: ModelID,
+    status: Model["status"],
+    name: string,
+    apiID: string,
+  ): Model {
     const normalized: Model = {
       ...model,
       id,
-      name: KIMI_FOR_CODING_NAME,
+      name,
       family: model.family ?? KIMI_FOR_CODING_ID,
       api: {
         ...model.api,
-        id: KIMI_FOR_CODING_ID,
+        id: apiID,
         url: provider.api ?? model.api.url,
         npm: "@ai-sdk/openai-compatible",
       },
@@ -1268,11 +1284,42 @@ function exposeKimiForCodingModel(provider: ModelsDev.Provider, models: Record<s
     Object.values(models)[0]
   if (!fallback) return
 
+  const activeIDs = new Set([KIMI_FOR_CODING_ID, KIMI_FOR_CODING_FAST_ID, K3_ID])
+
   for (const [id, model] of Object.entries(models)) {
-    if (id === KIMI_FOR_CODING_ID) continue
-    models[id] = normalize(model, model.id, "deprecated")
+    if (activeIDs.has(id)) continue
+    models[id] = normalize(model, model.id, "deprecated", KIMI_FOR_CODING_NAME, KIMI_FOR_CODING_ID)
   }
-  models[KIMI_FOR_CODING_ID] = normalize(fallback, ModelID.make(KIMI_FOR_CODING_ID), "active")
+
+  models[KIMI_FOR_CODING_ID] = normalize(
+    fallback,
+    ModelID.make(KIMI_FOR_CODING_ID),
+    "active",
+    KIMI_FOR_CODING_NAME,
+    KIMI_FOR_CODING_ID,
+  )
+
+  const fast = models[KIMI_FOR_CODING_FAST_ID]
+  if (fast) {
+    models[KIMI_FOR_CODING_FAST_ID] = normalize(
+      fast,
+      ModelID.make(KIMI_FOR_CODING_FAST_ID),
+      "active",
+      fast.name || KIMI_FOR_CODING_FAST_NAME,
+      KIMI_FOR_CODING_FAST_ID,
+    )
+  }
+
+  const k3 = models[K3_ID]
+  if (k3) {
+    models[K3_ID] = normalize(
+      k3,
+      ModelID.make(K3_ID),
+      "active",
+      k3.name || K3_NAME,
+      K3_ID,
+    )
+  }
 }
 
 export function fromModelsDevProvider(provider: ModelsDev.Provider): Info {
@@ -1456,8 +1503,10 @@ const layer: Layer.Layer<
 
           for (const [modelID, model] of Object.entries(configuredModels)) {
             const existingModel = parsed.models[model.id ?? modelID]
-            const metadataModel = existingModel ?? findKnownModelMetadata(database, model.id, modelID)
             const apiID = model.id ?? existingModel?.api.id ?? modelID
+            const capabilityModelID = model.capability_model_id ?? CodexModel.capabilityModelID(apiID)
+            const knownMetadata = findKnownModelMetadata(database, model.id, modelID, capabilityModelID)
+            const metadataModel = existingModel ?? knownMetadata
             const apiNpm =
               model.provider?.npm ??
               provider.npm ??
@@ -1479,7 +1528,15 @@ const layer: Layer.Layer<
               status: model.status ?? metadataModel?.status ?? "active",
               name,
               providerID: ProviderID.make(providerID),
-              backend_semantics: model.backend_semantics ?? provider.backend_semantics ?? existingModel?.backend_semantics,
+              backend_semantics:
+                model.backend_semantics ??
+                provider.backend_semantics ??
+                metadataModel?.backend_semantics ??
+                knownMetadata?.backend_semantics,
+              capability_model_id:
+                capabilityModelID ?? metadataModel?.capability_model_id ?? knownMetadata?.capability_model_id,
+              reasoning_efforts:
+                model.reasoning_efforts ?? metadataModel?.reasoning_efforts ?? knownMetadata?.reasoning_efforts,
               capabilities: {
                 temperature: model.temperature ?? metadataModel?.capabilities.temperature ?? false,
                 reasoning: model.reasoning ?? metadataModel?.capabilities.reasoning ?? false,
@@ -1615,12 +1672,16 @@ const layer: Layer.Layer<
 
           for (const modelID of discoveredModels) {
             if (provider.models[modelID]) continue
-            const metadataModel = findKnownModelMetadata(database, modelID)
+            const capabilityModelID = CodexModel.capabilityModelID(modelID)
+            const metadataModel = findKnownModelMetadata(database, modelID, capabilityModelID)
             provider.models[modelID] = {
               id: ModelID.make(modelID),
               providerID: id,
               name: metadataModel?.name ?? modelID,
               family: metadataModel?.family ?? "",
+              backend_semantics: metadataModel?.backend_semantics,
+              capability_model_id: metadataModel?.capability_model_id ?? capabilityModelID,
+              reasoning_efforts: metadataModel?.reasoning_efforts,
               api: { id: modelID, url: devEntry.api ?? "", npm },
               status: "active",
               headers: {},
@@ -1762,7 +1823,7 @@ const layer: Layer.Layer<
 
             const codexLimit =
               model.backend_semantics === "codex" && !configModel?.limit
-                ? ProviderTransform.codexLimit(model.api.id)
+                ? ProviderTransform.codexLimit(model.capability_model_id ?? model.api.id)
                 : undefined
             if (codexLimit) model.limit = codexLimit
 

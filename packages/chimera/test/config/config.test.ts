@@ -1807,6 +1807,34 @@ test("validates provider wire API placement and values", () => {
   )
   expect(modelOverride.provider?.invalid?.models?.model).toEqual({})
 })
+test("validates provider model capability metadata", () => {
+  const config = ConfigParse.effectSchema(
+    Config.Info,
+    {
+      provider: {
+        compatible: {
+          models: {
+            "gpt-5.6-sol-fast": {
+              capability_model_id: "gpt-5.6-sol",
+              reasoning_efforts: ["low", "max"],
+            },
+          },
+        },
+      },
+    },
+    "test",
+  )
+  expect(config.provider?.compatible?.models?.["gpt-5.6-sol-fast"]).toMatchObject({
+    capability_model_id: "gpt-5.6-sol",
+    reasoning_efforts: ["low", "max"],
+  })
+  expect(
+    Config.Info.zod.safeParse({
+      provider: { compatible: { models: { model: { reasoning_efforts: ["extreme"] } } } },
+    }).success,
+  ).toBe(false)
+})
+
 
 // MCP config merging tests
 
