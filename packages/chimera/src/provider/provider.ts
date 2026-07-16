@@ -32,6 +32,10 @@ import { ModelID, ProviderID } from "./schema"
 const log = Log.create({ service: "provider" })
 const KIMI_FOR_CODING_ID = "kimi-for-coding"
 const KIMI_FOR_CODING_NAME = "kimi-for-coding（Kimi-K2.7）"
+const KIMI_FOR_CODING_FAST_ID = "kimi-for-coding-fast"
+const KIMI_FOR_CODING_FAST_NAME = "kimi-for-coding-fast"
+const K3_ID = "k3"
+const K3_NAME = "k3"
 const MODEL_DISCOVERY_TIMEOUT = 5_000
 
 function shouldUseCopilotResponsesApi(modelID: string): boolean {
@@ -1221,15 +1225,21 @@ export function findKnownModelMetadata(database: Record<string, Info>, ...ids: (
 function exposeKimiForCodingModel(provider: ModelsDev.Provider, models: Record<string, Model>) {
   if (provider.id !== KIMI_FOR_CODING_ID) return
 
-  function normalize(model: Model, id: ModelID, status: Model["status"]): Model {
+  function normalize(
+    model: Model,
+    id: ModelID,
+    status: Model["status"],
+    name: string,
+    apiID: string,
+  ): Model {
     const normalized: Model = {
       ...model,
       id,
-      name: KIMI_FOR_CODING_NAME,
+      name,
       family: model.family ?? KIMI_FOR_CODING_ID,
       api: {
         ...model.api,
-        id: KIMI_FOR_CODING_ID,
+        id: apiID,
         url: provider.api ?? model.api.url,
         npm: "@ai-sdk/openai-compatible",
       },
@@ -1268,11 +1278,42 @@ function exposeKimiForCodingModel(provider: ModelsDev.Provider, models: Record<s
     Object.values(models)[0]
   if (!fallback) return
 
+  const activeIDs = new Set([KIMI_FOR_CODING_ID, KIMI_FOR_CODING_FAST_ID, K3_ID])
+
   for (const [id, model] of Object.entries(models)) {
-    if (id === KIMI_FOR_CODING_ID) continue
-    models[id] = normalize(model, model.id, "deprecated")
+    if (activeIDs.has(id)) continue
+    models[id] = normalize(model, model.id, "deprecated", KIMI_FOR_CODING_NAME, KIMI_FOR_CODING_ID)
   }
-  models[KIMI_FOR_CODING_ID] = normalize(fallback, ModelID.make(KIMI_FOR_CODING_ID), "active")
+
+  models[KIMI_FOR_CODING_ID] = normalize(
+    fallback,
+    ModelID.make(KIMI_FOR_CODING_ID),
+    "active",
+    KIMI_FOR_CODING_NAME,
+    KIMI_FOR_CODING_ID,
+  )
+
+  const fast = models[KIMI_FOR_CODING_FAST_ID]
+  if (fast) {
+    models[KIMI_FOR_CODING_FAST_ID] = normalize(
+      fast,
+      ModelID.make(KIMI_FOR_CODING_FAST_ID),
+      "active",
+      fast.name || KIMI_FOR_CODING_FAST_NAME,
+      KIMI_FOR_CODING_FAST_ID,
+    )
+  }
+
+  const k3 = models[K3_ID]
+  if (k3) {
+    models[K3_ID] = normalize(
+      k3,
+      ModelID.make(K3_ID),
+      "active",
+      k3.name || K3_NAME,
+      K3_ID,
+    )
+  }
 }
 
 export function fromModelsDevProvider(provider: ModelsDev.Provider): Info {

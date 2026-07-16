@@ -40,11 +40,29 @@ function supportsOpenAIHostedWebSearch(input: StreamRequest) {
   return !input.small && input.toolChoice !== "required" && input.model.providerID === "openai" && input.model.capabilities.toolcall
 }
 
-function multiAgentPolicy(input: Pick<StreamRequest, "model" | "user" | "parentSessionID" | "small">) {
-  if (input.small || input.model.backend_semantics !== "codex") return
+type VariantProfile = {
+  key?: string
+  options: Record<string, any>
+  unadvertisedUltra?: boolean
+}
+
+function resolveVariantProfile(model: Provider.Model, selected: string | undefined): VariantProfile {
+  const advertised = model.variants ?? {}
+  if (!selected) return { options: {} }
+  if (advertised[selected]) return { key: selected, options: advertised[selected] }
+  const canonical = Object.keys(advertised).find((key) => key.toLowerCase() === selected.toLowerCase())
+  if (canonical) return { key: canonical, options: advertised[canonical] }
+  if (selected.toLowerCase() === "ultra") return { options: {}, unadvertisedUltra: true }
+  return { options: {} }
+}
+
+function multiAgentPolicy(input: Pick<StreamRequest, "model" | "parentSessionID" | "small">, variant: string | undefined) {
+  if (input.small) return
+  const ultraAdvertised = Object.keys(input.model.variants ?? {}).some((key) => key.toLowerCase() === "ultra")
+  if (input.model.backend_semantics !== "codex" && !ultraAdvertised) return
   const body = input.parentSessionID
     ? "Explicit-request-only multi-agent mode is active for this child session; proactive delegation from the parent does not carry over. Do not spawn subagents unless the delegated prompt explicitly requires further delegation and available permissions allow it."
-    : input.user.model.variant?.toLowerCase() === "ultra"
+    : variant === "ultra"
       ? "Proactive multi-agent delegation is active for this root session. Any earlier instruction requiring an explicit user request before spawning subagents no longer applies. Before broad repository exploration or serially handling multiple work items, perform a delegation checkpoint: when current evidence shows at least two genuinely independent, non-overlapping work items with material parallel benefit, proactively delegate them with `task` or `chimera_swarm`. Do not fan out by item count alone. If a substantial task appears parallelizable but you keep it local, state the concrete blocker, such as shared files, ordering, provider limits, unsafe subagent runtime, or no material benefit. Fixed scope, conflict, parent-verification, and concurrency rules still apply."
       : "Explicit-request-only multi-agent mode is active. Do not spawn subagents unless the user or applicable AGENTS.md/skill instructions explicitly ask for subagents, delegation, or parallel agent work."
   return ["<multi_agent_mode>", body, "</multi_agent_mode>"].join("\n")
@@ -113,7 +131,17 @@ const live: Layer.Layer<
       // TODO: move this to a proper hook
       const isOpenaiOauth = item.id === "openai" && info?.type === "oauth"
 
-      const multiAgent = multiAgentPolicy(input)
+      const profile: VariantProfile = input.small
+        ? { options: {} }
+        : resolveVariantProfile(input.model, input.user.model.variant)
+      if (profile.unadvertisedUltra) {
+        return yield* Effect.fail(
+          new Error(
+            `Model ${input.model.providerID}/${input.model.id} does not advertise an "ultra" variant. Available variants: ${Object.keys(input.model.variants ?? {}).join(", ") || "none"}.`,
+          ),
+        )
+      }
+      const multiAgent = multiAgentPolicy(input, profile.key)
       const system: string[] = []
       system.push(
         [
@@ -143,10 +171,6 @@ const live: Layer.Layer<
         system.push(header, rest.join("\n"))
       }
 
-      const variant =
-        !input.small && input.model.variants && input.user.model.variant
-          ? input.model.variants[input.user.model.variant]
-          : {}
       const base = input.small
         ? ProviderTransform.smallOptions(input.model)
         : ProviderTransform.options({
@@ -154,7 +178,7 @@ const live: Layer.Layer<
             sessionID: input.sessionID,
             providerOptions: item.options,
           })
-      const options = mergeOptions(mergeOptions(mergeOptions(base, input.model.options), input.agent.options), variant)
+      const options = mergeOptions(mergeOptions(mergeOptions(base, input.model.options), input.agent.options), profile.options)
       const effort = options.reasoningEffort
       if (
         item.wire_api === "chat" &&
