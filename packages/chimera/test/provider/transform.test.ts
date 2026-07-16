@@ -669,6 +669,34 @@ describe("ProviderTransform.providerOptions", () => {
     expect(options).toEqual({ reasoningEffort: "ultra", trace: "keep" })
   })
 
+
+  test("lowers raw Ultra effort through the advertised ultra profile for non-Codex models", () => {
+    const model = createModel({
+      providerID: "kimi-for-coding",
+      api: { id: "k3", url: "https://api.kimi.com/coding/v1", npm: "@ai-sdk/openai-compatible" },
+      variants: {
+        low: { reasoningEffort: "low" },
+        max: { reasoningEffort: "max" },
+        ultra: { reasoningEffort: "max" },
+      },
+    })
+
+    expect(ProviderTransform.providerOptions(model, { reasoningEffort: "ultra", trace: "keep" })).toEqual({
+      "kimi-for-coding": { reasoningEffort: "max", trace: "keep" },
+    })
+  })
+
+  test("leaves raw Ultra effort untouched when no ultra profile is advertised", () => {
+    const model = createModel({
+      providerID: "my-proxy",
+      api: { id: "plain-model", url: "https://api.proxy.test", npm: "@ai-sdk/openai-compatible" },
+    })
+
+    expect(ProviderTransform.providerOptions(model, { reasoningEffort: "ultra" })).toEqual({
+      "my-proxy": { reasoningEffort: "ultra" },
+    })
+  })
+
   test("uses gateway model provider slug for gateway models", () => {
     const model = createModel({
       providerID: "vercel",
@@ -2597,6 +2625,23 @@ describe("ProviderTransform.variants", () => {
     expect(result.ultra.reasoningSummary).toBeUndefined()
     expect(result.ultra.include).toBeUndefined()
     expect(ProviderTransform.smallOptions(model)).toEqual({ reasoningEffort: "low" })
+  })
+
+
+  test("kimi k3 advertises Ultra with the provider-legal maximum", () => {
+    const model = createMockModel({
+      id: "k3",
+      providerID: "kimi-for-coding",
+      api: {
+        id: "k3",
+        url: "https://api.kimi.com/coding/v1",
+        npm: "@ai-sdk/openai-compatible",
+      },
+    })
+    const result = ProviderTransform.variants(model)
+    expect(Object.keys(result)).toEqual(["low", "medium", "high", "max", "ultra"])
+    expect(result.max).toEqual({ reasoningEffort: "max" })
+    expect(result.ultra).toEqual({ reasoningEffort: "max" })
   })
 
   test("codex semantics supplies known efforts when discovery omits reasoning metadata", () => {
