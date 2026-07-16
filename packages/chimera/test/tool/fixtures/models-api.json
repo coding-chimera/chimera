@@ -17840,6 +17840,39 @@
         "open_weights": true,
         "cost": { "input": 0, "output": 0, "cache_read": 0, "cache_write": 0 },
         "limit": { "context": 262144, "output": 32768 }
+      },
+      "kimi-for-coding-fast": {
+        "id": "kimi-for-coding-fast",
+        "name": "Kimi For Coding Fast",
+        "family": "kimi-thinking",
+        "attachment": false,
+        "reasoning": true,
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "knowledge": "2025-07",
+        "release_date": "2025-11",
+        "last_updated": "2025-12",
+        "modalities": { "input": ["text"], "output": ["text"] },
+        "open_weights": true,
+        "cost": { "input": 0, "output": 0, "cache_read": 0, "cache_write": 0 },
+        "limit": { "context": 262144, "output": 32768 }
+      },
+      "k3": {
+        "id": "k3",
+        "name": "Kimi K3",
+        "family": "kimi-thinking",
+        "attachment": false,
+        "reasoning": true,
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "release_date": "2026-07-17",
+        "last_updated": "2026-07-17",
+        "modalities": { "input": ["text"], "output": ["text"] },
+        "open_weights": true,
+        "cost": { "input": 0, "output": 0, "cache_read": 0, "cache_write": 0 },
+        "limit": { "context": 1048576, "output": 32768 }
       }
     }
   },

@@ -2756,6 +2756,125 @@ test("models.dev normalization exposes Kimi For Coding as a stable model id", ()
   expect(legacy.status).toBe("deprecated")
 })
 
+
+test("models.dev normalization exposes k3 and kimi-for-coding-fast as active models", () => {
+  const provider = {
+    id: "kimi-for-coding",
+    name: "Kimi",
+    env: ["KIMI_API_KEY"],
+    npm: "@ai-sdk/anthropic",
+    api: "https://api.kimi.com/coding/v1",
+    models: {
+      k2p6: {
+        id: "k2p6",
+        name: "Kimi K2.6",
+        family: "kimi-thinking",
+        attachment: false,
+        reasoning: true,
+        temperature: true,
+        tool_call: true,
+        release_date: "2026-04",
+        modalities: {
+          input: ["text", "image", "video"],
+          output: ["text"],
+        },
+        limit: {
+          context: 262_144,
+          output: 32_768,
+        },
+        cost: {
+          input: 0,
+          output: 0,
+          cache_read: 0,
+          cache_write: 0,
+        },
+      },
+      k3: {
+        id: "k3",
+        name: "Kimi K3",
+        family: "kimi-thinking",
+        attachment: false,
+        reasoning: true,
+        temperature: true,
+        tool_call: true,
+        structured_output: true,
+        release_date: "2026-07-17",
+        last_updated: "2026-07-17",
+        modalities: {
+          input: ["text"],
+          output: ["text"],
+        },
+        limit: {
+          context: 1_048_576,
+          output: 32_768,
+        },
+        cost: {
+          input: 0,
+          output: 0,
+          cache_read: 0,
+          cache_write: 0,
+        },
+      },
+      "kimi-for-coding-fast": {
+        id: "kimi-for-coding-fast",
+        name: "Kimi For Coding Fast",
+        family: "kimi-thinking",
+        attachment: false,
+        reasoning: true,
+        temperature: true,
+        tool_call: true,
+        structured_output: true,
+        release_date: "2025-11",
+        last_updated: "2025-12",
+        knowledge: "2025-07",
+        modalities: {
+          input: ["text"],
+          output: ["text"],
+        },
+        limit: {
+          context: 262_144,
+          output: 32_768,
+        },
+        cost: {
+          input: 0,
+          output: 0,
+          cache_read: 0,
+          cache_write: 0,
+        },
+      },
+    },
+  } as unknown as ModelsDev.Provider
+
+  const models = Provider.fromModelsDevProvider(provider).models
+
+  const k3 = models["k3"]
+  const fast = models["kimi-for-coding-fast"]
+  const stable = models["kimi-for-coding"]
+  const legacy = models["k2p6"]
+
+  expect(k3).toBeDefined()
+  expect(k3.status).toBe("active")
+  expect(k3.name).toBe("Kimi K3")
+  expect(k3.api.id).toBe("k3")
+  expect(k3.limit.context).toBe(1_048_576)
+  expect(k3.capabilities.reasoning).toBe(true)
+  expect(k3.variants?.max).toEqual({ reasoningEffort: "max" })
+  expect(k3.variants?.ultra).toEqual({ reasoningEffort: "max" })
+
+  expect(fast).toBeDefined()
+  expect(fast.status).toBe("active")
+  expect(fast.name).toBe("Kimi For Coding Fast")
+  expect(fast.api.id).toBe("kimi-for-coding-fast")
+
+  expect(stable).toBeDefined()
+  expect(stable.status).toBe("active")
+  expect(stable.api.id).toBe("kimi-for-coding")
+
+  expect(legacy).toBeDefined()
+  expect(legacy.status).toBe("deprecated")
+  expect(legacy.api.id).toBe("kimi-for-coding")
+})
+
 test("model variants are generated for reasoning models", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {

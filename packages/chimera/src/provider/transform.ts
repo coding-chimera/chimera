@@ -779,9 +779,11 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
     case "@ai-sdk/openai-compatible":
       const efforts = [...WIDELY_SUPPORTED_EFFORTS]
       const apiID = model.api.id.toLowerCase()
+      const isKimiK3 = apiID.includes("k3")
       if (
         apiID.includes("deepseek-v4") ||
         apiID.includes("claude-opus-4") ||
+        isKimiK3 ||
         /claude-4(?:[.-]\d)?-opus/.test(apiID)
       ) {
         efforts.push("max")
@@ -789,7 +791,9 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
       if (model.release_date >= "2025-12-04" || GPT5_FAMILY_RE.test(apiID)) {
         efforts.push("xhigh")
       }
-      return Object.fromEntries(efforts.map((effort) => [effort, { reasoningEffort: effort }]))
+      const compatible = Object.fromEntries(efforts.map((effort) => [effort, { reasoningEffort: effort }]))
+      if (isKimiK3) compatible.ultra = { reasoningEffort: "max" }
+      return compatible
 
     case "@ai-sdk/azure":
       // https://v5.ai-sdk.dev/providers/ai-sdk-providers/azure
@@ -1252,11 +1256,16 @@ const SLUG_OVERRIDES: Record<string, string> = {
   amazon: "bedrock",
 }
 
+function lowerUltraEffort(model: Provider.Model, options: { [x: string]: any }) {
+  if (options.reasoningEffort !== "ultra") return options
+  const advertised = model.variants?.ultra?.reasoningEffort
+  if (typeof advertised === "string") return { ...options, reasoningEffort: advertised }
+  if (model.backend_semantics === "codex") return { ...options, reasoningEffort: "max" }
+  return options
+}
+
 export function providerOptions(model: Provider.Model, options: { [x: string]: any }) {
-  const wireOptions =
-    model.backend_semantics === "codex" && options.reasoningEffort === "ultra"
-      ? { ...options, reasoningEffort: "max" }
-      : options
+  const wireOptions = lowerUltraEffort(model, options)
   if (model.api.npm === "@ai-sdk/gateway") {
     // Gateway providerOptions are split across two namespaces:
     // - `gateway`: gateway-native routing/caching controls (order, only, byok, etc.)
