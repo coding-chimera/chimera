@@ -1,4 +1,4 @@
-import { describe, expect, beforeAll, beforeEach, afterAll } from "bun:test"
+import { describe, expect, test, beforeAll, beforeEach, afterAll } from "bun:test"
 import { Effect, Layer, Ref } from "effect"
 import { HttpClient, HttpClientResponse } from "effect/unstable/http"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
@@ -118,6 +118,65 @@ const initialState: MockState = {
   status: 200,
   calls: [],
 }
+
+test("normalizes GPT-5.6 catalog capabilities from provider metadata", () => {
+  const normalized = ModelsDev.normalizeCatalog({
+    compatible: {
+      id: "compatible",
+      name: "Compatible",
+      env: [],
+      npm: "@ai-sdk/openai-compatible",
+      models: {
+        sol: {
+          id: "gpt-5.6-sol",
+          reasoning_options: [{ type: "effort", values: ["low", "high", "max", null, "unsupported"] }],
+        },
+        plain: {
+          id: "gpt-5.6",
+          reasoning_options: [{ type: "effort", values: ["low", "medium", "max"] }],
+        },
+        luna: {
+          id: "gpt-5.6-luna",
+          reasoning_options: [{ type: "effort", values: ["low", "high"] }],
+        },
+      },
+    },
+    gateway: {
+      id: "gateway",
+      name: "Gateway",
+      env: [],
+      npm: "@ai-sdk/gateway",
+      models: {
+        terra: {
+          id: "gpt-5.6-terra",
+          reasoning_options: [{ type: "effort", values: ["low", "max"] }],
+        },
+      },
+    },
+  } as unknown as Record<string, ModelsDev.Provider>)
+
+  expect(normalized.compatible.models.sol).toMatchObject({
+    backend_semantics: "codex",
+    capability_model_id: "gpt-5.6-sol",
+    reasoning_efforts: ["low", "high", "max"],
+  })
+  expect(normalized.compatible.models.plain).toMatchObject({
+    backend_semantics: "codex",
+    capability_model_id: "gpt-5.6",
+    reasoning_efforts: ["low", "medium", "max"],
+  })
+  expect(normalized.compatible.models.luna).toMatchObject({
+    capability_model_id: "gpt-5.6-luna",
+    reasoning_efforts: ["low", "high"],
+  })
+  expect(normalized.compatible.models.luna.backend_semantics).toBeUndefined()
+  expect(normalized.gateway.models.terra).toMatchObject({
+    capability_model_id: "gpt-5.6-terra",
+    reasoning_efforts: ["low", "max"],
+  })
+  expect(normalized.gateway.models.terra.backend_semantics).toBeUndefined()
+})
+
 
 describe("ModelsDev Service", () => {
   it.live("get() returns providers from disk when cache file exists", () =>

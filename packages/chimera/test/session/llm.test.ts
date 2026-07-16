@@ -619,7 +619,6 @@ describe("session.llm.stream", () => {
     })
   })
 
-
   test("activates the Ultra profile for Kimi k3 on OpenAI-compatible Chat", async () => {
     const server = state.server
     if (!server) throw new Error("Server not initialized")
@@ -908,7 +907,7 @@ describe("session.llm.stream", () => {
             messages: [{ role: "user", content: "Hello" }],
             tools: {},
           }),
-        ).rejects.toThrow('does not support Codex reasoning effort "ultra". Use wire_api "responses" or @ai-sdk/openai-compatible Chat.')
+        ).rejects.toThrow('does not support Codex reasoning effort "max". Use wire_api "responses" or @ai-sdk/openai-compatible Chat.')
       },
     })
   })

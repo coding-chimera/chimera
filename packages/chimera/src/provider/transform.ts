@@ -6,6 +6,7 @@ import type * as Provider from "./provider"
 import type * as ModelsDev from "./models"
 import { iife } from "@/util/iife"
 import { Flag } from "@opencode-ai/core/flag/flag"
+import { CodexModel } from "./codex-model"
 
 type Modality = NonNullable<ModelsDev.Model["modalities"]>["input"][number]
 
@@ -502,12 +503,6 @@ const WIDELY_SUPPORTED_EFFORTS = ["low", "medium", "high"]
 const OPENAI_EFFORTS = ["none", "minimal", ...WIDELY_SUPPORTED_EFFORTS, "xhigh"]
 const NVIDIA_KIMI_K26_EFFORTS = ["none", "minimal", ...WIDELY_SUPPORTED_EFFORTS, "xhigh", "max"]
 const TENCENT_GLM52_EFFORTS = ["high", "max"]
-const CODEX_REASONING_EFFORTS = {
-  "gpt-5.5": ["low", "medium", "high", "xhigh"],
-  "gpt-5.6-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
-  "gpt-5.6-terra": ["low", "medium", "high", "xhigh", "max", "ultra"],
-  "gpt-5.6-luna": ["low", "medium", "high", "xhigh", "max"],
-} as const
 
 // OpenAI rolled out the `none` reasoning_effort tier on this date (Responses API).
 // Models released before it 400 on `reasoning_effort: "none"`, so we only expose
@@ -549,25 +544,14 @@ function anthropicAdaptiveEfforts(apiId: string): string[] | null {
   return null
 }
 
-function codexModelID(apiId: string) {
-  return apiId.toLowerCase().split("/").at(-1) ?? apiId.toLowerCase()
-}
-
 export function codexLimit(apiId: string) {
-  const id = codexModelID(apiId)
-  const nextInput =
-    id === "gpt-5.5"
-      ? 272_000
-      : ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"].includes(id)
-        ? 372_000
-        : undefined
-  if (!nextInput) return
-  return { context: nextInput + 128_000, input: nextInput, output: 128_000 }
+  return CodexModel.limit(apiId)
 }
 
-function codexReasoningEfforts(apiId: string) {
-  const id = codexModelID(apiId)
-  return CODEX_REASONING_EFFORTS[id as keyof typeof CODEX_REASONING_EFFORTS]
+function codexReasoningEfforts(model: Provider.Model) {
+  const capabilityID = model.capability_model_id ?? CodexModel.capabilityModelID(model.api.id)
+  if (!capabilityID) return []
+  return CodexModel.reasoningEfforts(capabilityID, model.reasoning_efforts)
 }
 
 function isNvidiaKimiK26(model: Provider.Model) {
@@ -623,10 +607,14 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
   // Same discovery gap for custom openai-compatible proxies (e.g. aijws/grok-4.5).
   const grokEfforts = grokReasoningEfforts(model)
   const isGrokEffortModel = grokEfforts !== null
-  const codexEfforts = model.backend_semantics === "codex" ? codexReasoningEfforts(model.api.id) : undefined
-  if (!model.capabilities.reasoning && !isTencentGlm52 && !isGrokEffortModel && !codexEfforts) return {}
-  if (codexEfforts) {
-    return Object.fromEntries(codexEfforts.map((effort) => [effort, { reasoningEffort: effort }]))
+  const codexEfforts = model.backend_semantics === "codex" ? codexReasoningEfforts(model) : []
+  if (!model.capabilities.reasoning && !isTencentGlm52 && !isGrokEffortModel && codexEfforts.length === 0) return {}
+  if (codexEfforts.length > 0) {
+    // Ultra is a Chimera product profile: its advertised options already carry the
+    // provider-legal maximum, so transports never see a raw "ultra" effort.
+    return Object.fromEntries(
+      codexEfforts.map((effort) => [effort, { reasoningEffort: effort === "ultra" ? "max" : effort }]),
+    )
   }
 
   const id = model.id.toLowerCase()
@@ -792,6 +780,9 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
         efforts.push("xhigh")
       }
       const compatible = Object.fromEntries(efforts.map((effort) => [effort, { reasoningEffort: effort }]))
+      // Kimi k3 advertises the Ultra product profile with its verified provider-legal
+      // maximum (reasoning_effort "max"); the proactive Dynamic Workflow policy is
+      // resolved from this advertised variant in session/llm.
       if (isKimiK3) compatible.ultra = { reasoningEffort: "max" }
       return compatible
 
@@ -1213,7 +1204,13 @@ export function options(input: {
 }
 
 export function smallOptions(model: Provider.Model) {
-  const codexEffort = model.backend_semantics === "codex" ? codexReasoningEfforts(model.api.id)?.[0] : undefined
+  const codexEffort =
+    model.backend_semantics === "codex"
+      ? CodexModel.smallReasoningEffort(
+          model.capability_model_id ?? model.api.id,
+          model.reasoning_efforts,
+        )
+      : undefined
   if (
     model.providerID === "openai" ||
     model.api.npm === "@ai-sdk/openai" ||
@@ -1256,6 +1253,9 @@ const SLUG_OVERRIDES: Record<string, string> = {
   amazon: "bedrock",
 }
 
+// Defensive backstop: a raw "ultra" effort must never reach the wire. Ultra variants
+// already store the provider-legal maximum, so resolve through the advertised profile
+// first and only then fall back to the Codex maximum.
 function lowerUltraEffort(model: Provider.Model, options: { [x: string]: any }) {
   if (options.reasoningEffort !== "ultra") return options
   const advertised = model.variants?.ultra?.reasoningEffort

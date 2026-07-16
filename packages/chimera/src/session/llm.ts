@@ -46,6 +46,9 @@ type VariantProfile = {
   unadvertisedUltra?: boolean
 }
 
+// Resolves the selected variant once so provider options and the multi-agent policy
+// consume the same canonical profile. Exact advertised keys win; otherwise the
+// selected name is matched case-insensitively against advertised variants.
 function resolveVariantProfile(model: Provider.Model, selected: string | undefined): VariantProfile {
   const advertised = model.variants ?? {}
   if (!selected) return { options: {} }
@@ -137,7 +140,7 @@ const live: Layer.Layer<
       if (profile.unadvertisedUltra) {
         return yield* Effect.fail(
           new Error(
-            `Model ${input.model.providerID}/${input.model.id} does not advertise an "ultra" variant. Available variants: ${Object.keys(input.model.variants ?? {}).join(", ") || "none"}.`,
+            `Model ${input.model.providerID}/${input.model.id} does not advertise an "ultra" variant. Available variants: ${Object.keys(input.model.variants ?? {}).join(", ") || "none"}.`
           ),
         )
       }

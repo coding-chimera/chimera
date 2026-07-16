@@ -669,7 +669,6 @@ describe("ProviderTransform.providerOptions", () => {
     expect(options).toEqual({ reasoningEffort: "ultra", trace: "keep" })
   })
 
-
   test("lowers raw Ultra effort through the advertised ultra profile for non-Codex models", () => {
     const model = createModel({
       providerID: "kimi-for-coding",
@@ -2621,12 +2620,68 @@ describe("ProviderTransform.variants", () => {
     const result = ProviderTransform.variants(model)
     expect(Object.keys(result)).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"])
     expect(result.max).toEqual({ reasoningEffort: "max" })
-    expect(result.ultra).toEqual({ reasoningEffort: "ultra" })
+    expect(result.ultra).toEqual({ reasoningEffort: "max" })
     expect(result.ultra.reasoningSummary).toBeUndefined()
     expect(result.ultra.include).toBeUndefined()
     expect(ProviderTransform.smallOptions(model)).toEqual({ reasoningEffort: "low" })
   })
 
+  test("codex semantics filters variants by provider reasoning efforts", () => {
+    const model = createMockModel({
+      id: "custom/gpt-5.6-sol-fast",
+      providerID: "custom",
+      backend_semantics: "codex",
+      capability_model_id: "gpt-5.6-sol",
+      reasoning_efforts: ["low", "max"],
+      api: {
+        id: "gpt-5.6-sol-fast",
+        url: "https://api.custom.test",
+        npm: "@ai-sdk/openai-compatible",
+      },
+    })
+    expect(ProviderTransform.variants(model)).toEqual({
+      low: { reasoningEffort: "low" },
+      max: { reasoningEffort: "max" },
+      ultra: { reasoningEffort: "max" },
+    })
+  })
+
+  test("plain GPT-5.6 supports declared max without inheriting ultra", () => {
+    const model = createMockModel({
+      id: "custom/gpt-5.6",
+      providerID: "custom",
+      backend_semantics: "codex",
+      capability_model_id: "gpt-5.6",
+      reasoning_efforts: ["low", "max"],
+      api: {
+        id: "gpt-5.6",
+        url: "https://api.custom.test",
+        npm: "@ai-sdk/openai-compatible",
+      },
+    })
+    expect(ProviderTransform.variants(model)).toEqual({
+      low: { reasoningEffort: "low" },
+      max: { reasoningEffort: "max" },
+    })
+  })
+
+  test("plain GPT-5.6 does not infer max or ultra without provider metadata", () => {
+    const model = createMockModel({
+      id: "custom/gpt-5.6",
+      providerID: "custom",
+      backend_semantics: "codex",
+      capability_model_id: "gpt-5.6",
+      api: {
+        id: "gpt-5.6",
+        url: "https://api.custom.test",
+        npm: "@ai-sdk/openai-compatible",
+      },
+    })
+    expect(Object.keys(ProviderTransform.variants(model))).toEqual(["low", "medium", "high", "xhigh"])
+    expect(ProviderTransform.variants(model).max).toBeUndefined()
+    expect(ProviderTransform.variants(model).ultra).toBeUndefined()
+    expect(ProviderTransform.smallOptions(model)).toEqual({})
+  })
 
   test("kimi k3 advertises Ultra with the provider-legal maximum", () => {
     const model = createMockModel({
@@ -2643,6 +2698,7 @@ describe("ProviderTransform.variants", () => {
     expect(result.max).toEqual({ reasoningEffort: "max" })
     expect(result.ultra).toEqual({ reasoningEffort: "max" })
   })
+
 
   test("codex semantics supplies known efforts when discovery omits reasoning metadata", () => {
     const model = createMockModel({

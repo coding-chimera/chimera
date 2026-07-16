@@ -316,6 +316,7 @@ test("custom OpenAI-compatible provider reuses known model metadata", async () =
               env: [],
               models: {
                 "openai/gpt-5.4-pro": {},
+                "gpt-5.6-sol-fast": {},
               },
               options: {
                 baseURL: "https://api.custom.com/v1",
@@ -337,6 +338,13 @@ test("custom OpenAI-compatible provider reuses known model metadata", async () =
       expect(model.limit.context).toBe(1_050_000)
       expect(model.limit.output).toBe(128_000)
       expect(model.cost.input).toBeGreaterThan(0)
+      const fast = providers[ProviderID.make("custom-openai")].models["gpt-5.6-sol-fast"]
+      expect(fast.api.id).toBe("gpt-5.6-sol-fast")
+      expect(fast.capability_model_id).toBe("gpt-5.6-sol")
+      expect(fast.backend_semantics).toBe("codex")
+      expect(fast.reasoning_efforts).toEqual(["none", "low", "medium", "high", "xhigh", "max"])
+      expect(Object.keys(fast.variants ?? {})).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"])
+      expect(fast.limit).toEqual({ context: 500_000, input: 372_000, output: 128_000 })
     },
   })
 })
@@ -2755,8 +2763,6 @@ test("models.dev normalization exposes Kimi For Coding as a stable model id", ()
   expect(legacy.api.id).toBe("kimi-for-coding")
   expect(legacy.status).toBe("deprecated")
 })
-
-
 test("models.dev normalization exposes k3 and kimi-for-coding-fast as active models", () => {
   const provider = {
     id: "kimi-for-coding",
@@ -2804,6 +2810,7 @@ test("models.dev normalization exposes k3 and kimi-for-coding-fast as active mod
           input: ["text"],
           output: ["text"],
         },
+        reasoning_options: [{ type: "effort", values: ["low", "medium", "high", "max"] }],
         limit: {
           context: 1_048_576,
           output: 32_768,
