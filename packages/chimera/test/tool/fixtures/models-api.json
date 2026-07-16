@@ -828,6 +828,24 @@
         "cost": { "input": 0.25, "output": 2, "cache_read": 0.025 },
         "limit": { "context": 400000, "input": 272000, "output": 128000 }
       },
+      "gpt-5.6-sol": {
+        "id": "gpt-5.6-sol",
+        "name": "GPT-5.6 Sol",
+        "family": "gpt-sol",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [{ "type": "effort", "values": ["none", "low", "medium", "high", "xhigh", "max"] }],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": false,
+        "knowledge": "2026-02-16",
+        "release_date": "2026-07-09",
+        "last_updated": "2026-07-09",
+        "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] },
+        "open_weights": false,
+        "cost": { "input": 5, "output": 30, "cache_read": 0.5, "cache_write": 6.25 },
+        "limit": { "context": 1050000, "input": 922000, "output": 128000 }
+      },
       "gpt-5.4-pro": {
         "id": "gpt-5.4-pro",
         "name": "GPT-5.4 Pro",
@@ -17840,6 +17858,41 @@
         "open_weights": true,
         "cost": { "input": 0, "output": 0, "cache_read": 0, "cache_write": 0 },
         "limit": { "context": 262144, "output": 32768 }
+      },
+      "kimi-for-coding-fast": {
+        "id": "kimi-for-coding-fast",
+        "name": "Kimi For Coding Fast",
+        "family": "kimi-thinking",
+        "attachment": false,
+        "reasoning": true,
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "knowledge": "2025-07",
+        "release_date": "2025-11",
+        "last_updated": "2025-12",
+        "modalities": { "input": ["text"], "output": ["text"] },
+        "open_weights": true,
+        "cost": { "input": 0, "output": 0, "cache_read": 0, "cache_write": 0 },
+        "limit": { "context": 262144, "output": 32768 }
+      },
+      "k3": {
+        "id": "k3",
+        "name": "Kimi K3",
+        "family": "kimi-thinking",
+        "attachment": false,
+        "reasoning": true,
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "knowledge": "2025-07",
+        "release_date": "2025-11",
+        "last_updated": "2025-12",
+        "modalities": { "input": ["text"], "output": ["text"] },
+        "open_weights": true,
+        "reasoning_options": [{ "type": "effort", "values": ["low", "medium", "high", "max"] }],
+        "cost": { "input": 0, "output": 0, "cache_read": 0, "cache_write": 0 },
+        "limit": { "context": 1048576, "output": 32768 }
       }
     }
   },

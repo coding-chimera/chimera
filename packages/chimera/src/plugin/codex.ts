@@ -7,7 +7,7 @@ import os from "os"
 import { setTimeout as sleep } from "node:timers/promises"
 import { createServer } from "http"
 import { rewriteRemoteCompactionInput } from "../session/remote-compaction-codec"
-import { codexLimit } from "../provider/transform"
+import { CodexModel } from "../provider/codex-model"
 
 const log = Log.create({ service: "plugin.codex" })
 
@@ -17,39 +17,20 @@ export const CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/respons
 export const CODEX_OAUTH_SCOPE = "openid profile email offline_access api.connectors.read api.connectors.invoke"
 const OAUTH_PORT = 1455
 const OAUTH_POLLING_SAFETY_MARGIN_MS = 3000
-const ALLOWED_MODELS = new Set([
-  "gpt-5.2",
-  "gpt-5.3-codex",
-  "gpt-5.3-codex-spark",
-  "gpt-5.4",
-  "gpt-5.4-mini",
-  "gpt-5.5",
-  "gpt-5.6-sol",
-  "gpt-5.6-terra",
-  "gpt-5.6-luna",
-])
-
-const CODEX_REASONING_EFFORTS = {
-  "gpt-5.5": ["low", "medium", "high", "xhigh"],
-  "gpt-5.6-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
-  "gpt-5.6-terra": ["low", "medium", "high", "xhigh", "max", "ultra"],
-  "gpt-5.6-luna": ["low", "medium", "high", "xhigh", "max"],
-} as const
-
-function isAllowedModel(modelID: string) {
-  if (ALLOWED_MODELS.has(modelID)) return true
-  const match = modelID.match(/^gpt-(\d+\.\d+)$/)
-  return match ? parseFloat(match[1]) > 5.4 : false
-}
-
-function codexReasoningVariants(modelID: string) {
-  const efforts = CODEX_REASONING_EFFORTS[modelID as keyof typeof CODEX_REASONING_EFFORTS]
-  if (!efforts) return
+function codexReasoningVariants(model: {
+  api: { id: string }
+  capability_model_id?: string
+  reasoning_efforts?: readonly unknown[]
+}) {
+  const capabilityID = model.capability_model_id ?? CodexModel.capabilityModelID(model.api.id)
+  if (!capabilityID) return
+  const efforts = CodexModel.reasoningEfforts(capabilityID, model.reasoning_efforts)
+  if (efforts.length === 0) return
   return Object.fromEntries(
     efforts.map((effort) => [
       effort,
       {
-        reasoningEffort: effort,
+        reasoningEffort: effort === "ultra" ? "max" : effort,
         reasoningSummary: "auto",
         include: ["reasoning.encrypted_content"],
       },
@@ -482,15 +463,20 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
 
         return Object.fromEntries(
           Object.entries(provider.models)
-            .filter(([, model]) => isAllowedModel(model.api.id))
+            .filter(([, model]) => CodexModel.isOAuthModel(model.api.id))
             .map(([modelID, model]) => {
-              const limit = codexLimit(model.api.id)
-              const variants = codexReasoningVariants(model.api.id)
+              const capabilityID =
+                ("capability_model_id" in model && typeof model.capability_model_id === "string"
+                  ? model.capability_model_id
+                  : undefined) ?? CodexModel.capabilityModelID(model.api.id)
+              const limit = CodexModel.limit(capabilityID ?? model.api.id)
+              const variants = codexReasoningVariants(model)
               return [
                 modelID,
                 {
                   ...model,
                   backend_semantics: "codex" as const,
+                  capability_model_id: capabilityID,
                   cost: {
                     input: 0,
                     output: 0,
