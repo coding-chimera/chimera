@@ -2804,8 +2804,9 @@ test("models.dev normalization exposes k3 and kimi-for-coding-fast as active mod
         temperature: true,
         tool_call: true,
         structured_output: true,
-        release_date: "2026-07-17",
-        last_updated: "2026-07-17",
+        release_date: "2025-11",
+        last_updated: "2025-12",
+        knowledge: "2025-07",
         modalities: {
           input: ["text"],
           output: ["text"],
