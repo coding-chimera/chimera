@@ -453,7 +453,7 @@ describe("HttpApi SDK", () => {
             sdk.memory.update({ id, memoryUpdateInput: { text: "Updated SDK memory note" } }),
           )
           const imported = yield* capture(() =>
-            sdk.memory.import({
+            sdk.memory.importLegacy({
               legacyMemoryFileV1: {
                 schemaVersion: 1,
                 notes: [

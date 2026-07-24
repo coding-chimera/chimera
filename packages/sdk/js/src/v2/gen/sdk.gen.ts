@@ -88,8 +88,8 @@ import type {
   MemoryCreateInput,
   MemoryForgetErrors,
   MemoryForgetResponses,
-  MemoryImportErrors,
-  MemoryImportResponses,
+  MemoryImportLegacyErrors,
+  MemoryImportLegacyResponses,
   MemoryNotesResponses,
   MemoryRebuildErrors,
   MemoryRebuildInput,
@@ -2690,7 +2690,7 @@ export class Memory extends HeyApiClient {
    *
    * Idempotently import legacy schemaVersion 1 notes into global or current-project scopes.
    */
-  public import<ThrowOnError extends boolean = false>(
+  public importLegacy<ThrowOnError extends boolean = false>(
     parameters?: {
       directory?: string
       workspace?: string
@@ -2710,7 +2710,7 @@ export class Memory extends HeyApiClient {
         },
       ],
     )
-    return (options?.client ?? this.client).post<MemoryImportResponses, MemoryImportErrors, ThrowOnError>({
+    return (options?.client ?? this.client).post<MemoryImportLegacyResponses, MemoryImportLegacyErrors, ThrowOnError>({
       url: "/memory/import",
       ...options,
       ...params,

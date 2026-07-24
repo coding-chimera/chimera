@@ -5389,7 +5389,7 @@ export type MemoryResetResponses = {
 
 export type MemoryResetResponse = MemoryResetResponses[keyof MemoryResetResponses]
 
-export type MemoryImportData = {
+export type MemoryImportLegacyData = {
   body?: LegacyMemoryFileV1
   path?: never
   query?: {
@@ -5399,23 +5399,23 @@ export type MemoryImportData = {
   url: "/memory/import"
 }
 
-export type MemoryImportErrors = {
+export type MemoryImportLegacyErrors = {
   /**
    * MemoryBadRequestError
    */
   400: MemoryBadRequestError
 }
 
-export type MemoryImportError = MemoryImportErrors[keyof MemoryImportErrors]
+export type MemoryImportLegacyError = MemoryImportLegacyErrors[keyof MemoryImportLegacyErrors]
 
-export type MemoryImportResponses = {
+export type MemoryImportLegacyResponses = {
   /**
    * Legacy memory import result
    */
   200: MemoryImportResult
 }
 
-export type MemoryImportResponse = MemoryImportResponses[keyof MemoryImportResponses]
+export type MemoryImportLegacyResponse = MemoryImportLegacyResponses[keyof MemoryImportLegacyResponses]
 
 export type MemoryRebuildData = {
   body?: MemoryRebuildInput
