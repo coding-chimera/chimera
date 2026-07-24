@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test"
+import { expect, mock, spyOn, test } from "bun:test"
 import fs from "fs/promises"
 import path from "path"
 import { pathToFileURL } from "url"
@@ -35,13 +35,14 @@ test("adds tui plugin at runtime from spec", async () => {
     plugin: [],
     plugin_origins: undefined,
   }
-  const wait = spyOn(TuiConfig, "waitForDependencies").mockResolvedValue()
+  const waitForDependencies = async () => {}
   const cwd = spyOn(process, "cwd").mockImplementation(() => tmp.path)
 
   try {
     await TuiPluginRuntime.init({
       api: createTuiPluginApi(),
       config,
+      waitForDependencies,
     })
 
     await expect(TuiPluginRuntime.addPlugin(tmp.extra.spec)).resolves.toBe(true)
@@ -57,7 +58,6 @@ test("adds tui plugin at runtime from spec", async () => {
   } finally {
     await TuiPluginRuntime.dispose()
     cwd.mockRestore()
-    wait.mockRestore()
     delete process.env.OPENCODE_PLUGIN_META_FILE
   }
 })
@@ -78,7 +78,7 @@ test("retries runtime add for file plugins after dependency wait", async () => {
     plugin: [],
     plugin_origins: undefined,
   }
-  const wait = spyOn(TuiConfig, "waitForDependencies").mockImplementation(async () => {
+  const waitForDependencies = mock(async () => {
     await Bun.write(
       path.join(tmp.extra.mod, "index.ts"),
       `export default {
@@ -96,16 +96,16 @@ test("retries runtime add for file plugins after dependency wait", async () => {
     await TuiPluginRuntime.init({
       api: createTuiPluginApi(),
       config,
+      waitForDependencies,
     })
 
     await expect(TuiPluginRuntime.addPlugin(tmp.extra.spec)).resolves.toBe(true)
     await expect(fs.readFile(tmp.extra.marker, "utf8")).resolves.toBe("called")
-    expect(wait).toHaveBeenCalledTimes(1)
+    expect(waitForDependencies).toHaveBeenCalledTimes(1)
     expect(TuiPluginRuntime.list().find((item) => item.id === "demo.add.retry")?.active).toBe(true)
   } finally {
     await TuiPluginRuntime.dispose()
     cwd.mockRestore()
-    wait.mockRestore()
     delete process.env.OPENCODE_PLUGIN_META_FILE
   }
 })

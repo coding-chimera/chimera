@@ -3,7 +3,11 @@ import { Patch } from "../../src/patch"
 import * as fs from "fs/promises"
 import * as path from "path"
 import { tmpdir } from "os"
+import { Effect, Schema } from "effect"
+import { AppFileSystem } from "@opencode-ai/core/filesystem"
 
+const applyPatch = (patchText: string) =>
+  Patch.applyPatch(patchText).pipe(Effect.provide(AppFileSystem.defaultLayer), Effect.runPromise)
 describe("Patch namespace", () => {
   let tempDir: string
 
@@ -141,7 +145,7 @@ PATCH`
 +This is a new file
 *** End Patch`
 
-      const result = await Patch.applyPatch(patchText)
+      const result = await applyPatch(patchText)
       expect(result.added).toHaveLength(1)
       expect(result.modified).toHaveLength(0)
       expect(result.deleted).toHaveLength(0)
@@ -158,7 +162,7 @@ PATCH`
 *** Delete File: ${filePath}
 *** End Patch`
 
-      const result = await Patch.applyPatch(patchText)
+      const result = await applyPatch(patchText)
       expect(result.deleted).toHaveLength(1)
       expect(result.deleted[0]).toBe(filePath)
 
@@ -182,7 +186,7 @@ PATCH`
  line 3
 *** End Patch`
 
-      const result = await Patch.applyPatch(patchText)
+      const result = await applyPatch(patchText)
       expect(result.modified).toHaveLength(1)
       expect(result.modified[0]).toBe(filePath)
 
@@ -203,7 +207,7 @@ PATCH`
 +new content
 *** End Patch`
 
-      const result = await Patch.applyPatch(patchText)
+      const result = await applyPatch(patchText)
       expect(result.modified).toHaveLength(1)
       expect(result.modified[0]).toBe(newPath)
 
@@ -235,7 +239,7 @@ PATCH`
 *** Delete File: ${file2}
 *** End Patch`
 
-      const result = await Patch.applyPatch(patchText)
+      const result = await applyPatch(patchText)
       expect(result.added).toHaveLength(1)
       expect(result.modified).toHaveLength(1)
       expect(result.deleted).toHaveLength(1)
@@ -249,7 +253,7 @@ PATCH`
 +Deep nested content
 *** End Patch`
 
-      const result = await Patch.applyPatch(patchText)
+      const result = await applyPatch(patchText)
       expect(result.added).toHaveLength(1)
       expect(result.added[0]).toBe(nestedPath)
 
@@ -272,7 +276,7 @@ PATCH`
 +new line
 *** End Patch`
 
-      await expect(Patch.applyPatch(patchText)).rejects.toThrow()
+      await expect(applyPatch(patchText)).rejects.toThrow()
     })
 
     test("should throw error when deleting non-existent file", async () => {
@@ -282,7 +286,23 @@ PATCH`
 *** Delete File: ${nonExistent}
 *** End Patch`
 
-      await expect(Patch.applyPatch(patchText)).rejects.toThrow()
+      await expect(applyPatch(patchText)).rejects.toThrow()
+    })
+
+    test("validates every hunk before writing any files", async () => {
+      const added = path.join(tempDir, "should-not-exist.txt")
+      const missing = path.join(tempDir, "missing.txt")
+      const patchText = `*** Begin Patch
+*** Add File: ${added}
++created
+*** Update File: ${missing}
+@@
+-old
++new
+*** End Patch`
+
+      await expect(applyPatch(patchText)).rejects.toThrow()
+      await expect(fs.readFile(added, "utf-8")).rejects.toThrow()
     })
   })
 
@@ -297,7 +317,7 @@ PATCH`
 +First line
 *** End Patch`
 
-      const result = await Patch.applyPatch(patchText)
+      const result = await applyPatch(patchText)
       expect(result.modified).toHaveLength(1)
 
       const content = await fs.readFile(emptyFile, "utf-8")
@@ -315,7 +335,7 @@ PATCH`
 +has newline now
 *** End Patch`
 
-      const result = await Patch.applyPatch(patchText)
+      const result = await applyPatch(patchText)
       expect(result.modified).toHaveLength(1)
 
       const content = await fs.readFile(filePath, "utf-8")
@@ -338,11 +358,23 @@ PATCH`
 +LINE 4
 *** End Patch`
 
-      const result = await Patch.applyPatch(patchText)
+      const result = await applyPatch(patchText)
       expect(result.modified).toHaveLength(1)
 
       const content = await fs.readFile(filePath, "utf-8")
       expect(content).toBe("line 1\nLINE 2\nline 3\nLINE 4\n")
     })
+  })
+})
+
+
+describe("PatchSchema", () => {
+  test("keeps Effect and Zod decoding aligned", () => {
+    const input = { patchText: "*** Begin Patch\n*** End Patch" }
+
+    expect(Schema.decodeUnknownSync(Patch.PatchParamsSchema)(input)).toEqual(input)
+    expect(Patch.PatchSchema.parse(input)).toEqual(input)
+    expect(() => Schema.decodeUnknownSync(Patch.PatchParamsSchema)({ patchText: 42 })).toThrow()
+    expect(() => Patch.PatchSchema.parse({ patchText: 42 })).toThrow()
   })
 })

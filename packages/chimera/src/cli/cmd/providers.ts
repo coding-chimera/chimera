@@ -12,10 +12,10 @@ import { Config } from "@/config/config"
 import { Global } from "@opencode-ai/core/global"
 import { Plugin } from "../../plugin"
 import type { Hooks } from "@opencode-ai/plugin"
-import { Process } from "@/util/process"
 import { errorMessage } from "@/util/error"
-import { text } from "node:stream/consumers"
-import { Effect, Option } from "effect"
+import { Effect, Option, Stream } from "effect"
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
+import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 
 type PluginAuth = NonNullable<Hooks["auth"]>
 
@@ -34,6 +34,23 @@ const cliTry = <Value>(message: string, fn: () => PromiseLike<Value>) =>
     try: fn,
     catch: (error) => new CliError({ message: message + errorMessage(error) }),
   })
+
+export const runAuthCommand = Effect.fnUntraced(
+  function* (command: string[]) {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+    const handle = yield* spawner.spawn(
+      ChildProcess.make(command[0], command.slice(1), {
+        extendEnv: true,
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "inherit",
+        forceKillAfter: "5 seconds",
+      }),
+    )
+    return yield* Effect.all([handle.exitCode, Stream.mkString(Stream.decodeText(handle.stdout))], { concurrency: 2 })
+  },
+  Effect.scoped,
+)
 
 const handlePluginAuth = Effect.fn("Cli.providers.pluginAuth")(function* (
   plugin: { auth: PluginAuth },
@@ -324,16 +341,12 @@ export const ProvidersLoginCommand = effectCmd({
         auth: { command: string[]; env: string }
       }
       yield* Prompt.log.info(`Running \`${wellknown.auth.command.join(" ")}\``)
-      const abort = new AbortController()
-      const proc = Process.spawn(wellknown.auth.command, { stdout: "pipe", stderr: "inherit", abort: abort.signal })
-      if (!proc.stdout) {
-        yield* Prompt.log.error("Failed")
-        yield* Prompt.outro("Done")
-        return
-      }
-      const [exit, token] = yield* cliTry("Failed to run auth provider command: ", () =>
-        Promise.all([proc.exited, text(proc.stdout!)]),
-      ).pipe(Effect.ensuring(Effect.sync(() => abort.abort())))
+      const [exit, token] = yield* runAuthCommand(wellknown.auth.command).pipe(
+        Effect.mapError(
+          (error) => new CliError({ message: "Failed to run auth provider command: " + errorMessage(error) }),
+        ),
+        Effect.provide(CrossSpawnSpawner.defaultLayer),
+      )
       if (exit !== 0) {
         yield* Prompt.log.error("Failed")
         yield* Prompt.outro("Done")

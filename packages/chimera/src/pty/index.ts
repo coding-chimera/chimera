@@ -3,7 +3,6 @@ import { Bus } from "@/bus"
 import { Config } from "@/config/config"
 import { InstanceState } from "@/effect/instance-state"
 import { EffectBridge } from "@/effect/bridge"
-import { lazy } from "@opencode-ai/core/util/lazy"
 import { Plugin } from "@/plugin"
 import { Shell } from "@/shell/shell"
 import type { Proc } from "#pty"
@@ -51,8 +50,6 @@ const meta = (cursor: number) => {
   out.set(bytes, 1)
   return out
 }
-
-const pty = lazy(() => import("#pty"))
 
 export const Info = Schema.Struct({
   id: PtyID,
@@ -120,6 +117,8 @@ export const layer = Layer.effect(
     const config = yield* Config.Service
     const bus = yield* Bus.Service
     const plugin = yield* Plugin.Service
+
+    const pty = yield* Effect.cached(Effect.promise(() => import("#pty")))
 
     function teardown(session: Active) {
       try {
@@ -201,7 +200,7 @@ export const layer = Layer.effect(
       }
       log.info("creating session", { id, cmd: command, args, cwd })
 
-      const { spawn } = yield* Effect.promise(() => pty())
+      const { spawn } = yield* pty
       const proc = yield* Effect.sync(() =>
         spawn(command, args, {
           name: "xterm-256color",

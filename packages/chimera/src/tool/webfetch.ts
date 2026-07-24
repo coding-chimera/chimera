@@ -138,7 +138,7 @@ export const WebFetchTool = Tool.define(
 
             case "text":
               if (contentType.includes("text/html")) {
-                const text = yield* Effect.promise(() => extractTextFromHTML(content))
+                const text = yield* extractTextFromHTML(content)
                 return { output: text, title, metadata: {} }
               }
               return { output: content, title, metadata: {} }
@@ -154,36 +154,37 @@ export const WebFetchTool = Tool.define(
   }),
 )
 
-async function extractTextFromHTML(html: string) {
-  let text = ""
-  let skipContent = false
-
-  const rewriter = new HTMLRewriter()
-    .on("script, style, noscript, iframe, object, embed", {
-      element() {
-        skipContent = true
-      },
-      text() {
-        // Skip text content inside these elements
-      },
-    })
-    .on("*", {
-      element(element) {
-        // Reset skip flag when entering other elements
-        if (!["script", "style", "noscript", "iframe", "object", "embed"].includes(element.tagName)) {
-          skipContent = false
-        }
-      },
-      text(input) {
-        if (!skipContent) {
-          text += input.text
-        }
-      },
-    })
-    .transform(new Response(html))
-
-  await rewriter.text()
-  return text.trim()
+function extractTextFromHTML(html: string) {
+  return Effect.tryPromise({
+    try: async (signal) => {
+      let text = ""
+      let excluded = 0
+      const response = new HTMLRewriter()
+        .on("script, style, noscript, iframe, object, embed", {
+          element(element) {
+            excluded += 1
+            element.onEndTag(() => {
+              excluded -= 1
+            })
+          },
+        })
+        .on("*", {
+          text(input) {
+            if (excluded === 0) text += input.text
+          },
+        })
+        .transform(new Response(html))
+      const abort = () => void response.body?.cancel(signal.reason)
+      signal.addEventListener("abort", abort, { once: true })
+      try {
+        await response.text()
+        return text.trim()
+      } finally {
+        signal.removeEventListener("abort", abort)
+      }
+    },
+    catch: (cause) => new Error("Failed to extract text from HTML", { cause }),
+  })
 }
 
 function convertHTMLToMarkdown(html: string): string {

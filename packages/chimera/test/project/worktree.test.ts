@@ -1,8 +1,8 @@
 import { $ } from "bun"
-import { afterEach, describe, expect } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import * as fs from "fs/promises"
 import path from "path"
-import { Cause, Effect, Exit, Layer } from "effect"
+import { Cause, Effect, Exit, Layer, Schema } from "effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Instance } from "../../src/project/instance"
 import { WithInstance } from "../../src/project/with-instance"
@@ -224,5 +224,32 @@ describe("Worktree", () => {
         }),
       ),
     )
+  })
+})
+
+
+describe("Worktree error payload schemas", () => {
+  test("keeps shared Effect and Zod payload validation aligned", () => {
+    const data = { message: "worktree failed" }
+    expect(Schema.decodeUnknownSync(Worktree.ErrorPayloadSchema)(data)).toEqual(data)
+    expect(Worktree.ErrorPayload.parse(data)).toEqual(data)
+    expect(() => Schema.decodeUnknownSync(Worktree.ErrorPayloadSchema)({ message: 1 })).toThrow()
+    expect(Worktree.ErrorPayload.safeParse({ message: 1 }).success).toBe(false)
+  })
+
+  test("preserves every error name and serialized data shape", () => {
+    const data = { message: "worktree failed" }
+    expect(new Worktree.NotGitError(data).toObject()).toEqual({ name: "WorktreeNotGitError", data })
+    expect(new Worktree.NameGenerationFailedError(data).toObject()).toEqual({
+      name: "WorktreeNameGenerationFailedError",
+      data,
+    })
+    expect(new Worktree.CreateFailedError(data).toObject()).toEqual({ name: "WorktreeCreateFailedError", data })
+    expect(new Worktree.StartCommandFailedError(data).toObject()).toEqual({
+      name: "WorktreeStartCommandFailedError",
+      data,
+    })
+    expect(new Worktree.RemoveFailedError(data).toObject()).toEqual({ name: "WorktreeRemoveFailedError", data })
+    expect(new Worktree.ResetFailedError(data).toObject()).toEqual({ name: "WorktreeResetFailedError", data })
   })
 })

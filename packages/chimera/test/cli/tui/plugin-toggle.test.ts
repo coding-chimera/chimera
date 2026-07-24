@@ -52,12 +52,12 @@ test("toggles plugin runtime state by exported id", async () => {
       },
     ],
   }
-  const wait = spyOn(TuiConfig, "waitForDependencies").mockResolvedValue()
+  const waitForDependencies = async () => {}
   const cwd = spyOn(process, "cwd").mockImplementation(() => tmp.path)
   const api = createTuiPluginApi()
 
   try {
-    await TuiPluginRuntime.init({ api, config })
+    await TuiPluginRuntime.init({ api, config, waitForDependencies })
 
     await expect(fs.readFile(tmp.extra.marker, "utf8")).rejects.toThrow()
     expect(TuiPluginRuntime.list().find((item) => item.id === "demo.toggle")).toEqual({
@@ -85,7 +85,6 @@ test("toggles plugin runtime state by exported id", async () => {
   } finally {
     await TuiPluginRuntime.dispose()
     cwd.mockRestore()
-    wait.mockRestore()
     delete process.env.OPENCODE_PLUGIN_META_FILE
   }
 })
@@ -129,7 +128,7 @@ test("kv plugin_enabled overrides tui config on startup", async () => {
       },
     ],
   }
-  const wait = spyOn(TuiConfig, "waitForDependencies").mockResolvedValue()
+  const waitForDependencies = async () => {}
   const cwd = spyOn(process, "cwd").mockImplementation(() => tmp.path)
   const api = createTuiPluginApi()
   api.kv.set("plugin_enabled", {
@@ -137,7 +136,7 @@ test("kv plugin_enabled overrides tui config on startup", async () => {
   })
 
   try {
-    await TuiPluginRuntime.init({ api, config })
+    await TuiPluginRuntime.init({ api, config, waitForDependencies })
 
     await expect(fs.readFile(tmp.extra.marker, "utf8")).resolves.toBe("on")
     expect(TuiPluginRuntime.list().find((item) => item.id === "demo.startup")).toEqual({
@@ -151,7 +150,6 @@ test("kv plugin_enabled overrides tui config on startup", async () => {
   } finally {
     await TuiPluginRuntime.dispose()
     cwd.mockRestore()
-    wait.mockRestore()
     delete process.env.OPENCODE_PLUGIN_META_FILE
   }
 })

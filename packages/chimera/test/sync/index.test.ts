@@ -10,6 +10,7 @@ import { MessageID } from "../../src/session/schema"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { initProjectors } from "../../src/server/projectors"
 import { testEffect } from "../lib/effect"
+import { EventV2 } from "../../src/v2/event"
 
 const original = Flag.OPENCODE_EXPERIMENTAL_WORKSPACES
 const it = testEffect(Layer.mergeAll(SyncEvent.defaultLayer, CrossSpawnSpawner.defaultLayer))
@@ -67,7 +68,8 @@ describe("SyncEvent", () => {
       provideTmpdirInstance(() =>
         Effect.gen(function* () {
           const { Created } = setup()
-          yield* SyncEvent.use.run(Created, { id: "evt_1", name: "first" })
+          const sync = yield* SyncEvent.Service
+          yield* EventV2.run(sync, Created, { id: "evt_1", name: "first" })
           const rows = Database.use((db) => db.select().from(EventTable).all())
           expect(rows).toHaveLength(1)
           expect(rows[0].type).toBe("item.created.1")

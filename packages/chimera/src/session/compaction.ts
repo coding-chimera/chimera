@@ -21,6 +21,7 @@ import { makeRuntime } from "@/effect/run-service"
 import { fn } from "@/util/fn"
 import { EventV2 } from "@/v2/event"
 import { SessionEvent } from "@/v2/session-event"
+import { SyncEvent } from "@/sync"
 import { RemoteCompaction } from "./remote-compaction"
 
 const log = Log.create({ service: "session.compaction" })
@@ -225,6 +226,7 @@ export const layer: Layer.Layer<
   | SessionProcessor.Service
   | Provider.Service
   | RemoteCompaction.Service
+  | SyncEvent.Service
 > = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -236,6 +238,7 @@ export const layer: Layer.Layer<
     const processors = yield* SessionProcessor.Service
     const provider = yield* Provider.Service
     const remote = yield* RemoteCompaction.Service
+    const sync = yield* SyncEvent.Service
 
     const isOverflow = Effect.fn("SessionCompaction.isOverflow")(function* (input: {
       tokens: MessageV2.Assistant["tokens"]
@@ -559,7 +562,7 @@ export const layer: Layer.Layer<
             sessionID: input.sessionID,
             overflow: input.overflow,
           })
-          EventV2.run(SessionEvent.Compaction.Ended.Sync, {
+          yield* EventV2.run(sync, SessionEvent.Compaction.Ended.Sync, {
             sessionID: input.sessionID,
             timestamp: DateTime.makeUnsafe(Date.now()),
             text,
@@ -658,7 +661,7 @@ export const layer: Layer.Layer<
             parts: [],
           },
         )
-        EventV2.run(SessionEvent.Compaction.Ended.Sync, {
+        yield* EventV2.run(sync, SessionEvent.Compaction.Ended.Sync, {
           sessionID: input.sessionID,
           timestamp: DateTime.makeUnsafe(Date.now()),
           text: summary ?? "",
@@ -692,7 +695,7 @@ export const layer: Layer.Layer<
         auto: input.auto,
         overflow: input.overflow,
       })
-      EventV2.run(SessionEvent.Compaction.Started.Sync, {
+      yield* EventV2.run(sync, SessionEvent.Compaction.Started.Sync, {
         sessionID: input.sessionID,
         timestamp: DateTime.makeUnsafe(Date.now()),
         reason: input.auto ? "auto" : "manual",
@@ -718,6 +721,7 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(Bus.layer),
     Layer.provide(Config.defaultLayer),
     Layer.provide(RemoteCompaction.defaultLayer),
+    Layer.provide(SyncEvent.defaultLayer),
   ),
 )
 

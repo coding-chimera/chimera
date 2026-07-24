@@ -6,6 +6,7 @@ import { TuiConfig } from "@/cli/cmd/tui/config/tui"
 import { errorMessage } from "@/util/error"
 import { validateSession } from "./validate-session"
 import { ServerAuth } from "@/server/auth"
+import { TuiRuntime } from "./layer"
 
 export const AttachCommand = cmd({
   command: "attach <url>",
@@ -67,7 +68,7 @@ export const AttachCommand = cmd({
         }
       })()
       const headers = ServerAuth.headers({ password: args.password, username: args.username })
-      const config = await TuiConfig.get()
+      const config = await TuiRuntime.runPromise(TuiConfig.Service.use((svc) => svc.get()))
 
       try {
         await validateSession({

@@ -1,3 +1,7 @@
+import * as Log from "@opencode-ai/core/util/log"
+
+await Log.init({ print: true, level: "ERROR" })
+
 const raw = process.argv[2]
 if (!raw) throw new Error("Missing worker payload")
 
@@ -16,4 +20,9 @@ process.env.OPENCODE_PLUGIN_META_FILE = msg.file
 
 const { PluginMeta } = await import("../../src/plugin/meta")
 
-await PluginMeta.touch(msg.spec, msg.target, msg.id)
+try {
+  await PluginMeta.touch(msg.spec, msg.target, msg.id)
+} finally {
+  const { AppRuntime } = await import("../../src/effect/app-runtime")
+  await AppRuntime.dispose()
+}

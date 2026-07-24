@@ -636,6 +636,21 @@ describe("tool.read truncation", () => {
     }),
   )
 
+  it.live("handles CRLF split across file chunks without adding a blank line", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const first = "x".repeat(64 * 1024 - 1)
+      yield* put(path.join(dir, "chunked-crlf.txt"), `${first}\r\nsecond\rthird\nfourth`)
+
+      const result = yield* exec(dir, { filePath: path.join(dir, "chunked-crlf.txt") })
+      expect(result.output).toContain(`2#${lineHash(2, "second")}|second`)
+      expect(result.output).toContain(`3#${lineHash(3, "third")}|third`)
+      expect(result.output).toContain(`4#${lineHash(4, "fourth")}|fourth`)
+      expect(result.output).toContain("End of file - total 4 lines")
+      expect(result.metadata.hashline?.unanchorable).toEqual([1])
+    }),
+  )
+
   it.live("image files set truncated to false", () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped()

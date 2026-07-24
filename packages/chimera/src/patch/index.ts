@@ -1,18 +1,19 @@
-import z from "zod"
+import { Effect, Schema } from "effect"
+import { zodObject } from "@/util/effect-zod"
 import * as path from "path"
-import * as fs from "fs/promises"
-import { readFileSync } from "fs"
+import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import * as Log from "@opencode-ai/core/util/log"
 import * as Bom from "../util/bom"
 
 const log = Log.create({ service: "patch" })
 
 // Schema definitions
-export const PatchSchema = z.object({
-  patchText: z.string().describe("The full patch text that describes all changes to be made"),
+export const PatchParamsSchema = Schema.Struct({
+  patchText: Schema.String.annotate({ description: "The full patch text that describes all changes to be made" }),
 })
+export const PatchSchema = zodObject(PatchParamsSchema)
 
-export type PatchParams = z.infer<typeof PatchSchema>
+export type PatchParams = Schema.Schema.Type<typeof PatchParamsSchema>
 
 // Core types matching the Rust implementation
 export interface ApplyPatchArgs {
@@ -309,14 +310,12 @@ interface ApplyPatchFileUpdate {
   bom: boolean
 }
 
-export function deriveNewContentsFromChunks(filePath: string, chunks: UpdateFileChunk[]): ApplyPatchFileUpdate {
-  // Read original file content
-  let originalContent: ReturnType<typeof Bom.split>
-  try {
-    originalContent = Bom.split(readFileSync(filePath, "utf-8"))
-  } catch (error) {
-    throw new Error(`Failed to read file ${filePath}: ${error}`, { cause: error })
-  }
+export function deriveNewContentsFromChunks(
+  filePath: string,
+  source: string,
+  chunks: UpdateFileChunk[],
+): ApplyPatchFileUpdate {
+  const originalContent = Bom.split(source)
 
   let originalLines = originalContent.text.split("\n")
 
@@ -517,168 +516,135 @@ function generateUnifiedDiff(oldContent: string, newContent: string): string {
   return hasChanges ? diff : ""
 }
 
+type PreparedChange =
+  | { type: "add"; path: string; content: string }
+  | { type: "delete"; path: string }
+  | { type: "update"; path: string; movePath?: string; fileUpdate: ApplyPatchFileUpdate }
+
 // Apply hunks to filesystem
-export async function applyHunksToFiles(hunks: Hunk[]): Promise<AffectedPaths> {
-  if (hunks.length === 0) {
-    throw new Error("No files were modified.")
-  }
+export const applyHunksToFiles = Effect.fn("Patch.applyHunksToFiles")(function* (hunks: Hunk[]) {
+  if (hunks.length === 0) return yield* Effect.fail(new Error("No files were modified."))
+
+  const fs = yield* AppFileSystem.Service
+  const prepared: PreparedChange[] = yield* Effect.forEach(hunks, (hunk) =>
+    Effect.gen(function* () {
+      if (hunk.type === "add") return { type: "add" as const, path: hunk.path, content: hunk.contents }
+      if (hunk.type === "delete") {
+        yield* fs.readFileString(hunk.path)
+        return { type: "delete" as const, path: hunk.path }
+      }
+      const source = yield* fs.readFileString(hunk.path)
+      return {
+        type: "update" as const,
+        path: hunk.path,
+        movePath: hunk.move_path,
+        fileUpdate: deriveNewContentsFromChunks(hunk.path, source, hunk.chunks),
+      }
+    }),
+  )
 
   const added: string[] = []
   const modified: string[] = []
   const deleted: string[] = []
 
-  for (const hunk of hunks) {
-    switch (hunk.type) {
-      case "add":
-        // Create parent directories
-        const addDir = path.dirname(hunk.path)
-        if (addDir !== "." && addDir !== "/") {
-          await fs.mkdir(addDir, { recursive: true })
-        }
-
-        await fs.writeFile(hunk.path, hunk.contents, "utf-8")
-        added.push(hunk.path)
-        log.info(`Added file: ${hunk.path}`)
-        break
-
-      case "delete":
-        await fs.unlink(hunk.path)
-        deleted.push(hunk.path)
-        log.info(`Deleted file: ${hunk.path}`)
-        break
-
-      case "update":
-        const fileUpdate = deriveNewContentsFromChunks(hunk.path, hunk.chunks)
-
-        if (hunk.move_path) {
-          // Handle file move
-          const moveDir = path.dirname(hunk.move_path)
-          if (moveDir !== "." && moveDir !== "/") {
-            await fs.mkdir(moveDir, { recursive: true })
-          }
-
-          await fs.writeFile(hunk.move_path, Bom.join(fileUpdate.content, fileUpdate.bom), "utf-8")
-          await fs.unlink(hunk.path)
-          modified.push(hunk.move_path)
-          log.info(`Moved file: ${hunk.path} -> ${hunk.move_path}`)
-        } else {
-          // Regular update
-          await fs.writeFile(hunk.path, Bom.join(fileUpdate.content, fileUpdate.bom), "utf-8")
-          modified.push(hunk.path)
-          log.info(`Updated file: ${hunk.path}`)
-        }
-        break
+  for (const item of prepared) {
+    if (item.type === "add") {
+      yield* fs.writeWithDirs(item.path, item.content)
+      added.push(item.path)
+      log.info(`Added file: ${item.path}`)
+      continue
     }
+    if (item.type === "delete") {
+      yield* fs.remove(item.path)
+      deleted.push(item.path)
+      log.info(`Deleted file: ${item.path}`)
+      continue
+    }
+
+    const content = Bom.join(item.fileUpdate.content, item.fileUpdate.bom)
+    if (item.movePath) {
+      yield* fs.writeWithDirs(item.movePath, content)
+      yield* fs.remove(item.path)
+      modified.push(item.movePath)
+      log.info(`Moved file: ${item.path} -> ${item.movePath}`)
+      continue
+    }
+
+    yield* fs.writeWithDirs(item.path, content)
+    modified.push(item.path)
+    log.info(`Updated file: ${item.path}`)
   }
 
   return { added, modified, deleted }
-}
+})
 
-// Main patch application function
-export async function applyPatch(patchText: string): Promise<AffectedPaths> {
-  const { hunks } = parsePatch(patchText)
-  return applyHunksToFiles(hunks)
-}
+export const applyPatch = Effect.fn("Patch.applyPatch")(function* (patchText: string) {
+  return yield* applyHunksToFiles(parsePatch(patchText).hunks)
+})
 
-// Async version of maybeParseApplyPatchVerified
-export async function maybeParseApplyPatchVerified(
+export const maybeParseApplyPatchVerified = Effect.fn("Patch.maybeParseApplyPatchVerified")(function* (
   argv: string[],
   cwd: string,
-): Promise<
-  | { type: MaybeApplyPatchVerified.Body; action: ApplyPatchAction }
-  | { type: MaybeApplyPatchVerified.CorrectnessError; error: Error }
-  | { type: MaybeApplyPatchVerified.NotApplyPatch }
-> {
-  // Detect implicit patch invocation (raw patch without apply_patch command)
+) {
   if (argv.length === 1) {
     try {
       parsePatch(argv[0])
       return {
         type: MaybeApplyPatchVerified.CorrectnessError,
         error: new Error(ApplyPatchError.ImplicitInvocation),
-      }
+      } as const
     } catch {
       // Not a patch, continue
     }
   }
 
   const result = maybeParseApplyPatch(argv)
-
-  switch (result.type) {
-    case MaybeApplyPatch.Body:
-      const { args } = result
-      const effectiveCwd = args.workdir ? path.resolve(cwd, args.workdir) : cwd
-      const changes = new Map<string, ApplyPatchFileChange>()
-
-      for (const hunk of args.hunks) {
-        const resolvedPath = path.resolve(
-          effectiveCwd,
-          hunk.type === "update" && hunk.move_path ? hunk.move_path : hunk.path,
-        )
-
-        switch (hunk.type) {
-          case "add":
-            changes.set(resolvedPath, {
-              type: "add",
-              content: hunk.contents,
-            })
-            break
-
-          case "delete":
-            // For delete, we need to read the current content
-            const deletePath = path.resolve(effectiveCwd, hunk.path)
-            try {
-              const content = await fs.readFile(deletePath, "utf-8")
-              changes.set(resolvedPath, {
-                type: "delete",
-                content,
-              })
-            } catch {
-              return {
-                type: MaybeApplyPatchVerified.CorrectnessError,
-                error: new Error(`Failed to read file for deletion: ${deletePath}`),
-              }
-            }
-            break
-
-          case "update":
-            const updatePath = path.resolve(effectiveCwd, hunk.path)
-            try {
-              const fileUpdate = deriveNewContentsFromChunks(updatePath, hunk.chunks)
-              changes.set(resolvedPath, {
-                type: "update",
-                unified_diff: fileUpdate.unified_diff,
-                move_path: hunk.move_path ? path.resolve(effectiveCwd, hunk.move_path) : undefined,
-                new_content: fileUpdate.content,
-              })
-            } catch (error) {
-              return {
-                type: MaybeApplyPatchVerified.CorrectnessError,
-                error: error as Error,
-              }
-            }
-            break
-        }
-      }
-
-      return {
-        type: MaybeApplyPatchVerified.Body,
-        action: {
-          changes,
-          patch: args.patch,
-          cwd: effectiveCwd,
-        },
-      }
-
-    case MaybeApplyPatch.PatchParseError:
-      return {
-        type: MaybeApplyPatchVerified.CorrectnessError,
-        error: result.error,
-      }
-
-    case MaybeApplyPatch.NotApplyPatch:
-      return { type: MaybeApplyPatchVerified.NotApplyPatch }
+  if (result.type === MaybeApplyPatch.PatchParseError) {
+    return { type: MaybeApplyPatchVerified.CorrectnessError, error: result.error } as const
   }
-}
+  if (result.type === MaybeApplyPatch.NotApplyPatch) {
+    return { type: MaybeApplyPatchVerified.NotApplyPatch } as const
+  }
+
+  const fs = yield* AppFileSystem.Service
+  const effectiveCwd = result.args.workdir ? path.resolve(cwd, result.args.workdir) : cwd
+  const changes = new Map<string, ApplyPatchFileChange>()
+
+  for (const hunk of result.args.hunks) {
+    const resolvedPath = path.resolve(
+      effectiveCwd,
+      hunk.type === "update" && hunk.move_path ? hunk.move_path : hunk.path,
+    )
+    if (hunk.type === "add") {
+      changes.set(resolvedPath, { type: "add", content: hunk.contents })
+      continue
+    }
+
+    const sourcePath = path.resolve(effectiveCwd, hunk.path)
+    const source = yield* fs.readFileString(sourcePath).pipe(
+      Effect.mapError(() => new Error(`Failed to read file for ${hunk.type === "delete" ? "deletion" : "update"}: ${sourcePath}`)),
+    )
+    if (hunk.type === "delete") {
+      changes.set(resolvedPath, { type: "delete", content: source })
+      continue
+    }
+
+    const fileUpdate = yield* Effect.try({
+      try: () => deriveNewContentsFromChunks(sourcePath, source, hunk.chunks),
+      catch: (cause) => cause instanceof Error ? cause : new Error(String(cause)),
+    })
+    changes.set(resolvedPath, {
+      type: "update",
+      unified_diff: fileUpdate.unified_diff,
+      move_path: hunk.move_path ? path.resolve(effectiveCwd, hunk.move_path) : undefined,
+      new_content: fileUpdate.content,
+    })
+  }
+
+  return {
+    type: MaybeApplyPatchVerified.Body,
+    action: { changes, patch: result.args.patch, cwd: effectiveCwd },
+  } as const
+})
 
 export * as Patch from "."

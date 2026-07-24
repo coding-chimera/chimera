@@ -1,12 +1,14 @@
-import { Effect, Layer, Context, Schema } from "effect"
+import { Effect, Layer, Context, Schema, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
+import { Npm } from "@opencode-ai/core/npm"
 import { InstanceState } from "@/effect/instance-state"
 import path from "path"
 import { mergeDeep } from "remeda"
 import { Config } from "@/config/config"
 import * as Log from "@opencode-ai/core/util/log"
 import * as Formatter from "./formatter"
+import { which } from "../util/which"
 import { zod } from "@/util/effect-zod"
 import { withStatics } from "@/util/schema"
 
@@ -34,7 +36,25 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const config = yield* Config.Service
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-
+    const npm = yield* Npm.Service
+    const command: Formatter.CommandRunner = (cmd) =>
+      Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const handle = yield* spawner.spawn(
+              ChildProcess.make(cmd[0], cmd.slice(1), {
+                extendEnv: true,
+                stdin: "ignore",
+              }),
+            )
+            const [code, stdout] = yield* Effect.all(
+              [handle.exitCode, Stream.mkString(Stream.decodeText(handle.stdout))],
+              { concurrency: 2 },
+            )
+            return { code: Number(code), stdout }
+          }).pipe(Effect.catch(() => Effect.succeed({ code: 1, stdout: "" }))),
+        ),
+      )
     const state = yield* InstanceState.make(
       Effect.fn("Format.state")(function* (ctx) {
         const commands: Record<string, string[] | false> = {}
@@ -43,7 +63,7 @@ export const layer = Layer.effect(
         async function getCommand(item: Formatter.Info) {
           let cmd = commands[item.name]
           if (cmd === false || cmd === undefined) {
-            cmd = await item.enabled(ctx)
+            cmd = await item.enabled({ ...ctx, npm, command, which })
             commands[item.name] = cmd
           }
           return cmd
@@ -205,6 +225,7 @@ export const layer = Layer.effect(
 export const defaultLayer = layer.pipe(
   Layer.provide(Config.defaultLayer),
   Layer.provide(CrossSpawnSpawner.defaultLayer),
+  Layer.provide(Npm.defaultLayer),
 )
 
 export * as Format from "."

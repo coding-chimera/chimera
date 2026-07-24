@@ -11,6 +11,7 @@ import { Process } from "@/util/process"
 import { UI } from "../ui"
 import { effectCmd } from "../effect-cmd"
 import { InstanceRef } from "@/effect/instance-ref"
+import { Npm } from "@opencode-ai/core/npm"
 
 type Spin = {
   start: (msg: string) => void
@@ -44,14 +45,14 @@ export type PlugCtx = {
   directory: string
 }
 
-const defaultPlugDeps: PlugDeps = {
+const defaultPlugDeps = (resolve: PlugDeps["resolve"]): PlugDeps => ({
   spinner: () => spinner(),
   log: {
     error: (msg) => log.error(msg),
     info: (msg) => log.info(msg),
     success: (msg) => log.success(msg),
   },
-  resolve: (spec) => resolvePluginTarget(spec),
+  resolve,
   readText: (file) => Filesystem.readText(file),
   write: async (file, text) => {
     await Filesystem.write(file, text)
@@ -59,7 +60,7 @@ const defaultPlugDeps: PlugDeps = {
   exists: (file) => Filesystem.exists(file),
   files: (dir, name) => ConfigPaths.fileInDirectory(dir, name),
   global: Global.Path.config,
-}
+})
 
 function cause(err: unknown) {
   if (!err || typeof err !== "object") return
@@ -67,7 +68,7 @@ function cause(err: unknown) {
   return (err as { cause?: unknown }).cause
 }
 
-export function createPlugTask(input: PlugInput, dep: PlugDeps = defaultPlugDeps) {
+export function createPlugTask(input: PlugInput, dep: PlugDeps) {
   const mod = input.mod
   const force = Boolean(input.force)
   const global = Boolean(input.global)
@@ -208,11 +209,14 @@ export const PluginCommand = effectCmd({
     UI.empty()
     intro(`Install plugin ${mod}`)
 
+    const npm = yield* Npm.Service
     const run = createPlugTask({
       mod,
       global: Boolean(args.global),
       force: Boolean(args.force),
-    })
+    },
+    defaultPlugDeps((spec) => resolvePluginTarget(spec, (pkg) => Effect.runPromise(npm.add(pkg).pipe(Effect.map((x) => x.directory))))),
+    )
 
     const ctx = yield* InstanceRef
     if (!ctx) return

@@ -12,25 +12,25 @@ Plan for replacing instance Hono route implementations with Effect `HttpApi` whi
 
 ## Current State
 
-- `OPENCODE_EXPERIMENTAL_HTTPAPI` selects the backend at server startup. Default is still `hono`.
-- `server/backend.ts` picks one of `effect-httpapi` or `hono`; `server.ts` builds either a pure Effect `HttpApi` web handler or the legacy Hono app accordingly. The earlier in-Hono "bridge" model has been replaced by this fork-at-startup.
-- Legacy Hono routes remain mounted for the `hono` backend and remain the source for `hono-openapi` SDK generation.
-- An Effect `HttpApi` OpenAPI surface exists (`OpenApi.fromApi(PublicApi)` in `cli/cmd/generate.ts --httpapi`, `OPENCODE_SDK_OPENAPI=httpapi` in `packages/sdk/js/script/build.ts`) but is opt-in. The default SDK generation is still Hono.
-- `httpapi/public.ts` carries the Hono-compat normalization for the Effect-generated OpenAPI surface (auth scheme strip, request-body required flag, optional `null` arms, `BadRequestError` / `NotFoundError` remap, `$ref` self-cycle fix, `auth_token` query injection). Today's Effect-generated SDK is not byte-identical to the Hono-generated SDK — see Phase 4.
-- Auth is centrally configured for the Effect backend via Effect `Config` (`refactor: use Effect config for HttpApi authorization`, `Fix HttpApi raw route authorization`) rather than re-attached in each route module.
-- Auth supports Basic auth and the legacy `auth_token` query parameter through `HttpApiSecurity.apiKey`.
+- Effect `HttpApi` is the default instance-server backend.
+- Set `CHIMERA_SERVER_HONO=1` or `OPENCODE_SERVER_HONO=1` to select the retained Hono fallback. The legacy `OPENCODE_EXPERIMENTAL_HTTPAPI=true` setting remains compatible and explicitly selects Effect.
+- `server/backend.ts` selects `effect-httpapi` by default and forks to the pure Effect web handler or Hono fallback at startup; this is not an in-Hono bridge.
+- SDK and OpenAPI generation use the Effect `HttpApi` surface by default. Hono generation is an explicit fallback for parity checks.
+- `httpapi/public.ts` owns the compatibility normalization needed to preserve the established SDK contract, and the normalization plus bridge/SDK gates pass.
+- Auth is centrally configured for the Effect backend via Effect `Config`, including Basic auth and the legacy `auth_token` query parameter through `HttpApiSecurity.apiKey`.
 - Instance context is provided by `httpapi/server.ts` using `directory`, `workspace`, and `x-opencode-directory`.
 - `Observability.layer` is provided in the Effect route layer and deduplicated through the shared `memoMap`.
-- CORS middleware is wired into both backends (`feat(httpapi): add CORS middleware to instance routes`).
+- CORS middleware is wired into both the default Effect backend and the Hono fallback.
+- Hono remains an intentional compatibility boundary. Its deletion and fallback retirement are still outstanding and must not be inferred from the Effect default.
 
 ## Migration Rules
 
 - Preserve runtime behavior first. Semantic changes, new error behavior, or route shape changes need separate PRs.
 - Migrate one route group, or one coherent subset of a route group, at a time.
 - Reuse existing services. Do not re-architect service logic during HTTP boundary migration.
-- Effect Schema owns route DTOs. Keep `.zod` only as compatibility for remaining Hono/OpenAPI surfaces.
+- Effect Schema owns route DTOs. Keep `.zod` only where the retained Hono fallback still requires compatibility.
 - Regenerate the SDK after schema or OpenAPI-affecting changes and verify the diff is expected.
-- Do not delete a Hono route until the SDK/OpenAPI pipeline no longer depends on its Hono `describeRoute` entry.
+- Do not delete a Hono route until the fallback is intentionally retired and the route meets the deletion checklist.
 
 ## Route Slice Checklist
 
@@ -38,19 +38,19 @@ Use this checklist for each small HttpApi migration PR:
 
 1. Read the legacy Hono route and copy behavior exactly, including default values, headers, operation IDs, response schemas, and status codes.
 2. Put the new `HttpApiGroup`, route paths, DTO schemas, and handlers in `src/server/routes/instance/httpapi/*`.
-3. Mount the new paths in `src/server/routes/instance/index.ts` only inside the `OPENCODE_EXPERIMENTAL_HTTPAPI` block.
+3. Add the route to the default Effect composition; keep equivalent Hono behavior only in the explicit fallback.
 4. Use `InstanceState.context` / `InstanceState.directory` inside HttpApi handlers instead of `Instance.directory`, `Instance.worktree`, or `Instance.project` ALS globals.
 5. Reuse existing services directly. If a service returns plain objects, use `Schema.Struct`; use `Schema.Class` only when handlers return actual class instances.
-6. Keep legacy Hono routes and `.zod` compatibility in place for SDK/OpenAPI generation.
-7. Add tests that hit the Hono-mounted bridge via `InstanceRoutes`, not only the raw `HttpApi` web handler, when the route depends on auth or instance context.
-8. Run `bun typecheck` from `packages/opencode`, relevant `bun run test:ci ...` tests from `packages/opencode`, and `./packages/sdk/js/script/build.ts` from the repo root.
+6. Keep only the Hono and `.zod` compatibility required by the fallback; do not add new Hono-first contracts.
+7. Add tests through the instance server boundary for auth, instance context, and route behavior, and cover the Hono fallback where compatibility is material.
+8. Run `bun typecheck` and relevant `bun test --timeout 30000 ...` commands from `packages/chimera`; regenerate the SDK with `./packages/sdk/js/script/build.ts` from the repository root.
 
 ## Hono Deletion Checklist
 
 Use this checklist before deleting any Hono route implementation. A route being `bridged` is not enough.
 
 1. `HttpApi` parity is complete for the route path, method, auth behavior, query parameters, request body, response status, response headers, and error status.
-2. The route is mounted by default, not only behind `OPENCODE_EXPERIMENTAL_HTTPAPI`.
+2. The route is mounted by the default Effect backend, not only by the Hono fallback.
 3. If a fallback flag exists, tests cover both the default `HttpApi` path and the fallback Hono path until the fallback is removed.
 4. OpenAPI generation uses the Effect `HttpApi` route as the source for that path.
 5. Generated SDK output is unchanged from the Hono-generated contract, or the SDK diff is intentionally reviewed and accepted.
@@ -62,15 +62,15 @@ Use this checklist before deleting any Hono route implementation. A route being 
 
 Hono can be removed from the instance server only after all mounted Hono route groups meet this checklist and `server/routes/instance/index.ts` no longer depends on Hono routing for default behavior.
 
-## Experimental Read Slice Guidance
+## Route Migration Guidance
 
-For the experimental route group, port read-only JSON routes before mutations:
+Effect is now the default, so route work should preserve the established contract rather than add another experimental bridge:
 
-- Good first batch: `GET /console`, `GET /console/orgs`, `GET /tool/ids`, `GET /resource`.
-- Consider `GET /worktree` only if the handler uses `InstanceState.context` instead of `Instance.project`.
-- Defer `POST /console/switch`, worktree create/remove/reset, and `GET /session` to separate PRs because they mutate state or have broader pagination/session behavior.
-- Preserve response headers such as pagination cursors if a route is ported.
-- If SDK generation changes, explain whether it is a semantic contract change or a generator-equivalent type normalization.
+- Add new JSON routes to Effect `HttpApi` and treat Hono only as an explicit compatibility fallback.
+- Preserve behavior, operation IDs, response headers, status codes, and SDK-visible schemas.
+- Use `InstanceState.context` for instance-bound handlers and separate stateful mutations into reviewable changes.
+- For SSE, websocket, streaming, or UI-control routes, use raw Effect HTTP where `HttpApi` is not the right abstraction.
+- Keep fallback coverage until Hono deletion is explicitly completed; do not describe defaulting to Effect as fallback retirement.
 
 ## Schema Notes
 
@@ -93,15 +93,14 @@ Before porting more routes, cover the bridge behavior that every route depends o
 
 ### 2. Complete The Inventory
 
-Create a route inventory from the actual Hono registrations and classify each route.
+Maintain the route inventory from actual Effect and Hono registrations, using rollout status rather than the superseded experimental-bridge vocabulary.
 
 Statuses:
 
-- `bridged`: served through the `HttpApi` bridge when the flag is on.
-- `implemented`: `HttpApi` group exists but is not mounted through Hono.
-- `next`: good JSON candidate for near-term porting.
-- `later`: portable, but needs schema/service cleanup first.
-- `special`: SSE, websocket, streaming, or UI bridge behavior that likely needs raw Effect HTTP rather than `HttpApi`.
+- `default/fallback`: served by Effect by default with an equivalent Hono fallback.
+- `default`: served by Effect with no Hono implementation for that route.
+- `fallback-only`: intentionally available only through Hono and blocks fallback retirement.
+- `special`: SSE, websocket, streaming, or UI bridge behavior implemented with raw Effect HTTP or another explicit non-`HttpApi` replacement.
 
 ### 3. Finish JSON Route Parity
 
@@ -122,40 +121,32 @@ Keep large or stateful groups for later:
 
 ### 4. Move OpenAPI And SDK Generation
 
-Hono routes cannot be deleted while `hono-openapi` is the source of SDK generation.
+Status: **complete**. Effect `HttpApi` is the default OpenAPI and SDK source. The Hono source remains available only as an explicit fallback for parity comparisons.
 
-Status: the Effect `HttpApi` OpenAPI surface is **implemented and opt-in** (`bun dev generate --httpapi`, `OPENCODE_SDK_OPENAPI=httpapi`). Default SDK generation still uses Hono. `httpapi/public.ts` applies the Hono-compat normalization layer to the Effect output. Diff against the Hono-generated spec still shows real gaps that must be closed before the SDK can flip:
+The compatibility normalization in `httpapi/public.ts` preserves the accepted SDK contract, including schema naming and shape differences, and the SDK normalization gate passes. Route deletion no longer depends on Hono OpenAPI, but it still depends on intentional fallback retirement and the Hono deletion checklist.
 
-- Branded-type `pattern` constraints on ID schemas are not propagated to the Effect output (~169 missing).
-- Per-property `description` annotations are not propagated through `Schema.Struct` to the Effect output (~107 missing).
-- `Event.*` and `SyncEvent.*` component names use dotted form in Hono and PascalCase in Effect (~50 differences, breaks SDK type names).
-- Effect's component deduper emits numbered duplicates (`Session9`, `SyncEvent.session.updated.11`) that need a name-collision fix.
-- Cosmetic-only diffs (`additionalProperties: false`, `const` vs `enum`, MAX_SAFE_INTEGER `maximum`, `propertyNames`) can be normalized in `public.ts` if they would otherwise change SDK output.
+Ongoing rules:
 
-Required before route deletion:
-
-- Close the diff above so Effect-generated SDK output matches the Hono-generated SDK output for every retained path.
-- Keep operation IDs, schemas, status codes, and SDK type names stable unless the change is intentional.
-- Flip `packages/sdk/js/script/build.ts` default to `httpapi` and regenerate.
-- Compare generated SDK output against `dev` for every route group deletion.
-- Remove Hono OpenAPI stubs only after Effect OpenAPI is the SDK source for those paths.
+- Keep operation IDs, schemas, status codes, and SDK type names stable unless a change is intentional.
+- Compare Effect and Hono output when changing normalization while the fallback exists.
+- Remove Hono OpenAPI stubs only with the corresponding Hono fallback routes.
 
 V2 cleanup once SDK compatibility no longer needs the legacy Hono contract:
 
-- Remove `public.ts` compatibility transforms that hide honest `HttpApi` metadata, including auth `securitySchemes`, per-route `security`, and generated `401` responses.
-- Stop remapping built-in `HttpApi` error schemas back to legacy Hono `BadRequestError` / `NotFoundError` components if V2 clients can consume the actual Effect error shape.
-- Prefer the direct `HttpApi` OpenAPI output for request/response bodies and named component schemas instead of rewriting it to match Hono generator quirks.
-- Keep schema fixes that describe the actual wire format, but delete transforms that only preserve legacy SDK type names or inline-vs-ref shape.
-- Re-evaluate `auth_token` as an OpenAPI security scheme rather than a hand-injected query parameter once clients can consume the V2 spec.
+- Remove compatibility transforms that hide honest `HttpApi` metadata only through an intentional SDK contract change.
+- Prefer direct `HttpApi` OpenAPI output where it preserves the accepted wire contract.
+- Keep schema fixes that describe the actual wire format, but delete transforms that only preserve retired generator quirks.
+- Re-evaluate `auth_token` as an OpenAPI security scheme once clients can consume the V2 spec.
 
 ### 5. Make HttpApi Default For JSON Routes
 
-After JSON parity and SDK generation are covered:
+Status: **complete for runtime defaulting**.
 
-- Flip the bridge default for ported JSON routes.
-- Keep a short-lived fallback flag for the old Hono implementation.
-- Run the same tests against both the default and fallback path during rollout.
-- Stop adding new Hono handlers for JSON routes once the default flips.
+- Effect serves JSON routes by default.
+- `CHIMERA_SERVER_HONO=1` / `OPENCODE_SERVER_HONO=1` selects the Hono fallback; legacy `OPENCODE_EXPERIMENTAL_HTTPAPI=true` remains compatible.
+- Bridge and SDK gates cover the default Effect path and retained compatibility boundary.
+- Do not add new Hono handlers for JSON routes.
+- Fallback retirement is intentionally deferred to Phase 6 and remains unchecked.
 
 ### 6. Delete Hono Route Implementations
 
@@ -189,27 +180,27 @@ Use raw Effect HTTP routes where `HttpApi` does not fit. The goal is deleting Ho
 
 ## Current Route Status
 
-| Area                      | Status            | Notes                                                                      |
-| ------------------------- | ----------------- | -------------------------------------------------------------------------- |
-| `question`                | `bridged`         | `GET /question`, reply, reject                                             |
-| `permission`              | `bridged`         | list and reply                                                             |
-| `provider`                | `bridged`         | list, auth, OAuth authorize/callback                                       |
-| `config`                  | `bridged`         | read, providers, update                                                    |
-| `project`                 | `bridged`         | list, current, git init, update                                            |
-| `file`                    | `bridged` partial | find text/file/symbol, list/content/status                                 |
-| `mcp`                     | `bridged`         | status, add, OAuth, connect/disconnect                                     |
-| `workspace`               | `bridged`         | adapter/list/status/create/remove/session-restore                          |
-| top-level instance routes | `bridged`         | path, vcs, command, agent, skill, lsp, formatter, dispose                  |
-| experimental JSON routes  | `bridged`         | console, tool, worktree list/mutations, global session list, resource list |
-| `session`                 | `bridged`         | read, lifecycle, prompt, message/part mutations, revert, permission reply  |
-| `sync`                    | `bridged`         | start/replay/history                                                       |
-| `event`                   | `bridged`         | SSE via raw Effect HTTP                                                    |
-| `pty`                     | `special`         | websocket                                                                  |
-| `tui`                     | `special`         | UI bridge                                                                  |
+| Area                      | Status             | Notes                                                                      |
+| ------------------------- | ------------------ | -------------------------------------------------------------------------- |
+| `question`                | `default/fallback` | Effect default; equivalent Hono fallback retained                          |
+| `permission`              | `default/fallback` | Effect default; equivalent Hono fallback retained                          |
+| `provider`                | `default/fallback` | Effect default; equivalent Hono fallback retained                          |
+| `config`                  | `default/fallback` | Effect default; equivalent Hono fallback retained                          |
+| `project`                 | `default/fallback` | Effect default; equivalent Hono fallback retained                          |
+| `file`                    | `default/fallback` | Effect default; equivalent Hono fallback retained                          |
+| `mcp`                     | `default/fallback` | Effect default; equivalent Hono fallback retained                          |
+| `workspace`               | `default/fallback` | Effect default; equivalent Hono fallback retained                          |
+| top-level instance routes | `default/fallback` | Effect default; equivalent Hono fallback retained                          |
+| experimental JSON routes  | `default/fallback` | Effect default; equivalent Hono fallback retained                          |
+| `session`                 | `default/fallback` | Effect default, including streaming responses; Hono fallback retained      |
+| `sync`                    | `default/fallback` | Effect default; equivalent Hono fallback retained                          |
+| `event`                   | `default/fallback` | Raw Effect HTTP SSE default; Hono SSE fallback retained                     |
+| `pty`                     | `default/fallback` | Raw Effect HTTP/websocket default; Hono fallback retained                   |
+| `tui`                     | `default/fallback` | Non-Hono Effect compatibility path default; Hono fallback retained          |
 
 ## Full Route Checklist
 
-This checklist tracks bridge parity only. Checked routes are available through the experimental `HttpApi` bridge; Hono deletion is tracked separately by the deletion checklist above.
+This checklist tracks Effect replacement parity. Checked routes are served by the default Effect backend; retained Hono fallback deletion is tracked separately by the deletion checklist above.
 
 ### Top-Level Instance Routes
 
@@ -376,11 +367,12 @@ Prefer smaller PRs from here so route behavior and SDK/OpenAPI fallout stays rev
 8. [x] Bridge session read routes: list, status, get, children, todo, diff, messages.
 9. [x] Bridge session lifecycle mutation routes: create, delete, update, fork, abort.
 10. [x] Bridge remaining session mutation and prompt routes.
-11. [ ] Replace event SSE with non-Hono Effect HTTP. The Effect backend has a raw Effect HTTP `httpapi/event.ts`; the Hono backend still uses `hono/streaming` `streamSSE`. Either port Hono `/event` to raw Effect HTTP for the fallback window, or skip and delete it together with Hono in step 15.
-12. [x] Replace pty websocket/control routes with non-Hono Effect HTTP for the Effect backend. Hono `pty.ts` remains in the Hono backend.
-13. [x] Replace tui bridge routes or explicitly isolate them behind a non-Hono compatibility layer for the Effect backend. Hono `tui.ts` remains in the Hono backend.
-14. [ ] Switch OpenAPI/SDK generation to Effect routes and compare SDK output. Effect path is implemented and opt-in via `--httpapi` / `OPENCODE_SDK_OPENAPI=httpapi`. Close the schema-shape gaps in `public.ts` (branded `pattern`, per-property `description`, `Event.*` / `SyncEvent.*` naming, dedup collisions), then flip `packages/sdk/js/script/build.ts` default.
-15. [ ] Flip `backend.ts` default from `hono` to `effect-httpapi`, keep `OPENCODE_EXPERIMENTAL_HTTPAPI` (or its inverse) as a short fallback flag, then delete replaced Hono route files.
+11. [x] Replace event SSE with non-Hono Effect HTTP for the default backend. Raw Effect HTTP serves `/event`; the Hono `streamSSE` implementation remains only in the explicit fallback and is deleted with Hono.
+12. [x] Replace pty websocket/control routes with non-Hono Effect HTTP for the Effect backend. Hono `pty.ts` remains in the Hono fallback.
+13. [x] Replace tui bridge routes or explicitly isolate them behind a non-Hono compatibility layer for the Effect backend. Hono `tui.ts` remains in the Hono fallback.
+14. [x] Switch OpenAPI/SDK generation to Effect routes and pass normalization and SDK parity gates. Hono generation remains an explicit comparison fallback.
+15. [x] Make Effect the runtime default and retain explicit Hono fallback flags, including legacy `OPENCODE_EXPERIMENTAL_HTTPAPI=true` compatibility.
+16. Final architecture follow-up: delete the Hono route implementations and retire the Hono fallback; canonical completion tracking lives in `routes.md`.
 
 ## Checklist
 
@@ -394,8 +386,8 @@ Prefer smaller PRs from here so route behavior and SDK/OpenAPI fallout stays rev
 - [x] Complete exact Hono route inventory.
 - [x] Resolve implemented-but-unmounted route groups.
 - [x] Port remaining top-level JSON reads.
-- [x] Implement Effect `HttpApi` OpenAPI generation behind `--httpapi` / `OPENCODE_SDK_OPENAPI=httpapi`.
-- [ ] Close Effect-vs-Hono OpenAPI schema-shape gaps and flip the SDK generator default.
-- [ ] Flip the runtime backend default from `hono` to `effect-httpapi`, with a short fallback flag.
-- [ ] Delete replaced Hono route implementations.
-- [ ] Replace SSE/websocket/streaming Hono routes with non-Hono implementations (or remove with the rest of Hono).
+- [x] Implement Effect `HttpApi` OpenAPI generation and retain explicit Hono comparison generation.
+- [x] Close Effect-vs-Hono OpenAPI schema-shape gaps and make Effect the SDK generator default.
+- [x] Make `effect-httpapi` the runtime default with explicit Hono fallback flags.
+- Hono route deletion and fallback retirement remain outstanding and are tracked canonically in `routes.md`.
+- [x] Effect replacements exist for SSE, websocket, streaming, and UI bridge routes; Hono deletion remains part of that architecture follow-up.

@@ -7,6 +7,7 @@ import {
   type PluginKind,
   type PluginPackage,
   type PluginSource,
+  type PluginTargetResolver,
 } from "./shared"
 import { ConfigPlugin } from "@/config/plugin"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
@@ -69,6 +70,7 @@ export namespace PluginLoader {
   export async function resolve(
     plan: Plan,
     kind: PluginKind,
+    resolveTarget: PluginTargetResolver,
   ): Promise<
     | { ok: true; value: Resolved }
     | { ok: false; stage: "missing"; value: Missing }
@@ -77,7 +79,7 @@ export namespace PluginLoader {
     // First make sure the plugin exists locally, installing npm plugins on demand.
     let target = ""
     try {
-      target = await resolvePluginTarget(plan.spec)
+      target = await resolvePluginTarget(plan.spec, resolveTarget)
     } catch (error) {
       return { ok: false, stage: "install", error }
     }
@@ -136,6 +138,7 @@ export namespace PluginLoader {
     finish: ((load: Loaded, origin: ConfigPlugin.Origin, retry: boolean) => Promise<R | undefined>) | undefined,
     missing: ((value: Missing, origin: ConfigPlugin.Origin, retry: boolean) => Promise<R | undefined>) | undefined,
     report: Report | undefined,
+    resolveTarget: PluginTargetResolver,
   ): Promise<R | undefined> {
     const plan = candidate.plan
 
@@ -144,7 +147,7 @@ export namespace PluginLoader {
 
     report?.start?.(candidate, retry)
 
-    const resolved = await resolve(plan, kind)
+    const resolved = await resolve(plan, kind, resolveTarget)
     if (!resolved.ok) {
       if (resolved.stage === "missing") {
         // Missing entrypoints are handled separately so callers can still inspect package metadata,
@@ -179,6 +182,7 @@ export namespace PluginLoader {
     finish?: (load: Loaded, origin: ConfigPlugin.Origin, retry: boolean) => Promise<R | undefined>
     missing?: (value: Missing, origin: ConfigPlugin.Origin, retry: boolean) => Promise<R | undefined>
     report?: Report
+    resolveTarget?: PluginTargetResolver
   }
 
   // Resolve and load all configured plugins in parallel.
@@ -188,9 +192,10 @@ export namespace PluginLoader {
   // step happening elsewhere before their entrypoint becomes loadable.
   export async function loadExternal<R = Loaded>(input: Input<R>): Promise<R[]> {
     const candidates = input.items.map((origin) => ({ origin, plan: plan(origin.spec) }))
+    const resolveTarget = input.resolveTarget ?? (() => Promise.resolve(""))
     const list: Array<Promise<R | undefined>> = []
     for (const candidate of candidates) {
-      list.push(attempt(candidate, input.kind, false, input.finish, input.missing, input.report))
+      list.push(attempt(candidate, input.kind, false, input.finish, input.missing, input.report, resolveTarget))
     }
     const out = await Promise.all(list)
     if (input.wait) {
@@ -204,7 +209,15 @@ export namespace PluginLoader {
         if (!candidate || pluginSource(candidate.plan.spec) !== "file") continue
         deps ??= input.wait()
         await deps
-        out[i] = await attempt(candidate, input.kind, true, input.finish, input.missing, input.report)
+        out[i] = await attempt(
+          candidate,
+          input.kind,
+          true,
+          input.finish,
+          input.missing,
+          input.report,
+          resolveTarget,
+        )
       }
     }
 

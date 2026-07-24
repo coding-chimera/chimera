@@ -1,34 +1,40 @@
 import path from "path"
-import z from "zod"
+import { zodObject } from "@/util/effect-zod"
+import type { DeepMutable } from "@/util/schema"
 import { Global } from "@opencode-ai/core/global"
-import { Effect, Layer, Context } from "effect"
+import { Effect, Layer, Context, Schema } from "effect"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
 
-export const Tokens = z.object({
-  accessToken: z.string(),
-  refreshToken: z.string().optional(),
-  expiresAt: z.number().optional(),
-  scope: z.string().optional(),
+export const TokensSchema = Schema.Struct({
+  accessToken: Schema.String,
+  refreshToken: Schema.optional(Schema.String),
+  expiresAt: Schema.optional(Schema.Finite),
+  scope: Schema.optional(Schema.String),
 })
-export type Tokens = z.infer<typeof Tokens>
+export const Tokens = zodObject(TokensSchema)
+export type Tokens = DeepMutable<Schema.Schema.Type<typeof TokensSchema>>
 
-export const ClientInfo = z.object({
-  clientId: z.string(),
-  clientSecret: z.string().optional(),
-  clientIdIssuedAt: z.number().optional(),
-  clientSecretExpiresAt: z.number().optional(),
+export const ClientInfoSchema = Schema.Struct({
+  clientId: Schema.String,
+  clientSecret: Schema.optional(Schema.String),
+  clientIdIssuedAt: Schema.optional(Schema.Finite),
+  clientSecretExpiresAt: Schema.optional(Schema.Finite),
 })
-export type ClientInfo = z.infer<typeof ClientInfo>
+export const ClientInfo = zodObject(ClientInfoSchema)
+export type ClientInfo = DeepMutable<Schema.Schema.Type<typeof ClientInfoSchema>>
 
-export const Entry = z.object({
-  tokens: Tokens.optional(),
-  clientInfo: ClientInfo.optional(),
-  codeVerifier: z.string().optional(),
-  oauthState: z.string().optional(),
-  serverUrl: z.string().optional(),
+export const EntrySchema = Schema.Struct({
+  tokens: Schema.optional(TokensSchema),
+  clientInfo: Schema.optional(ClientInfoSchema),
+  codeVerifier: Schema.optional(Schema.String),
+  oauthState: Schema.optional(Schema.String),
+  serverUrl: Schema.optional(Schema.String),
 })
-export type Entry = z.infer<typeof Entry>
+export const Entry = zodObject(EntrySchema)
+export type Entry = DeepMutable<Schema.Schema.Type<typeof EntrySchema>>
+
+const Entries = Schema.Record(Schema.String, EntrySchema)
 
 const filepath = path.join(Global.Path.data, "mcp-auth.json")
 const lockKey = `mcp-auth:${filepath}`
@@ -59,7 +65,7 @@ export const layer = Layer.effect(
 
     const read = Effect.fn("McpAuth.read")(function* () {
       return yield* fs.readJson(filepath).pipe(
-        Effect.map((data) => data as Record<string, Entry>),
+        Effect.flatMap(Schema.decodeUnknownEffect(Entries)),
         Effect.catch(() => Effect.succeed({} as Record<string, Entry>)),
       )
     })

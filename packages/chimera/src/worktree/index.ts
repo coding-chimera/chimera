@@ -1,4 +1,3 @@
-import z from "zod"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { Global } from "@opencode-ai/core/global"
 import { InstanceLayer } from "@/project/instance-layer"
@@ -22,6 +21,7 @@ import { BootstrapRuntime } from "@/effect/bootstrap-runtime"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { InstanceState } from "@/effect/instance-state"
 import { zod as effectZod } from "@/util/effect-zod"
+import type z from "zod"
 import { withStatics } from "@/util/schema"
 
 const log = Log.create({ service: "worktree" })
@@ -75,47 +75,17 @@ export const ResetInput = Schema.Struct({
   .pipe(withStatics((s) => ({ zod: effectZod(s) })))
 export type ResetInput = Schema.Schema.Type<typeof ResetInput>
 
-export const NotGitError = NamedError.create(
-  "WorktreeNotGitError",
-  z.object({
-    message: z.string(),
-  }),
-)
+export const ErrorPayloadSchema = Schema.Struct({
+  message: Schema.String,
+})
+export const ErrorPayload = effectZod(ErrorPayloadSchema) as z.ZodObject<{ message: z.ZodString }>
 
-export const NameGenerationFailedError = NamedError.create(
-  "WorktreeNameGenerationFailedError",
-  z.object({
-    message: z.string(),
-  }),
-)
-
-export const CreateFailedError = NamedError.create(
-  "WorktreeCreateFailedError",
-  z.object({
-    message: z.string(),
-  }),
-)
-
-export const StartCommandFailedError = NamedError.create(
-  "WorktreeStartCommandFailedError",
-  z.object({
-    message: z.string(),
-  }),
-)
-
-export const RemoveFailedError = NamedError.create(
-  "WorktreeRemoveFailedError",
-  z.object({
-    message: z.string(),
-  }),
-)
-
-export const ResetFailedError = NamedError.create(
-  "WorktreeResetFailedError",
-  z.object({
-    message: z.string(),
-  }),
-)
+export const NotGitError = NamedError.create("WorktreeNotGitError", ErrorPayload)
+export const NameGenerationFailedError = NamedError.create("WorktreeNameGenerationFailedError", ErrorPayload)
+export const CreateFailedError = NamedError.create("WorktreeCreateFailedError", ErrorPayload)
+export const StartCommandFailedError = NamedError.create("WorktreeStartCommandFailedError", ErrorPayload)
+export const RemoveFailedError = NamedError.create("WorktreeRemoveFailedError", ErrorPayload)
+export const ResetFailedError = NamedError.create("WorktreeResetFailedError", ErrorPayload)
 
 function slugify(input: string) {
   return input

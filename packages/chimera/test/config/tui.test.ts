@@ -4,11 +4,12 @@ import fs from "fs/promises"
 import { provideTestInstance, tmpdir } from "../fixture/fixture"
 import { InstanceRuntime } from "@/project/instance-runtime"
 import { TuiConfig } from "../../src/cli/cmd/tui/config/tui"
+import { TuiInfoSchema } from "../../src/cli/cmd/tui/config/tui-schema"
 import { Config } from "@/config/config"
 import { Global } from "@opencode-ai/core/global"
 import { Filesystem } from "@/util/filesystem"
 import { AppRuntime } from "../../src/effect/app-runtime"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Schema } from "effect"
 import { CurrentWorkingDirectory } from "@/cli/cmd/tui/config/cwd"
 import { ConfigPlugin } from "@/config/plugin"
 
@@ -666,4 +667,23 @@ test("missing tui.json — silently treated as empty (ENOENT path)", async () =>
   expect(config).toBeDefined()
   // No theme set anywhere.
   expect(config.theme).toBeUndefined()
+})
+
+
+test("TUI schemas keep Effect and Zod decoding aligned", () => {
+  const input = {
+    theme: "tokyo-night",
+    scroll_speed: 2,
+    scroll_acceleration: { enabled: true },
+    diff_style: "stacked" as const,
+    mouse: false,
+    keybinds: { app_exit: "ctrl+q" },
+    plugin: [["demo-plugin", { enabled: true }]] as [string, Record<string, unknown>][],
+    plugin_enabled: { "demo-plugin": true },
+  }
+
+  expect(Schema.decodeUnknownSync(TuiInfoSchema)(input)).toEqual(input)
+  expect(TuiConfig.Info.parse(input)).toEqual(input)
+  expect(() => Schema.decodeUnknownSync(TuiInfoSchema)({ scroll_speed: 0 })).toThrow()
+  expect(() => TuiConfig.Info.parse({ scroll_speed: 0 })).toThrow()
 })

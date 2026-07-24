@@ -1,12 +1,12 @@
 export * as TuiConfig from "./tui"
 
-import z from "zod"
 import { mergeDeep, unique } from "remeda"
-import { Context, Effect, Fiber, Layer } from "effect"
+import { Context, Effect, Fiber, Layer, Schema } from "effect"
 import { ConfigParse } from "@/config/parse"
 import * as ConfigPaths from "@/config/paths"
 import { migrateTuiConfig } from "./tui-migrate"
-import { TuiInfo } from "./tui-schema"
+import { TuiInfo, TuiInfoSchema } from "./tui-schema"
+import type { DeepMutable } from "@/util/schema"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { isRecord } from "@/util/record"
 import { Global } from "@opencode-ai/core/global"
@@ -15,7 +15,6 @@ import { CurrentWorkingDirectory } from "./cwd"
 import { ConfigPlugin } from "@/config/plugin"
 import { ConfigKeybinds } from "@/config/keybinds"
 import { InstallationLocal, InstallationVersion } from "@opencode-ai/core/installation/version"
-import { makeRuntime } from "@opencode-ai/core/effect/runtime"
 import { Filesystem } from "@/util/filesystem"
 import * as Log from "@opencode-ai/core/util/log"
 import { ConfigVariable } from "@/config/variable"
@@ -34,7 +33,7 @@ type State = {
   deps: Array<Fiber.Fiber<void, AppFileSystem.Error>>
 }
 
-export type Info = z.output<typeof Info> & {
+export type Info = DeepMutable<Schema.Schema.Type<typeof TuiInfoSchema>> & {
   // Internal resolved plugin list used by runtime loading.
   plugin_origins?: ConfigPlugin.Origin[]
 }
@@ -90,7 +89,7 @@ const loadState = Effect.fn("TuiConfig.loadState")(function* (ctx: { directory: 
       if (!isRecord(data)) return {} as Info
       // Flatten a nested "tui" key so users who wrote `{ "tui": { ... } }` inside tui.json
       // (mirroring the old chimera.json shape) still get their settings applied.
-      const validated = ConfigParse.schema(Info, normalize(data), configFilepath)
+      const validated = ConfigParse.effectSchema(TuiInfoSchema, normalize(data), configFilepath)
       return yield* resolvePlugins(validated, configFilepath)
     }).pipe(
       // catchCause (not tapErrorCause + orElseSucceed) because ConfigParse.jsonc/.schema
@@ -226,13 +225,3 @@ export const layer = Layer.effect(
 )
 
 export const defaultLayer = layer.pipe(Layer.provide(Npm.defaultLayer), Layer.provide(AppFileSystem.defaultLayer))
-
-const { runPromise } = makeRuntime(Service, defaultLayer)
-
-export async function waitForDependencies() {
-  await runPromise((svc) => svc.waitForDependencies())
-}
-
-export async function get() {
-  return runPromise((svc) => svc.get())
-}

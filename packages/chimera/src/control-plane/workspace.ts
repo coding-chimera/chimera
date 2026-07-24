@@ -5,7 +5,7 @@ import { asc } from "drizzle-orm"
 import { eq } from "drizzle-orm"
 import { inArray } from "drizzle-orm"
 import { Project } from "@/project/project"
-import { Instance } from "@/project/instance"
+import { InstanceState } from "@/effect/instance-state"
 import { BusEvent } from "@/bus/bus-event"
 import { GlobalBus } from "@/bus/global"
 import { Auth } from "@/auth"
@@ -619,7 +619,7 @@ export const layer = Layer.effect(
 
             // "claim" this session so any future events coming from
             // the old workspace are ignored
-            SyncEvent.claim(input.sessionID, input.workspaceID ?? Instance.project.id)
+            SyncEvent.claim(input.sessionID, input.workspaceID ?? (yield* InstanceState.context).project.id)
           }
         }
 
@@ -654,14 +654,12 @@ export const layer = Layer.effect(
         }
 
         if (input.workspaceID === null) {
-          yield* Effect.sync(() =>
-            SyncEvent.run(Session.Event.Updated, {
-              sessionID: input.sessionID,
-              info: {
-                workspaceID: null,
-              },
-            }),
-          )
+          yield* sync.run(Session.Event.Updated, {
+            sessionID: input.sessionID,
+            info: {
+              workspaceID: null,
+            },
+          })
 
           log.info("session warp complete", {
             workspaceID: input.workspaceID,

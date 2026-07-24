@@ -5,7 +5,7 @@ import * as EffectZod from "@/util/effect-zod"
 import { ProviderID, ModelID } from "@/provider/schema"
 import { ToolRegistry } from "@/tool/registry"
 import { Worktree } from "@/worktree"
-import { Instance } from "@/project/instance"
+import * as InstanceState from "@/effect/instance-state"
 import { Project } from "@/project/project"
 import { MCP } from "@/mcp"
 import { Session } from "@/session/session"
@@ -275,7 +275,8 @@ export const ExperimentalRoutes = lazy(() =>
       async (c) =>
         jsonRequest("ExperimentalRoutes.worktree.list", c, function* () {
           const svc = yield* Project.Service
-          return yield* svc.sandboxes(Instance.project.id)
+          const instance = yield* InstanceState.context
+          return yield* svc.sandboxes(instance.project.id)
         }),
     )
     .delete(
@@ -302,8 +303,9 @@ export const ExperimentalRoutes = lazy(() =>
           const body = c.req.valid("json")
           const worktree = yield* Worktree.Service
           const project = yield* Project.Service
+          const instance = yield* InstanceState.context
           yield* worktree.remove(body)
-          yield* project.removeSandbox(Instance.project.id, body.directory)
+          yield* project.removeSandbox(instance.project.id, body.directory)
           return true
         }),
     )

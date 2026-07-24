@@ -8,9 +8,11 @@ import * as LSPServer from "./server"
 import z from "zod"
 import { Config } from "@/config/config"
 import { Flag } from "@opencode-ai/core/flag/flag"
-import { Process } from "@/util/process"
 import { spawn as lspspawn } from "./launch"
-import { Effect, Layer, Context, Schema } from "effect"
+import { Effect, Layer, Context, Schema, Option, Stream } from "effect"
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
+import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
+import { Npm } from "@opencode-ai/core/npm"
 import { InstanceState } from "@/effect/instance-state"
 import { containsPath } from "@/project/instance-context"
 import { NonNegativeInt, withStatics } from "@/util/schema"
@@ -155,7 +157,34 @@ export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const config = yield* Config.Service
-
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+    const npm = yield* Npm.Service
+    const command: LSPServer.CommandRunner = (cmd, opts) =>
+      Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const handle = yield* spawner.spawn(
+              ChildProcess.make(cmd[0], cmd.slice(1), {
+                cwd: opts?.cwd,
+                env: opts?.env,
+                extendEnv: true,
+              }),
+            )
+            const [code, stdout, stderr] = yield* Effect.all(
+              [
+                handle.exitCode,
+                Stream.mkString(Stream.decodeText(handle.stdout)),
+                Stream.mkString(Stream.decodeText(handle.stderr)),
+              ],
+              { concurrency: 3 },
+            )
+            return { code: Number(code), stdout, stderr }
+          }),
+        ),
+      )
+    const install: LSPServer.InstallerCommand = (cmd, opts) => command(cmd, opts).then((result) => result.code)
+    const resolveNpm: LSPServer.NpmCommand = (pkg, bin) =>
+      Effect.runPromise(npm.which(pkg, bin).pipe(Effect.map(Option.getOrUndefined)))
     const state = yield* InstanceState.make<State>(
       Effect.fn("LSP.state")(function* (ctx) {
         const cfg = yield* config.get()
@@ -229,7 +258,7 @@ export const layer = Layer.effect(
 
         async function schedule(server: LSPServer.Info, root: string, key: string) {
           const handle = await server
-            .spawn(root, ctx)
+            .spawn(root, ctx, install, resolveNpm, command)
             .then((value) => {
               if (!value) s.broken.add(key)
               return value
@@ -250,7 +279,7 @@ export const layer = Layer.effect(
             directory: ctx.directory,
           }).catch(async (err) => {
             s.broken.add(key)
-            await Process.stop(handle.process)
+            await handle.process.stop()
             log.error(`Failed to initialize LSP client ${server.id}`, { error: err })
             return undefined
           })
@@ -259,7 +288,7 @@ export const layer = Layer.effect(
 
           const existing = s.clients.find((x) => x.root === root && x.serverID === server.id)
           if (existing) {
-            await Process.stop(handle.process)
+            await handle.process.stop()
             return existing
           }
 
@@ -510,7 +539,11 @@ export const layer = Layer.effect(
   }),
 )
 
-export const defaultLayer = layer.pipe(Layer.provide(Config.defaultLayer))
+export const defaultLayer = layer.pipe(
+  Layer.provide(Config.defaultLayer),
+  Layer.provide(CrossSpawnSpawner.defaultLayer),
+  Layer.provide(Npm.defaultLayer),
+)
 
 export * as Diagnostic from "./diagnostic"
 

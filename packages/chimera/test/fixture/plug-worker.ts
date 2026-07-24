@@ -2,6 +2,9 @@ import path from "path"
 
 import { createPlugTask, type PlugCtx, type PlugDeps } from "../../src/cli/cmd/plug"
 import { Filesystem } from "@/util/filesystem"
+import * as Log from "@opencode-ai/core/util/log"
+
+await Log.init({ print: true, level: "ERROR" })
 
 type Msg = {
   dir: string
@@ -86,8 +89,13 @@ async function main() {
   }
 }
 
-await main().catch((err) => {
+try {
+  await main()
+} catch (err) {
   const text = err instanceof Error ? (err.stack ?? err.message) : String(err)
   process.stderr.write(text)
-  process.exit(1)
-})
+  process.exitCode = 1
+} finally {
+  const { AppRuntime } = await import("../../src/effect/app-runtime")
+  await AppRuntime.dispose()
+}

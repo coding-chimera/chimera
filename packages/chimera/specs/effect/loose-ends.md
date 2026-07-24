@@ -4,29 +4,23 @@ Small follow-ups that do not fit neatly into the main facade, route, tool, or sc
 
 ## Config / TUI
 
-- [ ] `cli/cmd/tui/config/tui.ts` - finish the internal Effect migration.
-      Keep the current precedence and migration semantics intact while converting the remaining internal async helpers (`loadState`, `mergeFile`, `loadFile`, `load`) to `Effect.gen(...)` / `Effect.fn(...)`.
-- [ ] `cli/cmd/tui/config/tui.ts` callers - once the internal service is stable, migrate plain async callers to use `TuiConfig.Service` directly where that actually simplifies the code.
-      Likely first callers: `cli/cmd/tui/attach.ts`, `cli/cmd/tui/thread.ts`, `cli/cmd/tui/plugin/runtime.ts`.
+- [x] `cli/cmd/tui/config/tui.ts` - complete the internal Effect migration while preserving config precedence and migration semantics.
+- [x] TUI config callers — migrate `cli/cmd/tui/attach.ts`, `cli/cmd/tui/thread.ts`, and `cli/cmd/tui/plugin/runtime.ts` to yield `TuiConfig.Service` through the shared TUI runtime; the former service-local runtime facade has been deleted.
 - [x] `env/index.ts` - already uses `InstanceState.make(...)`.
 
 ## ConfigPaths
 
-- [ ] `config/paths.ts` - split pure helpers from effectful helpers.
-      Keep `fileInDirectory(...)` as a plain function.
-- [ ] `config/paths.ts` - add a `ConfigPaths.Service` for the effectful operations so callers do not inherit `AppFileSystem.Service` directly.
-      Initial service surface should cover:
-  - `projectFiles(...)`
-  - `directories(...)`
-  - `readFile(...)`
-  - `parseText(...)`
-- [ ] `config/config.ts` - switch internal config loading from `Effect.promise(() => ConfigPaths.*(...))` to `yield* paths.*(...)` once the service exists.
-- [ ] `cli/cmd/tui/config/tui.ts` - switch TUI config loading from async `ConfigPaths.*` wrappers to the `ConfigPaths.Service` once that service exists.
-- [ ] `cli/cmd/tui/config/tui-migrate.ts` - decide whether to leave this as a plain async module using wrapper functions or effectify it fully after `ConfigPaths.Service` lands.
+- [x] `config/paths.ts` - separate pure helpers from effectful helpers; `fileInDirectory(...)` remains a plain function.
+- **Superseded intentionally:** do not add a forwarding-only `ConfigPaths.Service`. `Config` and the TUI domain own reading and parsing, while `ConfigPaths` provides focused helpers.
+- [x] `config/config.ts` and `cli/cmd/tui/config/tui.ts` - yield the effectful `ConfigPaths` helpers directly.
+- [x] `cli/cmd/tui/config/tui-migrate.ts` - intentionally retain the plain async compatibility module rather than effectifying it.
 
 ## Instance cleanup
 
-- [ ] `project/instance.ts` - keep shrinking the legacy ALS / Promise cache after the remaining `Instance.*` callers move over.
+`project/instance.ts` is now a thin ALS compatibility shim, and route ambient reads are zero. Remaining retirement work:
+
+- [ ] Remove the remaining `WithInstance` compatibility boundary after Hono and other entrypoints provide explicit instance context.
+- [ ] Retire the remaining session/compatibility ALS fallback once all consumers receive explicit instance context.
 
 ## Notes
 

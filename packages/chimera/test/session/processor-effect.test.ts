@@ -22,6 +22,7 @@ import { SessionStatus } from "../../src/session/status"
 import { SessionSummary } from "../../src/session/summary"
 import { Database } from "@/storage/db"
 import { EventTable } from "../../src/sync/event.sql"
+import { SyncEvent } from "../../src/sync"
 import { Snapshot } from "../../src/snapshot"
 import * as Log from "@opencode-ai/core/util/log"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
@@ -171,6 +172,7 @@ const deps = Layer.mergeAll(
   LLM.defaultLayer,
   Provider.defaultLayer,
   status,
+  SyncEvent.defaultLayer,
 ).pipe(Layer.provideMerge(infra))
 const env = Layer.mergeAll(
   TestLLMServer.layer,
@@ -210,6 +212,7 @@ const providerExecutedDeps = Layer.mergeAll(
   providerExecutedLLM,
   Provider.defaultLayer,
   status,
+  SyncEvent.defaultLayer,
 ).pipe(Layer.provideMerge(infra))
 const providerExecutedEnv = SessionProcessor.layer.pipe(Layer.provide(summary), Layer.provideMerge(providerExecutedDeps))
 const providerExecutedIt = testEffect(providerExecutedEnv)
@@ -271,6 +274,7 @@ const metadataToolDeps = Layer.mergeAll(
   metadataToolLLM,
   Provider.defaultLayer,
   status,
+  SyncEvent.defaultLayer,
 ).pipe(Layer.provideMerge(infra))
 const metadataToolEnv = SessionProcessor.layer.pipe(Layer.provide(summary), Layer.provideMerge(metadataToolDeps))
 const metadataToolIt = testEffect(metadataToolEnv)
@@ -300,6 +304,7 @@ const failedToolDeps = Layer.mergeAll(
   failedToolLLM,
   Provider.defaultLayer,
   status,
+  SyncEvent.defaultLayer,
 ).pipe(Layer.provideMerge(infra))
 const failedToolEnv = SessionProcessor.layer.pipe(Layer.provide(summary), Layer.provideMerge(failedToolDeps))
 const failedToolIt = testEffect(failedToolEnv)

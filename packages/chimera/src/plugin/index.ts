@@ -20,6 +20,7 @@ import { PoeAuthPlugin } from "opencode-poe-auth"
 import { CloudflareAIGatewayAuthPlugin, CloudflareWorkersAuthPlugin } from "./cloudflare"
 import { AzureAuthPlugin } from "./azure"
 import { Effect, Layer, Context, Stream } from "effect"
+import { Npm } from "@opencode-ai/core/npm"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { errorMessage } from "@/util/error"
@@ -110,11 +111,13 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const bus = yield* Bus.Service
     const config = yield* Config.Service
+    const npm = yield* Npm.Service
 
     const state = yield* InstanceState.make<State>(
       Effect.fn("Plugin.state")(function* (ctx) {
         const hooks: Hooks[] = []
         const bridge = yield* EffectBridge.make()
+        const resolveTarget = (pkg: string) => Effect.runPromise(npm.add(pkg).pipe(Effect.map((entry) => entry.directory)))
 
         function publishPluginError(message: string) {
           bridge.fork(bus.publish(Session.Event.Error, { error: new NamedError.Unknown({ message }).toObject() }))
@@ -166,6 +169,7 @@ export const layer = Layer.effect(
         const loaded = yield* Effect.promise(() =>
           PluginLoader.loadExternal({
             items: plugins,
+            resolveTarget,
             kind: "server",
             report: {
               start(candidate) {
@@ -283,6 +287,10 @@ export const layer = Layer.effect(
   }),
 )
 
-export const defaultLayer = layer.pipe(Layer.provide(Bus.layer), Layer.provide(Config.defaultLayer))
+export const defaultLayer = layer.pipe(
+  Layer.provide(Bus.layer),
+  Layer.provide(Config.defaultLayer),
+  Layer.provide(Npm.defaultLayer),
+)
 
 export * as Plugin from "."

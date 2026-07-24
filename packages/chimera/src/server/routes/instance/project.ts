@@ -1,14 +1,14 @@
 import { Hono } from "hono"
 import { describeRoute, validator } from "hono-openapi"
 import { resolver } from "hono-openapi"
-import { Instance } from "@/project/instance"
-import { InstanceRuntime } from "@/project/instance-runtime"
+import * as InstanceState from "@/effect/instance-state"
+import { InstanceStore } from "@/project/instance-store"
 import { Project } from "@/project/project"
 import z from "zod"
 import { ProjectID } from "@/project/schema"
 import { errors } from "../../error"
 import { lazy } from "@/util/lazy"
-import { jsonRequest, runRequest } from "./trace"
+import { jsonRequest } from "./trace"
 
 export const ProjectRoutes = lazy(() =>
   new Hono()
@@ -51,9 +51,10 @@ export const ProjectRoutes = lazy(() =>
           },
         },
       }),
-      async (c) => {
-        return c.json(Instance.project)
-      },
+      async (c) =>
+        jsonRequest("ProjectRoutes.current", c, function* () {
+          return (yield* InstanceState.context).project
+        }),
     )
     .post(
       "/git/init",
@@ -72,18 +73,25 @@ export const ProjectRoutes = lazy(() =>
           },
         },
       }),
-      async (c) => {
-        const dir = Instance.directory
-        const prev = Instance.project
-        const next = await runRequest(
-          "ProjectRoutes.initGit",
-          c,
-          Project.Service.use((svc) => svc.initGit({ directory: dir, project: prev })),
-        )
-        if (next.id === prev.id && next.vcs === prev.vcs && next.worktree === prev.worktree) return c.json(next)
-        await InstanceRuntime.reloadInstance({ directory: dir, worktree: dir, project: next })
-        return c.json(next)
-      },
+      async (c) =>
+        jsonRequest("ProjectRoutes.initGit", c, function* () {
+          const instance = yield* InstanceState.context
+          const project = yield* Project.Service
+          const next = yield* project.initGit({ directory: instance.directory, project: instance.project })
+          if (
+            next.id !== instance.project.id ||
+            next.vcs !== instance.project.vcs ||
+            next.worktree !== instance.project.worktree
+          ) {
+            const store = yield* InstanceStore.Service
+            yield* store.reload({
+              directory: instance.directory,
+              worktree: instance.directory,
+              project: next,
+            })
+          }
+          return next
+        }),
     )
     .patch(
       "/:projectID",

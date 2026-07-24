@@ -47,16 +47,15 @@ test("skips external tui plugins in pure mode", async () => {
       },
     ],
   }
-  const wait = spyOn(TuiConfig, "waitForDependencies").mockResolvedValue()
+  const waitForDependencies = async () => {}
   const cwd = spyOn(process, "cwd").mockImplementation(() => tmp.path)
 
   try {
-    await TuiPluginRuntime.init({ api: createTuiPluginApi(), config })
+    await TuiPluginRuntime.init({ api: createTuiPluginApi(), config, waitForDependencies })
     await expect(fs.readFile(tmp.extra.marker, "utf8")).rejects.toThrow()
   } finally {
     await TuiPluginRuntime.dispose()
     cwd.mockRestore()
-    wait.mockRestore()
     if (pure === undefined) {
       delete process.env.OPENCODE_PURE
     } else {

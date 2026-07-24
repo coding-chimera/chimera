@@ -1,24 +1,26 @@
 # Facade removal checklist
 
-Concrete inventory of the remaining `makeRuntime(...)`-backed facades in `packages/opencode`.
+Concrete inventory of the tracked `makeRuntime(...)`-backed service facades in `packages/chimera` and `packages/core`.
 
 Current status on this branch:
 
-- `src/` has 5 `makeRuntime(...)` call sites total.
-- 2 are intentionally excluded from this checklist: `src/bus/index.ts` and `src/effect/cross-spawn-spawner.ts`.
-- 1 is tracked primarily by the instance-context migration rather than facade removal: `src/project/instance.ts`.
-- That leaves 2 live runtime-backed service facades still worth tracking here: `src/npm/index.ts` and `src/cli/cmd/tui/config/tui.ts`.
+- `packages/chimera/src/` has 4 `makeRuntime(...)` call sites total.
+- All 4 are intentional runtime boundaries excluded from this checklist: `src/bus/index.ts`, `src/installation/index.ts`, `src/session/compaction.ts`, and `src/session/remote-compaction.ts`.
+- `Bus`, session compaction, and installation/integration runtimes are not service namespace facades and must not be counted as facade-removal backlog.
+- The tracked facade set is complete: `Npm` now lives at `packages/core/src/npm.ts`, and both `Npm` and `TuiConfig` have migrated all callers and tests and deleted their service-local `makeRuntime(...)` and facade exports.
+- Project instance context remains an independent architecture migration tracked in `instance-context.md`; this checklist does not claim that work is complete.
 
 Recent progress:
 
 - Wave 1 is merged: `Pty`, `Skill`, `Vcs`, `ToolRegistry`, `Auth`.
 - Wave 2 is merged: `Config`, `Provider`, `File`, `LSP`, `MCP`.
+- The final tracked facades, `Npm` and `TuiConfig`, are complete.
 
-## Priority hotspots
+## Current boundary decisions
 
-- `src/cli/cmd/tui/config/tui.ts` still exports `makeRuntime(...)` plus async facade helpers for `get()` and `waitForDependencies()`.
-- `src/npm/index.ts` still exports `makeRuntime(...)` plus async facade helpers for `install()`, `add()`, `outdated()`, and `which()`.
-- `src/project/instance.ts` still uses a dedicated runtime for project boot, but that file is really part of the broader legacy instance-context transition tracked in `instance-context.md`.
+- `packages/core/src/npm.ts` exposes the `Npm` Effect service without a service-local runtime or async facade helpers.
+- `packages/chimera/src/cli/cmd/tui/config/tui.ts` exposes the `TuiConfig` Effect service without a service-local runtime or async facade helpers.
+- Project instance context remains separate because it is an instance-lifetime architecture concern, not facade-removal backlog.
 
 ## Completed Batches
 
@@ -40,14 +42,14 @@ Caller-heavy batch, all merged:
 
 Shared pattern:
 
-- one service file still exports `makeRuntime(...)` + async facades
-- one or two route or CLI entrypoints call those facades directly
-- tests call the facade directly and need to switch to `yield* svc.method(...)`
-- once callers are gone, delete `makeRuntime(...)`, remove async facade exports, and drop the `makeRuntime` import
+- one service file exported `makeRuntime(...)` + async facades
+- one or two route or CLI entrypoints called those facades directly
+- tests called the facade directly and needed to switch to `yield* svc.method(...)`
+- after callers were migrated, `makeRuntime(...)`, async facade exports, and the `makeRuntime` import were deleted
 
 ## Done means
 
-For each service in the low-risk batch, the work is complete only when all of these are true:
+For each tracked service, the work is complete only when all of these are true:
 
 1. all production callers stop using `Namespace.method(...)` facade calls
 2. all direct test callers stop using the facade and instead yield the service from context
@@ -188,16 +190,14 @@ These were the recurring mistakes and useful corrections from the first two batc
 
 ## Remaining work
 
-Most of the original facade-removal backlog is already done. The practical remaining work is narrower now:
+The tracked facade set is complete. Project instance context continues in the separate `instance-context.md` migration and is intentionally not represented as unfinished facade work here.
 
-1. remove the `Npm` runtime-backed facade from `src/npm/index.ts`
-2. remove the `TuiConfig` runtime-backed facade from `src/cli/cmd/tui/config/tui.ts`
-3. keep `src/project/instance.ts` in the separate instance-context migration, not this checklist
+This completion does not complete unrelated Hono removal or fallback-retirement work; those remain open in their own trackers.
 
 ## Checklist
 
-- [ ] `src/npm/index.ts` (`Npm`) - still exports runtime-backed async facade helpers on top of `Npm.Service`
-- [ ] `src/cli/cmd/tui/config/tui.ts` (`TuiConfig`) - still exports runtime-backed async facade helpers on top of `TuiConfig.Service`
+- [x] `packages/core/src/npm.ts` (`Npm`) - all production callers and tests migrated; service-local `makeRuntime(...)` and runtime-backed facade exports deleted
+- [x] `packages/chimera/src/cli/cmd/tui/config/tui.ts` (`TuiConfig`) - all production callers and tests migrated; service-local `makeRuntime(...)` and runtime-backed facade exports deleted
 - [x] `src/session/session.ts` / `src/session/prompt.ts` / `src/session/revert.ts` / `src/session/summary.ts` - service-local facades removed
 - [x] `src/agent/agent.ts` (`Agent`) - service-local facades removed
 - [x] `src/permission/index.ts` (`Permission`) - service-local facades removed
@@ -217,5 +217,11 @@ Most of the original facade-removal backlog is already done. The practical remai
 
 ## Excluded `makeRuntime(...)` sites
 
-- `src/bus/index.ts` - core bus plumbing, not a normal facade-removal target.
-- `src/effect/cross-spawn-spawner.ts` - runtime helper for `ChildProcessSpawner`, not a service namespace facade.
+These are intentional runtime boundaries, not service namespace facades:
+
+- `packages/chimera/src/bus/index.ts` - core bus plumbing.
+- `packages/chimera/src/installation/index.ts` - installation/integration runtime boundary.
+- `packages/chimera/src/session/compaction.ts` - compaction runtime boundary.
+- `packages/chimera/src/session/remote-compaction.ts` - remote-compaction runtime boundary.
+
+The former cross-spawn runtime helper is no longer listed: that entry was superseded by its retirement, not reclassified as completed facade work.

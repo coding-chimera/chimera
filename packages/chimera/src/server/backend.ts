@@ -11,8 +11,9 @@ export type Selection = {
 export type Attributes = ReturnType<typeof attributes>
 
 export function select(): Selection {
+  if (Flag.OPENCODE_SERVER_HONO) return { backend: "hono", reason: "env" }
   if (Flag.OPENCODE_EXPERIMENTAL_HTTPAPI) return { backend: "effect-httpapi", reason: "env" }
-  return { backend: "hono", reason: "stable" }
+  return { backend: "effect-httpapi", reason: "stable" }
 }
 
 export function attributes(selection: Selection): Record<string, string> {

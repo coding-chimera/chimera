@@ -24,6 +24,7 @@ import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionStatus } from "../../src/session/status"
 import { SessionSummary } from "../../src/session/summary"
 import { SessionV2 } from "../../src/v2/session"
+import { SyncEvent } from "../../src/sync"
 import { ModelID, ProviderID } from "../../src/provider/schema"
 import type { Provider } from "@/provider/provider"
 import * as SessionProcessorModule from "../../src/session/processor"
@@ -238,6 +239,8 @@ function authLayer(info: Auth.Info | undefined = {
   })
 }
 
+const compactionLayer = SessionCompaction.layer.pipe(Layer.provide(SyncEvent.defaultLayer))
+
 function runtime(
   result: "continue" | "compact",
   plugin = Plugin.defaultLayer,
@@ -246,7 +249,7 @@ function runtime(
 ) {
   const bus = Bus.layer
   return ManagedRuntime.make(
-    Layer.mergeAll(SessionCompaction.layer, bus).pipe(
+    Layer.mergeAll(compactionLayer, bus).pipe(
       Layer.provide(RemoteCompaction.disabledLayer),
       Layer.provide(provider.layer),
       Layer.provide(SessionNs.defaultLayer),
@@ -272,7 +275,7 @@ const deps = Layer.mergeAll(
 const env = Layer.mergeAll(
   SessionNs.defaultLayer,
   CrossSpawnSpawner.defaultLayer,
-  SessionCompaction.layer.pipe(Layer.provide(SessionNs.defaultLayer), Layer.provideMerge(deps)),
+  compactionLayer.pipe(Layer.provide(SessionNs.defaultLayer), Layer.provideMerge(deps)),
 )
 
 const it = testEffect(env)
@@ -302,9 +305,12 @@ function llm() {
 function liveRuntime(layer: Layer.Layer<LLM.Service>, provider = ProviderTest.fake(), config = Config.defaultLayer) {
   const bus = Bus.layer
   const status = SessionStatus.layer.pipe(Layer.provide(bus))
-  const processor = SessionProcessorModule.SessionProcessor.layer.pipe(Layer.provide(summary))
+  const processor = SessionProcessorModule.SessionProcessor.layer.pipe(
+    Layer.provide(summary),
+    Layer.provide(SyncEvent.defaultLayer),
+  )
   return ManagedRuntime.make(
-    Layer.mergeAll(SessionCompaction.layer.pipe(Layer.provide(processor)), processor, bus, status).pipe(
+    Layer.mergeAll(compactionLayer.pipe(Layer.provide(processor)), processor, bus, status).pipe(
       Layer.provide(RemoteCompaction.disabledLayer),
       Layer.provide(provider.layer),
       Layer.provide(SessionNs.defaultLayer),
@@ -1080,7 +1086,7 @@ describe("session.compaction.process", () => {
           Layer.provide(FetchHttpClient.layer),
         )
         const rt = ManagedRuntime.make(
-          Layer.mergeAll(SessionCompaction.layer.pipe(Layer.provide(remoteLayer)), bus).pipe(
+          Layer.mergeAll(compactionLayer.pipe(Layer.provide(remoteLayer)), bus).pipe(
             Layer.provide(ProviderTest.fake().layer),
             Layer.provide(SessionNs.defaultLayer),
             Layer.provide(layer("continue")),
@@ -1178,7 +1184,7 @@ describe("session.compaction.process", () => {
           new URL("/backend-api/codex/responses", server.url).toString(),
         ).pipe(Layer.provide(authLayer()), Layer.provide(config), Layer.provide(FetchHttpClient.layer))
         const rt = ManagedRuntime.make(
-          Layer.mergeAll(SessionCompaction.layer.pipe(Layer.provide(remoteLayer)), bus).pipe(
+          Layer.mergeAll(compactionLayer.pipe(Layer.provide(remoteLayer)), bus).pipe(
             Layer.provide(ProviderTest.fake().layer),
             Layer.provide(SessionNs.defaultLayer),
             Layer.provide(layer("continue")),
@@ -1304,7 +1310,7 @@ describe("session.compaction.process", () => {
           Layer.provide(FetchHttpClient.layer),
         )
         const rt = ManagedRuntime.make(
-          Layer.mergeAll(SessionCompaction.layer.pipe(Layer.provide(remoteLayer)), bus).pipe(
+          Layer.mergeAll(compactionLayer.pipe(Layer.provide(remoteLayer)), bus).pipe(
             Layer.provide(ProviderTest.fake().layer),
             Layer.provide(SessionNs.defaultLayer),
             Layer.provide(layer("continue")),
@@ -1429,7 +1435,7 @@ describe("session.compaction.process", () => {
           Layer.provide(FetchHttpClient.layer),
         )
         const rt = ManagedRuntime.make(
-          Layer.mergeAll(SessionCompaction.layer.pipe(Layer.provide(remoteLayer)), bus).pipe(
+          Layer.mergeAll(compactionLayer.pipe(Layer.provide(remoteLayer)), bus).pipe(
             Layer.provide(ProviderTest.fake().layer),
             Layer.provide(SessionNs.defaultLayer),
             Layer.provide(layer("continue")),
@@ -1516,7 +1522,7 @@ describe("session.compaction.process", () => {
           timeout: "10 millis",
         }).pipe(Layer.provide(auth), Layer.provide(config), Layer.provide(FetchHttpClient.layer))
         const rt = ManagedRuntime.make(
-          Layer.mergeAll(SessionCompaction.layer.pipe(Layer.provide(remoteLayer)), bus).pipe(
+          Layer.mergeAll(compactionLayer.pipe(Layer.provide(remoteLayer)), bus).pipe(
             Layer.provide(ProviderTest.fake().layer),
             Layer.provide(SessionNs.defaultLayer),
             Layer.provide(layer("continue")),
@@ -1608,7 +1614,7 @@ describe("session.compaction.process", () => {
           timeout: "10 millis",
         }).pipe(Layer.provide(auth), Layer.provide(config), Layer.provide(FetchHttpClient.layer))
         const rt = ManagedRuntime.make(
-          Layer.mergeAll(SessionCompaction.layer.pipe(Layer.provide(remoteLayer)), bus).pipe(
+          Layer.mergeAll(compactionLayer.pipe(Layer.provide(remoteLayer)), bus).pipe(
             Layer.provide(ProviderTest.fake().layer),
             Layer.provide(SessionNs.defaultLayer),
             Layer.provide(layer("continue")),
@@ -1703,7 +1709,7 @@ describe("session.compaction.process", () => {
           Layer.provide(FetchHttpClient.layer),
         )
         const rt = ManagedRuntime.make(
-          Layer.mergeAll(SessionCompaction.layer.pipe(Layer.provide(remoteLayer)), bus).pipe(
+          Layer.mergeAll(compactionLayer.pipe(Layer.provide(remoteLayer)), bus).pipe(
             Layer.provide(ProviderTest.fake().layer),
             Layer.provide(SessionNs.defaultLayer),
             Layer.provide(layer("continue")),
@@ -1853,7 +1859,7 @@ describe("session.compaction.process", () => {
           Layer.provide(FetchHttpClient.layer),
         )
         const rt = ManagedRuntime.make(
-          Layer.mergeAll(SessionCompaction.layer.pipe(Layer.provide(remoteLayer)), bus).pipe(
+          Layer.mergeAll(compactionLayer.pipe(Layer.provide(remoteLayer)), bus).pipe(
             Layer.provide(wide().layer),
             Layer.provide(SessionNs.defaultLayer),
             Layer.provide(layer("continue")),

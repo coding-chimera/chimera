@@ -39,10 +39,12 @@ test("runs onDispose callbacks with aborted signal and is idempotent", async () 
     },
   })
 
-  const { config, restore } = mockTuiRuntime(tmp.path, [[tmp.extra.spec, { marker: tmp.extra.marker }]])
+  const { config, waitForDependencies, restore } = mockTuiRuntime(tmp.path, [
+    [tmp.extra.spec, { marker: tmp.extra.marker }],
+  ])
 
   try {
-    await TuiPluginRuntime.init({ api: createTuiPluginApi(), config })
+    await TuiPluginRuntime.init({ api: createTuiPluginApi(), config, waitForDependencies })
     await TuiPluginRuntime.dispose()
 
     const marker = await fs.readFile(tmp.extra.marker, "utf8")
@@ -99,13 +101,13 @@ test("rolls back failed plugin and continues loading next", async () => {
     },
   })
 
-  const { config, restore } = mockTuiRuntime(tmp.path, [
+  const { config, waitForDependencies, restore } = mockTuiRuntime(tmp.path, [
     [tmp.extra.badSpec, { bad_marker: tmp.extra.badMarker }],
     [tmp.extra.goodSpec, { good_marker: tmp.extra.goodMarker }],
   ])
 
   try {
-    await TuiPluginRuntime.init({ api: createTuiPluginApi(), config })
+    await TuiPluginRuntime.init({ api: createTuiPluginApi(), config, waitForDependencies })
     // bad plugin's onDispose ran during rollback
     await expect(fs.readFile(tmp.extra.badMarker, "utf8")).resolves.toBe("cleaned")
     // good plugin still loaded
@@ -155,11 +157,11 @@ export default {
     },
   })
 
-  const { config, restore } = mockTuiRuntime(tmp.path, [tmp.extra.spec])
+  const { config, waitForDependencies, restore } = mockTuiRuntime(tmp.path, [tmp.extra.spec])
   const err = spyOn(console, "error").mockImplementation(() => {})
 
   try {
-    await TuiPluginRuntime.init({ api: createTuiPluginApi(), config })
+    await TuiPluginRuntime.init({ api: createTuiPluginApi(), config, waitForDependencies })
 
     const marker = await fs.readFile(tmp.extra.marker, "utf8")
     expect(marker).toContain("one")
@@ -202,10 +204,10 @@ test(
       },
     })
 
-    const { config, restore } = mockTuiRuntime(tmp.path, [tmp.extra.spec])
+    const { config, waitForDependencies, restore } = mockTuiRuntime(tmp.path, [tmp.extra.spec])
 
     try {
-      await TuiPluginRuntime.init({ api: createTuiPluginApi(), config })
+      await TuiPluginRuntime.init({ api: createTuiPluginApi(), config, waitForDependencies })
 
       const done = await new Promise<string>((resolve) => {
         const timer = setTimeout(() => resolve("timeout"), 7000)

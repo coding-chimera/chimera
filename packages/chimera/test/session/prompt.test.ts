@@ -38,6 +38,7 @@ import { SessionRunState } from "../../src/session/run-state"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionStatus } from "../../src/session/status"
 import { SessionV2 } from "../../src/v2/session"
+import { SyncEvent } from "../../src/sync"
 import { Skill } from "../../src/skill"
 import { SystemPrompt } from "../../src/session/system"
 import { Shell } from "../../src/shell/shell"
@@ -220,6 +221,7 @@ function makeHttp() {
     mcp,
     AppFileSystem.defaultLayer,
     status,
+    SyncEvent.defaultLayer,
   ).pipe(Layer.provideMerge(infra))
   const question = Question.layer.pipe(Layer.provideMerge(deps))
   const todo = Todo.layer.pipe(Layer.provideMerge(deps))
@@ -598,7 +600,7 @@ it.live("prompt emits v2 prompted and synthetic events", () =>
       })
 
       const messages = yield* SessionV2.Service.use((session) => session.messages({ sessionID: chat.id })).pipe(
-        Effect.provide(SessionV2.layer),
+        Effect.provide(SessionV2.defaultLayer),
       )
       const row = Database.use((db) =>
         db.select().from(SessionMessageTable).where(Database.eq(SessionMessageTable.session_id, chat.id)).get(),
@@ -1939,6 +1941,70 @@ unix(
       ),
     ),
   30_000,
+)
+
+unix(
+  "command ! expansion includes successful shell output",
+  () =>
+    provideTmpdirServer(
+      ({ llm }) =>
+        Effect.gen(function* () {
+          const { prompt, chat } = yield* boot()
+          yield* llm.text("done")
+
+          yield* prompt.command({
+            sessionID: chat.id,
+            command: "probe",
+            arguments: "",
+          })
+
+          const inputs = yield* llm.inputs
+          expect(JSON.stringify(inputs.at(-1)?.messages)).toContain("expanded")
+        }),
+      {
+        git: true,
+        config: (url) => ({
+          ...providerCfg(url),
+          command: {
+            probe: {
+              template: "Probe: !`printf expanded`",
+            },
+          },
+        }),
+      },
+    ),
+)
+
+unix(
+  "command ! expansion keeps stdout after non-zero shell exit",
+  () =>
+    provideTmpdirServer(
+      ({ llm }) =>
+        Effect.gen(function* () {
+          const { prompt, chat } = yield* boot()
+          yield* llm.text("done")
+
+          yield* prompt.command({
+            sessionID: chat.id,
+            command: "probe",
+            arguments: "",
+          })
+
+          const inputs = yield* llm.inputs
+          expect(JSON.stringify(inputs.at(-1)?.messages)).toContain("retained")
+        }),
+      {
+        git: true,
+        config: (url) => ({
+          ...providerCfg(url),
+          command: {
+            probe: {
+              template: "Probe: !`printf retained; exit 7`",
+            },
+          },
+        }),
+      },
+    ),
 )
 
 unix(

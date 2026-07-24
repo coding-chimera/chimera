@@ -101,4 +101,56 @@ describe("tool.webfetch", () => {
       },
     )
   })
+
+  test("extracts HTML text while excluding non-content elements", async () => {
+    const html = "<main>Hello <strong>world</strong><script>secret()</script><style>.hidden{}</style><p>after</p></main>"
+    await withFetch(
+      () => new Response(html, { status: 200, headers: { "content-type": "text/html; charset=utf-8" } }),
+      async (url) => {
+        await WithInstance.provide({
+          directory: projectRoot,
+          fn: async () => {
+            const result = await exec({ url: new URL("/page", url).toString(), format: "text" })
+            expect(result.output).toContain("Hello world")
+            expect(result.output).toContain("after")
+            expect(result.output).not.toContain("secret")
+            expect(result.output).not.toContain("hidden")
+          },
+        })
+      },
+    )
+  })
+
+  test("converts HTML to markdown while excluding scripts and styles", async () => {
+    const html = "<h1>Title</h1><script>secret()</script><style>.hidden{}</style><p>Hello <strong>world</strong>.</p>"
+    await withFetch(
+      () => new Response(html, { status: 200, headers: { "content-type": "text/html" } }),
+      async (url) => {
+        await WithInstance.provide({
+          directory: projectRoot,
+          fn: async () => {
+            const result = await exec({ url: new URL("/page", url).toString(), format: "markdown" })
+            expect(result.output).toContain("# Title")
+            expect(result.output).toContain("**world**")
+            expect(result.output).not.toContain("secret")
+            expect(result.output).not.toContain("hidden")
+          },
+        })
+      },
+    )
+  })
+
+  test("fails when the HTTP response is not successful", async () => {
+    await withFetch(
+      () => new Response("unavailable", { status: 503, headers: { "content-type": "text/plain" } }),
+      async (url) => {
+        await WithInstance.provide({
+          directory: projectRoot,
+          fn: async () => {
+            await expect(exec({ url: new URL("/failure", url).toString(), format: "text" })).rejects.toThrow()
+          },
+        })
+      },
+    )
+  })
 })

@@ -7,13 +7,20 @@ import * as LSPServer from "@/lsp/server"
 import { Instance } from "../../src/project/instance"
 import { WithInstance } from "../../src/project/with-instance"
 import * as Log from "@opencode-ai/core/util/log"
-
+import { Schema } from "effect"
 function spawnFakeServer() {
   const { spawn } = require("child_process")
   const serverPath = path.join(__dirname, "../fixture/lsp/fake-lsp-server.js")
+  const proc = spawn(process.execPath, [serverPath], {
+    stdio: "pipe",
+  })
   return {
-    process: spawn(process.execPath, [serverPath], {
-      stdio: "pipe",
+    process: Object.assign(proc, {
+      exited: new Promise<number>((resolve) => proc.once("exit", (code: number | null) => resolve(code ?? 1))),
+      stop: async () => {
+        if (proc.exitCode !== null || proc.signalCode !== null) return
+        proc.kill()
+      },
     }),
   }
 }
@@ -479,5 +486,24 @@ describe("LSPClient interop", () => {
         await client.shutdown()
       },
     })
+  })
+})
+
+
+describe("LSPClient schemas", () => {
+  test("keeps error and diagnostics payload validation aligned", () => {
+    const initialize = { serverID: "typescript" }
+    expect(Schema.decodeUnknownSync(LSPClient.InitializeErrorPayloadSchema)(initialize)).toEqual(initialize)
+    expect(LSPClient.InitializeErrorPayload.parse(initialize)).toEqual(initialize)
+    expect(new LSPClient.InitializeError(initialize).toObject()).toEqual({ name: "LSPInitializeError", data: initialize })
+
+    const diagnostics = { serverID: "typescript", path: "/tmp/index.ts" }
+    expect(Schema.decodeUnknownSync(LSPClient.DiagnosticsEventPayloadSchema)(diagnostics)).toEqual(diagnostics)
+    expect(LSPClient.DiagnosticsEventPayload.parse(diagnostics)).toEqual(diagnostics)
+
+    expect(() => Schema.decodeUnknownSync(LSPClient.InitializeErrorPayloadSchema)({ serverID: 1 })).toThrow()
+    expect(LSPClient.InitializeErrorPayload.safeParse({ serverID: 1 }).success).toBe(false)
+    expect(() => Schema.decodeUnknownSync(LSPClient.DiagnosticsEventPayloadSchema)({ serverID: "typescript" })).toThrow()
+    expect(LSPClient.DiagnosticsEventPayload.safeParse({ serverID: "typescript" }).success).toBe(false)
   })
 })

@@ -7,7 +7,7 @@ import path from "path"
 import { tmpdir } from "../fixture/fixture"
 import { GlobalBus } from "../../src/bus/global"
 import { ProjectID } from "../../src/project/schema"
-import { Effect, Layer, Stream } from "effect"
+import { Effect, Layer, Schema, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { NodePath } from "@effect/platform-node"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
@@ -599,5 +599,21 @@ describe("Project.fromDirectory with bare repos", () => {
     } finally {
       await $`rm -rf ${barePath} ${worktreePath}`.quiet().nothrow()
     }
+  })
+})
+
+
+describe("Project.UpdateInput schema", () => {
+  test("keeps Effect and Zod validation aligned", () => {
+    const input = {
+      projectID: ProjectID.global,
+      name: "Global",
+      icon: { color: "#ffffff" },
+      commands: { start: "bun dev" },
+    }
+    expect(Schema.decodeUnknownSync(Project.UpdateInputSchema)(input)).toEqual(input)
+    expect(Project.UpdateInput.parse(input)).toEqual(input)
+    expect(() => Schema.decodeUnknownSync(Project.UpdateInputSchema)({ projectID: 1 })).toThrow()
+    expect(Project.UpdateInput.safeParse({ projectID: 1 }).success).toBe(false)
   })
 })

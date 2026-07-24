@@ -19,7 +19,7 @@ import { iife } from "@/util/iife"
 import { Global } from "@opencode-ai/core/global"
 import path from "path"
 import { pathToFileURL } from "url"
-import { Effect, Layer, Context, Schema, Types } from "effect"
+import { Effect, Layer, Context, Schema, Types, Option } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
@@ -1360,7 +1360,7 @@ export function fromModelsDevProvider(provider: ModelsDev.Provider): Info {
 const layer: Layer.Layer<
   Service,
   never,
-  Config.Service | Auth.Service | Plugin.Service | AppFileSystem.Service | Env.Service | ModelsDev.Service
+  Config.Service | Auth.Service | Plugin.Service | AppFileSystem.Service | Env.Service | ModelsDev.Service | Npm.Service
 > = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -1370,6 +1370,7 @@ const layer: Layer.Layer<
     const env = yield* Env.Service
     const plugin = yield* Plugin.Service
     const modelsDevSvc = yield* ModelsDev.Service
+    const npm = yield* Npm.Service
 
     const state = yield* InstanceState.make<State>(() =>
       Effect.gen(function* () {
@@ -1977,9 +1978,10 @@ const layer: Layer.Layer<
 
         let installedPath: string
         if (!model.api.npm.startsWith("file://")) {
-          const item = await Npm.add(model.api.npm)
-          if (!item.entrypoint) throw new Error(`Package ${model.api.npm} has no import entrypoint`)
-          installedPath = item.entrypoint
+          const item = await Effect.runPromise(npm.add(model.api.npm))
+          const entrypoint = Option.getOrUndefined(item.entrypoint)
+          if (!entrypoint) throw new Error(`Package ${model.api.npm} has no import entrypoint`)
+          installedPath = entrypoint
         } else {
           log.info("loading local provider", { pkg: model.api.npm })
           installedPath = model.api.npm
@@ -2185,6 +2187,7 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(Auth.defaultLayer),
     Layer.provide(Plugin.defaultLayer),
     Layer.provide(ModelsDev.defaultLayer),
+    Layer.provide(Npm.defaultLayer),
   ),
 )
 

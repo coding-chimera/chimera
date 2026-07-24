@@ -1671,8 +1671,8 @@ export class File2 extends HeyApiClient {
       workspace?: string
       path: string
       kind?: string
-      startLine?: string
-      endLine?: string
+      startLine?: number
+      endLine?: number
       limit?: number
     },
     options?: Options<never, ThrowOnError>,
@@ -1841,7 +1841,7 @@ export class Graph extends HeyApiClient {
       workspace?: string
       nodeID?: string
       path?: string
-      depth?: string
+      depth?: number
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -3162,7 +3162,7 @@ export class Pty extends HeyApiClient {
       ptyID: string
       directory?: string
       workspace?: string
-      cursor?: number
+      cursor?: string
       ticket?: string
     },
     options?: Options<never, ThrowOnError>,

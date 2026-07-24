@@ -7,7 +7,9 @@ import { lazy } from "../util/lazy"
 import { Global } from "@opencode-ai/core/global"
 import * as Log from "@opencode-ai/core/util/log"
 import { NamedError } from "@opencode-ai/core/util/error"
-import z from "zod"
+import { zod } from "@/util/effect-zod"
+import type z from "zod"
+import { Schema } from "effect"
 import path from "path"
 import { readFileSync, readdirSync, existsSync } from "fs"
 import { Flag } from "@opencode-ai/core/flag/flag"
@@ -18,12 +20,11 @@ import { init } from "#db"
 
 declare const OPENCODE_MIGRATIONS: { sql: string; timestamp: number; name: string }[] | undefined
 
-export const NotFoundError = NamedError.create(
-  "NotFoundError",
-  z.object({
-    message: z.string(),
-  }),
-)
+export const NotFoundErrorPayloadSchema = Schema.Struct({
+  message: Schema.String,
+})
+export const NotFoundErrorPayload = zod(NotFoundErrorPayloadSchema) as z.ZodObject<{ message: z.ZodString }>
+export const NotFoundError = NamedError.create("NotFoundError", NotFoundErrorPayload)
 
 const log = Log.create({ service: "db" })
 

@@ -1,5 +1,5 @@
 import type { Argv } from "yargs"
-import { Effect } from "effect"
+import { Effect, Stream } from "effect"
 import { cmd } from "./cmd"
 import { effectCmd, fail } from "../effect-cmd"
 import { Session } from "@/session/session"
@@ -8,7 +8,8 @@ import { UI } from "../ui"
 import { Locale } from "@/util/locale"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { Filesystem } from "@/util/filesystem"
-import { Process } from "@/util/process"
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
+import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { NotFoundError } from "@/storage/storage"
 import { EOL } from "os"
 import path from "path"
@@ -40,6 +41,23 @@ function pagerCmd(): string[] {
   // Fall back to Windows built-in more (via cmd.exe)
   return ["cmd", "/c", "more"]
 }
+
+export const pageOutput = Effect.fnUntraced(
+  function* (cmd: string[], output: string) {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+    const handle = yield* spawner.spawn(
+      ChildProcess.make(cmd[0], cmd.slice(1), {
+        extendEnv: true,
+        stdin: { stream: Stream.make(new TextEncoder().encode(output)) },
+        stdout: "inherit",
+        stderr: "inherit",
+        forceKillAfter: "5 seconds",
+      }),
+    )
+    return yield* handle.exitCode
+  },
+  Effect.scoped,
+)
 
 export const SessionCommand = cmd({
   command: "session",
@@ -93,22 +111,7 @@ export const SessionListCommand = effectCmd({
     const shouldPaginate = process.stdout.isTTY && !args.maxCount && args.format === "table"
 
     if (shouldPaginate) {
-      yield* Effect.promise(async () => {
-        const proc = Process.spawn(pagerCmd(), {
-          stdin: "pipe",
-          stdout: "inherit",
-          stderr: "inherit",
-        })
-
-        if (!proc.stdin) {
-          console.log(output)
-          return
-        }
-
-        proc.stdin.write(output)
-        proc.stdin.end()
-        await proc.exited
-      })
+      yield* pageOutput(pagerCmd(), output).pipe(Effect.provide(CrossSpawnSpawner.defaultLayer), Effect.orDie)
     } else {
       console.log(output)
     }

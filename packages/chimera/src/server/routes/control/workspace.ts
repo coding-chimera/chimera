@@ -7,7 +7,7 @@ import { Workspace } from "@/control-plane/workspace"
 import { AppRuntime } from "@/effect/app-runtime"
 import { WorkspaceAdapterEntry } from "@/control-plane/types"
 import { zodObject } from "@/util/effect-zod"
-import { Instance } from "@/project/instance"
+import * as InstanceState from "@/effect/instance-state"
 import { Vcs } from "@/project/vcs"
 import { errors } from "../../error"
 import { lazy } from "@/util/lazy"
@@ -31,9 +31,15 @@ export const WorkspaceRoutes = lazy(() =>
           },
         },
       }),
-      async (c) => {
-        return c.json(await listAdapters(Instance.project.id))
-      },
+      async (c) =>
+        c.json(
+          await AppRuntime.runPromise(
+            Effect.gen(function* () {
+              const instance = yield* InstanceState.context
+              return yield* Effect.promise(() => listAdapters(instance.project.id))
+            }),
+          ),
+        ),
     )
     .post(
       "/",
@@ -62,12 +68,14 @@ export const WorkspaceRoutes = lazy(() =>
       async (c) => {
         const body = c.req.valid("json") as Omit<Workspace.CreateInput, "projectID">
         const workspace = await AppRuntime.runPromise(
-          Workspace.Service.use((svc) =>
-            svc.create({
-              projectID: Instance.project.id,
+          Effect.gen(function* () {
+            const svc = yield* Workspace.Service
+            const instance = yield* InstanceState.context
+            return yield* svc.create({
+              projectID: instance.project.id,
               ...body,
-            }),
-          ),
+            })
+          }),
         )
         return c.json(workspace)
       },
@@ -89,9 +97,15 @@ export const WorkspaceRoutes = lazy(() =>
           },
         },
       }),
-      async (c) => {
-        return c.json(await AppRuntime.runPromise(Workspace.Service.use((svc) => svc.list(Instance.project))))
-      },
+      async (c) =>
+        c.json(
+          await AppRuntime.runPromise(
+            Effect.gen(function* () {
+              const svc = yield* Workspace.Service
+              return yield* svc.list((yield* InstanceState.context).project)
+            }),
+          ),
+        ),
     )
     .get(
       "/status",
@@ -112,7 +126,11 @@ export const WorkspaceRoutes = lazy(() =>
       }),
       async (c) => {
         const result = await AppRuntime.runPromise(
-          Workspace.Service.use((svc) => Effect.all([svc.list(Instance.project), svc.status()])),
+          Effect.gen(function* () {
+            const svc = yield* Workspace.Service
+            const instance = yield* InstanceState.context
+            return yield* Effect.all([svc.list(instance.project), svc.status()])
+          }),
         )
         const ids = new Set(result[0].map((item) => item.id))
         return c.json(result[1].filter((item) => ids.has(item.workspaceID)))

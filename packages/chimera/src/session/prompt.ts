@@ -51,7 +51,6 @@ import { ShellID } from "@/tool/shell/id"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { Truncate } from "@/tool/truncate"
 import { decodeDataUrl } from "@/util/data-url"
-import { Process } from "@/util/process"
 import { Cause, Effect, Exit, Latch, Layer, Option, Scope, Context, Schema, Types } from "effect"
 import { zod } from "@/util/effect-zod"
 import { withStatics } from "@/util/schema"
@@ -62,6 +61,7 @@ import { SessionRunState } from "./run-state"
 import { EffectBridge } from "@/effect/bridge"
 import { EventV2 } from "@/v2/event"
 import { SessionEvent } from "@/v2/session-event"
+import { SyncEvent } from "@/sync"
 import { Modelv2 } from "@/v2/model"
 import { AgentAttachment, FileAttachment, Source } from "@/v2/session-prompt"
 import { supportsOpenAIRemoteCompactionModel } from "./remote-compaction"
@@ -224,6 +224,7 @@ export const layer = Layer.effect(
     const chimeraPromptContext = yield* ChimeraPromptContext.Service
     const sys = yield* SystemPrompt.Service
     const llm = yield* LLM.Service
+    const sync = yield* SyncEvent.Service
     const memory = Option.getOrElse(yield* Effect.serviceOption(Memory.Service), () => ({
       promptContext: () => Effect.succeed(undefined),
       captureDirectives: () => Effect.succeed(0),
@@ -1091,7 +1092,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               },
             }
             yield* sessions.updatePart(part)
-            EventV2.run(SessionEvent.Shell.Started.Sync, {
+            yield* EventV2.run(sync, SessionEvent.Shell.Started.Sync, {
               sessionID: input.sessionID,
               timestamp: DateTime.makeUnsafe(started),
               callID,
@@ -1112,7 +1113,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 output += "\n\n" + ["<metadata>", "User aborted the command", "</metadata>"].join("\n")
               }
               const completed = Date.now()
-              EventV2.run(SessionEvent.Shell.Ended.Sync, {
+              yield* EventV2.run(sync, SessionEvent.Shell.Ended.Sync, {
                 sessionID: input.sessionID,
                 timestamp: DateTime.makeUnsafe(completed),
                 callID: part.callID,
@@ -1336,7 +1337,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           .get(),
       )
       if (current?.agent !== info.agent) {
-        EventV2.run(SessionEvent.AgentSwitched.Sync, {
+        yield* EventV2.run(sync, SessionEvent.AgentSwitched.Sync, {
           sessionID: input.sessionID,
           timestamp: DateTime.makeUnsafe(info.time.created),
           agent: info.agent,
@@ -1347,7 +1348,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         current.model.id !== info.model.modelID ||
         current.model.variant !== info.model.variant
       ) {
-        EventV2.run(SessionEvent.ModelSwitched.Sync, {
+        yield* EventV2.run(sync, SessionEvent.ModelSwitched.Sync, {
           sessionID: input.sessionID,
           timestamp: DateTime.makeUnsafe(info.time.created),
           model: {
@@ -1732,7 +1733,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         },
       )
       // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-      EventV2.run(SessionEvent.Prompted.Sync, {
+      yield* EventV2.run(sync, SessionEvent.Prompted.Sync, {
         sessionID: input.sessionID,
         timestamp: DateTime.makeUnsafe(info.time.created),
         prompt: {
@@ -1743,7 +1744,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       })
       for (const text of nextPrompt.synthetic) {
         // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-        EventV2.run(SessionEvent.Synthetic.Sync, {
+        yield* EventV2.run(sync, SessionEvent.Synthetic.Sync, {
           sessionID: input.sessionID,
           timestamp: DateTime.makeUnsafe(info.time.created),
           text,
@@ -2155,10 +2156,27 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       if (shellMatches.length > 0) {
         const cfg = yield* config.get()
         const sh = Shell.preferred(cfg.shell)
-        const results = yield* Effect.promise(() =>
-          Promise.all(
-            shellMatches.map(async ([, cmd]) => (await Process.text([cmd], { shell: sh, nothrow: true })).text),
+        const results = yield* Effect.all(
+          shellMatches.map(([, command]) =>
+            Effect.gen(function* () {
+              const cwd = process.cwd()
+              const handle = yield* spawner.spawn(
+                ChildProcess.make(sh, process.platform === "win32" ? ["/d", "/s", "/c", command] : ["-c", command], {
+                  cwd,
+                  extendEnv: true,
+                  stdin: "ignore",
+                  forceKillAfter: "5 seconds",
+                }),
+              )
+              const [output] = yield* Effect.all(
+                [Stream.mkString(Stream.decodeText(handle.stdout)), Stream.runDrain(handle.stderr)],
+                { concurrency: 2 },
+              )
+              yield* handle.exitCode
+              return output
+            }).pipe(Effect.scoped, Effect.catch(() => Effect.succeed(""))),
           ),
+          { concurrency: "unbounded" },
         )
         let index = 0
         template = template.replace(bashRegex, () => results[index++])
@@ -2307,8 +2325,7 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(AppFileSystem.defaultLayer),
     Layer.provide(Plugin.defaultLayer),
     Layer.provide(Question.defaultLayer),
-    Layer.provide(Session.defaultLayer),
-    Layer.provide(SessionRevert.defaultLayer),
+    Layer.provide(Layer.mergeAll(Session.defaultLayer, SessionRevert.defaultLayer, SyncEvent.defaultLayer)),
     Layer.provide(
       Layer.mergeAll(SessionSummary.defaultLayer, WorkBrief.defaultLayer, ChimeraPromptContext.defaultLayer, Memory.defaultLayer),
     ),

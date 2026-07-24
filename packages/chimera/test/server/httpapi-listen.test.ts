@@ -11,6 +11,7 @@ void Log.init({ print: false })
 
 const original = {
   OPENCODE_EXPERIMENTAL_HTTPAPI: Flag.OPENCODE_EXPERIMENTAL_HTTPAPI,
+  OPENCODE_SERVER_HONO: Flag.OPENCODE_SERVER_HONO,
   OPENCODE_SERVER_PASSWORD: Flag.OPENCODE_SERVER_PASSWORD,
   OPENCODE_SERVER_USERNAME: Flag.OPENCODE_SERVER_USERNAME,
   envPassword: process.env.OPENCODE_SERVER_PASSWORD,
@@ -21,6 +22,7 @@ const testPty = process.platform === "win32" ? test.skip : test
 
 afterEach(async () => {
   Flag.OPENCODE_EXPERIMENTAL_HTTPAPI = original.OPENCODE_EXPERIMENTAL_HTTPAPI
+  Flag.OPENCODE_SERVER_HONO = original.OPENCODE_SERVER_HONO
   Flag.OPENCODE_SERVER_PASSWORD = original.OPENCODE_SERVER_PASSWORD
   Flag.OPENCODE_SERVER_USERNAME = original.OPENCODE_SERVER_USERNAME
   if (original.envPassword === undefined) delete process.env.OPENCODE_SERVER_PASSWORD
@@ -33,6 +35,7 @@ afterEach(async () => {
 
 async function startListener(backend: "effect-httpapi" | "hono" = "effect-httpapi") {
   Flag.OPENCODE_EXPERIMENTAL_HTTPAPI = backend === "effect-httpapi"
+  Flag.OPENCODE_SERVER_HONO = backend === "hono"
   Flag.OPENCODE_SERVER_PASSWORD = auth.password
   Flag.OPENCODE_SERVER_USERNAME = auth.username
   process.env.OPENCODE_SERVER_PASSWORD = auth.password
@@ -42,6 +45,7 @@ async function startListener(backend: "effect-httpapi" | "hono" = "effect-httpap
 
 async function startNoAuthListener(backend: "effect-httpapi" | "hono" = "effect-httpapi") {
   Flag.OPENCODE_EXPERIMENTAL_HTTPAPI = backend === "effect-httpapi"
+  Flag.OPENCODE_SERVER_HONO = backend === "hono"
   Flag.OPENCODE_SERVER_PASSWORD = undefined
   Flag.OPENCODE_SERVER_USERNAME = auth.username
   delete process.env.OPENCODE_SERVER_PASSWORD

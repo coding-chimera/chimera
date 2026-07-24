@@ -1,5 +1,5 @@
 import { BusEvent } from "@/bus/bus-event"
-import z from "zod"
+import { zodObject } from "@/util/effect-zod"
 import { Schema } from "effect"
 import { NamedError } from "@opencode-ai/core/util/error"
 import * as Log from "@opencode-ai/core/util/log"
@@ -24,14 +24,15 @@ export const Event = {
   ),
 }
 
-export const AlreadyInstalledError = NamedError.create("AlreadyInstalledError", z.object({}))
+export const AlreadyInstalledErrorPayloadSchema = Schema.Struct({})
+export const AlreadyInstalledErrorPayload = zodObject(AlreadyInstalledErrorPayloadSchema)
+export const AlreadyInstalledError = NamedError.create("AlreadyInstalledError", AlreadyInstalledErrorPayload)
 
-export const InstallFailedError = NamedError.create(
-  "InstallFailedError",
-  z.object({
-    stderr: z.string(),
-  }),
-)
+export const InstallFailedErrorPayloadSchema = Schema.Struct({
+  stderr: Schema.String,
+})
+export const InstallFailedErrorPayload = zodObject(InstallFailedErrorPayloadSchema)
+export const InstallFailedError = NamedError.create("InstallFailedError", InstallFailedErrorPayload)
 
 export function ide() {
   if (process.env["TERM_PROGRAM"] === "vscode") {

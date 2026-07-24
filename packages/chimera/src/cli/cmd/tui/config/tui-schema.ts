@@ -1,38 +1,41 @@
-import z from "zod"
+import { Schema } from "effect"
 import { ConfigPlugin } from "@/config/plugin"
 import { ConfigKeybinds } from "@/config/keybinds"
+import { zodObject } from "@/util/effect-zod"
 
-const KeybindOverride = z
-  .object(
-    Object.fromEntries(Object.keys(ConfigKeybinds.Keybinds.shape).map((key) => [key, z.string().optional()])) as Record<
-      string,
-      z.ZodOptional<z.ZodString>
-    >,
-  )
-  .strict()
+const OptionalString = Schema.optional(Schema.String)
+const KeybindOverride = Schema.Struct(
+  Object.fromEntries(Object.keys(ConfigKeybinds.Keybinds.shape).map((key) => [key, OptionalString])) as Record<
+    keyof ConfigKeybinds.Keybinds,
+    typeof OptionalString
+  >,
+)
 
-export const TuiOptions = z.object({
-  scroll_speed: z.number().min(0.001).optional().describe("TUI scroll speed"),
-  scroll_acceleration: z
-    .object({
-      enabled: z.boolean().describe("Enable scroll acceleration"),
-    })
-    .optional()
-    .describe("Scroll acceleration settings"),
-  diff_style: z
-    .enum(["auto", "stacked"])
-    .optional()
-    .describe("Control diff rendering style: 'auto' adapts to terminal width, 'stacked' always shows single column"),
-  mouse: z.boolean().optional().describe("Enable or disable mouse capture (default: true)"),
+export const TuiOptionsSchema = Schema.Struct({
+  scroll_speed: Schema.optional(
+    Schema.Number.check(Schema.isGreaterThan(0)).annotate({ description: "TUI scroll speed" }),
+  ),
+  scroll_acceleration: Schema.optional(
+    Schema.Struct({
+      enabled: Schema.Boolean.annotate({ description: "Enable scroll acceleration" }),
+    }).annotate({ description: "Scroll acceleration settings" }),
+  ),
+  diff_style: Schema.optional(
+    Schema.Literals(["auto", "stacked"]).annotate({
+      description: "Control diff rendering style: 'auto' adapts to terminal width, 'stacked' always shows single column",
+    }),
+  ),
+  mouse: Schema.optional(Schema.Boolean.annotate({ description: "Enable or disable mouse capture (default: true)" })),
 })
 
-export const TuiInfo = z
-  .object({
-    $schema: z.string().optional(),
-    theme: z.string().optional(),
-    keybinds: KeybindOverride.optional(),
-    plugin: ConfigPlugin.Spec.zod.array().optional(),
-    plugin_enabled: z.record(z.string(), z.boolean()).optional(),
-  })
-  .extend(TuiOptions.shape)
-  .strict()
+export const TuiInfoSchema = Schema.Struct({
+  $schema: Schema.optional(Schema.String),
+  theme: Schema.optional(Schema.String),
+  keybinds: Schema.optional(KeybindOverride),
+  plugin: Schema.optional(Schema.mutable(Schema.Array(ConfigPlugin.Spec))),
+  plugin_enabled: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)),
+  ...TuiOptionsSchema.fields,
+})
+
+export const TuiOptions = zodObject(TuiOptionsSchema)
+export const TuiInfo = zodObject(TuiInfoSchema).strict()

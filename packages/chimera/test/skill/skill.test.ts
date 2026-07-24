@@ -1,5 +1,6 @@
-import { describe, expect } from "bun:test"
-import { Effect, Layer } from "effect"
+import { describe, expect, test } from "bun:test"
+import { Effect, Layer, Schema } from "effect"
+import z from "zod"
 import { Skill } from "../../src/skill"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { provideInstance, provideTmpdirInstance, tmpdir } from "../fixture/fixture"
@@ -388,4 +389,22 @@ description: A skill in the .chimera/skills directory.
       { git: true },
     ),
   )
+})
+
+
+describe("Skill error payload schemas", () => {
+  test("keeps Effect, Zod, and NamedError payloads aligned", () => {
+    const invalid = { path: "/tmp/SKILL.md", message: "invalid", issues: new z.ZodError([]).issues }
+    expect(Schema.decodeUnknownSync(Skill.InvalidErrorPayloadSchema)(invalid)).toEqual(invalid)
+    expect(Skill.InvalidErrorPayload.parse(invalid)).toEqual(invalid)
+    expect(new Skill.InvalidError(invalid).toObject()).toEqual({ name: "SkillInvalidError", data: invalid })
+
+    const mismatch = { path: "/tmp/SKILL.md", expected: "expected", actual: "actual" }
+    expect(Schema.decodeUnknownSync(Skill.NameMismatchErrorPayloadSchema)(mismatch)).toEqual(mismatch)
+    expect(Skill.NameMismatchErrorPayload.parse(mismatch)).toEqual(mismatch)
+    expect(new Skill.NameMismatchError(mismatch).toObject()).toEqual({ name: "SkillNameMismatchError", data: mismatch })
+
+    expect(() => Schema.decodeUnknownSync(Skill.InvalidErrorPayloadSchema)({ path: 1 })).toThrow()
+    expect(Skill.InvalidErrorPayload.safeParse({ path: 1 }).success).toBe(false)
+  })
 })

@@ -247,6 +247,8 @@ describe("InstanceStore", () => {
       CHIMERA_INSTANCE_IDLE_TTL_MS: "600000",
       CHIMERA_INSTANCE_IDLE_SWEEP_MS: "600000",
       CHIMERA_INSTANCE_MAX_ACTIVE_INSTANCES: "2",
+      CHIMERA_INSTANCE_BOOT_GRACE_MS: "0",
+      CHIMERA_INSTANCE_SWEEP_DEBOUNCE_MS: "5",
     })
     const disposed: string[] = []
     const off = registerDisposer(async (directory) => {
@@ -281,6 +283,8 @@ describe("InstanceStore", () => {
       CHIMERA_INSTANCE_IDLE_TTL_MS: "600000",
       CHIMERA_INSTANCE_IDLE_SWEEP_MS: "600000",
       CHIMERA_INSTANCE_MAX_ACTIVE_INSTANCES: "1",
+      CHIMERA_INSTANCE_BOOT_GRACE_MS: "0",
+      CHIMERA_INSTANCE_SWEEP_DEBOUNCE_MS: "5",
     })
     const disposed: string[] = []
     const off = registerDisposer(async (directory) => {
@@ -345,6 +349,8 @@ describe("InstanceStore", () => {
       CHIMERA_INSTANCE_IDLE_TTL_MS: "600000",
       CHIMERA_INSTANCE_IDLE_SWEEP_MS: "600000",
       CHIMERA_INSTANCE_MAX_ACTIVE_INSTANCES: "1",
+      CHIMERA_INSTANCE_BOOT_GRACE_MS: "0",
+      CHIMERA_INSTANCE_SWEEP_DEBOUNCE_MS: "5",
     })
     const disposed: string[] = []
     const off = registerDisposer(async (directory) => {
@@ -370,6 +376,48 @@ describe("InstanceStore", () => {
           expect(disposed.filter((directory) => directory === active.path)).toHaveLength(reloadDisposals)
           expect(disposed).toContain(inactive.path)
           yield* current.release
+        }),
+      )
+    } finally {
+      off()
+      restore()
+    }
+  })
+  test("LRU dispose followed by immediate re-boot pins the instance and converges", async () => {
+    const restore = withInstanceStoreEnv({
+      CHIMERA_INSTANCE_IDLE_TTL_MS: "600000",
+      CHIMERA_INSTANCE_IDLE_SWEEP_MS: "600000",
+      CHIMERA_INSTANCE_MAX_ACTIVE_INSTANCES: "1",
+      CHIMERA_INSTANCE_BOOT_GRACE_MS: "0",
+      CHIMERA_INSTANCE_SWEEP_DEBOUNCE_MS: "5",
+      CHIMERA_INSTANCE_OSCILLATION_WINDOW_MS: "60000",
+      CHIMERA_INSTANCE_OSCILLATION_PIN_MS: "60000",
+    })
+    const disposed: string[] = []
+    const off = registerDisposer(async (directory) => {
+      disposed.push(directory)
+    }, "test-oscillation-instance-disposer")
+    try {
+      await using dir1 = await tmpdir({ git: true })
+      await using dir2 = await tmpdir({ git: true })
+      await runIsolatedStore(
+        Effect.gen(function* () {
+          const store = yield* InstanceStore.Service
+          // Simulate two clients racing across an undersized cap: each load re-boots
+          // the instance the previous sweep just evicted.
+          for (let round = 0; round < 6; round++) {
+            yield* store.load({ directory: dir1.path })
+            yield* store.load({ directory: dir2.path })
+            yield* Effect.sleep("20 millis")
+          }
+          const converged = disposed.length
+          yield* store.load({ directory: dir1.path })
+          yield* store.load({ directory: dir2.path })
+          yield* Effect.sleep("20 millis")
+          // Without the oscillation guard every round would add more disposals.
+          expect(converged).toBeGreaterThan(0)
+          expect(converged).toBeLessThanOrEqual(4)
+          expect(disposed.length).toBe(converged)
         }),
       )
     } finally {

@@ -5,9 +5,8 @@ import { pathToFileURL, fileURLToPath } from "url"
 import { createMessageConnection, StreamMessageReader, StreamMessageWriter } from "vscode-jsonrpc/node"
 import type { Diagnostic as VSCodeDiagnostic } from "vscode-languageserver-types"
 import * as Log from "@opencode-ai/core/util/log"
-import { Process } from "@/util/process"
 import { LANGUAGE_EXTENSIONS } from "./language"
-import z from "zod"
+import { zodObject } from "@/util/effect-zod"
 import { Schema } from "effect"
 import type * as LSPServer from "./server"
 import { NamedError } from "@opencode-ai/core/util/error"
@@ -32,21 +31,20 @@ export type Info = NonNullable<Awaited<ReturnType<typeof create>>>
 
 export type Diagnostic = VSCodeDiagnostic
 
-export const InitializeError = NamedError.create(
-  "LSPInitializeError",
-  z.object({
-    serverID: z.string(),
-  }),
-)
+export const InitializeErrorPayloadSchema = Schema.Struct({
+  serverID: Schema.String,
+})
+export const InitializeErrorPayload = zodObject(InitializeErrorPayloadSchema)
+export const InitializeError = NamedError.create("LSPInitializeError", InitializeErrorPayload)
+
+export const DiagnosticsEventPayloadSchema = Schema.Struct({
+  serverID: Schema.String,
+  path: Schema.String,
+})
+export const DiagnosticsEventPayload = zodObject(DiagnosticsEventPayloadSchema)
 
 export const Event = {
-  Diagnostics: BusEvent.define(
-    "lsp.client.diagnostics",
-    Schema.Struct({
-      serverID: Schema.String,
-      path: Schema.String,
-    }),
-  ),
+  Diagnostics: BusEvent.define("lsp.client.diagnostics", DiagnosticsEventPayloadSchema),
 }
 
 type DocumentDiagnosticReport = {
@@ -684,7 +682,7 @@ export async function create(input: { serverID: string; server: LSPServer.Handle
       logger.info("shutting down")
       connection.end()
       connection.dispose()
-      await Process.stop(input.server.process)
+      await input.server.process.stop()
       logger.info("shutdown")
     },
   }

@@ -14,6 +14,10 @@ export const Server = Schema.Struct({
   cors: Schema.optional(Schema.mutable(Schema.Array(Schema.String))).annotate({
     description: "Additional domains to allow for CORS",
   }),
+  maxActiveInstances: Schema.optional(PositiveInt).annotate({
+    description:
+      "Maximum simultaneously active project instances kept by the server before LRU eviction (default: 4). Can also be set via CHIMERA_INSTANCE_MAX_ACTIVE_INSTANCES, which takes precedence.",
+  }),
 })
   .annotate({ identifier: "ServerConfig" })
   .pipe(withStatics((s) => ({ zod: zod(s) })))
