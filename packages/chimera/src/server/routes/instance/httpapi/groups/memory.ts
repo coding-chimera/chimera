@@ -105,7 +105,7 @@ export const MemoryApi = HttpApi.make("memory")
           error: MemoryManagement.BadRequestError,
         }).annotateMerge(
           OpenApi.annotations({
-            identifier: "memory.import",
+            identifier: "memory.importLegacy",
             summary: "Import legacy memory notes",
             description: "Idempotently import legacy schemaVersion 1 notes into global or current-project scopes.",
           }),

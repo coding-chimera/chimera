@@ -196,7 +196,7 @@ export const MemoryRoutes = lazy(() =>
       describeRoute({
         summary: "Import legacy memory notes",
         description: "Idempotently import legacy schemaVersion 1 notes into global or current-project scopes.",
-        operationId: "memory.import",
+        operationId: "memory.importLegacy",
         responses: {
           200: {
             description: "Legacy memory import result",
