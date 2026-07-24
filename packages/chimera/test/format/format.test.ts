@@ -269,4 +269,24 @@ describe("Format", () => {
       },
     ),
   )
+
+  it.live("air capability probe uses the injected command runner", () =>
+    Effect.gen(function* () {
+      const calls: string[][] = []
+      const result = yield* Effect.promise(() =>
+        Formatter.rlang.enabled({
+          directory: process.cwd(),
+          worktree: process.cwd(),
+          npm: {} as Formatter.Context["npm"],
+          command: async (cmd) => {
+            calls.push(cmd)
+            return { code: 0, stdout: "Air: An R language server and formatter\n" }
+          },
+          which: () => "/bin/air",
+        }),
+      )
+      expect(calls).toEqual([["/bin/air", "--help"]])
+      expect(result).toEqual(["/bin/air", "format", "$FILE"])
+    }),
+  )
 })

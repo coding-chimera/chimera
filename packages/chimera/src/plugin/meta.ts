@@ -4,7 +4,9 @@ import { fileURLToPath } from "url"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { Global } from "@opencode-ai/core/global"
 import { Filesystem } from "@/util/filesystem"
-import { Flock } from "@opencode-ai/core/util/flock"
+import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
+import { Effect } from "effect"
+import { AppRuntime } from "@/effect/app-runtime"
 
 import { parsePluginSpecifier, pluginSource } from "./shared"
 
@@ -51,6 +53,10 @@ function storePath() {
 
 function lock(file: string) {
   return `plugin-meta:${file}`
+}
+
+function withLock<A>(key: string, body: () => Promise<A>) {
+  return AppRuntime.runPromise(EffectFlock.Service.use((flock) => flock.withLock(Effect.promise(body), key)))
 }
 
 function fileTarget(spec: string, target: string) {
@@ -144,7 +150,7 @@ export async function touchMany(items: Touch[]): Promise<Array<{ state: State; e
   const file = storePath()
   const rows = await Promise.all(items.map((item) => row(item)))
 
-  return Flock.withLock(lock(file), async () => {
+  return withLock(lock(file), async () => {
     const store = await read(file)
     const now = Date.now()
     const out: Array<{ state: State; entry: Entry }> = []
@@ -168,7 +174,7 @@ export async function touch(spec: string, target: string, id: string): Promise<{
 
 export async function setTheme(id: string, name: string, theme: Theme): Promise<void> {
   const file = storePath()
-  await Flock.withLock(lock(file), async () => {
+  await withLock(lock(file), async () => {
     const store = await read(file)
     const entry = store[id]
     if (!entry) return
@@ -182,7 +188,7 @@ export async function setTheme(id: string, name: string, theme: Theme): Promise<
 
 export async function list(): Promise<Store> {
   const file = storePath()
-  return Flock.withLock(lock(file), async () => read(file))
+  return withLock(lock(file), async () => read(file))
 }
 
 export * as PluginMeta from "./meta"

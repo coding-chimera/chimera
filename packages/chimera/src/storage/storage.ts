@@ -2,7 +2,8 @@ import * as Log from "@opencode-ai/core/util/log"
 import path from "path"
 import { Global } from "@opencode-ai/core/global"
 import { NamedError } from "@opencode-ai/core/util/error"
-import z from "zod"
+import { zod } from "@/util/effect-zod"
+import type z from "zod"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { Effect, Exit, Layer, Option, RcMap, Schema, Context, TxReentrantLock } from "effect"
 import { NonNegativeInt } from "@/util/schema"
@@ -16,12 +17,11 @@ type Migration = (
   git: Git.Interface,
 ) => Effect.Effect<void, AppFileSystem.Error>
 
-export const NotFoundError = NamedError.create(
-  "NotFoundError",
-  z.object({
-    message: z.string(),
-  }),
-)
+export const NotFoundErrorPayloadSchema = Schema.Struct({
+  message: Schema.String,
+})
+export const NotFoundErrorPayload = zod(NotFoundErrorPayloadSchema) as z.ZodObject<{ message: z.ZodString }>
+export const NotFoundError = NamedError.create("NotFoundError", NotFoundErrorPayload)
 
 export type Error = AppFileSystem.Error | InstanceType<typeof NotFoundError>
 

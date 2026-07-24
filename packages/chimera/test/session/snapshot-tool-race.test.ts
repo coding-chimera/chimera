@@ -21,6 +21,7 @@ import { LLM } from "../../src/session/llm"
 import { SessionPrompt } from "../../src/session/prompt"
 import { SessionRevert } from "../../src/session/revert"
 import { SessionSummary } from "../../src/session/summary"
+import { SyncEvent } from "../../src/sync"
 import { MessageV2 } from "../../src/session/message-v2"
 import * as Log from "@opencode-ai/core/util/log"
 import { provideTmpdirServer } from "../fixture/fixture"
@@ -128,6 +129,7 @@ function makeHttp() {
     mcp,
     AppFileSystem.defaultLayer,
     status,
+    SyncEvent.defaultLayer,
   ).pipe(Layer.provideMerge(infra))
   const question = Question.layer.pipe(Layer.provideMerge(deps))
   const todo = Todo.layer.pipe(Layer.provideMerge(deps))

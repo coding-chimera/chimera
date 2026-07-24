@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { Effect, Layer, Stream } from "effect"
+import { Effect, Layer, Schema, Stream } from "effect"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { Installation } from "../../src/installation"
@@ -164,5 +164,16 @@ describe("installation", () => {
       )
       expect(result).toBe("2.1.0")
     })
+  })
+})
+
+
+describe("Installation.Info schema", () => {
+  test("keeps Effect and Zod validation aligned", () => {
+    const input = { version: "1.2.3", latest: "1.3.0" }
+    expect(Schema.decodeUnknownSync(Installation.InfoSchema)(input)).toEqual(input)
+    expect(Installation.Info.parse(input)).toEqual(input)
+    expect(() => Schema.decodeUnknownSync(Installation.InfoSchema)({ version: 1, latest: "1.3.0" })).toThrow()
+    expect(Installation.Info.safeParse({ version: 1, latest: "1.3.0" }).success).toBe(false)
   })
 })

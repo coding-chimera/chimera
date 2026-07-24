@@ -2,6 +2,7 @@ import { describe, expect, test, beforeAll, beforeEach, afterAll } from "bun:tes
 import { Effect, Layer, Ref } from "effect"
 import { HttpClient, HttpClientResponse } from "effect/unstable/http"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
+import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { Global } from "@opencode-ai/core/global"
 import { ModelsDev } from "../../src/provider/models"
@@ -72,6 +73,7 @@ interface MockState {
   body: string
   status: number
   calls: Array<{ url: string }>
+  delayMs?: number
 }
 
 const makeMockClient = (state: Ref.Ref<MockState>) =>
@@ -79,6 +81,7 @@ const makeMockClient = (state: Ref.Ref<MockState>) =>
     Effect.gen(function* () {
       yield* Ref.update(state, (s) => ({ ...s, calls: [...s.calls, { url: request.url }] }))
       const s = yield* Ref.get(state)
+      if (s.delayMs) yield* Effect.sleep(`${s.delayMs} millis`)
       return HttpClientResponse.fromWeb(request, new Response(s.body, { status: s.status }))
     }),
   )
@@ -90,6 +93,7 @@ const buildLayer = (state: Ref.Ref<MockState>) =>
   Layer.fresh(ModelsDev.layer).pipe(
     Layer.provide(Layer.succeed(HttpClient.HttpClient, makeMockClient(state))),
     Layer.provide(AppFileSystem.defaultLayer),
+    Layer.provide(EffectFlock.defaultLayer),
   )
 
 const writeCache = (data: object, mtimeMs?: number) =>
@@ -289,6 +293,28 @@ describe("ModelsDev Service", () => {
         Effect.gen(function* () {
           const svc = yield* ModelsDev.Service
           yield* svc.refresh(false)
+          return yield* svc.get()
+        }),
+      )
+      const final = yield* Ref.get(state)
+      expect(final.calls.length).toBe(1)
+      expect(after).toEqual(fixture2)
+    }),
+  )
+
+  it.live("concurrent stale refreshes fetch once after the lock re-check", () =>
+    Effect.gen(function* () {
+      yield* writeCache(fixture, Date.now() - 10 * 60 * 1000)
+      const state = yield* Ref.make<MockState>({
+        ...initialState,
+        body: JSON.stringify(fixture2),
+        delayMs: 100,
+      })
+      const after = yield* provided(
+        state,
+        Effect.gen(function* () {
+          const svc = yield* ModelsDev.Service
+          yield* Effect.all([svc.refresh(false), svc.refresh(false)], { concurrency: "unbounded" })
           return yield* svc.get()
         }),
       )

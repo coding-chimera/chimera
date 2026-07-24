@@ -71,10 +71,17 @@ const InstanceQueryParameters = [
 // Query schemas describe decoded Effect values, but the generated SDK needs the
 // public call shape. These keep SDK callers passing numbers/booleans while the
 // server still decodes string query params at runtime.
-const QueryNumberParameters = new Set(["start", "cursor", "limit", "method"])
+const QueryNumberParameters = new Set(["start", "limit", "method"])
 const QueryBooleanParameters = new Set(["roots", "archived"])
 const QueryParameterSchemas = {
   "GET /find/file limit": { type: "integer", minimum: 1, maximum: 200 },
+  "GET /graph/search limit": { type: "integer", minimum: 1, maximum: 100 },
+  "GET /graph/file/symbols startLine": { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+  "GET /graph/file/symbols endLine": { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+  "GET /graph/file/symbols limit": { type: "integer", minimum: 1, maximum: 100 },
+  "GET /graph/impact depth": { type: "integer", minimum: 1, maximum: 5 },
+  "GET /experimental/session cursor": { type: "number" },
+  "GET /pty/{ptyID}/connect cursor": { type: "string" },
   "GET /session cursor": { type: "string" },
   "GET /session/{sessionID}/diff messageID": { type: "string", pattern: "^msg.*" },
   "GET /session/{sessionID}/message limit": { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
@@ -263,12 +270,22 @@ function normalizeComponentNames(spec: OpenApiSpec) {
       if (stableSchema(schemas[name], schemas) === stableSchema(schemas[next], schemas)) {
         rewriteRefs(spec, name, next)
         delete schemas[name]
+        continue
       }
-      continue
+      const displaced = availableComponentName(schemas, next)
+      schemas[displaced] = schemas[next]
+      rewriteRefs(spec, next, displaced)
     }
     schemas[next] = schemas[name]
     rewriteRefs(spec, name, next)
     delete schemas[name]
+  }
+}
+
+function availableComponentName(schemas: Record<string, OpenApiSchema>, base: string) {
+  for (let suffix = 2; ; suffix++) {
+    const name = `${base}${suffix}`
+    if (!schemas[name]) return name
   }
 }
 

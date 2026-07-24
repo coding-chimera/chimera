@@ -6,8 +6,8 @@ import { Flag } from "@opencode-ai/core/flag/flag"
 import z from "zod"
 import { Format } from "@/format"
 import { TuiRoutes } from "./tui"
-import { Instance } from "@/project/instance"
-import { InstanceRuntime } from "@/project/instance-runtime"
+import * as InstanceState from "@/effect/instance-state"
+import { InstanceStore } from "@/project/instance-store"
 import { GraphRoutes } from "./graph"
 import { Vcs } from "@/project/vcs"
 import { Agent } from "@/agent/agent"
@@ -214,10 +214,12 @@ export const InstanceRoutes = (upgrade: UpgradeWebSocket, opts?: CorsOptions): H
           },
         },
       }),
-      async (c) => {
-        await InstanceRuntime.disposeInstance(Instance.current)
-        return c.json(true)
-      },
+      async (c) =>
+        jsonRequest("InstanceRoutes.dispose", c, function* () {
+          const store = yield* InstanceStore.Service
+          yield* store.dispose(yield* InstanceState.context)
+          return true
+        }),
     )
     .get(
       "/path",
@@ -248,15 +250,17 @@ export const InstanceRoutes = (upgrade: UpgradeWebSocket, opts?: CorsOptions): H
           },
         },
       }),
-      async (c) => {
-        return c.json({
-          home: Global.Path.home,
-          state: Global.Path.state,
-          config: Global.Path.config,
-          worktree: Instance.worktree,
-          directory: Instance.directory,
-        })
-      },
+      async (c) =>
+        jsonRequest("InstanceRoutes.path", c, function* () {
+          const instance = yield* InstanceState.context
+          return {
+            home: Global.Path.home,
+            state: Global.Path.state,
+            config: Global.Path.config,
+            worktree: instance.worktree,
+            directory: instance.directory,
+          }
+        }),
     )
     .get(
       "/vcs",

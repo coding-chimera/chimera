@@ -1,11 +1,23 @@
-import { Npm } from "@opencode-ai/core/npm"
+import type { Npm } from "@opencode-ai/core/npm"
 import type { InstanceContext } from "../project/instance"
 import { Filesystem } from "@/util/filesystem"
-import { Process } from "@/util/process"
 import { which } from "../util/which"
 import { Flag } from "@opencode-ai/core/flag/flag"
+import { Effect, Option } from "effect"
 
-export interface Context extends Pick<InstanceContext, "directory" | "worktree"> {}
+export interface CommandResult {
+  code: number
+  stdout: string
+}
+
+export type CommandRunner = (cmd: string[]) => Promise<CommandResult>
+export type Which = (cmd: string) => string | null
+
+export interface Context extends Pick<InstanceContext, "directory" | "worktree"> {
+  npm: Npm.Interface
+  command: CommandRunner
+  which: Which
+}
 
 export interface Info {
   name: string
@@ -75,7 +87,7 @@ export const prettier: Info = {
         devDependencies?: Record<string, string>
       }>(item)
       if (json.dependencies?.prettier || json.devDependencies?.prettier) {
-        const bin = await Npm.which("prettier")
+        const bin = Option.getOrUndefined(await Effect.runPromise(context.npm.which("prettier")))
         if (bin) return [bin, "--write", "$FILE"]
       }
     }
@@ -98,7 +110,7 @@ export const oxfmt: Info = {
         devDependencies?: Record<string, string>
       }>(item)
       if (json.dependencies?.oxfmt || json.devDependencies?.oxfmt) {
-        const bin = await Npm.which("oxfmt")
+        const bin = Option.getOrUndefined(await Effect.runPromise(context.npm.which("oxfmt")))
         if (bin) return [bin, "$FILE"]
       }
     }
@@ -144,7 +156,7 @@ export const biome: Info = {
     for (const config of configs) {
       const found = await Filesystem.findUp(config, context.directory, context.worktree)
       if (found.length > 0) {
-        const bin = await Npm.which("@biomejs/biome")
+        const bin = Option.getOrUndefined(await Effect.runPromise(context.npm.which("@biomejs/biome")))
         if (bin) return [bin, "format", "--write", "$FILE"]
       }
     }
@@ -217,14 +229,14 @@ export const ruff: Info = {
 export const rlang: Info = {
   name: "air",
   extensions: [".R"],
-  async enabled() {
-    const air = which("air")
+  async enabled(context) {
+    const air = context.which("air")
     if (air == null) return false
 
-    const output = await Process.text([air, "--help"], { nothrow: true })
+    const output = await context.command([air, "--help"])
 
     // Check for "Air: An R language server and formatter"
-    const firstLine = output.text.split("\n")[0]
+    const firstLine = output.stdout.split("\n")[0]
     const hasR = firstLine.includes("R language")
     const hasFormatter = firstLine.includes("formatter")
     if (output.code === 0 && hasR && hasFormatter) return [air, "format", "$FILE"]
@@ -237,9 +249,9 @@ export const uvformat: Info = {
   extensions: [".py", ".pyi"],
   async enabled(context) {
     if (await ruff.enabled(context)) return false
-    const uv = which("uv")
+    const uv = context.which("uv")
     if (uv == null) return false
-    const output = await Process.run([uv, "format", "--help"], { nothrow: true })
+    const output = await context.command([uv, "format", "--help"])
     if (output.code === 0) return [uv, "format", "--", "$FILE"]
     return false
   },

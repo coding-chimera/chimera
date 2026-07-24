@@ -1,6 +1,6 @@
-import { describe, expect } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import path from "path"
-import { Effect, Exit, Layer } from "effect"
+import { Effect, Exit, Layer, Schema } from "effect"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Git } from "../../src/git"
@@ -290,4 +290,17 @@ describe("Storage", () => {
       expect(Exit.isFailure(exit)).toBe(true)
     }),
   )
+})
+
+
+describe("Storage.NotFoundError schema", () => {
+  test("keeps Effect, Zod, and NamedError serialization aligned", () => {
+    const data = { message: "resource not found" }
+    expect(Schema.decodeUnknownSync(Storage.NotFoundErrorPayloadSchema)(data)).toEqual(data)
+    expect(Storage.NotFoundErrorPayload.parse(data)).toEqual(data)
+    expect(new Storage.NotFoundError(data).toObject()).toEqual({ name: "NotFoundError", data })
+
+    expect(() => Schema.decodeUnknownSync(Storage.NotFoundErrorPayloadSchema)({ message: 1 })).toThrow()
+    expect(Storage.NotFoundErrorPayload.safeParse({ message: 1 }).success).toBe(false)
+  })
 })

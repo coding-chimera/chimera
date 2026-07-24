@@ -10,7 +10,9 @@ import {
 import * as ConfigPaths from "@/config/paths"
 import { Global } from "@opencode-ai/core/global"
 import { Filesystem } from "@/util/filesystem"
-import { Flock } from "@opencode-ai/core/util/flock"
+import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
+import { Effect } from "effect"
+import { AppRuntime } from "@/effect/app-runtime"
 import { isRecord } from "@/util/record"
 
 import { parsePluginSpecifier, readPackageThemes, readPluginPackage, resolvePluginTarget } from "./shared"
@@ -75,9 +77,6 @@ type PatchOne = Ok<{ item: PatchItem }> | PatchErr
 
 export type PatchResult = Ok<{ dir: string; items: PatchItem[] }> | (PatchErr & { dir: string })
 
-const defaultInstallDeps: InstallDeps = {
-  resolve: (spec) => resolvePluginTarget(spec),
-}
 
 const defaultPatchDeps: PatchDeps = {
   readText: (file) => Filesystem.readText(file),
@@ -256,8 +255,8 @@ function patchPluginList(
   }
 }
 
-export async function installPlugin(spec: string, dep: InstallDeps = defaultInstallDeps): Promise<InstallResult> {
-  const target = await dep.resolve(spec).then(
+export async function installPlugin(spec: string, dep: InstallDeps): Promise<InstallResult> {
+  const target = await resolvePluginTarget(spec, dep.resolve).then(
     (item) => ({
       ok: true as const,
       item,
@@ -344,78 +343,85 @@ function patchName(kind: Kind): string {
 
 async function patchOne(dir: string, target: Target, spec: string, force: boolean, dep: PatchDeps): Promise<PatchOne> {
   const name = patchName(target.kind)
-  await using _ = await Flock.acquire(`plug-config:${Filesystem.resolve(path.join(dir, name))}`)
+  return AppRuntime.runPromise(
+    EffectFlock.Service.use((flock) =>
+      flock.withLock(
+        Effect.promise(async (): Promise<PatchOne> => {
+          const files = dep.files(dir, name)
+          let cfg = files[0]
+          for (const file of files) {
+            if (!(await dep.exists(file))) continue
+            cfg = file
+            break
+          }
 
-  const files = dep.files(dir, name)
-  let cfg = files[0]
-  for (const file of files) {
-    if (!(await dep.exists(file))) continue
-    cfg = file
-    break
-  }
+          const src = await dep.readText(cfg).catch((err: NodeJS.ErrnoException) => {
+            if (err.code === "ENOENT") return "{}"
+            return err
+          })
+          if (src instanceof Error) {
+            return {
+              ok: false,
+              code: "patch_failed",
+              kind: target.kind,
+              error: src,
+            }
+          }
+          const text = src.trim() ? src : "{}"
 
-  const src = await dep.readText(cfg).catch((err: NodeJS.ErrnoException) => {
-    if (err.code === "ENOENT") return "{}"
-    return err
-  })
-  if (src instanceof Error) {
-    return {
-      ok: false,
-      code: "patch_failed",
-      kind: target.kind,
-      error: src,
-    }
-  }
-  const text = src.trim() ? src : "{}"
+          const errs: JsoncParseError[] = []
+          const data = parseJsonc(text, errs, { allowTrailingComma: true })
+          if (errs.length) {
+            const err = errs[0]
+            const lines = text.substring(0, err.offset).split("\n")
+            return {
+              ok: false,
+              code: "invalid_json",
+              kind: target.kind,
+              file: cfg,
+              line: lines.length,
+              col: lines[lines.length - 1].length + 1,
+              parse: printParseErrorCode(err.error),
+            }
+          }
 
-  const errs: JsoncParseError[] = []
-  const data = parseJsonc(text, errs, { allowTrailingComma: true })
-  if (errs.length) {
-    const err = errs[0]
-    const lines = text.substring(0, err.offset).split("\n")
-    return {
-      ok: false,
-      code: "invalid_json",
-      kind: target.kind,
-      file: cfg,
-      line: lines.length,
-      col: lines[lines.length - 1].length + 1,
-      parse: printParseErrorCode(err.error),
-    }
-  }
+          const list = pluginList(data)
+          const item = target.opts ? ([spec, target.opts] as const) : spec
+          const out = patchPluginList(text, list, spec, item, force)
+          if (out.mode === "noop") {
+            return {
+              ok: true,
+              item: {
+                kind: target.kind,
+                mode: out.mode,
+                file: cfg,
+              },
+            }
+          }
 
-  const list = pluginList(data)
-  const item = target.opts ? ([spec, target.opts] as const) : spec
-  const out = patchPluginList(text, list, spec, item, force)
-  if (out.mode === "noop") {
-    return {
-      ok: true,
-      item: {
-        kind: target.kind,
-        mode: out.mode,
-        file: cfg,
-      },
-    }
-  }
+          const write = await dep.write(cfg, out.text).catch((error: unknown) => error)
+          if (write instanceof Error) {
+            return {
+              ok: false,
+              code: "patch_failed",
+              kind: target.kind,
+              error: write,
+            }
+          }
 
-  const write = await dep.write(cfg, out.text).catch((error: unknown) => error)
-  if (write instanceof Error) {
-    return {
-      ok: false,
-      code: "patch_failed",
-      kind: target.kind,
-      error: write,
-    }
-  }
-
-  return {
-    ok: true,
-    item: {
-      kind: target.kind,
-      mode: out.mode,
-      file: cfg,
-    },
-  }
+          return {
+            ok: true,
+            item: {
+              kind: target.kind,
+              mode: out.mode,
+              file: cfg,
+            },
+          }
+        }),
+        `plug-config:${Filesystem.resolve(path.join(dir, name))}`,
+      ),
+    ),
+  )
 }
 
 export async function patchPluginConfig(input: PatchInput, dep: PatchDeps = defaultPatchDeps): Promise<PatchResult> {

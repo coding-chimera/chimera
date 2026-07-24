@@ -54,7 +54,7 @@ test("installs plugin without loading it", async () => {
     plugin: [],
     plugin_origins: undefined,
   }
-  const wait = spyOn(TuiConfig, "waitForDependencies").mockResolvedValue()
+  const waitForDependencies = async () => {}
   const cwd = spyOn(process, "cwd").mockImplementation(() => tmp.path)
   const api = createTuiPluginApi({
     state: {
@@ -68,7 +68,7 @@ test("installs plugin without loading it", async () => {
   })
 
   try {
-    await TuiPluginRuntime.init({ api, config })
+    await TuiPluginRuntime.init({ api, config, waitForDependencies })
     const out = await TuiPluginRuntime.installPlugin(tmp.extra.spec)
     expect(out).toMatchObject({
       ok: true,
@@ -81,7 +81,6 @@ test("installs plugin without loading it", async () => {
   } finally {
     await TuiPluginRuntime.dispose()
     cwd.mockRestore()
-    wait.mockRestore()
     delete process.env.OPENCODE_PLUGIN_META_FILE
   }
 })

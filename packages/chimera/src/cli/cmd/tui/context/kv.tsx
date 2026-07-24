@@ -1,11 +1,17 @@
 import { Global } from "@opencode-ai/core/global"
 import { Filesystem } from "@/util/filesystem"
-import { Flock } from "@opencode-ai/core/util/flock"
+import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
+import { Effect } from "effect"
+import { TuiRuntime } from "../layer"
 import { rename, rm } from "fs/promises"
 import { createSignal, type Setter } from "solid-js"
 import { createStore, unwrap } from "solid-js/store"
 import { createSimpleContext } from "./helper"
 import path from "path"
+
+function withLock<A>(key: string, body: () => Promise<A>) {
+  return TuiRuntime.runPromise(EffectFlock.Service.use((flock) => flock.withLock(Effect.promise(body), key)))
+}
 
 export const { use: useKV, provider: KVProvider } = createSimpleContext({
   name: "KV",
@@ -29,7 +35,7 @@ export const { use: useKV, provider: KVProvider } = createSimpleContext({
     }
 
     // Read under the same lock used for writes because kv.json is shared across processes.
-    Flock.withLock(lock, () => Filesystem.readJson<Record<string, any>>(filePath))
+    withLock(lock, () => Filesystem.readJson<Record<string, any>>(filePath))
       .then((x) => {
         setStore(x)
       })
@@ -65,7 +71,7 @@ export const { use: useKV, provider: KVProvider } = createSimpleContext({
         setStore(key, value)
         const snapshot = structuredClone(unwrap(store))
         write = write
-          .then(() => Flock.withLock(lock, () => writeSnapshot(snapshot)))
+          .then(() => withLock(lock, () => writeSnapshot(snapshot)))
           .catch((error) => {
             console.error("Failed to write KV state", { filePath, error })
           })

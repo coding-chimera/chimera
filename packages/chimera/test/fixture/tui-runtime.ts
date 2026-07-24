@@ -1,6 +1,6 @@
 import { spyOn } from "bun:test"
 import path from "path"
-import { TuiConfig } from "../../src/cli/cmd/tui/config/tui"
+import type { TuiConfig } from "../../src/cli/cmd/tui/config/tui"
 
 type PluginSpec = string | [string, Record<string, unknown>]
 
@@ -11,7 +11,7 @@ export function mockTuiRuntime(dir: string, plugin: PluginSpec[], opts?: { plugi
     scope: "local" as const,
     source: path.join(dir, "tui.json"),
   }))
-  const wait = spyOn(TuiConfig, "waitForDependencies").mockResolvedValue()
+  const waitForDependencies = async () => {}
   const cwd = spyOn(process, "cwd").mockImplementation(() => dir)
 
   const config: TuiConfig.Info = {
@@ -22,9 +22,9 @@ export function mockTuiRuntime(dir: string, plugin: PluginSpec[], opts?: { plugi
 
   return {
     config,
+    waitForDependencies,
     restore: () => {
       cwd.mockRestore()
-      wait.mockRestore()
       delete process.env.OPENCODE_PLUGIN_META_FILE
     },
   }

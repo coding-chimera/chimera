@@ -1,4 +1,4 @@
-import type { ChildProcessWithoutNullStreams } from "child_process"
+import type { Child } from "./launch"
 import path from "path"
 import os from "os"
 import { Global } from "@opencode-ai/core/global"
@@ -9,11 +9,9 @@ import { Filesystem } from "@/util/filesystem"
 import type { InstanceContext } from "../project/instance"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { Archive } from "@/util/archive"
-import { Process } from "@/util/process"
 import { which } from "../util/which"
 import { Module } from "@opencode-ai/core/util/module"
 import { spawn } from "./launch"
-import { Npm } from "@opencode-ai/core/npm"
 
 const log = Log.create({ service: "lsp.server" })
 const pathExists = async (p: string) =>
@@ -21,11 +19,9 @@ const pathExists = async (p: string) =>
     .stat(p)
     .then(() => true)
     .catch(() => false)
-const run = (cmd: string[], opts: Process.RunOptions = {}) => Process.run(cmd, { ...opts, nothrow: true })
-const output = (cmd: string[], opts: Process.RunOptions = {}) => Process.text(cmd, { ...opts, nothrow: true })
 
 export interface Handle {
-  process: ChildProcessWithoutNullStreams
+  process: Child
   initialization?: Record<string, any>
 }
 
@@ -55,12 +51,31 @@ const NearestRoot = (includePatterns: string[], excludePatterns?: string[]): Roo
   }
 }
 
+export interface CommandResult {
+  code: number
+  stdout: string
+  stderr: string
+}
+
+export type CommandRunner = (
+  cmd: string[],
+  opts?: { cwd?: string; env?: Record<string, string | undefined> },
+) => Promise<CommandResult>
+export type InstallerCommand = (cmd: string[], opts?: { cwd?: string; env?: Record<string, string | undefined> }) => Promise<number>
+export type NpmCommand = (pkg: string, bin?: string) => Promise<string | undefined>
+
 export interface Info {
   id: string
   extensions: string[]
   global?: boolean
   root: RootFunction
-  spawn(root: string, ctx: InstanceContext): Promise<Handle | undefined>
+  spawn(
+    root: string,
+    ctx: InstanceContext,
+    install: InstallerCommand,
+    npm: NpmCommand,
+    command: CommandRunner,
+  ): Promise<Handle | undefined>
 }
 
 export const Deno: Info = {
@@ -98,11 +113,11 @@ export const Typescript: Info = {
     ["deno.json", "deno.jsonc"],
   ),
   extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"],
-  async spawn(root, ctx) {
+  async spawn(root, ctx, _install, npm) {
     const tsserver = Module.resolve("typescript/lib/tsserver.js", ctx.directory)
     log.info("typescript server", { tsserver })
     if (!tsserver) return
-    const bin = await Npm.which("typescript-language-server")
+    const bin = await npm("typescript-language-server")
     if (!bin) return
     const proc = spawn(bin, ["--stdio"], {
       cwd: root,
@@ -125,12 +140,12 @@ export const Vue: Info = {
   id: "vue",
   extensions: [".vue"],
   root: NearestRoot(["package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock"]),
-  async spawn(root) {
+  async spawn(root, _ctx, _install, npm) {
     let binary = which("vue-language-server")
     const args: string[] = []
     if (!binary) {
       if (Flag.OPENCODE_DISABLE_LSP_DOWNLOAD) return
-      const resolved = await Npm.which("@vue/language-server")
+      const resolved = await npm("@vue/language-server")
       if (!resolved) return
       binary = resolved
     }
@@ -154,7 +169,7 @@ export const ESLint: Info = {
   id: "eslint",
   root: NearestRoot(["package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock"]),
   extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue"],
-  async spawn(root, ctx) {
+  async spawn(root, ctx, _install, _npm, command) {
     const eslint = Module.resolve("eslint", ctx.directory)
     if (!eslint) return
     log.info("spawning eslint server")
@@ -188,8 +203,8 @@ export const ESLint: Info = {
       await fs.rename(extractedPath, finalPath)
 
       const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm"
-      await Process.run([npmCmd, "install"], { cwd: finalPath })
-      await Process.run([npmCmd, "run", "compile"], { cwd: finalPath })
+      await command([npmCmd, "install"], { cwd: finalPath })
+      await command([npmCmd, "run", "compile"], { cwd: finalPath })
 
       log.info("installed VS Code ESLint server", { serverPath })
     }
@@ -310,7 +325,7 @@ export const Biome: Info = {
     ".gql",
     ".html",
   ],
-  async spawn(root) {
+  async spawn(root, _ctx, _install, npm) {
     const localBin = path.join(root, "node_modules", ".bin", "biome")
     let bin: string | undefined
     if (await Filesystem.exists(localBin)) bin = localBin
@@ -324,7 +339,7 @@ export const Biome: Info = {
     if (!bin) {
       const resolved = Module.resolve("biome", root)
       if (!resolved) return
-      bin = await Npm.which("biome")
+      bin = await npm("biome")
       if (!bin) return
       args = ["lsp-proxy", "--stdio"]
     }
@@ -350,20 +365,16 @@ export const Gopls: Info = {
     return NearestRoot(["go.mod", "go.sum"])(file, ctx)
   },
   extensions: [".go"],
-  async spawn(root) {
+  async spawn(root, _ctx, install) {
     let bin = which("gopls")
     if (!bin) {
       if (!which("go")) return
       if (Flag.OPENCODE_DISABLE_LSP_DOWNLOAD) return
 
       log.info("installing gopls")
-      const proc = Process.spawn(["go", "install", "golang.org/x/tools/gopls@latest"], {
-        env: { ...process.env, GOBIN: Global.Path.bin },
-        stdout: "pipe",
-        stderr: "pipe",
-        stdin: "pipe",
+      const exit = await install(["go", "install", "golang.org/x/tools/gopls@latest"], {
+        env: { GOBIN: Global.Path.bin },
       })
-      const exit = await proc.exited
       if (exit !== 0) {
         log.error("Failed to install gopls")
         return
@@ -385,7 +396,7 @@ export const Rubocop: Info = {
   id: "ruby-lsp",
   root: NearestRoot(["Gemfile"]),
   extensions: [".rb", ".rake", ".gemspec", ".ru"],
-  async spawn(root) {
+  async spawn(root, _ctx, install) {
     let bin = which("rubocop")
     if (!bin) {
       const ruby = which("ruby")
@@ -396,12 +407,7 @@ export const Rubocop: Info = {
       }
       if (Flag.OPENCODE_DISABLE_LSP_DOWNLOAD) return
       log.info("installing rubocop")
-      const proc = Process.spawn(["gem", "install", "rubocop", "--bindir", Global.Path.bin], {
-        stdout: "pipe",
-        stderr: "pipe",
-        stdin: "pipe",
-      })
-      const exit = await proc.exited
+      const exit = await install(["gem", "install", "rubocop", "--bindir", Global.Path.bin])
       if (exit !== 0) {
         log.error("Failed to install rubocop")
         return
@@ -485,12 +491,12 @@ export const Pyright: Info = {
   id: "pyright",
   extensions: [".py", ".pyi"],
   root: NearestRoot(["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile", "pyrightconfig.json"]),
-  async spawn(root) {
+  async spawn(root, _ctx, _install, npm) {
     let binary = which("pyright-langserver")
     const args = []
     if (!binary) {
       if (Flag.OPENCODE_DISABLE_LSP_DOWNLOAD) return
-      const resolved = await Npm.which("pyright", "pyright-langserver")
+      const resolved = await npm("pyright", "pyright-langserver")
       if (!resolved) return
       binary = resolved
     }
@@ -529,7 +535,7 @@ export const ElixirLS: Info = {
   id: "elixir-ls",
   extensions: [".ex", ".exs"],
   root: NearestRoot(["mix.exs", "mix.lock"]),
-  async spawn(root) {
+  async spawn(root, _ctx, _install, _npm, command) {
     let binary = which("elixir-ls")
     if (!binary) {
       const elixirLsPath = path.join(Global.Path.bin, "elixir-ls")
@@ -570,9 +576,9 @@ export const ElixirLS: Info = {
 
         const cwd = path.join(Global.Path.bin, "elixir-ls-master")
         const env = { MIX_ENV: "prod", ...process.env }
-        await Process.run(["mix", "deps.get"], { cwd, env })
-        await Process.run(["mix", "compile"], { cwd, env })
-        await Process.run(["mix", "elixir_ls.release2", "-o", "release"], { cwd, env })
+        await command(["mix", "deps.get"], { cwd, env })
+        await command(["mix", "compile"], { cwd, env })
+        await command(["mix", "elixir_ls.release2", "-o", "release"], { cwd, env })
 
         log.info(`installed elixir-ls`, {
           path: elixirLsPath,
@@ -592,7 +598,7 @@ export const Zls: Info = {
   id: "zls",
   extensions: [".zig", ".zon"],
   root: NearestRoot(["build.zig"]),
-  async spawn(root) {
+  async spawn(root, _ctx, _install, _npm, command) {
     let bin = which("zls")
 
     if (!bin) {
@@ -673,7 +679,7 @@ export const Zls: Info = {
           })
         if (!ok) return
       } else {
-        await run(["tar", "-xf", tempPath], { cwd: Global.Path.bin })
+        await command(["tar", "-xf", tempPath], { cwd: Global.Path.bin })
       }
 
       await fs.rm(tempPath, { force: true })
@@ -704,8 +710,8 @@ export const CSharp: Info = {
   id: "csharp",
   root: NearestRoot([".slnx", ".sln", ".csproj", "global.json"]),
   extensions: [".cs", ".csx"],
-  async spawn(root) {
-    const bin = await getRoslynLanguageServer()
+  async spawn(root, _ctx, install) {
+    const bin = await getRoslynLanguageServer(install)
     if (!bin) return
 
     return {
@@ -720,8 +726,8 @@ export const Razor: Info = {
   id: "razor",
   root: NearestRoot([".slnx", ".sln", ".csproj", "global.json"]),
   extensions: [".razor", ".cshtml"],
-  async spawn(root) {
-    const bin = await getRoslynLanguageServer()
+  async spawn(root, _ctx, install) {
+    const bin = await getRoslynLanguageServer(install)
     if (!bin) return
 
     const razor = await findVscodeRazorExtension()
@@ -752,20 +758,19 @@ export const Razor: Info = {
 
 let roslynLanguageServerInstall: Promise<string | undefined> | undefined
 
-async function getRoslynLanguageServer() {
+function getRoslynLanguageServer(install: InstallerCommand) {
   const existing = which("roslyn-language-server")
-  if (existing) return existing
+  if (existing) return Promise.resolve(existing)
 
-  const global = await roslynLanguageServerGlobalPath()
-  if (global) return global
-
-  roslynLanguageServerInstall ||= installRoslynLanguageServer().finally(() => {
-    roslynLanguageServerInstall = undefined
-  })
+  roslynLanguageServerInstall ||= roslynLanguageServerGlobalPath()
+    .then((global) => global ?? installRoslynLanguageServer(install))
+    .finally(() => {
+      roslynLanguageServerInstall = undefined
+    })
   return roslynLanguageServerInstall
 }
 
-async function installRoslynLanguageServer() {
+async function installRoslynLanguageServer(install: InstallerCommand) {
   if (!which("dotnet")) {
     log.error(".NET SDK is required to install roslyn-language-server")
     return
@@ -773,12 +778,14 @@ async function installRoslynLanguageServer() {
 
   if (Flag.OPENCODE_DISABLE_LSP_DOWNLOAD) return
   log.info("installing roslyn-language-server via dotnet tool")
-  const proc = Process.spawn(["dotnet", "tool", "install", "--global", "roslyn-language-server", "--prerelease"], {
-    stdout: "pipe",
-    stderr: "pipe",
-    stdin: "pipe",
-  })
-  const exit = await proc.exited
+  const exit = await install([
+    "dotnet",
+    "tool",
+    "install",
+    "--global",
+    "roslyn-language-server",
+    "--prerelease",
+  ])
   if (exit !== 0) {
     log.error("Failed to install roslyn-language-server")
     return
@@ -849,7 +856,7 @@ export const FSharp: Info = {
   id: "fsharp",
   root: NearestRoot([".slnx", ".sln", ".fsproj", "global.json"]),
   extensions: [".fs", ".fsi", ".fsx", ".fsscript"],
-  async spawn(root) {
+  async spawn(root, _ctx, install) {
     let bin = which("fsautocomplete")
     if (!bin) {
       if (!which("dotnet")) {
@@ -859,12 +866,14 @@ export const FSharp: Info = {
 
       if (Flag.OPENCODE_DISABLE_LSP_DOWNLOAD) return
       log.info("installing fsautocomplete via dotnet tool")
-      const proc = Process.spawn(["dotnet", "tool", "install", "fsautocomplete", "--tool-path", Global.Path.bin], {
-        stdout: "pipe",
-        stderr: "pipe",
-        stdin: "pipe",
-      })
-      const exit = await proc.exited
+      const exit = await install([
+        "dotnet",
+        "tool",
+        "install",
+        "fsautocomplete",
+        "--tool-path",
+        Global.Path.bin,
+      ])
       if (exit !== 0) {
         log.error("Failed to install fsautocomplete")
         return
@@ -886,7 +895,7 @@ export const SourceKit: Info = {
   id: "sourcekit-lsp",
   extensions: [".swift", ".objc", "objcpp"],
   root: NearestRoot(["Package.swift", "*.xcodeproj", "*.xcworkspace"]),
-  async spawn(root) {
+  async spawn(root, _ctx, _install, _npm, command) {
     // Check if sourcekit-lsp is available in the PATH
     // This is installed with the Swift toolchain
     const sourcekit = which("sourcekit-lsp")
@@ -902,11 +911,11 @@ export const SourceKit: Info = {
     // This is specific to macOS where sourcekit-lsp is typically installed with Xcode
     if (!which("xcrun")) return
 
-    const lspLoc = await output(["xcrun", "--find", "sourcekit-lsp"])
+    const lspLoc = await command(["xcrun", "--find", "sourcekit-lsp"])
 
     if (lspLoc.code !== 0) return
 
-    const bin = lspLoc.text.trim()
+    const bin = lspLoc.stdout.trim()
 
     return {
       process: spawn(bin, {
@@ -966,7 +975,7 @@ export const Clangd: Info = {
   id: "clangd",
   root: NearestRoot(["compile_commands.json", "compile_flags.txt", ".clangd"]),
   extensions: [".c", ".cpp", ".cc", ".cxx", ".c++", ".h", ".hpp", ".hh", ".hxx", ".h++"],
-  async spawn(root) {
+  async spawn(root, _ctx, _install, _npm, command) {
     const args = ["--background-index", "--clang-tidy"]
     const fromPath = which("clangd")
     if (fromPath) {
@@ -1081,7 +1090,7 @@ export const Clangd: Info = {
       if (!ok) return
     }
     if (tar) {
-      await run(["tar", "-xf", archive], { cwd: Global.Path.bin })
+      await command(["tar", "-xf", archive], { cwd: Global.Path.bin })
     }
     await fs.rm(archive, { force: true })
 
@@ -1112,12 +1121,12 @@ export const Svelte: Info = {
   id: "svelte",
   extensions: [".svelte"],
   root: NearestRoot(["package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock"]),
-  async spawn(root) {
+  async spawn(root, _ctx, _install, npm) {
     let binary = which("svelteserver")
     const args: string[] = []
     if (!binary) {
       if (Flag.OPENCODE_DISABLE_LSP_DOWNLOAD) return
-      const resolved = await Npm.which("svelte-language-server")
+      const resolved = await npm("svelte-language-server")
       if (!resolved) return
       binary = resolved
     }
@@ -1139,7 +1148,7 @@ export const Astro: Info = {
   id: "astro",
   extensions: [".astro"],
   root: NearestRoot(["package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock"]),
-  async spawn(root, ctx) {
+  async spawn(root, ctx, _install, npm) {
     const tsserver = Module.resolve("typescript/lib/tsserver.js", ctx.directory)
     if (!tsserver) {
       log.info("typescript not found, required for Astro language server")
@@ -1151,7 +1160,7 @@ export const Astro: Info = {
     const args: string[] = []
     if (!binary) {
       if (Flag.OPENCODE_DISABLE_LSP_DOWNLOAD) return
-      const resolved = await Npm.which("@astrojs/language-server")
+      const resolved = await npm("@astrojs/language-server")
       if (!resolved) return
       binary = resolved
     }
@@ -1200,13 +1209,13 @@ export const JDTLS: Info = {
     if (settingsRoot) return settingsRoot
   },
   extensions: [".java"],
-  async spawn(root) {
+  async spawn(root, _ctx, _install, _npm, command) {
     const java = which("java")
     if (!java) {
       log.error("Java 21 or newer is required to run the JDTLS. Please install it first.")
       return
     }
-    const javaMajorVersion = await run(["java", "-version"]).then((result) => {
+    const javaMajorVersion = await command(["java", "-version"]).then((result) => {
       const m = /"(\d+)\.\d+\.\d+"/.exec(result.stderr.toString())
       return !m ? undefined : parseInt(m[1])
     })
@@ -1234,7 +1243,7 @@ export const JDTLS: Info = {
       await Filesystem.writeStream(path.join(distPath, archiveName), download.body)
 
       log.info("Extracting JDTLS archive")
-      const tarResult = await run(["tar", "-xzf", archiveName], { cwd: distPath })
+      const tarResult = await command(["tar", "-xzf", archiveName], { cwd: distPath })
       if (tarResult.code !== 0) {
         log.error("Failed to extract JDTLS", { exitCode: tarResult.code, stderr: tarResult.stderr.toString() })
         return
@@ -1397,12 +1406,12 @@ export const YamlLS: Info = {
   id: "yaml-ls",
   extensions: [".yaml", ".yml"],
   root: NearestRoot(["package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock"]),
-  async spawn(root) {
+  async spawn(root, _ctx, _install, npm) {
     let binary = which("yaml-language-server")
     const args: string[] = []
     if (!binary) {
       if (Flag.OPENCODE_DISABLE_LSP_DOWNLOAD) return
-      const resolved = await Npm.which("yaml-language-server")
+      const resolved = await npm("yaml-language-server")
       if (!resolved) return
       binary = resolved
     }
@@ -1431,7 +1440,7 @@ export const LuaLS: Info = {
     "selene.yml",
   ]),
   extensions: [".lua"],
-  async spawn(root) {
+  async spawn(root, _ctx, _install, _npm, command) {
     let bin = which("lua-language-server")
 
     if (!bin) {
@@ -1517,7 +1526,7 @@ export const LuaLS: Info = {
           })
         if (!ok) return
       } else {
-        const ok = await run(["tar", "-xzf", tempPath, "-C", installDir])
+        const ok = await command(["tar", "-xzf", tempPath, "-C", installDir])
           .then((result) => result.code === 0)
           .catch((error: unknown) => {
             log.error("Failed to extract lua-language-server archive", { error })
@@ -1564,12 +1573,12 @@ export const PHPIntelephense: Info = {
   id: "php intelephense",
   extensions: [".php"],
   root: NearestRoot(["composer.json", "composer.lock", ".php-version"]),
-  async spawn(root) {
+  async spawn(root, _ctx, _install, npm) {
     let binary = which("intelephense")
     const args: string[] = []
     if (!binary) {
       if (Flag.OPENCODE_DISABLE_LSP_DOWNLOAD) return
-      const resolved = await Npm.which("intelephense")
+      const resolved = await npm("intelephense")
       if (!resolved) return
       binary = resolved
     }
@@ -1648,12 +1657,12 @@ export const BashLS: Info = {
   id: "bash",
   extensions: [".sh", ".bash", ".zsh", ".ksh"],
   root: async (_file, ctx) => ctx.directory,
-  async spawn(root) {
+  async spawn(root, _ctx, _install, npm) {
     let binary = which("bash-language-server")
     const args: string[] = []
     if (!binary) {
       if (Flag.OPENCODE_DISABLE_LSP_DOWNLOAD) return
-      const resolved = await Npm.which("bash-language-server")
+      const resolved = await npm("bash-language-server")
       if (!resolved) return
       binary = resolved
     }
@@ -1755,7 +1764,7 @@ export const TexLab: Info = {
   id: "texlab",
   extensions: [".tex", ".bib"],
   root: NearestRoot([".latexmkrc", "latexmkrc", ".texlabroot", "texlabroot"]),
-  async spawn(root) {
+  async spawn(root, _ctx, _install, _npm, command) {
     let bin = which("texlab")
 
     if (!bin) {
@@ -1812,7 +1821,7 @@ export const TexLab: Info = {
         if (!ok) return
       }
       if (ext === "tar.gz") {
-        await run(["tar", "-xzf", tempPath], { cwd: Global.Path.bin })
+        await command(["tar", "-xzf", tempPath], { cwd: Global.Path.bin })
       }
 
       await fs.rm(tempPath, { force: true })
@@ -1843,12 +1852,12 @@ export const DockerfileLS: Info = {
   id: "dockerfile",
   extensions: [".dockerfile", "Dockerfile"],
   root: async (_file, ctx) => ctx.directory,
-  async spawn(root) {
+  async spawn(root, _ctx, _install, npm) {
     let binary = which("docker-langserver")
     const args: string[] = []
     if (!binary) {
       if (Flag.OPENCODE_DISABLE_LSP_DOWNLOAD) return
-      const resolved = await Npm.which("dockerfile-language-server-nodejs")
+      const resolved = await npm("dockerfile-language-server-nodejs")
       if (!resolved) return
       binary = resolved
     }
@@ -1939,7 +1948,7 @@ export const Tinymist: Info = {
   id: "tinymist",
   extensions: [".typ", ".typc"],
   root: NearestRoot(["typst.toml"]),
-  async spawn(root) {
+  async spawn(root, _ctx, _install, _npm, command) {
     let bin = which("tinymist")
 
     if (!bin) {
@@ -2002,7 +2011,7 @@ export const Tinymist: Info = {
           })
         if (!ok) return
       } else {
-        await run(["tar", "-xzf", tempPath, "--strip-components=1"], { cwd: Global.Path.bin })
+        await command(["tar", "-xzf", tempPath, "--strip-components=1"], { cwd: Global.Path.bin })
       }
 
       await fs.rm(tempPath, { force: true })

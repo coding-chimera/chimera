@@ -1,10 +1,10 @@
 # Server package extraction
 
-Practical reference for extracting a future `packages/server` from the current `packages/opencode` monolith while `packages/core` is still being migrated to Effect.
+**Status: superseded/reference**
 
-This document is intentionally execution-oriented.
+This document preserves the historical proposal to split the former `packages/opencode` package into `packages/server` and related workspaces. That direction has been superseded by the current architecture: the complete `packages/chimera` package owns the server implementation internally and uses `packages/core` as its shared boundary.
 
-It should give an agent enough context to land one incremental PR at a time without needing to rediscover the package strategy, route migration rules, or current constraints.
+Do not execute this document's PR sequence or treat its historical checklist as pending work. Keep the design as context for earlier decisions; mechanically replacing old paths with `packages/chimera` would not make the obsolete extraction plan current.
 
 ## Goal
 
@@ -640,20 +640,11 @@ Avoid by:
 - do not wait for full `packages/core` before starting `packages/server`
 - do not change SDK generation to consume multiple specs
 
-## Checklist
+## Historical superseded checklist
 
-- [x] create `packages/server`
-- [x] add package-level exports for contract and OpenAPI
-- [ ] extract `question` contract into `packages/server`
-- [ ] extract `question` handler factory into `packages/server`
-- [ ] mount `question` from `packages/opencode`
-- [ ] merge legacy and contract OpenAPI into one document
-- [ ] add merged-spec coverage
-- [ ] migrate `GET /provider/auth`
-- [ ] migrate `GET /config/providers`
-- [ ] migrate small read-only instance routes one or two at a time
-- [ ] move host ownership into `packages/server` only after `packages/core` is ready enough
-- [ ] split `packages/cli` after server and core boundaries are stable
+The former checklist is retained only as a record of the superseded extraction sequence. Before supersession, the standalone `packages/server` workspace and its contract/OpenAPI exports were created; the remaining route extraction, host mounting, merged-spec, route migration, host-ownership, and CLI-split steps were not completed under this plan.
+
+Those uncompleted steps are intentionally not checkboxes and must not be counted as current work. In particular, migration away from Hono and retirement of compatibility fallbacks remain unresolved boundaries unless a current specification and verified implementation state say otherwise; they are not made complete by this document's supersession.
 
 ## Rule of thumb
 

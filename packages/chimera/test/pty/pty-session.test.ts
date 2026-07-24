@@ -23,6 +23,35 @@ const pick = (log: Array<{ type: "created" | "exited" | "deleted"; id: PtyID }>,
 }
 
 describe("pty", () => {
+  test("shares PTY module initialization across concurrent creates", async () => {
+    if (process.platform === "win32") return
+
+    await using dir = await tmpdir({ git: true })
+
+    await WithInstance.provide({
+      directory: dir.path,
+      fn: () =>
+        AppRuntime.runPromise(
+          Effect.gen(function* () {
+            const pty = yield* Pty.Service
+            const sessions = yield* Effect.all(
+              [
+                pty.create({ command: "/usr/bin/env", args: ["sh", "-c", "sleep 1"], title: "first" }),
+                pty.create({ command: "/usr/bin/env", args: ["sh", "-c", "sleep 1"], title: "second" }),
+              ],
+              { concurrency: "unbounded" },
+            )
+            try {
+              const active = yield* pty.list()
+              expect(active.map((item) => item.id)).toEqual(expect.arrayContaining(sessions.map((item) => item.id)))
+            } finally {
+              yield* Effect.all(sessions.map((item) => pty.remove(item.id)), { concurrency: "unbounded" })
+            }
+          }),
+        ),
+    })
+  })
+
   test("publishes created, exited, deleted in order for a short-lived process", async () => {
     if (process.platform === "win32") return
 

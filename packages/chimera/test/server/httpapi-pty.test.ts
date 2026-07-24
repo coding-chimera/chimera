@@ -71,10 +71,13 @@ describe("pty HttpApi bridge", () => {
   test("documents PTY websocket query contract", async () => {
     const operation = (await Server.openapi()).paths["/pty/{ptyID}/connect"]?.get
     const query = (operation?.parameters ?? []).flatMap((parameter) =>
-      "$ref" in parameter || parameter.in !== "query" ? [] : [parameter.name],
+      "$ref" in parameter || parameter.in !== "query" ? [] : [parameter],
     )
 
-    expect(query).toEqual(expect.arrayContaining(["directory", "workspace", "cursor", "ticket"]))
+    expect(query.map((parameter) => parameter.name)).toEqual(
+      expect.arrayContaining(["directory", "workspace", "cursor", "ticket"]),
+    )
+    expect(query.find((parameter) => parameter.name === "cursor")?.schema).toEqual({ type: "string" })
   })
 
   test("serves available shell list through experimental Effect routes", async () => {

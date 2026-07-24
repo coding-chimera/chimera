@@ -3,7 +3,6 @@ import fs from "fs/promises"
 import { xdgData, xdgCache, xdgConfig, xdgState } from "xdg-basedir"
 import os from "os"
 import { Context, Effect, Layer } from "effect"
-import { Flock } from "./util/flock"
 import { Flag } from "./flag/flag"
 
 const app = "chimera"
@@ -27,8 +26,6 @@ const paths = {
 }
 
 export const Path = paths
-
-Flock.setGlobal({ state })
 
 await Promise.all([
   fs.mkdir(Path.data, { recursive: true }),

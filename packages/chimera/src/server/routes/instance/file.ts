@@ -4,7 +4,7 @@ import z from "zod"
 import { File } from "@/file"
 import { Ripgrep } from "@/file/ripgrep"
 import { LSP } from "@/lsp/lsp"
-import { Instance } from "@/project/instance"
+import * as InstanceState from "@/effect/instance-state"
 import { lazy } from "@/util/lazy"
 import { jsonRequest } from "./trace"
 
@@ -37,7 +37,8 @@ export const FileRoutes = lazy(() =>
         jsonRequest("FileRoutes.findText", c, function* () {
           const pattern = c.req.valid("query").pattern
           const svc = yield* Ripgrep.Service
-          const result = yield* svc.search({ cwd: Instance.directory, pattern, limit: 10 })
+          const instance = yield* InstanceState.context
+          const result = yield* svc.search({ cwd: instance.directory, pattern, limit: 10 })
           return result.items
         }),
     )

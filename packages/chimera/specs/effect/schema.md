@@ -1,6 +1,6 @@
 # Schema migration
 
-Practical reference for migrating data types in `packages/opencode` from
+Practical reference for migrating data types in `packages/chimera` from
 Zod-first definitions to Effect Schema with Zod compatibility shims.
 
 ## Goal
@@ -142,7 +142,7 @@ mechanical.
 
 ### `src/config/` ✅ complete
 
-All of `packages/opencode/src/config/` has been migrated. Files that still
+All of `packages/chimera/src/config/` has been migrated. Files that still
 import `z` do so only for local `ZodOverride` bridges or for `z.ZodType`
 type annotations — the `export const <Info|Spec>` values are all Effect
 Schema at source.
@@ -221,7 +221,6 @@ session.ts
 |  `- bus/bus-event.ts
 |- sync/index.ts
 |- bus/bus-event.ts
-`- util/update-schema.ts
 ```
 
 Working rule for this cluster:
@@ -305,80 +304,78 @@ emitted JSON Schema must stay byte-identical.
 
 ### HTTP route boundaries
 
-Every file in `src/server/routes/` uses hono-openapi with zod validators for
-route inputs/outputs. Migrating these individually is the last step; most
-will switch to `.zod` derived from the Schema-migrated domain types above,
-which means touching them is largely mechanical once the domain side is
-done.
+The retained Hono validators and compatibility surfaces below are removed with the
+Hono fallback. They are an inventory, not independent schema-migration tasks;
+canonical retirement tracking lives in `routes.md`.
 
-- [ ] `src/server/error.ts`
-- [x] `src/server/event.ts`
-- [x] `src/server/projectors.ts`
-- [ ] `src/server/routes/control/index.ts`
-- [ ] `src/server/routes/control/workspace.ts`
-- [ ] `src/server/routes/global.ts`
-- [ ] `src/server/routes/instance/index.ts`
-- [ ] `src/server/routes/instance/config.ts`
-- [ ] `src/server/routes/instance/event.ts`
-- [ ] `src/server/routes/instance/experimental.ts`
-- [ ] `src/server/routes/instance/file.ts`
-- [ ] `src/server/routes/instance/mcp.ts`
-- [ ] `src/server/routes/instance/permission.ts`
-- [ ] `src/server/routes/instance/project.ts`
-- [ ] `src/server/routes/instance/provider.ts`
-- [ ] `src/server/routes/instance/pty.ts`
-- [ ] `src/server/routes/instance/question.ts`
-- [ ] `src/server/routes/instance/session.ts`
-- [ ] `src/server/routes/instance/sync.ts`
-- [ ] `src/server/routes/instance/tui.ts`
+`src/server/event.ts` is already Effect Schema-first, and
+`src/server/projectors.ts` has no schema contract, so neither belongs in this
+compatibility inventory.
 
-The bigger prize for this group is the `@effect/platform` HTTP migration
-described in `specs/effect/http-api.md`. Once that lands, every one of
-these files changes shape entirely (`HttpApi.endpoint(...)` and friends),
-so the Schema-first domain types become a prerequisite rather than a
-sibling task.
+- `src/server/error.ts`
+- `src/server/routes/control/index.ts`
+- `src/server/routes/control/workspace.ts`
+- `src/server/routes/global.ts`
+- `src/server/routes/instance/index.ts`
+- `src/server/routes/instance/config.ts`
+- `src/server/routes/instance/event.ts`
+- `src/server/routes/instance/experimental.ts`
+- `src/server/routes/instance/file.ts`
+- `src/server/routes/instance/mcp.ts`
+- `src/server/routes/instance/permission.ts`
+- `src/server/routes/instance/project.ts`
+- `src/server/routes/instance/provider.ts`
+- `src/server/routes/instance/pty.ts`
+- `src/server/routes/instance/question.ts`
+- `src/server/routes/instance/session.ts`
+- `src/server/routes/instance/sync.ts`
+- `src/server/routes/instance/tui.ts`
+
+> Do not read this inventory as evidence that all HTTP Zod has been removed.
 
 ### Everything else
 
 Small / shared / control-plane / CLI. Mostly independent; can be done
 piecewise.
 
-- [ ] `src/agent/agent.ts`
+- [x] `src/agent/agent.ts`
 - [x] `src/bus/bus-event.ts`
-- [ ] `src/bus/index.ts`
-- [ ] `src/cli/cmd/tui/config/tui-migrate.ts`
-- [ ] `src/cli/cmd/tui/config/tui-schema.ts`
-- [ ] `src/cli/cmd/tui/config/tui.ts`
-- [ ] `src/cli/cmd/tui/event.ts`
-- [ ] `src/cli/ui.ts`
-- [ ] `src/command/index.ts`
+- [x] `src/bus/index.ts`
+- **Intentional boundary:** `src/cli/cmd/tui/config/tui-migrate.ts` remains Zod-compatible for legacy config migration; it is not unimplemented domain-schema work.
+- [x] `src/cli/cmd/tui/config/tui-schema.ts` — TUI schema migration completed in this round
+- [x] `src/cli/cmd/tui/config/tui.ts`
+- [x] `src/cli/cmd/tui/event.ts`
+- [x] `src/cli/ui.ts`
+- [x] `src/command/index.ts`
 - [x] `src/control-plane/adapters/worktree.ts`
 - [x] `src/control-plane/types.ts`
 - [x] `src/control-plane/workspace.ts`
-- [ ] `src/file/index.ts`
-- [ ] `src/file/ripgrep.ts`
-- [ ] `src/file/watcher.ts`
-- [ ] `src/format/index.ts`
-- [ ] `src/id/id.ts`
-- [ ] `src/ide/index.ts`
-- [ ] `src/installation/index.ts`
-- [ ] `src/lsp/client.ts`
-- [ ] `src/lsp/lsp.ts`
-- [ ] `src/mcp/auth.ts`
-- [ ] `src/patch/index.ts`
-- [ ] `src/plugin/github-copilot/models.ts`
-- [ ] `src/project/project.ts`
-- [ ] `src/project/vcs.ts`
-- [ ] `src/pty/index.ts`
-- [ ] `src/skill/index.ts`
-- [ ] `src/snapshot/index.ts`
-- [ ] `src/storage/db.ts`
-- [ ] `src/storage/storage.ts`
+- [x] `src/file/index.ts`
+- [x] `src/file/ripgrep.ts`
+- [x] `src/file/watcher.ts`
+- [x] `src/format/index.ts`
+- **Intentional boundary:** `src/id/id.ts` retains its generic Zod-compatible ID helper; it is not a missing domain schema.
+- [x] `src/ide/index.ts`
+- [x] `src/installation/index.ts`
+- [x] `src/lsp/client.ts`
+- [x] `src/lsp/lsp.ts`
+- [x] `src/mcp/auth.ts`
+- [x] `src/patch/index.ts`
+- **Intentional boundary:** `src/plugin/github-copilot/models.ts` remains a Zod-native external wire parser.
+- [x] `src/project/project.ts`
+- [x] `src/project/vcs.ts`
+- [x] `src/pty/index.ts`
+- [x] `src/skill/index.ts`
+- [x] `src/snapshot/index.ts`
+- [x] `src/storage/db.ts`
+- [x] `src/storage/storage.ts`
 - [x] `src/sync/index.ts` — public API (`SyncEvent.define`) is Schema-first; `payloads()` still derives zod for the remaining HTTP/OpenAPI boundary
-- [ ] `src/util/fn.ts`
-- [ ] `src/util/log.ts`
-- [ ] `src/util/update-schema.ts`
-- [ ] `src/worktree/index.ts`
+- **Intentional boundary:** `src/util/fn.ts` preserves its Zod-accepting utility contract; it is not unimplemented schema work.
+- [x] `src/worktree/index.ts`
+
+Superseded tracker entries: `src/util/log.ts` moved and no longer exists at
+that path; `src/util/update-schema.ts` was deleted after its callers were
+removed. Neither is an outstanding schema migration.
 
 ### Do-not-migrate
 

@@ -1,9 +1,7 @@
 import { createHash } from "crypto"
 import { Effect, Option, Schema, Scope } from "effect"
 import { NonNegativeInt } from "@/util/schema"
-import { createReadStream } from "fs"
 import * as path from "path"
-import { createInterface } from "readline"
 import * as Tool from "./tool"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { LSP } from "@/lsp/lsp"
@@ -21,6 +19,7 @@ const MAX_LINE_SUFFIX = `... (line truncated to ${MAX_LINE_LENGTH} chars)`
 const MAX_BYTES = 50 * 1024
 const MAX_BYTES_LABEL = `${MAX_BYTES / 1024} KB`
 const SAMPLE_BYTES = 4096
+const READ_CHUNK_SIZE = 64 * 1024
 const SUPPORTED_IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"])
 const READ_DEDUP_MESSAGES_EXTRA = "readDedupMessages"
 const HASHLINE_PREFIX = /^(\d+)#([A-Za-z0-9-]{2})\|/
@@ -518,6 +517,87 @@ export const ReadTool = Tool.define(
       return nonPrintableCount / bytes.length > 0.3
     }
 
+    const lines = Effect.fn("ReadTool.lines")(function* (filepath: string, opts: { limit: number; offset: number }) {
+      return yield* Effect.scoped(
+        Effect.gen(function* () {
+          const file = yield* fs.open(filepath, { flag: "r" })
+          const decoder = new TextDecoder()
+          const start = opts.offset - 1
+          const raw: string[] = []
+          const unanchorable: number[] = []
+          let current = ""
+          let long = false
+          let skipLF = false
+          let bytes = 0
+          let count = 0
+          let cut = false
+          let more = false
+
+          const emit = () => {
+            count += 1
+            if (count <= start) {
+              current = ""
+              long = false
+              return true
+            }
+            if (raw.length >= opts.limit) {
+              current = ""
+              long = false
+              more = true
+              return true
+            }
+
+            const content = long ? current + MAX_LINE_SUFFIX : current
+            const size = Buffer.byteLength(content, "utf-8") + (raw.length > 0 ? 1 : 0)
+            if (bytes + size > MAX_BYTES) {
+              cut = true
+              more = true
+              return false
+            }
+
+            raw.push(content)
+            if (long) unanchorable.push(count)
+            bytes += size
+            current = ""
+            long = false
+            return true
+          }
+
+          const consume = (text: string) => {
+            for (let i = 0; i < text.length; i++) {
+              const char = text[i]
+              if (skipLF) {
+                skipLF = false
+                if (char === "\n") continue
+              }
+              if (char === "\r" || char === "\n") {
+                if (!emit()) return false
+                skipLF = char === "\r"
+                continue
+              }
+              if (current.length < MAX_LINE_LENGTH) current += char
+              else long = true
+            }
+            return true
+          }
+
+          while (!cut) {
+            const chunk = yield* file.readAlloc(READ_CHUNK_SIZE)
+            if (Option.isNone(chunk) || chunk.value.length === 0) break
+            if (!consume(decoder.decode(chunk.value, { stream: true }))) break
+          }
+
+          if (!cut) {
+            consume(decoder.decode())
+            if (current.length > 0 || long) emit()
+          }
+
+          return { raw, count, cut, more, offset: opts.offset, unanchorable }
+
+        }),
+      )
+    })
+
     const run = Effect.fn("ReadTool.execute")(function* (
       params: Schema.Schema.Type<typeof Parameters>,
       ctx: Tool.Context,
@@ -612,9 +692,7 @@ export const ReadTool = Tool.define(
         return yield* Effect.fail(new Error(`Cannot read binary file: ${filepath}`))
       }
 
-      const file = yield* Effect.promise(() =>
-        lines(filepath, { limit: params.limit ?? DEFAULT_READ_LIMIT, offset: params.offset || 1 }),
-      )
+      const file = yield* lines(filepath, { limit: params.limit ?? DEFAULT_READ_LIMIT, offset: params.offset || 1 })
       if (file.count < file.offset && !(file.count === 0 && file.offset === 1)) {
         return yield* Effect.fail(
           new Error(`Offset ${file.offset} is out of range for this file (${file.count} lines)`),
@@ -718,50 +796,3 @@ export const ReadTool = Tool.define(
     }
   }),
 )
-
-async function lines(filepath: string, opts: { limit: number; offset: number }) {
-  const stream = createReadStream(filepath, { encoding: "utf8" })
-  const rl = createInterface({
-    input: stream,
-    // Note: we use the crlfDelay option to recognize all instances of CR LF
-    // ('\r\n') in file as a single line break.
-    crlfDelay: Infinity,
-  })
-
-  const start = opts.offset - 1
-  const raw: string[] = []
-  const unanchorable: number[] = []
-  let bytes = 0
-  let count = 0
-  let cut = false
-  let more = false
-  try {
-    for await (const text of rl) {
-      count += 1
-      if (count <= start) continue
-
-      if (raw.length >= opts.limit) {
-        more = true
-        continue
-      }
-
-      const truncatedLine = text.length > MAX_LINE_LENGTH
-      const line = truncatedLine ? text.substring(0, MAX_LINE_LENGTH) + MAX_LINE_SUFFIX : text
-      const size = Buffer.byteLength(line, "utf-8") + (raw.length > 0 ? 1 : 0)
-      if (bytes + size > MAX_BYTES) {
-        cut = true
-        more = true
-        break
-      }
-
-      raw.push(line)
-      if (truncatedLine) unanchorable.push(count)
-      bytes += size
-    }
-  } finally {
-    rl.close()
-    stream.destroy()
-  }
-
-  return { raw, count, cut, more, offset: opts.offset, unanchorable }
-}

@@ -3,7 +3,7 @@ import { spawn } from "child_process"
 import fs from "fs/promises"
 import path from "path"
 import os from "os"
-import { Cause, Effect, Exit, Layer } from "effect"
+import { Cause, Effect, Exit, Fiber, Layer } from "effect"
 import { testEffect } from "../lib/effect"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
@@ -104,6 +104,14 @@ const testGlobal = Global.layerWith({
 })
 
 const testLayer = EffectFlock.layer.pipe(Layer.provide(testGlobal), Layer.provide(AppFileSystem.defaultLayer))
+
+const timingLayer = EffectFlock.layerWithTiming({
+  staleMs: 10_000,
+  timeoutMs: 100,
+  baseDelayMs: 10,
+  maxDelayMs: 20,
+  heartbeatMs: 50,
+}).pipe(Layer.provide(testGlobal), Layer.provide(AppFileSystem.defaultLayer))
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -266,7 +274,8 @@ describe("util.effect-flock", () => {
         .pipe(Effect.exit)
 
       expect(Exit.isFailure(result)).toBe(true)
-      expect(Exit.isFailure(result) ? Cause.pretty(result.cause) : "").toContain("missing")
+      const defect = Exit.isFailure(result) ? Cause.squash(result.cause) : undefined
+      expect(defect).toMatchObject({ _tag: "ReleaseError", detail: "metadata missing" })
       yield* Effect.promise(() => fs.rm(tmp, { recursive: true, force: true }))
     }),
   )
@@ -294,7 +303,8 @@ describe("util.effect-flock", () => {
         .pipe(Effect.exit)
 
       expect(Exit.isFailure(result)).toBe(true)
-      expect(Exit.isFailure(result) ? Cause.pretty(result.cause) : "").toContain("token mismatch")
+      const defect = Exit.isFailure(result) ? Cause.squash(result.cause) : undefined
+      expect(defect).toMatchObject({ _tag: "ReleaseError", detail: "token mismatch" })
       expect(yield* Effect.promise(() => exists(lockDir))).toBe(true)
       yield* Effect.promise(() => fs.rm(tmp, { recursive: true, force: true }))
     }),
@@ -383,4 +393,46 @@ describe("util.effect-flock", () => {
       }),
     30_000,
   )
+
+
+  describe("configured timing", () => {
+    const timingIt = testEffect(timingLayer)
+
+    timingIt.live(
+      "returns a typed timeout while a healthy lock is held",
+      Effect.gen(function* () {
+        const flock = yield* EffectFlock.Service
+        const tmp = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "eflock-timeout-")))
+        const dir = path.join(tmp, "locks")
+        const key = "eflock:timeout"
+        const lockDir = lock(dir, key)
+        yield* Effect.promise(() => fs.mkdir(lockDir, { recursive: true }))
+
+        const exit = yield* Effect.scoped(flock.acquire(key, dir)).pipe(Effect.exit)
+        expect(Exit.isFailure(exit)).toBe(true)
+        const failure = Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined
+        expect(failure).toBeInstanceOf(EffectFlock.LockTimeoutError)
+        expect(failure).toMatchObject({ _tag: "LockTimeoutError", key })
+        yield* Effect.promise(() => fs.rm(tmp, { recursive: true, force: true }))
+      }),
+    )
+
+    timingIt.live(
+      "interrupts promptly while waiting for acquisition",
+      Effect.gen(function* () {
+        const flock = yield* EffectFlock.Service
+        const tmp = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "eflock-interrupt-")))
+        const dir = path.join(tmp, "locks")
+        const key = "eflock:interrupt"
+        yield* Effect.promise(() => fs.mkdir(lock(dir, key), { recursive: true }))
+
+        const started = performance.now()
+        const fiber = yield* Effect.scoped(flock.acquire(key, dir)).pipe(Effect.forkChild)
+        yield* Effect.sleep("20 millis")
+        yield* Fiber.interrupt(fiber).pipe(Effect.timeout("500 millis"))
+        expect(performance.now() - started).toBeLessThan(500)
+        yield* Effect.promise(() => fs.rm(tmp, { recursive: true, force: true }))
+      }),
+    )
+  })
 })

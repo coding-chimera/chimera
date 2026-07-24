@@ -1,18 +1,14 @@
 # Tool migration
 
-Practical reference for the current tool-migration state in `packages/opencode`.
+Practical reference for the current tool-migration state in `packages/chimera`.
 
 ## Status
 
 `Tool.Def.execute` and `Tool.Info.init` already return `Effect` on this branch, and the built-in tool surface is now largely on the target shape.
 
-The current exported tools in `src/tool` all use `Tool.define(...)` with Effect-based initialization, and nearly all of them already build their tool body with `Effect.gen(...)` and `Effect.fn(...)`.
+The current exported tools in `src/tool` use `Tool.define(...)` with Effect-based initialization and execution. The tracked internal migrations are also complete: tool I/O now uses the intended Effect services, with deliberate bounded compatibility boundaries called out below.
 
-So the remaining work is no longer "convert tools to Effect at all". The remaining work is mostly:
-
-1. remove Promise and raw platform bridges inside individual tool bodies
-2. swap tool internals to Effect-native services like `AppFileSystem`, `HttpClient`, and `ChildProcessSpawner`
-3. keep tests and callers aligned with `yield* info.init()` and real service graphs
+There are no open implementation items in this tool-migration tracker.
 
 ## Current shape
 
@@ -22,11 +18,11 @@ So the remaining work is no longer "convert tools to Effect at all". The remaini
 - `info.init()` returns an `Effect`
 - `execute(...)` returns an `Effect`
 
-That means a tool does not need a separate `Tool.defineEffect(...)` helper to count as migrated. A tool is effectively migrated when its init and execute path stay Effect-native, even if some internals still bridge to Promise-based or raw APIs.
+A tool counts as migrated when its initialization, execution, resource lifetime, and platform-service boundaries stay Effect-native.
 
 ## Tests
 
-Tool tests should use the existing Effect helpers in `packages/opencode/test/lib/effect.ts`:
+Tool tests should use the existing Effect helpers in `packages/chimera/test/lib/effect.ts`:
 
 - Use `testEffect(...)` / `it.live(...)` instead of creating fake local wrappers around effectful tools.
 - Yield the real tool export, then initialize it: `const info = yield* ReadTool`, `const tool = yield* info.init()`.
@@ -39,7 +35,7 @@ This keeps tool tests aligned with the production service graph and makes follow
 These exported tool definitions currently use `Tool.define(...)` in `src/tool`:
 
 - [x] `apply_patch.ts`
-- [x] `bash.ts`
+- [x] `shell.ts`
 - [x] `edit.ts`
 - [x] `glob.ts`
 - [x] `grep.ts`
@@ -61,30 +57,18 @@ Notes:
 - `truncate.ts` is an Effect service used by tools, not a tool definition itself.
 - `mcp-exa.ts`, `external-directory.ts`, and `schema.ts` are support modules, not standalone tool definitions.
 
-## Follow-up cleanup
+## Completed cleanup
 
-Most exported tools are already on the intended Effect-native shape. The remaining cleanup is narrower than the old checklist implied.
+The tool-adjacent cleanup tracked by this specification is complete:
 
-Current spot cleanups worth tracking:
+- [x] `read.ts` — reads scoped, bounded `AppFileSystem` chunks; binary detection and chunk lifetime remain inside the Effect scope.
+- [x] `shell.ts` — uses an `Effect.cached` parser and a scoped Effect file writer; these are intentional lifecycle boundaries rather than deferred raw-platform cleanup.
+- [x] `webfetch.ts` — uses Effect `HttpClient` and keeps HTML extraction behind a controlled, cancellable `HTMLRewriter` boundary.
+- [x] `file/ripgrep.ts` — uses `AppFileSystem` and `ChildProcessSpawner` for filesystem and process work.
+- [x] `patch/index.ts` — keeps patch calculation as a pure transform and performs preflight through Effect `AppFileSystem` before application.
 
-- [ ] `read.ts` — still bridges to Node stream / `readline` helpers and Promise-based binary detection
-- [ ] `bash.ts` — already uses Effect child-process primitives; only keep tracking shell-specific platform bridges and parser/loading details as they come up
-- [ ] `webfetch.ts` — already uses `HttpClient`; remaining work is limited to smaller boundary helpers like HTML text extraction
-- [ ] `file/ripgrep.ts` — adjacent to tool migration; still has raw fs/process usage that affects `grep.ts` and file-search routes
-- [ ] `patch/index.ts` — adjacent to tool migration; still has raw fs usage behind patch application
+The previous raw-fs checklist is superseded by these implementations and has been removed rather than recorded as false completion work.
 
-Notable items that are already effectively on the target path and do not need separate migration bullets right now:
+## Separate architecture follow-up
 
-- `apply_patch.ts`
-- `grep.ts`
-- `write.ts`
-- `websearch.ts`
-- `edit.ts`
-
-## Filesystem notes
-
-Current raw fs users that still appear relevant here:
-
-- `tool/read.ts` — `fs.createReadStream`, `readline`
-- `file/ripgrep.ts` — `fs/promises`
-- `patch/index.ts` — `fs`, `fs/promises`
+Hono route deletion and fallback retirement are architecture work tracked in `routes.md`; they are not tool-migration backlog.

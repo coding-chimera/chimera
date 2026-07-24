@@ -35,6 +35,7 @@ interface Entry {
   readonly deferred: Deferred.Deferred<InstanceContext>
   ctx?: InstanceContext
   disposed: Deferred.Deferred<void>
+  bootedAt: number
   lastUsedAt: number
   active: number
   disposing: boolean
@@ -45,23 +46,43 @@ type ReadyEntry = Entry & { ctx: InstanceContext }
 const DEFAULT_IDLE_TTL_MS = 10 * 60 * 1000
 const DEFAULT_IDLE_SWEEP_MS = 60 * 1000
 const DEFAULT_MAX_ACTIVE_INSTANCES = 4
+const DEFAULT_BOOT_GRACE_MS = 60 * 1000
+const DEFAULT_SWEEP_DEBOUNCE_MS = 5 * 1000
+const DEFAULT_OSCILLATION_WINDOW_MS = 30 * 1000
+const DEFAULT_OSCILLATION_PIN_MS = 2 * 60 * 1000
+
+/** Disposed reasons emitted for LRU-driven sweeps; clients use these to tell eviction apart from reloads. */
+export const LRU_DISPOSE_REASONS = ["idle-sweep", "post-load-lru", "post-request-lru"] as const
+
 
 function envPositiveNumber(names: string[], fallback: number) {
   const raw = names.map((name) => process.env[name]).find((value) => value)
   const parsed = raw ? Number(raw) : fallback
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
+  // 0 is a valid explicit value (disables grace/debounce-style knobs); only negative/NaN falls back.
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback
+}
+
+let configDefaults: { maxActiveInstances?: number } = {}
+
+/** Applies `server.*` config-file values as defaults. Explicit env vars still win over config. */
+export function applyServerInstanceDefaults(input: { maxActiveInstances?: number }) {
+  configDefaults = { ...configDefaults, ...input }
 }
 
 function settings() {
   return {
     idleTtlMs: envPositiveNumber(["CHIMERA_INSTANCE_IDLE_TTL_MS", "OPENCODE_INSTANCE_IDLE_TTL_MS"], DEFAULT_IDLE_TTL_MS),
     sweepMs: envPositiveNumber(["CHIMERA_INSTANCE_IDLE_SWEEP_MS", "OPENCODE_INSTANCE_IDLE_SWEEP_MS"], DEFAULT_IDLE_SWEEP_MS),
+    bootGraceMs: envPositiveNumber(["CHIMERA_INSTANCE_BOOT_GRACE_MS"], DEFAULT_BOOT_GRACE_MS),
+    sweepDebounceMs: envPositiveNumber(["CHIMERA_INSTANCE_SWEEP_DEBOUNCE_MS"], DEFAULT_SWEEP_DEBOUNCE_MS),
+    oscillationWindowMs: envPositiveNumber(["CHIMERA_INSTANCE_OSCILLATION_WINDOW_MS"], DEFAULT_OSCILLATION_WINDOW_MS),
+    oscillationPinMs: envPositiveNumber(["CHIMERA_INSTANCE_OSCILLATION_PIN_MS"], DEFAULT_OSCILLATION_PIN_MS),
     maxActiveInstances: Math.max(
       1,
       Math.floor(
         envPositiveNumber(
           ["CHIMERA_INSTANCE_MAX_ACTIVE_INSTANCES", "OPENCODE_INSTANCE_MAX_ACTIVE_INSTANCES"],
-          DEFAULT_MAX_ACTIVE_INSTANCES,
+          configDefaults.maxActiveInstances ?? DEFAULT_MAX_ACTIVE_INSTANCES,
         ),
       ),
     ),
@@ -72,6 +93,7 @@ function makeEntry(now = Date.now()): Entry {
   return {
     deferred: Deferred.makeUnsafe<InstanceContext>(),
     disposed: Deferred.makeUnsafe<void>(),
+    bootedAt: now,
     lastUsedAt: now,
     active: 0,
     disposing: false,
@@ -86,6 +108,8 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
     const scope = yield* Scope.Scope
     const cache = new Map<string, Entry>()
     const options = settings()
+    const lastDisposedAt = new Map<string, number>()
+    const pinnedUntil = new Map<string, number>()
 
     const boot = (input: LoadInput & { directory: string }) =>
       Effect.gen(function* () {
@@ -114,7 +138,7 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
         return true
       })
 
-    const emitDisposed = (input: { directory: string; project?: string }) =>
+    const emitDisposed = (input: { directory: string; project?: string; reason?: string }) =>
       Effect.sync(() =>
         GlobalBus.emit("event", {
           directory: input.directory,
@@ -124,6 +148,7 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
             type: "server.instance.disposed",
             properties: {
               directory: input.directory,
+              reason: input.reason,
             },
           },
         }),
@@ -151,7 +176,7 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
     ) {
       yield* Effect.logInfo("disposing instance", { directory: ctx.directory, reason })
       yield* runInstanceDisposers(ctx.directory)
-      yield* emitDisposed({ directory: ctx.directory, project: ctx.project.id })
+      yield* emitDisposed({ directory: ctx.directory, project: ctx.project.id, reason })
     })
 
     const disposeEntry = Effect.fnUntraced(function* (
@@ -169,6 +194,7 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
       entry.disposing = true
       yield* Effect.gen(function* () {
         yield* disposeContext(entry.ctx, reason)
+        lastDisposedAt.set(directory, Date.now())
         if (cache.get(directory) === entry) cache.delete(directory)
       }).pipe(Effect.ensuring(Deferred.succeed(entry.disposed, undefined).pipe(Effect.ignore)))
       return true
@@ -188,18 +214,25 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
           now - item.entry.lastUsedAt >= options.idleTtlMs,
       )
       const idleDirectories = new Set(idle.map((item) => item.directory))
-      const overflow = ready
-        .filter(
-          (item) =>
-            !idleDirectories.has(item.directory) && !item.entry.disposing && item.entry.active === 0,
-        )
+      const evictable = ready.filter(
+        (item) =>
+          !idleDirectories.has(item.directory) &&
+          !item.entry.disposing &&
+          item.entry.active === 0 &&
+          now - item.entry.bootedAt >= options.bootGraceMs &&
+          (pinnedUntil.get(item.directory) ?? 0) <= now,
+      )
+      const overflow = evictable
         .toSorted((a, b) => a.entry.lastUsedAt - b.entry.lastUsedAt)
         .slice(0, Math.max(0, ready.length - options.maxActiveInstances - idle.length))
       return [...idle, ...overflow]
     }
 
     const sweepIdle = Effect.fn("InstanceStore.sweepIdle")(function* (reason: string) {
-      const candidates = collectIdleCandidates(Date.now())
+      const now = Date.now()
+      for (const [directory, until] of pinnedUntil) if (until <= now) pinnedUntil.delete(directory)
+      for (const [directory, at] of lastDisposedAt) if (now - at > options.oscillationWindowMs) lastDisposedAt.delete(directory)
+      const candidates = collectIdleCandidates(now)
       if (candidates.length === 0) return
       yield* Effect.logInfo("disposing idle instances", {
         reason,
@@ -214,8 +247,37 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
       )
     })
 
-    const requestSweep = (reason: string) =>
-      sweepIdle(reason).pipe(Effect.ignore, Effect.forkIn(scope, { startImmediately: true }), Effect.asVoid)
+    // Debounced LRU sweep: every boot/release used to sweep immediately, which let a
+    // dispose -> client resync -> re-boot cycle amplify into a dispose storm.
+    // Trailing semantics: requests arriving while a sweep is scheduled mark the
+    // state dirty and get their own sweep pass, so no eviction check is dropped.
+    let sweepScheduled = false
+    let sweepDirty = false
+    const requestSweep = (reason: string) => {
+      if (sweepScheduled) {
+        sweepDirty = true
+        return Effect.void
+      }
+      sweepScheduled = true
+      return Effect.gen(function* () {
+        while (true) {
+          yield* Effect.sleep(`${options.sweepDebounceMs} millis`)
+          sweepDirty = false
+          yield* sweepIdle(reason)
+          if (!sweepDirty) break
+        }
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            sweepScheduled = false
+            sweepDirty = false
+          }),
+        ),
+        Effect.ignore,
+        Effect.forkIn(scope, { startImmediately: true }),
+        Effect.asVoid,
+      )
+    }
 
     const completeLoad = (directory: string, input: LoadInput, entry: Entry) =>
       Effect.gen(function* () {
@@ -225,7 +287,17 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
           yield* Deferred.succeed(entry.disposed, undefined).pipe(Effect.ignore)
         } else {
           entry.ctx = exit.value
-          entry.lastUsedAt = Date.now()
+          const now = Date.now()
+          entry.bootedAt = now
+          entry.lastUsedAt = now
+          const lastDispose = lastDisposedAt.get(directory)
+          if (lastDispose !== undefined && now - lastDispose <= options.oscillationWindowMs) {
+            pinnedUntil.set(directory, now + options.oscillationPinMs)
+            yield* Effect.logWarning("instance re-booted shortly after LRU dispose; pinning to break oscillation", {
+              directory,
+              oscillationPinMs: options.oscillationPinMs,
+            })
+          }
         }
         yield* Deferred.done(entry.deferred, exit).pipe(Effect.asVoid)
         if (Exit.isSuccess(exit)) yield* requestSweep("post-load-lru")
@@ -309,7 +381,7 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
               previous.disposing = true
               yield* Deferred.await(previous.deferred).pipe(Effect.ignore)
               yield* runInstanceDisposers(directory)
-              yield* emitDisposed({ directory, project: input.project?.id ?? previous.ctx?.project.id })
+              yield* emitDisposed({ directory, project: input.project?.id ?? previous.ctx?.project.id, reason: "reload" })
               yield* Deferred.succeed(previous.disposed, undefined).pipe(Effect.ignore)
             }
             yield* completeLoad(directory, input, entry)

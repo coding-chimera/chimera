@@ -1,9 +1,50 @@
-import { Effect } from "effect"
+import { Effect, Stream } from "effect"
 import { UI } from "../ui"
 import { effectCmd, fail } from "../effect-cmd"
 import { Git } from "@/git"
 import { InstanceRef } from "@/effect/instance-ref"
-import { Process } from "@/util/process"
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
+import { errorMessage } from "@/util/error"
+import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
+
+export const runCaptured = Effect.fnUntraced(function* (cmd: string[], cwd?: string) {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+  return yield* Effect.gen(function* () {
+    const handle = yield* spawner.spawn(
+      ChildProcess.make(cmd[0], cmd.slice(1), { cwd, extendEnv: true, stdin: "ignore" }),
+    )
+    const [code, stdout, stderr] = yield* Effect.all(
+      [
+        handle.exitCode,
+        Stream.mkString(Stream.decodeText(handle.stdout)),
+        Stream.mkString(Stream.decodeText(handle.stderr)),
+      ],
+      { concurrency: 3 },
+    )
+    return { code, stdout, stderr }
+  }).pipe(
+    Effect.scoped,
+    Effect.catch((error) => Effect.succeed({ code: 1, stdout: "", stderr: errorMessage(error) })),
+  )
+})
+
+export const runInherited = Effect.fnUntraced(
+  function* (cmd: string[], cwd: string) {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+    const handle = yield* spawner.spawn(
+      ChildProcess.make(cmd[0], cmd.slice(1), {
+        cwd,
+        extendEnv: true,
+        stdin: "inherit",
+        stdout: "inherit",
+        stderr: "inherit",
+        forceKillAfter: "5 seconds",
+      }),
+    )
+    return yield* handle.exitCode
+  },
+  Effect.scoped,
+)
 
 export const PrCommand = effectCmd({
   command: "pr <number>",
@@ -28,31 +69,24 @@ export const PrCommand = effectCmd({
     const localBranchName = `pr/${prNumber}`
     UI.println(`Fetching and checking out PR #${prNumber}...`)
 
-    const checkout = yield* Effect.promise(() =>
-      Process.run(["gh", "pr", "checkout", `${prNumber}`, "--branch", localBranchName, "--force"], { nothrow: true }),
-    )
+    const checkout = yield* runCaptured(["gh", "pr", "checkout", `${prNumber}`, "--branch", localBranchName, "--force"]).pipe(Effect.provide(CrossSpawnSpawner.defaultLayer))
     if (checkout.code !== 0) {
       return yield* fail(`Failed to checkout PR #${prNumber}. Make sure you have gh CLI installed and authenticated.`)
     }
 
-    const prInfoResult = yield* Effect.promise(() =>
-      Process.text(
-        [
-          "gh",
-          "pr",
-          "view",
-          `${prNumber}`,
-          "--json",
-          "headRepository,headRepositoryOwner,isCrossRepository,headRefName,body",
-        ],
-        { nothrow: true },
-      ),
-    )
+    const prInfoResult = yield* runCaptured([
+      "gh",
+      "pr",
+      "view",
+      `${prNumber}`,
+      "--json",
+      "headRepository,headRepositoryOwner,isCrossRepository,headRefName,body",
+    ]).pipe(Effect.provide(CrossSpawnSpawner.defaultLayer))
 
     let sessionId: string | undefined
 
-    if (prInfoResult.code === 0 && prInfoResult.text.trim()) {
-      const prInfo = JSON.parse(prInfoResult.text)
+    if (prInfoResult.code === 0 && prInfoResult.stdout.trim()) {
+      const prInfo = JSON.parse(prInfoResult.stdout)
 
       if (prInfo?.isCrossRepository && prInfo.headRepository && prInfo.headRepositoryOwner) {
         const forkOwner = prInfo.headRepositoryOwner.login
@@ -79,11 +113,9 @@ export const PrCommand = effectCmd({
           UI.println(`Found chimera session: ${sessionUrl}`)
           UI.println(`Importing session...`)
 
-          const importResult = yield* Effect.promise(() =>
-            Process.text(["chimera", "import", sessionUrl], { nothrow: true }),
-          )
+          const importResult = yield* runCaptured(["chimera", "import", sessionUrl]).pipe(Effect.provide(CrossSpawnSpawner.defaultLayer))
           if (importResult.code === 0) {
-            const sessionIdMatch = importResult.text.trim().match(/Imported session: ([a-zA-Z0-9_-]+)/)
+            const sessionIdMatch = importResult.stdout.trim().match(/Imported session: ([a-zA-Z0-9_-]+)/)
             if (sessionIdMatch) {
               sessionId = sessionIdMatch[1]
               UI.println(`Session imported: ${sessionId}`)
@@ -99,14 +131,9 @@ export const PrCommand = effectCmd({
     UI.println()
 
     const chimeraArgs = sessionId ? ["-s", sessionId] : []
-    const code = yield* Effect.promise(
-      () =>
-        Process.spawn(["chimera", ...chimeraArgs], {
-          stdin: "inherit",
-          stdout: "inherit",
-          stderr: "inherit",
-          cwd: process.cwd(),
-        }).exited,
+    const code = yield* runInherited(["chimera", ...chimeraArgs], process.cwd()).pipe(
+      Effect.provide(CrossSpawnSpawner.defaultLayer),
+      Effect.orDie,
     )
     // Match legacy throw semantics — propagate as a defect so the top-level
     // index.ts catch handles it identically (exit 1, "Unexpected error" banner).

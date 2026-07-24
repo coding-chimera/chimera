@@ -14,11 +14,12 @@ import { lazy } from "@/util/lazy"
 import * as Log from "@opencode-ai/core/util/log"
 import { Workspace } from "@/control-plane/workspace"
 import { AppRuntime } from "@/effect/app-runtime"
-import { Instance } from "@/project/instance"
+import * as InstanceState from "@/effect/instance-state"
 import { errors } from "../../error"
 import { Session } from "@/session/session"
 import { WorkspaceContext } from "@/control-plane/workspace-context"
 import { SessionID } from "@/session/schema"
+import { Effect } from "effect"
 
 const ReplayEvent = z.object({
   id: z.string(),
@@ -54,7 +55,11 @@ export const SyncRoutes = lazy(() =>
       }),
       async (c) => {
         void AppRuntime.runPromise(
-          Workspace.Service.use((workspace) => workspace.startWorkspaceSyncing(Instance.project.id)),
+          Effect.gen(function* () {
+            const workspace = yield* Workspace.Service
+            const instance = yield* InstanceState.context
+            yield* workspace.startWorkspaceSyncing(instance.project.id)
+          }),
         )
         return c.json(true)
       },
@@ -138,12 +143,14 @@ export const SyncRoutes = lazy(() =>
         const workspaceID = WorkspaceContext.workspaceID
         if (!workspaceID) throw new Error("Cannot steal session without workspace context")
 
-        SyncEvent.run(Session.Event.Updated, {
-          sessionID: body.sessionID,
-          info: {
-            workspaceID,
-          },
-        })
+        await AppRuntime.runPromise(
+          SyncEvent.use.run(Session.Event.Updated, {
+            sessionID: body.sessionID,
+            info: {
+              workspaceID,
+            },
+          }),
+        )
 
         log.info("sync session stolen", {
           sessionID: body.sessionID,

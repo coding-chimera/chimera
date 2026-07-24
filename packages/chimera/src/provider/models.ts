@@ -4,7 +4,7 @@ import { Context, Duration, Effect, Layer, Option, Schedule, Schema } from "effe
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http"
 import { Installation } from "../installation"
 import { Flag } from "@opencode-ai/core/flag/flag"
-import { Flock } from "@opencode-ai/core/util/flock"
+import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
 import { Hash } from "@opencode-ai/core/util/hash"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { withTransientReadRetry } from "@/util/effect-http-client"
@@ -146,10 +146,15 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/ModelsDev") {}
 
-export const layer: Layer.Layer<Service, never, AppFileSystem.Service | HttpClient.HttpClient> = Layer.effect(
+const serviceLayer: Layer.Layer<
+  Service,
+  never,
+  AppFileSystem.Service | EffectFlock.Service | HttpClient.HttpClient
+> = Layer.effect(
   Service,
   Effect.gen(function* () {
     const fs = yield* AppFileSystem.Service
+    const flock = yield* EffectFlock.Service
     const http = HttpClient.filterStatusOk(withTransientReadRetry(yield* HttpClient.HttpClient))
 
     const source = Flag.OPENCODE_MODELS_URL || "https://models.dev"
@@ -201,12 +206,9 @@ export const layer: Layer.Layer<Service, never, AppFileSystem.Service | HttpClie
       if (snapshot) return snapshot
       if (Flag.OPENCODE_DISABLE_MODELS_FETCH) return {}
       // Flock is cross-process: concurrent opencode CLIs can race on this cache file.
-      const text = yield* Effect.scoped(
-        Effect.gen(function* () {
-          yield* Flock.effect(lockKey)
-          return yield* fetchAndWrite()
-        }),
-      )
+      const text = yield* Effect.gen(function* () {
+        return yield* fetchAndWrite()
+      }).pipe(flock.withLock(lockKey))
       return JSON.parse(text) as Record<string, Provider>
     }).pipe(Effect.withSpan("ModelsDev.populate"), Effect.orDie)
 
@@ -219,16 +221,14 @@ export const layer: Layer.Layer<Service, never, AppFileSystem.Service | HttpClie
 
     const refresh = Effect.fn("ModelsDev.refresh")(function* (force = false) {
       if (!force && (yield* fresh())) return
-      yield* Effect.scoped(
-        Effect.gen(function* () {
-          yield* Flock.effect(lockKey)
-          // Re-check under the lock: another process may have refreshed between
-          // our outer check and lock acquisition.
-          if (!force && (yield* fresh())) return
-          yield* fetchAndWrite()
-          yield* invalidate
-        }),
-      ).pipe(
+      yield* Effect.gen(function* () {
+        // Re-check under the lock: another process may have refreshed between
+        // our outer check and lock acquisition.
+        if (!force && (yield* fresh())) return
+        yield* fetchAndWrite()
+        yield* invalidate
+      }).pipe(
+        flock.withLock(lockKey),
         Effect.tapCause((cause) => Effect.logError("Failed to fetch models.dev", { cause })),
         Effect.ignore,
       )
@@ -241,6 +241,10 @@ export const layer: Layer.Layer<Service, never, AppFileSystem.Service | HttpClie
 
     return Service.of({ get, refresh })
   }),
+)
+
+export const layer: Layer.Layer<Service, never, AppFileSystem.Service | HttpClient.HttpClient> = serviceLayer.pipe(
+  Layer.provide(EffectFlock.defaultLayer),
 )
 
 export const defaultLayer: Layer.Layer<Service> = layer.pipe(

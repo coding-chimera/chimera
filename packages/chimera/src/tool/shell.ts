@@ -1,12 +1,10 @@
-import { Effect, Stream } from "effect"
+import { Effect, Fiber, FileSystem, Stream } from "effect"
 import os from "os"
-import { createWriteStream } from "node:fs"
 import * as Tool from "./tool"
 import path from "path"
 import * as Log from "@opencode-ai/core/util/log"
 import { containsPath, type InstanceContext } from "../project/instance-context"
 import { InstanceState } from "@/effect/instance-state"
-import { lazy } from "@/util/lazy"
 import { Language, type Node } from "web-tree-sitter"
 
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
@@ -278,12 +276,6 @@ function tail(text: string, maxLines: number, maxBytes: number) {
   }
 }
 
-const parse = Effect.fn("ShellTool.parse")(function* (command: string, ps: boolean) {
-  const tree = yield* Effect.promise(() => parser().then((p) => (ps ? p.ps : p.bash).parse(command)))
-  if (!tree) throw new Error("Failed to parse command")
-  return tree
-})
-
 const ask = Effect.fn("ShellTool.ask")(function* (ctx: Tool.Context, scan: Scan) {
   if (scan.dirs.size > 0) {
     const globs = Array.from(scan.dirs).map((dir) => {
@@ -325,7 +317,7 @@ function cmd(shell: string, command: string, cwd: string, env: NodeJS.ProcessEnv
     detached: process.platform !== "win32",
   })
 }
-const parser = lazy(async () => {
+const loadParsers = Effect.promise(async () => {
   const { Parser } = await import("web-tree-sitter")
   const { default: treeWasm } = await import("web-tree-sitter/tree-sitter.wasm" as string, {
     with: { type: "wasm" },
@@ -361,6 +353,13 @@ export const ShellTool = Tool.define(
     const trunc = yield* Truncate.Service
     const plugin = yield* Plugin.Service
 
+    const parsers = yield* Effect.cached(loadParsers)
+    const parse = Effect.fn("ShellTool.parse")(function* (command: string, ps: boolean) {
+      const parser = yield* parsers
+      const tree = (ps ? parser.ps : parser.bash).parse(command)
+      if (!tree) throw new Error("Failed to parse command")
+      return tree
+    })
     const cygpath = Effect.fn("ShellTool.cygpath")(function* (shell: string, text: string) {
       const lines = yield* spawner
         .lines(ChildProcess.make(shell, ["-lc", 'cygpath -w -- "$1"', "_", text]))
@@ -459,7 +458,8 @@ export const ShellTool = Tool.define(
       const list: Chunk[] = []
       let used = 0
       let file = ""
-      let sink: ReturnType<typeof createWriteStream> | undefined
+      let sink: FileSystem.File | undefined
+      const encoder = new TextEncoder()
       let cut = false
       let expired = false
       let aborted = false
@@ -475,7 +475,7 @@ export const ShellTool = Tool.define(
         Effect.gen(function* () {
           const handle = yield* spawner.spawn(cmd(input.shell, input.command, input.cwd, input.env))
 
-          yield* Effect.forkScoped(
+          const output = yield* Effect.forkScoped(
             Stream.runForEach(Stream.decodeText(handle.all), (chunk) => {
               const size = Buffer.byteLength(chunk, "utf-8")
               list.push({ text: chunk, size })
@@ -490,29 +490,32 @@ export const ShellTool = Tool.define(
               last = preview(last + chunk)
 
               if (file) {
-                sink?.write(chunk)
-              } else {
-                full += chunk
-                if (Buffer.byteLength(full, "utf-8") > limits.maxBytes) {
-                  return trunc.write(full).pipe(
-                    Effect.andThen((next) =>
-                      Effect.sync(() => {
-                        file = next
-                        cut = true
-                        sink = createWriteStream(next, { flags: "a" })
-                        full = ""
-                      }),
-                    ),
-                    Effect.andThen(
-                      ctx.metadata({
-                        metadata: {
-                          output: last,
-                          description: input.description,
-                        },
-                      }),
-                    ),
-                  )
-                }
+                return sink!.writeAll(encoder.encode(chunk)).pipe(
+                  Effect.andThen(
+                    ctx.metadata({
+                      metadata: {
+                        output: last,
+                        description: input.description,
+                      },
+                    }),
+                  ),
+                )
+              }
+
+              full += chunk
+              if (Buffer.byteLength(full, "utf-8") > limits.maxBytes) {
+                return Effect.gen(function* () {
+                  file = yield* trunc.write(full)
+                  cut = true
+                  sink = yield* fs.open(file, { flag: "a" })
+                  full = ""
+                  yield* ctx.metadata({
+                    metadata: {
+                      output: last,
+                      description: input.description,
+                    },
+                  })
+                })
               }
 
               return ctx.metadata({
@@ -548,6 +551,9 @@ export const ShellTool = Tool.define(
             yield* handle.kill({ forceKillAfter: "3 seconds" }).pipe(Effect.orDie)
           }
 
+          yield* Fiber.join(output)
+          if (sink) yield* sink.sync
+
           return exit.kind === "exit" ? exit.code : null
         }),
       ).pipe(Effect.orDie)
@@ -575,16 +581,6 @@ export const ShellTool = Tool.define(
 
       if (meta.length > 0) {
         output += "\n\n<shell_metadata>\n" + meta.join("\n") + "\n</shell_metadata>"
-      }
-      if (sink) {
-        const stream = sink
-        yield* Effect.promise(
-          () =>
-            new Promise<void>((resolve) => {
-              stream.end(() => resolve())
-              stream.on("error", () => resolve())
-            }),
-        )
       }
 
       const result = {

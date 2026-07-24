@@ -32,13 +32,17 @@ import { hasTheme, upsertTheme } from "../context/theme"
 import { Global } from "@opencode-ai/core/global"
 import { Filesystem } from "@/util/filesystem"
 import { Process } from "@/util/process"
-import { Flock } from "@opencode-ai/core/util/flock"
+import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { ConfigPaths } from "@/config/paths"
 import { INTERNAL_TUI_PLUGINS, type InternalTuiPlugin } from "./internal"
 import { setupSlots, Slot as View } from "./slots"
 import type { HostPluginApi, HostSlots } from "./slots"
 import { ConfigPlugin } from "@/config/plugin"
+import { TuiRuntime } from "../layer"
+import { Npm } from "@opencode-ai/core/npm"
+import { Effect } from "effect"
+import type { PluginTargetResolver } from "@/plugin/shared"
 
 type PluginLoad = {
   options: ConfigPlugin.Options | undefined
@@ -78,6 +82,8 @@ type RuntimeState = {
   plugins: PluginEntry[]
   plugins_by_id: Map<string, PluginEntry>
   pending: Map<string, ConfigPlugin.Origin>
+  waitForDependencies: () => Promise<void>
+  resolveTarget: PluginTargetResolver
 }
 
 const log = Log.create({ service: "tui.plugin" })
@@ -146,6 +152,10 @@ function resolveRoot(root: string) {
   return path.resolve(process.cwd(), root)
 }
 
+function withLock<A>(key: string, body: () => Promise<A>) {
+  return TuiRuntime.runPromise(EffectFlock.Service.use((flock) => flock.withLock(Effect.promise(body), key)))
+}
+
 function createThemeInstaller(
   meta: ConfigPlugin.Origin,
   root: string,
@@ -173,7 +183,7 @@ function createThemeInstaller(
       size,
     }
 
-    await Flock.withLock(`tui-theme:${dest}`, async () => {
+    await withLock(`tui-theme:${dest}`, async () => {
       const save = async () => {
         plugin.themes[name] = info
         await PluginMeta.setTheme(plugin.id, name, info).catch((error) => {
@@ -590,10 +600,15 @@ function applyInitialPluginEnabledState(state: RuntimeState, config: TuiConfig.I
   }
 }
 
-async function resolveExternalPlugins(list: ConfigPlugin.Origin[], wait: () => Promise<void>) {
+async function resolveExternalPlugins(
+  list: ConfigPlugin.Origin[],
+  wait: () => Promise<void>,
+  resolveTarget: PluginTargetResolver,
+) {
   return PluginLoader.loadExternal({
     items: list,
     kind: "tui",
+    resolveTarget,
     wait: async () => {
       await wait().catch((error) => {
         log.warn("failed waiting for tui plugin dependencies", { error })
@@ -793,7 +808,7 @@ async function addPluginBySpec(state: RuntimeState | undefined, raw: string) {
   }
   const ready = await WithInstance.provide({
     directory: state.directory,
-    fn: () => resolveExternalPlugins([cfg], () => TuiConfig.waitForDependencies()),
+    fn: () => resolveExternalPlugins([cfg], state.waitForDependencies, state.resolveTarget),
   }).catch((error) => {
     fail("failed to add tui plugin", { path: next, error })
     return [] as PluginLoad[]
@@ -854,7 +869,7 @@ async function installPluginBySpec(
     }
   }
 
-  const install = await installModulePlugin(spec)
+  const install = await installModulePlugin(spec, { resolve: state.resolveTarget })
   if (!install.ok) {
     const out = installDetail(install.error)
     return {
@@ -924,7 +939,12 @@ let loaded: Promise<void> | undefined
 let runtime: RuntimeState | undefined
 export const Slot = View
 
-export async function init(input: { api: HostPluginApi; config: TuiConfig.Info }) {
+export async function init(input: {
+  api: HostPluginApi
+  config: TuiConfig.Info
+  waitForDependencies?: () => Promise<void>
+  resolveTarget?: PluginTargetResolver
+}) {
   const cwd = process.cwd()
   if (loaded) {
     if (dir !== cwd) {
@@ -973,7 +993,12 @@ export async function dispose() {
   }
 }
 
-async function load(input: { api: Api; config: TuiConfig.Info }) {
+async function load(input: {
+  api: Api
+  config: TuiConfig.Info
+  waitForDependencies?: () => Promise<void>
+  resolveTarget?: PluginTargetResolver
+}) {
   const { api, config } = input
   const cwd = process.cwd()
   const slots = setupSlots(api)
@@ -984,6 +1009,13 @@ async function load(input: { api: Api; config: TuiConfig.Info }) {
     plugins: [],
     plugins_by_id: new Map(),
     pending: new Map(),
+    waitForDependencies:
+      input.waitForDependencies ??
+      (() => TuiRuntime.runPromise(TuiConfig.Service.use((svc) => svc.waitForDependencies()))),
+    resolveTarget:
+      input.resolveTarget ??
+      ((pkg) =>
+        TuiRuntime.runPromise(Npm.Service.use((npm) => npm.add(pkg).pipe(Effect.map((entry) => entry.directory))))),
   }
   runtime = next
   try {
@@ -1009,7 +1041,7 @@ async function load(input: { api: Api; config: TuiConfig.Info }) {
           })
         }
 
-        const ready = await resolveExternalPlugins(records, () => TuiConfig.waitForDependencies())
+        const ready = await resolveExternalPlugins(records, next.waitForDependencies, next.resolveTarget)
         await addExternalPluginEntries(next, ready)
 
         applyInitialPluginEnabledState(next, config)

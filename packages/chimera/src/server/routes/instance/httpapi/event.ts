@@ -1,4 +1,6 @@
 import { Bus } from "@/bus"
+import { InstanceRef } from "@/effect/instance-ref"
+import { InstanceStore } from "@/project/instance-store"
 import * as Log from "@opencode-ai/core/util/log"
 import { Effect, Schema } from "effect"
 import * as Stream from "effect/Stream"
@@ -37,7 +39,7 @@ function eventData(data: unknown): Sse.Event {
   }
 }
 
-function eventResponse(bus: Bus.Interface) {
+function eventResponse(bus: Bus.Interface, release: Effect.Effect<void>) {
   const events = bus.subscribeAll().pipe(Stream.takeUntil((event) => event.type === Bus.InstanceDisposed.type))
   const heartbeat = Stream.tick("10 seconds").pipe(
     Stream.drop(1),
@@ -51,6 +53,7 @@ function eventResponse(bus: Bus.Interface) {
       Stream.map(eventData),
       Stream.pipeThroughChannel(Sse.encode()),
       Stream.encodeText,
+      Stream.ensuring(release),
       Stream.ensuring(Effect.sync(() => log.info("event disconnected"))),
     ),
     {
@@ -67,10 +70,15 @@ function eventResponse(bus: Bus.Interface) {
 export const eventHandlers = HttpApiBuilder.group(EventApi, "event", (handlers) =>
   Effect.gen(function* () {
     const bus = yield* Bus.Service
+    const store = yield* InstanceStore.Service
     return handlers.handleRaw(
       "subscribe",
       Effect.fn("EventHttpApi.subscribe")(function* () {
-        return eventResponse(bus)
+        // Hold an instance lease for the stream lifetime so the LRU sweeper treats
+        // this subscriber as active usage instead of evicting a watched project.
+        const ref = yield* InstanceRef
+        const lease = ref ? yield* store.lease({ directory: ref.directory }) : undefined
+        return eventResponse(bus, lease?.release ?? Effect.void)
       }),
     )
   }),

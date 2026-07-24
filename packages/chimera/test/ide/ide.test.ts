@@ -1,6 +1,6 @@
 import { describe, expect, test, afterEach } from "bun:test"
 import { Ide } from "../../src/ide"
-
+import { Schema } from "effect"
 describe("ide", () => {
   const original = { ...process.env }
 
@@ -78,5 +78,22 @@ describe("ide", () => {
     process.env["OPENCODE_CALLER"] = "unknown"
 
     expect(Ide.alreadyInstalled()).toBe(false)
+  })
+})
+
+
+describe("IDE error payload schemas", () => {
+  test("keeps Effect, Zod, and NamedError payloads aligned", () => {
+    expect(Schema.decodeUnknownSync(Ide.AlreadyInstalledErrorPayloadSchema)({})).toEqual({})
+    expect(Ide.AlreadyInstalledErrorPayload.parse({})).toEqual({})
+    expect(new Ide.AlreadyInstalledError({}).toObject()).toEqual({ name: "AlreadyInstalledError", data: {} })
+
+    const failed = { stderr: "extension install failed" }
+    expect(Schema.decodeUnknownSync(Ide.InstallFailedErrorPayloadSchema)(failed)).toEqual(failed)
+    expect(Ide.InstallFailedErrorPayload.parse(failed)).toEqual(failed)
+    expect(new Ide.InstallFailedError(failed).toObject()).toEqual({ name: "InstallFailedError", data: failed })
+
+    expect(() => Schema.decodeUnknownSync(Ide.InstallFailedErrorPayloadSchema)({ stderr: 1 })).toThrow()
+    expect(Ide.InstallFailedErrorPayload.safeParse({ stderr: 1 }).success).toBe(false)
   })
 })

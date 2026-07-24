@@ -3,6 +3,7 @@ import { attach } from "./run-service"
 import * as Observability from "@opencode-ai/core/effect/observability"
 
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
+import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
 import { Bus } from "@/bus"
 import { Auth } from "@/auth"
 import { Account } from "@/account/account"
@@ -62,6 +63,7 @@ import { WebUIPreferences } from "@/server/webui-preferences"
 export const AppLayer = Layer.mergeAll(
   Npm.defaultLayer,
   AppFileSystem.defaultLayer,
+  EffectFlock.defaultLayer,
   Bus.defaultLayer,
   Auth.defaultLayer,
   Account.defaultLayer,

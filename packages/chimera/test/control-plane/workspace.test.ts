@@ -22,7 +22,7 @@ import { SessionTable } from "@/session/session.sql"
 import { SyncEvent } from "@/sync"
 import { EventSequenceTable } from "@/sync/event.sql"
 import { resetDatabase } from "../fixture/db"
-import { disposeAllInstances, provideTmpdirInstance, tmpdir } from "../fixture/fixture"
+import { disposeAllInstances, provideTmpdirInstance, tmpdir, tmpdirScoped } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { registerAdapter } from "../../src/control-plane/adapters"
 import { WorkspaceID } from "../../src/control-plane/schema"
@@ -32,13 +32,14 @@ import * as WorkspaceOld from "../../src/control-plane/workspace"
 import { AppRuntime } from "@/effect/app-runtime"
 import { InstanceStore } from "@/project/instance-store"
 import { InstanceBootstrap } from "@/project/bootstrap"
+import { InstanceRef } from "@/effect/instance-ref"
 
 void Log.init({ print: false })
 
 const testServerLayer = Layer.mergeAll(
   NodeHttpServer.layer(Http.createServer, { host: "127.0.0.1", port: 0 }),
   WorkspaceOld.defaultLayer.pipe(
-    Layer.provide(InstanceStore.defaultLayer),
+    Layer.provideMerge(InstanceStore.defaultLayer),
     Layer.provide(InstanceBootstrap.defaultLayer),
   ),
   SessionNs.defaultLayer,
@@ -689,29 +690,37 @@ describe("workspace-old CRUD", () => {
     })
   })
 
-  test("sessionWarp detaches a session to the local project and claims project ownership", async () => {
-    await withInstance(async (dir) => {
-      const previousType = unique("warp-detach-local")
-      const previous = workspaceInfo(Instance.project.id, previousType)
-      insertWorkspace(previous)
-      registerAdapter(Instance.project.id, previousType, localAdapter(path.join(dir, "warp-detach-local")).adapter)
-      const session = await AppRuntime.runPromise(SessionNs.Service.use((svc) => svc.create({})))
-      attachSessionToWorkspace(session.id, previous.id)
+  it.live("sessionWarp detaches using the Effect-provided instance project", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      const store = yield* InstanceStore.Service
+      const ctx = yield* store.load({ directory: dir })
 
-      await warpWorkspaceSession({ workspaceID: null, sessionID: session.id })
+      yield* Effect.gen(function* () {
+        const workspace = yield* WorkspaceOld.Service
+        const sessionService = yield* SessionNs.Service
+        const previousType = unique("warp-detach-local")
+        const previous = workspaceInfo(ctx.project.id, previousType)
+        insertWorkspace(previous)
+        registerAdapter(ctx.project.id, previousType, localAdapter(path.join(dir, "warp-detach-local")).adapter)
+        const session = yield* sessionService.create({})
+        attachSessionToWorkspace(session.id, previous.id)
 
-      expect(
-        Database.use((db) =>
-          db
-            .select({ workspaceID: SessionTable.workspace_id })
-            .from(SessionTable)
-            .where(eq(SessionTable.id, session.id))
-            .get(),
-        )?.workspaceID,
-      ).toBeNull()
-      expect(sessionSequenceOwner(session.id)).toBe(Instance.project.id)
-    })
-  })
+        yield* workspace.sessionWarp({ workspaceID: null, sessionID: session.id })
+
+        expect(
+          Database.use((db) =>
+            db
+              .select({ workspaceID: SessionTable.workspace_id })
+              .from(SessionTable)
+              .where(eq(SessionTable.id, session.id))
+              .get(),
+          )?.workspaceID,
+        ).toBeNull()
+        expect(sessionSequenceOwner(session.id)).toBe(ctx.project.id)
+      }).pipe(Effect.provideService(InstanceRef, ctx))
+    }),
+  )
 
   it.live("sessionWarp syncs previous remote history, replays it, steals, and claims the sequence", () => {
     const calls: FetchCall[] = []

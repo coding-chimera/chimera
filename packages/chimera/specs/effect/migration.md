@@ -1,6 +1,6 @@
 # Effect patterns
 
-Practical reference for new and migrated Effect code in `packages/opencode`.
+Practical reference for new and migrated Effect code in `packages/chimera`.
 
 ## Choose scope
 
@@ -218,10 +218,10 @@ This checklist is only about the service shape migration. Many of these services
 - [x] `ShareNext` — `share/share-next.ts`
 - [x] `SessionTodo` — `session/todo.ts`
 
-Still open at the service-shape level:
+Service-shape migration is complete:
 
-- [ ] `SyncEvent` — `sync/index.ts` (deferred pending sync with James)
-- [ ] `Workspace` — `control-plane/workspace.ts` (deferred pending sync with James)
+- [x] `SyncEvent` — `sync/index.ts` (service shape complete; runtime facade removed)
+- [x] `Workspace` — `control-plane/workspace.ts` (service shape and direct ambient reads migrated; the Promise adapter bridge and global `FiberMap` are intentional ABI and architecture boundaries, not migration gaps)
 
 ## Tool migration
 
@@ -238,8 +238,8 @@ Some already-effectified areas still use raw `Filesystem.*` or `Process.spawn` i
 
 ### `Process.spawn` → `ChildProcessSpawner` (yield in layer)
 
-- [x] `format/formatter.ts` — direct `Process.spawn()` checks removed (`air`, `uv`)
-- [ ] `lsp/server.ts` — multiple `Process.spawn()` installs/download helpers
+- [x] `format/formatter.ts` — formatter process execution is fully on `ChildProcessSpawner`
+- [x] `lsp/server.ts` — installer and download process execution migrated to `ChildProcessSpawner`
 
 ## Filesystem consolidation
 
@@ -249,10 +249,13 @@ Tool-specific filesystem cleanup notes live in `tools.md`.
 
 ## Primitives & utilities
 
-- [ ] `util/lock.ts` — reader-writer lock → Effect Semaphore/Permit
-- [ ] `util/flock.ts` — file-based distributed lock with heartbeat → Effect.repeat + addFinalizer
-- [ ] `util/process.ts` — child process spawn wrapper → return Effect instead of Promise
-- [ ] `util/lazy.ts` — replace uses in Effect code with Effect.cached; keep for sync-only code
+- [x] `util/lock.ts` — removed after reaching zero callers
+- [x] `util/flock.ts` — replaced by `EffectFlock`; legacy implementation removed
+- [x] `util/process.ts` — all Effect callers migrated; plain async, UI, and platform utility boundaries intentionally retain their native process APIs
+- [x] `util/lazy.ts` — Effect async paths use `Effect.cached`; synchronous and resettable lazy values intentionally remain
+- **Clipboard boundary:** intentionally remains a plain-async platform integration until an Effect-native owner is introduced; it is not current migration backlog.
+- **Hono factories:** intentionally remain compatibility boundaries; deletion is tracked in `routes.md`.
+- **Retained fallbacks:** intentionally remain available for compatibility; final retirement is tracked in `routes.md`.
 
 ## Destroying the facades
 
@@ -283,16 +286,10 @@ For each service, the migration is roughly:
 
 ### Migration log
 
-- `SessionStatus` — migrated 2026-04-11. Replaced the last route and retry-policy callers with `AppRuntime.runPromise(SessionStatus.Service.use(...))` and removed the `makeRuntime(...)` facade.
-- `ShareNext` — migrated 2026-04-11. Swapped remaining async callers to `AppRuntime.runPromise(ShareNext.Service.use(...))`, removed the `makeRuntime(...)` facade, and kept instance bootstrap on the shared app runtime.
-- `SessionTodo` — migrated 2026-04-10. Already matched the target service shape in `session/todo.ts`: single namespace, traced Effect methods, and no `makeRuntime(...)` facade remained; checklist updated to reflect the completed migration.
-- `Storage` — migrated 2026-04-10. One production caller (`Session.diff`) and all storage.test.ts tests converted to effectful style. Facades and `makeRuntime` removed.
-- `SessionRunState` — migrated 2026-04-11. Single caller in `server/routes/instance/session.ts` converted; facade removed.
-- `Account` — migrated 2026-04-11. Callers in `server/routes/instance/experimental.ts` and `cli/cmd/account.ts` converted; facade removed.
-- `Instruction` — migrated 2026-04-11. Test-only callers converted; facade removed.
-- `FileWatcher` — migrated 2026-04-11. Callers in `project/bootstrap.ts` and test converted; facade removed.
-- `Question` — migrated 2026-04-11. Callers in `server/routes/instance/question.ts` and test converted; facade removed.
-- `Truncate` — migrated 2026-04-11. Caller in `tool/tool.ts` and test converted; facade removed.
+- 2026-04-10–11: completed the service-shape and facade-removal wave for Session, Storage, Account, Instruction, FileWatcher, Question, and Truncate surfaces.
+- 2026-07-24: closed SyncEvent and Workspace service-shape work; the Workspace Promise adapter and global `FiberMap` remain intentional boundaries.
+- 2026-07-24: migrated the LSP installer, formatter processes, Effect process callers, flock, and async lazy paths; removed the zero-caller lock and legacy flock utilities.
+- Compatibility retirement work is tracked in `routes.md`; the platform and fallback boundaries above are not open primitive-migration items.
 
 ## Route handler effectification
 

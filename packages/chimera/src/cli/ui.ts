@@ -1,4 +1,6 @@
+import { Schema } from "effect"
 import z from "zod"
+import { zod, ZodOverride } from "@/util/effect-zod"
 import { EOL } from "os"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { logo as glyphs } from "./logo"
@@ -10,7 +12,11 @@ const wordmark = [
   `▀▀▀ ▀  ▀ ▀▀▀ ▀   ▀ ▀▀▀ ▀ ▀ ▀ ▀`,
 ]
 
-export const CancelledError = NamedError.create("UICancelledError", z.void())
+export const CancelledErrorPayloadSchema = Schema.Undefined.annotate({
+  [ZodOverride]: z.void(),
+})
+export const CancelledErrorPayload = zod(CancelledErrorPayloadSchema) as z.ZodVoid
+export const CancelledError = NamedError.create("UICancelledError", CancelledErrorPayload)
 
 export const Style = {
   TEXT_HIGHLIGHT: "\x1b[96m",

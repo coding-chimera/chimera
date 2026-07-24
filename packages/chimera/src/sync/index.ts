@@ -12,7 +12,6 @@ import { Flag } from "@opencode-ai/core/flag/flag"
 import { Context, Effect, Layer, Schema as EffectSchema } from "effect"
 import { zodObject } from "@/util/effect-zod"
 import type { DeepMutable } from "@/util/schema"
-import { makeRuntime } from "@/effect/run-service"
 import { serviceUse } from "@/effect/service-use"
 import { InstanceState } from "@/effect/instance-state"
 
@@ -190,8 +189,6 @@ export const defaultLayer = layer
 
 export const use = serviceUse(Service)
 
-const runtime = makeRuntime(Service, defaultLayer)
-
 export const registry = new Map<string, Definition>()
 let projectors: Map<Definition, ProjectorFunc> | undefined
 const versions = new Map<string, number>()
@@ -336,22 +333,6 @@ function process<Def extends Definition>(
       }
     })
   })
-}
-
-export function replay(event: SerializedEvent, options?: { publish: boolean; ownerID?: string }) {
-  return runtime.runSync((sync) => sync.replay(event, options))
-}
-
-export function replayAll(events: SerializedEvent[], options?: { publish: boolean; ownerID?: string }) {
-  return runtime.runSync((sync) => sync.replayAll(events, options))
-}
-
-export function run<Def extends Definition>(def: Def, data: Event<Def>["data"], options?: { publish?: boolean }) {
-  return runtime.runSync((sync) => sync.run(def, data, options))
-}
-
-export function remove(aggregateID: string) {
-  return runtime.runSync((sync) => sync.remove(aggregateID))
 }
 
 export function claim(aggregateID: string, ownerID: string) {

@@ -55,7 +55,7 @@ type ListenOptions = CorsOptions & {
 }
 
 const DefaultHono = lazy(() =>
-  withBackend({ backend: "hono", reason: "stable" }, createHono({}, { backend: "hono", reason: "stable" })),
+  withBackend({ backend: "hono", reason: "env" }, createHono({}, { backend: "hono", reason: "env" })),
 )
 const DefaultHttpApi = lazy(() => createDefaultHttpApi())
 

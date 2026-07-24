@@ -26,7 +26,7 @@ export type Event =
   | EventWorkBriefUpdated
   | EventTuiPromptAppend
   | EventTuiCommandExecute
-  | EventTuiToastShow1
+  | EventTuiToastShow
   | EventTuiSessionSelect
   | EventMcpToolsChanged
   | EventMcpBrowserOpenFailed
@@ -288,61 +288,6 @@ export type WorkBrief = {
   openQuestions: Array<string>
   relevantEvidence: Array<string>
   closeout: Array<string>
-}
-
-export type EventTuiPromptAppend = {
-  id: string
-  type: "tui.prompt.append"
-  properties: {
-    text: string
-  }
-}
-
-export type EventTuiCommandExecute = {
-  id: string
-  type: "tui.command.execute"
-  properties: {
-    command:
-      | "session.list"
-      | "session.new"
-      | "session.share"
-      | "session.interrupt"
-      | "session.compact"
-      | "session.page.up"
-      | "session.page.down"
-      | "session.line.up"
-      | "session.line.down"
-      | "session.half.page.up"
-      | "session.half.page.down"
-      | "session.first"
-      | "session.last"
-      | "prompt.clear"
-      | "prompt.submit"
-      | "agent.cycle"
-      | string
-  }
-}
-
-export type EventTuiToastShow = {
-  id: string
-  type: "tui.toast.show"
-  properties: {
-    title?: string
-    message: string
-    variant: "info" | "success" | "warning" | "error"
-    duration?: number
-  }
-}
-
-export type EventTuiSessionSelect = {
-  id: string
-  type: "tui.session.select"
-  properties: {
-    /**
-     * Session ID to navigate to
-     */
-    sessionID: string
-  }
 }
 
 export type Project = {
@@ -1005,6 +950,7 @@ export type ServerConfig = {
   mdns?: boolean
   mdnsDomain?: string
   cors?: Array<string>
+  maxActiveInstances?: number
 }
 
 export type PermissionActionConfig = "ask" | "allow" | "deny"
@@ -1028,6 +974,10 @@ export type PermissionConfig =
       external_directory?: PermissionRuleConfig
       todowrite?: PermissionActionConfig
       workbrief?: PermissionActionConfig
+      memory_remember?: PermissionActionConfig
+      memory_list?: PermissionActionConfig
+      memory_forget?: PermissionActionConfig
+      memory_read?: PermissionActionConfig
       question?: PermissionActionConfig
       webfetch?: PermissionActionConfig
       websearch?: PermissionActionConfig
@@ -1118,6 +1068,8 @@ export type ProviderConfig = {
       name?: string
       family?: string
       backend_semantics?: "openai" | "codex"
+      capability_model_id?: string
+      reasoning_efforts?: Array<"none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max">
       release_date?: string
       attachment?: boolean
       reasoning?: boolean
@@ -1390,6 +1342,8 @@ export type Model = {
   name: string
   family?: string
   backend_semantics?: "openai" | "codex"
+  capability_model_id?: string
+  reasoning_efforts?: Array<"none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max">
   capabilities: {
     temperature: boolean
     reasoning: boolean
@@ -1743,6 +1697,7 @@ export type MemoryStatus = {
   enabled: boolean
   useMemories: boolean
   generateMemories: boolean
+  dedicatedTools: boolean
   global?: MemoryScopeStats
   project?: MemoryScopeStats
 }
@@ -1975,14 +1930,16 @@ export type V2SessionMessagesResponse = {
   }
 }
 
-export type EventTuiPromptAppend2 = {
+export type EventTuiPromptAppend = {
+  id: string
   type: "tui.prompt.append"
   properties: {
     text: string
   }
 }
 
-export type EventTuiCommandExecute2 = {
+export type EventTuiCommandExecute = {
+  id: string
   type: "tui.command.execute"
   properties: {
     command:
@@ -2006,7 +1963,8 @@ export type EventTuiCommandExecute2 = {
   }
 }
 
-export type EventTuiToastShow2 = {
+export type EventTuiToastShow = {
+  id: string
   type: "tui.toast.show"
   properties: {
     title?: string
@@ -2016,7 +1974,8 @@ export type EventTuiToastShow2 = {
   }
 }
 
-export type EventTuiSessionSelect2 = {
+export type EventTuiSessionSelect = {
+  id: string
   type: "tui.session.select"
   properties: {
     /**
@@ -2761,6 +2720,57 @@ export type EventWorkBriefUpdated = {
   properties: {
     sessionID: string
     brief: WorkBrief
+  }
+}
+
+export type EventTuiPromptAppend2 = {
+  type: "tui.prompt.append"
+  properties: {
+    text: string
+  }
+}
+
+export type EventTuiCommandExecute2 = {
+  type: "tui.command.execute"
+  properties: {
+    command:
+      | "session.list"
+      | "session.new"
+      | "session.share"
+      | "session.interrupt"
+      | "session.compact"
+      | "session.page.up"
+      | "session.page.down"
+      | "session.line.up"
+      | "session.line.down"
+      | "session.half.page.up"
+      | "session.half.page.down"
+      | "session.first"
+      | "session.last"
+      | "prompt.clear"
+      | "prompt.submit"
+      | "agent.cycle"
+      | string
+  }
+}
+
+export type EventTuiToastShow2 = {
+  type: "tui.toast.show"
+  properties: {
+    title?: string
+    message: string
+    variant: "info" | "success" | "warning" | "error"
+    duration?: number
+  }
+}
+
+export type EventTuiSessionSelect2 = {
+  type: "tui.session.select"
+  properties: {
+    /**
+     * Session ID to navigate to
+     */
+    sessionID: string
   }
 }
 
@@ -3662,17 +3672,6 @@ export type SessionMessage =
   | SessionMessageShell
   | SessionMessageAssistant
   | SessionMessageCompaction
-
-export type EventTuiToastShow1 = {
-  id: string
-  type: "tui.toast.show"
-  properties: {
-    title?: string
-    message: string
-    variant: "info" | "success" | "warning" | "error"
-    duration?: number
-  }
-}
 
 export type EventChimeraGraphReady1 = {
   id: string
@@ -4662,8 +4661,8 @@ export type GraphFileSymbolsData = {
     workspace?: string
     path: string
     kind?: string
-    startLine?: string
-    endLine?: string
+    startLine?: number
+    endLine?: number
     limit?: number
   }
   url: "/graph/file/symbols"
@@ -4726,7 +4725,7 @@ export type GraphImpactData = {
     workspace?: string
     nodeID?: string
     path?: string
-    depth?: string
+    depth?: number
   }
   url: "/graph/impact"
 }
@@ -7841,7 +7840,7 @@ export type PtyConnectData = {
   query?: {
     directory?: string
     workspace?: string
-    cursor?: number
+    cursor?: string
     ticket?: string
   }
   url: "/pty/{ptyID}/connect"

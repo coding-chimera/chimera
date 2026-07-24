@@ -1,7 +1,8 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, spyOn, test } from "bun:test"
 import { Effect, Layer, ManagedRuntime } from "effect"
 import os from "os"
 import path from "path"
+import fs from "fs/promises"
 import { Config } from "@/config/config"
 import { Shell } from "../../src/shell/shell"
 import { ShellTool } from "../../src/tool/shell"
@@ -18,6 +19,7 @@ import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { Plugin } from "../../src/plugin"
 import { readOracleResults } from "../../src/chimera/store"
 import { getCodeGraphDir } from "../../src/graph"
+import { Parser } from "web-tree-sitter"
 
 const runtime = ManagedRuntime.make(
   Layer.mergeAll(
@@ -160,6 +162,34 @@ describe("tool.shell", () => {
         expect(result.metadata.output).toContain("test")
       },
     })
+  })
+
+  test("shares parser initialization across concurrent executions", async () => {
+    await using tmp = await tmpdir()
+    const init = spyOn(Parser, "init")
+    try {
+      await WithInstance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const bash = await initShell()
+          const results = await Effect.runPromise(
+            Effect.all(
+              [
+                bash.execute({ command: "echo first", description: "Echo first text" }, ctx),
+                bash.execute({ command: "echo second", description: "Echo second text" }, ctx),
+              ],
+              { concurrency: "unbounded" },
+            ),
+          )
+
+          expect(results[0].output).toContain("first")
+          expect(results[1].output).toContain("second")
+        },
+      })
+      expect(init).toHaveBeenCalledTimes(1)
+    } finally {
+      init.mockRestore()
+    }
   })
 
   test("falls back from terminal-only configured shell", async () => {
@@ -1163,6 +1193,41 @@ describe("tool.shell abort", () => {
     })
   }, 15_000)
 
+
+  test("closes the incremental output file after abort", async () => {
+    await using tmp = await tmpdir()
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const bash = await initShell()
+        const controller = new AbortController()
+        const result = await Effect.runPromise(
+          bash.execute(
+            {
+              command: `${fill("bytes", Truncate.MAX_BYTES + 10_000)} && echo spill-ready && sleep 30`,
+              description: "Abort after spilling output",
+            },
+            {
+              ...ctx,
+              abort: controller.signal,
+              metadata: (input) =>
+                Effect.sync(() => {
+                  const output = (input.metadata as { output?: string })?.output
+                  if (output?.includes("spill-ready")) controller.abort()
+                }),
+            },
+          ),
+        )
+
+        expect(result.output).toContain("User aborted the command")
+        const outputPath = (result.metadata as { outputPath?: string }).outputPath
+        expect(outputPath).toBeTruthy()
+        const renamed = path.join(tmp.path, "closed-output.txt")
+        await fs.rename(outputPath!, renamed)
+        expect((await fs.readFile(renamed, "utf-8")).length).toBeGreaterThan(Truncate.MAX_BYTES)
+      },
+    })
+  }, 15_000)
   test("terminates command on timeout", async () => {
     await WithInstance.provide({
       directory: projectRoot,

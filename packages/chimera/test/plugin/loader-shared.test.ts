@@ -1,5 +1,5 @@
-import { afterAll, afterEach, describe, expect, spyOn, test } from "bun:test"
-import { Effect, Layer } from "effect"
+import { afterAll, afterEach, describe, expect, mock, test } from "bun:test"
+import { Effect, Layer, Option } from "effect"
 import fs from "fs/promises"
 import path from "path"
 import { pathToFileURL } from "url"
@@ -28,7 +28,7 @@ afterEach(async () => {
   await disposeAllInstances()
 })
 
-async function load(dir: string) {
+async function load(dir: string, resolveTarget: (pkg: string) => Promise<string> = async () => "") {
   const source = path.join(dir, "chimera.json")
   const config = (await Bun.file(source).json()) as { plugin?: Array<string | [string, Record<string, unknown>]> }
   const plugins = config.plugin ?? []
@@ -47,6 +47,16 @@ async function load(dir: string) {
                 plugin_origins: plugins.map((plugin) => ({ spec: plugin, source, scope: "local" as const })),
               }),
             directories: () => Effect.succeed([dir]),
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(Npm.Service)({
+            add: (pkg) =>
+              Effect.promise(() => resolveTarget(pkg)).pipe(
+                Effect.map((directory) => ({ directory, entrypoint: Option.none<string>() })),
+              ),
+            install: () => Effect.void,
+            which: () => Effect.succeed(Option.none<string>()),
           }),
         ),
       ),
@@ -256,13 +266,10 @@ describe("plugin.loader.shared", () => {
       },
     })
 
-    const add = spyOn(Npm, "add").mockImplementation(async (pkg) => {
-      if (pkg === "acme-plugin") return { directory: tmp.extra.acme, entrypoint: undefined }
-      return { directory: tmp.extra.scope, entrypoint: undefined }
-    })
+    const add = mock(async (pkg: string) => (pkg === "acme-plugin@latest" ? tmp.extra.acme : tmp.extra.scope))
 
     try {
-      await load(tmp.path)
+      await load(tmp.path, add)
 
       expect(add.mock.calls).toContainEqual(["acme-plugin@latest"])
       expect(add.mock.calls).toContainEqual(["scope-plugin@2.3.4"])
@@ -319,10 +326,10 @@ describe("plugin.loader.shared", () => {
       },
     })
 
-    const install = spyOn(Npm, "add").mockResolvedValue({ directory: tmp.extra.mod, entrypoint: undefined })
+    const install = mock(async () => tmp.extra.mod)
 
     try {
-      await load(tmp.path)
+      await load(tmp.path, install)
       expect(await Bun.file(tmp.extra.mark).text()).toBe("called")
     } finally {
       install.mockRestore()
@@ -376,10 +383,10 @@ describe("plugin.loader.shared", () => {
       },
     })
 
-    const install = spyOn(Npm, "add").mockResolvedValue({ directory: tmp.extra.mod, entrypoint: undefined })
+    const install = mock(async () => tmp.extra.mod)
 
     try {
-      await load(tmp.path)
+      await load(tmp.path, install)
       expect(await Bun.file(tmp.extra.mark).text()).toBe("called")
     } finally {
       install.mockRestore()
@@ -428,10 +435,10 @@ describe("plugin.loader.shared", () => {
       },
     })
 
-    const install = spyOn(Npm, "add").mockResolvedValue({ directory: tmp.extra.mod, entrypoint: undefined })
+    const install = mock(async () => tmp.extra.mod)
 
     try {
-      await load(tmp.path)
+      await load(tmp.path, install)
       expect(await Bun.file(tmp.extra.mark).text()).toBe("called")
     } finally {
       install.mockRestore()
@@ -473,10 +480,10 @@ describe("plugin.loader.shared", () => {
       },
     })
 
-    const install = spyOn(Npm, "add").mockResolvedValue({ directory: tmp.extra.mod, entrypoint: undefined })
+    const install = mock(async () => tmp.extra.mod)
 
     try {
-      await load(tmp.path)
+      await load(tmp.path, install)
       const called = await Bun.file(tmp.extra.mark)
         .text()
         .then(() => true)
@@ -536,10 +543,10 @@ describe("plugin.loader.shared", () => {
       },
     })
 
-    const install = spyOn(Npm, "add").mockResolvedValue({ directory: tmp.extra.mod, entrypoint: undefined })
+    const install = mock(async () => tmp.extra.mod)
 
     try {
-      await load(tmp.path)
+      await load(tmp.path, install)
       const called = await Bun.file(tmp.extra.mark)
         .text()
         .then(() => true)
@@ -566,10 +573,10 @@ describe("plugin.loader.shared", () => {
       },
     })
 
-    const install = spyOn(Npm, "add").mockResolvedValue({ directory: "", entrypoint: undefined })
+    const install = mock(async (_pkg: string) => "")
 
     try {
-      await load(tmp.path)
+      await load(tmp.path, install)
 
       const pkgs = install.mock.calls.map((call) => call[0])
       expect(pkgs).toContain("regular-plugin@1.0.0")
@@ -606,10 +613,12 @@ describe("plugin.loader.shared", () => {
       },
     })
 
-    const install = spyOn(Npm, "add").mockRejectedValue(new Error("boom"))
+    const install = mock(async () => {
+      throw new Error("boom")
+    })
 
     try {
-      await load(tmp.path)
+      await load(tmp.path, install)
       expect(install).toHaveBeenCalledWith("broken-plugin@9.9.9")
       expect(await Bun.file(tmp.extra.mark).text()).toBe("ok")
     } finally {
@@ -945,7 +954,7 @@ export default {
       },
     })
 
-    const install = spyOn(Npm, "add").mockResolvedValue({ directory: tmp.extra.mod, entrypoint: undefined })
+    const install = mock(async () => tmp.extra.mod)
     const missing: string[] = []
 
     try {
@@ -958,6 +967,7 @@ export default {
           },
         ],
         kind: "tui",
+        resolveTarget: install,
         missing: async (item) => {
           if (!item.pkg) return
           const themes = readPackageThemes(item.spec, item.pkg)
@@ -1014,7 +1024,7 @@ export default {
       },
     })
 
-    const install = spyOn(Npm, "add").mockResolvedValue({ directory: tmp.extra.mod, entrypoint: undefined })
+    const install = mock(async () => tmp.extra.mod)
 
     try {
       const loaded = await PluginLoader.loadExternal({
@@ -1026,6 +1036,7 @@ export default {
           },
         ],
         kind: "tui",
+        resolveTarget: install,
         finish: async (item) => {
           if (!item.pkg) return
           return {
@@ -1153,7 +1164,9 @@ export default {
   })
 
   test("does not wait or retry npm plugin failures", async () => {
-    const install = spyOn(Npm, "add").mockRejectedValue(new Error("boom"))
+    const install = mock(async () => {
+      throw new Error("boom")
+    })
     let wait = 0
     const errors: Array<[string, boolean]> = []
 
@@ -1167,6 +1180,7 @@ export default {
           },
         ],
         kind: "tui",
+        resolveTarget: install,
         wait: async () => {
           wait += 1
         },

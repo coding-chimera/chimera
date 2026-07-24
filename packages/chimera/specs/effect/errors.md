@@ -252,24 +252,19 @@ After enough route groups declare their expected errors:
 - Leave one final unknown-defect fallback that logs server-side and returns a
   safe generic `500` body.
 
-## Inventory Checklist
+## Per-change review questions
 
-Use this checklist when touching a service or route group.
+Use these questions when touching a service or route group. They are review
+guidance, not repository-wide migration status items.
 
-- [ ] Does the service interface expose every expected failure in the Effect
-      error type?
-- [ ] Are user-caused, provider-caused, IO, auth, missing-resource, and busy-state
-      failures modeled as typed errors instead of defects?
-- [ ] Does the service avoid importing HTTP status, `HttpApiError`, or response
-      classes?
-- [ ] Does the handler map each service error into a declared endpoint error?
-- [ ] Does the endpoint `error` field include every public error the handler can
-      emit?
-- [ ] Does OpenAPI/SDK output either stay byte-identical or have an explicitly
-      reviewed diff?
-- [ ] Do tests cover both service-level error typing and HTTP-level status/body?
-- [ ] Did the PR remove any now-unneeded case from the temporary compatibility
-      middleware?
+- Does the service interface expose every expected failure in the Effect error type?
+- Are user-caused, provider-caused, IO, auth, missing-resource, and busy-state failures modeled as typed errors instead of defects?
+- Does the service avoid importing HTTP status, `HttpApiError`, or response classes?
+- Does the handler map each service error into a declared endpoint error?
+- Does the endpoint `error` field include every public error the handler can emit?
+- Does OpenAPI/SDK output either stay byte-identical or have an explicitly reviewed diff?
+- Do tests cover both service-level error typing and HTTP-level status/body?
+- Did the PR remove any now-unneeded case from the temporary compatibility middleware?
 
 ## Testing Requirements
 

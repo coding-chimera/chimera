@@ -10,6 +10,7 @@ import { Plugin } from "@/plugin"
 import { Auth } from "@/auth"
 import { Bus } from "@/bus"
 import { TestConfig } from "../fixture/config"
+import { Npm } from "@opencode-ai/core/npm"
 
 function layer(directory: string, plugins: string[]) {
   return ProviderAuth.layer.pipe(
@@ -31,6 +32,7 @@ function layer(directory: string, plugins: string[]) {
             directories: () => Effect.succeed([directory]),
           }),
         ),
+        Layer.provide(Npm.defaultLayer),
       ),
     ),
   )

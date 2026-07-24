@@ -1,5 +1,6 @@
 import type { Argv, InferredOptionTypes } from "yargs"
 import { Config } from "@/config/config"
+import { applyServerInstanceDefaults } from "@/project/instance-store"
 import { Effect } from "effect"
 
 const options = {
@@ -38,6 +39,7 @@ export function withNetworkOptions<T>(yargs: Argv<T>) {
 }
 export const resolveNetworkOptions = Effect.fn("Cli.resolveNetworkOptions")(function* (args: NetworkOptions) {
   const config = yield* Config.Service.use((cfg) => cfg.getGlobal())
+  applyServerInstanceDefaults({ maxActiveInstances: config?.server?.maxActiveInstances })
   return resolveNetworkOptionsNoConfig(args, config)
 })
 

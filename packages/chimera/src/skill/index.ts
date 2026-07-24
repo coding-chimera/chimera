@@ -2,7 +2,7 @@ import path from "path"
 import { pathToFileURL } from "url"
 import z from "zod"
 import { Effect, Layer, Context, Schema } from "effect"
-import { zod } from "@/util/effect-zod"
+import { zod, zodObject, ZodOverride } from "@/util/effect-zod"
 import { withStatics } from "@/util/schema"
 import { NamedError } from "@opencode-ai/core/util/error"
 import type { Agent } from "@/agent/agent"
@@ -33,23 +33,25 @@ export const Info = Schema.Struct({
 }).pipe(withStatics((s) => ({ zod: zod(s) })))
 export type Info = Schema.Schema.Type<typeof Info>
 
-export const InvalidError = NamedError.create(
-  "SkillInvalidError",
-  z.object({
-    path: z.string(),
-    message: z.string().optional(),
-    issues: z.custom<z.core.$ZodIssue[]>().optional(),
-  }),
-)
+const ZodIssues = Schema.declare<z.core.$ZodIssue[]>((_input): _input is z.core.$ZodIssue[] => true).annotate({
+  [ZodOverride]: z.custom<z.core.$ZodIssue[]>(),
+})
 
-export const NameMismatchError = NamedError.create(
-  "SkillNameMismatchError",
-  z.object({
-    path: z.string(),
-    expected: z.string(),
-    actual: z.string(),
-  }),
-)
+export const InvalidErrorPayloadSchema = Schema.Struct({
+  path: Schema.String,
+  message: Schema.optional(Schema.String),
+  issues: Schema.optional(ZodIssues),
+})
+export const InvalidErrorPayload = zodObject(InvalidErrorPayloadSchema)
+export const InvalidError = NamedError.create("SkillInvalidError", InvalidErrorPayload)
+
+export const NameMismatchErrorPayloadSchema = Schema.Struct({
+  path: Schema.String,
+  expected: Schema.String,
+  actual: Schema.String,
+})
+export const NameMismatchErrorPayload = zodObject(NameMismatchErrorPayloadSchema)
+export const NameMismatchError = NamedError.create("SkillNameMismatchError", NameMismatchErrorPayload)
 
 type State = {
   skills: Record<string, Info>

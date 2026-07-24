@@ -18,6 +18,7 @@ void Log.init({ print: false })
 
 const original = {
   OPENCODE_EXPERIMENTAL_HTTPAPI: Flag.OPENCODE_EXPERIMENTAL_HTTPAPI,
+  OPENCODE_SERVER_HONO: Flag.OPENCODE_SERVER_HONO,
   OPENCODE_SERVER_PASSWORD: Flag.OPENCODE_SERVER_PASSWORD,
   OPENCODE_SERVER_USERNAME: Flag.OPENCODE_SERVER_USERNAME,
 }
@@ -91,17 +92,24 @@ function openApiRequestBodies(spec: OpenApiSpec) {
 
 type OpenApiSpec = {
   components?: {
-    schemas?: Record<string, unknown>
+    schemas?: Record<string, OpenApiSchema>
   }
   paths: Record<string, Partial<Record<(typeof methods)[number], Operation>>>
 }
 
 type OpenApiSchema = {
   $ref?: string
-  allOf?: unknown[]
-  anyOf?: unknown[]
-  oneOf?: unknown[]
-  properties?: Record<string, unknown>
+  additionalProperties?: boolean | OpenApiSchema
+  allOf?: OpenApiSchema[]
+  anyOf?: OpenApiSchema[]
+  description?: string
+  enum?: unknown[]
+  maximum?: number
+  oneOf?: OpenApiSchema[]
+  pattern?: string
+  properties?: Record<string, OpenApiSchema>
+  propertyNames?: OpenApiSchema
+  required?: string[]
   type?: string | string[]
 }
 
@@ -136,6 +144,43 @@ function sortSchema(input: unknown): unknown {
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([key, value]) => [key, sortSchema(value)]),
   )
+}
+
+function sdkComponentSchema(input: unknown): unknown {
+  if (Array.isArray(input)) return input.map(sdkComponentSchema)
+  if (!input || typeof input !== "object") return input
+  return Object.fromEntries(
+    Object.entries(input)
+      .filter(([key, value]) =>
+          key !== "description" &&
+          key !== "propertyNames" &&
+          !(key === "additionalProperties" && value === false) &&
+          !(key === "maximum" && value === Number.MAX_SAFE_INTEGER),
+      )
+      .map(([key, value]) => [
+        key === "const" ? "enum" : key,
+        key === "const"
+          ? [value]
+          : (key === "enum" || key === "required") && Array.isArray(value)
+            ? [...value].sort()
+            : sdkComponentSchema(value),
+      ] as const)
+      .sort(([left], [right]) => left.localeCompare(right)),
+  )
+}
+
+function componentSchema(spec: OpenApiSpec, name: string) {
+  return spec.components?.schemas?.[name]
+}
+
+function requestBodySchema(input: {
+  spec: OpenApiSpec
+  path: string
+  method: (typeof methods)[number]
+}) {
+  const body = input.spec.paths[input.path]?.[input.method]?.requestBody
+  if (!body || typeof body !== "object" || !("content" in body)) return
+  return (body as RequestBody).content?.["application/json"]?.schema
 }
 
 function parameterSchema(input: {
@@ -206,6 +251,7 @@ function fileUrl(input?: { directory?: string; token?: string }) {
 
 afterEach(async () => {
   Flag.OPENCODE_EXPERIMENTAL_HTTPAPI = original.OPENCODE_EXPERIMENTAL_HTTPAPI
+  Flag.OPENCODE_SERVER_HONO = original.OPENCODE_SERVER_HONO
   Flag.OPENCODE_SERVER_PASSWORD = original.OPENCODE_SERVER_PASSWORD
   Flag.OPENCODE_SERVER_USERNAME = original.OPENCODE_SERVER_USERNAME
   await disposeAllInstances()
@@ -213,12 +259,16 @@ afterEach(async () => {
 })
 
 describe("HttpApi server", () => {
-  test("keeps Effect HttpApi behind the feature flag", () => {
+  test("defaults to Effect HttpApi and keeps an explicit Hono fallback", () => {
     Flag.OPENCODE_EXPERIMENTAL_HTTPAPI = false
-    expect(Server.backend()).toEqual({ backend: "hono", reason: "stable" })
+    Flag.OPENCODE_SERVER_HONO = false
+    expect(Server.backend()).toEqual({ backend: "effect-httpapi", reason: "stable" })
 
     Flag.OPENCODE_EXPERIMENTAL_HTTPAPI = true
     expect(Server.backend()).toEqual({ backend: "effect-httpapi", reason: "env" })
+
+    Flag.OPENCODE_SERVER_HONO = true
+    expect(Server.backend()).toEqual({ backend: "hono", reason: "env" })
   })
 
   test("covers every generated OpenAPI route with Effect HttpApi contracts", async () => {
@@ -258,7 +308,7 @@ describe("HttpApi server", () => {
     ).toEqual([])
   })
 
-  test("matches SDK-affecting query parameter schemas", async () => {
+  test("matches SDK-affecting query parameter schemas", () => {
     const effect = effectOpenApi()
 
     expect(parameterSchema({ spec: effect, path: "/session", method: "get", name: "roots" })).toEqual({
@@ -282,8 +332,109 @@ describe("HttpApi server", () => {
       minimum: 0,
       maximum: Number.MAX_SAFE_INTEGER,
     })
+    expect(
+      parameterSchema({ spec: effect, path: "/graph/file/symbols", method: "get", name: "startLine" }),
+    ).toEqual({ type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER })
+    expect(
+      parameterSchema({ spec: effect, path: "/graph/file/symbols", method: "get", name: "endLine" }),
+    ).toEqual({ type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER })
+    expect(parameterSchema({ spec: effect, path: "/graph/file/symbols", method: "get", name: "limit" })).toEqual({
+      type: "integer",
+      minimum: 1,
+      maximum: 100,
+    })
+    expect(parameterSchema({ spec: effect, path: "/graph/impact", method: "get", name: "depth" })).toEqual({
+      type: "integer",
+      minimum: 1,
+      maximum: 5,
+    })
+    expect(parameterSchema({ spec: effect, path: "/experimental/session", method: "get", name: "cursor" })).toEqual({
+      type: "number",
+    })
+    expect(
+      parameterSchema({ spec: effect, path: "/pty/{ptyID}/connect", method: "get", name: "cursor" }),
+    ).toEqual({ type: "string" })
   })
 
+  test("keeps SDK component names normalized and separates TUI event payloads", () => {
+    const spec = effectOpenApi()
+    const schemas = spec.components?.schemas ?? {}
+    const names = Object.keys(schemas)
+
+    expect(names.filter((name) => name.includes("."))).toEqual([])
+    expect(
+      names.filter((name) => {
+        const base = name.replace(/\d+$/, "")
+        return (
+          base !== name &&
+          schemas[base] &&
+          stableSchema(sdkComponentSchema(schemas[name])) === stableSchema(sdkComponentSchema(schemas[base]))
+        )
+      }),
+    ).toEqual([])
+
+    const eventNames = [
+      "EventTuiPromptAppend",
+      "EventTuiCommandExecute",
+      "EventTuiToastShow",
+      "EventTuiSessionSelect",
+    ]
+    for (const name of eventNames) {
+      expect(componentSchema(spec, name)?.required).toContain("id")
+      expect(componentSchema(spec, name)?.properties?.id).toEqual({ type: "string" })
+      expect(componentSchema(spec, `${name}2`)?.required ?? []).not.toContain("id")
+      expect(componentSchema(spec, `${name}2`)?.properties?.id).toBeUndefined()
+    }
+
+    expect(componentSchema(spec, "Event")?.anyOf?.map((schema) => schema.$ref)).toEqual(
+      expect.arrayContaining(eventNames.map((name) => `#/components/schemas/${name}`)),
+    )
+    expect(
+      requestBodySchema({ spec, path: "/tui/publish", method: "post" })?.anyOf?.map((schema) => schema.$ref),
+    ).toEqual(eventNames.map((name) => `#/components/schemas/${name}2`))
+  })
+
+  test("preserves representative SDK-relevant component contracts", async () => {
+    const hono = (await Server.openapiHono()) as OpenApiSpec
+    const effect = effectOpenApi() as OpenApiSpec
+
+    for (const name of ["LogLevel", "ServerConfig", "LayoutConfig", "Project", "ApiError"]) {
+      expect({ name, schema: sdkComponentSchema(componentSchema(effect, name)) }).toEqual({
+        name,
+        schema: sdkComponentSchema(componentSchema(hono, name)),
+      })
+    }
+
+    expect(componentSchema(effect, "LogLevel")?.description).toBe("Log level")
+    expect(componentSchema(effect, "ServerConfig")?.description).toBe(
+      "Server configuration for chimera serve and web commands",
+    )
+    expect(componentSchema(effect, "LayoutConfig")?.description).toBe("@deprecated Always uses stretch layout.")
+  })
+
+  test("preserves representative branded ID patterns and property descriptions", () => {
+    const effect = effectOpenApi() as OpenApiSpec
+
+    expect(
+      parameterSchema({ spec: effect, path: "/session/{sessionID}", method: "get", name: "sessionID" }),
+    ).toEqual({
+      type: "string",
+      pattern: "^ses.*",
+    })
+    expect(
+      parameterSchema({
+        spec: effect,
+        path: "/session/{sessionID}/message/{messageID}",
+        method: "get",
+        name: "messageID",
+      }),
+    ).toEqual({ type: "string", pattern: "^msg.*" })
+    expect(
+      componentSchema(effect, "EventTuiSessionSelect")?.properties?.properties?.properties?.sessionID,
+    ).toMatchObject({
+      description: "Session ID to navigate to",
+    })
+  })
   test("matches SDK-affecting request schema details", () => {
     const effect = effectOpenApi()
     const sessionUpdate = effect.paths["/session/{sessionID}"]?.patch?.requestBody

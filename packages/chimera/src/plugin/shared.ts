@@ -4,7 +4,6 @@ import npa from "npm-package-arg"
 import semver from "semver"
 import { Filesystem } from "@/util/filesystem"
 import { isRecord } from "@/util/record"
-import { Npm } from "@opencode-ai/core/npm"
 
 // Old npm package names for plugins that are now built-in
 export const DEPRECATED_PLUGIN_PACKAGES = ["opencode-openai-codex-auth", "opencode-copilot-auth"]
@@ -204,12 +203,13 @@ export async function checkPluginCompatibility(target: string, opencodeVersion: 
   }
 }
 
-export async function resolvePluginTarget(spec: string) {
+export type PluginTargetResolver = (pkg: string) => Promise<string>
+
+export async function resolvePluginTarget(spec: string, resolve: PluginTargetResolver) {
   if (isPathPluginSpec(spec)) return resolvePathPluginTarget(spec)
   const hit = parse(spec)
   const pkg = hit?.name && hit.raw === hit.name ? `${hit.name}@latest` : spec
-  const result = await Npm.add(pkg)
-  return result.directory
+  return resolve(pkg)
 }
 
 export async function readPluginPackage(target: string): Promise<PluginPackage> {

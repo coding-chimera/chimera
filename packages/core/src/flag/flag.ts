@@ -26,6 +26,7 @@ const CHIMERA_OPENCODE_ENV_ALIASES = [
   "FAKE_VCS",
   "SERVER_PASSWORD",
   "SERVER_USERNAME",
+  "SERVER_HONO",
   "ENABLE_QUESTION_TOOL",
   "EXPERIMENTAL",
   "EXPERIMENTAL_FILEWATCHER",
@@ -126,6 +127,8 @@ export const Flag = {
   OPENCODE_FAKE_VCS: process.env["OPENCODE_FAKE_VCS"],
   OPENCODE_SERVER_PASSWORD: process.env["OPENCODE_SERVER_PASSWORD"],
   OPENCODE_SERVER_USERNAME: process.env["OPENCODE_SERVER_USERNAME"],
+  // Short-lived escape hatch while effect-httpapi rolls out as the default server backend.
+  OPENCODE_SERVER_HONO: truthy("OPENCODE_SERVER_HONO"),
   OPENCODE_ENABLE_QUESTION_TOOL: truthy("OPENCODE_ENABLE_QUESTION_TOOL"),
 
   // Experimental
@@ -156,11 +159,10 @@ export const Flag = {
   OPENCODE_STRICT_CONFIG_DEPS: truthy("OPENCODE_STRICT_CONFIG_DEPS"),
 
   OPENCODE_WORKSPACE_ID: process.env["OPENCODE_WORKSPACE_ID"],
-  // Defaults to true on dev/beta/local channels so internal users exercise the
-  // new effect-httpapi server backend. Stable (`prod`/`latest`) installs stay
-  // on the legacy hono backend until the rollout is complete. An explicit env
-  // var ("true"/"1" or "false"/"0") always wins, providing an opt-in for
-  // stable users and an escape hatch for dev/beta users.
+  // Legacy compatibility flag: explicit true still selects effect-httpapi. The server
+  // backend now defaults to effect-httpapi on every channel; use SERVER_HONO as the
+  // short-lived rollback switch while the Hono fallback remains available.
+  // Channel-derived values remain for compatibility with existing dev/beta installs.
   OPENCODE_EXPERIMENTAL_HTTPAPI:
     truthy("OPENCODE_EXPERIMENTAL_HTTPAPI") ||
     (!falsy("OPENCODE_EXPERIMENTAL_HTTPAPI") && HTTPAPI_DEFAULT_ON_CHANNELS.has(InstallationChannel)),

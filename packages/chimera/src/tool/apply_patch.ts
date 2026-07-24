@@ -16,9 +16,7 @@ import { Format } from "../format"
 import * as Bom from "@/util/bom"
 import { Chimera } from "@/chimera"
 
-export const Parameters = Schema.Struct({
-  patchText: Schema.String.annotate({ description: "The full patch text that describes all changes to be made" }),
-})
+export const Parameters = Patch.PatchParamsSchema
 
 export const ApplyPatchTool = Tool.define(
   "apply_patch",
@@ -120,7 +118,11 @@ export const ApplyPatchTool = Tool.define(
 
             // Apply the update chunks to get new content
             try {
-              const fileUpdate = Patch.deriveNewContentsFromChunks(filePath, hunk.chunks)
+              const fileUpdate = Patch.deriveNewContentsFromChunks(
+                filePath,
+                Bom.join(source.text, source.bom),
+                hunk.chunks,
+              )
               newContent = fileUpdate.content
               bom = fileUpdate.bom
             } catch (error) {
