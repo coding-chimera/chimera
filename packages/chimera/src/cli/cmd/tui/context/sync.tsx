@@ -36,7 +36,6 @@ import path from "path"
 import type { PromptStats } from "@/session/prompt-stats"
 import { useKV } from "./kv"
 
-import { remoteCompactionLockFromParts, type RemoteCompactionLock } from "../util/remote-compaction"
 function providerBalanceFallback(providerID: string): ProviderBalanceResult {
   if (providerID === "openai") {
     return {
@@ -103,9 +102,6 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       part: {
         [messageID: string]: Part[]
       }
-      remote_compaction_lock: {
-        [sessionID: string]: RemoteCompactionLock | undefined
-      }
       lsp: LspStatus[]
       mcp: {
         [key: string]: McpStatus
@@ -140,7 +136,6 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       prompt_stats: {},
       message: {},
       part: {},
-      remote_compaction_lock: {},
       lsp: [],
       mcp: {},
       mcp_resource: {},
@@ -378,8 +373,6 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           break
         }
         case "message.part.updated": {
-          const lock = remoteCompactionLockFromParts([event.properties.part])
-          if (lock) setStore("remote_compaction_lock", event.properties.part.sessionID, lock)
           const parts = store.part[event.properties.part.messageID]
           if (!parts) {
             setStore("part", event.properties.part.messageID, [event.properties.part])
@@ -591,10 +584,9 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         },
         async sync(sessionID: string) {
           if (fullSyncedSessions.has(sessionID)) return
-          const [session, messages, fullMessages, todo, workBrief, diff] = await Promise.all([
+          const [session, messages, todo, workBrief, diff] = await Promise.all([
             sdk.client.session.get({ sessionID }, { throwOnError: true }),
             sdk.client.session.messages({ sessionID, limit: 100 }),
-            sdk.client.session.messages({ sessionID, limit: 0 }),
             sdk.client.session.todo({ sessionID }),
             sdk.client.session.workBrief({ sessionID }),
             sdk.client.session.diff({ sessionID }),
@@ -611,9 +603,6 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
                 draft.part[message.info.id] = message.parts
               }
               draft.session_diff[sessionID] = diff.data ?? []
-              draft.remote_compaction_lock[sessionID] = remoteCompactionLockFromParts(
-                (fullMessages.data ?? []).flatMap((message) => message.parts),
-              )
             }),
           )
           fullSyncedSessions.add(sessionID)

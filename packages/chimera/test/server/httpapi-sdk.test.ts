@@ -120,6 +120,49 @@ function providerConfig(url: string) {
   }
 }
 
+function remoteCompactionProviderConfig() {
+  return {
+    formatter: false,
+    lsp: false,
+    username: "preserved-sdk-user",
+    provider: {
+      test: {
+        name: "Test",
+        id: "test",
+        env: [],
+        npm: "@ai-sdk/openai",
+        wire_api: "responses" as const,
+        remote_compaction: {
+          profile: "codex-responses" as const,
+          protocols: ["v2", "legacy"] as ["v2", "legacy"],
+          auth: "provider-bearer" as const,
+        },
+        models: {
+          "logical-model": {
+            id: "wire-model",
+            name: "Test Model",
+            attachment: false,
+            reasoning: false,
+            temperature: false,
+            tool_call: true,
+            release_date: "2025-01-01",
+            limit: { context: 100_000, output: 10_000 },
+            cost: { input: 0, output: 0 },
+            options: {},
+            wire_api: "responses" as const,
+            remote_compaction: true,
+          },
+        },
+        options: {
+          apiKey: "sdk-secret-api-key",
+          baseURL: "https://provider.invalid/v1",
+          headers: { Authorization: "Bearer sdk-authorization-secret" },
+        },
+      },
+    },
+  }
+}
+
 function call<T>(request: () => Promise<T>) {
   return Effect.promise(request)
 }
@@ -536,6 +579,84 @@ describe("HttpApi SDK", () => {
           foundFile: JSON.stringify(findFiles.data).includes("hello.txt"),
           foundText: JSON.stringify(findText.data ?? null).includes("sdk-parity"),
           listedFile: JSON.stringify(files.data).includes("hello.txt"),
+        }
+      }),
+    ),
+  )
+
+  parity("matches generated SDK remote compaction status and update across backends", (backend) =>
+    withProject(backend, { git: false, config: remoteCompactionProviderConfig() }, ({ directory }) =>
+      Effect.gen(function* () {
+        const requests: { method: string; pathname: string; query: Record<string, string>; body?: unknown }[] = []
+        const fetch = serverFetch(backend)
+        const sdk = createOpencodeClient({
+          baseUrl: "http://localhost",
+          fetch: Object.assign(
+            async (input: RequestInfo | URL, init?: RequestInit) => {
+              const request = input instanceof Request ? input : new Request(input, init)
+              const url = new URL(request.url)
+              requests.push({
+                method: request.method,
+                pathname: url.pathname,
+                query: Object.fromEntries(url.searchParams),
+                body: request.body ? await request.clone().json() : undefined,
+              })
+              const headers = new Headers(request.headers)
+              headers.set("x-chimera-directory", directory)
+              return fetch(new Request(request, { headers }))
+            },
+            { preconnect: globalThis.fetch.preconnect },
+          ) satisfies typeof globalThis.fetch,
+        })
+        const session = yield* capture(() => sdk.session.create({ title: "remote compaction SDK" }))
+        const sessionID = String(record(session.data).id)
+        const status = yield* capture(() =>
+          sdk.config.remoteCompaction.status({ providerID: "test", modelID: "logical-model", sessionID }),
+        )
+        const update = yield* capture(() =>
+          sdk.config.remoteCompaction.update({
+            remoteCompactionPolicyPatch: { remote: "on", remote_protocol: "v2" },
+          }),
+        )
+
+        expect(status.status).toBe(200)
+        expect(status.data).toMatchObject({
+          configured: { mode: "auto", protocol: "auto" },
+          requested: { providerID: "test", modelID: "logical-model" },
+          effective: { providerID: "test", modelID: "logical-model", wireModelID: "wire-model" },
+          lock: { status: "none" },
+          replay: { mode: "none", reason: "no_lock" },
+        })
+        expect(update.status).toBe(200)
+        expect(update.data).toEqual({ remote: "on", remote_protocol: "v2" })
+        expect(requests.slice(-2)).toEqual([
+          {
+            method: "GET",
+            pathname: "/config/remote-compaction/status",
+            query: { providerID: "test", modelID: "logical-model", sessionID },
+          },
+          {
+            method: "PATCH",
+            pathname: "/config/remote-compaction",
+            query: {},
+            body: { remote: "on", remote_protocol: "v2" },
+          },
+        ])
+        const serialized = JSON.stringify({ status: status.data, update: update.data })
+        for (const secret of [
+          "sdk-secret-api-key",
+          "sdk-authorization-secret",
+          "Authorization",
+          "encrypted_content",
+          "headers",
+        ])
+          expect(serialized).not.toContain(secret)
+
+        return {
+          statuses: statuses({ session, status, update }),
+          status: status.data,
+          update: update.data,
+          requestShapes: requests.slice(-2).map((request) => ({ ...request, query: { ...request.query, sessionID: request.query.sessionID ? "present" : undefined } })),
         }
       }),
     ),

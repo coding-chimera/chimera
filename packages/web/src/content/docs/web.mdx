@@ -106,6 +106,12 @@ Click "See Servers" to view connected servers and their status.
 
 ![OpenCode Web - See Servers](../../assets/web/web-homepage-see-servers.png)
 
+### Core → Compaction
+
+In the Chimera Web interface, open **Settings → Core → Compaction** to control remote compaction for the currently focused provider, model, and session. The policy and protocol controls are scoped to that selection, and the authoritative status card shows the resolved mode, protocol order, fallback behavior, credentials, replay state, and any active session lock.
+
+Use **Advanced Config** to declare the first-class provider and model capability fields—such as `wire_api` and `remote_compaction`—that authorize remote compaction. A preference in Core cannot enable a provider or model that lacks those explicit capability declarations.
+
 ---
 
 ## Attaching a Terminal

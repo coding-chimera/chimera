@@ -6,9 +6,13 @@ import { useSync } from "@tui/context/sync"
 import { useLocal } from "@tui/context/local"
 import { For, Match, Switch, Show, createMemo } from "solid-js"
 import {
-  openAIRemoteCompactionEnabled,
-  openAIRemoteCompactionProtocolDescription,
-  openAIRemoteCompactionProtocolStatus,
+  remoteCompactionCredential,
+  remoteCompactionDescription,
+  remoteCompactionLock,
+  remoteCompactionProtocols,
+  remoteCompactionReason,
+  remoteCompactionReplay,
+  remoteCompactionTarget,
 } from "@tui/util/remote-compaction"
 
 export type DialogStatusProps = {}
@@ -20,11 +24,7 @@ export function DialogStatus() {
   const dialog = useDialog()
 
   const enabledFormatters = createMemo(() => sync.data.formatter.filter((f) => f.enabled))
-  const remoteCompactionEnabled = createMemo(() => openAIRemoteCompactionEnabled(sync.data.config, local.model.current()))
-  const remoteCompactionStatus = createMemo(() => openAIRemoteCompactionProtocolStatus(sync.data.config, local.model.current()))
-  const remoteCompactionDescription = createMemo(() =>
-    openAIRemoteCompactionProtocolDescription(sync.data.config, local.model.current()),
-  )
+  const remoteCompaction = createMemo(() => local.model.remoteCompaction.status())
 
   const plugins = createMemo(() => {
     const list = sync.data.config.plugin ?? []
@@ -64,23 +64,19 @@ export function DialogStatus() {
       </box>
       <box>
         <text fg={theme.text}>Settings</text>
-        <box flexDirection="row" gap={1}>
-          <text
-            flexShrink={0}
-            style={{
-              fg: remoteCompactionEnabled() ? theme.success : theme.textMuted,
-            }}
-          >
-            •
-          </text>
-          <text fg={theme.text} wrapMode="word">
-            <b>OpenAI remote compaction protocol</b>{" "}
-            <span style={{ fg: remoteCompactionEnabled() ? theme.success : theme.textMuted }}>
-              {remoteCompactionStatus()}
-            </span>{" "}
-            <span style={{ fg: theme.textMuted }}>{remoteCompactionDescription()}</span>
-          </text>
-        </box>
+        <Show when={remoteCompaction()} fallback={<text fg={theme.textMuted}>Remote compaction status loading</text>}>
+          {(status) => (
+            <box flexDirection="row" gap={1}>
+              <text flexShrink={0} fg={status().mode === "remote" ? theme.success : theme.textMuted}>•</text>
+              <text fg={theme.text} wrapMode="word">
+                <b>Remote compaction</b> <span style={{ fg: status().mode === "remote" ? theme.success : theme.textMuted }}>{status().mode}</span>{" "}
+                <span style={{ fg: theme.textMuted }}>
+                  target {remoteCompactionTarget(status())}; reason {remoteCompactionReason(status())}; credential {remoteCompactionCredential(status())}; protocols {remoteCompactionProtocols(status())}; replay {remoteCompactionReplay(status())}; lock {remoteCompactionLock(status())}; {remoteCompactionDescription(status())}
+                </span>
+              </text>
+            </box>
+          )}
+        </Show>
       </box>
       <Show when={Object.keys(sync.data.mcp).length > 0} fallback={<text fg={theme.text}>No MCP Servers</text>}>
         <box>

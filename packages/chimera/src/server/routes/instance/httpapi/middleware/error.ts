@@ -24,12 +24,13 @@ export const errorLayer = HttpRouter.middleware<{ handles: unknown }>()((effect)
       const error = defect.defect
       log.error("failed", { error, cause: Cause.pretty(cause) })
 
+      if (error instanceof Provider.ModelNotFoundError)
+        return Effect.succeed(HttpServerResponse.jsonUnsafe(error.toObject(), { status: 400 }))
       if (error instanceof NamedError) {
         return Effect.succeed(
           HttpServerResponse.jsonUnsafe(error.toObject(), {
             status: iife(() => {
               if (error instanceof NotFoundError) return 404
-              if (error instanceof Provider.ModelNotFoundError) return 400
               if (error.name === "ProviderAuthValidationFailed") return 400
               if (error.name.startsWith("Worktree")) return 400
               return 500

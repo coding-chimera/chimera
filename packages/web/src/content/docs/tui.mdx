@@ -89,6 +89,24 @@ Compact the current session. _Alias_: `/summarize`
 
 **Keybind:** `ctrl+x c`
 
+### remote-compaction
+
+Cycle the remote compaction policy for the focused provider, model, and session through `auto` → `on` → `off`. _Aliases_: `/remote-compact`, `/openai-remote-compaction`
+
+```bash frame="none"
+/remote-compaction
+```
+
+### remote-compaction-protocol
+
+Cycle the preferred remote compaction protocol through `auto` → `v2` → `legacy`. _Aliases_: `/remote-compact-protocol`, `/remote-protocol`
+
+```bash frame="none"
+/remote-compaction-protocol
+```
+
+The command labels and status display are authoritative and session-aware: they show the resolved state for the currently focused provider, model, and session rather than only the saved preference.
+
 ---
 
 ### details

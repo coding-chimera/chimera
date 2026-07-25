@@ -226,6 +226,59 @@ const RemoteCompactionImplementation = Schema.Union([
 ])
 
 const RemoteCompactionUsage = Schema.Record(Schema.String, NonNegativeInt)
+const RemoteCompactionOutput = Schema.Array(
+  Schema.Struct({
+    type: Schema.Union([Schema.Literal("compaction"), Schema.Literal("compaction_summary")]),
+    encrypted_content: Schema.String,
+  }),
+)
+const OfficialRemoteCompaction = Schema.Struct({
+  providerID: Schema.Literal("openai"),
+  endpoint: Schema.Literal("codex"),
+  implementation: RemoteCompactionImplementation,
+  modelID: Schema.String,
+  output: RemoteCompactionOutput,
+  usage: Schema.optional(RemoteCompactionUsage),
+})
+const ProviderRemoteCompaction = Schema.Struct({
+  providerID: Schema.String,
+  endpoint: Schema.Literal("provider"),
+  driver: Schema.Literal("codex-responses"),
+  profile: Schema.Literal("codex-responses"),
+  implementation: RemoteCompactionImplementation,
+  modelID: Schema.String,
+  wireModelID: Schema.String,
+  replay: Schema.Struct({
+    format: Schema.Literal("responses_compaction_v1"),
+    wire_api: Schema.Literal("responses"),
+    compatibility_key: Schema.String,
+  }),
+  output: RemoteCompactionOutput,
+  usage: Schema.optional(RemoteCompactionUsage),
+})
+const OfficialRemoteCompactionError = Schema.Struct({
+  providerID: Schema.Literal("openai"),
+  endpoint: Schema.Literal("codex"),
+  implementation: RemoteCompactionImplementation,
+  modelID: Schema.String,
+  message: Schema.String,
+  status: Schema.optional(Schema.Number),
+  retryable: Schema.optional(Schema.Boolean),
+  attempts: Schema.optional(NonNegativeInt),
+  time: NonNegativeInt,
+})
+const ProviderRemoteCompactionError = Schema.Struct({
+  providerID: Schema.String,
+  endpoint: Schema.Literal("provider"),
+  implementation: RemoteCompactionImplementation,
+  modelID: Schema.String,
+  wireModelID: Schema.String,
+  message: Schema.String,
+  status: Schema.optional(Schema.Number),
+  retryable: Schema.optional(Schema.Boolean),
+  attempts: Schema.optional(NonNegativeInt),
+  time: NonNegativeInt,
+})
 
 export const CompactionPart = Schema.Struct({
   ...partBase,
@@ -233,34 +286,8 @@ export const CompactionPart = Schema.Struct({
   auto: Schema.Boolean,
   overflow: Schema.optional(Schema.Boolean),
   tail_start_id: Schema.optional(MessageID),
-  remote: Schema.optional(
-    Schema.Struct({
-      providerID: Schema.Literal("openai"),
-      endpoint: Schema.Literal("codex"),
-      implementation: RemoteCompactionImplementation,
-      modelID: Schema.String,
-      output: Schema.Array(
-        Schema.Struct({
-          type: Schema.Union([Schema.Literal("compaction"), Schema.Literal("compaction_summary")]),
-          encrypted_content: Schema.String,
-        }),
-      ),
-      usage: Schema.optional(RemoteCompactionUsage),
-    }),
-  ),
-  remote_error: Schema.optional(
-    Schema.Struct({
-      providerID: Schema.Literal("openai"),
-      endpoint: Schema.Literal("codex"),
-      implementation: RemoteCompactionImplementation,
-      modelID: Schema.String,
-      message: Schema.String,
-      status: Schema.optional(Schema.Number),
-      retryable: Schema.optional(Schema.Boolean),
-      attempts: Schema.optional(NonNegativeInt),
-      time: NonNegativeInt,
-    }),
-  ),
+  remote: Schema.optional(Schema.Union([OfficialRemoteCompaction, ProviderRemoteCompaction])),
+  remote_error: Schema.optional(Schema.Union([OfficialRemoteCompactionError, ProviderRemoteCompactionError])),
 })
   .annotate({ identifier: "CompactionPart" })
   .pipe(withStatics((s) => ({ zod: zod(s) })))
@@ -889,7 +916,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
         if (part.type === "compaction" && !(options?.remoteCompaction === "text" && part.remote)) {
           userMessage.parts.push({
             type: "text",
-            text: options?.remoteCompaction === "encoded" && part.remote ? encodeRemoteCompactionInput(part.remote.output) : "What did we do so far?",
+            text: options?.remoteCompaction === "encoded" && part.remote ? encodeRemoteCompactionInput(part.remote) : "What did we do so far?",
           })
         }
         if (part.type === "subtask") {

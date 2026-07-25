@@ -52,7 +52,7 @@ import { DialogWorkspaceUnavailable } from "../dialog-workspace-unavailable"
 import { useArgs } from "@tui/context/args"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { WorkspaceLabel, type WorkspaceStatus } from "../workspace-label"
-import { openAIRemoteCompactionEnabled, openAIRemoteCompactionProtocolStatus } from "@tui/util/remote-compaction"
+import { remoteCompactionSummary } from "@tui/util/remote-compaction"
 import { ProviderAccountStatus } from "../provider-account-status"
 
 export type PromptProps = {
@@ -187,8 +187,7 @@ export function Prompt(props: PromptProps) {
   const [workspaceCreatingDots, setWorkspaceCreatingDots] = createSignal(3)
   const [warpNotice, setWarpNotice] = createSignal<string>()
   const currentProviderLabel = createMemo(() => local.model.parsed().provider)
-  const remoteCompactionEnabled = createMemo(() => openAIRemoteCompactionEnabled(sync.data.config, local.model.current()))
-  const remoteCompactionStatus = createMemo(() => openAIRemoteCompactionProtocolStatus(sync.data.config, local.model.current()))
+  const remoteCompactionStatus = createMemo(() => local.model.remoteCompaction.status())
   const hasRightContent = createMemo(() => Boolean(props.right))
   const defaultWorkspaceID = createMemo(() => props.workspaceID ?? project.workspace.current())
 
@@ -1472,11 +1471,15 @@ export function Prompt(props: PromptProps) {
                               </span>
                             </text>
                           </Show>
-                          <Show when={remoteCompactionEnabled()}>
-                            <text fg={fadeColor(theme.textMuted, modelMetaAlpha())}>·</text>
-                            <text fg={fadeColor(theme.textMuted, modelMetaAlpha())}>
-                              OpenAI remote compaction: {remoteCompactionStatus()}
-                            </text>
+                          <Show when={remoteCompactionStatus()}>
+                            {(remote) => (
+                              <>
+                                <text fg={fadeColor(theme.textMuted, modelMetaAlpha())}>·</text>
+                                <text fg={fadeColor(theme.textMuted, modelMetaAlpha())}>
+                                  Remote compaction: {remoteCompactionSummary(remote())}
+                                </text>
+                              </>
+                            )}
                           </Show>
                         </box>
                       </Show>

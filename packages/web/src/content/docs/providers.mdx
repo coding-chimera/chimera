@@ -27,6 +27,40 @@ in `~/.local/share/opencode/auth.json`.
 You can customize the providers through the `provider` section in your OpenCode
 config.
 
+Remote compaction capability is provider-neutral and is declared alongside `options`, not inside it:
+
+```json title="opencode.json"
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "example-responses": {
+      "npm": "@ai-sdk/openai-compatible",
+      "remote_compaction": {
+        "profile": "codex-responses",
+        "protocols": ["v2", "legacy"],
+        "auth": "provider-bearer"
+      },
+      "options": {
+        "baseURL": "https://api.example-provider.test/v1"
+      },
+      "models": {
+        "example-model": {
+          "provider": { "npm": "@ai-sdk/openai" },
+          "wire_api": "responses",
+          "remote_compaction": true
+        }
+      }
+    }
+  }
+}
+```
+
+Both provider and model capability must be explicit. Provider `remote_compaction` is a first-class capability field outside `options`; model `remote_compaction: true` opts that model into an existing provider capability but cannot create one. A model that produces or replays remote compaction state must use the Responses wire API with a Responses-capable SDK such as `@ai-sdk/openai`.
+
+The Web UI eligibility control writes only a project/directory-level override for the selected provider and model. Enabling it adds the provider remote-compaction capability and switches only the selected model to `@ai-sdk/openai` with `wire_api: "responses"`; provider credentials, headers, URLs, sibling models, and unrelated configuration are preserved. Ordinary requests, remote compaction, and opaque continuation replay for that selected model then use the provider's Responses endpoint. Disabling eligibility only sets the selected model's `remote_compaction` field to `false`; it intentionally leaves the model on Responses so existing opaque state remains replayable and does not attempt an unreliable merge-based restoration to Chat.
+
+Eligibility is separate from the project remote-compaction policy. The eligibility override declares that a compatible provider/model may use remote compaction; the policy controls whether Chimera attempts it (`off`, `auto`, or `on`) and which protocol it prefers. Enable eligibility only when the third-party endpoint implements the complete OpenAI Responses contract and the selected compaction protocol; Chat Completions compatibility alone is insufficient. Runtime status and the first request can still report endpoint, credential, routing, or protocol incompatibility.
+
 ---
 
 #### Base URL

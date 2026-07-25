@@ -114,6 +114,7 @@ type OpenApiSchema = {
 }
 
 type Operation = {
+  operationId?: string
   parameters?: unknown[]
   responses?: unknown
   requestBody?: unknown
@@ -284,6 +285,20 @@ describe("HttpApi server", () => {
       "POST /api/session/{sessionID}/prompt",
       "POST /api/session/{sessionID}/wait",
     ])
+  })
+
+  test("keeps remote compaction operation IDs and routes in parity", async () => {
+    const hono = (await Server.openapiHono()) as OpenApiSpec
+    const effect = effectOpenApi() as OpenApiSpec
+    const operations = [
+      ["/config/remote-compaction/status", "get", "config.remoteCompaction.status"],
+      ["/config/remote-compaction", "patch", "config.remoteCompaction.update"],
+    ] as const
+
+    for (const [path, method, operationId] of operations) {
+      expect(hono.paths[path]?.[method]?.operationId).toBe(operationId)
+      expect(effect.paths[path]?.[method]?.operationId).toBe(operationId)
+    }
   })
 
   test("matches generated OpenAPI route parameters", async () => {

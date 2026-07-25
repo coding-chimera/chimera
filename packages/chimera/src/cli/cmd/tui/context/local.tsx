@@ -1,6 +1,6 @@
 import { createStore } from "solid-js/store"
 import { createSimpleContext } from "./helper"
-import { batch, createEffect, createMemo, onCleanup } from "solid-js"
+import { batch, createEffect, createMemo, createResource, onCleanup } from "solid-js"
 import { useSync } from "@tui/context/sync"
 import { useTheme } from "@tui/context/theme"
 import { uniqueBy } from "remeda"
@@ -11,8 +11,9 @@ import { useArgs } from "./args"
 import { useSDK } from "./sdk"
 import { RGBA } from "@opentui/core"
 import { useRoute } from "./route"
-import { remoteCompactionModelLocked, remoteCompactionModelLockMessage } from "../util/remote-compaction"
+import { remoteCompactionModelChangeBlocked, remoteCompactionModelLockMessage } from "../util/remote-compaction"
 import { useEvent } from "./event"
+import { useProject } from "./project"
 
 export function parseModel(model: string) {
   const [providerID, ...rest] = model.split("/")
@@ -30,6 +31,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     const toast = useToast()
     const route = useRoute()
     const event = useEvent()
+    const project = useProject()
 
     function isModelValid(model: { providerID: string; modelID: string }) {
       const provider = sync.data.provider.find((x) => x.id === model.providerID)
@@ -172,29 +174,9 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       const unsubscribeModelSelection = event.on("config.model_selection.updated", (msg) => applySelection(msg.properties))
       onCleanup(unsubscribeModelSelection)
 
-      const remoteCompactionLock = createMemo(() => {
-        if (route.data.type !== "session") return undefined
-        return sync.data.remote_compaction_lock[route.data.sessionID]
-      })
-
-      function warnRemoteCompactionLock(target?: { providerID: string; modelID: string }) {
-        const lock = remoteCompactionLock()
-        if (!lock) return false
-        if (!target || remoteCompactionModelLocked(lock, target)) {
-          toast.show({
-            variant: "warning",
-            message: remoteCompactionModelLockMessage(lock, target),
-            duration: 5000,
-          })
-          return true
-        }
-        return false
-      }
 
       const args = useArgs()
       const currentModel = createMemo(() => {
-        const lock = remoteCompactionLock()
-        if (lock) return { providerID: lock.providerID, modelID: lock.modelID }
         const a = agent.current()
         return (
           getFirstValidModel(
@@ -230,6 +212,51 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           ) ?? undefined
         )
       })
+
+
+      const [remoteCompactionStatus, { refetch: refreshRemoteCompactionStatus }] = createResource(
+        () => {
+          const current = currentModel()
+          if (!current) return
+          return {
+            providerID: current.providerID,
+            modelID: current.modelID,
+            sessionID: route.data.type === "session" ? route.data.sessionID : undefined,
+            workspace: project.workspace.current(),
+            configuredMode: sync.data.config.compaction?.remote,
+            configuredProtocol: sync.data.config.compaction?.remote_protocol,
+          }
+        },
+        (input) =>
+          sdk.client.config.remoteCompaction
+            .status({
+              workspace: input.workspace,
+              providerID: input.providerID,
+              modelID: input.modelID,
+              sessionID: input.sessionID,
+            })
+            .then((result) => result.data),
+      )
+
+      function warnRemoteCompactionLock() {
+        const status = remoteCompactionStatus()
+        if (!remoteCompactionModelChangeBlocked(status)) return false
+        toast.show({
+          variant: "warning",
+          message: remoteCompactionModelLockMessage(status!),
+          duration: 5000,
+        })
+        return true
+      }
+
+      const unsubscribeRemoteCompaction = event.subscribe((msg) => {
+        const sessionID = route.data.type === "session" ? route.data.sessionID : undefined
+        if (msg.type === "session.updated" && msg.properties.info.id !== sessionID) return
+        if (msg.type === "message.part.updated" && msg.properties.part.sessionID !== sessionID) return
+        if (msg.type !== "session.updated" && msg.type !== "message.part.updated" && msg.type !== "server.instance.disposed") return
+        void refreshRemoteCompactionStatus()
+      })
+      onCleanup(unsubscribeRemoteCompaction)
 
       return {
         current: currentModel,
@@ -313,7 +340,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           save()
         },
         set(model: { providerID: string; modelID: string }, options?: { recent?: boolean }) {
-          if (warnRemoteCompactionLock(model)) return false
+          if (warnRemoteCompactionLock()) return false
           return batch(() => {
             if (!isModelValid(model)) {
               toast.show({
@@ -361,7 +388,10 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             save()
           })
         },
-        remoteCompactionLock,
+        remoteCompaction: {
+          status: remoteCompactionStatus,
+          refresh: refreshRemoteCompactionStatus,
+        },
         warnRemoteCompactionLock,
         variant: {
           selected() {

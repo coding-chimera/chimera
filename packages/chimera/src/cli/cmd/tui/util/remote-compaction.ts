@@ -1,182 +1,115 @@
-export type RemoteCompactionMode = "auto" | "on" | "off"
-export type RemoteCompactionProtocol = "auto" | "v2" | "legacy"
-export type RemoteCompactionProtocolStatus = "v2" | "legacy" | "off"
+import type { RemoteCompactionPolicyPatch, RemoteCompactionResolution } from "@opencode-ai/sdk/v2"
 
-export type RemoteCompactionConfig = {
-  compaction?: {
-    remote?: RemoteCompactionMode
-    remote_protocol?: RemoteCompactionProtocol
-  }
+export type RemoteCompactionMode = RemoteCompactionResolution["configured"]["mode"]
+export type RemoteCompactionProtocol = RemoteCompactionResolution["configured"]["protocol"]
+
+const reasons: Record<RemoteCompactionResolution["reason"], string> = {
+  policy_off: "policy off",
+  provider_capability_missing: "provider capability missing",
+  model_disabled: "model disabled",
+  wire_api_not_responses: "Responses transport unavailable",
+  credential_unavailable: "credential unavailable",
+  protocol_mismatch: "protocol mismatch",
+  routing_identity_unsafe: "routing identity unsafe",
+  model_unsupported: "model unsupported",
+  ready: "ready",
 }
 
-export type RemoteCompactionModel = {
-  id?: string
-  providerID?: string
-  api?: {
-    id?: string
-  }
+const replayReasons: Record<RemoteCompactionResolution["replay"]["reason"], string> = {
+  no_lock: "no installed state",
+  exact_binding: "exact binding",
+  model_mismatch: "provider/model mismatch",
+  transport_unavailable: "transport unavailable",
+  binding_mismatch: "route binding changed",
+  credential_unavailable: "credential unavailable",
+  routing_identity_unsafe: "routing identity unsafe",
 }
 
-export type RemoteCompactionLock = {
-  providerID: string
-  modelID: string
-  messageID?: string
-  partID?: string
+export function nextRemoteCompactionMode(mode: RemoteCompactionMode): RemoteCompactionMode {
+  if (mode === "auto") return "on"
+  if (mode === "on") return "off"
+  return "auto"
 }
 
-export type RemoteCompactionPart = {
-  id?: string
-  messageID?: string
-  type: string
-  remote?: {
-    providerID: string
-    modelID: string
-  }
+export function nextRemoteCompactionProtocol(protocol: RemoteCompactionProtocol): RemoteCompactionProtocol {
+  if (protocol === "auto") return "v2"
+  if (protocol === "v2") return "legacy"
+  return "auto"
 }
 
-export function remoteCompactionLockFromParts(parts: RemoteCompactionPart[]) {
-  const part = parts.find((item) => item.type === "compaction" && item.remote)
-  if (!part?.remote) return undefined
-  return {
-    providerID: part.remote.providerID,
-    modelID: part.remote.modelID,
-    messageID: part.messageID,
-    partID: part.id,
-  } satisfies RemoteCompactionLock
+export function remoteCompactionModePatch(status: RemoteCompactionResolution): RemoteCompactionPolicyPatch {
+  return { remote: nextRemoteCompactionMode(status.configured.mode) }
 }
 
-export function remoteCompactionModelLocked(
-  lock: RemoteCompactionLock | undefined,
-  model: { providerID: string; modelID: string } | undefined,
-) {
-  if (!lock || !model) return false
-  return lock.providerID !== model.providerID || lock.modelID !== model.modelID
+export function remoteCompactionProtocolPatch(status: RemoteCompactionResolution): RemoteCompactionPolicyPatch {
+  return { remote_protocol: nextRemoteCompactionProtocol(status.configured.protocol) }
 }
 
-export function remoteCompactionModelLockMessage(
-  lock: RemoteCompactionLock,
-  model?: { providerID: string; modelID: string },
-) {
-  const requested = model ? ` Requested ${model.providerID}/${model.modelID}.` : ""
-  return `This session already installed Codex remote compaction and is locked to ${lock.providerID}/${lock.modelID}.${requested} Fork or start a new session to use another model.`
+export function remoteCompactionReason(status: RemoteCompactionResolution) {
+  return reasons[status.reason]
 }
 
-function openAIRemoteCompactionCompatible(model: RemoteCompactionModel | undefined) {
-  const id = (model?.api?.id ?? model?.id ?? "").toLowerCase()
-  return openAIRemoteCompactionApplies(model) || /^(gpt-|o[1-9](?:-|$)|chatgpt-|codex-)/.test(id)
+export function remoteCompactionReplay(status: RemoteCompactionResolution) {
+  return `${status.replay.mode} (${replayReasons[status.replay.reason]})`
 }
 
-export function openAIRemoteCompactionApplies(model: RemoteCompactionModel | undefined) {
-  return model?.providerID === "openai"
+export function remoteCompactionLock(status: RemoteCompactionResolution) {
+  if (status.lock.status === "none") return "none"
+  return `${status.lock.status} ${status.lock.providerID}/${status.lock.modelID}`
 }
 
-export function openAIRemoteCompactionEnabled(config: RemoteCompactionConfig, model: RemoteCompactionModel | undefined) {
-  const mode = config.compaction?.remote ?? "auto"
-  if (mode === "off") return false
-  if (mode === "on") return openAIRemoteCompactionCompatible(model)
-  return openAIRemoteCompactionApplies(model)
+export function remoteCompactionProtocols(status: RemoteCompactionResolution) {
+  return status.protocols.length ? status.protocols.join(" → ") : "none"
 }
 
-export function openAIRemoteCompactionStatus(config: RemoteCompactionConfig, model: RemoteCompactionModel | undefined) {
-  return openAIRemoteCompactionEnabled(config, model) ? "on" : "off"
+export function remoteCompactionCredential(status: RemoteCompactionResolution) {
+  return status.credential.replaceAll("-", " ")
 }
 
-export function openAIRemoteCompactionProtocolStatus(
-  config: RemoteCompactionConfig,
-  model: RemoteCompactionModel | undefined,
-): RemoteCompactionProtocolStatus {
-  if (!openAIRemoteCompactionEnabled(config, model)) return "off"
-  return config.compaction?.remote_protocol === "legacy" ? "legacy" : "v2"
+export function remoteCompactionTarget(status: RemoteCompactionResolution) {
+  if (status.target === "local") return "local"
+  return `${status.target} ${status.effective.providerID}/${status.effective.modelID}`
 }
 
-export function openAIRemoteCompactionStatusTitle(config: RemoteCompactionConfig, model: RemoteCompactionModel | undefined) {
-  return `OpenAI remote compaction: ${openAIRemoteCompactionStatus(config, model)}`
+export function remoteCompactionSummary(status: RemoteCompactionResolution) {
+  return [
+    status.mode,
+    remoteCompactionTarget(status),
+    `protocol ${remoteCompactionProtocols(status)}`,
+    `credential ${remoteCompactionCredential(status)}`,
+    `replay ${status.replay.mode}`,
+    `lock ${status.lock.status}`,
+    status.localFallback ? "local fallback" : undefined,
+  ]
+    .filter(Boolean)
+    .join(" · ")
 }
 
-export function openAIRemoteCompactionProtocolStatusTitle(
-  config: RemoteCompactionConfig,
-  model: RemoteCompactionModel | undefined,
-) {
-  return `OpenAI remote compaction protocol: ${openAIRemoteCompactionProtocolStatus(config, model)}`
+export function remoteCompactionDescription(status: RemoteCompactionResolution) {
+  return `${remoteCompactionReason(status)}; replay ${remoteCompactionReplay(status)}; lock ${remoteCompactionLock(status)}; local fallback available.`
 }
 
-export function openAIRemoteCompactionDescription(config: RemoteCompactionConfig, model: RemoteCompactionModel | undefined) {
-  const mode = config.compaction?.remote ?? "auto"
-  if (mode === "off") return "Disabled; Chimera will always use local compaction."
-  if (mode === "on" && openAIRemoteCompactionCompatible(model)) {
-    return "Forced on; tries Codex remote compaction with OpenAI OAuth when available."
-  }
-  if (mode === "on") return "Forced on in config, but off for this provider."
-  return openAIRemoteCompactionApplies(model)
-    ? "Auto-enabled for OpenAI OAuth sessions; falls back to local compaction."
-    : "Auto mode is off for this provider; turn on manually only if the endpoint supports remote compaction."
+export function remoteCompactionModeTitle(status: RemoteCompactionResolution) {
+  return `Remote compaction mode: ${status.configured.mode} (switch to ${nextRemoteCompactionMode(status.configured.mode)})`
 }
 
-export function openAIRemoteCompactionProtocolDescription(
-  config: RemoteCompactionConfig,
-  model: RemoteCompactionModel | undefined,
-) {
-  const status = openAIRemoteCompactionProtocolStatus(config, model)
-  if (status === "off") return "Remote compaction is off; Chimera will use local compaction."
-  if ((config.compaction?.remote_protocol ?? "auto") === "auto") {
-    return "Prefers v2 and falls back to legacy remote compaction."
-  }
-  if (status === "v2") return "Uses Responses compaction v2, then falls back to local compaction."
-  return "Uses legacy /responses/compact, then falls back to local compaction."
+export function remoteCompactionProtocolTitle(status: RemoteCompactionResolution) {
+  return `Remote compaction protocol: ${status.configured.protocol} (switch to ${nextRemoteCompactionProtocol(status.configured.protocol)})`
 }
 
-export function nextOpenAIRemoteCompactionMode(
-  config: RemoteCompactionConfig,
-  model: RemoteCompactionModel | undefined,
-): RemoteCompactionMode {
-  if (openAIRemoteCompactionEnabled(config, model)) return "off"
-  return openAIRemoteCompactionApplies(model) ? "auto" : "on"
+export function remoteCompactionModeDescription(status: RemoteCompactionResolution) {
+  return `${remoteCompactionSummary(status)}; ${remoteCompactionReason(status)}.`
 }
 
-export function nextOpenAIRemoteCompactionProtocolStatus(
-  config: RemoteCompactionConfig,
-  model: RemoteCompactionModel | undefined,
-): RemoteCompactionProtocolStatus {
-  const status = openAIRemoteCompactionProtocolStatus(config, model)
-  if (status === "v2") return "legacy"
-  if (status === "legacy") return "off"
-  return "v2"
+export function remoteCompactionProtocolDescription(status: RemoteCompactionResolution) {
+  return `Configured ${status.configured.protocol}; authoritative attempt order ${remoteCompactionProtocols(status)}; local fallback available.`
 }
 
-export function openAIRemoteCompactionProtocolConfig(
-  status: RemoteCompactionProtocolStatus,
-  model: RemoteCompactionModel | undefined,
-): { remote: RemoteCompactionMode; remote_protocol: RemoteCompactionProtocol } {
-  if (status === "off") return { remote: "off", remote_protocol: "v2" }
-  return {
-    remote: openAIRemoteCompactionApplies(model) ? "auto" : "on",
-    remote_protocol: status,
-  }
+export function remoteCompactionModelChangeBlocked(status: RemoteCompactionResolution | undefined) {
+  return status?.lock.status === "model_mismatch" || status?.replay.mode === "blocked"
 }
 
-export function openAIRemoteCompactionToggleTitle(config: RemoteCompactionConfig, model: RemoteCompactionModel | undefined) {
-  return `${openAIRemoteCompactionStatusTitle(config, model)} (toggle ${openAIRemoteCompactionEnabled(config, model) ? "off" : "on"})`
-}
-
-export function openAIRemoteCompactionProtocolToggleTitle(
-  config: RemoteCompactionConfig,
-  model: RemoteCompactionModel | undefined,
-) {
-  return `${openAIRemoteCompactionProtocolStatusTitle(config, model)} (switch to ${nextOpenAIRemoteCompactionProtocolStatus(config, model)})`
-}
-
-export function openAIRemoteCompactionToggleDescription(config: RemoteCompactionConfig, model: RemoteCompactionModel | undefined) {
-  return openAIRemoteCompactionEnabled(config, model)
-    ? "Turn off to force local compaction for OpenAI remote models."
-    : "Turn on to try Codex remote compaction for this model when OpenAI OAuth is available."
-}
-
-export function openAIRemoteCompactionProtocolToggleDescription(
-  config: RemoteCompactionConfig,
-  model: RemoteCompactionModel | undefined,
-) {
-  const next = nextOpenAIRemoteCompactionProtocolStatus(config, model)
-  if (next === "off") return "Switch to local compaction only."
-  if (next === "legacy") return "Switch to legacy /responses/compact remote compaction."
-  return "Switch to Responses compaction v2."
+export function remoteCompactionModelLockMessage(status: RemoteCompactionResolution) {
+  const lock = status.lock.status === "none" ? "installed remote state" : `${status.lock.providerID}/${status.lock.modelID}`
+  return `This session cannot replay ${lock}: ${remoteCompactionReplay(status)}. Fork or start a new session before changing models.`
 }

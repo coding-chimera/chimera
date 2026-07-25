@@ -29,6 +29,12 @@ import { optionalOmitUndefined, withStatics } from "@/util/schema"
 import * as ProviderTransform from "./transform"
 import { ModelID, ProviderID } from "./schema"
 import { CodexModel } from "./codex-model"
+import { ResponsesTransport } from "./responses-transport"
+import {
+  bindingFromTransportIdentity,
+  inspectRemoteCompactionRequest,
+  rewriteRemoteCompactionRequest,
+} from "@/session/remote-compaction-codec"
 
 const log = Log.create({ service: "provider" })
 const KIMI_FOR_CODING_ID = "kimi-for-coding"
@@ -154,6 +160,20 @@ function nonEmptyString(value: unknown) {
   const trimmed = value.trim()
   if (!trimmed) return
   return trimmed
+}
+
+function normalizeHeaders(...values: unknown[]) {
+  const headers = new Map<string, [string, string]>()
+  for (const value of values) {
+    if (!value) continue
+    if (value instanceof Headers) {
+      value.forEach((header, name) => headers.set(name.toLowerCase(), [name, header]))
+      continue
+    }
+    for (const [name, header] of Object.entries(value as Record<string, string>))
+      headers.set(name.toLowerCase(), [name, header])
+  }
+  return Object.fromEntries(headers.values())
 }
 
 function defaultProviderNpm(wireAPI: "chat" | "responses" | undefined) {
@@ -1005,6 +1025,15 @@ const ProviderLimit = Schema.Struct({
 
 const BackendSemantics = Schema.Literals(["openai", "codex"])
 const WireAPI = Schema.Literals(["chat", "responses"])
+const RemoteCompactionCapability = Schema.Struct({
+  profile: Schema.Literal("codex-responses"),
+  protocols: Schema.Union([
+    Schema.Tuple([Schema.Literals(["v2", "legacy"])]),
+    Schema.Tuple([Schema.Literal("v2"), Schema.Literal("legacy")]),
+    Schema.Tuple([Schema.Literal("legacy"), Schema.Literal("v2")]),
+  ]),
+  auth: Schema.Literal("provider-bearer"),
+})
 
 export const Model = Schema.Struct({
   id: ModelID,
@@ -1012,6 +1041,8 @@ export const Model = Schema.Struct({
   api: ProviderApiInfo,
   name: Schema.String,
   family: optionalOmitUndefined(Schema.String),
+  wire_api: optionalOmitUndefined(WireAPI),
+  remote_compaction: optionalOmitUndefined(Schema.Boolean),
   backend_semantics: optionalOmitUndefined(BackendSemantics),
   capability_model_id: optionalOmitUndefined(Schema.String),
   reasoning_efforts: optionalOmitUndefined(Schema.Array(Schema.Literals(CodexModel.REASONING_EFFORTS))),
@@ -1033,6 +1064,7 @@ export const Info = Schema.Struct({
   name: Schema.String,
   source: Schema.Literals(["env", "config", "custom", "api"]),
   wire_api: optionalOmitUndefined(WireAPI),
+  remote_compaction: optionalOmitUndefined(RemoteCompactionCapability),
   backend_semantics: optionalOmitUndefined(BackendSemantics),
   env: Schema.Array(Schema.String),
   key: optionalOmitUndefined(Schema.String),
@@ -1067,6 +1099,10 @@ export interface Interface {
   readonly getProvider: (providerID: ProviderID) => Effect.Effect<Info>
   readonly getModel: (providerID: ProviderID, modelID: ModelID) => Effect.Effect<Model>
   readonly getLanguage: (model: Model) => Effect.Effect<LanguageModelV3>
+  readonly getResponsesTransport: (
+    providerID: ProviderID,
+    modelID: ModelID,
+  ) => Effect.Effect<ResponsesTransport.Transport>
   readonly closest: (
     providerID: ProviderID,
     query: string[],
@@ -1471,6 +1507,7 @@ const layer: Layer.Layer<
             options: mergeDeep(existing?.options ?? {}, provider.options ?? {}),
             source: "config",
             wire_api: provider.wire_api ?? existing?.wire_api,
+            remote_compaction: provider.remote_compaction ?? existing?.remote_compaction,
             backend_semantics: provider.backend_semantics ?? existing?.backend_semantics,
             models: existing?.models ?? {},
           }
@@ -1508,12 +1545,13 @@ const layer: Layer.Layer<
             const capabilityModelID = model.capability_model_id ?? CodexModel.capabilityModelID(apiID)
             const knownMetadata = findKnownModelMetadata(database, model.id, modelID, capabilityModelID)
             const metadataModel = existingModel ?? knownMetadata
+            const wireAPI = model.wire_api ?? parsed.wire_api ?? existingModel?.wire_api
             const apiNpm =
               model.provider?.npm ??
               provider.npm ??
-              (provider.wire_api === "responses"
+              (wireAPI === "responses"
                 ? "@ai-sdk/openai"
-                : existingModel?.api.npm ?? modelsDev[providerID]?.npm ?? defaultProviderNpm(provider.wire_api))
+                : existingModel?.api.npm ?? modelsDev[providerID]?.npm ?? defaultProviderNpm(wireAPI))
             const name = iife(() => {
               if (model.name) return model.name
               if (model.id && model.id !== modelID) return modelID
@@ -1529,6 +1567,8 @@ const layer: Layer.Layer<
               status: model.status ?? metadataModel?.status ?? "active",
               name,
               providerID: ProviderID.make(providerID),
+              wire_api: wireAPI,
+              remote_compaction: model.remote_compaction ?? existingModel?.remote_compaction,
               backend_semantics:
                 model.backend_semantics ??
                 provider.backend_semantics ??
@@ -1598,7 +1638,7 @@ const layer: Layer.Layer<
                 input: model.limit?.input ?? metadataModel?.limit?.input,
                 output: model.limit?.output ?? metadataModel?.limit?.output ?? 0,
               },
-              headers: mergeDeep(mergeDeep(existingModel?.headers ?? {}, userAgentHeaders), model.headers ?? {}),
+              headers: normalizeHeaders(existingModel?.headers, userAgentHeaders, model.headers),
               family: model.family ?? metadataModel?.family ?? "",
               release_date: model.release_date ?? metadataModel?.release_date ?? "",
               variants: {},
@@ -1857,50 +1897,46 @@ const layer: Layer.Layer<
 
     const list = Effect.fn("Provider.list")(() => InstanceState.use(state, (s) => s.providers))
 
+    function resolveProviderRequestOptions(model: Model, s: State, envs: Record<string, string | undefined>) {
+      const provider = s.providers[model.providerID]
+      const options = { ...provider.options }
+
+      if (model.providerID === "google-vertex" && !model.api.npm.includes("@ai-sdk/openai-compatible")) {
+        delete options.fetch
+      }
+
+      if (model.api.npm.includes("@ai-sdk/openai-compatible") && options["includeUsage"] !== false) {
+        options["includeUsage"] = true
+      }
+
+      const baseURL = iife(() => {
+        let url = typeof options["baseURL"] === "string" && options["baseURL"] !== "" ? options["baseURL"] : model.api.url
+        if (!url) return
+
+        const loader = s.varsLoaders[model.providerID]
+        if (loader) {
+          const vars = loader(options)
+          for (const [key, value] of Object.entries(vars)) {
+            const field = "${" + key + "}"
+            url = url.replaceAll(field, value)
+          }
+        }
+
+        return url.replace(/\$\{([^}]+)\}/g, (item, key) => envs[String(key)] ?? item)
+      })
+
+      if (baseURL !== undefined) options["baseURL"] = baseURL
+      if (options["apiKey"] === undefined && provider.key) options["apiKey"] = provider.key
+      options["headers"] = normalizeHeaders(options["headers"], model.headers)
+      return { provider, options }
+    }
+
     async function resolveSDK(model: Model, s: State, envs: Record<string, string | undefined>) {
       try {
         using _ = log.time("getSDK", {
           providerID: model.providerID,
         })
-        const provider = s.providers[model.providerID]
-        const options = { ...provider.options }
-
-        if (model.providerID === "google-vertex" && !model.api.npm.includes("@ai-sdk/openai-compatible")) {
-          delete options.fetch
-        }
-
-        if (model.api.npm.includes("@ai-sdk/openai-compatible") && options["includeUsage"] !== false) {
-          options["includeUsage"] = true
-        }
-
-        const baseURL = iife(() => {
-          let url =
-            typeof options["baseURL"] === "string" && options["baseURL"] !== "" ? options["baseURL"] : model.api.url
-          if (!url) return
-
-          const loader = s.varsLoaders[model.providerID]
-          if (loader) {
-            const vars = loader(options)
-            for (const [key, value] of Object.entries(vars)) {
-              const field = "${" + key + "}"
-              url = url.replaceAll(field, value)
-            }
-          }
-
-          url = url.replace(/\$\{([^}]+)\}/g, (item, key) => {
-            const val = envs[String(key)]
-            return val ?? item
-          })
-          return url
-        })
-
-        if (baseURL !== undefined) options["baseURL"] = baseURL
-        if (options["apiKey"] === undefined && provider.key) options["apiKey"] = provider.key
-        if (model.headers)
-          options["headers"] = {
-            ...options["headers"],
-            ...model.headers,
-          }
+        const { provider, options } = resolveProviderRequestOptions(model, s, envs)
 
         const key = Hash.fast(
           JSON.stringify({
@@ -1915,6 +1951,18 @@ const layer: Layer.Layer<
         const customFetch = options["fetch"]
         const chunkTimeout = options["chunkTimeout"]
         delete options["chunkTimeout"]
+        const replayTransport = () =>
+          ResponsesTransport.make({
+            providerID: model.providerID,
+            modelID: model.id,
+            wireModelID: model.api.id,
+            baseURL: options["baseURL"],
+            apiKey: options["apiKey"],
+            headers: options["headers"],
+            fetch: customFetch,
+            timeout: options["timeout"],
+            chunkTimeout,
+          })
 
         options["fetch"] = async (input: any, init?: BunFetchRequestInit) => {
           const fetchFn = customFetch ?? fetch
@@ -1929,6 +1977,27 @@ const layer: Layer.Layer<
 
           const combined = signals.length === 0 ? null : signals.length === 1 ? signals[0] : AbortSignal.any(signals)
           if (combined) opts.signal = combined
+          const remoteCompaction =
+            opts.method === "POST" && typeof opts.body === "string"
+              ? inspectRemoteCompactionRequest(opts.body)
+              : "none"
+          if (remoteCompaction !== "none" && (model.wire_api ?? provider.wire_api) !== "responses")
+            throw new Error("Remote compaction replay requires the Responses wire API")
+          if (remoteCompaction !== "none" && typeof opts.body === "string") {
+            const transport = replayTransport()
+            const rewritten = rewriteRemoteCompactionRequest(
+              opts.body,
+              bindingFromTransportIdentity(transport.identity),
+            )
+            if (rewritten.envelope === "provider-v2" && !transport.identity.replay.eligible)
+              throw new Error(`Remote compaction replay is unavailable: ${transport.identity.replay.reason}`)
+            opts.body = rewritten.body
+            if (rewritten.envelope === "provider-v2") {
+              const headers = new Headers(opts.headers)
+              headers.set("x-codex-beta-features", "remote_compaction_v2")
+              opts.headers = headers
+            }
+          }
 
           // Strip openai itemId metadata following what codex does
           if (
@@ -1947,8 +2016,9 @@ const layer: Layer.Layer<
               opts.body = JSON.stringify(body)
             }
           }
-          if (provider.source === "config" && model.headers?.["User-Agent"]) {
-            opts.headers = { ...opts.headers, "User-Agent": model.headers["User-Agent"] }
+          if (provider.source === "config" && model.headers) {
+            const userAgent = new Headers(model.headers).get("user-agent")
+            if (userAgent) opts.headers = normalizeHeaders(opts.headers, { "user-agent": userAgent })
           }
 
           const res = await fetchFn(input, {
@@ -2026,6 +2096,28 @@ const layer: Layer.Layer<
       return info
     })
 
+    const getResponsesTransport = Effect.fn("Provider.getResponsesTransport")(function* (
+      providerID: ProviderID,
+      modelID: ModelID,
+    ) {
+      const s = yield* InstanceState.get(state)
+      const provider = s.providers[providerID]
+      const model = provider?.models[modelID]
+      if (!model) throw new ModelNotFoundError({ providerID, modelID })
+      const envs = yield* env.all()
+      const resolved = resolveProviderRequestOptions(model, s, envs)
+      return ResponsesTransport.make({
+        providerID,
+        modelID,
+        wireModelID: model.api.id,
+        baseURL: resolved.options["baseURL"],
+        apiKey: resolved.options["apiKey"],
+        headers: resolved.options["headers"],
+        fetch: resolved.options["fetch"],
+        timeout: resolved.options["timeout"],
+        chunkTimeout: resolved.options["chunkTimeout"],
+      })
+    })
     const getLanguage = Effect.fn("Provider.getLanguage")(function* (model: Model) {
       const s = yield* InstanceState.get(state)
       const envs = yield* env.all()
@@ -2038,14 +2130,15 @@ const layer: Layer.Layer<
 
         try {
           const language = await (async () => {
-            if (provider.wire_api === "responses") {
+            const wireAPI = model.wire_api ?? provider.wire_api
+            if (wireAPI === "responses") {
               if (!sdk.responses)
                 throw new Error(
                   `Provider ${model.providerID} uses wire_api \"responses\", but ${model.api.npm} does not expose a responses model`,
                 )
               return sdk.responses(model.api.id)
             }
-            if (provider.wire_api === "chat") {
+            if (wireAPI === "chat") {
               if (sdk.chat) return sdk.chat(model.api.id)
               if (sdk.chatModel) return sdk.chatModel(model.api.id)
               return sdk.languageModel(model.api.id)
@@ -2175,7 +2268,16 @@ const layer: Layer.Layer<
       }
     })
 
-    return Service.of({ list, getProvider, getModel, getLanguage, closest, getSmallModel, defaultModel })
+    return Service.of({
+      list,
+      getProvider,
+      getModel,
+      getLanguage,
+      getResponsesTransport,
+      closest,
+      getSmallModel,
+      defaultModel,
+    })
   }),
 )
 

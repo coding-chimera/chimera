@@ -160,6 +160,7 @@ function makeHttp() {
     SessionSummary.defaultLayer,
     SessionPrompt.layer.pipe(
       Layer.provide(SessionRevert.defaultLayer),
+      Layer.provide(RemoteCompaction.disabledLayer),
       Layer.provide(SessionSummary.defaultLayer),
       Layer.provideMerge(run),
       Layer.provideMerge(compact),

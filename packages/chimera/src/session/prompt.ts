@@ -34,7 +34,6 @@ import { Chimera } from "@/chimera"
 import { Question } from "@/question"
 import { pathToFileURL, fileURLToPath } from "url"
 import { Config } from "@/config/config"
-import { Auth } from "@/auth"
 import { ConfigMarkdown } from "@/config/markdown"
 import { SessionSummary } from "./summary"
 import { WorkBrief } from "./work-brief"
@@ -64,7 +63,7 @@ import { SessionEvent } from "@/v2/session-event"
 import { SyncEvent } from "@/sync"
 import { Modelv2 } from "@/v2/model"
 import { AgentAttachment, FileAttachment, Source } from "@/v2/session-prompt"
-import { supportsOpenAIRemoteCompactionModel } from "./remote-compaction"
+import { RemoteCompaction } from "./remote-compaction"
 import * as DateTime from "effect/DateTime"
 import { eq } from "@/storage/db"
 import * as Database from "@/storage/db"
@@ -207,7 +206,7 @@ export const layer = Layer.effect(
     const plugin = yield* Plugin.Service
     const commands = yield* Command.Service
     const config = yield* Config.Service
-    const auth = yield* Auth.Service
+    const remoteCompaction = yield* RemoteCompaction.Service
     const permission = yield* Permission.Service
     const fsys = yield* AppFileSystem.Service
     const mcp = yield* MCP.Service
@@ -1205,9 +1204,11 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     }) {
       const lock = yield* sessions.remoteCompactionLock(input.sessionID)
       if (!lock) return
-      if (lock.providerID === input.model.providerID && lock.modelID === input.model.modelID) return
+      const model = yield* getModel(input.model.providerID, input.model.modelID, input.sessionID)
+      const resolution = yield* remoteCompaction.resolve({ model, session: { sessionID: input.sessionID, lock } })
+      if (resolution.replay.mode !== "blocked") return
       const error = new NamedError.Unknown({
-        message: `This session already installed Codex remote compaction and is locked to ${lock.providerID}/${lock.modelID}. Requested ${input.model.providerID}/${input.model.modelID}. Fork or start a new session to use another model.`,
+        message: `This session already installed remote compaction and is locked to ${lock.providerID}/${lock.modelID}. Requested ${input.model.providerID}/${input.model.modelID}. Fork or start a new session to use another provider or logical model.`,
       })
       yield* bus.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() })
       throw error
@@ -1803,15 +1804,11 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       return { lastUser, lastAssistant, lastFinished, tasks }
     }
 
-    const remoteCompactionReplay = Effect.fnUntraced(function* (model: Provider.Model) {
-      const cfg = yield* config.get()
-      const openaiAuth = yield* auth.get("openai").pipe(Effect.orElseSucceed(() => undefined))
-      const remoteMode = cfg.compaction?.remote ?? "auto"
-      return remoteMode !== "off" &&
-        (remoteMode === "auto" ? model.providerID === "openai" : supportsOpenAIRemoteCompactionModel(model)) &&
-        openaiAuth?.type === "oauth"
-        ? "encoded"
-        : "text"
+    const remoteCompactionReplay = Effect.fnUntraced(function* (sessionID: SessionID, model: Provider.Model) {
+      const lock = yield* sessions.remoteCompactionLock(sessionID)
+      if (!lock) return "text" as const
+      const resolution = yield* remoteCompaction.resolve({ model, session: { sessionID, lock } })
+      return resolution.replay.mode === "encoded" ? ("encoded" as const) : ("text" as const)
     })
 
     const runLoop: (sessionID: SessionID) => Effect.Effect<MessageV2.WithParts> = Effect.fn("SessionPrompt.run")(
@@ -1831,7 +1828,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
           if (!loopState.lastUser) throw new Error("No user message found in stream. This should never happen.")
           const model = yield* getModel(loopState.lastUser.model.providerID, loopState.lastUser.model.modelID, sessionID)
-          const remoteCompaction = yield* remoteCompactionReplay(model)
+          const remoteCompaction = yield* remoteCompactionReplay(sessionID, model)
           if (remoteCompaction === "text") {
             msgs = yield* MessageV2.filterCompactedEffect(sessionID, { remoteCompaction })
             loopState = inspectLoopMessages(msgs)
@@ -2312,6 +2309,7 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(SessionRunState.defaultLayer),
     Layer.provide(SessionStatus.defaultLayer),
     Layer.provide(SessionCompaction.defaultLayer),
+    Layer.provide(RemoteCompaction.defaultLayer),
     Layer.provide(SessionProcessor.defaultLayer),
     Layer.provide(Command.defaultLayer),
     Layer.provide(Permission.defaultLayer),
@@ -2335,7 +2333,6 @@ export const defaultLayer = Layer.suspend(() =>
         SystemPrompt.defaultLayer,
         LLM.defaultLayer,
         Bus.layer,
-        Auth.defaultLayer,
         CrossSpawnSpawner.defaultLayer,
       ),
     ),
