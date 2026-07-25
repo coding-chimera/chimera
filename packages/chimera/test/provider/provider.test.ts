@@ -16,6 +16,7 @@ import { Env } from "../../src/env"
 import { Effect } from "effect"
 import { AppRuntime } from "../../src/effect/app-runtime"
 import { makeRuntime } from "../../src/effect/run-service"
+import { encodeRemoteCompactionInput } from "@/session/remote-compaction-codec"
 
 const env = makeRuntime(Env.Service, Env.defaultLayer)
 const set = (k: string, v: string) => env.runSync((svc) => svc.set(k, v))
@@ -43,6 +44,10 @@ async function getModel(providerID: ProviderID, modelID: ModelID) {
 
 async function getLanguage(model: Provider.Model) {
   return run((provider) => provider.getLanguage(model))
+}
+
+async function getResponsesTransport(providerID: ProviderID, modelID: ModelID) {
+  return run((provider) => provider.getResponsesTransport(providerID, modelID))
 }
 
 async function closest(providerID: ProviderID, query: string[]) {
@@ -502,6 +507,135 @@ test("custom Responses provider selects the Responses SDK and preserves Codex va
       expect((await getLanguage(model)).provider).toBe("custom-responses.responses")
     },
   })
+})
+
+test("model wire_api overrides provider transport", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "chimera.json"),
+        JSON.stringify({
+          provider: {
+            "mixed-wire": {
+              wire_api: "chat",
+              env: [],
+              options: { apiKey: "test-key", baseURL: "https://api.custom.test/v1" },
+              models: {
+                responses: { wire_api: "responses" },
+                chat: {},
+              },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const provider = (await list())[ProviderID.make("mixed-wire")]
+      expect(provider.wire_api).toBe("chat")
+      expect(provider.models.responses.wire_api).toBe("responses")
+      expect(provider.models.responses.api.npm).toBe("@ai-sdk/openai")
+      expect((await getLanguage(provider.models.responses)).provider).toBe("mixed-wire.responses")
+      expect(provider.models.chat.wire_api).toBe("chat")
+      expect((await getLanguage(provider.models.chat)).provider).toBe("mixed-wire.chat")
+    },
+  })
+})
+
+test("model Chat wire API overrides a Responses provider while siblings inherit Responses", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "chimera.json"),
+        JSON.stringify({
+          provider: {
+            mixed: {
+              wire_api: "responses",
+              env: [],
+              options: { apiKey: "test-key", baseURL: "https://api.custom.test/v1" },
+              models: {
+                inherited: {},
+                chat: { wire_api: "chat" },
+              },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const provider = (await list())[ProviderID.make("mixed")]
+      expect(provider.models.inherited.wire_api).toBe("responses")
+      expect(provider.models.inherited.api.npm).toBe("@ai-sdk/openai")
+      expect((await getLanguage(provider.models.inherited)).provider).toBe("mixed.responses")
+      expect(provider.models.chat.wire_api).toBe("chat")
+      expect(provider.models.chat.api.npm).toBe("@ai-sdk/openai-compatible")
+      expect((await getLanguage(provider.models.chat)).provider).toBe("mixed.chat")
+      expect((await getResponsesTransport(provider.id, provider.models.chat.id)).identity.ready).toBe(true)
+    },
+  })
+})
+
+test("provider Responses transport reuses effective base URL, bearer, and model headers", async () => {
+  const calls: { path: string; auth: string | null; providerHeader: string | null; modelHeader: string | null }[] = []
+  using server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      calls.push({
+        path: new URL(request.url).pathname,
+        auth: request.headers.get("authorization"),
+        providerHeader: request.headers.get("x-provider"),
+        modelHeader: request.headers.get("x-model"),
+      })
+      return Response.json({ output: [] })
+    },
+  })
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "chimera.json"),
+        JSON.stringify({
+          provider: {
+            transport: {
+              wire_api: "responses",
+              env: [],
+              options: {
+                apiKey: "provider-secret",
+                baseURL: `${server.url.origin}/v1`,
+                headers: { "X-Provider": "provider", "X-Model": "provider-value" },
+              },
+              models: { model: { headers: { "x-model": "model-value" } } },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const model = (await list())[ProviderID.make("transport")].models.model
+      const transport = await getResponsesTransport(model.providerID, model.id)
+      expect(transport.identity.ready).toBe(true)
+      expect(JSON.stringify(transport.identity)).not.toContain("provider-secret")
+      expect(await transport.execute("responses/compact", { body: "{}" })).toEqual({
+        status: 200,
+        body: JSON.stringify({ output: [] }),
+      })
+    },
+  })
+  expect(calls).toEqual([
+    {
+      path: "/v1/responses/compact",
+      auth: "Bearer provider-secret",
+      providerHeader: "provider",
+      modelHeader: "model-value",
+    },
+  ])
 })
 
 test("custom Responses provider does not fall back to a Chat-only SDK", async () => {
@@ -3327,6 +3461,286 @@ test("cloudflare-ai-gateway forwards config metadata options", async () => {
         invoked_by: "test",
         project: "opencode",
       })
+    },
+  })
+})
+
+test("persisted generic provider replay uses its exact installed binding without current capability", async () => {
+  const apiKey = "synthetic-provider-api-key"
+  const encryptedContent = "synthetic-encrypted-compaction"
+  const calls: { body: string; beta: string | null; authorization: string | null }[] = []
+  using server = Bun.serve({
+    port: 0,
+    async fetch(request) {
+      calls.push({
+        body: await request.text(),
+        beta: request.headers.get("x-codex-beta-features"),
+        authorization: request.headers.get("authorization"),
+      })
+      return new Response("data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } })
+    },
+  })
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "chimera.json"),
+        JSON.stringify({
+          provider: {
+            replay: {
+              name: "Replay Provider",
+              npm: "@ai-sdk/openai",
+              wire_api: "responses",
+              env: [],
+              options: { apiKey, baseURL: `${server.url.origin}/v1` },
+              models: { model: { wire_api: "responses" } },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const provider = (await list())[ProviderID.make("replay")]
+      const model = provider.models.model
+      expect(provider.remote_compaction).toBeUndefined()
+      expect(model.remote_compaction).toBeUndefined()
+      const transport = await getResponsesTransport(provider.id, model.id)
+      expect(JSON.stringify(transport.identity)).not.toContain(apiKey)
+      const language = await getLanguage(model)
+      const encoded = encodeRemoteCompactionInput({
+        providerID: provider.id,
+        endpoint: "provider",
+        driver: "codex-responses",
+        profile: "codex-responses",
+        implementation: "responses_compaction_v2",
+        modelID: model.id,
+        wireModelID: model.api.id,
+        replay: {
+          format: "responses_compaction_v1",
+          wire_api: "responses",
+          compatibility_key: transport.identity.compatibilityKey,
+        },
+        output: [{ type: "compaction", encrypted_content: encryptedContent }],
+      })
+      await language.doStream({
+        prompt: [{ role: "user", content: [{ type: "text", text: encoded }] }],
+        includeRawChunks: false,
+      })
+    },
+  })
+  expect(calls).toHaveLength(1)
+  expect(calls[0].body).not.toContain("__chimera_remote_compaction")
+  expect(JSON.parse(calls[0].body).input).toContainEqual({
+    type: "compaction",
+    encrypted_content: encryptedContent,
+  })
+  expect(calls[0].beta).toBe("remote_compaction_v2")
+  expect(calls[0].authorization).toBe(`Bearer ${apiKey}`)
+  expect(calls[0].body).not.toContain(apiKey)
+})
+
+
+test("model-level Responses eligibility preserves sibling Chat transport and replays opaque compaction", async () => {
+  const encryptedContent = "aijws-encrypted-compaction"
+  const calls: { path: string; body: string; beta: string | null }[] = []
+  using server = Bun.serve({
+    port: 0,
+    async fetch(request) {
+      calls.push({
+        path: new URL(request.url).pathname,
+        body: await request.text(),
+        beta: request.headers.get("x-codex-beta-features"),
+      })
+      return new Response("data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } })
+    },
+  })
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "chimera.json"),
+        JSON.stringify({
+          provider: {
+            aijws: {
+              name: "AIJWS",
+              npm: "@ai-sdk/openai-compatible",
+              env: [],
+              remote_compaction: {
+                profile: "codex-responses",
+                protocols: ["v2", "legacy"],
+                auth: "provider-bearer",
+              },
+              options: { apiKey: "aijws-test-key", baseURL: `${server.url.origin}/v1` },
+              models: {
+                target: {
+                  provider: { npm: "@ai-sdk/openai" },
+                  wire_api: "responses",
+                  remote_compaction: true,
+                },
+                sibling: {},
+              },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const provider = (await list())[ProviderID.make("aijws")]
+      const target = provider.models.target
+      const sibling = provider.models.sibling
+      expect(target.api.npm).toBe("@ai-sdk/openai")
+      expect(target.wire_api).toBe("responses")
+      expect(sibling.api.npm).toBe("@ai-sdk/openai-compatible")
+      expect(sibling.wire_api).toBeUndefined()
+
+      const targetLanguage = await getLanguage(target)
+      const siblingLanguage = await getLanguage(sibling)
+      expect(targetLanguage.provider).toBe("aijws.responses")
+      expect(siblingLanguage.provider).toBe("aijws.chat")
+
+      await targetLanguage.doStream({
+        prompt: [{ role: "user", content: [{ type: "text", text: "ordinary Responses request" }] }],
+        includeRawChunks: false,
+      })
+      const transport = await getResponsesTransport(provider.id, target.id)
+      const encoded = encodeRemoteCompactionInput({
+        providerID: provider.id,
+        endpoint: "provider",
+        driver: "codex-responses",
+        profile: "codex-responses",
+        implementation: "responses_compaction_v2",
+        modelID: target.id,
+        wireModelID: target.api.id,
+        replay: {
+          format: "responses_compaction_v1",
+          wire_api: "responses",
+          compatibility_key: transport.identity.compatibilityKey,
+        },
+        output: [{ type: "compaction", encrypted_content: encryptedContent }],
+      })
+      await targetLanguage.doStream({
+        prompt: [{ role: "user", content: [{ type: "text", text: encoded }] }],
+        includeRawChunks: false,
+      })
+      await siblingLanguage.doStream({
+        prompt: [{ role: "user", content: [{ type: "text", text: "ordinary Chat request" }] }],
+        includeRawChunks: false,
+      })
+      const beforeBlockedReplay = calls.length
+      const blocked = await siblingLanguage
+        .doStream({
+          prompt: [{ role: "user", content: [{ type: "text", text: encoded }] }],
+          includeRawChunks: false,
+        })
+        .then(
+          () => undefined,
+          (cause) => cause,
+        )
+      expect(blocked).toBeInstanceOf(Error)
+      expect(String(blocked)).toContain("Remote compaction replay requires the Responses wire API")
+      expect(calls).toHaveLength(beforeBlockedReplay)
+    },
+  })
+
+  expect(calls.map((call) => call.path)).toEqual([
+    "/v1/responses",
+    "/v1/responses",
+    "/v1/chat/completions",
+  ])
+  expect(calls[0].body).not.toContain("__chimera_remote_compaction")
+  expect(calls[0].beta).toBeNull()
+  expect(calls[1].body).not.toContain("__chimera_remote_compaction")
+  expect(JSON.parse(calls[1].body).input).toContainEqual({
+    type: "compaction",
+    encrypted_content: encryptedContent,
+  })
+  expect(calls[1].beta).toBe("remote_compaction_v2")
+  expect(JSON.parse(calls[2].body).messages).toBeArray()
+})
+
+test("persisted generic provider replay mismatch fails before custom route fetch", async () => {
+  const apiKey = "synthetic-custom-route-api-key"
+  const encryptedContent = "synthetic-mismatched-compaction"
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      const configDir = path.join(dir, ".chimera")
+      const root = path.join(configDir, "plugin")
+      await mkdir(root, { recursive: true })
+      await markPluginDependenciesReady(configDir)
+      await markPluginDependenciesReady(Global.Path.config)
+      await Bun.write(
+        path.join(root, "replay-provider.ts"),
+        [
+          "export default {",
+          '  id: "test.replay-provider",',
+          "  server: async () => ({",
+          "    async config(cfg) {",
+          "      cfg.provider ??= {}",
+          "      cfg.provider.replay = {",
+          '        name: "Replay Provider",',
+          '        npm: "@ai-sdk/openai",',
+          '        wire_api: "responses",',
+          "        env: [],",
+          "        options: {",
+          `          apiKey: "${apiKey}",`,
+          '          baseURL: "https://custom-route.invalid/v1",',
+          "          fetch: async () => { globalThis.__replayFetchCalls = (globalThis.__replayFetchCalls ?? 0) + 1; return new Response() },",
+          "        },",
+          '        models: { model: { wire_api: "responses" } },',
+          "      }",
+          "    },",
+          "  }),",
+          "}",
+          "",
+        ].join("\n"),
+      )
+    },
+  })
+  ;(globalThis as typeof globalThis & { __replayFetchCalls?: number }).__replayFetchCalls = 0
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const language = await AppRuntime.runPromise(
+        Effect.gen(function* () {
+          const plugin = yield* Plugin.Service
+          yield* plugin.init()
+          const provider = yield* Provider.Service
+          const model = yield* provider.getModel(ProviderID.make("replay"), ModelID.make("model"))
+          return yield* provider.getLanguage(model)
+        }),
+      )
+      const encoded = encodeRemoteCompactionInput({
+        providerID: "replay",
+        endpoint: "provider",
+        driver: "codex-responses",
+        profile: "codex-responses",
+        implementation: "responses_compaction_v2",
+        modelID: "model",
+        wireModelID: "model",
+        replay: {
+          format: "responses_compaction_v1",
+          wire_api: "responses",
+          compatibility_key: "mismatched-on-purpose",
+        },
+        output: [{ type: "compaction", encrypted_content: encryptedContent }],
+      })
+      const error = await language
+        .doStream({
+          prompt: [{ role: "user", content: [{ type: "text", text: encoded }] }],
+          includeRawChunks: false,
+        })
+        .then(
+          () => undefined,
+          (cause) => cause,
+        )
+      expect(error).toBeInstanceOf(Error)
+      expect(String(error)).not.toContain(apiKey)
+      expect(String(error)).not.toContain(encryptedContent)
+      expect((globalThis as typeof globalThis & { __replayFetchCalls?: number }).__replayFetchCalls).toBe(0)
     },
   })
 })

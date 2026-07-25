@@ -251,6 +251,7 @@ function makeHttp() {
     TestLLMServer.layer,
     SessionPrompt.layer.pipe(
       Layer.provide(SessionRevert.defaultLayer),
+      Layer.provide(RemoteCompaction.disabledLayer),
       Layer.provide(summary),
       Layer.provideMerge(run),
       Layer.provideMerge(compact),
@@ -297,6 +298,70 @@ const cfg = {
         baseURL: "http://localhost:1/v1",
       },
     },
+    replay: {
+      name: "Replay Provider",
+      id: "replay",
+      env: [],
+      npm: "@ai-sdk/openai",
+      wire_api: "responses" as const,
+      remote_compaction: {
+        profile: "codex-responses" as const,
+        protocols: ["v2", "legacy"] as ["v2", "legacy"],
+        auth: "provider-bearer" as const,
+      },
+      models: {
+        model: {
+          id: "model",
+          name: "Replay Model",
+          attachment: false,
+          reasoning: true,
+          temperature: false,
+          tool_call: true,
+          release_date: "2025-01-01",
+          limit: { context: 100000, output: 10000 },
+          cost: { input: 0, output: 0 },
+          options: {},
+          wire_api: "responses" as const,
+          remote_compaction: true,
+        },
+        other: {
+          id: "other",
+          name: "Other Replay Model",
+          attachment: false,
+          reasoning: true,
+          temperature: false,
+          tool_call: true,
+          release_date: "2025-01-01",
+          limit: { context: 100000, output: 10000 },
+          cost: { input: 0, output: 0 },
+          options: {},
+          wire_api: "responses" as const,
+          remote_compaction: true,
+        },
+      },
+      options: { apiKey: "test-key" },
+    },
+    openai: {
+      name: "OpenAI",
+      id: "openai",
+      env: [],
+      npm: "@ai-sdk/openai",
+      models: {
+        "gpt-5": {
+          id: "gpt-5",
+          name: "GPT-5",
+          attachment: false,
+          reasoning: true,
+          temperature: false,
+          tool_call: true,
+          release_date: "2025-01-01",
+          limit: { context: 100000, output: 10000 },
+          cost: { input: 0, output: 0 },
+          options: {},
+        },
+      },
+      options: { apiKey: "test-key" },
+    },
   },
 }
 
@@ -309,6 +374,13 @@ function providerCfg(url: string) {
         ...cfg.provider.test,
         options: {
           ...cfg.provider.test.options,
+          baseURL: url,
+        },
+      },
+      replay: {
+        ...cfg.provider.replay,
+        options: {
+          ...cfg.provider.replay.options,
           baseURL: url,
         },
       },
@@ -364,6 +436,69 @@ const remoteCompactionLock = Effect.fn("test.remoteCompactionLock")(function* (
     },
   })
   return msg
+})
+
+const genericRemoteCompactionLock = Effect.fn("test.genericRemoteCompactionLock")(function* (
+  sessionID: SessionID,
+  compatibilityKey: string,
+  encryptedContent: string,
+  model = { providerID: ProviderID.make("replay"), modelID: ModelID.make("model") },
+) {
+  const session = yield* Session.Service
+  const msg = yield* session.updateMessage({
+    id: MessageID.ascending(),
+    role: "user",
+    sessionID,
+    agent: "build",
+    model,
+    time: { created: Date.now() },
+  })
+  yield* session.updatePart({
+    id: PartID.ascending(),
+    messageID: msg.id,
+    sessionID,
+    type: "compaction",
+    auto: true,
+    remote: {
+      providerID: model.providerID,
+      endpoint: "provider",
+      driver: "codex-responses",
+      profile: "codex-responses",
+      implementation: "responses_compaction_v2",
+      modelID: model.modelID,
+      wireModelID: model.modelID,
+      replay: {
+        format: "responses_compaction_v1",
+        wire_api: "responses",
+        compatibility_key: compatibilityKey,
+      },
+      output: [{ type: "compaction", encrypted_content: encryptedContent }],
+    },
+  })
+  const assistant: MessageV2.Assistant = {
+    id: MessageID.ascending(),
+    role: "assistant",
+    parentID: msg.id,
+    sessionID,
+    mode: "build",
+    agent: "build",
+    summary: true,
+    finish: "stop",
+    cost: 0,
+    path: { cwd: "/tmp", root: "/tmp" },
+    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    modelID: model.modelID,
+    providerID: model.providerID,
+    time: { created: Date.now() },
+  }
+  yield* session.updateMessage(assistant)
+  yield* session.updatePart({
+    id: PartID.ascending(),
+    messageID: assistant.id,
+    sessionID,
+    type: "text",
+    text: "opaque remote summary sentinel",
+  })
 })
 
 const seed = Effect.fn("test.seed")(function* (sessionID: SessionID, opts?: { finish?: string }) {
@@ -479,6 +614,86 @@ it.live("rejects model changes after remote compaction", () =>
         }
       }),
     { git: true, config: cfg },
+  ),
+)
+
+it.live("generic route drift resumes with persisted full text history", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm }) {
+      const { prompt, sessions, chat } = yield* boot()
+      const model = { providerID: ProviderID.make("replay"), modelID: ModelID.make("model") }
+      const encryptedContent = "route-drift-encrypted-ciphertext-sentinel"
+      yield* seed(chat.id)
+      yield* genericRemoteCompactionLock(chat.id, "stale-route-binding", encryptedContent, model)
+      yield* llm.text("resumed")
+
+      const result = yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        model,
+        parts: [{ type: "text", text: "continue after route drift" }],
+      })
+
+      expect(result.info.role).toBe("assistant")
+      const persisted = JSON.stringify(yield* sessions.messages({ sessionID: chat.id }))
+      expect(persisted).toContain("continue after route drift")
+      const body = JSON.stringify((yield* llm.inputs).at(-1))
+      expect(body).toContain("hello")
+      expect(body).toContain("hi there")
+      expect(body).toContain("continue after route drift")
+      expect(body).not.toContain("__chimera_remote_compaction")
+      expect(body).not.toContain("opaque remote summary sentinel")
+      expect(body).not.toContain(encryptedContent)
+    }),
+    { git: true, config: providerCfg },
+  ),
+)
+
+it.live("generic provider or logical model mismatch fails before persistence and LLM", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm }) {
+      const { prompt, sessions } = yield* boot()
+      const cases = [
+        {
+          title: "Provider mismatch",
+          model: ref,
+          text: "provider mismatch must not persist",
+        },
+        {
+          title: "Logical model mismatch",
+          model: { providerID: ProviderID.make("replay"), modelID: ModelID.make("other") },
+          text: "logical model mismatch must not persist",
+        },
+      ]
+      for (const item of cases) {
+        const chat = yield* sessions.create({ title: item.title })
+        yield* genericRemoteCompactionLock(
+          chat.id,
+          "persisted-route-binding",
+          "mismatch-encrypted-ciphertext-sentinel",
+        )
+        const before = yield* sessions.messages({ sessionID: chat.id })
+
+        const exit = yield* prompt
+          .prompt({
+            sessionID: chat.id,
+            agent: "build",
+            model: item.model,
+            parts: [{ type: "text", text: item.text }],
+          })
+          .pipe(Effect.exit)
+
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit)) {
+          const error = Cause.squash(exit.cause)
+          expect(error).toBeInstanceOf(NamedError.Unknown)
+          if (NamedError.Unknown.isInstance(error)) expect(error.data.message).toContain("locked to replay/model")
+        }
+        expect(yield* sessions.messages({ sessionID: chat.id })).toEqual(before)
+      }
+      expect(yield* llm.calls).toBe(0)
+    }),
+    { git: true, config: providerCfg },
   ),
 )
 
@@ -1335,7 +1550,9 @@ it.live(
 
         expect(tool.state.metadata?.interrupted).toBe(true)
         expect(tool.state.time.end).toBeDefined()
-      }),
+        },
+        Effect.scoped,
+      ),
       { git: true, config: providerCfg },
     ),
   30_000,
@@ -1384,7 +1601,7 @@ it.live(
           expect(tool.state.status).not.toBe("running")
           expect(taskMsg.info.time.completed).toBeDefined()
           expect(taskMsg.info.finish).toBeDefined()
-        }),
+        }).pipe(Effect.scoped),
       { git: true, config: cfg },
     ),
   30_000,
@@ -2246,7 +2463,7 @@ it.live(
               ),
             ]),
           )
-        }),
+        }).pipe(Effect.scoped),
       { git: true, config: cfg },
     ),
   30_000,
@@ -2289,7 +2506,7 @@ it.live(
               ),
             ]),
           )
-        }),
+        }).pipe(Effect.scoped),
       { git: true, config: cfg },
     ),
   30_000,

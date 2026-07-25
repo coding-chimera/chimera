@@ -20,6 +20,13 @@ import type {
   ConfigModelSelectionUpdateErrors,
   ConfigModelSelectionUpdateResponses,
   ConfigProvidersResponses,
+  ConfigRemoteCompactionEligibilityListResponses,
+  ConfigRemoteCompactionEligibilityUpdateErrors,
+  ConfigRemoteCompactionEligibilityUpdateResponses,
+  ConfigRemoteCompactionStatusErrors,
+  ConfigRemoteCompactionStatusResponses,
+  ConfigRemoteCompactionUpdateErrors,
+  ConfigRemoteCompactionUpdateResponses,
   ConfigUpdateErrors,
   ConfigUpdateResponses,
   EventSubscribeResponses,
@@ -150,6 +157,8 @@ import type {
   QuestionRejectResponses,
   QuestionReplyErrors,
   QuestionReplyResponses,
+  RemoteCompactionEligibilityPatch,
+  RemoteCompactionPolicyPatch,
   SessionAbortErrors,
   SessionAbortResponses,
   SessionChildrenErrors,
@@ -647,6 +656,167 @@ export class Event extends HeyApiClient {
   }
 }
 
+export class Eligibility extends HeyApiClient {
+  /**
+   * List remote compaction eligibility
+   *
+   * List redacted provider and model eligibility for project-level remote compaction overrides.
+   */
+  public list<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<ConfigRemoteCompactionEligibilityListResponses, unknown, ThrowOnError>({
+      url: "/config/remote-compaction/eligibility",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Update remote compaction eligibility
+   *
+   * Persist a narrow provider and model remote compaction override for this project.
+   */
+  public update<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      remoteCompactionEligibilityPatch?: RemoteCompactionEligibilityPatch
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "remoteCompactionEligibilityPatch", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).patch<
+      ConfigRemoteCompactionEligibilityUpdateResponses,
+      ConfigRemoteCompactionEligibilityUpdateErrors,
+      ThrowOnError
+    >({
+      url: "/config/remote-compaction/eligibility",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
+export class RemoteCompaction extends HeyApiClient {
+  /**
+   * Get remote compaction status
+   *
+   * Resolve remote compaction production eligibility and installed replay disposition.
+   */
+  public status<ThrowOnError extends boolean = false>(
+    parameters: {
+      directory?: string
+      workspace?: string
+      providerID: string
+      modelID: string
+      sessionID?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "query", key: "providerID" },
+            { in: "query", key: "modelID" },
+            { in: "query", key: "sessionID" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      ConfigRemoteCompactionStatusResponses,
+      ConfigRemoteCompactionStatusErrors,
+      ThrowOnError
+    >({
+      url: "/config/remote-compaction/status",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Update remote compaction policy
+   *
+   * Update only the requested remote compaction policy and protocol.
+   */
+  public update<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      remoteCompactionPolicyPatch?: RemoteCompactionPolicyPatch
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "remoteCompactionPolicyPatch", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).patch<
+      ConfigRemoteCompactionUpdateResponses,
+      ConfigRemoteCompactionUpdateErrors,
+      ThrowOnError
+    >({
+      url: "/config/remote-compaction",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  private _eligibility?: Eligibility
+  get eligibility(): Eligibility {
+    return (this._eligibility ??= new Eligibility({ client: this.client }))
+  }
+}
+
 export class ModelSelection extends HeyApiClient {
   /**
    * Get model selection
@@ -816,6 +986,11 @@ export class Config2 extends HeyApiClient {
       ...options,
       ...params,
     })
+  }
+
+  private _remoteCompaction?: RemoteCompaction
+  get remoteCompaction(): RemoteCompaction {
+    return (this._remoteCompaction ??= new RemoteCompaction({ client: this.client }))
   }
 
   private _modelSelection?: ModelSelection

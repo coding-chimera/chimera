@@ -1,6 +1,7 @@
 import { Config } from "@/config/config"
 import { ConfigModelSelection } from "@/config/model-selection"
 import { Provider } from "@/provider/provider"
+import { RemoteCompaction } from "@/session/remote-compaction"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
 import { Authorization } from "../middleware/authorization"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
@@ -31,6 +32,48 @@ export const ConfigApi = HttpApi.make("config")
             identifier: "config.update",
             summary: "Update configuration",
             description: "Update OpenCode configuration settings and preferences.",
+          }),
+        ),
+        HttpApiEndpoint.get("remoteCompactionEligibilityList", `${root}/remote-compaction/eligibility`, {
+          success: described(RemoteCompaction.EligibilityList, "Redacted remote compaction eligibility"),
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "config.remoteCompaction.eligibility.list",
+            summary: "List remote compaction eligibility",
+            description: "List redacted provider and model eligibility for project-level remote compaction overrides.",
+          }),
+        ),
+        HttpApiEndpoint.patch("remoteCompactionEligibilityUpdate", `${root}/remote-compaction/eligibility`, {
+          payload: RemoteCompaction.EligibilityPatch,
+          success: described(RemoteCompaction.Eligibility, "Persisted redacted remote compaction eligibility"),
+          error: RemoteCompaction.EligibilityError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "config.remoteCompaction.eligibility.update",
+            summary: "Update remote compaction eligibility",
+            description: "Persist a narrow provider and model remote compaction override for this project.",
+          }),
+        ),
+        HttpApiEndpoint.get("remoteCompactionStatus", `${root}/remote-compaction/status`, {
+          query: RemoteCompaction.StatusQuery,
+          success: described(RemoteCompaction.Resolution, "Remote compaction status"),
+          error: HttpApiError.BadRequest,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "config.remoteCompaction.status",
+            summary: "Get remote compaction status",
+            description: "Resolve remote compaction production eligibility and installed replay disposition.",
+          }),
+        ),
+        HttpApiEndpoint.patch("remoteCompactionUpdate", `${root}/remote-compaction`, {
+          payload: RemoteCompaction.PolicyPatch,
+          success: described(RemoteCompaction.Policy, "Resulting remote compaction policy"),
+          error: HttpApiError.BadRequest,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "config.remoteCompaction.update",
+            summary: "Update remote compaction policy",
+            description: "Update only the requested remote compaction policy and protocol.",
           }),
         ),
         HttpApiEndpoint.get("modelSelectionGet", `${root}/model-selection`, {

@@ -661,30 +661,65 @@ export type CompactionPart = {
   auto: boolean
   overflow?: boolean
   tail_start_id?: string
-  remote?: {
-    providerID: "openai"
-    endpoint: "codex"
-    implementation: "responses_compact" | "responses_compaction_v2"
-    modelID: string
-    output: Array<{
-      type: "compaction" | "compaction_summary"
-      encrypted_content: string
-    }>
-    usage?: {
-      [key: string]: number
-    }
-  }
-  remote_error?: {
-    providerID: "openai"
-    endpoint: "codex"
-    implementation: "responses_compact" | "responses_compaction_v2"
-    modelID: string
-    message: string
-    status?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
-    retryable?: boolean
-    attempts?: number
-    time: number
-  }
+  remote?:
+    | {
+        providerID: "openai"
+        endpoint: "codex"
+        implementation: "responses_compact" | "responses_compaction_v2"
+        modelID: string
+        output: Array<{
+          type: "compaction" | "compaction_summary"
+          encrypted_content: string
+        }>
+        usage?: {
+          [key: string]: number
+        }
+      }
+    | {
+        providerID: string
+        endpoint: "provider"
+        driver: "codex-responses"
+        profile: "codex-responses"
+        implementation: "responses_compact" | "responses_compaction_v2"
+        modelID: string
+        wireModelID: string
+        replay: {
+          format: "responses_compaction_v1"
+          wire_api: "responses"
+          compatibility_key: string
+        }
+        output: Array<{
+          type: "compaction" | "compaction_summary"
+          encrypted_content: string
+        }>
+        usage?: {
+          [key: string]: number
+        }
+      }
+  remote_error?:
+    | {
+        providerID: "openai"
+        endpoint: "codex"
+        implementation: "responses_compact" | "responses_compaction_v2"
+        modelID: string
+        message: string
+        status?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        retryable?: boolean
+        attempts?: number
+        time: number
+      }
+    | {
+        providerID: string
+        endpoint: "provider"
+        implementation: "responses_compact" | "responses_compaction_v2"
+        modelID: string
+        wireModelID: string
+        message: string
+        status?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        retryable?: boolean
+        attempts?: number
+        time: number
+      }
 }
 
 export type Part =
@@ -1046,6 +1081,11 @@ export type ProviderConfig = {
   id?: string
   npm?: string
   wire_api?: "chat" | "responses"
+  remote_compaction?: {
+    profile: "codex-responses"
+    protocols: ["v2" | "legacy"] | ["v2", "legacy"] | ["legacy", "v2"]
+    auth: "provider-bearer"
+  }
   backend_semantics?: "openai" | "codex"
   userAgent?: string
   whitelist?: Array<string>
@@ -1067,6 +1107,8 @@ export type ProviderConfig = {
       id?: string
       name?: string
       family?: string
+      wire_api?: "chat" | "responses"
+      remote_compaction?: boolean
       backend_semantics?: "openai" | "codex"
       capability_model_id?: string
       reasoning_efforts?: Array<"none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max">
@@ -1320,6 +1362,114 @@ export type Config = {
   }
 }
 
+export type RemoteCompactionEligibility = {
+  providerID: string
+  providerName: string
+  modelID: string
+  modelName: string
+  apiNpm: string
+  wire_api: "chat" | "responses"
+  providerCapability: {
+    present: boolean
+    protocols: Array<"v2" | "legacy">
+  }
+  modelRemoteCompaction: "enabled" | "disabled" | "unset"
+  configurable: boolean
+}
+
+export type RemoteCompactionEligibilityList = {
+  items: Array<RemoteCompactionEligibility>
+}
+
+export type RemoteCompactionEligibilityPatch = {
+  providerID: string
+  modelID: string
+  enabled: boolean
+  protocols?: ["v2" | "legacy"] | ["v2", "legacy"] | ["legacy", "v2"]
+}
+
+export type RemoteCompactionEligibilityError = {
+  name: "RemoteCompactionEligibilityError"
+  data: {
+    providerID: string
+    modelID: string
+    reason: "unknown_provider" | "unknown_model" | "not_configurable" | "unknown_field"
+  }
+}
+
+export type RemoteCompactionResolution = {
+  configured: {
+    mode: "off" | "auto" | "on"
+    protocol: "auto" | "v2" | "legacy"
+  }
+  requested: {
+    providerID: string
+    modelID: string
+  }
+  effective: {
+    providerID: string
+    modelID: string
+    wireModelID: string
+  }
+  mode: "remote" | "local"
+  target: "openai-codex" | "provider" | "local"
+  profile?: "codex-responses"
+  driver?: "codex-responses"
+  credential: "oauth" | "provider-bearer" | "configured" | "missing" | "unavailable"
+  protocols: Array<"v2" | "legacy">
+  localFallback: true
+  reason:
+    | "policy_off"
+    | "provider_capability_missing"
+    | "model_disabled"
+    | "wire_api_not_responses"
+    | "credential_unavailable"
+    | "protocol_mismatch"
+    | "routing_identity_unsafe"
+    | "model_unsupported"
+    | "ready"
+  binding?: {
+    providerID: string
+    modelID: string
+    wireModelID: string
+    driver: "codex-responses"
+    format: "responses_compaction_v1"
+    wire_api: "responses"
+    compatibility_key: string
+  }
+  lock:
+    | {
+        status: "none"
+      }
+    | {
+        status: "exact" | "route_mismatch" | "model_mismatch"
+        endpoint: "openai-codex" | "provider"
+        providerID: string
+        modelID: string
+      }
+  replay: {
+    mode: "none" | "encoded" | "full_history" | "blocked"
+    reason:
+      | "no_lock"
+      | "exact_binding"
+      | "model_mismatch"
+      | "transport_unavailable"
+      | "binding_mismatch"
+      | "credential_unavailable"
+      | "routing_identity_unsafe"
+  }
+}
+
+export type RemoteCompactionPolicyPatch = {
+  remote?: "auto" | "on" | "off"
+  remote_protocol?: "auto" | "v2" | "legacy"
+}
+
+export type RemoteCompactionPolicy = {
+  remote: "auto" | "on" | "off"
+  remote_protocol: "auto" | "v2" | "legacy"
+}
+
 export type ModelSelectionPatch = {
   model?: {
     [key: string]: ModelSelectionKey
@@ -1341,6 +1491,8 @@ export type Model = {
   }
   name: string
   family?: string
+  wire_api?: "chat" | "responses"
+  remote_compaction?: boolean
   backend_semantics?: "openai" | "codex"
   capability_model_id?: string
   reasoning_efforts?: Array<"none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max">
@@ -1410,6 +1562,11 @@ export type Provider = {
   name: string
   source: "env" | "config" | "custom" | "api"
   wire_api?: "chat" | "responses"
+  remote_compaction?: {
+    profile: "codex-responses"
+    protocols: ["v2" | "legacy"] | ["v2", "legacy"] | ["legacy", "v2"]
+    auth: "provider-bearer"
+  }
   backend_semantics?: "openai" | "codex"
   env: Array<string>
   key?: string
@@ -2010,30 +2167,65 @@ export type CompactionPart1 = {
   auto: boolean
   overflow?: boolean
   tail_start_id?: string
-  remote?: {
-    providerID: "openai"
-    endpoint: "codex"
-    implementation: "responses_compact" | "responses_compaction_v2"
-    modelID: string
-    output: Array<{
-      type: "compaction" | "compaction_summary"
-      encrypted_content: string
-    }>
-    usage?: {
-      [key: string]: number
-    }
-  }
-  remote_error?: {
-    providerID: "openai"
-    endpoint: "codex"
-    implementation: "responses_compact" | "responses_compaction_v2"
-    modelID: string
-    message: string
-    status?: number | "NaN" | "Infinity" | "-Infinity"
-    retryable?: boolean
-    attempts?: number
-    time: number
-  }
+  remote?:
+    | {
+        providerID: "openai"
+        endpoint: "codex"
+        implementation: "responses_compact" | "responses_compaction_v2"
+        modelID: string
+        output: Array<{
+          type: "compaction" | "compaction_summary"
+          encrypted_content: string
+        }>
+        usage?: {
+          [key: string]: number
+        }
+      }
+    | {
+        providerID: string
+        endpoint: "provider"
+        driver: "codex-responses"
+        profile: "codex-responses"
+        implementation: "responses_compact" | "responses_compaction_v2"
+        modelID: string
+        wireModelID: string
+        replay: {
+          format: "responses_compaction_v1"
+          wire_api: "responses"
+          compatibility_key: string
+        }
+        output: Array<{
+          type: "compaction" | "compaction_summary"
+          encrypted_content: string
+        }>
+        usage?: {
+          [key: string]: number
+        }
+      }
+  remote_error?:
+    | {
+        providerID: "openai"
+        endpoint: "codex"
+        implementation: "responses_compact" | "responses_compaction_v2"
+        modelID: string
+        message: string
+        status?: number | "NaN" | "Infinity" | "-Infinity"
+        retryable?: boolean
+        attempts?: number
+        time: number
+      }
+    | {
+        providerID: string
+        endpoint: "provider"
+        implementation: "responses_compact" | "responses_compaction_v2"
+        modelID: string
+        wireModelID: string
+        message: string
+        status?: number | "NaN" | "Infinity" | "-Infinity"
+        retryable?: boolean
+        attempts?: number
+        time: number
+      }
 }
 
 export type SyncEventMessageUpdated = {
@@ -4070,6 +4262,119 @@ export type ConfigUpdateResponses = {
 }
 
 export type ConfigUpdateResponse = ConfigUpdateResponses[keyof ConfigUpdateResponses]
+
+export type ConfigRemoteCompactionEligibilityListData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/config/remote-compaction/eligibility"
+}
+
+export type ConfigRemoteCompactionEligibilityListResponses = {
+  /**
+   * Redacted remote compaction eligibility
+   */
+  200: RemoteCompactionEligibilityList
+}
+
+export type ConfigRemoteCompactionEligibilityListResponse =
+  ConfigRemoteCompactionEligibilityListResponses[keyof ConfigRemoteCompactionEligibilityListResponses]
+
+export type ConfigRemoteCompactionEligibilityUpdateData = {
+  body?: RemoteCompactionEligibilityPatch
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/config/remote-compaction/eligibility"
+}
+
+export type ConfigRemoteCompactionEligibilityUpdateErrors = {
+  /**
+   * RemoteCompactionEligibilityError
+   */
+  400: RemoteCompactionEligibilityError
+}
+
+export type ConfigRemoteCompactionEligibilityUpdateError =
+  ConfigRemoteCompactionEligibilityUpdateErrors[keyof ConfigRemoteCompactionEligibilityUpdateErrors]
+
+export type ConfigRemoteCompactionEligibilityUpdateResponses = {
+  /**
+   * Persisted redacted remote compaction eligibility
+   */
+  200: RemoteCompactionEligibility
+}
+
+export type ConfigRemoteCompactionEligibilityUpdateResponse =
+  ConfigRemoteCompactionEligibilityUpdateResponses[keyof ConfigRemoteCompactionEligibilityUpdateResponses]
+
+export type ConfigRemoteCompactionStatusData = {
+  body?: never
+  path?: never
+  query: {
+    directory?: string
+    workspace?: string
+    providerID: string
+    modelID: string
+    sessionID?: string
+  }
+  url: "/config/remote-compaction/status"
+}
+
+export type ConfigRemoteCompactionStatusErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ConfigRemoteCompactionStatusError =
+  ConfigRemoteCompactionStatusErrors[keyof ConfigRemoteCompactionStatusErrors]
+
+export type ConfigRemoteCompactionStatusResponses = {
+  /**
+   * Remote compaction status
+   */
+  200: RemoteCompactionResolution
+}
+
+export type ConfigRemoteCompactionStatusResponse =
+  ConfigRemoteCompactionStatusResponses[keyof ConfigRemoteCompactionStatusResponses]
+
+export type ConfigRemoteCompactionUpdateData = {
+  body?: RemoteCompactionPolicyPatch
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/config/remote-compaction"
+}
+
+export type ConfigRemoteCompactionUpdateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ConfigRemoteCompactionUpdateError =
+  ConfigRemoteCompactionUpdateErrors[keyof ConfigRemoteCompactionUpdateErrors]
+
+export type ConfigRemoteCompactionUpdateResponses = {
+  /**
+   * Resulting remote compaction policy
+   */
+  200: RemoteCompactionPolicy
+}
+
+export type ConfigRemoteCompactionUpdateResponse =
+  ConfigRemoteCompactionUpdateResponses[keyof ConfigRemoteCompactionUpdateResponses]
 
 export type ConfigModelSelectionGetData = {
   body?: never

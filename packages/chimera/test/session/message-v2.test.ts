@@ -327,6 +327,148 @@ describe("session.message-v2.toModelMessage", () => {
     ).toMatchObject({ implementation: "responses_compaction_v2", usage: { input_tokens: 12, output_tokens: 3 } })
   })
 
+  test("accepts generic provider remote compaction success and error metadata", () => {
+    const messageID = MessageID.ascending()
+    const part = MessageV2.CompactionPart.zod.parse({
+      ...basePart(messageID, PartID.ascending()),
+      type: "compaction",
+      auto: false,
+      remote: {
+        providerID: "third-party",
+        endpoint: "provider",
+        driver: "codex-responses",
+        profile: "codex-responses",
+        implementation: "responses_compaction_v2",
+        modelID: "logical-model",
+        wireModelID: "wire-model",
+        replay: {
+          format: "responses_compaction_v1",
+          wire_api: "responses",
+          compatibility_key: "safe-binding",
+        },
+        output: [{ type: "compaction", encrypted_content: "opaque" }],
+        usage: { input_tokens: 12, output_tokens: 3 },
+      },
+      remote_error: {
+        providerID: "third-party",
+        endpoint: "provider",
+        implementation: "responses_compact",
+        modelID: "logical-model",
+        wireModelID: "wire-model",
+        message: "remote compaction failed with HTTP 503",
+        status: 503,
+        retryable: true,
+        attempts: 2,
+        time: 123,
+      },
+    })
+
+    expect(part.remote).toMatchObject({
+      endpoint: "provider",
+      driver: "codex-responses",
+      modelID: "logical-model",
+      wireModelID: "wire-model",
+      replay: { compatibility_key: "safe-binding" },
+      usage: { input_tokens: 12, output_tokens: 3 },
+    })
+    expect(part.remote_error).toEqual({
+      providerID: "third-party",
+      endpoint: "provider",
+      implementation: "responses_compact",
+      modelID: "logical-model",
+      wireModelID: "wire-model",
+      message: "remote compaction failed with HTTP 503",
+      status: 503,
+      retryable: true,
+      attempts: 2,
+      time: 123,
+    })
+  })
+
+  test("converts generic provider compaction metadata into a bound encoded replay", async () => {
+    const messageID = "m-provider-compaction"
+    const input: MessageV2.WithParts[] = [
+      {
+        info: userInfo(messageID),
+        parts: [
+          {
+            ...basePart(messageID, "p-provider-compaction"),
+            type: "compaction",
+            auto: false,
+            remote: {
+              providerID: "third-party",
+              endpoint: "provider",
+              driver: "codex-responses",
+              profile: "codex-responses",
+              implementation: "responses_compaction_v2",
+              modelID: "logical-model",
+              wireModelID: "wire-model",
+              replay: {
+                format: "responses_compaction_v1",
+                wire_api: "responses",
+                compatibility_key: "safe-binding",
+              },
+              output: [{ type: "compaction", encrypted_content: "opaque" }],
+            },
+          },
+        ] as MessageV2.Part[],
+      },
+    ]
+
+    const replay = await MessageV2.toModelMessages(input, model, { remoteCompaction: "encoded" })
+    expect(replay[0]?.role).toBe("user")
+    if (replay[0]?.role !== "user" || typeof replay[0].content === "string") throw new Error("invalid replay")
+    const text = replay[0].content[0]
+    if (text.type !== "text") throw new Error("invalid replay text")
+    expect(
+      decodeRemoteCompactionInput(text.text, {
+        providerID: "third-party",
+        modelID: "logical-model",
+        wireModelID: "wire-model",
+        driver: "codex-responses",
+        format: "responses_compaction_v1",
+        wire_api: "responses",
+        compatibility_key: "safe-binding",
+      }),
+    ).toEqual([{ type: "compaction", encrypted_content: "opaque" }])
+    expect(decodeRemoteCompactionInput(text.text)).toBeUndefined()
+  })
+
+  test("keeps persisted remote compaction diagnostics compatible without retaining secrets", () => {
+    const parsed = MessageV2.CompactionPart.zod.parse({
+      ...basePart(MessageID.ascending(), PartID.ascending()),
+      type: "compaction",
+      auto: true,
+      remote_error: {
+        providerID: "third-party",
+        endpoint: "provider",
+        implementation: "responses_compaction_v2",
+        modelID: "logical-model",
+        wireModelID: "wire-model",
+        message: "provider request failed",
+        status: 401,
+        retryable: false,
+        time: 456,
+        responseBody: "secret-response-body",
+        responseHeaders: { authorization: "Bearer secret-token" },
+        requestBody: { api_key: "secret-key" },
+      },
+    })
+
+    expect(parsed.remote_error).toEqual({
+      providerID: "third-party",
+      endpoint: "provider",
+      implementation: "responses_compaction_v2",
+      modelID: "logical-model",
+      wireModelID: "wire-model",
+      message: "provider request failed",
+      status: 401,
+      retryable: false,
+      time: 456,
+    })
+    expect(JSON.stringify(parsed)).not.toContain("secret-")
+  })
+
   test("converts assistant tool completion into tool-call + tool-result messages with attachments", async () => {
     const userID = "m-user"
     const assistantID = "m-assistant"

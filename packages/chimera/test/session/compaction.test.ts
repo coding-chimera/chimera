@@ -1024,10 +1024,7 @@ describe("session.compaction.process", () => {
               headers: request.headers,
             }
             return Response.json({
-              output: [
-                { type: "message", role: "user", content: [{ type: "input_text", text: "first" }] },
-                { type: "compaction_summary", encrypted_content: "encrypted" },
-              ],
+              output: [{ type: "compaction_summary", encrypted_content: "encrypted" }],
             })
           }
         })
@@ -1793,7 +1790,31 @@ describe("session.compaction.process", () => {
     expect(await canCompact("on", model)).toBe(false)
     expect(await canCompact("off", model)).toBe(false)
     expect(await canCompact("auto", openai)).toBe(true)
-    expect(await canCompact("on", mirror)).toBe(true)
+    expect(await canCompact("on", mirror)).toBe(false)
+  })
+
+  test("model remote compaction disable overrides OpenAI OAuth and policy", async () => {
+    const model = ProviderTest.model({
+      id: ModelID.make("gpt-5"),
+      providerID: ProviderID.make("openai"),
+      remote_compaction: false,
+    })
+    for (const remote of ["auto", "on"] as const) {
+      const rt = ManagedRuntime.make(
+        RemoteCompaction.layerWithEndpoint("http://127.0.0.1/responses/compact").pipe(
+          Layer.provide(authLayer()),
+          Layer.provide(cfg({ remote })),
+          Layer.provide(FetchHttpClient.layer),
+        ),
+      )
+      try {
+        const resolution = await rt.runPromise(RemoteCompaction.Service.use((svc) => svc.resolve({ model })))
+        expect(resolution).toMatchObject({ mode: "local", target: "local", reason: "model_disabled" })
+        expect(await rt.runPromise(RemoteCompaction.Service.use((svc) => svc.canCompact({ model })))).toBe(false)
+      } finally {
+        await rt.dispose()
+      }
+    }
   })
 
   test("skips remote compaction for OpenAI API key auth", async () => {
@@ -3136,5 +3157,281 @@ describe("SessionNs.getUsage", () => {
     expect(result.tokens.input).toBe(500)
     expect(result.tokens.cache.read).toBe(200)
     expect(result.tokens.cache.write).toBe(300)
+  })
+})
+
+
+describe("session.remote-compaction provider target", () => {
+  function genericFixture(
+    protocols: Array<"v2" | "legacy"> = ["v2", "legacy"],
+    success: "v2" | "legacy" = "legacy",
+    options: { capability?: boolean; model?: boolean } = {},
+  ) {
+    const model = ProviderTest.model({
+      id: ModelID.make("logical-model"),
+      providerID: ProviderID.make("third-party"),
+      api: { id: ModelID.make("wire-model"), url: "https://provider.test/v1", npm: "@ai-sdk/openai" },
+      wire_api: "responses",
+      remote_compaction: options.model ?? true,
+    })
+    const calls: Array<{ target: "responses" | "responses/compact"; body: Record<string, unknown>; feature?: string }> = []
+    const transport = {
+      identity: {
+        providerID: model.providerID,
+        modelID: model.id,
+        wireModelID: model.api.id,
+        wireAPI: "responses" as const,
+        auth: "provider-bearer" as const,
+        ready: true,
+        compatibilityKey: "safe-binding",
+        replay: { eligible: true } as const,
+      },
+      execute: async (target: "responses" | "responses/compact", input: { body: BodyInit; feature?: "remote-compaction-v2" }) => {
+        calls.push({ target, body: JSON.parse(String(input.body)), feature: input.feature })
+        if (target === "responses" && success !== "v2") return { status: 500, body: "secret-marker-response" }
+        if (target === "responses")
+          return {
+            status: 200,
+            body: sse([
+              { type: "response.output_item.done", item: { type: "compaction", encrypted_content: "opaque" } },
+              { type: "response.completed" },
+            ]),
+          }
+        if (success !== "legacy") return { status: 500, body: "secret-marker-response" }
+        return {
+          status: 200,
+          body: JSON.stringify({ output: [{ type: "compaction_summary", encrypted_content: "opaque" }] }),
+        }
+      },
+    }
+    const provider = ProviderTest.fake({
+      model,
+      info: ProviderTest.info(
+        {
+          id: model.providerID,
+          wire_api: "responses",
+          remote_compaction:
+            options.capability === false
+              ? undefined
+              : {
+                  profile: "codex-responses",
+                  protocols: protocols as ["v2", "legacy"],
+                  auth: "provider-bearer",
+                },
+        },
+        model,
+      ),
+      getResponsesTransport: () => Effect.succeed(transport),
+    })
+    return { model, calls, provider }
+  }
+
+  test("session lock resolution distinguishes model, route, and production state", async () => {
+    const lock = (fixture: ReturnType<typeof genericFixture>): SessionNs.RemoteCompactionLock => ({
+      endpoint: "provider",
+      providerID: fixture.model.providerID,
+      modelID: fixture.model.id,
+      wireModelID: fixture.model.api.id,
+      driver: "codex-responses",
+      format: "responses_compaction_v1",
+      wireAPI: "responses",
+      compatibilityKey: "safe-binding",
+      messageID: MessageID.make("msg_remote_lock"),
+      partID: PartID.make("prt_remote_lock"),
+    })
+    async function resolve(
+      fixture: ReturnType<typeof genericFixture>,
+      installed: SessionNs.RemoteCompactionLock,
+      remote: "off" | "on" = "on",
+    ) {
+      const rt = ManagedRuntime.make(
+        RemoteCompaction.layerWithEndpoint("http://127.0.0.1/responses", { attempts: 1 }).pipe(
+          Layer.provide(authLayer()),
+          Layer.provide(cfg({ remote, remote_protocol: "auto" })),
+          Layer.provide(FetchHttpClient.layer),
+          Layer.provide(fixture.provider.layer),
+        ),
+      )
+      try {
+        return await rt.runPromise(
+          RemoteCompaction.Service.use((svc) => svc.resolve({ model: fixture.model, session: { lock: installed } })),
+        )
+      } finally {
+        await rt.dispose()
+      }
+    }
+
+    const ready = genericFixture()
+    const exact = lock(ready)
+    expect(await resolve(ready, exact)).toMatchObject({
+      mode: "remote",
+      lock: { status: "exact" },
+      replay: { mode: "encoded", reason: "exact_binding" },
+    })
+    for (const mismatch of [
+      { ...exact, wireModelID: "other-wire-model" },
+      { ...exact, compatibilityKey: "other-binding" },
+    ]) {
+      expect(await resolve(ready, mismatch)).toMatchObject({
+        lock: { status: "route_mismatch" },
+        replay: { mode: "full_history", reason: "binding_mismatch" },
+      })
+    }
+    for (const mismatch of [
+      { ...exact, providerID: ProviderID.make("other-provider") },
+      { ...exact, modelID: ModelID.make("other-logical-model") },
+    ]) {
+      expect(await resolve(ready, mismatch)).toMatchObject({
+        lock: { status: "model_mismatch" },
+        replay: { mode: "blocked", reason: "model_mismatch" },
+      })
+    }
+
+    const disabled = [
+      { fixture: genericFixture(["v2", "legacy"], "legacy", { capability: false }), reason: "provider_capability_missing" },
+      { fixture: genericFixture(["v2", "legacy"], "legacy", { model: false }), reason: "model_disabled" },
+    ] as const
+    for (const item of disabled) {
+      expect(await resolve(item.fixture, lock(item.fixture))).toMatchObject({
+        mode: "local",
+        reason: item.reason,
+        lock: { status: "exact" },
+        replay: { mode: "encoded", reason: "exact_binding" },
+      })
+    }
+    expect(await resolve(ready, exact, "off")).toMatchObject({
+      mode: "local",
+      reason: "policy_off",
+      lock: { status: "exact" },
+      replay: { mode: "encoded", reason: "exact_binding" },
+    })
+  })
+
+  test("resolver selects provider and auto follows declared protocol order", async () => {
+    const fixture = genericFixture(["v2", "legacy"])
+    const rt = ManagedRuntime.make(
+      RemoteCompaction.layerWithEndpoint("http://127.0.0.1/responses", { attempts: 1 }).pipe(
+        Layer.provide(authLayer()),
+        Layer.provide(cfg({ remote: "on", remote_protocol: "auto" })),
+        Layer.provide(FetchHttpClient.layer),
+        Layer.provide(fixture.provider.layer),
+      ),
+    )
+    try {
+      const resolution = await rt.runPromise(RemoteCompaction.Service.use((svc) => svc.resolve({ model: fixture.model })))
+      expect(resolution).toMatchObject({
+        mode: "remote",
+        target: "provider",
+        credential: "provider-bearer",
+        protocols: ["v2", "legacy"],
+        reason: "ready",
+        localFallback: true,
+      })
+      const metadata = await rt.runPromise(
+        RemoteCompaction.Service.use((svc) =>
+          svc.compact({
+            sessionID: SessionID.make("ses_provider_compaction"),
+            model: fixture.model,
+            messages: [],
+            instructions: "compact",
+          }),
+        ),
+      )
+      expect(fixture.calls.map((item) => item.target)).toEqual(["responses", "responses/compact"])
+      expect(fixture.calls[0]?.feature).toBe("remote-compaction-v2")
+      expect(fixture.calls[0]?.body.model).toBe("wire-model")
+      expect(fixture.calls[0]?.body.input).toEqual([{ type: "compaction_trigger" }])
+      expect("stream" in fixture.calls[1]!.body).toBe(false)
+      expect(metadata).toMatchObject({
+        endpoint: "provider",
+        implementation: "responses_compact",
+        modelID: "logical-model",
+        wireModelID: "wire-model",
+        replay: { compatibility_key: "safe-binding" },
+      })
+      expect(JSON.stringify(metadata)).not.toContain("secret-marker-response")
+    } finally {
+      await rt.dispose()
+    }
+  })
+
+  test("auto follows reverse declared order and falls back legacy to v2", async () => {
+    const fixture = genericFixture(["legacy", "v2"], "v2")
+    const rt = ManagedRuntime.make(
+      RemoteCompaction.layerWithEndpoint("http://127.0.0.1/responses", { attempts: 1 }).pipe(
+        Layer.provide(authLayer()),
+        Layer.provide(cfg({ remote: "on", remote_protocol: "auto" })),
+        Layer.provide(FetchHttpClient.layer),
+        Layer.provide(fixture.provider.layer),
+      ),
+    )
+    try {
+      const metadata = await rt.runPromise(
+        RemoteCompaction.Service.use((svc) =>
+          svc.compact({
+            sessionID: SessionID.make("ses_provider_reverse"),
+            model: fixture.model,
+            messages: [],
+            instructions: "compact",
+          }),
+        ),
+      )
+      expect(fixture.calls.map((item) => item.target)).toEqual(["responses/compact", "responses"])
+      expect(metadata.implementation).toBe("responses_compaction_v2")
+    } finally {
+      await rt.dispose()
+    }
+  })
+
+  test("explicit provider protocol never falls through", async () => {
+    const fixture = genericFixture(["v2", "legacy"], "legacy")
+    const rt = ManagedRuntime.make(
+      RemoteCompaction.layerWithEndpoint("http://127.0.0.1/responses", { attempts: 1 }).pipe(
+        Layer.provide(authLayer()),
+        Layer.provide(cfg({ remote: "on", remote_protocol: "v2" })),
+        Layer.provide(FetchHttpClient.layer),
+        Layer.provide(fixture.provider.layer),
+      ),
+    )
+    try {
+      await expect(
+        rt.runPromise(
+          RemoteCompaction.Service.use((svc) =>
+            svc.compact({
+              sessionID: SessionID.make("ses_provider_explicit"),
+              model: fixture.model,
+              messages: [],
+              instructions: "compact",
+            }),
+          ),
+        ),
+      ).rejects.toThrow("HTTP 500")
+      expect(fixture.calls.map((item) => item.target)).toEqual(["responses"])
+    } finally {
+      await rt.dispose()
+    }
+  })
+
+  test("explicit protocol mismatch resolves local without network", async () => {
+    const fixture = genericFixture(["v2"])
+    const rt = ManagedRuntime.make(
+      RemoteCompaction.layerWithEndpoint("http://127.0.0.1/responses", { attempts: 1 }).pipe(
+        Layer.provide(authLayer()),
+        Layer.provide(cfg({ remote: "on", remote_protocol: "legacy" })),
+        Layer.provide(FetchHttpClient.layer),
+        Layer.provide(fixture.provider.layer),
+      ),
+    )
+    try {
+      expect(await rt.runPromise(RemoteCompaction.Service.use((svc) => svc.resolve({ model: fixture.model })))).toMatchObject({
+        mode: "local",
+        target: "local",
+        reason: "protocol_mismatch",
+        protocols: [],
+      })
+      expect(fixture.calls).toHaveLength(0)
+    } finally {
+      await rt.dispose()
+    }
   })
 })

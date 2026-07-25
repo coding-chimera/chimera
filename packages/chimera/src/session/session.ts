@@ -197,12 +197,26 @@ export const Usage = Schema.Struct({
   .pipe(withStatics((s) => ({ zod: zod(s) })))
 export type Usage = Types.DeepMutable<Schema.Schema.Type<typeof Usage>>
 
-export type RemoteCompactionLock = {
-  providerID: ProviderID
-  modelID: ModelID
-  messageID: MessageID
-  partID: PartID
-}
+export type RemoteCompactionLock =
+  | {
+      providerID: ProviderID
+      modelID: ModelID
+      endpoint: "codex"
+      messageID: MessageID
+      partID: PartID
+    }
+  | {
+      providerID: ProviderID
+      modelID: ModelID
+      endpoint: "provider"
+      wireModelID: string
+      driver: "codex-responses"
+      format: "responses_compaction_v1"
+      wireAPI: "responses"
+      compatibilityKey: string
+      messageID: MessageID
+      partID: PartID
+    }
 
 export const Info = Schema.Struct({
   id: SessionID,
@@ -914,11 +928,25 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
       if (Option.isNone(match)) return undefined
       const part = match.value.parts.find((item) => item.type === "compaction" && item.remote)
       if (!part || part.type !== "compaction" || !part.remote) return undefined
+      const source = { messageID: part.messageID, partID: part.id }
+      if (part.remote.endpoint === "codex") {
+        return {
+          providerID: ProviderID.make(part.remote.providerID),
+          modelID: ModelID.make(part.remote.modelID),
+          endpoint: "codex" as const,
+          ...source,
+        }
+      }
       return {
         providerID: ProviderID.make(part.remote.providerID),
         modelID: ModelID.make(part.remote.modelID),
-        messageID: part.messageID,
-        partID: part.id,
+        endpoint: "provider" as const,
+        wireModelID: part.remote.wireModelID,
+        driver: part.remote.driver,
+        format: part.remote.replay.format,
+        wireAPI: part.remote.replay.wire_api,
+        compatibilityKey: part.remote.replay.compatibility_key,
+        ...source,
       }
     })
 

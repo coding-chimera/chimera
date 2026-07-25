@@ -33,6 +33,9 @@ const svc = {
   fork(input: { sessionID: SessionID; messageID?: MessageID }) {
     return run(SessionNs.Service.use((svc) => svc.fork(input)))
   },
+  remoteCompactionLock(sessionID: SessionID) {
+    return run(SessionNs.Service.use((svc) => svc.remoteCompactionLock(sessionID)))
+  },
 }
 
 async function fill(sessionID: SessionID, count: number, time = (i: number) => Date.now() + i) {
@@ -111,9 +114,15 @@ async function addAssistant(
   return id
 }
 
-async function addCompactionPart(sessionID: SessionID, messageID: MessageID, tailStartID?: MessageID, remote = false) {
+async function addCompactionPart(
+  sessionID: SessionID,
+  messageID: MessageID,
+  tailStartID?: MessageID,
+  remote: false | true | "provider" = false,
+) {
+  const id = PartID.ascending()
   await svc.updatePart({
-    id: PartID.ascending(),
+    id,
     sessionID,
     messageID,
     type: "compaction",
@@ -121,16 +130,34 @@ async function addCompactionPart(sessionID: SessionID, messageID: MessageID, tai
     tail_start_id: tailStartID,
     ...(remote
       ? {
-          remote: {
-            providerID: "openai",
-            endpoint: "codex",
-            implementation: "responses_compaction_v2",
-            modelID: "gpt-5.2",
-            output: [{ type: "compaction", encrypted_content: "encrypted" }],
-          },
+          remote:
+            remote === "provider"
+              ? {
+                  providerID: "third-party",
+                  endpoint: "provider",
+                  driver: "codex-responses",
+                  profile: "codex-responses",
+                  implementation: "responses_compaction_v2",
+                  modelID: "logical-model",
+                  wireModelID: "wire-model",
+                  replay: {
+                    format: "responses_compaction_v1",
+                    wire_api: "responses",
+                    compatibility_key: "safe-binding",
+                  },
+                  output: [{ type: "compaction", encrypted_content: "encrypted" }],
+                }
+              : {
+                  providerID: "openai",
+                  endpoint: "codex",
+                  implementation: "responses_compaction_v2",
+                  modelID: "gpt-5.2",
+                  output: [{ type: "compaction", encrypted_content: "encrypted" }],
+                },
         }
       : {}),
-  } as any)
+  } as MessageV2.CompactionPart)
+  return id
 }
 
 describe("MessageV2.page", () => {
@@ -908,6 +935,106 @@ describe("MessageV2.filterCompacted", () => {
         expect(encoded.map((item) => item.info.id)).toEqual([c1, s1, u2, a2, u3])
         expect(text.map((item) => item.info.id)).toEqual([u1, a1, u2, a2, u3])
 
+        await svc.remove(session.id)
+      },
+    })
+  })
+
+  test("extracts generic provider remote lock across internal pagination", async () => {
+    await WithInstance.provide({
+      directory: root,
+      fn: async () => {
+        const session = await svc.create({})
+        const messageID = await addUser(session.id)
+        const partID = await addCompactionPart(session.id, messageID, undefined, "provider")
+        await fill(session.id, 60)
+
+        expect(await svc.remoteCompactionLock(session.id)).toEqual({
+          providerID: ProviderID.make("third-party"),
+          modelID: ModelID.make("logical-model"),
+          endpoint: "provider",
+          wireModelID: "wire-model",
+          driver: "codex-responses",
+          format: "responses_compaction_v1",
+          wireAPI: "responses",
+          compatibilityKey: "safe-binding",
+          messageID,
+          partID,
+        })
+
+        await svc.remove(session.id)
+      },
+    })
+  })
+
+  test("applies generic provider tail disposition and preserves full history as text", async () => {
+    await WithInstance.provide({
+      directory: root,
+      fn: async () => {
+        const session = await svc.create({})
+        const u1 = await addUser(session.id, "first")
+        const a1 = await addAssistant(session.id, u1, { finish: "end_turn" })
+        const u2 = await addUser(session.id, "second")
+        const a2 = await addAssistant(session.id, u2, { finish: "end_turn" })
+        const c1 = await addUser(session.id)
+        await addCompactionPart(session.id, c1, u2, "provider")
+        const s1 = await addAssistant(session.id, c1, { summary: true, finish: "end_turn" })
+        const u3 = await addUser(session.id, "third")
+
+        const encoded = MessageV2.filterCompacted(MessageV2.stream(session.id))
+        const text = MessageV2.filterCompacted(MessageV2.stream(session.id), { remoteCompaction: "text" })
+
+        expect(encoded.map((item) => item.info.id)).toEqual([c1, s1, u2, a2, u3])
+        expect(text.map((item) => item.info.id)).toEqual([u1, a1, u2, a2, u3])
+
+        await svc.remove(session.id)
+      },
+    })
+  })
+
+  test("fork inherits generic provider lock and remaps its tail boundary", async () => {
+    await WithInstance.provide({
+      directory: root,
+      fn: async () => {
+        const session = await svc.create({})
+        const u1 = await addUser(session.id, "first")
+        await addAssistant(session.id, u1, { finish: "end_turn" })
+        const u2 = await addUser(session.id, "second")
+        await addAssistant(session.id, u2, { finish: "end_turn" })
+        const c1 = await addUser(session.id)
+        await addCompactionPart(session.id, c1, u2, "provider")
+        await addAssistant(session.id, c1, { summary: true, finish: "end_turn" })
+        await addUser(session.id, "third")
+
+        const parentLock = await svc.remoteCompactionLock(session.id)
+        const forked = await svc.fork({ sessionID: session.id })
+        const childLock = await svc.remoteCompactionLock(forked.id)
+
+        expect(childLock).toMatchObject({
+          providerID: "third-party",
+          modelID: "logical-model",
+          endpoint: "provider",
+          wireModelID: "wire-model",
+          driver: "codex-responses",
+          format: "responses_compaction_v1",
+          wireAPI: "responses",
+          compatibilityKey: "safe-binding",
+        })
+        expect(childLock?.messageID).not.toBe(parentLock?.messageID)
+        expect(childLock?.partID).not.toBe(parentLock?.partID)
+        if (!childLock) throw new Error("Expected forked generic remote compaction lock")
+
+        const lockMessage = MessageV2.get({ sessionID: forked.id, messageID: childLock.messageID })
+        const part = lockMessage.parts.find((item) => item.id === childLock.partID)
+        expect(part?.type).toBe("compaction")
+        if (!part || part.type !== "compaction") throw new Error("Expected forked generic compaction part")
+        expect(part.remote?.endpoint).toBe("provider")
+        const tailStartID = part.tail_start_id
+        expect(tailStartID).toBeDefined()
+        if (!tailStartID) throw new Error("Expected forked compaction tail boundary")
+        expect(MessageV2.get({ sessionID: forked.id, messageID: tailStartID }).info.id).toBe(tailStartID)
+
+        await svc.remove(forked.id)
         await svc.remove(session.id)
       },
     })

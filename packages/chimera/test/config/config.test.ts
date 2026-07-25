@@ -183,14 +183,10 @@ test("loads shell config field", async () => {
 test("updates config and preserves empty shell sentinel", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
-      await writeConfig(
-        dir,
-        {
-          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
-          shell: "bash",
-        },
-        "config.json",
-      )
+      await writeConfig(dir, {
+        $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+        shell: "bash",
+      })
     },
   })
   await WithInstance.provide({
@@ -198,7 +194,7 @@ test("updates config and preserves empty shell sentinel", async () => {
     fn: async () => {
       await save({ shell: "" })
 
-      const writtenConfig = await Filesystem.readJson<{ shell?: string }>(path.join(tmp.path, "config.json"))
+      const writtenConfig = await Filesystem.readJson<{ shell?: string }>(path.join(tmp.path, "chimera.json"))
       expect(writtenConfig.shell).toBe("")
     },
   })
@@ -955,16 +951,46 @@ Nested command template`,
   })
 })
 
-test("updates config and writes to file", async () => {
+test("updates config and reloads from project file", async () => {
   await using tmp = await tmpdir()
   await WithInstance.provide({
     directory: tmp.path,
     fn: async () => {
-      const newConfig = { model: "updated/model" }
-      await save(newConfig as any)
-
-      const writtenConfig = await Filesystem.readJson<{ model: string }>(path.join(tmp.path, "config.json"))
+      await save({ model: "updated/model" } as Config.Info)
+      const writtenConfig = await Filesystem.readJson<{ model: string }>(path.join(tmp.path, "chimera.json"))
       expect(writtenConfig.model).toBe("updated/model")
+    },
+  })
+  await clear(true)
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      expect((await load()).model).toBe("updated/model")
+    },
+  })
+})
+
+test("updates existing project jsonc without dropping comments", async () => {
+  await using tmp = await tmpdir({
+    init: (dir) => Filesystem.write(path.join(dir, "chimera.jsonc"), `{
+  // keep this comment
+  "formatter": false,
+}`),
+  })
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      await save({ username: "patched-user" })
+      const written = await Filesystem.readText(path.join(tmp.path, "chimera.jsonc"))
+      expect(written).toContain("// keep this comment")
+      expect(written).toContain('"formatter": false')
+    },
+  })
+  await clear(true)
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      expect(await load()).toMatchObject({ username: "patched-user", formatter: false })
     },
   })
 })
@@ -1802,10 +1828,28 @@ test("validates provider wire API placement and values", () => {
   expect(issue?.message).toContain('"completions"')
   const modelOverride = ConfigParse.effectSchema(
     Config.Info,
-    { provider: { invalid: { models: { model: { wire_api: "responses" } } } } },
+    { provider: { valid: { models: { model: { wire_api: "responses" } } } } },
     "test",
   )
-  expect(modelOverride.provider?.invalid?.models?.model).toEqual({})
+  expect(modelOverride.provider?.valid?.models?.model.wire_api).toBe("responses")
+  const invalidModelWireAPI = (() => {
+    try {
+      ConfigParse.effectSchema(
+        Config.Info,
+        { provider: { invalid: { models: { model: { wire_api: "completions" } } } } },
+        "test",
+      )
+    } catch (error) {
+      return error as { data?: { issues?: Array<{ path?: string[]; message?: string }> } }
+    }
+  })()
+  expect(invalidModelWireAPI?.data?.issues?.[0]?.path).toEqual([
+    "provider",
+    "invalid",
+    "models",
+    "model",
+    "wire_api",
+  ])
 })
 test("validates provider model capability metadata", () => {
   const config = ConfigParse.effectSchema(
@@ -1833,6 +1877,43 @@ test("validates provider model capability metadata", () => {
       provider: { compatible: { models: { model: { reasoning_efforts: ["extreme"] } } } },
     }).success,
   ).toBe(false)
+})
+
+
+test("validates explicit remote compaction capability and protocol order", () => {
+  const parsed = ConfigParse.effectSchema(
+    Config.Info,
+    {
+      provider: {
+        compatible: {
+          wire_api: "responses",
+          remote_compaction: {
+            profile: "codex-responses",
+            protocols: ["legacy", "v2"],
+            auth: "provider-bearer",
+          },
+          models: { model: { remote_compaction: true } },
+        },
+      },
+    },
+    "test",
+  )
+  expect(parsed.provider?.compatible?.remote_compaction?.protocols).toEqual(["legacy", "v2"])
+  expect(parsed.provider?.compatible?.models?.model.remote_compaction).toBe(true)
+  for (const protocols of [[], ["v2", "v2"], ["legacy", "legacy"], ["unknown"]])
+    expect(
+      Config.Info.zod.safeParse({
+        provider: {
+          invalid: {
+            remote_compaction: {
+              profile: "codex-responses",
+              protocols,
+              auth: "provider-bearer",
+            },
+          },
+        },
+      }).success,
+    ).toBe(false)
 })
 
 

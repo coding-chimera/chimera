@@ -275,11 +275,11 @@ export const Info = Schema.Struct({
       }),
       remote: Schema.optional(Schema.Literals(["auto", "on", "off"])).annotate({
         description:
-          "Use Codex remote compaction automatically for OpenAI, set to on to force it for compatible endpoints, or off to always use local compaction.",
+          "Use remote compaction automatically for supported OpenAI OAuth sessions or explicitly capable providers. on never bypasses provider and model capability opt-in; off prevents future remote compaction.",
       }),
       remote_protocol: Schema.optional(Schema.Literals(["auto", "v2", "legacy"])).annotate({
         description:
-          "Select the Codex remote compaction wire protocol. auto tries Responses v2 before legacy, v2 uses only Responses compaction v2, and legacy uses /responses/compact.",
+          "Select the remote compaction wire protocol. auto uses the explicitly authorized provider protocol order, v2 uses only Responses compaction v2, and legacy uses only /responses/compact.",
       }),
     }),
   ),
@@ -352,6 +352,12 @@ function globalConfigFile() {
     if (existsSync(file)) return file
   }
   return candidates[0]
+}
+
+function projectConfigFile(dir: string) {
+  const jsonc = path.join(dir, `${ConfigPaths.APP_CONFIG_NAME}.jsonc`)
+  if (existsSync(jsonc)) return jsonc
+  return path.join(dir, `${ConfigPaths.APP_CONFIG_NAME}.json`)
 }
 
 function patchJsonc(input: string, patch: unknown, path: string[] = []): string {
@@ -790,11 +796,19 @@ export const layer = Layer.effect(
 
     const update = Effect.fn("Config.update")(function* (config: Info) {
       const dir = yield* InstanceState.directory
-      const file = path.join(dir, "config.json")
-      const existing = yield* loadFile(file)
-      yield* fs
-        .writeFileString(file, JSON.stringify(mergeDeep(writable(existing), writable(config)), null, 2))
-        .pipe(Effect.orDie)
+      const file = projectConfigFile(dir)
+      const before = (yield* readConfigFile(file)) || "{}"
+      const patch = writable(config)
+      if (!file.endsWith(".jsonc")) {
+        const existing = ConfigParse.effectSchema(Info, ConfigParse.jsonc(before, file), file)
+        yield* fs
+          .writeFileString(file, JSON.stringify(mergeDeep(writable(existing), patch), null, 2))
+          .pipe(Effect.orDie)
+        return
+      }
+      const updated = patchJsonc(before, patch)
+      ConfigParse.effectSchema(Info, ConfigParse.jsonc(updated, file), file)
+      yield* fs.writeFileString(file, updated).pipe(Effect.orDie)
     })
 
     const invalidate = Effect.fn("Config.invalidate")(function* () {

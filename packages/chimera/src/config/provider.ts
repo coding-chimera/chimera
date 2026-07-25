@@ -5,11 +5,26 @@ import { CodexModel } from "@/provider/codex-model"
 
 const BackendSemantics = Schema.Literals(["openai", "codex"])
 const WireAPI = Schema.Literals(["chat", "responses"])
+const RemoteCompaction = Schema.Struct({
+  profile: Schema.Literal("codex-responses"),
+  protocols: Schema.Union([
+    Schema.mutable(Schema.Tuple([Schema.Literals(["v2", "legacy"])])),
+    Schema.mutable(Schema.Tuple([Schema.Literal("v2"), Schema.Literal("legacy")])),
+    Schema.mutable(Schema.Tuple([Schema.Literal("legacy"), Schema.Literal("v2")])),
+  ]),
+  auth: Schema.Literal("provider-bearer"),
+})
 
 export const Model = Schema.Struct({
   id: Schema.optional(Schema.String),
   name: Schema.optional(Schema.String),
   family: Schema.optional(Schema.String),
+  wire_api: Schema.optional(WireAPI).annotate({
+    description: "Wire protocol for this model; takes precedence over the provider default",
+  }),
+  remote_compaction: Schema.optional(Schema.Boolean).annotate({
+    description: "Explicitly enable or disable provider remote compaction for this model",
+  }),
   backend_semantics: Schema.optional(BackendSemantics).annotate({
     description: "Capability semantics to apply independently of the configured transport",
   }),
@@ -91,6 +106,9 @@ export const Info = Schema.Struct({
   npm: Schema.optional(Schema.String),
   wire_api: Schema.optional(WireAPI).annotate({
     description: "Wire protocol for model requests; independent of backend_semantics",
+  }),
+  remote_compaction: Schema.optional(RemoteCompaction).annotate({
+    description: "Explicit provider authorization for remote compaction; required for non-OpenAI providers",
   }),
   backend_semantics: Schema.optional(BackendSemantics).annotate({
     description: "Default capability semantics for models in this provider; model values take precedence",

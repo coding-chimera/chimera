@@ -66,15 +66,13 @@ import { TuiPluginRuntime } from "@/cli/cmd/tui/plugin/runtime"
 import type { RouteMap } from "@/cli/cmd/tui/plugin/api"
 import { FormatError, FormatUnknownError } from "@/cli/error"
 import {
-  nextOpenAIRemoteCompactionMode,
-  nextOpenAIRemoteCompactionProtocolStatus,
-  openAIRemoteCompactionProtocolConfig,
-  openAIRemoteCompactionProtocolStatus,
-  openAIRemoteCompactionProtocolToggleDescription,
-  openAIRemoteCompactionProtocolToggleTitle,
-  openAIRemoteCompactionStatus,
-  openAIRemoteCompactionToggleDescription,
-  openAIRemoteCompactionToggleTitle,
+  remoteCompactionModeDescription,
+  remoteCompactionModePatch,
+  remoteCompactionModeTitle,
+  remoteCompactionProtocolDescription,
+  remoteCompactionProtocolPatch,
+  remoteCompactionProtocolTitle,
+  remoteCompactionSummary,
 } from "@tui/util/remote-compaction"
 import {
   memoryDedicatedToolsStatus,
@@ -89,6 +87,7 @@ import {
 
 import type { EventSource } from "./context/sdk"
 import { DialogVariant } from "./component/dialog-variant"
+import type { RemoteCompactionPolicyPatch } from "@opencode-ai/sdk/v2"
 
 function rendererConfig(_config: TuiConfig.Info): CliRendererConfig {
   const mouseEnabled = !Flag.OPENCODE_DISABLE_MOUSE && (_config.mouse ?? true)
@@ -453,89 +452,48 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     ),
   )
 
-  async function toggleOpenAIRemoteCompaction() {
-    const remote = nextOpenAIRemoteCompactionMode(sync.data.config, local.model.current())
-    const result = await sdk.client.config
+  async function updateRemoteCompaction(remoteCompactionPolicyPatch: RemoteCompactionPolicyPatch) {
+    const result = await sdk.client.config.remoteCompaction
       .update({
         workspace: project.workspace.current(),
-        config: {
-          compaction: {
-            remote,
-          },
-        },
+        remoteCompactionPolicyPatch,
       })
       .catch((error) => {
-        toast.show({
-          variant: "error",
-          message: errorMessage(error),
-          duration: 5000,
-        })
+        toast.show({ variant: "error", message: errorMessage(error), duration: 5000 })
       })
     if (!result) return
     if (result.error) {
-      toast.show({
-        variant: "error",
-        message: errorMessage(result.error),
-        duration: 5000,
-      })
+      toast.show({ variant: "error", message: errorMessage(result.error), duration: 5000 })
       return
     }
-    sync.set("config", "compaction", { ...sync.data.config.compaction, remote })
-    await sync.bootstrap({ fatal: false }).catch((error) => {
-      toast.show({
-        variant: "error",
-        message: errorMessage(error),
-        duration: 5000,
-      })
+    const status = await Promise.resolve(local.model.remoteCompaction.refresh()).catch((error: unknown) => {
+      toast.show({ variant: "error", message: errorMessage(error), duration: 5000 })
     })
-    sync.set("config", "compaction", { ...sync.data.config.compaction, remote })
-    toast.show({
-      variant: "info",
-      message: `OpenAI remote compaction: ${openAIRemoteCompactionStatus(sync.data.config, local.model.current())}`,
-      duration: 3000,
+    if (!status) return
+    sync.set("config", "compaction", {
+      ...sync.data.config.compaction,
+      remote: status.configured.mode,
+      remote_protocol: status.configured.protocol,
     })
+    toast.show({ variant: "info", message: `Remote compaction: ${remoteCompactionSummary(status)}`, duration: 5000 })
   }
 
-  async function toggleOpenAIRemoteCompactionProtocol() {
-    const next = nextOpenAIRemoteCompactionProtocolStatus(sync.data.config, local.model.current())
-    const config = openAIRemoteCompactionProtocolConfig(next, local.model.current())
-    const result = await sdk.client.config
-      .update({
-        workspace: project.workspace.current(),
-        config: {
-          compaction: config,
-        },
-      })
-      .catch((error) => {
-        toast.show({
-          variant: "error",
-          message: errorMessage(error),
-          duration: 5000,
-        })
-      })
-    if (!result) return
-    if (result.error) {
-      toast.show({
-        variant: "error",
-        message: errorMessage(result.error),
-        duration: 5000,
-      })
+  async function toggleRemoteCompaction() {
+    const status = local.model.remoteCompaction.status()
+    if (!status) {
+      toast.show({ variant: "warning", message: "Remote compaction status is still loading", duration: 3000 })
       return
     }
-    sync.set("config", "compaction", { ...sync.data.config.compaction, ...config })
-    await sync.bootstrap({ fatal: false }).catch((error) => {
-      toast.show({
-        variant: "error",
-        message: errorMessage(error),
-        duration: 5000,
-      })
-    })
-    sync.set("config", "compaction", { ...sync.data.config.compaction, ...config })
-    toast.show({
-      variant: "info",
-      message: `OpenAI remote compaction protocol: ${openAIRemoteCompactionProtocolStatus(sync.data.config, local.model.current())}`,
-      duration: 3000,
-    })
+    await updateRemoteCompaction(remoteCompactionModePatch(status))
+  }
+
+  async function toggleRemoteCompactionProtocol() {
+    const status = local.model.remoteCompaction.status()
+    if (!status) {
+      toast.show({ variant: "warning", message: "Remote compaction status is still loading", duration: 3000 })
+      return
+    }
+    await updateRemoteCompaction(remoteCompactionProtocolPatch(status))
   }
 
   async function toggleMemoryEnabled() {
@@ -876,8 +834,12 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       category: "System",
     },
     {
-      title: openAIRemoteCompactionToggleTitle(sync.data.config, local.model.current()),
-      description: openAIRemoteCompactionToggleDescription(sync.data.config, local.model.current()),
+      title: local.model.remoteCompaction.status()
+        ? remoteCompactionModeTitle(local.model.remoteCompaction.status()!)
+        : "Remote compaction mode: loading",
+      description: local.model.remoteCompaction.status()
+        ? remoteCompactionModeDescription(local.model.remoteCompaction.status()!)
+        : "Loading authoritative remote compaction status.",
       value: "app.toggle.openai_remote_compaction",
       suggested: true,
       slash: {
@@ -885,14 +847,18 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         aliases: ["remote-compact", "openai-remote-compaction"],
       },
       onSelect: async (dialog) => {
-        await toggleOpenAIRemoteCompaction()
+        await toggleRemoteCompaction()
         dialog.clear()
       },
       category: "System",
     },
     {
-      title: openAIRemoteCompactionProtocolToggleTitle(sync.data.config, local.model.current()),
-      description: openAIRemoteCompactionProtocolToggleDescription(sync.data.config, local.model.current()),
+      title: local.model.remoteCompaction.status()
+        ? remoteCompactionProtocolTitle(local.model.remoteCompaction.status()!)
+        : "Remote compaction protocol: loading",
+      description: local.model.remoteCompaction.status()
+        ? remoteCompactionProtocolDescription(local.model.remoteCompaction.status()!)
+        : "Loading authoritative remote compaction status.",
       value: "app.toggle.openai_remote_compaction_protocol",
       suggested: true,
       slash: {
@@ -900,7 +866,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         aliases: ["remote-compact-protocol", "remote-protocol"],
       },
       onSelect: async (dialog) => {
-        await toggleOpenAIRemoteCompactionProtocol()
+        await toggleRemoteCompactionProtocol()
         dialog.clear()
       },
       category: "System",

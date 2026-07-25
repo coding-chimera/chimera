@@ -23,6 +23,7 @@ import { EventV2 } from "@/v2/event"
 import { SessionEvent } from "@/v2/session-event"
 import { SyncEvent } from "@/sync"
 import { RemoteCompaction } from "./remote-compaction"
+import { bindingFromMetadata, sameRemoteCompactionBinding } from "./remote-compaction-codec"
 
 const log = Log.create({ service: "session.compaction" })
 
@@ -525,7 +526,19 @@ export const layer: Layer.Layer<
         },
       })
 
-      if (compactionPart && (yield* remote.canCompact({ model }))) {
+      const producerResolution = yield* remote.resolve({ model })
+      const replayModel =
+        model.providerID === userMessage.model.providerID && model.id === userMessage.model.modelID
+          ? model
+          : yield* provider.getModel(userMessage.model.providerID, userMessage.model.modelID)
+      const replayResolution = replayModel === model ? producerResolution : yield* remote.resolve({ model: replayModel })
+      const producerMatchesReplay =
+        producerResolution.target !== "provider" ||
+        (replayResolution.target === "provider" &&
+          producerResolution.binding !== undefined &&
+          replayResolution.binding !== undefined &&
+          sameRemoteCompactionBinding(producerResolution.binding, replayResolution.binding))
+      if (compactionPart && producerMatchesReplay && producerResolution.mode === "remote") {
         const result = yield* remote
           .compact({
             sessionID: input.sessionID,
@@ -534,7 +547,21 @@ export const layer: Layer.Layer<
             instructions: nextPrompt,
           })
           .pipe(
-            Effect.map((metadata) => ({ ok: true as const, metadata })),
+            Effect.map((metadata) => {
+              if (
+                metadata.endpoint === "provider" &&
+                (!replayResolution.binding ||
+                  !sameRemoteCompactionBinding(bindingFromMetadata(metadata), replayResolution.binding))
+              )
+                return {
+                  ok: false as const,
+                  error: new RemoteCompaction.RemoteCompactionError({
+                    message: "provider remote compaction binding changed before installation",
+                    implementation: metadata.implementation,
+                  }),
+                }
+              return { ok: true as const, metadata }
+            }),
             Effect.catch((error) => Effect.succeed({ ok: false as const, error })),
           )
         if (result.ok) {
@@ -547,7 +574,7 @@ export const layer: Layer.Layer<
           msg.finish = "end_turn"
           msg.time.completed = Date.now()
           yield* session.updateMessage(msg)
-          const text = "Remote Codex compaction installed."
+          const text = result.metadata.endpoint === "codex" ? "Remote Codex compaction installed." : "Remote compaction installed."
           yield* session.updatePart({
             id: PartID.ascending(),
             messageID: msg.id,
@@ -577,7 +604,7 @@ export const layer: Layer.Layer<
           retryable: result.error.retryable,
           status: result.error.status,
         })
-        compactionPart.remote_error = RemoteCompaction.failureMetadata({ modelID: model.id, error: result.error })
+        compactionPart.remote_error = RemoteCompaction.failureMetadata({ model, error: result.error })
         compactionPart.tail_start_id = selected.tail_start_id
         yield* session.updatePart(compactionPart)
         const attempts = result.error.attempts && result.error.attempts > 1 ? ` after ${result.error.attempts} attempts` : ""
@@ -587,7 +614,7 @@ export const layer: Layer.Layer<
           messageID: compactionPart.messageID,
           sessionID: input.sessionID,
           type: "text",
-          text: `Remote Codex compaction failed${attempts}${result.error.status ? ` with status ${result.error.status}` : ""}; falling back to local compaction.`,
+          text: `Remote compaction failed${attempts}${result.error.status ? ` with status ${result.error.status}` : ""}; falling back to local compaction.`,
           synthetic: true,
           ignored: true,
           metadata: { remote_compaction_failure: true },

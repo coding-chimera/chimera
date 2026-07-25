@@ -4,21 +4,31 @@ import { makeRuntime } from "@/effect/run-service"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import * as Log from "@opencode-ai/core/util/log"
 import os from "os"
-import { Context, Effect, Layer, Schema } from "effect"
+import { Context, Duration, Effect, Layer, Option, Schema } from "effect"
+import z from "zod"
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http"
-import type { Provider } from "@/provider/provider"
-import type { SessionID } from "./schema"
+import { Provider } from "@/provider/provider"
+import { ModelID, ProviderID } from "@/provider/schema"
+import { SessionID } from "./schema"
+import { withStatics } from "@/util/schema"
+import { zod } from "@/util/effect-zod"
+import type { RemoteCompactionLock } from "./session"
 import { MessageV2 } from "./message-v2"
 import { codexAuthHeaders, codexEndpointUrl } from "@/plugin/codex"
 import type { ModelMessage } from "ai"
 import {
+  bindingFromTransportIdentity,
   decodeRemoteCompactionInput,
   decodeRemoteCompactionOutput,
+  rewriteRemoteCompactionInput,
+  sameRemoteCompactionBinding,
   type RemoteCompactionImplementation,
   type RemoteCompactionMetadata,
   type RemoteCompactionOutputItem,
+  type RemoteCompactionReplayBinding,
   type RemoteCompactionUsage,
 } from "./remote-compaction-codec"
+import { ResponsesTransport } from "@/provider/responses-transport"
 
 const log = Log.create({ service: "remote.compaction" })
 
@@ -67,7 +77,281 @@ export class RemoteCompactionError extends Schema.TaggedErrorClass<RemoteCompact
   },
 ) {}
 
+export const StatusQuery = Schema.Struct({
+  providerID: ProviderID,
+  modelID: ModelID,
+  sessionID: Schema.optional(SessionID),
+})
+  .annotate({ identifier: "RemoteCompactionStatusQuery" })
+  .pipe(
+    withStatics(() => ({
+      zod: z
+        .object({
+          providerID: ProviderID.zod,
+          modelID: ModelID.zod,
+          sessionID: (z.string() as unknown as z.ZodType<SessionID>).optional(),
+        })
+        .strict(),
+    })),
+  )
+export type StatusQuery = Schema.Schema.Type<typeof StatusQuery>
+
+export const PolicyPatch = Schema.StructWithRest(
+  Schema.Struct({
+    remote: Schema.optional(Schema.Literals(["auto", "on", "off"])),
+    remote_protocol: Schema.optional(Schema.Literals(["auto", "v2", "legacy"])),
+  }),
+  [Schema.Record(Schema.String, Schema.Unknown)],
+)
+  .annotate({ identifier: "RemoteCompactionPolicyPatch" })
+  .pipe(
+    withStatics(() => ({
+      zod: z
+        .object({
+          remote: z.enum(["auto", "on", "off"]).optional(),
+          remote_protocol: z.enum(["auto", "v2", "legacy"]).optional(),
+        })
+        .strict(),
+    })),
+  )
+export type PolicyPatch = Schema.Schema.Type<typeof PolicyPatch>
+
+export const Policy = Schema.Struct({
+  remote: Schema.Literals(["auto", "on", "off"]),
+  remote_protocol: Schema.Literals(["auto", "v2", "legacy"]),
+})
+  .annotate({ identifier: "RemoteCompactionPolicy" })
+  .pipe(withStatics((schema) => ({ zod: zod(schema) })))
+export type Policy = Schema.Schema.Type<typeof Policy>
+
+export const ResolutionReason = Schema.Literals([
+  "policy_off",
+  "provider_capability_missing",
+  "model_disabled",
+  "wire_api_not_responses",
+  "credential_unavailable",
+  "protocol_mismatch",
+  "routing_identity_unsafe",
+  "model_unsupported",
+  "ready",
+])
+export type ResolutionReason = Schema.Schema.Type<typeof ResolutionReason>
+
+export const ReplayReason = Schema.Literals([
+  "no_lock",
+  "exact_binding",
+  "model_mismatch",
+  "transport_unavailable",
+  "wire_api_not_responses",
+  "binding_mismatch",
+  "credential_unavailable",
+  "routing_identity_unsafe",
+])
+export type ReplayReason = Schema.Schema.Type<typeof ReplayReason>
+
+export const LockResolution = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("none") }),
+  Schema.Struct({
+    status: Schema.Literals(["exact", "route_mismatch", "model_mismatch"]),
+    endpoint: Schema.Literals(["openai-codex", "provider"]),
+    providerID: Schema.String,
+    modelID: Schema.String,
+  }),
+])
+export type LockResolution = Schema.Schema.Type<typeof LockResolution>
+
+export const ReplayResolution = Schema.Struct({
+  mode: Schema.Literals(["none", "encoded", "full_history", "blocked"]),
+  reason: ReplayReason,
+})
+export type ReplayResolution = Schema.Schema.Type<typeof ReplayResolution>
+
+export type ResolveInput = {
+  model: Provider.Model
+  session?: { sessionID?: SessionID; lock?: RemoteCompactionLock }
+}
+
+const ReplayBinding = Schema.Struct({
+  providerID: Schema.String,
+  modelID: Schema.String,
+  wireModelID: Schema.String,
+  driver: Schema.Literal("codex-responses"),
+  format: Schema.Literal("responses_compaction_v1"),
+  wire_api: Schema.Literal("responses"),
+  compatibility_key: Schema.String,
+})
+
+export const Resolution = Schema.Struct({
+  configured: Schema.Struct({
+    mode: Schema.Literals(["off", "auto", "on"]),
+    protocol: Schema.Literals(["auto", "v2", "legacy"]),
+  }),
+  requested: Schema.Struct({ providerID: Schema.String, modelID: Schema.String }),
+  effective: Schema.Struct({ providerID: Schema.String, modelID: Schema.String, wireModelID: Schema.String }),
+  mode: Schema.Literals(["remote", "local"]),
+  target: Schema.Literals(["openai-codex", "provider", "local"]),
+  profile: Schema.optional(Schema.Literal("codex-responses")),
+  driver: Schema.optional(Schema.Literal("codex-responses")),
+  credential: Schema.Literals(["oauth", "provider-bearer", "configured", "missing", "unavailable"]),
+  protocols: Schema.Array(Schema.Literals(["v2", "legacy"])),
+  localFallback: Schema.Literal(true),
+  reason: ResolutionReason,
+  binding: Schema.optional(ReplayBinding),
+  lock: LockResolution,
+  replay: ReplayResolution,
+})
+  .annotate({ identifier: "RemoteCompactionResolution" })
+  .pipe(withStatics((schema) => ({ zod: zod(schema) })))
+export type Resolution = Schema.Schema.Type<typeof Resolution>
+
+const EligibilityProtocols = Schema.Union([
+  Schema.Tuple([Schema.Literals(["v2", "legacy"])]),
+  Schema.Tuple([Schema.Literal("v2"), Schema.Literal("legacy")]),
+  Schema.Tuple([Schema.Literal("legacy"), Schema.Literal("v2")]),
+])
+
+export const EligibilityPatch = Schema.StructWithRest(
+  Schema.Struct({
+    providerID: ProviderID,
+    modelID: ModelID,
+    enabled: Schema.Boolean,
+    protocols: Schema.optional(EligibilityProtocols),
+  }),
+  [Schema.Record(Schema.String, Schema.Unknown)],
+)
+  .annotate({ identifier: "RemoteCompactionEligibilityPatch" })
+  .pipe(
+    withStatics(() => ({
+      zod: z
+        .object({
+          providerID: ProviderID.zod,
+          modelID: ModelID.zod,
+          enabled: z.boolean(),
+          protocols: z
+            .union([
+              z.tuple([z.enum(["v2", "legacy"])]),
+              z.tuple([z.literal("v2"), z.literal("legacy")]),
+              z.tuple([z.literal("legacy"), z.literal("v2")]),
+            ])
+            .optional(),
+        })
+        .passthrough(),
+    })),
+  )
+export type EligibilityPatch = Schema.Schema.Type<typeof EligibilityPatch>
+
+export const Eligibility = Schema.Struct({
+  providerID: Schema.String,
+  providerName: Schema.String,
+  modelID: Schema.String,
+  modelName: Schema.String,
+  apiNpm: Schema.String,
+  wire_api: Schema.Literals(["chat", "responses"]),
+  providerCapability: Schema.Struct({
+    present: Schema.Boolean,
+    protocols: Schema.Array(Schema.Literals(["v2", "legacy"])),
+  }),
+  modelRemoteCompaction: Schema.Literals(["enabled", "disabled", "unset"]),
+  configurable: Schema.Boolean,
+})
+  .annotate({ identifier: "RemoteCompactionEligibility" })
+  .pipe(withStatics((schema) => ({ zod: zod(schema) })))
+export type Eligibility = Schema.Schema.Type<typeof Eligibility>
+
+export const EligibilityList = Schema.Struct({
+  items: Schema.Array(Eligibility),
+})
+  .annotate({ identifier: "RemoteCompactionEligibilityList" })
+  .pipe(withStatics((schema) => ({ zod: zod(schema) })))
+export type EligibilityList = Schema.Schema.Type<typeof EligibilityList>
+
+export const EligibilityErrorReason = Schema.Literals([
+  "unknown_provider",
+  "unknown_model",
+  "not_configurable",
+  "unknown_field",
+])
+export type EligibilityErrorReason = Schema.Schema.Type<typeof EligibilityErrorReason>
+
+const EligibilityErrorFields = {
+  name: Schema.Literal("RemoteCompactionEligibilityError"),
+  data: Schema.Struct({
+    providerID: Schema.String,
+    modelID: Schema.String,
+    reason: EligibilityErrorReason,
+  }),
+}
+
+export const EligibilityErrorResponse = Schema.Struct(EligibilityErrorFields)
+  .annotate({ identifier: "RemoteCompactionEligibilityError" })
+  .pipe(withStatics((schema) => ({ zod: zod(schema) })))
+export type EligibilityErrorResponse = Schema.Schema.Type<typeof EligibilityErrorResponse>
+
+export class EligibilityError extends Schema.ErrorClass<EligibilityError>("RemoteCompactionEligibilityError")(
+  EligibilityErrorFields,
+  { httpApiStatus: 400 },
+) {}
+
+export function eligibilityError(input: { providerID: string; modelID: string; reason: EligibilityErrorReason }) {
+  return { name: "RemoteCompactionEligibilityError" as const, data: input }
+}
+
+const ELIGIBLE_PROVIDER_PACKAGES = new Set(["@ai-sdk/openai", "@ai-sdk/openai-compatible"])
+
+export function eligibility(provider: Provider.Info, model: Provider.Model, patch?: EligibilityPatch): Eligibility {
+  const enabled = patch?.enabled ?? model.remote_compaction
+  return {
+    providerID: provider.id,
+    providerName: provider.name,
+    modelID: model.id,
+    modelName: model.name,
+    apiNpm: patch?.enabled ? "@ai-sdk/openai" : model.api.npm,
+    wire_api: patch?.enabled ? "responses" : model.wire_api ?? provider.wire_api ?? "chat",
+    providerCapability: {
+      present: patch?.enabled ? true : provider.remote_compaction !== undefined,
+      protocols: patch?.enabled
+        ? [...(patch.protocols ?? ["v2", "legacy"])]
+        : [...(provider.remote_compaction?.protocols ?? [])],
+    },
+    modelRemoteCompaction: enabled === true ? "enabled" : enabled === false ? "disabled" : "unset",
+    configurable: provider.id !== "openai" && ELIGIBLE_PROVIDER_PACKAGES.has(model.api.npm),
+  }
+}
+
+export function eligibilityList(providers: Record<string, Provider.Info>): EligibilityList {
+  return {
+    items: Object.values(providers)
+      .filter((provider) => provider.id !== "openai")
+      .flatMap((provider) => Object.values(provider.models).map((model) => eligibility(provider, model)))
+      .sort((a, b) => `${a.providerID}/${a.modelID}`.localeCompare(`${b.providerID}/${b.modelID}`)),
+  }
+}
+
+export function eligibilityConfigPatch(input: EligibilityPatch): Config.Info {
+  return {
+    provider: {
+      [input.providerID]: input.enabled
+        ? {
+            remote_compaction: {
+              profile: "codex-responses",
+              protocols: [...(input.protocols ?? ["v2", "legacy"])],
+              auth: "provider-bearer",
+            },
+            models: {
+              [input.modelID]: {
+                provider: { npm: "@ai-sdk/openai" },
+                wire_api: "responses",
+                remote_compaction: true,
+              },
+            },
+          }
+        : { models: { [input.modelID]: { remote_compaction: false } } },
+    },
+  }
+}
+
 export interface Interface {
+  readonly resolve: (input: ResolveInput) => Effect.Effect<Resolution>
   readonly canCompact: (input: { model: Provider.Model }) => Effect.Effect<boolean>
   readonly compact: (input: {
     sessionID: SessionID
@@ -96,8 +380,7 @@ function durationLabel(duration: Parameters<typeof Effect.sleep>[0]) {
 }
 
 export function supportsOpenAIRemoteCompactionModel(model: Provider.Model) {
-  const id = (model.api.id ?? model.id).toLowerCase()
-  return model.providerID === "openai" || /^(gpt-|o[1-9](?:-|$)|chatgpt-|codex-)/.test(id)
+  return model.providerID === "openai"
 }
 
 function truncate(text: string) {
@@ -285,17 +568,23 @@ function parseV2CompactionStream(body: string) {
   return { output, usage: usageFromCompleted(completed?.data) }
 }
 
-export function failureMetadata(input: { modelID: string; error: RemoteCompactionError }) {
-  return {
-    providerID: "openai" as const,
-    endpoint: "codex" as const,
+export function failureMetadata(input: { model: Provider.Model; error: RemoteCompactionError }) {
+  const common = {
     implementation: input.error.implementation ?? LEGACY_IMPLEMENTATION,
-    modelID: input.modelID,
+    modelID: input.model.id,
     message: input.error.message,
     ...(input.error.status === undefined ? {} : { status: input.error.status }),
     ...(input.error.attempts === undefined ? {} : { attempts: input.error.attempts }),
     ...(input.error.retryable === undefined ? {} : { retryable: input.error.retryable }),
     time: Date.now(),
+  }
+  if (input.model.providerID === "openai")
+    return { providerID: "openai" as const, endpoint: "codex" as const, ...common }
+  return {
+    providerID: input.model.providerID,
+    endpoint: "provider" as const,
+    wireModelID: input.model.api.id,
+    ...common,
   }
 }
 
@@ -311,15 +600,162 @@ export const layerWithEndpoint = (endpoint = codexEndpointUrl("responses/compact
     const http = yield* HttpClient.HttpClient
     const timeout = options.timeout ?? DEFAULT_COMPACTION_TIMEOUT
     const attempts = Math.max(1, Math.floor(options.attempts ?? DEFAULT_COMPACTION_ATTEMPTS))
+    const provider = Option.getOrUndefined(yield* Effect.serviceOption(Provider.Service))
     const responsesEndpoint = options.responsesEndpoint ?? responsesEndpointFrom(endpoint)
     const legacyEndpoint = options.legacyEndpoint ?? legacyEndpointFrom(endpoint)
 
+    const resolve = Effect.fn("RemoteCompaction.resolve")(function* (input: ResolveInput) {
+      const cfg = yield* config.get()
+      const configured = {
+        mode: cfg.compaction?.remote ?? "auto",
+        protocol: cfg.compaction?.remote_protocol ?? "auto",
+      }
+      const common = {
+        configured,
+        requested: { providerID: input.model.providerID, modelID: input.model.id },
+        effective: {
+          providerID: input.model.providerID,
+          modelID: input.model.id,
+          wireModelID: input.model.api.id,
+        },
+        localFallback: true as const,
+      }
+      type ProductionResolution = Omit<Resolution, "lock" | "replay">
+      const resolved = (value: Resolution) => value
+      const local = (
+        reason: ResolutionReason,
+        credential: Resolution["credential"] = "unavailable",
+      ): ProductionResolution => ({
+        ...common,
+        mode: "local",
+        target: "local",
+        credential,
+        protocols: [],
+        reason,
+      })
+      const stored =
+        input.model.providerID === "openai"
+          ? yield* auth.get("openai").pipe(Effect.orElseSucceed(() => undefined))
+          : undefined
+      const info =
+        input.model.providerID !== "openai" && provider
+          ? yield* provider.getProvider(input.model.providerID).pipe(Effect.orElseSucceed(() => undefined))
+          : undefined
+      const needsProviderTransport =
+        input.model.providerID !== "openai" &&
+        !!provider &&
+        (!!info?.remote_compaction ||
+          (input.session?.lock?.endpoint === "provider" &&
+            input.session.lock.providerID === input.model.providerID &&
+            input.session.lock.modelID === input.model.id))
+      const transport = needsProviderTransport
+        ? yield* provider
+            .getResponsesTransport(input.model.providerID, input.model.id)
+            .pipe(Effect.orElseSucceed(() => undefined))
+        : undefined
+      const currentBinding = transport ? bindingFromTransportIdentity(transport.identity) : undefined
+      const production: ProductionResolution = yield* Effect.gen(function* () {
+        if (configured.mode === "off") return local("policy_off")
+        if (input.model.providerID === "openai") {
+          if (input.model.remote_compaction === false) return local("model_disabled")
+          if (!supportsOpenAIRemoteCompactionModel(input.model)) return local("model_unsupported")
+          if (stored?.type !== "oauth") return local("credential_unavailable", "missing")
+          return {
+            ...common,
+            mode: "remote" as const,
+            target: "openai-codex" as const,
+            driver: "codex-responses" as const,
+            credential: "oauth" as const,
+            protocols: protocolsFor(configured.protocol).map((item) =>
+              item === V2_IMPLEMENTATION ? "v2" as const : "legacy" as const,
+            ),
+            reason: "ready" as const,
+          }
+        }
+        if (!provider || !info?.remote_compaction) return local("provider_capability_missing")
+        if (input.model.remote_compaction !== true) return local("model_disabled")
+        if (input.model.wire_api !== "responses") return local("wire_api_not_responses")
+        if (!transport?.identity.ready) return local("credential_unavailable", "missing")
+        if (!transport.identity.replay.eligible) return local("routing_identity_unsafe", transport.identity.auth)
+        const requested = configured.protocol === "auto" ? info.remote_compaction.protocols : [configured.protocol]
+        const protocols = requested.filter((item) => info.remote_compaction!.protocols.includes(item))
+        if (!protocols.length) return local("protocol_mismatch", transport.identity.auth)
+        return {
+          ...common,
+          mode: "remote" as const,
+          target: "provider" as const,
+          profile: "codex-responses" as const,
+          driver: "codex-responses" as const,
+          credential: transport.identity.auth,
+          protocols,
+          reason: "ready" as const,
+          binding: currentBinding,
+        }
+      })
+      const installed = input.session?.lock
+      if (!installed)
+        return resolved({
+          ...production,
+          lock: { status: "none" },
+          replay: { mode: "none", reason: "no_lock" },
+        })
+      const identity = {
+        endpoint: installed.endpoint === "codex" ? "openai-codex" as const : "provider" as const,
+        providerID: installed.providerID,
+        modelID: installed.modelID,
+      }
+      if (installed.providerID !== input.model.providerID || installed.modelID !== input.model.id)
+        return resolved({
+          ...production,
+          lock: { status: "model_mismatch", ...identity },
+          replay: { mode: "blocked", reason: "model_mismatch" },
+        })
+      if (installed.endpoint === "codex")
+        return resolved({
+          ...production,
+          lock: { status: "exact", ...identity },
+          replay:
+            stored?.type === "oauth"
+              ? { mode: "encoded", reason: "exact_binding" }
+              : { mode: "full_history", reason: "credential_unavailable" },
+        })
+      if (input.model.wire_api !== "responses")
+        return resolved({
+          ...production,
+          lock: { status: "exact", ...identity },
+          replay: { mode: "full_history", reason: "wire_api_not_responses" },
+        })
+      const installedBinding: RemoteCompactionReplayBinding = {
+        providerID: installed.providerID,
+        modelID: installed.modelID,
+        wireModelID: installed.wireModelID,
+        driver: installed.driver,
+        format: installed.format,
+        wire_api: installed.wireAPI,
+        compatibility_key: installed.compatibilityKey,
+      }
+      if (!currentBinding || !sameRemoteCompactionBinding(installedBinding, currentBinding))
+        return resolved({
+          ...production,
+          lock: { status: "route_mismatch", ...identity },
+          replay: {
+            mode: "full_history",
+            reason: currentBinding ? "binding_mismatch" : "transport_unavailable",
+          },
+        })
+      return resolved({
+        ...production,
+        lock: { status: "exact", ...identity },
+        replay: transport?.identity.ready
+          ? transport.identity.replay.eligible
+            ? { mode: "encoded", reason: "exact_binding" }
+            : { mode: "full_history", reason: "routing_identity_unsafe" }
+          : { mode: "full_history", reason: "credential_unavailable" },
+      })
+    })
+
     const canCompact = Effect.fn("RemoteCompaction.canCompact")(function* (input: { model: Provider.Model }) {
-      const mode = (yield* config.get()).compaction?.remote ?? "auto"
-      if (mode === "off") return false
-      if (mode === "auto" && input.model.providerID !== "openai") return false
-      if (mode === "on" && !supportsOpenAIRemoteCompactionModel(input.model)) return false
-      return (yield* auth.get("openai").pipe(Effect.orElseSucceed(() => undefined)))?.type === "oauth"
+      return (yield* resolve(input)).mode === "remote"
     })
 
     const compact = Effect.fn("RemoteCompaction.compact")(function* (input: {
@@ -328,14 +764,145 @@ export const layerWithEndpoint = (endpoint = codexEndpointUrl("responses/compact
       messages: MessageV2.WithParts[]
       instructions: string
     }) {
-      const cfg = yield* config.get()
-      const protocol = cfg.compaction?.remote_protocol ?? "auto"
-      const firstImplementation = protocolsFor(protocol)[0] ?? V2_IMPLEMENTATION
-      if (!(yield* canCompact(input))) {
+      const resolution = yield* resolve(input)
+      const firstImplementation =
+        resolution.protocols[0] === "legacy" ? LEGACY_IMPLEMENTATION : V2_IMPLEMENTATION
+      if (resolution.mode !== "remote") {
         return yield* new RemoteCompactionError({
-          message: "remote compaction unavailable",
+          message: `remote compaction unavailable: ${resolution.reason}`,
           implementation: firstImplementation,
         })
+      }
+      if (resolution.target === "provider") {
+        if (!provider)
+          return yield* new RemoteCompactionError({
+            message: `provider ${input.model.providerID} remote compaction transport is unavailable`,
+            implementation: firstImplementation,
+          })
+        const transport = yield* provider.getResponsesTransport(input.model.providerID, input.model.id).pipe(
+          Effect.mapError(
+            () =>
+              new RemoteCompactionError({
+                message: `provider ${input.model.providerID} remote compaction transport is unavailable`,
+                implementation: firstImplementation,
+              }),
+          ),
+        )
+        const requestInput = yield* responsesInput(input.messages, input.model)
+        const binding = bindingFromTransportIdentity(transport.identity)
+        const body = {
+          model: transport.identity.wireModelID,
+          input: requestInput,
+          instructions: input.instructions,
+          tools: [],
+          parallel_tool_calls: false,
+          prompt_cache_key: input.sessionID,
+          store: false,
+        }
+        const runProtocol = (protocol: "v2" | "legacy") => {
+          const implementation = protocol === "v2" ? V2_IMPLEMENTATION : LEGACY_IMPLEMENTATION
+          const target = protocol === "v2" ? "responses" as const : "responses/compact" as const
+          const payload =
+            protocol === "v2"
+              ? {
+                  ...body,
+                  input: [...requestInput, { type: "compaction_trigger" } satisfies ResponsesCompactionTriggerItem],
+                  stream: true,
+                }
+              : body
+          const rewritten = rewriteRemoteCompactionInput(JSON.stringify(payload), binding)
+          const execute: (attempt: number) => Effect.Effect<RemoteCompactionMetadata, RemoteCompactionError> = (attempt) =>
+            Effect.tryPromise({
+              try: () =>
+                transport.execute(target, {
+                  body: rewritten,
+                  feature: protocol === "v2" ? "remote-compaction-v2" : undefined,
+                  timeout: Duration.toMillis(Duration.fromInputUnsafe(timeout)),
+                }),
+              catch: (cause) =>
+                new RemoteCompactionError({
+                  message: `provider ${input.model.providerID} ${protocol} remote compaction transport failed`,
+                  retryable:
+                    cause instanceof ResponsesTransport.Error &&
+                    (cause.kind === "timeout" || cause.kind === "network"),
+                  implementation,
+                }),
+            }).pipe(
+              Effect.flatMap((response) => {
+                if (response.status < 200 || response.status >= 300)
+                  return Effect.fail(
+                    new RemoteCompactionError({
+                      message: `provider ${input.model.providerID} ${protocol} remote compaction failed with HTTP ${response.status}`,
+                      status: response.status,
+                      retryable: response.status === 429 || response.status >= 500,
+                      implementation,
+                    }),
+                  )
+                const parsed =
+                  protocol === "v2"
+                    ? parseV2CompactionStream(response.body)
+                    : (() => {
+                        try {
+                          const json = JSON.parse(response.body)
+                          const output = isRecord(json) ? decodeRemoteCompactionOutput(json.output) : undefined
+                          return output?.length === 1
+                            ? { output, usage: undefined }
+                            : new RemoteCompactionError({
+                                message: `provider ${input.model.providerID} legacy remote compaction response was invalid`,
+                                implementation,
+                              })
+                        } catch {
+                          return new RemoteCompactionError({
+                            message: `provider ${input.model.providerID} legacy remote compaction response was invalid`,
+                            implementation,
+                          })
+                        }
+                      })()
+                if (parsed instanceof RemoteCompactionError) return Effect.fail(parsed)
+                return Effect.succeed({
+                  providerID: input.model.providerID,
+                  endpoint: "provider" as const,
+                  driver: "codex-responses" as const,
+                  profile: "codex-responses" as const,
+                  implementation,
+                  modelID: input.model.id,
+                  wireModelID: transport.identity.wireModelID,
+                  replay: {
+                    format: "responses_compaction_v1" as const,
+                    wire_api: "responses" as const,
+                    compatibility_key: transport.identity.compatibilityKey,
+                  },
+                  output: parsed.output,
+                  ...(parsed.usage ? { usage: parsed.usage } : {}),
+                })
+              }),
+              Effect.catch((error) =>
+                error.retryable && attempt < attempts
+                  ? execute(attempt + 1)
+                  : Effect.fail(
+                      attempt > 1
+                        ? new RemoteCompactionError({ ...error, attempts: attempt, implementation })
+                        : error,
+                    ),
+              ),
+            )
+          return execute(1)
+        }
+        const runOrdered = (index: number): Effect.Effect<RemoteCompactionMetadata, RemoteCompactionError> => {
+          const protocol = resolution.protocols[index]
+          if (!protocol)
+            return Effect.fail(
+              new RemoteCompactionError({
+                message: `provider ${input.model.providerID} remote compaction has no authorized protocol`,
+              }),
+            )
+          return runProtocol(protocol).pipe(
+            Effect.catch((error) =>
+              resolution.protocols[index + 1] ? runOrdered(index + 1) : Effect.fail(error),
+            ),
+          )
+        }
+        return yield* runOrdered(0)
       }
       const stored = yield* auth.get("openai").pipe(Effect.orElseSucceed(() => undefined))
       if (!stored || stored.type !== "oauth") {
@@ -485,7 +1052,9 @@ export const layerWithEndpoint = (endpoint = codexEndpointUrl("responses/compact
         implementation === V2_IMPLEMENTATION
           ? attemptProtocol(implementation, compactV2)
           : attemptProtocol(implementation, compactLegacy)
-      const ordered = protocolsFor(protocol)
+      const ordered = resolution.protocols.map((item) =>
+        item === "v2" ? V2_IMPLEMENTATION : LEGACY_IMPLEMENTATION,
+      )
       const first = ordered[0] ?? V2_IMPLEMENTATION
       const result = yield* runProtocol(first).pipe(
         Effect.map((metadata) => ({ ok: true as const, metadata })),
@@ -503,7 +1072,7 @@ export const layerWithEndpoint = (endpoint = codexEndpointUrl("responses/compact
       return yield* runProtocol(next)
     })
 
-    return Service.of({ canCompact, compact })
+    return Service.of({ resolve, canCompact, compact })
   }),
 )
 
@@ -513,17 +1082,50 @@ export const defaultLayer = layer.pipe(
   Layer.provide(Auth.defaultLayer),
   Layer.provide(Config.defaultLayer),
   Layer.provide(FetchHttpClient.layer),
+  Layer.provide(Provider.defaultLayer),
 )
 
 export const disabledLayer = Layer.succeed(
   Service,
   Service.of({
+    resolve: ({ model, session }) => {
+      const lock = session?.lock
+      const mismatch = !!lock && (lock.providerID !== model.providerID || lock.modelID !== model.id)
+      return Effect.succeed({
+        configured: { mode: "off", protocol: "auto" },
+        requested: { providerID: model.providerID, modelID: model.id },
+        effective: { providerID: model.providerID, modelID: model.id, wireModelID: model.api.id },
+        mode: "local",
+        target: "local",
+        credential: "unavailable",
+        protocols: [],
+        localFallback: true,
+        reason: "policy_off",
+        lock: !lock
+          ? { status: "none" }
+          : {
+              status: mismatch ? "model_mismatch" : lock.endpoint === "codex" ? "exact" : "route_mismatch",
+              endpoint: lock.endpoint === "codex" ? "openai-codex" : "provider",
+              providerID: lock.providerID,
+              modelID: lock.modelID,
+            },
+        replay: !lock
+          ? { mode: "none", reason: "no_lock" }
+          : mismatch
+            ? { mode: "blocked", reason: "model_mismatch" }
+            : { mode: "full_history", reason: "transport_unavailable" },
+      } satisfies Resolution)
+    },
     canCompact: () => Effect.succeed(false),
     compact: () => Effect.fail(new RemoteCompactionError({ message: "remote compaction disabled" })),
   }),
 )
 
 const { runPromise } = makeRuntime(Service, defaultLayer)
+
+export async function resolve(input: ResolveInput) {
+  return runPromise((svc) => svc.resolve(input))
+}
 
 export async function canCompact(input: { model: Provider.Model }) {
   return runPromise((svc) => svc.canCompact(input))

@@ -665,6 +665,8 @@ You can control context compaction behavior through the `compaction` option.
   "$schema": "https://opencode.ai/config.json",
   "compaction": {
     "auto": true,
+    "remote": "auto",
+    "remote_protocol": "auto",
     "prune": true,
     "reserved": 10000
   }
@@ -672,8 +674,16 @@ You can control context compaction behavior through the `compaction` option.
 ```
 
 - `auto` - Automatically compact the session when context is full (default: `true`).
+- `remote` - Remote compaction policy: `"auto"` uses remote compaction when the selected provider and model explicitly support it, `"on"` requests remote compaction but still requires that explicit capability, and `"off"` always compacts locally (default: `"auto"`). Neither `"auto"` nor `"on"` can bypass provider or model capability checks. If a remote attempt fails, Chimera falls back to local compaction.
+- `remote_protocol` - Protocol preference: `"auto"`, `"v2"`, or `"legacy"` (default: `"auto"`). Chimera intersects this preference with the provider-authorized protocol order; it never switches to a different provider host to satisfy the preference.
 - `prune` - Remove old tool outputs to save tokens (default: `true`).
-- `reserved` - Token buffer for compaction. Leaves enough window to avoid overflow during compaction
+- `reserved` - Token buffer for compaction. Leaves enough window to avoid overflow during compaction.
+
+:::caution[Remote compaction disclosure]
+Remote compaction sends substantial conversation history—including prompts and tool output—to the selected provider. Enable it only for providers and endpoints you trust and have verified.
+:::
+
+After successful remote compaction, the session contains opaque state produced by that provider. Chimera then blocks changing the provider or logical model so that state cannot be sent to an incompatible destination. If the same logical model later resolves through a different route, Chimera does not send the opaque state; where safe, it falls back to the full conversation history instead.
 
 ---
 
