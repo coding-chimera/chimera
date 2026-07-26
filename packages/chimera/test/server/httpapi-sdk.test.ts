@@ -613,9 +613,18 @@ describe("HttpApi SDK", () => {
         const status = yield* capture(() =>
           sdk.config.remoteCompaction.status({ providerID: "test", modelID: "logical-model", sessionID }),
         )
+        const policy = yield* capture(() => sdk.config.remoteCompaction.get())
         const update = yield* capture(() =>
           sdk.config.remoteCompaction.update({
             remoteCompactionPolicyPatch: { remote: "on", remote_protocol: "v2" },
+          }),
+        )
+        const reset = yield* capture(() =>
+          sdk.config.remoteCompaction.update({ remoteCompactionPolicyPatch: { remote: null } }),
+        )
+        const eligibilityReset = yield* capture(() =>
+          sdk.config.remoteCompaction.eligibility.update({
+            remoteCompactionEligibilityPatch: { providerID: "test", modelID: "logical-model", enabled: null },
           }),
         )
 
@@ -627,13 +636,44 @@ describe("HttpApi SDK", () => {
           lock: { status: "none" },
           replay: { mode: "none", reason: "no_lock" },
         })
+        expect(policy.status).toBe(200)
+        expect(policy.data).toMatchObject({
+          remote: "auto",
+          remote_protocol: "auto",
+          metadata: {
+            remote: { source: "default", explicitAtWriteTarget: false },
+            remote_protocol: { source: "default", explicitAtWriteTarget: false },
+          },
+        })
         expect(update.status).toBe(200)
-        expect(update.data).toEqual({ remote: "on", remote_protocol: "v2" })
-        expect(requests.slice(-2)).toEqual([
+        expect(update.data).toMatchObject({
+          remote: "on",
+          remote_protocol: "v2",
+          metadata: { remote: { source: "project", explicitAtWriteTarget: true } },
+        })
+        expect(reset.status).toBe(200)
+        expect(reset.data).toMatchObject({
+          remote: "auto",
+          remote_protocol: "v2",
+          metadata: { remote: { source: "default", explicitAtWriteTarget: false } },
+        })
+        expect(eligibilityReset.status).toBe(200)
+        expect(eligibilityReset.data).toMatchObject({
+          providerID: "test",
+          modelID: "logical-model",
+          modelRemoteCompaction: "unset",
+          metadata: { modelRemoteCompaction: { source: "default", explicitAtWriteTarget: false } },
+        })
+        expect(requests.slice(-5)).toEqual([
           {
             method: "GET",
             pathname: "/config/remote-compaction/status",
             query: { providerID: "test", modelID: "logical-model", sessionID },
+          },
+          {
+            method: "GET",
+            pathname: "/config/remote-compaction",
+            query: {},
           },
           {
             method: "PATCH",
@@ -641,8 +681,26 @@ describe("HttpApi SDK", () => {
             query: {},
             body: { remote: "on", remote_protocol: "v2" },
           },
+          {
+            method: "PATCH",
+            pathname: "/config/remote-compaction",
+            query: {},
+            body: { remote: null },
+          },
+          {
+            method: "PATCH",
+            pathname: "/config/remote-compaction/eligibility",
+            query: {},
+            body: { providerID: "test", modelID: "logical-model", enabled: null },
+          },
         ])
-        const serialized = JSON.stringify({ status: status.data, update: update.data })
+        const serialized = JSON.stringify({
+          status: status.data,
+          policy: policy.data,
+          update: update.data,
+          reset: reset.data,
+          eligibilityReset: eligibilityReset.data,
+        })
         for (const secret of [
           "sdk-secret-api-key",
           "sdk-authorization-secret",
@@ -653,10 +711,16 @@ describe("HttpApi SDK", () => {
           expect(serialized).not.toContain(secret)
 
         return {
-          statuses: statuses({ session, status, update }),
+          statuses: statuses({ session, status, policy, update, reset, eligibilityReset }),
           status: status.data,
+          policy: policy.data,
           update: update.data,
-          requestShapes: requests.slice(-2).map((request) => ({ ...request, query: { ...request.query, sessionID: request.query.sessionID ? "present" : undefined } })),
+          reset: reset.data,
+          eligibilityReset: eligibilityReset.data,
+          requestShapes: requests.slice(-5).map((request) => ({
+            ...request,
+            query: { ...request.query, sessionID: request.query.sessionID ? "present" : undefined },
+          })),
         }
       }),
     ),

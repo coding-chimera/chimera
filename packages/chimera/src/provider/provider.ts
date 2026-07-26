@@ -1096,6 +1096,7 @@ export function defaultModelIDs<T extends { models: Record<string, { id: string 
 
 export interface Interface {
   readonly list: () => Effect.Effect<Record<ProviderID, Info>>
+  readonly invalidate: () => Effect.Effect<void>
   readonly getProvider: (providerID: ProviderID) => Effect.Effect<Info>
   readonly getModel: (providerID: ProviderID, modelID: ModelID) => Effect.Effect<Model>
   readonly getLanguage: (model: Model) => Effect.Effect<LanguageModelV3>
@@ -1896,6 +1897,7 @@ const layer: Layer.Layer<
     )
 
     const list = Effect.fn("Provider.list")(() => InstanceState.use(state, (s) => s.providers))
+    const invalidate = Effect.fn("Provider.invalidate")(() => InstanceState.invalidate(state))
 
     function resolveProviderRequestOptions(model: Model, s: State, envs: Record<string, string | undefined>) {
       const provider = s.providers[model.providerID]
@@ -2270,6 +2272,7 @@ const layer: Layer.Layer<
 
     return Service.of({
       list,
+      invalidate,
       getProvider,
       getModel,
       getLanguage,

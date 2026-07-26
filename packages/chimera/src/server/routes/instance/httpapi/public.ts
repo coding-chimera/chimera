@@ -135,9 +135,13 @@ function matchLegacyOpenApi(input: Record<string, unknown>) {
       const operation = item[method]
       if (!operation) continue
       if (operation.requestBody) {
-        // Hono's generated OpenAPI never marked request bodies as required. Keep
-        // that SDK surface stable during the HttpApi migration.
-        delete operation.requestBody.required
+        // Preserve legacy optional request bodies except where the payload itself
+        // is the complete identity-bearing command contract.
+        if (path === "/config/remote-compaction/eligibility" && method === "patch") {
+          operation.requestBody.required = true
+        } else {
+          delete operation.requestBody.required
+        }
         const body = operation.requestBody.content?.["application/json"]
         if (body?.schema) body.schema = stripOptionalNull(structuredClone(body.schema))
         if (path === "/experimental/workspace" && method === "post") {
@@ -312,6 +316,11 @@ function applyLegacySchemaOverrides(spec: OpenApiSpec) {
     schemas.GlobalSession.properties.project = nullable(schemas.GlobalSession.properties.project)
   const providerOptions = schemas.ProviderConfig?.properties?.options
   if (providerOptions) providerOptions.additionalProperties = {}
+  const eligibilityPatch = schemas.RemoteCompactionEligibilityPatch?.properties
+  if (eligibilityPatch?.enabled) eligibilityPatch.enabled = nullable(eligibilityPatch.enabled)
+  const policyPatch = schemas.RemoteCompactionPolicyPatch?.properties
+  if (policyPatch?.remote) policyPatch.remote = nullable(policyPatch.remote)
+  if (policyPatch?.remote_protocol) policyPatch.remote_protocol = nullable(policyPatch.remote_protocol)
   const model = schemas.ProviderConfig?.properties?.models?.additionalProperties
   const variants = typeof model === "object" ? model.properties?.variants?.additionalProperties : undefined
   if (variants && typeof variants === "object") variants.additionalProperties = {}

@@ -388,6 +388,37 @@ it.live("session.processor effect tests capture llm input cleanly", () =>
   ),
 )
 
+it.live("uses local context estimation when a third-party stream omits usage", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        yield* llm.text("hello")
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "hi")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+        })
+        const result = yield* handle.process({
+          user: parent,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "x".repeat(360_000) }],
+          tools: {},
+        })
+        expect(result).toBe("compact")
+        expect(handle.message.tokens.input).toBeGreaterThan(90_000)
+      }),
+    { git: true, config: (url) => providerCfg(url) },
+  ),
+  )
+
 it.live("session.processor hides memory citation markup from deltas and stored text", () =>
   provideTmpdirServer(
     ({ dir, llm }) =>

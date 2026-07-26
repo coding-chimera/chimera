@@ -21,6 +21,8 @@ void Log.init({ print: false })
 const original = {
   OPENCODE_EXPERIMENTAL_HTTPAPI: Flag.OPENCODE_EXPERIMENTAL_HTTPAPI,
   OPENCODE_SERVER_HONO: Flag.OPENCODE_SERVER_HONO,
+  OPENCODE_SERVER_PASSWORD: Flag.OPENCODE_SERVER_PASSWORD,
+  OPENCODE_SERVER_USERNAME: Flag.OPENCODE_SERVER_USERNAME,
 }
 
 function app(backend: "effect-httpapi" | "hono" = "effect-httpapi") {
@@ -205,6 +207,8 @@ async function persistGenericRemoteCompactionLock(directory: string, compatibili
 afterEach(async () => {
   Flag.OPENCODE_EXPERIMENTAL_HTTPAPI = original.OPENCODE_EXPERIMENTAL_HTTPAPI
   Flag.OPENCODE_SERVER_HONO = original.OPENCODE_SERVER_HONO
+  Flag.OPENCODE_SERVER_PASSWORD = original.OPENCODE_SERVER_PASSWORD
+  Flag.OPENCODE_SERVER_USERNAME = original.OPENCODE_SERVER_USERNAME
   await disposeAllInstances()
   await resetDatabase()
 })
@@ -319,6 +323,79 @@ describe("config HttpApi", () => {
         expect(serialized).not.toContain(secret)
     })
 
+    test(`${backend} authenticated reset of absent project policy does not create a write target`, async () => {
+      Flag.OPENCODE_SERVER_PASSWORD = "secret"
+      Flag.OPENCODE_SERVER_USERNAME = "chimera"
+      await using tmp = await tmpdir()
+      const file = path.join(tmp.path, "chimera.json")
+      const response = await app(backend).request("/config/remote-compaction", {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json",
+          "x-chimera-directory": tmp.path,
+          authorization: `Basic ${Buffer.from("chimera:secret").toString("base64")}`,
+        },
+        body: JSON.stringify({ remote: null, remote_protocol: null }),
+      })
+
+      expect(response.status, await response.clone().text()).toBe(200)
+      expect(await response.json()).toEqual({
+        remote: "auto",
+        remote_protocol: "auto",
+        metadata: {
+          remote: { source: "default", explicitAtWriteTarget: false },
+          remote_protocol: { source: "default", explicitAtWriteTarget: false },
+          writeTarget: { source: "project", format: "json", exists: false },
+        },
+      })
+      expect(await Bun.file(file).exists()).toBe(false)
+    })
+
+    test(`${backend} returns authoritative values when environment config overrides project writes`, async () => {
+      const previous = process.env.OPENCODE_CONFIG_CONTENT
+      process.env.OPENCODE_CONFIG_CONTENT = JSON.stringify({
+        compaction: { remote: "off" },
+        provider: { aijws: { models: { "gpt-5.6-sol": { remote_compaction: false } } } },
+      })
+      await using tmp = await remoteCompactionProject()
+      try {
+        const headers = { "content-type": "application/json", "x-chimera-directory": tmp.path }
+        const policy = await app(backend).request("/config/remote-compaction", {
+          method: "PATCH",
+          headers,
+          body: JSON.stringify({ remote: "on" }),
+        })
+        expect(policy.status).toBe(200)
+        expect(await policy.json()).toMatchObject({
+          remote: "off",
+          metadata: { remote: { source: "environment", explicitAtWriteTarget: true } },
+        })
+
+        const eligibility = await app(backend).request("/config/remote-compaction/eligibility", {
+          method: "PATCH",
+          headers,
+          body: JSON.stringify({ providerID: "aijws", modelID: "gpt-5.6-sol", enabled: true }),
+        })
+        expect(eligibility.status).toBe(200)
+        expect(await eligibility.json()).toMatchObject({
+          providerID: "aijws",
+          modelID: "gpt-5.6-sol",
+          modelRemoteCompaction: "disabled",
+          metadata: {
+            modelRemoteCompaction: { source: "environment", explicitAtWriteTarget: true },
+          },
+        })
+
+        expect(await Bun.file(path.join(tmp.path, "chimera.json")).json()).toMatchObject({
+          compaction: { remote: "on" },
+          provider: { aijws: { models: { "gpt-5.6-sol": { remote_compaction: true } } } },
+        })
+      } finally {
+        if (previous === undefined) delete process.env.OPENCODE_CONFIG_CONTENT
+        else process.env.OPENCODE_CONFIG_CONTENT = previous
+      }
+    })
+
     test(`${backend} narrowly patches remote compaction and preserves unrelated config`, async () => {
       await using tmp = await remoteCompactionProject()
       const disposed = waitDisposed(tmp.path)
@@ -329,7 +406,15 @@ describe("config HttpApi", () => {
       })
 
       expect(response.status).toBe(200)
-      expect(await response.json()).toEqual({ remote: "on", remote_protocol: "auto" })
+      expect(await response.json()).toEqual({
+        remote: "on",
+        remote_protocol: "auto",
+        metadata: {
+          remote: { source: "project", explicitAtWriteTarget: true },
+          remote_protocol: { source: "default", explicitAtWriteTarget: false },
+          writeTarget: { source: "project", format: "json", exists: true },
+        },
+      })
       await disposed
       expect(await Bun.file(path.join(tmp.path, "chimera.json")).json()).toMatchObject({
         username: "preserved-user",
@@ -344,6 +429,51 @@ describe("config HttpApi", () => {
       )
       expect(reloaded.status).toBe(200)
       expect(await reloaded.json()).toMatchObject({ configured: { mode: "on", protocol: "auto" }, reason: "ready" })
+    })
+
+    test(`${backend} gets policy metadata and deletes JSONC overrides without dropping comments`, async () => {
+      await using tmp = await remoteCompactionProject()
+      const file = path.join(tmp.path, "chimera.jsonc")
+      await Bun.write(file, `{
+  // preserve unrelated comment
+  "formatter": false,
+  "compaction": {
+    "remote": "on",
+    "remote_protocol": "v2"
+  }
+}`)
+      const headers = { "content-type": "application/json", "x-chimera-directory": tmp.path }
+
+      const before = await app(backend).request("/config/remote-compaction", { headers })
+      expect(before.status).toBe(200)
+      expect(await before.json()).toEqual({
+        remote: "on",
+        remote_protocol: "v2",
+        metadata: {
+          remote: { source: "project", explicitAtWriteTarget: true },
+          remote_protocol: { source: "project", explicitAtWriteTarget: true },
+          writeTarget: { source: "project", format: "jsonc", exists: true },
+        },
+      })
+
+      const reset = await app(backend).request("/config/remote-compaction", {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ remote: null, remote_protocol: null }),
+      })
+      expect(reset.status).toBe(200)
+      expect(await reset.json()).toEqual({
+        remote: "auto",
+        remote_protocol: "auto",
+        metadata: {
+          remote: { source: "default", explicitAtWriteTarget: false },
+          remote_protocol: { source: "default", explicitAtWriteTarget: false },
+          writeTarget: { source: "project", format: "jsonc", exists: true },
+        },
+      })
+      const written = await Bun.file(file).text()
+      expect(written).toContain("// preserve unrelated comment")
+      expect(written).not.toContain('"compaction"')
     })
 
     test(`${backend} lists redacted eligibility and enables then disables aijws remote compaction`, async () => {
@@ -401,6 +531,11 @@ describe("config HttpApi", () => {
         providerCapability: { present: true, protocols: ["v2", "legacy"] },
         modelRemoteCompaction: "enabled",
         configurable: true,
+        metadata: {
+          modelRemoteCompaction: { source: "project", explicitAtWriteTarget: true },
+          protocols: { source: "project", explicitAtWriteTarget: true },
+          writeTarget: { source: "project", format: "json", exists: true },
+        },
       })
 
       const ready = await app(backend).request("/config/remote-compaction/status?providerID=aijws&modelID=gpt-5.6-sol", { headers })
@@ -504,6 +639,29 @@ describe("config HttpApi", () => {
             },
           },
         },
+      })
+
+      const reset = await app(backend).request("/config/remote-compaction/eligibility", {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ providerID: "aijws", modelID: "gpt-5.6-sol", enabled: null }),
+      })
+      expect(reset.status).toBe(200)
+      expect(await reset.json()).toMatchObject({
+        providerID: "aijws",
+        modelID: "gpt-5.6-sol",
+        modelRemoteCompaction: "unset",
+        metadata: {
+          modelRemoteCompaction: { source: "default", explicitAtWriteTarget: false },
+          protocols: { source: "project", explicitAtWriteTarget: true },
+          writeTarget: { source: "project", format: "json", exists: true },
+        },
+      })
+      const resetConfig = await Bun.file(path.join(tmp.path, "chimera.json")).json()
+      expect(resetConfig.provider.aijws.models["gpt-5.6-sol"]).not.toHaveProperty("remote_compaction")
+      expect(resetConfig.provider.aijws.models["gpt-5.6-sol"]).toMatchObject({
+        provider: { npm: "@ai-sdk/openai" },
+        wire_api: "responses",
       })
     })
 

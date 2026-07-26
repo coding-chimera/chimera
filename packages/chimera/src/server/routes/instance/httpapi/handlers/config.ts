@@ -29,7 +29,7 @@ export const configHandlers = HttpApiBuilder.group(InstanceHttpApi, "config", (h
     const sessions = yield* Session.Service
 
     const remoteCompactionEligibilityList = Effect.fn("ConfigHttpApi.remoteCompactionEligibilityList")(function* () {
-      return RemoteCompaction.eligibilityList(yield* providerSvc.list())
+      return yield* RemoteCompaction.eligibilityList(yield* providerSvc.list(), configSvc)
     })
 
     const remoteCompactionEligibilityUpdate = Effect.fn("ConfigHttpApi.remoteCompactionEligibilityUpdate")(function* (ctx) {
@@ -45,16 +45,26 @@ export const configHandlers = HttpApiBuilder.group(InstanceHttpApi, "config", (h
       if (!provider) return yield* failure("unknown_provider")
       const model = provider.models[ctx.payload.modelID]
       if (!model) return yield* failure("unknown_model")
-      const eligibility = RemoteCompaction.eligibility(provider, model, ctx.payload)
-      if (!eligibility.configurable) return yield* failure("not_configurable")
-      yield* configSvc.update(RemoteCompaction.eligibilityConfigPatch(ctx.payload))
+      if (!RemoteCompaction.eligibility(provider, model).configurable) return yield* failure("not_configurable")
+      if (ctx.payload.enabled === null) {
+        yield* configSvc.remove([
+          ["provider", ctx.payload.providerID, "models", ctx.payload.modelID, "remote_compaction"],
+        ])
+      } else {
+        yield* configSvc.update(RemoteCompaction.eligibilityConfigPatch(ctx.payload))
+      }
+      yield* providerSvc.invalidate()
+      const refreshedProviders = yield* providerSvc.list()
+      const refreshedProvider = refreshedProviders[ctx.payload.providerID] ?? provider
+      const refreshedModel = refreshedProvider.models[ctx.payload.modelID] ?? model
+      const context = yield* RemoteCompaction.eligibilityContext(configSvc, ctx.payload)
       const instance = yield* InstanceState.context
       yield* markInstanceForReload(instance, {
         directory: instance.directory,
         worktree: instance.directory,
         project: instance.project,
       })
-      return eligibility
+      return RemoteCompaction.eligibility(refreshedProvider, refreshedModel, context)
     })
 
     const remoteCompactionStatus = Effect.fn("ConfigHttpApi.remoteCompactionStatus")(function* (ctx) {
@@ -71,21 +81,28 @@ export const configHandlers = HttpApiBuilder.group(InstanceHttpApi, "config", (h
       })
     })
 
+    const remoteCompactionGet = Effect.fn("ConfigHttpApi.remoteCompactionGet")(function* () {
+      return yield* RemoteCompaction.policy(configSvc)
+    })
+
     const remoteCompactionUpdate = Effect.fn("ConfigHttpApi.remoteCompactionUpdate")(function* (ctx) {
       if (Object.keys(ctx.payload).some((key) => key !== "remote" && key !== "remote_protocol"))
         return yield* new HttpApiError.BadRequest({})
-      const current = yield* configSvc.get()
-      yield* configSvc.update({ compaction: ctx.payload })
+      const patch = Object.fromEntries(Object.entries(ctx.payload).filter((entry) => entry[1] !== null))
+      if (Object.keys(patch).length) yield* configSvc.update({ compaction: patch } as Config.Info)
+      yield* configSvc.remove(
+        Object.entries(ctx.payload)
+          .filter((entry) => entry[1] === null)
+          .map(([key]) => ["compaction", key]),
+      )
+      const policy = yield* RemoteCompaction.policy(configSvc)
       const instance = yield* InstanceState.context
       yield* markInstanceForReload(instance, {
         directory: instance.directory,
         worktree: instance.directory,
         project: instance.project,
       })
-      return {
-        remote: ctx.payload.remote ?? current.compaction?.remote ?? "auto",
-        remote_protocol: ctx.payload.remote_protocol ?? current.compaction?.remote_protocol ?? "auto",
-      }
+      return policy
     })
 
     const modelSelectionGet = Effect.fn("ConfigHttpApi.modelSelectionGet")(function* () {
@@ -112,6 +129,7 @@ export const configHandlers = HttpApiBuilder.group(InstanceHttpApi, "config", (h
       .handle("remoteCompactionEligibilityList", remoteCompactionEligibilityList)
       .handle("remoteCompactionEligibilityUpdate", remoteCompactionEligibilityUpdate)
       .handle("remoteCompactionStatus", remoteCompactionStatus)
+      .handle("remoteCompactionGet", remoteCompactionGet)
       .handle("remoteCompactionUpdate", remoteCompactionUpdate)
       .handle("modelSelectionGet", modelSelectionGet)
       .handle("modelSelectionUpdate", modelSelectionUpdate)

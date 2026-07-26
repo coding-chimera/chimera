@@ -995,6 +995,82 @@ test("updates existing project jsonc without dropping comments", async () => {
   })
 })
 
+test("resolves project write targets and deletes paths from JSON and JSONC", async () => {
+  for (const name of ["chimera.json", "chimera.jsonc"]) {
+    await using tmp = await tmpdir({
+      init: (dir) =>
+        Filesystem.write(
+          path.join(dir, name),
+          name.endsWith("jsonc")
+            ? `{
+  // preserve unrelated comment
+  "formatter": false,
+  "compaction": { "remote": "on", "remote_protocol": "v2" }
+}`
+            : JSON.stringify({ formatter: false, compaction: { remote: "on", remote_protocol: "v2" } }),
+        ),
+    })
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const before = await Effect.runPromise(
+          Config.Service.use((svc) =>
+            Effect.gen(function* () {
+              const value = yield* svc.resolve(["compaction", "remote"])
+              yield* svc.remove([
+                ["compaction", "remote"],
+                ["compaction", "remote_protocol"],
+              ])
+              return value
+            }),
+          ).pipe(Effect.scoped, Effect.provide(layer)),
+        )
+        expect(before).toMatchObject({
+          value: "on",
+          source: "project",
+          explicitAtWriteTarget: true,
+          writeTarget: { source: "project", format: name.endsWith("jsonc") ? "jsonc" : "json", exists: true },
+        })
+        const written = await Filesystem.readText(path.join(tmp.path, name))
+        expect(written).not.toContain('"compaction"')
+        expect(written).toContain('"formatter"')
+        if (name.endsWith("jsonc")) expect(written).toContain("// preserve unrelated comment")
+      },
+    })
+    await clear(true)
+  }
+})
+
+test("reports environment and managed provenance above an explicit project value", async () => {
+  const previous = process.env.OPENCODE_CONFIG_CONTENT
+  process.env.OPENCODE_CONFIG_CONTENT = JSON.stringify({ compaction: { remote: "off" } })
+  await using tmp = await tmpdir({ config: { compaction: { remote: "on" } } })
+  try {
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const value = await Effect.runPromise(
+          Config.Service.use((svc) => svc.resolve(["compaction", "remote"])).pipe(Effect.scoped, Effect.provide(layer)),
+        )
+        expect(value).toMatchObject({ value: "off", source: "environment", explicitAtWriteTarget: true })
+      },
+    })
+    await clear(true)
+    await writeManagedSettings({ compaction: { remote: "auto" } })
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const value = await Effect.runPromise(
+          Config.Service.use((svc) => svc.resolve(["compaction", "remote"])).pipe(Effect.scoped, Effect.provide(layer)),
+        )
+        expect(value).toMatchObject({ value: "auto", source: "managed", explicitAtWriteTarget: true })
+      },
+    })
+  } finally {
+    if (previous === undefined) delete process.env.OPENCODE_CONFIG_CONTENT
+    else process.env.OPENCODE_CONFIG_CONTENT = previous
+  }
+})
 test("gets config directories", async () => {
   await using tmp = await tmpdir()
   await WithInstance.provide({

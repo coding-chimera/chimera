@@ -1375,6 +1375,21 @@ export type RemoteCompactionEligibility = {
   }
   modelRemoteCompaction: "enabled" | "disabled" | "unset"
   configurable: boolean
+  metadata: {
+    modelRemoteCompaction: {
+      source: "default" | "global" | "project" | "environment" | "account" | "managed"
+      explicitAtWriteTarget: boolean
+    }
+    protocols: {
+      source: "default" | "global" | "project" | "environment" | "account" | "managed"
+      explicitAtWriteTarget: boolean
+    }
+    writeTarget: {
+      source: "project"
+      format: "json" | "jsonc"
+      exists: boolean
+    }
+  }
 }
 
 export type RemoteCompactionEligibilityList = {
@@ -1384,7 +1399,7 @@ export type RemoteCompactionEligibilityList = {
 export type RemoteCompactionEligibilityPatch = {
   providerID: string
   modelID: string
-  enabled: boolean
+  enabled: boolean | null
   protocols?: ["v2" | "legacy"] | ["v2", "legacy"] | ["legacy", "v2"]
 }
 
@@ -1401,6 +1416,21 @@ export type RemoteCompactionResolution = {
   configured: {
     mode: "off" | "auto" | "on"
     protocol: "auto" | "v2" | "legacy"
+    metadata?: {
+      remote: {
+        source: "default" | "global" | "project" | "environment" | "account" | "managed"
+        explicitAtWriteTarget: boolean
+      }
+      remote_protocol: {
+        source: "default" | "global" | "project" | "environment" | "account" | "managed"
+        explicitAtWriteTarget: boolean
+      }
+      writeTarget: {
+        source: "project"
+        format: "json" | "jsonc"
+        exists: boolean
+      }
+    }
   }
   requested: {
     providerID: string
@@ -1454,20 +1484,36 @@ export type RemoteCompactionResolution = {
       | "exact_binding"
       | "model_mismatch"
       | "transport_unavailable"
+      | "wire_api_not_responses"
       | "binding_mismatch"
       | "credential_unavailable"
       | "routing_identity_unsafe"
   }
 }
 
-export type RemoteCompactionPolicyPatch = {
-  remote?: "auto" | "on" | "off"
-  remote_protocol?: "auto" | "v2" | "legacy"
-}
-
 export type RemoteCompactionPolicy = {
   remote: "auto" | "on" | "off"
   remote_protocol: "auto" | "v2" | "legacy"
+  metadata: {
+    remote: {
+      source: "default" | "global" | "project" | "environment" | "account" | "managed"
+      explicitAtWriteTarget: boolean
+    }
+    remote_protocol: {
+      source: "default" | "global" | "project" | "environment" | "account" | "managed"
+      explicitAtWriteTarget: boolean
+    }
+    writeTarget: {
+      source: "project"
+      format: "json" | "jsonc"
+      exists: boolean
+    }
+  }
+}
+
+export type RemoteCompactionPolicyPatch = {
+  remote?: "auto" | "on" | "off" | null
+  remote_protocol?: "auto" | "v2" | "legacy" | null
 }
 
 export type ModelSelectionPatch = {
@@ -4284,7 +4330,7 @@ export type ConfigRemoteCompactionEligibilityListResponse =
   ConfigRemoteCompactionEligibilityListResponses[keyof ConfigRemoteCompactionEligibilityListResponses]
 
 export type ConfigRemoteCompactionEligibilityUpdateData = {
-  body?: RemoteCompactionEligibilityPatch
+  body: RemoteCompactionEligibilityPatch
   path?: never
   query?: {
     directory?: string
@@ -4345,6 +4391,26 @@ export type ConfigRemoteCompactionStatusResponses = {
 
 export type ConfigRemoteCompactionStatusResponse =
   ConfigRemoteCompactionStatusResponses[keyof ConfigRemoteCompactionStatusResponses]
+
+export type ConfigRemoteCompactionGetData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/config/remote-compaction"
+}
+
+export type ConfigRemoteCompactionGetResponses = {
+  /**
+   * Effective remote compaction policy
+   */
+  200: RemoteCompactionPolicy
+}
+
+export type ConfigRemoteCompactionGetResponse =
+  ConfigRemoteCompactionGetResponses[keyof ConfigRemoteCompactionGetResponses]
 
 export type ConfigRemoteCompactionUpdateData = {
   body?: RemoteCompactionPolicyPatch

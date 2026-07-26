@@ -10,6 +10,7 @@ import * as Session from "./session"
 import { LLM } from "./llm"
 import { MessageV2 } from "./message-v2"
 import { isOverflow } from "./overflow"
+import { Token } from "@/util/token"
 import { PartID } from "./schema"
 import type { SessionID } from "./schema"
 import { SessionRetry } from "./retry"
@@ -72,6 +73,20 @@ function jsonSafe(value: unknown) {
 function stringifyToolOutput(output: unknown) {
   if (typeof output === "string") return output
   return JSON.stringify(jsonSafe(output))
+}
+
+function estimateInputTokens(input: Pick<LLM.StreamInput, "system" | "messages" | "tools">) {
+  return Token.estimate(
+    JSON.stringify({
+      system: input.system,
+      messages: input.messages,
+      tools: Object.entries(input.tools).map(([name, tool]) => ({
+        name,
+        description: tool.description,
+        inputSchema: tool.inputSchema,
+      })),
+    }),
+  )
 }
 
 function isCompleteToolOutput(output: unknown): output is CompleteToolOutput {
@@ -158,6 +173,7 @@ interface ProcessorContext extends Input {
   snapshot: string | undefined
   blocked: boolean
   needsCompaction: boolean
+  estimatedInputTokens: number
   currentText: MessageV2.TextPart | undefined
   currentTextRaw: string | undefined
   reasoningMap: Record<string, MessageV2.ReasoningPart>
@@ -215,6 +231,7 @@ export const layer: Layer.Layer<
         snapshot: initialSnapshot,
         blocked: false,
         needsCompaction: false,
+        estimatedInputTokens: 0,
         currentText: undefined,
         currentTextRaw: undefined,
         reasoningMap: {},
@@ -544,6 +561,7 @@ export const layer: Layer.Layer<
               model: ctx.model,
               usage: value.usage,
               metadata: value.providerMetadata,
+              estimatedInputTokens: ctx.estimatedInputTokens,
             })
             if (!ctx.assistantMessage.summary) {
               // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
@@ -794,6 +812,7 @@ export const layer: Layer.Layer<
       const process = Effect.fn("SessionProcessor.process")(function* (streamInput: LLM.StreamInput) {
         slog.info("process")
         ctx.needsCompaction = false
+        ctx.estimatedInputTokens = estimateInputTokens(streamInput)
         ctx.shouldBreak = (yield* config.get()).experimental?.continue_loop_on_deny !== true
 
         return yield* Effect.gen(function* () {

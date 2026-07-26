@@ -20,6 +20,7 @@ const replayReasons: Record<RemoteCompactionResolution["replay"]["reason"], stri
   exact_binding: "exact binding",
   model_mismatch: "provider/model mismatch",
   transport_unavailable: "transport unavailable",
+  wire_api_not_responses: "Responses transport unavailable",
   binding_mismatch: "route binding changed",
   credential_unavailable: "credential unavailable",
   routing_identity_unsafe: "routing identity unsafe",
