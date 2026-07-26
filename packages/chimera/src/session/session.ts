@@ -411,12 +411,17 @@ export function plan(input: { slug: string; time: { created: number } }, instanc
   return path.join(base, [input.time.created, input.slug].join("-") + ".md")
 }
 
-export const getUsage = (input: { model: Provider.Model; usage: LanguageModelUsage; metadata?: ProviderMetadata }) => {
+export const getUsage = (input: {
+  model: Provider.Model
+  usage: LanguageModelUsage
+  metadata?: ProviderMetadata
+  estimatedInputTokens?: number
+}) => {
   const safe = (value: number) => {
     if (!Number.isFinite(value)) return 0
     return value
   }
-  const inputTokens = safe(input.usage.inputTokens ?? 0)
+  const inputTokens = safe(input.usage.inputTokens ?? input.estimatedInputTokens ?? 0)
   const outputTokens = safe(input.usage.outputTokens ?? 0)
   const reasoningTokens = safe(input.usage.outputTokenDetails?.reasoningTokens ?? input.usage.reasoningTokens ?? 0)
 
@@ -477,7 +482,10 @@ export const getUsage = (input: { model: Provider.Model; usage: LanguageModelUsa
 }
 
 function usageTotal(tokens: MessageV2.TokenUsage) {
-  return tokens.total ?? tokens.input + tokens.output + tokens.reasoning + tokens.cache.read + tokens.cache.write
+  return Math.max(
+    tokens.total ?? 0,
+    tokens.input + tokens.output + tokens.reasoning + tokens.cache.read + tokens.cache.write,
+  )
 }
 
 function normalizeUsageTokens(tokens: MessageV2.TokenUsage): MessageV2.TokenUsage {

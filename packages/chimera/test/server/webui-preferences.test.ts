@@ -151,12 +151,14 @@ describe("WebUI preferences service", () => {
 
 const original = {
   experimental: Flag.OPENCODE_EXPERIMENTAL_HTTPAPI,
+  hono: Flag.OPENCODE_SERVER_HONO,
   password: Flag.OPENCODE_SERVER_PASSWORD,
   username: Flag.OPENCODE_SERVER_USERNAME,
 }
 
 function app(effect: boolean, password?: string) {
   Flag.OPENCODE_EXPERIMENTAL_HTTPAPI = effect
+  Flag.OPENCODE_SERVER_HONO = !effect
   Flag.OPENCODE_SERVER_PASSWORD = password
   Flag.OPENCODE_SERVER_USERNAME = "chimera"
   return Server.Default().app
@@ -189,6 +191,7 @@ function authorization() {
 
 afterEach(async () => {
   Flag.OPENCODE_EXPERIMENTAL_HTTPAPI = original.experimental
+  Flag.OPENCODE_SERVER_HONO = original.hono
   Flag.OPENCODE_SERVER_PASSWORD = original.password
   Flag.OPENCODE_SERVER_USERNAME = original.username
   await disposeAllInstances()

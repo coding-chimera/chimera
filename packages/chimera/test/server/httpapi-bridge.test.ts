@@ -299,6 +299,9 @@ describe("HttpApi server", () => {
       expect(hono.paths[path]?.[method]?.operationId).toBe(operationId)
       expect(effect.paths[path]?.[method]?.operationId).toBe(operationId)
     }
+    const eligibilityPath = "/config/remote-compaction/eligibility"
+    expect((hono.paths[eligibilityPath]?.patch?.requestBody as RequestBody).required).toBe(true)
+    expect((effect.paths[eligibilityPath]?.patch?.requestBody as RequestBody).required).toBe(true)
   })
 
   test("matches generated OpenAPI route parameters", async () => {

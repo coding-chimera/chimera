@@ -23,6 +23,7 @@ import type {
   ConfigRemoteCompactionEligibilityListResponses,
   ConfigRemoteCompactionEligibilityUpdateErrors,
   ConfigRemoteCompactionEligibilityUpdateResponses,
+  ConfigRemoteCompactionGetResponses,
   ConfigRemoteCompactionStatusErrors,
   ConfigRemoteCompactionStatusResponses,
   ConfigRemoteCompactionUpdateErrors,
@@ -693,10 +694,10 @@ export class Eligibility extends HeyApiClient {
    * Persist a narrow provider and model remote compaction override for this project.
    */
   public update<ThrowOnError extends boolean = false>(
-    parameters?: {
+    parameters: {
       directory?: string
       workspace?: string
-      remoteCompactionEligibilityPatch?: RemoteCompactionEligibilityPatch
+      remoteCompactionEligibilityPatch: RemoteCompactionEligibilityPatch
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -765,6 +766,36 @@ export class RemoteCompaction extends HeyApiClient {
       ThrowOnError
     >({
       url: "/config/remote-compaction/status",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get remote compaction policy
+   *
+   * Get effective remote compaction policy with redacted provenance and write-target metadata.
+   */
+  public get<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<ConfigRemoteCompactionGetResponses, unknown, ThrowOnError>({
+      url: "/config/remote-compaction",
       ...options,
       ...params,
     })

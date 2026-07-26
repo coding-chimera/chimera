@@ -99,7 +99,8 @@ export const ConfigRoutes = lazy(() =>
       async (c) =>
         jsonRequest("ConfigRoutes.remoteCompaction.eligibility.list", c, function* () {
           const provider = yield* Provider.Service
-          return RemoteCompaction.eligibilityList(yield* provider.list())
+          const config = yield* Config.Service
+          return yield* RemoteCompaction.eligibilityList(yield* provider.list(), config)
         }),
     )
     .patch(
@@ -108,6 +109,7 @@ export const ConfigRoutes = lazy(() =>
         summary: "Update remote compaction eligibility",
         description: "Persist a narrow provider and model remote compaction override for this project.",
         operationId: "config.remoteCompaction.eligibility.update",
+        requestBody: { required: true, content: {} },
         responses: {
           200: {
             description: "Persisted redacted remote compaction eligibility",
@@ -142,10 +144,13 @@ export const ConfigRoutes = lazy(() =>
             if (!provider) return rejected("unknown_provider")
             const model = provider.models[payload.modelID]
             if (!model) return rejected("unknown_model")
-            const eligibility = RemoteCompaction.eligibility(provider, model, payload)
-            if (!eligibility.configurable) return rejected("not_configurable")
             const config = yield* Config.Service
-            yield* config.update(RemoteCompaction.eligibilityConfigPatch(payload))
+            if (!RemoteCompaction.eligibility(provider, model).configurable) return rejected("not_configurable")
+            if (payload.enabled === null) {
+              yield* config.remove([["provider", payload.providerID, "models", payload.modelID, "remote_compaction"]])
+            } else {
+              yield* config.update(RemoteCompaction.eligibilityConfigPatch(payload))
+            }
             const instance = yield* InstanceState.context
             const store = yield* InstanceStore.Service
             yield* store.reload({
@@ -153,7 +158,14 @@ export const ConfigRoutes = lazy(() =>
               worktree: instance.directory,
               project: instance.project,
             })
-            return { ok: true as const, eligibility }
+            const refreshedProviders = yield* providerSvc.list()
+            const refreshedProvider = refreshedProviders[payload.providerID] ?? provider
+            const refreshedModel = refreshedProvider.models[payload.modelID] ?? model
+            const context = yield* RemoteCompaction.eligibilityContext(config, payload)
+            return {
+              ok: true as const,
+              eligibility: RemoteCompaction.eligibility(refreshedProvider, refreshedModel, context),
+            }
           }),
         )
         if (!result.ok) return c.json(result.error, 400)
@@ -195,6 +207,24 @@ export const ConfigRoutes = lazy(() =>
           )
         }),
     )
+    .get(
+      "/remote-compaction",
+      describeRoute({
+        summary: "Get remote compaction policy",
+        description: "Get effective remote compaction policy with redacted provenance and write-target metadata.",
+        operationId: "config.remoteCompaction.get",
+        responses: {
+          200: {
+            description: "Effective remote compaction policy",
+            content: { "application/json": { schema: resolver(RemoteCompaction.Policy.zod) } },
+          },
+        },
+      }),
+      async (c) =>
+        jsonRequest("ConfigRoutes.remoteCompaction.get", c, function* () {
+          return yield* RemoteCompaction.policy(yield* Config.Service)
+        }),
+    )
     .patch(
       "/remote-compaction",
       describeRoute({
@@ -221,8 +251,13 @@ export const ConfigRoutes = lazy(() =>
           Effect.gen(function* () {
             const payload = c.req.valid("json")
             const config = yield* Config.Service
-            const current = yield* config.get()
-            yield* config.update({ compaction: payload })
+            const patch = Object.fromEntries(Object.entries(payload).filter((entry) => entry[1] !== null))
+            if (Object.keys(patch).length) yield* config.update({ compaction: patch } as Config.Info)
+            yield* config.remove(
+              Object.entries(payload)
+                .filter((entry) => entry[1] === null)
+                .map(([key]) => ["compaction", key]),
+            )
             const instance = yield* InstanceState.context
             const store = yield* InstanceStore.Service
             yield* store.reload({
@@ -230,10 +265,7 @@ export const ConfigRoutes = lazy(() =>
               worktree: instance.directory,
               project: instance.project,
             })
-            return {
-              remote: payload.remote ?? current.compaction?.remote ?? "auto",
-              remote_protocol: payload.remote_protocol ?? current.compaction?.remote_protocol ?? "auto",
-            }
+            return yield* RemoteCompaction.policy(config)
           }),
         )
         return c.json(result)

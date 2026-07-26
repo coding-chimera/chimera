@@ -98,8 +98,8 @@ export type StatusQuery = Schema.Schema.Type<typeof StatusQuery>
 
 export const PolicyPatch = Schema.StructWithRest(
   Schema.Struct({
-    remote: Schema.optional(Schema.Literals(["auto", "on", "off"])),
-    remote_protocol: Schema.optional(Schema.Literals(["auto", "v2", "legacy"])),
+    remote: Schema.optional(Schema.Union([Schema.Literals(["auto", "on", "off"]), Schema.Null])),
+    remote_protocol: Schema.optional(Schema.Union([Schema.Literals(["auto", "v2", "legacy"]), Schema.Null])),
   }),
   [Schema.Record(Schema.String, Schema.Unknown)],
 )
@@ -108,17 +108,41 @@ export const PolicyPatch = Schema.StructWithRest(
     withStatics(() => ({
       zod: z
         .object({
-          remote: z.enum(["auto", "on", "off"]).optional(),
-          remote_protocol: z.enum(["auto", "v2", "legacy"]).optional(),
+          remote: z.enum(["auto", "on", "off"]).nullable().optional(),
+          remote_protocol: z.enum(["auto", "v2", "legacy"]).nullable().optional(),
         })
         .strict(),
     })),
   )
 export type PolicyPatch = Schema.Schema.Type<typeof PolicyPatch>
 
+export const SourceCategory = Schema.Literals(["default", "global", "project", "environment", "account", "managed"])
+export type SourceCategory = Schema.Schema.Type<typeof SourceCategory>
+
+export const ValueMetadata = Schema.Struct({
+  source: SourceCategory,
+  explicitAtWriteTarget: Schema.Boolean,
+})
+export type ValueMetadata = Schema.Schema.Type<typeof ValueMetadata>
+
+export const WriteTargetMetadata = Schema.Struct({
+  source: Schema.Literal("project"),
+  format: Schema.Literals(["json", "jsonc"]),
+  exists: Schema.Boolean,
+})
+export type WriteTargetMetadata = Schema.Schema.Type<typeof WriteTargetMetadata>
+
+export const PolicyMetadata = Schema.Struct({
+  remote: ValueMetadata,
+  remote_protocol: ValueMetadata,
+  writeTarget: WriteTargetMetadata,
+})
+export type PolicyMetadata = Schema.Schema.Type<typeof PolicyMetadata>
+
 export const Policy = Schema.Struct({
   remote: Schema.Literals(["auto", "on", "off"]),
   remote_protocol: Schema.Literals(["auto", "v2", "legacy"]),
+  metadata: PolicyMetadata,
 })
   .annotate({ identifier: "RemoteCompactionPolicy" })
   .pipe(withStatics((schema) => ({ zod: zod(schema) })))
@@ -185,6 +209,7 @@ export const Resolution = Schema.Struct({
   configured: Schema.Struct({
     mode: Schema.Literals(["off", "auto", "on"]),
     protocol: Schema.Literals(["auto", "v2", "legacy"]),
+    metadata: Schema.optional(PolicyMetadata),
   }),
   requested: Schema.Struct({ providerID: Schema.String, modelID: Schema.String }),
   effective: Schema.Struct({ providerID: Schema.String, modelID: Schema.String, wireModelID: Schema.String }),
@@ -214,7 +239,7 @@ export const EligibilityPatch = Schema.StructWithRest(
   Schema.Struct({
     providerID: ProviderID,
     modelID: ModelID,
-    enabled: Schema.Boolean,
+    enabled: Schema.Union([Schema.Boolean, Schema.Null]),
     protocols: Schema.optional(EligibilityProtocols),
   }),
   [Schema.Record(Schema.String, Schema.Unknown)],
@@ -226,7 +251,7 @@ export const EligibilityPatch = Schema.StructWithRest(
         .object({
           providerID: ProviderID.zod,
           modelID: ModelID.zod,
-          enabled: z.boolean(),
+          enabled: z.boolean().nullable(),
           protocols: z
             .union([
               z.tuple([z.enum(["v2", "legacy"])]),
@@ -239,6 +264,13 @@ export const EligibilityPatch = Schema.StructWithRest(
     })),
   )
 export type EligibilityPatch = Schema.Schema.Type<typeof EligibilityPatch>
+
+export const EligibilityMetadata = Schema.Struct({
+  modelRemoteCompaction: ValueMetadata,
+  protocols: ValueMetadata,
+  writeTarget: WriteTargetMetadata,
+})
+export type EligibilityMetadata = Schema.Schema.Type<typeof EligibilityMetadata>
 
 export const Eligibility = Schema.Struct({
   providerID: Schema.String,
@@ -253,6 +285,7 @@ export const Eligibility = Schema.Struct({
   }),
   modelRemoteCompaction: Schema.Literals(["enabled", "disabled", "unset"]),
   configurable: Schema.Boolean,
+  metadata: EligibilityMetadata,
 })
   .annotate({ identifier: "RemoteCompactionEligibility" })
   .pipe(withStatics((schema) => ({ zod: zod(schema) })))
@@ -298,36 +331,131 @@ export function eligibilityError(input: { providerID: string; modelID: string; r
 
 const ELIGIBLE_PROVIDER_PACKAGES = new Set(["@ai-sdk/openai", "@ai-sdk/openai-compatible"])
 
-export function eligibility(provider: Provider.Info, model: Provider.Model, patch?: EligibilityPatch): Eligibility {
-  const enabled = patch?.enabled ?? model.remote_compaction
+type EligibilityContext = {
+  modelRemoteCompaction: boolean | undefined
+  metadata: EligibilityMetadata
+}
+
+function valueMetadata(
+  resolution: Config.ValueResolution,
+  input?: { source: Config.SourceCategory; explicitAtWriteTarget: boolean },
+): ValueMetadata {
+  return {
+    source: input?.source ?? resolution.source,
+    explicitAtWriteTarget: input?.explicitAtWriteTarget ?? resolution.explicitAtWriteTarget,
+  }
+}
+
+export function policy(config: Config.Interface) {
+  return Effect.gen(function* () {
+    const [remote, protocol] = yield* Effect.all([
+      config.resolve(["compaction", "remote"]),
+      config.resolve(["compaction", "remote_protocol"]),
+    ])
+    return {
+      remote: (remote.value as Policy["remote"] | undefined) ?? "auto",
+      remote_protocol: (protocol.value as Policy["remote_protocol"] | undefined) ?? "auto",
+      metadata: {
+        remote: valueMetadata(remote),
+        remote_protocol: valueMetadata(protocol),
+        writeTarget: remote.writeTarget,
+      },
+    } satisfies Policy
+  })
+}
+
+export function configured(policy: Policy) {
+  return {
+    mode: policy.remote,
+    protocol: policy.remote_protocol,
+    metadata: policy.metadata,
+  } satisfies Resolution["configured"]
+}
+
+export function eligibilityContext(
+  config: Config.Interface,
+  input: Pick<EligibilityPatch, "providerID" | "modelID">,
+) {
+  return Effect.gen(function* () {
+    const [model, protocols] = yield* Effect.all([
+      config.resolve(["provider", input.providerID, "models", input.modelID, "remote_compaction"]),
+      config.resolve(["provider", input.providerID, "remote_compaction", "protocols"]),
+    ])
+    return {
+      modelRemoteCompaction: model.value as boolean | undefined,
+      metadata: {
+        modelRemoteCompaction: valueMetadata(model),
+        protocols: valueMetadata(protocols),
+        writeTarget: model.writeTarget,
+      },
+    } satisfies EligibilityContext
+  })
+}
+
+function currentEligibilityContext(
+  model: Provider.Model,
+  modelMetadata?: Config.ValueResolution,
+  protocolMetadata?: Config.ValueResolution,
+): EligibilityContext {
+  return {
+    modelRemoteCompaction: model.remote_compaction,
+    metadata: {
+      modelRemoteCompaction: modelMetadata
+        ? valueMetadata(modelMetadata)
+        : { source: "default", explicitAtWriteTarget: false },
+      protocols: protocolMetadata
+        ? valueMetadata(protocolMetadata)
+        : { source: "default", explicitAtWriteTarget: false },
+      writeTarget: modelMetadata?.writeTarget ?? { source: "project", format: "json", exists: false },
+    },
+  }
+}
+
+export function eligibility(
+  provider: Provider.Info,
+  model: Provider.Model,
+  context = currentEligibilityContext(model),
+): Eligibility {
+  const enabled = context.modelRemoteCompaction
   return {
     providerID: provider.id,
     providerName: provider.name,
     modelID: model.id,
     modelName: model.name,
-    apiNpm: patch?.enabled ? "@ai-sdk/openai" : model.api.npm,
-    wire_api: patch?.enabled ? "responses" : model.wire_api ?? provider.wire_api ?? "chat",
+    apiNpm: model.api.npm,
+    wire_api: model.wire_api ?? provider.wire_api ?? "chat",
     providerCapability: {
-      present: patch?.enabled ? true : provider.remote_compaction !== undefined,
-      protocols: patch?.enabled
-        ? [...(patch.protocols ?? ["v2", "legacy"])]
-        : [...(provider.remote_compaction?.protocols ?? [])],
+      present: provider.remote_compaction !== undefined,
+      protocols: [...(provider.remote_compaction?.protocols ?? [])],
     },
     modelRemoteCompaction: enabled === true ? "enabled" : enabled === false ? "disabled" : "unset",
     configurable: provider.id !== "openai" && ELIGIBLE_PROVIDER_PACKAGES.has(model.api.npm),
+    metadata: context.metadata,
   }
 }
 
-export function eligibilityList(providers: Record<string, Provider.Info>): EligibilityList {
-  return {
-    items: Object.values(providers)
-      .filter((provider) => provider.id !== "openai")
-      .flatMap((provider) => Object.values(provider.models).map((model) => eligibility(provider, model)))
+export function eligibilityList(providers: Record<string, Provider.Info>, config?: Config.Interface) {
+  const items = Object.values(providers)
+    .filter((provider) => provider.id !== "openai")
+    .flatMap((provider) => Object.values(provider.models).map((model) => ({ provider, model })))
+  const build = (contexts: EligibilityContext[]) => ({
+    items: items
+      .map((item, index) => eligibility(item.provider, item.model, contexts[index]))
       .sort((a, b) => `${a.providerID}/${a.modelID}`.localeCompare(`${b.providerID}/${b.modelID}`)),
-  }
+  })
+  if (!config) return Effect.succeed(build(items.map((item) => currentEligibilityContext(item.model))))
+  return Effect.all(
+    items.map((item) =>
+      Effect.all([
+        config.resolve(["provider", item.provider.id, "models", item.model.id, "remote_compaction"]),
+        config.resolve(["provider", item.provider.id, "remote_compaction", "protocols"]),
+      ]).pipe(Effect.map(([model, protocols]) => currentEligibilityContext(item.model, model, protocols))),
+    ),
+  ).pipe(Effect.map(build))
 }
 
 export function eligibilityConfigPatch(input: EligibilityPatch): Config.Info {
+  if (input.enabled === null) return {}
   return {
     provider: {
       [input.providerID]: input.enabled
@@ -605,11 +733,12 @@ export const layerWithEndpoint = (endpoint = codexEndpointUrl("responses/compact
     const legacyEndpoint = options.legacyEndpoint ?? legacyEndpointFrom(endpoint)
 
     const resolve = Effect.fn("RemoteCompaction.resolve")(function* (input: ResolveInput) {
-      const cfg = yield* config.get()
+      const selectedPolicy = yield* policy(config)
       const configured = {
-        mode: cfg.compaction?.remote ?? "auto",
-        protocol: cfg.compaction?.remote_protocol ?? "auto",
-      }
+        mode: selectedPolicy.remote,
+        protocol: selectedPolicy.remote_protocol,
+        metadata: selectedPolicy.metadata,
+      } satisfies Resolution["configured"]
       const common = {
         configured,
         requested: { providerID: input.model.providerID, modelID: input.model.id },
@@ -1092,7 +1221,15 @@ export const disabledLayer = Layer.succeed(
       const lock = session?.lock
       const mismatch = !!lock && (lock.providerID !== model.providerID || lock.modelID !== model.id)
       return Effect.succeed({
-        configured: { mode: "off", protocol: "auto" },
+        configured: {
+          mode: "off",
+          protocol: "auto",
+          metadata: {
+            remote: { source: "default", explicitAtWriteTarget: false },
+            remote_protocol: { source: "default", explicitAtWriteTarget: false },
+            writeTarget: { source: "project", format: "json", exists: false },
+          },
+        },
         requested: { providerID: model.providerID, modelID: model.id },
         effective: { providerID: model.providerID, modelID: model.id, wireModelID: model.api.id },
         mode: "local",

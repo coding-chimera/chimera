@@ -498,83 +498,95 @@ describe("session.compaction.isOverflow", () => {
       }),
     ),
   )
-
-  // ─── Bug reproduction tests ───────────────────────────────────────────
-  // These tests demonstrate that when limit.input is set, isOverflow()
-  // does not subtract any headroom for the next model response. This means
-  // compaction only triggers AFTER we've already consumed the full input
-  // budget, leaving zero room for the next API call's output tokens.
-  //
-  // Compare: without limit.input, usable = context - output (reserves space).
-  // With limit.input, usable = limit.input (reserves nothing).
-  //
-  // Related issues: #10634, #8089, #11086, #12621
-  // Open PRs: #6875, #12924
-
   it.live(
-    "BUG: no headroom when limit.input is set — compaction should trigger near boundary but does not",
+    "uses an elastic percentage threshold for large context windows",
     provideTmpdirInstance(() =>
       Effect.gen(function* () {
         const compact = yield* SessionCompaction.Service
-        // Simulate Claude with prompt caching: input limit = 200K, output limit = 32K
-        const model = createModel({ context: 200_000, input: 200_000, output: 32_000 })
+        const model = createModel({ context: 1_000_000, input: 1_000_000, output: 32_000 })
+        const below = { input: 861_199, output: 10_000, reasoning: 0, cache: { read: 0, write: 0 } }
+        const at = { input: 861_200, output: 10_000, reasoning: 0, cache: { read: 0, write: 0 } }
+        expect(yield* compact.isOverflow({ tokens: below, model })).toBe(false)
+        expect(yield* compact.isOverflow({ tokens: at, model })).toBe(true)
+      }),
+    ),
+  )
+  it.live(
+    "clamps the elastic threshold to the provider input limit",
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const compact = yield* SessionCompaction.Service
+        const model = createModel({ context: 1_000_000, input: 400_000, output: 32_000 })
+        const at = { input: 350_000, output: 10_000, reasoning: 0, cache: { read: 0, write: 0 } }
+        expect(yield* compact.isOverflow({ tokens: at, model })).toBe(true)
+      }),
+    ),
+  )
 
-        // We've used 198K tokens total. Only 2K under the input limit.
-        // On the next turn, the full conversation (198K) becomes input,
-        // plus the model needs room to generate output — this WILL overflow.
-        const tokens = { input: 180_000, output: 15_000, reasoning: 0, cache: { read: 3_000, write: 0 } }
-        // count = 180K + 3K + 15K = 198K
-        // usable = limit.input = 200K (no output subtracted!)
-        // 198K > 200K = false → no compaction triggered
-
-        // WITHOUT limit.input: usable = 200K - 32K = 168K, and 198K > 168K = true ✓
-        // WITH limit.input: usable = 200K, and 198K > 200K = false ✗
-
-        // With 198K used and only 2K headroom, the next turn will overflow.
-        // Compaction MUST trigger here.
+  it.live(
+    "uses token components when the reported total omits prompt usage",
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const compact = yield* SessionCompaction.Service
+        const model = createModel({ context: 100_000, output: 32_000 })
+        const tokens = {
+          total: 500,
+          input: 55_000,
+          output: 500,
+          reasoning: 0,
+          cache: { read: 0, write: 0 },
+        }
         expect(yield* compact.isOverflow({ tokens, model })).toBe(true)
       }),
     ),
   )
 
+  // These cases cover the compaction safety budget for models that expose
+  // a separate input limit or only a combined context/output limit. The
+  // threshold uses the smaller effective input capacity, the default 90%
+  // auto-compaction budget, and any explicit reserved-token override.
+
   it.live(
-    "BUG: without limit.input, same token count correctly triggers compaction",
+    "uses the smaller combined-window capacity when limit.input is set",
     provideTmpdirInstance(() =>
       Effect.gen(function* () {
         const compact = yield* SessionCompaction.Service
-        // Same model but without limit.input — uses context - output instead
-        const model = createModel({ context: 200_000, output: 32_000 })
-
-        // Same token usage as above
-        const tokens = { input: 180_000, output: 15_000, reasoning: 0, cache: { read: 3_000, write: 0 } }
-        // count = 198K
-        // usable = context - output = 200K - 32K = 168K
-        // 198K > 168K = true → compaction correctly triggered
-
-        const result = yield* compact.isOverflow({ tokens, model })
-        expect(result).toBe(true) // ← Correct: headroom is reserved
+        const model = createModel({ context: 200_000, input: 200_000, output: 32_000 })
+        const below = { input: 137_999, output: 10_000, reasoning: 0, cache: { read: 0, write: 0 } }
+        const at = { input: 138_000, output: 10_000, reasoning: 0, cache: { read: 0, write: 0 } }
+        expect(yield* compact.isOverflow({ tokens: below, model })).toBe(false)
+        expect(yield* compact.isOverflow({ tokens: at, model })).toBe(true)
       }),
     ),
   )
 
   it.live(
-    "BUG: asymmetry — limit.input model allows 30K more usage before compaction than equivalent model without it",
+    "infers input capacity from combined context and output limits",
     provideTmpdirInstance(() =>
       Effect.gen(function* () {
         const compact = yield* SessionCompaction.Service
-        // Two models with identical context/output limits, differing only in limit.input
-        const withInputLimit = createModel({ context: 200_000, input: 200_000, output: 32_000 })
-        const withoutInputLimit = createModel({ context: 200_000, output: 32_000 })
+        const model = createModel({ context: 500_000, output: 128_000 })
+        const below = { input: 324_799, output: 10_000, reasoning: 0, cache: { read: 0, write: 0 } }
+        const at = { input: 324_800, output: 10_000, reasoning: 0, cache: { read: 0, write: 0 } }
+        expect(yield* compact.isOverflow({ tokens: below, model })).toBe(false)
+        expect(yield* compact.isOverflow({ tokens: at, model })).toBe(true)
+      }),
+    ),
+  )
 
-        // 170K total tokens — well above context-output (168K) but below input limit (200K)
-        const tokens = { input: 166_000, output: 10_000, reasoning: 0, cache: { read: 5_000, write: 0 } }
-
-        const withLimit = yield* compact.isOverflow({ tokens, model: withInputLimit })
-        const withoutLimit = yield* compact.isOverflow({ tokens, model: withoutInputLimit })
-
-        // Both models have identical real capacity — they should agree:
-        expect(withLimit).toBe(true) // should compact (170K leaves no room for 32K output)
-        expect(withoutLimit).toBe(true) // correctly compacts (170K > 168K)
+  it.live(
+    "treats non-positive input limits as unavailable",
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const compact = yield* SessionCompaction.Service
+        const withZeroInput = createModel({ context: 500_000, input: 0, output: 128_000 })
+        const withoutInput = createModel({ context: 500_000, output: 128_000 })
+        const below = { input: 324_799, output: 10_000, reasoning: 0, cache: { read: 0, write: 0 } }
+        const at = { input: 324_800, output: 10_000, reasoning: 0, cache: { read: 0, write: 0 } }
+        expect(yield* compact.isOverflow({ tokens: below, model: withZeroInput })).toBe(false)
+        expect(yield* compact.isOverflow({ tokens: below, model: withoutInput })).toBe(false)
+        expect(yield* compact.isOverflow({ tokens: at, model: withZeroInput })).toBe(true)
+        expect(yield* compact.isOverflow({ tokens: at, model: withoutInput })).toBe(true)
       }),
     ),
   )
@@ -2870,6 +2882,68 @@ describe("SessionNs.getUsage", () => {
     expect(result.tokens.cache.read).toBe(0)
     expect(result.tokens.cache.write).toBe(0)
   })
+  test("uses a local input estimate when the provider omits prompt usage", () => {
+    const model = createModel({ context: 100_000, output: 32_000 })
+    const result = SessionNs.getUsage({
+      model,
+      estimatedInputTokens: 12_000,
+      usage: {
+        inputTokens: undefined,
+        outputTokens: 500,
+        totalTokens: undefined,
+        inputTokenDetails: {
+          noCacheTokens: undefined,
+          cacheReadTokens: undefined,
+          cacheWriteTokens: undefined,
+        },
+        outputTokenDetails: {
+          textTokens: undefined,
+          reasoningTokens: undefined,
+        },
+      },
+    })
+    expect(result.tokens.input).toBe(12_000)
+    expect(result.tokens.output).toBe(500)
+    expect(result.tokens.total).toBeUndefined()
+  })
+  test("preserves explicit zero input usage over a local estimate", () => {
+    const model = createModel({ context: 100_000, output: 32_000 })
+    const result = SessionNs.getUsage({
+      model,
+      estimatedInputTokens: 12_000,
+      usage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        inputTokenDetails: {
+          noCacheTokens: undefined,
+          cacheReadTokens: undefined,
+          cacheWriteTokens: undefined,
+        },
+        outputTokenDetails: {
+          textTokens: undefined,
+          reasoningTokens: undefined,
+        },
+      },
+    })
+    expect(result.tokens.input).toBe(0)
+    expect(result.tokens.total).toBe(0)
+  })
+
+  test("normalizes underreported totals when appending usage", () => {
+    const result = SessionNs.appendUsage(undefined, {
+      tokens: {
+        total: 500,
+        input: 12_000,
+        output: 500,
+        reasoning: 250,
+        cache: { read: 1_000, write: 250 },
+      },
+      cost: 0,
+    })
+    expect(result.last.total).toBe(14_000)
+    expect(result.total.total).toBe(14_000)
+  })
 
   test("extracts cached tokens to cache.read", () => {
     const model = createModel({ context: 100_000, output: 32_000 })
@@ -3265,6 +3339,15 @@ describe("session.remote-compaction provider target", () => {
     const exact = lock(ready)
     expect(await resolve(ready, exact)).toMatchObject({
       mode: "remote",
+      configured: {
+        mode: "on",
+        protocol: "auto",
+        metadata: {
+          remote: { source: "project", explicitAtWriteTarget: true },
+          remote_protocol: { source: "project", explicitAtWriteTarget: true },
+          writeTarget: { source: "project", format: "json", exists: true },
+        },
+      },
       lock: { status: "exact" },
       replay: { mode: "encoded", reason: "exact_binding" },
     })

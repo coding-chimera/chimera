@@ -324,18 +324,43 @@ export type Info = DeepMutable<Schema.Schema.Type<typeof Info>> & {
   plugin_origins?: ConfigPlugin.Origin[]
 }
 
+export type SourceCategory = "default" | "global" | "project" | "environment" | "account" | "managed"
+
+export type ValueResolution = {
+  value: unknown
+  inherited: unknown
+  source: SourceCategory
+  inheritedSource: SourceCategory
+  explicitAtWriteTarget: boolean
+  writeTarget: {
+    source: "project"
+    format: "json" | "jsonc"
+    exists: boolean
+  }
+}
+
+type SourceEntry = {
+  value: unknown
+  source: SourceCategory
+  writeTarget: boolean
+}
+
 type State = {
   config: Info
   directories: string[]
   deps: Fiber.Fiber<void, never>[]
   consoleState: ConsoleState
+  sources: Map<string, SourceEntry[]>
+  writeTarget: ValueResolution["writeTarget"]
 }
 
 export interface Interface {
   readonly get: () => Effect.Effect<Info>
   readonly getGlobal: () => Effect.Effect<Info>
   readonly getConsoleState: () => Effect.Effect<ConsoleState>
+  readonly resolve: (path: string[]) => Effect.Effect<ValueResolution>
   readonly update: (config: Info) => Effect.Effect<void>
+  readonly remove: (paths: string[][]) => Effect.Effect<void>
   readonly updateGlobal: (config: Info) => Effect.Effect<{ info: Info; changed: boolean }>
   readonly invalidate: () => Effect.Effect<void>
   readonly directories: () => Effect.Effect<string[]>
@@ -372,6 +397,41 @@ function patchJsonc(input: string, patch: unknown, path: string[] = []): string 
   }
 
   return Object.entries(patch).reduce((result, [key, value]) => patchJsonc(result, value, [...path, key]), input)
+}
+
+function valueAtPath(input: unknown, path: string[]) {
+  return path.reduce<unknown>((value, key) => (isRecord(value) ? value[key] : undefined), input)
+}
+
+function sourceKey(path: string[]) {
+  return JSON.stringify(path)
+}
+
+function recordSources(
+  target: Map<string, SourceEntry[]>,
+  input: unknown,
+  source: SourceCategory,
+  writeTarget: boolean,
+  path: string[] = [],
+) {
+  if (isRecord(input)) {
+    for (const [key, value] of Object.entries(input)) recordSources(target, value, source, writeTarget, [...path, key])
+    return
+  }
+  target.set(sourceKey(path), [...(target.get(sourceKey(path)) ?? []), { value: input, source, writeTarget }])
+}
+
+function removeJsonc(input: string, paths: string[][], source: string) {
+  return paths.reduce((text, path) => {
+    if (valueAtPath(ConfigParse.jsonc(text, source), path) === undefined) return text
+    const removed = patchJsonc(text, undefined, path)
+    return path.slice(0, -1).reduceRight((result, _key, index) => {
+      const parent = path.slice(0, index + 1)
+      const value = valueAtPath(ConfigParse.jsonc(result, source), parent)
+      if (!isRecord(value) || Object.keys(value).length) return result
+      return patchJsonc(result, undefined, parent)
+    }, removed)
+  }, input)
 }
 
 function writable(info: Info) {
@@ -498,9 +558,10 @@ export const layer = Layer.effect(
         const auth = yield* authSvc.all().pipe(Effect.orDie)
 
         let result: Info = {}
+        const sources = new Map<string, SourceEntry[]>()
+        const writeTargetFile = projectConfigFile(ctx.directory)
         const consoleManagedProviders = new Set<string>()
         let activeOrgName: string | undefined
-
         const pluginScopeForSource = Effect.fnUntraced(function* (source: string) {
           if (source.startsWith("http://") || source.startsWith("https://")) return "global"
           if (source === "OPENCODE_CONFIG_CONTENT") return "local"
@@ -529,8 +590,14 @@ export const layer = Layer.effect(
           result.plugin_origins = plugins
         })
 
-        const merge = (source: string, next: Info, kind?: ConfigPlugin.Scope) => {
+        const merge = (
+          source: string,
+          next: Info,
+          category: SourceCategory,
+          kind?: ConfigPlugin.Scope,
+        ) => {
           result = mergeConfigConcatArrays(result, next)
+          recordSources(sources, next, category, source === writeTargetFile)
           return mergePluginOrigins(source, next.plugin, kind)
         }
 
@@ -571,22 +638,22 @@ export const layer = Layer.effect(
               dir: path.dirname(source),
               source,
             })
-            yield* merge(source, next, "global")
+            yield* merge(source, next, "managed", "global")
             log.debug("loaded remote config from well-known", { url })
           }
         }
 
         const global = yield* getGlobal()
-        yield* merge(Global.Path.config, global, "global")
+        yield* merge(Global.Path.config, global, "global", "global")
 
         if (Flag.OPENCODE_CONFIG) {
-          yield* merge(Flag.OPENCODE_CONFIG, yield* loadFile(Flag.OPENCODE_CONFIG))
+          yield* merge(Flag.OPENCODE_CONFIG, yield* loadFile(Flag.OPENCODE_CONFIG), "environment")
           log.debug("loaded custom config", { path: Flag.OPENCODE_CONFIG })
         }
 
         if (!Flag.OPENCODE_DISABLE_PROJECT_CONFIG) {
           for (const file of yield* ConfigPaths.files(ConfigPaths.APP_CONFIG_NAME, ctx.directory, ctx.worktree).pipe(Effect.orDie)) {
-            yield* merge(file, yield* loadFile(file), "local")
+            yield* merge(file, yield* loadFile(file), "project", "local")
           }
         }
 
@@ -607,7 +674,7 @@ export const layer = Layer.effect(
             for (const file of ConfigPaths.APP_CONFIG_FILES) {
               const source = path.join(dir, file)
               log.debug(`loading config from ${source}`)
-              yield* merge(source, yield* loadFile(source))
+              yield* merge(source, yield* loadFile(source), "project")
               result.agent ??= {}
               result.mode ??= {}
               result.plugin ??= []
@@ -654,7 +721,7 @@ export const layer = Layer.effect(
             dir: ctx.directory,
             source,
           })
-          yield* merge(source, next, "local")
+          yield* merge(source, next, "environment", "local")
           log.debug("loaded custom config from OPENCODE_CONFIG_CONTENT")
         }
 
@@ -684,7 +751,7 @@ export const layer = Layer.effect(
               for (const providerID of Object.keys(next.provider ?? {})) {
                 consoleManagedProviders.add(providerID)
               }
-              yield* merge(source, next, "global")
+              yield* merge(source, next, "account", "global")
             }
           }).pipe(
             Effect.withSpan("Config.loadActiveOrgConfig"),
@@ -701,20 +768,19 @@ export const layer = Layer.effect(
         if (existsSync(managedDir)) {
           for (const file of ConfigPaths.APP_CONFIG_FILES) {
             const source = path.join(managedDir, file)
-            yield* merge(source, yield* loadFile(source), "global")
+            yield* merge(source, yield* loadFile(source), "managed", "global")
           }
         }
 
         // macOS managed preferences (.mobileconfig deployed via MDM) override everything
         const managed = yield* Effect.promise(() => ConfigManaged.readManagedPreferences())
         if (managed) {
-          result = mergeConfigConcatArrays(
-            result,
-            yield* loadConfig(managed.text, {
-              dir: path.dirname(managed.source),
-              source: managed.source,
-            }),
-          )
+          const next = yield* loadConfig(managed.text, {
+            dir: path.dirname(managed.source),
+            source: managed.source,
+          })
+          result = mergeConfigConcatArrays(result, next)
+          recordSources(sources, next, "managed", false)
         }
 
         for (const [name, mode] of Object.entries(result.mode ?? {})) {
@@ -760,6 +826,12 @@ export const layer = Layer.effect(
           config: result,
           directories,
           deps,
+          sources,
+          writeTarget: {
+            source: "project" as const,
+            format: writeTargetFile.endsWith(".jsonc") ? "jsonc" as const : "json" as const,
+            exists: existsSync(writeTargetFile),
+          },
           consoleState: {
             consoleManagedProviders: Array.from(consoleManagedProviders),
             activeOrgName,
@@ -778,6 +850,22 @@ export const layer = Layer.effect(
 
     const get = Effect.fn("Config.get")(function* () {
       return yield* InstanceState.use(state, (s) => s.config)
+    })
+
+    const resolve = Effect.fn("Config.resolve")(function* (path: string[]) {
+      return yield* InstanceState.use(state, (s): ValueResolution => {
+        const entries = s.sources.get(sourceKey(path)) ?? []
+        const effective = entries.at(-1)
+        const inherited = entries.filter((entry) => !entry.writeTarget).at(-1)
+        return {
+          value: valueAtPath(s.config, path),
+          inherited: inherited?.value,
+          source: effective?.source ?? "default",
+          inheritedSource: inherited?.source ?? "default",
+          explicitAtWriteTarget: entries.some((entry) => entry.writeTarget),
+          writeTarget: s.writeTarget,
+        }
+      })
     })
 
     const directories = Effect.fn("Config.directories")(function* () {
@@ -804,11 +892,24 @@ export const layer = Layer.effect(
         yield* fs
           .writeFileString(file, JSON.stringify(mergeDeep(writable(existing), patch), null, 2))
           .pipe(Effect.orDie)
+        yield* InstanceState.invalidate(state)
         return
       }
       const updated = patchJsonc(before, patch)
       ConfigParse.effectSchema(Info, ConfigParse.jsonc(updated, file), file)
       yield* fs.writeFileString(file, updated).pipe(Effect.orDie)
+      yield* InstanceState.invalidate(state)
+    })
+
+    const remove = Effect.fn("Config.remove")(function* (paths: string[][]) {
+      if (!paths.length) return
+      const file = projectConfigFile(yield* InstanceState.directory)
+      const before = (yield* readConfigFile(file)) || "{}"
+      const updated = removeJsonc(before, paths, file)
+      if (updated === before) return
+      ConfigParse.effectSchema(Info, ConfigParse.jsonc(updated, file), file)
+      yield* fs.writeFileString(file, updated).pipe(Effect.orDie)
+      yield* InstanceState.invalidate(state)
     })
 
     const invalidate = Effect.fn("Config.invalidate")(function* () {
@@ -844,7 +945,9 @@ export const layer = Layer.effect(
       get,
       getGlobal,
       getConsoleState,
+      resolve,
       update,
+      remove,
       updateGlobal,
       invalidate,
       directories,

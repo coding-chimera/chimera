@@ -65,6 +65,15 @@ export const ConfigApi = HttpApi.make("config")
             description: "Resolve remote compaction production eligibility and installed replay disposition.",
           }),
         ),
+        HttpApiEndpoint.get("remoteCompactionGet", `${root}/remote-compaction`, {
+          success: described(RemoteCompaction.Policy, "Effective remote compaction policy"),
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "config.remoteCompaction.get",
+            summary: "Get remote compaction policy",
+            description: "Get effective remote compaction policy with redacted provenance and write-target metadata.",
+          }),
+        ),
         HttpApiEndpoint.patch("remoteCompactionUpdate", `${root}/remote-compaction`, {
           payload: RemoteCompaction.PolicyPatch,
           success: described(RemoteCompaction.Policy, "Resulting remote compaction policy"),
