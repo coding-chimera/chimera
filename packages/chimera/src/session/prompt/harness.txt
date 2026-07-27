@@ -26,7 +26,7 @@ Use web access when the user explicitly asks for a URL or current information, w
 
 Use task/explore agents when independent research can proceed in parallel or when a codebase question requires broad exploration. Do not delegate a single known file read or a single known symbol lookup.
 
-Load a skill when the task matches an available skill. Skills are specialized playbooks; do not invent a skill name that is not listed.
+Load a skill by its exact listed name when it clearly matches the task. Skill instructions are loaded only when the skill tool is called; do not invent a skill name.
 
 ## Tool result handling
 

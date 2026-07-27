@@ -69,6 +69,10 @@ Use this skill.
           })).find((tool) => tool.id === SkillTool.id)
           if (!tool) throw new Error("Skill tool not found")
 
+          expect(tool.description.length).toBeLessThan(1_000)
+          expect(tool.description).not.toContain("tool-skill")
+          expect(tool.description).not.toContain("Skill for tool tests.")
+
           const requests: Array<Omit<Permission.Request, "id" | "sessionID" | "tool">> = []
           const ctx: Tool.Context = {
             ...baseCtx,

@@ -141,7 +141,7 @@ For prompt/provider/runtime changes, trace the actual request path before editin
 - `SystemPrompt.provider` and `SystemPrompt.overlay` routing;
 - agent prompt overrides;
 - project and directory instructions;
-- skill list injection;
+- skill name-index injection and on-demand content loading;
 - runtime environment block;
 - Current Work Brief and execution context injection;
 - provider-specific instruction transport;
