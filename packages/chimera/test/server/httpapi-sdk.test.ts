@@ -443,7 +443,7 @@ describe("HttpApi SDK", () => {
   parity("matches generated SDK basic auth behavior across backends", (backend) =>
     withStandardProject(backend, ({ directory }) =>
       Effect.gen(function* () {
-        const auth = { username: "opencode", password: "secret" }
+        const auth = { username: "opencode", password: "secret:with:colon" }
         const missing = yield* capture(() => client(backend, directory, auth).file.read({ path: "hello.txt" }))
         const missingMemory = yield* capture(() => client(backend, directory, auth).memory.status())
         const bad = yield* capture(() =>
@@ -461,15 +461,18 @@ describe("HttpApi SDK", () => {
         const good = yield* capture(() =>
           client(backend, directory, {
             ...auth,
-            headers: { authorization: authorization("opencode", "secret") },
+            headers: { authorization: authorization("opencode", auth.password) },
           }).file.read({ path: "hello.txt" }),
         )
         const goodMemory = yield* capture(() =>
           client(backend, directory, {
             ...auth,
-            headers: { authorization: authorization("opencode", "secret") },
+            headers: { authorization: authorization("opencode", auth.password) },
           }).memory.status(),
         )
+
+        expect(good.status).toBe(200)
+        expect(goodMemory.status).toBe(200)
 
         return {
           statuses: statuses({ missing, bad, good, missingMemory, badMemory, goodMemory }),
