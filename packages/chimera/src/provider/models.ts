@@ -27,6 +27,13 @@ const Cost = Schema.Struct({
 
 const BackendSemantics = Schema.Literals(["openai", "codex"])
 const ReasoningEffort = Schema.Literals(CodexModel.REASONING_EFFORTS)
+const ReasoningProtocol = Schema.Literals([
+  "zhipuai_thinking",
+  "dashscope_enable_thinking",
+  "vllm_chat_template",
+  "anthropic_thinking",
+  "google_thinking_config",
+])
 const ReasoningOption = Schema.Struct({
   type: Schema.String,
   values: Schema.optional(Schema.Array(Schema.NullOr(Schema.String))),
@@ -45,6 +52,7 @@ export const Model = Schema.Struct({
   tool_call: Schema.Boolean,
   reasoning_options: Schema.optional(Schema.Array(ReasoningOption)),
   reasoning_efforts: Schema.optional(Schema.Array(ReasoningEffort)),
+  reasoning_protocol: Schema.optional(ReasoningProtocol),
   interleaved: Schema.optional(
     Schema.Union([
       Schema.Literal(true),
@@ -123,6 +131,7 @@ export function normalizeCatalog(catalog: Record<string, Provider>) {
               CodexModel.supportsCatalogSemantics(capabilityModelID)
                 ? "codex"
                 : undefined)
+            const reasoningProtocol = inferReasoningProtocol(providerID, model, npm)
             return [
               modelID,
               {
@@ -130,6 +139,7 @@ export function normalizeCatalog(catalog: Record<string, Provider>) {
                 ...(backendSemantics ? { backend_semantics: backendSemantics } : {}),
                 ...(capabilityModelID ? { capability_model_id: capabilityModelID } : {}),
                 ...(reasoningEfforts ? { reasoning_efforts: reasoningEfforts } : {}),
+                ...(reasoningProtocol ? { reasoning_protocol: reasoningProtocol } : {}),
               },
             ]
           }),
@@ -137,6 +147,62 @@ export function normalizeCatalog(catalog: Record<string, Provider>) {
       },
     ]),
   )
+}
+
+// Infers the reasoning protocol that controls how thinking is enabled in the
+// request body. Mirrors the providerID/SDK matching previously hardcoded in
+// transform.ts options(), but runs at catalog normalization time so custom
+// providers inherit the protocol via findKnownModelMetadata cross-provider
+// model ID matching.
+type ReasoningProtocol =
+  | "zhipuai_thinking"
+  | "dashscope_enable_thinking"
+  | "vllm_chat_template"
+  | "anthropic_thinking"
+  | "google_thinking_config"
+
+function inferReasoningProtocol(providerID: string, model: Model, npm: string): ReasoningProtocol | undefined {
+  if (model.reasoning_protocol) return model.reasoning_protocol
+  const id = model.id.toLowerCase()
+  const family = model.family?.toLowerCase() ?? ""
+  // zhipuai / zai / tencent GLM models use the OpenAI-compatible `thinking`
+  // field with clear_thinking to enable reasoning_content output.
+  if (
+    (family === "glm" || id.includes("glm")) &&
+    ["zhipuai", "zai", "tencent"].some((p) => providerID.includes(p)) &&
+    npm === "@ai-sdk/openai-compatible"
+  ) {
+    return "zhipuai_thinking"
+  }
+  // DashScope (alibaba-cn) requires enable_thinking in the body for reasoning
+  // models; kimi-k2-thinking returns reasoning_content by default and is excluded.
+  if (
+    providerID === "alibaba-cn" &&
+    model.reasoning &&
+    npm === "@ai-sdk/openai-compatible" &&
+    !id.includes("kimi-k2-thinking")
+  ) {
+    return "dashscope_enable_thinking"
+  }
+  // vLLM-style chat template arg for providers that deploy GLM/Kimi via
+  // baseten or the opencode hosted proxy.
+  if (
+    providerID === "baseten" ||
+    (providerID === "opencode" && ["kimi-k2-thinking", "glm-4.6"].includes(id))
+  ) {
+    return "vllm_chat_template"
+  }
+  // Google AI SDK exposes thinkingConfig for reasoning models.
+  if (npm === "@ai-sdk/google" || npm === "@ai-sdk/google-vertex") {
+    if (model.reasoning) return "google_thinking_config"
+  }
+  // Anthropic SDK with Kimi K2 models uses budget-token thinking.
+  if (
+    (npm === "@ai-sdk/anthropic" || npm === "@ai-sdk/google-vertex/anthropic") &&
+    (id.includes("k2p") || id.includes("kimi-k2.") || id.includes("kimi-k2p"))
+  ) {
+    return "anthropic_thinking"
+  }
 }
 
 export interface Interface {

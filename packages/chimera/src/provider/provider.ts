@@ -989,6 +989,14 @@ const ProviderInterleaved = Schema.Union([
   }),
 ])
 
+const ReasoningProtocol = Schema.Literals([
+  "zhipuai_thinking",
+  "dashscope_enable_thinking",
+  "vllm_chat_template",
+  "anthropic_thinking",
+  "google_thinking_config",
+])
+
 const ProviderCapabilities = Schema.Struct({
   temperature: Schema.Boolean,
   reasoning: Schema.Boolean,
@@ -997,6 +1005,7 @@ const ProviderCapabilities = Schema.Struct({
   input: ProviderModalities,
   output: ProviderModalities,
   interleaved: ProviderInterleaved,
+  reasoning_protocol: optionalOmitUndefined(ReasoningProtocol),
 })
 
 const ProviderCacheCost = Schema.Struct({
@@ -1187,6 +1196,7 @@ function fromModelsDevModel(provider: ModelsDev.Provider, model: ModelsDev.Model
         pdf: model.modalities?.output?.includes("pdf") ?? false,
       },
       interleaved: model.interleaved ?? false,
+      reasoning_protocol: model.reasoning_protocol,
     },
     release_date: model.release_date ?? "",
     variants: {},
@@ -1607,6 +1617,8 @@ const layer: Layer.Layer<
                   (!existingModel && apiNpm === "@ai-sdk/openai-compatible" && apiID.includes("deepseek")
                     ? { field: "reasoning_content" }
                     : metadataModel?.capabilities.interleaved ?? false),
+                reasoning_protocol:
+                  metadataModel?.capabilities.reasoning_protocol ?? knownMetadata?.capabilities.reasoning_protocol,
               },
               cost: {
                 input: model?.cost?.input ?? metadataModel?.cost?.input ?? 0,
@@ -1753,6 +1765,7 @@ const layer: Layer.Layer<
                   pdf: metadataModel?.capabilities?.output?.pdf ?? false,
                 },
                 interleaved: metadataModel?.capabilities?.interleaved ?? false,
+                reasoning_protocol: metadataModel?.capabilities?.reasoning_protocol,
               },
               release_date: metadataModel?.release_date ?? "",
               variants: {},
