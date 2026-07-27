@@ -241,10 +241,11 @@ describe("ProviderTransform.options - custom provider with inherited reasoning_p
   const sessionID = "test-session-123"
 
   // Simulates a user-defined openai-compatible provider (e.g. dahetao) proxying
-  // a GLM-5.2 model. The model inherits reasoning_protocol="zhipuai_thinking"
-  // from zhipuai/glm-5.2 via findKnownModelMetadata cross-provider matching.
-  // This is the regression test for the issue where custom providerIDs were
-  // not covered by the former providerID whitelist in transform.ts options().
+  // a GLM-5.2 model. Custom providers do NOT inherit reasoning_protocol from
+  // known metadata (e.g. zhipuai's zhipuai_thinking), because the protocol
+  // describes the request body shape and depends on the provider's backend
+  // implementation, not the upstream model. GLM-5.2 thinking is enabled by
+  // default; effort is controlled via the reasoning_effort variant.
   const createCustomProviderModel = (providerID: string, protocol?: string) =>
     ({
       id: `${providerID}/glm-5.2`,
@@ -272,9 +273,21 @@ describe("ProviderTransform.options - custom provider with inherited reasoning_p
       headers: {},
     }) as any
 
-  test("dahetao/glm-5.2 with inherited zhipuai_thinking protocol sets thinking cfg", () => {
+  test("dahetao/glm-5.2 without inherited protocol does not inject zhipuai thinking cfg", () => {
     const result = ProviderTransform.options({
-      model: createCustomProviderModel("dahetao", "zhipuai_thinking"),
+      model: createCustomProviderModel("dahetao"),
+      sessionID,
+      providerOptions: {},
+    })
+    // GLM-5.2 thinking is enabled by default on the backend; no `thinking`
+    // field should be injected for an OpenAI-compatible proxy that may not
+    // understand the zhipuai-native parameter.
+    expect(result.thinking).toBeUndefined()
+  })
+
+  test("custom provider with explicit zhipuai_thinking protocol sets thinking cfg", () => {
+    const result = ProviderTransform.options({
+      model: createCustomProviderModel("some-zhipuai-proxy", "zhipuai_thinking"),
       sessionID,
       providerOptions: {},
     })
