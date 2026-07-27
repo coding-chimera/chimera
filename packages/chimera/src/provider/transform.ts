@@ -502,7 +502,6 @@ export function topK(model: Provider.Model) {
 const WIDELY_SUPPORTED_EFFORTS = ["low", "medium", "high"]
 const OPENAI_EFFORTS = ["none", "minimal", ...WIDELY_SUPPORTED_EFFORTS, "xhigh"]
 const NVIDIA_KIMI_K26_EFFORTS = ["none", "minimal", ...WIDELY_SUPPORTED_EFFORTS, "xhigh", "max"]
-const TENCENT_GLM52_EFFORTS = ["high", "max"]
 
 // OpenAI rolled out the `none` reasoning_effort tier on this date (Responses API).
 // Models released before it 400 on `reasoning_effort: "none"`, so we only expose
@@ -627,20 +626,21 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
     return Object.fromEntries(NVIDIA_KIMI_K26_EFFORTS.map((effort) => [effort, { reasoningEffort: effort }]))
   }
 
-  if (
-    model.providerID.includes("tencent") &&
-    model.api.id.toLowerCase().includes("glm-5.2") &&
-    model.api.npm === "@ai-sdk/openai-compatible"
-  ) {
-    return Object.fromEntries(TENCENT_GLM52_EFFORTS.map((effort) => [effort, { reasoningEffort: effort }]))
+  // Models with an explicit reasoning_efforts list (e.g. GLM-5.2 with
+  // high/max) generate effort variants directly from that list. This covers
+  // zhipuai/zai/tencent and any custom provider (e.g. dahetao) that inherits
+  // reasoning_efforts via findKnownModelMetadata, replacing the former
+  // TENCENT_GLM52_EFFORTS hardcode.
+  if (model.reasoning_efforts?.length && model.api.npm === "@ai-sdk/openai-compatible") {
+    return Object.fromEntries(model.reasoning_efforts.map((effort) => [effort, { reasoningEffort: effort }]))
   }
   if (
+    (id.includes("glm") && !model.reasoning_efforts?.length) ||
     id.includes("deepseek-chat") ||
     id.includes("deepseek-reasoner") ||
     id.includes("deepseek-r1") ||
     id.includes("deepseek-v3") ||
     id.includes("minimax") ||
-    id.includes("glm") ||
     id.includes("kimi") ||
     id.includes("k2p") ||
     id.includes("qwen") ||
@@ -1080,67 +1080,42 @@ export function options(input: {
     }
   }
 
-  if (
-    input.model.providerID === "baseten" ||
-    (input.model.providerID === "opencode" && ["kimi-k2-thinking", "glm-4.6"].includes(input.model.api.id))
-  ) {
-    result["chat_template_args"] = { enable_thinking: true }
-  }
-
   const modelId = input.model.api.id.toLowerCase()
+  const protocol = input.model.capabilities.reasoning_protocol
 
-  if (
-    (["zai", "zhipuai"].some((id) => input.model.providerID.includes(id)) ||
-      (input.model.providerID.includes("tencent") && modelId.includes("glm"))) &&
-    input.model.api.npm === "@ai-sdk/openai-compatible"
-  ) {
-    result["thinking"] = {
-      type: "enabled",
-      clear_thinking: false,
-    }
+  // Protocol-driven thinking injection. The reasoning_protocol capability
+  // (inferred in normalizeCatalog or inherited via findKnownModelMetadata)
+  // replaces the former providerID whitelist so custom providers that proxy
+  // the same upstream model get the same thinking treatment automatically.
+  switch (protocol) {
+    case "vllm_chat_template":
+      result["chat_template_args"] = { enable_thinking: true }
+      break
+    case "zhipuai_thinking":
+      result["thinking"] = { type: "enabled", clear_thinking: false }
+      break
+    case "google_thinking_config":
+      result["thinkingConfig"] = { includeThoughts: true }
+      if (modelId.includes("gemini-3")) result["thinkingConfig"]["thinkingLevel"] = "high"
+      break
+    case "anthropic_thinking":
+      result["thinking"] = {
+        type: "enabled",
+        budgetTokens: Math.min(16_000, Math.floor(input.model.limit.output / 2 - 1)),
+      }
+      break
+    case "dashscope_enable_thinking":
+      result["enable_thinking"] = true
+      break
   }
 
   if (input.model.providerID === "openai" || input.providerOptions?.setCacheKey) {
     result["promptCacheKey"] = input.sessionID
   }
 
-  if (input.model.api.npm === "@ai-sdk/google" || input.model.api.npm === "@ai-sdk/google-vertex") {
-    if (input.model.capabilities.reasoning) {
-      result["thinkingConfig"] = {
-        includeThoughts: true,
-      }
-      if (input.model.api.id.includes("gemini-3")) {
-        result["thinkingConfig"]["thinkingLevel"] = "high"
-      }
-    }
-  }
-
   // Enable thinking by default for kimi models using anthropic SDK
   if (isNvidiaKimiK26(input.model)) {
     result["reasoningEffort"] = "medium"
-  }
-  if (
-    (input.model.api.npm === "@ai-sdk/anthropic" || input.model.api.npm === "@ai-sdk/google-vertex/anthropic") &&
-    (modelId.includes("k2p") || modelId.includes("kimi-k2.") || modelId.includes("kimi-k2p"))
-  ) {
-    result["thinking"] = {
-      type: "enabled",
-      budgetTokens: Math.min(16_000, Math.floor(input.model.limit.output / 2 - 1)),
-    }
-  }
-
-  // Enable thinking for reasoning models on alibaba-cn (DashScope).
-  // DashScope's OpenAI-compatible API requires `enable_thinking: true` in the request body
-  // to return reasoning_content. Without it, models like kimi-k2.5, qwen-plus, qwen3, qwq,
-  // deepseek-r1, etc. never output thinking/reasoning tokens.
-  // Note: kimi-k2-thinking is excluded as it returns reasoning_content by default.
-  if (
-    input.model.providerID === "alibaba-cn" &&
-    input.model.capabilities.reasoning &&
-    input.model.api.npm === "@ai-sdk/openai-compatible" &&
-    !modelId.includes("kimi-k2-thinking")
-  ) {
-    result["enable_thinking"] = true
   }
 
   // grok-4.5 defaults to high effort when no variant is selected.

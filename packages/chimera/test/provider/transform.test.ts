@@ -141,6 +141,7 @@ describe("ProviderTransform.options - zai/zhipuai thinking", () => {
         input: { text: true, audio: false, image: true, video: false, pdf: true },
         output: { text: true, audio: false, image: false, video: false, pdf: false },
         interleaved: false,
+        reasoning_protocol: "zhipuai_thinking",
       },
       cost: {
         input: 0.001,
@@ -194,6 +195,7 @@ describe("ProviderTransform.options - tencent GLM thinking", () => {
         input: { text: true, audio: false, image: true, video: false, pdf: true },
         output: { text: true, audio: false, image: false, video: false, pdf: false },
         interleaved: false,
+        ...(modelId.includes("glm") ? { reasoning_protocol: "zhipuai_thinking" as const } : {}),
       },
       cost: {
         input: 0.001,
@@ -235,6 +237,59 @@ describe("ProviderTransform.options - tencent GLM thinking", () => {
   })
 })
 
+describe("ProviderTransform.options - custom provider with inherited reasoning_protocol", () => {
+  const sessionID = "test-session-123"
+
+  // Simulates a user-defined openai-compatible provider (e.g. dahetao) proxying
+  // a GLM-5.2 model. The model inherits reasoning_protocol="zhipuai_thinking"
+  // from zhipuai/glm-5.2 via findKnownModelMetadata cross-provider matching.
+  // This is the regression test for the issue where custom providerIDs were
+  // not covered by the former providerID whitelist in transform.ts options().
+  const createCustomProviderModel = (providerID: string, protocol?: string) =>
+    ({
+      id: `${providerID}/glm-5.2`,
+      providerID,
+      api: {
+        id: "glm-5.2",
+        url: "https://custom-proxy.example.com/v1",
+        npm: "@ai-sdk/openai-compatible",
+      },
+      name: "GLM 5.2",
+      capabilities: {
+        temperature: true,
+        reasoning: true,
+        attachment: false,
+        toolcall: true,
+        input: { text: true, audio: false, image: false, video: false, pdf: false },
+        output: { text: true, audio: false, image: false, video: false, pdf: false },
+        interleaved: { field: "reasoning_content" },
+        ...(protocol ? { reasoning_protocol: protocol } : {}),
+      },
+      cost: { input: 1.4, output: 4.4, cache: { read: 0.26, write: 0 } },
+      limit: { context: 1_000_000, output: 131_072 },
+      status: "active",
+      options: {},
+      headers: {},
+    }) as any
+
+  test("dahetao/glm-5.2 with inherited zhipuai_thinking protocol sets thinking cfg", () => {
+    const result = ProviderTransform.options({
+      model: createCustomProviderModel("dahetao", "zhipuai_thinking"),
+      sessionID,
+      providerOptions: {},
+    })
+    expect(result.thinking).toEqual({ type: "enabled", clear_thinking: false })
+  })
+
+  test("custom provider without reasoning_protocol does not set thinking cfg", () => {
+    const result = ProviderTransform.options({
+      model: createCustomProviderModel("some-other-proxy"),
+      sessionID,
+      providerOptions: {},
+    })
+    expect(result.thinking).toBeUndefined()
+  })
+})
 describe("ProviderTransform.options - nvidia Kimi K2.6 thinking", () => {
   const sessionID = "test-session-123"
 
@@ -366,6 +421,7 @@ describe("ProviderTransform.options - google thinkingConfig gating", () => {
         input: { text: true, audio: false, image: true, video: false, pdf: true },
         output: { text: true, audio: false, image: false, video: false, pdf: false },
         interleaved: false,
+        ...(reasoning ? { reasoning_protocol: "google_thinking_config" as const } : {}),
       },
       cost: {
         input: 0.001,
@@ -2820,6 +2876,7 @@ describe("ProviderTransform.variants", () => {
     const model = createMockModel({
       id: "tencent-tokenhub/glm-5.2",
       providerID: "tencent-tokenhub",
+      reasoning_efforts: ["high", "max"],
       api: {
         id: "glm-5.2",
         url: "https://api.lkeap.cloud.tencent.com/coding/v3",
@@ -2837,12 +2894,31 @@ describe("ProviderTransform.variants", () => {
     const model = createMockModel({
       id: "tencent-tokenhub/glm-5.2",
       providerID: "tencent-tokenhub",
+      reasoning_efforts: ["high", "max"],
       api: {
         id: "glm-5.2",
         url: "https://api.lkeap.cloud.tencent.com/coding/v3",
         npm: "@ai-sdk/openai-compatible",
       },
       capabilities: { reasoning: false },
+    })
+    const result = ProviderTransform.variants(model)
+    expect(result).toEqual({
+      high: { reasoningEffort: "high" },
+      max: { reasoningEffort: "max" },
+    })
+  })
+
+  test("dahetao/glm-5.2 returns inherited reasoning effort variants", () => {
+    const model = createMockModel({
+      id: "dahetao/glm-5.2",
+      providerID: "dahetao",
+      reasoning_efforts: ["high", "max"],
+      api: {
+        id: "glm-5.2",
+        url: "https://custom-proxy.example.com/v1",
+        npm: "@ai-sdk/openai-compatible",
+      },
     })
     const result = ProviderTransform.variants(model)
     expect(result).toEqual({
