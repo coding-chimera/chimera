@@ -600,6 +600,10 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
   // Tencent TokenHub GLM-5.2 is discovered via the /models endpoint without
   // capability metadata, so capabilities.reasoning defaults to false. It does
   // support reasoning_effort, so let it through the guard below.
+  const isClaudeCompatibleModel =
+    model.api.npm === "@ai-sdk/openai-compatible" &&
+    model.api.id.toLowerCase().includes("claude")
+
   const isTencentGlm52 =
     model.providerID.includes("tencent") &&
     model.api.id.toLowerCase().includes("glm-5.2") &&
@@ -608,7 +612,7 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
   const grokEfforts = grokReasoningEfforts(model)
   const isGrokEffortModel = grokEfforts !== null
   const codexEfforts = model.backend_semantics === "codex" ? codexReasoningEfforts(model) : []
-  if (!model.capabilities.reasoning && !isTencentGlm52 && !isGrokEffortModel && codexEfforts.length === 0) return {}
+  if (!model.capabilities.reasoning && !isTencentGlm52 && !isGrokEffortModel && !isClaudeCompatibleModel && codexEfforts.length === 0) return {}
   if (codexEfforts.length > 0) {
     // Ultra is a Chimera product profile: its advertised options already carry the
     // provider-legal maximum, so transports never see a raw "ultra" effort.
@@ -770,9 +774,8 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
       const isKimiK3 = apiID.includes("k3")
       if (
         apiID.includes("deepseek-v4") ||
-        apiID.includes("claude-opus-4") ||
-        isKimiK3 ||
-        /claude-4(?:[.-]\d)?-opus/.test(apiID)
+        isClaudeCompatibleModel ||
+        isKimiK3
       ) {
         efforts.push("max")
       }
