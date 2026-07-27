@@ -34,10 +34,14 @@ const apiLayer = HttpRouter.serve(
 
 const noAuthLayer = ServerAuth.Config.layer({ password: Option.none(), username: "opencode" })
 const secretLayer = ServerAuth.Config.layer({ password: Option.some("secret"), username: "opencode" })
+const colonSecretLayer = ServerAuth.Config.layer({ password: Option.some("secret:with:colon"), username: "opencode" })
+const unicodeSecretLayer = ServerAuth.Config.layer({ password: Option.some("päss🔐"), username: "opencode" })
 const kitSecretLayer = ServerAuth.Config.layer({ password: Option.some("secret"), username: "kit" })
 
 const it = testEffect(apiLayer.pipe(Layer.provide(noAuthLayer)))
 const itSecret = testEffect(apiLayer.pipe(Layer.provide(secretLayer)))
+const itColonSecret = testEffect(apiLayer.pipe(Layer.provide(colonSecretLayer)))
+const itUnicodeSecret = testEffect(apiLayer.pipe(Layer.provide(unicodeSecretLayer)))
 const itKitSecret = testEffect(apiLayer.pipe(Layer.provide(kitSecretLayer)))
 
 const basic = (username: string, password: string) => ServerAuth.header({ username, password }) ?? ""
@@ -74,6 +78,29 @@ describe("HttpApi authorization middleware", () => {
       expect(missing.status).toBe(401)
       expect(badPassword.status).toBe(401)
       expect(good.status).toBe(200)
+    }),
+  )
+  itColonSecret.live("accepts passwords containing colons in basic auth and auth token query credentials", () =>
+    Effect.gen(function* () {
+      const password = "secret:with:colon"
+      const [header, query] = yield* Effect.all(
+        [
+          getProbe({ authorization: basic("opencode", password) }),
+          HttpClient.get(`/probe?auth_token=${encodeURIComponent(token("opencode", password))}`),
+        ],
+        { concurrency: "unbounded" },
+      )
+
+      expect(header.status).toBe(200)
+      expect(query.status).toBe(200)
+    }),
+  )
+
+  itUnicodeSecret.live("accepts UTF-8 basic auth credentials", () =>
+    Effect.gen(function* () {
+      const response = yield* getProbe({ authorization: basic("opencode", "päss🔐") })
+
+      expect(response.status).toBe(200)
     }),
   )
 
