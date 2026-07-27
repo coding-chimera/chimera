@@ -1618,7 +1618,18 @@ const layer: Layer.Layer<
                     ? { field: "reasoning_content" }
                     : metadataModel?.capabilities.interleaved ?? false),
                 reasoning_protocol:
-                  metadataModel?.capabilities.reasoning_protocol ?? knownMetadata?.capabilities.reasoning_protocol,
+                  existingModel?.capabilities.reasoning_protocol ??
+                  // Do not inherit reasoning_protocol from knownMetadata or
+                  // metadataModel for custom providers: the protocol describes
+                  // how the request body must be shaped to enable thinking, which
+                  // depends on the provider's backend implementation, not the
+                  // upstream model. A custom proxy (e.g. dahetao) speaking the
+                  // OpenAI-compatible shape should use reasoning_effort (via
+                  // variant), not the zhipuai-native `thinking` field it may
+                  // not understand.
+                  (existingModel
+                    ? metadataModel?.capabilities.reasoning_protocol ?? knownMetadata?.capabilities.reasoning_protocol
+                    : undefined),
               },
               cost: {
                 input: model?.cost?.input ?? metadataModel?.cost?.input ?? 0,
@@ -1765,7 +1776,9 @@ const layer: Layer.Layer<
                   pdf: metadataModel?.capabilities?.output?.pdf ?? false,
                 },
                 interleaved: metadataModel?.capabilities?.interleaved ?? false,
-                reasoning_protocol: metadataModel?.capabilities?.reasoning_protocol,
+                // Do not inherit reasoning_protocol for API-discovered models:
+                // the protocol is backend-specific and should not cross providers.
+                reasoning_protocol: undefined,
               },
               release_date: metadataModel?.release_date ?? "",
               variants: {},
