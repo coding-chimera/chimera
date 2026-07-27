@@ -1,5 +1,4 @@
 import path from "path"
-import { pathToFileURL } from "url"
 import z from "zod"
 import { Effect, Layer, Context, Schema } from "effect"
 import { zod, zodObject, ZodOverride } from "@/util/effect-zod"
@@ -270,29 +269,12 @@ export const defaultLayer = layer.pipe(
   Layer.provide(Global.layer),
 )
 
-export function fmt(list: Info[], opts: { verbose: boolean }) {
+export function fmt(list: Info[]) {
   if (list.length === 0) return "No skills are currently available."
-  if (opts.verbose) {
-    return [
-      "<available_skills>",
-      ...list
-        .sort((a, b) => a.name.localeCompare(b.name))
-        .flatMap((skill) => [
-          "  <skill>",
-          `    <name>${skill.name}</name>`,
-          `    <description>${skill.description}</description>`,
-          `    <location>${pathToFileURL(skill.location).href}</location>`,
-          "  </skill>",
-        ]),
-      "</available_skills>",
-    ].join("\n")
-  }
-
   return [
-    "## Available Skills",
-    ...list
-      .toSorted((a, b) => a.name.localeCompare(b.name))
-      .map((skill) => `- **${skill.name}**: ${skill.description}`),
+    "<available_skills>",
+    ...list.toSorted((a, b) => a.name.localeCompare(b.name)).map((skill) => `- ${skill.name}`),
+    "</available_skills>",
   ].join("\n")
 }
 
