@@ -52,7 +52,7 @@ import { DialogWorkspaceUnavailable } from "../dialog-workspace-unavailable"
 import { useArgs } from "@tui/context/args"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { WorkspaceLabel, type WorkspaceStatus } from "../workspace-label"
-import { remoteCompactionSummary } from "@tui/util/remote-compaction"
+import { remoteCompactionShortAlert } from "@tui/util/remote-compaction"
 import { ProviderAccountStatus } from "../provider-account-status"
 
 export type PromptProps = {
@@ -1471,12 +1471,12 @@ export function Prompt(props: PromptProps) {
                               </span>
                             </text>
                           </Show>
-                          <Show when={remoteCompactionStatus()}>
-                            {(remote) => (
+                          <Show when={remoteCompactionShortAlert(remoteCompactionStatus())}>
+                            {(alert) => (
                               <>
                                 <text fg={fadeColor(theme.textMuted, modelMetaAlpha())}>·</text>
-                                <text fg={fadeColor(theme.textMuted, modelMetaAlpha())}>
-                                  Remote compaction: {remoteCompactionSummary(remote())}
+                                <text fg={fadeColor(alert().startsWith("✓") ? theme.success : theme.warning, modelMetaAlpha())}>
+                                  {alert()}
                                 </text>
                               </>
                             )}

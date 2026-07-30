@@ -114,3 +114,11 @@ export function remoteCompactionModelLockMessage(status: RemoteCompactionResolut
   const lock = status.lock.status === "none" ? "installed remote state" : `${status.lock.providerID}/${status.lock.modelID}`
   return `This session cannot replay ${lock}: ${remoteCompactionReplay(status)}. Fork or start a new session before changing models.`
 }
+
+export function remoteCompactionShortAlert(status: RemoteCompactionResolution | undefined): string | undefined {
+  if (!status) return undefined
+  if (status.mode === "remote") return "✓ remote"
+  if (remoteCompactionModelChangeBlocked(status)) return `⚠ ${remoteCompactionReplay(status)}`
+  return undefined
+}
+
