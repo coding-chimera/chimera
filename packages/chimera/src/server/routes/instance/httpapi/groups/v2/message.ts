@@ -2,7 +2,6 @@ import { SessionID } from "@/session/schema"
 import { SessionMessage } from "@/v2/session-message"
 import { Schema } from "effect"
 import { HttpApiEndpoint, HttpApiError, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
-import { Authorization } from "../../middleware/authorization"
 
 export const MessageGroup = HttpApiGroup.make("v2.message")
   .add(
@@ -66,4 +65,3 @@ export const MessageGroup = HttpApiGroup.make("v2.message")
       description: "Experimental v2 message routes.",
     }),
   )
-  .middleware(Authorization)

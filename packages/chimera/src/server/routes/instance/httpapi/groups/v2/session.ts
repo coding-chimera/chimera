@@ -5,7 +5,6 @@ import { Prompt } from "@/v2/session-prompt"
 import { SessionV2 } from "@/v2/session"
 import { Schema, SchemaGetter } from "effect"
 import { HttpApiEndpoint, HttpApiError, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/unstable/httpapi"
-import { Authorization } from "../../middleware/authorization"
 
 export const SessionGroup = HttpApiGroup.make("v2.session")
   .add(
@@ -137,4 +136,3 @@ export const SessionGroup = HttpApiGroup.make("v2.session")
       description: "Experimental v2 routes.",
     }),
   )
-  .middleware(Authorization)

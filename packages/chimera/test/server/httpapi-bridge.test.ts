@@ -526,6 +526,10 @@ describe("HttpApi server", () => {
     ])
 
     expect(missing.status).toBe(401)
+    expect(missing.headers.get("www-authenticate")).toBe('Basic realm="Secure Area"')
+    expect(bad.status).toBe(401)
+    expect(bad.headers.get("www-authenticate")).toBe('Basic realm="Secure Area"')
+    expect(good.status).toBe(200)
     expect(bad.status).toBe(401)
     expect(good.status).toBe(200)
   })

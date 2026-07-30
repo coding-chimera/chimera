@@ -55,7 +55,7 @@ import { serveNewWebUIEffect } from "@/server/shared/newweb-ui"
 import { ServerAuth } from "@/server/auth"
 import { WebUIPreferences } from "@/server/webui-preferences"
 import { InstanceHttpApi, RootHttpApi } from "./api"
-import { authorizationLayer, authorizationRouterMiddleware } from "./middleware/authorization"
+import { authorizationRouterMiddleware } from "./middleware/authorization"
 import { EventApi, eventHandlers } from "./event"
 import { configHandlers } from "./handlers/config"
 import { controlHandlers } from "./handlers/control"
@@ -136,12 +136,12 @@ const instanceApiRoutes = HttpApiBuilder.layer(InstanceHttpApi).pipe(
     tuiHandlers,
     workspaceHandlers,
   ]),
+  Layer.provide(instanceRouterLayer),
 )
 
 const rawInstanceRoutes = Layer.mergeAll(ptyConnectRoute).pipe(Layer.provide(instanceRouterLayer))
 const instanceRoutes = Layer.mergeAll(rawInstanceRoutes, instanceApiRoutes).pipe(
   Layer.provide([
-    authorizationLayer.pipe(Layer.provide(ServerAuth.Config.defaultLayer)),
     workspaceRoutingLayer.pipe(Layer.provide(Socket.layerWebSocketConstructorGlobal)),
     instanceContextLayer,
   ]),
