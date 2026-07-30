@@ -4,7 +4,7 @@ import { Effect, Layer, Option, Schema } from "effect"
 import { HttpClient, HttpClientRequest, HttpRouter } from "effect/unstable/http"
 import { HttpApi, HttpApiBuilder, HttpApiEndpoint, HttpApiError, HttpApiGroup } from "effect/unstable/httpapi"
 import { ServerAuth } from "../../src/server/auth"
-import { Authorization, authorizationLayer } from "../../src/server/routes/instance/httpapi/middleware/authorization"
+import { authorizationRouterMiddleware } from "../../src/server/routes/instance/httpapi/middleware/authorization"
 import { testEffect } from "../lib/effect"
 
 const Api = HttpApi.make("test-authorization").add(
@@ -18,7 +18,6 @@ const Api = HttpApi.make("test-authorization").add(
         error: HttpApiError.NotFound,
       }),
     )
-    .middleware(Authorization),
 )
 
 const handlers = HttpApiBuilder.group(Api, "test", (handlers) =>
@@ -28,7 +27,7 @@ const handlers = HttpApiBuilder.group(Api, "test", (handlers) =>
 )
 
 const apiLayer = HttpRouter.serve(
-  HttpApiBuilder.layer(Api).pipe(Layer.provide(handlers), Layer.provide(authorizationLayer)),
+  HttpApiBuilder.layer(Api).pipe(Layer.provide(handlers), Layer.provide(authorizationRouterMiddleware.layer)),
   { disableListenLog: true, disableLogger: true },
 ).pipe(Layer.provideMerge(NodeHttpServer.layerTest))
 
@@ -76,6 +75,10 @@ describe("HttpApi authorization middleware", () => {
       )
 
       expect(missing.status).toBe(401)
+      expect(missing.headers["www-authenticate"]).toBe('Basic realm="Secure Area"')
+      expect(badPassword.status).toBe(401)
+      expect(badPassword.headers["www-authenticate"]).toBe('Basic realm="Secure Area"')
+      expect(good.status).toBe(200)
       expect(badPassword.status).toBe(401)
       expect(good.status).toBe(200)
     }),

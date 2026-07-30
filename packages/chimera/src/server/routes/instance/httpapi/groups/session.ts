@@ -13,7 +13,6 @@ import { MessageID, PartID, SessionID } from "@/session/schema"
 import { Snapshot } from "@/snapshot"
 import { Schema, SchemaGetter, Struct } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/unstable/httpapi"
-import { Authorization } from "../middleware/authorization"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
 import { WorkspaceRoutingMiddleware } from "../middleware/workspace-routing"
 import { ApiNotFoundError } from "../errors"
@@ -435,8 +434,7 @@ export const SessionApi = HttpApi.make("session")
         }),
       )
       .middleware(InstanceContextMiddleware)
-      .middleware(WorkspaceRoutingMiddleware)
-      .middleware(Authorization),
+      .middleware(WorkspaceRoutingMiddleware),
   )
   .annotateMerge(
     OpenApi.annotations({

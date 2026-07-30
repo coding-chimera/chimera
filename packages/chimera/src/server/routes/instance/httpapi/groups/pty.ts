@@ -3,7 +3,6 @@ import { PtyTicket } from "@/pty/ticket"
 import { PtyID } from "@/pty/schema"
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
-import { Authorization } from "../middleware/authorization"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
 import { WorkspaceRoutingMiddleware } from "../middleware/workspace-routing"
 import { PTY_CONNECT_TICKET_QUERY } from "@/server/shared/pty-ticket"
@@ -114,8 +113,7 @@ export const PtyApi = HttpApi.make("pty")
       )
       .annotateMerge(OpenApi.annotations({ title: "pty", description: "Experimental HttpApi PTY routes." }))
       .middleware(InstanceContextMiddleware)
-      .middleware(WorkspaceRoutingMiddleware)
-      .middleware(Authorization),
+      .middleware(WorkspaceRoutingMiddleware),
   )
   .annotateMerge(
     OpenApi.annotations({

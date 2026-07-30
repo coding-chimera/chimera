@@ -2,7 +2,6 @@ import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
 import { MemoryLegacy } from "@/memory/legacy"
 import { MemoryManagement } from "@/memory/management"
-import { Authorization } from "../middleware/authorization"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
 import { WorkspaceRoutingMiddleware } from "../middleware/workspace-routing"
 import { described } from "./metadata"
@@ -131,8 +130,7 @@ export const MemoryApi = HttpApi.make("memory")
         }),
       )
       .middleware(InstanceContextMiddleware)
-      .middleware(WorkspaceRoutingMiddleware)
-      .middleware(Authorization),
+      .middleware(WorkspaceRoutingMiddleware),
   )
   .annotateMerge(
     OpenApi.annotations({

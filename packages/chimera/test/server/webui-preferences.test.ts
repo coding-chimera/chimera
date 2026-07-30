@@ -263,7 +263,9 @@ describe("WebUI preferences routes", () => {
     }
 
     for (const backend of apps) {
-      expect((await backend.request("/global/preferences")).status).toBe(401)
+      const noAuthResponse = await backend.request("/global/preferences")
+      expect(noAuthResponse.status).toBe(401)
+      expect(noAuthResponse.headers.get("www-authenticate")).toBe('Basic realm="Secure Area"')
       expect(
         (
           await backend.request("/global/preferences", {
