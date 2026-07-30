@@ -29,6 +29,7 @@ import {
   type RemoteCompactionUsage,
 } from "./remote-compaction-codec"
 import { ResponsesTransport } from "@/provider/responses-transport"
+import { isModelRemoteCompactionCapable, isProviderRemoteCompactionDegraded, recordRemoteCompactionFailure, resetRemoteCompactionHealth } from "./remote-compaction-registry"
 
 const log = Log.create({ service: "remote.compaction" })
 
@@ -429,7 +430,7 @@ export function eligibility(
       protocols: [...(provider.remote_compaction?.protocols ?? [])],
     },
     modelRemoteCompaction: enabled === true ? "enabled" : enabled === false ? "disabled" : "unset",
-    configurable: provider.id !== "openai" && ELIGIBLE_PROVIDER_PACKAGES.has(model.api.npm),
+    configurable: provider.id !== "openai" && isModelRemoteCompactionCapable(model) && provider.remote_compaction !== undefined,
     metadata: context.metadata,
   }
 }
@@ -458,22 +459,13 @@ export function eligibilityConfigPatch(input: EligibilityPatch): Config.Info {
   if (input.enabled === null) return {}
   return {
     provider: {
-      [input.providerID]: input.enabled
-        ? {
-            remote_compaction: {
-              profile: "codex-responses",
-              protocols: [...(input.protocols ?? ["v2", "legacy"])],
-              auth: "provider-bearer",
-            },
-            models: {
-              [input.modelID]: {
-                provider: { npm: "@ai-sdk/openai" },
-                wire_api: "responses",
-                remote_compaction: true,
-              },
-            },
-          }
-        : { models: { [input.modelID]: { remote_compaction: false } } },
+      [input.providerID]: {
+        models: {
+          [input.modelID]: input.enabled
+            ? { wire_api: "responses", remote_compaction: true }
+            : { remote_compaction: false },
+        },
+      },
     },
   }
 }
@@ -508,7 +500,7 @@ function durationLabel(duration: Parameters<typeof Effect.sleep>[0]) {
 }
 
 export function supportsOpenAIRemoteCompactionModel(model: Provider.Model) {
-  return model.providerID === "openai"
+  return isModelRemoteCompactionCapable(model)
 }
 
 function truncate(text: string) {
@@ -762,16 +754,25 @@ export const layerWithEndpoint = (endpoint = codexEndpointUrl("responses/compact
         protocols: [],
         reason,
       })
-      const stored =
-        input.model.providerID === "openai"
-          ? yield* auth.get("openai").pipe(Effect.orElseSucceed(() => undefined))
-          : undefined
-      const info =
-        input.model.providerID !== "openai" && provider
-          ? yield* provider.getProvider(input.model.providerID).pipe(Effect.orElseSucceed(() => undefined))
-          : undefined
+      // Smart degradation: skip remote for degraded non-OAuth providers
+      const isOAuth = (yield* auth.get(input.model.providerID).pipe(Effect.orElseSucceed(() => undefined)))?.type === "oauth"
+      if (!isOAuth && isProviderRemoteCompactionDegraded(input.model.providerID)) {
+        return resolved({
+          ...common,
+          mode: "local",
+          target: "local",
+          credential: "unavailable",
+          protocols: [],
+          reason: "routing_identity_unsafe",
+          lock: { status: "none" },
+          replay: { mode: "none", reason: "no_lock" },
+        })
+      }
+      const stored = yield* auth.get(input.model.providerID).pipe(Effect.orElseSucceed(() => undefined))
+      const info = provider
+        ? yield* provider.getProvider(input.model.providerID).pipe(Effect.orElseSucceed(() => undefined))
+        : undefined
       const needsProviderTransport =
-        input.model.providerID !== "openai" &&
         !!provider &&
         (!!info?.remote_compaction ||
           (input.session?.lock?.endpoint === "provider" &&
@@ -785,7 +786,7 @@ export const layerWithEndpoint = (endpoint = codexEndpointUrl("responses/compact
       const currentBinding = transport ? bindingFromTransportIdentity(transport.identity) : undefined
       const production: ProductionResolution = yield* Effect.gen(function* () {
         if (configured.mode === "off") return local("policy_off")
-        if (input.model.providerID === "openai") {
+        if (stored?.type === "oauth") {
           if (input.model.remote_compaction === false) return local("model_disabled")
           if (!supportsOpenAIRemoteCompactionModel(input.model)) return local("model_unsupported")
           if (stored?.type !== "oauth") return local("credential_unavailable", "missing")
@@ -802,6 +803,7 @@ export const layerWithEndpoint = (endpoint = codexEndpointUrl("responses/compact
           }
         }
         if (!provider || !info?.remote_compaction) return local("provider_capability_missing")
+        if (!isModelRemoteCompactionCapable(input.model)) return local("model_unsupported")
         if (input.model.remote_compaction !== true) return local("model_disabled")
         if (input.model.wire_api !== "responses") return local("wire_api_not_responses")
         if (!transport?.identity.ready) return local("credential_unavailable", "missing")
@@ -888,6 +890,20 @@ export const layerWithEndpoint = (endpoint = codexEndpointUrl("responses/compact
     })
 
     const compact = Effect.fn("RemoteCompaction.compact")(function* (input: {
+      sessionID: SessionID
+      model: Provider.Model
+      messages: MessageV2.WithParts[]
+      instructions: string
+    }) {
+      const storedCredential = yield* auth.get(input.model.providerID).pipe(Effect.orElseSucceed(() => undefined))
+      const isOAuthCredential = storedCredential?.type === "oauth"
+      return yield* compactInternal(input).pipe(
+        Effect.tap(() => Effect.sync(() => resetRemoteCompactionHealth(input.model.providerID))),
+        Effect.tapError(() => Effect.sync(() => recordRemoteCompactionFailure(input.model.providerID, isOAuthCredential))),
+      )
+    })
+
+    const compactInternal = Effect.fn("RemoteCompaction.compactInternal")(function* (input: {
       sessionID: SessionID
       model: Provider.Model
       messages: MessageV2.WithParts[]

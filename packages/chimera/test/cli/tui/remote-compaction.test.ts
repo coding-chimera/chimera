@@ -18,6 +18,7 @@ const {
   remoteCompactionProtocols,
   remoteCompactionReason,
   remoteCompactionReplay,
+  remoteCompactionShortAlert,
   remoteCompactionSummary,
   remoteCompactionTarget,
 } = await import("../../../src/cli/cmd/tui/util/remote-compaction")
@@ -114,5 +115,11 @@ describe("TUI remote compaction helpers", () => {
     expect(remoteCompactionModelChangeBlocked(ready)).toBe(false)
     expect(remoteCompactionModelChangeBlocked(blocked)).toBe(true)
     expect(remoteCompactionModelLockMessage(blocked)).toContain("blocked (provider/model mismatch)")
+  })
+
+  test("short alert hides normal local state, shows remote and blocked", () => {
+    expect(remoteCompactionShortAlert(ready)).toBe("✓ remote")
+    expect(remoteCompactionShortAlert(routeMismatch)).toBeUndefined()
+    expect(remoteCompactionShortAlert(blocked)).toBe("⚠ blocked (provider/model mismatch)")
   })
 })

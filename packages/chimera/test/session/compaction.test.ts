@@ -3244,7 +3244,7 @@ describe("session.remote-compaction provider target", () => {
     const model = ProviderTest.model({
       id: ModelID.make("logical-model"),
       providerID: ProviderID.make("third-party"),
-      api: { id: ModelID.make("wire-model"), url: "https://provider.test/v1", npm: "@ai-sdk/openai" },
+      api: { id: ModelID.make("gpt-5.4"), url: "https://provider.test/v1", npm: "@ai-sdk/openai" },
       wire_api: "responses",
       remote_compaction: options.model ?? true,
     })
@@ -3422,14 +3422,14 @@ describe("session.remote-compaction provider target", () => {
       )
       expect(fixture.calls.map((item) => item.target)).toEqual(["responses", "responses/compact"])
       expect(fixture.calls[0]?.feature).toBe("remote-compaction-v2")
-      expect(fixture.calls[0]?.body.model).toBe("wire-model")
+      expect(fixture.calls[0]?.body.model).toBe("gpt-5.4")
       expect(fixture.calls[0]?.body.input).toEqual([{ type: "compaction_trigger" }])
       expect("stream" in fixture.calls[1]!.body).toBe(false)
       expect(metadata).toMatchObject({
         endpoint: "provider",
         implementation: "responses_compact",
         modelID: "logical-model",
-        wireModelID: "wire-model",
+        wireModelID: "gpt-5.4",
         replay: { compatibility_key: "safe-binding" },
       })
       expect(JSON.stringify(metadata)).not.toContain("secret-marker-response")
