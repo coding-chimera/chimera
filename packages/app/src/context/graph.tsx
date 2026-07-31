@@ -39,15 +39,15 @@ export const { use: useGraph, provider: GraphProvider } = createSimpleContext({
         return sdk.client.graph.file
           .symbols({
             ...input,
-            startLine: input.startLine === undefined ? undefined : String(input.startLine),
-            endLine: input.endLine === undefined ? undefined : String(input.endLine),
+            startLine: input.startLine,
+            endLine: input.endLine,
           })
           .then((r) => r.data)
       },
       impact(input: { nodeID?: string; path?: string; depth?: number }) {
         return sdk.client.graph.impact({
           ...input,
-          depth: input.depth === undefined ? undefined : String(input.depth),
+          depth: input.depth,
         }).then((r) => r.data)
       },
     }
