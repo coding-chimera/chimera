@@ -30,6 +30,8 @@ export type Event =
   | EventTuiSessionSelect
   | EventMcpToolsChanged
   | EventMcpBrowserOpenFailed
+  | EventCommandStarted
+  | EventCommandProgress1
   | EventCommandExecuted
   | EventProjectUpdated
   | EventSessionCompacted
@@ -868,6 +870,8 @@ export type GlobalEvent = {
     | EventTuiSessionSelect
     | EventMcpToolsChanged
     | EventMcpBrowserOpenFailed
+    | EventCommandStarted
+    | EventCommandProgress
     | EventCommandExecuted
     | EventProjectUpdated
     | EventSessionCompacted
@@ -1566,6 +1570,12 @@ export type Model = {
       | {
           field: "reasoning_content" | "reasoning_details"
         }
+    reasoning_protocol?:
+      | "zhipuai_thinking"
+      | "dashscope_enable_thinking"
+      | "vllm_chat_template"
+      | "anthropic_thinking"
+      | "google_thinking_config"
   }
   cost: {
     input: number
@@ -3029,6 +3039,31 @@ export type EventMcpBrowserOpenFailed = {
   }
 }
 
+export type EventCommandStarted = {
+  id: string
+  type: "command.started"
+  properties: {
+    name: string
+    sessionID: string
+    arguments: string
+  }
+}
+
+export type EventCommandProgress = {
+  id: string
+  type: "command.progress"
+  properties: {
+    name: string
+    sessionID: string
+    arguments: string
+    phase: string
+    current: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    total: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    currentFile?: string
+    elapsedMs: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  }
+}
+
 export type EventCommandExecuted = {
   id: string
   type: "command.executed"
@@ -3910,6 +3945,21 @@ export type SessionMessage =
   | SessionMessageShell
   | SessionMessageAssistant
   | SessionMessageCompaction
+
+export type EventCommandProgress1 = {
+  id: string
+  type: "command.progress"
+  properties: {
+    name: string
+    sessionID: string
+    arguments: string
+    phase: string
+    current: number | "NaN" | "Infinity" | "-Infinity"
+    total: number | "NaN" | "Infinity" | "-Infinity"
+    currentFile?: string
+    elapsedMs: number | "NaN" | "Infinity" | "-Infinity"
+  }
+}
 
 export type EventChimeraGraphReady1 = {
   id: string

@@ -1183,6 +1183,30 @@ export function Session() {
                   </Switch>
                 )}
               </For>
+              <Show when={sync.data.command_progress[route.sessionID]}>
+                {(progress) => (
+                  <Show when={progress().phase !== "complete"}>
+                    <box
+                      marginTop={1}
+                      flexShrink={0}
+                      border={["left"]}
+                      customBorderChars={SplitBorder.customBorderChars}
+                      borderColor={theme.backgroundPanel}
+                      paddingLeft={2}
+                    >
+                      <Spinner color={theme.textMuted}>
+                        {progress().name} · {progress().phase}
+                        <Show when={progress().total > 0}>
+                          {` ${progress().current}/${progress().total}`}
+                        </Show>
+                        <Show when={progress().currentFile}>
+                          {` · ${progress().currentFile}`}
+                        </Show>
+                      </Spinner>
+                    </box>
+                  </Show>
+                )}
+              </Show>
             </scrollbox>
               <box flexShrink={0}>
                 <Show when={permissions().length > 0}>

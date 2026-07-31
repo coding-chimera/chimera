@@ -31,6 +31,7 @@ import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import * as Stream from "effect/Stream"
 import { Command } from "../command"
 import { Chimera } from "@/chimera"
+import type { IndexProgress } from "@/graph"
 import { Question } from "@/question"
 import { pathToFileURL, fileURLToPath } from "url"
 import { Config } from "@/config/config"
@@ -1229,7 +1230,59 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       )
     })
 
-    const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (input: CommandInput) {
+const COMMAND_PROGRESS_INTERVAL_MS = 1_000
+
+// Publishes throttled command.progress events from the graph sync onProgress callback.
+// The first event goes out immediately, then at most one per second unless a phase
+// completes. commandGraphProgress(input).complete() sends the terminal "complete"
+// phase so both UIs can hide the indicator before command.executed arrives.
+const commandGraphProgress = (input: CommandInput) => {
+  const startedAt = Date.now()
+  let latest: IndexProgress | undefined
+  let emitted = false
+  let lastEmittedAt = 0
+
+  const emit = (progress: IndexProgress) => {
+    const now = Date.now()
+    const phaseDone = progress.total > 0 && progress.current >= progress.total
+    if (emitted && !phaseDone && now - lastEmittedAt < COMMAND_PROGRESS_INTERVAL_MS) return
+    emitted = true
+    lastEmittedAt = now
+    const file = progress.currentFile
+    void Bus.publish(Command.Event.Progress, {
+      name: input.command,
+      sessionID: input.sessionID,
+      arguments: input.arguments,
+      phase: progress.phase,
+      current: progress.current,
+      total: progress.total,
+      currentFile: file && file.length > 80 ? `...${file.slice(-77)}` : file,
+      elapsedMs: now - startedAt,
+    }).catch(() => undefined)
+  }
+
+  return {
+    onProgress(progress: IndexProgress) {
+      latest = progress
+      emit(progress)
+    },
+    complete() {
+      const now = Date.now()
+      void Bus.publish(Command.Event.Progress, {
+        name: input.command,
+        sessionID: input.sessionID,
+        arguments: input.arguments,
+        phase: "complete",
+        current: latest?.current ?? 0,
+        total: latest?.total ?? 0,
+        currentFile: undefined,
+        elapsedMs: now - startedAt,
+      }).catch(() => undefined)
+    },
+  }
+}
+
+const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (input: CommandInput) {
       const ctx = yield* InstanceState.context
       const agentName = input.agent ?? (yield* agents.defaultAgent())
       const model = yield* commandModel(input)
@@ -1249,12 +1302,20 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         text: input.arguments.trim() ? `/init-graph ${input.arguments}` : "/init-graph",
       } satisfies MessageV2.TextPart)
       const started = Date.now()
+      yield* bus.publish(Command.Event.Started, {
+        name: input.command,
+        sessionID: input.sessionID,
+        arguments: input.arguments,
+      })
+      const graphProgress = commandGraphProgress(input)
       const snapshot = yield* Chimera.initProjectGraph({
         bus,
         source: "command.init-graph",
         sessionID: input.sessionID,
         watch: false,
+        onProgress: graphProgress.onProgress,
       })
+      graphProgress.complete()
       const assistant = yield* sessions.updateMessage({
         id: MessageID.ascending(),
         sessionID: input.sessionID,
@@ -2254,10 +2315,17 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           .pipe(Effect.catchTag("QuestionRejectedError", () => Effect.succeed([["Skip"]])))
 
         if (answers[0]?.[0] === "Run Chimera graph") {
+          yield* bus.publish(Command.Event.Started, {
+            name: input.command,
+            sessionID: input.sessionID,
+            arguments: input.arguments,
+          })
+          const graphProgress = commandGraphProgress(input)
           yield* Chimera.initProjectGraph({
             bus,
             source: "command.init",
             sessionID: input.sessionID,
+            onProgress: graphProgress.onProgress,
           }).pipe(
             Effect.catchCause((cause) =>
               Effect.logWarning("chimera graph init failed", {
@@ -2267,6 +2335,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               }),
             ),
           )
+          graphProgress.complete()
         }
       }
 

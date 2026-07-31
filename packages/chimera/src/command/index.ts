@@ -18,6 +18,27 @@ type State = {
 }
 
 export const Event = {
+  Started: BusEvent.define(
+    "command.started",
+    Schema.Struct({
+      name: Schema.String,
+      sessionID: SessionID,
+      arguments: Schema.String,
+    }),
+  ),
+  Progress: BusEvent.define(
+    "command.progress",
+    Schema.Struct({
+      name: Schema.String,
+      sessionID: SessionID,
+      arguments: Schema.String,
+      phase: Schema.String,
+      current: Schema.Number,
+      total: Schema.Number,
+      currentFile: Schema.optional(Schema.String),
+      elapsedMs: Schema.Number,
+    }),
+  ),
   Executed: BusEvent.define(
     "command.executed",
     Schema.Struct({
