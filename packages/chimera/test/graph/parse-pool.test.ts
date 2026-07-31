@@ -41,13 +41,14 @@ class FakeWorker implements ParsePoolWorker {
     if (this.alive) this.msgCb?.({ type: 'parse-result', id, result });
   }
   postMessage(msg: unknown): void {
-    const m = msg as { type: string } & Partial<ParseMsg>;
-    if (m.type === 'load-grammars') {
+    const type = (msg as { type?: string }).type;
+    if (type === 'load-grammars') {
       setTimeout(() => { if (this.alive) this.msgCb?.({ type: 'grammars-loaded' }); }, 0);
       return;
     }
-    if (m.type !== 'parse') return;
-    const action = this.behavior(m as ParseMsg);
+    if (type !== 'parse') return;
+    const m = msg as ParseMsg;
+    const action = this.behavior(m);
     if ('crash' in action) {
       this.alive = false;
       setTimeout(() => this.exitCb?.(1), 0); // simulate a WASM-OOM exit(1)
