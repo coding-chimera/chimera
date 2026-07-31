@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { cycleModelVariant, getConfiguredAgentVariant, resolveModelVariant } from "./model-variant"
+import { cycleModelVariant, getConfiguredAgentVariant, resolveModelVariant, shouldConfirmUltraSwitch } from "./model-variant"
 
 describe("model variant", () => {
   test("resolves configured agent variant when model matches", () => {
@@ -82,5 +82,20 @@ describe("model variant", () => {
     })
 
     expect(value).toBe("low")
+  })
+
+  test("confirms switching across the ultra boundary", () => {
+    expect(shouldConfirmUltraSwitch("max", "ultra")).toBe(true)
+    expect(shouldConfirmUltraSwitch(undefined, "ultra")).toBe(true)
+    expect(shouldConfirmUltraSwitch("ultra", "max")).toBe(true)
+    expect(shouldConfirmUltraSwitch("ultra", undefined)).toBe(true)
+    expect(shouldConfirmUltraSwitch("Ultra", "high")).toBe(true)
+  })
+
+  test("does not confirm switches within the same side", () => {
+    expect(shouldConfirmUltraSwitch("max", "high")).toBe(false)
+    expect(shouldConfirmUltraSwitch(undefined, "max")).toBe(false)
+    expect(shouldConfirmUltraSwitch("ultra", "ultra")).toBe(false)
+    expect(shouldConfirmUltraSwitch(undefined, undefined)).toBe(false)
   })
 })

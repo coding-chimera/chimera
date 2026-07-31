@@ -416,6 +416,11 @@ export const dict = {
   "toast.permissions.autoaccept.off.description": "權限請求將需要批准",
 
   "toast.model.none.title": "未選擇模型",
+  "dialog.variant.ultra.enter.title": "切換到 ultra？",
+  "dialog.variant.ultra.enter.description": "ultra 會變更系統提示字首（多智慧體模式），本次工作階段的提示快取命中率將暫時下降。",
+  "dialog.variant.ultra.leave.title": "離開 ultra？",
+  "dialog.variant.ultra.leave.description": "將恢復先前的系統提示字首，本次工作階段的提示快取命中率將暫時下降。",
+  "dialog.variant.ultra.confirm": "切換",
   "toast.model.none.description": "請先連線提供者以總結此工作階段",
 
   "toast.file.loadFailed.title": "載入檔案失敗",

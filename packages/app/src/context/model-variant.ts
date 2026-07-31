@@ -50,3 +50,8 @@ export function cycleModelVariant(input: VariantInput) {
   }
   return input.variants[0]
 }
+
+export function shouldConfirmUltraSwitch(prev: string | undefined, next: string | undefined) {
+  const isUltra = (value: string | undefined) => value?.toLowerCase() === "ultra"
+  return isUltra(prev) !== isUltra(next)
+}

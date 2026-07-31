@@ -417,6 +417,11 @@ export const dict = {
   "toast.permissions.autoaccept.off.description": "คำขอสิทธิ์จะต้องได้รับการอนุมัติ",
 
   "toast.model.none.title": "ไม่ได้เลือกโมเดล",
+  "dialog.variant.ultra.enter.title": "Switch to ultra?",
+  "dialog.variant.ultra.enter.description": "Ultra changes the system prompt prefix (multi-agent mode); prompt cache hits will drop temporarily for this session.",
+  "dialog.variant.ultra.leave.title": "Switch away from ultra?",
+  "dialog.variant.ultra.leave.description": "This restores the previous system prompt prefix; prompt cache hits will drop temporarily for this session.",
+  "dialog.variant.ultra.confirm": "Switch",
   "toast.model.none.description": "เชื่อมต่อผู้ให้บริการเพื่อสรุปเซสชันนี้",
 
   "toast.file.loadFailed.title": "ไม่สามารถโหลดไฟล์",

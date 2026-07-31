@@ -419,6 +419,11 @@ export const dict = {
   "toast.permissions.autoaccept.off.description": "Las solicitudes de permisos requerirán aprobación",
 
   "toast.model.none.title": "Ningún modelo seleccionado",
+  "dialog.variant.ultra.enter.title": "Switch to ultra?",
+  "dialog.variant.ultra.enter.description": "Ultra changes the system prompt prefix (multi-agent mode); prompt cache hits will drop temporarily for this session.",
+  "dialog.variant.ultra.leave.title": "Switch away from ultra?",
+  "dialog.variant.ultra.leave.description": "This restores the previous system prompt prefix; prompt cache hits will drop temporarily for this session.",
+  "dialog.variant.ultra.confirm": "Switch",
   "toast.model.none.description": "Conecta un proveedor para resumir esta sesión",
 
   "toast.file.loadFailed.title": "Fallo al cargar archivo",

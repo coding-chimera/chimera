@@ -2768,6 +2768,85 @@ describe("ProviderTransform.variants", () => {
     expect(result.ultra).toEqual({ reasoningEffort: "max" })
   })
 
+  test("deepseek-v4-flash advertises Ultra over its declared reasoning efforts", () => {
+    const model = createMockModel({
+      id: "deepseek-v4-flash",
+      providerID: "deepseek",
+      reasoning_efforts: ["high", "max"],
+      api: {
+        id: "deepseek-v4-flash",
+        url: "https://api.deepseek.com",
+        npm: "@ai-sdk/openai-compatible",
+      },
+    })
+    const result = ProviderTransform.variants(model)
+    expect(Object.keys(result)).toEqual(["high", "max", "ultra"])
+    expect(result.max).toEqual({ reasoningEffort: "max" })
+    expect(result.ultra).toEqual({ reasoningEffort: "max" })
+  })
+
+  test("deepseek-v4-flash advertises Ultra at its highest declared effort", () => {
+    const model = createMockModel({
+      id: "deepseek-v4-flash",
+      providerID: "deepseek",
+      reasoning_efforts: ["high"],
+      api: {
+        id: "deepseek-v4-flash",
+        url: "https://api.deepseek.com",
+        npm: "@ai-sdk/openai-compatible",
+      },
+    })
+    expect(ProviderTransform.variants(model)).toEqual({
+      high: { reasoningEffort: "high" },
+      ultra: { reasoningEffort: "high" },
+    })
+  })
+
+  test("deepseek-v4-pro does not inherit the Ultra profile", () => {
+    const model = createMockModel({
+      id: "deepseek-v4-pro",
+      providerID: "deepseek",
+      reasoning_efforts: ["high", "max"],
+      api: {
+        id: "deepseek-v4-pro",
+        url: "https://api.deepseek.com",
+        npm: "@ai-sdk/openai-compatible",
+      },
+    })
+    expect(ProviderTransform.variants(model).ultra).toBeUndefined()
+  })
+
+  test("deepseek-v4-flash advertises Ultra on the openai-compatible fallback path", () => {
+    const model = createMockModel({
+      id: "deepseek-v4-flash",
+      providerID: "deepseek",
+      api: {
+        id: "deepseek-v4-flash",
+        url: "https://api.deepseek.com",
+        npm: "@ai-sdk/openai-compatible",
+      },
+    })
+    const result = ProviderTransform.variants(model)
+    expect(result.max).toEqual({ reasoningEffort: "max" })
+    expect(result.ultra).toEqual({ reasoningEffort: "max" })
+  })
+
+  test("deepseek-v4-flash Ultra advertises an xhigh top effort", () => {
+    const model = createMockModel({
+      id: "deepseek-v4-flash",
+      providerID: "deepseek",
+      reasoning_efforts: ["high", "xhigh"],
+      api: {
+        id: "deepseek-v4-flash",
+        url: "https://api.deepseek.com",
+        npm: "@ai-sdk/openai-compatible",
+      },
+    })
+    const result = ProviderTransform.variants(model)
+    expect(result.xhigh).toEqual({ reasoningEffort: "xhigh" })
+    expect(result.ultra).toEqual({ reasoningEffort: "xhigh" })
+  })
+
 
   test("codex semantics supplies known efforts when discovery omits reasoning metadata", () => {
     const model = createMockModel({

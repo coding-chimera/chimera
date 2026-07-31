@@ -15,6 +15,8 @@ import { useSync } from "@/context/sync"
 import { useTerminal } from "@/context/terminal"
 import { showToast } from "@opencode-ai/ui/toast"
 import { findLast } from "@opencode-ai/core/util/array"
+import { cycleModelVariant, shouldConfirmUltraSwitch } from "@/context/model-variant"
+import { DialogVariantCache } from "@/components/dialog-variant-cache"
 import { createSessionTabs } from "@/pages/session/helpers"
 import { extractPromptFromParts } from "@/utils/prompt"
 import { UserMessage } from "@opencode-ai/sdk/v2"
@@ -526,7 +528,28 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
       title: language.t("command.model.variant.cycle"),
       description: language.t("command.model.variant.cycle.description"),
       keybind: "shift+mod+d",
-      onSelect: () => local.model.variant.cycle(),
+      onSelect: () => {
+        const items = local.model.variant.list()
+        if (items.length === 0) return
+        const next = cycleModelVariant({
+          variants: items,
+          selected: local.model.variant.selected(),
+          configured: local.model.variant.configured(),
+        })
+        const prev = local.model.variant.current()
+        if (shouldConfirmUltraSwitch(prev, next)) {
+          const entering = next?.toLowerCase() === "ultra"
+          dialog.show(() => (
+            <DialogVariantCache
+              title={language.t(entering ? "dialog.variant.ultra.enter.title" : "dialog.variant.ultra.leave.title")}
+              description={language.t(entering ? "dialog.variant.ultra.enter.description" : "dialog.variant.ultra.leave.description")}
+              onConfirm={() => local.model.variant.set(next)}
+            />
+          ))
+          return
+        }
+        local.model.variant.cycle()
+      },
     }),
   ]
 

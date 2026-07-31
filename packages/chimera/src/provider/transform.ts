@@ -614,13 +614,17 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
   if (!model.capabilities.reasoning && !isTencentGlm52 && !isGrokEffortModel && !isClaudeCompatibleModel && codexEfforts.length === 0) return {}
   if (codexEfforts.length > 0) {
     // Ultra is a Chimera product profile: its advertised options already carry the
-    // provider-legal maximum, so transports never see a raw "ultra" effort.
+    // model's highest supported effort, so transports never see a raw "ultra" effort.
+    const top = CodexModel.highestReasoningEffort(codexEfforts)
     return Object.fromEntries(
-      codexEfforts.map((effort) => [effort, { reasoningEffort: effort === "ultra" ? "max" : effort }]),
+      codexEfforts.map((effort) => [effort, { reasoningEffort: effort === "ultra" ? top ?? "max" : effort }]),
     )
   }
 
   const id = model.id.toLowerCase()
+  const apiID = model.api.id.toLowerCase()
+  const isDeepSeekV4Flash = id.includes("deepseek-v4-flash")
+  const isKimiK3 = apiID.includes("k3")
   const adaptiveEfforts = anthropicAdaptiveEfforts(model.api.id)
   if (isNvidiaKimiK26(model)) {
     return Object.fromEntries(NVIDIA_KIMI_K26_EFFORTS.map((effort) => [effort, { reasoningEffort: effort }]))
@@ -632,7 +636,13 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
   // reasoning_efforts via findKnownModelMetadata, replacing the former
   // TENCENT_GLM52_EFFORTS hardcode.
   if (model.reasoning_efforts?.length && model.api.npm === "@ai-sdk/openai-compatible") {
-    return Object.fromEntries(model.reasoning_efforts.map((effort) => [effort, { reasoningEffort: effort }]))
+    const compatible = Object.fromEntries(model.reasoning_efforts.map((effort) => [effort, { reasoningEffort: effort }]))
+    // Kimi k3 and DeepSeek V4 Flash advertise the Ultra product profile at their
+    // highest supported effort; the proactive multi-agent policy is resolved from
+    // this advertised variant in session/llm.
+    const top = CodexModel.highestReasoningEffort(model.reasoning_efforts)
+    if ((isKimiK3 || isDeepSeekV4Flash) && top) compatible.ultra = { reasoningEffort: top }
+    return compatible
   }
   if (
     (id.includes("glm") && !model.reasoning_efforts?.length) ||
@@ -770,8 +780,6 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
     // https://docs.venice.ai/overview/guides/reasoning-models#reasoning-effort
     case "@ai-sdk/openai-compatible":
       const efforts = [...WIDELY_SUPPORTED_EFFORTS]
-      const apiID = model.api.id.toLowerCase()
-      const isKimiK3 = apiID.includes("k3")
       if (
         apiID.includes("deepseek-v4") ||
         isClaudeCompatibleModel ||
@@ -783,10 +791,13 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
         efforts.push("xhigh")
       }
       const compatible = Object.fromEntries(efforts.map((effort) => [effort, { reasoningEffort: effort }]))
-      // Kimi k3 advertises the Ultra product profile with its verified provider-legal
-      // maximum (reasoning_effort "max"); the proactive Dynamic Workflow policy is
-      // resolved from this advertised variant in session/llm.
-      if (isKimiK3) compatible.ultra = { reasoningEffort: "max" }
+      // Kimi k3 and DeepSeek V4 Flash advertise the Ultra product profile at their
+      // highest supported effort; the proactive Dynamic Workflow policy is resolved
+      // from this advertised variant in session/llm.
+      if (isKimiK3 || isDeepSeekV4Flash) {
+        const top = CodexModel.highestReasoningEffort(efforts)
+        if (top) compatible.ultra = { reasoningEffort: top }
+      }
       return compatible
 
     case "@ai-sdk/azure":

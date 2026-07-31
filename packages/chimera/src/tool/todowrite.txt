@@ -1,6 +1,8 @@
 Use this tool to create and manage a structured task list for your current coding session. This helps you track progress, organize complex tasks, and demonstrate thoroughness to the user.
 It also helps the user understand the progress of the task and overall progress of their requests.
 
+This tool manages only the current session's agent task list. It is not for reading repository files named `TODO.md`, scanning source-code `TODO`/`FIXME` comments, or inspecting project backlog documents. When the user names a file or path such as `TODO.md`, use Read/Glob/Grep or Chimera tools to inspect the repository content instead.
+
 ## When to Use This Tool
 Use this tool proactively in these scenarios:
 
@@ -164,4 +166,3 @@ The assistant did not use the todo list because this is a single command executi
    - Use clear, descriptive task names
 
 When in doubt, use this tool. Being proactive with task management demonstrates attentiveness and ensures you complete all requirements successfully.
-
