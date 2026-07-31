@@ -27,6 +27,7 @@
 import { Command } from 'commander';
 import * as path from 'path';
 import * as fs from 'fs';
+import { execFileSync } from 'child_process';
 import '../env';
 import { getCodeGraphDir, getGraphDataRootInfo, isInitialized, migrateLegacyGraphData, readIndexJob, unsafeIndexRootReason } from '../directory';
 import { detectWorktreeIndexMismatch, worktreeMismatchWarning } from '../sync/worktree';
@@ -606,10 +607,34 @@ program
 /**
  * chimera graph index [path]
  */
+/**
+ * Best-effort detection of gitignored embedded git repos (for the
+ * includeIgnored opt-in hint). Returns [] when git is unavailable or the
+ * project isn't a repo — never throws.
+ */
+ function findGitignoredEmbeddedRepos(projectPath: string): string[] {
+  try {
+    const output = execFileSync(
+      'git', ['ls-files', '-z', '-o', '-i', '--exclude-standard'],
+      { cwd: projectPath, encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }
+    );
+    const repos: string[] = [];
+    for (const rel of output.split('\0')) {
+      if (!rel || !rel.endsWith('/')) continue;
+      try {
+        if (fs.statSync(path.join(projectPath, rel, '.git')).isDirectory()) repos.push(rel.replace(/\/$/, ''));
+      } catch { /* not a repo */ }
+    }
+    return repos;
+  } catch {
+    return [];
+  }
+}
+
 program
   .command('index [path]')
   .description('Index all files in the project')
-  .option('-f, --force', 'Force full re-index even if already indexed')
+  .option('-f, --force', 'Force full re-index even if already indexed; also overrides home/root directory refusal')
   .option('-q, --quiet', 'Suppress progress output')
   .option('-v, --verbose', 'Show detailed worker lifecycle and memory info')
   .action(async (pathArg: string | undefined, options: { force?: boolean; quiet?: boolean; verbose?: boolean }) => {
@@ -663,6 +688,21 @@ program
       }
 
       printIndexResult(clack, result, projectPath);
+
+      // Empty result with gitignored embedded repos: offer the codegraph.json
+      // includeIgnored opt-in so a "super-repo of gitignored child repos"
+      // layout (#1156) can be indexed on the user's say-so.
+      if (result.nodesCreated === 0) {
+        const repos = findGitignoredEmbeddedRepos(projectPath);
+        if (repos.length > 0) {
+          const snippet = `{ \"includeIgnored\": [${repos.map((p) => JSON.stringify(p)).join(', ')}] }`;
+          clack.log.warn(
+            `Your .gitignore excludes ${repos.length === 1 ? 'a nested git repository' : `${repos.length} nested git repositories`} here, ` +
+            `so ${repos.length === 1 ? 'it was' : 'they were'} not indexed: ${repos.join(', ')}. ` +
+            `To opt in, create codegraph.json with: ${snippet}`
+          );
+        }
+      }
 
       if (!result.success) {
         process.exit(1);

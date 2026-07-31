@@ -95,6 +95,37 @@ describe('getNodesByIds (batch lookup)', () => {
     expect(out.get('n1')!.name).toBe('n1');
     expect(out.get('n2')!.name).toBe('n2');
   });
+
+  it('evicts the oldest entry at the maxCacheSize boundary (LRU)', () => {
+    // maxCacheSize is 1000 — inserting 1001 distinct nodes evicts the
+    // least-recently-used (oldest) entry, so a direct UPDATE is visible.
+    const nodes = Array.from({ length: 1001 }, (_, i) => makeNode(`evict${i}`));
+    q.insertNodes(nodes);
+    q.getNodesByIds(nodes.map((n) => n.id)); // warm all; evict0 is oldest
+    db.getDb().prepare('UPDATE nodes SET name = ? WHERE id = ?').run('changed', 'evict0');
+    expect(q.getNodeById('evict0')!.name).toBe('changed'); // evicted → fresh read
+  });
+
+  it('touching a cached node refreshes its LRU position', () => {
+    const nodes = Array.from({ length: 1001 }, (_, i) => makeNode(`lru${i}`));
+    q.insertNodes(nodes);
+    q.getNodesByIds(nodes.map((n) => n.id)); // warm all; lru0 evicted, lru1 oldest
+    q.getNodeById('lru0'); // touch → reinserted as newest (evicts lru1)
+    q.insertNodes([makeNode('lruNew')]);
+    q.getNodesByIds(['lruNew']); // warm lruNew → evicts lru2
+    db.getDb().prepare('UPDATE nodes SET name = ? WHERE id = ?').run('changed', 'lru1');
+    expect(q.getNodeById('lru1')!.name).toBe('changed'); // lru1 evicted → fresh read
+    // lru0 was touched and not re-evicted, so it is still cached (stale read).
+    db.getDb().prepare('UPDATE nodes SET name = ? WHERE id = ?').run('changed2', 'lru0');
+    expect(q.getNodeById('lru0')!.name).toBe('lru0'); // cached → stale
+  });
+
+  it('invalidates the cache entry on deleteNode', () => {
+    q.insertNodes([makeNode('del1')]);
+    q.getNodeById('del1'); // warm
+    q.deleteNode('del1');
+    expect(q.getNodeById('del1')).toBeNull(); // stale cache would leak the row
+  });
 });
 
 describe('insertNode cache invalidation', () => {

@@ -473,6 +473,42 @@ function getGitChangedFiles(rootDir: string): GitChanges | null {
       }
     }
 
+    // Gitignored embedded repos opted in via codegraph.json `includeIgnored`:
+    // their changes are invisible to the parent repo's `git status`, so detect
+    // them by running status inside each opted-in repo (#622, #699).
+    const includeIgnoredPatterns = loadIncludeIgnoredPatterns(rootDir);
+    if (includeIgnoredPatterns.length > 0) {
+      const includeIgnored = ignore().add(includeIgnoredPatterns);
+      try {
+        const ignored = execFileSync(
+          'git', ['ls-files', '-z', '-o', '-i', '--exclude-standard'],
+          { cwd: rootDir, encoding: 'utf-8', timeout: 30000, maxBuffer: 50 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }
+        );
+        for (const rel of ignored.split('\0')) {
+          if (!rel || !rel.endsWith('/')) continue;
+          if (!includeIgnored.ignores(normalizePath(rel))) continue;
+          const childDir = path.join(rootDir, rel);
+          if (classifyGitDir(childDir) !== 'embedded') continue;
+          try {
+            const childOutput = execFileSync(
+              'git', ['status', '--porcelain', '--no-renames'],
+              { cwd: childDir, encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }
+            );
+            const prefix = normalizePath(rel);
+            for (const line of childOutput.split('\n')) {
+              if (line.length < 4) continue;
+              const statusCode = line.substring(0, 2);
+              const filePath = normalizePath(prefix + line.substring(3));
+              if (!isSourceFile(filePath)) continue;
+              if (statusCode === '??') added.push(filePath);
+              else if (statusCode.includes('D')) deleted.push(filePath);
+              else modified.push(filePath);
+            }
+          } catch { /* child repo status failure — skip */ }
+        }
+      } catch { /* ls-files -i unavailable */ }
+    }
+
     return { modified, added, deleted };
   } catch {
     return null;
