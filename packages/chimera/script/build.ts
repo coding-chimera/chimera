@@ -281,6 +281,7 @@ for (const item of targets) {
   const rootPath = path.resolve(dir, "../../node_modules/@opentui/core/parser.worker.js")
   const parserWorker = fs.realpathSync(fs.existsSync(localPath) ? localPath : rootPath)
   const workerPath = "./src/cli/cmd/tui/worker.ts"
+  const parseWorkerPath = "./src/graph/extraction/parse-worker.ts"
 
   // Use platform-specific bunfs root path based on target OS
   const bunfsRoot = item.os === "win32" ? "B:/~BUN/root/" : "/$bunfs/root/"
@@ -317,6 +318,7 @@ for (const item of targets) {
       "./src/index.ts",
       parserWorker,
       workerPath,
+      parseWorkerPath,
       ...(embeddedWebUIFileMap ? [embeddedWebUIEntrypoint] : []),
       ...(embeddedNewWebUIFileMap ? [embeddedNewWebUIEntrypoint] : []),
     ],
@@ -327,6 +329,7 @@ for (const item of targets) {
       CHIMERA_BUNDLED_RUNTIME: "true",
       OTUI_TREE_SITTER_WORKER_PATH: bunfsRoot + workerRelativePath,
       OPENCODE_WORKER_PATH: workerPath,
+      CHIMERA_PARSE_WORKER_PATH: parseWorkerPath,
       OPENCODE_CHANNEL: `'${Script.channel}'`,
       OPENCODE_LIBC: item.os === "linux" ? `'${item.abi ?? "glibc"}'` : "",
     },
