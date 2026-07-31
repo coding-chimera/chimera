@@ -87,6 +87,17 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       session_diff: {
         [sessionID: string]: Snapshot.FileDiff[]
       }
+      command_progress: {
+        [sessionID: string]: {
+          name: string
+          arguments: string
+          phase: string
+          current: number
+          total: number
+          currentFile?: string
+          elapsedMs: number
+        }
+      }
       todo: {
         [sessionID: string]: Todo[]
       }
@@ -131,6 +142,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       session: [],
       session_status: {},
       session_diff: {},
+      command_progress: {},
       todo: {},
       work_brief: {},
       prompt_stats: {},
@@ -316,6 +328,41 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         case "session.status": {
           setStore("session_status", event.properties.sessionID, event.properties.status)
           if (event.properties.status.type === "idle") void refreshProviderBalances()
+          break
+        }
+
+        case "command.started": {
+          setStore("command_progress", event.properties.sessionID, {
+            name: event.properties.name,
+            arguments: event.properties.arguments,
+            phase: "starting",
+            current: 0,
+            total: 0,
+            elapsedMs: 0,
+          })
+          break
+        }
+
+        case "command.progress": {
+          setStore("command_progress", event.properties.sessionID, {
+            name: event.properties.name,
+            arguments: event.properties.arguments,
+            phase: event.properties.phase,
+            current: Number(event.properties.current),
+            total: Number(event.properties.total),
+            currentFile: event.properties.currentFile,
+            elapsedMs: Number(event.properties.elapsedMs),
+          })
+          break
+        }
+
+        case "command.executed": {
+          setStore(
+            "command_progress",
+            produce((draft) => {
+              delete draft[event.properties.sessionID]
+            }),
+          )
           break
         }
 
