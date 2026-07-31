@@ -219,6 +219,7 @@ export class QueryBuilder {
     getNodeById?: SqliteStatement;
     getNodesByFile?: SqliteStatement;
     getNodesByKind?: SqliteStatement;
+    iterateNodesByKind?: SqliteStatement;
     insertEdge?: SqliteStatement;
     upsertFile?: SqliteStatement;
     deleteEdgesBySource?: SqliteStatement;
@@ -711,11 +712,7 @@ export class QueryBuilder {
    * Get all nodes of a specific kind
    */
   getNodesByKind(kind: NodeKind): Node[] {
-    if (!this.stmts.getNodesByKind) {
-      this.stmts.getNodesByKind = this.db.prepare('SELECT * FROM nodes WHERE kind = ?');
-    }
-    const rows = this.stmts.getNodesByKind.all(kind) as NodeRow[];
-    return rows.map(rowToNode);
+    return Array.from(this.iterateNodesByKind(kind));
   }
 
   /**
@@ -1479,6 +1476,33 @@ export class QueryBuilder {
     }
     const rows = this.stmts.getAllFiles.all() as FileRow[];
     return rows.map(rowToFileRecord);
+  }
+
+  /**
+   * Distinct languages present in the index — used to skip language-specific
+   * synthesis passes that cannot produce edges for a project (single-language
+   * repos skip unrelated pass work entirely).
+   */
+  getDistinctFileLanguages(): Set<string> {
+    const rows = this.db.prepare('SELECT DISTINCT language FROM files').all() as Array<{ language: string }>;
+    return new Set(rows.map((row) => row.language));
+  }
+
+  /**
+   * Iterate all nodes of a specific kind via a streaming cursor — O(1) memory
+   * vs. getNodesByKind's full materialization (upstream #610). Callers must
+   * not mutate the same connection mid-iteration.
+   */
+  iterateNodesByKind(kind: NodeKind): IterableIterator<Node> {
+    if (!this.stmts.iterateNodesByKind) {
+      this.stmts.iterateNodesByKind = this.db.prepare('SELECT * FROM nodes WHERE kind = ?');
+    }
+    const stmt = this.stmts.iterateNodesByKind;
+    return (function* () {
+      for (const row of stmt.iterate(kind) as IterableIterator<NodeRow>) {
+        yield rowToNode(row);
+      }
+    })();
   }
 
   /**

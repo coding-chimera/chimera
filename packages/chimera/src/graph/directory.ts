@@ -5,6 +5,7 @@
  */
 
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { createDatabase } from './db/sqlite-adapter';
 import { CURRENT_SCHEMA_VERSION, getCurrentVersion, runMigrations } from './db/migrations';
@@ -212,6 +213,49 @@ export function findNearestCodeGraphRoot(startPath: string): string | null {
   }
 
   if (isInitialized(current)) return current;
+  return null;
+}
+
+/**
+ * Reason a directory is unsafe to use as an index ROOT, or null when it's fine.
+ *
+ * Indexing your home directory or a filesystem root drags in caches, every
+ * other project, etc. — a multi-GB index and constant file-watcher churn
+ * (upstream #845). These are never intended project roots, so `init`/`index`
+ * refuse them (overridable with `--force`).
+ *
+ * Pure-ish (reads only `os.homedir()` + realpath) so it's easy to unit-test.
+ * The returned string is a human phrase that slots into "… looks like {reason}".
+ */
+export function unsafeIndexRootReason(projectRoot: string): string | null {
+  const resolve = (p: string): string => {
+    try {
+      return fs.realpathSync(path.resolve(p));
+    } catch {
+      return path.resolve(p);
+    }
+  };
+  const resolved = resolve(projectRoot);
+
+  // Filesystem root: `/` on POSIX, a drive root like `C:\` on Windows.
+  if (path.parse(resolved).root === resolved) {
+    return 'the filesystem root';
+  }
+
+  const home = resolve(os.homedir());
+  // Case-insensitive on macOS/Windows (case-preserving but case-insensitive FS).
+  const norm = (p: string): string =>
+    process.platform === 'darwin' || process.platform === 'win32' ? p.toLowerCase() : p;
+  const r = norm(resolved);
+  const h = norm(home);
+
+  if (r === h) {
+    return 'your home directory';
+  }
+  // An ancestor of home (e.g. `/Users`, `/home`) — even broader than home.
+  if (h.startsWith(r + path.sep)) {
+    return 'a parent of your home directory';
+  }
   return null;
 }
 

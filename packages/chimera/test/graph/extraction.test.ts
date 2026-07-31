@@ -3558,6 +3558,144 @@ describe('Nested non-submodule git repos', () => {
   });
 });
 
+describe('Git worktrees', () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = createTempDir();
+  });
+
+  afterEach(() => {
+    cleanupTempDir(tempDir);
+  });
+
+  it('should not index files from a git worktree inside the main checkout', async () => {
+    const { execFileSync } = await import('child_process');
+    const git = (cwd: string, ...args: string[]) =>
+      execFileSync('git', args, { cwd, stdio: 'pipe' });
+
+    // Main repo with committed source, plus a linked worktree checked out
+    // INSIDE the main working tree. The worktree's `.git` is a FILE pointer
+    // (`gitdir: <main>/.git/worktrees/<name>`) — a second working view of the
+    // same repo, so its files must not be indexed a second time.
+    const mainDir = path.join(tempDir, 'main');
+    fs.mkdirSync(mainDir, { recursive: true });
+    git(mainDir, 'init', '-q');
+    git(mainDir, 'config', 'user.email', 'test@test.com');
+    git(mainDir, 'config', 'user.name', 'Test');
+    fs.writeFileSync(path.join(mainDir, 'app.ts'), 'export const app = 1;');
+    git(mainDir, 'add', '-A');
+    git(mainDir, 'commit', '-q', '-m', 'main init');
+    git(mainDir, 'worktree', 'add', '-q', path.join(mainDir, 'wt'), '-b', 'feature');
+    fs.writeFileSync(path.join(mainDir, 'wt', 'feature.ts'), 'export const feature = 1;');
+    git(path.join(mainDir, 'wt'), 'add', '-A');
+    git(path.join(mainDir, 'wt'), 'commit', '-q', '-m', 'feature init');
+
+    // A genuine embedded repo (real `.git` DIRECTORY) must still be indexed —
+    // the worktree fix must not over-block embedded clones.
+    const embed = path.join(mainDir, 'embed', 'src');
+    fs.mkdirSync(embed, { recursive: true });
+    git(path.join(mainDir, 'embed'), 'init', '-q');
+    git(path.join(mainDir, 'embed'), 'config', 'user.email', 'test@test.com');
+    git(path.join(mainDir, 'embed'), 'config', 'user.name', 'Test');
+    fs.writeFileSync(path.join(embed, 'embedded.ts'), 'export const embedded = 1;');
+    git(path.join(mainDir, 'embed'), 'add', '-A');
+    git(path.join(mainDir, 'embed'), 'commit', '-q', '-m', 'embed init');
+
+    const files = scanDirectory(mainDir);
+
+    expect(files).toContain('app.ts');
+    expect(files).toContain('embed/src/embedded.ts');
+    // Worktree files are a duplicate view — none of them may be indexed.
+    expect(files.every((f) => !f.startsWith('wt/'))).toBe(true);
+  });
+});
+
+describe('CJK file names in git projects', () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = createTempDir();
+  });
+
+  afterEach(() => {
+    cleanupTempDir(tempDir);
+  });
+
+  it('should index tracked and untracked CJK-named files', async () => {
+    const { execFileSync } = await import('child_process');
+    const git = (...args: string[]) =>
+      execFileSync('git', args, { cwd: tempDir, stdio: 'pipe' });
+
+    git('init', '-q');
+    git('config', 'user.email', 'test@test.com');
+    git('config', 'user.name', 'Test');
+    // core.quotepath defaults to true; pin it so git deterministically
+    // octal-escapes and double-quotes non-ASCII paths in non -z output.
+    git('config', 'core.quotepath', 'true');
+    fs.mkdirSync(path.join(tempDir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(tempDir, 'src', '数据.ts'), 'export const data = 1;');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'cjk init');
+    // An untracked CJK-named source file exercises the `-o --exclude-standard` pass.
+    fs.writeFileSync(path.join(tempDir, 'src', '说明.ts'), 'export const notes = 1;');
+
+    const files = scanDirectory(tempDir);
+
+    expect(files).toContain('src/数据.ts');
+    expect(files).toContain('src/说明.ts');
+  });
+});
+
+describe('Defensive .gitignore parsing', () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = createTempDir();
+  });
+
+  afterEach(() => {
+    cleanupTempDir(tempDir);
+  });
+
+  it('should drop unparseable patterns instead of throwing mid-scan', () => {
+    const srcDir = path.join(tempDir, 'src');
+    const nmDir = path.join(tempDir, 'node_modules', 'pkg');
+    fs.mkdirSync(srcDir, { recursive: true });
+    fs.mkdirSync(nmDir, { recursive: true });
+    fs.writeFileSync(path.join(srcDir, 'index.ts'), 'export const x = 1;');
+    fs.writeFileSync(path.join(nmDir, 'index.js'), 'module.exports = {};');
+    // `\\[` is an unterminated character class that the `ignore` library
+    // throws on lazily at match time; the good `node_modules/` pattern next
+    // to it must still be applied.
+    fs.writeFileSync(path.join(tempDir, '.gitignore'), '\\[\nnode_modules/\n');
+
+    expect(() => {
+      const files = scanDirectory(tempDir);
+      expect(files).toContain('src/index.ts');
+      expect(files.every((f) => !f.includes('node_modules'))).toBe(true);
+    }).not.toThrow();
+  });
+
+  it('should treat a non-UTF-8 .gitignore as absent instead of throwing', () => {
+    const srcDir = path.join(tempDir, 'src');
+    const nmDir = path.join(tempDir, 'node_modules', 'pkg');
+    fs.mkdirSync(srcDir, { recursive: true });
+    fs.mkdirSync(nmDir, { recursive: true });
+    fs.writeFileSync(path.join(srcDir, 'index.ts'), 'export const x = 1;');
+    fs.writeFileSync(path.join(nmDir, 'index.js'), 'module.exports = {};');
+    // DLP-style encrypted-in-place .gitignore: a UTF-16-looking binary blob
+    // that is not valid UTF-8.
+    fs.writeFileSync(path.join(tempDir, '.gitignore'), Buffer.from([0xff, 0xfe, 0x00, 0x41, 0x00, 0x42]));
+
+    expect(() => {
+      const files = scanDirectory(tempDir);
+      expect(files).toContain('src/index.ts');
+      expect(files.every((f) => !f.includes('node_modules'))).toBe(true);
+    }).not.toThrow();
+  });
+});
+
 // =============================================================================
 // Scala
 // =============================================================================

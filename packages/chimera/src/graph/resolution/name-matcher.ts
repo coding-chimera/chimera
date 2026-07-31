@@ -7,6 +7,20 @@
 import { Node } from '../types';
 import { UnresolvedRef, ResolvedRef, ResolutionContext } from './types';
 
+// Names defined more than this many times are never guessed by fuzzy scoring:
+// K definitions x K references is O(K²) work and stalls indexing on vendored/
+// duplicated code. Precise strategies (qualified name, imports, class names)
+// still resolve before this ceiling is consulted.
+const DEFAULT_AMBIGUOUS_NAME_CEILING = 500;
+
+function resolveAmbiguousNameCeiling(): number {
+  const raw = process.env.CODEGRAPH_AMBIGUOUS_NAME_CEILING;
+  const value = raw === undefined ? DEFAULT_AMBIGUOUS_NAME_CEILING : Number(raw);
+  return Number.isInteger(value) && value > 0 ? value : DEFAULT_AMBIGUOUS_NAME_CEILING;
+}
+
+const AMBIGUOUS_NAME_CEILING = resolveAmbiguousNameCeiling();
+
 /**
  * Try to resolve a path-like reference (e.g., "snippets/drawer-menu.liquid")
  * by matching the filename against file nodes.
@@ -85,6 +99,10 @@ export function matchByExactName(
       resolvedBy: 'exact-match',
     };
   }
+
+  // Too many same-named definitions: refuse to guess instead of scoring every
+  // candidate (O(K²) stall protection, mirrors upstream CODEGRAPH_AMBIGUOUS_NAME_CEILING).
+  if (candidates.length > AMBIGUOUS_NAME_CEILING) return null;
 
   // Multiple matches - try to narrow down
   const bestMatch = findBestMatch(ref, candidates, context);
@@ -475,6 +493,10 @@ export function matchMethodCall(
   // names like permissionEngine → PermissionRuleEngine.
   if (methodName) {
     const methodCandidates = context.getNodesByName(methodName!);
+
+    // Same-name ceiling: refuse to guess when a name repeats beyond any real
+    // codebase; precise strategies already tried above stay unaffected.
+    if (methodCandidates.length > AMBIGUOUS_NAME_CEILING) return null;
     const methods = methodCandidates.filter(
       (n) => n.kind === 'method' && n.name === methodName
     );

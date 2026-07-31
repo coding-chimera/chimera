@@ -1180,20 +1180,25 @@ function ginMiddlewareChainEdges(queries: QueryBuilder, ctx: ResolutionContext):
  * count added. Never throws into indexing — callers wrap in try/catch.
  */
 export function synthesizeCallbackEdges(queries: QueryBuilder, ctx: ResolutionContext): number {
+  // Language gate: skip passes whose target language(s) are absent from the
+  // project — a pass over an empty language class is provably empty, so
+  // single-language repos skip unrelated scan work entirely (upstream #1235).
+  const langs = queries.getDistinctFileLanguages();
+  const has = (...ls: string[]) => ls.some((l) => langs.has(l));
   const fieldEdges = fieldChannelEdges(queries, ctx);
   const closureCollEdges = closureCollectionEdges(queries, ctx);
   const emitterEdges = eventEmitterEdges(ctx);
   const renderEdges = reactRenderEdges(queries, ctx);
   const jsxEdges = reactJsxChildEdges(ctx);
-  const vueEdges = vueTemplateEdges(ctx);
-  const flutterEdges = flutterBuildEdges(queries, ctx);
-  const cppEdges = cppOverrideEdges(queries);
-  const ifaceEdges = interfaceOverrideEdges(queries);
-  const goGrpcEdges = goGrpcStubImplEdges(queries);
+  const vueEdges = has('vue') ? vueTemplateEdges(ctx) : [];
+  const flutterEdges = has('dart') ? flutterBuildEdges(queries, ctx) : [];
+  const cppEdges = has('cpp') ? cppOverrideEdges(queries) : [];
+  const ifaceEdges = has(...IFACE_OVERRIDE_LANGS) ? interfaceOverrideEdges(queries) : [];
+  const goGrpcEdges = has('go') ? goGrpcStubImplEdges(queries) : [];
   const rnEventEdgesList = rnEventEdges(ctx);
   const fabricNativeEdges = fabricNativeImplEdges(ctx);
-  const mybatisEdges = mybatisJavaXmlEdges(queries);
-  const ginEdges = ginMiddlewareChainEdges(queries, ctx);
+  const mybatisEdges = has('java', 'kotlin') && has('xml') ? mybatisJavaXmlEdges(queries) : [];
+  const ginEdges = has('go') ? ginMiddlewareChainEdges(queries, ctx) : [];
 
   const merged: Edge[] = [];
   const seen = new Set<string>();

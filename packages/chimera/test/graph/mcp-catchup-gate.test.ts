@@ -119,4 +119,22 @@ describe('MCP catch-up gate', () => {
     expect(res.isError).toBeFalsy();
     expect(res.content[0].text).toMatch(/survivor/);
   });
+
+  it('time-boxes a never-resolving gate so the first call cannot hang (upstream #905)', async () => {
+    const previous = process.env.CODEGRAPH_CATCHUP_GATE_TIMEOUT_MS;
+    process.env.CODEGRAPH_CATCHUP_GATE_TIMEOUT_MS = '50';
+    try {
+      const gate = new Promise<void>(() => { /* never resolves */ });
+      handler.setCatchUpGate(gate);
+      const start = Date.now();
+      const res = await handler.execute('codegraph_search', { query: 'survivor' });
+      const elapsed = Date.now() - start;
+      expect(res.isError).toBeFalsy();
+      expect(res.content[0].text).toMatch(/survivor/);
+      expect(elapsed).toBeLessThan(5000);
+    } finally {
+      if (previous === undefined) delete process.env.CODEGRAPH_CATCHUP_GATE_TIMEOUT_MS;
+      else process.env.CODEGRAPH_CATCHUP_GATE_TIMEOUT_MS = previous;
+    }
+  });
 });

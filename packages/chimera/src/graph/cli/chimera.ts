@@ -28,7 +28,7 @@ import { Command } from 'commander';
 import * as path from 'path';
 import * as fs from 'fs';
 import '../env';
-import { getCodeGraphDir, getGraphDataRootInfo, isInitialized, migrateLegacyGraphData, readIndexJob } from '../directory';
+import { getCodeGraphDir, getGraphDataRootInfo, isInitialized, migrateLegacyGraphData, readIndexJob, unsafeIndexRootReason } from '../directory';
 import { detectWorktreeIndexMismatch, worktreeMismatchWarning } from '../sync/worktree';
 import { createShimmerProgress } from '../ui/shimmer-progress';
 import { getGlyphs } from '../ui/glyphs';
@@ -451,14 +451,24 @@ program
   .command('init [path]')
   .description('Initialize Chimera graph data in a project directory')
   .option('-i, --index', 'Deprecated: initialization no longer runs a blocking index; run "chimera graph index" explicitly')
+  .option('-f, --force', 'Initialize even if the path looks like your home directory or a filesystem root')
   .option('-v, --verbose', 'Accepted for backward compatibility')
-  .action(async (pathArg: string | undefined, _options: { index?: boolean; verbose?: boolean }) => {
+  .action(async (pathArg: string | undefined, _options: { force?: boolean; index?: boolean; verbose?: boolean }) => {
     const projectPath = path.resolve(pathArg || process.cwd());
     const clack = await loadClackPrompts();
 
     clack.intro('Initializing Chimera graph data');
 
     try {
+      // Refuse to index your home directory / a filesystem root - it drags in caches,
+      // other projects, and the whole tree (upstream #845). --force overrides.
+      const unsafe = unsafeIndexRootReason(projectPath);
+      if (unsafe && !_options.force) {
+        clack.log.error(`Refusing to initialize in ${projectPath} - it looks like ${unsafe}.`);
+        clack.log.info('Run inside a specific project directory, or pass --force if you really mean to index everything under it.');
+        clack.outro('');
+        process.exit(1);
+      }
       if (isInitialized(projectPath)) {
         clack.log.warn(`Already initialized in ${projectPath}`);
         clack.log.info('Use "chimera graph index" to index or "chimera graph sync" to update');
@@ -606,6 +616,13 @@ program
     const projectPath = resolveProjectPath(pathArg);
 
     try {
+      // Don't (re)index your home directory / a filesystem root (upstream #845).
+      // --force doubles as the override.
+      const unsafe = unsafeIndexRootReason(projectPath);
+      if (unsafe && !options.force) {
+        error(`Refusing to index ${projectPath} - it looks like ${unsafe}. Pass --force to override.`);
+        process.exit(1);
+      }
       const { default: CodeGraph } = await loadCodeGraph();
       if (!isInitialized(projectPath)) {
         throw new Error(`Chimera graph is not initialized in ${projectPath}; run "chimera graph init" first`);

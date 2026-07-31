@@ -269,6 +269,17 @@ function adaptiveExploreEnabled(): boolean {
 }
 
 /**
+ * Time-box for the first-tool-call catch-up reconcile (#905). A huge catch-up
+ * sync must not block the first tool call forever; default 3000ms, 0 = wait
+ * indefinitely. Set CODEGRAPH_CATCHUP_GATE_TIMEOUT_MS to override.
+ */
+function catchUpGateTimeoutMs(): number {
+  const raw = process.env.CODEGRAPH_CATCHUP_GATE_TIMEOUT_MS;
+  const value = raw === undefined ? 3000 : Number(raw);
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 3000;
+}
+
+/**
  * Prefix each line of a source slice with its 1-based line number, matching
  * the Read tool's `cat -n` convention (number + tab) so the agent treats it
  * the same way it treats Read output.
@@ -985,7 +996,16 @@ export class ToolHandler {
       if (this.catchUpGate) {
         const gate = this.catchUpGate;
         this.catchUpGate = null;
-        try { await gate; } catch { /* engine already logged */ }
+        try {
+          // Time-box the first-call reconcile so a huge catch-up never blocks
+          // the first tool call forever; 0 waits indefinitely (upstream #905).
+          const timeoutMs = catchUpGateTimeoutMs();
+          if (timeoutMs > 0) {
+            await Promise.race([gate, new Promise((resolve) => setTimeout(resolve, timeoutMs))]);
+          } else {
+            await gate;
+          }
+        } catch { /* engine already logged */ }
       }
       // Honor the optional tool allowlist (CODEGRAPH_MCP_TOOLS): a trimmed
       // surface rejects ablated tools defensively even if a client cached them.

@@ -25,6 +25,7 @@ import { loadGoModule, type GoModule } from './go-module';
 import { logDebug } from '../errors';
 import type { ReExport } from './types';
 import { LRUCache } from './lru-cache';
+import { createYielder, type MaybeYield } from './cooperative-yield';
 
 /**
  * Cache size limits. Each per-resolver cache is bounded so memory
@@ -509,6 +510,60 @@ export class ReferenceResolver {
   }
 
   /**
+   * Resolve a batch with cooperative per-ref yielding so a dense batch never
+   * starves the event loop (agent runtime responsiveness, CLI progress, MCP
+   * daemon responses). Mirrors resolveAll's semantics exactly — same order,
+   * same stats — but yields between every reference (upstream #1122: a single
+   * reference can take seconds worst-case, so a fixed N-refs cadence would
+   * let the worst case land inside one unyielded span).
+   */
+  private async resolveBatchYielding(
+    unresolvedRefs: UnresolvedReference[],
+    maybeYield: MaybeYield
+  ): Promise<ResolutionResult> {
+    this.warmCaches();
+
+    const resolved: ResolvedRef[] = [];
+    const unresolved: UnresolvedRef[] = [];
+    const byMethod: Record<string, number> = {};
+
+    const refs: UnresolvedRef[] = unresolvedRefs.map((ref) => ({
+      fromNodeId: ref.fromNodeId,
+      referenceName: ref.referenceName,
+      referenceKind: ref.referenceKind,
+      line: ref.line,
+      column: ref.column,
+      filePath: ref.filePath || this.getFilePathFromNodeId(ref.fromNodeId),
+      language: ref.language || this.getLanguageFromNodeId(ref.fromNodeId),
+    }));
+
+    for (let i = 0; i < refs.length; i++) {
+      const ref = refs[i]!; // Array index is guaranteed to be in bounds
+      const result = this.resolveOne(ref);
+
+      if (result) {
+        resolved.push(result);
+        byMethod[result.resolvedBy] = (byMethod[result.resolvedBy] || 0) + 1;
+      } else {
+        unresolved.push(ref);
+      }
+
+      await maybeYield();
+    }
+
+    return {
+      resolved,
+      unresolved,
+      stats: {
+        total: refs.length,
+        resolved: resolved.length,
+        unresolved: unresolved.length,
+        byMethod,
+      },
+    };
+  }
+
+  /**
    * Check if a reference name has any possible match in the codebase.
    * Uses the pre-built knownNames set to skip expensive resolution
    * for names that definitely don't exist as symbols.
@@ -728,6 +783,12 @@ export class ReferenceResolver {
     onProgress?: (current: number, total: number) => void,
     batchSize: number = 5000
   ): Promise<ResolutionResult> {
+    // Resolution runs on the host runtime's main thread; a dense batch's
+    // synchronous resolveAll freezes the event loop (CLI progress, MCP daemon
+    // responses) for seconds on large repos. A shared yielder gives the loop a
+    // regular window between references and between persistence chunks.
+    const maybeYield = createYielder();
+
     this.warmCaches();
 
     const total = this.queries.getUnresolvedReferencesCount();
@@ -741,38 +802,47 @@ export class ReferenceResolver {
 
     // Process in batches. We always read from offset 0 because resolved refs
     // are deleted after each batch, shifting the remaining rows forward.
+    let prevRemaining = Number.POSITIVE_INFINITY;
     while (true) {
       const batch = this.queries.getUnresolvedReferencesBatch(0, batchSize);
       if (batch.length === 0) break;
 
-      const result = this.resolveAll(batch);
+      const result = await this.resolveBatchYielding(batch, maybeYield);
+
+      // Persist in bounded sub-transactions with yields between: a whole
+      // batch's edge insert / keyed deletes are otherwise one solid
+      // synchronous span each on a multi-GB index (upstream #1212).
+      const PERSIST_CHUNK = 1000;
 
       // Persist edges immediately
       const edges = this.createEdges(result.resolved);
-      if (edges.length > 0) {
-        this.queries.insertEdges(edges);
+      for (let i = 0; i < edges.length; i += PERSIST_CHUNK) {
+        this.queries.insertEdges(edges.slice(i, i + PERSIST_CHUNK));
+        await maybeYield();
       }
 
       // Clean up resolved refs so they don't appear in the next batch
-      if (result.resolved.length > 0) {
-        this.queries.deleteSpecificResolvedReferences(
-          result.resolved.map((r) => ({
-            fromNodeId: r.original.fromNodeId,
-            referenceName: r.original.referenceName,
-            referenceKind: r.original.referenceKind,
-          }))
-        );
+      const resolvedKeys = result.resolved.map((r) => ({
+        fromNodeId: r.original.fromNodeId,
+        referenceName: r.original.referenceName,
+        referenceKind: r.original.referenceKind,
+      }));
+      for (let i = 0; i < resolvedKeys.length; i += PERSIST_CHUNK) {
+        this.queries.deleteSpecificResolvedReferences(resolvedKeys.slice(i, i + PERSIST_CHUNK));
+        await maybeYield();
       }
 
-      // Delete unresolvable refs from this batch to avoid re-processing them
-      if (result.unresolved.length > 0) {
-        this.queries.deleteSpecificResolvedReferences(
-          result.unresolved.map((r) => ({
-            fromNodeId: r.fromNodeId,
-            referenceName: r.referenceName,
-            referenceKind: r.referenceKind,
-          }))
-        );
+      // Delete unresolvable refs from this batch to avoid re-processing them.
+      // (Upstream parks these as status='failed' for #1240 retry; chimera has
+      // no status column yet, so DELETE keeps the existing semantics.)
+      const unresolvedKeys = result.unresolved.map((r) => ({
+        fromNodeId: r.fromNodeId,
+        referenceName: r.referenceName,
+        referenceKind: r.referenceKind,
+      }));
+      for (let i = 0; i < unresolvedKeys.length; i += PERSIST_CHUNK) {
+        this.queries.deleteSpecificResolvedReferences(unresolvedKeys.slice(i, i + PERSIST_CHUNK));
+        await maybeYield();
       }
 
       // Aggregate stats
@@ -789,11 +859,21 @@ export class ReferenceResolver {
       // Yield so progress UI can render between batches
       await new Promise(resolve => setImmediate(resolve));
 
-      // If nothing was resolved or removed in this batch, we'd loop forever
-      // on the same rows. Break to avoid infinite loop.
-      if (result.resolved.length === 0 && result.unresolved.length === batch.length) {
-        break;
-      }
+      // NOTE: there used to be an extra early break here when a batch resolved
+      // nothing (`resolved.length === 0 && unresolved.length === batch.length`).
+      // That was wrong: an all-unresolvable batch still DELETES its rows
+      // (progress), yet the break abandoned every batch after it in the same
+      // run — on a repo whose first 5000 refs are all external/stdlib calls,
+      // resolution stopped at batch one and left the rest of the table as
+      // permanent orphans (upstream #1187).
+
+      // Non-progress guard (defense-in-depth): because we re-read from offset 0
+      // each pass, the pending population MUST shrink every iteration. If it
+      // didn't, a resolver returned a match whose key differs from the stored
+      // row and the keyed delete no-ops — stop rather than loop forever.
+      const remaining = this.queries.getUnresolvedReferencesCount();
+      if (remaining >= prevRemaining) break;
+      prevRemaining = remaining;
     }
 
     // Dynamic-edge synthesis: now that all base `calls` edges are persisted,

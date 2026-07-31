@@ -15,6 +15,7 @@ export interface SqliteStatement {
   run(...params: any[]): { changes: number; lastInsertRowid: number | bigint };
   get(...params: any[]): any;
   all(...params: any[]): any[];
+  iterate(...params: any[]): IterableIterator<any>;
 }
 
 export interface SqliteDatabase {
@@ -114,6 +115,11 @@ class NodeSqliteAdapter implements SqliteDatabase {
       all(...params: any[]) {
         return stmt.all(...params);
       },
+      iterate(...params: any[]) {
+        // node:sqlite StatementSync.iterate returns a live cursor — O(1)
+        // memory streaming for whole-kind scans (upstream #610).
+        return stmt.iterate(...params);
+      },
     };
   }
 
@@ -197,6 +203,11 @@ class BunSqliteAdapter implements SqliteDatabase {
       },
       all(...params: any[]) {
         return stmt.all(...normalizeStatementParams(params));
+      },
+      iterate(...params: any[]) {
+        // bun:sqlite Statement.iterate returns a live cursor — O(1) memory
+        // streaming for whole-kind scans.
+        return stmt.iterate(...normalizeStatementParams(params));
       },
     };
   }
