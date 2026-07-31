@@ -19,6 +19,7 @@ import {
 import { QueryBuilder } from '../db/queries';
 import { extractFromSource } from './tree-sitter';
 import { detectLanguage, isSourceFile, isLanguageSupported, isFileLevelOnlyLanguage, initGrammars, loadGrammarsForLanguages } from './grammars';
+import { loadIncludeIgnoredPatterns } from '../config';
 import { ParseWorkerPool, resolveParsePoolSize, resolveParseTimeoutMs } from './parse-pool';
 import { logDebug, logWarn } from '../errors';
 import { validatePathWithinRoot, normalizePath } from '../utils';
@@ -312,7 +313,7 @@ function classifyGitDir(absDir: string): 'embedded' | 'worktree' | 'none' {
  * embedded repo is its own git boundary, so we re-run `git ls-files` inside it.
  * (See issue #193.)
  */
-function collectGitFiles(repoDir: string, prefix: string, files: Set<string>): void {
+function collectGitFiles(repoDir: string, prefix: string, files: Set<string>, includeIgnored: Ignore | null = null): void {
   const gitOpts = { cwd: repoDir, encoding: 'utf-8' as const, timeout: 30000, maxBuffer: 50 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'] as ['pipe', 'pipe', 'pipe'], windowsHide: true };
 
   // Tracked files. --recurse-submodules pulls in files from active submodules,
@@ -346,11 +347,31 @@ function collectGitFiles(repoDir: string, prefix: string, files: Set<string>): v
       // indexed through its main checkout — so it is skipped here too.
       const childDir = path.join(repoDir, rel);
       if (classifyGitDir(childDir) === 'embedded') {
-        collectGitFiles(childDir, prefix + rel, files);
+        collectGitFiles(childDir, prefix + rel, files, includeIgnored);
       }
       continue;
     }
     files.add(normalizePath(prefix + rel));
+  }
+
+  // Gitignored directories the project opted into via codegraph.json
+  // `includeIgnored` (#622, #699): `ls-files -o -i` lists ignored untracked
+  // entries; those matching an opted-in pattern and containing an embedded
+  // repo are recursed so their source gets indexed despite .gitignore.
+  if (includeIgnored) {
+    try {
+      const ignored = execFileSync('git', ['ls-files', '-z', '-o', '-i', '--exclude-standard'], gitOpts);
+      for (const rel of ignored.split('\0')) {
+        if (!rel || !rel.endsWith('/')) continue;
+        if (!includeIgnored.ignores(normalizePath(rel))) continue;
+        const childDir = path.join(repoDir, rel);
+        if (classifyGitDir(childDir) === 'embedded') {
+          collectGitFiles(childDir, prefix + rel, files, includeIgnored);
+        }
+      }
+    } catch {
+      // ls-files -i unavailable — fall back to .gitignore-respecting behaviour
+    }
   }
 }
 
@@ -387,12 +408,20 @@ function getGitVisibleFiles(rootDir: string): Set<string> | null {
     }
 
     const files = new Set<string>();
-    collectGitFiles(rootDir, '', files);
+    // codegraph.json `includeIgnored` opt-in: gitignored embedded repos are
+    // discovered despite .gitignore; no patterns means .gitignore is fully
+    // respected (null matcher, zero overhead).
+    const includeIgnoredPatterns = loadIncludeIgnoredPatterns(rootDir);
+    const includeIgnored = includeIgnoredPatterns.length > 0 ? ignore().add(includeIgnoredPatterns) : null;
+    collectGitFiles(rootDir, '', files, includeIgnored);
     // Apply built-in default ignores uniformly — to tracked files too, since
     // committing a dependency/build dir doesn't make it project code. A
     // `.gitignore` negation (e.g. `!vendor/`) is the explicit opt-in. (issue #407)
     const ig = buildDefaultIgnore(rootDir);
-    return new Set([...files].filter((f) => !ig.ignores(f)));
+    // includeIgnored-resurrected files (gitignored embedded repos opted in via
+    // codegraph.json) are exempt from the default-ignore filter — the opt-in
+    // would otherwise be undone by the root .gitignore the matcher includes.
+    return new Set([...files].filter((f) => !ig.ignores(f) || (includeIgnored !== null && includeIgnored.ignores(f))));
   } catch {
     return null;
   }

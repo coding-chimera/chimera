@@ -12,6 +12,7 @@ import { CodeGraph } from '../../src/graph';
 import { extractFromSource, scanDirectory } from '../../src/graph/extraction';
 import { detectLanguage, isLanguageSupported, getSupportedLanguages, initGrammars, loadAllGrammars } from '../../src/graph/extraction/grammars';
 import { normalizePath } from '../../src/graph/utils';
+import { clearProjectConfigCache } from '../../src/graph/config';
 
 beforeAll(async () => {
   await initGrammars();
@@ -3555,6 +3556,40 @@ describe('Nested non-submodule git repos', () => {
 
     expect(files).toContain('sub_repo/src/real.ts');
     expect(files).not.toContain('sub_repo/src/generated.ts');
+  });
+
+  it('should index gitignored embedded repos opted in via codegraph.json includeIgnored', async () => {
+    const { execFileSync } = await import('child_process');
+    const git = (cwd: string, ...args: string[]) =>
+      execFileSync('git', args, { cwd, stdio: 'pipe' });
+
+    const root = path.join(tempDir, 'root');
+    fs.mkdirSync(root, { recursive: true });
+    git(root, 'init', '-q');
+    git(root, 'config', 'user.email', 'test@test.com');
+    git(root, 'config', 'user.name', 'Test');
+    fs.writeFileSync(path.join(root, '.gitignore'), 'vendor/\n');
+
+    // Gitignored directory containing an embedded (non-submodule) repo.
+    const sdk = path.join(root, 'vendor', 'sdk');
+    fs.mkdirSync(path.join(sdk, 'src'), { recursive: true });
+    git(sdk, 'init', '-q');
+    git(sdk, 'config', 'user.email', 'test@test.com');
+    git(sdk, 'config', 'user.name', 'Test');
+    fs.writeFileSync(path.join(sdk, 'src', 'api.ts'), 'export const api = 1;');
+    git(sdk, 'add', '-A');
+    git(sdk, 'commit', '-q', '-m', 'sdk init');
+
+    // Without opt-in: gitignored → not discovered.
+    expect(scanDirectory(root)).not.toContain('vendor/sdk/src/api.ts');
+
+    // With includeIgnored opt-in: discovered and indexed.
+    fs.writeFileSync(
+      path.join(root, 'codegraph.json'),
+      JSON.stringify({ includeIgnored: ['vendor/'] })
+    );
+    clearProjectConfigCache();
+    expect(scanDirectory(root)).toContain('vendor/sdk/src/api.ts');
   });
 });
 
