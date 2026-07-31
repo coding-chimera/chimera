@@ -26,6 +26,15 @@
 - Only explicit write flows (`chimera graph init`, `index`, `sync`, `migrate-data`) may create or migrate graph data. Never silently move, merge, or delete legacy `.codegraph/` data.
 - When changing graph CLI, Chimera tools, prompt context, storage paths, watcher/extraction ignores, or installer behavior, update agent-facing prompt/tool guidance and focused tests in the same change.
 
+# Ultra tier semantics
+
+- `ultra` is a Chimera product-level reasoning tier (a model variant), **not a provider-offered tier**. It means the model's highest supported reasoning effort **plus** proactive multi-agent delegation.
+- It is **not always `max`**: the advertised `ultra` variant carries the model's highest supported effort (e.g. `xhigh` for models that top out there), never a hardcoded `max` assumption. Today's ultra advertisers (gpt-5.6-sol/terra, kimi k3, deepseek-v4-flash) all top out at `max`, which is why the code currently shows `reasoningEffort: "max"`.
+- The advertising layer translates `ultra` to that maximum value before any transport sees it; a raw `"ultra"` effort must never reach the wire. `lowerUltraEffort` in `src/provider/transform.ts` and `buildReasoning` in `src/session/codex-responses.ts` are defensive backstops.
+- Selecting the `ultra` variant activates proactive multi-agent delegation via `multiAgentPolicy` in `src/session/llm.ts`. The injected `<multi_agent_mode>` fragment is model-specialized: DeepSeek ultra uses an exploration-first swarm profile (split investigation into independent sub-questions and fan out with `chimera_swarm`, up to 16 parallel workers as the normal width), while other models keep the generic proactive delegation text.
+- Advertising points: codex-semantics models via profiles in `src/provider/codex-model.ts` (`ultra: true`, appended only when the model's codex efforts include `max`); openai-compatible models via `variants()` in `src/provider/transform.ts` (kimi k3, deepseek-v4-flash).
+- When adding `ultra` to a new model, derive the advertised effort from the model's declared reasoning efforts (its highest one), not from `max` by default.
+
 # Database guide
 
 ## Database

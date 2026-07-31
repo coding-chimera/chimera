@@ -713,6 +713,98 @@ describe("session.llm.stream", () => {
     })
   })
 
+  test("activates the Ultra profile for DeepSeek V4 Flash on OpenAI-compatible Chat", async () => {
+    const server = state.server
+    if (!server) throw new Error("Server not initialized")
+
+    const providerID = "custom-deepseek-chat"
+    const modelID = "deepseek-v4-flash"
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(
+          path.join(dir, "chimera.json"),
+          JSON.stringify({
+            $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+            enabled_providers: [providerID],
+            provider: {
+              [providerID]: {
+                name: "Custom DeepSeek Chat",
+                npm: "@ai-sdk/openai-compatible",
+                wire_api: "chat",
+                env: [],
+                models: { [modelID]: { reasoning: true } },
+                options: {
+                  apiKey: "test-deepseek-key",
+                  baseURL: `${server.url.origin}/v1`,
+                },
+              },
+            },
+          }),
+        )
+      },
+    })
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const resolved = await getModel(ProviderID.make(providerID), ModelID.make(modelID))
+        expect(resolved.variants?.ultra).toEqual({ reasoningEffort: "max" })
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        } satisfies Agent.Info
+        const capture = async (variant: string, label: string, parentSessionID?: string) => {
+          const request = waitRequest(
+            "/chat/completions",
+            new Response(createChatStream(label), {
+              status: 200,
+              headers: { "Content-Type": "text/event-stream" },
+            }),
+          )
+          const sessionID = SessionID.make(`session-deepseek-${label}`)
+          const user = {
+            id: MessageID.make(`user-deepseek-${label}`),
+            sessionID,
+            role: "user",
+            time: { created: Date.now() },
+            agent: agent.name,
+            model: { providerID: ProviderID.make(providerID), modelID: resolved.id, variant },
+          } satisfies MessageV2.User
+
+          await drain({
+            user,
+            sessionID,
+            parentSessionID,
+            model: resolved,
+            agent,
+            system: ["runtime-system"],
+            messages: [{ role: "user", content: "Hello" }],
+            tools: {},
+          })
+          return (await request).body
+        }
+
+        const ultra = await capture("ultra", "ultra")
+        expect(ultra.reasoning_effort).toBe("max")
+        expect(JSON.stringify(ultra)).not.toContain('"ultra"')
+        expect(promptForRole(ultra, "system")).toContain("Proactive multi-agent delegation is active for this root session.")
+        expect(promptForRole(ultra, "system")).toContain("Exploration is a swarm task by default")
+        expect(promptForRole(ultra, "system")).toContain("up to 16 parallel workers")
+
+        const max = await capture("max", "max")
+        expect(max.reasoning_effort).toBe("max")
+        expect(promptForRole(max, "system")).toContain("Explicit-request-only multi-agent mode is active.")
+
+        const child = await capture("ultra", "child", SessionID.make("session-deepseek-parent"))
+        expect(child.reasoning_effort).toBe("max")
+        expect(promptForRole(child, "system")).toContain("active for this child session")
+        expect(promptForRole(child, "system")).not.toContain("active for this root session")
+      },
+    })
+  })
+
   test("lowers options-only Ultra for Kimi k3 and rejects unadvertised Ultra", async () => {
     const server = state.server
     if (!server) throw new Error("Server not initialized")

@@ -28,6 +28,8 @@ import { IconButton } from "@opencode-ai/ui/icon-button"
 import { Select } from "@opencode-ai/ui/select"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { ModelSelectorPopover } from "@/components/dialog-select-model"
+import { DialogVariantCache } from "@/components/dialog-variant-cache"
+import { shouldConfirmUltraSwitch } from "@/context/model-variant"
 import { useProviders } from "@/hooks/use-providers"
 import { useCommand } from "@/context/command"
 import { Persist, persisted } from "@/utils/persist"
@@ -1596,8 +1598,25 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                             options={variants()}
                             current={local.model.variant.current() ?? "default"}
                             label={(x) => (x === "default" ? language.t("common.default") : x)}
+                            children={(x) => (x === "ultra" ? <span class="opacity-50">{x}</span> : x)}
                             onSelect={(value) => {
-                              local.model.variant.set(value === "default" ? undefined : value)
+                              const next = value === "default" ? undefined : value
+                              const prev = local.model.variant.current()
+                              if (shouldConfirmUltraSwitch(prev, next)) {
+                                const entering = next?.toLowerCase() === "ultra"
+                                dialog.show(() => (
+                                  <DialogVariantCache
+                                    title={language.t(entering ? "dialog.variant.ultra.enter.title" : "dialog.variant.ultra.leave.title")}
+                                    description={language.t(entering ? "dialog.variant.ultra.enter.description" : "dialog.variant.ultra.leave.description")}
+                                    onConfirm={() => {
+                                      local.model.variant.set(next)
+                                      restoreFocus()
+                                    }}
+                                  />
+                                ))
+                                return
+                              }
+                              local.model.variant.set(next)
                               restoreFocus()
                             }}
                             class="capitalize max-w-[160px] text-text-base"

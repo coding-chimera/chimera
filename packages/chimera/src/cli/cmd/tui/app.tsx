@@ -1,6 +1,7 @@
 import { render, TimeToFirstDraw, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import * as Clipboard from "@tui/util/clipboard"
 import * as Selection from "@tui/util/selection"
+import { shouldConfirmUltraSwitch, ultraSwitchCopy } from "@tui/util/variant"
 import { createCliRenderer, MouseButton, type CliRendererConfig } from "@opentui/core"
 import { RouteProvider, useRoute } from "@tui/context/route"
 import {
@@ -755,8 +756,16 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       value: "variant.cycle",
       keybind: "variant_cycle",
       category: "Agent",
-      onSelect: () => {
-        local.model.variant.cycle()
+      onSelect: async () => {
+        const next = local.model.variant.next()
+        if (!next) return
+        const prev = local.model.variant.current()
+        if (shouldConfirmUltraSwitch(prev, next.target)) {
+          const copy = ultraSwitchCopy(prev, next.target)
+          const ok = await DialogConfirm.show(dialog, copy.title, copy.message)
+          if (!ok) return
+        }
+        local.model.variant.set(next.target)
       },
     },
     {

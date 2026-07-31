@@ -420,6 +420,11 @@ export const dict = {
   "toast.permissions.autoaccept.off.description": "Forespørsler om tillatelse vil kreve godkjenning",
 
   "toast.model.none.title": "Ingen modell valgt",
+  "dialog.variant.ultra.enter.title": "Switch to ultra?",
+  "dialog.variant.ultra.enter.description": "Ultra changes the system prompt prefix (multi-agent mode); prompt cache hits will drop temporarily for this session.",
+  "dialog.variant.ultra.leave.title": "Switch away from ultra?",
+  "dialog.variant.ultra.leave.description": "This restores the previous system prompt prefix; prompt cache hits will drop temporarily for this session.",
+  "dialog.variant.ultra.confirm": "Switch",
   "toast.model.none.description": "Koble til en leverandør for å oppsummere denne sesjonen",
 
   "toast.file.loadFailed.title": "Kunne ikke laste fil",

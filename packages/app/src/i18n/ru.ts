@@ -419,6 +419,11 @@ export const dict = {
   "toast.workspace.disabled.description": "В боковой панели отображается только главное рабочее дерево",
 
   "toast.model.none.title": "Модель не выбрана",
+  "dialog.variant.ultra.enter.title": "Switch to ultra?",
+  "dialog.variant.ultra.enter.description": "Ultra changes the system prompt prefix (multi-agent mode); prompt cache hits will drop temporarily for this session.",
+  "dialog.variant.ultra.leave.title": "Switch away from ultra?",
+  "dialog.variant.ultra.leave.description": "This restores the previous system prompt prefix; prompt cache hits will drop temporarily for this session.",
+  "dialog.variant.ultra.confirm": "Switch",
   "toast.model.none.description": "Подключите провайдера для суммаризации сессии",
 
   "toast.file.loadFailed.title": "Не удалось загрузить файл",

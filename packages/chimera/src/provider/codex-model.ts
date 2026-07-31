@@ -74,6 +74,9 @@ export function normalizeReasoningEfforts(values: readonly unknown[] | undefined
     ),
   )
 }
+export function highestReasoningEffort(efforts: readonly string[]) {
+  return REASONING_EFFORTS.filter((effort) => efforts.includes(effort)).at(-1)
+}
 
 export function reasoningEfforts(capabilityID: string, configured?: readonly unknown[]) {
   const current = profile(capabilityID)
@@ -81,7 +84,7 @@ export function reasoningEfforts(capabilityID: string, configured?: readonly unk
   if (!preferred || (current.requiresConfiguredEfforts && configured === undefined)) return []
   const available = configured === undefined ? undefined : normalizeReasoningEfforts(configured)
   const efforts = available ? preferred.filter((effort) => available.includes(effort)) : [...preferred]
-  if (!efforts.includes("max") || !supportsUltra(capabilityID)) return efforts
+  if (!efforts.length || !supportsUltra(capabilityID)) return efforts
   return [...efforts, "ultra" as const]
 }
 

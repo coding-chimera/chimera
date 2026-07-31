@@ -26,11 +26,12 @@ function codexReasoningVariants(model: {
   if (!capabilityID) return
   const efforts = CodexModel.reasoningEfforts(capabilityID, model.reasoning_efforts)
   if (efforts.length === 0) return
+  const top = CodexModel.highestReasoningEffort(efforts)
   return Object.fromEntries(
     efforts.map((effort) => [
       effort,
       {
-        reasoningEffort: effort === "ultra" ? "max" : effort,
+        reasoningEffort: effort === "ultra" ? top ?? "max" : effort,
         reasoningSummary: "auto",
         include: ["reasoning.encrypted_content"],
       },

@@ -435,6 +435,11 @@ export const dict = {
 
   "toast.model.none.title": "No model selected",
   "toast.model.none.description": "Connect a provider to summarize this session",
+  "dialog.variant.ultra.enter.title": "Switch to ultra?",
+  "dialog.variant.ultra.enter.description": "Ultra changes the system prompt prefix (multi-agent mode); prompt cache hits will drop temporarily for this session.",
+  "dialog.variant.ultra.leave.title": "Switch away from ultra?",
+  "dialog.variant.ultra.leave.description": "This restores the previous system prompt prefix; prompt cache hits will drop temporarily for this session.",
+  "dialog.variant.ultra.confirm": "Switch",
 
   "toast.file.loadFailed.title": "Failed to load file",
   "toast.file.listFailed.title": "Failed to list files",

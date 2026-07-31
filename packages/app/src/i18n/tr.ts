@@ -422,6 +422,11 @@ export const dict = {
   "toast.permissions.autoaccept.off.description": "Düzenleme ve yazma izinleri onay gerektirecek",
 
   "toast.model.none.title": "Model seçilmedi",
+  "dialog.variant.ultra.enter.title": "Switch to ultra?",
+  "dialog.variant.ultra.enter.description": "Ultra changes the system prompt prefix (multi-agent mode); prompt cache hits will drop temporarily for this session.",
+  "dialog.variant.ultra.leave.title": "Switch away from ultra?",
+  "dialog.variant.ultra.leave.description": "This restores the previous system prompt prefix; prompt cache hits will drop temporarily for this session.",
+  "dialog.variant.ultra.confirm": "Switch",
   "toast.model.none.description": "Bu oturumu özetlemek için bir sağlayıcı bağlayın",
 
   "toast.file.loadFailed.title": "Dosya yüklenemedi",

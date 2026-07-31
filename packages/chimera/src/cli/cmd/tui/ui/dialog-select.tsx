@@ -43,6 +43,7 @@ export interface DialogSelectOption<T = any> {
   categoryView?: JSX.Element
   disabled?: boolean
   bg?: RGBA
+  fg?: RGBA
   gutter?: () => JSX.Element
   margin?: JSX.Element
   onSelect?: (ctx: DialogContext) => void
@@ -355,6 +356,7 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
                           active={active()}
                           current={current()}
                           gutter={option.gutter}
+                          fg={option.fg}
                         />
                       </box>
                     )
@@ -411,6 +413,7 @@ function Option(props: {
   current?: boolean
   footer?: JSX.Element | string
   gutter?: () => JSX.Element
+  fg?: RGBA
   onMouseOver?: () => void
 }) {
   const { theme } = useTheme()
@@ -430,7 +433,7 @@ function Option(props: {
       </Show>
       <text
         flexGrow={1}
-        fg={props.active ? fg : props.current ? theme.primary : theme.text}
+        fg={props.fg ?? (props.active ? fg : props.current ? theme.primary : theme.text)}
         attributes={props.active ? TextAttributes.BOLD : undefined}
         overflow="hidden"
         wrapMode="none"
