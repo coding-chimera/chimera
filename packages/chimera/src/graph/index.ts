@@ -143,7 +143,7 @@ export {
   defaultLogger,
 } from './errors';
 export type { Logger } from './errors';
-export { Mutex, FileLock, processInBatches, debounce, throttle, MemoryMonitor } from './utils';
+export { Mutex, FileLock, processInBatches, debounce, throttle } from './utils';
 export {
   FileWatcher,
   LockUnavailableError,
@@ -1224,12 +1224,14 @@ export class CodeGraph {
   }
 
   /**
-   * Release SQLite memory caches without closing the database (PRAGMA shrink_memory).
-   * Useful after a tool call to free accumulated query cache while keeping the
-   * connection open for fast reuse by the next call.
+   * Release SQLite memory caches and the JS node cache without closing the
+   * database: PRAGMA shrink_memory + QueryBuilder cache clear. Useful after a
+   * tool call to free accumulated query cache while keeping the connection
+   * open for fast reuse by the next call.
    */
   shrink(): void {
     this.db.shrinkMemory();
+    this.queries.clearCache();
   }
 
   /**
