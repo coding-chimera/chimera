@@ -8,6 +8,7 @@ import { fileURLToPath } from "url"
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ownPkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"))
 const pkgShortName = (ownPkg.name || "@coding-chimera/chimera").split("/").pop()
+const pkgFullName = ownPkg.name || "@coding-chimera/chimera"
 
 function detectPlatformAndArch() {
   // Map platform names
@@ -48,10 +49,14 @@ function detectPlatformAndArch() {
 }
 
 function candidatePackageNames(platform, arch) {
-  const base = `${pkgShortName}-${platform}-${arch}`
-  if (platform !== "linux") return arch === "x64" ? [base, `${base}-baseline`] : [base]
-  if (arch !== "x64") return [base, `${base}-musl`]
-  return [base, `${base}-baseline`, `${base}-musl`, `${base}-baseline-musl`]
+  const shortBase = `${pkgShortName}-${platform}-${arch}`
+  const fullBase = `${pkgFullName}-${platform}-${arch}`
+  const bases = fullBase !== shortBase ? [fullBase, shortBase] : [fullBase]
+  if (platform !== "linux") {
+    return bases.flatMap((base) => (arch === "x64" ? [base, `${base}-baseline`] : [base]))
+  }
+  if (arch !== "x64") return bases.flatMap((base) => [base, `${base}-musl`])
+  return bases.flatMap((base) => [base, `${base}-baseline`, `${base}-musl`, `${base}-baseline-musl`])
 }
 
 function findBinary() {

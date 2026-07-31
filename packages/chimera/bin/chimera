@@ -36,6 +36,7 @@ const scriptPath = fs.realpathSync(fileURLToPath(import.meta.url))
 const scriptDir = path.dirname(scriptPath)
 const ownPkg = JSON.parse(fs.readFileSync(path.join(scriptDir, "..", "package.json"), "utf8"))
 const pkgShortName = (ownPkg.name || "@coding-chimera/chimera").split("/").pop()
+const pkgFullName = ownPkg.name || "@coding-chimera/chimera"
 
 const cached = path.join(scriptDir, ".chimera")
 if (fs.existsSync(cached)) {
@@ -66,7 +67,6 @@ let arch = archMap[os.arch()]
 if (!arch) {
   arch = os.arch()
 }
-const base = pkgShortName + "-" + platform + "-" + arch
 const binary = platform === "windows" ? "chimera.exe" : "chimera"
 
 function supportsAvx2() {
@@ -122,6 +122,8 @@ function supportsAvx2() {
 const names = (() => {
   const avx2 = supportsAvx2()
   const baseline = arch === "x64" && !avx2
+  const bases = pkgFullName !== pkgShortName ? [pkgFullName, pkgShortName] : [pkgFullName]
+  const expand = (suffixes) => bases.flatMap((b) => suffixes.map((s) => `${b}-${platform}-${arch}${s}`))
 
   if (platform === "linux") {
     const musl = (() => {
@@ -144,24 +146,24 @@ const names = (() => {
 
     if (musl) {
       if (arch === "x64") {
-        if (baseline) return [`${base}-baseline-musl`, `${base}-musl`, `${base}-baseline`, base]
-        return [`${base}-musl`, `${base}-baseline-musl`, base, `${base}-baseline`]
+        if (baseline) return expand(["-baseline-musl", "-musl", "-baseline", ""])
+        return expand(["-musl", "-baseline-musl", "", "-baseline"])
       }
-      return [`${base}-musl`, base]
+      return expand(["-musl", ""])
     }
 
     if (arch === "x64") {
-      if (baseline) return [`${base}-baseline`, base, `${base}-baseline-musl`, `${base}-musl`]
-      return [base, `${base}-baseline`, `${base}-musl`, `${base}-baseline-musl`]
+      if (baseline) return expand(["-baseline", "", "-baseline-musl", "-musl"])
+      return expand(["", "-baseline", "-musl", "-baseline-musl"])
     }
-    return [base, `${base}-musl`]
+    return expand(["", "-musl"])
   }
 
   if (arch === "x64") {
-    if (baseline) return [`${base}-baseline`, base]
-    return [base, `${base}-baseline`]
+    if (baseline) return expand(["-baseline", ""])
+    return expand(["", "-baseline"])
   }
-  return [base]
+  return expand([""])
 })()
 
 function findBinary(startDir) {

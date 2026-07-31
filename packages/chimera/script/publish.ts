@@ -10,6 +10,7 @@ import { packageLicense, parsePackageVariant, writePackageLicenseFiles } from ".
 const dir = fileURLToPath(new URL("..", import.meta.url))
 process.chdir(dir)
 const dryRun = process.argv.includes("--dry-run")
+const npmOnly = process.argv.includes("--npm-only")
 
 async function published(name: string, version: string) {
   return (await $`npm view ${name}@${version} version`.nothrow()).exitCode === 0
@@ -94,14 +95,14 @@ await publish(`./dist/${pkg.name}`, pkg.name, version)
 
 const releaseName = pkg.name
 const repo = process.env.GH_REPO
-if (!repo) throw new Error("GH_REPO is required")
+if (!npmOnly && !repo) throw new Error("GH_REPO is required")
 const image = `ghcr.io/${repo}`
 const platforms = "linux/amd64,linux/arm64"
 const tags = [`${image}:${version}`, `${image}:${Script.channel}`]
 const tagFlags = tags.flatMap((t) => ["-t", t])
 
 // registries
-if (!Script.preview && !dryRun) {
+if (!npmOnly && !Script.preview && !dryRun) {
   await $`docker buildx build --platform ${platforms} ${tagFlags} --push .`
   // Calculate SHA values
   const arm64Sha = await $`sha256sum ./dist/${releaseName}-linux-arm64.tar.gz | cut -d' ' -f1`
