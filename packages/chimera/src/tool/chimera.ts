@@ -32,6 +32,7 @@ import {
   type RelationEvidence as CodeGraphRelation,
   type RelationKind,
 } from "@/graph"
+import { ProjectionMemo } from "@/chimera/projection-memo"
 import { deriveImpactLabels, type ImpactLabelResult } from "@/chimera/impact-label"
 import { dispatchMayImpactRule, mayImpactRuleEvidence, type MayImpactRule } from "@/chimera/may-impact-rules"
 import {
@@ -2051,7 +2052,8 @@ const buildAudit = Effect.fn("ChimeraTool.buildAudit")(function* (params: BuildA
     : source === "recent_provenance" && recent
       ? recent
       : syntheticAuditRecord({ projectRoot: state.projectRoot, directory: instance.directory, source, changedFiles, snapshot })
-  const ephemeralAfterNodes = ephemeralRecord ? collectFileProjections(state.graph, ephemeralRecord.files, snapshot) : []
+  const projectionMemo = new ProjectionMemo()
+  const ephemeralAfterNodes = ephemeralRecord ? collectFileProjections(state.graph, ephemeralRecord.files, snapshot, projectionMemo) : []
   const ephemeralAfterRelations = ephemeralRecord ? collectIncidentRelations(state.graph, ephemeralAfterNodes, snapshot) : []
   const changeFacts = storedChangeFacts.length
     ? storedChangeFacts

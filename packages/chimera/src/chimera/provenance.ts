@@ -7,6 +7,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { registerDisposer } from "@/effect/instance-registry"
 import type { Tool } from "@/tool/tool"
 import { classifyChangeRecord, classifyFileBoundary, collectFileProjections, collectIncidentRelations } from "./change-classifier"
+import { ProjectionMemo } from "./projection-memo"
 import { CodeGraphAdapter } from "./codegraph-adapter"
 import { getCodeGraphDir, isInitialized, type CodeGraphSnapshot, type IndexProgress as CodeGraphIndexProgress, type SyncResult as CodeGraphSyncResult } from "@/graph"
 import { appendProvenanceRecord, databaseStorePath, readPredesignRuns, readProvenanceRecords, readRecentProvenanceRecords, recordOracleResult, writeChangeFacts, type OracleLinkedChange, type OracleStatus, type OracleVerificationKind } from "./store"
@@ -638,12 +639,15 @@ export function trackToolMutation<A, E, R>(
     rememberToolFiles(s.projectRoot, files)
     const syncFiles = files.filter((file) => file.insideGraph).map((file) => file.absolutePath)
     const before = s.graph.snapshot()
-    const beforeNodes = collectFileProjections(s.graph, files, before)
+    // One memo per tool-call: before/after projections of the same nodes
+    // reuse the same frozen objects, halving projection work on hot paths.
+    const memo = new ProjectionMemo()
+    const beforeNodes = collectFileProjections(s.graph, files, before, memo)
     const beforeRelations = collectIncidentRelations(s.graph, beforeNodes, before)
     const exit = yield* effect.pipe(Effect.exit)
     const sync = yield* Effect.promise(() => s.graph.syncFiles(syncFiles)).pipe(Effect.orDie)
     const after = s.graph.snapshot()
-    const afterNodes = collectFileProjections(s.graph, files, after)
+    const afterNodes = collectFileProjections(s.graph, files, after, memo)
     const afterRelations = collectIncidentRelations(s.graph, afterNodes, after)
     const finishedAt = new Date().toISOString()
     const record: ToolMutationRecord = {

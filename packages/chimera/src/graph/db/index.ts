@@ -39,8 +39,14 @@ const sqlitePragmaMB = (name: string, fallback: number) => {
   return Number.isFinite(value) && value >= 0 ? Math.floor(value) : fallback;
 };
 
-const sqliteCacheKiB = () => Math.max(1024, sqlitePragmaMB('CHIMERA_SQLITE_CACHE_MB', 8) * 1024);
-const sqliteMmapBytes = () => sqlitePragmaMB('CHIMERA_SQLITE_MMAP_MB', 0) * 1024 * 1024;
+// Hot/cold OS-level tuning: mmap keeps hot pages resident and lets the OS evict
+// cold pages back to disk; cache_size is the per-connection page cache. Defaults
+// match upstream codegraph (64MB cache, 256MB mmap) and are env-overridable.
+const sqliteCacheKiB = () => Math.max(1024, sqlitePragmaMB('CHIMERA_SQLITE_CACHE_MB', 64) * 1024);
+const sqliteMmapBytes = () => sqlitePragmaMB('CHIMERA_SQLITE_MMAP_MB', 256) * 1024 * 1024;
+// temp_store stays FILE by default: chimera runs inside an agent runtime where
+// large sorts/joins spilling to disk are safer than unbounded memory. Set
+// CHIMERA_SQLITE_TEMP_STORE=MEMORY to mirror upstream codegraph's default.
 const sqliteTempStore = () => process.env.CHIMERA_SQLITE_TEMP_STORE?.toUpperCase() === 'MEMORY' ? 'MEMORY' : 'FILE';
 
 function configureConnection(db: SqliteDatabase, options: DatabaseOpenOptions = {}): void {
@@ -290,6 +296,62 @@ export class DatabaseConnection {
       this.db.exec('PRAGMA wal_checkpoint(PASSIVE)');
     } catch {
       // ignore (e.g., not in WAL mode)
+    }
+  }
+
+  /**
+   * Current WAL sidecar file size in bytes (0 when absent). Used by the
+   * WalCheckpointValve to bound growth while auto-checkpointing is deferred.
+   */
+  getWalSizeBytes(): number {
+    try {
+      const walPath = `${this.dbPath}-wal`;
+      return fs.existsSync(walPath) ? fs.statSync(walPath).size : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * Current wal_autocheckpoint page count (default 1000).
+   */
+  getWalAutocheckpoint(): number {
+    const row = this.db.pragma('wal_autocheckpoint', { simple: true }) as number | undefined;
+    return typeof row === 'number' ? row : 1000;
+  }
+
+  /**
+   * Override wal_autocheckpoint (0 = fully defer automatic checkpoints).
+   */
+  setWalAutocheckpoint(pages: number): void {
+    this.db.pragma(`wal_autocheckpoint = ${pages}`);
+  }
+
+  /**
+   * Fold pending WAL frames into the main DB with PRAGMA wal_checkpoint(PASSIVE)
+   * on a SEPARATE connection, so the writer connection is never blocked.
+   * PASSIVE never blocks writers; the off-connection checkpoint is what the
+   * WalCheckpointValve uses to keep a deferred WAL bounded. Runs on the main
+   * thread (worker off-loading is a later refinement). Returns the checkpoint
+   * row, or null when the checkpoint is unavailable (e.g. non-WAL mode).
+   */
+  async checkpointWalPassive(): Promise<{ busy: number; log: number; checkpointed: number } | null> {
+    try {
+      const { db } = createDatabase(this.dbPath, { readOnly: true });
+      try {
+        const row = db.prepare('PRAGMA wal_checkpoint(PASSIVE)').get() as
+          { busy?: number; log?: number; checkpointed?: number } | undefined;
+        if (!row) return null;
+        return {
+          busy: Number(row.busy ?? 0),
+          log: Number(row.log ?? 0),
+          checkpointed: Number(row.checkpointed ?? 0),
+        };
+      } finally {
+        db.close();
+      }
+    } catch {
+      return null;
     }
   }
 

@@ -69,6 +69,12 @@ export interface WatchBatchApi {
   getPendingFiles: () => PendingFile[];
 }
 
+// Retry budget for failed debounced syncs: after this many consecutive
+// failures the watcher degrades permanently instead of retrying forever
+// (upstream #1127). Backoff is exponential, capped at MAX_RETRY_BACKOFF_MS.
+const MAX_SYNC_FAILURE_RETRIES = 5;
+const MAX_RETRY_BACKOFF_MS = 30_000;
+
 /**
  * Options for the file watcher
  */
@@ -112,6 +118,13 @@ export interface WatchOptions {
    */
   onSyncComplete?: (result: WatchSyncSummary, batch?: WatchBatch) => void;
 
+  /**
+   * Called once when the watcher permanently disables auto-sync after
+   * repeated failures or resource exhaustion (EMFILE/ENFILE/ENOSPC). Hosts
+   * should surface "index no longer auto-updates" instead of silently
+   * serving a frozen index (upstream #876).
+   */
+  onDegraded?: (reason: string) => void;
   /**
    * Callback when a sync errors (for logging/diagnostics).
    */
@@ -244,6 +257,10 @@ export class FileWatcher {
   private readonly onBatch?: WatchOptions['onBatch'];
   private readonly onSyncComplete?: WatchOptions['onSyncComplete'];
   private readonly onSyncError?: WatchOptions['onSyncError'];
+  private readonly onDegraded?: WatchOptions['onDegraded'];
+  private degradedReason: string | null = null;
+  private syncFailureCount = 0;
+  private retryBackoffMs = 0;
   private batchSeq = 0;
   private watchedGitRelPaths = new Set<string>();
 
@@ -262,6 +279,7 @@ export class FileWatcher {
     this.onBatch = options.onBatch;
     this.onSyncComplete = options.onSyncComplete;
     this.onSyncError = options.onSyncError;
+    this.onDegraded = options.onDegraded;
     this.batchApi = batchApi;
   }
 
@@ -352,6 +370,15 @@ export class FileWatcher {
 
       // Handle watcher errors gracefully — don't crash, the user can restart.
       this.watcher.on('error', (err: unknown) => {
+        const code = (err as { code?: string })?.code ?? '';
+        if (code === 'EMFILE' || code === 'ENFILE' || /too many open files/i.test(String(err))) {
+          this.degrade(`watcher resource exhaustion (${code}) — automatic sync disabled`);
+          return;
+        }
+        if (code === 'ENOSPC') {
+          logWarn('File watcher: inotify watch limit reached — some directories are not watched', { error: String(err) });
+          return;
+        }
         logWarn('File watcher error', { error: String(err) });
       });
 
@@ -527,6 +554,8 @@ export class FileWatcher {
         }
       }
       this.onSyncComplete?.(toWatchSummary(result), batch);
+      this.syncFailureCount = 0;
+      this.retryBackoffMs = 0;
     } catch (err) {
       if (err instanceof LockUnavailableError) {
         // Lock-failure no-op (another writer holds the lock). pendingFiles
@@ -539,6 +568,14 @@ export class FileWatcher {
         const error = err instanceof Error ? err : new Error(String(err));
         logWarn('Watch sync failed', { error: error.message });
         this.onSyncError?.(error, this.createBatch(this.syncStartedMs));
+        // Retry budget with exponential backoff; past the budget the watcher
+        // degrades permanently so the host can surface "index no longer
+        // auto-updates" instead of silently retrying forever (upstream #1127).
+        this.syncFailureCount++;
+        this.retryBackoffMs = Math.min(this.debounceMs * 2 ** (this.syncFailureCount - 1), MAX_RETRY_BACKOFF_MS);
+        if (this.syncFailureCount >= MAX_SYNC_FAILURE_RETRIES) {
+          this.degrade(`sync failed ${this.syncFailureCount} times in a row: ${error.message}`);
+        }
       }
       // Failure: leave pendingFiles untouched. Every edit it tracks is
       // still unindexed; the rescheduled sync sees the same set.
@@ -546,11 +583,38 @@ export class FileWatcher {
       this.syncing = false;
 
       // If pending files remain (mid-sync events, or this sync failed),
-      // schedule another pass.
-      if (this.pendingEvents.size > 0 && !this.stopped) {
-        this.scheduleSync();
+      // schedule another pass — with exponential backoff after a failure.
+      if (this.pendingEvents.size > 0 && !this.stopped && !this.isDegraded()) {
+        if (this.retryBackoffMs > 0) {
+          const backoff = this.retryBackoffMs;
+          this.retryBackoffMs = 0;
+          this.debounceTimer = setTimeout(() => {
+            this.debounceTimer = null;
+            this.flush();
+          }, backoff);
+        } else {
+          this.scheduleSync();
+        }
       }
     }
+  }
+
+  /** Permanently disable auto-sync after repeated failures (surfaced to hosts). */
+  private degrade(reason: string): void {
+    if (this.degradedReason) return;
+    this.degradedReason = reason;
+    logWarn('File watcher degraded', { reason });
+    this.onDegraded?.(reason);
+  }
+
+  /** True once the watcher has permanently disabled auto-sync. */
+  isDegraded(): boolean {
+    return this.degradedReason !== null;
+  }
+
+  /** Why auto-sync is disabled, or null when healthy. */
+  getDegradedReason(): string | null {
+    return this.degradedReason;
   }
 
   private createBatch(startedAtMs: number): WatchBatch {

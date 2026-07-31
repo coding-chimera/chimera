@@ -482,6 +482,26 @@ describe('FileWatcher', () => {
 
       watcher.stop();
     });
+
+    it('should degrade the watcher after repeated sync failures', async () => {
+      const syncFn = vi.fn().mockRejectedValue(new Error('sync failed'));
+      const onDegraded = vi.fn();
+      const watcher = new FileWatcher(testDir, syncFn, {
+        debounceMs: 20,
+        onDegraded,
+      });
+
+      watcher.start();
+      await watcher.waitUntilReady();
+      triggerFileEvent(testDir, 'add', 'src/test.ts');
+
+      await waitFor(() => watcher.isDegraded(), 5000);
+      expect(watcher.getDegradedReason()).toContain('sync failed');
+      expect(onDegraded).toHaveBeenCalled();
+      expect(onDegraded.mock.calls[0]![0]).toContain('sync failed');
+
+      watcher.stop();
+    });
   });
 
   describe('CodeGraph integration', () => {
@@ -503,6 +523,8 @@ describe('FileWatcher', () => {
 
       await cg.unwatch();
       expect(cg.isWatching()).toBe(false);
+      expect(cg.isWatcherDegraded()).toBe(false);
+      expect(cg.getWatcherDegradedReason()).toBeNull();
     });
 
     it('should stop watching on close', async () => {

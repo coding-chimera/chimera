@@ -11,7 +11,7 @@ import * as os from 'os';
 import { CodeGraph } from '../../src/graph';
 import { Node, UnresolvedReference } from '../../src/graph/types';
 import { ReferenceResolver, createResolver, ResolutionContext } from '../../src/graph/resolution';
-import { matchReference } from '../../src/graph/resolution/name-matcher';
+import { matchReference, matchByExactName } from '../../src/graph/resolution/name-matcher';
 import { resolveImportPath, extractImportMappings, resolveJvmImport, loadCppIncludeDirs, clearCppIncludeDirCache } from '../../src/graph/resolution/import-resolver';
 import type { UnresolvedRef } from '../../src/graph/resolution/types';
 import { detectFrameworks, getAllFrameworkResolvers } from '../../src/graph/resolution/frameworks';
@@ -95,6 +95,71 @@ describe('Resolution Module', () => {
       expect(result).not.toBeNull();
       expect(result?.targetNodeId).toBe('func:test.ts:myFunction:10');
       expect(result?.resolvedBy).toBe('exact-match');
+    });
+
+    it('refuses to fuzzy-guess names defined beyond the ambiguity ceiling', () => {
+      // Upstream #999: K definitions x K references is O(K²) work that stalls
+      // indexing on vendored/duplicated code. Beyond the ceiling the fuzzy
+      // scorer is bypassed; precise strategies (qualified/import) are unaffected.
+      const many = Array.from({ length: 501 }, (_, i) => ({
+        id: `func:dup.ts:f:${i}`,
+        kind: 'function' as const,
+        name: 'overloaded',
+        qualifiedName: 'dup.ts::overloaded',
+        filePath: `dup${i}.ts`,
+        language: 'typescript' as const,
+        startLine: i + 1,
+        endLine: i + 2,
+        startColumn: 0,
+        endColumn: 0,
+        updatedAt: Date.now(),
+      }));
+      const context: ResolutionContext = {
+        ...baseContext,
+        getNodesByName: () => many,
+      };
+      const ref = {
+        fromNodeId: 'caller:main.ts:caller:5',
+        referenceName: 'overloaded',
+        referenceKind: 'calls' as const,
+        line: 5,
+        column: 10,
+        filePath: 'main.ts',
+        language: 'typescript' as const,
+      };
+      expect(matchByExactName(ref, context)).toBeNull();
+    });
+
+    it('still scores names at or below the ambiguity ceiling', () => {
+      // The guard is strict >; exactly 500 (or fewer) still runs the scorer.
+      const many = Array.from({ length: 500 }, (_, i) => ({
+        id: `func:dup.ts:f:${i}`,
+        kind: 'function' as const,
+        name: 'overloaded',
+        qualifiedName: 'dup.ts::overloaded',
+        filePath: `dup${i}.ts`,
+        language: 'typescript' as const,
+        startLine: i + 1,
+        endLine: i + 2,
+        startColumn: 0,
+        endColumn: 0,
+        updatedAt: Date.now(),
+      }));
+      const context: ResolutionContext = {
+        ...baseContext,
+        getNodesByName: () => many,
+      };
+      const ref = {
+        fromNodeId: 'caller:main.ts:caller:5',
+        referenceName: 'overloaded',
+        referenceKind: 'calls' as const,
+        line: 5,
+        column: 10,
+        filePath: 'main.ts',
+        language: 'typescript' as const,
+      };
+      const result = matchByExactName(ref, context);
+      expect(result === null ? null : result.resolvedBy).toBe('exact-match');
     });
 
     it('should prefer same-module candidates over cross-module matches', () => {

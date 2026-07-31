@@ -9,6 +9,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
 import './env';
+import { WalCheckpointValve } from './db/wal-valve';
 import type {
   Node,
   Edge,
@@ -1265,6 +1266,16 @@ export class CodeGraph {
         finishIndexJob(this.projectRoot, job, 'failed', { error: 'Could not acquire file lock - another process may be indexing' });
         return { success: false, filesIndexed: 0, filesSkipped: 0, filesErrored: 0, nodesCreated: 0, edgesCreated: 0, errors: [{ message: 'Could not acquire file lock - another process may be indexing', severity: 'error' as const }], durationMs: 0 };
       }
+
+      // WAL deferral: disable auto-checkpoints during the bulk write so the
+      // store degrades to sequential WAL appends (upstream #1231), then fold
+      // at phase boundaries and restore the default afterwards.
+      const deferWal = process.env.CODEGRAPH_NO_WAL_DEFER !== '1';
+      const walValve = deferWal ? new WalCheckpointValve(this.db) : null;
+      if (walValve) {
+        this.db.setWalAutocheckpoint(0);
+        walValve.start();
+      }
       try {
         const before = this.queries.getNodeAndEdgeCount();
         const result = await this.orchestrator.indexAll(onProgress, options.signal, options.verbose);
@@ -1273,6 +1284,10 @@ export class CodeGraph {
           this.resolver.initialize();
           this.resolver.runPostExtract();
         }
+
+        // Fold the deferred WAL before resolution's first reads so the next
+        // phase never pages a bulk-write-sized WAL on the main thread.
+        if (walValve) await walValve.foldNow();
 
         if (result.success && result.filesIndexed > 0) {
           const unresolvedCount = this.queries.getUnresolvedReferencesCount();
@@ -1314,6 +1329,11 @@ export class CodeGraph {
         finishIndexJob(this.projectRoot, job, 'failed', { error: error instanceof Error ? error.message : String(error) });
         throw error;
       } finally {
+        if (walValve) {
+          walValve.stop();
+          await walValve.drain();
+          this.db.setWalAutocheckpoint(1000);
+        }
         this.fileLock.release();
       }
     });
@@ -1607,6 +1627,21 @@ export class CodeGraph {
    */
   isWatching(): boolean {
     return this.watcher?.isActive() ?? false;
+  }
+
+  /**
+   * True once the file watcher has permanently disabled auto-sync after
+   * repeated failures or resource exhaustion (upstream #876/#1127).
+   */
+  isWatcherDegraded(): boolean {
+    return this.watcher?.isDegraded() ?? false;
+  }
+
+  /**
+   * Why auto-sync is disabled, or null when the watcher is healthy/inactive.
+   */
+  getWatcherDegradedReason(): string | null {
+    return this.watcher?.getDegradedReason() ?? null;
   }
 
   /**
