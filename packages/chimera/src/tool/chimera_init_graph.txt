@@ -1,0 +1,19 @@
+Initialize or synchronize the Chimera/CodeGraph graph data for the current project.
+
+Use this tool when the project's graph is NOT ready and read-only tools report it:
+- `chimera_status` returns "Chimera graph surface is not initialized."
+- `chimera_search` / `chimera_file_symbols` / `chimera_impact` return the structured uninitialized state with zero results.
+- The environment has no external pre-init flow (for example headless or API sessions where `chimera graph init` and `/init-graph` are not available), so you must initialize the graph yourself.
+
+This is an explicit WRITE flow: it creates or migrates graph data under `.chimera/`, including database, lock, job, and migration files. Read-only tools never do this — only this tool, the `/init-graph` command, or `chimera graph init` may. Do not call it speculatively: when status reports the graph is ready, use the read-only tools instead.
+
+Parameter rules:
+- `refresh` defaults to true: after initialization, also synchronize the index from current sources. Set it to false only when you need initialization without an immediate sync.
+
+Common calls:
+- First tool call after `chimera_status` reports the graph is not initialized: call `chimera_init_graph`, then re-run `chimera_status` and continue with graph-backed exploration.
+- When the index is stale and you need a fresh sync before evidence gathering.
+
+After this tool:
+- The result reports the project root, active data root, revision, and file/node/edge counts.
+- Continue with `chimera_search`, `chimera_file_symbols`, `chimera_impact`, or audit tools.

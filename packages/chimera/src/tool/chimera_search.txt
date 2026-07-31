@@ -20,7 +20,7 @@ Common calls:
 - Find a symbol or component by name.
 - Find graph-indexed API or route terms.
 - Locate likely declarations before reading files.
-- If the graph is uninitialized, return the structured unavailable state and zero results rather than creating graph data.
+- If the graph is uninitialized, the tool returns the structured unavailable state with zero results rather than creating graph data; call `chimera_init_graph` first to initialize the project graph.
 
 After this tool:
 - Copy `Ref: node:<id>` from result output when a later Chimera tool accepts `ref` or `refs`; prefer that over raw `nodeID`.

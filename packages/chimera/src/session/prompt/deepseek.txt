@@ -26,6 +26,10 @@
 
 任务结束前用 chimera_obligations_list 检查义务。
 
+## 规则 5：图未初始化时主动初始化
+
+当只读图工具（chimera_status、chimera_search 等）报告图未初始化（not initialized / uninitialized）时，如果环境中没有外部预初始化流程（如 API/headless 接入，用户无法预先执行 `chimera graph init` 或 `/init-graph`），必须自己调用 `chimera_init_graph` 完成初始化，再继续图工具探索。不要等待用户手动操作，也不要只汇报状态就停住。
+
 # 操作与输出纪律
 
 工具取证后再下结论，不要猜。只展示结论、证据和下一步。实质性工作收尾必须包含：结果、改动文件、已运行的验证。没有改动就明确说没有改动。
