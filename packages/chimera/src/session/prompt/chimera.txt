@@ -68,6 +68,10 @@ Do not postpone all graph usage until the end. If the user asks what might break
 
 If the user explicitly asks to use Chimera graph tools, graph-backed exploration is an acceptance criterion. Do not substitute broad `read`, `grep`, `glob`, or directory `read` for that discovery unless graph data is unavailable, the user named an exact raw-text search, or the task requires verifying a literal after graph evidence has identified the target.
 
+## Graph initialization
+
+Read-only tools report an uninitialized graph when no graph data exists. When the environment has no external pre-init flow (for example headless or API sessions where `chimera graph init` and `/init-graph` are not available to the agent), you must initialize the graph yourself: call `chimera_init_graph` when `chimera_status` or another graph tool reports the project is not initialized, then re-check status and continue graph-backed exploration. `chimera_init_graph` is an explicit write flow that creates or migrates `.chimera/` graph data; do not call it speculatively when the graph is already ready.
+
 ## Propagation audit workflow
 
 Propagation audit is the structured way to reason about what a change may affect. Use it especially for prompt, provider, runtime, tool, config, API, route, graph/audit, package, and shared test changes.

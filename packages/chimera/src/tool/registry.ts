@@ -31,6 +31,7 @@ import {
   ChimeraAuditTool,
   ChimeraFileSymbolsTool,
   ChimeraImpactTool,
+  ChimeraInitGraphTool,
   ChimeraOracleGetTool,
   ChimeraOracleRecentTool,
   ChimeraObligationClaimTool,
@@ -137,6 +138,7 @@ export const layer = Layer.effect(
     const chimeraFileSymbolsTool = yield* ChimeraFileSymbolsTool
     const chimeraPredesignTool = yield* ChimeraPredesignTool
     const chimeraImpactTool = yield* ChimeraImpactTool
+    const chimeraInitGraphTool = yield* ChimeraInitGraphTool
     const chimeraAuditTool = yield* ChimeraAuditTool
     const chimeraAuditRecentTool = yield* ChimeraAuditRecentTool
     const chimeraOracleRecentTool = yield* ChimeraOracleRecentTool
@@ -262,6 +264,7 @@ export const layer = Layer.effect(
           chimeraFileSymbols: Tool.init(chimeraFileSymbolsTool),
           chimeraPredesign: Tool.init(chimeraPredesignTool),
           chimeraImpact: Tool.init(chimeraImpactTool),
+          chimeraInitGraph: Tool.init(chimeraInitGraphTool),
           chimeraAudit: Tool.init(chimeraAuditTool),
           chimeraAuditRecent: Tool.init(chimeraAuditRecentTool),
           chimeraOracleRecent: Tool.init(chimeraOracleRecentTool),
@@ -308,6 +311,7 @@ export const layer = Layer.effect(
             tool.chimeraFileSymbols,
             tool.chimeraPredesign,
             tool.chimeraImpact,
+            tool.chimeraInitGraph,
             tool.chimeraAuditRecent,
             tool.chimeraAudit,
             tool.chimeraOracleRecent,

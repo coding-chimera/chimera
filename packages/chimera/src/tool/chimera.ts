@@ -48,6 +48,7 @@ import {
   type OracleRecord,
 } from "@/chimera/store"
 import * as Tool from "./tool"
+import INIT_GRAPH_DESCRIPTION from "./chimera_init_graph.txt"
 import STATUS_DESCRIPTION from "./chimera_status.txt"
 import SEARCH_DESCRIPTION from "./chimera_search.txt"
 import FILE_SYMBOLS_DESCRIPTION from "./chimera_file_symbols.txt"
@@ -101,6 +102,12 @@ const ChimeraRefDescription =
   "Typed Chimera ref copied from a previous tool output, formatted like `node:<id>`, `audit:<id>`, `predesign:<id>`, `oracle:<id>`, `obligation:<id>`, or `change:<id>`. Prefer this over legacy raw id fields when available."
 const ChimeraRefsDescription =
   "Typed Chimera refs copied from previous tool outputs. Currently `node:<id>` refs are accepted here; prefer refs over legacy nodeIDs when available."
+export const InitGraphParameters = Schema.Struct({
+  refresh: Schema.optional(Schema.Boolean).annotate({
+    description: RefreshDescription,
+  }),
+})
+
 export const StatusParameters = Schema.Struct({
   refresh: Schema.optional(Schema.Boolean).annotate({
     description: RefreshDescription,
@@ -383,6 +390,17 @@ export const ObligationIgnoreParameters = Schema.Struct({
     description: "Optional additional context.",
   }),
 })
+
+type InitGraphMetadata = {
+  projectRoot: string
+  initialized: boolean
+  dataRoot: string
+  dataRootStatus: string
+  revision: string
+  fileCount: number
+  nodeCount: number
+  edgeCount: number
+}
 
 type StatusMetadata = {
   projectRoot: string
@@ -2116,6 +2134,51 @@ function persistAuditRun(audit: AuditMetadata) {
   )
 }
 
+export const ChimeraInitGraphTool = Tool.define<typeof InitGraphParameters, InitGraphMetadata, never>(
+  "chimera_init_graph",
+  Effect.succeed({
+    description: INIT_GRAPH_DESCRIPTION,
+    parameters: InitGraphParameters,
+    execute: (params: Schema.Schema.Type<typeof InitGraphParameters>, ctx: Tool.Context<InitGraphMetadata>) =>
+      Effect.gen(function* () {
+        yield* permission(ctx, "chimera_init_graph", { refresh: params.refresh !== false })
+        const instance = yield* InstanceState.context
+        const root = contextProjectRoot(instance)
+        const dataRoot = getGraphDataRootInfo(root)
+        const reporter = createSyncProgressReporter(ctx, true)
+        const snapshot = yield* Chimera.initProjectGraph({
+          source: "tool.chimera_init_graph",
+          sessionID: ctx.sessionID,
+          watch: false,
+          onProgress: reporter.onProgress,
+        }).pipe(Effect.ensuring(Effect.sync(() => reporter.done())))
+        return {
+          title: "Chimera init graph",
+          output: [
+            "Chimera graph initialized.",
+            `Project root: ${root}`,
+            `Data root: ${dataRoot.dataRoot}`,
+            `Data root status: ${dataRoot.dataRootStatus}`,
+            `Revision: ${snapshot.revision}`,
+            `Files: ${snapshot.fileCount}`,
+            `Nodes: ${snapshot.nodeCount}`,
+            `Edges: ${snapshot.edgeCount}`,
+          ].join("\n"),
+          metadata: {
+            projectRoot: root,
+            initialized: true,
+            dataRoot: dataRoot.dataRoot,
+            dataRootStatus: dataRoot.dataRootStatus,
+            revision: snapshot.revision,
+            fileCount: snapshot.fileCount,
+            nodeCount: snapshot.nodeCount,
+            edgeCount: snapshot.edgeCount,
+          },
+        }
+      }).pipe(Effect.orDie),
+  }),
+)
+
 export const ChimeraStatusTool = Tool.define<typeof StatusParameters, StatusMetadata, never>(
   "chimera_status",
   Effect.succeed({
@@ -2228,7 +2291,7 @@ export const ChimeraSearchTool = Tool.define<typeof SearchParameters, SearchMeta
             title: "Chimera search",
             output: [
               "Static graph evidence (0 results):",
-              "- Chimera graph is not initialized; run `chimera graph init` then `chimera graph index` for this project.",
+              "- Chimera graph is not initialized; call `chimera_init_graph` to initialize it for this project."
             ].join("\n"),
             metadata: {
               initialized: false,

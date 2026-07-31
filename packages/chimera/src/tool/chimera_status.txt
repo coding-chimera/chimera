@@ -15,3 +15,4 @@ Common calls:
 
 After this tool:
 - If pending obligations are reported and the user is asking for closeout, list or resolve them before claiming completion.
+- If the graph is not initialized, call `chimera_init_graph` to initialize it before continuing graph-backed work.

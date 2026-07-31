@@ -15,6 +15,7 @@ import {
   ChimeraAuditTool,
   ChimeraFileSymbolsTool,
   ChimeraImpactTool,
+  ChimeraInitGraphTool,
   ChimeraOracleGetTool,
   ChimeraOracleRecentTool,
   ChimeraObligationClaimTool,
@@ -52,6 +53,15 @@ const runStatus = Effect.fn("ChimeraToolTest.runStatus")(function* (
   next: Tool.Context = ctx,
 ) {
   const info = yield* ChimeraStatusTool
+  const tool = yield* info.init()
+  return yield* tool.execute(args, next)
+})
+
+const runInitGraph = Effect.fn("ChimeraToolTest.runInitGraph")(function* (
+  args: Tool.InferParameters<typeof ChimeraInitGraphTool>,
+  next: Tool.Context = ctx,
+) {
+  const info = yield* ChimeraInitGraphTool
   const tool = yield* info.init()
   return yield* tool.execute(args, next)
 })
@@ -218,6 +228,26 @@ describe("tool.chimera", () => {
       expect(result.metadata.initialized).toBe(false)
       expect(result.metadata.dataRootStatus).toBe("uninitialized")
       expect(yield* Effect.promise(() => Bun.file(path.join(test.directory, ".chimera")).exists())).toBe(false)
+    }),
+  )
+
+  it.instance("initializes graph via chimera_init_graph tool", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "tracked.ts"), "export const tracked = 1\n"))
+
+      const result = yield* runInitGraph({ refresh: true })
+
+      expect(result.title).toBe("Chimera init graph")
+      expect(result.output).toContain("Chimera graph initialized.")
+      expect(result.metadata.initialized).toBe(true)
+      expect(result.metadata.revision).toEqual(expect.any(String))
+      expect(result.metadata.fileCount).toBeGreaterThan(0)
+      expect(result.metadata.nodeCount).toBeGreaterThan(0)
+
+      const status = yield* runStatus({ refresh: false })
+      expect(status.metadata.initialized).toBe(true)
+      expect(yield* Effect.promise(() => fs.stat(path.join(test.directory, ".chimera", "codegraph.db")))).toBeTruthy()
     }),
   )
 
