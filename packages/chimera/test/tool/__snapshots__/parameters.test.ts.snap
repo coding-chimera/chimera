@@ -1152,3 +1152,73 @@ exports[`tool parameters JSON Schema (wire shape) write 1`] = `
   "type": "object",
 }
 `;
+
+exports[`tool parameters JSON Schema (wire shape) chimera_swarm 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "concurrency": {
+      "description": "Maximum child tasks to run at once. Defaults to 16 and is capped at 16.",
+      "type": "number",
+    },
+    "description": {
+      "description": "Short base description for child task titles.",
+      "type": "string",
+    },
+    "from": {
+      "description": "Optional Chimera evidence source to materialize into items instead of passing explicit items.",
+      "enum": [
+        "pending_obligations",
+        "claimed_obligations",
+        "stale_obligations",
+        "active_obligations",
+        "failing_oracles",
+        "unknown_oracles",
+        "failing_or_unknown_oracles",
+      ],
+      "type": "string",
+    },
+    "items": {
+      "description": "Explicit work items. Each item is rendered into one child subagent task.",
+      "items": {
+        "anyOf": [
+          {
+            "type": "string",
+          },
+          {
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string",
+            },
+            "type": "object",
+          },
+        ],
+      },
+      "type": "array",
+    },
+    "limit": {
+      "description": "Maximum items to read from a Chimera evidence source. Defaults to 20 and is capped at 100.",
+      "type": "number",
+    },
+    "preset": {
+      "description": "Optional worker prompt shape for audit follow-up, audit review, oracle follow-up, or file review.",
+      "enum": [
+        "audit-followup",
+        "audit-review",
+        "oracle-followup",
+        "file-review",
+      ],
+      "type": "string",
+    },
+    "prompt_template": {
+      "description": "Prompt template for each child task. Use {{item}} plus optional {{index}} and {{total}} placeholders.",
+      "type": "string",
+    },
+    "subagent_type": {
+      "description": "Subagent type to run for each item. Defaults to general.",
+      "type": "string",
+    },
+  },
+  "type": "object",
+}
+`;

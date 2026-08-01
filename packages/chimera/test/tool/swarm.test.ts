@@ -1,5 +1,5 @@
 import { afterEach, describe, expect } from "bun:test"
-import { Deferred, Effect, Exit, Fiber, Layer } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
 import { Agent } from "../../src/agent/agent"
 import { Config } from "@/config/config"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
@@ -632,6 +632,133 @@ describe("tool.chimera_swarm", () => {
       expect(prompts).toHaveLength(1)
       expect(prompts[0].subagent_type).toBe("explore")
       expect(prompts[0].prompt).toContain("file-review subagent")
+    }),
+  )
+
+  it.instance("fails with a constructed example when explicit items is empty", () =>
+    Effect.gen(function* () {
+      const parent = yield* seed()
+      const tool = yield* ChimeraSwarmTool
+      const def = yield* tool.init()
+      const exit = yield* Effect.exit(
+        def.execute({ prompt_template: "Handle {{item}}", items: [] }, ctx(parent, stubOps())),
+      )
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) {
+        const message = Cause.pretty(exit.cause)
+        expect(message).toContain("Provide at least one swarm item.")
+        expect(message).toContain("Example:")
+        expect(message).toContain("{{item}}")
+      }
+    }),
+  )
+
+  it.instance("fails when both items and from are provided", () =>
+    Effect.gen(function* () {
+      const parent = yield* seed()
+      const tool = yield* ChimeraSwarmTool
+      const def = yield* tool.init()
+      const exit = yield* Effect.exit(
+        def.execute({ items: ["a.ts"], from: "pending_obligations" }, ctx(parent, stubOps())),
+      )
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) {
+        const message = Cause.pretty(exit.cause)
+        expect(message).toContain("Provide either explicit items or from, not both.")
+      }
+    }),
+  )
+
+  it.instance("fails when prompt_template omits {{item}} and shows a template example", () =>
+    Effect.gen(function* () {
+      const parent = yield* seed()
+      const tool = yield* ChimeraSwarmTool
+      const def = yield* tool.init()
+      const exit = yield* Effect.exit(
+        def.execute({ prompt_template: "Review all files", items: ["a.ts"] }, ctx(parent, stubOps())),
+      )
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) {
+        const message = Cause.pretty(exit.cause)
+        expect(message).toContain("prompt_template must include the {{item}} placeholder.")
+        expect(message).toContain("Example:")
+        expect(message).toContain("{{index}}/{{total}}")
+      }
+    }),
+  )
+
+  it.instance("fails when neither prompt_template nor preset is given and shows an example", () =>
+    Effect.gen(function* () {
+      const parent = yield* seed()
+      const tool = yield* ChimeraSwarmTool
+      const def = yield* tool.init()
+      const exit = yield* Effect.exit(
+        def.execute({ items: ["a.ts"] }, ctx(parent, stubOps())),
+      )
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) {
+        const message = Cause.pretty(exit.cause)
+        expect(message).toContain("Provide prompt_template or choose a preset.")
+        expect(message).toContain("Example:")
+      }
+    }),
+  )
+
+  it.instance("fails with unknown agent type and enumerates valid types", () =>
+    Effect.gen(function* () {
+      const parent = yield* seed()
+      const tool = yield* ChimeraSwarmTool
+      const def = yield* tool.init()
+      const exit = yield* Effect.exit(
+        def.execute(
+          { prompt_template: "Handle {{item}}", items: ["a.ts"], subagent_type: "nope" },
+          ctx(parent, stubOps()),
+        ),
+      )
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) {
+        const message = Cause.pretty(exit.cause)
+        expect(message).toContain("Unknown agent type: nope")
+        expect(message).toContain("Valid types:")
+      }
+    }),
+  )
+
+  it.instance("fails when a from source yields no items with a follow-up hint", () =>
+    Effect.gen(function* () {
+      const parent = yield* seed()
+      const tool = yield* ChimeraSwarmTool
+      const def = yield* tool.init()
+      const exit = yield* Effect.exit(
+        def.execute({ from: "pending_obligations" }, ctx(parent, stubOps())),
+      )
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) {
+        const message = Cause.pretty(exit.cause)
+        expect(message).toContain("No swarm items found from source: pending_obligations")
+        expect(message).toContain("chimera_obligations_list")
+      }
+    }),
+  )
+
+  it.instance("formats schema validation errors with expected shape and example", () =>
+    Effect.gen(function* () {
+      const parent = yield* seed()
+      const tool = yield* ChimeraSwarmTool
+      const def = yield* tool.init()
+      const exit = yield* Effect.exit(
+        def.execute(
+          { concurrency: "8" } as unknown as Parameters<typeof def.execute>[0],
+          ctx(parent, stubOps()),
+        ),
+      )
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) {
+        const message = Cause.pretty(exit.cause)
+        expect(message).toContain("invalid arguments")
+        expect(message).toContain("Expected shape:")
+        expect(message).toContain("Example:")
+      }
     }),
   )
 })

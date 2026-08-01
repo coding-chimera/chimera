@@ -40,6 +40,7 @@ import { Parameters as Todo } from "../../src/tool/todo"
 import { Parameters as WebFetch } from "../../src/tool/webfetch"
 import { Parameters as WebSearch } from "../../src/tool/websearch"
 import { Parameters as Write } from "../../src/tool/write"
+import { Parameters as Swarm } from "../../src/tool/swarm"
 
 const parse = <S extends Schema.Decoder<unknown>>(schema: S, input: unknown): S["Type"] =>
   Schema.decodeUnknownSync(schema)(input)
@@ -78,6 +79,7 @@ describe("tool parameters", () => {
     test("webfetch", () => expect(toJsonSchema(WebFetch)).toMatchSnapshot())
     test("websearch", () => expect(toJsonSchema(WebSearch)).toMatchSnapshot())
     test("write", () => expect(toJsonSchema(Write)).toMatchSnapshot())
+    test("chimera_swarm", () => expect(toJsonSchema(Swarm)).toMatchSnapshot())
   })
 
   describe("apply_patch", () => {
@@ -339,6 +341,32 @@ describe("tool parameters", () => {
     })
     test("rejects missing filePath", () => {
       expect(accepts(Write, { content: "hi" })).toBe(false)
+    })
+  })
+
+  describe("chimera_swarm", () => {
+    test("accepts preset + from without items", () => {
+      expect(accepts(Swarm, { preset: "audit-followup", from: "pending_obligations" })).toBe(true)
+    })
+    test("accepts prompt_template + items with mixed string/object items", () => {
+      expect(
+        accepts(Swarm, {
+          prompt_template: "Item {{index}}/{{total}}: {{item}}",
+          items: ["a.ts", { file: "b.ts", scope: "api" }],
+        }),
+      ).toBe(true)
+    })
+    test("rejects non-array items", () => {
+      expect(accepts(Swarm, { items: "a.ts" })).toBe(false)
+    })
+    test("rejects string concurrency", () => {
+      expect(accepts(Swarm, { items: ["a.ts"], concurrency: "8" })).toBe(false)
+    })
+    test("rejects unknown preset", () => {
+      expect(accepts(Swarm, { items: ["a.ts"], preset: "nope" })).toBe(false)
+    })
+    test("rejects unknown from source", () => {
+      expect(accepts(Swarm, { from: "nope" })).toBe(false)
     })
   })
 })

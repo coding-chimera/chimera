@@ -13,6 +13,7 @@ import PROMPT_GPT55 from "./prompt/gpt55.txt"
 import PROMPT_KIMI from "./prompt/kimi.txt"
 import PROMPT_DEEPSEEK from "./prompt/deepseek.txt"
 import PROMPT_DEEPSEEK_OVERLAY from "./prompt/deepseek-overlay.txt"
+import PROMPT_DEEPSEEK_ULTRA from "./prompt/deepseek-ultra.txt"
 
 import PROMPT_CODEX from "./prompt/codex.txt"
 import PROMPT_TRINITY from "./prompt/trinity.txt"
@@ -60,6 +61,11 @@ export function provider(model: Provider.Model) {
 export function overlay(model: Provider.Model) {
   if (isDeepSeek(model)) return [PROMPT_DEEPSEEK_OVERLAY]
   return []
+}
+
+export function ultraVariant(model: Provider.Model, variant: string | undefined) {
+  if (variant !== "ultra" || !isDeepSeek(model)) return []
+  return [PROMPT_DEEPSEEK_ULTRA]
 }
 
 export interface Interface {
