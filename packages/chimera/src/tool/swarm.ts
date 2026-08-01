@@ -391,23 +391,31 @@ export const ChimeraSwarmTool = Tool.define(
     const dispatch = yield* SubagentDispatch
 
     const run = Effect.fn("ChimeraSwarmTool.execute")(function* (params: Params, ctx: Tool.Context) {
-      if (params.items && params.from) return yield* Effect.fail(new Error("Provide either explicit items or from, not both."))
+      if (params.items?.length && params.from) return yield* Effect.fail(new Error("Provide either explicit items or from, not both."))
       const sourceLimit = bounded(params.limit, 20, 100)
       const sourceItems = params.from ? yield* materializeSource(params.from, sourceLimit) : undefined
       const items = params.items ?? sourceItems
       if (!items?.length)
         return yield* Effect.fail(
-          new Error(params.from ? `No swarm items found from source: ${params.from}` : "Provide at least one swarm item."),
+          new Error(
+            params.from
+              ? `No swarm items found from source: ${params.from}. Run \`chimera_audit_recent\` / \`chimera_obligations_list\` first to confirm pending evidence.`
+              : "Provide at least one swarm item.\n\nExample: { prompt_template: \"Item {{index}}/{{total}}: {{item}}\", items: [\"Review src/auth.ts\", { file: \"src/api.ts\", scope: \"route handlers\", questions: [\"callers?\"] }] }",
+          ),
         )
       const scopeWarnings = params.items ? collectScopeWarnings(items) : []
 
       const preset = params.preset ?? inferPreset(params.from)
       const template = params.prompt_template ?? (preset ? DEFAULT_TEMPLATES[preset] : undefined)
-      if (!template) return yield* Effect.fail(new Error("Provide prompt_template or choose a preset."))
-      if (!template.includes("{{item}}")) return yield* Effect.fail(new Error("prompt_template must include the {{item}} placeholder."))
+      if (!template) return yield* Effect.fail(new Error("Provide prompt_template or choose a preset.\n\nExample: { preset: \"audit-followup\", from: \"pending_obligations\", concurrency: 8 }"))
+      if (!template.includes("{{item}}")) return yield* Effect.fail(new Error("prompt_template must include the {{item}} placeholder.\n\nExample: prompt_template: \"Item {{index}}/{{total}}: {{item}}\""))
 
       const subagent = params.subagent_type ?? inferSubagent(preset)
-      if (!(yield* agents.get(subagent))) return yield* Effect.fail(new Error(`Unknown agent type: ${subagent} is not a valid agent type`))
+      const subagentInfo = yield* agents.get(subagent)
+      if (!subagentInfo) {
+        const validTypes = (yield* agents.list()).map((agent) => agent.name).join(", ")
+        return yield* Effect.fail(new Error(`Unknown agent type: ${subagent} is not a valid agent type. Valid types: ${validTypes}`))
+      }
 
       if (!ctx.extra?.bypassAgentCheck) {
         yield* ctx.ask({
@@ -630,6 +638,13 @@ export const ChimeraSwarmTool = Tool.define(
       description: DESCRIPTION,
       parameters: Parameters,
       execute: (params: Params, ctx: Tool.Context) => run(params, ctx).pipe(Effect.orDie),
+      formatValidationError(error) {
+        return [
+          `The ${id} tool was called with invalid arguments: ${error}.`,
+          "Expected shape: { prompt_template?: string (must include {{item}}), items?: (string | object)[], preset?: \"audit-followup\" | \"audit-review\" | \"oracle-followup\" | \"file-review\", from?: \"pending_obligations\" | \"claimed_obligations\" | \"stale_obligations\" | \"active_obligations\" | \"failing_oracles\" | \"unknown_oracles\" | \"failing_or_unknown_oracles\", subagent_type?: string, concurrency?: number (1-16), limit?: number (1-100) }",
+          "Example: { preset: \"audit-followup\", from: \"pending_obligations\", concurrency: 8 }",
+        ].join("\n")
+      },
     }
   }),
 )

@@ -37,3 +37,7 @@ Supported `from` sources:
 - `failing_oracles`, `unknown_oracles`, `failing_or_unknown_oracles`: default to `oracle-followup`.
 
 For parallel editing, keep items independent and scoped by file/range/symbol when possible. Workers must not broaden into unrelated refactors or take over other swarm items; the parent agent must rerun relevant checks, resolve conflicts, inspect structured child reports, and handle obligation claim/resolve/ignore decisions explicitly.
+
+Minimal call examples:
+- `{ preset: "audit-followup", from: "pending_obligations", concurrency: 8 }`
+- `{ prompt_template: "Item {{index}}/{{total}}: {{item}}", items: ["Review src/auth.ts", { file: "src/api.ts", scope: "route handlers", questions: ["callers?", "error paths?"] }] }`

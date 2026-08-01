@@ -791,16 +791,22 @@ describe("session.llm.stream", () => {
         expect(JSON.stringify(ultra)).not.toContain('"ultra"')
         expect(promptForRole(ultra, "system")).toContain("Proactive multi-agent delegation is active for this root session.")
         expect(promptForRole(ultra, "system")).toContain("Exploration is a swarm task by default")
-        expect(promptForRole(ultra, "system")).toContain("up to 16 parallel workers")
+        expect(promptForRole(ultra, "system")).not.toContain("up to 16 parallel workers")
+        expect(promptForRole(ultra, "system")).not.toContain("normal operating width")
+        expect(promptForRole(ultra, "system")).toContain("see the DeepSeek ultra swarm rules")
+        expect(promptForRole(ultra, "system")).toContain("swarm 派发纪律")
+        expect(promptForRole(ultra, "system")).toContain("规则 5：禁止自我豁免")
 
         const max = await capture("max", "max")
         expect(max.reasoning_effort).toBe("max")
         expect(promptForRole(max, "system")).toContain("Explicit-request-only multi-agent mode is active.")
+        expect(promptForRole(max, "system")).not.toContain("swarm 派发纪律")
 
         const child = await capture("ultra", "child", SessionID.make("session-deepseek-parent"))
         expect(child.reasoning_effort).toBe("max")
         expect(promptForRole(child, "system")).toContain("active for this child session")
         expect(promptForRole(child, "system")).not.toContain("active for this root session")
+        expect(promptForRole(child, "system")).not.toContain("swarm 派发纪律")
       },
     })
   })

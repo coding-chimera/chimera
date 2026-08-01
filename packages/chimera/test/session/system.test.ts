@@ -174,6 +174,28 @@ describe("session.system", () => {
     }),
   )
 
+  it.effect("routes DeepSeek ultra variant to the deepseek-ultra layer only", () =>
+    Effect.gen(function* () {
+      const deepseek = {
+        providerID: "dahetao",
+        api: { id: "deepseek-v4-flash" },
+      } as unknown as Parameters<typeof SystemPrompt.ultraVariant>[0]
+
+      expect(SystemPrompt.ultraVariant(deepseek, "ultra").join("\n")).toContain("swarm 派发纪律")
+      expect(SystemPrompt.ultraVariant(deepseek, "ultra").join("\n")).toContain("规则 1：探索类任务前 3 步内派发 chimera_swarm")
+      expect(SystemPrompt.ultraVariant(deepseek, "ultra").join("\n")).toContain("规则 5：禁止自我豁免")
+      expect(SystemPrompt.ultraVariant(deepseek, "max")).toEqual([])
+      expect(SystemPrompt.ultraVariant(deepseek, undefined)).toEqual([])
+
+      const kimi = {
+        providerID: "kimi-for-coding",
+        api: { id: "k3" },
+      } as unknown as Parameters<typeof SystemPrompt.ultraVariant>[0]
+      expect(SystemPrompt.ultraVariant(kimi, "ultra")).toEqual([])
+      yield* Effect.void
+    }),
+  )
+
   it.effect("routes gpt-5.5 ids to the GPT-5.5 prompt", () =>
     Effect.gen(function* () {
       const raw = SystemPrompt.provider({
