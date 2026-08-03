@@ -10,7 +10,8 @@ import { EdgeKind, Language, Node } from '../types';
  * An unresolved reference from extraction
  */
 export interface UnresolvedRef {
-  /** ID of the source node containing the reference */
+  /** SQLite row identity when loaded from unresolved_refs. */
+  id?: number;
   fromNodeId: string;
   /** The name being referenced */
   referenceName: string;

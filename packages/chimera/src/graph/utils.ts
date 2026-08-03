@@ -29,6 +29,7 @@
  * ```
  */
 
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -183,9 +184,14 @@ export function normalizePath(filePath: string): string {
 export class FileLock {
   private lockPath: string;
   private held = false;
+  private token?: string;
+  private heartbeat?: ReturnType<typeof setInterval>;
 
-  /** Locks older than this are considered stale regardless of PID status */
-  private static readonly STALE_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
+  private static readonly STALE_TIMEOUT_MS = 2 * 60 * 1000;
+  private static readonly HEARTBEAT_INTERVAL_MS = FileLock.STALE_TIMEOUT_MS / 3;
+  private static readonly OPERATION_GUARD_TIMEOUT_MS = 5000;
+  private static readonly OPERATION_GUARD_RETRY_MS = 5;
+  private static readonly OPERATION_GUARD_WAIT = new Int32Array(new SharedArrayBuffer(4));
 
   constructor(lockPath: string) {
     this.lockPath = lockPath;
@@ -195,46 +201,75 @@ export class FileLock {
    * Acquire the lock. Throws if the lock is held by another live process.
    */
   acquire(): void {
-    // Check for existing lock
-    if (fs.existsSync(this.lockPath)) {
-      try {
-        const content = fs.readFileSync(this.lockPath, 'utf-8').trim();
-        const pid = parseInt(content, 10);
-        const stat = fs.statSync(this.lockPath);
-        const lockAge = Date.now() - stat.mtimeMs;
+    this.withOperationGuard(() => this.acquireUnderGuard());
+  }
 
-        // Treat locks older than the timeout as stale, regardless of PID
-        if (lockAge < FileLock.STALE_TIMEOUT_MS && !isNaN(pid) && this.isProcessAlive(pid)) {
+  private acquireUnderGuard(): void {
+    if (fs.existsSync(this.lockPath)) {
+      let fd: number | undefined;
+      try {
+        fd = fs.openSync(this.lockPath, 'r');
+        const content = fs.readFileSync(fd, 'utf-8').trim();
+        const owner = this.parseOwner(content);
+        const observedStat = fs.fstatSync(fd);
+        const lockAge = Date.now() - observedStat.mtimeMs;
+
+        if (owner?.pid !== undefined && this.isProcessAlive(owner.pid)) {
           throw new Error(
-            `CodeGraph database is locked by another process (PID ${pid}). ` +
+            `CodeGraph database is locked by another process (PID ${owner.pid}). ` +
+            `If this is stale, run 'codegraph unlock' or delete ${this.lockPath}`
+          );
+        }
+        if (owner?.pid === undefined && lockAge < FileLock.STALE_TIMEOUT_MS) {
+          throw new Error(
+            'CodeGraph database is locked by another process. ' +
             `If this is stale, run 'codegraph unlock' or delete ${this.lockPath}`
           );
         }
 
-        // Stale lock (dead process or timed out) - remove it
-        fs.unlinkSync(this.lockPath);
+        const quarantinePath = `${this.lockPath}.${process.pid}.${crypto.randomUUID()}.stale`;
+        fs.renameSync(this.lockPath, quarantinePath);
+        const quarantinedStat = fs.statSync(quarantinePath);
+        if (quarantinedStat.dev !== observedStat.dev || quarantinedStat.ino !== observedStat.ino) {
+          this.restoreQuarantinedLock(quarantinePath);
+          throw new Error(
+            'CodeGraph database is locked by another process. ' +
+            `If this is stale, run 'codegraph unlock' or delete ${this.lockPath}`
+          );
+        }
+        fs.unlinkSync(quarantinePath);
       } catch (err) {
         if (err instanceof Error && err.message.includes('locked by another')) {
           throw err;
         }
-        // Other errors reading lock file - try to remove it
-        try { fs.unlinkSync(this.lockPath); } catch { /* ignore */ }
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      } finally {
+        if (fd !== undefined) fs.closeSync(fd);
       }
     }
 
-    // Write our PID to the lock file using exclusive create flag
+    const token = crypto.randomUUID();
+    const temporaryPath = `${this.lockPath}.${process.pid}.${token}.tmp`;
     try {
-      fs.writeFileSync(this.lockPath, String(process.pid), { flag: 'wx' });
+      fs.writeFileSync(
+        temporaryPath,
+        JSON.stringify({ pid: process.pid, token, createdAt: new Date().toISOString() }) + '\n',
+        { flag: 'wx' }
+      );
+      fs.linkSync(temporaryPath, this.lockPath);
+      this.token = token;
       this.held = true;
-    } catch (err: any) {
-      if (err.code === 'EEXIST') {
-        // Race condition: another process grabbed the lock between our check and write
+      this.startHeartbeat();
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
         throw new Error(
           'CodeGraph database is locked by another process. ' +
           `If this is stale, run 'codegraph unlock' or delete ${this.lockPath}`
         );
       }
       throw err;
+    } finally {
+      try { fs.unlinkSync(temporaryPath); } catch { /* ignore */ }
     }
   }
 
@@ -243,16 +278,40 @@ export class FileLock {
    */
   release(): void {
     if (!this.held) return;
+    this.stopHeartbeat();
     try {
-      // Only remove if we still own it (check PID)
-      const content = fs.readFileSync(this.lockPath, 'utf-8').trim();
-      if (parseInt(content, 10) === process.pid) {
-        fs.unlinkSync(this.lockPath);
-      }
+      this.withOperationGuard(() => this.releaseUnderGuard());
     } catch {
-      // Lock file already gone - that's fine
+      this.startHeartbeat();
+      return;
     }
     this.held = false;
+    this.token = undefined;
+  }
+
+  private releaseUnderGuard(): void {
+    const token = this.token;
+    let fd: number | undefined;
+    try {
+      fd = fs.openSync(this.lockPath, 'r');
+      const content = fs.readFileSync(fd, 'utf-8').trim();
+      if (!token || this.parseOwner(content)?.token !== token) return;
+      const observedStat = fs.fstatSync(fd);
+      const quarantinePath = `${this.lockPath}.${process.pid}.${crypto.randomUUID()}.stale`;
+      fs.renameSync(this.lockPath, quarantinePath);
+      const quarantinedStat = fs.statSync(quarantinePath);
+      if (quarantinedStat.dev !== observedStat.dev || quarantinedStat.ino !== observedStat.ino) {
+        this.restoreQuarantinedLock(quarantinePath);
+        return;
+      }
+      fs.unlinkSync(quarantinePath);
+    } catch {
+      // Lock file already gone or ownership changed.
+    } finally {
+      if (fd !== undefined) {
+        try { fs.closeSync(fd); } catch { /* ignore */ }
+      }
+    }
   }
 
   /**
@@ -279,6 +338,86 @@ export class FileLock {
     }
   }
 
+  private withOperationGuard<T>(fn: () => T): T {
+    const guardPath = `${this.lockPath}.operation`;
+    const deadline = Date.now() + FileLock.OPERATION_GUARD_TIMEOUT_MS;
+    while (true) {
+      try {
+        fs.mkdirSync(guardPath);
+        break;
+      } catch (err: unknown) {
+        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+        if (Date.now() >= deadline) {
+          throw new Error(
+            `CodeGraph lock operation is already in progress. ` +
+            `If a process crashed, delete ${guardPath}`
+          );
+        }
+        Atomics.wait(
+          FileLock.OPERATION_GUARD_WAIT,
+          0,
+          0,
+          FileLock.OPERATION_GUARD_RETRY_MS
+        );
+      }
+    }
+
+    try {
+      return fn();
+    } finally {
+      try { fs.rmdirSync(guardPath); } catch { /* fail closed */ }
+    }
+  }
+
+
+  private restoreQuarantinedLock(quarantinePath: string): void {
+    try {
+      fs.linkSync(quarantinePath, this.lockPath);
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    }
+    try { fs.unlinkSync(quarantinePath); } catch { /* ignore */ }
+  }
+
+
+  private parseOwner(content: string): { pid: number; token?: string } | undefined {
+    if (/^\d+$/.test(content)) return { pid: Number(content) };
+    try {
+      const parsed = JSON.parse(content) as { pid?: unknown; token?: unknown };
+      if (!Number.isInteger(parsed.pid) || (parsed.pid as number) <= 0) return undefined;
+      return {
+        pid: parsed.pid as number,
+        token: typeof parsed.token === 'string' ? parsed.token : undefined,
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
+  private startHeartbeat(): void {
+    this.heartbeat = setInterval(() => {
+      if (!this.held || !this.token) return;
+      let fd: number | undefined;
+      try {
+        fd = fs.openSync(this.lockPath, 'r');
+        const content = fs.readFileSync(fd, 'utf-8').trim();
+        if (this.parseOwner(content)?.token !== this.token) return;
+        const now = new Date();
+        fs.futimesSync(fd, now, now);
+      } catch {
+        // Ownership was lost or the lock file is unavailable.
+      } finally {
+        if (fd !== undefined) fs.closeSync(fd);
+      }
+    }, FileLock.HEARTBEAT_INTERVAL_MS);
+    this.heartbeat.unref();
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeat) clearInterval(this.heartbeat);
+    this.heartbeat = undefined;
+  }
+
   /**
    * Check if a process is still running
    */
@@ -286,8 +425,8 @@ export class FileLock {
     try {
       process.kill(pid, 0);
       return true;
-    } catch {
-      return false;
+    } catch (err: unknown) {
+      return (err as NodeJS.ErrnoException).code === 'EPERM';
     }
   }
 }

@@ -988,31 +988,52 @@ export class CodeGraph {
   static async init(projectRoot: string, options: InitOptions = {}): Promise<CodeGraph> {
     await initGrammars();
     const resolvedRoot = path.resolve(projectRoot);
+    const dataRoot = getCodeGraphDir(resolvedRoot);
+    fs.mkdirSync(path.dirname(dataRoot), { recursive: true });
+    const bootstrapLock = new FileLock(`${dataRoot}.bootstrap.lock`);
+    let instance: CodeGraph;
+    let initializedDb: DatabaseConnection | undefined;
 
-    // Check if already initialized
-    if (isInitialized(resolvedRoot)) {
-      throw new Error(`CodeGraph already initialized in ${resolvedRoot}`);
-    }
-
-    const job = startIndexJob(resolvedRoot, 'init', 'initializing Chimera graph data root');
-
+    bootstrapLock.acquire();
     try {
-      createDirectory(resolvedRoot);
-      const dbPath = getDatabasePath(resolvedRoot);
-      const db = DatabaseConnection.initialize(dbPath);
-      const queries = new QueryBuilder(db.getDb());
-      const instance = new CodeGraph(db, queries, resolvedRoot);
-      finishIndexJob(resolvedRoot, job, 'succeeded', { phase: 'bootstrap', message: 'Chimera graph data root initialized' });
-
-      if (options.index) {
-        await instance.indexAll({ onProgress: options.onProgress });
+      // Check if already initialized
+      if (isInitialized(resolvedRoot)) {
+        throw new Error(`CodeGraph already initialized in ${resolvedRoot}`);
       }
 
-      return instance;
-    } catch (error) {
-      finishIndexJob(resolvedRoot, job, 'failed', { phase: 'bootstrap', error: error instanceof Error ? error.message : String(error) });
-      throw error;
+      const job = startIndexJob(resolvedRoot, 'init', 'initializing Chimera graph data root');
+
+      try {
+        createDirectory(resolvedRoot);
+        const dbPath = getDatabasePath(resolvedRoot);
+        initializedDb = DatabaseConnection.initialize(dbPath);
+        const queries = new QueryBuilder(initializedDb.getDb());
+        instance = new CodeGraph(initializedDb, queries, resolvedRoot);
+        finishIndexJob(resolvedRoot, job, 'succeeded', { phase: 'bootstrap', message: 'Chimera graph data root initialized' });
+        initializedDb = undefined;
+      } catch (error) {
+        try { initializedDb?.close(); } catch { }
+        initializedDb = undefined;
+        try {
+          finishIndexJob(resolvedRoot, job, 'failed', { phase: 'bootstrap', error: error instanceof Error ? error.message : String(error) });
+        } catch {
+        }
+        throw error;
+      }
+    } finally {
+      bootstrapLock.release();
     }
+
+    if (options.index) {
+      try {
+        await instance.indexAll({ onProgress: options.onProgress });
+      } catch (error) {
+        try { await instance.close(); } catch { }
+        throw error;
+      }
+    }
+
+    return instance;
   }
 
   /**
@@ -1020,25 +1041,40 @@ export class CodeGraph {
    */
   static initSync(projectRoot: string): CodeGraph {
     const resolvedRoot = path.resolve(projectRoot);
+    const dataRoot = getCodeGraphDir(resolvedRoot);
+    fs.mkdirSync(path.dirname(dataRoot), { recursive: true });
+    const bootstrapLock = new FileLock(`${dataRoot}.bootstrap.lock`);
+    let initializedDb: DatabaseConnection | undefined;
 
-    // Check if already initialized
-    if (isInitialized(resolvedRoot)) {
-      throw new Error(`CodeGraph already initialized in ${resolvedRoot}`);
-    }
-
-    const job = startIndexJob(resolvedRoot, 'init', 'initializing Chimera graph data root');
-
+    bootstrapLock.acquire();
     try {
-      createDirectory(resolvedRoot);
-      const dbPath = getDatabasePath(resolvedRoot);
-      const db = DatabaseConnection.initialize(dbPath);
-      const queries = new QueryBuilder(db.getDb());
-      const instance = new CodeGraph(db, queries, resolvedRoot);
-      finishIndexJob(resolvedRoot, job, 'succeeded', { phase: 'bootstrap', message: 'Chimera graph data root initialized' });
-      return instance;
-    } catch (error) {
-      finishIndexJob(resolvedRoot, job, 'failed', { phase: 'bootstrap', error: error instanceof Error ? error.message : String(error) });
-      throw error;
+      // Check if already initialized
+      if (isInitialized(resolvedRoot)) {
+        throw new Error(`CodeGraph already initialized in ${resolvedRoot}`);
+      }
+
+      const job = startIndexJob(resolvedRoot, 'init', 'initializing Chimera graph data root');
+
+      try {
+        createDirectory(resolvedRoot);
+        const dbPath = getDatabasePath(resolvedRoot);
+        initializedDb = DatabaseConnection.initialize(dbPath);
+        const queries = new QueryBuilder(initializedDb.getDb());
+        const instance = new CodeGraph(initializedDb, queries, resolvedRoot);
+        finishIndexJob(resolvedRoot, job, 'succeeded', { phase: 'bootstrap', message: 'Chimera graph data root initialized' });
+        initializedDb = undefined;
+        return instance;
+      } catch (error) {
+        try { initializedDb?.close(); } catch { }
+        initializedDb = undefined;
+        try {
+          finishIndexJob(resolvedRoot, job, 'failed', { phase: 'bootstrap', error: error instanceof Error ? error.message : String(error) });
+        } catch {
+        }
+        throw error;
+      }
+    } finally {
+      bootstrapLock.release();
     }
   }
 
@@ -1205,9 +1241,18 @@ export class CodeGraph {
   }
 
   private refreshFileSemantics(filePaths: readonly string[]): void {
-    for (const filePath of [...new Set(filePaths)]) {
-      this.refreshFileSemanticInfo(filePath);
-    }
+    const records = [...new Set(filePaths)].flatMap((filePath) => {
+      const graphPath = this.toGraphPath(filePath);
+      const file = this.queries.getFileByPath(graphPath);
+      if (!file) return [];
+      return [{
+        path: file.path,
+        contentHash: file.contentHash,
+        semantic: this.computeFileSemanticInfo(graphPath),
+        updatedAt: Date.now(),
+      }];
+    });
+    if (!this.db.isReadOnly()) this.queries.upsertFileSemantics(records);
   }
 
   /**
@@ -1252,9 +1297,21 @@ export class CodeGraph {
    */
   async indexAll(options: IndexOptions = {}): Promise<IndexResult> {
     return this.indexMutex.withLock(async () => {
-      const job = startIndexJob(this.projectRoot, 'index', 'indexing project files');
+      try {
+        this.fileLock.acquire();
+      } catch {
+        return { success: false, filesIndexed: 0, filesSkipped: 0, filesErrored: 0, nodesCreated: 0, edgesCreated: 0, errors: [{ message: 'Could not acquire file lock - another process may be indexing', severity: 'error' as const }], durationMs: 0 };
+      }
+
+      let job: ReturnType<typeof startIndexJob>;
+      try {
+        job = startIndexJob(this.projectRoot, 'index', 'indexing project files');
+      } catch (error) {
+        this.fileLock.release();
+        throw error;
+      }
       const onProgress = (progress: IndexProgress) => {
-        updateIndexJob(this.projectRoot, job, {
+        job = updateIndexJob(this.projectRoot, job, {
           phase: progress.phase,
           current: progress.current,
           total: progress.total,
@@ -1262,33 +1319,34 @@ export class CodeGraph {
         });
         options.onProgress?.(progress);
       };
-      try {
-        this.fileLock.acquire();
-      } catch {
-        finishIndexJob(this.projectRoot, job, 'failed', { error: 'Could not acquire file lock - another process may be indexing' });
-        return { success: false, filesIndexed: 0, filesSkipped: 0, filesErrored: 0, nodesCreated: 0, edgesCreated: 0, errors: [{ message: 'Could not acquire file lock - another process may be indexing', severity: 'error' as const }], durationMs: 0 };
-      }
 
-      // WAL deferral: disable auto-checkpoints during the bulk write so the
-      // store degrades to sequential WAL appends (upstream #1231), then fold
-      // at phase boundaries and restore the default afterwards.
       const deferWal = process.env.CODEGRAPH_NO_WAL_DEFER !== '1';
-      const walValve = deferWal ? new WalCheckpointValve(this.db) : null;
-      if (walValve) {
-        this.db.setWalAutocheckpoint(0);
-        walValve.start();
-      }
+      let walValve: WalCheckpointValve | null = null;
+      let walAutocheckpoint: number | undefined;
+      let walFinalized = false;
       try {
+        // WAL deferral: disable auto-checkpoints during the bulk write so the
+        // store degrades to sequential WAL appends (upstream #1231), then fold
+        // at phase boundaries and restore the default afterwards.
+        walValve = deferWal ? new WalCheckpointValve(this.db) : null;
+        if (walValve) {
+          walAutocheckpoint = this.db.getWalAutocheckpoint();
+          this.db.setWalAutocheckpoint(0);
+          walValve.start();
+        }
         const before = this.queries.getNodeAndEdgeCount();
-        const result = await this.orchestrator.indexAll(onProgress, options.signal, options.verbose);
+        const result = await this.orchestrator.indexAll(onProgress, options.signal, options.verbose, walValve ? () => walValve!.backpressure() : undefined);
+
+        // Fold extraction writes before post-extract begins reading them.
+        if (walValve) await walValve.foldNow();
 
         if (result.success && result.filesIndexed > 0) {
           this.resolver.initialize();
           this.resolver.runPostExtract();
         }
 
-        // Fold the deferred WAL before resolution's first reads so the next
-        // phase never pages a bulk-write-sized WAL on the main thread.
+        // Post-extract can write synthesized edges, so fold again before
+        // resolution begins reading the completed extraction graph.
         if (walValve) await walValve.foldNow();
 
         if (result.success && result.filesIndexed > 0) {
@@ -1305,12 +1363,22 @@ export class CodeGraph {
               current,
               total,
             });
-          });
+          }, walValve ? () => walValve!.backpressure() : undefined);
         }
 
         if (result.success && result.filesIndexed > 0) {
+          // Stop the valve before runMaintenance so the two never race the
+          // checkpointer (upstream #1231: the loser silently no-ops and leaves
+          // the WAL unfolded).
+          if (walValve) {
+            walValve.stop();
+            await walValve.drain();
+          }
           this.refreshFileSemantics(this.queries.getAllFilePaths());
           this.db.runMaintenance();
+          // PASSIVE folds frames but never reclaims the WAL file's high-water
+          // size; TRUNCATE on a quiescent DB releases the disk space.
+          walFinalized = (await this.db.checkpointWalTruncate())?.busy === 0;
         }
 
         if (result.success && result.filesIndexed > 0) {
@@ -1328,13 +1396,21 @@ export class CodeGraph {
         });
         return result;
       } catch (error) {
-        finishIndexJob(this.projectRoot, job, 'failed', { error: error instanceof Error ? error.message : String(error) });
+        try {
+          finishIndexJob(this.projectRoot, job, 'failed', { error: error instanceof Error ? error.message : String(error) });
+        } catch {
+        }
         throw error;
       } finally {
         if (walValve) {
-          walValve.stop();
-          await walValve.drain();
-          this.db.setWalAutocheckpoint(1000);
+          try { walValve.stop(); } catch { }
+          try { await walValve.drain(); } catch { }
+        }
+        if (walAutocheckpoint !== undefined) {
+          if (!walFinalized) {
+            try { await this.db.checkpointWalTruncate(); } catch { }
+          }
+          try { this.db.setWalAutocheckpoint(walAutocheckpoint); } catch { }
         }
         this.fileLock.release();
       }
@@ -1348,12 +1424,18 @@ export class CodeGraph {
    */
   async indexFiles(filePaths: string[]): Promise<IndexResult> {
     return this.indexMutex.withLock(async () => {
-      const job = startIndexJob(this.projectRoot, 'index', 'indexing selected files');
       try {
         this.fileLock.acquire();
       } catch {
-        finishIndexJob(this.projectRoot, job, 'failed', { error: 'Could not acquire file lock - another process may be indexing' });
         return { success: false, filesIndexed: 0, filesSkipped: 0, filesErrored: 0, nodesCreated: 0, edgesCreated: 0, errors: [{ message: 'Could not acquire file lock - another process may be indexing', severity: 'error' as const }], durationMs: 0 };
+      }
+
+      let job: ReturnType<typeof startIndexJob>;
+      try {
+        job = startIndexJob(this.projectRoot, 'index', 'indexing selected files');
+      } catch (error) {
+        this.fileLock.release();
+        throw error;
       }
       try {
         const result = await this.orchestrator.indexFiles(filePaths);
@@ -1367,7 +1449,10 @@ export class CodeGraph {
         });
         return result;
       } catch (error) {
-        finishIndexJob(this.projectRoot, job, 'failed', { error: error instanceof Error ? error.message : String(error) });
+        try {
+          finishIndexJob(this.projectRoot, job, 'failed', { error: error instanceof Error ? error.message : String(error) });
+        } catch {
+        }
         throw error;
       } finally {
         this.fileLock.release();
@@ -1382,9 +1467,21 @@ export class CodeGraph {
    */
   async sync(options: IndexOptions = {}): Promise<SyncResult> {
     return this.indexMutex.withLock(async () => {
-      const job = startIndexJob(this.projectRoot, 'sync', 'syncing changed files');
+      try {
+        this.fileLock.acquire();
+      } catch {
+        return { filesChecked: 0, filesAdded: 0, filesModified: 0, filesRemoved: 0, nodesUpdated: 0, durationMs: 0 };
+      }
+
+      let job: ReturnType<typeof startIndexJob>;
+      try {
+        job = startIndexJob(this.projectRoot, 'sync', 'syncing changed files');
+      } catch (error) {
+        this.fileLock.release();
+        throw error;
+      }
       const onProgress = (progress: IndexProgress) => {
-        updateIndexJob(this.projectRoot, job, {
+        job = updateIndexJob(this.projectRoot, job, {
           phase: progress.phase,
           current: progress.current,
           total: progress.total,
@@ -1392,12 +1489,6 @@ export class CodeGraph {
         });
         options.onProgress?.(progress);
       };
-      try {
-        this.fileLock.acquire();
-      } catch {
-        finishIndexJob(this.projectRoot, job, 'failed', { error: 'Could not acquire file lock - another process may be indexing' });
-        return { filesChecked: 0, filesAdded: 0, filesModified: 0, filesRemoved: 0, nodesUpdated: 0, durationMs: 0 };
-      }
       try {
         const result = await this.orchestrator.sync(onProgress);
 
@@ -1452,7 +1543,10 @@ export class CodeGraph {
         });
         return result;
       } catch (error) {
-        finishIndexJob(this.projectRoot, job, 'failed', { error: error instanceof Error ? error.message : String(error) });
+        try {
+          finishIndexJob(this.projectRoot, job, 'failed', { error: error instanceof Error ? error.message : String(error) });
+        } catch {
+        }
         throw error;
       } finally {
         this.fileLock.release();
@@ -1469,9 +1563,21 @@ export class CodeGraph {
    */
   async syncFiles(filePaths: string[], options: IndexOptions = {}): Promise<SyncResult> {
     return this.indexMutex.withLock(async () => {
-      const job = startIndexJob(this.projectRoot, 'sync', 'syncing selected files');
+      try {
+        this.fileLock.acquire();
+      } catch {
+        return { filesChecked: 0, filesAdded: 0, filesModified: 0, filesRemoved: 0, nodesUpdated: 0, durationMs: 0 };
+      }
+
+      let job: ReturnType<typeof startIndexJob>;
+      try {
+        job = startIndexJob(this.projectRoot, 'sync', 'syncing selected files');
+      } catch (error) {
+        this.fileLock.release();
+        throw error;
+      }
       const onProgress = (progress: IndexProgress) => {
-        updateIndexJob(this.projectRoot, job, {
+        job = updateIndexJob(this.projectRoot, job, {
           phase: progress.phase,
           current: progress.current,
           total: progress.total,
@@ -1479,12 +1585,6 @@ export class CodeGraph {
         });
         options.onProgress?.(progress);
       };
-      try {
-        this.fileLock.acquire();
-      } catch {
-        finishIndexJob(this.projectRoot, job, 'failed', { error: 'Could not acquire file lock - another process may be indexing' });
-        return { filesChecked: 0, filesAdded: 0, filesModified: 0, filesRemoved: 0, nodesUpdated: 0, durationMs: 0 };
-      }
       try {
         const normalizedFilePaths = [...new Set(filePaths.flatMap((filePath) => {
           const fullPath = path.isAbsolute(filePath) ? filePath : path.join(this.projectRoot, filePath);
@@ -1560,7 +1660,10 @@ export class CodeGraph {
         });
         return result;
       } catch (error) {
-        finishIndexJob(this.projectRoot, job, 'failed', { error: error instanceof Error ? error.message : String(error) });
+        try {
+          finishIndexJob(this.projectRoot, job, 'failed', { error: error instanceof Error ? error.message : String(error) });
+        } catch {
+        }
         throw error;
       } finally {
         this.fileLock.release();
@@ -1708,8 +1811,11 @@ export class CodeGraph {
    * Resolve references in batches to keep memory bounded on large codebases.
    * Processes chunks of unresolved refs, persisting results after each batch.
    */
-  async resolveReferencesBatched(onProgress?: (current: number, total: number) => void): Promise<ResolutionResult> {
-    return this.resolver.resolveAndPersistBatched(onProgress);
+  async resolveReferencesBatched(
+    onProgress?: (current: number, total: number) => void,
+    walBackpressure?: () => Promise<void> | null
+  ): Promise<ResolutionResult> {
+    return this.resolver.resolveAndPersistBatched(onProgress, 5000, walBackpressure);
   }
 
   /**

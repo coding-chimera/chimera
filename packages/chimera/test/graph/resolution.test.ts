@@ -4,7 +4,7 @@
  * Tests for Phase 3: Reference Resolution
  */
 
-import { describe, it, expect, beforeEach, afterEach } from './vitest';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from './vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -1337,6 +1337,173 @@ func main() {
       expect(signInNode).toBeDefined();
       const callers = cg.getCallers(signInNode!.id);
       expect(callers.some((c) => c.node.filePath === 'src/main.ts')).toBe(true);
+    });
+  });
+
+  describe('Batched Resolver Database Regressions', () => {
+    let db: DatabaseConnection;
+    let queries: QueryBuilder;
+
+    const node = (id: string, name: string, filePath = 'src/test.ts'): Node => ({
+      id,
+      kind: 'function',
+      name,
+      qualifiedName: `${filePath}::${name}`,
+      filePath,
+      language: 'typescript',
+      startLine: 1,
+      endLine: 2,
+      startColumn: 0,
+      endColumn: 1,
+      updatedAt: Date.now(),
+    });
+
+    const ref = (fromNodeId: string, referenceName: string, line = 1): UnresolvedReference => ({
+      fromNodeId,
+      referenceName,
+      referenceKind: 'calls',
+      line,
+      column: 1,
+      filePath: 'src/test.ts',
+      language: 'typescript',
+    });
+
+    beforeEach(() => {
+      db = DatabaseConnection.initialize(path.join(tempDir, 'resolution.db'));
+      queries = new QueryBuilder(db.getDb());
+    });
+
+    afterEach(() => {
+      db.close();
+    });
+
+    it('deletes duplicate unresolved tuples by their distinct stable row IDs', async () => {
+      queries.insertNode(node('source:duplicate', 'caller'));
+      queries.insertUnresolvedRefsBatch([
+        ref('source:duplicate', 'missing'),
+        ref('source:duplicate', 'missing'),
+      ]);
+      const ids = queries.getUnresolvedReferences().map((item) => item.id);
+      const deleteByIds = spyOn(queries, 'deleteUnresolvedReferencesByIds');
+
+      try {
+        const result = await createResolver(tempDir, queries).resolveAndPersistBatched(undefined, 1);
+
+        expect(ids).toHaveLength(2);
+        expect(ids[0]).not.toBe(ids[1]);
+        expect(deleteByIds).toHaveBeenNthCalledWith(1, [ids[0]]);
+        expect(deleteByIds).toHaveBeenNthCalledWith(2, [ids[1]]);
+        expect(result.stats).toMatchObject({ total: 2, resolved: 0, unresolved: 2 });
+        expect(queries.getUnresolvedReferences()).toEqual([]);
+      } finally {
+        deleteByIds.mockRestore();
+      }
+    });
+
+    it('processes every unresolvable batch with one initial count query', async () => {
+      queries.insertNode(node('source:unresolvable', 'caller'));
+      queries.insertUnresolvedRefsBatch(
+        Array.from({ length: 5 }, (_, index) => ref('source:unresolvable', `missing${index}`, index + 1))
+      );
+      const count = spyOn(queries, 'getUnresolvedReferencesCount');
+      const progress: Array<[number, number]> = [];
+
+      try {
+        const result = await createResolver(tempDir, queries).resolveAndPersistBatched(
+          (current, total) => progress.push([current, total]),
+          2
+        );
+
+        expect(count).toHaveBeenCalledTimes(1);
+        expect(progress).toEqual([[2, 5], [4, 5], [5, 5]]);
+        expect(result.stats).toMatchObject({ total: 5, resolved: 0, unresolved: 5 });
+        expect(queries.getUnresolvedReferences()).toEqual([]);
+      } finally {
+        count.mockRestore();
+      }
+    });
+
+    it('persists mixed results across resolution and persistence chunk boundaries', async () => {
+      queries.insertNodes([
+        node('source:mixed', 'caller'),
+        node('target:alpha', 'alpha', 'src/targets.ts'),
+        node('target:beta', 'beta', 'src/targets.ts'),
+        node('target:gamma', 'gamma', 'src/targets.ts'),
+      ]);
+      queries.insertUnresolvedRefsBatch([
+        ref('source:mixed', 'alpha', 1),
+        ref('source:mixed', 'missingA', 2),
+        ref('source:mixed', 'beta', 3),
+        ref('source:mixed', 'missingB', 4),
+        ref('source:mixed', 'gamma', 5),
+      ]);
+      const insertEdges = spyOn(queries, 'insertEdges');
+      const deleteByIds = spyOn(queries, 'deleteUnresolvedReferencesByIds');
+
+      try {
+        const result = await createResolver(tempDir, queries).resolveAndPersistBatched(
+          undefined,
+          4,
+          undefined,
+          2
+        );
+
+        expect(insertEdges.mock.calls.map((call) => call[0].length)).toEqual([2, 1]);
+        expect(deleteByIds.mock.calls.map((call) => call[0].length)).toEqual([2, 2, 1]);
+        expect(result.stats).toMatchObject({ total: 5, resolved: 3, unresolved: 2 });
+        expect(queries.getOutgoingEdges('source:mixed', ['calls']).map((edge) => edge.target).sort()).toEqual([
+          'target:alpha',
+          'target:beta',
+          'target:gamma',
+        ]);
+        expect(queries.getUnresolvedReferences()).toEqual([]);
+      } finally {
+        insertEdges.mockRestore();
+        deleteByIds.mockRestore();
+      }
+    });
+
+    it('falls back to tuple deletion for ID-less unresolved references', () => {
+      queries.insertNodes([
+        node('source:idless', 'caller'),
+        node('target:idless', 'target', 'src/target.ts'),
+      ]);
+      const unresolved = ref('source:idless', 'target');
+      queries.insertUnresolvedRef(unresolved);
+      const deleteByIds = spyOn(queries, 'deleteUnresolvedReferencesByIds');
+      const deleteByTuple = spyOn(queries, 'deleteSpecificResolvedReferences');
+
+      try {
+        const result = createResolver(tempDir, queries).resolveAndPersist([unresolved]);
+
+        expect(result.stats).toMatchObject({ total: 1, resolved: 1, unresolved: 0 });
+        expect(deleteByIds).not.toHaveBeenCalled();
+        expect(deleteByTuple).toHaveBeenCalledWith([
+          { fromNodeId: 'source:idless', referenceName: 'target', referenceKind: 'calls' },
+        ]);
+        expect(queries.getUnresolvedReferences()).toEqual([]);
+        expect(queries.getOutgoingEdges('source:idless', ['calls'])).toHaveLength(1);
+      } finally {
+        deleteByIds.mockRestore();
+        deleteByTuple.mockRestore();
+      }
+    });
+
+    it('rejects invalid resolution and persistence batch sizes', async () => {
+      const resolver = createResolver(tempDir, queries);
+
+      await expect(resolver.resolveAndPersistBatched(undefined, 0)).rejects.toThrow(
+        'batchSize must be a positive integer'
+      );
+      await expect(resolver.resolveAndPersistBatched(undefined, 1.5)).rejects.toThrow(
+        'batchSize must be a positive integer'
+      );
+      await expect(resolver.resolveAndPersistBatched(undefined, 1, undefined, 0)).rejects.toThrow(
+        'persistenceChunkSize must be a positive integer'
+      );
+      await expect(resolver.resolveAndPersistBatched(undefined, 1, undefined, Number.NaN)).rejects.toThrow(
+        'persistenceChunkSize must be a positive integer'
+      );
     });
   });
 

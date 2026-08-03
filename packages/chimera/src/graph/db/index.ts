@@ -96,28 +96,28 @@ export class DatabaseConnection {
 
     // Create and configure database
     const { db, backend } = createDatabase(dbPath);
-
-    configureConnection(db);
-
-    // Run schema initialization
-    db.exec(loadInitialSchema());
-
-    // Record current schema version so migrations aren't re-applied on open
-    const currentVersion = getCurrentVersion(db);
-    if (currentVersion < CURRENT_SCHEMA_VERSION) {
-      db.prepare(
-        'INSERT OR IGNORE INTO schema_versions (version, applied_at, description) VALUES (?, ?, ?)'
-      ).run(CURRENT_SCHEMA_VERSION, Date.now(), 'Initial schema includes all migrations');
-    }
-
     const conn = new DatabaseConnection(db, dbPath, backend);
+
     try {
+      configureConnection(db);
+
+      // Run schema initialization
+      db.exec(loadInitialSchema());
+
+      // Record current schema version so migrations aren't re-applied on open
+      const currentVersion = getCurrentVersion(db);
+      if (currentVersion < CURRENT_SCHEMA_VERSION) {
+        db.prepare(
+          'INSERT OR IGNORE INTO schema_versions (version, applied_at, description) VALUES (?, ?, ?)'
+        ).run(CURRENT_SCHEMA_VERSION, Date.now(), 'Initial schema includes all migrations');
+      }
+
       for (const extension of options.storageExtensions ?? []) {
         conn.applyStorageExtension(extension);
       }
       return conn;
     } catch (error) {
-      conn.close();
+      try { conn.close(); } catch { }
       throw error;
     }
   }
@@ -131,14 +131,13 @@ export class DatabaseConnection {
     }
 
     const { db, backend } = createDatabase(dbPath, { readOnly: options.readOnly });
-
-    configureConnection(db, options);
-
-    // Check and run migrations if needed
     const conn = new DatabaseConnection(db, dbPath, backend, options.readOnly ?? false);
-    const currentVersion = getCurrentVersion(db);
 
     try {
+      configureConnection(db, options);
+
+      // Check and run migrations if needed
+      const currentVersion = getCurrentVersion(db);
       if (currentVersion < CURRENT_SCHEMA_VERSION) {
         if (options.readOnly) {
           throw new Error(
@@ -154,7 +153,7 @@ export class DatabaseConnection {
 
       return conn;
     } catch (error) {
-      conn.close();
+      try { conn.close(); } catch { }
       throw error;
     }
   }
@@ -334,12 +333,35 @@ export class DatabaseConnection {
    * WalCheckpointValve uses to keep a deferred WAL bounded. Runs on the main
    * thread (worker off-loading is a later refinement). Returns the checkpoint
    * row, or null when the checkpoint is unavailable (e.g. non-WAL mode).
+   *
+   * The checkpoint connection must be WRITABLE: SQLite folds WAL frames by
+   * writing them back into the main DB file, so a read-only connection raises
+   * SQLITE_READONLY and no frames move (a regression that let the deferred
+   * WAL grow unbounded during bulk indexing).
    */
   async checkpointWalPassive(): Promise<{ busy: number; log: number; checkpointed: number } | null> {
+    return this.checkpointWal('PASSIVE');
+  }
+
+  /**
+   * Like {@link checkpointWalPassive} but with PRAGMA wal_checkpoint(TRUNCATE):
+   * after folding every frame, TRUNCATE also shrinks the WAL file back to zero
+   * bytes, reclaiming the file's high-water size. Use at phase/run boundaries
+   * when no readers are pinned; PASSIVE never reclaims file size.
+   */
+  async checkpointWalTruncate(): Promise<{ busy: number; log: number; checkpointed: number } | null> {
+    return this.checkpointWal('TRUNCATE');
+  }
+
+  private async checkpointWal(mode: 'PASSIVE' | 'TRUNCATE'): Promise<{ busy: number; log: number; checkpointed: number } | null> {
     try {
-      const { db } = createDatabase(this.dbPath, { readOnly: true });
+      const { db } = createDatabase(this.dbPath);
       try {
-        const row = db.prepare('PRAGMA wal_checkpoint(PASSIVE)').get() as
+        // The checkpoint connection bypasses configureConnection (deliberately:
+        // it must stay writable and must not flip journal_mode), so give it the
+        // same busy timeout as the writer to avoid instant lock-contention failure.
+        db.pragma('busy_timeout = 5000');
+        const row = db.prepare(`PRAGMA wal_checkpoint(${mode})`).get() as
           { busy?: number; log?: number; checkpointed?: number } | undefined;
         if (!row) return null;
         return {
@@ -350,7 +372,12 @@ export class DatabaseConnection {
       } finally {
         db.close();
       }
-    } catch {
+    } catch (error) {
+      // A writable checkpoint can fail transiently (busy writer, read-only
+      // filesystem). Return null — the valve treats null as "machinery
+      // unavailable" and retries next tick — but surface the reason instead of
+      // swallowing it silently.
+      console.warn(`wal_checkpoint(${mode}) failed:`, error instanceof Error ? error.message : String(error));
       return null;
     }
   }

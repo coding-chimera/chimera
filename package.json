@@ -4,7 +4,7 @@
   "description": "Chimera monorepo: AI coding agent CLI with built-in CodeGraph-powered impact analysis and propagation audit, harness tooling, native-agent experience, and tailored adapters for GPT and DeepSeek.",
   "private": true,
   "type": "module",
-  "packageManager": "bun@1.3.13",
+  "packageManager": "bun@1.3.14",
   "scripts": {
     "dev": "bun run --cwd packages/chimera --conditions=browser src/index.ts",
     "dev:desktop": "bun --cwd packages/desktop dev",
