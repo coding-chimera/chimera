@@ -8,7 +8,7 @@
  * - Atomic writes
  */
 
-import { describe, it, expect, beforeEach, afterEach } from './vitest';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from './vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -47,8 +47,10 @@ describe('FileLock', () => {
     lock.acquire();
 
     expect(fs.existsSync(lockPath)).toBe(true);
-    const content = fs.readFileSync(lockPath, 'utf-8').trim();
-    expect(parseInt(content, 10)).toBe(process.pid);
+    const lockRecord = JSON.parse(fs.readFileSync(lockPath, 'utf-8')) as { pid?: number; token?: string; createdAt?: string };
+    expect(lockRecord.pid).toBe(process.pid);
+    expect(lockRecord.token).toEqual(expect.any(String));
+    expect(lockRecord.createdAt).toEqual(expect.any(String));
 
     lock.release();
     expect(fs.existsSync(lockPath)).toBe(false);
@@ -132,6 +134,90 @@ describe('FileLock', () => {
     lock.release();
     // Second release should not throw
     expect(() => lock.release()).not.toThrow();
+  });
+
+  it('serializes stale eviction before another cooperative contender can publish', () => {
+    fs.writeFileSync(lockPath, '99999999');
+    const winner = new FileLock(lockPath);
+    const originalRenameSync = fs.renameSync;
+    const internals = FileLock as unknown as { OPERATION_GUARD_TIMEOUT_MS: number };
+    const originalTimeout = internals.OPERATION_GUARD_TIMEOUT_MS;
+    let contenderError: unknown;
+    let attempted = false;
+    internals.OPERATION_GUARD_TIMEOUT_MS = 20;
+    const renameSync = spyOn(fs, 'renameSync').mockImplementation((oldPath, newPath) => {
+      if (!attempted && oldPath === lockPath && String(newPath).endsWith('.stale')) {
+        attempted = true;
+        try {
+          new FileLock(lockPath).acquire();
+        } catch (error) {
+          contenderError = error;
+        }
+      }
+      return originalRenameSync(oldPath, newPath);
+    });
+
+    try {
+      winner.acquire();
+
+      expect(attempted).toBe(true);
+      expect(contenderError).toBeInstanceOf(Error);
+      expect((contenderError as Error).message).toMatch(/lock operation is already in progress/);
+      expect(() => new FileLock(lockPath).acquire()).toThrow(/locked by another process/);
+    } finally {
+      renameSync.mockRestore();
+      internals.OPERATION_GUARD_TIMEOUT_MS = originalTimeout;
+      winner.release();
+    }
+  });
+
+  it('can retry release after a stranded operation guard is cleared', () => {
+    const lock = new FileLock(lockPath);
+    const guardPath = `${lockPath}.operation`;
+    const internals = FileLock as unknown as { OPERATION_GUARD_TIMEOUT_MS: number };
+    const originalTimeout = internals.OPERATION_GUARD_TIMEOUT_MS;
+    lock.acquire();
+    fs.mkdirSync(guardPath);
+    internals.OPERATION_GUARD_TIMEOUT_MS = 20;
+
+    try {
+      lock.release();
+      expect(fs.existsSync(lockPath)).toBe(true);
+      expect(fs.existsSync(guardPath)).toBe(true);
+
+      fs.rmdirSync(guardPath);
+      lock.release();
+      expect(fs.existsSync(lockPath)).toBe(false);
+      expect(fs.existsSync(guardPath)).toBe(false);
+    } finally {
+      internals.OPERATION_GUARD_TIMEOUT_MS = originalTimeout;
+      try { fs.rmdirSync(guardPath); } catch { /* ignore */ }
+      lock.release();
+    }
+  });
+
+
+  it('does not remove a successor lock if ownership changes during release', () => {
+    const lock = new FileLock(lockPath);
+    lock.acquire();
+    const successor = { pid: process.pid, token: 'successor-token', createdAt: new Date().toISOString() };
+    const originalRenameSync = fs.renameSync;
+    const renameSync = spyOn(fs, 'renameSync').mockImplementation((oldPath, newPath) => {
+      if (oldPath === lockPath && String(newPath).endsWith('.stale')) {
+        fs.unlinkSync(lockPath);
+        fs.writeFileSync(lockPath, JSON.stringify(successor) + '\n', { flag: 'wx' });
+      }
+      return originalRenameSync(oldPath, newPath);
+    });
+
+    try {
+      lock.release();
+
+      expect(JSON.parse(fs.readFileSync(lockPath, 'utf-8'))).toEqual(successor);
+      expect(fs.readdirSync(tempDir).filter((entry) => entry.endsWith('.stale'))).toEqual([]);
+    } finally {
+      renameSync.mockRestore();
+    }
   });
 });
 

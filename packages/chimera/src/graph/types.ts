@@ -695,6 +695,9 @@ export interface ExtractionError {
  * A reference that couldn't be resolved during extraction
  */
 export interface UnresolvedReference {
+  /** SQLite row identity when loaded from the unresolved_refs table */
+  id?: number;
+
   /** ID of the node containing the reference */
   fromNodeId: string;
 

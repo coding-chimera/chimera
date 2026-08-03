@@ -781,7 +781,8 @@ export class ExtractionOrchestrator {
   async indexAll(
     onProgress?: (progress: IndexProgress) => void,
     signal?: AbortSignal,
-    verbose?: boolean
+    verbose?: boolean,
+    walBackpressure?: () => Promise<void> | null
   ): Promise<IndexResult> {
     await initGrammars();
     const startTime = Date.now();
@@ -974,8 +975,16 @@ export class ExtractionOrchestrator {
             const item = completed.get(nextToStore)!;
             completed.delete(nextToStore);
             nextToStore++;
-            if (item.ok) await storeResult(item.filePath, item.content, item.stats, item.result);
-            else recordParseFailure(item.filePath, item.err);
+            if (item.ok) {
+              // Writer-side backstop: when the WAL valve's hard cap is breached,
+              // pause the commit stream at this between-transactions boundary
+              // until a full backfill lands (upstream #1231 wiring).
+              const bp = walBackpressure?.();
+              if (bp) await bp;
+              await storeResult(item.filePath, item.content, item.stats, item.result);
+            } else {
+              recordParseFailure(item.filePath, item.err);
+            }
           }
         } catch (err) {
           flushError = err;

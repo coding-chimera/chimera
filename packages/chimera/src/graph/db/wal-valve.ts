@@ -150,7 +150,12 @@ export class WalCheckpointValve {
     for (let i = 0; i < MAX_PAUSED_BACKFILL_PASSES; i++) {
       if (this.inflight) await this.inflight; // fold in the stale in-flight pass first
       const res = await this.db.checkpointWalPassive();
-      if (!res) return; // checkpoint machinery unavailable — don't spin
+      if (!res) {
+        // Checkpoint machinery unavailable (e.g. not in WAL mode, or a
+        // transient write failure) — surface it instead of silently spinning.
+        this.log('backfill pass: checkpoint machinery unavailable, giving up this cycle');
+        return;
+      }
       this.log(`backfill pass ${i + 1}: busy=${res.busy} log=${res.log} checkpointed=${res.checkpointed} wal=${this.mb(this.db.getWalSizeBytes())}`);
       if (res.busy === 0 && res.log === res.checkpointed) {
         this.sizeAtLastFullBackfill = this.db.getWalSizeBytes();
@@ -172,7 +177,10 @@ export class WalCheckpointValve {
           this.sizeAtLastFullBackfill = this.db.getWalSizeBytes();
         }
       })
-      .catch(() => { /* best-effort */ })
+      .catch((err) => {
+        // best-effort: log so a broken checkpoint path is not invisible
+        this.log(`fire: checkpoint failed: ${err instanceof Error ? err.message : String(err)}`);
+      })
       .finally(() => {
         if (this.inflight === p) this.inflight = null;
       });

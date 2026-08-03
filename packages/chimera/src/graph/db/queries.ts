@@ -1562,6 +1562,19 @@ export class QueryBuilder {
   }
 
   /**
+   * Insert or update file semantic metadata in bounded transactions.
+   */
+  upsertFileSemantics(records: readonly FileSemanticRecord[], chunkSize = SQLITE_PARAM_CHUNK_SIZE): void {
+    const size = Number.isFinite(chunkSize) ? Math.max(1, Math.floor(chunkSize)) : SQLITE_PARAM_CHUNK_SIZE;
+    for (let i = 0; i < records.length; i += size) {
+      const chunk = records.slice(i, i + size);
+      this.db.transaction(() => {
+        for (const record of chunk) this.upsertFileSemantic(record);
+      })();
+    }
+  }
+
+  /**
    * Get persisted CodeGraph-owned file semantic metadata by path.
    */
   getFileSemanticByPath(filePath: string): FileSemanticRecord | null {
@@ -1645,16 +1658,7 @@ export class QueryBuilder {
       );
     }
     const rows = this.stmts.getUnresolvedByName.all(name) as UnresolvedRefRow[];
-    return rows.map((row) => ({
-      fromNodeId: row.from_node_id,
-      referenceName: row.reference_name,
-      referenceKind: row.reference_kind as EdgeKind,
-      line: row.line,
-      column: row.col,
-      candidates: row.candidates ? safeJsonParse(row.candidates, undefined) : undefined,
-      filePath: row.file_path,
-      language: row.language as Language,
-    }));
+    return rows.map(rowToUnresolvedReference);
   }
 
   /**
@@ -1662,16 +1666,7 @@ export class QueryBuilder {
    */
   getUnresolvedReferences(): UnresolvedReference[] {
     const rows = this.db.prepare('SELECT * FROM unresolved_refs').all() as UnresolvedRefRow[];
-    return rows.map((row) => ({
-      fromNodeId: row.from_node_id,
-      referenceName: row.reference_name,
-      referenceKind: row.reference_kind as EdgeKind,
-      line: row.line,
-      column: row.col,
-      candidates: row.candidates ? safeJsonParse(row.candidates, undefined) : undefined,
-      filePath: row.file_path,
-      language: row.language as Language,
-    }));
+    return rows.map(rowToUnresolvedReference);
   }
 
   /**
@@ -1693,21 +1688,14 @@ export class QueryBuilder {
    */
   getUnresolvedReferencesBatch(offset: number, limit: number): UnresolvedReference[] {
     if (!this.stmts.getUnresolvedBatch) {
-      this.stmts.getUnresolvedBatch = this.db.prepare(
-        'SELECT * FROM unresolved_refs LIMIT ? OFFSET ?'
-      );
+      this.stmts.getUnresolvedBatch = this.db.prepare(`
+        SELECT id, from_node_id, reference_name, reference_kind, line, col, candidates, file_path, language
+        FROM unresolved_refs
+        LIMIT ? OFFSET ?
+      `);
     }
     const rows = this.stmts.getUnresolvedBatch.all(limit, offset) as UnresolvedRefRow[];
-    return rows.map((row) => ({
-      fromNodeId: row.from_node_id,
-      referenceName: row.reference_name,
-      referenceKind: row.reference_kind as EdgeKind,
-      line: row.line,
-      column: row.col,
-      candidates: row.candidates ? safeJsonParse(row.candidates, undefined) : undefined,
-      filePath: row.file_path,
-      language: row.language as Language,
-    }));
+    return rows.map(rowToUnresolvedReference);
   }
 
   /**
@@ -1744,16 +1732,7 @@ export class QueryBuilder {
       .prepare(`SELECT * FROM unresolved_refs WHERE file_path IN (${placeholders})`)
       .all(...filePaths) as UnresolvedRefRow[];
 
-    return rows.map((row) => ({
-      fromNodeId: row.from_node_id,
-      referenceName: row.reference_name,
-      referenceKind: row.reference_kind as EdgeKind,
-      line: row.line,
-      column: row.col,
-      candidates: row.candidates ? safeJsonParse(row.candidates, undefined) : undefined,
-      filePath: row.file_path,
-      language: row.language as Language,
-    }));
+    return rows.map(rowToUnresolvedReference);
   }
 
   /**
@@ -1776,20 +1755,43 @@ export class QueryBuilder {
    * Delete specific resolved references by (fromNodeId, referenceName, referenceKind) tuples.
    * More precise than deleteResolvedReferences — only removes refs that were actually resolved.
    */
-  deleteSpecificResolvedReferences(refs: Array<{ fromNodeId: string; referenceName: string; referenceKind: string }>): void {
-    if (refs.length === 0) return;
+  deleteSpecificResolvedReferences(refs: Array<{ fromNodeId: string; referenceName: string; referenceKind: string }>): number {
+    if (refs.length === 0) return 0;
     const stmt = this.db.prepare(
       'DELETE FROM unresolved_refs WHERE from_node_id = ? AND reference_name = ? AND reference_kind = ?'
     );
     const deleteMany = this.db.transaction((items: typeof refs) => {
+      let changes = 0;
       for (const ref of items) {
-        stmt.run(ref.fromNodeId, ref.referenceName, ref.referenceKind);
+        changes += stmt.run(ref.fromNodeId, ref.referenceName, ref.referenceKind).changes;
       }
+      return changes;
     });
-    deleteMany(refs);
+    return deleteMany(refs);
   }
 
-  // ===========================================================================
+  /**
+   * Delete unresolved references by their stable SQLite row identities.
+   * Multiple parameter-limited statements share one transaction so a large
+   * persistence chunk still has one commit boundary.
+   */
+  deleteUnresolvedReferencesByIds(ids: number[]): number {
+    const uniqueIds = [...new Set(ids)];
+    if (uniqueIds.length === 0) return 0;
+    const deleteMany = this.db.transaction((items: number[]) => {
+      let changes = 0;
+      for (let i = 0; i < items.length; i += SQLITE_PARAM_CHUNK_SIZE) {
+        const chunk = items.slice(i, i + SQLITE_PARAM_CHUNK_SIZE);
+        const placeholders = chunk.map(() => '?').join(',');
+        changes += this.db
+          .prepare(`DELETE FROM unresolved_refs WHERE id IN (${placeholders})`)
+          .run(...chunk).changes;
+      }
+      return changes;
+    });
+    return deleteMany(uniqueIds);
+  }
+
   // Statistics
   // ===========================================================================
 
@@ -1899,4 +1901,18 @@ export class QueryBuilder {
       this.db.exec('DELETE FROM files');
     })();
   }
+}
+
+function rowToUnresolvedReference(row: UnresolvedRefRow): UnresolvedReference {
+  return {
+    id: row.id,
+    fromNodeId: row.from_node_id,
+    referenceName: row.reference_name,
+    referenceKind: row.reference_kind as EdgeKind,
+    line: row.line,
+    column: row.col,
+    candidates: row.candidates ? safeJsonParse(row.candidates, undefined) : undefined,
+    filePath: row.file_path,
+    language: row.language as Language,
+  };
 }

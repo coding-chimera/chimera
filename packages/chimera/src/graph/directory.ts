@@ -4,6 +4,7 @@
  * Manages the Chimera project-local graph data directory structure.
  */
 
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -153,8 +154,15 @@ export function readIndexJob(projectRoot: string): GraphJobState | undefined {
 
 export function writeIndexJob(projectRoot: string, job: GraphJobState): void {
   const dataRoot = getCodeGraphDir(projectRoot);
+  const jobPath = getIndexJobPath(projectRoot);
+  const temporaryPath = `${jobPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
   fs.mkdirSync(dataRoot, { recursive: true });
-  fs.writeFileSync(getIndexJobPath(projectRoot), JSON.stringify(job, null, 2) + '\n', 'utf-8');
+  try {
+    fs.writeFileSync(temporaryPath, JSON.stringify(job, null, 2) + '\n', { encoding: 'utf-8', flag: 'wx' });
+    fs.renameSync(temporaryPath, jobPath);
+  } finally {
+    try { fs.unlinkSync(temporaryPath); } catch { /* ignore */ }
+  }
 }
 
 export function startIndexJob(projectRoot: string, kind: GraphJobKind, message?: string): GraphJobState {

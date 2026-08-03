@@ -459,6 +459,7 @@ export class ReferenceResolver {
 
     // Convert to our internal format, using denormalized fields when available
     const refs: UnresolvedRef[] = unresolvedRefs.map((ref) => ({
+      id: ref.id,
       fromNodeId: ref.fromNodeId,
       referenceName: ref.referenceName,
       referenceKind: ref.referenceKind,
@@ -528,6 +529,7 @@ export class ReferenceResolver {
     const byMethod: Record<string, number> = {};
 
     const refs: UnresolvedRef[] = unresolvedRefs.map((ref) => ({
+      id: ref.id,
       fromNodeId: ref.fromNodeId,
       referenceName: ref.referenceName,
       referenceKind: ref.referenceKind,
@@ -734,6 +736,31 @@ export class ReferenceResolver {
   }
 
   /**
+   * Delete unresolved rows by stable SQLite IDs when available, preserving
+   * tuple-based deletion for extraction callers that do not have row IDs.
+   */
+  private deleteUnresolvedReferences(refs: UnresolvedRef[]): number {
+    if (refs.length === 0) return 0;
+
+    const ids = refs.flatMap((ref) => ref.id === undefined ? [] : [ref.id]);
+    const withoutIds = refs.filter((ref) => ref.id === undefined);
+    let deleted = 0;
+    if (ids.length > 0) {
+      deleted += this.queries.deleteUnresolvedReferencesByIds(ids);
+    }
+    if (withoutIds.length > 0) {
+      deleted += this.queries.deleteSpecificResolvedReferences(
+        withoutIds.map((ref) => ({
+          fromNodeId: ref.fromNodeId,
+          referenceName: ref.referenceName,
+          referenceKind: ref.referenceKind,
+        }))
+      );
+    }
+    return deleted;
+  }
+
+  /**
    * Resolve and persist edges to database
    */
   resolveAndPersist(
@@ -760,15 +787,9 @@ export class ReferenceResolver {
       // synthesis is additive and optional; ignore failures
     }
 
-    // Clean up resolved refs from unresolved_refs table so metrics are accurate
+    // Clean up resolved refs from unresolved_refs so metrics stay accurate.
     if (result.resolved.length > 0) {
-      this.queries.deleteSpecificResolvedReferences(
-        result.resolved.map((r) => ({
-          fromNodeId: r.original.fromNodeId,
-          referenceName: r.original.referenceName,
-          referenceKind: r.original.referenceKind,
-        }))
-      );
+      this.deleteUnresolvedReferences(result.resolved.map((ref) => ref.original));
     }
 
     return result;
@@ -781,8 +802,17 @@ export class ReferenceResolver {
    */
   async resolveAndPersistBatched(
     onProgress?: (current: number, total: number) => void,
-    batchSize: number = 5000
+    batchSize: number = 5000,
+    walBackpressure?: () => Promise<void> | null,
+    persistenceChunkSize: number = 1000
   ): Promise<ResolutionResult> {
+    if (!Number.isInteger(batchSize) || batchSize <= 0) {
+      throw new RangeError('batchSize must be a positive integer');
+    }
+    if (!Number.isInteger(persistenceChunkSize) || persistenceChunkSize <= 0) {
+      throw new RangeError('persistenceChunkSize must be a positive integer');
+    }
+
     // Resolution runs on the host runtime's main thread; a dense batch's
     // synchronous resolveAll freezes the event loop (CLI progress, MCP daemon
     // responses) for seconds on large repos. A shared yielder gives the loop a
@@ -792,6 +822,7 @@ export class ReferenceResolver {
     this.warmCaches();
 
     const total = this.queries.getUnresolvedReferencesCount();
+    let remaining = total;
     let processed = 0;
     const aggregateStats = {
       total: 0,
@@ -800,48 +831,32 @@ export class ReferenceResolver {
       byMethod: {} as Record<string, number>,
     };
 
-    // Process in batches. We always read from offset 0 because resolved refs
-    // are deleted after each batch, shifting the remaining rows forward.
-    let prevRemaining = Number.POSITIVE_INFINITY;
+    // Process in batches. We always read from offset 0 because rows are
+    // deleted after each batch, shifting the remaining rows forward.
+    let previousRemaining = total + 1;
     while (true) {
       const batch = this.queries.getUnresolvedReferencesBatch(0, batchSize);
       if (batch.length === 0) break;
 
       const result = await this.resolveBatchYielding(batch, maybeYield);
 
-      // Persist in bounded sub-transactions with yields between: a whole
-      // batch's edge insert / keyed deletes are otherwise one solid
-      // synchronous span each on a multi-GB index (upstream #1212).
-      const PERSIST_CHUNK = 1000;
-
-      // Persist edges immediately
+      // Persist edges immediately in bounded sub-transactions with yields
+      // between chunks so a large batch never monopolizes the event loop.
       const edges = this.createEdges(result.resolved);
-      for (let i = 0; i < edges.length; i += PERSIST_CHUNK) {
-        this.queries.insertEdges(edges.slice(i, i + PERSIST_CHUNK));
+      for (let i = 0; i < edges.length; i += persistenceChunkSize) {
+        this.queries.insertEdges(edges.slice(i, i + persistenceChunkSize));
         await maybeYield();
       }
 
-      // Clean up resolved refs so they don't appear in the next batch
-      const resolvedKeys = result.resolved.map((r) => ({
-        fromNodeId: r.original.fromNodeId,
-        referenceName: r.original.referenceName,
-        referenceKind: r.original.referenceKind,
-      }));
-      for (let i = 0; i < resolvedKeys.length; i += PERSIST_CHUNK) {
-        this.queries.deleteSpecificResolvedReferences(resolvedKeys.slice(i, i + PERSIST_CHUNK));
-        await maybeYield();
-      }
-
-      // Delete unresolvable refs from this batch to avoid re-processing them.
-      // (Upstream parks these as status='failed' for #1240 retry; chimera has
-      // no status column yet, so DELETE keeps the existing semantics.)
-      const unresolvedKeys = result.unresolved.map((r) => ({
-        fromNodeId: r.fromNodeId,
-        referenceName: r.referenceName,
-        referenceKind: r.referenceKind,
-      }));
-      for (let i = 0; i < unresolvedKeys.length; i += PERSIST_CHUNK) {
-        this.queries.deleteSpecificResolvedReferences(unresolvedKeys.slice(i, i + PERSIST_CHUNK));
+      // Delete every row read in this batch. Database-loaded rows carry stable
+      // IDs; callers without IDs retain the tuple-delete compatibility path.
+      const refsToDelete = [
+        ...result.resolved.map((ref) => ref.original),
+        ...result.unresolved,
+      ];
+      let deleted = 0;
+      for (let i = 0; i < refsToDelete.length; i += persistenceChunkSize) {
+        deleted += this.deleteUnresolvedReferences(refsToDelete.slice(i, i + persistenceChunkSize));
         await maybeYield();
       }
 
@@ -853,8 +868,13 @@ export class ReferenceResolver {
         aggregateStats.byMethod[method] = (aggregateStats.byMethod[method] || 0) + count;
       }
 
-      processed += batch.length;
+      processed += deleted;
       onProgress?.(processed, total);
+
+      // Writer-side backstop: pause between batches when the WAL valve's hard
+      // cap is breached until a full backfill lands (upstream #1231 wiring).
+      const bp = walBackpressure?.();
+      if (bp) await bp;
 
       // Yield so progress UI can render between batches
       await new Promise(resolve => setImmediate(resolve));
@@ -867,13 +887,11 @@ export class ReferenceResolver {
       // resolution stopped at batch one and left the rest of the table as
       // permanent orphans (upstream #1187).
 
-      // Non-progress guard (defense-in-depth): because we re-read from offset 0
-      // each pass, the pending population MUST shrink every iteration. If it
-      // didn't, a resolver returned a match whose key differs from the stored
-      // row and the keyed delete no-ops — stop rather than loop forever.
-      const remaining = this.queries.getUnresolvedReferencesCount();
-      if (remaining >= prevRemaining) break;
-      prevRemaining = remaining;
+      // Non-progress guard: the pending population must shrink after every
+      // batch. Stable row IDs make this check precise even for duplicate tuples.
+      remaining = Math.max(0, remaining - deleted);
+      if (deleted === 0 || remaining >= previousRemaining) break;
+      previousRemaining = remaining;
     }
 
     // Dynamic-edge synthesis: now that all base `calls` edges are persisted,
@@ -892,6 +910,7 @@ export class ReferenceResolver {
       stats: aggregateStats,
     };
   }
+
 
   /**
    * Get detected frameworks
