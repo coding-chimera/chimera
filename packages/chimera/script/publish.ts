@@ -38,7 +38,8 @@ const packageVariant = parsePackageVariant(
       .catch(() => null)
   )?.variant ?? "no-webui",
 )
-if (packageVariant !== "no-webui") throw new Error("npm publish only supports the no-WebUI variant")
+console.log(`Publishing ${packageVariant} variant`)
+
 const binaries: Record<string, string> = {}
 
 for (const { dir: packageDir, json: binaryPkg } of findPlatformPackages("./dist", pkg.name)) {
@@ -87,10 +88,11 @@ await Bun.file(`./dist/${pkg.name}/package.json`).write(
   ),
 )
 
-const tasks = Object.entries(binaries).map(async ([name]) => {
-  await publish(`./dist/${name}`, name, binaries[name])
-})
-await Promise.all(tasks)
+// Publish sequentially: concurrent pack+publish of a dozen multi-hundred-MB
+// platform packages can exhaust memory and get the whole publish killed.
+for (const [name, binaryVersion] of Object.entries(binaries)) {
+  await publish(`./dist/${name}`, name, binaryVersion)
+}
 await publish(`./dist/${pkg.name}`, pkg.name, version)
 
 const releaseName = pkg.name
