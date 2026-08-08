@@ -35,15 +35,20 @@ These references describe architectural lineage and implementation influences. C
 
 ## Install and run
 
-Chimera is not yet published to the npm registry. Download the latest release
-tarballs from [GitHub Releases](https://github.com/coding-chimera/chimera/releases)
-and install with npm.
+Chimera is published to the npm registry as `@coding-chimera/chimera`; the only public CLI command is `chimera`:
 
-Choose `no-webui` (MIT) or `with-webui` (GPL-3.0-only aggregate, with the MIT runtime license included separately). Both variants install the same `chimera` and `chimera-<platform>` package identities, so install only one variant at a time.
+```bash
+npm install -g @coding-chimera/chimera
+chimera --version
+```
+
+Alternatively, download the latest release tarballs from [GitHub Releases](https://github.com/coding-chimera/chimera/releases) and install them with npm.
+
+Choose `no-webui` (MIT) or `with-webui` (GPL-3.0-only aggregate, with the MIT runtime license included separately). Both variants install the same `@coding-chimera/chimera` and `@coding-chimera/chimera-<platform>` package identities, so install only one variant at a time.
 Check the releases page for the latest version and exact tarball filenames.
 
 ```bash
-npm install -g ./chimera-darwin-arm64-no-webui-0.0.5-patch1.tgz ./chimera-no-webui-0.0.5-patch1.tgz
+npm install -g ./coding-chimera-chimera-darwin-arm64-no-webui-0.0.5-patch1.tgz ./coding-chimera-chimera-no-webui-0.0.5-patch1.tgz
 chimera --version
 ```
 
@@ -113,7 +118,7 @@ Tarballs are written to:
 dist/npm-tarballs/
 ```
 
-No-WebUI tarballs are named like `chimera-no-webui-<version>.tgz`; with-WebUI tarballs use `with-webui` in the same position. The variant is not part of the npm package name.
+No-WebUI tarballs are named like `coding-chimera-chimera-no-webui-<version>.tgz`; with-WebUI tarballs use `with-webui` in the same position. The variant is not part of the npm package name.
 
 Standalone no-WebUI CLI archives keep the compatibility names such as `chimera-darwin-arm64.zip`; with-WebUI archives add `-with-webui`. Every standalone archive includes the license files for its variant at the archive root.
 
@@ -121,7 +126,7 @@ A locally packed install can be smoke-tested with a temporary npm prefix. Instal
 
 ```bash
 prefix="$(mktemp -d)"
-npm install -g --prefix "$prefix" dist/npm-tarballs/chimera-darwin-arm64-no-webui-*.tgz dist/npm-tarballs/chimera-no-webui-*.tgz
+npm install -g --prefix "$prefix" dist/npm-tarballs/coding-chimera-chimera-darwin-arm64-no-webui-*.tgz dist/npm-tarballs/coding-chimera-chimera-no-webui-*.tgz
 "$prefix/bin/chimera" --version
 "$prefix/bin/chimera" --graph --help
 ```

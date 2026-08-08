@@ -1,11 +1,11 @@
 # Chimera agent package
 
-This package is the complete Chimera agent runtime: the opencode-derived agent plus the built-in Chimera graph and propagation-audit runtime. The npm package name is `chimera`; the only public CLI command is `chimera`.
+This package is the complete Chimera agent runtime: the opencode-derived agent plus the built-in Chimera graph and propagation-audit runtime. The npm package name is `@coding-chimera/chimera`; the only public CLI command is `chimera`.
 
-To install from npm once published:
+To install from npm:
 
 ```bash
-npm install -g chimera
+npm install -g @coding-chimera/chimera
 chimera
 ```
 
@@ -46,7 +46,7 @@ Build the default current-platform no-WebUI package from this package directory:
 OPENCODE_CHANNEL=latest bun run build --single --skip-install
 ```
 
-The default package intentionally does not embed the GPL-licensed NewWeb/OpenCodeUI-derived assets. To also build the with-WebUI release variant, run a second build and preserve the first variant's npm tarballs. Both variants retain the same `chimera` and `chimera-<platform>` package names, so they must be installed one at a time:
+The default package intentionally does not embed the GPL-licensed NewWeb/OpenCodeUI-derived assets. To also build the with-WebUI release variant, run a second build and preserve the first variant's npm tarballs. Both variants retain the same `@coding-chimera/chimera` and `@coding-chimera/chimera-<platform>` package names, so they must be installed one at a time:
 
 ```bash
 OPENCODE_CHANNEL=latest bun run build --single --skip-install --with-webui --preserve-npm-tarballs
@@ -58,7 +58,7 @@ The tarballs are written under:
 dist/npm-tarballs/
 ```
 
-The no-WebUI tarballs are named like `chimera-no-webui-<version>.tgz` and `chimera-darwin-arm64-no-webui-<version>.tgz`. The with-WebUI tarballs use `with-webui` in the same position; the variant appears only in the tarball filename.
+The no-WebUI tarballs are named like `coding-chimera-chimera-no-webui-<version>.tgz` and `coding-chimera-chimera-darwin-arm64-no-webui-<version>.tgz`. The with-WebUI tarballs use `with-webui` in the same position; the variant appears only in the tarball filename.
 
 Standalone no-WebUI CLI archives keep compatibility names such as `chimera-darwin-arm64.zip`; with-WebUI archives add `-with-webui`. Each archive includes its variant's license files at the archive root.
 
@@ -66,7 +66,7 @@ Install the matching main and platform tarballs for exactly one locally built va
 
 ```bash
 prefix="$(mktemp -d)"
-npm install -g --prefix "$prefix" dist/npm-tarballs/chimera-darwin-arm64-no-webui-*.tgz dist/npm-tarballs/chimera-no-webui-*.tgz
+npm install -g --prefix "$prefix" dist/npm-tarballs/coding-chimera-chimera-darwin-arm64-no-webui-*.tgz dist/npm-tarballs/coding-chimera-chimera-no-webui-*.tgz
 "$prefix/bin/chimera" --version
 "$prefix/bin/chimera" --graph --help
 ```
@@ -81,7 +81,7 @@ printf 'export function add(a: number, b: number) { return a + b }\n' > "$projec
 "$prefix/bin/chimera" graph query add --path "$project"
 ```
 
-The generated main tarball has `package.json.name === "chimera"` and exposes only the `chimera` bin. The platform tarball is named `chimera-<os>-<arch>` internally and contains the compiled `bin/chimera` binary plus graph runtime assets; the tarball filename carries the packaging variant.
+The generated main tarball has `package.json.name === "@coding-chimera/chimera"` and exposes only the `chimera` bin. The platform tarball is named `@coding-chimera/chimera-<os>-<arch>` internally and contains the compiled `bin/chimera` binary plus graph runtime assets; the tarball filename carries the packaging variant.
 
 ## Variant licenses
 

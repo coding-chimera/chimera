@@ -3,10 +3,12 @@
 import { $ } from "bun"
 import fs from "fs/promises"
 import path from "path"
+import { createNpmPackageManifest } from "./npm-package"
 import {
   packageLicense,
-  parsePackageVariant,
+  parsePackageVariantMetadata,
   tarballNameForVariant,
+  validatePlatformPackageSet,
   writePackageLicenseFiles,
   type PackageVariant,
 } from "./package-variant"
@@ -16,23 +18,30 @@ const dir = path.resolve(import.meta.dir, "..")
 export async function packNpmTarballs(input: { variant?: PackageVariant } = {}) {
   const dist = path.join(dir, "dist")
   const tarballDir = path.join(dist, "npm-tarballs")
-  const pkg = await Bun.file(path.join(dir, "package.json")).json()
-  const metadata = await Bun.file(path.join(dist, "package-variant.json"))
-    .json()
-    .catch(() => null)
-  const variant = parsePackageVariant(input.variant ?? metadata?.variant ?? "no-webui")
+  const pkg: { name: string } = await Bun.file(path.join(dir, "package.json")).json()
+  const metadata = parsePackageVariantMetadata(
+    await Bun.file(path.join(dist, "package-variant.json"))
+      .json()
+      .catch(() => null),
+    pkg.name,
+  )
+  if (input.variant && input.variant !== metadata.variant) {
+    throw new Error(`Requested package variant ${input.variant} does not match build metadata ${metadata.variant}`)
+  }
+  const variant = metadata.variant
   process.chdir(dir)
 
-  const platformPackages = await findPlatformPackages(dist, pkg.name)
-  if (platformPackages.length === 0) {
-    throw new Error("No platform packages found in dist. Run the build before packing.")
-  }
-
-  const versions = new Set(platformPackages.map((item) => item.json.version))
-  if (versions.size !== 1) {
-    throw new Error(`Platform package versions do not match: ${[...versions].join(", ")}`)
-  }
-  const version = platformPackages[0].json.version
+  const discoveredPackages = await findPlatformPackages(dist, pkg.name)
+  const platformPackageVersions = validatePlatformPackageSet({
+    metadata,
+    packages: discoveredPackages.map((item) => item.json),
+  })
+  const platformPackages = metadata.expectedPlatformPackages.map((name) => {
+    const item = discoveredPackages.find((candidate) => candidate.json.name === name)
+    if (!item) throw new Error(`Validated platform package is missing: ${name}`)
+    return item
+  })
+  const version = metadata.version
   const mainDir = path.join(dist, pkg.name)
   await fs.rm(mainDir, { recursive: true, force: true })
   await fs.mkdir(mainDir, { recursive: true })
@@ -44,19 +53,11 @@ export async function packNpmTarballs(input: { variant?: PackageVariant } = {}) 
 
   await Bun.file(path.join(mainDir, "package.json")).write(
     JSON.stringify(
-      {
-        name: pkg.name,
+      createNpmPackageManifest({
         version,
-        type: "module",
-        license: packageLicense(variant),
-        bin: {
-          chimera: "./bin/chimera",
-        },
-        scripts: {
-          postinstall: "bun ./postinstall.mjs || node ./postinstall.mjs",
-        },
-        optionalDependencies: Object.fromEntries(platformPackages.map((item) => [item.json.name, item.json.version])),
-      },
+        variant,
+        platformPackages: platformPackageVersions,
+      }),
       null,
       2,
     ),
@@ -89,25 +90,49 @@ export async function packNpmTarballs(input: { variant?: PackageVariant } = {}) 
   }
 }
 
-async function findPlatformPackages(dist: string, pkgName: string): Promise<{ dir: string; json: any }[]> {
-  const results: { dir: string; json: any }[] = []
+async function findPlatformPackages(
+  dist: string,
+  pkgName: string,
+): Promise<{ dir: string; json: Record<string, unknown> & { name: string; version: unknown } }[]> {
+  const results: { dir: string; json: Record<string, unknown> & { name: string; version: unknown } }[] = []
+
+  const packageRoot = path.resolve(dist, pkgName)
+  const packageParent = path.dirname(packageRoot)
+  const packagePrefix = `${path.basename(packageRoot)}-`
 
   async function scan(currentDir: string) {
     const entries = await fs.readdir(currentDir, { withFileTypes: true }).catch(() => [])
     for (const entry of entries) {
       if (!entry.isDirectory()) continue
       const packageDir = path.join(currentDir, entry.name)
+      const platformDir = path.resolve(currentDir) === packageParent && entry.name.startsWith(packagePrefix)
       const packageJsonPath = path.join(packageDir, "package.json")
       const hasPackageJson = await fs
         .access(packageJsonPath)
         .then(() => true)
         .catch(() => false)
+      if (platformDir && !hasPackageJson) {
+        throw new Error(`Platform package directory is missing package.json: ${packageDir}`)
+      }
       if (hasPackageJson) {
-        const json = await Bun.file(packageJsonPath).json()
-        if (json.name && String(json.name).startsWith(`${pkgName}-`)) {
-          results.push({ dir: packageDir, json })
+        const json: unknown = await Bun.file(packageJsonPath).json()
+        if (typeof json !== "object" || json === null || Array.isArray(json)) {
+          throw new Error(`Platform package manifest must be an object: ${packageJsonPath}`)
+        }
+        const manifest = json as Record<string, unknown>
+        const name = manifest.name
+        if (typeof name === "string" && name.startsWith(`${pkgName}-`)) {
+          const expectedDir = path.resolve(dist, name)
+          if (path.resolve(packageDir) !== expectedDir) {
+            throw new Error(`Platform package directory does not match manifest name: ${packageDir}`)
+          }
+          results.push({
+            dir: packageDir,
+            json: { ...manifest, name, version: manifest.version },
+          })
           continue
         }
+        if (platformDir) throw new Error(`Platform package manifest has an invalid name: ${packageJsonPath}`)
       }
       await scan(packageDir)
     }

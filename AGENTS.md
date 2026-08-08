@@ -8,7 +8,7 @@
 ## Naming convention
 
 - In this workspace, `opencode` no longer means upstream/original opencode by default.
-- `chimera` is the public npm package and public CLI command for the complete Chimera distribution: the opencode-derived agent runtime plus the Chimera/CodeGraph graph and audit runtime.
+- `@coding-chimera/chimera` is the public npm package and `chimera` is the public CLI command for the complete Chimera distribution: the opencode-derived agent runtime plus the Chimera/CodeGraph graph and audit runtime.
 - Do not add public `opencode` or `codegraph` bins; graph/runtime commands live under `chimera graph ...` and `chimera --graph ...`.
 - When referring to the original upstream project, say **upstream opencode** or **original opencode** explicitly.
 
@@ -25,10 +25,10 @@
 
 - Bun remains the package development toolchain for this checkout: use it for local install/build/test/typecheck/pack commands inside package directories, usually `packages/chimera`; do not run build, test, lint, or typecheck commands from the repository root.
 - For source validation in `packages/chimera`, use `bun typecheck` and focused `bun test --timeout 30000 <test-file>` as needed. Do not run `tsc` directly.
-- For local tarball/user-install validation, build the default no-WebUI variant from `packages/chimera` with `OPENCODE_CHANNEL=latest bun run build --single --skip-install`. This creates `dist/npm-tarballs/chimera-no-webui-<version>.tgz` and the current-platform tarball such as `chimera-darwin-arm64-no-webui-<version>.tgz`.
+- For local tarball/user-install validation, build the default no-WebUI variant from `packages/chimera` with `OPENCODE_CHANNEL=latest bun run build --single --skip-install`. This creates `dist/npm-tarballs/coding-chimera-chimera-no-webui-<version>.tgz` and the current-platform tarball such as `coding-chimera-chimera-darwin-arm64-no-webui-<version>.tgz`.
 - To produce the GPL-licensed NewWeb/OpenCodeUI-derived variant for release assets, run a second build with `OPENCODE_CHANNEL=latest bun run build --single --skip-install --with-webui --preserve-npm-tarballs`. This preserves the no-WebUI tarballs and adds `*-with-webui-<version>.tgz` tarballs. Keep no-WebUI and with-WebUI artifacts visibly separate in release notes.
-- User-facing and release-matrix global install validation must use npm, not Bun. Published package validation should exercise `npm install -g chimera`; local tarball smoke tests should install one variant at a time with npm, e.g. `npm install -g ./dist/npm-tarballs/chimera-darwin-arm64-no-webui-<version>.tgz ./dist/npm-tarballs/chimera-no-webui-<version>.tgz`.
-- Do not use `bun install -g` as evidence for release-matrix or user-install behavior; it tests Bun's global store and can miss npm install/postinstall issues.
+- User-facing and release-matrix global install validation must use npm, not Bun. Published package validation should exercise `npm install -g @coding-chimera/chimera`; local tarball smoke tests should install one variant at a time with npm, e.g. `npm install -g ./dist/npm-tarballs/coding-chimera-chimera-darwin-arm64-no-webui-<version>.tgz ./dist/npm-tarballs/coding-chimera-chimera-no-webui-<version>.tgz`.
+- Verify npm installs with `command -v chimera`, `chimera --version`, and `npm ls -g --depth=0 @coding-chimera/chimera @coding-chimera/chimera-darwin-arm64`.
 
 ## Style Guide
 
