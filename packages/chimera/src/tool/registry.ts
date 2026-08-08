@@ -355,7 +355,19 @@ export const layer = Layer.effect(
             `- ${item.name}: ${item.description ?? "This subagent should only be called manually by the user."}`,
         )
         .join("\n")
-      return ["Available agent types and the tools they have access to:", description].join("\n")
+      const cfg = yield* config.get()
+      const profiles = Object.entries(cfg.delegation?.model_profiles ?? {}).filter(
+        ([name]) => Permission.evaluate("task_profile", name, agent.permission).action !== "deny",
+      )
+      const profileSection = profiles.length
+        ? [
+            "Available model profiles:",
+            profiles.map(([name, entry]) => `- ${name}: ${entry.description ?? name}`).join("\n"),
+          ].join("\n")
+        : ""
+      return ["Available agent types and the tools they have access to:", description, profileSection]
+        .filter(Boolean)
+        .join("\n")
     })
 
     const tools: Interface["tools"] = Effect.fn("ToolRegistry.tools")(function* (input) {

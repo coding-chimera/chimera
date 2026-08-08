@@ -21,6 +21,7 @@ import { Plugin } from "../plugin"
 import PROMPT_PLAN from "../session/prompt/plan.txt"
 import BUILD_SWITCH from "../session/prompt/build-switch.txt"
 import MAX_STEPS from "../session/prompt/max-steps.txt"
+import CUTOFF_NOTE from "../session/prompt/cutoff-note.txt"
 import { ToolRegistry } from "@/tool/registry"
 import { MCP } from "../mcp"
 import { LSP } from "@/lsp/lsp"
@@ -1828,8 +1829,14 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
           permissions.push({ permission: t, action: enabled ? "allow" : "deny", pattern: "*" })
         }
         if (permissions.length > 0) {
-          session.permission = permissions
-          yield* sessions.setPermission({ sessionID: session.id, permission: permissions })
+          session.permission = [
+            ...(session.permission ?? []).filter(
+              (rule) =>
+                !permissions.some((slot) => slot.permission === rule.permission && slot.pattern === rule.pattern),
+            ),
+            ...permissions,
+          ]
+          yield* sessions.updatePermissionSlots({ sessionID: session.id, rules: permissions }).pipe(Effect.orDie)
         }
 
         if (input.noReply === true) return message
@@ -1878,6 +1885,9 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
         const slog = elog.with({ sessionID })
         let structured: unknown
         let step = 0
+        const CUTOFF_MAX_RETRIES = 1
+        let cutoffRetries = 0
+        let cutoffPending = false
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
 
         while (true) {
@@ -1913,8 +1923,19 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
             !hasToolCalls &&
             lastUser.id < lastAssistant.id
           ) {
-            yield* slog.info("exiting loop")
-            break
+            const hasText = lastAssistantMsg?.parts.some((p) => p.type === "text") ?? false
+            const isCutoff =
+              lastAssistant.finish === "length" && !hasText && cutoffRetries < CUTOFF_MAX_RETRIES
+            if (cutoffPending || isCutoff) {
+              if (!cutoffPending) {
+                cutoffRetries++
+                cutoffPending = true
+                yield* slog.info("output cutoff retry", { retries: cutoffRetries })
+              }
+            } else {
+              yield* slog.info("exiting loop")
+              break
+            }
           }
 
           step++
@@ -2082,6 +2103,10 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
               ...(memoryContext ? [memoryContext.guidance] : []),
               ...(skills ? [skills] : []),
             ]
+            if (cutoffPending) {
+              system.push(CUTOFF_NOTE)
+              cutoffPending = false
+            }
             const format = lastUser.format ?? { type: "text" as const }
             if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
             const extraModelMsgs = isLastStep ? [{ role: "assistant" as const, content: MAX_STEPS }] : []

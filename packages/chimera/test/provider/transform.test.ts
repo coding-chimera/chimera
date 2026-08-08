@@ -4333,3 +4333,9 @@ describe("ProviderTransform.providerOptions - ai-gateway-provider", () => {
     expect(result).toEqual({ openaiCompatible: { reasoningEffort: "high" } })
   })
 })
+
+describe("ProviderTransform.OUTPUT_TOKEN_MAX", () => {
+  test("defaults to 65536 so reasoning plus a tool call fit in one step", () => {
+    expect(ProviderTransform.OUTPUT_TOKEN_MAX).toBe(65_536)
+  })
+})

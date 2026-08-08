@@ -1,4 +1,5 @@
 import { NodeFileSystem } from "@effect/platform-node"
+import CUTOFF_NOTE from "../../src/session/prompt/cutoff-note.txt"
 import { FetchHttpClient } from "effect/unstable/http"
 import { expect, test } from "bun:test"
 import { Cause, Effect, Exit, Fiber, Layer } from "effect"
@@ -2905,3 +2906,158 @@ it.live(
     ),
   30_000,
 )
+
+// Prompt tools -> permission slot updates
+
+it.live("prompt tools slot replaces matching rule and keeps unrelated bash/edit rules", () =>
+  provideTmpdirInstance(
+    () =>
+      Effect.gen(function* () {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const chat = yield* sessions.create({
+          title: "Pinned",
+          permission: [
+            { permission: "bash", pattern: "*", action: "allow" },
+            { permission: "edit", pattern: "*", action: "allow" },
+          ],
+        })
+        yield* prompt.prompt({
+          sessionID: chat.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "hello" }],
+          tools: { task: false },
+        })
+        const persisted = yield* sessions.get(chat.id)
+        expect(persisted.permission).toEqual([
+          { permission: "bash", pattern: "*", action: "allow" },
+          { permission: "edit", pattern: "*", action: "allow" },
+          { permission: "task", pattern: "*", action: "deny" },
+        ])
+        expect(Permission.evaluate("task", "*", persisted.permission ?? []).action).toBe("deny")
+        expect(Permission.evaluate("bash", "*", persisted.permission ?? []).action).toBe("allow")
+        expect(Permission.evaluate("edit", "*", persisted.permission ?? []).action).toBe("allow")
+      }),
+    { git: true, config: cfg },
+  ),
+)
+
+it.live("prompt tools same-slot prior allow is replaced by one final deny override", () =>
+  provideTmpdirInstance(
+    () =>
+      Effect.gen(function* () {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const chat = yield* sessions.create({
+          title: "Pinned",
+          permission: [{ permission: "task", pattern: "*", action: "allow" }],
+        })
+        yield* prompt.prompt({
+          sessionID: chat.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "hello" }],
+          tools: { task: false },
+        })
+        const persisted = yield* sessions.get(chat.id)
+        expect(persisted.permission).toEqual([{ permission: "task", pattern: "*", action: "deny" }])
+        expect(Permission.evaluate("task", "*", persisted.permission ?? []).action).toBe("deny")
+      }),
+    { git: true, config: cfg },
+  ),
+)
+
+it.live("prompt tools true and false both apply via Permission.evaluate on an empty permission", () =>
+  provideTmpdirInstance(
+    () =>
+      Effect.gen(function* () {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const chat = yield* sessions.create({})
+        yield* prompt.prompt({
+          sessionID: chat.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "hello" }],
+          tools: { task: false, bash: true },
+        })
+        const persisted = yield* sessions.get(chat.id)
+        expect(Permission.evaluate("task", "*", persisted.permission ?? []).action).toBe("deny")
+        expect(Permission.evaluate("bash", "*", persisted.permission ?? []).action).toBe("allow")
+      }),
+    { git: true, config: cfg },
+  ),
+)
+
+it.live("prompt without tools leaves persisted permission untouched", () =>
+  provideTmpdirInstance(
+    () =>
+      Effect.gen(function* () {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const chat = yield* sessions.create({
+          title: "Pinned",
+          permission: [{ permission: "task", pattern: "*", action: "allow" }],
+        })
+        yield* prompt.prompt({
+          sessionID: chat.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "hello" }],
+        })
+        const before = yield* sessions.get(chat.id)
+        expect(before.permission).toEqual([{ permission: "task", pattern: "*", action: "allow" }])
+        yield* prompt.prompt({
+          sessionID: chat.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "hello again" }],
+          tools: {},
+        })
+        const after = yield* sessions.get(chat.id)
+        expect(after.permission).toEqual([{ permission: "task", pattern: "*", action: "allow" }])
+      }),
+    { git: true, config: cfg },
+  ),
+)
+
+it.live("prompt nested task and chimera_swarm denies stay effective without erasing derived rules", () =>
+  provideTmpdirInstance(
+    () =>
+      Effect.gen(function* () {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const chat = yield* sessions.create({
+          title: "Pinned",
+          permission: [
+            { permission: "task", pattern: "*", action: "deny" },
+            { permission: "bash", pattern: "*", action: "allow" },
+          ],
+        })
+        yield* prompt.prompt({
+          sessionID: chat.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "hello" }],
+          tools: { task: false, chimera_swarm: false },
+        })
+        const persisted = yield* sessions.get(chat.id)
+        expect(persisted.permission).toEqual([
+          { permission: "bash", pattern: "*", action: "allow" },
+          { permission: "task", pattern: "*", action: "deny" },
+          { permission: "chimera_swarm", pattern: "*", action: "deny" },
+        ])
+        expect(Permission.evaluate("task", "*", persisted.permission ?? []).action).toBe("deny")
+        expect(Permission.evaluate("chimera_swarm", "*", persisted.permission ?? []).action).toBe("deny")
+        expect(Permission.evaluate("bash", "*", persisted.permission ?? []).action).toBe("allow")
+      }),
+    { git: true, config: cfg },
+  ),
+)
+
+test("cutoff note tells the model to act immediately after output budget exhaustion", () => {
+  expect(CUTOFF_NOTE).toContain("finish reason: length")
+  expect(CUTOFF_NOTE).toContain("no tool call or text produced")
+  expect(CUTOFF_NOTE).toContain("Immediately perform one concrete action")
+})

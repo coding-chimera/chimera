@@ -2,7 +2,7 @@ export * as BrowserRuntime from "./runtime"
 
 import { Context, Effect, FileSystem, Layer, Schema, Semaphore } from "effect"
 import { NodeFileSystem } from "@effect/platform-node"
-import { chromium } from "playwright-core"
+import { pathToFileURL } from "url"
 import { ulid } from "ulid"
 import { InstanceState } from "@/effect/instance-state"
 import { BrowserArtifact } from "./artifact"
@@ -136,10 +136,19 @@ type State = {
 
 const DEFAULT_TIMEOUT = 15_000
 
+// playwright-core is external at build time (bun cannot inline its dynamic
+// requires), so load it lazily: startup never touches it and a missing
+// package surfaces as a per-operation RuntimeError instead of crashing.
+const loadChromium = async () => {
+  const entry = process.env.CHIMERA_PLAYWRIGHT_CORE_ENTRY
+  if (entry) return ((await import(pathToFileURL(entry).href)) as typeof import("playwright-core")).chromium
+  return (await import("playwright-core")).chromium
+}
+
 const PLAYWRIGHT_DRIVER: Driver = {
-  launch: async (options) => (await chromium.launch(options)) as unknown as BrowserLike,
+  launch: async (options) => (await loadChromium()).launch(options) as unknown as BrowserLike,
   connectOverCDP: async (endpoint, options) =>
-    (await chromium.connectOverCDP(endpoint, options)) as unknown as BrowserLike,
+    (await loadChromium()).connectOverCDP(endpoint, options) as unknown as BrowserLike,
 }
 
 export const layerWith = (driver: Driver) =>

@@ -138,6 +138,23 @@ export default [
       log.warn("ignored late part update", { partID: id, messageID, sessionID })
     }
   }),
+  SyncEvent.project(Session.Event.PermissionSlot, (db, data) => {
+    const row = db
+      .select({ permission: SessionTable.permission })
+      .from(SessionTable)
+      .where(eq(SessionTable.id, data.sessionID))
+      .get()
+    if (!row) throw new NotFoundError({ message: `Session not found: ${data.sessionID}` })
+    const current = row.permission ?? []
+    const next = [
+      ...current.filter((rule) => !data.rules.some((r) => r.permission === rule.permission && r.pattern === rule.pattern)),
+      ...data.rules,
+    ]
+    db.update(SessionTable)
+      .set({ permission: next, time_updated: data.timestamp })
+      .where(eq(SessionTable.id, data.sessionID))
+      .run()
+  }),
 
   ...nextProjectors,
 ]

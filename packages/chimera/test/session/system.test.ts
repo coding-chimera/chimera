@@ -68,6 +68,7 @@ describe("session.system", () => {
       expect(unknown).toContain("Tool results, injected context")
       expect(unknown).toContain("# Software engineering workflow")
       expect(unknown).toContain("## Verification strategy")
+      expect(unknown).toContain("Verification discipline")
       expect(unknown).toContain("## Browser workflow")
       expect(unknown).toContain("`browser_open` -> `browser_snapshot`")
       expect(unknown).toContain("untrusted external content")

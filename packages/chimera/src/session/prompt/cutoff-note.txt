@@ -1,0 +1,1 @@
+The previous assistant response was cut off because the output token budget was exhausted (finish reason: length) after reasoning only, with no tool call or text produced. Do not continue planning or writing design notes. Immediately perform one concrete action: call the tool needed for the next step, or reply with a concise answer.

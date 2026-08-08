@@ -3,6 +3,7 @@ import DESCRIPTION from "./swarm.txt"
 import { SubagentDispatch, type SubagentPromptOps } from "../agent/subagent-dispatch"
 import { Agent } from "../agent/agent"
 import { InstanceState } from "@/effect/instance-state"
+import { Config } from "@/config/config"
 import { getCodeGraphDir } from "@/graph/directory"
 import { readOracleResults, readPersistentObligationStore, type OracleRecord, type ObligationStoreLike } from "@/chimera/store"
 import { SessionID } from "@/session/schema"
@@ -41,6 +42,9 @@ export const Parameters = Schema.Struct({
   }),
   subagent_type: Schema.optional(Schema.String).annotate({
     description: "Subagent type to run for each item. Defaults to general.",
+  }),
+  model_profile: Schema.optional(Schema.String).annotate({
+    description: "Name of a delegation.model_profiles entry to run every worker with. Omit to use the subagent's configured model or the parent model.",
   }),
   description: Schema.optional(Schema.String).annotate({
     description: "Short base description for child task titles.",
@@ -104,6 +108,7 @@ type ChildSession = {
   title: string
   sessionId: string
   model?: unknown
+  model_profile?: string
 }
 type SwarmChildRun = {
   index: number
@@ -112,6 +117,8 @@ type SwarmChildRun = {
   status: "queued" | "running" | "completed" | "error" | "cancelled"
   sessionId?: string
   model?: unknown
+  model_profile?: string
+  execution?: unknown
   outputPath?: string
   summary?: SwarmSummary
   error?: string
@@ -387,6 +394,7 @@ export const ChimeraSwarmTool = Tool.define(
   id,
   Effect.gen(function* () {
     const agents = yield* Agent.Service
+    const config = yield* Config.Service
     const truncate = yield* Truncate.Service
     const dispatch = yield* SubagentDispatch
 
@@ -416,7 +424,23 @@ export const ChimeraSwarmTool = Tool.define(
         const validTypes = (yield* agents.list()).map((agent) => agent.name).join(", ")
         return yield* Effect.fail(new Error(`Unknown agent type: ${subagent} is not a valid agent type. Valid types: ${validTypes}`))
       }
-
+      const cfg = yield* config.get()
+      const selectedProfile = params.model_profile ?? cfg.delegation?.routes?.[subagent]
+      if (selectedProfile !== undefined) {
+        if (selectedProfile.trim().length === 0) {
+          return yield* Effect.fail(new Error("Model profile name must not be empty"))
+        }
+        if (!cfg.delegation?.model_profiles?.[selectedProfile]) {
+          const valid = Object.keys(cfg.delegation?.model_profiles ?? {})
+          return yield* Effect.fail(
+            new Error(
+              params.model_profile !== undefined
+                ? `Unknown model profile: ${selectedProfile}. Valid profiles: ${valid.join(", ")}`
+                : `Unknown model profile: ${selectedProfile} for route "${subagent}". Valid profiles: ${valid.join(", ")}`,
+            ),
+          )
+        }
+      }
       if (!ctx.extra?.bypassAgentCheck) {
         yield* ctx.ask({
           permission: "task",
@@ -430,8 +454,32 @@ export const ChimeraSwarmTool = Tool.define(
         })
       }
 
+
       const promptOps = ctx.extra?.promptOps as SubagentPromptOps | undefined
       if (!promptOps) return yield* Effect.fail(new Error("ChimeraSwarmTool requires promptOps in ctx.extra"))
+      if (selectedProfile !== undefined) {
+        yield* ctx.ask({
+          permission: "task_profile",
+          patterns: [selectedProfile],
+          always: ["*"],
+          metadata: {
+            description: params.description ?? `chimera swarm ${items.length} items`,
+            model_profile: selectedProfile,
+          },
+        })
+      }
+      const authorizeProfile = (profile: string) =>
+        profile === selectedProfile
+          ? Effect.void
+          : ctx.ask({
+              permission: "task_profile",
+              patterns: [profile],
+              always: ["*"],
+              metadata: {
+                description: params.description ?? `chimera swarm ${items.length} items`,
+                model_profile: profile,
+              },
+            })
 
       const concurrency = bounded(params.concurrency, DEFAULT_CONCURRENCY, MAX_CONCURRENCY)
       const title = params.description ?? `chimera swarm (${items.length})`
@@ -458,6 +506,7 @@ export const ChimeraSwarmTool = Tool.define(
         itemCount: items.length,
         concurrency,
         subagent_type: subagent,
+        model_profile: params.model_profile,
         scopeWarningCount: scopeWarnings.length,
         scopeWarnings: scopeWarnings.map((warning) => ({
           file: warning.file,
@@ -475,6 +524,7 @@ export const ChimeraSwarmTool = Tool.define(
                   title: run.title,
                   sessionId: run.sessionId,
                   model: run.model,
+                  model_profile: run.model_profile,
                 },
               ]
             : [],
@@ -525,14 +575,18 @@ export const ChimeraSwarmTool = Tool.define(
               description: item.title,
               prompt: item.prompt,
               subagentType: subagent,
+              modelProfile: params.model_profile,
               promptOps,
               abort: ctx.abort,
               nestedDelegation: "deny",
-              onStarted: ({ sessionId, model }) =>
+              authorizeProfile,
+              onStarted: (started) =>
                 updateChildRun(item.index, {
                   status: "running",
-                  sessionId,
-                  model,
+                  sessionId: started.sessionId,
+                  model: started.model,
+                  model_profile: started.execution?.modelProfile,
+                  execution: started.execution,
                 }),
             })
             const outputPath = yield* writeChildOutput(result, truncate)
@@ -544,6 +598,8 @@ export const ChimeraSwarmTool = Tool.define(
               outputPath,
               summary,
               error: undefined,
+              model_profile: result.execution?.modelProfile,
+              execution: result.execution,
             })
             return {
               index: item.index,
@@ -584,6 +640,7 @@ export const ChimeraSwarmTool = Tool.define(
         preset: preset ?? "custom",
         source: params.from ?? "items",
         subagent_type: subagent,
+        model_profile: params.model_profile,
         items: items.length,
         concurrency,
         childRuns: childRunList(),
@@ -641,7 +698,7 @@ export const ChimeraSwarmTool = Tool.define(
       formatValidationError(error) {
         return [
           `The ${id} tool was called with invalid arguments: ${error}.`,
-          "Expected shape: { prompt_template?: string (must include {{item}}), items?: (string | object)[], preset?: \"audit-followup\" | \"audit-review\" | \"oracle-followup\" | \"file-review\", from?: \"pending_obligations\" | \"claimed_obligations\" | \"stale_obligations\" | \"active_obligations\" | \"failing_oracles\" | \"unknown_oracles\" | \"failing_or_unknown_oracles\", subagent_type?: string, concurrency?: number (1-16), limit?: number (1-100) }",
+          "Expected shape: { prompt_template?: string (must include {{item}}), items?: (string | object)[], preset?: \"audit-followup\" | \"audit-review\" | \"oracle-followup\" | \"file-review\", from?: \"pending_obligations\" | \"claimed_obligations\" | \"stale_obligations\" | \"active_obligations\" | \"failing_oracles\" | \"unknown_oracles\" | \"failing_or_unknown_oracles\", subagent_type?: string, model_profile?: string, concurrency?: number (1-16), limit?: number (1-100) }",
           "Example: { preset: \"audit-followup\", from: \"pending_obligations\", concurrency: 8 }",
         ].join("\n")
       },
