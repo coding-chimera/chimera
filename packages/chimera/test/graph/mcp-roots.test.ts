@@ -5,7 +5,7 @@
  * doesn't pass a `rootUri`/`workspaceFolders` in `initialize`, the server used
  * to fall straight back to `process.cwd()` — which for many IDE clients is the
  * wrong directory. Every tool call without an explicit `projectPath` then
- * failed with a misleading "Chimera not initialized. Run 'chimera init'."
+ * failed without actionable `chimera graph init` and `chimera graph index` guidance.
  *
  * The fix: when no explicit path is provided, the server asks the client for
  * its workspace root via the spec-blessed `roots/list` request (if the client
@@ -21,6 +21,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { CodeGraph } from '../../src/graph';
+import { getStaticTools, ToolHandler } from '../../src/graph/mcp/tools';
 
 const BIN = path.resolve(__dirname, 'fixtures/graph-cli.ts');
 
@@ -75,7 +76,7 @@ function send(child: ChildProcessWithoutNullStreams, msg: object): void {
 const CLIENT_INFO = { name: 'test', version: '0.0.0' };
 
 describe('MCP project resolution via roots/list (issue #196)', () => {
-  let cwdDir: string;     // where the server is launched — has NO .codegraph
+  let cwdDir: string;     // where the server is launched — has no initialized graph
   let projectDir: string; // the real indexed project the client reports
   let child: ChildProcessWithoutNullStreams | null = null;
 
@@ -91,6 +92,30 @@ describe('MCP project resolution via roots/list (issue #196)', () => {
     }
     fs.rmSync(cwdDir, { recursive: true, force: true });
     fs.rmSync(projectDir, { recursive: true, force: true });
+  });
+
+  it('describes projectPath for current and compatible legacy graph data', () => {
+    const descriptions = getStaticTools()
+      .map((tool) => tool.inputSchema.properties.projectPath?.description)
+      .filter((description): description is string => typeof description === 'string');
+
+    expect(descriptions.length).toBeGreaterThan(0);
+    for (const description of descriptions) {
+      expect(description).toContain('initialized Chimera graph');
+      expect(description).toContain('.chimera/');
+      expect(description).toContain('.codegraph/');
+      expect(description).toContain('legacy');
+      expect(description).not.toContain('with .codegraph/ initialized');
+    }
+  });
+
+  it('points an initialized but empty graph at the public graph index route', async () => {
+    const cg = await CodeGraph.init(projectDir);
+    const result = await new ToolHandler(cg).execute('codegraph_files', {});
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).toBe('No files indexed. Run `chimera graph index` first.');
+    cg.close();
   });
 
   it('resolves the project from the client roots/list when no rootUri is sent', async () => {
@@ -141,8 +166,13 @@ describe('MCP project resolution via roots/list (issue #196)', () => {
     const text = resp.result.content[0].text as string;
 
     expect(text).toContain('No CodeGraph project is loaded');
+    expect(text).toContain('chimera graph init');
+    expect(text).toContain('chimera graph index');
+    expect(text).toContain('.chimera/');
+    expect(text).toContain('.codegraph/');
     expect(text).toContain('projectPath');
     expect(text).toContain('--path');
+    expect(text).toContain('["graph", "serve", "--mcp", "--path"');
     // Names the directory it actually searched (the wrong cwd) so the user can
     // see why detection missed. basename survives any symlink realpath-ing.
     expect(text).toContain(path.basename(cwdDir));

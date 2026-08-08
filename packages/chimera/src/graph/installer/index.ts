@@ -28,6 +28,7 @@ import { getGlyphs } from '../ui/glyphs';
 // installer must stay importable even when native modules can't load).
 import { watchDisabledReason } from '../sync/watch-policy';
 import { isGitRepo, isSyncHookInstalled, installGitSyncHook } from '../sync/git-hooks';
+import { getGraphDataRootInfo, isInitialized } from '../directory';
 
 // Backwards-compat: keep these named exports — downstream code may
 // import them. The shim in `config-writer.ts` continues to re-export
@@ -46,19 +47,27 @@ export type { InstallLocation } from './config-writer';
 const importESM = new Function('specifier', 'return import(specifier)') as
   (specifier: string) => Promise<typeof import('@clack/prompts')>;
 
+export const CHIMERA_NPM_PACKAGE = '@coding-chimera/chimera';
+export const CHIMERA_NPM_INSTALL_COMMAND = `npm install -g ${CHIMERA_NPM_PACKAGE}`;
+export const CHIMERA_GRAPH_QUICK_START = 'cd your-project\nchimera graph init\nchimera graph index';
 function formatNumber(n: number): string {
   return n.toLocaleString();
 }
 
 function getVersion(): string {
+  const packageJsonPath = [
+    path.join(path.dirname(process.execPath), '..', 'package.json'),
+    path.join(import.meta.dirname, '..', '..', '..', 'package.json'),
+  ].find((candidate) => fs.existsSync(candidate));
+  if (!packageJsonPath) return '0.0.0';
   try {
-    const packageJsonPath = path.join(__dirname, '..', '..', '..', 'package.json');
     const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
     return packageJson.version;
   } catch {
     return '0.0.0';
   }
 }
+
 
 export interface RunInstallerOptions {
   /** Comma-separated target list, or `auto` / `all` / `none`. */
@@ -75,9 +84,9 @@ export interface RunInstallerOptions {
 }
 
 /**
- * Interactive entry point — preserves the historical UX (`codegraph
- * install` with no args goes through the prompts), but now starts
- * the targets multi-select pre-populated with detected agents.
+ * Interactive entry point — preserves the historical UX (`chimera install`
+ * with no args goes through the prompts), but now starts the targets
+ * multi-select pre-populated with detected agents.
  */
 export async function runInstaller(): Promise<void> {
   return runInstallerWithOptions({});
@@ -102,8 +111,8 @@ export async function runInstallerWithOptions(opts: RunInstallerOptions): Promis
     return;
   }
 
-  // Step 2: install the codegraph npm package on PATH (always offered;
-  // matches existing behavior). Skipped when --yes (assume present).
+  // Step 2: offer to install the public Chimera package on PATH.
+  // Skipped when --yes (assume present).
   if (!useDefaults) {
     const shouldInstallGlobally = await clack.confirm({
       message: 'Install the chimera CLI on your PATH? (Required so agents can launch the MCP server)',
@@ -117,11 +126,12 @@ export async function runInstallerWithOptions(opts: RunInstallerOptions): Promis
       const s = clack.spinner();
       s.start('Installing chimera CLI...');
       try {
-        execSync('npm install -g chimera', { stdio: 'pipe', windowsHide: true });
+        execSync(CHIMERA_NPM_INSTALL_COMMAND, { stdio: 'pipe', windowsHide: true });
         s.stop('Installed chimera CLI on PATH');
-      } catch {
-        s.stop('Could not install (permission denied)');
-        clack.log.warn('Try: sudo npm install -g chimera');
+      } catch (error) {
+        s.stop('Could not install Chimera CLI');
+        clack.log.warn(error instanceof Error ? error.message : String(error));
+        clack.log.info(`Install manually with: ${CHIMERA_NPM_INSTALL_COMMAND}`);
       }
     } else {
       clack.log.info('Skipped CLI install — agents will not be able to launch the MCP server without it');
@@ -208,7 +218,7 @@ export async function runInstallerWithOptions(opts: RunInstallerOptions): Promis
   }
 
   if (location === 'global') {
-    clack.note('cd your-project\nchimera init -i', 'Quick start');
+    clack.note(CHIMERA_GRAPH_QUICK_START, 'Quick start');
   }
 
   const finalNote = targets.length > 0
@@ -295,8 +305,8 @@ export function uninstallTargets(
  * one block per agent so the user sees exactly which providers it hit.
  *
  * Removes only what install wrote (MCP server entry, instructions
- * block, permissions) — never the `.codegraph/` index, which `codegraph
- * uninit` owns.
+ * block, permissions) — never the Chimera graph data, which
+ * `chimera graph uninit` owns.
  */
 export async function runUninstaller(opts: RunUninstallerOptions): Promise<void> {
   const clack = await importESM('@clack/prompts');
@@ -360,10 +370,11 @@ export async function runUninstaller(opts: RunUninstallerOptions): Promise<void>
     }
   }
 
-  // Step 4: for local uninstall, the index dir is separate — point at
-  // `uninit` so the user knows it's still there (and how to remove it).
-  if (location === 'local' && fs.existsSync(path.join(process.cwd(), '.codegraph'))) {
-    clack.log.info('The .codegraph/ index for this project is still here. Run `codegraph uninit` to delete it.');
+  // Step 4: for local uninstall, graph data is separate — point at the
+  // graph route so the user knows it is still there (and how to remove it).
+  if (location === 'local' && isInitialized(process.cwd())) {
+    const dataRoot = getGraphDataRootInfo(process.cwd());
+    clack.log.info(`The Chimera graph data for this project is still in ${dataRoot.dataRoot}. Run \`chimera graph uninit\` to delete it.`);
   }
 
   // Step 5: summary.
@@ -455,20 +466,20 @@ async function initializeLocalProject(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     clack.log.error(`Could not load native modules: ${msg}`);
-    clack.log.info('Skipping project initialization. Run "chimera init -i" later.');
+    clack.log.info('Skipping project initialization. Run "chimera graph init" and then "chimera graph index" later.');
     return;
   }
 
   // Check if already initialized
   if (CodeGraph.isInitialized(projectPath)) {
-    clack.log.info('CodeGraph already initialized in this project');
+    clack.log.info('Chimera graph is already initialized in this project');
     await offerWatchFallback(clack, projectPath, { yes: useDefaults });
     return;
   }
 
   // Initialize
   const cg = await CodeGraph.init(projectPath);
-  clack.log.success('Created .codegraph/ directory');
+  clack.log.success(`Created Chimera graph data in ${getGraphDataRootInfo(projectPath).dataRoot}`);
 
   // Index the project with shimmer progress (worker thread for smooth animation)
   const { createShimmerProgress } = await import('../ui/shimmer-progress');
@@ -496,7 +507,7 @@ async function initializeLocalProject(
  * When the live file watcher will be disabled for this project (e.g. WSL2
  * /mnt drives, or CODEGRAPH_NO_WATCH), the index would silently go stale.
  * Explain that, and offer to keep it fresh automatically via git hooks
- * (commit / pull / checkout) instead of manual `chimera sync`.
+ * (commit / pull / checkout) instead of manual `chimera graph sync`.
  *
  * No-op on environments where the watcher runs normally, so it's safe to
  * call unconditionally after init.
@@ -514,7 +525,7 @@ export async function offerWatchFallback(
 
   // No git repo → the commit-hook path doesn't apply; point at manual sync.
   if (!isGitRepo(projectPath)) {
-    clack.log.info('Run `chimera sync` after changing files to refresh the index.');
+    clack.log.info('Run `chimera graph sync` after changing files to refresh the index.');
     return;
   }
 
@@ -532,19 +543,19 @@ export async function offerWatchFallback(
       message: 'How should CodeGraph keep its index fresh?',
       options: [
         { value: 'hook' as const, label: 'Sync on git commit / pull / checkout', hint: 'installs git hooks (recommended)' },
-        { value: 'manual' as const, label: 'I\'ll run `chimera sync` myself', hint: 'fully manual' },
+        { value: 'manual' as const, label: 'I\'ll run `chimera graph sync` myself', hint: 'fully manual' },
       ],
       initialValue: 'hook' as const,
     });
     if (clack.isCancel(sel)) {
-      clack.log.info('Skipped — run `chimera sync` after changes to refresh the index.');
+      clack.log.info('Skipped — run `chimera graph sync` after changes to refresh the index.');
       return;
     }
     choice = sel;
   }
 
   if (choice === 'manual') {
-    clack.log.info('Run `chimera sync` after changing files to refresh the index.');
+    clack.log.info('Run `chimera graph sync` after changing files to refresh the index.');
     return;
   }
 
@@ -554,11 +565,11 @@ export async function offerWatchFallback(
       `Installed git ${result.installed.join(', ')} hook${result.installed.length > 1 ? 's' : ''} — ` +
       'the index refreshes in the background after each.',
     );
-    clack.log.info('Run `chimera sync` anytime to refresh immediately.');
+    clack.log.info('Run `chimera graph sync` anytime to refresh immediately.');
   } else {
     clack.log.warn(
       `Could not install git hooks${result.skipped ? ` (${result.skipped})` : ''}. ` +
-      'Run `chimera sync` after changes instead.',
+      'Run `chimera graph sync` after changes instead.',
     );
   }
 }

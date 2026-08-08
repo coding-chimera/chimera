@@ -46,7 +46,7 @@ async function loadCodeGraph(): Promise<typeof import('../index')> {
     console.error(`\x1b[31m${getGlyphs().err}\x1b[0m Failed to load Chimera modules.`);
     console.error(`\n  Node: ${process.version}  Platform: ${process.platform} ${process.arch}`);
     console.error(`\n  Error: ${msg}`);
-    console.error('\n  Try reinstalling with: npm install -g chimera\n');
+    console.error('\n  Try reinstalling with: npm install -g @coding-chimera/chimera\n');
     process.exit(1);
   }
 }
@@ -111,7 +111,7 @@ function prepareRuntime(): void {
   // memory: Zone`) on Node >= 22. No-op under the bundled launcher, which already
   // passes the flag. Must run before any grammar (in the parse worker, which
   // inherits this process's flags) is compiled. See ../extraction/wasm-runtime-flags.
-  relaunchWithWasmRuntimeFlagsIfNeeded(__filename);
+  relaunchWithWasmRuntimeFlagsIfNeeded(import.meta.filename);
 
   process.on('uncaughtException', (error) => {
     console.error('[Chimera] Uncaught exception:', error);
@@ -148,10 +148,15 @@ async function main(argv = process.argv.slice(2), programName = 'chimera') {
 
 const program = new Command();
 
-// Version from package.json
-const packageJson = JSON.parse(
-  fs.readFileSync(path.join(__dirname, '..', '..', '..', 'package.json'), 'utf-8')
-);
+// Version from package.json (executable-relative first, then the relocatable
+// module path for source checkouts and unusual embedding environments).
+const packageJsonPath = [
+  path.join(path.dirname(process.execPath), '..', 'package.json'),
+  path.join(import.meta.dirname, '..', '..', '..', 'package.json'),
+].find((candidate) => fs.existsSync(candidate));
+const packageJson = packageJsonPath
+  ? JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'))
+  : { version: '0.0.0' };
 
 // =============================================================================
 // ANSI Color Helpers (avoid chalk ESM issues)
@@ -446,7 +451,7 @@ function writeErrorLog(projectPath: string, errors: Array<{ message: string; fil
 // =============================================================================
 
 /**
- * chimera init [path]
+ * chimera graph init [path]
  */
 program
   .command('init [path]')
@@ -551,7 +556,7 @@ program
   });
 
 /**
- * chimera uninit [path]
+ * chimera graph uninit [path]
  */
 program
   .command('uninit [path]')
@@ -915,7 +920,7 @@ program
         if (changes.removed.length > 0) {
           console.log(`  Removed:   ${changes.removed.length} files`);
         }
-        info('Run "chimera sync" to update the index');
+        info('Run "chimera graph sync" to update the index');
       } else {
         success('Index is up to date');
       }
@@ -1280,7 +1285,7 @@ function printFileTree(
 }
 
 /**
- * chimera serve
+ * chimera graph serve
  */
 program
   .command('serve')
@@ -1313,9 +1318,9 @@ program
         console.error(chalk.dim(`
 {
   "mcpServers": {
-    "codegraph": {
-      "command": "codegraph",
-      "args": ["serve", "--mcp"]
+    "chimera": {
+      "command": "chimera",
+      "args": ["graph", "serve", "--mcp"]
     }
   }
 }
@@ -1867,7 +1872,7 @@ await program.parseAsync(argv, { from: 'user' });
 
 function isCliEntrypoint(): boolean {
   try {
-    return !!process.argv[1] && fs.realpathSync(process.argv[1]) === __filename;
+    return !!process.argv[1] && fs.realpathSync(process.argv[1]) === import.meta.filename;
   } catch {
     return false;
   }

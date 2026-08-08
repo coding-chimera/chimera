@@ -43,7 +43,7 @@ declare global {
 }
 function resolveParseWorkerPath(): string | undefined {
   if (typeof CHIMERA_PARSE_WORKER_PATH !== "undefined") return CHIMERA_PARSE_WORKER_PATH
-  const dist = path.join(__dirname, 'parse-worker.js')
+  const dist = path.join(import.meta.dirname, 'parse-worker.js')
   if (fs.existsSync(dist)) return dist
   return undefined
 }

@@ -18,6 +18,7 @@ import * as os from 'os';
 import {
   writeMcpConfig,
 } from '../../src/graph/installer/config-writer';
+import { CHIMERA_GRAPH_QUICK_START, CHIMERA_NPM_INSTALL_COMMAND, CHIMERA_NPM_PACKAGE } from '../../src/graph/installer';
 
 function createTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-installer-test-'));
@@ -100,5 +101,14 @@ describe('Installer Config Writer', () => {
       expect(content.mcpServers.other).toBeDefined();
       expect(content.customField).toBe('preserved');
     });
+  });
+});
+
+describe('Installer public CLI guidance', () => {
+  it('uses the scoped npm package and public graph route', () => {
+    expect(CHIMERA_NPM_PACKAGE).toBe('@coding-chimera/chimera');
+    expect(CHIMERA_NPM_INSTALL_COMMAND).toBe('npm install -g @coding-chimera/chimera');
+    expect(CHIMERA_GRAPH_QUICK_START).toBe('cd your-project\nchimera graph init\nchimera graph index');
+    expect(CHIMERA_GRAPH_QUICK_START).not.toContain('chimera init -i');
   });
 });

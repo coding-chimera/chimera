@@ -1,5 +1,6 @@
 import { Worker } from 'worker_threads';
 import * as path from 'path';
+import * as fs from 'fs';
 
 const PHASE_NAMES: Record<string, string> = {
   scanning: 'Scanning files',
@@ -22,10 +23,23 @@ export interface ShimmerProgress {
 export function createShimmerProgress(): ShimmerProgress {
   let lastPhase = '';
 
-  const workerPath = path.join(__dirname, 'shimmer-worker.js');
+  // The worker file is not shipped next to the binary, so prefer the
+  // executable-relative location and degrade to a no-op progress when the
+  // file is missing (e.g. installed packages) instead of failing.
+  const workerPath = [
+    path.join(path.dirname(process.execPath), 'shimmer-worker.js'),
+    path.join(import.meta.dirname, 'shimmer-worker.js'),
+  ].find((candidate) => fs.existsSync(candidate));
+  if (!workerPath) {
+    return {
+      onProgress() {},
+      stop: async () => {},
+    };
+  }
   const worker = new Worker(workerPath, {
     workerData: { startTime: Date.now() },
   });
+  worker.on('error', () => {});
 
   return {
     onProgress(progress: IndexProgress) {

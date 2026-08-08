@@ -164,7 +164,7 @@ export { projectLanguageAwareSignals } from './semantic/language-signals';
 function loadCodeGraphVersion(): string {
   try {
     const packageJson = JSON.parse(
-      fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf-8')
+      fs.readFileSync(path.join(import.meta.dirname, '..', '..', 'package.json'), 'utf-8')
     ) as { version?: unknown };
     if (typeof packageJson.version === 'string') return packageJson.version;
   } catch {

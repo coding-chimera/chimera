@@ -43,8 +43,8 @@ export class MCPEngine {
   private cg: CodeGraph | null = null;
   private toolHandler: ToolHandler;
   // Project root we resolved to. Null until `ensureInitialized` succeeds
-  // (or null forever if no .codegraph/ ever turned up — that's a valid
-  // state for the engine, since cross-project queries still work).
+  // (or null forever if no current `.chimera/` or compatible legacy `.codegraph/`
+  // data ever turns up — that's valid because cross-project queries still work).
   private projectPath: string | null = null;
   // Set on first `ensureInitialized` so subsequent sessions don't redo work.
   private initPromise: Promise<void> | null = null;
@@ -84,7 +84,7 @@ export class MCPEngine {
   }
 
   /**
-   * Walk up from `searchFrom` to find the nearest `.codegraph/` and open it.
+   * Walk up from `searchFrom` to find the nearest initialized Chimera graph and open it.
    * Idempotent: concurrent callers share one in-flight init; subsequent
    * callers after success are no-ops.
    *
@@ -157,7 +157,7 @@ export class MCPEngine {
 
     const resolvedRoot = findNearestCodeGraphRoot(searchFrom);
     if (!resolvedRoot) {
-      // No .codegraph/ above searchFrom. Sessions may still discover one later via roots/list
+      // No initialized Chimera graph above searchFrom. Sessions may discover one later via roots/list.
       this.projectPath = searchFrom;
       return;
     }
@@ -188,7 +188,7 @@ export class MCPEngine {
     if (disabledReason) {
       process.stderr.write(
         `[CodeGraph MCP] File watcher disabled — ${disabledReason}. ` +
-        `The graph will not auto-update; run \`chimera sync\` (or install the git sync hooks via \`chimera init\`) to refresh.\n`
+        `The graph will not auto-update; run \`chimera graph sync\` (or install the git sync hooks via \`chimera graph init\`) to refresh.\n`
       );
       this.watcherStarted = true;
       return;
@@ -223,7 +223,7 @@ export class MCPEngine {
       process.stderr.write('[CodeGraph MCP] File watcher active — graph will auto-sync on changes\n');
     } else {
       process.stderr.write(
-        '[CodeGraph MCP] File watcher unavailable on this platform — run `chimera sync` to refresh the graph after changes.\n'
+        '[CodeGraph MCP] File watcher unavailable on this platform — run `chimera graph sync` to refresh the graph after changes.\n'
       );
     }
   }
