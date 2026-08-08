@@ -9,10 +9,15 @@ import { createSolidTransformPlugin } from "@opentui/solid/bun-plugin"
 import { resolveVersion } from "./version"
 import { packNpmTarballs } from "./pack-local"
 import {
-  packageLicense,
+  assertNoEmbeddedBuildPaths,
+  createPlatformPackageManifest,
+  npmPlatformTargets,
   packageLicenseFiles,
   parsePackageVariant,
+  parsePackageVariantMetadata,
   platformPackageName,
+  platformPackageNames,
+  transformCommonJsPathGlobals,
   writePackageLicenseFiles,
 } from "./package-variant"
 
@@ -89,6 +94,19 @@ const baselineFlag = process.argv.includes("--baseline")
 const skipInstall = process.argv.includes("--skip-install")
 const sourcemapsFlag = process.argv.includes("--sourcemaps")
 const plugin = createSolidTransformPlugin()
+const relocatableCommonJsPlugin: Bun.BunPlugin = {
+  name: "chimera-relocatable-commonjs-globals",
+  setup(build) {
+    build.onLoad({ filter: /node_modules[\\/].*\.[cm]?js$/ }, async (args) => {
+      const source = await Bun.file(args.path).text()
+      if (!source.includes("__dirname") && !source.includes("__filename")) return
+      return {
+        contents: await transformCommonJsPathGlobals({ source, filename: args.path }),
+        loader: args.loader,
+      }
+    })
+  },
+}
 const packageVariantFlag = process.argv.find((arg) => arg.startsWith("--package-variant="))
 const withWebUiFlag = process.argv.includes("--with-webui") || process.argv.includes("--embed-web-ui")
 const embedLegacyWebUiFlag = withWebUiFlag || process.argv.includes("--embed-legacy-web-ui")
@@ -104,14 +122,21 @@ const packageVariant = parsePackageVariant(
 if (packageVariant === "no-webui" && (embedLegacyWebUi || embedNewWebUi)) {
   throw new Error("no-webui package variant cannot embed WebUI assets")
 }
-if (packageVariant === "with-webui" && !embedLegacyWebUi && !embedNewWebUi) {
-  throw new Error(
-    "with-webui package variant requires --with-webui, --embed-web-ui, --embed-legacy-web-ui, or --embed-newweb-ui",
-  )
+if (packageVariant === "with-webui" && !embedNewWebUi) {
+  throw new Error("with-webui package variant requires embedded NewWeb UI assets")
 }
 const preserveNpmTarballs = process.argv.includes("--preserve-npm-tarballs")
 console.log(`Package variant: ${packageVariant}`)
 const buildVersion = resolveVersion({ currentVersion: pkg.version })
+const forbiddenBuildRoots = [
+  dir,
+  path.resolve(dir, "../.."),
+  path.resolve(dir, "../../.."),
+  os.homedir(),
+  process.env.GITHUB_WORKSPACE,
+  process.env.CI_PROJECT_DIR,
+  process.env.BUILD_WORKSPACE_DIRECTORY,
+].filter((root): root is string => Boolean(root))
 
 const createEmbeddedWebUIBundle = async (input: { label: string; packageDir: string }) => {
   console.log(`Building ${input.label} UI to embed in the binary`)
@@ -137,6 +162,9 @@ const createEmbeddedWebUIBundle = async (input: { label: string; packageDir: str
     .map((file) => file.replaceAll("\\", "/"))
     .filter((file) => !file.endsWith(".map"))
     .sort()
+  if (input.label === "NewWeb" && !files.includes("index.html")) {
+    throw new Error("NewWeb bundle must contain index.html")
+  }
   const imports = files.map((file, i) => {
     const spec = path.relative(dir, path.join(dist, file)).replaceAll("\\", "/")
     return `import file_${i} from ${JSON.stringify(spec.startsWith(".") ? spec : `./${spec}`)} with { type: "file" };`
@@ -159,71 +187,8 @@ const embeddedNewWebUIFileMap = embedNewWebUi
   ? await createEmbeddedWebUIBundle({ label: "NewWeb", packageDir: "../../newweb" })
   : null
 
-const allTargets: {
-  os: string
-  arch: "arm64" | "x64"
-  abi?: "musl"
-  avx2?: false
-}[] = [
-  {
-    os: "linux",
-    arch: "arm64",
-  },
-  {
-    os: "linux",
-    arch: "x64",
-  },
-  {
-    os: "linux",
-    arch: "x64",
-    avx2: false,
-  },
-  {
-    os: "linux",
-    arch: "arm64",
-    abi: "musl",
-  },
-  {
-    os: "linux",
-    arch: "x64",
-    abi: "musl",
-  },
-  {
-    os: "linux",
-    arch: "x64",
-    abi: "musl",
-    avx2: false,
-  },
-  {
-    os: "darwin",
-    arch: "arm64",
-  },
-  {
-    os: "darwin",
-    arch: "x64",
-  },
-  {
-    os: "darwin",
-    arch: "x64",
-    avx2: false,
-  },
-  {
-    os: "win32",
-    arch: "arm64",
-  },
-  {
-    os: "win32",
-    arch: "x64",
-  },
-  {
-    os: "win32",
-    arch: "x64",
-    avx2: false,
-  },
-]
-
 const targets = singleFlag
-  ? allTargets.filter((item) => {
+  ? npmPlatformTargets.filter((item) => {
       if (item.os !== process.platform || item.arch !== process.arch) {
         return false
       }
@@ -241,7 +206,7 @@ const targets = singleFlag
 
       return true
     })
-  : allTargets
+  : npmPlatformTargets
 
 const preservedTarballDir = preserveNpmTarballs
   ? await fs.promises.mkdtemp(path.join(os.tmpdir(), "chimera-npm-tarballs-"))
@@ -257,11 +222,16 @@ await $`rm -rf dist`
 await fs.promises.mkdir(path.join(dir, "dist"), { recursive: true })
 await Bun.file(path.join(dir, "dist", "package-variant.json")).write(
   JSON.stringify(
-    {
-      variant: packageVariant,
-      embedLegacyWebUi,
-      embedNewWebUi,
-    },
+    parsePackageVariantMetadata(
+      {
+        variant: packageVariant,
+        version: buildVersion,
+        embedLegacyWebUi,
+        embedNewWebUi,
+        expectedPlatformPackages: platformPackageNames(pkg.name, targets),
+      },
+      pkg.name,
+    ),
     null,
     2,
   ),
@@ -269,8 +239,8 @@ await Bun.file(path.join(dir, "dist", "package-variant.json")).write(
 
 const binaries: Record<string, string> = {}
 if (!skipInstall) {
-  await $`bun install --os="*" --cpu="*" @opentui/core@${pkg.dependencies["@opentui/core"]}`
-  await $`bun install --os="*" --cpu="*" @parcel/watcher@${pkg.dependencies["@parcel/watcher"]}`
+  await $`bun install --no-save --os="*" --cpu="*" @opentui/core@${pkg.dependencies["@opentui/core"]}`
+  await $`bun install --no-save --os="*" --cpu="*" @parcel/watcher@${pkg.dependencies["@parcel/watcher"]}`
 }
 for (const item of targets) {
   const name = platformPackageName(pkg.name, item)
@@ -291,11 +261,12 @@ for (const item of targets) {
   const embeddedWebUIEntrypoint = "chimera-web-ui.gen.ts"
   const embeddedNewWebUIEntrypoint = "chimera-newweb-ui.gen.ts"
 
+  const binaryPath = path.join(dir, "dist", name, "bin", binaryName)
   await Bun.build({
     conditions: ["node"],
     tsconfig: "./tsconfig.json",
-    plugins: [plugin],
-    external: ["node-gyp"],
+    plugins: [relocatableCommonJsPlugin, plugin],
+    external: ["node-gyp", "playwright-core"],
     format: "esm",
     minify: true,
     sourcemap: sourcemapsFlag ? "linked" : "none",
@@ -335,12 +306,17 @@ for (const item of targets) {
     },
   })
 
+  assertNoEmbeddedBuildPaths({
+    artifactPath: path.relative(dir, binaryPath),
+    bytes: new Uint8Array(await Bun.file(binaryPath).arrayBuffer()),
+    roots: forbiddenBuildRoots,
+  })
+
   await copyGraphGrammarWasms(path.join(dir, "dist", name, "bin"))
   await copyWebTreeSitterRuntime(path.join(dir, "dist", name, "bin"))
 
   // Smoke test: only run if binary is for current platform
   if (item.os === process.platform && item.arch === process.arch && !item.abi) {
-    const binaryPath = path.join(dir, "dist", name, "bin", binaryName)
     const smokeCwd = await fs.promises.mkdtemp(path.join(os.tmpdir(), "chimera-smoke-"))
     console.log(`Running smoke test: ${path.relative(dir, binaryPath)} --version`)
     try {
@@ -358,13 +334,7 @@ for (const item of targets) {
   await writePackageLicenseFiles({ packageDir: path.join(dir, "dist", name), variant: packageVariant, projectDir: dir })
   await Bun.file(`dist/${name}/package.json`).write(
     JSON.stringify(
-      {
-        name,
-        version: buildVersion,
-        os: [item.os],
-        cpu: [item.arch],
-        license: packageLicense(packageVariant),
-      },
+      createPlatformPackageManifest({ name, version: buildVersion, target: item, variant: packageVariant }),
       null,
       2,
     ),

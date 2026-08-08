@@ -5,6 +5,11 @@ export type ClientOptions = {
 }
 
 export type Event =
+  | EventTuiPromptAppend
+  | EventTuiCommandExecute
+  | EventTuiToastShow
+  | EventTuiSessionSelect
+  | EventSessionPromptStats1
   | EventServerInstanceDisposed
   | EventFileEdited
   | EventFileWatcherUpdated
@@ -24,10 +29,6 @@ export type Event =
   | EventQuestionRejected
   | EventTodoUpdated
   | EventWorkBriefUpdated
-  | EventTuiPromptAppend
-  | EventTuiCommandExecute
-  | EventTuiToastShow
-  | EventTuiSessionSelect
   | EventMcpToolsChanged
   | EventMcpBrowserOpenFailed
   | EventCommandStarted
@@ -37,7 +38,6 @@ export type Event =
   | EventSessionCompacted
   | EventChimeraToolMutationRecorded
   | EventChimeraGraphReady1
-  | EventSessionPromptStats1
   | EventVcsBranchUpdated
   | EventWorkspaceReady
   | EventWorkspaceFailed
@@ -55,6 +55,7 @@ export type Event =
   | EventSessionCreated
   | EventSessionUpdated
   | EventSessionDeleted
+  | EventSessionPermissionSlot
   | EventSessionNextAgentSwitched
   | EventSessionNextModelSwitched
   | EventSessionNextPrompted
@@ -845,6 +846,11 @@ export type GlobalEvent = {
   project?: string
   workspace?: string
   payload:
+    | EventTuiPromptAppend
+    | EventTuiCommandExecute
+    | EventTuiToastShow
+    | EventTuiSessionSelect
+    | EventSessionPromptStats
     | EventServerInstanceDisposed
     | EventFileEdited
     | EventFileWatcherUpdated
@@ -864,10 +870,6 @@ export type GlobalEvent = {
     | EventQuestionRejected
     | EventTodoUpdated
     | EventWorkBriefUpdated
-    | EventTuiPromptAppend
-    | EventTuiCommandExecute
-    | EventTuiToastShow
-    | EventTuiSessionSelect
     | EventMcpToolsChanged
     | EventMcpBrowserOpenFailed
     | EventCommandStarted
@@ -877,7 +879,6 @@ export type GlobalEvent = {
     | EventSessionCompacted
     | EventChimeraToolMutationRecorded
     | EventChimeraGraphReady
-    | EventSessionPromptStats
     | EventVcsBranchUpdated
     | EventWorkspaceReady
     | EventWorkspaceFailed
@@ -895,6 +896,7 @@ export type GlobalEvent = {
     | EventSessionCreated
     | EventSessionUpdated
     | EventSessionDeleted
+    | EventSessionPermissionSlot
     | EventSessionNextAgentSwitched
     | EventSessionNextModelSwitched
     | EventSessionNextPrompted
@@ -934,6 +936,7 @@ export type GlobalEvent = {
     | SyncEventSessionCreated
     | SyncEventSessionUpdated
     | SyncEventSessionDeleted
+    | SyncEventSessionPermissionSlot
     | SyncEventSessionNextAgentSwitched
     | SyncEventSessionNextModelSwitched
     | SyncEventSessionNextPrompted
@@ -1010,6 +1013,7 @@ export type PermissionConfig =
       list?: PermissionRuleConfig
       bash?: PermissionRuleConfig
       task?: PermissionRuleConfig
+      task_profile?: PermissionRuleConfig
       external_directory?: PermissionRuleConfig
       todowrite?: PermissionActionConfig
       workbrief?: PermissionActionConfig
@@ -1220,6 +1224,24 @@ export type McpRemoteConfig = {
  */
 export type LayoutConfig = "auto" | "stretch"
 
+export type DelegationModelProfile = {
+  /**
+   * Model to use for this delegation profile in the format of provider/model, eg anthropic/claude-2
+   */
+  model: string
+  variant?: string
+  description?: string
+}
+
+export type DelegationConfig = {
+  model_profiles?: {
+    [key: string]: DelegationModelProfile
+  }
+  routes?: {
+    [key: string]: string
+  }
+}
+
 export type Config = {
   $schema?: string
   shell?: string
@@ -1329,6 +1351,7 @@ export type Config = {
   instructions?: Array<string>
   layout?: LayoutConfig
   permission?: PermissionConfig
+  delegation?: DelegationConfig
   tools?: {
     [key: string]: boolean
   }
@@ -2409,6 +2432,19 @@ export type SyncEventSessionDeleted = {
   }
 }
 
+export type SyncEventSessionPermissionSlot = {
+  type: "sync"
+  name: "session.permission.slot.1"
+  id: string
+  seq: number
+  aggregateID: "sessionID"
+  data: {
+    sessionID: string
+    rules: PermissionRuleset
+    timestamp: number
+  }
+}
+
 export type SyncEventSessionNextAgentSwitched = {
   type: "sync"
   name: "session.next.agent.switched.1"
@@ -2807,6 +2843,96 @@ export type SyncEventSessionNextCompactionEnded = {
   }
 }
 
+export type EventTuiPromptAppend2 = {
+  type: "tui.prompt.append"
+  properties: {
+    text: string
+  }
+}
+
+export type EventTuiCommandExecute2 = {
+  type: "tui.command.execute"
+  properties: {
+    command:
+      | "session.list"
+      | "session.new"
+      | "session.share"
+      | "session.interrupt"
+      | "session.compact"
+      | "session.page.up"
+      | "session.page.down"
+      | "session.line.up"
+      | "session.line.down"
+      | "session.half.page.up"
+      | "session.half.page.down"
+      | "session.first"
+      | "session.last"
+      | "prompt.clear"
+      | "prompt.submit"
+      | "agent.cycle"
+      | string
+  }
+}
+
+export type EventTuiToastShow2 = {
+  type: "tui.toast.show"
+  properties: {
+    title?: string
+    message: string
+    variant: "info" | "success" | "warning" | "error"
+    duration?: number
+  }
+}
+
+export type EventTuiSessionSelect2 = {
+  type: "tui.session.select"
+  properties: {
+    /**
+     * Session ID to navigate to
+     */
+    sessionID: string
+  }
+}
+
+export type EventSessionPromptStats = {
+  id: string
+  type: "session.prompt.stats"
+  properties: {
+    sessionID: string
+    messageID: string
+    stage: "prepared"
+    step: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    agent: string
+    providerID: string
+    modelID: string
+    createdAt: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    totals: {
+      chars: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      bytes: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      approxTokens: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      blocks: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    }
+    fingerprints: {
+      system: string
+      history: string
+      runtime: string
+      current: string
+      memory: string
+      tools: string
+      request: string
+    }
+    blocks: Array<{
+      kind: string
+      role?: string
+      chars: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      bytes: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      approxTokens: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      hash: string
+    }>
+    warnings: Array<string>
+  }
+}
+
 export type EventServerInstanceDisposed = {
   id: string
   type: "server.instance.disposed"
@@ -2971,57 +3097,6 @@ export type EventWorkBriefUpdated = {
   }
 }
 
-export type EventTuiPromptAppend2 = {
-  type: "tui.prompt.append"
-  properties: {
-    text: string
-  }
-}
-
-export type EventTuiCommandExecute2 = {
-  type: "tui.command.execute"
-  properties: {
-    command:
-      | "session.list"
-      | "session.new"
-      | "session.share"
-      | "session.interrupt"
-      | "session.compact"
-      | "session.page.up"
-      | "session.page.down"
-      | "session.line.up"
-      | "session.line.down"
-      | "session.half.page.up"
-      | "session.half.page.down"
-      | "session.first"
-      | "session.last"
-      | "prompt.clear"
-      | "prompt.submit"
-      | "agent.cycle"
-      | string
-  }
-}
-
-export type EventTuiToastShow2 = {
-  type: "tui.toast.show"
-  properties: {
-    title?: string
-    message: string
-    variant: "info" | "success" | "warning" | "error"
-    duration?: number
-  }
-}
-
-export type EventTuiSessionSelect2 = {
-  type: "tui.session.select"
-  properties: {
-    /**
-     * Session ID to navigate to
-     */
-    sessionID: string
-  }
-}
-
 export type EventMcpToolsChanged = {
   id: string
   type: "mcp.tools.changed"
@@ -3119,45 +3194,6 @@ export type EventChimeraGraphReady = {
     edgeCount: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
     source: string
     sessionID?: string
-  }
-}
-
-export type EventSessionPromptStats = {
-  id: string
-  type: "session.prompt.stats"
-  properties: {
-    sessionID: string
-    messageID: string
-    stage: "prepared"
-    step: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
-    agent: string
-    providerID: string
-    modelID: string
-    createdAt: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
-    totals: {
-      chars: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
-      bytes: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
-      approxTokens: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
-      blocks: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
-    }
-    fingerprints: {
-      system: string
-      history: string
-      runtime: string
-      current: string
-      memory: string
-      tools: string
-      request: string
-    }
-    blocks: Array<{
-      kind: string
-      role?: string
-      chars: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
-      bytes: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
-      approxTokens: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
-      hash: string
-    }>
-    warnings: Array<string>
   }
 }
 
@@ -3306,6 +3342,16 @@ export type EventSessionDeleted = {
   properties: {
     sessionID: string
     info: Session
+  }
+}
+
+export type EventSessionPermissionSlot = {
+  id: string
+  type: "session.permission.slot"
+  properties: {
+    sessionID: string
+    rules: PermissionRuleset
+    timestamp: number
   }
 }
 
@@ -3946,36 +3992,6 @@ export type SessionMessage =
   | SessionMessageAssistant
   | SessionMessageCompaction
 
-export type EventCommandProgress1 = {
-  id: string
-  type: "command.progress"
-  properties: {
-    name: string
-    sessionID: string
-    arguments: string
-    phase: string
-    current: number | "NaN" | "Infinity" | "-Infinity"
-    total: number | "NaN" | "Infinity" | "-Infinity"
-    currentFile?: string
-    elapsedMs: number | "NaN" | "Infinity" | "-Infinity"
-  }
-}
-
-export type EventChimeraGraphReady1 = {
-  id: string
-  type: "chimera.graph.ready"
-  properties: {
-    projectRoot: string
-    revision: string
-    indexedAt: number | "NaN" | "Infinity" | "-Infinity"
-    fileCount: number | "NaN" | "Infinity" | "-Infinity"
-    nodeCount: number | "NaN" | "Infinity" | "-Infinity"
-    edgeCount: number | "NaN" | "Infinity" | "-Infinity"
-    source: string
-    sessionID?: string
-  }
-}
-
 export type EventSessionPromptStats1 = {
   id: string
   type: "session.prompt.stats"
@@ -4012,6 +4028,36 @@ export type EventSessionPromptStats1 = {
       hash: string
     }>
     warnings: Array<string>
+  }
+}
+
+export type EventCommandProgress1 = {
+  id: string
+  type: "command.progress"
+  properties: {
+    name: string
+    sessionID: string
+    arguments: string
+    phase: string
+    current: number | "NaN" | "Infinity" | "-Infinity"
+    total: number | "NaN" | "Infinity" | "-Infinity"
+    currentFile?: string
+    elapsedMs: number | "NaN" | "Infinity" | "-Infinity"
+  }
+}
+
+export type EventChimeraGraphReady1 = {
+  id: string
+  type: "chimera.graph.ready"
+  properties: {
+    projectRoot: string
+    revision: string
+    indexedAt: number | "NaN" | "Infinity" | "-Infinity"
+    fileCount: number | "NaN" | "Infinity" | "-Infinity"
+    nodeCount: number | "NaN" | "Infinity" | "-Infinity"
+    edgeCount: number | "NaN" | "Infinity" | "-Infinity"
+    source: string
+    sessionID?: string
   }
 }
 

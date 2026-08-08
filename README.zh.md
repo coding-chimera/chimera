@@ -13,7 +13,7 @@ Chimera 是一个 AI 编程 Agent 发行版：一个 opencode-derived 的交互�
 ## 包身份
 
 - 完整 Agent 包源码：[`packages/chimera`](packages/chimera)
-- npm 包名：`chimera`
+- npm 包名：`@coding-chimera/chimera`
 - 公开 CLI 命令：`chimera`
 - 图谱命令入口：`chimera graph ...` 和 `chimera --graph ...`
 
@@ -35,14 +35,20 @@ Chimera 致谢并引用以下设计参考：
 
 ## 安装与运行
 
-Chimera 尚未发布到 npm registry。请从 [GitHub Releases](https://github.com/coding-chimera/chimera/releases)
-下载最新 release tarball，通过 npm 安装。
+Chimera 已发布到 npm registry，包名为 `@coding-chimera/chimera`：
 
-选择 `no-webui`（MIT）或 `with-webui`（整体标记为 GPL-3.0-only，并单独保留 MIT runtime 许可）变体。两种变体使用相同的 `chimera` 与 `chimera-<platform>` npm 包身份，因此一次只能安装一种变体。
+```bash
+npm install -g @coding-chimera/chimera
+chimera --version
+```
+
+也可以从 [GitHub Releases](https://github.com/coding-chimera/chimera/releases) 下载最新 release tarball，通过 npm 安装。
+
+选择 `no-webui`（MIT）或 `with-webui`（整体标记为 GPL-3.0-only，并单独保留 MIT runtime 许可）变体。两种变体使用相同的 `@coding-chimera/chimera` 与 `@coding-chimera/chimera-<platform>` npm 包身份，因此一次只能安装一种变体。
 查看 releases 页面获取最新版本号和准确的 tarball 文件名。
 
 ```bash
-npm install -g ./chimera-darwin-arm64-no-webui-0.0.5-patch1.tgz ./chimera-no-webui-0.0.5-patch1.tgz
+npm install -g ./coding-chimera-chimera-darwin-arm64-no-webui-0.0.5-patch1.tgz ./coding-chimera-chimera-no-webui-0.0.5-patch1.tgz
 chimera --version
 ```
 
@@ -112,7 +118,7 @@ tarball 写入：
 dist/npm-tarballs/
 ```
 
-no-WebUI tarball 名称形如 `chimera-no-webui-<version>.tgz`；with-WebUI tarball 在相同位置使用 `with-webui` 命名。variant 不进入 npm package name。
+no-WebUI tarball 名称形如 `coding-chimera-chimera-no-webui-<version>.tgz`；with-WebUI tarball 在相同位置使用 `with-webui` 命名。variant 不进入 npm package name。
 
 独立 no-WebUI CLI archive 继续使用 `chimera-darwin-arm64.zip` 等兼容名称；with-WebUI archive 增加 `-with-webui`。每个独立 archive 的根目录都包含该变体对应的许可文件。
 
@@ -120,7 +126,7 @@ no-WebUI tarball 名称形如 `chimera-no-webui-<version>.tgz`；with-WebUI tarb
 
 ```bash
 prefix="$(mktemp -d)"
-npm install -g --prefix "$prefix" dist/npm-tarballs/chimera-darwin-arm64-no-webui-*.tgz dist/npm-tarballs/chimera-no-webui-*.tgz
+npm install -g --prefix "$prefix" dist/npm-tarballs/coding-chimera-chimera-darwin-arm64-no-webui-*.tgz dist/npm-tarballs/coding-chimera-chimera-no-webui-*.tgz
 "$prefix/bin/chimera" --version
 "$prefix/bin/chimera" --graph --help
 ```

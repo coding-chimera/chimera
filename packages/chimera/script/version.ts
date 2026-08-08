@@ -1,9 +1,33 @@
+import semver from "semver"
+
+export function isExactVersion(value: string) {
+  const parsed = semver.parse(value, { loose: false })
+  if (!parsed) return false
+  return `${parsed.version}${parsed.build.length > 0 ? `+${parsed.build.join(".")}` : ""}` === value
+}
+
 function explicitArgVersion(argv = process.argv) {
   const inline = argv.find((arg) => arg.startsWith("--version="))
   if (inline) return inline.slice("--version=".length)
 
   const index = argv.indexOf("--version")
   if (index >= 0) return argv[index + 1]
+}
+
+function explicitVersion(input: { argv?: string[]; env?: NodeJS.ProcessEnv }) {
+  const env = input.env ?? process.env
+  const version = explicitArgVersion(input.argv) ?? env.CHIMERA_VERSION ?? env.OPENCODE_VERSION
+  if (version === undefined) return
+  if (!isExactVersion(version)) throw new Error(`Explicit version must be an exact npm version: ${version || "<empty>"}`)
+  return version
+}
+
+export function resolveExplicitVersion(input: { argv?: string[]; env?: NodeJS.ProcessEnv } = {}) {
+  const version = explicitVersion(input)
+  if (!version) {
+    throw new Error("An explicit target version is required via --version, CHIMERA_VERSION, or OPENCODE_VERSION")
+  }
+  return version
 }
 
 function semverParts(version: string) {
@@ -26,7 +50,7 @@ export function nextPatchVersion(version: string) {
 
 export function resolveVersion(input: { currentVersion: string; argv?: string[]; env?: NodeJS.ProcessEnv }) {
   const env = input.env ?? process.env
-  const explicit = explicitArgVersion(input.argv) ?? env.CHIMERA_VERSION ?? env.OPENCODE_VERSION
+  const explicit = explicitVersion({ argv: input.argv, env })
   if (explicit) return explicit
 
   const bump = (env.CHIMERA_BUMP ?? env.OPENCODE_BUMP)?.toLowerCase()

@@ -5,7 +5,14 @@ import path from "path"
 import pkg from "../package.json"
 import { Script } from "@opencode-ai/script"
 import { fileURLToPath } from "url"
-import { packageLicense, parsePackageVariant, writePackageLicenseFiles } from "./package-variant"
+import { createNpmPackageManifest } from "./npm-package"
+import {
+  parsePackageVariantMetadata,
+  platformPackageNames,
+  validatePlatformPackageSet,
+  writePackageLicenseFiles,
+} from "./package-variant"
+import { resolveExplicitVersion } from "./version"
 
 const dir = fileURLToPath(new URL("..", import.meta.url))
 process.chdir(dir)
@@ -24,38 +31,44 @@ async function publish(dir: string, name: string, version: string) {
     console.log(`already published ${name}@${version}`)
     return
   }
+  for (const file of fs.readdirSync(dir).filter((item) => item.endsWith(".tgz"))) {
+    fs.rmSync(path.join(dir, file), { force: true })
+  }
   await $`bun pm pack`.cwd(dir)
+  const tarballs = fs.readdirSync(dir).filter((item) => item.endsWith(".tgz"))
+  if (tarballs.length !== 1) {
+    throw new Error(`Expected exactly one packed tarball for ${name}@${version}, received: ${tarballs.join(", ")}`)
+  }
   if (dryRun) {
     console.log(`dry run packed ${name}@${version}`)
     return
   }
-  await $`npm publish *.tgz --access public --tag ${Script.channel}`.cwd(dir)
+  await $`npm publish ${tarballs[0]} --access public --tag ${Script.channel}`.cwd(dir)
 }
-const packageVariant = parsePackageVariant(
-  (
-    await Bun.file("./dist/package-variant.json")
-      .json()
-      .catch(() => null)
-  )?.variant ?? "no-webui",
+const version = resolveExplicitVersion()
+const requiredPlatformPackages = platformPackageNames(pkg.name)
+const packageVariantMetadata = parsePackageVariantMetadata(
+  await Bun.file("./dist/package-variant.json")
+    .json()
+    .catch(() => null),
+  pkg.name,
 )
-console.log(`Publishing ${packageVariant} variant`)
 
-const binaries: Record<string, string> = {}
-
-for (const { dir: packageDir, json: binaryPkg } of findPlatformPackages("./dist", pkg.name)) {
-  binaries[binaryPkg.name] = binaryPkg.version
-}
-
+const discoveredPackages = [...findPlatformPackages("./dist", pkg.name)]
+const binaries = validatePlatformPackageSet({
+  metadata: packageVariantMetadata,
+  packages: discoveredPackages.map((item) => item.json),
+  requiredPlatformPackages,
+  requiredVersion: version,
+})
+const platformPackages = requiredPlatformPackages.map((name) => {
+  const item = discoveredPackages.find((candidate) => candidate.json.name === name)
+  if (!item) throw new Error(`Validated platform package is missing: ${name}`)
+  return item
+})
+const packageVariant = packageVariantMetadata.variant
+console.log(`Publishing ${packageVariant} variant at ${version}`)
 console.log("binaries", binaries)
-
-const versions = [...new Set(Object.values(binaries))]
-if (versions.length === 0) {
-  throw new Error("No platform packages found in dist. Run the build before publishing.")
-}
-if (versions.length !== 1) {
-  throw new Error(`Platform package versions do not match: ${versions.join(", ")}`)
-}
-const version = versions[0]
 
 await $`rm -rf ./dist/${pkg.name}`
 await $`mkdir -p ./dist/${pkg.name}`
@@ -70,28 +83,20 @@ await writePackageLicenseFiles({
 
 await Bun.file(`./dist/${pkg.name}/package.json`).write(
   JSON.stringify(
-    {
-      name: pkg.name,
-      version: version,
-      type: "module",
-      license: packageLicense(packageVariant),
-      bin: {
-        chimera: "./bin/chimera",
-      },
-      scripts: {
-        postinstall: "bun ./postinstall.mjs || node ./postinstall.mjs",
-      },
-      optionalDependencies: binaries,
-    },
+    createNpmPackageManifest({
+      version,
+      variant: packageVariant,
+      platformPackages: binaries,
+    }),
     null,
     2,
   ),
 )
 
-// Publish sequentially: concurrent pack+publish of a dozen multi-hundred-MB
-// platform packages can exhaust memory and get the whole publish killed.
-for (const [name, binaryVersion] of Object.entries(binaries)) {
-  await publish(`./dist/${name}`, name, binaryVersion)
+// Publish sequentially in the shared platform order: concurrent pack+publish
+// of a dozen multi-hundred-MB platform packages can exhaust memory.
+for (const item of platformPackages) {
+  await publish(item.dir, item.json.name, version)
 }
 await publish(`./dist/${pkg.name}`, pkg.name, version)
 
@@ -240,24 +245,43 @@ if (!npmOnly && !Script.preview && !dryRun) {
   }
 }
 
-function* findPlatformPackages(dist: string, pkgName: string): Generator<{ dir: string; json: any }> {
+function* findPlatformPackages(
+  dist: string,
+  pkgName: string,
+  root = dist,
+): Generator<{ dir: string; json: Record<string, unknown> & { name: string; version: unknown } }> {
+  const packageRoot = path.resolve(root, pkgName)
+  const packageParent = path.dirname(packageRoot)
+  const packagePrefix = `${path.basename(packageRoot)}-`
   for (const entry of fs.readdirSync(dist, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue
 
     const packageDir = path.join(dist, entry.name)
-
+    const platformDir = path.resolve(dist) === packageParent && entry.name.startsWith(packagePrefix)
     const packageJsonPath = path.join(packageDir, "package.json")
-
+    if (platformDir && !fs.existsSync(packageJsonPath)) {
+      throw new Error(`Platform package directory is missing package.json: ${packageDir}`)
+    }
     if (fs.existsSync(packageJsonPath)) {
-      const json = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"))
-
-      if (json.name && String(json.name).startsWith(`${pkgName}-`)) {
-        yield { dir: packageDir, json }
-
+      const json: unknown = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"))
+      if (typeof json !== "object" || json === null || Array.isArray(json)) {
+        throw new Error(`Platform package manifest must be an object: ${packageJsonPath}`)
+      }
+      const manifest = json as Record<string, unknown>
+      const name = manifest.name
+      if (typeof name === "string" && name.startsWith(`${pkgName}-`)) {
+        if (path.resolve(packageDir) !== path.resolve(root, name)) {
+          throw new Error(`Platform package directory does not match manifest name: ${packageDir}`)
+        }
+        yield {
+          dir: packageDir,
+          json: { ...manifest, name, version: manifest.version },
+        }
         continue
       }
+      if (platformDir) throw new Error(`Platform package manifest has an invalid name: ${packageJsonPath}`)
     }
 
-    yield* findPlatformPackages(packageDir, pkgName)
+    yield* findPlatformPackages(packageDir, pkgName, root)
   }
 }

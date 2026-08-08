@@ -4,18 +4,38 @@ import childProcess from "child_process"
 import fs from "fs"
 import path from "path"
 import os from "os"
+import { createRequire } from "module"
 import { fileURLToPath } from "url"
 
+const scriptPath = fs.realpathSync(fileURLToPath(import.meta.url))
+const scriptDir = path.dirname(scriptPath)
+const packagePath = path.join(scriptDir, "..", "package.json")
+const packageRequire = createRequire(packagePath)
+const playwrightCoreEntry = (() => {
+  try {
+    return packageRequire.resolve("playwright-core")
+  } catch {
+    return
+  }
+})()
+
 function run(target) {
+  const env = { ...process.env }
+  delete env.CHIMERA_PLAYWRIGHT_CORE_ENTRY
+  if (playwrightCoreEntry) env.CHIMERA_PLAYWRIGHT_CORE_ENTRY = playwrightCoreEntry
   const result = childProcess.spawnSync(target, process.argv.slice(2), {
     stdio: "inherit",
+    env,
   })
   if (result.error) {
     console.error(result.error.message)
     process.exit(1)
   }
-  const code = typeof result.status === "number" ? result.status : 0
-  process.exit(code)
+  if (result.signal) {
+    console.error(`Chimera binary terminated by ${result.signal}`)
+    process.exit(1)
+  }
+  process.exit(typeof result.status === "number" ? result.status : 1)
 }
 
 function chimeraEnv(key) {
@@ -32,21 +52,10 @@ if (envPath) {
   run(envPath)
 }
 
-const scriptPath = fs.realpathSync(fileURLToPath(import.meta.url))
-const scriptDir = path.dirname(scriptPath)
-const ownPkg = JSON.parse(fs.readFileSync(path.join(scriptDir, "..", "package.json"), "utf8"))
+const ownPkg = JSON.parse(fs.readFileSync(packagePath, "utf8"))
 const pkgShortName = (ownPkg.name || "@coding-chimera/chimera").split("/").pop()
 const pkgFullName = ownPkg.name || "@coding-chimera/chimera"
 
-const cached = path.join(scriptDir, ".chimera")
-if (fs.existsSync(cached)) {
-  run(cached)
-}
-
-const legacyCached = path.join(scriptDir, ".opencode")
-if (fs.existsSync(legacyCached)) {
-  run(legacyCached)
-}
 
 const platformMap = {
   darwin: "darwin",

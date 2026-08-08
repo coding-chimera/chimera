@@ -1,127 +1,35 @@
 #!/usr/bin/env node
 
+import childProcess from "child_process"
 import fs from "fs"
 import path from "path"
-import os from "os"
 import { fileURLToPath } from "url"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const ownPkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"))
-const pkgShortName = (ownPkg.name || "@coding-chimera/chimera").split("/").pop()
-const pkgFullName = ownPkg.name || "@coding-chimera/chimera"
+const binDir = path.join(__dirname, "bin")
 
-function detectPlatformAndArch() {
-  // Map platform names
-  let platform
-  switch (os.platform()) {
-    case "darwin":
-      platform = "darwin"
-      break
-    case "linux":
-      platform = "linux"
-      break
-    case "win32":
-      platform = "windows"
-      break
-    default:
-      platform = os.platform()
-      break
-  }
-
-  // Map architecture names
-  let arch
-  switch (os.arch()) {
-    case "x64":
-      arch = "x64"
-      break
-    case "arm64":
-      arch = "arm64"
-      break
-    case "arm":
-      arch = "arm"
-      break
-    default:
-      arch = os.arch()
-      break
-  }
-
-  return { platform, arch }
-}
-
-function candidatePackageNames(platform, arch) {
-  const shortBase = `${pkgShortName}-${platform}-${arch}`
-  const fullBase = `${pkgFullName}-${platform}-${arch}`
-  const bases = fullBase !== shortBase ? [fullBase, shortBase] : [fullBase]
-  if (platform !== "linux") {
-    return bases.flatMap((base) => (arch === "x64" ? [base, `${base}-baseline`] : [base]))
-  }
-  if (arch !== "x64") return bases.flatMap((base) => [base, `${base}-musl`])
-  return bases.flatMap((base) => [base, `${base}-baseline`, `${base}-musl`, `${base}-baseline-musl`])
-}
-
-function findBinary() {
-  const { platform, arch } = detectPlatformAndArch()
-  const binaryName = platform === "windows" ? "chimera.exe" : "chimera"
-  let current = __dirname
-  for (;;) {
-    const modules = path.join(current, "node_modules")
-    for (const packageName of candidatePackageNames(platform, arch)) {
-      const nested = path.join(modules, packageName, "bin", binaryName)
-      if (fs.existsSync(nested)) return { binaryPath: nested, binaryName }
-
-      const sibling = path.join(current, packageName, "bin", binaryName)
-      if (fs.existsSync(sibling)) return { binaryPath: sibling, binaryName }
-    }
-    const parent = path.dirname(current)
-    if (parent === current) break
-    current = parent
-  }
-  throw new Error(`Could not find Chimera platform package for ${platform}/${arch}`)
-}
-
-function syncAssetDirectory(binaryPath, dirname) {
-  const source = path.join(path.dirname(binaryPath), dirname)
-  const target = path.join(__dirname, "bin", dirname)
-  fs.rmSync(target, { recursive: true, force: true })
-  if (!fs.existsSync(source)) return
-  fs.cpSync(source, target, { recursive: true })
-}
-
-function syncRuntimeAssets(binaryPath) {
-  syncAssetDirectory(binaryPath, "tree-sitter-wasms")
-  syncAssetDirectory(binaryPath, "web-tree-sitter")
-}
-
-async function main() {
+function main() {
   try {
-    if (os.platform() === "win32") {
-      // On Windows, the .exe is already included in the package and bin field points to it
-      // No postinstall setup needed
-      console.log("Windows detected: binary setup not needed (using packaged .exe)")
-      return
+    for (const name of [".chimera", ".opencode", "tree-sitter-wasms", "web-tree-sitter"]) {
+      fs.rmSync(path.join(binDir, name), { recursive: true, force: true })
     }
 
-    // On non-Windows platforms, just verify the binary package exists
-    // Don't replace the wrapper script - it handles binary execution
-    const { binaryPath } = findBinary()
-    const target = path.join(__dirname, "bin", ".chimera")
-    if (fs.existsSync(target)) fs.unlinkSync(target)
-    try {
-      fs.linkSync(binaryPath, target)
-    } catch {
-      fs.copyFileSync(binaryPath, target)
-    }
-    fs.chmodSync(target, 0o755)
-    syncRuntimeAssets(binaryPath)
+    const env = { ...process.env }
+    delete env.CHIMERA_BIN_PATH
+    delete env.OPENCODE_BIN_PATH
+    const result = childProcess.spawnSync(process.execPath, [path.join(binDir, "chimera"), "--version"], {
+      stdio: "inherit",
+      env,
+    })
+    if (result.error) throw result.error
+    if (result.status === 0) return
+
+    const reason = result.signal ? `signal ${result.signal}` : `exit code ${result.status ?? "unknown"}`
+    throw new Error(`Chimera wrapper verification failed (${reason})`)
   } catch (error) {
-    console.error("Failed to setup Chimera binary:", error.message)
+    console.error("Failed to verify Chimera installation:", error instanceof Error ? error.message : error)
     process.exit(1)
   }
 }
 
-try {
-  void main()
-} catch (error) {
-  console.error("Postinstall script error:", error.message)
-  process.exit(0)
-}
+main()
