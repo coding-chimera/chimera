@@ -75,6 +75,81 @@ describe("Permission.evaluate for permission.task", () => {
   })
 })
 
+describe("Permission.evaluate for permission.task_profile", () => {
+  const createRuleset = (rules: Record<string, "allow" | "deny" | "ask">): Permission.Ruleset =>
+    Object.entries(rules).map(([pattern, action]) => ({
+      permission: "task_profile",
+      pattern,
+      action,
+    }))
+
+  test("returns ask when no match (default)", () => {
+    expect(Permission.evaluate("task_profile", "luna", []).action).toBe("ask")
+  })
+
+  test("returns deny for explicit deny", () => {
+    const ruleset = createRuleset({ luna: "deny" })
+    expect(Permission.evaluate("task_profile", "luna", ruleset).action).toBe("deny")
+  })
+
+  test("returns allow for explicit allow", () => {
+    const ruleset = createRuleset({ luna: "allow" })
+    expect(Permission.evaluate("task_profile", "luna", ruleset).action).toBe("allow")
+  })
+
+  test("returns ask for explicit ask", () => {
+    const ruleset = createRuleset({ luna: "ask" })
+    expect(Permission.evaluate("task_profile", "luna", ruleset).action).toBe("ask")
+  })
+
+  test("matches wildcard patterns with deny", () => {
+    const ruleset = createRuleset({ "orchestrator-*": "deny" })
+    expect(Permission.evaluate("task_profile", "orchestrator-fast", ruleset).action).toBe("deny")
+    expect(Permission.evaluate("task_profile", "orchestrator-slow", ruleset).action).toBe("deny")
+    expect(Permission.evaluate("task_profile", "general", ruleset).action).toBe("ask")
+  })
+
+  test("later rules take precedence (last match wins)", () => {
+    const ruleset = createRuleset({
+      "orchestrator-*": "deny",
+      "orchestrator-fast": "allow",
+    })
+    expect(Permission.evaluate("task_profile", "orchestrator-fast", ruleset).action).toBe("allow")
+    expect(Permission.evaluate("task_profile", "orchestrator-slow", ruleset).action).toBe("deny")
+  })
+
+  test("matches global wildcard", () => {
+    expect(Permission.evaluate("task_profile", "luna", createRuleset({ "*": "allow" })).action).toBe("allow")
+    expect(Permission.evaluate("task_profile", "luna", createRuleset({ "*": "deny" })).action).toBe("deny")
+    expect(Permission.evaluate("task_profile", "luna", createRuleset({ "*": "ask" })).action).toBe("ask")
+  })
+})
+
+describe("permission.task_profile with real config files", () => {
+  test("loads task_profile permissions from chimera.json config", async () => {
+    await using tmp = await tmpdir({
+      git: true,
+      config: {
+        permission: {
+          task_profile: {
+            "*": "allow",
+            luna: "deny",
+          },
+        },
+      },
+    })
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const config = await load()
+        const ruleset = Permission.fromConfig(config.permission ?? {})
+        expect(Permission.evaluate("task_profile", "luna", ruleset).action).toBe("deny")
+        expect(Permission.evaluate("task_profile", "general", ruleset).action).toBe("allow")
+      },
+    })
+  })
+})
+
 describe("Permission.disabled for task tool", () => {
   // Note: The `disabled` function checks if a TOOL should be completely removed from the tool list.
   // It only disables a tool when there's a rule with `pattern: "*"` and `action: "deny"`.

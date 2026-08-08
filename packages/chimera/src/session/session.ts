@@ -386,6 +386,16 @@ export const Event = {
     aggregate: "sessionID",
     schema: CreatedEventSchema,
   }),
+  PermissionSlot: SyncEvent.define({
+    type: "session.permission.slot",
+    version: 1,
+    aggregate: "sessionID",
+    schema: Schema.Struct({
+      sessionID: SessionID,
+      rules: Permission.Ruleset,
+      timestamp: NonNegativeInt,
+    }),
+  }),
   Diff: BusEvent.define(
     "session.diff",
     Schema.Struct({
@@ -556,6 +566,7 @@ export interface Interface {
   readonly setTitle: (input: { sessionID: SessionID; title: string }) => Effect.Effect<void>
   readonly setArchived: (input: { sessionID: SessionID; time?: number | null }) => Effect.Effect<void>
   readonly setPermission: (input: { sessionID: SessionID; permission: Permission.Ruleset }) => Effect.Effect<void>
+  readonly updatePermissionSlots: (input: { sessionID: SessionID; rules: Permission.Ruleset }) => Effect.Effect<void, NotFound>
   readonly setRevert: (input: {
     sessionID: SessionID
     revert: Info["revert"]
@@ -603,6 +614,14 @@ export type Patch = Types.DeepMutable<SyncEvent.Event<typeof Event.Updated>["dat
 
 const db = <T>(fn: (d: Parameters<typeof Database.use>[0] extends (trx: infer D) => any ? D : never) => T) =>
   Effect.sync(() => Database.use(fn))
+
+function normalizePermissionSlots(rules: Permission.Ruleset): Permission.Ruleset {
+  const slots = new Map<string, Permission.Rule>()
+  for (const rule of rules) {
+    slots.set(`${rule.permission}\0${rule.pattern}`, rule)
+  }
+  return Array.from(slots.values())
+}
 
 export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | SyncEvent.Service | Config.Service> = Layer.effect(
   Service,
@@ -852,6 +871,19 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
       yield* patch(input.sessionID, { permission: input.permission, time: { updated: Date.now() } })
     })
 
+    const updatePermissionSlots = Effect.fn("Session.updatePermissionSlots")(function* (input: {
+      sessionID: SessionID
+      rules: Permission.Ruleset
+    }) {
+      yield* get(input.sessionID)
+      const normalized = normalizePermissionSlots(input.rules)
+      if (normalized.length === 0) return
+      const timestamp = Date.now()
+      yield* sync.run(Event.PermissionSlot, { sessionID: input.sessionID, rules: normalized, timestamp })
+      const info = yield* get(input.sessionID)
+      yield* bus.publish(Event.Updated, { sessionID: info.id, info })
+    })
+
     const setRevert = Effect.fn("Session.setRevert")(function* (input: {
       sessionID: SessionID
       revert: Info["revert"]
@@ -967,6 +999,7 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
       setTitle,
       setArchived,
       setPermission,
+      updatePermissionSlots,
       setRevert,
       clearRevert,
       recordUsage,

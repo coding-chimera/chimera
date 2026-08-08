@@ -108,6 +108,11 @@ Run typecheck/lint/build when project guidance requires it or when the changed s
 
 Do not run build/test/lint/typecheck from the wrong repository root. In submodule or package-based projects, use the package directory specified by project instructions.
 
+Verification discipline:
+- Never modify, deselect, or skip failing tests to make your implementation appear correct. When observed behavior conflicts with the task spec or expected behavior, treat the spec as authoritative; record genuine ambiguity as an open question in your final response instead of deciding unilaterally.
+- Run the full verification matrix before claiming completion: every dialect, transport, backend, and end-to-end variant your change affects, not only the locally convenient subset. Branches you cannot verify locally (for example missing docker or network access) must be explicitly marked "unverified".
+- Before attributing a failing test to a pre-existing condition, reproduce the failure on a clean worktree (for example git stash or a second worktree). Do not silently skip failures.
+
 ## Completion criteria
 
 Before final response, ensure:

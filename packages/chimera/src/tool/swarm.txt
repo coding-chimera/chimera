@@ -14,6 +14,8 @@ The tool publishes each worker incrementally through `metadata.childRuns` (`queu
 
 Concurrency defaults to 16 and is capped at 16. Treat 16 as a capacity ceiling, not a target: use full concurrency only for independent work with disjoint scopes, and lower it for shared files, ordered dependencies, provider limits, or contended state.
 
+Optional `model_profile` names a `delegation.model_profiles` config entry and applies it to every worker in the fan-out. The profile is resolved through delegation config into a concrete model and variant — the value is a profile name, never a raw provider/model string. Omit it to use each subagent's configured model or the parent model.
+
 Swarm workers cannot call `task` or `chimera_swarm`; nested fan-out is disabled so one parent swarm cannot recursively multiply its concurrency.
 
 Prompt templates support:

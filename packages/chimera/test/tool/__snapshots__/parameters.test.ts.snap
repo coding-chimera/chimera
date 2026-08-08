@@ -1001,6 +1001,10 @@ exports[`tool parameters JSON Schema (wire shape) task 1`] = `
       "description": "A short (3-5 words) description of the task",
       "type": "string",
     },
+    "model_profile": {
+      "description": "Name of a delegation.model_profiles entry to run this subagent with. Omit to use the subagent's configured model or the parent model; when resuming an existing session, the session's persisted model is used.",
+      "type": "string",
+    },
     "prompt": {
       "description": "The task for the agent to perform",
       "type": "string",
@@ -1199,6 +1203,10 @@ exports[`tool parameters JSON Schema (wire shape) chimera_swarm 1`] = `
     "limit": {
       "description": "Maximum items to read from a Chimera evidence source. Defaults to 20 and is capped at 100.",
       "type": "number",
+    },
+    "model_profile": {
+      "description": "Name of a delegation.model_profiles entry to run every worker with. Omit to use the subagent's configured model or the parent model.",
+      "type": "string",
     },
     "preset": {
       "description": "Optional worker prompt shape for audit follow-up, audit review, oracle follow-up, or file review.",

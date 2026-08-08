@@ -1828,6 +1828,92 @@ test("Effect config parser preserves permission order while rejecting unknown to
   }
 })
 
+test("parses delegation config with model profiles", () => {
+  const config = ConfigParse.effectSchema(
+    Config.Info,
+    {
+      delegation: {
+        model_profiles: {
+          coder: {
+            model: "aijws/gpt-5.6-luna/extra",
+            variant: "high",
+            description: "Fast coder profile",
+          },
+        },
+      },
+    },
+    "test",
+  )
+  expect(config.delegation?.model_profiles?.coder).toEqual({
+    model: "aijws/gpt-5.6-luna/extra",
+    variant: "high",
+    description: "Fast coder profile",
+  })
+})
+
+test("parses delegation routes", () => {
+  const config = ConfigParse.effectSchema(
+    Config.Info,
+    {
+      delegation: {
+        routes: {
+          "code-reviewer": "general",
+          explore: "fast",
+        },
+      },
+    },
+    "test",
+  )
+  expect(config.delegation?.routes?.["code-reviewer"]).toBe("general")
+  expect(config.delegation?.routes?.explore).toBe("fast")
+})
+
+test("rejects unknown top-level keys alongside delegation", () => {
+  try {
+    ConfigParse.effectSchema(Config.Info, { delegation: { model_profiles: {} }, invalid_field: true }, "test")
+    throw new Error("expected config parse to fail")
+  } catch (err) {
+    const error = err as { data?: { issues?: Array<{ code?: string; keys?: string[]; path?: string[] }> } }
+    expect(error.data?.issues?.[0]).toMatchObject({ code: "unrecognized_keys", keys: ["invalid_field"], path: [] })
+  }
+})
+
+test("Config zod schema exposes delegation", () => {
+  const parsed = Config.Info.zod.safeParse({
+    delegation: {
+      model_profiles: { coder: { model: "aijws/gpt-5.6-luna/extra", variant: "high" } },
+      routes: { "code-reviewer": "general" },
+    },
+  })
+  expect(parsed.success).toBe(true)
+  if (parsed.success) {
+    expect(parsed.data.delegation?.model_profiles?.coder.model).toBe("aijws/gpt-5.6-luna/extra")
+    expect(parsed.data.delegation?.routes?.["code-reviewer"]).toBe("general")
+  }
+})
+
+test("loads delegation config from project file", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await writeConfig(dir, {
+        $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+        delegation: {
+          model_profiles: {
+            coder: { model: "aijws/gpt-5.6-luna/extra" },
+          },
+        },
+      })
+    },
+  })
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const config = await load()
+      expect(config.delegation?.model_profiles?.coder.model).toBe("aijws/gpt-5.6-luna/extra")
+    },
+  })
+})
+
 test("decodes cross-session memory config", () => {
   const config = ConfigParse.effectSchema(
     Config.Info,

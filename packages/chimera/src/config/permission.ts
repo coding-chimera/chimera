@@ -30,6 +30,7 @@ const InputObject = Schema.StructWithRest(
     list: Schema.optional(Rule),
     bash: Schema.optional(Rule),
     task: Schema.optional(Rule),
+    task_profile: Schema.optional(Rule),
     external_directory: Schema.optional(Rule),
     todowrite: Schema.optional(Action),
     workbrief: Schema.optional(Action),

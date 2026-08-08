@@ -4,11 +4,13 @@ import { Agent } from "../../src/agent/agent"
 import { Config } from "@/config/config"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Session } from "@/session/session"
+import { Permission } from "../../src/permission"
 import { MessageV2 } from "../../src/session/message-v2"
 import type { SessionPrompt } from "../../src/session/prompt"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { ModelID, ProviderID } from "../../src/provider/schema"
 import { ChimeraSwarmTool } from "../../src/tool/swarm"
+import { SubagentDispatch } from "../../src/agent/subagent-dispatch"
 import type { TaskPromptOps } from "../../src/tool/task"
 import { Truncate } from "@/tool/truncate"
 import { ToolRegistry } from "@/tool/registry"
@@ -16,12 +18,20 @@ import { getCodeGraphDir } from "@/graph/directory"
 import { recordOracleResult, writePersistentObligationStore } from "@/chimera/store"
 import { TestInstance, disposeAllInstances } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
+import { ProviderTest } from "../fake/provider"
 import path from "path"
 
 const ref = {
   providerID: ProviderID.make("test"),
   modelID: ModelID.make("test-model"),
 }
+const testProvider = ProviderTest.fake({
+  model: ProviderTest.model({
+    providerID: ProviderID.make("test"),
+    id: ModelID.make("test-model"),
+    variants: { max: {} },
+  }),
+})
 
 const it = testEffect(
   Layer.mergeAll(
@@ -31,6 +41,18 @@ const it = testEffect(
     Session.defaultLayer,
     Truncate.defaultLayer,
     ToolRegistry.defaultLayer,
+    testProvider.layer,
+  ),
+)
+const modelIt = testEffect(
+  Layer.mergeAll(
+    Agent.defaultLayer,
+    Config.defaultLayer,
+    CrossSpawnSpawner.defaultLayer,
+    Session.defaultLayer,
+    Truncate.defaultLayer,
+    ToolRegistry.defaultLayer,
+    testProvider.layer,
   ),
 )
 
@@ -306,6 +328,95 @@ describe("tool.chimera_swarm", () => {
         { pattern: "*", action: "deny", permission: "task" },
         { pattern: "*", action: "deny", permission: "chimera_swarm" },
       ])
+    }),
+  )
+
+  it.instance("resuming a swarm child through dispatch keeps nested denies and adds no allows", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const parent = yield* seed()
+      const tool = yield* ChimeraSwarmTool
+      const def = yield* tool.init()
+
+      const result = yield* def.execute(
+        {
+          prompt_template: "Review {{item}}",
+          items: ["alpha"],
+          subagent_type: "general",
+          concurrency: 1,
+        },
+        ctx(parent, stubOps()),
+      )
+
+      const childSessions = result.metadata.childSessions as Array<{ sessionId?: string }> | undefined
+      const childID = childSessions?.[0]?.sessionId
+      expect(childID).toBeDefined()
+      const before = (yield* sessions.get(SessionID.make(childID!))).permission ?? []
+
+      const dispatch = yield* SubagentDispatch
+      yield* dispatch.run({
+        parentSessionID: parent.chat.id,
+        parentMessageID: parent.assistant.id,
+        description: "resume shard",
+        prompt: "continue the review",
+        subagentType: "general",
+        taskID: childID,
+        promptOps: stubOps(),
+        abort: new AbortController().signal,
+        nestedDelegation: "deny",
+      })
+
+      const after = (yield* sessions.get(SessionID.make(childID!))).permission ?? []
+      expect(after.slice(-2)).toEqual([
+        { pattern: "*", action: "deny", permission: "task" },
+        { pattern: "*", action: "deny", permission: "chimera_swarm" },
+      ])
+      expect(after.filter((rule) => rule.action === "allow")).toEqual(before.filter((rule) => rule.action === "allow"))
+      expect(after.filter((rule) => rule.permission === "task" && rule.action === "deny")).toHaveLength(1)
+      expect(after.filter((rule) => rule.permission === "chimera_swarm" && rule.action === "deny")).toHaveLength(1)
+    }),
+  )
+
+  it.instance("resumed swarm child evaluates task and chimera_swarm as deny through real permissions", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const parent = yield* seed()
+      const tool = yield* ChimeraSwarmTool
+      const def = yield* tool.init()
+
+      const result = yield* def.execute(
+        {
+          prompt_template: "Review {{item}}",
+          items: ["alpha"],
+          subagent_type: "general",
+          concurrency: 1,
+        },
+        ctx(parent, stubOps()),
+      )
+
+      const childSessions = result.metadata.childSessions as Array<{ sessionId?: string }> | undefined
+      const childID = childSessions?.[0]?.sessionId
+      expect(childID).toBeDefined()
+      const before = (yield* sessions.get(SessionID.make(childID!))).permission ?? []
+
+      const dispatch = yield* SubagentDispatch
+      yield* dispatch.run({
+        parentSessionID: parent.chat.id,
+        parentMessageID: parent.assistant.id,
+        description: "resume shard",
+        prompt: "continue the review",
+        subagentType: "general",
+        taskID: childID,
+        promptOps: stubOps(),
+        abort: new AbortController().signal,
+        nestedDelegation: "deny",
+      })
+
+      const after = (yield* sessions.get(SessionID.make(childID!))).permission ?? []
+      expect(Permission.evaluate("task", "*", after).action).toBe("deny")
+      expect(Permission.evaluate("chimera_swarm", "*", after).action).toBe("deny")
+      expect(Permission.evaluate("bash", "*", after).action).toBe("ask")
+      expect(after.filter((rule) => rule.action === "allow")).toEqual(before.filter((rule) => rule.action === "allow"))
     }),
   )
 
@@ -760,5 +871,252 @@ describe("tool.chimera_swarm", () => {
         expect(message).toContain("Example:")
       }
     }),
+  )
+
+  it.instance("asks for task_profile permission when model_profile is set", () =>
+    Effect.gen(function* () {
+      const parent = yield* seed()
+      const tool = yield* ChimeraSwarmTool
+      const def = yield* tool.init()
+      const asks: Array<{ permission?: string; patterns?: readonly string[]; metadata?: Record<string, unknown> }> = []
+      const promptOps = stubOps()
+      yield* def.execute(
+        {
+          prompt_template: "Review {{item}}",
+          items: ["alpha"],
+          subagent_type: "general",
+          model_profile: "flash",
+          concurrency: 1,
+        },
+        {
+          ...ctx(parent, promptOps),
+          extra: { promptOps, bypassAgentCheck: false },
+          ask: (input) =>
+            Effect.sync(() => {
+              asks.push(input)
+            }),
+        },
+      )
+      expect(asks.map((item) => item.permission)).toEqual(["task", "task_profile"])
+      expect(asks[1].patterns).toEqual(["flash"])
+      expect(asks[1].metadata).toMatchObject({ model_profile: "flash" })
+    }),
+    {
+      config: {
+        delegation: { model_profiles: { flash: { model: "test/test-model" } } },
+      },
+    },
+  )
+
+  modelIt.instance(
+    "asks once for a route profile when agent selection is bypassed",
+    () =>
+      Effect.gen(function* () {
+        const parent = yield* seed()
+        const tool = yield* ChimeraSwarmTool
+        const def = yield* tool.init()
+        const asks: Array<{ permission?: string; patterns?: readonly string[] }> = []
+        const promptOps = stubOps()
+        const result = yield* def.execute(
+          {
+            prompt_template: "Review {{item}}",
+            items: ["alpha", "beta"],
+            subagent_type: "general",
+            concurrency: 2,
+          },
+          {
+            ...ctx(parent, promptOps),
+            extra: { promptOps, bypassAgentCheck: true },
+            ask: (input) =>
+              Effect.sync(() => {
+                asks.push(input)
+              }),
+          },
+        )
+
+        expect(result.metadata.successCount).toBe(2)
+        expect(asks.map((item) => item.permission)).toEqual(["task_profile"])
+        expect(asks[0]?.patterns).toEqual(["flash"])
+      }),
+    {
+      config: {
+        delegation: {
+          model_profiles: { flash: { model: "test/test-model" } },
+          routes: { general: "flash" },
+        },
+      },
+    },
+  )
+
+  it.instance(
+    "fails before creating children when task_profile permission is denied",
+    () =>
+      Effect.gen(function* () {
+        const sessions = yield* Session.Service
+        const parent = yield* seed()
+        const tool = yield* ChimeraSwarmTool
+        const def = yield* tool.init()
+        const exit = yield* Effect.exit(
+          def.execute(
+            {
+              prompt_template: "Review {{item}}",
+              items: ["alpha"],
+              subagent_type: "general",
+              model_profile: "flash",
+              concurrency: 1,
+            },
+            {
+              ...ctx(parent, stubOps()),
+              extra: { promptOps: stubOps(), bypassAgentCheck: false },
+              ask: (input: { permission?: string }) =>
+                input.permission === "task_profile" ? Effect.die(new Error("task_profile denied")) : Effect.void,
+            },
+          ),
+        )
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit)) {
+          expect(Cause.pretty(exit.cause)).toContain("task_profile denied")
+        }
+        expect(yield* sessions.children(parent.chat.id)).toHaveLength(0)
+      }),
+    {
+      config: {
+        permission: {
+          task_profile: {
+            "*": "allow",
+            flash: "deny",
+          },
+        },
+        delegation: { model_profiles: { flash: { model: "test/test-model" } } },
+      },
+    },
+  )
+
+  modelIt.instance(
+    "applies model_profile to every worker prompt input model and variant",
+    () =>
+      Effect.gen(function* () {
+        const parent = yield* seed()
+        const tool = yield* ChimeraSwarmTool
+        const def = yield* tool.init()
+        const prompts: SessionPrompt.PromptInput[] = []
+        const result = yield* def.execute(
+          {
+            prompt_template: "Review {{item}}",
+            items: ["alpha", "beta"],
+            subagent_type: "general",
+            model_profile: "flash",
+            concurrency: 2,
+          },
+          ctx(parent, stubOps({ onPrompt: (input) => prompts.push(input) })),
+        )
+        expect(result.metadata.successCount).toBe(2)
+        expect(prompts).toHaveLength(2)
+        for (const input of prompts) {
+          expect(input.model).toMatchObject({ providerID: ref.providerID, modelID: ref.modelID })
+          expect(input.variant).toBe("max")
+        }
+      }),
+    {
+      config: {
+        delegation: {
+          model_profiles: {
+            flash: { model: "test/test-model", variant: "max" },
+          },
+        },
+      },
+    },
+  )
+
+  modelIt.instance(
+    "records model_profile and execution in child run and session metadata",
+    () =>
+      Effect.gen(function* () {
+        const parent = yield* seed()
+        const tool = yield* ChimeraSwarmTool
+        const def = yield* tool.init()
+        const result = yield* def.execute(
+          {
+            prompt_template: "Review {{item}}",
+            items: ["alpha"],
+            subagent_type: "general",
+            model_profile: "flash",
+            concurrency: 1,
+          },
+          ctx(parent, stubOps()),
+        )
+        const runs = result.metadata.childRuns as Array<{
+          model_profile?: string
+          execution?: { modelProfile?: string; source?: string }
+        }>
+        expect(runs).toHaveLength(1)
+        expect(runs[0].model_profile).toBe("flash")
+        expect(runs[0].execution?.modelProfile).toBe("flash")
+        expect(runs[0].execution?.source).toBe("request-profile")
+        const sessions = result.metadata.childSessions as Array<{ model_profile?: string }>
+        expect(sessions).toHaveLength(1)
+        expect(sessions[0].model_profile).toBe("flash")
+      }),
+    {
+      config: {
+        delegation: {
+          model_profiles: {
+            flash: { model: "test/test-model", variant: "max" },
+          },
+        },
+      },
+    },
+  )
+
+  modelIt.instance(
+    "keeps queued/running/completed status metadata with execution fields present",
+    () =>
+      Effect.gen(function* () {
+        const parent = yield* seed()
+        const tool = yield* ChimeraSwarmTool
+        const def = yield* tool.init()
+        const metadata: Array<{ title?: string; metadata?: Record<string, unknown> }> = []
+        yield* def.execute(
+          {
+            prompt_template: "Review {{item}}",
+            items: ["alpha", "beta"],
+            subagent_type: "general",
+            model_profile: "flash",
+            concurrency: 1,
+          },
+          {
+            ...ctx(parent, stubOps()),
+            metadata: (input) =>
+              Effect.sync(() => {
+                metadata.push(input)
+              }),
+          },
+        )
+        const firstRuns = metadata[0]?.metadata?.childRuns as Array<{ status: string }> | undefined
+        expect(firstRuns?.map((run) => run.status)).toEqual(["queued", "queued"])
+        expect(
+          metadata.some((item) =>
+            (item.metadata?.childRuns as Array<{ status: string }> | undefined)?.some((run) => run.status === "running"),
+          ),
+        ).toBe(true)
+        const last = metadata.at(-1)?.metadata
+        const lastRuns = last?.childRuns as
+          | Array<{ status: string; model_profile?: string; execution?: { modelProfile?: string } }>
+          | undefined
+        expect(lastRuns?.map((run) => run.status)).toEqual(["completed", "completed"])
+        expect(lastRuns?.every((run) => run.model_profile === "flash")).toBe(true)
+        expect(lastRuns?.every((run) => run.execution !== undefined)).toBe(true)
+        const lastSessions = last?.childSessions as Array<{ model_profile?: string }> | undefined
+        expect(lastSessions?.every((session) => session.model_profile === "flash")).toBe(true)
+      }),
+    {
+      config: {
+        delegation: {
+          model_profiles: {
+            flash: { model: "test/test-model", variant: "max" },
+          },
+        },
+      },
+    },
   )
 })
