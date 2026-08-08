@@ -8,19 +8,24 @@
  * `--version` output (which reads `package.json` directly) and the daemon
  * handshake.
  *
- * Resolution strategy: read the main package `package.json` three levels up
- * from this internal graph module. If reading fails
- * (e.g. the package was unpacked oddly), fall back to "0.0.0-unknown" — a
- * sentinel that will never match a real version, so the proxy harmlessly
- * falls back to direct mode.
+ * Resolution strategy: prefer the `package.json` next to the installed
+ * binary (platform package), then the main package three levels up from this
+ * internal graph module (source checkout). If reading fails (e.g. the
+ * package was unpacked oddly), fall back to "0.0.0-unknown" — a sentinel
+ * that will never match a real version, so the proxy harmlessly falls back
+ * to direct mode.
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 
 function readPackageVersion(): string {
+  const pkgPath = [
+    path.join(path.dirname(process.execPath), '..', 'package.json'),
+    path.join(import.meta.dirname, '..', '..', '..', 'package.json'),
+  ].find((candidate) => fs.existsSync(candidate));
+  if (!pkgPath) return '0.0.0-unknown';
   try {
-    const pkgPath = path.join(__dirname, '..', '..', '..', 'package.json');
     const raw = fs.readFileSync(pkgPath, 'utf8');
     const parsed = JSON.parse(raw);
     if (typeof parsed?.version === 'string' && parsed.version.length > 0) {

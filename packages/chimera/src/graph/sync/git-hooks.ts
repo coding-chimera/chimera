@@ -3,11 +3,11 @@
  *
  * When the live file watcher is disabled (e.g. on WSL2 `/mnt/*` drives,
  * see watch-policy.ts), the CodeGraph index would otherwise go stale until
- * the user runs `chimera sync` by hand. As an opt-in alternative, we can
+ * the user runs `chimera graph sync` by hand. As an opt-in alternative, we can
  * install git hooks that refresh the index after the operations that change
  * files on disk: commit, merge (covers `git pull`), and checkout.
  *
- * The hooks run `chimera sync` in the background so they never block git,
+ * The hooks run `chimera graph sync` in the background so they never block git,
  * and are guarded by `command -v chimera` so they no-op cleanly when the
  * CLI isn't on PATH. Our snippet is delimited by marker comments so install
  * is idempotent and removal preserves any user-authored hook content.
@@ -77,9 +77,9 @@ function markerBlock(): string {
     MARKER_BEGIN,
     '# Keeps the Chimera index fresh while the live file watcher is off',
     '# (e.g. WSL2 /mnt drives). Runs in the background so it never blocks git.',
-    '# Managed by chimera; remove with `chimera uninit` or delete this block.',
+    '# Managed by chimera; remove with `chimera graph uninit` or delete this block.',
     'if command -v chimera >/dev/null 2>&1; then',
-    '  ( chimera sync >/dev/null 2>&1 & ) >/dev/null 2>&1',
+    '  ( chimera graph sync >/dev/null 2>&1 & ) >/dev/null 2>&1',
     'fi',
     MARKER_END,
   ].join('\n');

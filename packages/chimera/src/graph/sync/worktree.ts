@@ -1,9 +1,10 @@
 /**
  * Git Worktree Awareness
  *
- * A CodeGraph index lives in a `.codegraph/` directory and is resolved by
- * walking up parent directories to the nearest one (see
- * `findNearestCodeGraphRoot`). That walk is unaware of git worktrees: when a
+ * Chimera graph data is resolved by walking up parent directories to the
+ * nearest initialized project, using current `.chimera/` data or compatible
+ * legacy `.codegraph/` data (see `findNearestCodeGraphRoot`). That walk is
+ * unaware of git worktrees: when a
  * worktree is created *inside* the main checkout (e.g. some tools place them
  * under `.gitignore`d paths like `.claude/worktrees/<name>/`), a command run
  * from the worktree walks up and silently resolves the MAIN checkout's index.
@@ -46,7 +47,7 @@ export function gitWorktreeRoot(dir: string): string | null {
 export interface WorktreeIndexMismatch {
   /** The git working tree the command was run from. */
   worktreeRoot: string;
-  /** The (different) working tree whose `.codegraph` index is being used. */
+  /** The different working tree whose initialized Chimera graph is being used. */
   indexRoot: string;
 }
 
@@ -58,8 +59,8 @@ export interface WorktreeIndexMismatch {
  *   - `startPath` isn't in a git repo (or git is unavailable),
  *   - the index already lives in `startPath`'s own working tree, or
  *   - `indexRoot` isn't itself a working-tree root (an unrelated parent dir
- *     that merely happens to contain a `.codegraph/`), which keeps non-git
- *     and monorepo-subdir layouts from producing false warnings.
+ *     that merely happens to contain initialized graph data), which keeps
+ *     non-git and monorepo-subdir layouts from producing false warnings.
  */
 export function detectWorktreeIndexMismatch(
   startPath: string,
@@ -86,8 +87,8 @@ export function worktreeMismatchWarning(m: WorktreeIndexMismatch): string {
     `  Running in: ${m.worktreeRoot}\n` +
     `  Index from: ${m.indexRoot}\n` +
     `Results reflect that tree's code (often a different branch), not this worktree — ` +
-    `symbols changed only here are missing. Run "chimera init -i" in this worktree ` +
-    `for a worktree-local index.`
+    `symbols changed only here are missing. Run "chimera graph init" and then "chimera graph index" ` +
+    `in this worktree for a worktree-local index.`
   );
 }
 
@@ -100,8 +101,8 @@ export function worktreeMismatchNotice(m: WorktreeIndexMismatch): string {
   return (
     `⚠ CodeGraph results below come from a different git worktree (${m.indexRoot}), ` +
     `not where you're working (${m.worktreeRoot}) — they may reflect another branch, ` +
-    `and symbols changed only here are missing. Run "chimera init -i" here for a ` +
-    `worktree-local index.`
+    `and symbols changed only here are missing. Run "chimera graph init" and then ` +
+    `"chimera graph index" here for a worktree-local index.`
   );
 }
 

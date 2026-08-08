@@ -65,7 +65,7 @@ function configureConnection(db: SqliteDatabase, options: DatabaseOpenOptions = 
 
 function loadInitialSchema(): string {
   if (typeof CHIMERA_DB_SCHEMA === 'string') return CHIMERA_DB_SCHEMA;
-  return fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf-8');
+  return fs.readFileSync(path.join(import.meta.dirname, 'schema.sql'), 'utf-8');
 }
 
 /**

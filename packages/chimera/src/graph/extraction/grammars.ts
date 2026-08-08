@@ -35,8 +35,8 @@ function treeSitterRuntime(value: unknown): TreeSitterRuntime | null {
 function loadTreeSitterRuntime(): TreeSitterRuntime {
   for (const fallbackPath of [
     path.join(path.dirname(process.execPath), 'web-tree-sitter', 'tree-sitter.cjs'),
-    path.join(__dirname, '..', '..', '..', 'node_modules', 'web-tree-sitter', 'tree-sitter.cjs'),
-    path.join(__dirname, '..', '..', '..', '..', '..', 'node_modules', 'web-tree-sitter', 'tree-sitter.cjs'),
+    path.join(import.meta.dirname, '..', '..', '..', 'node_modules', 'web-tree-sitter', 'tree-sitter.cjs'),
+    path.join(import.meta.dirname, '..', '..', '..', '..', '..', 'node_modules', 'web-tree-sitter', 'tree-sitter.cjs'),
     path.join(process.cwd(), 'node_modules', 'web-tree-sitter', 'tree-sitter.cjs'),
     'web-tree-sitter',
   ]) {
@@ -92,7 +92,7 @@ function binaryAdjacentGrammarPath(wasmFile: string): string | undefined {
 
 function resolveGrammarWasmPath(lang: GrammarLanguage): string {
   const wasmFile = WASM_GRAMMAR_FILES[lang];
-  const vendoredPath = path.join(__dirname, 'wasm', wasmFile);
+  const vendoredPath = path.join(import.meta.dirname, 'wasm', wasmFile);
 
   if (VENDORED_GRAMMAR_LANGUAGES.has(lang) && fs.existsSync(vendoredPath)) return vendoredPath;
 

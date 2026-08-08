@@ -39,7 +39,7 @@ describe('git sync hooks', () => {
     if (fs.existsSync(repo)) fs.rmSync(repo, { recursive: true, force: true });
   });
 
-  it('installs all default hooks, executable, invoking chimera sync', () => {
+  it('installs all default hooks, executable, invoking chimera graph sync', () => {
     gitInit(repo);
     const result = installGitSyncHook(repo);
 
@@ -50,7 +50,8 @@ describe('git sync hooks', () => {
       const file = path.join(repo, '.git', 'hooks', hook);
       expect(fs.existsSync(file)).toBe(true);
       const body = fs.readFileSync(file, 'utf8');
-      expect(body).toContain('chimera sync');
+      expect(body).toContain('chimera graph sync');
+      expect(body).not.toContain('chimera sync');
       expect(body).toContain('command -v chimera'); // no-op when not on PATH
       expect(isExecutable(file)).toBe(true);
     }
@@ -76,7 +77,8 @@ describe('git sync hooks', () => {
 
     const body = fs.readFileSync(file, 'utf8');
     expect(body).toContain('echo "my custom hook"');
-    expect(body).toContain('chimera sync');
+    expect(body).toContain('chimera graph sync');
+    expect(body).not.toContain('chimera sync');
   });
 
   it('remove strips our block; deletes a hook that was only ours', () => {
@@ -102,7 +104,7 @@ describe('git sync hooks', () => {
     expect(fs.existsSync(file)).toBe(true);
     const body = fs.readFileSync(file, 'utf8');
     expect(body).toContain('echo "keep me"');
-    expect(body).not.toContain('chimera sync');
+    expect(body).not.toContain('chimera graph sync');
   });
 
   it('honors core.hooksPath', () => {
