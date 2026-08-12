@@ -50,6 +50,7 @@ export type WorkspaceAdapter = {
   description: string
   configure(config: WorkspaceInfo): WorkspaceInfo | Promise<WorkspaceInfo>
   create(config: WorkspaceInfo, env: Record<string, string | undefined>, from?: WorkspaceInfo): Promise<void>
+  restart?(config: WorkspaceInfo, completeReplacementEnv: Record<string, string | undefined>): Promise<void>
   remove(config: WorkspaceInfo): Promise<void>
   target(config: WorkspaceInfo): WorkspaceTarget | Promise<WorkspaceTarget>
 }

@@ -36,6 +36,7 @@ import type { IndexProgress } from "@/graph"
 import { Question } from "@/question"
 import { pathToFileURL, fileURLToPath } from "url"
 import { Config } from "@/config/config"
+import { ConfigSubagentRouting } from "@/config/subagent-routing"
 import { ConfigMarkdown } from "@/config/markdown"
 import { SessionSummary } from "./summary"
 import { WorkBrief } from "./work-brief"
@@ -46,6 +47,7 @@ import { SessionProcessor } from "./processor"
 import { Tool } from "@/tool/tool"
 import { Permission } from "@/permission"
 import { SessionStatus } from "./status"
+import { SubagentModelCatalog } from "@/agent/subagent-model-catalog"
 import { LLM } from "./llm"
 import { Shell } from "@/shell/shell"
 import { ShellID } from "@/tool/shell/id"
@@ -88,7 +90,7 @@ const STRUCTURED_OUTPUT_SYSTEM_PROMPT = `IMPORTANT: The user has requested struc
 const log = Log.create({ service: "session.prompt" })
 
 type RuntimeContextSection = {
-  key: "workBrief" | "chimera"
+  key: "workBrief" | "chimera" | "subagentModels"
   title: string
   content: string
   hash: string
@@ -208,6 +210,7 @@ export const layer = Layer.effect(
     const plugin = yield* Plugin.Service
     const commands = yield* Command.Service
     const config = yield* Config.Service
+    const routing = yield* ConfigSubagentRouting.Service
     const remoteCompaction = yield* RemoteCompaction.Service
     const permission = yield* Permission.Service
     const fsys = yield* AppFileSystem.Service
@@ -293,14 +296,55 @@ export const layer = Layer.effect(
     }
 
 
-    const runtimeContextSections = Effect.fn("SessionPrompt.runtimeContextSections")(function* (sessionID: SessionID) {
+    const runtimeContextSections = Effect.fn("SessionPrompt.runtimeContextSections")(function* (input: {
+      sessionID: SessionID
+      agent: string
+      tools?: Record<string, boolean>
+    }) {
       const [workBriefSuffix, chimeraContextSuffix] = yield* Effect.all([
-        workBrief.render(sessionID),
-        chimeraPromptContext.render(sessionID),
+        workBrief.render(input.sessionID),
+        chimeraPromptContext.render(input.sessionID),
       ])
+      const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+      const agent = yield* agents.get(input.agent)
+      const ruleset = Permission.merge(agent.permission, session.permission ?? [])
+      const disabled = Permission.disabled([TaskTool.id, "chimera_swarm"], ruleset)
+      const canDelegate =
+        !session.parentID &&
+        agent.mode !== "subagent" &&
+        [TaskTool.id, "chimera_swarm"].some((tool) => input.tools?.[tool] !== false && !disabled.has(tool))
+      const subagentCatalog = canDelegate
+        ? yield* SubagentModelCatalog.withPreferences(
+            SubagentModelCatalog.visible(
+              SubagentModelCatalog.buildSnapshot({
+                providers: yield* provider.list(),
+                configuredProviders: (yield* config.get()).provider,
+              }),
+              ruleset,
+            ),
+            session.projectID,
+            routing,
+          )
+        : undefined
+      const subagentModels = subagentCatalog ? SubagentModelCatalog.disclosure(subagentCatalog) : undefined
       return [
         workBriefSuffix ? { key: "workBrief" as const, title: "Current Work Brief", content: workBriefSuffix, hash: hash(workBriefSuffix) } : undefined,
-        chimeraContextSuffix ? { key: "chimera" as const, title: "Chimera Execution Context", content: chimeraContextSuffix, hash: hash(chimeraContextSuffix) } : undefined,
+        chimeraContextSuffix
+          ? {
+              key: "chimera" as const,
+              title: "Chimera Execution Context",
+              content: chimeraContextSuffix,
+              hash: hash(chimeraContextSuffix),
+            }
+          : undefined,
+        subagentModels && subagentCatalog
+          ? {
+              key: "subagentModels" as const,
+              title: "Available Subagent Model Identities",
+              content: subagentModels,
+              hash: hash(SubagentModelCatalog.disclosureProjection(subagentCatalog)),
+            }
+          : undefined,
       ].filter((section): section is RuntimeContextSection => Boolean(section))
     })
 
@@ -350,8 +394,13 @@ export const layer = Layer.effect(
       messages: Iterable<MessageV2.WithParts>
       newestFirst?: boolean
       time?: number
+      tools?: Record<string, boolean>
     }) {
-      const sections = yield* runtimeContextSections(input.sessionID)
+      const sections = yield* runtimeContextSections({
+        sessionID: input.sessionID,
+        agent: input.agent,
+        tools: input.tools,
+      })
       const nextHash = runtimeContextHash(sections)
       const previous = latestRuntimeContext(input.messages, input.newestFirst)
       if (!previous && sections.length === 0) return undefined
@@ -1743,6 +1792,7 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
         messages: MessageV2.stream(input.sessionID),
         newestFirst: true,
         time: Math.max(0, info.time.created - 1),
+        tools: info.tools,
       })
       yield* sessions.updateMessage(info)
       for (const part of parts) yield* sessions.updatePart(part)
@@ -1988,6 +2038,7 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
             agent: lastUser.agent,
             model: lastUser.model,
             messages: msgs,
+            tools: lastUser.tools,
           })
           if (runtimeContext) msgs = [...msgs, runtimeContext]
           const maxSteps = agent.steps ?? Infinity
@@ -2412,7 +2463,7 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(ToolRegistry.defaultLayer),
     Layer.provide(Truncate.defaultLayer),
     Layer.provide(Provider.defaultLayer),
-    Layer.provide(Config.defaultLayer),
+    Layer.provide(Layer.mergeAll(Config.defaultLayer, ConfigSubagentRouting.defaultLayer)),
     Layer.provide(Instruction.defaultLayer),
     Layer.provide(AppFileSystem.defaultLayer),
     Layer.provide(Plugin.defaultLayer),

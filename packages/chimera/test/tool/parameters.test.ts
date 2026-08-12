@@ -35,6 +35,9 @@ import { Parameters as Question } from "../../src/tool/question"
 import { Parameters as Read } from "../../src/tool/read"
 import { Parameters as Shell } from "../../src/tool/shell"
 import { Parameters as Skill } from "../../src/tool/skill"
+import { Parameters as SubagentModelRoutes } from "../../src/tool/subagent_model_routes"
+import { Parameters as SubagentModelPrefer } from "../../src/tool/subagent_model_prefer"
+import { Parameters as SubagentModelSuppress } from "../../src/tool/subagent_model_suppress"
 import { Parameters as Task } from "../../src/tool/task"
 import { Parameters as Todo } from "../../src/tool/todo"
 import { Parameters as WebFetch } from "../../src/tool/webfetch"
@@ -74,6 +77,9 @@ describe("tool parameters", () => {
     test("question", () => expect(toJsonSchema(Question)).toMatchSnapshot())
     test("read", () => expect(toJsonSchema(Read)).toMatchSnapshot())
     test("skill", () => expect(toJsonSchema(Skill)).toMatchSnapshot())
+    test("subagent_model_routes", () => expect(toJsonSchema(SubagentModelRoutes)).toMatchSnapshot())
+    test("subagent_model_prefer", () => expect(toJsonSchema(SubagentModelPrefer)).toMatchSnapshot())
+    test("subagent_model_suppress", () => expect(toJsonSchema(SubagentModelSuppress)).toMatchSnapshot())
     test("task", () => expect(toJsonSchema(Task)).toMatchSnapshot())
     test("todo", () => expect(toJsonSchema(Todo)).toMatchSnapshot())
     test("webfetch", () => expect(toJsonSchema(WebFetch)).toMatchSnapshot())
@@ -301,10 +307,42 @@ describe("tool parameters", () => {
     })
   })
 
+  describe("subagent_model_routes", () => {
+    test("requires model_identity and accepts optional provider", () => {
+      expect(parse(SubagentModelRoutes, { model_identity: "identity-a" })).toEqual({
+        model_identity: "identity-a",
+      })
+      expect(parse(SubagentModelRoutes, { model_identity: "identity-a", provider: "provider-a" })).toEqual({
+        model_identity: "identity-a",
+        provider: "provider-a",
+      })
+      expect(accepts(SubagentModelRoutes, {})).toBe(false)
+      expect(accepts(SubagentModelRoutes, { model_identity: 1 })).toBe(false)
+    })
+  })
+
   describe("task", () => {
     test("accepts description + prompt + subagent_type", () => {
       const parsed = parse(Task, { description: "d", prompt: "p", subagent_type: "general" })
       expect(parsed.subagent_type).toBe("general")
+    })
+    test("accepts exact, profile, and identity selector fields at the wire layer", () => {
+      expect(
+        parse(Task, {
+          description: "d",
+          prompt: "p",
+          subagent_type: "general",
+          model_identity: "gpt-5.6",
+          provider: "relay",
+          variant: "max",
+        }),
+      ).toMatchObject({ model_identity: "gpt-5.6", provider: "relay", variant: "max" })
+      expect(parse(Task, { description: "d", prompt: "p", subagent_type: "general", model: "relay/model" }).model).toBe(
+        "relay/model",
+      )
+      expect(parse(Task, { description: "d", prompt: "p", subagent_type: "general", model_profile: "flash" }).model_profile).toBe(
+        "flash",
+      )
     })
     test("rejects missing prompt", () => {
       expect(accepts(Task, { description: "d", subagent_type: "general" })).toBe(false)
@@ -355,6 +393,18 @@ describe("tool parameters", () => {
           items: ["a.ts", { file: "b.ts", scope: "api" }],
         }),
       ).toBe(true)
+    })
+    test("accepts exact, profile, and identity selector fields at the wire layer", () => {
+      expect(
+        parse(Swarm, {
+          items: ["a.ts"],
+          model_identity: "gpt-5.6",
+          provider: "relay",
+          variant: "max",
+        }),
+      ).toMatchObject({ model_identity: "gpt-5.6", provider: "relay", variant: "max" })
+      expect(parse(Swarm, { items: ["a.ts"], model: "relay/model" }).model).toBe("relay/model")
+      expect(parse(Swarm, { items: ["a.ts"], model_profile: "flash" }).model_profile).toBe("flash")
     })
     test("rejects non-array items", () => {
       expect(accepts(Swarm, { items: "a.ts" })).toBe(false)

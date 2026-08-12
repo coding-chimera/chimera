@@ -618,7 +618,9 @@ const db = <T>(fn: (d: Parameters<typeof Database.use>[0] extends (trx: infer D)
 function normalizePermissionSlots(rules: Permission.Ruleset): Permission.Ruleset {
   const slots = new Map<string, Permission.Rule>()
   for (const rule of rules) {
-    slots.set(`${rule.permission}\0${rule.pattern}`, rule)
+    // JSON tuple keeps the composite key unambiguous: a NUL inside either
+    // field can no longer collide with a separator-joined pair.
+    slots.set(JSON.stringify([rule.permission, rule.pattern]), rule)
   }
   return Array.from(slots.values())
 }
@@ -880,8 +882,8 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
       if (normalized.length === 0) return
       const timestamp = Date.now()
       yield* sync.run(Event.PermissionSlot, { sessionID: input.sessionID, rules: normalized, timestamp })
-      const info = yield* get(input.sessionID)
-      yield* bus.publish(Event.Updated, { sessionID: info.id, info })
+      // The complete session.updated is published once by the sync layer's
+      // derived-event hook after the permission slot is projected.
     })
 
     const setRevert = Effect.fn("Session.setRevert")(function* (input: {

@@ -1001,6 +1001,14 @@ exports[`tool parameters JSON Schema (wire shape) task 1`] = `
       "description": "A short (3-5 words) description of the task",
       "type": "string",
     },
+    "model": {
+      "description": "Exact provider/model route to run the subagent with. Mutually exclusive with model_profile and model_identity; when resuming an existing session, the session's persisted model must match.",
+      "type": "string",
+    },
+    "model_identity": {
+      "description": "Current runtime model identity to resolve before starting the subagent. Mutually exclusive with model_profile and model; use provider to narrow an identity when needed.",
+      "type": "string",
+    },
     "model_profile": {
       "description": "Name of a delegation.model_profiles entry to run this subagent with. Omit to use the subagent's configured model or the parent model; when resuming an existing session, the session's persisted model is used.",
       "type": "string",
@@ -1009,12 +1017,20 @@ exports[`tool parameters JSON Schema (wire shape) task 1`] = `
       "description": "The task for the agent to perform",
       "type": "string",
     },
+    "provider": {
+      "description": "Current provider ID used only to narrow model_identity. Never use with exact model or model_profile.",
+      "type": "string",
+    },
     "subagent_type": {
       "description": "The type of specialized agent to use for this task",
       "type": "string",
     },
     "task_id": {
       "description": "This should only be set if you mean to resume a previous task (you can pass a prior task_id and the task will continue the same subagent session as before instead of creating a fresh one)",
+      "type": "string",
+    },
+    "variant": {
+      "description": "Model variant (e.g. ultra) to use with model or model_identity. Only allowed when the resolved model advertises it.",
       "type": "string",
     },
   },
@@ -1204,8 +1220,16 @@ exports[`tool parameters JSON Schema (wire shape) chimera_swarm 1`] = `
       "description": "Maximum items to read from a Chimera evidence source. Defaults to 20 and is capped at 100.",
       "type": "number",
     },
+    "model": {
+      "description": "Exact provider/model route to run every worker with. Mutually exclusive with model_profile and model_identity; when resuming an existing session, the session's persisted model must match.",
+      "type": "string",
+    },
+    "model_identity": {
+      "description": "Current runtime model identity to resolve once before starting workers. Mutually exclusive with model_profile and model; use provider to narrow an identity when needed.",
+      "type": "string",
+    },
     "model_profile": {
-      "description": "Name of a delegation.model_profiles entry to run every worker with. Omit to use the subagent's configured model or the parent model.",
+      "description": "Name of a delegation.model_profiles entry to run every worker with. Mutually exclusive with model and model_identity; omit to use the subagent route, configured model, or parent model.",
       "type": "string",
     },
     "preset": {
@@ -1222,11 +1246,127 @@ exports[`tool parameters JSON Schema (wire shape) chimera_swarm 1`] = `
       "description": "Prompt template for each child task. Use {{item}} plus optional {{index}} and {{total}} placeholders.",
       "type": "string",
     },
+    "provider": {
+      "description": "Current provider ID used only to narrow model_identity. Never use with exact model or model_profile.",
+      "type": "string",
+    },
     "subagent_type": {
       "description": "Subagent type to run for each item. Defaults to general.",
       "type": "string",
     },
+    "variant": {
+      "description": "Model variant (e.g. ultra) to use with model or model_identity. Only allowed when the resolved model advertises it.",
+      "type": "string",
+    },
   },
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) subagent_model_routes 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "model_identity": {
+      "description": "Model identity to inspect current visible concrete routes for.",
+      "type": "string",
+    },
+    "provider": {
+      "description": "Optional provider ID to narrow the route listing to one provider.",
+      "type": "string",
+    },
+  },
+  "required": [
+    "model_identity",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) subagent_model_prefer 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "model": {
+      "description": "Exact current provider/model route used for validation and task_model authorization.",
+      "type": "string",
+    },
+    "model_identity": {
+      "description": "Exact current model identity for the validating route.",
+      "type": "string",
+    },
+    "provider": {
+      "description": "Exact current provider ID for the validating route.",
+      "type": "string",
+    },
+    "scope": {
+      "description": "Preference scope: global across projects or only this session's project.",
+      "enum": [
+        "global",
+        "project",
+      ],
+      "type": "string",
+    },
+    "target": {
+      "description": "Preference target: the provider generally or this exact model route.",
+      "enum": [
+        "provider",
+        "route",
+      ],
+      "type": "string",
+    },
+  },
+  "required": [
+    "scope",
+    "target",
+    "provider",
+    "model_identity",
+    "model",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) subagent_model_suppress 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "model": {
+      "description": "Exact current provider/model route used for validation and task_model authorization.",
+      "type": "string",
+    },
+    "model_identity": {
+      "description": "Exact current model identity for the validating route.",
+      "type": "string",
+    },
+    "provider": {
+      "description": "Exact current provider ID for the validating route.",
+      "type": "string",
+    },
+    "scope": {
+      "description": "Preference scope: global across projects or only this session's project.",
+      "enum": [
+        "global",
+        "project",
+      ],
+      "type": "string",
+    },
+    "target": {
+      "description": "Preference target: the provider generally or this exact model route.",
+      "enum": [
+        "provider",
+        "route",
+      ],
+      "type": "string",
+    },
+  },
+  "required": [
+    "scope",
+    "target",
+    "provider",
+    "model_identity",
+    "model",
+  ],
   "type": "object",
 }
 `;

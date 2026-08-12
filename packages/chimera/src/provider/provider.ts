@@ -19,7 +19,7 @@ import { iife } from "@/util/iife"
 import { Global } from "@opencode-ai/core/global"
 import path from "path"
 import { pathToFileURL } from "url"
-import { Effect, Layer, Context, Schema, Types, Option } from "effect"
+import { Effect, Layer, Context, Schema, Types, Option, Semaphore } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
@@ -1127,6 +1127,10 @@ interface State {
   sdk: Map<string, BundledSDK>
   modelLoaders: Record<string, CustomModelLoader>
   varsLoaders: Record<string, CustomVarsLoader>
+  sourceRevisions: {
+    auth: number
+    models: number
+  }
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Provider") {}
@@ -1419,8 +1423,16 @@ const layer: Layer.Layer<
     const modelsDevSvc = yield* ModelsDev.Service
     const npm = yield* Npm.Service
 
+    const readSourceRevisions = Effect.fnUntraced(function* () {
+      return {
+        auth: yield* auth.revision(),
+        models: yield* modelsDevSvc.revision(),
+      }
+    })
+
     const state = yield* InstanceState.make<State>(() =>
       Effect.gen(function* () {
+        const sourceRevisions = yield* readSourceRevisions()
         using _ = log.time("state")
         const bridge = yield* EffectBridge.make()
         const cfg = yield* config.get()
@@ -1918,11 +1930,38 @@ const layer: Layer.Layer<
           sdk,
           modelLoaders,
           varsLoaders,
+          sourceRevisions,
         }
       }),
     )
 
-    const list = Effect.fn("Provider.list")(() => InstanceState.use(state, (s) => s.providers))
+    const freshness = Semaphore.makeUnsafe(1)
+    const resolveFreshState = (): Effect.Effect<State> =>
+      Effect.gen(function* () {
+        const current = yield* InstanceState.get(state)
+        const latest = yield* readSourceRevisions()
+        if (
+          current.sourceRevisions.auth === latest.auth &&
+          current.sourceRevisions.models === latest.models
+        )
+          return current
+        yield* InstanceState.invalidate(state)
+        return yield* Effect.suspend(resolveFreshState)
+      })
+    const freshState = Effect.fnUntraced(function* () {
+      const current = yield* InstanceState.get(state)
+      const latest = yield* readSourceRevisions()
+      if (
+        current.sourceRevisions.auth === latest.auth &&
+        current.sourceRevisions.models === latest.models
+      )
+        return current
+      return yield* freshness.withPermits(1)(resolveFreshState())
+    })
+
+    const list = Effect.fn("Provider.list")(function* () {
+      return (yield* freshState()).providers
+    })
     const invalidate = Effect.fn("Provider.invalidate")(() => InstanceState.invalidate(state))
 
     function resolveProviderRequestOptions(model: Model, s: State, envs: Record<string, string | undefined>) {
@@ -2102,12 +2141,12 @@ const layer: Layer.Layer<
       }
     }
 
-    const getProvider = Effect.fn("Provider.getProvider")((providerID: ProviderID) =>
-      InstanceState.use(state, (s) => s.providers[providerID]),
-    )
+    const getProvider = Effect.fn("Provider.getProvider")(function* (providerID: ProviderID) {
+      return (yield* freshState()).providers[providerID]
+    })
 
     const getModel = Effect.fn("Provider.getModel")(function* (providerID: ProviderID, modelID: ModelID) {
-      const s = yield* InstanceState.get(state)
+      const s = yield* freshState()
       const provider = s.providers[providerID]
       if (!provider) {
         const available = Object.keys(s.providers)
@@ -2128,7 +2167,7 @@ const layer: Layer.Layer<
       providerID: ProviderID,
       modelID: ModelID,
     ) {
-      const s = yield* InstanceState.get(state)
+      const s = yield* freshState()
       const provider = s.providers[providerID]
       const model = provider?.models[modelID]
       if (!model) throw new ModelNotFoundError({ providerID, modelID })
@@ -2147,36 +2186,39 @@ const layer: Layer.Layer<
       })
     })
     const getLanguage = Effect.fn("Provider.getLanguage")(function* (model: Model) {
-      const s = yield* InstanceState.get(state)
+      const s = yield* freshState()
+      const provider = s.providers[model.providerID]
+      const canonical =
+        provider?.models[model.id] ?? Object.values(provider?.models ?? {}).find((item) => item.id === model.id)
+      if (!canonical) throw new ModelNotFoundError({ providerID: model.providerID, modelID: model.id })
       const envs = yield* env.all()
-      const key = `${model.providerID}/${model.id}`
+      const key = `${canonical.providerID}/${canonical.id}`
       if (s.models.has(key)) return s.models.get(key)!
 
       return yield* Effect.promise(async () => {
-        const provider = s.providers[model.providerID]
-        const sdk = await resolveSDK(model, s, envs)
+        const sdk = await resolveSDK(canonical, s, envs)
 
         try {
           const language = await (async () => {
-            const wireAPI = model.wire_api ?? provider.wire_api
+            const wireAPI = canonical.wire_api ?? provider.wire_api
             if (wireAPI === "responses") {
               if (!sdk.responses)
                 throw new Error(
-                  `Provider ${model.providerID} uses wire_api \"responses\", but ${model.api.npm} does not expose a responses model`,
+                  `Provider ${canonical.providerID} uses wire_api \"responses\", but ${canonical.api.npm} does not expose a responses model`,
                 )
-              return sdk.responses(model.api.id)
+              return sdk.responses(canonical.api.id)
             }
             if (wireAPI === "chat") {
-              if (sdk.chat) return sdk.chat(model.api.id)
-              if (sdk.chatModel) return sdk.chatModel(model.api.id)
-              return sdk.languageModel(model.api.id)
+              if (sdk.chat) return sdk.chat(canonical.api.id)
+              if (sdk.chatModel) return sdk.chatModel(canonical.api.id)
+              return sdk.languageModel(canonical.api.id)
             }
-            if (s.modelLoaders[model.providerID])
-              return s.modelLoaders[model.providerID](sdk, model.api.id, {
+            if (s.modelLoaders[canonical.providerID])
+              return s.modelLoaders[canonical.providerID](sdk, canonical.api.id, {
                 ...provider.options,
-                ...model.options,
+                ...canonical.options,
               })
-            return sdk.languageModel(model.api.id)
+            return sdk.languageModel(canonical.api.id)
           })()
           s.models.set(key, language)
           return language
@@ -2184,8 +2226,8 @@ const layer: Layer.Layer<
           if (e instanceof NoSuchModelError)
             throw new ModelNotFoundError(
               {
-                modelID: model.id,
-                providerID: model.providerID,
+                modelID: canonical.id,
+                providerID: canonical.providerID,
               },
               { cause: e },
             )
@@ -2195,7 +2237,7 @@ const layer: Layer.Layer<
     })
 
     const closest = Effect.fn("Provider.closest")(function* (providerID: ProviderID, query: string[]) {
-      const s = yield* InstanceState.get(state)
+      const s = yield* freshState()
       const provider = s.providers[providerID]
       if (!provider) return undefined
       for (const item of query) {
@@ -2207,6 +2249,7 @@ const layer: Layer.Layer<
     })
 
     const getSmallModel = Effect.fn("Provider.getSmallModel")(function* (providerID: ProviderID) {
+      const s = yield* freshState()
       const cfg = yield* config.get()
 
       if (cfg.small_model) {
@@ -2214,7 +2257,6 @@ const layer: Layer.Layer<
         return yield* getModel(parsed.providerID, parsed.modelID)
       }
 
-      const s = yield* InstanceState.get(state)
       const provider = s.providers[providerID]
       if (!provider) return undefined
 
@@ -2263,10 +2305,10 @@ const layer: Layer.Layer<
     })
 
     const defaultModel = Effect.fn("Provider.defaultModel")(function* () {
+      const s = yield* freshState()
       const cfg = yield* config.get()
       if (cfg.model) return parseModel(cfg.model)
 
-      const s = yield* InstanceState.get(state)
       const recent = yield* fs.readJson(path.join(Global.Path.state, "model.json")).pipe(
         Effect.map((x): { providerID: ProviderID; modelID: ModelID }[] => {
           if (!isRecord(x) || !Array.isArray(x.recent)) return []
@@ -2321,6 +2363,13 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(Npm.defaultLayer),
   ),
 )
+
+/**
+ * Test-only escape hatch: the raw provider layer without bundled dependencies.
+ * Lets focused tests substitute a custom `ModelsDev` service (for example to
+ * drive catalog refresh) without touching the process-global app runtime.
+ */
+export const baseLayer = layer
 
 const priority = ["gpt-5", "claude-sonnet-4", "big-pickle", "gemini-3-pro"]
 export function sort<T extends { id: string }>(models: T[]) {

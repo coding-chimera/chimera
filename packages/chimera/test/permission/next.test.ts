@@ -1132,3 +1132,57 @@ it.live("ask - abort should clear pending request", () =>
     if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBeInstanceOf(Permission.RejectedError)
   }),
 )
+
+it.live("reply - task_profile always approval only approves the answered profile", () =>
+  Effect.gen(function* () {
+    const dir = yield* tmpdirScoped({ git: true })
+    const run = withProvided(dir)
+    const fiber = yield* ask({
+      id: PermissionID.make("per_profile_a"),
+      sessionID: SessionID.make("session_prof"),
+      permission: "task_profile",
+      patterns: ["alpha"],
+      metadata: {},
+      always: ["alpha"],
+      ruleset: [],
+    }).pipe(run, Effect.forkScoped)
+
+    yield* waitForPending(1).pipe(run)
+    yield* reply({ requestID: PermissionID.make("per_profile_a"), reply: "always" }).pipe(run)
+    yield* Fiber.join(fiber)
+
+    const again = yield* ask({
+      sessionID: SessionID.make("session_prof2"),
+      permission: "task_profile",
+      patterns: ["alpha"],
+      metadata: {},
+      always: ["alpha"],
+      ruleset: [],
+    }).pipe(run)
+    expect(again).toBeUndefined()
+
+    const err = yield* fail(
+      ask({
+        sessionID: SessionID.make("session_prof3"),
+        permission: "task_profile",
+        patterns: ["beta"],
+        metadata: {},
+        always: ["beta"],
+        ruleset: [{ permission: "task_profile", pattern: "beta", action: "deny" }],
+      }).pipe(run),
+    )
+    expect(err).toBeInstanceOf(Permission.DeniedError)
+
+    const gamma = yield* ask({
+      sessionID: SessionID.make("session_prof4"),
+      permission: "task_profile",
+      patterns: ["gamma"],
+      metadata: {},
+      always: ["gamma"],
+      ruleset: [],
+    }).pipe(run, Effect.forkScoped)
+    expect((yield* waitForPending(1).pipe(run)).map((item) => item.permission)).toEqual(["task_profile"])
+    yield* rejectAll().pipe(run)
+    yield* Fiber.await(gamma)
+  }),
+)

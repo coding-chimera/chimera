@@ -1,5 +1,5 @@
 import { describe, expect } from "bun:test"
-import { Effect, Layer } from "effect"
+import { Effect, Fiber, Layer, Stream } from "effect"
 import { Auth } from "../../src/auth"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { provideTmpdirInstance } from "../fixture/fixture"
@@ -82,5 +82,48 @@ describe("Auth", () => {
         expect(after["anthropic"]).toBeUndefined()
       }),
     ),
+  )
+
+  it.live("updates an active auth snapshot and bumps revision only for state changes", () =>
+    provideTmpdirInstance(() => {
+      const previous = process.env.OPENCODE_AUTH_CONTENT
+      process.env.OPENCODE_AUTH_CONTENT = "{}"
+      return Effect.gen(function* () {
+        const auth = yield* Auth.Service
+        const start = yield* auth.revision()
+        const info = { type: "api" as const, key: "test-key" }
+        const setChange = yield* auth.changes.pipe(Stream.take(1), Stream.runCollect, Effect.forkScoped)
+        yield* Effect.yieldNow
+
+        yield* auth.set("phase5", info)
+        const afterSet = yield* auth.revision()
+        expect(afterSet).toBe(start + 1)
+        expect((yield* auth.get("phase5"))).toEqual(info)
+        expect(JSON.parse(process.env.OPENCODE_AUTH_CONTENT ?? "{}")).toEqual({ phase5: info })
+        expect(Array.from(yield* Fiber.join(setChange))).toEqual([{ revision: afterSet }])
+
+        const removeChange = yield* auth.changes.pipe(Stream.take(1), Stream.runCollect, Effect.forkScoped)
+        yield* Effect.yieldNow
+        yield* auth.set("phase5", info)
+        expect(yield* auth.revision()).toBe(afterSet)
+
+        yield* auth.remove("phase5")
+        const afterRemove = yield* auth.revision()
+        expect(afterRemove).toBe(afterSet + 1)
+        expect(yield* auth.all()).toEqual({})
+        expect(JSON.parse(process.env.OPENCODE_AUTH_CONTENT ?? "{}")).toEqual({})
+
+        yield* auth.remove("phase5")
+        expect(yield* auth.revision()).toBe(afterRemove)
+        expect(Array.from(yield* Fiber.join(removeChange))).toEqual([{ revision: afterRemove }])
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (previous === undefined) delete process.env.OPENCODE_AUTH_CONTENT
+            if (previous !== undefined) process.env.OPENCODE_AUTH_CONTENT = previous
+          }),
+        ),
+      )
+    }),
   )
 })

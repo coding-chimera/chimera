@@ -6,6 +6,7 @@ import { Instance } from "../../src/project/instance"
 import { WithInstance } from "../../src/project/with-instance"
 import { Agent } from "../../src/agent/agent"
 import { Permission } from "../../src/permission"
+import { deriveSubagentSessionPermission } from "../../src/agent/subagent-permissions"
 import { Global } from "@opencode-ai/core/global"
 
 // Helper to evaluate permission for a tool with wildcard pattern
@@ -114,6 +115,28 @@ test("general agent denies todo tools", async () => {
       expect(evalPerm(general, "todowrite")).toBe("deny")
     },
   })
+})
+
+test("derived child permissions always deny preference mutations", () => {
+  const permission = deriveSubagentSessionPermission({
+    parentSessionPermission: [
+      { permission: "subagent_model_prefer", pattern: "*", action: "allow" },
+      { permission: "subagent_model_suppress", pattern: "*", action: "allow" },
+    ],
+    parentAgent: undefined,
+    subagent: {
+      name: "configured-worker",
+      mode: "subagent",
+      options: {},
+      permission: [
+        { permission: "subagent_model_prefer", pattern: "*", action: "allow" },
+        { permission: "subagent_model_suppress", pattern: "*", action: "allow" },
+      ],
+    },
+  })
+
+  expect(Permission.evaluate("subagent_model_prefer", "*", permission).action).toBe("deny")
+  expect(Permission.evaluate("subagent_model_suppress", "*", permission).action).toBe("deny")
 })
 
 test("compaction agent denies all permissions", async () => {
@@ -396,6 +419,30 @@ test("multiple custom agents can be defined", async () => {
   })
 })
 
+test("configured subagents cannot override preference mutation denies", async () => {
+  await using tmp = await tmpdir({
+    config: {
+      agent: {
+        configured_worker: {
+          mode: "subagent",
+          permission: {
+            subagent_model_prefer: "allow",
+            subagent_model_suppress: "allow",
+          },
+        },
+      },
+    },
+  })
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const worker = await load(tmp.path, (svc) => svc.get("configured_worker"))
+      expect(evalPerm(worker, "subagent_model_prefer")).toBe("deny")
+      expect(evalPerm(worker, "subagent_model_suppress")).toBe("deny")
+    },
+  })
+})
+
 test("Agent.list keeps the default agent first and sorts the rest by name", async () => {
   await using tmp = await tmpdir({
     config: {
@@ -433,7 +480,7 @@ test("Agent.get returns undefined for non-existent agent", async () => {
   })
 })
 
-test("default permission includes doom_loop and external_directory as ask", async () => {
+test("default permission asks for guarded mutations, doom loops, and external directories", async () => {
   await using tmp = await tmpdir()
   await WithInstance.provide({
     directory: tmp.path,
@@ -441,6 +488,8 @@ test("default permission includes doom_loop and external_directory as ask", asyn
       const build = await load(tmp.path, (svc) => svc.get("build"))
       expect(evalPerm(build, "doom_loop")).toBe("ask")
       expect(evalPerm(build, "external_directory")).toBe("ask")
+      expect(evalPerm(build, "subagent_model_prefer")).toBe("ask")
+      expect(evalPerm(build, "subagent_model_suppress")).toBe("ask")
     },
   })
 })

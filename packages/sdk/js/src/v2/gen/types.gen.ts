@@ -1014,6 +1014,7 @@ export type PermissionConfig =
       bash?: PermissionRuleConfig
       task?: PermissionRuleConfig
       task_profile?: PermissionRuleConfig
+      task_model?: PermissionRuleConfig
       external_directory?: PermissionRuleConfig
       todowrite?: PermissionActionConfig
       workbrief?: PermissionActionConfig

@@ -8,6 +8,7 @@ import { BrowserRuntime } from "@/browser/runtime"
 import { disposeAllInstances, TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { TestConfig } from "../fixture/config"
+import { ConfigSubagentRouting } from "@/config/subagent-routing"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { Plugin } from "@/plugin"
 import { Question } from "@/question"
@@ -46,7 +47,7 @@ const authLayer = Layer.mock(Auth.Service)({
 const makeRegistryLayer = () =>
   Layer.provide(
     ToolRegistry.layer.pipe(
-      Layer.provide(configLayer),
+      Layer.provide(Layer.mergeAll(configLayer, ConfigSubagentRouting.defaultLayer)),
       Layer.provide(authLayer),
       Layer.provide(Plugin.defaultLayer),
       Layer.provide(Question.defaultLayer),
@@ -124,6 +125,9 @@ describe("tool.registry", () => {
       expect(ids).toContain("browser_type")
       expect(ids).toContain("browser_screenshot")
       expect(ids).toContain("browser_close")
+      expect(ids).toContain("subagent_model_routes")
+      expect(ids).toContain("subagent_model_prefer")
+      expect(ids).toContain("subagent_model_suppress")
       expect(ids).toContain("hello")
     }),
   )
@@ -228,6 +232,64 @@ describe("tool.registry", () => {
       const registry = yield* ToolRegistry.Service
       const ids = yield* registry.ids()
       expect(ids).toContain("cowsay")
+    }),
+  )
+
+  it.instance("registers subagent route discovery and keeps task descriptions candidate-free", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const tools = yield* registry.tools({
+        providerID: ProviderID.make("test"),
+        modelID: ModelID.make("test-model"),
+        agent: {
+          name: "build",
+          mode: "primary",
+          permission: [
+            { permission: "task", pattern: "*", action: "allow" },
+            { permission: "task_model", pattern: "*", action: "allow" },
+          ],
+          options: {},
+        },
+      })
+      const routeTool = tools.find((tool) => tool.id === "subagent_model_routes")
+      expect(routeTool?.description).toContain("current runtime")
+      expect(routeTool?.description).toContain("question")
+      const preferTool = tools.find((tool) => tool.id === "subagent_model_prefer")
+      const suppressTool = tools.find((tool) => tool.id === "subagent_model_suppress")
+      expect(preferTool?.description).toContain("ONLY")
+      expect(preferTool?.description).toContain("explicitly")
+      expect(suppressTool?.description).toContain("ONLY")
+      expect(suppressTool?.description).toContain("explicitly")
+      const descriptions = tools
+        .filter((tool) => tool.id === "task" || tool.id === "chimera_swarm")
+        .map((tool) => tool.description)
+        .join("\n")
+      expect(descriptions).toContain("exact provider/model route")
+      expect(descriptions).toContain("subagent_model_routes")
+      expect(descriptions).not.toMatch(/deepseek\/deepseek-v4-flash|gpt-\d|anthropic\/|openai\//i)
+    }),
+  )
+
+  it.instance("hides preference mutations from subagent-mode registry views", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const tools = yield* registry.tools({
+        providerID: ProviderID.make("test"),
+        modelID: ModelID.make("test-model"),
+        agent: {
+          name: "general",
+          mode: "subagent",
+          permission: [
+            { permission: "subagent_model_prefer", pattern: "*", action: "allow" },
+            { permission: "subagent_model_suppress", pattern: "*", action: "allow" },
+          ],
+          options: {},
+        },
+      })
+      const ids = tools.map((tool) => tool.id)
+      expect(ids).toContain("subagent_model_routes")
+      expect(ids).not.toContain("subagent_model_prefer")
+      expect(ids).not.toContain("subagent_model_suppress")
     }),
   )
 

@@ -22,6 +22,16 @@ export function initProjectors() {
       }
       return data
     },
+    // Derive a complete session.updated after permission slot updates so
+    // local, history, and live paths all publish the same single event.
+    // Runs after the transaction commits, so the row read is the latest.
+    deriveEvent: (type, data) => {
+      if (type !== "session.permission.slot") return []
+      const { sessionID } = data as SyncEvent.Event<typeof Session.Event.PermissionSlot>["data"]
+      const row = Database.use((db) => db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get())
+      if (!row) return []
+      return [{ type: "session.updated", data: { sessionID, info: Session.fromRow(row) } }]
+    },
   })
 }
 

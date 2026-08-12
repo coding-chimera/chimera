@@ -208,6 +208,7 @@ function inferReasoningProtocol(providerID: string, model: Model, npm: string): 
 export interface Interface {
   readonly get: () => Effect.Effect<Record<string, Provider>>
   readonly refresh: (force?: boolean) => Effect.Effect<void>
+  readonly revision: () => Effect.Effect<number>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/ModelsDev") {}
@@ -222,6 +223,7 @@ const serviceLayer: Layer.Layer<
     const fs = yield* AppFileSystem.Service
     const flock = yield* EffectFlock.Service
     const http = HttpClient.filterStatusOk(withTransientReadRetry(yield* HttpClient.HttpClient))
+    let currentRevision = 0
 
     const source = Flag.OPENCODE_MODELS_URL || "https://models.dev"
     const filepath = path.join(
@@ -293,6 +295,7 @@ const serviceLayer: Layer.Layer<
         if (!force && (yield* fresh())) return
         yield* fetchAndWrite()
         yield* invalidate
+        currentRevision += 1
       }).pipe(
         flock.withLock(lockKey),
         Effect.tapCause((cause) => Effect.logError("Failed to fetch models.dev", { cause })),
@@ -300,12 +303,16 @@ const serviceLayer: Layer.Layer<
       )
     })
 
+    const revision = Effect.fn("ModelsDev.revision")(function* () {
+      return currentRevision
+    })
+
     if (!Flag.OPENCODE_DISABLE_MODELS_FETCH && !process.argv.includes("--get-yargs-completions")) {
       // Schedule.spaced runs the effect once, then waits between completions.
       yield* Effect.forkScoped(refresh().pipe(Effect.repeat(Schedule.spaced("60 minutes")), Effect.ignore))
     }
 
-    return Service.of({ get, refresh })
+    return Service.of({ get, refresh, revision })
   }),
 )
 

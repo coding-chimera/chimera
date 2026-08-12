@@ -14,7 +14,13 @@ The tool publishes each worker incrementally through `metadata.childRuns` (`queu
 
 Concurrency defaults to 16 and is capped at 16. Treat 16 as a capacity ceiling, not a target: use full concurrency only for independent work with disjoint scopes, and lower it for shared files, ordered dependencies, provider limits, or contended state.
 
-Optional `model_profile` names a `delegation.model_profiles` config entry and applies it to every worker in the fan-out. The profile is resolved through delegation config into a concrete model and variant — the value is a profile name, never a raw provider/model string. Omit it to use each subagent's configured model or the parent model.
+Optional `model_profile` names a `delegation.model_profiles` entry and applies its configured model and variant to the fan-out.
+
+Optional exact selection: pass `model` as a current `provider/model` route, plus `variant` only when that route advertises it.
+
+Optional identity selection: pass `model_identity` to resolve a current runtime identity once before fan-out. Add `provider` only to narrow the identity to one current provider. Use `subagent_model_routes` when identity routes are ambiguous; do not invent provider IDs or deployment names.
+
+`model_profile`, `model`, and `model_identity` are mutually exclusive. `provider` requires `model_identity`. The tool resolves and validates the final route, asks `task_model` for that concrete `provider/model` once, and creates no child if resolution, variant validation, or authorization fails. Every worker then reuses the same prepared route.
 
 Swarm workers cannot call `task` or `chimera_swarm`; nested fan-out is disabled so one parent swarm cannot recursively multiply its concurrency.
 

@@ -1,7 +1,7 @@
 import { NodeFileSystem } from "@effect/platform-node"
 import CUTOFF_NOTE from "../../src/session/prompt/cutoff-note.txt"
 import { FetchHttpClient } from "effect/unstable/http"
-import { expect, test } from "bun:test"
+import { beforeEach, expect, test } from "bun:test"
 import { Cause, Effect, Exit, Fiber, Layer } from "effect"
 import path from "path"
 import fs from "fs/promises"
@@ -12,6 +12,7 @@ import { Bus } from "../../src/bus"
 import { Command } from "../../src/command"
 import { ChimeraPromptContext } from "@/chimera/prompt-context"
 import { Config } from "@/config/config"
+import { ConfigSubagentRouting } from "@/config/subagent-routing"
 import { Auth } from "@/auth"
 import { LSP } from "@/lsp/lsp"
 import { MCP } from "../../src/mcp"
@@ -58,6 +59,21 @@ import { testEffect } from "../lib/effect"
 import { reply, TestLLMServer } from "../lib/llm-server"
 
 void Log.init({ print: false })
+
+let routingState: ConfigSubagentRouting.State = ConfigSubagentRouting.empty()
+const routingLayer = Layer.succeed(
+  ConfigSubagentRouting.Service,
+  ConfigSubagentRouting.Service.of({
+    get: () => Effect.succeed(routingState),
+    prefer: () => Effect.die(new Error("unexpected preference mutation")),
+    suppress: () => Effect.die(new Error("unexpected suppression mutation")),
+    recordDelegation: () => Effect.succeed(routingState),
+  }),
+)
+
+beforeEach(() => {
+  routingState = ConfigSubagentRouting.empty()
+})
 
 const summary = Layer.succeed(
   SessionSummary.Service,
@@ -216,6 +232,7 @@ function makeHttp() {
     Permission.defaultLayer,
     Plugin.defaultLayer,
     Config.defaultLayer,
+    routingLayer,
     Auth.defaultLayer,
     ProviderSvc.defaultLayer,
     lsp,
@@ -933,6 +950,9 @@ it.live("persists runtime context and appends updates only when it changes", () 
       const first = runtimeContextParts(yield* sessions.messages({ sessionID: session.id }))
       expect(first).toHaveLength(1)
       expect(first[0]?.metadata?.runtimeContext.kind).toBe("snapshot")
+      expect(first[0]?.metadata?.runtimeContext.sections).toHaveProperty("subagentModels")
+      expect(first[0]?.text).toContain("## Available Subagent Model Identities")
+      expect(first[0]?.text).toContain("subagent_model_routes")
 
       yield* prompt.prompt({
         sessionID: session.id,
@@ -958,6 +978,167 @@ it.live("persists runtime context and appends updates only when it changes", () 
       expect(changed[1]?.metadata?.runtimeContext.kind).toBe("update")
       expect(changed[1]?.text).toContain("Runtime Context Update")
       expect(changed[1]?.text).toContain("second cache baseline")
+    }),
+    { git: true, config: providerCfg },
+  ),
+)
+
+it.live("updates subagent model context once when effective task_model visibility changes", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* () {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({ title: "Subagent model visibility" })
+
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "first" }],
+      })
+      const first = runtimeContextParts(yield* sessions.messages({ sessionID: session.id }))
+      expect(first).toHaveLength(1)
+      expect(first[0]?.text).toContain('"test-model": 1 route')
+
+      yield* sessions.setPermission({
+        sessionID: session.id,
+        permission: [{ permission: "task_model", pattern: "test/*", action: "deny" }],
+      })
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "second" }],
+      })
+      const changed = runtimeContextParts(yield* sessions.messages({ sessionID: session.id }))
+      expect(changed).toHaveLength(2)
+      expect(changed[1]?.metadata?.runtimeContext.kind).toBe("update")
+      expect(changed[1]?.text).toContain("Available Subagent Model Identities")
+      expect(changed[1]?.text).not.toContain('"test-model": 1 route')
+
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "third" }],
+      })
+      expect(runtimeContextParts(yield* sessions.messages({ sessionID: session.id }))).toHaveLength(2)
+    }),
+    { git: true, config: providerCfg },
+  ),
+)
+
+it.live("updates subagent model context when the preferred route changes within the same provider", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* () {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({ title: "Preferred route change" })
+      const prefer = (model: string): ConfigSubagentRouting.State => ({
+        ...ConfigSubagentRouting.empty(),
+        revision: 1,
+        global: {
+          providers: {},
+          routes: {
+            "shared-deployment": {
+              [model]: { preference: { weight: 1, activity: 0, revision: 1 } },
+            },
+          },
+        },
+      })
+
+      routingState = prefer("test/first-model")
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "first" }],
+      })
+      const first = runtimeContextParts(yield* sessions.messages({ sessionID: session.id }))
+      expect(first).toHaveLength(1)
+      expect(first[0]?.text).toContain("preferred test")
+
+      routingState = prefer("test/second-model")
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "second" }],
+      })
+      const changed = runtimeContextParts(yield* sessions.messages({ sessionID: session.id }))
+      expect(changed).toHaveLength(2)
+      expect(changed[1]?.metadata?.runtimeContext.kind).toBe("update")
+      expect(changed[1]?.text).toContain("preferred test")
+
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "third" }],
+      })
+      expect(runtimeContextParts(yield* sessions.messages({ sessionID: session.id }))).toHaveLength(2)
+    }),
+    {
+      git: true,
+      config: (url: string) => {
+        const base = providerCfg(url)
+        return {
+          ...base,
+          provider: {
+            ...base.provider,
+            test: {
+              ...base.provider.test,
+              models: {
+                ...base.provider.test.models,
+                "first-model": {
+                  ...base.provider.test.models["test-model"],
+                  id: "first-model",
+                  name: "First Model",
+                  capability_model_id: "shared-deployment",
+                },
+                "second-model": {
+                  ...base.provider.test.models["test-model"],
+                  id: "second-model",
+                  name: "Second Model",
+                  capability_model_id: "shared-deployment",
+                },
+              },
+            },
+          },
+        }
+      },
+    },
+  ),
+)
+
+it.live("omits subagent model context for child sessions and disabled delegation tools", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* () {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const parent = yield* sessions.create({ title: "Parent" })
+      const child = yield* sessions.create({ title: "Child", parentID: parent.id })
+      const disabled = yield* sessions.create({ title: "Disabled" })
+
+      yield* prompt.prompt({
+        sessionID: child.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "child" }],
+      })
+      yield* prompt.prompt({
+        sessionID: disabled.id,
+        agent: "build",
+        noReply: true,
+        tools: { task: false, chimera_swarm: false },
+        parts: [{ type: "text", text: "disabled" }],
+      })
+
+      for (const sessionID of [child.id, disabled.id]) {
+        const parts = runtimeContextParts(yield* sessions.messages({ sessionID }))
+        expect(parts.some((part) => part.metadata?.runtimeContext.sections.subagentModels !== undefined)).toBe(false)
+        expect(parts.some((part) => part.text.includes("Available Subagent Model Identities"))).toBe(false)
+      }
     }),
     { git: true, config: providerCfg },
   ),

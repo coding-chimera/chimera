@@ -128,4 +128,69 @@ describe("sync HttpApi", () => {
       expect(httpapi.status).toBe(400)
     }
   })
+
+  test("history returns persisted permission slot events and replay stays idempotent", async () => {
+    Flag.OPENCODE_EXPERIMENTAL_WORKSPACES = true
+    await using tmp = await tmpdir({ git: true, config: { formatter: false, lsp: false } })
+    const headers = { "x-chimera-directory": tmp.path, "content-type": "application/json" }
+
+    const session = await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () =>
+        runSession(
+          Session.Service.use((svc) =>
+            Effect.gen(function* () {
+              const created = yield* svc.create({ title: "sync slots" })
+              yield* svc.updatePermissionSlots({
+                sessionID: created.id,
+                rules: [{ permission: "task", pattern: "*", action: "deny" }],
+              })
+              return created
+            }),
+          ),
+        ),
+    })
+
+    const started = await app().request(SyncPaths.start, { method: "POST", headers })
+    expect(started.status).toBe(200)
+
+    const history = await app().request(SyncPaths.history, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({}),
+    })
+    expect(history.status).toBe(200)
+    const rows = (await history.json()) as Array<{
+      id: string
+      aggregate_id: string
+      seq: number
+      type: string
+      data: Record<string, unknown>
+    }>
+    const slot = rows.find((row) => row.aggregate_id === session.id && row.type === "session.permission.slot.1")
+    expect(slot).toBeDefined()
+    expect(slot?.data).toMatchObject({
+      sessionID: session.id,
+      rules: [{ permission: "task", pattern: "*", action: "deny" }],
+    })
+
+    const replayed = await app().request(SyncPaths.replay, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        directory: tmp.path,
+        events: rows
+          .filter((row) => row.aggregate_id === session.id)
+          .map((row) => ({
+            id: row.id,
+            aggregateID: row.aggregate_id,
+            seq: row.seq,
+            type: row.type,
+            data: row.data,
+          })),
+      }),
+    })
+    expect(replayed.status).toBe(200)
+    expect(await replayed.json()).toEqual({ sessionID: session.id })
+  })
 })

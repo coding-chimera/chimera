@@ -215,6 +215,40 @@ describe("applyDirectoryEvent", () => {
     expect(store.session_status.ses_1).toBeUndefined()
   })
 
+  test("reconciles session.updated with permission and time into an existing session", () => {
+    const [store, setStore] = createStore(
+      baseState({
+        session: [rootSession({ id: "ses_1" })],
+        sessionTotal: 1,
+      }),
+    )
+
+    applyDirectoryEvent({
+      event: {
+        type: "session.updated",
+        properties: {
+          info: {
+            ...rootSession({ id: "ses_1" }),
+            title: "updated title",
+            time: { created: 1, updated: 99 },
+            permission: [{ permission: "task", pattern: "*", action: "deny" }],
+          } as Session,
+        },
+      },
+      store,
+      setStore,
+      push() {},
+      directory: "/tmp",
+      loadLsp() {},
+    })
+
+    const updated = store.session.find((x) => x.id === "ses_1")
+    expect(updated?.title).toBe("updated title")
+    expect(updated?.time.updated).toBe(99)
+    expect(updated?.permission).toEqual([{ permission: "task", pattern: "*", action: "deny" }])
+    expect(store.sessionTotal).toBe(1)
+  })
+
   test("cleans session caches when deleted and decrements only root totals", () => {
     const cases = [
       { info: rootSession({ id: "ses_1" }), expectedTotal: 1 },
