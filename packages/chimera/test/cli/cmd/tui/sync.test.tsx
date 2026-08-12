@@ -9,7 +9,7 @@ import { KVProvider, useKV } from "../../../../src/cli/cmd/tui/context/kv"
 import { ProjectProvider } from "../../../../src/cli/cmd/tui/context/project"
 import { SDKProvider, type EventSource } from "../../../../src/cli/cmd/tui/context/sdk"
 import { SyncProvider, useSync } from "../../../../src/cli/cmd/tui/context/sync"
-import type { GlobalEvent } from "@opencode-ai/sdk/v2"
+import type { GlobalEvent, Session } from "@opencode-ai/sdk/v2"
 import { tmpdir } from "../../../fixture/fixture"
 
 const worktree = "/tmp/chimera"
@@ -195,6 +195,42 @@ describe("tui sync", () => {
 
       await wait(() => providerBalance.length === 2)
       expect(sync.data.provider_balance.openai?.status).toBe("available")
+    } finally {
+      app.renderer.destroy()
+      Global.Path.state = previous
+    }
+  })
+
+  test("applies a session.updated event with permission into the store", async () => {
+    const previous = Global.Path.state
+    await using tmp = await tmpdir()
+    Global.Path.state = tmp.path
+    await Bun.write(`${tmp.path}/kv.json`, "{}")
+    const { app, sync, events } = await mount()
+
+    try {
+      events.emit({
+        directory,
+        payload: {
+          id: "evt_updated",
+          type: "session.updated",
+          properties: {
+            sessionID: "ses_test",
+            info: {
+              id: "ses_test",
+              title: "from event",
+              time: { created: 1, updated: 99 },
+              permission: [{ permission: "task", pattern: "*", action: "deny" }],
+            } as Session,
+          },
+        },
+      })
+
+      await wait(() => sync.data.session.some((item) => item.id === "ses_test"))
+      const updated = sync.data.session.find((item) => item.id === "ses_test")
+      expect(updated?.title).toBe("from event")
+      expect(updated?.time.updated).toBe(99)
+      expect(updated?.permission).toEqual([{ permission: "task", pattern: "*", action: "deny" }])
     } finally {
       app.renderer.destroy()
       Global.Path.state = previous

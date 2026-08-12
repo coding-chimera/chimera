@@ -1,0 +1,13 @@
+Query the current concrete model routes for a subagent model identity before making a concrete provider/model selection.
+
+This tool reflects the current runtime only: routes come from live provider and configuration state at call time, not from a static catalog or documentation. It is read-only: it never changes authorization, preferences, or configuration, never requests approval, and never creates a child agent or task.
+
+When to use:
+- Use it before a concrete provider/model selection once a model identity has been requested or implied, to learn which provider/model routes are currently visible for that identity under the effective permission ruleset.
+- When the requested identity has no visible current route, the output lists up to 3 current identity suggestions from the same runtime snapshot.
+
+Rules:
+- If the requested identity has multiple visible current routes (different providers or deployments), do not pick one arbitrarily. Use the question tool with options taken from this tool's current output.
+- Never invent provider IDs. If a request names a provider that is not present in the current output, ask for clarification.
+- A third-party model request without a named provider requires clarification before any concrete selection.
+- This tool only informs selection. It does not perform selection and does not grant, deny, or change any permission.

@@ -8,6 +8,7 @@ import { Bus } from "@/bus"
 import { Auth } from "@/auth"
 import { Account } from "@/account/account"
 import { Config } from "@/config/config"
+import { ConfigSubagentRouting } from "@/config/subagent-routing"
 import { Git } from "@/git"
 import { Ripgrep } from "@/file/ripgrep"
 import { File } from "@/file"
@@ -68,6 +69,7 @@ export const AppLayer = Layer.mergeAll(
   Auth.defaultLayer,
   Account.defaultLayer,
   Config.defaultLayer,
+  ConfigSubagentRouting.defaultLayer,
   Git.defaultLayer,
   Ripgrep.defaultLayer,
   File.defaultLayer,

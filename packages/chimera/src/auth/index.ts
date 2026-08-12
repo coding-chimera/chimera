@@ -1,5 +1,5 @@
 import path from "path"
-import { Effect, Layer, Record, Result, Schema, Context } from "effect"
+import { Context, Effect, Layer, PubSub, Record, Result, Schema, Semaphore, Stream } from "effect"
 import { zod } from "@/util/effect-zod"
 import { NonNegativeInt } from "@/util/schema"
 import { Global } from "@opencode-ai/core/global"
@@ -41,11 +41,17 @@ export class AuthError extends Schema.TaggedErrorClass<AuthError>()("AuthError",
   cause: Schema.optional(Schema.Defect),
 }) {}
 
+export type Change = {
+  readonly revision: number
+}
+
 export interface Interface {
   readonly get: (providerID: string) => Effect.Effect<Info | undefined, AuthError>
   readonly all: () => Effect.Effect<Record<string, Info>, AuthError>
   readonly set: (key: string, info: Info) => Effect.Effect<void, AuthError>
   readonly remove: (key: string) => Effect.Effect<void, AuthError>
+  readonly revision: () => Effect.Effect<number>
+  readonly changes: Stream.Stream<Change>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Auth") {}
@@ -55,6 +61,10 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const fsys = yield* AppFileSystem.Service
     const decode = Schema.decodeUnknownOption(Info)
+    const mutationSemaphore = Semaphore.makeUnsafe(1)
+    const changeSignal = yield* PubSub.sliding<Change>(1)
+    yield* Effect.addFinalizer(() => PubSub.shutdown(changeSignal))
+    let currentRevision = 0
 
     const all = Effect.fn("Auth.all")(function* () {
       if (process.env.OPENCODE_AUTH_CONTENT) {
@@ -71,25 +81,46 @@ export const layer = Layer.effect(
       return (yield* all())[providerID]
     })
 
+    const persist = Effect.fnUntraced(function* (data: Record<string, Info>, next: Record<string, Info>) {
+      const content = JSON.stringify(next)
+      if (content === JSON.stringify(data)) return
+      yield* fsys.writeJson(file, next, 0o600).pipe(Effect.mapError(fail("Failed to write auth data")))
+      if (process.env.OPENCODE_AUTH_CONTENT) process.env.OPENCODE_AUTH_CONTENT = content
+      currentRevision += 1
+      yield* PubSub.publish(changeSignal, { revision: currentRevision })
+    })
+
     const set = Effect.fn("Auth.set")(function* (key: string, info: Info) {
-      const norm = key.replace(/\/+$/, "")
-      const data = yield* all()
-      if (norm !== key) delete data[key]
-      delete data[norm + "/"]
-      yield* fsys
-        .writeJson(file, { ...data, [norm]: info }, 0o600)
-        .pipe(Effect.mapError(fail("Failed to write auth data")))
+      yield* mutationSemaphore.withPermits(1)(
+        Effect.gen(function* () {
+          const norm = key.replace(/\/+$/, "")
+          const data = yield* all()
+          const next = { ...data, [norm]: info }
+          if (norm !== key) delete next[key]
+          delete next[norm + "/"]
+          yield* persist(data, next)
+        }).pipe(Effect.uninterruptible),
+      )
     })
 
     const remove = Effect.fn("Auth.remove")(function* (key: string) {
-      const norm = key.replace(/\/+$/, "")
-      const data = yield* all()
-      delete data[key]
-      delete data[norm]
-      yield* fsys.writeJson(file, data, 0o600).pipe(Effect.mapError(fail("Failed to write auth data")))
+      yield* mutationSemaphore.withPermits(1)(
+        Effect.gen(function* () {
+          const norm = key.replace(/\/+$/, "")
+          const data = yield* all()
+          const next = { ...data }
+          delete next[key]
+          delete next[norm]
+          yield* persist(data, next)
+        }).pipe(Effect.uninterruptible),
+      )
     })
 
-    return Service.of({ get, all, set, remove })
+    const revision = Effect.fn("Auth.revision")(function* () {
+      return currentRevision
+    })
+
+    return Service.of({ get, all, set, remove, revision, changes: Stream.fromPubSub(changeSignal) })
   }),
 )
 

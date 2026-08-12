@@ -20,7 +20,7 @@ import { Session as SessionNs } from "@/session/session"
 import { SessionID } from "@/session/schema"
 import { SessionTable } from "@/session/session.sql"
 import { SyncEvent } from "@/sync"
-import { EventSequenceTable } from "@/sync/event.sql"
+import { EventSequenceTable, EventTable } from "@/sync/event.sql"
 import { resetDatabase } from "../fixture/db"
 import { disposeAllInstances, provideTmpdirInstance, tmpdir, tmpdirScoped } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
@@ -347,6 +347,10 @@ function sessionSequenceOwner(sessionID: SessionID) {
 
 function sessionUpdatedType() {
   return SyncEvent.versionedType(SessionNs.Event.Updated.type, SessionNs.Event.Updated.version)
+}
+
+function sessionPermissionSlotType() {
+  return SyncEvent.versionedType(SessionNs.Event.PermissionSlot.type, SessionNs.Event.PermissionSlot.version)
 }
 
 describe("workspace-old schemas and exports", () => {
@@ -1276,6 +1280,300 @@ describe("workspace-old sync state", () => {
                     event.workspace === info.id &&
                     event.payload.type === "sync" &&
                     event.payload.syncEvent.seq === sseNextSeq,
+                ),
+              ).toBe(true)
+              yield* workspace.remove(info.id)
+            } finally {
+              captured.dispose()
+            }
+          }),
+        { git: true },
+      )
+    })
+  })
+
+  it.live("SSE derived envelopes are forwarded without replay and do not disturb source replay", () => {
+    let sseSessionID: SessionID | undefined
+    let sseNextSeq = 0
+    return Effect.gen(function* () {
+      yield* HttpServer.serveEffect()(
+        Effect.gen(function* () {
+          const req = yield* HttpServerRequest.HttpServerRequest
+          const url = new URL(req.url, "http://localhost")
+          if (url.pathname === "/sse-derived/global/event")
+            return HttpServerResponse.fromWeb(
+              eventStreamResponse(
+                [
+                  {
+                    directory: "remote-dir",
+                    project: "remote-project",
+                    payload: {
+                      type: "sync",
+                      syncEvent: {
+                        id: `evt_${unique("derived")}`,
+                        aggregateID: sseSessionID!,
+                        seq: sseNextSeq,
+                        type: sessionUpdatedType(),
+                        data: {
+                          sessionID: sseSessionID!,
+                          info: {
+                            title: "derived view",
+                            permission: [{ permission: "task", pattern: "*", action: "allow" }],
+                          },
+                        },
+                        derived: true,
+                      },
+                    },
+                  },
+                  {
+                    directory: "remote-dir",
+                    project: "remote-project",
+                    payload: {
+                      type: "sync",
+                      syncEvent: {
+                        id: `evt_${unique("slot")}`,
+                        aggregateID: sseSessionID!,
+                        seq: sseNextSeq,
+                        type: sessionPermissionSlotType(),
+                        data: {
+                          sessionID: sseSessionID!,
+                          rules: [{ permission: "task", pattern: "*", action: "deny" }],
+                          timestamp: 1234,
+                        },
+                      },
+                    },
+                  },
+                ],
+                false,
+              ),
+            )
+          if (url.pathname === "/sse-derived/sync/history") return HttpServerResponse.fromWeb(Response.json([]))
+          return HttpServerResponse.text("unexpected", { status: 500 })
+        }),
+      )
+      const url = yield* serverUrl()
+      yield* provideTmpdirInstance(
+        () =>
+          Effect.gen(function* () {
+            const workspace = yield* WorkspaceOld.Service
+            const sessionSvc = yield* SessionNs.Service
+            const captured = captureGlobalEvents()
+            try {
+              const type = unique("sse-derived")
+              const info = workspaceInfo(Instance.project.id, type)
+              insertWorkspace(info)
+              registerAdapter(Instance.project.id, type, remoteAdapter(`${url}/sse-derived`).adapter)
+              const session = yield* sessionSvc.create({ title: "before sse" })
+              attachSessionToWorkspace(session.id, info.id)
+              sseSessionID = session.id
+              sseNextSeq = (sessionSequence(session.id) ?? -1) + 1
+
+              yield* workspace.startWorkspaceSyncing(Instance.project.id)
+
+              yield* eventuallyEffect(
+                Effect.gen(function* () {
+                  const after = yield* sessionSvc.get(session.id).pipe(Effect.orDie)
+                  expect(
+                    after.permission?.some((rule) => rule.permission === "task" && rule.action === "deny"),
+                  ).toBe(true)
+                }),
+              )
+              // The derived envelope must not be replayed: the session keeps
+              // its pre-SSE title and no session.updated row is persisted.
+              const after = yield* sessionSvc.get(session.id).pipe(Effect.orDie)
+              expect(after.title).toBe("before sse")
+              const rows = Database.use((db) =>
+                db.select().from(EventTable).where(eq(EventTable.aggregate_id, session.id)).all(),
+              )
+              expect(rows.some((row) => row.type === sessionUpdatedType())).toBe(false)
+              // The derived envelope is forwarded to local consumers with
+              // workspace attribution.
+              expect(
+                captured.events.some(
+                  (event) =>
+                    event.workspace === info.id &&
+                    event.payload.type === "sync" &&
+                    event.payload.syncEvent.type === sessionUpdatedType() &&
+                    event.payload.syncEvent.derived === true,
+                ),
+              ).toBe(true)
+              yield* workspace.remove(info.id)
+            } finally {
+              captured.dispose()
+            }
+          }),
+        { git: true },
+      )
+    })
+  })
+
+  it.live("sync history replay of a permission slot derives a session.updated envelope in workspace context", () => {
+    let historySessionID: SessionID | undefined
+    let historyNextSeq = 0
+    return Effect.gen(function* () {
+      yield* HttpServer.serveEffect()(
+        Effect.gen(function* () {
+          const req = yield* HttpServerRequest.HttpServerRequest
+          const url = new URL(req.url, "http://localhost")
+          if (url.pathname === "/history-slot/global/event") return HttpServerResponse.fromWeb(eventStreamResponse())
+          if (url.pathname === "/history-slot/sync/history") {
+            return HttpServerResponse.fromWeb(
+              Response.json([
+                {
+                  id: `evt_${unique("history-slot")}` ,
+                  aggregate_id: historySessionID!,
+                  seq: historyNextSeq,
+                  type: sessionPermissionSlotType(),
+                  data: {
+                    sessionID: historySessionID!,
+                    rules: [{ permission: "task", pattern: "*", action: "deny" }],
+                    timestamp: 1234,
+                  },
+                },
+              ]),
+            )
+          }
+          return HttpServerResponse.text("unexpected", { status: 500 })
+        }),
+      )
+      const url = yield* serverUrl()
+      yield* provideTmpdirInstance(
+        () =>
+          Effect.gen(function* () {
+            const workspace = yield* WorkspaceOld.Service
+            const sessionSvc = yield* SessionNs.Service
+            const captured = captureGlobalEvents()
+            try {
+              const type = unique("history-slot")
+              const info = workspaceInfo(Instance.project.id, type)
+              insertWorkspace(info)
+              registerAdapter(Instance.project.id, type, remoteAdapter(`${url}/history-slot`).adapter)
+              const session = yield* sessionSvc.create({ title: "before history" })
+              attachSessionToWorkspace(session.id, info.id)
+              historySessionID = session.id
+              historyNextSeq = (sessionSequence(session.id) ?? -1) + 1
+
+              yield* workspace.startWorkspaceSyncing(Instance.project.id)
+
+              yield* eventuallyEffect(
+                Effect.gen(function* () {
+                  const updated = yield* sessionSvc.get(session.id).pipe(Effect.orDie)
+                  expect(updated.permission).toEqual([{ permission: "task", pattern: "*", action: "deny" }])
+                  expect(updated.time.updated).toBe(1234)
+                }),
+              )
+              const derived = captured.events.find(
+                (event) =>
+                  event.workspace === info.id &&
+                  event.payload.type === "sync" &&
+                  event.payload.syncEvent.type === sessionUpdatedType() &&
+                  event.payload.syncEvent.data.sessionID === session.id,
+              )
+              expect(derived).toBeDefined()
+              expect(derived!.payload.syncEvent.data.info.permission).toEqual([
+                { permission: "task", pattern: "*", action: "deny" },
+              ])
+              yield* workspace.remove(info.id)
+            } finally {
+              captured.dispose()
+            }
+          }),
+        { git: true },
+      )
+    })
+  })
+
+  it.live("SSE sync permission slots replay with publish and derive session.updated exactly once", () => {
+    let sseSessionID: SessionID | undefined
+    let sseNextSeq = 0
+    return Effect.gen(function* () {
+      yield* HttpServer.serveEffect()(
+        Effect.gen(function* () {
+          const req = yield* HttpServerRequest.HttpServerRequest
+          const url = new URL(req.url, "http://localhost")
+          if (url.pathname === "/sse-slot/global/event")
+            return HttpServerResponse.fromWeb(
+              eventStreamResponse(
+                [
+                  {
+                    directory: "remote-dir",
+                    project: "remote-project",
+                    payload: {
+                      type: "sync",
+                      syncEvent: {
+                        id: `evt_${unique("sse-slot")}` ,
+                        aggregateID: sseSessionID!,
+                        seq: sseNextSeq,
+                        type: sessionPermissionSlotType(),
+                        data: {
+                          sessionID: sseSessionID!,
+                          rules: [{ permission: "bash", pattern: "*", action: "allow" }],
+                          timestamp: 4321,
+                        },
+                      },
+                    },
+                  },
+                  {
+                    directory: "remote-dir",
+                    project: "remote-project",
+                    payload: { type: "custom.remote", properties: { ok: true } },
+                  },
+                ],
+                false,
+              ),
+            )
+          if (url.pathname === "/sse-slot/sync/history") return HttpServerResponse.fromWeb(Response.json([]))
+          return HttpServerResponse.text("unexpected", { status: 500 })
+        }),
+      )
+      const url = yield* serverUrl()
+      yield* provideTmpdirInstance(
+        () =>
+          Effect.gen(function* () {
+            const workspace = yield* WorkspaceOld.Service
+            const sessionSvc = yield* SessionNs.Service
+            const captured = captureGlobalEvents()
+            try {
+              const type = unique("sse-slot")
+              const info = workspaceInfo(Instance.project.id, type)
+              insertWorkspace(info)
+              registerAdapter(Instance.project.id, type, remoteAdapter(`${url}/sse-slot`).adapter)
+              const session = yield* sessionSvc.create({ title: "before sse" })
+              attachSessionToWorkspace(session.id, info.id)
+              sseSessionID = session.id
+              sseNextSeq = (sessionSequence(session.id) ?? -1) + 1
+
+              yield* workspace.startWorkspaceSyncing(Instance.project.id)
+
+              yield* eventuallyEffect(
+                Effect.gen(function* () {
+                  const updated = yield* sessionSvc.get(session.id).pipe(Effect.orDie)
+                  expect(updated.permission).toEqual([{ permission: "bash", pattern: "*", action: "allow" }])
+                  expect(updated.time.updated).toBe(4321)
+                }),
+              )
+              const raw = captured.events.filter(
+                (event) =>
+                  event.workspace === info.id &&
+                  event.payload.type === "sync" &&
+                  event.payload.syncEvent.type === sessionPermissionSlotType() &&
+                  event.payload.syncEvent.seq === sseNextSeq,
+              )
+              expect(raw).toHaveLength(1)
+              const derived = captured.events.filter(
+                (event) =>
+                  event.workspace === info.id &&
+                  event.payload.type === "sync" &&
+                  event.payload.syncEvent.type === sessionUpdatedType() &&
+                  event.payload.syncEvent.data.sessionID === session.id,
+              )
+              expect(derived).toHaveLength(1)
+              expect(derived[0].payload.syncEvent.data.info.permission).toEqual([
+                { permission: "bash", pattern: "*", action: "allow" },
+              ])
+              expect(
+                captured.events.some(
+                  (event) => event.workspace === info.id && event.payload.type === "custom.remote",
                 ),
               ).toBe(true)
               yield* workspace.remove(info.id)

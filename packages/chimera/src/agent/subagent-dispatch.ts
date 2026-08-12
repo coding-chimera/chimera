@@ -1,16 +1,19 @@
 import { Config } from "@/config/config"
+import { ConfigSubagentRouting } from "@/config/subagent-routing"
 import { EffectBridge } from "@/effect/bridge"
-import { ModelID, ProviderID } from "@/provider/schema"
+import { Permission } from "@/permission"
 import { Provider } from "@/provider/provider"
+import { ModelID, ProviderID } from "@/provider/schema"
 import { MessageV2 } from "@/session/message-v2"
 import { MessageID, SessionID } from "@/session/schema"
 import { Session } from "@/session/session"
+import { NotFoundError } from "@/storage/storage"
 import { Effect, Exit } from "effect"
 import type { SessionPrompt } from "../session/prompt"
 import { Agent } from "./agent"
+import { resolveSubagentExecution, type ResolvedSubagentExecution, type SubagentExecutionMetadata } from "./subagent-execution"
+import { SubagentModelCatalog } from "./subagent-model-catalog"
 import { deriveSubagentSessionPermission } from "./subagent-permissions"
-import { resolveSubagentExecution, type SubagentExecutionMetadata } from "./subagent-execution"
-import { NotFoundError } from "@/storage/storage"
 
 export interface SubagentPromptOps {
   cancel(sessionID: SessionID): Effect.Effect<void>
@@ -31,24 +34,58 @@ export type SubagentDispatchInput = {
   prompt: string
   subagentType: string
   modelProfile?: string
+  model?: string
+  modelIdentity?: string
+  provider?: string
+  variant?: string
   taskID?: string
   promptOps: SubagentPromptOps
   abort: AbortSignal
   nestedDelegation?: "inherit" | "deny"
   authorizeProfile?: (profile: string) => Effect.Effect<void>
+  authorizeModel?: (model: { providerID: ProviderID; modelID: ModelID; variant?: string }) => Effect.Effect<void>
   onStarted?: (input: SubagentDispatchStarted) => Effect.Effect<void>
 }
+
+export type SubagentDispatchPrepared = {
+  parentSessionID: SessionID
+  parent: Session.Info
+  subagent: Agent.Info
+  existing?: Session.Info
+  config: Config.Info
+  resolved: ResolvedSubagentExecution
+}
+
+export type SubagentDispatchPrepareInput = Pick<
+  SubagentDispatchInput,
+  | "parentSessionID"
+  | "parentMessageID"
+  | "subagentType"
+  | "modelProfile"
+  | "model"
+  | "modelIdentity"
+  | "provider"
+  | "variant"
+  | "taskID"
+  | "authorizeProfile"
+  | "authorizeModel"
+>
+
+export type SubagentDispatchRunPreparedInput = Pick<
+  SubagentDispatchInput,
+  "description" | "prompt" | "promptOps" | "abort" | "nestedDelegation" | "onStarted"
+> & { prepared: SubagentDispatchPrepared }
 
 export const SubagentDispatch = Effect.gen(function* () {
   const agents = yield* Agent.Service
   const config = yield* Config.Service
   const sessions = yield* Session.Service
   const provider = yield* Provider.Service
+  const routing = yield* ConfigSubagentRouting.Service
 
-  const run = Effect.fn("SubagentDispatch.run")(function* (input: SubagentDispatchInput) {
+  const prepare = Effect.fn("SubagentDispatch.prepare")(function* (input: SubagentDispatchPrepareInput) {
     const cfg = yield* config.get()
     const parent = yield* sessions.get(input.parentSessionID)
-
     const msg = yield* Effect.sync(() =>
       MessageV2.get({ sessionID: input.parentSessionID, messageID: input.parentMessageID }),
     )
@@ -72,9 +109,7 @@ export const SubagentDispatch = Effect.gen(function* () {
         )
       }
       if (existing.projectID !== parent.projectID) {
-        return yield* Effect.fail(
-          new Error(`Cannot resume session ${existing.id}: it belongs to a different project`),
-        )
+        return yield* Effect.fail(new Error(`Cannot resume session ${existing.id}: it belongs to a different project`))
       }
       if (existing.workspaceID !== parent.workspaceID) {
         return yield* Effect.fail(
@@ -83,9 +118,32 @@ export const SubagentDispatch = Effect.gen(function* () {
       }
     }
 
+    const catalog =
+      input.modelIdentity === undefined
+        ? undefined
+        : yield* Effect.gen(function* () {
+            const caller = yield* agents.get(msg.info.agent)
+            if (!caller) return yield* Effect.fail(new Error(`Unknown parent agent: ${msg.info.agent}`))
+            return yield* SubagentModelCatalog.withPreferences(
+              SubagentModelCatalog.visible(
+                SubagentModelCatalog.buildSnapshot({
+                  providers: yield* provider.list(),
+                  configuredProviders: cfg.provider,
+                }),
+                Permission.merge(caller.permission, parent.permission ?? []),
+              ),
+              parent.projectID,
+              routing,
+            )
+          })
+
     const resolved = yield* resolveSubagentExecution({
       subagentType: input.subagentType,
       modelProfile: input.modelProfile,
+      model: input.model,
+      modelIdentity: input.modelIdentity,
+      provider: input.provider,
+      variant: input.variant,
       parent: {
         providerID: msg.info.providerID,
         modelID: msg.info.modelID,
@@ -94,18 +152,35 @@ export const SubagentDispatch = Effect.gen(function* () {
       subagent,
       delegation: cfg.delegation,
       existing,
-      validateModel: (p, m) => provider.getModel(p, m),
+      validateModel: (providerID, modelID) => provider.getModel(providerID, modelID),
+      resolveModelIdentity: catalog
+        ? (intent) =>
+            SubagentModelCatalog.resolveRoute(catalog, intent).pipe(
+              Effect.map((route) => ({
+                providerID: ProviderID.make(route.providerID),
+                modelID: ModelID.make(route.modelID),
+              })),
+            )
+        : undefined,
     })
     if (resolved.profile !== undefined) {
-      yield* input.authorizeProfile?.(resolved.profile) ?? Effect.void
+      yield* (input.authorizeProfile?.(resolved.profile) ?? Effect.void)
     }
-    const parentAgent = parent.agent
-      ? yield* agents.get(parent.agent).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
+    if (input.model !== undefined || input.modelIdentity !== undefined) {
+      yield* (input.authorizeModel?.(resolved.model) ?? Effect.void)
+    }
+    return { parentSessionID: input.parentSessionID, parent, subagent, existing, config: cfg, resolved }
+  })
+
+  const runPrepared = Effect.fn("SubagentDispatch.runPrepared")(function* (input: SubagentDispatchRunPreparedInput) {
+    const prepared = input.prepared
+    const parentAgent = prepared.parent.agent
+      ? yield* agents.get(prepared.parent.agent).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
       : undefined
     const derived = deriveSubagentSessionPermission({
-      parentSessionPermission: parent.permission ?? [],
+      parentSessionPermission: prepared.parent.permission ?? [],
       parentAgent,
-      subagent,
+      subagent: prepared.subagent,
     })
 
     const nestedDenyRules =
@@ -117,39 +192,43 @@ export const SubagentDispatch = Effect.gen(function* () {
         : []
 
     const nextSession =
-      existing ??
+      prepared.existing ??
       (yield* sessions.create({
-        parentID: input.parentSessionID,
-        title: input.description + ` (@${subagent.name} subagent)`,
-        agent: subagent.name,
-        model: { id: resolved.model.modelID, providerID: resolved.model.providerID, variant: resolved.model.variant },
+        parentID: prepared.parentSessionID,
+        title: input.description + ` (@${prepared.subagent.name} subagent)`,
+        agent: prepared.subagent.name,
+        model: {
+          id: prepared.resolved.model.modelID,
+          providerID: prepared.resolved.model.providerID,
+          variant: prepared.resolved.model.variant,
+        },
         permission: [
           ...derived,
-          ...(cfg.experimental?.primary_tools?.map((item) => ({
+          ...(prepared.config.experimental?.primary_tools?.map((item) => ({
             pattern: "*",
             action: "allow" as const,
             permission: item,
           })) ?? []),
-          ...(nestedDenyRules),
+          ...nestedDenyRules,
         ],
       }))
 
-    if (existing) {
+    if (prepared.existing) {
       yield* sessions.updatePermissionSlots({
-        sessionID: existing.id,
+        sessionID: prepared.existing.id,
         rules: [...derived.filter((rule) => rule.action === "deny"), ...nestedDenyRules],
       })
     }
 
     const execution: SubagentExecutionMetadata = {
       version: 2,
-      parentSessionId: input.parentSessionID,
-      agent: subagent.name,
-      modelProfile: resolved.profile,
-      source: resolved.source,
-      resumed: Boolean(existing),
+      parentSessionId: prepared.parentSessionID,
+      agent: prepared.subagent.name,
+      modelProfile: prepared.resolved.profile,
+      source: prepared.resolved.source,
+      resumed: Boolean(prepared.existing),
     }
-    yield* input.onStarted?.({ sessionId: nextSession.id, model: resolved.model, execution }) ?? Effect.void
+    yield* (input.onStarted?.({ sessionId: nextSession.id, model: prepared.resolved.model, execution }) ?? Effect.void)
 
     const runCancel = yield* EffectBridge.make()
     const cancel = input.promptOps.cancel(nextSession.id)
@@ -174,15 +253,19 @@ export const SubagentDispatch = Effect.gen(function* () {
             messageID,
             sessionID: nextSession.id,
             model: {
-              modelID: resolved.model.modelID,
-              providerID: resolved.model.providerID,
+              modelID: prepared.resolved.model.modelID,
+              providerID: prepared.resolved.model.providerID,
             },
-            variant: resolved.model.variant,
-            agent: subagent.name,
+            variant: prepared.resolved.model.variant,
+            agent: prepared.subagent.name,
             tools: {
-              ...(subagent.permission.some((rule) => rule.permission === "todowrite") ? {} : { todowrite: false }),
-              ...(subagent.permission.some((rule) => rule.permission === "task") ? {} : { task: false }),
-              ...Object.fromEntries((cfg.experimental?.primary_tools ?? []).map((item) => [item, false])),
+              ...(prepared.subagent.permission.some((rule) => rule.permission === "todowrite")
+                ? {}
+                : { todowrite: false }),
+              ...(prepared.subagent.permission.some((rule) => rule.permission === "task") ? {} : { task: false }),
+              ...Object.fromEntries(
+                (prepared.config.experimental?.primary_tools ?? []).map((item) => [item, false]),
+              ),
               ...(input.nestedDelegation === "deny" ? { task: false, chimera_swarm: false } : {}),
             },
             parts,
@@ -205,12 +288,12 @@ export const SubagentDispatch = Effect.gen(function* () {
     return {
       title: input.description,
       sessionId: nextSession.id,
-      model: resolved.model,
-      profile: resolved.profile,
+      model: prepared.resolved.model,
+      profile: prepared.resolved.profile,
       execution,
       metadata: {
         sessionId: nextSession.id,
-        model: resolved.model,
+        model: prepared.resolved.model,
         execution,
       },
       message: result,
@@ -224,5 +307,18 @@ export const SubagentDispatch = Effect.gen(function* () {
     }
   })
 
-  return { run }
+  const run = Effect.fn("SubagentDispatch.run")(function* (input: SubagentDispatchInput) {
+    const prepared = yield* prepare(input)
+    return yield* runPrepared({
+      prepared,
+      description: input.description,
+      prompt: input.prompt,
+      promptOps: input.promptOps,
+      abort: input.abort,
+      nestedDelegation: input.nestedDelegation,
+      onStarted: input.onStarted,
+    })
+  })
+
+  return { prepare, runPrepared, run }
 })

@@ -1,4 +1,4 @@
-import { Context, Effect, FiberMap, Iterable, Layer, Schema, Stream } from "effect"
+import { Context, Effect, FiberMap, Iterable, Layer, Schema, Semaphore, Stream } from "effect"
 import { FetchHttpClient, HttpBody, HttpClient, HttpClientError, HttpClientRequest } from "effect/unstable/http"
 import { Database } from "@/storage/db"
 import { asc } from "drizzle-orm"
@@ -175,6 +175,29 @@ export const layer = Layer.effect(
     const vcs = yield* Vcs.Service
     const connections = new Map<WorkspaceID, ConnectionStatus>()
     const syncFibers = yield* FiberMap.make<WorkspaceID, void, SyncLoopError>()
+    const workspaceAuthRevisions = new Map<WorkspaceID, number>()
+    const authRefreshSemaphore = Semaphore.makeUnsafe(1)
+    const pendingAuthRefresh = new Set<WorkspaceID>()
+
+    const managedEnvironment = Effect.fnUntraced(function* (workspaceID: WorkspaceID, authContent?: string) {
+      return {
+        OPENCODE_AUTH_CONTENT: authContent ?? JSON.stringify(yield* auth.all()),
+        OPENCODE_WORKSPACE_ID: workspaceID,
+        OPENCODE_EXPERIMENTAL_WORKSPACES: "true",
+        OTEL_EXPORTER_OTLP_HEADERS: process.env.OTEL_EXPORTER_OTLP_HEADERS,
+        OTEL_EXPORTER_OTLP_ENDPOINT: process.env.OTEL_EXPORTER_OTLP_ENDPOINT,
+        OTEL_RESOURCE_ATTRIBUTES: process.env.OTEL_RESOURCE_ATTRIBUTES,
+      }
+    })
+
+    const authSnapshot = Effect.fnUntraced(function* () {
+      while (true) {
+        const before = yield* auth.revision()
+        const content = JSON.stringify(yield* auth.all())
+        const revision = yield* auth.revision()
+        if (before === revision) return { content, revision }
+      }
+    })
 
     const setStatus = (id: WorkspaceID, status: ConnectionStatus["status"]) => {
       const prev = connections.get(id)
@@ -435,8 +458,16 @@ export const layer = Layer.effect(
               const payload = evt.payload as { type?: string; syncEvent?: SyncEvent.SerializedEvent }
               if (payload.type === "server.heartbeat") return
 
-              if (payload.type === "sync" && payload.syncEvent) {
-                const failed = yield* sync.replay(payload.syncEvent).pipe(
+              if (payload.type === "sync" && payload.syncEvent && !payload.syncEvent.derived) {
+                const syncEvent = payload.syncEvent
+                const failed = yield* Effect.promise(() =>
+                  WorkspaceContext.provide({
+                    workspaceID: space.id,
+                    async fn() {
+                      await Effect.runPromise(sync.replay(syncEvent, { publish: true }))
+                    },
+                  }),
+                ).pipe(
                   Effect.as(false),
                   Effect.catchCause((error) =>
                     Effect.sync(() => {
@@ -449,6 +480,10 @@ export const layer = Layer.effect(
                   ),
                 )
                 if (failed) return
+                // Successful replay: the sync layer already emitted the bus and
+                // GlobalBus envelopes (including derived events) from within the
+                // workspace context, so do not forward the raw envelope again.
+                return
               }
 
               try {
@@ -519,6 +554,92 @@ export const layer = Layer.effect(
       connections.delete(id)
     })
 
+    let refreshedAuthRevision = yield* auth.revision()
+
+    const refreshWorkspaceAuth = Effect.fn("Workspace.refreshWorkspaceAuth")(function* (
+      space: Info,
+      authContent: string,
+      revision: number,
+    ) {
+      if ((workspaceAuthRevisions.get(space.id) ?? -1) >= revision && !pendingAuthRefresh.has(space.id)) return
+      if (!(yield* FiberMap.has(syncFibers, space.id)) && !pendingAuthRefresh.has(space.id)) return
+      const adapter = getAdapter(space.projectID, space.type)
+      yield* stopSync(space.id)
+      if (!adapter.restart) {
+        setStatus(space.id, "error")
+        log.warn("workspace auth refresh unsupported", {
+          workspaceID: space.id,
+          type: space.type,
+          revision,
+        })
+        return
+      }
+
+      const env = yield* managedEnvironment(space.id, authContent)
+      yield* EffectBridge.fromPromise(() => adapter.restart!(space, env))
+      yield* startSync(space)
+      pendingAuthRefresh.delete(space.id)
+      workspaceAuthRevisions.set(space.id, revision)
+      log.info("workspace auth refreshed", { workspaceID: space.id, type: space.type, revision })
+    })
+
+    const refreshAuth = Effect.fn("Workspace.refreshAuth")(function* (_change: Auth.Change) {
+      const snapshot = yield* authSnapshot()
+      if (snapshot.revision <= refreshedAuthRevision) return
+      const ids = [...connections.keys()]
+      if (ids.length === 0) {
+        refreshedAuthRevision = snapshot.revision
+        return
+      }
+
+      const spaces = yield* db((db) =>
+        db.select().from(WorkspaceTable).where(inArray(WorkspaceTable.id, ids)).all().map(fromRow),
+      )
+      yield* Effect.forEach(
+        spaces,
+        (space) =>
+          refreshWorkspaceAuth(space, snapshot.content, snapshot.revision).pipe(
+            Effect.catchCause(() =>
+              Effect.sync(() => {
+                pendingAuthRefresh.add(space.id)
+                setStatus(space.id, "error")
+                log.warn("workspace auth refresh failed", {
+                  workspaceID: space.id,
+                  type: space.type,
+                  revision: snapshot.revision,
+                })
+              }),
+            ),
+          ),
+        { discard: true },
+      )
+      refreshedAuthRevision = snapshot.revision
+    })
+
+    const coordinateAuthRefresh = (change: Auth.Change) => authRefreshSemaphore.withPermits(1)(refreshAuth(change))
+
+    yield* auth.changes.pipe(
+      Stream.runForEach((change) =>
+        coordinateAuthRefresh(change).pipe(
+          Effect.catchCause(() =>
+            Effect.sync(() => {
+              log.warn("workspace auth refresh coordinator failed", { revision: change.revision })
+            }),
+          ),
+        ),
+      ),
+      Effect.forkScoped,
+    )
+    yield* Effect.yieldNow
+    const startupRevision = yield* auth.revision()
+    yield* coordinateAuthRefresh({ revision: startupRevision }).pipe(
+      Effect.catchCause(() =>
+        Effect.sync(() => {
+          log.warn("workspace auth refresh coordinator failed", { revision: startupRevision })
+        }),
+      ),
+    )
+
     const create = Effect.fn("Workspace.create")(function* (input: CreateInput) {
       const id = WorkspaceID.ascending(input.id)
       const adapter = getAdapter(input.projectID, input.type)
@@ -550,31 +671,34 @@ export const layer = Layer.effect(
           .run()
       })
 
-      const env = {
-        OPENCODE_AUTH_CONTENT: JSON.stringify(yield* auth.all()),
-        OPENCODE_WORKSPACE_ID: config.id,
-        OPENCODE_EXPERIMENTAL_WORKSPACES: "true",
-        OTEL_EXPORTER_OTLP_HEADERS: process.env.OTEL_EXPORTER_OTLP_HEADERS,
-        OTEL_EXPORTER_OTLP_ENDPOINT: process.env.OTEL_EXPORTER_OTLP_ENDPOINT,
-        OTEL_RESOURCE_ATTRIBUTES: process.env.OTEL_RESOURCE_ATTRIBUTES,
-      }
+      const snapshot = yield* authSnapshot()
+      const env = yield* managedEnvironment(config.id, snapshot.content)
 
       yield* EffectBridge.fromPromise(() => adapter.create(config, env))
-      yield* Effect.all(
-        [
-          waitEvent({
-            timeout: TIMEOUT,
-            fn(event) {
-              if (event.workspace === info.id && event.payload.type === Event.Status.type) {
-                const { status } = event.payload.properties
-                return status === "error" || status === "connected"
-              }
-              return false
-            },
-          }),
-          startSync(info),
-        ],
-        { concurrency: 2, discard: true },
+      workspaceAuthRevisions.set(info.id, snapshot.revision)
+      yield* authRefreshSemaphore.withPermits(1)(
+        Effect.gen(function* () {
+          yield* Effect.all(
+            [
+              waitEvent({
+                timeout: TIMEOUT,
+                fn(event) {
+                  if (event.workspace === info.id && event.payload.type === Event.Status.type) {
+                    const { status } = event.payload.properties
+                    return status === "error" || status === "connected"
+                  }
+                  return false
+                },
+              }),
+              startSync(info),
+            ],
+            { concurrency: 2, discard: true },
+          )
+          const latestRevision = yield* auth.revision()
+          if (latestRevision === snapshot.revision) return
+          const latest = yield* authSnapshot()
+          yield* refreshWorkspaceAuth(info, latest.content, latest.revision)
+        }),
       )
 
       return info
@@ -852,6 +976,7 @@ export const layer = Layer.effect(
       if (!row) return
 
       yield* stopSync(id)
+      workspaceAuthRevisions.delete(id)
 
       const info = fromRow(row)
       yield* Effect.catchCause(

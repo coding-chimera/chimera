@@ -35,6 +35,7 @@ import { Bus } from "../../src/bus"
 import { Command } from "../../src/command"
 import { ChimeraPromptContext } from "@/chimera/prompt-context"
 import { Config } from "@/config/config"
+import { ConfigSubagentRouting } from "@/config/subagent-routing"
 import { Auth } from "@/auth"
 import { LSP } from "@/lsp/lsp"
 import { MCP } from "../../src/mcp"
@@ -111,6 +112,15 @@ const lsp = Layer.succeed(
 const status = SessionStatus.layer.pipe(Layer.provideMerge(Bus.layer))
 const run = SessionRunState.layer.pipe(Layer.provide(status))
 const infra = Layer.mergeAll(NodeFileSystem.layer, CrossSpawnSpawner.defaultLayer)
+const routingLayer = Layer.succeed(
+  ConfigSubagentRouting.Service,
+  ConfigSubagentRouting.Service.of({
+    get: () => Effect.succeed(ConfigSubagentRouting.empty()),
+    prefer: () => Effect.die(new Error("unexpected preference mutation")),
+    suppress: () => Effect.die(new Error("unexpected suppression mutation")),
+    recordDelegation: () => Effect.succeed(ConfigSubagentRouting.empty()),
+  }),
+)
 
 function makeHttp() {
   const deps = Layer.mergeAll(
@@ -123,6 +133,7 @@ function makeHttp() {
     Permission.defaultLayer,
     Plugin.defaultLayer,
     Config.defaultLayer,
+    routingLayer,
     Auth.defaultLayer,
     ProviderSvc.defaultLayer,
     lsp,

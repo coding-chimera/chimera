@@ -2,6 +2,7 @@ import { afterEach, describe, expect } from "bun:test"
 import { Cause, Effect, Exit, Fiber, Layer } from "effect"
 import { Agent } from "../../src/agent/agent"
 import { Config } from "@/config/config"
+import { ConfigSubagentRouting } from "@/config/subagent-routing"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Session } from "@/session/session"
 import { SessionTable } from "@/session/session.sql"
@@ -16,12 +17,14 @@ import { ModelID, ProviderID } from "../../src/provider/schema"
 import { TaskTool, type TaskPromptOps } from "../../src/tool/task"
 import { Truncate } from "@/tool/truncate"
 import { ToolRegistry } from "@/tool/registry"
-import { Provider } from "../../src/provider/provider"
+import { ModelNotFoundError, Provider } from "../../src/provider/provider"
 import { WorkspaceID } from "../../src/control-plane/schema"
 import { disposeAllInstances } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
 afterEach(async () => {
+  routingState = ConfigSubagentRouting.empty()
+  routingActivity = []
   await disposeAllInstances()
 })
 
@@ -65,10 +68,55 @@ const delegationConfig = {
 
 }
 
+const twoProviderConfig = {
+  ...delegationConfig,
+  provider: {
+    test: {
+      ...providerFixture,
+      models: {
+        "test-model": {
+          ...providerFixture.models["test-model"],
+          capability_model_id: "shared-test-model",
+        },
+      },
+    },
+    second: {
+      ...providerFixture,
+      id: "second",
+      name: "Second",
+      models: {
+        "second-model": {
+          ...providerFixture.models["test-model"],
+          id: "second-model",
+          name: "Second Model",
+          capability_model_id: "shared-test-model",
+        },
+      },
+    },
+  },
+}
+
+let routingState: ConfigSubagentRouting.State = ConfigSubagentRouting.empty()
+let routingActivity: ProjectID[] = []
+const routingLayer = Layer.succeed(
+  ConfigSubagentRouting.Service,
+  ConfigSubagentRouting.Service.of({
+    get: () => Effect.succeed(routingState),
+    prefer: () => Effect.die(new Error("unexpected preference mutation")),
+    suppress: () => Effect.die(new Error("unexpected suppression mutation")),
+    recordDelegation: (projectID) =>
+      Effect.sync(() => {
+        routingActivity.push(projectID)
+        return routingState
+      }),
+  }),
+)
+
 const it = testEffect(
   Layer.mergeAll(
     Agent.defaultLayer,
     Config.defaultLayer,
+    routingLayer,
     CrossSpawnSpawner.defaultLayer,
     Session.defaultLayer,
     Truncate.defaultLayer,
@@ -93,6 +141,7 @@ const failIt = testEffect(
   Layer.mergeAll(
     Agent.defaultLayer,
     Config.defaultLayer,
+    routingLayer,
     CrossSpawnSpawner.defaultLayer,
     failingSessionLayer,
     Truncate.defaultLayer,
@@ -109,9 +158,9 @@ function defer<T>() {
   return { promise, resolve }
 }
 
-const seed = Effect.fn("TaskToolTest.seed")(function* (title = "Pinned", agentName?: string) {
+const seed = Effect.fn("TaskToolTest.seed")(function* (title = "Pinned", agentName?: string, parentID?: SessionID) {
   const session = yield* Session.Service
-  const chat = yield* session.create({ title, ...(agentName ? { agent: agentName } : {}) })
+  const chat = yield* session.create({ title, ...(agentName ? { agent: agentName } : {}), ...(parentID ? { parentID } : {}) })
   const messageAgent = agentName ?? "build"
   const user = yield* session.updateMessage({
     id: MessageID.ascending(),
@@ -298,6 +347,7 @@ describe("tool.task", () => {
       expect(result.metadata.sessionId).toBe(child.id)
       expect(result.output).toContain(`task_id: ${child.id}`)
       expect(seen?.sessionID).toBe(child.id)
+      expect(routingActivity).toHaveLength(0)
     }),
   )
 
@@ -394,6 +444,7 @@ describe("tool.task", () => {
 
       const exit = yield* Fiber.await(fiber)
       expect(Exit.hasInterrupts(exit)).toBe(true)
+      expect(routingActivity).toHaveLength(1)
     }),
   )
 
@@ -448,6 +499,7 @@ describe("tool.task", () => {
       expect(prompted).toBe(false)
       expect(kids).toHaveLength(1)
       expect(yield* Effect.promise(() => cancelled.promise)).toBe(kids[0]?.id)
+      expect(routingActivity).toHaveLength(1)
     }),
   )
 
@@ -485,6 +537,7 @@ describe("tool.task", () => {
       expect(result.metadata.sessionId).not.toBe("ses_missing")
       expect(result.output).toContain(`task_id: ${result.metadata.sessionId}`)
       expect(seen?.sessionID).toBe(result.metadata.sessionId)
+      expect(routingActivity).toEqual([chat.projectID])
     }),
   )
 
@@ -522,6 +575,16 @@ describe("tool.task", () => {
         expect(child.permission).toEqual([
           {
             permission: "todowrite",
+            pattern: "*",
+            action: "deny",
+          },
+          {
+            permission: "subagent_model_prefer",
+            pattern: "*",
+            action: "deny",
+          },
+          {
+            permission: "subagent_model_suppress",
             pattern: "*",
             action: "deny",
           },
@@ -769,7 +832,7 @@ describe("tool.task", () => {
       expect(calls[1]).toEqual({
         permission: "task_profile",
         patterns: ["flash"],
-        always: ["*"],
+        always: ["flash"],
         metadata: {
           description: "inspect bug",
           model_profile: "flash",
@@ -1272,10 +1335,12 @@ describe("tool.task", () => {
       expect(result.metadata.sessionId).toBe(child.id)
       expect(result.metadata.execution.resumed).toBe(true)
       const resumed = yield* sessions.get(child.id)
-      expect(resumed.permission?.slice(-2)).toEqual([
-        { pattern: "*", action: "deny", permission: "task" },
-        { pattern: "*", action: "deny", permission: "chimera_swarm" },
-      ])
+      expect(resumed.permission).toContainEqual({ pattern: "*", action: "deny", permission: "task" })
+      expect(resumed.permission).toContainEqual({ pattern: "*", action: "deny", permission: "chimera_swarm" })
+      expect(resumed.permission).toContainEqual({ pattern: "*", action: "deny", permission: "subagent_model_prefer" })
+      expect(resumed.permission).toContainEqual({ pattern: "*", action: "deny", permission: "subagent_model_suppress" })
+      expect(resumed.permission?.filter((rule) => rule.permission === "task" && rule.action === "deny")).toHaveLength(1)
+      expect(resumed.permission?.filter((rule) => rule.permission === "chimera_swarm" && rule.action === "deny")).toHaveLength(1)
       expect(seen?.tools).toMatchObject({ task: false, chimera_swarm: false })
     }),
   )
@@ -1364,8 +1429,11 @@ describe("tool.task", () => {
         (yield* registry.tools({ ...ref, agent: build })).find((tool) => tool.id === TaskTool.id)?.description ?? ""
 
       expect(description).toContain("Available model profiles:")
-      expect(description).toContain("- flash: Flash profile")
-      expect(description).toContain("- luna: Luna profile")
+      expect(description).toContain("- flash -> test/test-model (variant: max): Flash profile")
+      expect(description).toContain("- luna -> test/test-model: Luna profile")
+      expect(description).toContain("Direct model selection:")
+      expect(description).toContain("- Pass model as an exact provider/model route.")
+      expect(description).toContain("- Use subagent_model_routes to inspect concrete current routes for a model identity.")
     }),
     { config: delegationConfig },
 
@@ -1380,8 +1448,8 @@ describe("tool.task", () => {
         (yield* registry.tools({ ...ref, agent: build })).find((tool) => tool.id === TaskTool.id)?.description ?? ""
 
       expect(description).toContain("Available model profiles:")
-      expect(description).not.toContain("- flash:")
-      expect(description).toContain("- luna: Luna profile")
+      expect(description).not.toContain("- flash")
+      expect(description).toContain("- luna -> test/test-model: Luna profile")
     }),
     {
       config: {
@@ -1557,5 +1625,854 @@ describe("tool.task", () => {
       expect(prompted).toBe(false)
       expect(yield* sessions.children(chat.id)).toHaveLength(0)
     }),
+  )
+  it.instance("execute resolves a direct model with an advertised variant", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      let seen: SessionPrompt.PromptInput | undefined
+      const promptOps = stubOps({ onPrompt: (input) => (seen = input) })
+
+      const result = yield* def.execute(
+        {
+          description: "inspect bug",
+          prompt: "look into the cache key path",
+          subagent_type: "general",
+          model: "test/test-model",
+          variant: "max",
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      expect(seen?.model).toEqual({ providerID: ProviderID.make("test"), modelID: ModelID.make("test-model") })
+      expect(seen?.variant).toBe("max")
+      expect(result.metadata.model).toEqual({
+        providerID: ProviderID.make("test"),
+        modelID: ModelID.make("test-model"),
+        variant: "max",
+      })
+      expect(result.metadata.execution.modelProfile).toBeUndefined()
+      expect(result.metadata.execution.source).toBe("request-model")
+      expect(result.metadata.execution.resumed).toBe(false)
+      const child = yield* sessions.get(result.metadata.sessionId)
+      expect(child.model).toEqual({
+        id: ModelID.make("test-model"),
+        providerID: ProviderID.make("test"),
+        variant: "max",
+      })
+    }),
+    { config: delegationConfig },
+  )
+
+  it.instance("execute asks for task_model with the canonical provider/model", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const calls: unknown[] = []
+
+      yield* def.execute(
+        {
+          description: "inspect bug",
+          prompt: "look into the cache key path",
+          subagent_type: "general",
+          model: "test/test-model",
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps: stubOps() },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: (input) =>
+            Effect.sync(() => {
+              calls.push(input)
+            }),
+        },
+      )
+
+      expect(calls).toHaveLength(2)
+      expect(calls[0]).toEqual({
+        permission: "task",
+        patterns: ["general"],
+        always: ["*"],
+        metadata: {
+          description: "inspect bug",
+          subagent_type: "general",
+        },
+      })
+      expect(calls[1]).toEqual({
+        permission: "task_model",
+        patterns: ["test/test-model"],
+        always: ["test/test-model"],
+        metadata: {
+          description: "inspect bug",
+          model: "test/test-model",
+        },
+      })
+    }),
+    { config: delegationConfig },
+  )
+
+  it.instance("execute still asks for task_model when agent selection is bypassed", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const asks: Array<{ permission?: string; patterns?: readonly string[] }> = []
+
+      yield* def.execute(
+        {
+          description: "inspect bug",
+          prompt: "look into the cache key path",
+          subagent_type: "general",
+          model: "test/test-model",
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps: stubOps(), bypassAgentCheck: true },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: (input) =>
+            Effect.sync(() => {
+              asks.push(input)
+            }),
+        },
+      )
+
+      expect(asks.map((item) => item.permission)).toEqual(["task_model"])
+      expect(asks[0]?.patterns).toEqual(["test/test-model"])
+    }),
+    { config: delegationConfig },
+  )
+
+  it.instance("execute fails before creating a child when task_model permission is denied", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      let prompted = false
+
+      const exit = yield* def
+        .execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+            model: "test/test-model",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps: stubOps({ onPrompt: () => (prompted = true) }) },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: (input: { permission?: string }) =>
+              input.permission === "task_model" ? Effect.die(new Error("task_model denied")) : Effect.void,
+          },
+        )
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) {
+        expect(Cause.pretty(exit.cause)).toContain("task_model denied")
+      }
+      expect(prompted).toBe(false)
+      expect(yield* sessions.children(chat.id)).toHaveLength(0)
+    }),
+    { config: delegationConfig },
+  )
+
+  it.instance("execute fails without asking or creating a child when model and model_profile are both set", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const asks: unknown[] = []
+
+      const exit = yield* def
+        .execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+            model: "test/test-model",
+            model_profile: "flash",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps: stubOps() },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: (input) =>
+              Effect.sync(() => {
+                asks.push(input)
+              }),
+          },
+        )
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) {
+        expect(Cause.pretty(exit.cause)).toContain("mutually exclusive")
+      }
+      expect(asks).toHaveLength(0)
+      expect(yield* sessions.children(chat.id)).toHaveLength(0)
+    }),
+    { config: delegationConfig },
+  )
+
+  it.instance("execute fails without creating a child when variant is set without model", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+
+      const exit = yield* def
+        .execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+            variant: "max",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps: stubOps() },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) {
+        expect(Cause.pretty(exit.cause)).toContain("variant requires model")
+      }
+      expect(yield* sessions.children(chat.id)).toHaveLength(0)
+    }),
+    { config: delegationConfig },
+  )
+
+  it.instance("execute fails without creating a child for an invalid model format", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+
+      const exit = yield* def
+        .execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+            model: "nope",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps: stubOps() },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) {
+        expect(Cause.pretty(exit.cause)).toContain('expected "provider/model"')
+      }
+      expect(yield* sessions.children(chat.id)).toHaveLength(0)
+    }),
+    { config: delegationConfig },
+  )
+
+  it.instance("execute fails before creating a child when the direct model is not registered", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+
+      const exit = yield* def
+        .execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+            model: "nope/nope",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps: stubOps() },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) {
+        const error = Cause.squash(exit.cause)
+        expect(Cause.pretty(exit.cause)).toContain("ProviderModelNotFoundError")
+        expect(ModelNotFoundError.isInstance(error)).toBe(true)
+      }
+      expect(yield* sessions.children(chat.id)).toHaveLength(0)
+    }),
+    { config: delegationConfig },
+  )
+
+  it.instance("execute fails before creating a child when the direct model variant is not advertised", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+
+      const exit = yield* def
+        .execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+            model: "test/test-model",
+            variant: "bogus",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps: stubOps() },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) {
+        expect(Cause.pretty(exit.cause)).toContain("Available variants: max, xhigh, high")
+      }
+      expect(yield* sessions.children(chat.id)).toHaveLength(0)
+    }),
+    { config: delegationConfig },
+  )
+
+  it.instance("execute resumes a direct model child when the model matches", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const child = yield* sessions.create({
+        parentID: chat.id,
+        title: "Existing child",
+        agent: "general",
+        model: { id: ModelID.make("test-model"), providerID: ProviderID.make("test"), variant: "max" },
+      })
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+
+      const result = yield* def.execute(
+        {
+          description: "inspect bug",
+          prompt: "look into the cache key path",
+          subagent_type: "general",
+          task_id: child.id,
+          model: "test/test-model",
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps: stubOps() },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      expect(result.metadata.sessionId).toBe(child.id)
+      expect(result.metadata.execution.resumed).toBe(true)
+      expect(result.metadata.execution.source).toBe("resume")
+      expect(result.metadata.model).toEqual({
+        providerID: ProviderID.make("test"),
+        modelID: ModelID.make("test-model"),
+        variant: "max",
+      })
+    }),
+    { config: delegationConfig },
+  )
+
+  it.instance("execute fails to resume a direct model child locked to a different model", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const child = yield* sessions.create({
+        parentID: chat.id,
+        title: "Existing child",
+        agent: "general",
+        model: { id: ModelID.make("test-model"), providerID: ProviderID.make("test") },
+      })
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+
+      const exit = yield* def
+        .execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+            task_id: child.id,
+            model: "test/other-model",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps: stubOps() },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) {
+        expect(Cause.pretty(exit.cause)).toContain("it is locked to model test/test-model, not test/other-model")
+      }
+    }),
+    {
+      config: {
+        delegation: { model_profiles: { luna: { model: "test/other-model" } } },
+        provider: {
+          test: {
+            ...providerFixture,
+            models: {
+              ...providerFixture.models,
+              "other-model": { ...providerFixture.models["test-model"], id: "other-model", name: "Other Model" },
+            },
+          },
+        },
+      },
+    },
+  )
+
+  it.instance("execute fails to resume a direct model child locked to a different variant", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const child = yield* sessions.create({
+        parentID: chat.id,
+        title: "Existing child",
+        agent: "general",
+        model: { id: ModelID.make("test-model"), providerID: ProviderID.make("test"), variant: "max" },
+      })
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+
+      const exit = yield* def
+        .execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+            task_id: child.id,
+            model: "test/test-model",
+            variant: "high",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps: stubOps() },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) {
+        expect(Cause.pretty(exit.cause)).toContain('is locked to variant "max", not variant "high"')
+      }
+    }),
+    { config: delegationConfig },
+  )
+
+  it.instance("execute keeps the persisted variant when resuming a direct model child without a variant", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const child = yield* sessions.create({
+        parentID: chat.id,
+        title: "Existing child",
+        agent: "general",
+        model: { id: ModelID.make("test-model"), providerID: ProviderID.make("test"), variant: "max" },
+      })
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+
+      const result = yield* def.execute(
+        {
+          description: "inspect bug",
+          prompt: "look into the cache key path",
+          subagent_type: "general",
+          task_id: child.id,
+          model: "test/test-model",
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps: stubOps() },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      expect(result.metadata.execution.resumed).toBe(true)
+      expect(result.metadata.model).toEqual({
+        providerID: ProviderID.make("test"),
+        modelID: ModelID.make("test-model"),
+        variant: "max",
+      })
+    }),
+    { config: delegationConfig },
+  )
+  it.instance("execute resolves model_identity and authorizes the canonical route before creating the child", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const asks: Array<{ permission?: string; patterns?: readonly string[] }> = []
+      let seen: SessionPrompt.PromptInput | undefined
+      const result = yield* def.execute(
+        {
+          description: "inspect bug",
+          prompt: "look into the cache key path",
+          subagent_type: "general",
+          model_identity: "shared-test-model",
+          provider: "test",
+          variant: "max",
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps: stubOps({ onPrompt: (input) => (seen = input) }) },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: (input) =>
+            Effect.sync(() => {
+              asks.push(input)
+            }),
+        },
+      )
+      expect(asks.map((item) => item.permission)).toEqual(["task", "task_model"])
+      expect(asks[1]?.patterns).toEqual(["test/test-model"])
+      expect(seen?.model).toEqual({ providerID: ProviderID.make("test"), modelID: ModelID.make("test-model") })
+      expect(seen?.variant).toBe("max")
+      expect(result.metadata.execution.source).toBe("request-model-identity")
+      expect(yield* sessions.children(chat.id)).toHaveLength(1)
+    }),
+    {
+      config: {
+        ...delegationConfig,
+        provider: {
+          test: {
+            ...providerFixture,
+            models: {
+              "test-model": {
+                ...providerFixture.models["test-model"],
+                capability_model_id: "shared-test-model",
+              },
+            },
+          },
+        },
+      },
+    },
+  )
+
+  it.instance("execute rejects identity task_model permission with zero children", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      let prompted = false
+      const exit = yield* def
+        .execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+            model_identity: "shared-test-model",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps: stubOps({ onPrompt: () => (prompted = true) }) },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: (input: { permission?: string }) =>
+              input.permission === "task_model" ? Effect.die(new Error("task_model denied")) : Effect.void,
+          },
+        )
+        .pipe(Effect.exit)
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) expect(Cause.pretty(exit.cause)).toContain("task_model denied")
+      expect(prompted).toBe(false)
+      expect(yield* sessions.children(chat.id)).toHaveLength(0)
+    }),
+    {
+      config: {
+        ...delegationConfig,
+        provider: {
+          test: {
+            ...providerFixture,
+            models: {
+              "test-model": {
+                ...providerFixture.models["test-model"],
+                capability_model_id: "shared-test-model",
+              },
+            },
+          },
+        },
+      },
+    },
+  )
+
+  it.instance("execute rejects conflicting identity selectors before asking or creating a child", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const asks: unknown[] = []
+      const exit = yield* def
+        .execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+            model: "test/test-model",
+            model_identity: "shared-test-model",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps: stubOps() },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: (input) =>
+              Effect.sync(() => {
+                asks.push(input)
+              }),
+          },
+        )
+        .pipe(Effect.exit)
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) expect(Cause.pretty(exit.cause)).toContain("mutually exclusive")
+      expect(asks).toHaveLength(0)
+      expect(yield* sessions.children(chat.id)).toHaveLength(0)
+    }),
+    { config: delegationConfig },
+  )
+
+  it.instance("execute fails without activity when promptOps are missing", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const exit = yield* def
+        .execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        .pipe(Effect.exit)
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) expect(Cause.pretty(exit.cause)).toContain("promptOps")
+      expect(routingActivity).toHaveLength(0)
+      expect(yield* sessions.children(chat.id)).toHaveLength(0)
+    }),
+  )
+
+  it.instance("execute records no activity when the parent session is itself a child", () =>
+    Effect.gen(function* () {
+      const root = yield* seed()
+      const { chat, assistant } = yield* seed("Nested parent", undefined, root.chat.id)
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const result = yield* def.execute(
+        {
+          description: "inspect bug",
+          prompt: "look into the cache key path",
+          subagent_type: "general",
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps: stubOps() },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+      expect(result.metadata.execution.resumed).toBe(false)
+      expect(routingActivity).toHaveLength(0)
+    }),
+  )
+
+  it.instance("execute resolves an ambiguous identity with the unique active preference", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      routingState = {
+        ...ConfigSubagentRouting.empty(),
+        revision: 1,
+        global: {
+          providers: {},
+          routes: {
+            "shared-test-model": {
+              "second/second-model": { preference: { weight: 1, activity: 0, revision: 1 } },
+            },
+          },
+        },
+      }
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const asks: Array<{ permission?: string; patterns?: readonly string[] }> = []
+      let seen: SessionPrompt.PromptInput | undefined
+      const result = yield* def.execute(
+        {
+          description: "inspect bug",
+          prompt: "look into the cache key path",
+          subagent_type: "general",
+          model_identity: "shared-test-model",
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps: stubOps({ onPrompt: (input) => (seen = input) }) },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: (input) =>
+            Effect.sync(() => {
+              asks.push(input)
+            }),
+        },
+      )
+      expect(asks.map((item) => item.permission)).toEqual(["task", "task_model"])
+      expect(asks[1]?.patterns).toEqual(["second/second-model"])
+      expect(seen?.model).toEqual({ providerID: ProviderID.make("second"), modelID: ModelID.make("second-model") })
+      expect(result.metadata.execution.source).toBe("request-model-identity")
+      expect(yield* sessions.children(chat.id)).toHaveLength(1)
+    }),
+    { config: twoProviderConfig },
+  )
+
+  it.instance("execute fails with ambiguity when identity routes tie without a preference", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const asks: Array<{ permission?: string }> = []
+      const exit = yield* def
+        .execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+            model_identity: "shared-test-model",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps: stubOps() },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: (input) =>
+              Effect.sync(() => {
+                asks.push(input)
+              }),
+          },
+        )
+        .pipe(Effect.exit)
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) expect(Cause.pretty(exit.cause)).toContain("ambiguous")
+      expect(asks.map((item) => item.permission)).toEqual(["task"])
+      expect(yield* sessions.children(chat.id)).toHaveLength(0)
+    }),
+    { config: twoProviderConfig },
   )
 })

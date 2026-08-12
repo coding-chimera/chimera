@@ -330,4 +330,62 @@ describe("ShareNext", () => {
       { config: { enterprise: { url: "https://legacy-share.example.com" } } },
     ),
   )
+
+  it.live("ShareNext syncs a session.updated payload with full info exactly once", () =>
+    provideTmpdirInstance(
+      () => {
+        const seen: Array<{ url: string; body: string }> = []
+        const client = HttpClient.make((req) => {
+          if (req.url.endsWith("/sync") && req.body._tag === "Uint8Array") {
+            seen.push({ url: req.url, body: new TextDecoder().decode(req.body.body) })
+          }
+          return Effect.succeed(json(req, { ok: true }))
+        })
+
+        return Effect.gen(function* () {
+          const bus = yield* Bus.Service
+          const share = yield* ShareNext.Service
+          const session = yield* Session.Service
+
+          const info = yield* session.create({ title: "first" })
+          yield* share.init()
+          yield* Effect.sleep(50)
+          yield* Effect.sync(() =>
+            Database.use((db) =>
+              db
+                .insert(SessionShareTable)
+                .values({
+                  session_id: info.id,
+                  id: "shr_abc",
+                  url: "https://legacy-share.example.com/share/abc",
+                  secret: "sec_123",
+                })
+                .run(),
+            ),
+          )
+
+          const updated = {
+            ...info,
+            permission: [{ permission: "task", pattern: "*", action: "deny" as const }],
+            time: { ...info.time, updated: 1234 },
+          }
+          yield* bus.publish(Session.Event.Updated, { sessionID: info.id, info: updated })
+          yield* Effect.sleep(1_250)
+
+          expect(seen).toHaveLength(1)
+          expect(seen[0].url).toBe("https://legacy-share.example.com/api/share/shr_abc/sync")
+
+          const body = JSON.parse(seen[0].body) as {
+            secret: string
+            data: Array<{ type: string; data: unknown }>
+          }
+          expect(body.secret).toBe("sec_123")
+          expect(body.data).toHaveLength(1)
+          expect(body.data[0].type).toBe("session")
+          expect(body.data[0].data).toEqual(updated)
+        }).pipe(Effect.provide(wired(client)))
+      },
+      { config: { enterprise: { url: "https://legacy-share.example.com" } } },
+    ),
+  )
 })

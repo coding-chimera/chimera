@@ -18,6 +18,7 @@ import { Database } from "@/storage/db"
 import { SyncEvent } from "@/sync"
 import { EventSequenceTable, EventTable } from "../../src/sync/event.sql"
 import { Flag } from "@opencode-ai/core/flag/flag"
+import { Config } from "@/config/config"
 
 const projectRoot = path.join(__dirname, "../..")
 void Log.init({ print: false })
@@ -33,6 +34,8 @@ function get(id: SessionID) {
 function remove(id: SessionID) {
   return AppRuntime.runPromise(SessionNs.Service.use((svc) => svc.remove(id)))
 }
+
+const load = () => AppRuntime.runPromise(Config.Service.use((svc) => svc.get()))
 
 function updateMessage<T extends MessageV2.Info>(msg: T) {
   return AppRuntime.runPromise(SessionNs.Service.use((svc) => svc.updateMessage(msg)))
@@ -416,18 +419,21 @@ describe("Session.updatePermissionSlots", () => {
     }),
   )
 
-  it.instance("publishes a session.updated bus event reflecting the slot update", () =>
+  it.instance("publishes exactly one session.updated bus event reflecting the slot update", () =>
     Effect.gen(function* () {
       const svc = yield* SessionNs.Service
-      const bus = yield* Bus.Service
       const info = yield* svc.create({})
       let payload: { sessionID: SessionID; info: SessionNs.Info } | undefined
+      let count = 0
       let resolve: () => void
       const received = new Promise<void>((done) => {
         resolve = done
       })
-      const unsub = yield* bus.subscribeCallback(SessionNs.Event.Updated, (event) => {
+      // Subscribe through the module-level Bus runtime: the sync layer's
+      // derived publish also goes through the shared standalone runtime.
+      const unsub = Bus.subscribe(SessionNs.Event.Updated, (event) => {
         if (event.properties.info.id === info.id) {
+          count += 1
           payload = event.properties as { sessionID: SessionID; info: SessionNs.Info }
           resolve()
         }
@@ -435,11 +441,77 @@ describe("Session.updatePermissionSlots", () => {
       try {
         yield* svc.updatePermissionSlots({ sessionID: info.id, rules: [taskDeny] })
         yield* Effect.promise(() => received)
+        yield* Effect.sleep("100 millis")
+        expect(count).toBe(1)
         expect(payload).toBeDefined()
         expect(payload!.info.permission).toEqual([taskDeny])
+        const updated = yield* svc.get(info.id)
+        expect(payload!.info.time.updated).toBe(updated.time.updated)
       } finally {
         unsub()
       }
     }),
+  )
+
+  it.instance("keeps distinct rules whose NUL-joined keys collide", () =>
+    Effect.gen(function* () {
+      const svc = yield* SessionNs.Service
+      const info = yield* svc.create({})
+      const left: Permission.Rule = { permission: "a", pattern: "\0b", action: "allow" }
+      const right: Permission.Rule = { permission: "a\0", pattern: "b", action: "deny" }
+      yield* svc.updatePermissionSlots({ sessionID: info.id, rules: [left, right] })
+      const updated = yield* svc.get(info.id)
+      // Old NUL-joined keys both produced "a\0\0b", collapsing one rule.
+      expect(updated.permission).toEqual([left, right])
+    }),
+  )
+
+  it.instance("keeps a NUL-prefixed pattern distinct from a plain tuple", () =>
+    Effect.gen(function* () {
+      const svc = yield* SessionNs.Service
+      const info = yield* svc.create({})
+      const plain: Permission.Rule = { permission: "a", pattern: "b", action: "allow" }
+      const nul: Permission.Rule = { permission: "a\0", pattern: "b", action: "deny" }
+      yield* svc.updatePermissionSlots({ sessionID: info.id, rules: [plain, nul] })
+      const updated = yield* svc.get(info.id)
+      expect(updated.permission).toEqual([plain, nul])
+    }),
+  )
+
+  it.instance("fully duplicate tuples collapse last-wins", () =>
+    Effect.gen(function* () {
+      const svc = yield* SessionNs.Service
+      const info = yield* svc.create({})
+      const allow: Permission.Rule = { permission: "a", pattern: "b", action: "allow" }
+      const deny: Permission.Rule = { permission: "a", pattern: "b", action: "deny" }
+      yield* svc.updatePermissionSlots({ sessionID: info.id, rules: [allow, deny] })
+      const updated = yield* svc.get(info.id)
+      expect(updated.permission).toEqual([deny])
+    }),
+  )
+
+  it.instance("survives NUL bytes loaded from a real config file", () =>
+      Effect.gen(function* () {
+        const svc = yield* SessionNs.Service
+        const config = yield* Effect.promise(() => load())
+        const ruleset = Permission.fromConfig(config.permission ?? {})
+        expect(ruleset).toHaveLength(2)
+        expect(Permission.evaluate("task\0sub", "agent", ruleset).action).toBe("allow")
+        expect(Permission.evaluate("task", "sub\0agent", ruleset).action).toBe("deny")
+
+        const info = yield* svc.create({})
+        yield* svc.updatePermissionSlots({ sessionID: info.id, rules: ruleset })
+        const updated = yield* svc.get(info.id)
+        expect(updated.permission).toHaveLength(2)
+        expect(updated.permission).toEqual(ruleset)
+      }),
+    {
+      config: {
+        permission: {
+          "task\0sub": { agent: "allow" },
+          task: { "sub\0agent": "deny" },
+        },
+      },
+    },
   )
 })

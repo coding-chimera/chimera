@@ -8,6 +8,7 @@ import { Instance } from "../../src/project/instance"
 import { WithInstance } from "../../src/project/with-instance"
 import { Plugin } from "../../src/plugin/index"
 import { ModelsDev } from "@/provider/models"
+import { Auth } from "@/auth"
 import { snapshot } from "../../src/provider/models-snapshot.js"
 import { Provider } from "@/provider/provider"
 import { ProviderID, ModelID } from "../../src/provider/schema"
@@ -26,6 +27,18 @@ async function run<A, E>(fn: (provider: Provider.Interface) => Effect.Effect<A, 
     Effect.gen(function* () {
       const provider = yield* Provider.Service
       return yield* fn(provider)
+    }),
+  )
+}
+
+async function runWithAuth<A, E>(
+  fn: (provider: Provider.Interface, auth: Auth.Interface) => Effect.Effect<A, E, never>,
+) {
+  return AppRuntime.runPromise(
+    Effect.gen(function* () {
+      const provider = yield* Provider.Service
+      const auth = yield* Auth.Service
+      return yield* fn(provider, auth)
     }),
   )
 }
@@ -3948,5 +3961,117 @@ test("opencode loader keeps paid models when auth exists", async () => {
         await unlink(authPath)
       } catch {}
     }
+  }
+})
+
+test("warmed Provider reads refresh concurrently after auth revision and canonicalize stale models", async () => {
+  const providerID = ProviderID.make("phase5-auth")
+  const modelID = ModelID.make("model")
+  const previous = process.env.OPENCODE_AUTH_CONTENT
+  process.env.OPENCODE_AUTH_CONTENT = "{}"
+  await using tmp = await tmpdir({
+    config: {
+      provider: {
+        [providerID]: {
+          name: "Phase 5 Auth",
+          npm: "@ai-sdk/openai-compatible",
+          env: [],
+          wire_api: "chat",
+          models: {
+            [modelID]: {
+              name: "Phase 5 Model",
+              tool_call: true,
+              limit: { context: 128_000, output: 4096 },
+            },
+          },
+          options: { baseURL: "https://phase5.invalid/v1" },
+        },
+      },
+    },
+  })
+
+  try {
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const warmed = await runWithAuth((provider) => provider.list())
+        const stale = warmed[providerID].models[modelID]
+        expect(warmed[providerID].key).toBeUndefined()
+        stale.api.id = "stale-wire-model"
+
+        await runWithAuth((_provider, auth) => auth.set(providerID, { type: "api", key: "test-key" }))
+
+        const refreshed = await runWithAuth((provider) =>
+          Effect.all(
+            [provider.list(), provider.getProvider(providerID), provider.getModel(providerID, modelID)],
+            { concurrency: "unbounded" },
+          ),
+        )
+        const [providers, info, model] = refreshed
+        expect(providers[providerID]).toBe(info)
+        expect(info.key).toBe("test-key")
+        expect(info.models[modelID]).toBe(model)
+        expect(model).not.toBe(stale)
+        expect(model.api.id).toBe(modelID)
+
+        const language = await runWithAuth((provider) => provider.getLanguage(stale))
+        expect(language.modelId).toBe(modelID)
+      },
+    })
+  } finally {
+    await AppRuntime.runPromise(Auth.Service.use((auth) => auth.remove(providerID)))
+    if (previous === undefined) delete process.env.OPENCODE_AUTH_CONTENT
+    if (previous !== undefined) process.env.OPENCODE_AUTH_CONTENT = previous
+  }
+})
+
+test("Provider freshness keeps two directory states isolated", async () => {
+  const trigger = "phase5-directory-trigger"
+  const previous = process.env.OPENCODE_AUTH_CONTENT
+  process.env.OPENCODE_AUTH_CONTENT = "{}"
+  const config = (name: string, model: string) => ({
+    provider: {
+      phase5: {
+        name,
+        npm: "@ai-sdk/openai-compatible",
+        env: [],
+        models: {
+          [model]: {
+            name: model,
+            tool_call: true,
+            limit: { context: 128_000, output: 4096 },
+          },
+        },
+        options: { baseURL: "https://phase5.invalid/v1" },
+      },
+    },
+  })
+  await using first = await tmpdir({ config: config("First", "first") })
+  await using second = await tmpdir({ config: config("Second", "second") })
+
+  const read = (directory: string) =>
+    WithInstance.provide({
+      directory,
+      fn: async () => (await list())[ProviderID.make("phase5")],
+    })
+
+  try {
+    const warmed = await Promise.all([read(first.path), read(second.path)])
+    expect(Object.keys(warmed[0].models)).toEqual(["first"])
+    expect(Object.keys(warmed[1].models)).toEqual(["second"])
+
+    await AppRuntime.runPromise(Auth.Service.use((auth) => auth.set(trigger, { type: "api", key: "test-key" })))
+    const refreshed = await Promise.all([read(first.path), read(second.path), read(first.path), read(second.path)])
+    expect(refreshed[0].name).toBe("First")
+    expect(refreshed[1].name).toBe("Second")
+    expect(Object.keys(refreshed[0].models)).toEqual(["first"])
+    expect(Object.keys(refreshed[1].models)).toEqual(["second"])
+    expect(refreshed[0]).toBe(refreshed[2])
+    expect(refreshed[1]).toBe(refreshed[3])
+    expect(refreshed[0]).not.toBe(refreshed[1])
+  } finally {
+    await AppRuntime.runPromise(Auth.Service.use((auth) => auth.remove(trigger)))
+    if (previous === undefined) delete process.env.OPENCODE_AUTH_CONTENT
+    if (previous !== undefined) process.env.OPENCODE_AUTH_CONTENT = previous
   }
 })

@@ -91,6 +91,8 @@ export const layer = Layer.effect(
         const defaults = Permission.fromConfig({
           "*": "allow",
           doom_loop: "ask",
+          subagent_model_prefer: "ask",
+          subagent_model_suppress: "ask",
           browser_open: "ask",
           browser_snapshot: "ask",
           browser_click: "ask",
@@ -270,6 +272,17 @@ export const layer = Layer.effect(
           item.steps = value.steps ?? item.steps
           item.options = mergeDeep(item.options, value.options ?? {})
           item.permission = Permission.merge(item.permission, Permission.fromConfig(value.permission ?? {}))
+        }
+
+        for (const agent of Object.values(agents)) {
+          if (agent.mode !== "subagent") continue
+          agent.permission = Permission.merge(
+            agent.permission,
+            Permission.fromConfig({
+              subagent_model_prefer: "deny",
+              subagent_model_suppress: "deny",
+            }),
+          )
         }
 
         // Ensure Truncate.GLOB is allowed unless explicitly configured

@@ -43,10 +43,15 @@ export type Event<Def extends Definition = Definition> = {
 
 export type Properties<Def extends Definition = Definition> = EffectSchema.Schema.Type<Def["properties"]>
 
-export type SerializedEvent<Def extends Definition = Definition> = Event<Def> & { type: string }
+export type SerializedEvent<Def extends Definition = Definition> = Event<Def> & { type: string; derived?: boolean }
 
 type ProjectorFunc = (db: Database.TxOrDb, data: unknown, event: Event) => void
 type ConvertEvent = (type: string, data: Event["data"]) => unknown | Promise<unknown>
+// Post-project derived events. Runs after the main event is projected and
+// (when publishing) emits additional bus/global events with an independent
+// identity (`derived: true` + fresh id) so they are never replayed as
+// source events. `type` is the unversioned definition type.
+type DeriveEvent = (type: string, data: unknown) => Array<{ type: string; data: unknown }>
 type PublishContext = {
   instance?: InstanceContext
   workspace?: WorkspaceID
@@ -194,14 +199,20 @@ let projectors: Map<Definition, ProjectorFunc> | undefined
 const versions = new Map<string, number>()
 let frozen = false
 let convertEvent: ConvertEvent
+let deriveEvent: DeriveEvent
 
 export function reset() {
   frozen = false
   projectors = undefined
   convertEvent = (_, data) => data
+  deriveEvent = () => []
 }
 
-export function init(input: { projectors: Array<[Definition, ProjectorFunc]>; convertEvent?: ConvertEvent }) {
+export function init(input: {
+  projectors: Array<[Definition, ProjectorFunc]>
+  convertEvent?: ConvertEvent
+  deriveEvent?: DeriveEvent
+}) {
   projectors = new Map(input.projectors)
 
   // Install all the latest event defs to the bus. We only ever emit
@@ -218,6 +229,7 @@ export function init(input: { projectors: Array<[Definition, ProjectorFunc]>; co
   // after `init` which would cause bugs
   frozen = true
   convertEvent = input.convertEvent ?? ((_, data) => data)
+  deriveEvent = input.deriveEvent ?? (() => [])
 }
 
 export function versionedType<A extends string>(type: A): A
@@ -330,6 +342,44 @@ function process<Def extends Definition>(
             },
           },
         })
+
+        // Derived events are published after the main event with their own
+        // event identity (`derived: true` + a fresh id) so remote consumers
+        // can distinguish them from persisted, replayable events. They are
+        // not projected and never touch the event tables; the workspace
+        // loop forwards them without replaying, which keeps replay
+        // deduplication keyed to the source event only.
+        for (const derived of deriveEvent(def.type, event.data)) {
+          const version = versions.get(derived.type)
+          if (version == null) continue
+          const derivedDef = registry.get(versionedType(derived.type, version))
+          if (!derivedDef) continue
+          const converted = convertEvent(derived.type, derived.data)
+          const derivedID = EventID.ascending()
+          const publishDerived = (data: unknown) =>
+            ProjectBus.publish(derivedDef, data as never, { id: derivedID })
+          if (converted instanceof Promise) {
+            void converted.then(publishDerived)
+          } else {
+            void publishDerived(converted)
+          }
+          GlobalBus.emit("event", {
+            directory: options.context.instance.directory,
+            project: options.context.instance.project.id,
+            workspace: options.context.workspace,
+            payload: {
+              type: "sync",
+              syncEvent: {
+                type: versionedType(derived.type, version),
+                id: derivedID,
+                seq: event.seq,
+                aggregateID: event.aggregateID,
+                data: derived.data,
+                derived: true,
+              },
+            },
+          })
+        }
       }
     })
   })

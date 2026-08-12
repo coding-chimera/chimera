@@ -40,6 +40,7 @@ export type WorkspaceAdapter = {
   description: string
   configure(info: WorkspaceInfo): WorkspaceInfo | Promise<WorkspaceInfo>
   create(info: WorkspaceInfo, env: Record<string, string | undefined>, from?: WorkspaceInfo): Promise<void>
+  restart?(info: WorkspaceInfo, completeReplacementEnv: Record<string, string | undefined>): Promise<void>
   remove(info: WorkspaceInfo): Promise<void>
   target(info: WorkspaceInfo): Target | Promise<Target>
 }

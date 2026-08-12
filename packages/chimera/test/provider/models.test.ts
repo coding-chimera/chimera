@@ -255,14 +255,16 @@ describe("ModelsDev Service", () => {
         state,
         Effect.gen(function* () {
           const svc = yield* ModelsDev.Service
+          const revision = yield* svc.revision()
           const before = yield* svc.get()
           yield* svc.refresh(true)
           const after = yield* svc.get()
-          return { before, after }
+          return { before, after, revision, refreshed: yield* svc.revision() }
         }),
       )
       expect(result.before).toEqual(fixture)
       expect(result.after).toEqual(fixture2)
+      expect(result.refreshed).toBe(result.revision + 1)
       const final = yield* Ref.get(state)
       expect(final.calls.length).toBe(1)
       expect(final.calls[0].url).toContain("/api.json")
@@ -274,10 +276,16 @@ describe("ModelsDev Service", () => {
       // Fresh: mtime within the 5-minute TTL.
       yield* writeCache(fixture, Date.now() - 1000)
       const state = yield* Ref.make({ ...initialState, body: JSON.stringify(fixture2) })
-      yield* provided(
+      const revisions = yield* provided(
         state,
-        ModelsDev.Service.use((s) => s.refresh(false)),
+        Effect.gen(function* () {
+          const svc = yield* ModelsDev.Service
+          const before = yield* svc.revision()
+          yield* svc.refresh(false)
+          return { before, after: yield* svc.revision() }
+        }),
       )
+      expect(revisions.after).toBe(revisions.before)
       const final = yield* Ref.get(state)
       expect(final.calls).toEqual([])
     }),
@@ -314,13 +322,15 @@ describe("ModelsDev Service", () => {
         state,
         Effect.gen(function* () {
           const svc = yield* ModelsDev.Service
+          const revision = yield* svc.revision()
           yield* Effect.all([svc.refresh(false), svc.refresh(false)], { concurrency: "unbounded" })
-          return yield* svc.get()
+          return { catalog: yield* svc.get(), revision, refreshed: yield* svc.revision() }
         }),
       )
       const final = yield* Ref.get(state)
       expect(final.calls.length).toBe(1)
-      expect(after).toEqual(fixture2)
+      expect(after.catalog).toEqual(fixture2)
+      expect(after.refreshed).toBe(after.revision + 1)
     }),
   )
 
@@ -332,11 +342,13 @@ describe("ModelsDev Service", () => {
         state,
         Effect.gen(function* () {
           const svc = yield* ModelsDev.Service
+          const before = yield* svc.revision()
           yield* svc.refresh(true)
-          return yield* svc.get()
+          return { catalog: yield* svc.get(), before, after: yield* svc.revision() }
         }),
       )
-      expect(result).toEqual(fixture)
+      expect(result.catalog).toEqual(fixture)
+      expect(result.after).toBe(result.before)
       // withTransientReadRetry retries 5xx, so calls may be > 1.
       const final = yield* Ref.get(state)
       expect(final.calls.length).toBeGreaterThanOrEqual(1)

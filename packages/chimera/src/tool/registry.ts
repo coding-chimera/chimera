@@ -8,6 +8,9 @@ import { GrepTool } from "./grep"
 import { ReadTool } from "./read"
 import { TaskTool } from "./task"
 import { ChimeraSwarmTool } from "./swarm"
+import { SubagentModelRoutesTool } from "./subagent_model_routes"
+import { SubagentModelPreferTool } from "./subagent_model_prefer"
+import { SubagentModelSuppressTool } from "./subagent_model_suppress"
 import { TodoWriteTool } from "./todo"
 import { WebFetchTool } from "./webfetch"
 import { BrowserOpenTool } from "./browser_open"
@@ -45,6 +48,7 @@ import {
 } from "./chimera"
 import * as Tool from "./tool"
 import { Config } from "@/config/config"
+import { ConfigSubagentRouting } from "@/config/subagent-routing"
 import { type ToolContext as PluginToolContext, type ToolDefinition } from "@opencode-ai/plugin"
 import { Schema } from "effect"
 import z from "zod"
@@ -149,6 +153,9 @@ export const layer = Layer.effect(
     const chimeraObligationResolveTool = yield* ChimeraObligationResolveTool
     const chimeraObligationIgnoreTool = yield* ChimeraObligationIgnoreTool
     const chimeraSwarmTool = yield* ChimeraSwarmTool
+    const subagentModelRoutesTool = yield* SubagentModelRoutesTool
+    const subagentModelPreferTool = yield* SubagentModelPreferTool
+    const subagentModelSuppressTool = yield* SubagentModelSuppressTool
     const memoryRemember = yield* MemoryRememberTool
     const memoryList = yield* MemoryListTool
     const memoryForget = yield* MemoryForgetTool
@@ -275,6 +282,9 @@ export const layer = Layer.effect(
           chimeraObligationResolve: Tool.init(chimeraObligationResolveTool),
           chimeraObligationIgnore: Tool.init(chimeraObligationIgnoreTool),
           chimeraSwarm: Tool.init(chimeraSwarmTool),
+          subagentModelRoutes: Tool.init(subagentModelRoutesTool),
+          subagentModelPrefer: Tool.init(subagentModelPreferTool),
+          subagentModelSuppress: Tool.init(subagentModelSuppressTool),
           memoryRemember: Tool.init(memoryRemember),
           memoryList: Tool.init(memoryList),
           memoryForget: Tool.init(memoryForget),
@@ -295,6 +305,9 @@ export const layer = Layer.effect(
             tool.workbrief,
             tool.task,
             tool.chimeraSwarm,
+            tool.subagentModelRoutes,
+            tool.subagentModelPrefer,
+            tool.subagentModelSuppress,
             tool.fetch,
             tool.todo,
             tool.search,
@@ -362,16 +375,23 @@ export const layer = Layer.effect(
       const profileSection = profiles.length
         ? [
             "Available model profiles:",
-            profiles.map(([name, entry]) => `- ${name}: ${entry.description ?? name}`).join("\n"),
+            profiles.map(([name, entry]) => `- ${name} -> ${entry.model}${entry.variant ? ` (variant: ${entry.variant})` : ""}${entry.description ? `: ${entry.description}` : ""}`).join("\n"),
           ].join("\n")
         : ""
-      return ["Available agent types and the tools they have access to:", description, profileSection]
+      const directModelSection = "Direct model selection:\n- Pass model as an exact provider/model route.\n- Use variant only when the selected route advertises it.\n- Use subagent_model_routes to inspect concrete current routes for a model identity."
+      return ["Available agent types and the tools they have access to:", description, profileSection, directModelSection]
         .filter(Boolean)
         .join("\n")
     })
 
     const tools: Interface["tools"] = Effect.fn("ToolRegistry.tools")(function* (input) {
       const filtered = (yield* all()).filter((tool) => {
+        if (
+          (tool.id === SubagentModelPreferTool.id || tool.id === SubagentModelSuppressTool.id) &&
+          input.agent.mode === "subagent"
+        )
+          return false
+
         if (tool.id === WebSearchTool.id) {
           return !usesProviderHostedWebSearch(input.providerID)
         }
@@ -395,7 +415,7 @@ export const layer = Layer.effect(
             id: tool.id,
             description: [
               output.description,
-              tool.id === TaskTool.id ? yield* describeTask(input.agent) : undefined,
+              tool.id === TaskTool.id || tool.id === ChimeraSwarmTool.id ? yield* describeTask(input.agent) : undefined,
             ]
               .filter(Boolean)
               .join("\n"),
@@ -420,7 +440,7 @@ export const layer = Layer.effect(
 export const defaultLayer = Layer.suspend(() =>
   Layer.provide(
     layer.pipe(
-      Layer.provide(Config.defaultLayer),
+      Layer.provide(Layer.mergeAll(Config.defaultLayer, ConfigSubagentRouting.defaultLayer)),
       Layer.provide(Auth.defaultLayer),
       Layer.provide(Plugin.defaultLayer),
       Layer.provide(Question.defaultLayer),

@@ -12,7 +12,7 @@ export type ResolvedSubagentExecution = {
     modelID: ModelID
     variant?: string
   }
-  source: "request-profile" | "role-route" | "agent-config" | "parent" | "resume"
+  source: "request-profile" | "role-route" | "agent-config" | "parent" | "resume" | "request-model" | "request-model-identity"
 }
 
 export type SubagentExecutionMetadata = {
@@ -27,6 +27,10 @@ export type SubagentExecutionMetadata = {
 export type SubagentExecutionInput = {
   subagentType: string
   modelProfile?: string
+  model?: string
+  modelIdentity?: string
+  provider?: string
+  variant?: string
   parent: { providerID: ProviderID; modelID: ModelID; variant?: string }
   subagent: Agent.Info
   delegation?: {
@@ -35,7 +39,41 @@ export type SubagentExecutionInput = {
   }
   existing?: { agent?: string; model?: { id: ModelID; providerID: ProviderID; variant?: string } | null }
   validateModel: (providerID: ProviderID, modelID: ModelID) => Effect.Effect<{ variants?: Record<string, unknown> }>
+  resolveModelIdentity?: (input: { modelIdentity: string; provider?: string }) => Effect.Effect<{ providerID: ProviderID; modelID: ModelID }, Error>
 }
+
+export type SubagentModelSelection = Pick<
+  SubagentExecutionInput,
+  "modelProfile" | "model" | "modelIdentity" | "provider" | "variant"
+>
+
+export const validateSubagentModelSelection = Effect.fn("SubagentExecution.validateSelection")(function* (
+  input: SubagentModelSelection,
+) {
+  if (input.model !== undefined && input.modelProfile !== undefined) {
+    return yield* Effect.fail(
+      new Error("model and model_profile are mutually exclusive: pass either model or model_profile, not both"),
+    )
+  }
+  if (input.modelIdentity !== undefined && (input.model !== undefined || input.modelProfile !== undefined)) {
+    return yield* Effect.fail(
+      new Error("model_profile, model, and model_identity are mutually exclusive: pass at most one selector"),
+    )
+  }
+  if (input.provider !== undefined && input.modelIdentity === undefined) {
+    return yield* Effect.fail(new Error("provider requires model_identity; exact model already includes its provider"))
+  }
+  if (input.modelIdentity !== undefined && input.modelIdentity.trim().length === 0) {
+    return yield* Effect.fail(new Error("model_identity must not be empty"))
+  }
+  if (input.provider !== undefined && input.provider.trim().length === 0) {
+    return yield* Effect.fail(new Error("provider must not be empty"))
+  }
+  if (input.variant !== undefined && input.model === undefined && input.modelIdentity === undefined) {
+    return yield* Effect.fail(new Error("variant requires model or model_identity"))
+  }
+})
+
 
 const applyResume: (input: {
   subagentType: string
@@ -61,7 +99,7 @@ const applyResume: (input: {
   }
   if (existing.model) {
     if (
-      input.resolved.source === "request-profile" &&
+      (input.resolved.source === "request-profile" || input.resolved.source === "request-model" || input.resolved.source === "request-model-identity") &&
       input.resolved.model.variant !== undefined &&
       input.resolved.model.variant !== existing.model.variant
     ) {
@@ -92,7 +130,8 @@ export const resolveSubagentExecution: (
 ) => Effect.Effect<ResolvedSubagentExecution, Error, never> = Effect.fn("SubagentExecution.resolve")(function* (
   input: SubagentExecutionInput,
 ) {
-  if (input.existing?.model && input.modelProfile === undefined) {
+  yield* validateSubagentModelSelection(input)
+  if (input.existing?.model && input.modelProfile === undefined && input.model === undefined && input.modelIdentity === undefined) {
     return yield* applyResume({
       subagentType: input.subagentType,
       existing: input.existing,
@@ -108,6 +147,58 @@ export const resolveSubagentExecution: (
       },
     })
   }
+
+  if (input.model !== undefined) {
+    const parsed = Provider.parseModel(input.model)
+    if (parsed.providerID.trim().length === 0 || parsed.modelID.trim().length === 0) {
+      return yield* Effect.fail(new Error(`Invalid model "${input.model}": expected "provider/model"`))
+    }
+    const info = yield* input.validateModel(parsed.providerID, parsed.modelID)
+    if (input.variant !== undefined && !info.variants?.[input.variant]) {
+      return yield* Effect.fail(
+        new Error(
+          `Model ${parsed.providerID}/${parsed.modelID} does not advertise variant "${input.variant}". Available variants: ${Object.keys(info.variants ?? {}).join(", ") || "none"}.`
+        ),
+      )
+    }
+    return yield* applyResume({
+      subagentType: input.subagentType,
+      existing: input.existing,
+      resolved: {
+        agent: input.subagentType,
+        model: { providerID: parsed.providerID, modelID: parsed.modelID, variant: input.variant },
+        source: "request-model",
+      },
+    })
+  }
+
+  if (input.modelIdentity !== undefined) {
+    if (!input.resolveModelIdentity) {
+      return yield* Effect.fail(new Error("model_identity resolution is unavailable"))
+    }
+    const route = yield* input.resolveModelIdentity({
+      modelIdentity: input.modelIdentity,
+      provider: input.provider,
+    })
+    const info = yield* input.validateModel(route.providerID, route.modelID)
+    if (input.variant !== undefined && !info.variants?.[input.variant]) {
+      return yield* Effect.fail(
+        new Error(
+          `Model ${route.providerID}/${route.modelID} does not advertise variant "${input.variant}". Available variants: ${Object.keys(info.variants ?? {}).join(", ") || "none"}.`,
+        ),
+      )
+    }
+    return yield* applyResume({
+      subagentType: input.subagentType,
+      existing: input.existing,
+      resolved: {
+        agent: input.subagentType,
+        model: { providerID: route.providerID, modelID: route.modelID, variant: input.variant },
+        source: "request-model-identity",
+      },
+    })
+  }
+
 
   const profiles = input.delegation?.model_profiles
   const routeProfile = input.delegation?.routes?.[input.subagentType]
@@ -132,7 +223,7 @@ export const resolveSubagentExecution: (
     if (variant !== undefined && !info.variants?.[variant]) {
       return yield* Effect.fail(
         new Error(
-          `Model ${parsed.providerID}/${parsed.modelID} does not advertise variant "${variant}". Available variants: ${Object.keys(info.variants ?? {}).join(", ") || "none"}.`,
+          `Model ${parsed.providerID}/${parsed.modelID} does not advertise variant "${variant}". Available variants: ${Object.keys(info.variants ?? {}).join(", ") || "none"}.`
         ),
       )
     }

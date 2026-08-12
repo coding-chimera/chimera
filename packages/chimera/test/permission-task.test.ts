@@ -125,6 +125,56 @@ describe("Permission.evaluate for permission.task_profile", () => {
   })
 })
 
+describe("Permission.evaluate for permission.task_model", () => {
+  const createRuleset = (rules: Record<string, "allow" | "deny" | "ask">): Permission.Ruleset =>
+    Object.entries(rules).map(([pattern, action]) => ({
+      permission: "task_model",
+      pattern,
+      action,
+    }))
+
+  test("returns ask when no match (default)", () => {
+    expect(Permission.evaluate("task_model", "deepseek/deepseek-v4-flash", []).action).toBe("ask")
+  })
+
+  test("returns deny for explicit deny", () => {
+    const ruleset = createRuleset({ "deepseek/deepseek-v4-flash": "deny" })
+    expect(Permission.evaluate("task_model", "deepseek/deepseek-v4-flash", ruleset).action).toBe("deny")
+  })
+
+  test("returns allow for explicit allow", () => {
+    const ruleset = createRuleset({ "deepseek/deepseek-v4-flash": "allow" })
+    expect(Permission.evaluate("task_model", "deepseek/deepseek-v4-flash", ruleset).action).toBe("allow")
+  })
+
+  test("returns ask for explicit ask", () => {
+    const ruleset = createRuleset({ "deepseek/deepseek-v4-flash": "ask" })
+    expect(Permission.evaluate("task_model", "deepseek/deepseek-v4-flash", ruleset).action).toBe("ask")
+  })
+
+  test("matches wildcard patterns with deny", () => {
+    const ruleset = createRuleset({ "deepseek/*": "deny" })
+    expect(Permission.evaluate("task_model", "deepseek/deepseek-v4-flash", ruleset).action).toBe("deny")
+    expect(Permission.evaluate("task_model", "deepseek/deepseek-r1", ruleset).action).toBe("deny")
+    expect(Permission.evaluate("task_model", "test/test-model", ruleset).action).toBe("ask")
+  })
+
+  test("later rules take precedence (last match wins)", () => {
+    const ruleset = createRuleset({
+      "deepseek/*": "deny",
+      "deepseek/deepseek-v4-flash": "allow",
+    })
+    expect(Permission.evaluate("task_model", "deepseek/deepseek-v4-flash", ruleset).action).toBe("allow")
+    expect(Permission.evaluate("task_model", "deepseek/deepseek-r1", ruleset).action).toBe("deny")
+  })
+
+  test("matches global wildcard", () => {
+    expect(Permission.evaluate("task_model", "deepseek/deepseek-v4-flash", createRuleset({ "*": "allow" })).action).toBe("allow")
+    expect(Permission.evaluate("task_model", "deepseek/deepseek-v4-flash", createRuleset({ "*": "deny" })).action).toBe("deny")
+    expect(Permission.evaluate("task_model", "deepseek/deepseek-v4-flash", createRuleset({ "*": "ask" })).action).toBe("ask")
+  })
+})
+
 describe("permission.task_profile with real config files", () => {
   test("loads task_profile permissions from chimera.json config", async () => {
     await using tmp = await tmpdir({
@@ -145,6 +195,31 @@ describe("permission.task_profile with real config files", () => {
         const ruleset = Permission.fromConfig(config.permission ?? {})
         expect(Permission.evaluate("task_profile", "luna", ruleset).action).toBe("deny")
         expect(Permission.evaluate("task_profile", "general", ruleset).action).toBe("allow")
+      },
+    })
+  })
+})
+
+describe("permission.task_model with real config files", () => {
+  test("loads task_model permissions from chimera.json config", async () => {
+    await using tmp = await tmpdir({
+      git: true,
+      config: {
+        permission: {
+          task_model: {
+            "*": "ask",
+            "deepseek/deepseek-v4-flash": "allow",
+          },
+        },
+      },
+    })
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const config = await load()
+        const ruleset = Permission.fromConfig(config.permission ?? {})
+        expect(Permission.evaluate("task_model", "deepseek/deepseek-v4-flash", ruleset).action).toBe("allow")
+        expect(Permission.evaluate("task_model", "some/other-model", ruleset).action).toBe("ask")
       },
     })
   })
