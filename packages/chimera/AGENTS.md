@@ -29,12 +29,20 @@
 # Ultra tier semantics
 
 - `ultra` is a Chimera product-level reasoning tier (a model variant), **not a provider-offered tier**. It means the model's highest supported reasoning effort **plus** proactive multi-agent delegation.
-- It is **not always `max`**: the advertised `ultra` variant carries the model's highest supported effort (e.g. `xhigh` for models that top out there), never a hardcoded `max` assumption. Today's ultra advertisers (gpt-5.6-sol/terra, kimi k3, deepseek-v4-flash) all top out at `max`, which is why the code currently shows `reasoningEffort: "max"`.
+- Membership is config-driven: `ultra_models` in chimera.json extends the built-in defaults (`DEFAULT_ULTRA_MODELS` in `src/provider/ultra.ts`: gpt-5.6-sol/terra, k3, deepseek-v4-flash). Entries match as case-insensitive substrings of the model or api id. Provider assembly stamps `model.ultra`, and `variants()` advertises `ultra = { reasoningEffort: <highest declared effort> }` for members. It is **not always `max`**: models topping out at `xhigh` or `high` advertise that effort instead.
 - The advertising layer translates `ultra` to that maximum value before any transport sees it; a raw `"ultra"` effort must never reach the wire. `lowerUltraEffort` in `src/provider/transform.ts` and `buildReasoning` in `src/session/codex-responses.ts` are defensive backstops.
-- Selecting the `ultra` variant activates proactive multi-agent delegation via `multiAgentPolicy` in `src/session/llm.ts`. The injected `<multi_agent_mode>` fragment is model-specialized: DeepSeek ultra uses an exploration-first swarm profile (split investigation into independent sub-questions and fan out with `chimera_swarm`; dispatch tiers, item construction, and anti-exemption rules live in `src/session/prompt/deepseek-ultra.txt`, injected via `SystemPrompt.ultraVariant` for DeepSeek ultra root sessions only), while other models keep the generic proactive delegation text.
-- Advertising points: codex-semantics models via profiles in `src/provider/codex-model.ts` (`ultra: true`, appended only when the model's codex efforts include `max`); openai-compatible models via `variants()` in `src/provider/transform.ts` (kimi k3, deepseek-v4-flash).
-- When adding `ultra` to a new model, derive the advertised effort from the model's declared reasoning efforts (its highest one), not from `max` by default.
+- Selecting the `ultra` variant activates proactive multi-agent delegation via `multiAgentPolicy` in `src/session/llm.ts` (generic root text; child sessions stay explicit-request-only). Ultra root sessions also receive the generic `src/session/prompt/ultra.txt` layer plus a model-specific ultra layer when one is registered in `ULTRA_LAYERS` in `src/session/system.ts` (e.g. `deepseek-ultra.txt` for DeepSeek).
+- Prompt layers are convention-based: `src/session/system.ts` matches ordered registry entries (`SPECIALIZATIONS`, `OVERLAYS`, `ULTRA_LAYERS`) against the model/provider id. Adding a layer for a new model family is normally a new txt file plus one registry entry.
+- Subagents never run `ultra`: explicit subagent requests for `ultra` are rejected, and an inherited `ultra` variant is stripped before child dispatch.
+- When adding `ultra` to a new model, add its name to `ultra_models` (or the built-in defaults); the advertised effort always derives from the model's highest declared effort, never from `max` by default.
 
+# Remote compaction model eligibility
+
+- Remote compaction (OpenAI Responses API compaction) is gated by a model-level capability list, not by provider claims: eligibility is determined by the model, not the provider.
+- Membership is config-driven: `remote_compaction_models` in chimera.json extends the built-in trusted defaults (`DEFAULT_REMOTE_COMPACTION_MODELS` in `src/session/remote-compaction-registry.ts`, same pattern as `ultra_models`). Config layers merge by union, like `ultra_models`.
+- Entries match `model.api.id` exactly or as a versioned prefix (`<entry>-...`), case-insensitively after trim; `"gpt-5.6"` covers `gpt-5.6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, and dated variants.
+- Both resolution branches consult the merged list via `isModelRemoteCompactionCapable`: the OpenAI OAuth branch (`supportsOpenAIRemoteCompactionModel`) and the provider-transport branch. A miss resolves to reason `model_unsupported` with local fallback.
+- When a new trusted OpenAI-native model family lands, add its base id to `DEFAULT_REMOTE_COMPACTION_MODELS`; user-specific or relay models belong in the `remote_compaction_models` config instead.
 # Database guide
 
 ## Database

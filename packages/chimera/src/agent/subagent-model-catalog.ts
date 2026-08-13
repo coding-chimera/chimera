@@ -27,6 +27,7 @@ export interface IdentitySummary {
   identityConfidence: ModelIdentity.IdentityConfidence
   routeCount: number
   providerIDs: string[]
+  variants: string[]
   preferredProviderID?: string
 }
 
@@ -105,19 +106,21 @@ function summarize(items: ModelRoute[]): IdentitySummary[] {
         identityConfidence: route.identityConfidence,
         routeCount: 1,
         providerIDs: [route.providerID],
+        variants: [...route.variants],
         preferredProviderID: route.preferred ? route.providerID : undefined,
       })
       continue
     }
     existing.routeCount += 1
     if (!existing.providerIDs.includes(route.providerID)) existing.providerIDs.push(route.providerID)
+    for (const variant of route.variants) if (!existing.variants.includes(variant)) existing.variants.push(variant)
     if (route.preferred) existing.preferredProviderID = route.providerID
     if (CONFIDENCE_RANK[route.identityConfidence] > CONFIDENCE_RANK[existing.identityConfidence]) {
       existing.identityConfidence = route.identityConfidence
     }
   }
   return [...groups.values()]
-    .map((item) => ({ ...item, providerIDs: item.providerIDs.toSorted() }))
+    .map((item) => ({ ...item, providerIDs: item.providerIDs.toSorted(), variants: item.variants.toSorted() }))
     .sort((a, b) => a.identity.localeCompare(b.identity) || a.identityConfidence.localeCompare(b.identityConfidence))
 }
 
@@ -304,7 +307,8 @@ export function disclosure(snap: Snapshot, maxChars = DISCLOSURE_MAX_CHARS): str
   const footer = "\nUse `subagent_model_routes` to inspect current concrete routes before choosing a provider."
   const lines = snap.identities.map((identity) => {
     const preferred = identity.preferredProviderID ? `; preferred ${identity.preferredProviderID}` : ""
-    return `- ${JSON.stringify(identity.identity)}: ${identity.routeCount} ${identity.routeCount === 1 ? "route" : "routes"}${preferred}`
+    const variants = identity.variants.length > 0 ? `; variants: ${identity.variants.join(", ")}` : ""
+    return `- ${JSON.stringify(identity.identity)}: ${identity.routeCount} ${identity.routeCount === 1 ? "route" : "routes"}${variants}${preferred}`
   })
   for (let included = lines.length; included >= 0; included--) {
     const omitted = lines.length - included

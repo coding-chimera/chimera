@@ -2,18 +2,19 @@ import { Context, Effect, Layer } from "effect"
 
 import { InstanceState } from "@/effect/instance-state"
 
-import PROMPT_ANTHROPIC from "./prompt/anthropic.txt"
+import PROMPT_CLAUDE from "./prompt/claude.txt"
 import PROMPT_CHIMERA from "./prompt/chimera.txt"
 import PROMPT_DEFAULT from "./prompt/default.txt"
 import PROMPT_WORKFLOW from "./prompt/workflow.txt"
-import PROMPT_BEAST from "./prompt/beast.txt"
+import PROMPT_GPT4 from "./prompt/gpt-4.txt"
 import PROMPT_GEMINI from "./prompt/gemini.txt"
 import PROMPT_GPT from "./prompt/gpt.txt"
-import PROMPT_GPT55 from "./prompt/gpt55.txt"
+import PROMPT_GPT55 from "./prompt/gpt-5.5.txt"
 import PROMPT_KIMI from "./prompt/kimi.txt"
 import PROMPT_DEEPSEEK from "./prompt/deepseek.txt"
 import PROMPT_DEEPSEEK_OVERLAY from "./prompt/deepseek-overlay.txt"
 import PROMPT_DEEPSEEK_ULTRA from "./prompt/deepseek-ultra.txt"
+import PROMPT_ULTRA from "./prompt/ultra.txt"
 
 import PROMPT_CODEX from "./prompt/codex.txt"
 import PROMPT_TRINITY from "./prompt/trinity.txt"
@@ -29,43 +30,70 @@ function ids(model: Provider.Model) {
   return { apiID, providerID, modelSlug }
 }
 
-function isDeepSeek(model: Provider.Model) {
-  const modelIDs = ids(model)
-  return modelIDs.providerID.includes("deepseek") || modelIDs.apiID.includes("deepseek")
+type ModelIDs = ReturnType<typeof ids>
+
+// Convention-based prompt layers. Entries are matched in order (first match
+// wins). By default a key matches as a case-insensitive substring of the
+// api id; `scope: "both"` also matches the provider id, `exact` restricts
+// matching to the exact model slug, and `match` overrides the predicate.
+// Adding a layer for a new model family is normally just a new txt file plus
+// one entry here.
+type LayerEntry = {
+  keys: string[]
+  content: string
+  exact?: boolean
+  scope?: "api" | "both"
+  match?: (ids: ModelIDs) => boolean
 }
 
-function specialization(model: Provider.Model) {
-  const modelIDs = ids(model)
+const SPECIALIZATIONS: LayerEntry[] = [
+  { keys: ["gpt-4", "o1", "o3"], content: PROMPT_GPT4 },
+  { keys: ["gpt-5.5"], content: PROMPT_GPT55, exact: true },
+  { keys: ["codex"], content: PROMPT_CODEX, match: (modelIDs) => modelIDs.apiID.includes("gpt") && modelIDs.apiID.includes("codex") },
+  { keys: ["gpt"], content: PROMPT_GPT },
+  { keys: ["gemini"], content: PROMPT_GEMINI },
+  { keys: ["claude"], content: PROMPT_CLAUDE },
+  { keys: ["trinity"], content: PROMPT_TRINITY },
+  { keys: ["kimi"], content: PROMPT_KIMI, scope: "both" },
+  { keys: ["deepseek"], content: PROMPT_DEEPSEEK, scope: "both" },
+]
 
-  if (modelIDs.apiID.includes("gpt-4") || modelIDs.apiID.includes("o1") || modelIDs.apiID.includes("o3"))
-    return PROMPT_BEAST
-  if (modelIDs.apiID.includes("gpt")) {
-    if (modelIDs.modelSlug === "gpt-5.5") return PROMPT_GPT55
-    if (modelIDs.apiID.includes("codex")) {
-      return PROMPT_CODEX
-    }
-    return PROMPT_GPT
-  }
-  if (modelIDs.apiID.includes("gemini-")) return PROMPT_GEMINI
-  if (modelIDs.apiID.includes("claude")) return PROMPT_ANTHROPIC
-  if (modelIDs.apiID.includes("trinity")) return PROMPT_TRINITY
-  if (modelIDs.providerID.includes("kimi") || modelIDs.apiID.includes("kimi")) return PROMPT_KIMI
-  if (isDeepSeek(model)) return PROMPT_DEEPSEEK
+const OVERLAYS: LayerEntry[] = [
+  { keys: ["deepseek"], content: PROMPT_DEEPSEEK_OVERLAY, scope: "both" },
+]
+
+const ULTRA_LAYERS: LayerEntry[] = [
+  { keys: ["deepseek"], content: PROMPT_DEEPSEEK_ULTRA, scope: "both" },
+]
+
+function matches(entry: LayerEntry, modelIDs: ModelIDs) {
+  if (entry.match) return entry.match(modelIDs)
+  if (entry.exact) return entry.keys.includes(modelIDs.modelSlug)
+  const haystacks = entry.scope === "both" ? [modelIDs.apiID, modelIDs.providerID] : [modelIDs.apiID]
+  return entry.keys.some((key) => haystacks.some((haystack) => haystack.includes(key)))
+}
+
+function matchLayer(entries: LayerEntry[], model: Provider.Model) {
+  const modelIDs = ids(model)
+  return entries.find((entry) => matches(entry, modelIDs))?.content
 }
 
 export function provider(model: Provider.Model) {
-  const tuned = specialization(model)
+  const tuned = matchLayer(SPECIALIZATIONS, model)
   return [PROMPT_DEFAULT, PROMPT_WORKFLOW, PROMPT_CHIMERA, ...(tuned ? [tuned] : [])]
 }
 
 export function overlay(model: Provider.Model) {
-  if (isDeepSeek(model)) return [PROMPT_DEEPSEEK_OVERLAY]
-  return []
+  const found = matchLayer(OVERLAYS, model)
+  return found ? [found] : []
 }
 
+// Ultra root sessions always receive the generic ultra layer, plus a
+// model-specific ultra layer when one is registered for the model.
 export function ultraVariant(model: Provider.Model, variant: string | undefined) {
-  if (variant !== "ultra" || !isDeepSeek(model)) return []
-  return [PROMPT_DEEPSEEK_ULTRA]
+  if (variant !== "ultra") return []
+  const specific = matchLayer(ULTRA_LAYERS, model)
+  return [PROMPT_ULTRA, ...(specific ? [specific] : [])]
 }
 
 export interface Interface {

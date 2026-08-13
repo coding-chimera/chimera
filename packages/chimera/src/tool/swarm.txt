@@ -16,7 +16,7 @@ Concurrency defaults to 16 and is capped at 16. Treat 16 as a capacity ceiling, 
 
 Optional `model_profile` names a `delegation.model_profiles` entry and applies its configured model and variant to the fan-out.
 
-Optional exact selection: pass `model` as a current `provider/model` route, plus `variant` only when that route advertises it.
+Optional exact selection: pass `model` as a current `provider/model` route, plus `variant` only when that route advertises it. Subagents do not support the `ultra` variant; it is reserved for root sessions.
 
 Optional identity selection: pass `model_identity` to resolve a current runtime identity once before fan-out. Add `provider` only to narrow the identity to one current provider. Use `subagent_model_routes` when identity routes are ambiguous; do not invent provider IDs or deployment names.
 

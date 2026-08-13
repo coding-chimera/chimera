@@ -1,17 +1,24 @@
 import type { Provider } from "@/provider/provider"
 
 /**
- * Built-in trusted model capability registry for remote compaction.
+ * Built-in trusted model capability defaults for remote compaction.
  *
  * Remote compaction is an OpenAI-native capability (Responses API + OAuth credential).
  * Only models listed here are considered truly capable of remote compaction.
  * Third-party relay providers (e.g. dahetao) may proxy this ability but are not
  * inherently trustworthy — eligibility is determined by the model, not the provider.
  *
- * To add a new model: append its API model ID (the `model.api.id` value used in
- * requests to the upstream endpoint) to the set below.
+ * The `remote_compaction_models` chimera.json config key extends these defaults
+ * (same pattern as `ultra_models`). Entries match the model api id exactly or as
+ * a versioned prefix ("<entry>-..."), so "gpt-5.6" covers gpt-5.6-luna,
+ * gpt-5.6-sol, and dated variants.
+ *
+ * To add a new trusted model: append its API model ID (the `model.api.id` value
+ * used in requests to the upstream endpoint) to the list below.
  */
-const REMOTE_COMPACTION_CAPABLE_MODELS = new Set([
+export const DEFAULT_REMOTE_COMPACTION_MODELS = [
+  // GPT-5.6 series
+  "gpt-5.6",
   // GPT-5.5 series
   "gpt-5.5",
   // GPT-5.4 series
@@ -51,23 +58,31 @@ const REMOTE_COMPACTION_CAPABLE_MODELS = new Set([
   "o4-mini",
   "codex-mini",
   // New models: add here
-])
+]
+
+function normalize(value: string) {
+  return value.trim().toLowerCase()
+}
+
+export function remoteCompactionModels(configured?: readonly string[]) {
+  return Array.from(
+    new Set(
+      [...DEFAULT_REMOTE_COMPACTION_MODELS, ...(configured ?? [])].map(normalize).filter((entry) => entry.length > 0),
+    ),
+  )
+}
 
 /**
  * Determine whether a model is truly capable of remote compaction based on the
- * built-in trusted registry. This checks `model.api.id` (the actual ID sent to
- * the upstream endpoint), not the provider ID.
+ * built-in trusted defaults plus the `remote_compaction_models` config entries.
+ * This checks `model.api.id` (the actual ID sent to the upstream endpoint),
+ * not the provider ID.
  *
  * Handles versioned suffixes (e.g. `gpt-5.4-2026-03-05` matches `gpt-5.4`).
  */
-export function isModelRemoteCompactionCapable(model: Provider.Model): boolean {
-  const modelID = model.api.id
-  if (REMOTE_COMPACTION_CAPABLE_MODELS.has(modelID)) return true
-  // Prefix match for versioned suffixes: "gpt-5.4-2026-03-05" matches "gpt-5.4"
-  for (const capable of REMOTE_COMPACTION_CAPABLE_MODELS) {
-    if (modelID.startsWith(capable + "-")) return true
-  }
-  return false
+export function isModelRemoteCompactionCapable(model: Provider.Model, configured?: readonly string[]) {
+  const modelID = normalize(model.api.id)
+  return remoteCompactionModels(configured).some((entry) => modelID === entry || modelID.startsWith(entry + "-"))
 }
 
 /**

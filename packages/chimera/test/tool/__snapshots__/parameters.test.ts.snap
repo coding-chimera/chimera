@@ -1030,7 +1030,7 @@ exports[`tool parameters JSON Schema (wire shape) task 1`] = `
       "type": "string",
     },
     "variant": {
-      "description": "Model variant (e.g. ultra) to use with model or model_identity. Only allowed when the resolved model advertises it.",
+      "description": "Model variant to use with model or model_identity. Only allowed when the resolved model advertises it. Subagents do not support the ultra variant; it is reserved for root sessions.",
       "type": "string",
     },
   },
@@ -1255,7 +1255,7 @@ exports[`tool parameters JSON Schema (wire shape) chimera_swarm 1`] = `
       "type": "string",
     },
     "variant": {
-      "description": "Model variant (e.g. ultra) to use with model or model_identity. Only allowed when the resolved model advertises it.",
+      "description": "Model variant to use with model or model_identity. Only allowed when the resolved model advertises it. Subagents do not support the ultra variant; it is reserved for root sessions.",
       "type": "string",
     },
   },

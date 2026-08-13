@@ -69,6 +69,13 @@ export const validateSubagentModelSelection = Effect.fn("SubagentExecution.valid
   if (input.provider !== undefined && input.provider.trim().length === 0) {
     return yield* Effect.fail(new Error("provider must not be empty"))
   }
+  if (input.variant !== undefined && input.variant.toLowerCase() === "ultra") {
+    return yield* Effect.fail(
+      new Error(
+        "Subagents do not support the ultra variant; ultra is reserved for root sessions. Omit variant or choose a non-ultra variant.",
+      ),
+    )
+  }
   if (input.variant !== undefined && input.model === undefined && input.modelIdentity === undefined) {
     return yield* Effect.fail(new Error("variant requires model or model_identity"))
   }
@@ -246,7 +253,9 @@ export const resolveSubagentExecution: (
         ? undefined
         : yield* input.validateModel(model.providerID, model.modelID).pipe(
             Effect.catchCause(() => Effect.succeed<{ variants?: Record<string, unknown> }>({})),
-            Effect.map((info) => (info.variants?.[input.subagent.variant!] ? input.subagent.variant : undefined)),
+            Effect.map((info) =>
+              info.variants?.[input.subagent.variant!] && input.subagent.variant!.toLowerCase() !== "ultra" ? input.subagent.variant : undefined,
+            ),
           )
     return yield* applyResume({
       subagentType: input.subagentType,
@@ -260,7 +269,11 @@ export const resolveSubagentExecution: (
     existing: input.existing,
     resolved: {
       agent: input.subagentType,
-      model: { providerID: input.parent.providerID, modelID: input.parent.modelID, variant: input.parent.variant },
+      model: {
+        providerID: input.parent.providerID,
+        modelID: input.parent.modelID,
+        variant: input.parent.variant?.toLowerCase() === "ultra" ? undefined : input.parent.variant,
+      },
       source: "parent",
     },
   })

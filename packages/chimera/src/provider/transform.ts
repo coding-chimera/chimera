@@ -550,7 +550,7 @@ export function codexLimit(apiId: string) {
 function codexReasoningEfforts(model: Provider.Model) {
   const capabilityID = model.capability_model_id ?? CodexModel.capabilityModelID(model.api.id)
   if (!capabilityID) return []
-  return CodexModel.reasoningEfforts(capabilityID, model.reasoning_efforts)
+  return CodexModel.reasoningEfforts(capabilityID, model.reasoning_efforts, model.ultra === true)
 }
 
 function isNvidiaKimiK26(model: Provider.Model) {
@@ -623,8 +623,6 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
 
   const id = model.id.toLowerCase()
   const apiID = model.api.id.toLowerCase()
-  const isDeepSeekV4Flash = id.includes("deepseek-v4-flash")
-  const isKimiK3 = apiID.includes("k3")
   const adaptiveEfforts = anthropicAdaptiveEfforts(model.api.id)
   if (isNvidiaKimiK26(model)) {
     return Object.fromEntries(NVIDIA_KIMI_K26_EFFORTS.map((effort) => [effort, { reasoningEffort: effort }]))
@@ -637,11 +635,12 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
   // TENCENT_GLM52_EFFORTS hardcode.
   if (model.reasoning_efforts?.length && model.api.npm === "@ai-sdk/openai-compatible") {
     const compatible = Object.fromEntries(model.reasoning_efforts.map((effort) => [effort, { reasoningEffort: effort }]))
-    // Kimi k3 and DeepSeek V4 Flash advertise the Ultra product profile at their
-    // highest supported effort; the proactive multi-agent policy is resolved from
-    // this advertised variant in session/llm.
+    // Models in the ultra list (built-in defaults plus the `ultra_models` config)
+    // advertise the Ultra product profile at their highest supported effort; the
+    // proactive multi-agent policy is resolved from this advertised variant in
+    // session/llm.
     const top = CodexModel.highestReasoningEffort(model.reasoning_efforts)
-    if ((isKimiK3 || isDeepSeekV4Flash) && top) compatible.ultra = { reasoningEffort: top }
+    if (model.ultra === true && top) compatible.ultra = { reasoningEffort: top }
     return compatible
   }
   if (
@@ -783,7 +782,7 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
       if (
         apiID.includes("deepseek-v4") ||
         isClaudeCompatibleModel ||
-        isKimiK3
+        model.ultra === true
       ) {
         efforts.push("max")
       }
@@ -791,10 +790,10 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
         efforts.push("xhigh")
       }
       const compatible = Object.fromEntries(efforts.map((effort) => [effort, { reasoningEffort: effort }]))
-      // Kimi k3 and DeepSeek V4 Flash advertise the Ultra product profile at their
-      // highest supported effort; the proactive Dynamic Workflow policy is resolved
-      // from this advertised variant in session/llm.
-      if (isKimiK3 || isDeepSeekV4Flash) {
+      // Ultra-list models advertise the Ultra product profile at their highest
+      // supported effort; the proactive multi-agent policy is resolved from this
+      // advertised variant in session/llm.
+      if (model.ultra === true) {
         const top = CodexModel.highestReasoningEffort(efforts)
         if (top) compatible.ultra = { reasoningEffort: top }
       }

@@ -31,7 +31,7 @@ export const Parameters = Schema.Struct({
   }),
   variant: Schema.optional(Schema.String).annotate({
     description:
-      "Model variant (e.g. ultra) to use with model or model_identity. Only allowed when the resolved model advertises it.",
+      "Model variant to use with model or model_identity. Only allowed when the resolved model advertises it. Subagents do not support the ultra variant; it is reserved for root sessions.",
   }),
   task_id: Schema.optional(Schema.String).annotate({
     description:

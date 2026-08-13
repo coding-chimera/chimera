@@ -66,6 +66,7 @@ describe("plugin.codex", () => {
           },
           "gpt-5.6-sol": {
             id: "gpt-5.6-sol",
+            ultra: true,
             providerID: "openai",
             api: { id: "gpt-5.6-sol" },
             limit: { context: 1_050_000, input: 922_000, output: 128_000 },

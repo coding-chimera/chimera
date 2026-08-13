@@ -8,7 +8,6 @@ type Profile = {
   codexEfforts?: readonly ReasoningEffort[]
   requiresConfiguredEfforts?: boolean
   codexInputLimit?: number
-  ultra?: boolean
 }
 
 const profiles: Record<string, Profile> = {
@@ -29,14 +28,12 @@ const profiles: Record<string, Profile> = {
     catalogSemantics: true,
     codexEfforts: ["low", "medium", "high", "xhigh", "max"],
     codexInputLimit: 372_000,
-    ultra: true,
   },
   "gpt-5.6-terra": {
     aliases: ["fast", "pro"],
     catalogSemantics: true,
     codexEfforts: ["low", "medium", "high", "xhigh", "max"],
     codexInputLimit: 372_000,
-    ultra: true,
   },
   "gpt-5.6-luna": {
     aliases: ["fast", "pro"],
@@ -78,13 +75,13 @@ export function highestReasoningEffort(efforts: readonly string[]) {
   return REASONING_EFFORTS.filter((effort) => efforts.includes(effort)).at(-1)
 }
 
-export function reasoningEfforts(capabilityID: string, configured?: readonly unknown[]) {
+export function reasoningEfforts(capabilityID: string, configured?: readonly unknown[], ultra?: boolean) {
   const current = profile(capabilityID)
   const preferred = current?.codexEfforts
   if (!preferred || (current.requiresConfiguredEfforts && configured === undefined)) return []
   const available = configured === undefined ? undefined : normalizeReasoningEfforts(configured)
   const efforts = available ? preferred.filter((effort) => available.includes(effort)) : [...preferred]
-  if (!efforts.length || !supportsUltra(capabilityID)) return efforts
+  if (!efforts.length || !ultra) return efforts
   return [...efforts, "ultra" as const]
 }
 
@@ -109,9 +106,4 @@ export function limit(value: string) {
 export function supportsCatalogSemantics(value: string) {
   return profile(value)?.catalogSemantics === true
 }
-
-export function supportsUltra(value: string) {
-  return profile(value)?.ultra === true
-}
-
 export * as CodexModel from "./codex-model"
