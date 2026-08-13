@@ -175,13 +175,14 @@ describe("session.system", () => {
     }),
   )
 
-  it.effect("routes DeepSeek ultra variant to the deepseek-ultra layer only", () =>
+  it.effect("routes DeepSeek ultra variant to the generic ultra layer plus the deepseek-ultra layer", () =>
     Effect.gen(function* () {
       const deepseek = {
         providerID: "dahetao",
         api: { id: "deepseek-v4-flash" },
       } as unknown as Parameters<typeof SystemPrompt.ultraVariant>[0]
 
+      expect(SystemPrompt.ultraVariant(deepseek, "ultra").join("\n")).toContain("You are running on the ultra tier")
       expect(SystemPrompt.ultraVariant(deepseek, "ultra").join("\n")).toContain("swarm 派发纪律")
       expect(SystemPrompt.ultraVariant(deepseek, "ultra").join("\n")).toContain("规则 1：探索类任务前 3 步内派发 chimera_swarm")
       expect(SystemPrompt.ultraVariant(deepseek, "ultra").join("\n")).toContain("规则 5：禁止自我豁免")
@@ -192,7 +193,8 @@ describe("session.system", () => {
         providerID: "kimi-for-coding",
         api: { id: "k3" },
       } as unknown as Parameters<typeof SystemPrompt.ultraVariant>[0]
-      expect(SystemPrompt.ultraVariant(kimi, "ultra")).toEqual([])
+      expect(SystemPrompt.ultraVariant(kimi, "ultra").join("\n")).toContain("You are running on the ultra tier")
+      expect(SystemPrompt.ultraVariant(kimi, "ultra").join("\n")).not.toContain("swarm 派发纪律")
       yield* Effect.void
     }),
   )

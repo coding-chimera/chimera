@@ -104,6 +104,66 @@ describe("SubagentExecution.resolve", () => {
     }),
   )
 
+describe("SubagentExecution.ultra policy", () => {
+  it.effect("rejects an explicit ultra variant for a subagent", () =>
+    Effect.gen(function* () {
+      const error = yield* resolveSubagentExecution({
+        subagentType: "general",
+        model: "test/test-model",
+        variant: "ultra",
+        parent,
+        subagent: subagent(),
+        validateModel: () => ok,
+      }).pipe(Effect.flip)
+      expect(String(error)).toContain("Subagents do not support the ultra variant")
+    }),
+  )
+
+  it.effect("rejects ultra case-insensitively on the model_identity path", () =>
+    Effect.gen(function* () {
+      const error = yield* resolveSubagentExecution({
+        subagentType: "general",
+        modelIdentity: "test-model",
+        variant: "Ultra",
+        parent,
+        subagent: subagent(),
+        validateModel: () => ok,
+        resolveModelIdentity: () =>
+          Effect.succeed({ providerID: ProviderID.make("test"), modelID: ModelID.make("test-model") }),
+      }).pipe(Effect.flip)
+      expect(String(error)).toContain("Subagents do not support the ultra variant")
+    }),
+  )
+
+  it.effect("strips an inherited ultra variant from the parent fallback", () =>
+    Effect.gen(function* () {
+      const result = yield* resolveSubagentExecution({
+        subagentType: "general",
+        parent: { ...parent, variant: "ultra" },
+        subagent: subagent(),
+        validateModel: () => ok,
+      })
+      expect(result.source).toBe("parent")
+      expect(result.model.variant).toBeUndefined()
+    }),
+  )
+
+  it.effect("drops an agent-config ultra variant even when advertised", () =>
+    Effect.gen(function* () {
+      const result = yield* resolveSubagentExecution({
+        subagentType: "general",
+        parent,
+        subagent: subagent({
+          model: { providerID: ProviderID.make("agent"), modelID: ModelID.make("agent-model") },
+          variant: "ultra",
+        }),
+        validateModel: () => Effect.succeed({ variants: { ultra: {} } }),
+      })
+      expect(result.source).toBe("agent-config")
+      expect(result.model.variant).toBeUndefined()
+    }),
+  )
+})
   it.effect("fails for an unknown route target profile", () =>
     Effect.gen(function* () {
       const error = yield* resolveSubagentExecution({

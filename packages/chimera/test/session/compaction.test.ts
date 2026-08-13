@@ -217,10 +217,10 @@ function layer(result: "continue" | "compact") {
   )
 }
 
-function cfg(compaction?: Config.Info["compaction"]) {
+function cfg(compaction?: Config.Info["compaction"], extra?: Partial<Config.Info>) {
   const base = Config.Info.zod.parse({})
   return TestConfig.layer({
-    get: () => Effect.succeed({ ...base, compaction }),
+    get: () => Effect.succeed({ ...base, ...extra, compaction }),
   })
 }
 
@@ -1803,6 +1803,32 @@ describe("session.compaction.process", () => {
     expect(await canCompact("off", model)).toBe(false)
     expect(await canCompact("auto", openai)).toBe(true)
     expect(await canCompact("on", mirror)).toBe(false)
+  })
+
+  test("remote_compaction_models config extends the built-in capability defaults", async () => {
+    const luna = createModel({ context: 100_000, output: 32_000, id: "gpt-5.6-luna", providerID: "openai" })
+    const custom = createModel({ context: 100_000, output: 32_000, id: "relay-compact-1", providerID: "openai" })
+    async function resolveModel(model: Provider.Model, models?: string[]) {
+      const rt = ManagedRuntime.make(
+        RemoteCompaction.layerWithEndpoint("http://127.0.0.1/responses/compact").pipe(
+          Layer.provide(authLayer()),
+          Layer.provide(cfg({ remote: "on" }, models ? { remote_compaction_models: models } : undefined)),
+          Layer.provide(FetchHttpClient.layer),
+        ),
+      )
+      try {
+        return await rt.runPromise(RemoteCompaction.Service.use((svc) => svc.resolve({ model })))
+      } finally {
+        await rt.dispose()
+      }
+    }
+
+    // gpt-5.6 series is covered by the built-in defaults
+    expect(await resolveModel(luna)).toMatchObject({ mode: "remote", target: "openai-codex", reason: "ready" })
+    // models outside the registry stay unsupported unless the config extends it
+    expect(await resolveModel(custom)).toMatchObject({ mode: "local", reason: "model_unsupported" })
+    // config entries match exactly or as a versioned prefix
+    expect(await resolveModel(custom, ["relay-compact"])).toMatchObject({ mode: "remote", target: "openai-codex", reason: "ready" })
   })
 
   test("model remote compaction disable overrides OpenAI OAuth and policy", async () => {

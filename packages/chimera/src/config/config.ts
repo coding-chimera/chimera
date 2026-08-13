@@ -57,6 +57,12 @@ function mergeConfigConcatArrays(target: Info, source: Info): Info {
   if (target.instructions && source.instructions) {
     merged.instructions = Array.from(new Set([...target.instructions, ...source.instructions]))
   }
+  if (target.ultra_models && source.ultra_models) {
+    merged.ultra_models = Array.from(new Set([...target.ultra_models, ...source.ultra_models]))
+  }
+  if (target.remote_compaction_models && source.remote_compaction_models) {
+    merged.remote_compaction_models = Array.from(new Set([...target.remote_compaction_models, ...source.remote_compaction_models]))
+  }
   return merged
 }
 
@@ -171,6 +177,14 @@ export const Info = Schema.Struct({
   }),
   enabled_providers: Schema.optional(Schema.mutable(Schema.Array(Schema.String))).annotate({
     description: "When set, ONLY these providers will be enabled. All other providers will be ignored",
+  }),
+  ultra_models: Schema.optional(Schema.mutable(Schema.Array(Schema.String))).annotate({
+    description:
+      "Model names that advertise the ultra tier (highest declared reasoning effort plus proactive multi-agent delegation). Matched as case-insensitive substrings of the model or api id; extends the built-in defaults.",
+  }),
+  remote_compaction_models: Schema.optional(Schema.mutable(Schema.Array(Schema.String))).annotate({
+    description:
+      "Model names eligible for remote compaction (OpenAI Responses API compaction). Matched against the model api id exactly or as a versioned prefix (\"<entry>-...\"), case-insensitively; extends the built-in trusted defaults.",
   }),
   model: Schema.optional(ConfigModelID).annotate({
     description: "Model to use in the format of provider/model, eg anthropic/claude-2",

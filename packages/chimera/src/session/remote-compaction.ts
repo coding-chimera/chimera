@@ -499,8 +499,8 @@ function durationLabel(duration: Parameters<typeof Effect.sleep>[0]) {
   return typeof duration === "number" || typeof duration === "string" ? String(duration) : "configured timeout"
 }
 
-export function supportsOpenAIRemoteCompactionModel(model: Provider.Model) {
-  return isModelRemoteCompactionCapable(model)
+export function supportsOpenAIRemoteCompactionModel(model: Provider.Model, configured?: readonly string[]) {
+  return isModelRemoteCompactionCapable(model, configured)
 }
 
 function truncate(text: string) {
@@ -726,6 +726,10 @@ export const layerWithEndpoint = (endpoint = codexEndpointUrl("responses/compact
 
     const resolve = Effect.fn("RemoteCompaction.resolve")(function* (input: ResolveInput) {
       const selectedPolicy = yield* policy(config)
+      const capableModels = yield* config.resolve(["remote_compaction_models"])
+      const configuredModels = Array.isArray(capableModels.value)
+        ? capableModels.value.filter((entry): entry is string => typeof entry === "string")
+        : undefined
       const configured = {
         mode: selectedPolicy.remote,
         protocol: selectedPolicy.remote_protocol,
@@ -788,7 +792,7 @@ export const layerWithEndpoint = (endpoint = codexEndpointUrl("responses/compact
         if (configured.mode === "off") return local("policy_off")
         if (stored?.type === "oauth") {
           if (input.model.remote_compaction === false) return local("model_disabled")
-          if (!supportsOpenAIRemoteCompactionModel(input.model)) return local("model_unsupported")
+          if (!supportsOpenAIRemoteCompactionModel(input.model, configuredModels)) return local("model_unsupported")
           if (stored?.type !== "oauth") return local("credential_unavailable", "missing")
           return {
             ...common,
@@ -803,7 +807,7 @@ export const layerWithEndpoint = (endpoint = codexEndpointUrl("responses/compact
           }
         }
         if (!provider || !info?.remote_compaction) return local("provider_capability_missing")
-        if (!isModelRemoteCompactionCapable(input.model)) return local("model_unsupported")
+        if (!isModelRemoteCompactionCapable(input.model, configuredModels)) return local("model_unsupported")
         if (input.model.remote_compaction !== true) return local("model_disabled")
         if (input.model.wire_api !== "responses") return local("wire_api_not_responses")
         if (!transport?.identity.ready) return local("credential_unavailable", "missing")

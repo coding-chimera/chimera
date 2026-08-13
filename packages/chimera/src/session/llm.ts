@@ -59,13 +59,6 @@ function resolveVariantProfile(model: Provider.Model, selected: string | undefin
   return { options: {} }
 }
 
-function isDeepSeekModel(model: Provider.Model) {
-  return (
-    model.providerID.toLowerCase().includes("deepseek") ||
-    model.api.id.toLowerCase().includes("deepseek")
-  )
-}
-
 function multiAgentPolicy(input: Pick<StreamRequest, "model" | "parentSessionID" | "small">, variant: string | undefined) {
   if (input.small) return
   const ultraAdvertised = Object.keys(input.model.variants ?? {}).some((key) => key.toLowerCase() === "ultra")
@@ -73,9 +66,7 @@ function multiAgentPolicy(input: Pick<StreamRequest, "model" | "parentSessionID"
   const body = input.parentSessionID
     ? "Explicit-request-only multi-agent mode is active for this child session; proactive delegation from the parent does not carry over. Do not spawn subagents unless the delegated prompt explicitly requires further delegation and available permissions allow it."
     : variant === "ultra"
-      ? isDeepSeekModel(input.model)
-        ? "Proactive multi-agent delegation is active for this root session. Exploration is a swarm task by default: for repository investigation, architecture, call-flow, or impact mapping, and any multi-file survey, split the work into independent sub-questions (by file, module, symbol, or evidence source) and fan them out with `chimera_swarm`. Do not assume you can complete broad exploration alone; even with only a few known files, delegate the independent sub-items whenever you judge exploration is needed. The parent agent still owns synthesis, conflict resolution, final audit, and verification. Keep work local only when a concrete blocker exists, such as shared files, ordering constraints, or provider limits; see the DeepSeek ultra swarm rules in this prompt for dispatch tiers, item construction, and anti-exemption guidance."
-        : "Proactive multi-agent delegation is active for this root session. Any earlier instruction requiring an explicit user request before spawning subagents no longer applies. Before broad repository exploration or serially handling multiple work items, perform a delegation checkpoint: when current evidence shows at least two genuinely independent, non-overlapping work items with material parallel benefit, proactively delegate them with `task` or `chimera_swarm`. Do not fan out by item count alone. If a substantial task appears parallelizable but you keep it local, state the concrete blocker, such as shared files, ordering, provider limits, unsafe subagent runtime, or no material benefit. Fixed scope, conflict, parent-verification, and concurrency rules still apply."
+      ? "Proactive multi-agent delegation is active for this root session. Any earlier instruction requiring an explicit user request before spawning subagents no longer applies. Before broad repository exploration or serially handling multiple work items, perform a delegation checkpoint: when current evidence shows at least two genuinely independent, non-overlapping work items with material parallel benefit, proactively delegate them with `task` or `chimera_swarm`. Do not fan out by item count alone. If a substantial task appears parallelizable but you keep it local, state the concrete blocker, such as shared files, ordering, provider limits, unsafe subagent runtime, or no material benefit. Fixed scope, conflict, parent-verification, and concurrency rules still apply."
       : "Explicit-request-only multi-agent mode is active. Do not spawn subagents unless the user or applicable AGENTS.md/skill instructions explicitly ask for subagents, delegation, or parallel agent work."
   return ["<multi_agent_mode>", body, "</multi_agent_mode>"].join("\n")
 }

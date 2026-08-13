@@ -121,7 +121,7 @@ describe("explicit config identity", () => {
     expect(snap.routes.map((route) => route.identity)).toEqual(["gpt-5.6", "gpt-5.6"])
     expect(snap.routes.every((route) => route.identityConfidence === "explicit")).toBe(true)
     expect(snap.identities).toEqual([
-      { identity: "gpt-5.6", identityConfidence: "explicit", routeCount: 2, providerIDs: ["azure", "openai"] },
+      { identity: "gpt-5.6", identityConfidence: "explicit", routeCount: 2, providerIDs: ["azure", "openai"], variants: [] },
     ])
   })
 })
@@ -139,7 +139,7 @@ describe("api-exact identity", () => {
     expect(snap.routes.map((route) => route.identity)).toEqual(["gpt-5.2", "gpt-5.2"])
     expect(snap.routes.every((route) => route.identityConfidence === "api-exact")).toBe(true)
     expect(snap.identities).toEqual([
-      { identity: "gpt-5.2", identityConfidence: "api-exact", routeCount: 2, providerIDs: ["azure", "openai"] },
+      { identity: "gpt-5.2", identityConfidence: "api-exact", routeCount: 2, providerIDs: ["azure", "openai"], variants: [] },
     ])
   })
 
@@ -301,7 +301,7 @@ describe("permission visibility", () => {
     const visible = SubagentModelCatalog.visible(snap, ruleset)
     expect(visible.routes.map((route) => route.model)).toEqual(["azure/alpha", "openai/alpha"])
     expect(visible.identities).toEqual([
-      { identity: "alpha", identityConfidence: "api-exact", routeCount: 2, providerIDs: ["azure", "openai"] },
+      { identity: "alpha", identityConfidence: "api-exact", routeCount: 2, providerIDs: ["azure", "openai"], variants: [] },
     ])
   })
 
@@ -356,6 +356,24 @@ describe("compact disclosure", () => {
     for (const line of first?.split("\n").filter((item) => item.startsWith("- \"identity-")) ?? []) {
       expect(line).toMatch(/: 1 route$/)
     }
+  })
+
+  test("shows the sorted variant union per identity", () => {
+    const snap = SubagentModelCatalog.buildSnapshot({
+      providers: {
+        openai: provider(ProviderID.openai, {
+          alpha: model({ id: ModelID.make("alpha"), variants: { ultra: { reasoningEffort: "max" }, high: {} } }),
+        }),
+        azure: provider(ProviderID.azure, {
+          alpha: model({
+            id: ModelID.make("alpha"),
+            api: { id: "alpha", url: "https://example.com", npm: "@ai-sdk/openai" },
+            variants: { max: {} },
+          }),
+        }),
+      },
+    })
+    expect(SubagentModelCatalog.disclosure(snap)).toContain(`- "alpha": 2 routes; variants: high, max, ultra`)
   })
 
   test("returns no partial disclosure when even the fixed guidance cannot fit", () => {
@@ -701,6 +719,7 @@ describe("Phase 4 preference precedence", () => {
         identityConfidence: "explicit",
         routeCount: 2,
         providerIDs: ["azure", "relay"],
+        variants: [],
       },
     ])
     expect(

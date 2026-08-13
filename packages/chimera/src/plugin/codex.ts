@@ -8,6 +8,7 @@ import { setTimeout as sleep } from "node:timers/promises"
 import { createServer } from "http"
 import { rewriteRemoteCompactionInput } from "../session/remote-compaction-codec"
 import { CodexModel } from "../provider/codex-model"
+import { mergeDeep } from "remeda"
 
 const log = Log.create({ service: "plugin.codex" })
 
@@ -21,10 +22,11 @@ function codexReasoningVariants(model: {
   api: { id: string }
   capability_model_id?: string
   reasoning_efforts?: readonly unknown[]
+  ultra?: boolean
 }) {
   const capabilityID = model.capability_model_id ?? CodexModel.capabilityModelID(model.api.id)
   if (!capabilityID) return
-  const efforts = CodexModel.reasoningEfforts(capabilityID, model.reasoning_efforts)
+  const efforts = CodexModel.reasoningEfforts(capabilityID, model.reasoning_efforts, model.ultra === true)
   if (efforts.length === 0) return
   const top = CodexModel.highestReasoningEffort(efforts)
   return Object.fromEntries(
@@ -484,7 +486,7 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
                     cache: { read: 0, write: 0 },
                   },
                   limit: limit ?? model.limit,
-                  variants: variants ?? model.variants ?? {},
+                  variants: variants ? mergeDeep(variants, model.variants ?? {}) : model.variants ?? {},
                 },
               ]
             }),
