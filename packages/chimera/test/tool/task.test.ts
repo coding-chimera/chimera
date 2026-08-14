@@ -3,6 +3,7 @@ import { Cause, Effect, Exit, Fiber, Layer } from "effect"
 import { Agent } from "../../src/agent/agent"
 import { Config } from "@/config/config"
 import { ConfigSubagentRouting } from "@/config/subagent-routing"
+import { Auth } from "@/auth"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Session } from "@/session/session"
 import { SessionTable } from "@/session/session.sql"
@@ -67,6 +68,13 @@ const delegationConfig = {
   provider: { test: providerFixture },
 
 }
+const disabledSchedulingConfig = {
+  ...delegationConfig,
+  delegation: {
+    ...delegationConfig.delegation,
+    scheduling: { enabled: false },
+  },
+}
 
 const twoProviderConfig = {
   ...delegationConfig,
@@ -111,12 +119,19 @@ const routingLayer = Layer.succeed(
       }),
   }),
 )
+const authLayer = Layer.mock(Auth.Service)({
+  get: () => Effect.succeed(undefined),
+  all: () => Effect.succeed({}),
+  set: () => Effect.void,
+  remove: () => Effect.void,
+})
 
 const it = testEffect(
   Layer.mergeAll(
     Agent.defaultLayer,
     Config.defaultLayer,
     routingLayer,
+    authLayer,
     CrossSpawnSpawner.defaultLayer,
     Session.defaultLayer,
     Truncate.defaultLayer,
@@ -142,6 +157,7 @@ const failIt = testEffect(
     Agent.defaultLayer,
     Config.defaultLayer,
     routingLayer,
+    authLayer,
     CrossSpawnSpawner.defaultLayer,
     failingSessionLayer,
     Truncate.defaultLayer,
@@ -2475,4 +2491,302 @@ describe("tool.task", () => {
     }),
     { config: twoProviderConfig },
   )
+  it.instance(
+    "execute selects a concrete route for workload-only dispatch and authorizes it",
+    () =>
+      Effect.gen(function* () {
+        const sessions = yield* Session.Service
+        const { chat, assistant } = yield* seed()
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+        const asks: Array<{ permission?: string; patterns?: readonly string[]; metadata?: Record<string, unknown> }> = []
+        let seen: SessionPrompt.PromptInput | undefined
+
+        const result = yield* def.execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+            workload: "scout",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps: stubOps({ onPrompt: (input) => (seen = input) }) },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: (input) =>
+              Effect.sync(() => {
+                asks.push(input)
+              }),
+          },
+        )
+
+        expect(asks.map((item) => item.permission)).toEqual(["task", "task_model"])
+        expect(asks[0]?.metadata).toMatchObject({ workload: "scout" })
+        expect(asks[1]?.patterns).toEqual([
+          `${result.metadata.model.providerID}/${result.metadata.model.modelID}`,
+        ])
+        expect(seen?.model).toEqual({
+          providerID: result.metadata.model.providerID,
+          modelID: result.metadata.model.modelID,
+        })
+        expect(seen?.variant).toBe(result.metadata.model.variant)
+        expect(result.metadata.execution).toMatchObject({ workload: "scout", source: "request-model", resumed: false })
+        expect((yield* sessions.get(result.metadata.sessionId)).model).toMatchObject({
+          providerID: result.metadata.model.providerID,
+          id: result.metadata.model.modelID,
+          variant: result.metadata.model.variant,
+        })
+      }),
+    { config: delegationConfig },
+  )
+
+  it.instance(
+    "execute keeps an explicit model and variant authoritative when workload is also set",
+    () =>
+      Effect.gen(function* () {
+        const { chat, assistant } = yield* seed()
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+        let seen: SessionPrompt.PromptInput | undefined
+
+        const result = yield* def.execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+            workload: "scout",
+            model: "test/test-model",
+            variant: "max",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps: stubOps({ onPrompt: (input) => (seen = input) }) },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+
+        expect(seen?.model).toEqual(ref)
+        expect(seen?.variant).toBe("max")
+        expect(result.metadata.model.variant).toBe("max")
+        expect(result.metadata.execution).toMatchObject({ workload: "scout", source: "request-model" })
+      }),
+    { config: delegationConfig },
+  )
+
+  it.instance(
+    "execute rejects workload-only dispatch when scheduling is disabled",
+    () =>
+      Effect.gen(function* () {
+        const sessions = yield* Session.Service
+        const { chat, assistant } = yield* seed()
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+        const asks: unknown[] = []
+
+        const exit = yield* def
+          .execute(
+            {
+              description: "inspect bug",
+              prompt: "look into the cache key path",
+              subagent_type: "general",
+              workload: "scout",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: { promptOps: stubOps() },
+              messages: [],
+              metadata: () => Effect.void,
+              ask: (input) =>
+                Effect.sync(() => {
+                  asks.push(input)
+                }),
+            },
+          )
+          .pipe(Effect.exit)
+
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit)) expect(Cause.pretty(exit.cause)).toContain("Subagent workload scheduling is disabled")
+        expect(asks).toHaveLength(0)
+        expect(yield* sessions.children(chat.id)).toHaveLength(0)
+      }),
+    { config: disabledSchedulingConfig },
+  )
+
+  it.instance(
+    "execute validates and dispatches an explicit model workload when scheduling is disabled",
+    () =>
+      Effect.gen(function* () {
+        const sessions = yield* Session.Service
+        const { chat, assistant } = yield* seed()
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+        const asks: Array<{ permission?: string; patterns?: readonly string[] }> = []
+
+        const invalid = yield* def
+          .execute(
+            {
+              description: "inspect bug",
+              prompt: "look into the cache key path",
+              subagent_type: "general",
+              workload: "unknown",
+              model: "test/test-model",
+              variant: "max",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: { promptOps: stubOps() },
+              messages: [],
+              metadata: () => Effect.void,
+              ask: (input) =>
+                Effect.sync(() => {
+                  asks.push(input)
+                }),
+            },
+          )
+          .pipe(Effect.exit)
+
+        expect(Exit.isFailure(invalid)).toBe(true)
+        if (Exit.isFailure(invalid)) expect(Cause.pretty(invalid.cause)).toContain("Valid workloads: scout, builder, reviewer")
+        expect(asks).toHaveLength(0)
+        expect(yield* sessions.children(chat.id)).toHaveLength(0)
+
+        let seen: SessionPrompt.PromptInput | undefined
+        const result = yield* def.execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+            workload: "scout",
+            model: "test/test-model",
+            variant: "max",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps: stubOps({ onPrompt: (input) => (seen = input) }) },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: (input) =>
+              Effect.sync(() => {
+                asks.push(input)
+              }),
+          },
+        )
+
+        expect(asks.map((item) => item.permission)).toEqual(["task", "task_model"])
+        expect(asks[1]?.patterns).toEqual(["test/test-model"])
+        expect(seen?.model).toEqual(ref)
+        expect(seen?.variant).toBe("max")
+        expect(result.metadata.execution).toMatchObject({ workload: "scout", source: "request-model" })
+        expect(yield* sessions.children(chat.id)).toHaveLength(1)
+      }),
+    { config: disabledSchedulingConfig },
+  )
+
+  it.instance(
+    "execute validates workload names before asking or creating a child",
+    () =>
+      Effect.gen(function* () {
+        const sessions = yield* Session.Service
+        const { chat, assistant } = yield* seed()
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+        const asks: unknown[] = []
+
+        const exit = yield* def
+          .execute(
+            {
+              description: "inspect bug",
+              prompt: "look into the cache key path",
+              subagent_type: "general",
+              workload: "unknown",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: { promptOps: stubOps() },
+              messages: [],
+              metadata: () => Effect.void,
+              ask: (input) =>
+                Effect.sync(() => {
+                  asks.push(input)
+                }),
+            },
+          )
+          .pipe(Effect.exit)
+
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit)) expect(Cause.pretty(exit.cause)).toContain("Valid workloads: scout, builder, reviewer")
+        expect(asks).toHaveLength(0)
+        expect(yield* sessions.children(chat.id)).toHaveLength(0)
+      }),
+    { config: delegationConfig },
+  )
+
+  it.instance(
+    "execute records workload on resume without changing the persisted model lock",
+    () =>
+      Effect.gen(function* () {
+        const sessions = yield* Session.Service
+        const { chat, assistant } = yield* seed()
+        const child = yield* sessions.create({
+          parentID: chat.id,
+          title: "Existing child",
+          agent: "general",
+          model: { id: ref.modelID, providerID: ref.providerID, variant: "max" },
+        })
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+        const asks: Array<{ permission?: string }> = []
+
+        const result = yield* def.execute(
+          {
+            description: "inspect bug",
+            prompt: "continue the cache key path",
+            subagent_type: "general",
+            workload: "builder",
+            task_id: child.id,
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps: stubOps() },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: (input) =>
+              Effect.sync(() => {
+                asks.push(input)
+              }),
+          },
+        )
+
+        expect(asks.map((item) => item.permission)).toEqual(["task"])
+        expect(result.metadata.sessionId).toBe(child.id)
+        expect(result.metadata.model).toMatchObject({ providerID: ref.providerID, modelID: ref.modelID, variant: "max" })
+        expect(result.metadata.execution).toMatchObject({ workload: "builder", source: "resume", resumed: true })
+      }),
+    { config: delegationConfig },
+  )
+
 })

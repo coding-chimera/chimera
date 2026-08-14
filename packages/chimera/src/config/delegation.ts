@@ -15,9 +15,45 @@ export const ModelProfile = Schema.Struct({
   .pipe(withStatics((s) => ({ zod: zod(s) })))
 export type ModelProfile = Schema.Schema.Type<typeof ModelProfile>
 
+export const SchedulingArchetype = Schema.Struct({
+  description: Schema.optional(Schema.String),
+  minQuality: Schema.optional(Schema.Number),
+  effortCap: Schema.optional(Schema.String),
+  weights: Schema.optional(
+    Schema.Struct({
+      quality: Schema.Number,
+      speed: Schema.Number,
+      cost: Schema.Number,
+    }),
+  ),
+  budgetUsdPerWorker: Schema.optional(Schema.Number),
+})
+export type SchedulingArchetype = Schema.Schema.Type<typeof SchedulingArchetype>
+
+export const Scheduling = Schema.Struct({
+  enabled: Schema.optional(Schema.Boolean),
+  spend: Schema.optional(Schema.Literals(["subscription-first", "metered-first"])),
+  quotaFloorPercent: Schema.optional(Schema.Number),
+  quotaStrainPercent: Schema.optional(Schema.Number),
+  rlStrainThreshold: Schema.optional(Schema.Number),
+  archetypes: Schema.optional(Schema.Record(Schema.String, SchedulingArchetype)),
+  overrides: Schema.optional(
+    Schema.Record(
+      Schema.String,
+      Schema.Struct({
+        billing: Schema.optional(Schema.Literals(["metered", "subscription", "free", "unknown"])),
+      }),
+    ),
+  ),
+})
+  .annotate({ identifier: "DelegationScheduling" })
+  .pipe(withStatics((s) => ({ zod: zod(s) })))
+export type Scheduling = Schema.Schema.Type<typeof Scheduling>
+
 export const Info = Schema.Struct({
   model_profiles: Schema.optional(Schema.Record(Schema.String, ModelProfile)),
   routes: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  scheduling: Schema.optional(Scheduling),
 })
   .annotate({ identifier: "DelegationConfig" })
   .pipe(withStatics((s) => ({ zod: zod(s) })))

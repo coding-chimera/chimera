@@ -951,8 +951,11 @@ it.live("persists runtime context and appends updates only when it changes", () 
       expect(first).toHaveLength(1)
       expect(first[0]?.metadata?.runtimeContext.kind).toBe("snapshot")
       expect(first[0]?.metadata?.runtimeContext.sections).toHaveProperty("subagentModels")
+      expect(first[0]?.metadata?.runtimeContext.sections).toHaveProperty("subagentScheduling")
       expect(first[0]?.text).toContain("## Available Subagent Model Identities")
       expect(first[0]?.text).toContain("subagent_model_routes")
+      expect(first[0]?.text).toContain("## Subagent Model Scheduling")
+      expect(first[0]?.text).toContain("No model selector + workload => scheduler picks")
 
       yield* prompt.prompt({
         sessionID: session.id,
@@ -1013,8 +1016,10 @@ it.live("updates subagent model context once when effective task_model visibilit
       const changed = runtimeContextParts(yield* sessions.messages({ sessionID: session.id }))
       expect(changed).toHaveLength(2)
       expect(changed[1]?.metadata?.runtimeContext.kind).toBe("update")
+      expect(changed[1]?.metadata?.runtimeContext.sections).toHaveProperty("subagentScheduling")
       expect(changed[1]?.text).toContain("Available Subagent Model Identities")
       expect(changed[1]?.text).not.toContain('"test-model": 1 route')
+      expect(changed[1]?.text).not.toContain("Subagent Model Scheduling")
 
       yield* prompt.prompt({
         sessionID: session.id,
@@ -1057,6 +1062,7 @@ it.live("updates subagent model context when the preferred route changes within 
       const first = runtimeContextParts(yield* sessions.messages({ sessionID: session.id }))
       expect(first).toHaveLength(1)
       expect(first[0]?.text).toContain("preferred test")
+      expect(first[0]?.metadata?.runtimeContext.sections).toHaveProperty("subagentScheduling")
 
       routingState = prefer("test/second-model")
       yield* prompt.prompt({
@@ -1138,7 +1144,85 @@ it.live("omits subagent model context for child sessions and disabled delegation
         const parts = runtimeContextParts(yield* sessions.messages({ sessionID }))
         expect(parts.some((part) => part.metadata?.runtimeContext.sections.subagentModels !== undefined)).toBe(false)
         expect(parts.some((part) => part.text.includes("Available Subagent Model Identities"))).toBe(false)
+        expect(parts.some((part) => part.metadata?.runtimeContext.sections.subagentScheduling !== undefined)).toBe(false)
+        expect(parts.some((part) => part.text.includes("Subagent Model Scheduling"))).toBe(false)
       }
+    }),
+    { git: true, config: providerCfg },
+  ),
+)
+
+it.live("can disable scheduling context without hiding subagent model identities", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* () {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({ title: "Scheduling disabled" })
+
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "first" }],
+      })
+
+      const parts = runtimeContextParts(yield* sessions.messages({ sessionID: session.id }))
+      expect(parts).toHaveLength(1)
+      expect(parts[0]?.metadata?.runtimeContext.sections).toHaveProperty("subagentModels")
+      expect(parts[0]?.metadata?.runtimeContext.sections).not.toHaveProperty("subagentScheduling")
+      expect(parts[0]?.text).toContain("Available Subagent Model Identities")
+      expect(parts[0]?.text).not.toContain("Subagent Model Scheduling")
+    }),
+    {
+      git: true,
+      config: (url: string) => ({
+        ...providerCfg(url),
+        delegation: { scheduling: { enabled: false } },
+      }),
+    },
+  ),
+)
+
+it.live("appends a runtime update when scheduling context is disabled", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* () {
+      const config = yield* Config.Service
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({ title: "Scheduling context update" })
+
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "first" }],
+      })
+      const first = runtimeContextParts(yield* sessions.messages({ sessionID: session.id }))
+      expect(first).toHaveLength(1)
+      expect(first[0]?.metadata?.runtimeContext.sections).toHaveProperty("subagentScheduling")
+
+      yield* config.update({ delegation: { scheduling: { enabled: false } } })
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "second" }],
+      })
+      const changed = runtimeContextParts(yield* sessions.messages({ sessionID: session.id }))
+      expect(changed).toHaveLength(2)
+      expect(changed[1]?.metadata?.runtimeContext.kind).toBe("update")
+      expect(changed[1]?.metadata?.runtimeContext.sections).toHaveProperty("subagentModels")
+      expect(changed[1]?.metadata?.runtimeContext.sections).not.toHaveProperty("subagentScheduling")
+      expect(changed[1]?.text).toContain("Removed Sections:")
+      expect(changed[1]?.text).toContain("- subagentScheduling")
+
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "third" }],
+      })
+      expect(runtimeContextParts(yield* sessions.messages({ sessionID: session.id }))).toHaveLength(2)
     }),
     { git: true, config: providerCfg },
   ),

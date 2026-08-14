@@ -20,13 +20,15 @@ Usage notes:
 5. Clearly tell the agent whether you expect it to write code or only research, since it is not aware of the user's intent. Tell it how to verify its work when possible.
 6. If the agent description says it should be used proactively, try to use it without waiting for the user, subject to the active multi-agent policy and independence threshold.
 
-Optional `model_profile`: pass the name of a `delegation.model_profiles` entry from your configuration to run the subagent with that profile's model and variant. Omit it to use the subagent's configured model or the parent model.
+Optional `workload`: declare the delegation archetype on each dispatch. Pass `workload` alone to let the current cost-aware scheduler choose a concrete route and non-ultra variant. Pass `workload` with `model_profile`, `model`, or `model_identity` to keep that explicit selector authoritative while validating and recording the workload for attribution. Unknown workload names are rejected with the current valid names. Omit workload to retain the existing role route -> agent config -> parent fallback chain.
+
+Optional `model_profile`: pass the name of a `delegation.model_profiles` entry from your configuration to run the subagent with that profile's model and variant. Omit it to use workload scheduling or the existing subagent/parent fallback.
 
 Optional exact selection: pass `model` as a current `provider/model` route, plus optional `variant` only when that route advertises it. Subagents do not support the `ultra` variant; it is reserved for root sessions.
 
 Optional identity selection: pass `model_identity` to resolve a model identity from the current runtime catalog before child creation. Add `provider` only to narrow that identity to one current provider. Use `subagent_model_routes` when an identity is ambiguous; do not invent provider IDs or deployment names.
 
-`model_profile`, `model`, and `model_identity` are mutually exclusive. `provider` requires `model_identity`. Identity resolution, model and variant validation, and `task_model` authorization of the final concrete `provider/model` all happen before a child is created. Resuming still locks to the child session's persisted concrete model and variant.
+`model_profile`, `model`, and `model_identity` are mutually exclusive. `workload` is orthogonal to those selectors. Identity or workload resolution, model and variant validation, and `task_model` authorization of the final concrete `provider/model` all happen before a child is created. Resuming still locks to the child session's persisted concrete model and variant; a workload declaration does not change that lock.
 
 Example usage (NOTE: The agents below are fictional examples for illustration only - use the actual agents listed above):
 

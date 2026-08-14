@@ -1,0 +1,5 @@
+Inspect current cost-aware subagent model recommendations by workload before dispatching work.
+
+Use this read-only tool when choosing a model for `task` or `chimera_swarm`, or when you need more recommendation detail than the compact runtime-context summary. Omit `workload` to inspect every current archetype, or pass one current workload name to narrow the result. Recommendations are built from the live permission-filtered provider catalog, explicit routing preferences, billing and quota feasibility, compact DeepSWE capability anchors with a shared reasoning-tier curve, and live Provider token pricing when available.
+
+This tool does not create child sessions, request authorization, mutate preferences, or grant permission. A recommendation is not authorization: the final concrete route still requires normal `task_model` handling when dispatched. Use `subagent_model_routes` instead when you need every concrete route for one exact model identity rather than workload ranking. Unknown workload names are rejected with the valid current names.

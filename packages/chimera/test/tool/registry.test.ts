@@ -126,6 +126,7 @@ describe("tool.registry", () => {
       expect(ids).toContain("browser_screenshot")
       expect(ids).toContain("browser_close")
       expect(ids).toContain("subagent_model_routes")
+      expect(ids).toContain("subagent_model_schedule")
       expect(ids).toContain("subagent_model_prefer")
       expect(ids).toContain("subagent_model_suppress")
       expect(ids).toContain("hello")
@@ -235,7 +236,7 @@ describe("tool.registry", () => {
     }),
   )
 
-  it.instance("registers subagent route discovery and keeps task descriptions candidate-free", () =>
+  it.instance("registers subagent route and workload schedule discovery", () =>
     Effect.gen(function* () {
       const registry = yield* ToolRegistry.Service
       const tools = yield* registry.tools({
@@ -254,6 +255,9 @@ describe("tool.registry", () => {
       const routeTool = tools.find((tool) => tool.id === "subagent_model_routes")
       expect(routeTool?.description).toContain("current runtime")
       expect(routeTool?.description).toContain("question")
+      const scheduleTool = tools.find((tool) => tool.id === "subagent_model_schedule")
+      expect(scheduleTool?.description).toContain("current cost-aware subagent model recommendations")
+      expect(scheduleTool?.description).toContain("read-only")
       const preferTool = tools.find((tool) => tool.id === "subagent_model_prefer")
       const suppressTool = tools.find((tool) => tool.id === "subagent_model_suppress")
       expect(preferTool?.description).toContain("ONLY")
@@ -266,6 +270,8 @@ describe("tool.registry", () => {
         .join("\n")
       expect(descriptions).toContain("exact provider/model route")
       expect(descriptions).toContain("subagent_model_routes")
+      expect(descriptions).toContain("## Subagent Model Scheduling")
+      expect(descriptions).toContain("No model selector + workload => scheduler picks")
       expect(descriptions).not.toMatch(/deepseek\/deepseek-v4-flash|gpt-\d|anthropic\/|openai\//i)
     }),
   )
