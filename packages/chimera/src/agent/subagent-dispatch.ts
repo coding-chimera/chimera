@@ -38,6 +38,7 @@ export type SubagentDispatchInput = {
   modelIdentity?: string
   provider?: string
   variant?: string
+  workload?: string
   taskID?: string
   promptOps: SubagentPromptOps
   abort: AbortSignal
@@ -54,6 +55,7 @@ export type SubagentDispatchPrepared = {
   existing?: Session.Info
   config: Config.Info
   resolved: ResolvedSubagentExecution
+  workload?: string
 }
 
 export type SubagentDispatchPrepareInput = Pick<
@@ -67,6 +69,7 @@ export type SubagentDispatchPrepareInput = Pick<
   | "provider"
   | "variant"
   | "taskID"
+  | "workload"
   | "authorizeProfile"
   | "authorizeModel"
 >
@@ -169,7 +172,7 @@ export const SubagentDispatch = Effect.gen(function* () {
     if (input.model !== undefined || input.modelIdentity !== undefined) {
       yield* (input.authorizeModel?.(resolved.model) ?? Effect.void)
     }
-    return { parentSessionID: input.parentSessionID, parent, subagent, existing, config: cfg, resolved }
+    return { parentSessionID: input.parentSessionID, parent, subagent, existing, config: cfg, resolved, workload: input.workload }
   })
 
   const runPrepared = Effect.fn("SubagentDispatch.runPrepared")(function* (input: SubagentDispatchRunPreparedInput) {
@@ -225,6 +228,7 @@ export const SubagentDispatch = Effect.gen(function* () {
       parentSessionId: prepared.parentSessionID,
       agent: prepared.subagent.name,
       modelProfile: prepared.resolved.profile,
+      workload: prepared.workload,
       source: prepared.resolved.source,
       resumed: Boolean(prepared.existing),
     }

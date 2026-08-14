@@ -8,6 +8,7 @@ import { GrepTool } from "./grep"
 import { ReadTool } from "./read"
 import { TaskTool } from "./task"
 import { ChimeraSwarmTool } from "./swarm"
+import { SubagentModelScheduleTool } from "./subagent_model_schedule"
 import { SubagentModelRoutesTool } from "./subagent_model_routes"
 import { SubagentModelPreferTool } from "./subagent_model_prefer"
 import { SubagentModelSuppressTool } from "./subagent_model_suppress"
@@ -82,6 +83,9 @@ import { Bus } from "../bus"
 import { Agent } from "../agent/agent"
 import { Skill } from "../skill"
 import { Permission } from "@/permission"
+import { ProjectID } from "@/project/schema"
+import { SubagentModelSchedulingRuntime } from "@/agent/subagent-model-scheduling-runtime"
+import { SubagentModelScheduling } from "@/agent/subagent-model-scheduling"
 import { Auth } from "@/auth"
 import { BrowserRuntime } from "@/browser/runtime"
 import { MemoryManagement } from "@/memory/management"
@@ -154,6 +158,7 @@ export const layer = Layer.effect(
     const chimeraObligationIgnoreTool = yield* ChimeraObligationIgnoreTool
     const chimeraSwarmTool = yield* ChimeraSwarmTool
     const subagentModelRoutesTool = yield* SubagentModelRoutesTool
+    const subagentModelScheduleTool = yield* SubagentModelScheduleTool
     const subagentModelPreferTool = yield* SubagentModelPreferTool
     const subagentModelSuppressTool = yield* SubagentModelSuppressTool
     const memoryRemember = yield* MemoryRememberTool
@@ -161,6 +166,7 @@ export const layer = Layer.effect(
     const memoryForget = yield* MemoryForgetTool
     const memoryRead = yield* MemoryReadTool
     const agent = yield* Agent.Service
+    const scheduling = yield* SubagentModelSchedulingRuntime.make
 
     const state = yield* InstanceState.make<State>(
       Effect.fn("ToolRegistry.state")(function* (ctx) {
@@ -283,6 +289,7 @@ export const layer = Layer.effect(
           chimeraObligationIgnore: Tool.init(chimeraObligationIgnoreTool),
           chimeraSwarm: Tool.init(chimeraSwarmTool),
           subagentModelRoutes: Tool.init(subagentModelRoutesTool),
+          subagentModelSchedule: Tool.init(subagentModelScheduleTool),
           subagentModelPrefer: Tool.init(subagentModelPreferTool),
           subagentModelSuppress: Tool.init(subagentModelSuppressTool),
           memoryRemember: Tool.init(memoryRemember),
@@ -306,6 +313,7 @@ export const layer = Layer.effect(
             tool.task,
             tool.chimeraSwarm,
             tool.subagentModelRoutes,
+            tool.subagentModelSchedule,
             tool.subagentModelPrefer,
             tool.subagentModelSuppress,
             tool.fetch,
@@ -379,7 +387,19 @@ export const layer = Layer.effect(
           ].join("\n")
         : ""
       const directModelSection = "Direct model selection:\n- Pass model as an exact provider/model route.\n- Use variant only when the selected route advertises it.\n- Use subagent_model_routes to inspect concrete current routes for a model identity."
-      return ["Available agent types and the tools they have access to:", description, profileSection, directModelSection]
+      const schedulingView = yield* scheduling.currentView({
+        ruleset: agent.permission,
+        projectID: ProjectID.global,
+        limit: 1,
+      })
+      const workloadSection = schedulingView ? SubagentModelScheduling.disclosure(schedulingView) : undefined
+      return [
+        "Available agent types and the tools they have access to:",
+        description,
+        profileSection,
+        directModelSection,
+        workloadSection,
+      ]
         .filter(Boolean)
         .join("\n")
     })

@@ -37,6 +37,9 @@ import { Question } from "@/question"
 import { pathToFileURL, fileURLToPath } from "url"
 import { Config } from "@/config/config"
 import { ConfigSubagentRouting } from "@/config/subagent-routing"
+import { Auth } from "@/auth"
+import { SubagentModelSchedulingRuntime } from "@/agent/subagent-model-scheduling-runtime"
+import { SubagentModelScheduling } from "@/agent/subagent-model-scheduling"
 import { ConfigMarkdown } from "@/config/markdown"
 import { SessionSummary } from "./summary"
 import { WorkBrief } from "./work-brief"
@@ -90,7 +93,7 @@ const STRUCTURED_OUTPUT_SYSTEM_PROMPT = `IMPORTANT: The user has requested struc
 const log = Log.create({ service: "session.prompt" })
 
 type RuntimeContextSection = {
-  key: "workBrief" | "chimera" | "subagentModels"
+  key: "workBrief" | "chimera" | "subagentModels" | "subagentScheduling"
   title: string
   content: string
   hash: string
@@ -210,7 +213,7 @@ export const layer = Layer.effect(
     const plugin = yield* Plugin.Service
     const commands = yield* Command.Service
     const config = yield* Config.Service
-    const routing = yield* ConfigSubagentRouting.Service
+    const scheduling = yield* SubagentModelSchedulingRuntime.make
     const remoteCompaction = yield* RemoteCompaction.Service
     const permission = yield* Permission.Service
     const fsys = yield* AppFileSystem.Service
@@ -313,20 +316,16 @@ export const layer = Layer.effect(
         !session.parentID &&
         agent.mode !== "subagent" &&
         [TaskTool.id, "chimera_swarm"].some((tool) => input.tools?.[tool] !== false && !disabled.has(tool))
-      const subagentCatalog = canDelegate
-        ? yield* SubagentModelCatalog.withPreferences(
-            SubagentModelCatalog.visible(
-              SubagentModelCatalog.buildSnapshot({
-                providers: yield* provider.list(),
-                configuredProviders: (yield* config.get()).provider,
-              }),
-              ruleset,
-            ),
-            session.projectID,
-            routing,
-          )
+      const subagentSnapshot = canDelegate
+        ? yield* scheduling.currentSnapshot({ ruleset, projectID: session.projectID })
         : undefined
-      const subagentModels = subagentCatalog ? SubagentModelCatalog.disclosure(subagentCatalog) : undefined
+      const subagentModels = subagentSnapshot
+        ? SubagentModelCatalog.disclosure(subagentSnapshot.catalog)
+        : undefined
+      const subagentSchedulingView = subagentSnapshot?.view
+      const subagentScheduling = subagentSchedulingView
+        ? SubagentModelScheduling.disclosure(subagentSchedulingView)
+        : undefined
       return [
         workBriefSuffix ? { key: "workBrief" as const, title: "Current Work Brief", content: workBriefSuffix, hash: hash(workBriefSuffix) } : undefined,
         chimeraContextSuffix
@@ -337,12 +336,20 @@ export const layer = Layer.effect(
               hash: hash(chimeraContextSuffix),
             }
           : undefined,
-        subagentModels && subagentCatalog
+        subagentModels && subagentSnapshot
           ? {
               key: "subagentModels" as const,
               title: "Available Subagent Model Identities",
               content: subagentModels,
-              hash: hash(SubagentModelCatalog.disclosureProjection(subagentCatalog)),
+              hash: hash(SubagentModelCatalog.disclosureProjection(subagentSnapshot.catalog)),
+            }
+          : undefined,
+        subagentScheduling && subagentSchedulingView
+          ? {
+              key: "subagentScheduling" as const,
+              title: "Subagent Model Scheduling",
+              content: subagentScheduling,
+              hash: hash(SubagentModelScheduling.disclosureProjection(subagentSchedulingView)),
             }
           : undefined,
       ].filter((section): section is RuntimeContextSection => Boolean(section))
@@ -2463,7 +2470,7 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(ToolRegistry.defaultLayer),
     Layer.provide(Truncate.defaultLayer),
     Layer.provide(Provider.defaultLayer),
-    Layer.provide(Layer.mergeAll(Config.defaultLayer, ConfigSubagentRouting.defaultLayer)),
+    Layer.provide(Layer.mergeAll(Config.defaultLayer, ConfigSubagentRouting.defaultLayer, Auth.defaultLayer)),
     Layer.provide(Instruction.defaultLayer),
     Layer.provide(AppFileSystem.defaultLayer),
     Layer.provide(Plugin.defaultLayer),

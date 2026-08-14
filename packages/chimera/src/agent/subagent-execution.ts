@@ -20,6 +20,7 @@ export type SubagentExecutionMetadata = {
   parentSessionId: SessionID
   agent: string
   modelProfile?: string
+  workload?: string
   source: ResolvedSubagentExecution["source"]
   resumed: boolean
 }
@@ -47,6 +48,9 @@ export type SubagentModelSelection = Pick<
   "modelProfile" | "model" | "modelIdentity" | "provider" | "variant"
 >
 
+const ULTRA_VARIANT_ERROR =
+  "Subagents do not support the ultra variant; ultra is reserved for root sessions. Omit variant or choose a non-ultra variant."
+
 export const validateSubagentModelSelection = Effect.fn("SubagentExecution.validateSelection")(function* (
   input: SubagentModelSelection,
 ) {
@@ -70,11 +74,7 @@ export const validateSubagentModelSelection = Effect.fn("SubagentExecution.valid
     return yield* Effect.fail(new Error("provider must not be empty"))
   }
   if (input.variant !== undefined && input.variant.toLowerCase() === "ultra") {
-    return yield* Effect.fail(
-      new Error(
-        "Subagents do not support the ultra variant; ultra is reserved for root sessions. Omit variant or choose a non-ultra variant.",
-      ),
-    )
+    return yield* Effect.fail(new Error(ULTRA_VARIANT_ERROR))
   }
   if (input.variant !== undefined && input.model === undefined && input.modelIdentity === undefined) {
     return yield* Effect.fail(new Error("variant requires model or model_identity"))
@@ -226,6 +226,9 @@ export const resolveSubagentExecution: (
     }
     const parsed = Provider.parseModel(entry.model)
     const variant = entry.variant
+    if (variant?.toLowerCase() === "ultra") {
+      return yield* Effect.fail(new Error(ULTRA_VARIANT_ERROR))
+    }
     const info = yield* input.validateModel(parsed.providerID, parsed.modelID)
     if (variant !== undefined && !info.variants?.[variant]) {
       return yield* Effect.fail(

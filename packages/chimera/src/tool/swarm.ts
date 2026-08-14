@@ -2,8 +2,10 @@ import * as Tool from "./tool"
 import DESCRIPTION from "./swarm.txt"
 import { SubagentDispatch, type SubagentPromptOps } from "../agent/subagent-dispatch"
 import { validateSubagentModelSelection } from "../agent/subagent-execution"
+import { SubagentModelSchedulingRuntime } from "../agent/subagent-model-scheduling-runtime"
 import { Agent } from "../agent/agent"
 import { ConfigSubagentRouting } from "@/config/subagent-routing"
+import { Permission } from "@/permission"
 import { InstanceState } from "@/effect/instance-state"
 import { getCodeGraphDir } from "@/graph/directory"
 import { readOracleResults, readPersistentObligationStore, type OracleRecord, type ObligationStoreLike } from "@/chimera/store"
@@ -44,6 +46,10 @@ export const Parameters = Schema.Struct({
   }),
   subagent_type: Schema.optional(Schema.String).annotate({
     description: "Subagent type to run for each item. Defaults to general.",
+  }),
+  workload: Schema.optional(Schema.String).annotate({
+    description:
+      "Delegation workload archetype. Without a model selector, the scheduler chooses one current route for the whole fan-out; with an explicit selector, workload is validation and attribution only.",
   }),
   model_profile: Schema.optional(Schema.String).annotate({
     description:
@@ -416,6 +422,7 @@ export const ChimeraSwarmTool = Tool.define(
     const dispatch = yield* SubagentDispatch
     const routing = yield* ConfigSubagentRouting.Service
     const sessions = yield* Session.Service
+    const scheduling = yield* SubagentModelSchedulingRuntime.make
 
     const run = Effect.fn("ChimeraSwarmTool.execute")(function* (params: Params, ctx: Tool.Context) {
       yield* validateSubagentModelSelection({
@@ -450,6 +457,19 @@ export const ChimeraSwarmTool = Tool.define(
         const validTypes = (yield* agents.list()).map((agent) => agent.name).join(", ")
         return yield* Effect.fail(new Error(`Unknown agent type: ${subagent} is not a valid agent type. Valid types: ${validTypes}`))
       }
+      const parent = yield* sessions.get(ctx.sessionID)
+      const caller = yield* agents.get(ctx.agent)
+      const workload = params.workload
+        ? yield* scheduling.resolveWorkload({
+            workload: params.workload,
+            select:
+              params.model_profile === undefined && params.model === undefined && params.model_identity === undefined,
+            ruleset: Permission.merge(caller.permission, parent.permission ?? []),
+            projectID: parent.projectID,
+          })
+        : undefined
+      const model = workload?.selection?.model ?? params.model
+      const variant = workload?.selection?.variant ?? params.variant
       if (!ctx.extra?.bypassAgentCheck) {
         yield* ctx.ask({
           permission: "task",
@@ -459,22 +479,23 @@ export const ChimeraSwarmTool = Tool.define(
             description: params.description ?? `chimera swarm ${items.length} items`,
             subagent_type: subagent,
             item_count: items.length,
+            ...(params.workload ? { workload: params.workload } : {}),
           },
         })
       }
 
       const promptOps = ctx.extra?.promptOps as SubagentPromptOps | undefined
       if (!promptOps) return yield* Effect.fail(new Error("ChimeraSwarmTool requires promptOps in ctx.extra"))
-      const parent = yield* sessions.get(ctx.sessionID)
       const prepared = yield* dispatch.prepare({
         parentSessionID: ctx.sessionID,
         parentMessageID: ctx.messageID,
         subagentType: subagent,
         modelProfile: params.model_profile,
-        model: params.model,
+        model,
         modelIdentity: params.model_identity,
         provider: params.provider,
-        variant: params.variant,
+        variant,
+        workload: params.workload,
         authorizeProfile: (profile) =>
           ctx.ask({
             permission: "task_profile",
@@ -522,7 +543,8 @@ export const ChimeraSwarmTool = Tool.define(
         concurrency,
         subagent_type: subagent,
         model_profile: params.model_profile,
-        model: params.model,
+        model,
+        workload: params.workload,
         model_identity: params.model_identity,
         provider: params.provider,
         scopeWarningCount: scopeWarnings.length,
@@ -667,7 +689,8 @@ export const ChimeraSwarmTool = Tool.define(
         source: params.from ?? "items",
         subagent_type: subagent,
         model_profile: params.model_profile,
-        model: params.model,
+        model,
+        workload: params.workload,
         model_identity: params.model_identity,
         provider: params.provider,
         items: items.length,

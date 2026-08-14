@@ -163,6 +163,20 @@ describe("SubagentExecution.ultra policy", () => {
       expect(result.model.variant).toBeUndefined()
     }),
   )
+
+  it.effect("rejects an ultra variant from a model profile even when advertised", () =>
+    Effect.gen(function* () {
+      const error = yield* resolveSubagentExecution({
+        subagentType: "general",
+        modelProfile: "flash",
+        parent,
+        subagent: subagent(),
+        delegation: { model_profiles: { flash: { model: "test/test-model", variant: "Ultra" } } },
+        validateModel: () => Effect.succeed({ variants: { ultra: {} } }),
+      }).pipe(Effect.flip)
+      expect(String(error)).toContain("Subagents do not support the ultra variant")
+    }),
+  )
 })
   it.effect("fails for an unknown route target profile", () =>
     Effect.gen(function* () {

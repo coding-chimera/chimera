@@ -3,6 +3,7 @@ import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
 import { Agent } from "../../src/agent/agent"
 import { Config } from "@/config/config"
 import { ConfigSubagentRouting } from "@/config/subagent-routing"
+import { Auth } from "@/auth"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Session } from "@/session/session"
 import { Permission } from "../../src/permission"
@@ -50,12 +51,19 @@ const routingLayer = Layer.succeed(
       }),
   }),
 )
+const authLayer = Layer.mock(Auth.Service)({
+  get: () => Effect.succeed(undefined),
+  all: () => Effect.succeed({}),
+  set: () => Effect.void,
+  remove: () => Effect.void,
+})
 
 const it = testEffect(
   Layer.mergeAll(
     Agent.defaultLayer,
     Config.defaultLayer,
     routingLayer,
+    authLayer,
     CrossSpawnSpawner.defaultLayer,
     Session.defaultLayer,
     Truncate.defaultLayer,
@@ -68,6 +76,7 @@ const modelIt = testEffect(
     Agent.defaultLayer,
     Config.defaultLayer,
     routingLayer,
+    authLayer,
     CrossSpawnSpawner.defaultLayer,
     Session.defaultLayer,
     Truncate.defaultLayer,
@@ -89,6 +98,7 @@ const identityIt = testEffect(
     Agent.defaultLayer,
     Config.defaultLayer,
     routingLayer,
+    authLayer,
     CrossSpawnSpawner.defaultLayer,
     Session.defaultLayer,
     Truncate.defaultLayer,
@@ -1517,6 +1527,195 @@ describe("tool.chimera_swarm", () => {
       )
       expect(result.metadata.successCount).toBe(1)
       expect(routingActivity).toHaveLength(0)
+    }),
+  )
+  identityIt.instance(
+    "selects and authorizes a workload route once for the whole fan-out",
+    () =>
+      Effect.gen(function* () {
+        const parent = yield* seed()
+        const tool = yield* ChimeraSwarmTool
+        const def = yield* tool.init()
+        const asks: Array<{ permission?: string; patterns?: readonly string[] }> = []
+        const prompts: SessionPrompt.PromptInput[] = []
+        modelIdentityListCalls = 0
+
+        const result = yield* def.execute(
+          {
+            prompt_template: "Review {{item}}",
+            items: ["alpha", "beta"],
+            subagent_type: "general",
+            workload: "scout",
+            concurrency: 2,
+          },
+          {
+            ...ctx(parent, stubOps({ onPrompt: (input) => prompts.push(input) })),
+            ask: (input) =>
+              Effect.sync(() => {
+                asks.push(input)
+              }),
+          },
+        )
+
+        expect(modelIdentityListCalls).toBe(1)
+        expect(asks).toHaveLength(1)
+        expect(asks[0]?.permission).toBe("task_model")
+        expect(asks[0]?.patterns).toEqual(["test/test-model"])
+        expect(result.metadata).toMatchObject({ workload: "scout", model: "test/test-model", successCount: 2 })
+        expect(prompts).toHaveLength(2)
+        expect(prompts.every((input) => input.model?.providerID === ref.providerID && input.model.modelID === ref.modelID)).toBe(true)
+        const runs = result.metadata.childRuns as Array<{ execution?: { workload?: string; source?: string } }>
+        expect(runs.every((run) => run.execution?.workload === "scout")).toBe(true)
+        expect(runs.every((run) => run.execution?.source === "request-model")).toBe(true)
+      }),
+  )
+
+  modelIt.instance(
+    "keeps an explicit swarm model authoritative while recording workload",
+    () =>
+      Effect.gen(function* () {
+        const parent = yield* seed()
+        const tool = yield* ChimeraSwarmTool
+        const def = yield* tool.init()
+        const prompts: SessionPrompt.PromptInput[] = []
+
+        const result = yield* def.execute(
+          {
+            prompt_template: "Review {{item}}",
+            items: ["alpha", "beta"],
+            subagent_type: "general",
+            workload: "scout",
+            model: "test/test-model",
+            variant: "max",
+            concurrency: 2,
+          },
+          ctx(parent, stubOps({ onPrompt: (input) => prompts.push(input) })),
+        )
+
+        expect(result.metadata).toMatchObject({ workload: "scout", model: "test/test-model", successCount: 2 })
+        expect(prompts.every((input) => input.model?.providerID === ref.providerID && input.model.modelID === ref.modelID && input.variant === "max")).toBe(true)
+        const runs = result.metadata.childRuns as Array<{ execution?: { workload?: string; source?: string } }>
+        expect(runs.every((run) => run.execution?.workload === "scout")).toBe(true)
+        expect(runs.every((run) => run.execution?.source === "request-model")).toBe(true)
+      }),
+  )
+
+  modelIt.instance(
+    "rejects workload-only swarm dispatch when scheduling is disabled",
+    () =>
+      Effect.gen(function* () {
+        const sessions = yield* Session.Service
+        const parent = yield* seed()
+        const tool = yield* ChimeraSwarmTool
+        const def = yield* tool.init()
+        const asks: unknown[] = []
+
+        const exit = yield* def
+          .execute(
+            {
+              prompt_template: "Review {{item}}",
+              items: ["alpha"],
+              subagent_type: "general",
+              workload: "scout",
+            },
+            {
+              ...ctx(parent, stubOps()),
+              ask: (input) =>
+                Effect.sync(() => {
+                  asks.push(input)
+                }),
+            },
+          )
+          .pipe(Effect.exit)
+
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit)) expect(Cause.pretty(exit.cause)).toContain("Subagent workload scheduling is disabled")
+        expect(asks).toHaveLength(0)
+        expect(yield* sessions.children(parent.chat.id)).toHaveLength(0)
+      }),
+    { config: { delegation: { scheduling: { enabled: false } } } },
+  )
+
+  identityIt.instance(
+    "keeps an explicit swarm model authoritative when scheduling is disabled and authorizes once",
+    () =>
+      Effect.gen(function* () {
+        const parent = yield* seed()
+        const tool = yield* ChimeraSwarmTool
+        const def = yield* tool.init()
+        const asks: Array<{ permission?: string; patterns?: readonly string[] }> = []
+        const prompts: SessionPrompt.PromptInput[] = []
+        modelIdentityListCalls = 0
+
+        const result = yield* def.execute(
+          {
+            prompt_template: "Review {{item}}",
+            items: ["alpha", "beta"],
+            subagent_type: "general",
+            workload: "scout",
+            model: "test/test-model",
+            variant: "max",
+            concurrency: 2,
+          },
+          {
+            ...ctx(parent, stubOps({ onPrompt: (input) => prompts.push(input) })),
+            ask: (input) =>
+              Effect.sync(() => {
+                asks.push(input)
+              }),
+          },
+        )
+
+        expect(modelIdentityListCalls).toBe(1)
+        expect(asks.map((item) => item.permission)).toEqual(["task_model"])
+        expect(asks[0]?.patterns).toEqual(["test/test-model"])
+        expect(result.metadata).toMatchObject({ workload: "scout", model: "test/test-model", successCount: 2 })
+        expect(prompts).toHaveLength(2)
+        expect(
+          prompts.every(
+            (input) =>
+              input.model?.providerID === ref.providerID &&
+              input.model.modelID === ref.modelID &&
+              input.variant === "max",
+          ),
+        ).toBe(true)
+        const runs = result.metadata.childRuns as Array<{ execution?: { workload?: string; source?: string } }>
+        expect(runs.every((run) => run.execution?.workload === "scout")).toBe(true)
+        expect(runs.every((run) => run.execution?.source === "request-model")).toBe(true)
+      }),
+    { config: { delegation: { scheduling: { enabled: false } } } },
+  )
+
+  modelIt.instance("rejects an unknown workload before authorization or child creation", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const parent = yield* seed()
+      const tool = yield* ChimeraSwarmTool
+      const def = yield* tool.init()
+      const asks: unknown[] = []
+
+      const exit = yield* def
+        .execute(
+          {
+            prompt_template: "Review {{item}}",
+            items: ["alpha"],
+            subagent_type: "general",
+            workload: "unknown",
+          },
+          {
+            ...ctx(parent, stubOps()),
+            ask: (input) =>
+              Effect.sync(() => {
+                asks.push(input)
+              }),
+          },
+        )
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) expect(Cause.pretty(exit.cause)).toContain("Valid workloads: scout, builder, reviewer")
+      expect(asks).toHaveLength(0)
+      expect(yield* sessions.children(parent.chat.id)).toHaveLength(0)
     }),
   )
 })
