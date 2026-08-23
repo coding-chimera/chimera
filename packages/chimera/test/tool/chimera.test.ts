@@ -9,6 +9,8 @@ import { readAuditRuns, readPredesignRuns } from "@/chimera/store"
 import { SessionToolMetadata } from "@/chimera/session-tool-metadata"
 import { DatabaseConnection, getDatabasePath } from "@/graph"
 import { Agent } from "@/agent/agent"
+import { ModelTelemetry } from "@/agent/model-telemetry"
+import { InstanceState } from "@/effect/instance-state"
 import { MessageID, SessionID } from "@/session/schema"
 import {
   ChimeraAuditRecentTool,
@@ -545,6 +547,94 @@ describe("tool.chimera", () => {
       expect(result.metadata.changedFiles).toEqual(["explicit.ts"])
       expect(factFiles).toContain("explicit.ts")
       expect(factFiles).not.toContain("package.json")
+    }),
+  )
+
+  it.instance("records bounded shadow Oracle telemetry for a bound child session", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const recorder = (ModelTelemetry as typeof ModelTelemetry & {
+        recordShadowOracle?: (input: {
+          projectID: string
+          sessionID: string
+          oracleID: string
+          verificationKind: string
+          status: string
+          trusted: boolean
+          occurredAt?: number
+        }) => Promise<void>
+      }).recordShadowOracle
+      const binder = (ModelTelemetry as typeof ModelTelemetry & {
+        bindShadowDelegationBestEffort?: (input: {
+          delegation: ModelTelemetry.ShadowDelegation
+          sessionID: string
+        }) => ModelTelemetry.ShadowDelegation | undefined
+      }).bindShadowDelegationBestEffort
+
+      const rootOracle = yield* Chimera.recordToolOracle({
+        kind: "shell",
+        toolID: "bash",
+        ctx,
+        status: "pass",
+        verificationKind: "typecheck",
+        trusted: true,
+        finishedAt: "2026-08-23T12:00:00.000Z",
+        payload: {
+          shell: {
+            command: "secret command",
+            cwd: test.directory,
+            output: "secret output",
+            diff: "secret diff",
+            path: "secret path",
+          },
+        },
+      })
+      expect(rootOracle.tool.sessionID).toBe(ctx.sessionID)
+      if (!recorder || !binder) return
+
+      const instance = yield* InstanceState.context
+      const decision = ModelTelemetry.createShadowDecision({
+        projectID: instance.project.id,
+        workload: "verification",
+        action: ModelTelemetry.actionForRoute({
+          route: "openai/gpt-5.6-luna",
+          identity: "gpt-5.6-luna",
+          selectionSource: "explicit",
+        }),
+      })
+      const delegation = ModelTelemetry.createShadowDelegation(decision)
+      const bound = binder({ delegation, sessionID: ctx.sessionID })
+      if (!bound) return
+
+      const childOracle = yield* Chimera.recordToolOracle({
+        kind: "shell",
+        toolID: "bash",
+        ctx: { ...ctx, sessionID: ctx.sessionID },
+        status: "pass",
+        verificationKind: "typecheck",
+        trusted: true,
+        finishedAt: "2026-08-23T12:00:01.000Z",
+        payload: {
+          shell: {
+            command: "child secret command",
+            cwd: test.directory,
+            output: "child secret output",
+            diff: "child secret diff",
+            path: "child secret path",
+          },
+        },
+      })
+      expect(childOracle.id).toBeTruthy()
+      yield* Effect.promise(() => ModelTelemetry.drainBestEffort())
+
+      const events = ModelTelemetry.read({ projectID: instance.project.id, limit: 100 }).filter((event) => event.eventType === "verification.recorded")
+      expect(events).toHaveLength(1)
+      expect(events[0]?.verification).toMatchObject({ kind: "typecheck", status: "pass", linked: true })
+      expect(Object.keys(events[0]?.verification ?? {}).every((key) => ["kind", "status", "linked", "trusted"].includes(key))).toBe(true)
+      const serialized = JSON.stringify(events[0])
+      for (const value of ["child secret command", "child secret output", "child secret diff", "child secret path"]) {
+        expect(serialized).not.toContain(value)
+      }
     }),
   )
 

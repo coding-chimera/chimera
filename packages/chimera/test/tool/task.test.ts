@@ -1,6 +1,7 @@
 import { afterEach, describe, expect } from "bun:test"
 import { Cause, Effect, Exit, Fiber, Layer } from "effect"
 import { Agent } from "../../src/agent/agent"
+import * as ModelTelemetry from "../../src/agent/model-telemetry"
 import { Config } from "@/config/config"
 import { ConfigSubagentRouting } from "@/config/subagent-routing"
 import { Auth } from "@/auth"
@@ -2789,4 +2790,205 @@ describe("tool.task", () => {
     { config: delegationConfig },
   )
 
+  it.instance("execute records linked telemetry and does not expose internal telemetry IDs", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      yield* Effect.promise(() => ModelTelemetry.drainBestEffort())
+      const existingTelemetryIDs = new Set(
+        ModelTelemetry.read({ projectID: chat.projectID }).map((event) => event.eventID),
+      )
+      const result = yield* def.execute(
+        {
+          description: "inspect bug",
+          prompt: "look into the cache key path",
+          subagent_type: "general",
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps: stubOps() },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+      yield* Effect.promise(() => ModelTelemetry.drainBestEffort())
+      const events = ModelTelemetry.read({ projectID: chat.projectID }).filter(
+        (event) => !existingTelemetryIDs.has(event.eventID),
+      )
+      const decisions = events.filter((event) => event.eventType === "decision.recorded")
+      const lifecycle = events.filter((event) => event.eventType.startsWith("delegation."))
+      expect(decisions).toHaveLength(1)
+      expect(lifecycle.map((event) => event.eventType).sort()).toEqual([
+        "delegation.finished",
+        "delegation.prepared",
+        "delegation.started",
+      ])
+      const decision = decisions[0]
+      if (!decision) throw new Error("expected a recorded delegation decision")
+      expect(lifecycle.every((event) => event.episodeID === decision.episodeID && event.decisionID === decision.decisionID)).toBe(true)
+      expect(lifecycle.every((event) => event.delegationID !== undefined)).toBe(true)
+      expect(new Set(lifecycle.map((event) => event.delegationID)).size).toBe(1)
+      expect(lifecycle.find((event) => event.eventType === "delegation.finished")?.execution).toMatchObject({
+        status: "completed",
+      })
+      const visible = `${JSON.stringify(result.metadata)}\n${result.output}`
+      const telemetryIDs = new Set(
+        events.flatMap((event) => [event.eventID, event.episodeID, event.decisionID, event.delegationID].filter(Boolean)),
+      )
+      telemetryIDs.forEach((id) => expect(visible).not.toContain(id))
+    }),
+  )
+  it.instance("execute persists explicit model_identity as the telemetry action identity", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      yield* Effect.promise(() => ModelTelemetry.drainBestEffort())
+      const existingTelemetryIDs = new Set(
+        ModelTelemetry.read({ projectID: chat.projectID }).map((event) => event.eventID),
+      )
+      yield* def.execute(
+        {
+          description: "inspect bug",
+          prompt: "look into the cache key path",
+          subagent_type: "general",
+          model_identity: "shared-test-model",
+          provider: "test",
+          variant: "max",
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps: stubOps() },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+      yield* Effect.promise(() => ModelTelemetry.drainBestEffort())
+      const decisions = ModelTelemetry.read({ projectID: chat.projectID })
+        .filter((event) => !existingTelemetryIDs.has(event.eventID))
+        .filter((event) => event.eventType === "decision.recorded")
+      expect(decisions).toHaveLength(1)
+      expect(decisions[0]?.action).toMatchObject({
+        route: "test/test-model",
+        identity: "shared-test-model",
+        variant: "max",
+      })
+      expect(decisions[0]?.action?.identity).not.toBe("route:test/test-model")
+    }),
+    { config: twoProviderConfig },
+  )
+  it.instance("execute records prepared and cancelled telemetry without started when already aborted", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      yield* Effect.promise(() => ModelTelemetry.drainBestEffort())
+      const existingTelemetryIDs = new Set(
+        ModelTelemetry.read({ projectID: chat.projectID }).map((event) => event.eventID),
+      )
+      const abort = new AbortController()
+      abort.abort()
+      const fiber = yield* def
+        .execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: abort.signal,
+            extra: { promptOps: stubOps() },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        .pipe(Effect.forkChild)
+      const exit = yield* Fiber.await(fiber)
+      expect(Exit.hasInterrupts(exit)).toBe(true)
+      yield* Effect.promise(() => ModelTelemetry.drainBestEffort())
+      const events = ModelTelemetry.read({ projectID: chat.projectID }).filter(
+        (event) => !existingTelemetryIDs.has(event.eventID),
+      )
+      const decisions = events.filter((event) => event.eventType === "decision.recorded")
+      const lifecycle = events.filter((event) => event.eventType.startsWith("delegation."))
+      expect(decisions).toHaveLength(1)
+      expect(lifecycle.map((event) => event.eventType).sort()).toEqual([
+        "delegation.cancelled",
+        "delegation.prepared",
+      ])
+      const decision = decisions[0]
+      const prepared = lifecycle.find((event) => event.eventType === "delegation.prepared")
+      const cancelled = lifecycle.find((event) => event.eventType === "delegation.cancelled")
+      if (!decision || !prepared || !cancelled) throw new Error("expected aborted delegation telemetry")
+      expect(prepared.decisionID).toBe(decision.decisionID)
+      expect(cancelled.decisionID).toBe(decision.decisionID)
+      expect(prepared.episodeID).toBe(decision.episodeID)
+      expect(cancelled.episodeID).toBe(decision.episodeID)
+      expect(prepared.delegationID).toBe(cancelled.delegationID)
+      expect(cancelled.execution).toMatchObject({
+        status: "cancelled",
+        finishReason: "cancelled",
+        errorClass: "cancelled",
+      })
+    }),
+  )
+  it.instance("resuming a task creates fresh telemetry IDs with inherited lineage and incremented attempt", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const execute = (task_id?: string) =>
+        def.execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+            ...(task_id ? { task_id } : {}),
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps: stubOps() },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+      yield* Effect.promise(() => ModelTelemetry.drainBestEffort())
+      const before = new Set(ModelTelemetry.read({ projectID: chat.projectID }).map((event) => event.eventID))
+      const first = yield* execute()
+      const second = yield* execute(first.metadata.sessionId)
+      yield* Effect.promise(() => ModelTelemetry.drainBestEffort())
+
+      const events = ModelTelemetry.read({ projectID: chat.projectID }).filter((event) => !before.has(event.eventID))
+      const decisions = events.filter((event) => event.eventType === "decision.recorded")
+      const prepared = events.filter((event) => event.eventType === "delegation.prepared")
+      expect(decisions).toHaveLength(2)
+      expect(prepared).toHaveLength(2)
+      expect(decisions[0]?.decisionID).not.toBe(decisions[1]?.decisionID)
+      expect(decisions[0]?.episodeID).toBe(decisions[1]?.episodeID)
+      const firstPrepared = prepared.find((event) => event.attemptIndex === 0)
+      const resumedPrepared = prepared.find((event) => event.attemptIndex === 1)
+      expect(firstPrepared?.delegationID).not.toBe(resumedPrepared?.delegationID)
+      expect(resumedPrepared?.parentDelegationID).toBe(firstPrepared?.delegationID)
+      expect(firstPrepared?.attemptIndex).toBe(0)
+      expect(resumedPrepared?.attemptIndex).toBe(1)
+      expect(second.metadata.sessionId).toBe(first.metadata.sessionId)
+    }),
+  )
 })

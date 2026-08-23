@@ -13,6 +13,7 @@ import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { ModelID, ProviderID } from "../../src/provider/schema"
 import { ChimeraSwarmTool } from "../../src/tool/swarm"
 import { SubagentDispatch } from "../../src/agent/subagent-dispatch"
+import * as ModelTelemetry from "../../src/agent/model-telemetry"
 import type { TaskPromptOps } from "../../src/tool/task"
 import { Truncate } from "@/tool/truncate"
 import { ToolRegistry } from "@/tool/registry"
@@ -358,6 +359,67 @@ describe("tool.chimera_swarm", () => {
     }),
   )
 
+  it.instance("keeps mixed interrupt and failure child outcomes classified as errors", () =>
+    Effect.gen(function* () {
+      const parent = yield* seed()
+      const tool = yield* ChimeraSwarmTool
+      const def = yield* tool.init()
+      const promptOps: TaskPromptOps = {
+        cancel: () => Effect.void,
+        resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+        prompt: (input) => {
+          const text = input.parts.find((part) => part.type === "text")?.text ?? ""
+          if (!text.includes("beta")) return Effect.succeed(reply(input, "done"))
+          return Effect.failCause(Cause.combine(Cause.interrupt(undefined), Cause.die(new Error("beta mixed failure"))))
+        },
+      }
+      const result = yield* def.execute(
+        {
+          prompt_template: "Review {{item}}",
+          items: ["alpha", "beta"],
+          subagent_type: "general",
+          concurrency: 2,
+        },
+        ctx(parent, promptOps),
+      )
+      const runs = result.metadata.childRuns as Array<{ status: string; error?: string }>
+      expect(runs.map((run) => run.status)).toEqual(["completed", "error"])
+      expect(runs[1]?.error).toContain("beta mixed failure")
+      expect(result.metadata.successCount).toBe(1)
+      expect(result.metadata.failureCount).toBe(1)
+    }),
+  )
+
+  it.instance("prioritizes parent abort over a mixed child cause", () =>
+    Effect.gen(function* () {
+      const parent = yield* seed()
+      const tool = yield* ChimeraSwarmTool
+      const def = yield* tool.init()
+      const abort = new AbortController()
+      const promptOps: TaskPromptOps = {
+        cancel: () => Effect.void,
+        resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+        prompt: (input) => {
+          const mixed = Cause.combine(Cause.interrupt(undefined), Cause.die(new Error("aborted mixed failure")))
+          return Effect.failCause(mixed).pipe(Effect.ensuring(Effect.sync(() => abort.abort())))
+        },
+      }
+      const result = yield* def.execute(
+        {
+          prompt_template: "Review {{item}}",
+          items: ["alpha"],
+          subagent_type: "general",
+          concurrency: 1,
+        },
+        { ...ctx(parent, promptOps), abort: abort.signal },
+      )
+      const runs = result.metadata.childRuns as Array<{ status: string; error?: string }>
+      expect(runs.map((run) => run.status)).toEqual(["cancelled"])
+      expect(runs[0]?.error).toContain("aborted mixed failure")
+      expect(result.metadata.successCount).toBe(0)
+      expect(result.metadata.failureCount).toBe(1)
+    }),
+  )
   it.instance("disables nested fan-out for swarm workers", () =>
     Effect.gen(function* () {
       const sessions = yield* Session.Service
@@ -1441,6 +1503,128 @@ describe("tool.chimera_swarm", () => {
         ).toBe(true)
         const runs = result.metadata.childRuns as Array<{ execution?: { source?: string } }>
         expect(runs.every((run) => run.execution?.source === "request-model-identity")).toBe(true)
+      }),
+  )
+
+  identityIt.instance(
+    "persists one shared swarm decision and linked child lifecycle without exposing telemetry IDs",
+    () =>
+      Effect.gen(function* () {
+        const parent = yield* seed()
+        const tool = yield* ChimeraSwarmTool
+        const def = yield* tool.init()
+        const asks: Array<{ permission?: string; patterns?: readonly string[] }> = []
+        modelIdentityListCalls = 0
+        yield* Effect.promise(() => ModelTelemetry.drainBestEffort())
+        const priorEvents = ModelTelemetry.read({ projectID: parent.chat.projectID, limit: 1000 })
+        const priorEventIDs = new Set(priorEvents.map((event) => event.eventID))
+
+        const result = yield* def.execute(
+          {
+            prompt_template: "Review {{item}}",
+            items: ["alpha", "beta"],
+            subagent_type: "general",
+            model_identity: "test-model",
+            provider: "test",
+            variant: "max",
+            concurrency: 2,
+          },
+          {
+            ...ctx(parent, stubOps()),
+            ask: (input) =>
+              Effect.sync(() => {
+                asks.push(input)
+              }),
+          },
+        )
+
+        expect(modelIdentityListCalls).toBe(1)
+        expect(asks.map((item) => item.permission)).toEqual(["task_model"])
+        expect(asks[0]?.patterns).toEqual(["test/test-model"])
+        expect(result.metadata.successCount).toBe(2)
+        expect(result.metadata.failureCount).toBe(0)
+
+        const metadata = result.metadata as { childRuns: unknown[]; childSessions: unknown[] }
+        const output = JSON.parse(result.output) as {
+          childRuns: unknown[]
+          childSessions: unknown[]
+          success: number
+          failure: number
+        }
+        expect(metadata.childRuns).toHaveLength(2)
+        expect(metadata.childSessions).toHaveLength(2)
+        expect(output.childRuns).toHaveLength(2)
+        expect(output.childSessions).toHaveLength(2)
+        expect(output.success).toBe(2)
+        expect(output.failure).toBe(0)
+
+        const publicPayload = JSON.stringify({ metadata, output })
+        for (const key of ["episodeID", "decisionID", "delegationID", "fanoutID"]) {
+          expect(publicPayload).not.toContain(`"${key}"`)
+        }
+
+        yield* Effect.promise(() => ModelTelemetry.drainBestEffort())
+        const events = ModelTelemetry.read({ projectID: parent.chat.projectID, limit: 1000 }).filter(
+          (event) => !priorEventIDs.has(event.eventID),
+        )
+        expect(events).toHaveLength(7)
+
+        const decisions = events.filter((event) => event.eventType === "decision.recorded")
+        expect(decisions).toHaveLength(1)
+        const decision = decisions[0]
+        if (!decision || decision.decisionID === undefined || decision.fanout === undefined) {
+          throw new Error("expected one persisted swarm decision with decision and fanout IDs")
+        }
+
+        expect(decision).toMatchObject({
+          eventType: "decision.recorded",
+          action: {
+            route: "test/test-model",
+            identity: "test-model",
+            variant: "max",
+            selectionSource: "explicit",
+            resolutionSource: "request-model-identity",
+          },
+          fanout: {
+            size: 2,
+            concurrency: 2,
+            templateKind: "swarm",
+          },
+        })
+        expect(decision.fanout.fanoutID).toMatch(/^fanout-/)
+
+        const lifecycle = events.filter((event) => event.eventType !== "decision.recorded")
+        expect(lifecycle).toHaveLength(6)
+        expect(lifecycle.every((event) => event.delegationID !== undefined)).toBe(true)
+        expect(lifecycle.every((event) => event.decisionID === decision.decisionID)).toBe(true)
+        expect(lifecycle.every((event) => event.episodeID === decision.episodeID)).toBe(true)
+        expect(lifecycle.every((event) => event.fanout?.fanoutID === decision.fanout?.fanoutID)).toBe(true)
+        expect(lifecycle.map((event) => event.fanout?.itemIndex).sort()).toEqual([0, 0, 0, 1, 1, 1])
+
+        const delegationIDs = [
+          ...new Set(
+            lifecycle
+              .map((event) => event.delegationID)
+              .filter((id): id is string => id !== undefined),
+          ),
+        ]
+        expect(delegationIDs).toHaveLength(2)
+        expect(
+          delegationIDs
+            .map((delegationID) => lifecycle.find((event) => event.delegationID === delegationID)?.fanout?.itemIndex)
+            .sort(),
+        ).toEqual([0, 1])
+
+        for (const delegationID of delegationIDs) {
+          const childEvents = lifecycle.filter((event) => event.delegationID === delegationID)
+          expect(childEvents).toHaveLength(3)
+          expect(childEvents.every((event) => event.attemptIndex === 0)).toBe(true)
+          expect(childEvents.map((event) => event.eventType).sort()).toEqual([
+            "delegation.finished",
+            "delegation.prepared",
+            "delegation.started",
+          ])
+        }
       }),
   )
 
