@@ -1,6 +1,7 @@
 import * as Tool from "./tool"
 import DESCRIPTION from "./task.txt"
 import { SubagentDispatch, type SubagentPromptOps } from "../agent/subagent-dispatch"
+import * as ModelTelemetry from "../agent/model-telemetry"
 import { validateSubagentModelSelection } from "../agent/subagent-execution"
 import { Agent } from "../agent/agent"
 import { SubagentModelSchedulingRuntime } from "../agent/subagent-model-scheduling-runtime"
@@ -106,11 +107,9 @@ export const TaskTool = Tool.define(
       const promptOps = ctx.extra?.promptOps as TaskPromptOps | undefined
       if (!promptOps) return yield* Effect.fail(new Error("TaskTool requires promptOps in ctx.extra"))
 
-      const result = yield* dispatch.run({
+      const prepared = yield* dispatch.prepare({
         parentSessionID: ctx.sessionID,
         parentMessageID: ctx.messageID,
-        description: params.description,
-        prompt: params.prompt,
         subagentType: params.subagent_type,
         modelProfile: params.model_profile,
         model,
@@ -119,9 +118,6 @@ export const TaskTool = Tool.define(
         variant,
         workload: params.workload,
         taskID: params.task_id,
-        promptOps,
-        abort: ctx.abort,
-        nestedDelegation: ctx.extra?.swarmWorker === true ? "deny" : "inherit",
         authorizeProfile: (profile) =>
           ctx.ask({
             permission: "task_profile",
@@ -142,6 +138,62 @@ export const TaskTool = Tool.define(
               model: `${providerID}/${modelID}`,
             },
           }),
+      })
+      const selectionSource = prepared.resolved.source === "resume" ? "resume" : workload?.selection ? "scheduler" : "explicit"
+      const telemetryState = (() => {
+        if (!prepared.existing) return { enabled: true, lineage: undefined }
+        try {
+          return {
+            enabled: true,
+            lineage: ModelTelemetry.getShadowSessionLineage({
+              projectID: parent.projectID,
+              sessionID: prepared.existing.id,
+            }),
+          }
+        } catch {
+          return { enabled: false, lineage: undefined }
+        }
+      })()
+      const action = ModelTelemetry.actionForRoute({
+        route: `${prepared.resolved.model.providerID}/${prepared.resolved.model.modelID}`,
+        identity: workload?.selection?.recommendation?.identity ?? params.model_identity,
+        variant: prepared.resolved.model.variant,
+        selectionSource,
+        resolutionSource: prepared.resolved.source,
+      })
+      const decision = telemetryState.enabled
+        ? ModelTelemetry.createShadowDecision({
+            projectID: parent.projectID,
+            workload: params.workload ?? "unknown",
+            action,
+            ...(telemetryState.lineage?.episodeID ? { episodeID: telemetryState.lineage.episodeID } : {}),
+            ...(selectionSource === "scheduler"
+              ? {
+                  candidates: ModelTelemetry.candidatesFromRecommendations({
+                    selected: action,
+                    recommendations: workload?.view?.recommendations[params.workload ?? ""] ?? [],
+                    resolutionSource: prepared.resolved.source,
+                  }),
+                }
+              : {}),
+          })
+        : undefined
+      const telemetry = decision
+        ? ModelTelemetry.createShadowDelegation(decision, {
+            ...(telemetryState.lineage?.parentDelegationID
+              ? { parentDelegationID: telemetryState.lineage.parentDelegationID }
+              : {}),
+          })
+        : undefined
+      if (decision) void ModelTelemetry.recordShadowDecision(decision)
+      const result = yield* dispatch.runPrepared({
+        prepared,
+        description: params.description,
+        prompt: params.prompt,
+        promptOps,
+        abort: ctx.abort,
+        nestedDelegation: ctx.extra?.swarmWorker === true ? "deny" : "inherit",
+        telemetry,
         onStarted: ({ sessionId, model, execution }) =>
           Effect.gen(function* () {
             yield* ctx.metadata({

@@ -1,6 +1,6 @@
 import path from "path"
 import fs from "fs"
-import { Effect, Exit, Schema } from "effect"
+import { Effect, Exit, Option, Schema } from "effect"
 import type { Interface as BusInterface } from "@/bus"
 import { BusEvent } from "@/bus/bus-event"
 import { InstanceState } from "@/effect/instance-state"
@@ -10,8 +10,23 @@ import { classifyChangeRecord, classifyFileBoundary, collectFileProjections, col
 import { ProjectionMemo } from "./projection-memo"
 import { CodeGraphAdapter } from "./codegraph-adapter"
 import { getCodeGraphDir, isInitialized, type CodeGraphSnapshot, type IndexProgress as CodeGraphIndexProgress, type SyncResult as CodeGraphSyncResult } from "@/graph"
+import { ModelTelemetry } from "@/agent/model-telemetry"
+import { Session } from "@/session/session"
 import { appendProvenanceRecord, databaseStorePath, readPredesignRuns, readProvenanceRecords, readRecentProvenanceRecords, recordOracleResult, writeChangeFacts, type OracleLinkedChange, type OracleStatus, type OracleVerificationKind } from "./store"
 import { TOOL_MUTATION_PREDESIGN_REQUIRED } from "./guidance"
+
+type ShadowOracleRecorder = (input: {
+  projectID: string
+  sessionID: string
+  oracleID: string
+  verificationKind: "test" | "typecheck" | "lint" | "build" | "lsp" | "explicit" | "unknown"
+  status: OracleStatus
+  trusted: boolean
+  occurredAt?: number
+  attribution?: ModelTelemetry.ShadowOracleAttribution
+}) => Promise<void>
+
+const recordShadowOracle = (ModelTelemetry as typeof ModelTelemetry & { recordShadowOracle?: ShadowOracleRecorder }).recordShadowOracle
 
 const ARTIFACT_SUBDIR = "chimera"
 const TOOL_PROVENANCE_FILE = "tool-provenance.jsonl"
@@ -589,7 +604,7 @@ export const recordToolOracle = Effect.fn("Chimera.recordToolOracle")(function* 
   const maxChanges = Math.max(1, Math.min(100, Math.floor(input.maxChanges ?? 20)))
   const records = yield* Effect.promise(() => readRecentProvenanceRecords(root, toolProvenanceArtifact(root), { sessionID: input.ctx.sessionID, finishedBefore: finishedAt, limit: maxChanges }))
   const linkedChanges = linkedOracleChanges({ records, root, sessionID: input.ctx.sessionID, finishedAt, maxChanges })
-  return yield* Effect.promise(() =>
+  const record = yield* Effect.promise(() =>
     recordOracleResult(root, oracleArtifact(root), {
       kind: input.kind,
       status: input.status,
@@ -620,6 +635,37 @@ export const recordToolOracle = Effect.fn("Chimera.recordToolOracle")(function* 
       payload: input.payload,
     }),
   )
+
+  if (!recordShadowOracle) return record
+  const session = Option.getOrUndefined(yield* Effect.serviceOption(Session.Service))
+  if (!session) return record
+  const projectID = yield* session.get(input.ctx.sessionID).pipe(
+    Effect.map((info) => info.projectID),
+    Effect.orElseSucceed(() => undefined),
+  )
+  if (!projectID || projectID !== instance.project.id) return record
+
+  const verificationKind = record.verificationKind === "unclassified_shell" ? "unknown" : (record.verificationKind ?? "unknown")
+  const occurredAt = Date.parse(record.finishedAt)
+  const attribution = (() => {
+    try {
+      return ModelTelemetry.getShadowOracleAttribution({ projectID, sessionID: input.ctx.sessionID })
+    } catch {
+      return undefined
+    }
+  })()
+  if (!attribution) return record
+  void recordShadowOracle({
+    projectID,
+    sessionID: input.ctx.sessionID,
+    oracleID: record.id,
+    attribution,
+    verificationKind,
+    status: record.status,
+    trusted: record.trusted ?? false,
+    ...(Number.isFinite(occurredAt) ? { occurredAt } : {}),
+  }).catch(() => undefined)
+  return record
 })
 
 export function trackToolMutation<A, E, R>(

@@ -1,6 +1,7 @@
 import * as Tool from "./tool"
 import DESCRIPTION from "./swarm.txt"
 import { SubagentDispatch, type SubagentPromptOps } from "../agent/subagent-dispatch"
+import * as ModelTelemetry from "../agent/model-telemetry"
 import { validateSubagentModelSelection } from "../agent/subagent-execution"
 import { SubagentModelSchedulingRuntime } from "../agent/subagent-model-scheduling-runtime"
 import { Agent } from "../agent/agent"
@@ -134,6 +135,7 @@ type ChildSession = {
   model?: unknown
   model_profile?: string
 }
+
 type SwarmChildRun = {
   index: number
   title: string
@@ -519,11 +521,45 @@ export const ChimeraSwarmTool = Tool.define(
       })
       const concurrency = bounded(params.concurrency, DEFAULT_CONCURRENCY, MAX_CONCURRENCY)
       const title = params.description ?? `chimera swarm (${items.length})`
+      const fanout = {
+        fanoutID: ModelTelemetry.createFanoutID(),
+        size: items.length,
+        concurrency,
+        templateKind: "swarm" as const,
+      }
+      const selectionSource = prepared.resolved.source === "resume" ? "resume" : workload?.selection ? "scheduler" : "explicit"
+      const action = ModelTelemetry.actionForRoute({
+        route: `${prepared.resolved.model.providerID}/${prepared.resolved.model.modelID}`,
+        identity: workload?.selection?.recommendation?.identity ?? params.model_identity,
+        variant: prepared.resolved.model.variant,
+        selectionSource,
+        resolutionSource: prepared.resolved.source,
+      })
+      const decision = ModelTelemetry.createShadowDecision({
+        projectID: parent.projectID,
+        workload: params.workload ?? "unknown",
+        action,
+        fanout,
+        ...(selectionSource === "scheduler"
+          ? {
+              candidates: ModelTelemetry.candidatesFromRecommendations({
+                selected: action,
+                recommendations: workload?.view?.recommendations[params.workload ?? ""] ?? [],
+                resolutionSource: prepared.resolved.source,
+              }),
+            }
+          : {}),
+      })
+      void ModelTelemetry.recordShadowDecision(decision)
       const workItems = items.map((item, index) => ({
         item,
         index: index + 1,
         title: `${params.description ?? preset ?? "swarm item"} ${index + 1}/${items.length}`,
         prompt: renderTemplate(template, item, index + 1, items.length, scopeWarnings),
+        telemetry: ModelTelemetry.createShadowDelegation(decision, {
+          attemptIndex: 0,
+          fanout: { ...fanout, itemIndex: index },
+        }),
       }))
       const childRuns = new Map<number, SwarmChildRun>(
         workItems.map((item) => [
@@ -617,6 +653,7 @@ export const ChimeraSwarmTool = Tool.define(
               promptOps,
               abort: ctx.abort,
               nestedDelegation: "deny",
+              telemetry: item.telemetry,
               onStarted: (started) =>
                 Effect.gen(function* () {
                   const recordActivity = !activityRecorded && !parent.parentID
@@ -664,7 +701,7 @@ export const ChimeraSwarmTool = Tool.define(
                 const outputPath = error.length > 0 ? yield* truncate.write(error) : undefined
                 const current = childRuns.get(item.index)
                 yield* updateChildRun(item.index, {
-                  status: Cause.hasInterrupts(cause) ? "cancelled" : "error",
+                  status: ctx.abort.aborted || Cause.hasInterruptsOnly(cause) ? "cancelled" : "error",
                   outputPath,
                   error,
                 })

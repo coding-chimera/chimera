@@ -8,10 +8,11 @@ import { MessageV2 } from "@/session/message-v2"
 import { MessageID, SessionID } from "@/session/schema"
 import { Session } from "@/session/session"
 import { NotFoundError } from "@/storage/storage"
-import { Effect, Exit } from "effect"
+import { Cause, Effect, Exit } from "effect"
 import type { SessionPrompt } from "../session/prompt"
 import { Agent } from "./agent"
 import { resolveSubagentExecution, type ResolvedSubagentExecution, type SubagentExecutionMetadata } from "./subagent-execution"
+import * as ModelTelemetry from "./model-telemetry"
 import { SubagentModelCatalog } from "./subagent-model-catalog"
 import { deriveSubagentSessionPermission } from "./subagent-permissions"
 
@@ -46,6 +47,7 @@ export type SubagentDispatchInput = {
   authorizeProfile?: (profile: string) => Effect.Effect<void>
   authorizeModel?: (model: { providerID: ProviderID; modelID: ModelID; variant?: string }) => Effect.Effect<void>
   onStarted?: (input: SubagentDispatchStarted) => Effect.Effect<void>
+  telemetry?: ModelTelemetry.ShadowDelegation
 }
 
 export type SubagentDispatchPrepared = {
@@ -76,7 +78,7 @@ export type SubagentDispatchPrepareInput = Pick<
 
 export type SubagentDispatchRunPreparedInput = Pick<
   SubagentDispatchInput,
-  "description" | "prompt" | "promptOps" | "abort" | "nestedDelegation" | "onStarted"
+  "description" | "prompt" | "promptOps" | "abort" | "nestedDelegation" | "onStarted" | "telemetry"
 > & { prepared: SubagentDispatchPrepared }
 
 export const SubagentDispatch = Effect.gen(function* () {
@@ -232,61 +234,120 @@ export const SubagentDispatch = Effect.gen(function* () {
       source: prepared.resolved.source,
       resumed: Boolean(prepared.existing),
     }
-    yield* (input.onStarted?.({ sessionId: nextSession.id, model: prepared.resolved.model, execution }) ?? Effect.void)
-
+    const startedAt = Date.now()
+    const boundTelemetry = (() => {
+      if (!input.telemetry) return undefined
+      try {
+        return ModelTelemetry.bindShadowDelegationBestEffort({ delegation: input.telemetry, sessionID: nextSession.id })
+      } catch {
+        return undefined
+      }
+    })()
+    const telemetry = (
+      eventType:
+        | "delegation.prepared"
+        | "delegation.started"
+        | "delegation.finished"
+        | "delegation.failed"
+        | "delegation.cancelled",
+      execution?: ModelTelemetry.Execution,
+    ) =>
+      Effect.sync(() => {
+        if (!boundTelemetry) return
+        void ModelTelemetry.recordShadowLifecycle(boundTelemetry, eventType, execution)
+      }).pipe(Effect.ignore)
+    yield* telemetry("delegation.prepared")
     const runCancel = yield* EffectBridge.make()
     const cancel = input.promptOps.cancel(nextSession.id)
     function onAbort() {
       runCancel.fork(cancel)
     }
 
-    const messageID = MessageID.ascending()
-    const result = yield* Effect.acquireUseRelease(
-      Effect.sync(() => {
-        input.abort.addEventListener("abort", onAbort, { once: true })
-      }),
-      () =>
-        Effect.gen(function* () {
-          if (input.abort.aborted) return yield* Effect.interrupt
-          const parts = (yield* input.promptOps.resolvePromptParts(input.prompt)).map((part) =>
-            part.type === "text"
-              ? { ...part, metadata: { ...part.metadata, memorySource: "delegated" } }
-              : part,
-          )
-          const result = yield* input.promptOps.prompt({
-            messageID,
-            sessionID: nextSession.id,
-            model: {
-              modelID: prepared.resolved.model.modelID,
-              providerID: prepared.resolved.model.providerID,
-            },
-            variant: prepared.resolved.model.variant,
-            agent: prepared.subagent.name,
-            tools: {
-              ...(prepared.subagent.permission.some((rule) => rule.permission === "todowrite")
-                ? {}
-                : { todowrite: false }),
-              ...(prepared.subagent.permission.some((rule) => rule.permission === "task") ? {} : { task: false }),
-              ...Object.fromEntries(
-                (prepared.config.experimental?.primary_tools ?? []).map((item) => [item, false]),
-              ),
-              ...(input.nestedDelegation === "deny" ? { task: false, chimera_swarm: false } : {}),
-            },
-            parts,
-          })
-          if (input.abort.aborted) return yield* Effect.interrupt
-          return result
+    const result = yield* Effect.gen(function* () {
+      if (input.abort.aborted) {
+        yield* (input.onStarted?.({ sessionId: nextSession.id, model: prepared.resolved.model, execution }) ?? Effect.void)
+        yield* cancel
+        return yield* Effect.interrupt
+      }
+      yield* telemetry("delegation.started")
+      yield* (input.onStarted?.({ sessionId: nextSession.id, model: prepared.resolved.model, execution }) ?? Effect.void)
+
+      const messageID = MessageID.ascending()
+      return yield* Effect.acquireUseRelease(
+        Effect.sync(() => {
+          input.abort.addEventListener("abort", onAbort, { once: true })
         }),
-      (_, exit) =>
-        Effect.gen(function* () {
-          if (Exit.hasInterrupts(exit)) yield* cancel
-        }).pipe(
-          Effect.ensuring(
-            Effect.sync(() => {
-              input.abort.removeEventListener("abort", onAbort)
-            }),
+        () =>
+          Effect.gen(function* () {
+            if (input.abort.aborted) return yield* Effect.interrupt
+            const parts = (yield* input.promptOps.resolvePromptParts(input.prompt)).map((part) =>
+              part.type === "text"
+                ? { ...part, metadata: { ...part.metadata, memorySource: "delegated" } }
+                : part,
+            )
+            const result = yield* input.promptOps.prompt({
+              messageID,
+              sessionID: nextSession.id,
+              model: {
+                modelID: prepared.resolved.model.modelID,
+                providerID: prepared.resolved.model.providerID,
+              },
+              variant: prepared.resolved.model.variant,
+              agent: prepared.subagent.name,
+              tools: {
+                ...(prepared.subagent.permission.some((rule) => rule.permission === "todowrite")
+                  ? {}
+                  : { todowrite: false }),
+                ...(prepared.subagent.permission.some((rule) => rule.permission === "task") ? {} : { task: false }),
+                ...Object.fromEntries(
+                  (prepared.config.experimental?.primary_tools ?? []).map((item) => [item, false]),
+                ),
+                ...(input.nestedDelegation === "deny" ? { task: false, chimera_swarm: false } : {}),
+              },
+              parts,
+            })
+            if (input.abort.aborted) return yield* Effect.interrupt
+            return result
+          }),
+        (_, exit) =>
+          Effect.gen(function* () {
+            if (Exit.hasInterrupts(exit)) yield* cancel
+          }).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                input.abort.removeEventListener("abort", onAbort)
+              }),
+            ),
           ),
-        ),
+      )
+    }).pipe(
+      Effect.onExit((exit) => {
+        const durationMs = Math.max(0, Date.now() - startedAt)
+        if (Exit.isSuccess(exit)) {
+          return telemetry("delegation.finished", { status: "completed", durationMs })
+        }
+        if (input.abort.aborted) {
+          return telemetry("delegation.cancelled", {
+            status: "cancelled",
+            finishReason: "cancelled",
+            errorClass: "cancelled",
+            durationMs,
+          })
+        }
+        if (Cause.hasInterruptsOnly(exit.cause)) {
+          return telemetry("delegation.cancelled", {
+            status: "interrupted",
+            finishReason: "interrupted",
+            durationMs,
+          })
+        }
+        return telemetry("delegation.failed", {
+          status: "failed",
+          finishReason: "unknown",
+          errorClass: "unknown",
+          durationMs,
+        })
+      }),
     )
 
     return {
@@ -321,6 +382,7 @@ export const SubagentDispatch = Effect.gen(function* () {
       abort: input.abort,
       nestedDelegation: input.nestedDelegation,
       onStarted: input.onStarted,
+      telemetry: input.telemetry,
     })
   })
 
