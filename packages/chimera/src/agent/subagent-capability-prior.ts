@@ -8,6 +8,26 @@ export const REASONING_TIER_ORDER = ["minimal", ...SEMANTIC_TIERS] as const
 export type SemanticTier = (typeof SEMANTIC_TIERS)[number]
 export type ReasoningTier = (typeof REASONING_TIER_ORDER)[number]
 
+function nonUltraTierIndex(variant: string) {
+  return REASONING_TIER_ORDER.indexOf(variant.toLowerCase() as ReasoningTier)
+}
+
+export function highestNonUltraVariant(variants: readonly string[]) {
+  const candidates = variants.filter((variant) => variant.toLowerCase() !== "ultra")
+  if (candidates.length === 0) return undefined
+  const tiered = candidates.filter((variant) => nonUltraTierIndex(variant) >= 0)
+  if (tiered.length === 0) return candidates[candidates.length - 1]
+  return tiered.toSorted((a, b) => nonUltraTierIndex(b) - nonUltraTierIndex(a))[0]
+}
+
+export function lowestNonUltraVariant(variants: readonly string[]) {
+  const candidates = variants.filter((variant) => variant.toLowerCase() !== "ultra")
+  if (candidates.length === 0) return undefined
+  const tiered = candidates.filter((variant) => nonUltraTierIndex(variant) >= 0)
+  if (tiered.length === 0) return candidates[0]
+  return tiered.toSorted((a, b) => nonUltraTierIndex(a) - nonUltraTierIndex(b))[0]
+}
+
 export interface CapabilityPriorParams {
   rho: number
   p: number

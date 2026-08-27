@@ -355,4 +355,15 @@ describe("subagent model scheduling", () => {
     expect(text).toContain("No model selector + workload => scheduler picks")
     expect(text).toContain("scheduling lines omitted")
   })
+
+  test("fills the lowest non-ultra variant when the archetype has no effort cap", () => {
+    const result = resolveSchedule({
+      routes: [route("deepseek-v4-flash", "test-relay", ["low", "high", "max", "ultra"])],
+      archetype: archetype("scout"),
+      regimes: { "test-relay": "metered" },
+      pricing: { "test-relay/deepseek-v4-flash": pricing() },
+    })
+
+    expect(result[0]?.variant).toBe("low")
+  })
 })

@@ -68,7 +68,7 @@ describe("SubagentExecution.resolve", () => {
       expect(result.source).toBe("role-route")
       expect(result.profile).toBe("flash")
       expect(result.model.modelID).toBe(ModelID.make("test-model"))
-      expect(result.model.variant).toBeUndefined()
+      expect(result.model.variant).toBe("max")
     }),
   )
 
@@ -264,7 +264,7 @@ describe("SubagentExecution.ultra policy", () => {
         validateModel: () => ok,
       })
       expect(result.source).toBe("request-profile")
-      expect(result.model.variant).toBeUndefined()
+      expect(result.model.variant).toBe("max")
     }),
   )
 
@@ -607,7 +607,7 @@ describe("SubagentExecution.ultra policy", () => {
       expect(result.model).toEqual({
         providerID: ProviderID.make("test"),
         modelID: ModelID.make("test-model"),
-        variant: undefined,
+        variant: "max",
       })
     }),
   )
@@ -719,7 +719,7 @@ describe("SubagentExecution.ultra policy", () => {
     }),
   )
 
-  it.effect("leaves the variant undefined when a direct model is given without one", () =>
+  it.effect("fills the highest non-ultra variant when a direct model has variants but no default options", () =>
     Effect.gen(function* () {
       const result = yield* resolveSubagentExecution({
         subagentType: "general",
@@ -728,7 +728,49 @@ describe("SubagentExecution.ultra policy", () => {
         subagent: subagent(),
         validateModel: () => ok,
       })
+      expect(result.model.variant).toBe("max")
+    }),
+  )
+
+  it.effect("keeps the variant undefined when the model config carries default options", () =>
+    Effect.gen(function* () {
+      const result = yield* resolveSubagentExecution({
+        subagentType: "general",
+        model: "test/test-model",
+        parent,
+        subagent: subagent(),
+        validateModel: () => Effect.succeed({ variants: { max: {}, xhigh: {} }, options: { reasoningEffort: "high" } }),
+      })
       expect(result.model.variant).toBeUndefined()
+    }),
+  )
+
+  it.effect("never fills the ultra variant as the dispatch default", () =>
+    Effect.gen(function* () {
+      const result = yield* resolveSubagentExecution({
+        subagentType: "general",
+        model: "test/test-model",
+        parent,
+        subagent: subagent(),
+        validateModel: () => Effect.succeed({ variants: { low: {}, ultra: {} } }),
+      })
+      expect(result.model.variant).toBe("low")
+    }),
+  )
+
+  it.effect("fills the highest non-ultra variant on the model_identity path", () =>
+    Effect.gen(function* () {
+      const result = yield* resolveSubagentExecution({
+        subagentType: "general",
+        modelIdentity: "test-model",
+        parent,
+        subagent: subagent(),
+        validateModel: () => ok,
+        resolveModelIdentity: () =>
+          Effect.succeed({ providerID: ProviderID.make("test"), modelID: ModelID.make("test-model") }),
+      })
+      expect(result.source).toBe("request-model-identity")
+      expect(result.model.variant).toBe("max")
     }),
   )
 

@@ -811,6 +811,99 @@ describe("session.llm.stream", () => {
     })
   })
 
+  test("falls back to the lowest non-ultra variant when no variant is selected and the model configures no default options", async () => {
+    const server = state.server
+    if (!server) throw new Error("Server not initialized")
+
+    const providerID = "custom-effort-fallback"
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(
+          path.join(dir, "chimera.json"),
+          JSON.stringify({
+            $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+            enabled_providers: [providerID],
+            provider: {
+              [providerID]: {
+                name: "Custom Effort Fallback",
+                npm: "@ai-sdk/openai-compatible",
+                wire_api: "chat",
+                env: [],
+                models: {
+                  "effort-model": {
+                    reasoning: true,
+                    variants: {
+                      low: { reasoningEffort: "low" },
+                      high: { reasoningEffort: "high" },
+                    },
+                  },
+                  "effort-defaulted": {
+                    reasoning: true,
+                    options: { reasoningEffort: "medium" },
+                    variants: {
+                      low: { reasoningEffort: "low" },
+                    },
+                  },
+                },
+                options: {
+                  apiKey: "test-effort-key",
+                  baseURL: `${server.url.origin}/v1`,
+                },
+              },
+            },
+          }),
+        )
+      },
+    })
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        } satisfies Agent.Info
+        const capture = async (modelID: string, label: string) => {
+          const resolved = await getModel(ProviderID.make(providerID), ModelID.make(modelID))
+          const request = waitRequest(
+            "/chat/completions",
+            new Response(createChatStream(label), {
+              status: 200,
+              headers: { "Content-Type": "text/event-stream" },
+            }),
+          )
+          const sessionID = SessionID.make(`session-effort-${label}`)
+          const user = {
+            id: MessageID.make(`user-effort-${label}`),
+            sessionID,
+            role: "user",
+            time: { created: Date.now() },
+            agent: agent.name,
+            model: { providerID: ProviderID.make(providerID), modelID: resolved.id },
+          } satisfies MessageV2.User
+          await drain({
+            user,
+            sessionID,
+            model: resolved,
+            agent,
+            system: ["runtime-system"],
+            messages: [{ role: "user", content: "Hello" }],
+            tools: {},
+          })
+          return (await request).body
+        }
+
+        const fallback = await capture("effort-model", "fallback")
+        expect(fallback.reasoning_effort).toBe("low")
+
+        const defaulted = await capture("effort-defaulted", "defaulted")
+        expect(defaulted.reasoning_effort).toBe("medium")
+      },
+    })
+  })
+
   test("lowers options-only Ultra for Kimi k3 and rejects unadvertised Ultra", async () => {
     const server = state.server
     if (!server) throw new Error("Server not initialized")
