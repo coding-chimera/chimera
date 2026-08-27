@@ -8,6 +8,7 @@ import { MessageV2 } from "@/session/message-v2"
 import { MessageID, SessionID } from "@/session/schema"
 import { Session } from "@/session/session"
 import { NotFoundError } from "@/storage/storage"
+import { errorMessage } from "@/util/error"
 import { Cause, Effect, Exit } from "effect"
 import type { SessionPrompt } from "../session/prompt"
 import { Agent } from "./agent"
@@ -307,6 +308,13 @@ export const SubagentDispatch = Effect.gen(function* () {
               parts,
             })
             if (input.abort.aborted) return yield* Effect.interrupt
+            if (result.info.role === "assistant" && result.info.error) {
+              return yield* Effect.fail(
+                new Error(
+                  `Subagent ${prepared.subagent.name} (${prepared.resolved.model.providerID}/${prepared.resolved.model.modelID}) failed: ${errorMessage(result.info.error)}`,
+                ),
+              )
+            }
             return result
           }),
         (_, exit) =>

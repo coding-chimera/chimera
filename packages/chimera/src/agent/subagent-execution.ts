@@ -3,6 +3,7 @@ import { Effect } from "effect"
 import { ModelID, ProviderID } from "../provider/schema"
 import { SessionID } from "../session/schema"
 import type { Agent } from "./agent"
+import { highestNonUltraVariant } from "./subagent-capability-prior"
 
 export type ResolvedSubagentExecution = {
   agent: string
@@ -39,7 +40,7 @@ export type SubagentExecutionInput = {
     routes?: Record<string, string>
   }
   existing?: { agent?: string; model?: { id: ModelID; providerID: ProviderID; variant?: string } | null }
-  validateModel: (providerID: ProviderID, modelID: ModelID) => Effect.Effect<{ variants?: Record<string, unknown> }>
+  validateModel: (providerID: ProviderID, modelID: ModelID) => Effect.Effect<{ variants?: Record<string, unknown>; options?: Record<string, unknown> }>
   resolveModelIdentity?: (input: { modelIdentity: string; provider?: string }) => Effect.Effect<{ providerID: ProviderID; modelID: ModelID }, Error>
 }
 
@@ -81,6 +82,18 @@ export const validateSubagentModelSelection = Effect.fn("SubagentExecution.valid
   }
 })
 
+
+const withDefaultVariant = (
+  resolved: ResolvedSubagentExecution,
+  info: { variants?: Record<string, unknown>; options?: Record<string, unknown> },
+): ResolvedSubagentExecution => {
+  if (resolved.source === "resume") return resolved
+  if (resolved.model.variant !== undefined) return resolved
+  if (Object.keys(info.options ?? {}).length > 0) return resolved
+  const variant = highestNonUltraVariant(Object.keys(info.variants ?? {}))
+  if (variant === undefined) return resolved
+  return { ...resolved, model: { ...resolved.model, variant } }
+}
 
 const applyResume: (input: {
   subagentType: string
@@ -168,7 +181,7 @@ export const resolveSubagentExecution: (
         ),
       )
     }
-    return yield* applyResume({
+    const resolved = yield* applyResume({
       subagentType: input.subagentType,
       existing: input.existing,
       resolved: {
@@ -177,6 +190,7 @@ export const resolveSubagentExecution: (
         source: "request-model",
       },
     })
+    return withDefaultVariant(resolved, info)
   }
 
   if (input.modelIdentity !== undefined) {
@@ -195,7 +209,7 @@ export const resolveSubagentExecution: (
         ),
       )
     }
-    return yield* applyResume({
+    const resolved = yield* applyResume({
       subagentType: input.subagentType,
       existing: input.existing,
       resolved: {
@@ -204,6 +218,7 @@ export const resolveSubagentExecution: (
         source: "request-model-identity",
       },
     })
+    return withDefaultVariant(resolved, info)
   }
 
 
@@ -237,7 +252,7 @@ export const resolveSubagentExecution: (
         ),
       )
     }
-    return yield* applyResume({
+    const resolved = yield* applyResume({
       subagentType: input.subagentType,
       existing: input.existing,
       resolved: {
@@ -247,6 +262,7 @@ export const resolveSubagentExecution: (
         source: input.modelProfile !== undefined ? "request-profile" : "role-route",
       },
     })
+    return withDefaultVariant(resolved, info)
   }
 
   if (input.subagent.model) {

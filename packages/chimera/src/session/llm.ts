@@ -10,6 +10,7 @@ import { ProviderTransform } from "@/provider/transform"
 import { Config } from "@/config/config"
 import { InstanceState } from "@/effect/instance-state"
 import type { Agent } from "@/agent/agent"
+import { lowestNonUltraVariant } from "@/agent/subagent-capability-prior"
 import type { MessageV2 } from "./message-v2"
 import { Plugin } from "@/plugin"
 import { SystemPrompt } from "./system"
@@ -49,9 +50,14 @@ type VariantProfile = {
 // Resolves the selected variant once so provider options and the multi-agent policy
 // consume the same canonical profile. Exact advertised keys win; otherwise the
 // selected name is matched case-insensitively against advertised variants.
-function resolveVariantProfile(model: Provider.Model, selected: string | undefined): VariantProfile {
+function resolveVariantProfile(model: Provider.Model, selected: string | undefined, hasConfiguredOptions: boolean): VariantProfile {
   const advertised = model.variants ?? {}
-  if (!selected) return { options: {} }
+  if (!selected) {
+    if (hasConfiguredOptions) return { options: {} }
+    const fallback = lowestNonUltraVariant(Object.keys(advertised))
+    if (fallback === undefined) return { options: {} }
+    return { key: fallback, options: advertised[fallback] }
+  }
   if (advertised[selected]) return { key: selected, options: advertised[selected] }
   const canonical = Object.keys(advertised).find((key) => key.toLowerCase() === selected.toLowerCase())
   if (canonical) return { key: canonical, options: advertised[canonical] }
@@ -136,7 +142,11 @@ const live: Layer.Layer<
 
       const profile: VariantProfile = input.small
         ? { options: {} }
-        : resolveVariantProfile(input.model, input.user.model.variant)
+        : resolveVariantProfile(
+            input.model,
+            input.user.model.variant,
+            Object.keys(input.model.options ?? {}).length > 0 || Object.keys(input.agent.options ?? {}).length > 0,
+          )
       if (profile.unadvertisedUltra) {
         return yield* Effect.fail(
           new Error(

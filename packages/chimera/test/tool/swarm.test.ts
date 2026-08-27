@@ -359,6 +359,57 @@ describe("tool.chimera_swarm", () => {
     }),
   )
 
+  it.instance("fails the child run with the assistant message error instead of an empty success", () =>
+    Effect.gen(function* () {
+      const parent = yield* seed()
+      const tool = yield* ChimeraSwarmTool
+      const def = yield* tool.init()
+      const failingOps: TaskPromptOps = {
+        cancel: () => Effect.void,
+        resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+        prompt: (input) =>
+          Effect.sync(() => {
+            const id = MessageID.ascending()
+            return {
+              info: {
+                id,
+                role: "assistant" as const,
+                parentID: input.messageID ?? MessageID.ascending(),
+                sessionID: input.sessionID,
+                mode: input.agent ?? "general",
+                agent: input.agent ?? "general",
+                cost: 0,
+                path: { cwd: "/tmp", root: "/tmp" },
+                tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+                modelID: input.model?.modelID ?? ref.modelID,
+                providerID: input.model?.providerID ?? ref.providerID,
+                time: { created: Date.now() },
+                error: new MessageV2.APIError({ message: "reasoning effort is required", isRetryable: false }).toObject(),
+              },
+              parts: [],
+            } satisfies MessageV2.WithParts
+          }),
+      }
+      const result = yield* def.execute(
+        {
+          prompt_template: "Review {{index}}/{{total}}: {{item}}",
+          items: ["alpha"],
+          subagent_type: "general",
+          description: "failing shard",
+        },
+        ctx(parent, failingOps),
+      )
+
+      expect(result.metadata.failureCount).toBe(1)
+      const runs = result.metadata.childRuns as Array<{ status: string; error?: string }>
+      expect(runs[0]?.status).toBe("error")
+      expect(runs[0]?.error).toContain("reasoning effort is required")
+      const output = JSON.parse(result.output)
+      expect(output.results[0].status).toBe("failure")
+      expect(output.results[0].error).toContain("reasoning effort is required")
+    }),
+  )
+
   it.instance("keeps mixed interrupt and failure child outcomes classified as errors", () =>
     Effect.gen(function* () {
       const parent = yield* seed()

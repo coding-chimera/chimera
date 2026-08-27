@@ -757,7 +757,7 @@ describe("tool.task", () => {
         )
 
         expect(seen?.model).toEqual({ providerID: ProviderID.make("test"), modelID: ModelID.make("test-model") })
-        expect(seen?.variant).toBeUndefined()
+        expect(seen?.variant).toBe("max")
         expect(result.metadata.execution.modelProfile).toBe("flash")
         expect(result.metadata.execution.source).toBe("role-route")
         expect(asks.map((item) => item.permission)).toEqual(["task", "task_profile"])

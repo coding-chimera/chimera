@@ -4,6 +4,7 @@ import {
   CAPABILITY_PRIOR_VERSION,
   REASONING_TIER_ORDER,
   capabilityAnchor,
+  lowestNonUltraVariant,
   reconstructScore,
   semanticTier,
 } from "./subagent-capability-prior"
@@ -403,7 +404,7 @@ export function resolveSchedule(input: {
       {
         route,
         profile,
-        variant: selected.variant,
+        variant: selected.variant ?? lowestNonUltraVariant(route.variants),
         effortMismatch: selected.mismatch,
         quality,
         score: 0,
