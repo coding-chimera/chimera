@@ -76,7 +76,9 @@ const deepSeekApiKey = Effect.fn("WebSearch.deepSeekApiKey")(function* (auth: Au
   const service = Option.getOrUndefined(yield* Effect.serviceOption(Provider.Service))
   if (service) {
     const key = yield* service.getProvider(ProviderID.make(DEEPSEEK_PROVIDER_ID)).pipe(
-      Effect.map((provider) => stringValue(provider.key) ?? stringValue(provider.options.apiKey)),
+      Effect.map((provider) =>
+        provider ? stringValue(provider.key) ?? stringValue(provider.options.apiKey) : undefined,
+      ),
       Effect.orElseSucceed(() => undefined),
     )
     if (key) return key
