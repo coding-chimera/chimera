@@ -1015,6 +1015,8 @@ export type PermissionConfig =
       task?: PermissionRuleConfig
       task_profile?: PermissionRuleConfig
       task_model?: PermissionRuleConfig
+      subagent_model_prefer?: PermissionRuleConfig
+      subagent_model_suppress?: PermissionRuleConfig
       external_directory?: PermissionRuleConfig
       todowrite?: PermissionActionConfig
       workbrief?: PermissionActionConfig
@@ -1095,7 +1097,8 @@ export type ProviderConfig = {
     protocols: ["v2" | "legacy"] | ["v2", "legacy"] | ["legacy", "v2"]
     auth: "provider-bearer"
   }
-  backend_semantics?: "openai" | "codex"
+  backend_semantics?: "openai" | "codex" | "alibailian"
+  search_model?: string
   userAgent?: string
   whitelist?: Array<string>
   blacklist?: Array<string>
@@ -1118,7 +1121,7 @@ export type ProviderConfig = {
       family?: string
       wire_api?: "chat" | "responses"
       remote_compaction?: boolean
-      backend_semantics?: "openai" | "codex"
+      backend_semantics?: "openai" | "codex" | "alibailian"
       capability_model_id?: string
       reasoning_efforts?: Array<"none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max">
       release_date?: string
@@ -1234,6 +1237,32 @@ export type DelegationModelProfile = {
   description?: string
 }
 
+export type DelegationScheduling = {
+  enabled?: boolean
+  spend?: "subscription-first" | "metered-first"
+  quotaFloorPercent?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  quotaStrainPercent?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  rlStrainThreshold?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  archetypes?: {
+    [key: string]: {
+      description?: string
+      minQuality?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      effortCap?: string
+      weights?: {
+        quality: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        speed: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        cost: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      }
+      budgetUsdPerWorker?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    }
+  }
+  overrides?: {
+    [key: string]: {
+      billing?: "metered" | "subscription" | "free" | "unknown"
+    }
+  }
+}
+
 export type DelegationConfig = {
   model_profiles?: {
     [key: string]: DelegationModelProfile
@@ -1241,6 +1270,7 @@ export type DelegationConfig = {
   routes?: {
     [key: string]: string
   }
+  scheduling?: DelegationScheduling
 }
 
 export type Config = {
@@ -1282,6 +1312,8 @@ export type Config = {
   autoupdate?: boolean | "notify"
   disabled_providers?: Array<string>
   enabled_providers?: Array<string>
+  ultra_models?: Array<string>
+  remote_compaction_models?: Array<string>
   model?: string
   small_model?: string
   default_agent?: string
@@ -1567,9 +1599,10 @@ export type Model = {
   family?: string
   wire_api?: "chat" | "responses"
   remote_compaction?: boolean
-  backend_semantics?: "openai" | "codex"
+  backend_semantics?: "openai" | "codex" | "alibailian"
   capability_model_id?: string
   reasoning_efforts?: Array<"none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max">
+  ultra?: boolean
   capabilities: {
     temperature: boolean
     reasoning: boolean
@@ -1647,7 +1680,8 @@ export type Provider = {
     protocols: ["v2" | "legacy"] | ["v2", "legacy"] | ["legacy", "v2"]
     auth: "provider-bearer"
   }
-  backend_semantics?: "openai" | "codex"
+  backend_semantics?: "openai" | "codex" | "alibailian"
+  search_model?: string
   env: Array<string>
   key?: string
   options: {

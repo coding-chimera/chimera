@@ -1,7 +1,8 @@
 - Search the web using Chimera's configured unified websearch providers.
-- For non-OpenAI/Codex models, prefer DeepSeek hosted web search when deepseek API-key auth or provider config is available.
+- For non-OpenAI/Codex models, prefer Ali Bailian web search when a configured provider declares backend_semantics "alibailian" (an Ali Bailian / Model Studio backed endpoint or relay); the request uses the provider's search_model when set, otherwise qwen3.8-flash, with enable_search enabled.
+- If no Ali Bailian provider is declared or it fails, prefer DeepSeek hosted web search when deepseek API-key auth or provider config is available.
 - If DeepSeek is unavailable or fails, fall back to Kimi search when kimi-for-coding API-key auth is configured.
-- Exa fallback is disabled; if neither DeepSeek nor Kimi can answer, report that web search is unavailable instead of trying an unrelated backend.
+- Exa fallback is disabled; if neither Ali Bailian, DeepSeek, nor Kimi can answer, report that web search is unavailable instead of trying an unrelated backend.
 - Provides up-to-date information for current events and recent data.
 - Supports configurable result counts and returns relevant web context when the selected provider supports it.
 - Use this tool for accessing information beyond knowledge cutoff.

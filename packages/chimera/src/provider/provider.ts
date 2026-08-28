@@ -1033,7 +1033,7 @@ const ProviderLimit = Schema.Struct({
   output: Schema.Finite,
 })
 
-const BackendSemantics = Schema.Literals(["openai", "codex"])
+const BackendSemantics = Schema.Literals(["openai", "codex", "alibailian"])
 const WireAPI = Schema.Literals(["chat", "responses"])
 const RemoteCompactionCapability = Schema.Struct({
   profile: Schema.Literal("codex-responses"),
@@ -1077,6 +1077,7 @@ export const Info = Schema.Struct({
   wire_api: optionalOmitUndefined(WireAPI),
   remote_compaction: optionalOmitUndefined(RemoteCompactionCapability),
   backend_semantics: optionalOmitUndefined(BackendSemantics),
+  search_model: optionalOmitUndefined(Schema.String),
   env: Schema.Array(Schema.String),
   key: optionalOmitUndefined(Schema.String),
   options: Schema.Record(Schema.String, Schema.Any),
@@ -1542,6 +1543,7 @@ const layer: Layer.Layer<
             wire_api: provider.wire_api ?? existing?.wire_api,
             remote_compaction: provider.remote_compaction ?? existing?.remote_compaction,
             backend_semantics: provider.backend_semantics ?? existing?.backend_semantics,
+            search_model: provider.search_model ?? existing?.search_model,
             models: existing?.models ?? {},
           }
           const configuredModels = { ...(provider.models ?? {}) }
@@ -1857,6 +1859,7 @@ const layer: Layer.Layer<
           if (provider.name) partial.name = provider.name
           if (provider.wire_api) partial.wire_api = provider.wire_api
           if (provider.backend_semantics) partial.backend_semantics = provider.backend_semantics
+          if (provider.search_model) partial.search_model = provider.search_model
           if (provider.options || discoveredBaseURLs[id])
             partial.options = mergeDeep(provider.options ?? {}, discoveredBaseURLs[id] ? { baseURL: discoveredBaseURLs[id] } : {})
           mergeProvider(providerID, partial)
