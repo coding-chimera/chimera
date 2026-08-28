@@ -312,10 +312,9 @@ export const layer = Layer.effect(
       const agent = yield* agents.get(input.agent)
       const ruleset = Permission.merge(agent.permission, session.permission ?? [])
       const disabled = Permission.disabled([TaskTool.id, "chimera_swarm"], ruleset)
-      const canDelegate =
-        !session.parentID &&
-        agent.mode !== "subagent" &&
-        [TaskTool.id, "chimera_swarm"].some((tool) => input.tools?.[tool] !== false && !disabled.has(tool))
+      // Both delegation tools are gated on the `task` permission at execution time,
+      // so task availability alone decides whether a session can delegate.
+      const canDelegate = input.tools?.[TaskTool.id] !== false && !disabled.has(TaskTool.id)
       const subagentSnapshot = canDelegate
         ? yield* scheduling.currentSnapshot({ ruleset, projectID: session.projectID })
         : undefined

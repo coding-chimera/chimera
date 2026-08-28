@@ -50,6 +50,7 @@ import {
 import * as Tool from "./tool"
 import { Config } from "@/config/config"
 import { ConfigSubagentRouting } from "@/config/subagent-routing"
+import { DelegationLimiter } from "@/agent/delegation-limiter"
 import { type ToolContext as PluginToolContext, type ToolDefinition } from "@opencode-ai/plugin"
 import { Schema } from "effect"
 import z from "zod"
@@ -460,7 +461,7 @@ export const layer = Layer.effect(
 export const defaultLayer = Layer.suspend(() =>
   Layer.provide(
     layer.pipe(
-      Layer.provide(Layer.mergeAll(Config.defaultLayer, ConfigSubagentRouting.defaultLayer)),
+      Layer.provide(Layer.mergeAll(Config.defaultLayer, ConfigSubagentRouting.defaultLayer, DelegationLimiter.defaultLayer)),
       Layer.provide(Auth.defaultLayer),
       Layer.provide(Plugin.defaultLayer),
       Layer.provide(Question.defaultLayer),

@@ -24,7 +24,7 @@ Optional identity selection: pass `model_identity` to resolve a current runtime 
 
 `model_profile`, `model`, and `model_identity` are mutually exclusive; `workload` is orthogonal to them. The tool resolves and validates the final route, asks `task_model` for that concrete `provider/model` once, and creates no child if resolution or authorization fails. Every worker then reuses the same prepared route.
 
-Swarm workers cannot call `task` or `chimera_swarm`; nested fan-out is disabled so one parent swarm cannot recursively multiply its concurrency.
+Workers may dispatch further subagents only when their agent type declares the `task` permission and the delegation chain is below `delegation.max_depth` (default 3 including the root session). All concurrently running subagents share the runtime-wide `delegation.max_concurrent` budget (default 128): dispatches that exceed the budget queue until capacity frees, and a worker waiting on its own children does not consume budget. Keep worker fan-out shallow — prefer widening the current swarm over nesting another one.
 
 Prompt templates support:
 - `{{item}}`: formatted item text or JSON

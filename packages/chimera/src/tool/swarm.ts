@@ -652,7 +652,6 @@ export const ChimeraSwarmTool = Tool.define(
               prompt: item.prompt,
               promptOps,
               abort: ctx.abort,
-              nestedDelegation: "deny",
               telemetry: item.telemetry,
               onStarted: (started) =>
                 Effect.gen(function* () {

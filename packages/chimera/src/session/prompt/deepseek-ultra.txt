@@ -14,9 +14,9 @@
 
 可选 {{index}}/{{total}}。不用模板时选 preset：audit-followup / audit-review / oracle-followup / file-review。
 
-## 规则 4：仅限父/根会话
+## 规则 4：嵌套派发的边界
 
-swarm worker 及其派生的子会话禁用 chimera_swarm 与 task；普通 task 子代理默认仅在委托提示明确要求且权限允许时才可再派发。不得在子代理提示中诱导嵌套派发。
+子代理（含 swarm worker）仅在其 agent 声明了 `task` 权限、委托提示明确要求、且会话链未达 `delegation.max_depth`（默认 3，含根会话）时才可再派发。所有并行运行中的子代理共享 `delegation.max_concurrent`（默认 128）额度，额度耗尽时新派发排队等待；等待子代理完成的父会话不占额度。不得在子代理提示中诱导无必要的嵌套派发。
 
 ## 规则 5：禁止自我豁免
 

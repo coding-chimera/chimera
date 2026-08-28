@@ -192,7 +192,6 @@ export const TaskTool = Tool.define(
         prompt: params.prompt,
         promptOps,
         abort: ctx.abort,
-        nestedDelegation: ctx.extra?.swarmWorker === true ? "deny" : "inherit",
         telemetry,
         onStarted: ({ sessionId, model, execution }) =>
           Effect.gen(function* () {

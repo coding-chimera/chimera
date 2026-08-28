@@ -13,6 +13,7 @@ import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { ModelID, ProviderID } from "../../src/provider/schema"
 import { ChimeraSwarmTool } from "../../src/tool/swarm"
 import { SubagentDispatch } from "../../src/agent/subagent-dispatch"
+import { DelegationLimiter } from "../../src/agent/delegation-limiter"
 import * as ModelTelemetry from "../../src/agent/model-telemetry"
 import type { TaskPromptOps } from "../../src/tool/task"
 import { Truncate } from "@/tool/truncate"
@@ -69,6 +70,7 @@ const it = testEffect(
     Session.defaultLayer,
     Truncate.defaultLayer,
     ToolRegistry.defaultLayer,
+    DelegationLimiter.defaultLayer,
     testProvider.layer,
   ),
 )
@@ -82,6 +84,7 @@ const modelIt = testEffect(
     Session.defaultLayer,
     Truncate.defaultLayer,
     ToolRegistry.defaultLayer,
+    DelegationLimiter.defaultLayer,
     testProvider.layer,
   ),
 )
@@ -104,6 +107,7 @@ const identityIt = testEffect(
     Session.defaultLayer,
     Truncate.defaultLayer,
     ToolRegistry.defaultLayer,
+    DelegationLimiter.defaultLayer,
     identityProvider.layer,
   ),
 )
@@ -471,7 +475,7 @@ describe("tool.chimera_swarm", () => {
       expect(result.metadata.failureCount).toBe(1)
     }),
   )
-  it.instance("disables nested fan-out for swarm workers", () =>
+  it.instance("allows nested delegation for swarm workers below the depth cap", () =>
     Effect.gen(function* () {
       const sessions = yield* Session.Service
       const parent = yield* seed()
@@ -489,20 +493,19 @@ describe("tool.chimera_swarm", () => {
         ctx(parent, stubOps({ onPrompt: (input) => prompts.push(input) })),
       )
 
-      expect(prompts[0].tools).toMatchObject({ task: false, chimera_swarm: false })
+      expect(prompts[0].tools?.task).toBeUndefined()
+      expect(prompts[0].tools?.chimera_swarm).toBeUndefined()
       const children = yield* sessions.children(parent.chat.id)
       expect(children).toHaveLength(1)
       const rules = children[0].permission ?? []
-      expect(rules).toContainEqual({ pattern: "*", action: "deny", permission: "task" })
-      expect(rules).toContainEqual({ pattern: "*", action: "deny", permission: "chimera_swarm" })
+      expect(rules).not.toContainEqual({ pattern: "*", action: "deny", permission: "task" })
+      expect(rules).not.toContainEqual({ pattern: "*", action: "deny", permission: "chimera_swarm" })
       expect(rules).toContainEqual({ pattern: "*", action: "deny", permission: "subagent_model_prefer" })
       expect(rules).toContainEqual({ pattern: "*", action: "deny", permission: "subagent_model_suppress" })
-      expect(Permission.evaluate("task", "*", rules).action).toBe("deny")
-      expect(Permission.evaluate("chimera_swarm", "*", rules).action).toBe("deny")
     }),
   )
 
-  it.instance("resuming a swarm child through dispatch keeps nested denies and adds no allows", () =>
+  it.instance("resuming a swarm child through dispatch keeps delegation allowed and adds no allows", () =>
     Effect.gen(function* () {
       const sessions = yield* Session.Service
       const parent = yield* seed()
@@ -534,21 +537,18 @@ describe("tool.chimera_swarm", () => {
         taskID: childID,
         promptOps: stubOps(),
         abort: new AbortController().signal,
-        nestedDelegation: "deny",
       })
 
       const after = (yield* sessions.get(SessionID.make(childID!))).permission ?? []
-      expect(after).toContainEqual({ pattern: "*", action: "deny", permission: "task" })
-      expect(after).toContainEqual({ pattern: "*", action: "deny", permission: "chimera_swarm" })
+      expect(after).not.toContainEqual({ pattern: "*", action: "deny", permission: "task" })
+      expect(after).not.toContainEqual({ pattern: "*", action: "deny", permission: "chimera_swarm" })
       expect(after).toContainEqual({ pattern: "*", action: "deny", permission: "subagent_model_prefer" })
       expect(after).toContainEqual({ pattern: "*", action: "deny", permission: "subagent_model_suppress" })
       expect(after.filter((rule) => rule.action === "allow")).toEqual(before.filter((rule) => rule.action === "allow"))
-      expect(after.filter((rule) => rule.permission === "task" && rule.action === "deny")).toHaveLength(1)
-      expect(after.filter((rule) => rule.permission === "chimera_swarm" && rule.action === "deny")).toHaveLength(1)
     }),
   )
 
-  it.instance("resumed swarm child evaluates task and chimera_swarm as deny through real permissions", () =>
+  it.instance("resumed swarm child evaluates task and chimera_swarm as allow through real permissions", () =>
     Effect.gen(function* () {
       const sessions = yield* Session.Service
       const parent = yield* seed()
@@ -580,15 +580,74 @@ describe("tool.chimera_swarm", () => {
         taskID: childID,
         promptOps: stubOps(),
         abort: new AbortController().signal,
-        nestedDelegation: "deny",
       })
 
       const after = (yield* sessions.get(SessionID.make(childID!))).permission ?? []
-      expect(Permission.evaluate("task", "*", after).action).toBe("deny")
-      expect(Permission.evaluate("chimera_swarm", "*", after).action).toBe("deny")
+      const agent = yield* Agent.Service
+      const general = yield* agent.get("general")
+      if (!general) return yield* Effect.fail(new Error("missing general agent"))
+      const effective = Permission.merge(general.permission, after)
+      expect(Permission.evaluate("task", "*", effective).action).toBe("allow")
+      expect(Permission.evaluate("chimera_swarm", "*", effective).action).toBe("allow")
       expect(Permission.evaluate("bash", "*", after).action).toBe("ask")
       expect(after.filter((rule) => rule.action === "allow")).toEqual(before.filter((rule) => rule.action === "allow"))
     }),
+  )
+
+  it.instance("injects nested delegation denies when the default depth cap is reached", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const parent = yield* seed()
+      const child = yield* seed("Intermediate child", parent.chat.id)
+      const dispatch = yield* SubagentDispatch
+      const prompts: SessionPrompt.PromptInput[] = []
+
+      yield* dispatch.run({
+        parentSessionID: child.chat.id,
+        parentMessageID: child.assistant.id,
+        description: "grandchild",
+        prompt: "work at the depth cap",
+        subagentType: "general",
+        promptOps: stubOps({ onPrompt: (input) => prompts.push(input) }),
+        abort: new AbortController().signal,
+      })
+
+      const grandchildren = yield* sessions.children(child.chat.id)
+      expect(grandchildren).toHaveLength(1)
+      const rules = grandchildren[0].permission ?? []
+      expect(rules).toContainEqual({ pattern: "*", action: "deny", permission: "task" })
+      expect(rules).toContainEqual({ pattern: "*", action: "deny", permission: "chimera_swarm" })
+      expect(prompts[0].tools).toMatchObject({ task: false, chimera_swarm: false })
+    }),
+  )
+
+  it.instance(
+    "injects nested delegation denies at the configured depth cap",
+    () =>
+      Effect.gen(function* () {
+        const sessions = yield* Session.Service
+        const parent = yield* seed()
+        const dispatch = yield* SubagentDispatch
+        const prompts: SessionPrompt.PromptInput[] = []
+
+        yield* dispatch.run({
+          parentSessionID: parent.chat.id,
+          parentMessageID: parent.assistant.id,
+          description: "capped child",
+          prompt: "child of the root is already at the cap",
+          subagentType: "general",
+          promptOps: stubOps({ onPrompt: (input) => prompts.push(input) }),
+          abort: new AbortController().signal,
+        })
+
+        const children = yield* sessions.children(parent.chat.id)
+        expect(children).toHaveLength(1)
+        const rules = children[0].permission ?? []
+        expect(rules).toContainEqual({ pattern: "*", action: "deny", permission: "task" })
+        expect(rules).toContainEqual({ pattern: "*", action: "deny", permission: "chimera_swarm" })
+        expect(prompts[0].tools).toMatchObject({ task: false, chimera_swarm: false })
+      }),
+    { config: { delegation: { max_depth: 2 } } },
   )
 
   it.instance("adds soft scope warnings for explicit item file conflicts", () =>
@@ -846,7 +905,9 @@ describe("tool.chimera_swarm", () => {
       expect(tool?.description).toContain("defaults to 16")
       expect(tool?.description).toContain("capped at 16")
       expect(tool?.description).toContain("capacity ceiling")
-      expect(tool?.description).toContain("cannot call `task` or `chimera_swarm`")
+      expect(tool?.description).toContain("delegation.max_depth")
+      expect(tool?.description).toContain("delegation.max_concurrent")
+      expect(tool?.description).toContain("does not consume budget")
     }),
   )
 
@@ -1435,7 +1496,7 @@ describe("tool.chimera_swarm", () => {
   )
 
   it.instance(
-    "newly created swarm children keep task and chimera_swarm denies when a direct model variant is used",
+    "newly created swarm children keep delegation allowed when a direct model variant is used",
     () =>
       Effect.gen(function* () {
         const sessions = yield* Session.Service
@@ -1460,15 +1521,13 @@ describe("tool.chimera_swarm", () => {
         expect(childID).toBeDefined()
 
         const permission = (yield* sessions.get(SessionID.make(childID!))).permission ?? []
-        expect(Permission.evaluate("task", "*", permission).action).toBe("deny")
-        expect(Permission.evaluate("chimera_swarm", "*", permission).action).toBe("deny")
-        expect(permission.some((rule) => rule.permission === "task" && rule.action === "deny")).toBe(true)
-        expect(permission.some((rule) => rule.permission === "chimera_swarm" && rule.action === "deny")).toBe(true)
+        expect(permission.some((rule) => rule.permission === "task" && rule.action === "deny")).toBe(false)
+        expect(permission.some((rule) => rule.permission === "chimera_swarm" && rule.action === "deny")).toBe(false)
       }),
   )
 
   it.instance(
-    "nested delegation denies still evaluate as deny when a direct model is used",
+    "swarm child resumed with a direct model keeps delegation allowed",
     () =>
       Effect.gen(function* () {
         const sessions = yield* Session.Service
@@ -1502,12 +1561,11 @@ describe("tool.chimera_swarm", () => {
           model: "test/test-model",
           promptOps: stubOps(),
           abort: new AbortController().signal,
-          nestedDelegation: "deny",
         })
 
         const after = (yield* sessions.get(SessionID.make(childID!))).permission ?? []
-        expect(Permission.evaluate("task", "*", after).action).toBe("deny")
-        expect(Permission.evaluate("chimera_swarm", "*", after).action).toBe("deny")
+        expect(Permission.evaluate("task", "*", after).action).not.toBe("deny")
+        expect(Permission.evaluate("chimera_swarm", "*", after).action).not.toBe("deny")
       }),
   )
   identityIt.instance(

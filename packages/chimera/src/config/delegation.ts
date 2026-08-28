@@ -1,8 +1,11 @@
 export * as ConfigDelegation from "./delegation"
 import { Schema } from "effect"
 import { zod } from "@/util/effect-zod"
-import { withStatics } from "@/util/schema"
 import { ConfigModelID } from "./model-id"
+import { PositiveInt, withStatics } from "@/util/schema"
+
+export const DEFAULT_MAX_DEPTH = 3
+export const DEFAULT_MAX_CONCURRENT = 128
 
 export const ModelProfile = Schema.Struct({
   model: ConfigModelID.annotate({
@@ -54,6 +57,14 @@ export const Info = Schema.Struct({
   model_profiles: Schema.optional(Schema.Record(Schema.String, ModelProfile)),
   routes: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   scheduling: Schema.optional(Scheduling),
+  max_depth: Schema.optional(PositiveInt).annotate({
+    description:
+      "Maximum delegation chain depth including the root session (default 3 = root -> subagent -> subagent). Sessions at the depth cap cannot dispatch further subagents.",
+  }),
+  max_concurrent: Schema.optional(PositiveInt).annotate({
+    description:
+      "Runtime-wide budget of concurrently running subagents (default 128). New dispatches queue when the budget is exhausted; subagents waiting on their own children do not consume budget.",
+  }),
 })
   .annotate({ identifier: "DelegationConfig" })
   .pipe(withStatics((s) => ({ zod: zod(s) })))

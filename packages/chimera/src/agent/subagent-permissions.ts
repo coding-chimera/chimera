@@ -14,7 +14,12 @@ export function deriveSubagentSessionPermission(input: {
       (rule) => rule.permission === "external_directory" || rule.action === "deny",
     ),
     ...(canTodo ? [] : [{ permission: "todowrite" as const, pattern: "*" as const, action: "deny" as const }]),
-    ...(canTask ? [] : [{ permission: "task" as const, pattern: "*" as const, action: "deny" as const }]),
+    ...(canTask
+      ? []
+      : [
+          { permission: "task" as const, pattern: "*" as const, action: "deny" as const },
+          { permission: "chimera_swarm" as const, pattern: "*" as const, action: "deny" as const },
+        ]),
     { permission: "subagent_model_prefer", pattern: "*", action: "deny" },
     { permission: "subagent_model_suppress", pattern: "*", action: "deny" },
   ]

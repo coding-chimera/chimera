@@ -34,6 +34,7 @@ import { ApplyPatchTool } from "@/tool/apply_patch"
 import { EditTool } from "@/tool/edit"
 import { WriteTool } from "@/tool/write"
 
+import { DelegationLimiter } from "../../src/agent/delegation-limiter"
 const node = CrossSpawnSpawner.defaultLayer
 const configLayer = TestConfig.layer({
   directories: () => InstanceState.directory.pipe(Effect.map((dir) => [path.join(dir, ".chimera")])),
@@ -47,7 +48,7 @@ const authLayer = Layer.mock(Auth.Service)({
 const makeRegistryLayer = () =>
   Layer.provide(
     ToolRegistry.layer.pipe(
-      Layer.provide(Layer.mergeAll(configLayer, ConfigSubagentRouting.defaultLayer)),
+      Layer.provide(Layer.mergeAll(configLayer, ConfigSubagentRouting.defaultLayer, DelegationLimiter.defaultLayer)),
       Layer.provide(authLayer),
       Layer.provide(Plugin.defaultLayer),
       Layer.provide(Question.defaultLayer),

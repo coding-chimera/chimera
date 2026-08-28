@@ -56,6 +56,7 @@ import { SessionRunState } from "../../src/session/run-state"
 import { SessionStatus } from "../../src/session/status"
 import { Snapshot } from "../../src/snapshot"
 import { ToolRegistry } from "@/tool/registry"
+import { DelegationLimiter } from "@/agent/delegation-limiter"
 import { MemoryManagement } from "@/memory/management"
 import { BrowserRuntime } from "@/browser/runtime"
 import { Truncate } from "@/tool/truncate"
@@ -147,6 +148,7 @@ function makeHttp() {
   const workBrief = WorkBrief.layer.pipe(Layer.provideMerge(deps))
   const chimeraPromptContext = ChimeraPromptContext.layer.pipe(Layer.provideMerge(deps))
   const registry = ToolRegistry.layer.pipe(
+    Layer.provideMerge(DelegationLimiter.defaultLayer),
     Layer.provide(Skill.defaultLayer),
     Layer.provide(FetchHttpClient.layer),
     Layer.provide(CrossSpawnSpawner.defaultLayer),

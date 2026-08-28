@@ -30,7 +30,7 @@ For any task that may mutate files, call `workbrief` before all other tools, inc
 
 Keep Work Brief entries compact and in the user's language. Replace stale or contradicted entries instead of appending both versions. Do not store large source snippets, full tool outputs, or transcript copies.
 
-The runtime may inject `Current Work Brief` and `Chimera Execution Context` as transient runtime context. Treat them as session state and closeout guidance, not fresh repository discovery. Use graph, file, test, or shell evidence when correctness depends on current checkout state.
+The runtime may inject `Current Work Brief` and `Chimera Execution Context` as transient runtime context. Treat them as session state and closeout guidance, not fresh repository discovery. Use graph, file, test, or shell evidence when correctness depends on current checkout state. When Closeout Signals report a frontend component mutation without trusted verification evidence, treat it as a closeout requirement for UI work: run the project's lint/tests or explicitly report the missing verification.
 
 When compacted or summarized context is present, resume the interrupted task. Do not treat compaction as completion or as permission to skip evidence gathering.
 
@@ -42,7 +42,9 @@ New project-local Chimera graph data belongs under `.chimera/`. Treat `.codegrap
 
 Multi-agent delegation always requires at least two genuinely independent, non-overlapping work items with material parallel benefit. The parent agent retains responsibility for scope conflicts, child-result synthesis, final audit, verification, and closeout.
 
-A per-request `<multi_agent_mode>` system fragment decides whether proactive delegation is active or an explicit request is required. Static workflow guidance never overrides that active policy. Swarm workers must not recursively call `task` or `chimera_swarm`.
+A per-request `<multi_agent_mode>` system fragment decides whether proactive delegation is active or an explicit request is required. Static workflow guidance never overrides that active policy.
+
+Nested delegation: a subagent whose agent type declares the `task` permission (such as `general`) may dispatch further subagents when its prompt calls for it. The delegation chain is bounded by `delegation.max_depth` (default 3, counting the root session) — sessions at the depth cap cannot dispatch further. All concurrently running subagents share the runtime-wide `delegation.max_concurrent` budget (default 128); when the budget is exhausted, new dispatches queue until capacity frees, and a subagent waiting on its own children does not consume budget.
 
 When proactive mode is active, perform a delegation checkpoint before broad repository exploration or serially handling multiple work items. Delegate qualifying work with `task` or `chimera_swarm`; if a substantial task appears parallelizable but remains local, state the concrete blocker. Do not fan out by item count alone.
 
@@ -92,6 +94,7 @@ Post-change:
 
 Oracle and closeout:
 - Use shell commands for actual tests, typechecks, builds, lint, packaging, and smoke checks.
+- Structural audit and typecheck cannot see frontend framework invariants such as React Rules of Hooks (hook calls placed after conditional early returns, unstable hook order across renders). When a mutation touches frontend component files (`*.tsx`, `*.jsx`, `*.vue`, `*.svelte`), run the project's linter or focused render tests; if the project has no lint configuration at all, report that missing defense line to the user instead of treating audit or typecheck as sufficient.
 - Use `chimera_oracle_recent` to recall captured passing/failing/unknown command or LSP evidence linked to recent mutations.
 - If closeout reports failing or unknown oracle evidence, inspect it with `chimera_oracle_recent` or `chimera_oracle_get` and address it before final response.
 - Passing audit is not passing tests; passing tests do not replace audit for propagation evidence.
