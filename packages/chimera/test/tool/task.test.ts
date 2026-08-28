@@ -17,6 +17,7 @@ import type { SessionPrompt } from "../../src/session/prompt"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { ModelID, ProviderID } from "../../src/provider/schema"
 import { TaskTool, type TaskPromptOps } from "../../src/tool/task"
+import { DelegationLimiter } from "../../src/agent/delegation-limiter"
 import { Truncate } from "@/tool/truncate"
 import { ToolRegistry } from "@/tool/registry"
 import { ModelNotFoundError, Provider } from "../../src/provider/provider"
@@ -137,6 +138,7 @@ const it = testEffect(
     Session.defaultLayer,
     Truncate.defaultLayer,
     ToolRegistry.defaultLayer,
+    DelegationLimiter.defaultLayer,
     Provider.defaultLayer,
   ),
 )
@@ -163,6 +165,7 @@ const failIt = testEffect(
     failingSessionLayer,
     Truncate.defaultLayer,
     ToolRegistry.defaultLayer,
+    DelegationLimiter.defaultLayer,
     Provider.defaultLayer,
   ),
 )
@@ -1321,7 +1324,7 @@ describe("tool.task", () => {
     }),
   )
 
-  it.instance("execute appends nested delegation denies when resuming a swarm worker child", () =>
+  it.instance("execute keeps delegation allowed when resuming a child below the depth cap", () =>
     Effect.gen(function* () {
       const sessions = yield* Session.Service
       const { chat, assistant } = yield* seed()
@@ -1342,7 +1345,7 @@ describe("tool.task", () => {
           messageID: assistant.id,
           agent: "build",
           abort: new AbortController().signal,
-          extra: { promptOps: stubOps({ onPrompt: (input) => (seen = input) }), swarmWorker: true },
+          extra: { promptOps: stubOps({ onPrompt: (input) => (seen = input) }) },
           messages: [],
           metadata: () => Effect.void,
           ask: () => Effect.void,
@@ -1352,20 +1355,20 @@ describe("tool.task", () => {
       expect(result.metadata.sessionId).toBe(child.id)
       expect(result.metadata.execution.resumed).toBe(true)
       const resumed = yield* sessions.get(child.id)
-      expect(resumed.permission).toContainEqual({ pattern: "*", action: "deny", permission: "task" })
-      expect(resumed.permission).toContainEqual({ pattern: "*", action: "deny", permission: "chimera_swarm" })
+      expect(resumed.permission).not.toContainEqual({ pattern: "*", action: "deny", permission: "task" })
+      expect(resumed.permission).not.toContainEqual({ pattern: "*", action: "deny", permission: "chimera_swarm" })
       expect(resumed.permission).toContainEqual({ pattern: "*", action: "deny", permission: "subagent_model_prefer" })
       expect(resumed.permission).toContainEqual({ pattern: "*", action: "deny", permission: "subagent_model_suppress" })
-      expect(resumed.permission?.filter((rule) => rule.permission === "task" && rule.action === "deny")).toHaveLength(1)
-      expect(resumed.permission?.filter((rule) => rule.permission === "chimera_swarm" && rule.action === "deny")).toHaveLength(1)
-      expect(seen?.tools).toMatchObject({ task: false, chimera_swarm: false })
+      expect(seen?.tools?.task).toBeUndefined()
+      expect(seen?.tools?.chimera_swarm).toBeUndefined()
     }),
   )
 
-  it.instance("execute does not duplicate nested delegation denies on repeated resumes", () =>
+  it.instance("execute does not duplicate depth-cap delegation denies on repeated resumes", () =>
     Effect.gen(function* () {
       const sessions = yield* Session.Service
-      const { chat, assistant } = yield* seed()
+      const { chat } = yield* seed()
+      const intermediate = yield* seed("Intermediate child", "general", chat.id)
       const tool = yield* TaskTool
       const def = yield* tool.init()
       const params = {
@@ -1373,19 +1376,19 @@ describe("tool.task", () => {
         prompt: "look into the cache key path",
         subagent_type: "general",
       }
-      const toolCtx = (swarmWorker: boolean) => ({
-        sessionID: chat.id,
-        messageID: assistant.id,
-        agent: "build",
+      const toolCtx = () => ({
+        sessionID: intermediate.chat.id,
+        messageID: intermediate.assistant.id,
+        agent: "general",
         abort: new AbortController().signal,
-        extra: { promptOps: stubOps(), swarmWorker },
+        extra: { promptOps: stubOps() },
         messages: [],
         metadata: () => Effect.void,
         ask: () => Effect.void,
       })
 
-      const first = yield* def.execute(params, toolCtx(true))
-      const second = yield* def.execute({ ...params, task_id: first.metadata.sessionId }, toolCtx(true))
+      const first = yield* def.execute(params, toolCtx())
+      const second = yield* def.execute({ ...params, task_id: first.metadata.sessionId }, toolCtx())
 
       expect(second.metadata.sessionId).toBe(first.metadata.sessionId)
       const child = yield* sessions.get(first.metadata.sessionId)
@@ -1395,6 +1398,59 @@ describe("tool.task", () => {
       expect(taskDenies).toHaveLength(1)
       expect(swarmDenies).toHaveLength(1)
     }),
+  )
+
+  it.instance(
+    "serializes concurrent dispatches when the delegation concurrency budget is exhausted",
+    () =>
+      Effect.gen(function* () {
+        const { chat, assistant } = yield* seed()
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+        const started: string[] = []
+        let release!: () => void
+        const gate = new Promise<void>((done) => {
+          release = done
+        })
+        const blockingOps = (tag: string): TaskPromptOps => ({
+          cancel: () => Effect.void,
+          resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+          prompt: (input) =>
+            Effect.gen(function* () {
+              started.push(tag)
+              yield* Effect.promise(() => gate)
+              return reply(input, "done")
+            }),
+        })
+        const toolCtx = (ops: TaskPromptOps) => ({
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps: ops },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        })
+
+        const first = yield* def
+          .execute({ description: "task a", prompt: "work a", subagent_type: "general" }, toolCtx(blockingOps("a")))
+          .pipe(Effect.forkScoped)
+        yield* Effect.sleep(50)
+        expect(started).toEqual(["a"])
+
+        const second = yield* def
+          .execute({ description: "task b", prompt: "work b", subagent_type: "general" }, toolCtx(blockingOps("b")))
+          .pipe(Effect.forkScoped)
+        yield* Effect.sleep(50)
+        expect(started).toEqual(["a"])
+
+        release()
+        yield* Fiber.join(first)
+        yield* Fiber.join(second)
+        expect(started).toEqual(["a", "b"])
+      }),
+    { config: { delegation: { max_concurrent: 1 } } },
   )
 
   it.instance("execute resume only appends deny rules and never adds allows", () =>
@@ -1477,13 +1533,14 @@ describe("tool.task", () => {
 
   )
 
-  it.instance("execute resume applies nested delegation denies via the atomic slot primitive", () =>
+  it.instance("execute resume applies depth-cap delegation denies via the atomic slot primitive", () =>
     Effect.gen(function* () {
       const sessions = yield* Session.Service
-      const { chat, assistant } = yield* seed()
+      const { chat } = yield* seed()
+      const intermediate = yield* seed("Intermediate child", "general", chat.id)
       const child = yield* sessions.create({
-        parentID: chat.id,
-        title: "Existing child",
+        parentID: intermediate.chat.id,
+        title: "Existing grandchild",
         agent: "general",
         permission: [
           { permission: "task", pattern: "*", action: "deny" },
@@ -1502,11 +1559,11 @@ describe("tool.task", () => {
           task_id: child.id,
         },
         {
-          sessionID: chat.id,
-          messageID: assistant.id,
-          agent: "build",
+          sessionID: intermediate.chat.id,
+          messageID: intermediate.assistant.id,
+          agent: "general",
           abort: new AbortController().signal,
-          extra: { promptOps: stubOps(), swarmWorker: true },
+          extra: { promptOps: stubOps() },
           messages: [],
           metadata: () => Effect.void,
           ask: () => Effect.void,

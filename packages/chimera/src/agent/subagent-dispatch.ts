@@ -1,4 +1,5 @@
 import { Config } from "@/config/config"
+import { ConfigDelegation } from "@/config/delegation"
 import { ConfigSubagentRouting } from "@/config/subagent-routing"
 import { EffectBridge } from "@/effect/bridge"
 import { Permission } from "@/permission"
@@ -12,6 +13,7 @@ import { errorMessage } from "@/util/error"
 import { Cause, Effect, Exit } from "effect"
 import type { SessionPrompt } from "../session/prompt"
 import { Agent } from "./agent"
+import { DelegationLimiter } from "./delegation-limiter"
 import { resolveSubagentExecution, type ResolvedSubagentExecution, type SubagentExecutionMetadata } from "./subagent-execution"
 import * as ModelTelemetry from "./model-telemetry"
 import { SubagentModelCatalog } from "./subagent-model-catalog"
@@ -44,7 +46,6 @@ export type SubagentDispatchInput = {
   taskID?: string
   promptOps: SubagentPromptOps
   abort: AbortSignal
-  nestedDelegation?: "inherit" | "deny"
   authorizeProfile?: (profile: string) => Effect.Effect<void>
   authorizeModel?: (model: { providerID: ProviderID; modelID: ModelID; variant?: string }) => Effect.Effect<void>
   onStarted?: (input: SubagentDispatchStarted) => Effect.Effect<void>
@@ -79,7 +80,7 @@ export type SubagentDispatchPrepareInput = Pick<
 
 export type SubagentDispatchRunPreparedInput = Pick<
   SubagentDispatchInput,
-  "description" | "prompt" | "promptOps" | "abort" | "nestedDelegation" | "onStarted" | "telemetry"
+  "description" | "prompt" | "promptOps" | "abort" | "onStarted" | "telemetry"
 > & { prepared: SubagentDispatchPrepared }
 
 export const SubagentDispatch = Effect.gen(function* () {
@@ -88,6 +89,7 @@ export const SubagentDispatch = Effect.gen(function* () {
   const sessions = yield* Session.Service
   const provider = yield* Provider.Service
   const routing = yield* ConfigSubagentRouting.Service
+  const limiter = yield* DelegationLimiter.Service
 
   const prepare = Effect.fn("SubagentDispatch.prepare")(function* (input: SubagentDispatchPrepareInput) {
     const cfg = yield* config.get()
@@ -178,6 +180,16 @@ export const SubagentDispatch = Effect.gen(function* () {
     return { parentSessionID: input.parentSessionID, parent, subagent, existing, config: cfg, resolved, workload: input.workload }
   })
 
+  // Depth of a session in the delegation chain; root sessions have depth 1.
+  // A missing ancestor is treated as a root so a corrupted chain fails open.
+  const delegationDepth = (info: Session.Info): Effect.Effect<number> =>
+    Effect.gen(function* () {
+      if (!info.parentID) return 1
+      const parent = yield* sessions.get(info.parentID).pipe(Effect.catch(() => Effect.succeed(undefined)))
+      if (!parent) return 1
+      return (yield* delegationDepth(parent)) + 1
+    })
+
   const runPrepared = Effect.fn("SubagentDispatch.runPrepared")(function* (input: SubagentDispatchRunPreparedInput) {
     const prepared = input.prepared
     const parentAgent = prepared.parent.agent
@@ -189,13 +201,15 @@ export const SubagentDispatch = Effect.gen(function* () {
       subagent: prepared.subagent,
     })
 
-    const nestedDenyRules =
-      input.nestedDelegation === "deny"
-        ? [
-            { pattern: "*", action: "deny" as const, permission: "task" as const },
-            { pattern: "*", action: "deny" as const, permission: "chimera_swarm" as const },
-          ]
-        : []
+    const maxDepth = prepared.config.delegation?.max_depth ?? ConfigDelegation.DEFAULT_MAX_DEPTH
+    const childDepth = (yield* delegationDepth(prepared.parent)) + 1
+    const atDepthCap = childDepth >= maxDepth
+    const nestedDenyRules = atDepthCap
+      ? [
+          { pattern: "*", action: "deny" as const, permission: "task" as const },
+          { pattern: "*", action: "deny" as const, permission: "chimera_swarm" as const },
+        ]
+      : []
 
     const nextSession =
       prepared.existing ??
@@ -264,7 +278,7 @@ export const SubagentDispatch = Effect.gen(function* () {
       runCancel.fork(cancel)
     }
 
-    const result = yield* Effect.gen(function* () {
+    const runWork = Effect.gen(function* () {
       if (input.abort.aborted) {
         yield* (input.onStarted?.({ sessionId: nextSession.id, model: prepared.resolved.model, execution }) ?? Effect.void)
         yield* cancel
@@ -299,11 +313,13 @@ export const SubagentDispatch = Effect.gen(function* () {
                 ...(prepared.subagent.permission.some((rule) => rule.permission === "todowrite")
                   ? {}
                   : { todowrite: false }),
-                ...(prepared.subagent.permission.some((rule) => rule.permission === "task") ? {} : { task: false }),
+                ...(prepared.subagent.permission.some((rule) => rule.permission === "task")
+                  ? {}
+                  : { task: false, chimera_swarm: false }),
                 ...Object.fromEntries(
                   (prepared.config.experimental?.primary_tools ?? []).map((item) => [item, false]),
                 ),
-                ...(input.nestedDelegation === "deny" ? { task: false, chimera_swarm: false } : {}),
+                ...(atDepthCap ? { task: false, chimera_swarm: false } : {}),
               },
               parts,
             })
@@ -328,35 +344,43 @@ export const SubagentDispatch = Effect.gen(function* () {
             ),
           ),
       )
-    }).pipe(
-      Effect.onExit((exit) => {
-        const durationMs = Math.max(0, Date.now() - startedAt)
-        if (Exit.isSuccess(exit)) {
-          return telemetry("delegation.finished", { status: "completed", durationMs })
-        }
-        if (input.abort.aborted) {
-          return telemetry("delegation.cancelled", {
-            status: "cancelled",
-            finishReason: "cancelled",
-            errorClass: "cancelled",
+    })
+
+    const result = yield* limiter
+      .run({
+        parentSessionID: prepared.parentSessionID,
+        sessionID: nextSession.id,
+        effect: runWork,
+      })
+      .pipe(
+        Effect.onExit((exit) => {
+          const durationMs = Math.max(0, Date.now() - startedAt)
+          if (Exit.isSuccess(exit)) {
+            return telemetry("delegation.finished", { status: "completed", durationMs })
+          }
+          if (input.abort.aborted) {
+            return telemetry("delegation.cancelled", {
+              status: "cancelled",
+              finishReason: "cancelled",
+              errorClass: "cancelled",
+              durationMs,
+            })
+          }
+          if (Cause.hasInterruptsOnly(exit.cause)) {
+            return telemetry("delegation.cancelled", {
+              status: "interrupted",
+              finishReason: "interrupted",
+              durationMs,
+            })
+          }
+          return telemetry("delegation.failed", {
+            status: "failed",
+            finishReason: "unknown",
+            errorClass: "unknown",
             durationMs,
           })
-        }
-        if (Cause.hasInterruptsOnly(exit.cause)) {
-          return telemetry("delegation.cancelled", {
-            status: "interrupted",
-            finishReason: "interrupted",
-            durationMs,
-          })
-        }
-        return telemetry("delegation.failed", {
-          status: "failed",
-          finishReason: "unknown",
-          errorClass: "unknown",
-          durationMs,
-        })
-      }),
-    )
+        }),
+      )
 
     return {
       title: input.description,
@@ -388,7 +412,6 @@ export const SubagentDispatch = Effect.gen(function* () {
       prompt: input.prompt,
       promptOps: input.promptOps,
       abort: input.abort,
-      nestedDelegation: input.nestedDelegation,
       onStarted: input.onStarted,
       telemetry: input.telemetry,
     })

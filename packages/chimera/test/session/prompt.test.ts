@@ -46,6 +46,7 @@ import { SystemPrompt } from "../../src/session/system"
 import { Shell } from "../../src/shell/shell"
 import { Snapshot } from "../../src/snapshot"
 import { ToolRegistry } from "@/tool/registry"
+import { DelegationLimiter } from "@/agent/delegation-limiter"
 import { MemoryManagement } from "@/memory/management"
 import { BrowserRuntime } from "@/browser/runtime"
 import { Truncate } from "@/tool/truncate"
@@ -246,6 +247,7 @@ function makeHttp() {
   const workBrief = WorkBrief.layer.pipe(Layer.provideMerge(deps))
   const chimeraPromptContext = ChimeraPromptContext.layer.pipe(Layer.provideMerge(deps))
   const registry = ToolRegistry.layer.pipe(
+    Layer.provideMerge(DelegationLimiter.defaultLayer),
     Layer.provide(Skill.defaultLayer),
     Layer.provide(FetchHttpClient.layer),
     Layer.provide(CrossSpawnSpawner.defaultLayer),
@@ -1117,13 +1119,17 @@ it.live("updates subagent model context when the preferred route changes within 
   ),
 )
 
-it.live("omits subagent model context for child sessions and disabled delegation tools", () =>
+it.live("omits subagent model context when delegation is denied or tools are disabled", () =>
   provideTmpdirServer(
     Effect.fnUntraced(function* () {
       const prompt = yield* SessionPrompt.Service
       const sessions = yield* Session.Service
       const parent = yield* sessions.create({ title: "Parent" })
       const child = yield* sessions.create({ title: "Child", parentID: parent.id })
+      const denied = yield* sessions.create({
+        title: "Denied",
+        permission: [{ permission: "task" as const, pattern: "*" as const, action: "deny" as const }],
+      })
       const disabled = yield* sessions.create({ title: "Disabled" })
 
       yield* prompt.prompt({
@@ -1133,6 +1139,12 @@ it.live("omits subagent model context for child sessions and disabled delegation
         parts: [{ type: "text", text: "child" }],
       })
       yield* prompt.prompt({
+        sessionID: denied.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "denied" }],
+      })
+      yield* prompt.prompt({
         sessionID: disabled.id,
         agent: "build",
         noReply: true,
@@ -1140,7 +1152,12 @@ it.live("omits subagent model context for child sessions and disabled delegation
         parts: [{ type: "text", text: "disabled" }],
       })
 
-      for (const sessionID of [child.id, disabled.id]) {
+      // A delegation-capable child session (below the depth cap, task permission allowed)
+      // sees the subagent model catalog.
+      const childParts = runtimeContextParts(yield* sessions.messages({ sessionID: child.id }))
+      expect(childParts.some((part) => part.text.includes("Available Subagent Model Identities"))).toBe(true)
+
+      for (const sessionID of [denied.id, disabled.id]) {
         const parts = runtimeContextParts(yield* sessions.messages({ sessionID }))
         expect(parts.some((part) => part.metadata?.runtimeContext.sections.subagentModels !== undefined)).toBe(false)
         expect(parts.some((part) => part.text.includes("Available Subagent Model Identities"))).toBe(false)
