@@ -841,12 +841,12 @@ type GraphFileSeed = {
 }
 
 function graphFile(root: string, base: string, filePath: string): GraphFileSeed {
-  const absolute = path.isAbsolute(filePath) ? filePath : path.resolve(base, filePath)
+  const absolute = path.resolve(base, filePath)
   const relative = path.relative(root, absolute).replaceAll("\\", "/")
   const insideGraph = relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative)
   return {
     absolutePath: absolute,
-    graphPath: insideGraph ? relative : filePath.replaceAll("\\", "/"),
+    graphPath: insideGraph ? relative : absolute.replaceAll("\\", "/"),
     insideGraph,
   }
 }

@@ -2,6 +2,7 @@ import { afterEach, describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
 import path from "path"
 import fs from "fs/promises"
+import os from "os"
 import { WriteTool } from "../../src/tool/write"
 import { Instance } from "../../src/project/instance"
 import { LSP } from "@/lsp/lsp"
@@ -190,6 +191,47 @@ describe("tool.write", () => {
           }),
         )
         expect(yield* Effect.promise(() => Bun.file(filepath).exists())).toBe(false)
+      }),
+    )
+
+    it.instance("accepts pre-design for source files outside the project root", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const graph = yield* Effect.promise(() => CodeGraph.init(test.directory))
+        graph.close()
+        const outside = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "chimera-outside-")))
+        const filepath = path.join(outside, "outside.ts")
+
+        const blocked = yield* run({ filePath: filepath, content: "export const outside = 1\n" })
+        expect(blocked.title).toBe("Chimera pre-design required")
+        expect(yield* Effect.promise(() => Bun.file(filepath).exists())).toBe(false)
+
+        yield* predesign(test.directory, [filepath])
+        const result = yield* run({ filePath: filepath, content: "export const outside = 1\n" })
+        expect(result.title).not.toBe("Chimera pre-design required")
+        expect(yield* Effect.promise(() => fs.readFile(filepath, "utf-8"))).toBe("export const outside = 1\n")
+
+        yield* Effect.promise(() => fs.rm(outside, { recursive: true, force: true }))
+      }),
+    )
+
+    it.instance("matches pre-design across symlinked paths outside the project root", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const graph = yield* Effect.promise(() => CodeGraph.init(test.directory))
+        graph.close()
+        const real = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "chimera-real-")))
+        const link = `${real}-link`
+        yield* Effect.promise(() => fs.symlink(real, link, "dir"))
+        yield* Effect.promise(() => fs.writeFile(path.join(real, "linked.ts"), "export const linked = 0\n"))
+
+        yield* predesign(test.directory, [path.join(link, "linked.ts")])
+        const result = yield* run({ filePath: path.join(real, "linked.ts"), content: "export const linked = 1\n" })
+        expect(result.title).not.toBe("Chimera pre-design required")
+        expect(yield* Effect.promise(() => fs.readFile(path.join(real, "linked.ts"), "utf-8"))).toBe("export const linked = 1\n")
+
+        yield* Effect.promise(() => fs.unlink(link))
+        yield* Effect.promise(() => fs.rm(real, { recursive: true, force: true }))
       }),
     )
   })
