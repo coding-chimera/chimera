@@ -108,7 +108,15 @@ const relocatableCommonJsPlugin: Bun.BunPlugin = {
   },
 }
 const packageVariantFlag = process.argv.find((arg) => arg.startsWith("--package-variant="))
-const withWebUiFlag = process.argv.includes("--with-webui") || process.argv.includes("--embed-web-ui")
+const explicitVariant = packageVariantFlag?.slice("--package-variant=".length)
+// WebUI assets embed by default; --no-webui or --package-variant=no-webui opts out.
+const noWebUiFlag = process.argv.includes("--no-webui") || explicitVariant === "no-webui"
+const withWebUiFlag =
+  !noWebUiFlag &&
+  (process.argv.includes("--with-webui") ||
+    process.argv.includes("--embed-web-ui") ||
+    explicitVariant === "with-webui" ||
+    explicitVariant === undefined)
 const embedLegacyWebUiFlag = withWebUiFlag || process.argv.includes("--embed-legacy-web-ui")
 const embedNewWebUiFlag = withWebUiFlag || process.argv.includes("--embed-newweb-ui")
 const skipEmbedWebUi = process.argv.includes("--skip-embed-web-ui")
