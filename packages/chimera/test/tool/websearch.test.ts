@@ -66,7 +66,7 @@ function alibailianProvider(
 function mockProvider(providers: Record<string, Provider.Info>) {
   return Layer.mock(Provider.Service)({
     list: () => Effect.succeed(providers),
-    getProvider: (id: ProviderID) => Effect.succeed(providers[id] ?? emptyProvider(id)),
+    getProvider: (id: ProviderID) => Effect.succeed(providers[id]),
   })
 }
 
@@ -375,6 +375,34 @@ describe("tool.websearch", () => {
     expect(result.metadata.provider).toBe("deepseek-web-search")
     expect(result.metadata.fallbackFrom).toBe("alibailian-web-search")
     expect(result.metadata.fallbackReason).toBe("Ali Bailian web search failed")
+  })
+
+  test("degrades gracefully when Ali Bailian fails and DeepSeek is absent from provider state", async () => {
+    const urls: string[] = []
+    const result = await WithInstance.provide({
+      directory: projectRoot,
+      fn: () =>
+        execute(
+          baseCtx,
+          mockHttpClient((request) => {
+            urls.push(request.url)
+            return new Response("failed", { status: 500 })
+          }),
+          mockAuth(),
+          mockProvider({ "my-relay": alibailianProvider(undefined, "qwen-plus") }),
+        ),
+    })
+
+    expect(urls).toEqual(["https://relay.example.com/v1/chat/completions"])
+    expect(result.output).toContain("Web search unavailable.")
+    expect(result.output).toContain("Ali Bailian web search failed")
+    expect(result.output).toContain("DeepSeek web search is not configured")
+    expect(result.output).toContain("Kimi search is not configured")
+    expect(result.metadata.fallbackErrors).toEqual([
+      "Ali Bailian web search failed",
+      "DeepSeek web search is not configured",
+      "Kimi search is not configured",
+    ])
   })
 
   test("records a failure and continues the chain when the declared Ali Bailian provider lacks credentials", async () => {
