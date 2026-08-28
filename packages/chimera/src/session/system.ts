@@ -54,7 +54,19 @@ const SPECIALIZATIONS: LayerEntry[] = [
   { keys: ["gemini"], content: PROMPT_GEMINI },
   { keys: ["claude"], content: PROMPT_CLAUDE },
   { keys: ["trinity"], content: PROMPT_TRINITY },
-  { keys: ["kimi"], content: PROMPT_KIMI, scope: "both" },
+  {
+    keys: ["kimi"],
+    content: PROMPT_KIMI,
+    match: (modelIDs) => {
+      // The layer text is written for the Kimi K2.7 generation. Match K2-family
+      // api ids plus the kimi-for-coding provider's K2.7 entry points, but never
+      // the newer k3 generation (api id "k3" or "kimi-k3...").
+      const slug = modelIDs.modelSlug
+      if (slug === "k3" || slug.startsWith("kimi-k3")) return false
+      if (slug.includes("kimi-k2")) return true
+      return modelIDs.providerID.startsWith("kimi-for-coding")
+    },
+  },
   { keys: ["deepseek"], content: PROMPT_DEEPSEEK, scope: "both" },
 ]
 

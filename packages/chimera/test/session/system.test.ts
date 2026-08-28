@@ -315,6 +315,32 @@ describe("session.system", () => {
     }),
   )
 
+  it.effect("keeps k3-generation Kimi models off the K2.7 layer", () =>
+    Effect.gen(function* () {
+      const relayed = SystemPrompt.provider({
+        providerID: "test-relay",
+        api: { id: "kimi-k3" },
+      } as unknown as Parameters<typeof SystemPrompt.provider>[0]).join("\n")
+      const providerHosted = SystemPrompt.provider({
+        providerID: "kimi-for-coding",
+        api: { id: "k3" },
+      } as unknown as Parameters<typeof SystemPrompt.provider>[0]).join("\n")
+      const k2 = SystemPrompt.provider({
+        providerID: "moonshot",
+        api: { id: "kimi-k2.5" },
+      } as unknown as Parameters<typeof SystemPrompt.provider>[0]).join("\n")
+
+      expect(relayed).not.toContain("kimi-for-coding（Kimi-K2.7）")
+      expect(relayed).not.toContain("中文 Kimi Layer")
+      expect(relayed).toContain("# Chimera graph, audit, and runtime protocol")
+      expect(providerHosted).not.toContain("kimi-for-coding（Kimi-K2.7）")
+      expect(providerHosted).not.toContain("中文 Kimi Layer")
+      expect(providerHosted).toContain("# Chimera graph, audit, and runtime protocol")
+      expect(k2).toContain("kimi-for-coding（Kimi-K2.7）")
+      yield* Effect.void
+    }),
+  )
+
   it.effect("routes other model-specific prompts as overlays on top of default", () =>
     Effect.gen(function* () {
       const cases = [
