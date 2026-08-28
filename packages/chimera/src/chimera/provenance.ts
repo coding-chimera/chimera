@@ -245,15 +245,24 @@ function predesignRisk(file: ProvenanceFile) {
   return { target, classification, highRisk }
 }
 
+function canonicalMutationPath(filePath: string) {
+  if (!path.isAbsolute(filePath)) return filePath
+  try {
+    return fs.realpathSync(filePath).replaceAll("\\", "/")
+  } catch {
+    return filePath.replaceAll("\\", "/")
+  }
+}
+
 function freshPredesign(input: { records: Awaited<ReturnType<typeof readPredesignRuns>>; sessionID: string; files: ProvenanceFile[] }) {
   const now = Date.now()
-  const targetFiles = new Set(input.files.flatMap((file) => (file.graphPath ? [file.graphPath] : [])))
+  const targetFiles = new Set(input.files.map((file) => canonicalMutationPath(file.graphPath ?? file.absolutePath)))
   return input.records.find((record) => {
     if (record.sessionID !== input.sessionID) return false
     const createdAt = Date.parse(record.createdAt)
     if (!Number.isFinite(createdAt) || now - createdAt > PREDESIGN_FRESH_WINDOW_MS) return false
     if (record.files.length === 0) return true
-    return record.files.some((file) => targetFiles.has(file))
+    return record.files.some((file) => targetFiles.has(canonicalMutationPath(file)))
   })
 }
 
