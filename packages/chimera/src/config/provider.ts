@@ -3,7 +3,7 @@ import { zod } from "@/util/effect-zod"
 import { PositiveInt, withStatics } from "@/util/schema"
 import { CodexModel } from "@/provider/codex-model"
 
-const BackendSemantics = Schema.Literals(["openai", "codex"])
+const BackendSemantics = Schema.Literals(["openai", "codex", "alibailian"])
 const WireAPI = Schema.Literals(["chat", "responses"])
 const RemoteCompaction = Schema.Struct({
   profile: Schema.Literal("codex-responses"),
@@ -111,7 +111,12 @@ export const Info = Schema.Struct({
     description: "Explicit provider authorization for remote compaction; required for non-OpenAI providers",
   }),
   backend_semantics: Schema.optional(BackendSemantics).annotate({
-    description: "Default capability semantics for models in this provider; model values take precedence",
+    description:
+      'Default capability semantics for models in this provider; model values take precedence. Use "codex" for Codex-backed relays and "alibailian" for Ali Bailian (Model Studio) backed endpoints or relays',
+  }),
+  search_model: Schema.optional(Schema.String).annotate({
+    description:
+      'Model ID used for unified websearch aggregation when backend_semantics is "alibailian"; defaults to qwen3.8-flash',
   }),
   userAgent: Schema.optional(Schema.String),
   whitelist: Schema.optional(Schema.mutable(Schema.Array(Schema.String))),

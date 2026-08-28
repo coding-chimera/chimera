@@ -25,7 +25,7 @@ const Cost = Schema.Struct({
   ),
 })
 
-const BackendSemantics = Schema.Literals(["openai", "codex"])
+const BackendSemantics = Schema.Literals(["openai", "codex", "alibailian"])
 const ReasoningEffort = Schema.Literals(CodexModel.REASONING_EFFORTS)
 const ReasoningProtocol = Schema.Literals([
   "zhipuai_thinking",

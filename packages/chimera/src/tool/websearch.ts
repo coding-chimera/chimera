@@ -8,10 +8,10 @@ import * as Tool from "./tool"
 import DESCRIPTION from "./websearch.txt"
 
 type WebSearchMetadata = {
-  provider?: "deepseek-web-search" | "kimi-code"
+  provider?: "alibailian-web-search" | "deepseek-web-search" | "kimi-code"
   authMode?: "api-key"
   numResults?: number
-  fallbackFrom?: "deepseek-web-search"
+  fallbackFrom?: "alibailian-web-search" | "deepseek-web-search"
   fallbackReason?: string
   fallbackErrors?: string[]
   model?: string
@@ -82,6 +82,52 @@ const deepSeekApiKey = Effect.fn("WebSearch.deepSeekApiKey")(function* (auth: Au
     if (key) return key
   }
   return authApiKey(yield* auth.get(DEEPSEEK_PROVIDER_ID).pipe(Effect.orElseSucceed(() => undefined)))
+})
+
+type AliBailianTarget = {
+  providerID: string
+  baseURL: string
+  apiKey: string
+  model: string
+}
+
+// Ali Bailian / Model Studio web search runs on qwen3.8-flash by default: cheap, fast,
+// and web-search capable on every Bailian endpoint; override per provider with search_model.
+const ALIBAILIAN_SEARCH_MODEL = "qwen3.8-flash"
+
+const alibailianTarget = Effect.fn("WebSearch.alibailianTarget")(function* (
+  auth: Auth.Interface,
+  session: { providerID?: string },
+) {
+  const service = Option.getOrUndefined(yield* Effect.serviceOption(Provider.Service))
+  if (!service) return undefined
+  const providers = yield* service.list().pipe(Effect.orElseSucceed(() => undefined))
+  if (!providers) return undefined
+  const declared = Object.values(providers)
+    .filter((info) => info.backend_semantics === "alibailian")
+    .sort((a, b) => {
+      if (a.id === session.providerID) return -1
+      if (b.id === session.providerID) return 1
+      return a.id.localeCompare(b.id)
+    })
+  if (declared.length === 0) return undefined
+  for (const info of declared) {
+    const apiKey =
+      stringValue(info.key) ??
+      stringValue(info.options.apiKey) ??
+      authApiKey(yield* auth.get(info.id).pipe(Effect.orElseSucceed(() => undefined)))
+    const baseURL =
+      stringValue(info.options.baseURL) ??
+      Object.values(info.models)
+        .map((item) => stringValue(item.api.url))
+        .find((url) => url !== undefined)
+    const model = stringValue(info.search_model) ?? ALIBAILIAN_SEARCH_MODEL
+    if (apiKey && baseURL && model) return { target: { providerID: info.id as string, baseURL, apiKey, model } }
+  }
+  return {
+    failure:
+      'Ali Bailian web search is declared (backend_semantics "alibailian") but the provider is missing an API key or base URL',
+  }
 })
 
 const KimiSearchResult = Schema.Struct({
@@ -201,6 +247,76 @@ const searchDeepSeek = Effect.fn("WebSearch.searchDeepSeek")(function* (
   }
 })
 
+const AliBailianChatResponse = Schema.Struct({
+  model: Schema.optional(Schema.String),
+  choices: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        message: Schema.optional(
+          Schema.Struct({
+            content: Schema.optional(Schema.Union([Schema.String, Schema.Array(Schema.Record(Schema.String, Schema.Unknown))])),
+          }),
+        ),
+      }),
+    ),
+  ),
+})
+
+function aliBailianAnswer(json: Schema.Schema.Type<typeof AliBailianChatResponse>) {
+  return (json.choices ?? [])
+    .flatMap((choice) => {
+      const content = choice.message?.content
+      if (typeof content === "string") return [stringValue(content)]
+      if (Array.isArray(content)) return content.map((part) => stringValue(part.text))
+      return []
+    })
+    .filter((text): text is string => text !== undefined)
+    .join("\n\n")
+}
+
+const searchAliBailian = Effect.fn("WebSearch.searchAliBailian")(function* (
+  http: HttpClient.HttpClient,
+  target: AliBailianTarget,
+  params: Schema.Schema.Type<typeof Parameters>,
+) {
+  const response = yield* HttpClientRequest.post(`${target.baseURL.replace(/\/+$/, "")}/chat/completions`).pipe(
+    HttpClientRequest.setHeaders({
+      Authorization: `Bearer ${target.apiKey}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    }),
+    HttpClientRequest.bodyJson({
+      model: target.model,
+      messages: [
+        {
+          role: "user",
+          content: [
+            "Use web search to answer this query.",
+            `Return a concise answer with up to ${params.numResults || 8} source URLs.`,
+            `Query: ${params.query}`,
+          ].join("\n"),
+        },
+      ],
+      enable_search: true,
+      search_options: {
+        forced_search: true,
+        ...(params.type === "deep" ? { search_strategy: "max" } : {}),
+      },
+    }),
+    Effect.flatMap((request) => HttpClient.filterStatusOk(http).execute(request)),
+    Effect.timeoutOrElse({
+      duration: "30 seconds",
+      orElse: () => Effect.die(new Error("Ali Bailian web search request timed out")),
+    }),
+  )
+  const json = yield* HttpClientResponse.schemaBodyJson(AliBailianChatResponse)(response)
+  const answer = aliBailianAnswer(json)
+  return {
+    output: answer || "Ali Bailian web search completed but returned no text answer.",
+    model: json.model ?? target.model,
+  }
+})
+
 const searchKimi = Effect.fn("WebSearch.searchKimi")(function* (
   http: HttpClient.HttpClient,
   apiKey: string,
@@ -291,13 +407,38 @@ export const WebSearchTool = Tool.define(
           }
 
           const failures: string[] = []
-          const deepSeekKey = yield* deepSeekApiKey(auth)
-          if (deepSeekKey) {
-            const result = yield* searchDeepSeek(http, deepSeekKey, params).pipe(Effect.exit)
+          let preferred: "alibailian-web-search" | "deepseek-web-search" = "deepseek-web-search"
+
+          const alibailian = yield* alibailianTarget(auth, { providerID })
+          if (alibailian?.target) {
+            preferred = "alibailian-web-search"
+            const result = yield* searchAliBailian(http, alibailian.target, params).pipe(Effect.exit)
             if (Exit.isSuccess(result)) {
               return webSearchResult({
                 query: params.query,
                 output: result.value.output,
+                metadata: {
+                  provider: "alibailian-web-search",
+                  authMode: "api-key",
+                  numResults: params.numResults,
+                  model: result.value.model,
+                },
+              })
+            }
+            failures.push("Ali Bailian web search failed")
+          } else if (alibailian?.failure) {
+            preferred = "alibailian-web-search"
+            failures.push(alibailian.failure)
+          }
+
+          const deepSeekKey = yield* deepSeekApiKey(auth)
+          if (deepSeekKey) {
+            const result = yield* searchDeepSeek(http, deepSeekKey, params).pipe(Effect.exit)
+            if (Exit.isSuccess(result)) {
+              const prefix = failures.length ? [`${failures[0]}; used DeepSeek web search instead.`, ""] : []
+              return webSearchResult({
+                query: params.query,
+                output: [...prefix, result.value.output].join("\n"),
                 metadata: {
                   provider: "deepseek-web-search",
                   authMode: "api-key",
@@ -305,6 +446,7 @@ export const WebSearchTool = Tool.define(
                   model: result.value.model,
                   webSearchRequests: result.value.webSearchRequests,
                   sourceCount: result.value.sourceCount,
+                  ...(failures.length ? { fallbackFrom: preferred, fallbackReason: failures[0] } : {}),
                 },
               })
             }
@@ -327,7 +469,7 @@ export const WebSearchTool = Tool.define(
                   provider: "kimi-code",
                   authMode: "api-key",
                   numResults: params.numResults,
-                  fallbackFrom: "deepseek-web-search",
+                  fallbackFrom: preferred,
                   fallbackReason,
                 },
               })

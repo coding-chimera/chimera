@@ -9,6 +9,8 @@ import { Truncate } from "../../src/tool/truncate"
 import type { Tool } from "../../src/tool/tool"
 import { WithInstance } from "../../src/project/with-instance"
 import { Auth } from "../../src/auth"
+import { Provider } from "../../src/provider/provider"
+import { ProviderID } from "../../src/provider/schema"
 
 const projectRoot = path.join(import.meta.dir, "../..")
 
@@ -43,6 +45,39 @@ function mockAuth(keys: { kimi?: string; deepseek?: string } = {}) {
     set: () => Effect.void,
     remove: () => Effect.void,
   })
+}
+
+function emptyProvider(id: string): Provider.Info {
+  return { id: ProviderID.make(id), name: id, source: "config", env: [], options: {}, models: {} }
+}
+
+function alibailianProvider(
+  options: Record<string, unknown> = { baseURL: "https://relay.example.com/v1", apiKey: "relay-test-key" },
+  searchModel?: string,
+): Provider.Info {
+  return {
+    ...emptyProvider("my-relay"),
+    backend_semantics: "alibailian",
+    options,
+    ...(searchModel ? { search_model: searchModel } : {}),
+  }
+}
+
+function mockProvider(providers: Record<string, Provider.Info>) {
+  return Layer.mock(Provider.Service)({
+    list: () => Effect.succeed(providers),
+    getProvider: (id: ProviderID) => Effect.succeed(providers[id] ?? emptyProvider(id)),
+  })
+}
+
+function requestJson(request: HttpClientRequest.HttpClientRequest) {
+  const body = request.body
+  if (body._tag !== "Uint8Array") return undefined
+  return JSON.parse(new TextDecoder().decode(body.body))
+}
+
+function relayModel(apiID: string, url: string) {
+  return { api: { id: apiID, npm: "@ai-sdk/openai-compatible", url } } as Provider.Model
 }
 
 function deepSeekResponse() {
@@ -100,7 +135,25 @@ function kimiResponse(text = "Kimi content") {
   )
 }
 
-function execute(ctx: Tool.Context, http: Layer.Layer<HttpClient.HttpClient>, auth = mockAuth()) {
+function alibailianResponse(text = "Ali Bailian answer", model = "qwen-plus") {
+  return new Response(
+    JSON.stringify({
+      model,
+      choices: [{ message: { role: "assistant", content: text } }],
+    }),
+    { headers: { "Content-Type": "application/json" } },
+  )
+}
+
+function execute(
+  ctx: Tool.Context,
+  http: Layer.Layer<HttpClient.HttpClient>,
+  auth = mockAuth(),
+  provider?: ReturnType<typeof mockProvider>,
+) {
+  const layers = provider
+    ? Layer.mergeAll(http, auth, Truncate.defaultLayer, Agent.defaultLayer, provider)
+    : Layer.mergeAll(http, auth, Truncate.defaultLayer, Agent.defaultLayer)
   return WebSearchTool.pipe(
     Effect.flatMap((info) => info.init()),
     Effect.flatMap((tool) =>
@@ -115,7 +168,7 @@ function execute(ctx: Tool.Context, http: Layer.Layer<HttpClient.HttpClient>, au
         ctx,
       ),
     ),
-    Effect.provide(Layer.mergeAll(http, auth, Truncate.defaultLayer, Agent.defaultLayer)),
+    Effect.provide(layers),
     Effect.runPromise,
   )
 }
@@ -265,5 +318,138 @@ describe("tool.websearch", () => {
 
     expect(result.output).toContain("hosted web_search")
     expect(result.metadata.provider).toBeUndefined()
+  })
+
+  test("prefers Ali Bailian web search when a provider declares the alibailian backend shape", async () => {
+    let url = ""
+    let authorization = ""
+    let body: unknown
+    const result = await WithInstance.provide({
+      directory: projectRoot,
+      fn: () =>
+        execute(
+          baseCtx,
+          mockHttpClient((request) => {
+            url = request.url
+            authorization = request.headers.authorization ?? request.headers.Authorization ?? ""
+            body = requestJson(request)
+            return alibailianResponse()
+          }),
+          mockAuth(),
+          mockProvider({ "my-relay": alibailianProvider(undefined, "qwen-plus") }),
+        ),
+    })
+
+    expect(url).toBe("https://relay.example.com/v1/chat/completions")
+    expect(authorization).toBe("Bearer relay-test-key")
+    expect(body).toMatchObject({
+      model: "qwen-plus",
+      enable_search: true,
+      search_options: { forced_search: true, search_strategy: "max" },
+    })
+    expect(result.output).toContain("Ali Bailian answer")
+    expect(result.metadata.provider).toBe("alibailian-web-search")
+    expect(result.metadata.model).toBe("qwen-plus")
+  })
+
+  test("falls back to DeepSeek with an explicit note when the declared Ali Bailian provider fails", async () => {
+    const urls: string[] = []
+    const result = await WithInstance.provide({
+      directory: projectRoot,
+      fn: () =>
+        execute(
+          baseCtx,
+          mockHttpClient((request) => {
+            urls.push(request.url)
+            if (request.url === "https://relay.example.com/v1/chat/completions") return new Response("failed", { status: 500 })
+            return deepSeekResponse()
+          }),
+          mockAuth({ deepseek: "deepseek-test-key" }),
+          mockProvider({ "my-relay": alibailianProvider(undefined, "qwen-plus") }),
+        ),
+    })
+
+    expect(urls).toEqual(["https://relay.example.com/v1/chat/completions", "https://api.deepseek.com/anthropic/v1/messages"])
+    expect(result.output).toContain("Ali Bailian web search failed; used DeepSeek web search instead.")
+    expect(result.output).toContain("DeepSeek answer")
+    expect(result.metadata.provider).toBe("deepseek-web-search")
+    expect(result.metadata.fallbackFrom).toBe("alibailian-web-search")
+    expect(result.metadata.fallbackReason).toBe("Ali Bailian web search failed")
+  })
+
+  test("records a failure and continues the chain when the declared Ali Bailian provider lacks credentials", async () => {
+    const urls: string[] = []
+    const result = await WithInstance.provide({
+      directory: projectRoot,
+      fn: () =>
+        execute(
+          baseCtx,
+          mockHttpClient((request) => {
+            urls.push(request.url)
+            return kimiResponse()
+          }),
+          mockAuth({ kimi: "kimi-test-key" }),
+          mockProvider({ "my-relay": alibailianProvider({}) }),
+        ),
+    })
+
+    expect(urls).toEqual(["https://api.kimi.com/coding/v1/search"])
+    expect(result.output).toContain(
+      'Ali Bailian web search is declared (backend_semantics "alibailian") but the provider is missing an API key or base URL; used Kimi search instead.',
+    )
+    expect(result.metadata.provider).toBe("kimi-code")
+    expect(result.metadata.fallbackFrom).toBe("alibailian-web-search")
+  })
+
+  test("defaults to qwen3.8-flash for Ali Bailian search when no search_model is configured", async () => {
+    let body: unknown
+    const result = await WithInstance.provide({
+      directory: projectRoot,
+      fn: () =>
+        execute(
+          { ...baseCtx, extra: { model: { providerID: "my-relay", api: { id: "kimi-k3" } } } },
+          mockHttpClient((request) => {
+            body = requestJson(request)
+            return alibailianResponse("default model answer", "qwen3.8-flash")
+          }),
+          mockAuth(),
+          mockProvider({
+            "my-relay": {
+              ...alibailianProvider(),
+              models: { "kimi-k3": relayModel("kimi-k3", "https://relay.example.com/v1") },
+            },
+          }),
+        ),
+    })
+
+    expect(body).toMatchObject({ model: "qwen3.8-flash", enable_search: true })
+    expect(result.output).toContain("default model answer")
+    expect(result.metadata.provider).toBe("alibailian-web-search")
+    expect(result.metadata.model).toBe("qwen3.8-flash")
+  })
+
+  test("resolves the Ali Bailian base URL from provider model api URLs when options.baseURL is unset", async () => {
+    let url = ""
+    const result = await WithInstance.provide({
+      directory: projectRoot,
+      fn: () =>
+        execute(
+          baseCtx,
+          mockHttpClient((request) => {
+            url = request.url
+            return alibailianResponse()
+          }),
+          mockAuth(),
+          mockProvider({
+            "my-relay": {
+              ...alibailianProvider({ apiKey: "relay-test-key" }),
+              models: { "kimi-k3": relayModel("kimi-k3", "https://relay.example.com/v1") },
+            },
+          }),
+        ),
+    })
+
+    expect(url).toBe("https://relay.example.com/v1/chat/completions")
+    expect(result.metadata.provider).toBe("alibailian-web-search")
   })
 })
