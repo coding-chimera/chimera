@@ -293,22 +293,36 @@ export const layer: Layer.Layer<
           )
         })
 
+        // Shared repo bootstrap for track() and the init-time warmup. Callers
+        // hold the gitdir lock; HEAD marks a completed init (an existing dir alone
+        // would race a concurrent warmup). Config is appended to the fresh gitdir
+        // config directly — four extra `git config` spawns are not worth it.
+        const initRepo = Effect.fnUntraced(function* () {
+          if (yield* exists(path.join(state.gitdir, "HEAD"))) return
+          yield* fs.ensureDir(state.gitdir).pipe(Effect.orDie)
+          const init = yield* git(["init"], {
+            env: { GIT_DIR: state.gitdir, GIT_WORK_TREE: state.worktree },
+          })
+          if (init.code !== 0) {
+            log.warn("init failed", { exitCode: init.code, stderr: init.stderr })
+            return
+          }
+          const configPath = path.join(state.gitdir, "config")
+          const existing = yield* read(configPath)
+          yield* fs
+            .writeFileString(
+              configPath,
+              `${existing.trimEnd()}\n\n[core]\n\tautocrlf = false\n\tlongpaths = true\n\tsymlinks = true\n\tfsmonitor = false\n`,
+            )
+            .pipe(Effect.orDie)
+          log.info("initialized")
+        })
+
         const track = Effect.fnUntraced(function* () {
           return yield* locked(
             Effect.gen(function* () {
               if (!(yield* enabled())) return
-              const existed = yield* exists(state.gitdir)
-              yield* fs.ensureDir(state.gitdir).pipe(Effect.orDie)
-              if (!existed) {
-                yield* git(["init"], {
-                  env: { GIT_DIR: state.gitdir, GIT_WORK_TREE: state.worktree },
-                })
-                yield* git(["--git-dir", state.gitdir, "config", "core.autocrlf", "false"])
-                yield* git(["--git-dir", state.gitdir, "config", "core.longpaths", "true"])
-                yield* git(["--git-dir", state.gitdir, "config", "core.symlinks", "true"])
-                yield* git(["--git-dir", state.gitdir, "config", "core.fsmonitor", "false"])
-                log.info("initialized")
-              }
+              yield* initRepo()
               yield* add()
               const result = yield* git(args(["write-tree"]), { cwd: state.directory })
               const hash = result.text.trim()
@@ -744,6 +758,21 @@ export const layer: Layer.Layer<
             }),
           )
         })
+
+        // Pre-create the snapshot repo in the background so the first LLM step
+        // does not pay git init on the critical path.
+        yield* locked(
+          Effect.gen(function* () {
+            if (!(yield* enabled())) return
+            yield* initRepo()
+          }),
+        ).pipe(
+          Effect.catchCause((cause) => {
+            log.warn("warmup failed", { cause: Cause.pretty(cause) })
+            return Effect.void
+          }),
+          Effect.forkScoped,
+        )
 
         yield* cleanup().pipe(
           Effect.catchCause((cause) => {
