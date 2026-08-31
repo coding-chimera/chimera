@@ -185,6 +185,13 @@ export const layer = Layer.effect(
                 webfetch: "allow",
                 websearch: "allow",
                 read: "allow",
+                // Read-only Chimera graph tools keep explore graph-capable (including
+                // cross-repo reads via projectPath) without granting write flows like
+                // chimera_init_graph or the obligation/oracle tools.
+                chimera_status: "allow",
+                chimera_search: "allow",
+                chimera_file_symbols: "allow",
+                chimera_impact: "allow",
                 external_directory: {
                   "*": "ask",
                   ...Object.fromEntries(whitelistedDirs.map((dir) => [dir, "allow"])),

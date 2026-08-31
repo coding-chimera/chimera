@@ -37,12 +37,14 @@ import { deriveImpactLabels, type ImpactLabelResult } from "@/chimera/impact-lab
 import { dispatchMayImpactRule, mayImpactRuleEvidence, type MayImpactRule } from "@/chimera/may-impact-rules"
 import {
   provenanceRecordCount as storedProvenanceRecordCount,
+  provenanceRecordCountReadOnly as storedProvenanceRecordCountReadOnly,
   readChangeFacts,
   recordPredesignRun,
   readProvenanceRecords,
   readOracleResult,
   readOracleResults,
   readPersistentObligationStore,
+  readPersistentObligationStoreReadOnly,
   recordAuditRun,
   writePersistentObligationStore,
   type OracleRecord,
@@ -109,6 +111,9 @@ export const InitGraphParameters = Schema.Struct({
 })
 
 export const StatusParameters = Schema.Struct({
+  projectPath: Schema.optional(Schema.String).annotate({
+    description: "Path to another project with an initialized Chimera graph for read-only cross-project queries. Omit to use the current project.",
+  }),
   refresh: Schema.optional(Schema.Boolean).annotate({
     description: RefreshDescription,
   }),
@@ -123,6 +128,9 @@ export const SearchParameters = Schema.Struct({
   }),
   limit: Schema.optional(Schema.Number).annotate({
     description: "Maximum results to return. Defaults to 10, capped at 50.",
+  }),
+  projectPath: Schema.optional(Schema.String).annotate({
+    description: "Path to another project with an initialized Chimera graph for read-only cross-project queries. Omit to use the current project.",
   }),
   refresh: Schema.optional(Schema.Boolean).annotate({
     description: RefreshDescription,
@@ -141,6 +149,9 @@ export const FileSymbolsParameters = Schema.Struct({
   }),
   limit: Schema.optional(Schema.Number).annotate({
     description: "Maximum results to return. Defaults to 10, capped at 50.",
+  }),
+  projectPath: Schema.optional(Schema.String).annotate({
+    description: "Path to another project with an initialized Chimera graph for read-only cross-project queries. Omit to use the current project.",
   }),
   refresh: Schema.optional(Schema.Boolean).annotate({
     description: RefreshDescription,
@@ -200,6 +211,9 @@ export const ImpactParameters = Schema.Struct({
   }),
   limit: Schema.optional(Schema.Number).annotate({
     description: "Maximum impacted symbols/files to return. Defaults to 20, capped at 100.",
+  }),
+  projectPath: Schema.optional(Schema.String).annotate({
+    description: "Path to another project with an initialized Chimera graph for read-only cross-project queries. Omit to use the current project.",
   }),
   refresh: Schema.optional(Schema.Boolean).annotate({
     description: RefreshDescription,
@@ -404,6 +418,7 @@ type InitGraphMetadata = {
 
 type StatusMetadata = {
   projectRoot: string
+  crossProject?: boolean
   artifact: string
   storePath: string
   obligationsArtifact: string
@@ -422,6 +437,7 @@ type StatusMetadata = {
 
 type SearchMetadata = {
   projectRoot: string
+  crossProject?: boolean
   initialized?: boolean
   dataRoot?: string
   dataRootStatus?: string
@@ -461,6 +477,7 @@ type PredesignMetadata = {
 
 type ImpactMetadata = {
   projectRoot: string
+  crossProject?: boolean
   snapshot: CodeGraphSnapshot
   seeds: Array<FrozenSemanticObject | null>
   impacted: Array<FrozenSemanticObject | null>
@@ -724,14 +741,15 @@ function createSyncProgressReporter(ctx: Tool.Context, enabled: boolean) {
   }
 }
 
-function openProjectGraphForTool(ctx: Tool.Context, refresh: boolean, options: { init?: boolean; readOnly?: boolean } = {}) {
-  const reporter = createSyncProgressReporter(ctx, refresh && !options.readOnly)
+function openProjectGraphForTool(ctx: Tool.Context, refresh: boolean, options: { init?: boolean; readOnly?: boolean; projectPath?: string } = {}) {
+  const reporter = createSyncProgressReporter(ctx, refresh && !options.readOnly && !options.projectPath)
   return Chimera.openProjectGraph({
     init: options.init ?? false,
     readOnly: options.readOnly,
     sync: refresh && !options.readOnly,
     watch: false,
     onProgress: reporter.onProgress,
+    projectPath: options.projectPath,
   }).pipe(
     Effect.ensuring(Effect.sync(() => reporter.done())),
   )
@@ -740,10 +758,10 @@ function openProjectGraphForTool(ctx: Tool.Context, refresh: boolean, options: {
 function withProjectGraphForTool<A, E, R>(
   ctx: Tool.Context,
   refresh: boolean,
-  options: { init?: boolean; readOnly?: boolean },
+  options: { init?: boolean; readOnly?: boolean; projectPath?: string },
   use: (state: ProjectGraphState) => Effect.Effect<A, E, R>,
 ) {
-  const reporter = createSyncProgressReporter(ctx, refresh && !options.readOnly)
+  const reporter = createSyncProgressReporter(ctx, refresh && !options.readOnly && !options.projectPath)
   return Chimera.withProjectGraph(
     {
       init: options.init ?? false,
@@ -751,6 +769,7 @@ function withProjectGraphForTool<A, E, R>(
       sync: refresh && !options.readOnly,
       watch: false,
       onProgress: reporter.onProgress,
+      projectPath: options.projectPath,
     },
     use,
   ).pipe(
@@ -1634,14 +1653,18 @@ function emptyObligationStore(): ObligationStore {
   return { schemaVersion: 1, obligations: [] }
 }
 
-function readObligationStore(projectRoot: string, artifact: string) {
-  return Effect.promise(() => readPersistentObligationStore<PersistentObligation>(projectRoot, artifact, emptyObligationStore()))
+function readObligationStore(projectRoot: string, artifact: string, readOnly = false) {
+  return Effect.promise(() =>
+    readOnly
+      ? readPersistentObligationStoreReadOnly(projectRoot, artifact, emptyObligationStore())
+      : readPersistentObligationStore(projectRoot, artifact, emptyObligationStore()),
+  )
 }
 
-function readObligationSummary(projectRoot: string, provenanceArtifact: string, storePath: string, limit = 10) {
+function readObligationSummary(projectRoot: string, provenanceArtifact: string, storePath: string, limit = 10, readOnly = false) {
   return Effect.gen(function* () {
     const artifact = obligationsArtifact(provenanceArtifact)
-    const store = yield* readObligationStore(projectRoot, artifact)
+    const store = yield* readObligationStore(projectRoot, artifact, readOnly)
     return {
       artifact,
       storePath,
@@ -2186,9 +2209,10 @@ export const ChimeraStatusTool = Tool.define<typeof StatusParameters, StatusMeta
     parameters: StatusParameters,
     execute: (params: Schema.Schema.Type<typeof StatusParameters>, ctx: Tool.Context<StatusMetadata>) =>
       Effect.gen(function* () {
-        yield* permission(ctx, "chimera_status", { refresh: params.refresh !== false })
+        yield* permission(ctx, "chimera_status", { refresh: params.refresh !== false, projectPath: params.projectPath })
         const instance = yield* InstanceState.context
-        const root = contextProjectRoot(instance)
+        const target = Chimera.resolveProjectGraphTarget(params.projectPath, contextProjectRoot(instance))
+        const root = target.root
         const dataRoot = getGraphDataRootInfo(root)
         const job = readIndexJob(root)
         if (!CodeGraph.isInitialized(root)) {
@@ -2196,14 +2220,18 @@ export const ChimeraStatusTool = Tool.define<typeof StatusParameters, StatusMeta
             title: "Chimera status",
             output: [
               "Chimera graph surface is not initialized.",
-              `Project: ${root}`,
+              `Project: ${root}${target.crossProject ? " (cross-project, read-only)" : ""}`,
               `Data root: ${dataRoot.dataRoot}`,
               `Data root status: ${dataRoot.dataRootStatus}`,
               job ? `Graph job: ${job.kind} ${job.status}` : undefined,
+              target.crossProject
+                ? "Ask the user to run `chimera graph init` and then `chimera graph index` in that project (indexing large repositories can take a long time); do not initialize another project's graph from this session."
+                : undefined,
             ].filter(Boolean).join("\n"),
             metadata: {
               initialized: false,
               projectRoot: root,
+              crossProject: target.crossProject,
               dataRoot: dataRoot.dataRoot,
               dataRootStatus: dataRoot.dataRootStatus,
               jobStatus: job,
@@ -2219,19 +2247,21 @@ export const ChimeraStatusTool = Tool.define<typeof StatusParameters, StatusMeta
         return yield* withProjectGraphForTool(
           ctx as Tool.Context,
           params.refresh !== false,
-          { init: false, readOnly: true },
+          { init: false, readOnly: true, projectPath: params.projectPath },
           (state) =>
             Effect.gen(function* () {
               const snapshot = state.graph.snapshot()
               const stats = state.graph.stats()
-              const provenanceRecords = yield* provenanceRecordCount(state.projectRoot, state.artifact)
-              const obligations = yield* readObligationSummary(state.projectRoot, state.artifact, state.storePath, 0)
+              const provenanceRecords = state.crossProject
+                ? yield* Effect.promise(() => storedProvenanceRecordCountReadOnly(state.projectRoot, state.artifact))
+                : yield* provenanceRecordCount(state.projectRoot, state.artifact)
+              const obligations = yield* readObligationSummary(state.projectRoot, state.artifact, state.storePath, 0, state.crossProject === true)
 
               return {
                 title: "Chimera status",
                 output: [
                   "Chimera graph surface is ready.",
-                  `Project: ${state.projectRoot}`,
+                  `Project: ${state.projectRoot}${state.crossProject ? " (cross-project, read-only)" : ""}`,
                   `Data root: ${dataRoot.dataRoot}`,
                   `Data root status: ${dataRoot.dataRootStatus}`,
                   job ? `Graph job: ${job.kind} ${job.status}${job.phase ? ` — ${job.phase}` : ""}` : undefined,
@@ -2249,6 +2279,7 @@ export const ChimeraStatusTool = Tool.define<typeof StatusParameters, StatusMeta
                 metadata: {
                   initialized: true,
                   projectRoot: state.projectRoot,
+                  crossProject: state.crossProject === true,
                   dataRoot: dataRoot.dataRoot,
                   dataRootStatus: dataRoot.dataRootStatus,
                   jobStatus: job,
@@ -2279,23 +2310,29 @@ export const ChimeraSearchTool = Tool.define<typeof SearchParameters, SearchMeta
       Effect.gen(function* () {
         yield* permission(ctx, "chimera_search", {
           query: params.query,
+          projectPath: params.projectPath,
           refresh: params.refresh !== false,
         })
         if (!params.query.trim()) throw new Error("chimera_search requires a non-empty query")
         const instance = yield* InstanceState.context
-        const root = contextProjectRoot(instance)
+        const target = Chimera.resolveProjectGraphTarget(params.projectPath, contextProjectRoot(instance))
+        const root = target.root
         const dataRoot = getGraphDataRootInfo(root)
         const job = readIndexJob(root)
         if (!CodeGraph.isInitialized(root)) {
           return {
             title: "Chimera search",
             output: [
+              ...(target.crossProject ? [`Project: ${root} (cross-project, read-only)`] : []),
               "Static graph evidence (0 results):",
-              "- Chimera graph is not initialized; call `chimera_init_graph` to initialize it for this project."
+              target.crossProject
+                ? "- Chimera graph is not initialized for the projectPath target. Tell the user to run `chimera graph init` and then `chimera graph index` in that project — indexing large repositories can take a long time. Do not initialize another project's graph from this session."
+                : "- Chimera graph is not initialized; call `chimera_init_graph` to initialize it for this project.",
             ].join("\n"),
             metadata: {
               initialized: false,
               projectRoot: root,
+              crossProject: target.crossProject,
               dataRoot: dataRoot.dataRoot,
               dataRootStatus: dataRoot.dataRootStatus,
               jobStatus: job,
@@ -2306,7 +2343,7 @@ export const ChimeraSearchTool = Tool.define<typeof SearchParameters, SearchMeta
         return yield* withProjectGraphForTool(
           ctx as Tool.Context,
           params.refresh !== false,
-          { init: false, readOnly: true },
+          { init: false, readOnly: true, projectPath: params.projectPath },
           (state) =>
             Effect.sync(() => {
               const limit = bounded(params.limit, 10, 50)
@@ -2317,11 +2354,13 @@ export const ChimeraSearchTool = Tool.define<typeof SearchParameters, SearchMeta
               return {
                 title: "Chimera search",
                 output: [
+                  ...(state.crossProject ? [`Project: ${state.projectRoot} (cross-project, read-only)`] : []),
                   `Static graph evidence (${results.length} result${results.length === 1 ? "" : "s"}):`,
                   ...results.map((result) => formatNode(result.node)),
                 ].join("\n"),
                 metadata: {
                   projectRoot: state.projectRoot,
+                  crossProject: state.crossProject === true,
                   initialized: true,
                   dataRoot: dataRoot.dataRoot,
                   dataRootStatus: dataRoot.dataRootStatus,
@@ -2348,42 +2387,54 @@ export const ChimeraFileSymbolsTool = Tool.define<typeof FileSymbolsParameters, 
       Effect.gen(function* () {
         yield* permission(ctx, "chimera_file_symbols", {
           filePath: params.filePath,
+          projectPath: params.projectPath,
           refresh: params.refresh !== false,
         })
         const instance = yield* InstanceState.context
-        const state = yield* openProjectGraphForTool(ctx as Tool.Context, params.refresh !== false)
-        const limit = bounded(params.limit, 10, 50)
-        const kinds = params.kind ? [params.kind] : undefined
-        const file = graphFile(state.projectRoot, instance.directory, params.filePath)
-        yield* Effect.promise(() => syncExistingGraphFiles(state, [file], "force")).pipe(Effect.orDie)
-        const fileExists = yield* Effect.promise(() => Bun.file(file.absolutePath).exists()).pipe(Effect.orDie)
-        const snapshot = state.graph.snapshot()
-        const normalizedFile = file.graphPath
-        const results = (params.range
-          ? state.graph.nodesIntersectingRange(normalizedFile, params.range, { kinds, smallestOnly: false })
-          : state.graph.nodesInFile(normalizedFile).filter((node) => !params.kind || node.kind === params.kind)
-        )
-          .slice(0, limit)
-          .map((node) => ({ node }))
+        return yield* withProjectGraphForTool(
+          ctx as Tool.Context,
+          params.refresh !== false,
+          { init: false, projectPath: params.projectPath },
+          (state) =>
+            Effect.gen(function* () {
+              const limit = bounded(params.limit, 10, 50)
+              const kinds = params.kind ? [params.kind] : undefined
+              const file = graphFile(state.projectRoot, state.crossProject ? state.projectRoot : instance.directory, params.filePath)
+              if (!state.crossProject) {
+                yield* Effect.promise(() => syncExistingGraphFiles(state, [file], "force")).pipe(Effect.orDie)
+              }
+              const fileExists = yield* Effect.promise(() => Bun.file(file.absolutePath).exists()).pipe(Effect.orDie)
+              const snapshot = state.graph.snapshot()
+              const normalizedFile = file.graphPath
+              const results = (params.range
+                ? state.graph.nodesIntersectingRange(normalizedFile, params.range, { kinds, smallestOnly: false })
+                : state.graph.nodesInFile(normalizedFile).filter((node) => !params.kind || node.kind === params.kind)
+              )
+                .slice(0, limit)
+                .map((node) => ({ node }))
 
-        return {
-          title: "Chimera file symbols",
-          output: [
-            `Static graph evidence (${results.length} result${results.length === 1 ? "" : "s"}):`,
-            ...(results.length === 0 && file.insideGraph && fileExists
-              ? ["- No indexed symbols found. File exists; possible unsupported parser, excluded path, or non-source file."]
-              : []),
-            ...results.map((result) => formatNode(result.node)),
-          ].join("\n"),
-          metadata: {
-            projectRoot: state.projectRoot,
-            snapshot,
-            results: results.map((result) => ({
-              ...result,
-              projection: state.graph.projectNode(result.node, snapshot),
-            })),
-          },
-        }
+              return {
+                title: "Chimera file symbols",
+                output: [
+                  ...(state.crossProject ? [`Project: ${state.projectRoot} (cross-project, read-only)`] : []),
+                  `Static graph evidence (${results.length} result${results.length === 1 ? "" : "s"}):`,
+                  ...(results.length === 0 && file.insideGraph && fileExists
+                    ? ["- No indexed symbols found. File exists; possible unsupported parser, excluded path, or non-source file."]
+                    : []),
+                  ...results.map((result) => formatNode(result.node)),
+                ].join("\n"),
+                metadata: {
+                  projectRoot: state.projectRoot,
+                  crossProject: state.crossProject === true,
+                  snapshot,
+                  results: results.map((result) => ({
+                    ...result,
+                    projection: state.graph.projectNode(result.node, snapshot),
+                  })),
+                },
+              }
+            }),
+        )
       }).pipe(Effect.orDie),
   }),
 )
@@ -2570,76 +2621,88 @@ export const ChimeraImpactTool = Tool.define<typeof ImpactParameters, ImpactMeta
           symbol: params.symbol,
           nodeID: params.nodeID,
           filePath: params.filePath,
+          projectPath: params.projectPath,
           refresh: params.refresh !== false,
         })
         const instance = yield* InstanceState.context
-        const state = yield* openProjectGraphForTool(ctx as Tool.Context, params.refresh !== false)
-        const depth = bounded(params.depth, 2, 5)
-        const limit = bounded(params.limit, 20, 100)
-        const file = params.filePath ? graphFile(state.projectRoot, instance.directory, params.filePath) : undefined
-        if (file) yield* Effect.promise(() => syncExistingGraphFiles(state, [file], "force")).pipe(Effect.orDie)
-        const snapshot = state.graph.snapshot()
-        const normalizedFile = file?.graphPath
-        const kinds = params.kind ? [params.kind] : undefined
-        const nodeID = chimeraRefID(params.ref, ["node"]) ?? params.nodeID?.trim()
-        const seedNodes = uniqueNodes(
-          nodeID
-            ? [state.graph.node(nodeID)].filter((node): node is CodeGraphNode => Boolean(node))
-            : normalizedFile && params.range
-              ? state.graph.nodesIntersectingRange(normalizedFile, params.range, { kinds, smallestOnly: false })
-              : params.symbol
-                ? state.graph.searchNodes(params.symbol, { kinds, limit: 5 }).map((result) => result.node)
-                : normalizedFile
-                  ? state.graph.nodesInFile(normalizedFile).filter((node) => !params.kind || node.kind === params.kind).slice(0, 5)
-                  : [],
+        return yield* withProjectGraphForTool(
+          ctx as Tool.Context,
+          params.refresh !== false,
+          { init: false, projectPath: params.projectPath },
+          (state) =>
+            Effect.gen(function* () {
+              const depth = bounded(params.depth, 2, 5)
+              const limit = bounded(params.limit, 20, 100)
+              const file = params.filePath ? graphFile(state.projectRoot, state.crossProject ? state.projectRoot : instance.directory, params.filePath) : undefined
+              if (file && !state.crossProject) {
+                yield* Effect.promise(() => syncExistingGraphFiles(state, [file], "force")).pipe(Effect.orDie)
+              }
+              const snapshot = state.graph.snapshot()
+              const normalizedFile = file?.graphPath
+              const kinds = params.kind ? [params.kind] : undefined
+              const nodeID = chimeraRefID(params.ref, ["node"]) ?? params.nodeID?.trim()
+              const seedNodes = uniqueNodes(
+                nodeID
+                  ? [state.graph.node(nodeID)].filter((node): node is CodeGraphNode => Boolean(node))
+                  : normalizedFile && params.range
+                    ? state.graph.nodesIntersectingRange(normalizedFile, params.range, { kinds, smallestOnly: false })
+                    : params.symbol
+                      ? state.graph.searchNodes(params.symbol, { kinds, limit: 5 }).map((result) => result.node)
+                      : normalizedFile
+                        ? state.graph.nodesInFile(normalizedFile).filter((node) => !params.kind || node.kind === params.kind).slice(0, 5)
+                        : [],
+              )
+              if (seedNodes.length === 0 && !normalizedFile) {
+                throw new Error("chimera_impact requires ref, nodeID, symbol, or filePath that resolves to at least one graph seed")
+              }
+
+              const impact = buildImpactEvidence({
+                state,
+                snapshot,
+                seedNodes,
+                changedFiles: normalizedFile ? [normalizedFile] : [],
+                changeFacts: [],
+                normalizedFile,
+                source: "input",
+                depth,
+                limit,
+              })
+
+              return {
+                title: "Chimera impact",
+                output: [
+                  ...(state.crossProject ? [`Project: ${state.projectRoot} (cross-project, read-only)`, ""] : []),
+                  "Static graph evidence:",
+                  "",
+                  "Seed symbols:",
+                  ...(seedNodes.length ? seedNodes.map((node) => formatNode(node)) : ["- No symbol seeds; file-level impact only."]),
+                  "",
+                  "Change classification:",
+                  ...(normalizedFile ? [formatClassification({ file: normalizedFile, ...classifyFile(normalizedFile) })] : ["- No changed file supplied."]),
+                  "",
+                  `File dependents (${impact.fileDependents.length}):`,
+                  ...(impact.fileDependents.length ? impact.fileDependents.map((file) => `- ${file}`) : ["- None found."]),
+                  "",
+                  `Impacted symbols (${impact.impactedNodes.length}):`,
+                  ...(impact.impactedNodes.length
+                    ? impact.impactedNodes.map((node) => `${formatNode(node)}\n  risk: ${riskForNode(node)}\n  risk_reason: ${riskReasonForNode(node)}`)
+                    : ["- None found."]),
+                  "",
+                  "Impact evidence:",
+                  ...(impact.evidence.length ? impact.evidence.map(formatEvidence) : ["- None found."]),
+                ].join("\n"),
+                metadata: {
+                  projectRoot: state.projectRoot,
+                  crossProject: state.crossProject === true,
+                  snapshot,
+                  seeds: seedNodes.map((node) => state.graph.projectNode(node, snapshot)),
+                  impacted: impact.impactedNodes.map((node) => state.graph.projectNode(node, snapshot)),
+                  fileDependents: impact.fileDependents,
+                  evidence: impact.evidence,
+                },
+              }
+            }),
         )
-        if (seedNodes.length === 0 && !normalizedFile) {
-          throw new Error("chimera_impact requires ref, nodeID, symbol, or filePath that resolves to at least one graph seed")
-        }
-
-        const impact = buildImpactEvidence({
-          state,
-          snapshot,
-          seedNodes,
-          changedFiles: normalizedFile ? [normalizedFile] : [],
-          changeFacts: [],
-          normalizedFile,
-          source: "input",
-          depth,
-          limit,
-        })
-
-        return {
-          title: "Chimera impact",
-          output: [
-            "Static graph evidence:",
-            "",
-            "Seed symbols:",
-            ...(seedNodes.length ? seedNodes.map((node) => formatNode(node)) : ["- No symbol seeds; file-level impact only."]),
-            "",
-            "Change classification:",
-            ...(normalizedFile ? [formatClassification({ file: normalizedFile, ...classifyFile(normalizedFile) })] : ["- No changed file supplied."]),
-            "",
-            `File dependents (${impact.fileDependents.length}):`,
-            ...(impact.fileDependents.length ? impact.fileDependents.map((file) => `- ${file}`) : ["- None found."]),
-            "",
-            `Impacted symbols (${impact.impactedNodes.length}):`,
-            ...(impact.impactedNodes.length
-              ? impact.impactedNodes.map((node) => `${formatNode(node)}\n  risk: ${riskForNode(node)}\n  risk_reason: ${riskReasonForNode(node)}`)
-              : ["- None found."]),
-            "",
-            "Impact evidence:",
-            ...(impact.evidence.length ? impact.evidence.map(formatEvidence) : ["- None found."]),
-          ].join("\n"),
-          metadata: {
-            projectRoot: state.projectRoot,
-            snapshot,
-            seeds: seedNodes.map((node) => state.graph.projectNode(node, snapshot)),
-            impacted: impact.impactedNodes.map((node) => state.graph.projectNode(node, snapshot)),
-            fileDependents: impact.fileDependents,
-            evidence: impact.evidence,
-          },
-        }
       }).pipe(Effect.orDie),
   }),
 )

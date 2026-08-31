@@ -1,7 +1,7 @@
 import { afterEach, describe, expect } from "bun:test"
 import fs from "fs/promises"
 import path from "path"
-import { Effect, Layer } from "effect"
+import { Cause, Effect, Exit, Layer } from "effect"
 import { Bus } from "@/bus"
 import { Chimera } from "@/chimera"
 import { ChimeraPromptContext } from "@/chimera/prompt-context"
@@ -11,6 +11,7 @@ import { DatabaseConnection, getDatabasePath } from "@/graph"
 import { Agent } from "@/agent/agent"
 import { ModelTelemetry } from "@/agent/model-telemetry"
 import { InstanceState } from "@/effect/instance-state"
+import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { MessageID, SessionID } from "@/session/schema"
 import {
   ChimeraAuditRecentTool,
@@ -30,7 +31,7 @@ import {
 } from "@/tool/chimera"
 import { Tool } from "@/tool/tool"
 import { Truncate } from "@/tool/truncate"
-import { disposeAllInstances, TestInstance } from "../fixture/fixture"
+import { disposeAllInstances, provideTmpdirInstance, TestInstance, tmpdir } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
 const ctx = {
@@ -1305,6 +1306,251 @@ describe("tool.chimera", () => {
       expect(yield* Effect.promise(() => Bun.file(path.join(test.directory, ".chimera", "codegraph.db")).exists())).toBe(true)
       expect(yield* Effect.promise(() => Bun.file(path.join(test.directory, ".chimera", "chimera", "obligations.json")).exists())).toBe(false)
       expect(yield* Effect.promise(() => Bun.file(path.join(test.directory, ".codegraph", "codegraph.db")).exists())).toBe(false)
+    }),
+  )
+})
+type GraphFileEntry = { label: string; mtimeMs: number; size: number }
+
+const graphFiles = Effect.fn("ChimeraToolTest.graphFiles")(function* (root: string) {
+  const base = path.join(root, ".chimera")
+  const collect = async (dir: string): Promise<GraphFileEntry[]> => {
+    const entries = (await fs.readdir(dir, { withFileTypes: true })).toSorted((a, b) => a.name.localeCompare(b.name))
+    const nested = await Promise.all(
+      entries.map(async (entry) => {
+        const full = path.join(dir, entry.name)
+        if (entry.isDirectory()) return collect(full)
+        const info = await fs.stat(full)
+        return [{ label: path.relative(base, full).replaceAll("\\", "/"), mtimeMs: info.mtimeMs, size: info.size }]
+      }),
+    )
+    return nested.flat()
+  }
+  return yield* Effect.promise(() => collect(base))
+})
+
+// SQLite db-shm bookkeeping churns with concurrent readers; the WAL must stay
+// byte-stable in size for read-only cross-project access (a growing WAL means
+// someone wrote frames), and every other graph file must be fully stable.
+const stableGraphFiles = (entries: GraphFileEntry[]) =>
+  entries
+    .filter((entry) => !/\.db-shm$/.test(entry.label))
+    .map((entry) => `${entry.label} ${/\.db-wal$/.test(entry.label) ? "size-only" : entry.mtimeMs} ${entry.size}`)
+    .join("\n")
+
+const crossMarkerLine = (root: string) => `Project: ${root} (cross-project, read-only)`
+
+// Second project fixture: an independent temp instance with its own initialized graph,
+// built with the same tmpdir + initGraph flow as the local fixtures.
+const projectB = Effect.fn("ChimeraToolTest.projectB")(function* () {
+  return yield* provideTmpdirInstance((dir) =>
+    Effect.gen(function* () {
+      yield* Effect.promise(() => fs.writeFile(path.join(dir, "shared.ts"), "export function crossProjectMarker() { return 1 }\n"))
+      yield* Effect.promise(() =>
+        fs.writeFile(
+          path.join(dir, "consumer.ts"),
+          "import { crossProjectMarker } from './shared'\nexport function crossProjectConsumer() { return crossProjectMarker() + 1 }\n",
+        ),
+      )
+      yield* Effect.promise(() => fs.mkdir(path.join(dir, "nested")))
+      yield* Effect.promise(() =>
+        fs.writeFile(path.join(dir, "nested", "deep.ts"), "export function nestedCrossMarker() { return 2 }\n"),
+      )
+      yield* initGraph()
+      return dir
+    }),
+  ).pipe(Effect.provide(CrossSpawnSpawner.defaultLayer))
+})
+
+describe("cross-project projectPath", () => {
+  it.instance("queries another initialized project's graph strictly through projectPath", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        fs.writeFile(path.join(test.directory, "local.ts"), "export function localOnlyMarker() { return 1 }\n"),
+      )
+      yield* initGraph()
+      const bRoot = yield* projectB()
+
+      const search = yield* runSearch({ query: "crossProjectMarker", projectPath: bRoot })
+      expect(search.title).toBe("Chimera search")
+      expect(search.output.split("\n")[0]).toBe(crossMarkerLine(bRoot))
+      expect(search.output).toContain("crossProjectMarker")
+      expect(search.output).toContain("shared.ts")
+      expect(search.metadata.crossProject).toBe(true)
+      expect(search.metadata.projectRoot).toBe(bRoot)
+      expect(search.metadata.results.some((item) => item.node.name === "crossProjectMarker")).toBe(true)
+
+      const localQuery = yield* runSearch({ query: "localOnlyMarker", projectPath: bRoot })
+      expect(localQuery.output).toContain("Static graph evidence (0 results):")
+      expect(localQuery.metadata.results).toHaveLength(0)
+
+      const fromSubdir = yield* runSearch({ query: "nestedCrossMarker", projectPath: path.join(bRoot, "nested") })
+      expect(fromSubdir.output.split("\n")[0]).toBe(crossMarkerLine(bRoot))
+      expect(fromSubdir.metadata.crossProject).toBe(true)
+      expect(fromSubdir.metadata.projectRoot).toBe(bRoot)
+      expect(fromSubdir.metadata.results.some((item) => item.node.name === "nestedCrossMarker")).toBe(true)
+
+      const deepFile = yield* runFileSymbols({ filePath: "nested/deep.ts", projectPath: bRoot })
+      expect(deepFile.output).toContain(crossMarkerLine(bRoot))
+      expect(deepFile.metadata.crossProject).toBe(true)
+      expect(deepFile.metadata.results.some((item) => item.node.name === "nestedCrossMarker")).toBe(true)
+
+      const symbols = yield* runFileSymbols({ filePath: "shared.ts", projectPath: bRoot })
+      expect(symbols.title).toBe("Chimera file symbols")
+      expect(symbols.output).toContain(crossMarkerLine(bRoot))
+      expect(symbols.output).toContain("crossProjectMarker")
+      expect(symbols.metadata.crossProject).toBe(true)
+      expect(symbols.metadata.projectRoot).toBe(bRoot)
+      expect(symbols.metadata.results.some((item) => item.node.name === "crossProjectMarker")).toBe(true)
+
+      const impact = yield* runImpact({ symbol: "crossProjectMarker", projectPath: bRoot })
+      expect(impact.title).toBe("Chimera impact")
+      expect(impact.output.split("\n")[0]).toBe(crossMarkerLine(bRoot))
+      expect(impact.metadata.crossProject).toBe(true)
+      expect(impact.metadata.projectRoot).toBe(bRoot)
+      expect(impact.metadata.seeds.some((seed) => seed?.payload.name === "crossProjectMarker")).toBe(true)
+      expect(impact.metadata.fileDependents).toContain("consumer.ts")
+
+      const status = yield* runStatus({ projectPath: bRoot })
+      expect(status.title).toBe("Chimera status")
+      expect(status.output).toContain("Chimera graph surface is ready.")
+      expect(status.output).toContain(crossMarkerLine(bRoot))
+      expect(status.metadata.crossProject).toBe(true)
+      expect(status.metadata.projectRoot).toBe(bRoot)
+      expect(status.metadata.snapshot?.fileCount).toBeGreaterThan(0)
+
+      const omitted = yield* runSearch({ query: "crossProjectMarker" })
+      expect(omitted.output).not.toContain("cross-project")
+      expect(omitted.metadata.crossProject).toBe(false)
+    }),
+  )
+
+  it.instance("never writes target graph data or syncs filePath seeds for cross reads", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "baseline.ts"), "export const baseline = 1\n"))
+      yield* initGraph()
+      const bRoot = yield* projectB()
+      yield* Effect.promise(() => fs.writeFile(path.join(bRoot, "late-cross.ts"), "export function lateCrossSymbol() { return 5 }\n"))
+
+      const before = yield* graphFiles(bRoot)
+      const beforeStatus = yield* runStatus({ projectPath: bRoot, refresh: false })
+      expect(beforeStatus.metadata.snapshot?.nodeCount).toBeGreaterThan(0)
+
+      const symbols = yield* runFileSymbols({ filePath: "late-cross.ts", projectPath: bRoot })
+      expect(symbols.metadata.crossProject).toBe(true)
+      expect(symbols.metadata.results).toHaveLength(0)
+      expect(symbols.output).toContain("No indexed symbols found")
+
+      const impact = yield* runImpact({ filePath: "late-cross.ts", projectPath: bRoot })
+      expect(impact.metadata.crossProject).toBe(true)
+      expect(impact.metadata.seeds).toHaveLength(0)
+      expect(impact.output).toContain("No symbol seeds")
+
+      const search = yield* runSearch({ query: "lateCrossSymbol", projectPath: bRoot })
+      expect(search.metadata.results).toHaveLength(0)
+
+      const afterStatus = yield* runStatus({ projectPath: bRoot, refresh: false })
+      expect(afterStatus.metadata.snapshot?.nodeCount).toBe(beforeStatus.metadata.snapshot?.nodeCount)
+
+      // Contrast: the same call shape on the current project does sync the unindexed file seed,
+      // proving the cross skip above is what kept the target index unchanged.
+      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "late-local.ts"), "export function lateLocalSymbol() { return 6 }\n"))
+      const local = yield* runFileSymbols({ filePath: "late-local.ts" })
+      expect(local.metadata.results.some((item) => item.node.name === "lateLocalSymbol")).toBe(true)
+      expect(local.metadata.crossProject ?? false).toBe(false)
+
+      const after = yield* graphFiles(bRoot)
+      expect(after.map((entry) => entry.label)).toEqual(before.map((entry) => entry.label))
+      expect(stableGraphFiles(after)).toBe(stableGraphFiles(before))
+    }),
+  )
+
+  it.instance("treats a projectPath resolving to the current project root as local", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        fs.writeFile(path.join(test.directory, "local.ts"), "export function localRootMarker() { return 1 }\n"),
+      )
+      yield* initGraph()
+
+      const search = yield* runSearch({ query: "localRootMarker", projectPath: test.directory })
+      expect(search.output).not.toContain("cross-project")
+      expect(search.metadata.crossProject).toBe(false)
+      expect(search.metadata.projectRoot).toBe(test.directory)
+      expect(search.metadata.results.some((item) => item.node.name === "localRootMarker")).toBe(true)
+
+      const status = yield* runStatus({ projectPath: test.directory })
+      expect(status.output).not.toContain("cross-project")
+      expect(status.metadata.crossProject).toBe(false)
+      expect(status.metadata.initialized).toBe(true)
+
+      const impact = yield* runImpact({ symbol: "localRootMarker", projectPath: test.directory })
+      expect(impact.output).not.toContain("cross-project")
+      expect(impact.metadata.crossProject).toBe(false)
+      expect(impact.metadata.seeds.some((seed) => seed?.payload.name === "localRootMarker")).toBe(true)
+
+      yield* Effect.promise(() =>
+        fs.writeFile(path.join(test.directory, "late-local-root.ts"), "export function lateLocalRootSymbol() { return 2 }\n"),
+      )
+      const symbols = yield* runFileSymbols({ filePath: "late-local-root.ts", projectPath: test.directory })
+      expect(symbols.output).not.toContain("cross-project")
+      expect(symbols.metadata.crossProject).toBe(false)
+      expect(symbols.metadata.projectRoot).toBe(test.directory)
+      expect(symbols.metadata.results.some((item) => item.node.name === "lateLocalRootSymbol")).toBe(true)
+    }),
+  )
+
+  it.instance("reports uninitialized cross targets and throws for seed-opening tools", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "local.ts"), "export const local = 1\n"))
+      yield* initGraph()
+      const target = yield* Effect.acquireRelease(
+        Effect.promise(() => tmpdir()),
+        (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+      )
+      const bRoot = target.path
+      yield* Effect.promise(() => fs.writeFile(path.join(bRoot, "b-source.ts"), "export function bOnlySymbol() { return 1 }\n"))
+
+      const status = yield* runStatus({ projectPath: bRoot, refresh: true })
+      expect(status.output).toContain("Chimera graph surface is not initialized.")
+      expect(status.output).toContain(crossMarkerLine(bRoot))
+      expect(status.metadata.initialized).toBe(false)
+      expect(status.metadata.crossProject).toBe(true)
+      expect(status.metadata.projectRoot).toBe(bRoot)
+      expect(status.metadata.dataRootStatus).toBe("uninitialized")
+
+      const search = yield* runSearch({ query: "bOnlySymbol", projectPath: bRoot, refresh: true })
+      expect(search.output).toContain(crossMarkerLine(bRoot))
+      expect(search.output).toContain("Static graph evidence (0 results):")
+      expect(search.output).toContain("not initialized for the projectPath target")
+      expect(search.output).toContain("chimera graph init")
+      expect(search.output).toContain("chimera graph index")
+      expect(search.metadata.initialized).toBe(false)
+      expect(search.metadata.crossProject).toBe(true)
+      expect(search.metadata.results).toHaveLength(0)
+
+      const symbolsExit = yield* runFileSymbols({ filePath: "b-source.ts", projectPath: bRoot }).pipe(Effect.exit)
+      expect(Exit.isFailure(symbolsExit)).toBe(true)
+      if (Exit.isFailure(symbolsExit)) {
+        const error = Cause.squash(symbolsExit.cause)
+        const message = error instanceof Error ? error.message : String(error)
+        expect(message).toContain("Chimera graph is not initialized")
+        expect(message).toContain(`in ${bRoot}`)
+        expect(message).toContain("chimera graph init")
+      }
+
+      const impactExit = yield* runImpact({ symbol: "bOnlySymbol", projectPath: bRoot }).pipe(Effect.exit)
+      expect(Exit.isFailure(impactExit)).toBe(true)
+      if (Exit.isFailure(impactExit)) {
+        const error = Cause.squash(impactExit.cause)
+        const message = error instanceof Error ? error.message : String(error)
+        expect(message).toContain("Chimera graph is not initialized")
+      }
+
+      expect(yield* Effect.promise(() => Bun.file(path.join(bRoot, ".chimera")).exists())).toBe(false)
+      expect(yield* Effect.promise(() => Bun.file(path.join(bRoot, ".codegraph")).exists())).toBe(false)
     }),
   )
 })

@@ -26,6 +26,14 @@
 - Only explicit write flows (`chimera graph init`, `index`, `sync`, `migrate-data`) may create or migrate graph data. Never silently move, merge, or delete legacy `.codegraph/` data.
 - When changing graph CLI, Chimera tools, prompt context, storage paths, watcher/extraction ignores, or installer behavior, update agent-facing prompt/tool guidance and focused tests in the same change.
 
+## Agent tool visibility and permission allowlists
+
+- A denied tool is not merely blocked at call time: `Permission.disabled()` (`src/permission/index.ts`) removes it from the model's tool list entirely, so the agent cannot even see that the tool exists.
+- `explore` runs a `"*": "deny"` + allowlist ruleset in `src/agent/agent.ts`: grep/glob/list/bash/webfetch/websearch/read plus the four read-only Chimera graph tools (`chimera_status`, `chimera_search`, `chimera_file_symbols`, `chimera_impact`). Because `bash` stays allowed, a locked-down agent missing a needed tool silently degrades to shell workarounds — observed in practice: an explore subagent told to use `chimera_search` with `projectPath` fell back to `bash chimera graph ...` because the graph tools were not in its allowlist.
+- When adding a new agent-facing tool, decide explicitly which restricted agents should get it and add narrow allowlist entries; do not use broad wildcards like `chimera_*` for `explore` — that would also grant write flows (`chimera_init_graph`, obligation/oracle tools) to a read-only explorer.
+- `chimera_swarm` preset mapping (`src/tool/swarm.ts`): `file-review` workers always run as `explore`; other presets run as `general`, which inherits the permissive `defaults`. Keep this mapping in mind when shaping swarm items that depend on specific tools.
+- Keep agent prompts aligned with the allowlist: `src/agent/prompt/explore.txt` tells explore to prefer the graph tools for structure questions. A tool that is allowed but never mentioned tends to go unused; a tool that is mentioned but denied produces silent CLI fallbacks.
+
 # Ultra tier semantics
 
 - `ultra` is a Chimera product-level reasoning tier (a model variant), **not a provider-offered tier**. It means the model's highest supported reasoning effort **plus** proactive multi-agent delegation.

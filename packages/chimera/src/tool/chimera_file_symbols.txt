@@ -11,6 +11,9 @@ Parameter rules:
 - `kind` filters node kind.
 - `limit` defaults to 10 and is capped at 50.
 - `refresh` defaults to true and controls whether stale graph signals may trigger a sync.
+- `projectPath` is optional and lists symbols from another already-initialized Chimera project instead of the current session project: pass an absolute or relative path to that project, or to any subdirectory inside it, and it is walk-up resolved to the nearest initialized graph root (current `.chimera/`, or compatible legacy `.codegraph/`). `filePath` is then resolved against the target project's indexed records. Omitting `projectPath` keeps current-project behavior, and a `projectPath` resolving to the current project root behaves the same as omitting it.
+- Cross-project listing is strictly read-only: `filePath` is not synced from the filesystem in this mode (the filesystem-sync rule above applies to current-project calls only), nothing is initialized, written, or recorded in the target project, and `refresh` is ignored. Output is labeled `Project: <resolved root> (cross-project, read-only)`.
+- If the target project is not initialized, the tool returns a structured error: tell the user to run `chimera graph init` and then `chimera graph index` in that project themselves (indexing large repositories can take a long time); never initialize another project's graph from this session. Cross-project listing is for understanding another repository only.
 
 Common calls:
 - List exported functions/classes/components in a changed file.

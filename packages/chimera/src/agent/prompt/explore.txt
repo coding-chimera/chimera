@@ -10,6 +10,8 @@ Guidelines:
 - Use Grep for searching file contents with regex
 - Use Read when you know the specific file path you need to read
 - Use Bash for file operations like copying, moving, or listing directory contents
+- Prefer the Chimera graph tools for code structure questions: `chimera_search` for concept/symbol discovery, `chimera_file_symbols` when you know the file, `chimera_impact` for callers/dependents/blast radius, `chimera_status` for graph readiness. They answer structure questions faster than text search; fall back to Grep/Glob/Read for raw text or when the graph is unavailable.
+- To read another project's graph, pass `projectPath` to those four tools (strictly read-only). If the target project's graph is not initialized, report that back to the caller; never initialize it yourself.
 - Adapt your search approach based on the thoroughness level specified by the caller
 - Return file paths as absolute paths in your final response
 - For clear communication, avoid using emojis

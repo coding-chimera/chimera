@@ -78,6 +78,7 @@ Evidence snapshot: 2026-08-28, gathered by parallel scout agents against the liv
 ### Agent-Facing Tools
 
 - When adding or changing an agent-facing tool, update the corresponding agent guidance in the same change. This can include the tool description, system prompt, tool result hint, command template, or workflow instruction that teaches the model when and how to use the tool.
+- New tools are invisible to restricted subagents by default: agents on a `"*": "deny"` allowlist (e.g. `explore`) have denied tools removed from the model's tool list entirely, so they silently fall back to `bash`/CLI workarounds instead of erroring. When a tool should reach those agents, add narrow allowlist entries in `packages/chimera/src/agent/agent.ts`; see `packages/chimera/AGENTS.md` -> "Agent tool visibility and permission allowlists".
 - Do not rely only on implementation or tests to make a new tool discoverable. If a tool is part of an expected workflow, add a high-salience prompt or tool-output reminder for that workflow.
 - For Chimera tools specifically, keep tool names and workflow guidance aligned with the specs under `packages/chimera/specs/` (for example `effect/` and `v2/`).
 - Tool guidance should be description-heavy and schema-short. The more freedom, risk, side effects, or selector ambiguity a tool has, the more model-facing description it needs to constrain when and how to use it; broad tools like `bash` justify long descriptions because the action space is large.
