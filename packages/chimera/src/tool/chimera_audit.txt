@@ -24,6 +24,7 @@ After this tool:
 - Interpret findings in the current task context; inspect or update relevant targets as needed.
 - Intentional, irrelevant, duplicate, or temporary-cleanup findings can be skipped with a brief note when that matters for closeout.
 - Run build, typecheck, lint, or tests separately when correctness matters.
+- For mutations touching frontend component files (`*.tsx`/`*.jsx`/`*.vue`/`*.svelte`), also run the project's lint or render tests: framework-rule violations (for example React hook calls after conditional early returns) are invisible to structural audit.
 - Use `chimera_obligations_sync` when findings need durable tracking.
 
 CodePlan atomic label glossary:

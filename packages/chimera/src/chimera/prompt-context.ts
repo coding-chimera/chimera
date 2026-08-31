@@ -74,7 +74,7 @@ async function readObligationsWithFallback(root: string) {
 
 async function readOraclesWithFallback(root: string, sessionID: SessionID) {
   let records = [] as OracleRecord[]
-  for (const artifact of artifactPaths(root, "oracle-results.jsonl")) records = await readOracleResults(root, artifact, { sessionID, limit: 20, includePassing: false })
+  for (const artifact of artifactPaths(root, "oracle-results.jsonl")) records = await readOracleResults(root, artifact, { sessionID, limit: 50, includePassing: true })
   return records
 }
 
@@ -142,9 +142,21 @@ function graphSnapshot(recent: ToolMutationRecord[], predesigns: PredesignRunRec
   ]
 }
 
-function closeoutSignals(recent: ToolMutationRecord[], obligations: PromptObligation[], predesigns: PredesignRunRecord[]) {
+const FRONTEND_COMPONENT_FILE = /\.(tsx|jsx|vue|svelte)$/
+
+function frontendVerificationGap(recent: ToolMutationRecord[], oracles: OracleRecord[]) {
+  const mutation = recent.find((record) => record.files.some((file) => FRONTEND_COMPONENT_FILE.test(file.graphPath ?? file.absolutePath)))
+  if (!mutation) return undefined
+  const verified = oracles.some((oracle) => oracle.trusted && oracle.finishedAt >= mutation.finishedAt)
+  if (verified) return undefined
+  return "- Frontend component mutation without trusted verification evidence: run the project's lint/tests before closeout (framework invariants such as React hook ordering are invisible to structural audit); if the project has no lint configuration, report that gap to the user."
+}
+
+function closeoutSignals(recent: ToolMutationRecord[], obligations: PromptObligation[], predesigns: PredesignRunRecord[], oracles: OracleRecord[]) {
+  const frontendGap = frontendVerificationGap(recent, oracles)
   return [
     ...(recent.length ? ["- Recent mutation present: run `chimera_audit_recent` before claiming completion if not already done."] : []),
+    ...(frontendGap ? [frontendGap] : []),
     ...(predesigns.length && recent.length === 0
       ? ["- Pre-design evidence recorded; successful mutations still need `chimera_audit_recent` before closeout."]
       : []),
@@ -191,7 +203,8 @@ function closeoutGate(recent: ToolMutationRecord[], obligations: PromptObligatio
 }
 
 function renderContext(recent: ToolMutationRecord[], obligations: PromptObligation[], predesigns: PredesignRunRecord[], audits: AuditRunRecord[], oracles: OracleRecord[]) {
-  if (recent.length === 0 && obligations.length === 0 && predesigns.length === 0 && audits.length === 0 && oracles.length === 0) return undefined
+  const nonPassingOracles = oracles.filter((oracle) => oracle.status !== "pass")
+  if (recent.length === 0 && obligations.length === 0 && predesigns.length === 0 && audits.length === 0 && nonPassingOracles.length === 0) return undefined
   return [
     "## Chimera Execution Context",
     "",
@@ -226,10 +239,10 @@ function renderContext(recent: ToolMutationRecord[], obligations: PromptObligati
       : ["- None active."]),
     "",
     "Closeout Gate:",
-    ...closeoutGate(recent, obligations, audits, oracles),
+    ...closeoutGate(recent, obligations, audits, nonPassingOracles),
     "",
     "Closeout Signals:",
-    ...closeoutSignals(recent, obligations, predesigns),
+    ...closeoutSignals(recent, obligations, predesigns, oracles),
   ].join("\n")
 }
 
