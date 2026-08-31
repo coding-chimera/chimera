@@ -408,6 +408,14 @@ function providerCfg(url: string) {
   }
 }
 
+// Snapshot tracking spawns ~11 git processes on a session's first LLM step
+// (~1s+). These loop-semantics tests don't exercise snapshots; disabling keeps
+// their live budgets stable on machines with slow process spawn. Tests that
+// spawn a real shell additionally get a 10s budget (shell spawn dominates).
+function providerCfgNoSnapshot(url: string) {
+  return { ...providerCfg(url), snapshot: false }
+}
+
 const user = Effect.fn("test.user")(function* (sessionID: SessionID, text: string) {
   const session = yield* Session.Service
   const msg = yield* session.updateMessage({
@@ -1727,7 +1735,7 @@ it.live(
         yield* Fiber.await(fiber)
         expect((yield* status.get(chat.id)).type).toBe("idle")
       }),
-      { git: true, config: providerCfg },
+      { git: true, config: providerCfgNoSnapshot },
     ),
   3_000,
 )
@@ -1757,7 +1765,7 @@ it.live(
           expect(exit.value.info.role).toBe("assistant")
         }
       }),
-      { git: true, config: providerCfg },
+      { git: true, config: providerCfgNoSnapshot },
     ),
   3_000,
 )
@@ -1785,7 +1793,7 @@ it.live(
           }
         }
       }),
-      { git: true, config: providerCfg },
+      { git: true, config: providerCfgNoSnapshot },
     ),
   3_000,
 )
@@ -1951,7 +1959,7 @@ it.live(
           expect(exitA.value.info.id).toBe(exitB.value.info.id)
         }
       }),
-      { git: true, config: providerCfg },
+      { git: true, config: providerCfgNoSnapshot },
     ),
   3_000,
 )
@@ -1995,7 +2003,7 @@ it.live(
         expect(a.info.id).toBe(b.info.id)
         expect(a.info.role).toBe("assistant")
       }),
-      { git: true, config: providerCfg },
+      { git: true, config: providerCfgNoSnapshot },
     ),
   3_000,
 )
@@ -2064,7 +2072,7 @@ it.live(
         expect(inputs).toHaveLength(2)
         expect(JSON.stringify(inputs.at(-1)?.messages)).toContain("second")
       }),
-      { git: true, config: providerCfg },
+      { git: true, config: providerCfgNoSnapshot },
     ),
   3_000,
 )
@@ -2094,7 +2102,7 @@ it.live(
         yield* prompt.cancel(chat.id)
         yield* Fiber.await(fiber)
       }),
-      { git: true, config: providerCfg },
+      { git: true, config: providerCfgNoSnapshot },
     ),
   3_000,
 )
@@ -2139,7 +2147,7 @@ it.live(
         yield* prompt.cancel(chat.id)
         yield* Fiber.await(fiber)
       }),
-      { git: true, config: providerCfg },
+      { git: true, config: providerCfgNoSnapshot },
     ),
   3_000,
 )
@@ -2359,9 +2367,9 @@ it.live(
         }
         expect(yield* llm.calls).toBe(1)
       }),
-      { git: true, config: providerCfg },
+      { git: true, config: providerCfgNoSnapshot },
     ),
-  3_000,
+  10_000,
 )
 
 it.live(
@@ -2399,9 +2407,9 @@ it.live(
         }
         expect(yield* llm.calls).toBe(1)
       }),
-      { git: true, config: providerCfg },
+      { git: true, config: providerCfgNoSnapshot },
     ),
-  3_000,
+  10_000,
 )
 
 unix(
@@ -2978,7 +2986,7 @@ it.live(
           expect(last.info.error?.name).toBe("MessageAbortedError")
         }
       }),
-      { git: true, config: providerCfg },
+      { git: true, config: providerCfgNoSnapshot },
     ),
   3_000,
 )
