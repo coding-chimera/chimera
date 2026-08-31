@@ -1,4 +1,4 @@
-Show Chimera and CodeGraph readiness for the current project.
+Show Chimera and CodeGraph readiness for the current project, or for another project selected with `projectPath`.
 
 Use this tool when you need to know whether the graph is ready, what revision is indexed, which data root is active, which backend is active, or how many tracked obligations are pending.
 
@@ -7,12 +7,17 @@ Do NOT use this tool to search symbols, audit propagation, or prove correctness.
 Parameter rules:
 - `refresh` defaults to true. Set it to false only when stale graph state is acceptable for a lightweight status check.
 - This is a read-only status probe. It must not initialize graph data, migrate legacy data, or create `.chimera/`, `.codegraph/`, DB, lock, job, or migration files when the graph is unavailable.
+- `projectPath` is optional and enables read-only status checks of another project: pass an absolute or relative path to that Chimera project, or to any subdirectory inside it, and the path is walk-up resolved to the nearest initialized graph root (current `.chimera/`, or compatible legacy `.codegraph/`). Omitting it queries the current session project exactly as before; a `projectPath` that resolves to the current project root behaves identically to omitting it.
+- Cross-project `projectPath` is strictly read-only and must not initialize graph data, migrate legacy data, or create `.chimera/`, `.codegraph/`, DB, lock, job, or migration files in the target project. No sync or watch is started for the target graph and `refresh` is ignored in cross-project mode. Cross-project results are labeled `Project: <resolved root> (cross-project, read-only)`.
+- If the target project is not initialized, the tool returns a structured error telling you to run `chimera graph init` there first and then `chimera graph index`; cross-project access assumes the target is already indexed. Use cross-project status to understand another repository only.
 
 Common calls:
 - Check graph readiness before graph-backed exploration.
 - Inspect pending obligation count during closeout.
 - Diagnose uninitialized/current/legacy/mixed/custom data-root state before using graph-backed tools.
+- Check whether another project is initialized before running cross-project `projectPath` queries against its graph.
 
 After this tool:
 - If pending obligations are reported and the user is asking for closeout, list or resolve them before claiming completion.
-- If the graph is not initialized, call `chimera_init_graph` to initialize it before continuing graph-backed work.
+- If the current session project's graph is not initialized, call `chimera_init_graph` to initialize it before continuing graph-backed work.
+- For a cross-project `projectPath` target that is not initialized, do not call `chimera_init_graph` (it only initializes the current session project) and do not edit the target's files from this session; tell the user the target graph is not initialized and that they must run `chimera graph init` and then `chimera graph index` in the target project themselves — warn them that indexing large repositories can take a long time.

@@ -9,7 +9,8 @@ import type { Tool } from "@/tool/tool"
 import { classifyChangeRecord, classifyFileBoundary, collectFileProjections, collectIncidentRelations } from "./change-classifier"
 import { ProjectionMemo } from "./projection-memo"
 import { CodeGraphAdapter } from "./codegraph-adapter"
-import { getCodeGraphDir, isInitialized, type CodeGraphSnapshot, type IndexProgress as CodeGraphIndexProgress, type SyncResult as CodeGraphSyncResult } from "@/graph"
+import { findNearestCodeGraphRoot, getCodeGraphDir, isInitialized, type CodeGraphSnapshot, type IndexProgress as CodeGraphIndexProgress, type SyncResult as CodeGraphSyncResult } from "@/graph"
+import { validateProjectPath } from "@/graph/utils"
 import { ModelTelemetry } from "@/agent/model-telemetry"
 import { Session } from "@/session/session"
 import { appendProvenanceRecord, databaseStorePath, readPredesignRuns, readProvenanceRecords, readRecentProvenanceRecords, recordOracleResult, writeChangeFacts, type OracleLinkedChange, type OracleStatus, type OracleVerificationKind } from "./store"
@@ -87,6 +88,8 @@ export interface OpenProjectGraphInput {
   onProgress?: (progress: CodeGraphIndexProgress) => void
   init?: boolean
   readOnly?: boolean
+  /** Optional path to another project with an initialized Chimera graph. Cross-project opens are forced read-only (no init, sync, watch, or provenance writes). */
+  projectPath?: string
 }
 
 export interface MutationPredesignInput {
@@ -184,6 +187,8 @@ export interface ProjectGraphState {
   projectRoot: string
   artifact: string
   storePath: string
+  /** True when the graph belongs to a different project than the current session. Cross-project states are read-only. */
+  crossProject?: boolean
   lastRefreshAttemptAt?: number
   refreshPromise?: Promise<void>
 }
@@ -196,6 +201,32 @@ const PREDESIGN_FRESH_WINDOW_MS = 2 * 60 * 60 * 1000
 
 function projectRoot(input: { directory: string; worktree: string }) {
   return input.worktree === "/" ? input.directory : input.worktree
+}
+
+/**
+ * Resolve an optional cross-project `projectPath` to a graph root.
+ *
+ * Walks up from the given path to the nearest initialized Chimera graph root
+ * (current `.chimera/` or compatible legacy `.codegraph/` data), mirroring the
+ * MCP surface. Cross-project access is strictly read-only: callers must not
+ * init, sync, watch, sync filePath seeds, or write provenance for it. A path
+ * that resolves to the current project root is not treated as cross-project.
+ * When no initialized root is found, the resolved path itself is returned so
+ * callers can report the uninitialized state for the requested target.
+ */
+export function resolveProjectGraphTarget(
+  projectPath: string | undefined,
+  currentRoot: string,
+): { root: string; crossProject: boolean } {
+  if (!projectPath?.trim()) return { root: currentRoot, crossProject: false }
+  const resolved = path.resolve(currentRoot, projectPath.trim())
+  if (fs.existsSync(resolved)) {
+    const pathError = validateProjectPath(resolved)
+    if (pathError) throw new Error(pathError)
+  }
+  const root = findNearestCodeGraphRoot(resolved) ?? resolved
+  if (path.resolve(root) === path.resolve(currentRoot)) return { root: currentRoot, crossProject: false }
+  return { root, crossProject: true }
 }
 
 function normalizeAbsolute(filePath: string, base: string) {
@@ -833,11 +864,27 @@ export const initProjectGraph = Effect.fn("Chimera.initProjectGraph")(function* 
 
 export const openProjectGraph = Effect.fn("Chimera.openProjectGraph")(function* (input: OpenProjectGraphInput = {}) {
   const instance = yield* InstanceState.context
-  const root = projectRoot(instance)
-  yield* Effect.sync(() => rememberGraphRoot(instance.directory, root))
-  const s = yield* Effect.promise(() => openGraphState(root, { init: input.init, readOnly: input.readOnly, watch: input.watch ?? !input.readOnly, onProgress: input.onProgress })).pipe(Effect.orDie)
-  if (input.sync && !input.readOnly) yield* Effect.promise(() => refreshProjectGraph(s, input.onProgress)).pipe(Effect.orDie)
-  return s
+  const currentRoot = projectRoot(instance)
+  const target = resolveProjectGraphTarget(input.projectPath, currentRoot)
+  if (target.crossProject && !isInitialized(target.root)) {
+    throw new Error(
+      `Chimera graph is not initialized in ${target.root}. ` +
+        "Tell the user to run 'chimera graph init' and then 'chimera graph index' in that project " +
+        "(indexing large repositories can take a long time); never initialize another project's graph from this session.",
+    )
+  }
+  if (!target.crossProject) yield* Effect.sync(() => rememberGraphRoot(instance.directory, target.root))
+  const readOnly = input.readOnly || target.crossProject
+  const s = yield* Effect.promise(() =>
+    openGraphState(target.root, {
+      init: target.crossProject ? false : input.init,
+      readOnly,
+      watch: target.crossProject ? false : (input.watch ?? !readOnly),
+      onProgress: input.onProgress,
+    }),
+  ).pipe(Effect.orDie)
+  if (input.sync && !readOnly) yield* Effect.promise(() => refreshProjectGraph(s, input.onProgress)).pipe(Effect.orDie)
+  return target.crossProject ? { ...s, crossProject: true } : s
 })
 
 export function withProjectGraph<A, E, R>(
@@ -848,7 +895,9 @@ export function withProjectGraph<A, E, R>(
   return Effect.acquireUseRelease(
     openProjectGraph(input),
     use,
-    (state) => readOnly ? Effect.promise(() => state.graph.close()).pipe(Effect.ignore) : Effect.sync(() => state.graph.shrink()),
+    // Cross-project opens are forced read-only inside openProjectGraph; key the
+    // release off the resolved state so those connections are closed, not shrunk.
+    (state) => readOnly || state.crossProject === true ? Effect.promise(() => state.graph.close()).pipe(Effect.ignore) : Effect.sync(() => state.graph.shrink()),
   )
 }
 

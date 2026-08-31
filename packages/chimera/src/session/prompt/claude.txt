@@ -24,6 +24,8 @@ Do not keep state only in your reasoning. Do not defer the update to the end. Do
 
 When the task involves repository structure, symbol lookup, call chains, import relationships, blast radius, or impact analysis, use `chimera_search`, `chimera_file_symbols`, and `chimera_impact` before resorting to broad file reads or grep sweeps. These tools retrieve from the code graph and are faster and more precise than line-by-line file reading.
 
+The four query tools (`chimera_status`, `chimera_search`, `chimera_file_symbols`, `chimera_impact`) also accept an optional `projectPath` for strictly read-only cross-project queries against another already-initialized project; use it only to understand that repository - when the goal is to change another repository's code, ask the user to open a session there instead, since `chimera_impact` is the only audit-adjacent tool with cross-project support and predesign/audit/oracle/obligation/init tools do not accept `projectPath`.
+
 Fall back to grep/glob/read only when the graph tools are not applicable (raw text literals, regex matching, counting occurrences).
 
 ## Rule 3: predesign before edits, audit after edits

@@ -217,6 +217,10 @@ exports[`tool parameters JSON Schema (wire shape) chimera_file_symbols 1`] = `
       "description": "Maximum results to return. Defaults to 10, capped at 50.",
       "type": "number",
     },
+    "projectPath": {
+      "description": "Path to another project with an initialized Chimera graph for read-only cross-project queries. Omit to use the current project.",
+      "type": "string",
+    },
     "range": {
       "description": "Optional source range inside filePath; returns intersecting symbols.",
       "properties": {
@@ -359,6 +363,10 @@ exports[`tool parameters JSON Schema (wire shape) chimera_impact 1`] = `
     },
     "nodeID": {
       "description": "Legacy exact CodeGraph node id to analyze. Prefer ref when available.",
+      "type": "string",
+    },
+    "projectPath": {
+      "description": "Path to another project with an initialized Chimera graph for read-only cross-project queries. Omit to use the current project.",
       "type": "string",
     },
     "range": {
@@ -654,6 +662,10 @@ exports[`tool parameters JSON Schema (wire shape) chimera_search 1`] = `
       "description": "Maximum results to return. Defaults to 10, capped at 50.",
       "type": "number",
     },
+    "projectPath": {
+      "description": "Path to another project with an initialized Chimera graph for read-only cross-project queries. Omit to use the current project.",
+      "type": "string",
+    },
     "query": {
       "description": "Symbol or CodeGraph-indexed text query. This is not raw literal/code-string search; use Grep for arbitrary source text.",
       "type": "string",
@@ -674,6 +686,10 @@ exports[`tool parameters JSON Schema (wire shape) chimera_status 1`] = `
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "projectPath": {
+      "description": "Path to another project with an initialized Chimera graph for read-only cross-project queries. Omit to use the current project.",
+      "type": "string",
+    },
     "refresh": {
       "description": "Refresh CodeGraph when stale: the index is empty, watcher has pending files, or git reports dirty source files. Defaults to true.",
       "type": "boolean",
@@ -989,6 +1005,114 @@ exports[`tool parameters JSON Schema (wire shape) skill 1`] = `
 }
 `;
 
+exports[`tool parameters JSON Schema (wire shape) subagent_model_routes 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "model_identity": {
+      "description": "Model identity to inspect current visible concrete routes for.",
+      "type": "string",
+    },
+    "provider": {
+      "description": "Optional provider ID to narrow the route listing to one provider.",
+      "type": "string",
+    },
+  },
+  "required": [
+    "model_identity",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) subagent_model_prefer 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "model": {
+      "description": "Exact current provider/model route used for validation and task_model authorization.",
+      "type": "string",
+    },
+    "model_identity": {
+      "description": "Exact current model identity for the validating route.",
+      "type": "string",
+    },
+    "provider": {
+      "description": "Exact current provider ID for the validating route.",
+      "type": "string",
+    },
+    "scope": {
+      "description": "Preference scope: global across projects or only this session's project.",
+      "enum": [
+        "global",
+        "project",
+      ],
+      "type": "string",
+    },
+    "target": {
+      "description": "Preference target: the provider generally or this exact model route.",
+      "enum": [
+        "provider",
+        "route",
+      ],
+      "type": "string",
+    },
+  },
+  "required": [
+    "scope",
+    "target",
+    "provider",
+    "model_identity",
+    "model",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) subagent_model_suppress 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "model": {
+      "description": "Exact current provider/model route used for validation and task_model authorization.",
+      "type": "string",
+    },
+    "model_identity": {
+      "description": "Exact current model identity for the validating route.",
+      "type": "string",
+    },
+    "provider": {
+      "description": "Exact current provider ID for the validating route.",
+      "type": "string",
+    },
+    "scope": {
+      "description": "Preference scope: global across projects or only this session's project.",
+      "enum": [
+        "global",
+        "project",
+      ],
+      "type": "string",
+    },
+    "target": {
+      "description": "Preference target: the provider generally or this exact model route.",
+      "enum": [
+        "provider",
+        "route",
+      ],
+      "type": "string",
+    },
+  },
+  "required": [
+    "scope",
+    "target",
+    "provider",
+    "model_identity",
+    "model",
+  ],
+  "type": "object",
+}
+`;
+
 exports[`tool parameters JSON Schema (wire shape) task 1`] = `
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1030,7 +1154,11 @@ exports[`tool parameters JSON Schema (wire shape) task 1`] = `
       "type": "string",
     },
     "variant": {
-      "description": "Model variant to use with model or model_identity. Only allowed when the resolved model advertises it. Subagents do not support the ultra variant; it is reserved for root sessions.",
+      "description": "Model variant to use with model or model_identity. Only allowed when the resolved model advertises it. Subagents do not support the ultra variant; it is reserved for root sessions. When omitted for a model that advertises variants but configures no default options, dispatch fills the highest non-ultra variant.",
+      "type": "string",
+    },
+    "workload": {
+      "description": "Delegation workload archetype. Without a model selector, the scheduler chooses a current route; with an explicit selector, workload is validation and attribution only.",
       "type": "string",
     },
   },
@@ -1255,118 +1383,14 @@ exports[`tool parameters JSON Schema (wire shape) chimera_swarm 1`] = `
       "type": "string",
     },
     "variant": {
-      "description": "Model variant to use with model or model_identity. Only allowed when the resolved model advertises it. Subagents do not support the ultra variant; it is reserved for root sessions.",
+      "description": "Model variant to use with model or model_identity. Only allowed when the resolved model advertises it. Subagents do not support the ultra variant; it is reserved for root sessions. When omitted for a model that advertises variants but configures no default options, dispatch fills the highest non-ultra variant.",
+      "type": "string",
+    },
+    "workload": {
+      "description": "Delegation workload archetype. Without a model selector, the scheduler chooses one current route for the whole fan-out; with an explicit selector, workload is validation and attribution only.",
       "type": "string",
     },
   },
-  "type": "object",
-}
-`;
-
-exports[`tool parameters JSON Schema (wire shape) subagent_model_routes 1`] = `
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "properties": {
-    "model_identity": {
-      "description": "Model identity to inspect current visible concrete routes for.",
-      "type": "string",
-    },
-    "provider": {
-      "description": "Optional provider ID to narrow the route listing to one provider.",
-      "type": "string",
-    },
-  },
-  "required": [
-    "model_identity",
-  ],
-  "type": "object",
-}
-`;
-
-exports[`tool parameters JSON Schema (wire shape) subagent_model_prefer 1`] = `
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "properties": {
-    "model": {
-      "description": "Exact current provider/model route used for validation and task_model authorization.",
-      "type": "string",
-    },
-    "model_identity": {
-      "description": "Exact current model identity for the validating route.",
-      "type": "string",
-    },
-    "provider": {
-      "description": "Exact current provider ID for the validating route.",
-      "type": "string",
-    },
-    "scope": {
-      "description": "Preference scope: global across projects or only this session's project.",
-      "enum": [
-        "global",
-        "project",
-      ],
-      "type": "string",
-    },
-    "target": {
-      "description": "Preference target: the provider generally or this exact model route.",
-      "enum": [
-        "provider",
-        "route",
-      ],
-      "type": "string",
-    },
-  },
-  "required": [
-    "scope",
-    "target",
-    "provider",
-    "model_identity",
-    "model",
-  ],
-  "type": "object",
-}
-`;
-
-exports[`tool parameters JSON Schema (wire shape) subagent_model_suppress 1`] = `
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "properties": {
-    "model": {
-      "description": "Exact current provider/model route used for validation and task_model authorization.",
-      "type": "string",
-    },
-    "model_identity": {
-      "description": "Exact current model identity for the validating route.",
-      "type": "string",
-    },
-    "provider": {
-      "description": "Exact current provider ID for the validating route.",
-      "type": "string",
-    },
-    "scope": {
-      "description": "Preference scope: global across projects or only this session's project.",
-      "enum": [
-        "global",
-        "project",
-      ],
-      "type": "string",
-    },
-    "target": {
-      "description": "Preference target: the provider generally or this exact model route.",
-      "enum": [
-        "provider",
-        "route",
-      ],
-      "type": "string",
-    },
-  },
-  "required": [
-    "scope",
-    "target",
-    "provider",
-    "model_identity",
-    "model",
-  ],
   "type": "object",
 }
 `;

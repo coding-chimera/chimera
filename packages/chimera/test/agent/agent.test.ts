@@ -82,6 +82,14 @@ test("explore agent denies edit and write", async () => {
       expect(evalPerm(explore, "edit")).toBe("deny")
       expect(evalPerm(explore, "write")).toBe("deny")
       expect(evalPerm(explore, "todowrite")).toBe("deny")
+      // Read-only Chimera graph tools are allowed so explore stays graph-capable
+      // (including cross-repo reads via projectPath); write flows stay denied.
+      expect(evalPerm(explore, "chimera_status")).toBe("allow")
+      expect(evalPerm(explore, "chimera_search")).toBe("allow")
+      expect(evalPerm(explore, "chimera_file_symbols")).toBe("allow")
+      expect(evalPerm(explore, "chimera_impact")).toBe("allow")
+      expect(evalPerm(explore, "chimera_init_graph")).toBe("deny")
+      expect(evalPerm(explore, "chimera_obligations_sync")).toBe("deny")
     },
   })
 })

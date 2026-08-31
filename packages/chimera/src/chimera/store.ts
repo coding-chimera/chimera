@@ -1093,6 +1093,20 @@ export async function provenanceRecordCount(projectRoot: string, artifact: strin
   return count ?? legacy.length
 }
 
+/**
+ * Read-only variant of provenanceRecordCount for cross-project queries: never
+ * opens the store read-write and never backfills legacy records into the db.
+ * Falls back to the legacy record count when the db is unavailable.
+ */
+export async function provenanceRecordCountReadOnly(projectRoot: string, artifact: string) {
+  const legacy = (await readLegacyProvenanceRecords(artifact)).map(normalizeProvenanceRecord)
+  const count = await withReadOnlyDb(projectRoot, (db) => {
+    const row = db.prepare("SELECT COUNT(*) AS count FROM chimera_change_event").get() as CountRow | undefined
+    return row?.count ?? 0
+  })
+  return count ?? legacy.length
+}
+
 export async function writeChangeFacts(projectRoot: string, facts: ChangeFact[]) {
   if (facts.length === 0) return
   await withDb(projectRoot, (db) => {
@@ -1896,6 +1910,24 @@ export async function readPersistentObligationStore<T extends ObligationLike>(
     }
   })
   return store ?? legacy
+}
+
+/**
+ * Read-only variant of readPersistentObligationStore for cross-project queries:
+ * never opens the store read-write and never backfills legacy obligations into
+ * the target db. Falls back to the legacy artifact when the db is unavailable.
+ */
+export async function readPersistentObligationStoreReadOnly<T extends ObligationLike>(
+  projectRoot: string,
+  artifact: string,
+  fallback: ObligationStoreLike<T>,
+) {
+  const store = await withReadOnlyDb(projectRoot, (db) => ({
+    schemaVersion: 1 as const,
+    obligations: (db.prepare("SELECT payload_json FROM chimera_audit_obligation ORDER BY created_at ASC, id ASC").all() as PayloadRow[])
+      .flatMap((row) => parseJson<T>(row.payload_json)),
+  }))
+  return store ?? (await readJson<ObligationStoreLike<T>>(artifact, fallback))
 }
 
 export async function writePersistentObligationStore<T extends ObligationLike>(

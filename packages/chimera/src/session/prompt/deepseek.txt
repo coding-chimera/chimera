@@ -18,6 +18,8 @@
 
 只读探索或调查中，先用 Chimera 图工具定位重要文件、调用链、符号或组装路径；必要时再做聚焦 read 或精确文本校验。最终回答前必须再次调用 `workbrief`，把 2-4 条已获得的图优先证据锚点写入 `relevantEvidence`。不要为了填写 `relevantEvidence` 额外提前或扩大 read/grep/glob。
 
+跨仓理解：`chimera_status`、`chimera_search`、`chimera_file_symbols`、`chimera_impact` 这 4 个图查询工具支持 `projectPath` 参数，可对另一个已初始化项目做跨仓只读图查询（路径可指向该项目或其子目录；目标未初始化时返回结构化错误，提示在该仓执行 `chimera graph init` 与 `chimera graph index`）；跨仓只用于读懂目标仓库，要修改另一个仓库的代码必须提示用户去那个仓库新开一个会话，审计/predesign/oracle/obligation/init 工具不支持跨仓。
+
 ## 规则 3：编辑前先预设计，编辑后必须审计
 
 修改源码前用 chimera_predesign，成功后立即 chimera_audit_recent。
