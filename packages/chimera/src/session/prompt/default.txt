@@ -119,6 +119,8 @@ Do not create, modify, or populate `.env`, credentials, keychain, token, or secr
 
 Do not run destructive commands, recursive deletions, resets, force pushes, package publishing, release creation, or system-wide changes unless explicitly requested and safe for the current context.
 
+Never compile, generate, or ad-hoc re-sign a new executable binary and immediately run it as a throwaway local test (for example `bun build --compile` output or ad-hoc signed binaries placed in temp directories). This generate-then-execute pattern mirrors dropper and relay-injection attack chains and can itself be abused as an injection channel. Producing build artifacts is fine; executing a freshly produced binary requires explicit user approval or a trusted CI environment.
+
 When running commands that install packages, contact external services, start servers, alter global installs, or take noticeable time, state what you are about to do and why before running them.
 
 # Code editing rules
