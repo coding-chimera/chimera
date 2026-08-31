@@ -813,6 +813,95 @@ describe("tool.chimera", () => {
       expect(context).toContain("latest audit evidence: none recorded for latest mutation")
     }),
   )
+  it.instance("signals frontend component mutation without trusted verification evidence", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* trackWrite({
+        filePath: path.join(test.directory, "case-detail.tsx"),
+        content: "export function CaseDetail() { return null }\n",
+        callID: "call_chimera_frontend_gap_mutation",
+        patch: `--- case-detail.tsx
++++ case-detail.tsx
+@@ -0,0 +1,1 @@
++export function CaseDetail() { return null }
+`,
+      })
+
+      const promptContext = yield* ChimeraPromptContext.Service
+      const context = yield* promptContext.render(ctx.sessionID)
+      expect(context).toContain("Frontend component mutation without trusted verification evidence")
+
+      yield* Chimera.recordToolOracle({
+        kind: "shell",
+        toolID: "bash",
+        ctx: { ...ctx, callID: "call_chimera_frontend_gap_lint" },
+        status: "pass",
+        payload: {
+          shell: {
+            command: "npm run lint",
+            cwd: test.directory,
+            description: "passing lint",
+            exit: 0,
+            output: "ok",
+            truncated: false,
+          },
+        },
+      })
+
+      const verified = yield* promptContext.render(ctx.sessionID)
+      expect(verified).not.toContain("Frontend component mutation without trusted verification evidence")
+    }),
+  )
+
+  it.instance("keeps frontend verification gap signal for unverified component mutations", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* trackWrite({
+        filePath: path.join(test.directory, "plain.ts"),
+        content: "export const plain = 1\n",
+        callID: "call_chimera_frontend_gap_plain",
+        patch: `--- plain.ts
++++ plain.ts
+@@ -0,0 +1,1 @@
++export const plain = 1
+`,
+      })
+
+      const promptContext = yield* ChimeraPromptContext.Service
+      const plainContext = yield* promptContext.render(ctx.sessionID)
+      expect(plainContext).not.toContain("Frontend component mutation")
+
+      yield* trackWrite({
+        filePath: path.join(test.directory, "widget.vue"),
+        content: "<template><div /></template>\n",
+        callID: "call_chimera_frontend_gap_vue",
+        patch: `--- widget.vue
++++ widget.vue
+@@ -0,0 +1,1 @@
++<template><div /></template>
+`,
+      })
+      yield* Chimera.recordToolOracle({
+        kind: "shell",
+        toolID: "bash",
+        ctx: { ...ctx, callID: "call_chimera_frontend_gap_ls" },
+        status: "pass",
+        payload: {
+          shell: {
+            command: "ls -la",
+            cwd: test.directory,
+            description: "list files",
+            exit: 0,
+            output: "ok",
+            truncated: false,
+          },
+        },
+      })
+
+      const context = yield* promptContext.render(ctx.sessionID)
+      expect(context).toContain("Frontend component mutation without trusted verification evidence")
+    }),
+  )
   it.instance("syncs an existing explicit file path before auditing", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
