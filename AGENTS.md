@@ -29,7 +29,7 @@ Evidence snapshot: 2026-08-28, gathered by parallel scout agents against the liv
 
 ### Web frontends
 
-- `packages/newweb` (`opencodeui`, GPL-3.0-only): default WebUI asset source embedded into the `chimera` binary. It is a nested independent git repo with its own CI — treat it as a separate project and keep its `dist/` build working.
+- `packages/newweb` (`opencodeui`, GPL-3.0-only): default WebUI asset source embedded into the `chimera` binary. It is a nested independent git repo with its own CI — treat it as a separate project and keep its `dist/` build working; has its own `packages/newweb/AGENTS.md` (test pitfalls: localStorage polyfill, store mocks, drift-guard baselines).
 - `packages/app` (`@opencode-ai/app`): legacy WebUI (SolidJS/Vite), still maintained; embedded only with `--embed-legacy-web-ui`; has its own `packages/app/AGENTS.md`.
 - `packages/ui` (`@opencode-ai/ui`): shared SolidJS component library for app/desktop/console/enterprise/storybook; source-only package (consumers build it, no dist).
 - `packages/desktop` (`@opencode-ai/desktop`, private): Electron wrapper around `packages/app`; its README tracks a stale `opencode-cli` Windows sidecar reference.
