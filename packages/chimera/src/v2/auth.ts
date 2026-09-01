@@ -45,7 +45,7 @@ export class Account extends Schema.Class<Account>("AuthV2.Account")({
 
 export class AuthFileWriteError extends Schema.TaggedErrorClass<AuthFileWriteError>()("AuthV2.FileWriteError", {
   operation: Schema.Union([Schema.Literal("migrate"), Schema.Literal("write")]),
-  cause: Schema.Defect,
+  cause: Schema.Defect(),
 }) {}
 
 export type AuthError = AuthFileWriteError

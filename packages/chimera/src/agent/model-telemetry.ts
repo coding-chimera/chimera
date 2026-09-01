@@ -824,7 +824,7 @@ type StorageOperation = Schema.Schema.Type<typeof StorageOperation>
 
 export class TelemetryStorageError extends Schema.TaggedErrorClass<TelemetryStorageError>()("TelemetryStorageError", {
   operation: StorageOperation,
-  cause: Schema.Defect,
+  cause: Schema.Defect(),
 }) {
   override get message() {
     return `Telemetry storage failed during ${this.operation}`
