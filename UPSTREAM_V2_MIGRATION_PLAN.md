@@ -1,6 +1,6 @@
 # Upstream v2 底座迁移计划
 
-状态：L0 已完成（L0.2 按预案推迟到 L1 后）——2026-08-31
+状态：L0 + L1 已完成（2026-09-01）——Effect beta.83、schema/protocol 包、插件 v2 host、codemode、grep 权限修复均已落地并提交
 制定：2026-08-28，基于对上游 opencode（`refs/remotes/upstream/dev` = `755ebdb94`，v1.18.25）与本 fork（fork 点 `98e091796`，2026-05-07，opencode v1.14.40）的 swarm 探测 + 跨仓图精读（上游克隆仓 `/Volumes/workspace/opencode`，图已索引）。
 
 ## 背景事实
@@ -30,8 +30,8 @@
 
 | 层 | 内容 | 工期 | 用户可验证的变化 |
 |---|---|---|---|
-| L0 | grep 权限修复 + 插件 v2 host + codemode 包 | ~2 天 | 安全行为；无破坏 |
-| L1 | schema/protocol 包 + Effect beta.59→83 | ~3 天 | 无感知（typecheck/test 绿） |
+| L0 | grep 权限修复 + 插件 v2 host + codemode 包 | ✅ 完成 | 安全行为；无破坏 |
+| L1 | schema/protocol 包 + Effect beta.59→83 | ✅ 完成 | 无感知（typecheck/test 绿） |
 | L2 | LayerNode 最小子集 + effect-drizzle-sqlite + 日志 shim | ~3-4 天 | 无感知 |
 | L3 | 提示词层改 `SystemContext.Source`；Session V2 按子能力接入（快照/回滚/epochs 先）；V1 主路径不动 | ~2 周 | 快照/回滚等可见能力 |
 | L4 | packages/llm + 逐 provider 迁移（DeepSeek 先）+ 模型能力配置化 | ~2 周 | 新 provider、`model_capabilities` 配置生效 |
@@ -62,7 +62,7 @@ Model schema 扩展字段：`sampling.{temperature,top_p,top_k}`、`reasoning_pr
 
 另两项 P0 结论：子代理 deny 继承（`b8ca71d30`）本 fork 已有且更严（`src/agent/subagent-permissions.ts`）；防破坏性 edit（`236cfcbbc`）由 hashline 锚点架构根除。均无需操作。
 
-### L0.2 — 插件 v2 effect host 搬入 ⏸ 推迟到 L1 后
+### L0.2 — 插件 v2 effect host 搬入 ✅ 已完成（2026-09-01，schema 落地后回接）
 
 纯新增，与 v1 插件 API 并存（上游同策略）。
 
@@ -94,6 +94,8 @@ Model schema 扩展字段：`sampling.{temperature,top_p,top_k}`、`reasoning_pr
 
 - `chimera graph status` 不支持 `-p/--projectPath`（`query` 有、`status` 没有，帮助文案与实际 flag 不符）。
 - Node 26 下只读 graph 子命令被 tree-sitter 版本安全闸硬拦截，需 `CODEGRAPH_ALLOW_UNSAFE_NODE=1` 绕过——只读命令不应触发该闸。
+- `drizzle-kit generate` 当前不可用：`migration/20260714000000_memory_system/snapshot.json` 格式与 drizzle-kit 不兼容（malformed）；最新两个迁移目录（model_telemetry 系列）已只有 migration.sql 无 snapshot.json。已手写 `20260901000000_add_session_share_url` 修复存量库缺列问题（`43135ac3f`）。
+- Effect 升级后复测确认以下测试失败为预存问题，与升级无关：MCP daemon/handshake 9 个（MCP 已非 CodeGraph 接入面）、httpapi-config 8 个、httpapi-sdk 2 个、tool.chimera 1 个、cross-spawn cwd 1 个（macOS /var 软链）、compaction abort 时序 1 个。建议后续专项清理。
 
 ## 待定
 
