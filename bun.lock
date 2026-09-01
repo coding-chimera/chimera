@@ -558,6 +558,7 @@
       "name": "@opencode-ai/plugin",
       "version": "1.14.41",
       "dependencies": {
+        "@ai-sdk/provider": "3.0.8",
         "@opencode-ai/sdk": "workspace:*",
         "effect": "catalog:",
         "zod": "catalog:",
@@ -616,6 +617,7 @@
       "name": "@opencode-ai/sdk",
       "version": "1.14.41",
       "dependencies": {
+        "@opencode-ai/schema": "workspace:*",
         "cross-spawn": "catalog:",
       },
       "devDependencies": {
