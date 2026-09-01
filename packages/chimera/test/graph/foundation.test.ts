@@ -399,7 +399,7 @@ describe('Database Connection', () => {
     db.close();
   });
 
-  it('should migrate schema v5 databases to v6 and backfill node search text', () => {
+  it('should migrate schema v5 databases to the current version and backfill node search text', () => {
     const dbPath = path.join(tempDir, 'test.db');
     const created = createDatabase(dbPath);
     const raw = created.db;
@@ -442,6 +442,40 @@ describe('Database Connection', () => {
         signature,
         content='nodes',
         content_rowid='rowid'
+      );
+
+      -- A faithful v5 database also carries these tables; migrations v8-v11
+      -- (edge dedup, unresolved-ref status, files.generated) touch them.
+      CREATE TABLE edges (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source TEXT NOT NULL,
+        target TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        metadata TEXT,
+        line INTEGER,
+        col INTEGER,
+        provenance TEXT DEFAULT NULL
+      );
+      CREATE TABLE files (
+        path TEXT PRIMARY KEY,
+        content_hash TEXT NOT NULL,
+        language TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        modified_at INTEGER NOT NULL,
+        indexed_at INTEGER NOT NULL,
+        node_count INTEGER DEFAULT 0,
+        errors TEXT
+      );
+      CREATE TABLE unresolved_refs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        from_node_id TEXT NOT NULL,
+        reference_name TEXT NOT NULL,
+        reference_kind TEXT NOT NULL,
+        line INTEGER NOT NULL,
+        col INTEGER NOT NULL,
+        candidates TEXT,
+        file_path TEXT NOT NULL DEFAULT '',
+        language TEXT NOT NULL DEFAULT 'unknown'
       );
     `);
     raw.prepare(`

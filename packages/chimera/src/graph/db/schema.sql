@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS nodes (
     is_abstract INTEGER DEFAULT 0,
     decorators TEXT, -- JSON array
     type_parameters TEXT, -- JSON array
+    return_type TEXT, -- normalized return/result type name for receiver-type inference (upstream v5, chimera v7)
     search_text TEXT, -- identifier split into component words for FTS (see query-utils.buildSearchText)
     updated_at INTEGER NOT NULL
 );
@@ -64,7 +65,12 @@ CREATE TABLE IF NOT EXISTS files (
     modified_at INTEGER NOT NULL,
     indexed_at INTEGER NOT NULL,
     node_count INTEGER DEFAULT 0,
-    errors TEXT -- JSON array
+    errors TEXT, -- JSON array
+    -- Index-time verdict from extraction/generated-detection.ts: filename
+    -- convention (*.pb.go, *.g.dart, ...) OR a generation banner in the file
+    -- header (upstream v9, chimera v11). No backfill: migrated rows stay 0
+    -- until the next full index; readers union it with the path-only check.
+    generated INTEGER NOT NULL DEFAULT 0
 );
 
 -- File Semantics: CodeGraph-owned file-level semantic classification
@@ -93,8 +99,26 @@ CREATE TABLE IF NOT EXISTS unresolved_refs (
     candidates TEXT, -- JSON array
     file_path TEXT NOT NULL DEFAULT '',
     language TEXT NOT NULL DEFAULT 'unknown',
+    -- status lifecycle: inserted 'pending'; a completed resolution pass
+    -- either deletes the row (resolved) or marks it 'failed' so a later sync
+    -- can retry it when a changed file introduces a matching symbol
+    -- (upstream v8, chimera v10, #1240). name_tail is the last segment of
+    -- reference_name ('util.greet' -> 'greet'), written when marked failed.
+    status TEXT NOT NULL DEFAULT 'pending',
+    name_tail TEXT NOT NULL DEFAULT '',
     FOREIGN KEY (from_node_id) REFERENCES nodes(id) ON DELETE CASCADE
 );
+
+-- Prose-word -> symbol-name lookup (upstream v7, chimera v9). One row per
+-- (segment, name): segment is a lowercased word of a symbol name
+-- (OrderStateMachine -> order, state, machine). Materialized on the node
+-- write path; starts empty on migrated databases and is rebuilt by full
+-- indexes / healed by sync.
+CREATE TABLE IF NOT EXISTS name_segment_vocab (
+    segment TEXT NOT NULL,
+    name TEXT NOT NULL,
+    PRIMARY KEY (segment, name)
+) WITHOUT ROWID;
 
 -- =============================================================================
 -- Indexes for Query Performance
@@ -151,9 +175,18 @@ CREATE INDEX IF NOT EXISTS idx_edges_kind ON edges(kind);
 CREATE INDEX IF NOT EXISTS idx_edges_source_kind ON edges(source, kind);
 CREATE INDEX IF NOT EXISTS idx_edges_target_kind ON edges(target, kind);
 
+-- Edge identity uniqueness (upstream v6, chimera v8). insertEdge uses
+-- INSERT OR IGNORE, which only dedups with something UNIQUE to conflict on.
+-- IFNULL folds nullable line/col so coordinate-less edges dedup too.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_identity
+  ON edges(source, target, kind, IFNULL(line, -1), IFNULL(col, -1));
+
 -- File indexes
 CREATE INDEX IF NOT EXISTS idx_files_language ON files(language);
 CREATE INDEX IF NOT EXISTS idx_files_modified_at ON files(modified_at);
+-- PARTIAL: the generated set is a small minority of any repo, so lookups
+-- intersecting a bounded candidate list stay proportional to it.
+CREATE INDEX IF NOT EXISTS idx_files_generated ON files(path) WHERE generated = 1;
 CREATE INDEX IF NOT EXISTS idx_file_semantics_role ON file_semantics(role);
 CREATE INDEX IF NOT EXISTS idx_file_semantics_classifier_version ON file_semantics(classifier_version);
 CREATE INDEX IF NOT EXISTS idx_file_semantics_content_hash ON file_semantics(content_hash);
@@ -163,6 +196,8 @@ CREATE INDEX IF NOT EXISTS idx_unresolved_from_node ON unresolved_refs(from_node
 CREATE INDEX IF NOT EXISTS idx_unresolved_name ON unresolved_refs(reference_name);
 CREATE INDEX IF NOT EXISTS idx_unresolved_file_path ON unresolved_refs(file_path);
 CREATE INDEX IF NOT EXISTS idx_unresolved_from_name ON unresolved_refs(from_node_id, reference_name);
+CREATE INDEX IF NOT EXISTS idx_unresolved_status ON unresolved_refs(status);
+CREATE INDEX IF NOT EXISTS idx_unresolved_failed_tail ON unresolved_refs(name_tail) WHERE status = 'failed';
 CREATE INDEX IF NOT EXISTS idx_edges_provenance ON edges(provenance);
 
 -- Project metadata for version/provenance tracking
