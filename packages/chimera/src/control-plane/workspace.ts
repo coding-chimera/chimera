@@ -133,7 +133,7 @@ export class SyncTimeoutError extends Schema.TaggedErrorClass<SyncTimeoutError>(
 
 export class SyncAbortedError extends Schema.TaggedErrorClass<SyncAbortedError>()("WorkspaceSyncAbortedError", {
   message: Schema.String,
-  cause: Schema.optional(Schema.Defect),
+  cause: Schema.optional(Schema.Defect()),
 }) {}
 
 type CreateError = Auth.AuthError

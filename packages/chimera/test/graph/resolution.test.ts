@@ -1377,50 +1377,59 @@ func main() {
       db.close();
     });
 
-    it('deletes duplicate unresolved tuples by their distinct stable row IDs', async () => {
+    it('parks duplicate unresolved tuples as failed and leaves the pending set empty', async () => {
       queries.insertNode(node('source:duplicate', 'caller'));
       queries.insertUnresolvedRefsBatch([
         ref('source:duplicate', 'missing'),
         ref('source:duplicate', 'missing'),
       ]);
-      const ids = queries.getUnresolvedReferences().map((item) => item.id);
-      const deleteByIds = spyOn(queries, 'deleteUnresolvedReferencesByIds');
+      const markFailed = spyOn(queries, 'markReferencesFailed');
 
       try {
         const result = await createResolver(tempDir, queries).resolveAndPersistBatched(undefined, 1);
 
-        expect(ids).toHaveLength(2);
-        expect(ids[0]).not.toBe(ids[1]);
-        expect(deleteByIds).toHaveBeenNthCalledWith(1, [ids[0]]);
-        expect(deleteByIds).toHaveBeenNthCalledWith(2, [ids[1]]);
-        expect(result.stats).toMatchObject({ total: 2, resolved: 0, unresolved: 2 });
-        expect(queries.getUnresolvedReferences()).toEqual([]);
+        // markReferencesFailed keys on the (fromNodeId, referenceName,
+        // referenceKind) tuple, so the first batch's UPDATE parks BOTH
+        // identical rows at once — the drain sees one pending row, but both
+        // land in failed, which is the state the retry sweep needs.
+        expect(result.stats).toMatchObject({ total: 1, resolved: 0, unresolved: 1 });
+        expect(markFailed).toHaveBeenCalled();
+        // Pending readers no longer see the parked rows…
+        expect(queries.getUnresolvedReferencesCount()).toBe(0);
+        // …but both stay queryable as failed, with the retry tail written.
+        const rows = db.getDb()
+          .prepare("SELECT status, name_tail FROM unresolved_refs ORDER BY id")
+          .all() as Array<{ status: string; name_tail: string }>;
+        expect(rows).toEqual([
+          { status: 'failed', name_tail: 'missing' },
+          { status: 'failed', name_tail: 'missing' },
+        ]);
       } finally {
-        deleteByIds.mockRestore();
+        markFailed.mockRestore();
       }
     });
 
-    it('processes every unresolvable batch with one initial count query', async () => {
+    it('processes every unresolvable batch, parking each row as failed', async () => {
       queries.insertNode(node('source:unresolvable', 'caller'));
       queries.insertUnresolvedRefsBatch(
         Array.from({ length: 5 }, (_, index) => ref('source:unresolvable', `missing${index}`, index + 1))
       );
-      const count = spyOn(queries, 'getUnresolvedReferencesCount');
       const progress: Array<[number, number]> = [];
 
-      try {
-        const result = await createResolver(tempDir, queries).resolveAndPersistBatched(
-          (current, total) => progress.push([current, total]),
-          2
-        );
+      const result = await createResolver(tempDir, queries).resolveAndPersistBatched(
+        (current, total) => progress.push([current, total]),
+        2
+      );
 
-        expect(count).toHaveBeenCalledTimes(1);
-        expect(progress).toEqual([[2, 5], [4, 5], [5, 5]]);
-        expect(result.stats).toMatchObject({ total: 5, resolved: 0, unresolved: 5 });
-        expect(queries.getUnresolvedReferences()).toEqual([]);
-      } finally {
-        count.mockRestore();
-      }
+      // The #1187 regression pin: an all-unresolvable first batch must not
+      // stop the drain — every batch is consumed (parked failed), not deleted.
+      expect(progress).toEqual([[2, 5], [4, 5], [5, 5]]);
+      expect(result.stats).toMatchObject({ total: 5, resolved: 0, unresolved: 5 });
+      expect(queries.getUnresolvedReferencesCount()).toBe(0);
+      const parked = db.getDb()
+        .prepare("SELECT COUNT(*) AS n FROM unresolved_refs WHERE status = 'failed'")
+        .get() as { n: number };
+      expect(parked.n).toBe(5);
     });
 
     it('persists mixed results across resolution and persistence chunk boundaries', async () => {
@@ -1439,6 +1448,7 @@ func main() {
       ]);
       const insertEdges = spyOn(queries, 'insertEdges');
       const deleteByIds = spyOn(queries, 'deleteUnresolvedReferencesByIds');
+      const markFailed = spyOn(queries, 'markReferencesFailed');
 
       try {
         const result = await createResolver(tempDir, queries).resolveAndPersistBatched(
@@ -1449,17 +1459,25 @@ func main() {
         );
 
         expect(insertEdges.mock.calls.map((call) => call[0].length)).toEqual([2, 1]);
-        expect(deleteByIds.mock.calls.map((call) => call[0].length)).toEqual([2, 2, 1]);
+        // Resolved rows are deleted (persistence chunks of 2); the
+        // unresolvable rows are parked as failed instead (#1240).
+        expect(deleteByIds.mock.calls.map((call) => call[0].length)).toEqual([2, 1]);
+        expect(markFailed.mock.calls.map((call) => call[0].length)).toEqual([2]);
         expect(result.stats).toMatchObject({ total: 5, resolved: 3, unresolved: 2 });
         expect(queries.getOutgoingEdges('source:mixed', ['calls']).map((edge) => edge.target).sort()).toEqual([
           'target:alpha',
           'target:beta',
           'target:gamma',
         ]);
-        expect(queries.getUnresolvedReferences()).toEqual([]);
+        expect(queries.getUnresolvedReferencesCount()).toBe(0);
+        const parked = db.getDb()
+          .prepare("SELECT COUNT(*) AS n FROM unresolved_refs WHERE status = 'failed'")
+          .get() as { n: number };
+        expect(parked.n).toBe(2);
       } finally {
         insertEdges.mockRestore();
         deleteByIds.mockRestore();
+        markFailed.mockRestore();
       }
     });
 

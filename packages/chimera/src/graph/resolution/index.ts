@@ -730,6 +730,15 @@ export class ReferenceResolver {
         metadata: {
           confidence: ref.confidence,
           resolvedBy: ref.resolvedBy,
+          // The ORIGINAL reference text (and kind, when kind promotion above
+          // rewrote it). If this edge's target is later removed by a re-index,
+          // the edge is resurrected as exactly this ref and re-resolved
+          // (upstream #1240 removal case). Edges without refName (pre-existing,
+          // synthesized) are deliberately NOT resurrected: reconstructing from
+          // the target's plain name would strip receiver context and risk a
+          // rebind a full re-index would never make.
+          refName: ref.original.referenceName,
+          ...(ref.original.referenceKind !== kind ? { refKind: ref.original.referenceKind } : {}),
         },
       };
     });
@@ -792,6 +801,64 @@ export class ReferenceResolver {
       this.deleteUnresolvedReferences(result.resolved.map((ref) => ref.original));
     }
 
+    // Park still-unresolvable refs as status='failed' — parity with the
+    // batched path (upstream #1240). A ref whose own file never changes would
+    // otherwise stay pending forever; failed rows are excluded from the
+    // pending readers but stay retryable by a later sync that adds the
+    // satisfying symbol.
+    if (result.unresolved.length > 0) {
+      this.queries.markReferencesFailed(
+        result.unresolved.map((r) => ({
+          fromNodeId: r.fromNodeId,
+          referenceName: r.referenceName,
+          referenceKind: r.referenceKind,
+        }))
+      );
+    }
+
+    return result;
+  }
+
+  /**
+   * Yielding counterpart of {@link resolveAndPersist} for a caller-supplied
+   * ref list — used by sync's failed-ref retry pass (upstream #1240). Same
+   * persistence semantics: resolved refs become edges and their rows are
+   * deleted; still-unresolvable refs are (re-)marked failed (a no-op for rows
+   * already in that status). Yields per chunk because sync can run under a
+   * daemon watchdog and a retry set is unbounded when a large edit lands many
+   * popular symbol names at once.
+   */
+  async resolveAndPersistListYielding(refs: UnresolvedReference[]): Promise<ResolutionResult> {
+    const maybeYield = createYielder();
+    const result = await this.resolveBatchYielding(refs, maybeYield);
+
+    const PERSIST_CHUNK = 1000;
+    const edges = this.createEdges(result.resolved);
+    for (let i = 0; i < edges.length; i += PERSIST_CHUNK) {
+      this.queries.insertEdges(edges.slice(i, i + PERSIST_CHUNK));
+      await maybeYield();
+    }
+
+    const resolvedKeys = result.resolved.map((r) => ({
+      fromNodeId: r.original.fromNodeId,
+      referenceName: r.original.referenceName,
+      referenceKind: r.original.referenceKind,
+    }));
+    for (let i = 0; i < resolvedKeys.length; i += PERSIST_CHUNK) {
+      this.queries.deleteSpecificResolvedReferences(resolvedKeys.slice(i, i + PERSIST_CHUNK));
+      await maybeYield();
+    }
+
+    const unresolvedKeys = result.unresolved.map((r) => ({
+      fromNodeId: r.fromNodeId,
+      referenceName: r.referenceName,
+      referenceKind: r.referenceKind,
+    }));
+    for (let i = 0; i < unresolvedKeys.length; i += PERSIST_CHUNK) {
+      this.queries.markReferencesFailed(unresolvedKeys.slice(i, i + PERSIST_CHUNK));
+      await maybeYield();
+    }
+
     return result;
   }
 
@@ -848,15 +915,27 @@ export class ReferenceResolver {
         await maybeYield();
       }
 
-      // Delete every row read in this batch. Database-loaded rows carry stable
-      // IDs; callers without IDs retain the tuple-delete compatibility path.
-      const refsToDelete = [
-        ...result.resolved.map((ref) => ref.original),
-        ...result.unresolved,
-      ];
-      let deleted = 0;
-      for (let i = 0; i < refsToDelete.length; i += persistenceChunkSize) {
-        deleted += this.deleteUnresolvedReferences(refsToDelete.slice(i, i + persistenceChunkSize));
+      // Resolved rows are deleted; unresolvable ones are parked as
+      // status='failed' (upstream #1240) — both leave the pending set the batch
+      // reader sees, so the drain still terminates, and failed rows stay
+      // retryable by a later sync that adds the satisfying symbol. Resolved rows
+      // loaded from the database carry stable IDs; tuple delete remains the
+      // compatibility path.
+      let consumed = 0;
+      const resolvedRefs = result.resolved.map((ref) => ref.original);
+      for (let i = 0; i < resolvedRefs.length; i += persistenceChunkSize) {
+        consumed += this.deleteUnresolvedReferences(resolvedRefs.slice(i, i + persistenceChunkSize));
+        await maybeYield();
+      }
+      const unresolvedKeys = result.unresolved.map((ref) => ({
+        fromNodeId: ref.fromNodeId,
+        referenceName: ref.referenceName,
+        referenceKind: ref.referenceKind,
+      }));
+      for (let i = 0; i < unresolvedKeys.length; i += persistenceChunkSize) {
+        const chunk = unresolvedKeys.slice(i, i + persistenceChunkSize);
+        this.queries.markReferencesFailed(chunk);
+        consumed += chunk.length;
         await maybeYield();
       }
 
@@ -868,7 +947,7 @@ export class ReferenceResolver {
         aggregateStats.byMethod[method] = (aggregateStats.byMethod[method] || 0) + count;
       }
 
-      processed += deleted;
+      processed += consumed;
       onProgress?.(processed, total);
 
       // Writer-side backstop: pause between batches when the WAL valve's hard
@@ -888,9 +967,14 @@ export class ReferenceResolver {
       // permanent orphans (upstream #1187).
 
       // Non-progress guard: the pending population must shrink after every
-      // batch. Stable row IDs make this check precise even for duplicate tuples.
-      remaining = Math.max(0, remaining - deleted);
-      if (deleted === 0 || remaining >= previousRemaining) break;
+      // batch — resolved rows are deleted and unresolvable rows are parked as
+      // failed above, and both leave the pending set the batch reader sees.
+      // A batch that consumed nothing, or a pending count that failed to
+      // shrink, means a resolver returned a match whose tuple does not match
+      // the stored row and we would spin forever (the pre-#1187 runaway).
+      if (consumed === 0) break;
+      remaining = this.queries.getUnresolvedReferencesCount();
+      if (remaining >= previousRemaining) break;
       previousRemaining = remaining;
     }
 

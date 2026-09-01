@@ -1494,6 +1494,15 @@ export class CodeGraph {
 
         if (result.filesAdded > 0 || result.filesModified > 0) {
           this.resolver.runPostExtract();
+        } else if (result.filesRemoved > 0) {
+          // A pure-removal sync still resolves refs below — the deletion path
+          // resurrects the removed file's incoming edges as pending refs
+          // (#1240 removal case) and the orphan sweep consumes them. In a
+          // long-lived process the resolver's name caches were warmed
+          // against the pre-removal graph; drop them so resolution sees the
+          // post-removal state (runPostExtract clears caches itself, so the
+          // changed-files branch is already covered).
+          this.resolver.clearCaches();
         }
 
         if (result.filesAdded > 0 || result.filesModified > 0) {
@@ -1512,6 +1521,22 @@ export class CodeGraph {
                 total,
               });
             });
+
+            // Retry previously-failed refs the changed files may now satisfy
+            // (#1240). Scoped resolution above only re-resolves refs FROM the
+            // changed files — but when a changed file gains a symbol, refs in
+            // UNCHANGED files that failed against the old graph can now
+            // resolve. Parked as status='failed' by earlier passes, they are
+            // looked up by the symbol names the changed files now carry. On a
+            // sync with no matches this is one indexed lookup.
+            const retryable = this.queries.getRetryableFailedReferences(
+              this.queries.getNodeNamesByFiles(result.changedFilePaths)
+            );
+            if (retryable.length > 0) {
+              onProgress({ phase: 'resolving', current: 0, total: retryable.length });
+              await this.resolver.resolveAndPersistListYielding(retryable);
+              onProgress({ phase: 'resolving', current: retryable.length, total: retryable.length });
+            }
           } else {
             const unresolvedCount = this.queries.getUnresolvedReferencesCount();
             onProgress({
@@ -1530,8 +1555,27 @@ export class CodeGraph {
           }
         }
 
+        // Orphan sweep (#1187). A resolution pass that dies mid-run leaves
+        // the refs it never reached in unresolved_refs, and the scoped path
+        // above never revisits them (it reads only the changed files' rows).
+        // A completed pass takes every row it processed out of the pending
+        // set (resolved rows deleted, unresolvable parked failed — #1240), so
+        // any pending row now is such an orphan. Grind them down with the
+        // batched resolver; this also makes a bare `sync` the recovery
+        // command for a wedged index. On a healthy index this is one COUNT
+        // query.
+        const orphanCount = this.queries.getUnresolvedReferencesCount();
+        if (orphanCount > 0) {
+          onProgress({ phase: 'resolving', current: 0, total: orphanCount });
+          await this.resolveReferencesBatched((current, total) => {
+            onProgress({ phase: 'resolving', current, total });
+          });
+        }
+
         if (result.filesAdded > 0 || result.filesModified > 0 || result.filesRemoved > 0) {
           this.refreshFileSemantics(result.changedFilePaths ?? []);
+          this.db.runMaintenance();
+        } else if (orphanCount > 0) {
           this.db.runMaintenance();
         }
 
@@ -1593,14 +1637,6 @@ export class CodeGraph {
         }))];
         const changedSet = new Set(normalizedFilePaths);
         const dependentEdgeKinds: Edge['kind'][] = ['calls', 'references', 'imports', 'type_of', 'returns', 'instantiates', 'extends', 'implements', 'overrides'];
-        const preservedIncomingEdges = normalizedFilePaths.flatMap((filePath) =>
-          this.queries.getNodesByFile(filePath).flatMap((node) =>
-            this.queries.getIncomingEdges(node.id, dependentEdgeKinds).filter((edge) => {
-              const source = this.queries.getNodeById(edge.source);
-              return source && source.filePath !== filePath;
-            })
-          )
-        );
         const dependentFilePaths = [...new Set([
           ...normalizedFilePaths.flatMap((filePath) => this.graphManager.getFileDependents(filePath)),
           ...normalizedFilePaths.flatMap((filePath) =>
@@ -1641,11 +1677,19 @@ export class CodeGraph {
               total,
             });
           });
+
+          // Retry previously-failed refs the changed files may now satisfy
+          // (#1240) — same rationale as the full-sync path.
+          const retryable = this.queries.getRetryableFailedReferences(
+            this.queries.getNodeNamesByFiles(resolutionFilePaths)
+          );
+          if (retryable.length > 0) {
+            onProgress({ phase: 'resolving', current: 0, total: retryable.length });
+            await this.resolver.resolveAndPersistListYielding(retryable);
+            onProgress({ phase: 'resolving', current: retryable.length, total: retryable.length });
+          }
         }
 
-        if (changed && preservedIncomingEdges.length > 0) {
-          this.queries.insertEdges(preservedIncomingEdges);
-        }
 
         if (result.filesAdded > 0 || result.filesModified > 0 || result.filesRemoved > 0) {
           this.refreshFileSemantics([...(result.changedFilePaths ?? []), ...(changed ? dependentFilePaths : [])]);

@@ -16,9 +16,7 @@ function emptyCredential() {
 }
 
 function decodeCredential(input: string) {
-  return Encoding.decodeBase64String(input)
-    .asEffect()
-    .pipe(
+  return Effect.fromResult(Encoding.decodeBase64String(input)).pipe(
       Effect.match({
         onFailure: emptyCredential,
         onSuccess: (header) => {
