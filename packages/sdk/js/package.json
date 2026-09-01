@@ -15,7 +15,8 @@
     "./v2": "./src/v2/index.ts",
     "./v2/client": "./src/v2/client.ts",
     "./v2/gen/client": "./src/v2/gen/client/index.ts",
-    "./v2/server": "./src/v2/server.ts"
+    "./v2/server": "./src/v2/server.ts",
+    "./v2/types": "./src/v2/types.ts"
   },
   "files": [
     "dist"
@@ -29,6 +30,7 @@
     "typescript": "catalog:"
   },
   "dependencies": {
+    "@opencode-ai/schema": "workspace:*",
     "cross-spawn": "catalog:"
   }
 }
