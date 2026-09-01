@@ -10,7 +10,7 @@ import { buildSearchText } from '../search/query-utils';
 /**
  * Current schema version
  */
-export const CURRENT_SCHEMA_VERSION = 6;
+export const CURRENT_SCHEMA_VERSION = 11;
 
 /**
  * Migration definition
@@ -152,6 +152,119 @@ const migrations: Migration[] = [
             VALUES (NEW.rowid, NEW.id, NEW.name, NEW.qualified_name, NEW.docstring, NEW.signature, NEW.search_text);
         END;
       `);
+    },
+  },
+  {
+    // Upstream codegraph v5 (fd03f31, #645), renumbered: chimera's own v5/v6
+    // (file_semantics, nodes.search_text) already occupy those numbers.
+    version: 7,
+    description:
+      'Add nodes.return_type — normalized return/result type for receiver-type inference (upstream v5, #645)',
+    up: (db) => {
+      // ALTER TABLE has no IF NOT EXISTS, so guard for idempotency (same
+      // pattern as v10/v11).
+      const cols = db.prepare('PRAGMA table_info(nodes)').all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === 'return_type')) {
+        db.exec('ALTER TABLE nodes ADD COLUMN return_type TEXT');
+      }
+    },
+  },
+  {
+    // Upstream codegraph v6 (0da2dce, #1034), renumbered.
+    version: 8,
+    description:
+      'Dedup duplicate edge rows and add a UNIQUE identity index so INSERT OR IGNORE actually dedups (upstream v6, #1034)',
+    up: (db) => {
+      // `insertEdge` has always used `INSERT OR IGNORE`, but the edges table had
+      // no UNIQUE constraint, so nothing conflicted and byte-identical rows
+      // accumulated whenever two passes emitted the same edge. Collapse each
+      // identity group to its lowest id, then add the constraint that makes
+      // `OR IGNORE` keep its promise. IFNULL folds nullable line/col so
+      // coordinate-less edges dedup too (SQLite treats each NULL as distinct) —
+      // and it MUST match the GROUP BY exactly, or the index creation would
+      // fail on a pair the DELETE left behind. Idempotent: the index is
+      // `IF NOT EXISTS` and the DELETE is a no-op once the table is unique.
+      db.exec(`
+        DELETE FROM edges
+        WHERE id NOT IN (
+          SELECT MIN(id) FROM edges
+          GROUP BY source, target, kind, IFNULL(line, -1), IFNULL(col, -1)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_identity
+          ON edges(source, target, kind, IFNULL(line, -1), IFNULL(col, -1));
+      `);
+    },
+  },
+  {
+    // Upstream codegraph v7 (e699ee9, #1136), renumbered.
+    version: 9,
+    description:
+      'Add name_segment_vocab — prose-word → symbol-name lookup for the prompt hook’s graph-derived gate (upstream v7)',
+    up: (db) => {
+      // DDL only — instant on any size database (the row-churn hazards of #1067
+      // don't apply). The table starts EMPTY on migrated databases; `sync`
+      // detects that over a populated graph and backfills batched+yielding
+      // (CodeGraph.rebuildNameSegmentVocab), and any full index rebuilds it
+      // from scratch. Keep the definition in lockstep with schema.sql.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS name_segment_vocab (
+          segment TEXT NOT NULL,
+          name TEXT NOT NULL,
+          PRIMARY KEY (segment, name)
+        ) WITHOUT ROWID;
+      `);
+    },
+  },
+  {
+    // Upstream codegraph v8 (9d0cd3a, #1240), renumbered.
+    version: 10,
+    description:
+      'Track attempted-but-unresolvable refs as status=failed so sync can retry them when a changed file adds a matching symbol (upstream v8, #1240)',
+    up: (db) => {
+      // DDL only — instant on any size database. No backfill needed: rows are
+      // only ever queried by name_tail once they carry status='failed', and
+      // both fields are written together by markReferencesFailed. Legacy rows
+      // (all 'pending' after this migration) are orphans from interrupted runs
+      // that the #1187 sweep grinds down on the next sync, marking survivors
+      // failed with their tails as it goes. The tail index is partial: on a
+      // healthy index the pending set is empty and the failed set is the only
+      // population worth indexing. Keep the definitions in lockstep with
+      // schema.sql. Guard each column for idempotency — a database created
+      // from current schema.sql already has both.
+      const cols = db.prepare('PRAGMA table_info(unresolved_refs)').all() as Array<{ name: string }>;
+      const hasColumn = (name: string) => cols.some((c) => c.name === name);
+      if (!hasColumn('status')) {
+        db.exec("ALTER TABLE unresolved_refs ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'");
+      }
+      if (!hasColumn('name_tail')) {
+        db.exec("ALTER TABLE unresolved_refs ADD COLUMN name_tail TEXT NOT NULL DEFAULT ''");
+      }
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_unresolved_status ON unresolved_refs(status);
+        CREATE INDEX IF NOT EXISTS idx_unresolved_failed_tail ON unresolved_refs(name_tail) WHERE status = 'failed';
+      `);
+    },
+  },
+  {
+    // Upstream codegraph v9 (16e1749, #1500), renumbered.
+    version: 11,
+    description:
+      'Add files.generated — index-time content-header generated-file detection for ranking (upstream v9, #1500)',
+    up: (db) => {
+      // DDL only — instant on any size database, and NO backfill: the flag is
+      // derived from file CONTENT, which this migration has no access to (the
+      // files table stores a hash, not the bytes). Migrated rows therefore stay
+      // 0 until the next full index re-extracts them, and every reader unions
+      // the flag with the path-only check, so an un-backfilled database keeps
+      // exactly the pre-#1500 behavior instead of regressing. `sync` heals it
+      // file-by-file as files change.
+      const cols = db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === 'generated')) {
+        db.exec('ALTER TABLE files ADD COLUMN generated INTEGER NOT NULL DEFAULT 0');
+      }
+      db.exec(
+        'CREATE INDEX IF NOT EXISTS idx_files_generated ON files(path) WHERE generated = 1'
+      );
     },
   },
 ];
