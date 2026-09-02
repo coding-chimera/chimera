@@ -52,8 +52,19 @@ type Journal = { sql: string; timestamp: number; name: string }[]
 // Drizzle's migrate overloads trigger expensive variance checks here; narrow to the journal overload we actually use.
 const migrateFromJournal = migrate as unknown as (db: SQLiteBunDatabase, entries: Journal) => void
 
-function applyMigrations(db: SQLiteBunDatabase, entries: Journal) {
-  migrateFromJournal(db, entries)
+// 20260901000000_add_session_share_url repairs databases whose
+// familiar_lady_ursula migration ran before share_url was folded into its
+// recreated session table; databases on the folded lineage already have
+// the column, so the plain ADD COLUMN would fail as a duplicate. The
+// column only exists after the earlier migrations ran, so the repair is
+// applied in a second pass once the table state is known.
+export function applyMigrations(db: SQLiteBunDatabase, entries: Journal) {
+  const isRepair = (item: Journal[number]) => item.name === "20260901000000_add_session_share_url"
+  const main = entries.filter((item) => !isRepair(item))
+  if (main.length > 0) migrateFromJournal(db, main)
+  const repair = entries.filter(isRepair)
+  if (repair.length > 0 && needsColumn(db as unknown as ReturnType<typeof init>, "session", "share_url"))
+    migrateFromJournal(db, repair)
 }
 
 function time(tag: string) {
@@ -87,6 +98,12 @@ function migrations(dir: string): Journal {
     .filter(Boolean) as Journal
 
   return sql.sort((a, b) => a.timestamp - b.timestamp)
+}
+
+function needsColumn(db: ReturnType<typeof init>, table: string, column: string) {
+  const tables = db.$client.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").all(table)
+  if (tables.length === 0) return false
+  return db.$client.prepare("SELECT name FROM pragma_table_info(?) WHERE name = ?").all(table, column).length === 0
 }
 
 export const Client = lazy(() => {

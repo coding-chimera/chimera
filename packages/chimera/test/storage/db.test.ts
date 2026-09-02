@@ -31,3 +31,12 @@ describe("Database.NotFoundError schema", () => {
     expect(Database.NotFoundErrorPayload.safeParse({ message: 1 }).success).toBe(false)
   })
 })
+
+describe("Database migrations", () => {
+  test("fresh database applies the full chain, including the share_url lineage repair", () => {
+    const columns = Database.Client().$client.prepare("SELECT name FROM pragma_table_info('session')").all() as {
+      name: string
+    }[]
+    expect(columns.some((column) => column.name === "share_url")).toBe(true)
+  })
+})

@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test"
 import { Database } from "bun:sqlite"
 import { drizzle, SQLiteBunDatabase } from "drizzle-orm/bun-sqlite"
-import { migrate } from "drizzle-orm/bun-sqlite/migrator"
+import { applyMigrations } from "@/storage/db"
 import path from "path"
 import fs from "fs/promises"
 import { readFileSync, readdirSync } from "fs"
@@ -91,7 +91,7 @@ function createTestDb() {
     .sort((a, b) => a.timestamp - b.timestamp)
 
   const db = drizzle({ client: sqlite })
-  migrate(db, migrations)
+  applyMigrations(db, migrations)
 
   return [sqlite, db] as const
 }
