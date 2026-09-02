@@ -61,6 +61,8 @@
 - **Command**: `bun run db generate --name <slug>`.
 - **Output**: creates `migration/<timestamp>_<slug>/migration.sql` and `snapshot.json`.
 - **Tests**: migration tests should read the per-folder layout (no `_journal.json`).
+- **Never edit an already-applied migration.** Folding a column into an old migration's `CREATE TABLE` (as happened with `familiar_lady_ursula` + `share_url`) forks database lineages: databases that applied it earlier never receive the column.
+- **Lineage repairs must be idempotent.** A plain `ALTER TABLE ... ADD COLUMN` repair fails with "duplicate column" on databases that already have the column (including every fresh test database). Apply such repairs through `Database.applyMigrations` in `src/storage/db.ts`, which runs the known repair in a second pass only when the column is actually missing; every code path that applies migrations (including test helpers) must go through it.
 
 # Module shape
 
