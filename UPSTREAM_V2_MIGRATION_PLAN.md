@@ -90,6 +90,41 @@ Model schema 扩展字段：`sampling.{temperature,top_p,top_k}`、`reasoning_pr
 
 执行顺序：L0.1 → L0.3 前置实验（决定 Effect 升级是否提前）→ L0.2 → L0.3。
 
+## L2 细分计划
+
+目标：搬入新底座骨架（LayerNode 服务组装机制 + effect-drizzle-sqlite），**不接任何现有代码**，为 L3 Session V2 打地基。行为零变化。
+
+### L2.1 — LayerNode 最小子集
+
+从上游 `packages/core/src/effect/` 搬入（`/Volumes/workspace/opencode` 只读参考）：
+
+- [ ] 搬入文件：`layer-node.ts`（333 行核心：Node 声明 + 编译期依赖检查）、`app-node.ts`、`app-node-builder.ts`、`app-node-platform.ts`、`service-use.ts`、`memo-map.ts`、`keyed-mutex.ts`、`runtime.ts`
+- [ ] **不搬**：`dfdf`（上游垃圾文件）
+- [ ] 适配点：`runtime.ts` 硬编码了上游 Observability——搬入时参数化，不绑定上游实现
+- [ ] 注意 hoist 约束：replacements 必须在 hoist 期应用（上游 location-services 注释），搬运时保留该顺序约定
+- [ ] 落点：packages/chimera 内新增（与现有 `src/effect/run-service.ts` 的 makeRuntime/InstanceState 体系并存，不动旧代码）
+- [ ] 搬入上游对应测试：`test/effect/layer-node/` + `keyed-mutex.test.ts`（observability.test.ts 视是否搬 observability 模块而定）
+- [ ] 验证：新测试全过 + `bun typecheck` 绿
+
+### L2.2 — effect-drizzle-sqlite 包
+
+- [ ] 从上游 `packages/effect-drizzle-sqlite/` 整包搬入（src/ 含 effect-sqlite、sqlite-core、up-migrations、internal；test/、examples/ 视情况）
+- [ ] 包名按本仓惯例保留 `@opencode-ai/effect-drizzle-sqlite`，private
+- [ ] 依赖核对：effect catalog:（已 beta.83）、drizzle-orm 版本对齐（上游已升 1.0.0-rc.2，本仓现状需核对）
+- [ ] 不从 `src/storage/db.ts` 迁移任何东西——现有存储层不动
+- [ ] 验证：包内 `bun typecheck` + `bun test` 全过
+
+### L2.3 — 日志 shim（并存保证）
+
+- [ ] 确认现有 `@opencode-ai/core/util/log` 在 beta.83 下继续工作（L1 已验证 typecheck 绿，此项多为确认）
+- [ ] 若 LayerNode 落地需要上游 observability/logging，则以独立模块搬入，**不改** 84 处现有 `util/log` 调用点
+
+### L2 完成验收
+
+1. 全部相关包 `bun typecheck` 绿
+2. LayerNode 与 effect-drizzle-sqlite 自带测试全过
+3. `chimera run` 行为与 L1 构建完全一致（无感）
+
 ## 顺带发现的本仓问题（独立于迁移）
 
 - `chimera graph status` 不支持 `-p/--projectPath`（`query` 有、`status` 没有，帮助文案与实际 flag 不符）。
