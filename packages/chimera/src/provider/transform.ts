@@ -550,7 +550,7 @@ export function codexLimit(apiId: string) {
 function codexReasoningEfforts(model: Provider.Model) {
   const capabilityID = model.capability_model_id ?? CodexModel.capabilityModelID(model.api.id)
   if (!capabilityID) return []
-  return CodexModel.reasoningEfforts(capabilityID, model.reasoning_efforts, model.ultra === true)
+  return CodexModel.reasoningEfforts(capabilityID, model.reasoning_efforts)
 }
 
 function isNvidiaKimiK26(model: Provider.Model) {
@@ -595,7 +595,7 @@ function grokEffortOptions(model: Provider.Model, effort: string) {
   return { reasoningEffort: effort }
 }
 
-export function variants(model: Provider.Model): Record<string, Record<string, any>> {
+function baseVariants(model: Provider.Model): Record<string, Record<string, any>> {
   // Tencent TokenHub GLM-5.2 is discovered via the /models endpoint without
   // capability metadata, so capabilities.reasoning defaults to false. It does
   // support reasoning_effort, so let it through the guard below.
@@ -634,14 +634,7 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
   // reasoning_efforts via findKnownModelMetadata, replacing the former
   // TENCENT_GLM52_EFFORTS hardcode.
   if (model.reasoning_efforts?.length && model.api.npm === "@ai-sdk/openai-compatible") {
-    const compatible = Object.fromEntries(model.reasoning_efforts.map((effort) => [effort, { reasoningEffort: effort }]))
-    // Models in the ultra list (built-in defaults plus the `ultra_models` config)
-    // advertise the Ultra product profile at their highest supported effort; the
-    // proactive multi-agent policy is resolved from this advertised variant in
-    // session/llm.
-    const top = CodexModel.highestReasoningEffort(model.reasoning_efforts)
-    if (model.ultra === true && top) compatible.ultra = { reasoningEffort: top }
-    return compatible
+    return Object.fromEntries(model.reasoning_efforts.map((effort) => [effort, { reasoningEffort: effort }]))
   }
   if (
     (id.includes("glm") && !model.reasoning_efforts?.length) ||
@@ -779,25 +772,13 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
     // https://docs.venice.ai/overview/guides/reasoning-models#reasoning-effort
     case "@ai-sdk/openai-compatible":
       const efforts = [...WIDELY_SUPPORTED_EFFORTS]
-      if (
-        apiID.includes("deepseek-v4") ||
-        isClaudeCompatibleModel ||
-        model.ultra === true
-      ) {
+      if (apiID.includes("deepseek-v4") || isClaudeCompatibleModel) {
         efforts.push("max")
       }
       if (model.release_date >= "2025-12-04" || GPT5_FAMILY_RE.test(apiID)) {
         efforts.push("xhigh")
       }
-      const compatible = Object.fromEntries(efforts.map((effort) => [effort, { reasoningEffort: effort }]))
-      // Ultra-list models advertise the Ultra product profile at their highest
-      // supported effort; the proactive multi-agent policy is resolved from this
-      // advertised variant in session/llm.
-      if (model.ultra === true) {
-        const top = CodexModel.highestReasoningEffort(efforts)
-        if (top) compatible.ultra = { reasoningEffort: top }
-      }
-      return compatible
+      return Object.fromEntries(efforts.map((effort) => [effort, { reasoningEffort: effort }]))
 
     case "@ai-sdk/azure":
       // https://v5.ai-sdk.dev/providers/ai-sdk-providers/azure
@@ -1051,6 +1032,20 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
       return {}
   }
   return {}
+}
+
+export function variants(model: Provider.Model): Record<string, Record<string, any>> {
+  // Ultra is a Chimera product profile advertised universally: every model with
+  // effort variants gains it at its highest supported effort (value copy preserves
+  // each transport's shape), and models with no tunable effort advertise the pure
+  // orchestration profile { ultra: {} }. The proactive multi-agent policy is
+  // resolved from this advertised variant in session/llm.
+  const advertised = baseVariants(model)
+  const entries = Object.entries(advertised)
+  if (entries.length === 0) return { ultra: {} }
+  if (Object.prototype.hasOwnProperty.call(advertised, "ultra")) return advertised
+  const top = CodexModel.highestReasoningEffort(entries.map(([effort]) => effort)) ?? entries[entries.length - 1][0]
+  return { ...advertised, ultra: { ...advertised[top] } }
 }
 
 export function options(input: {

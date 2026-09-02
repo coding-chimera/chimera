@@ -46,7 +46,7 @@ models.dev 数据（最低优先级）
   < 全局 model_capabilities（最高优先级，可覆盖一切）
 ```
 
-Model schema 扩展字段：`sampling.{temperature,top_p,top_k}`、`reasoning_protocol`、`variants`、`default_variant`、`default_effort`。现有硬编码（`src/provider/transform.ts` 的温度/topP/topK/族检测/variants、`src/provider/models.ts` 的 `inferReasoningProtocol`、`src/provider/codex-model.ts` 的 profiles、`src/provider/ultra.ts` 的默认列表）提取为内置默认数据表，行为不变、可被配置覆盖。
+Model schema 扩展字段：`sampling.{temperature,top_p,top_k}`、`reasoning_protocol`、`variants`、`default_variant`、`default_effort`。现有硬编码（`src/provider/transform.ts` 的温度/topP/topK/族检测/variants、`src/provider/models.ts` 的 `inferReasoningProtocol`、`src/provider/codex-model.ts` 的 profiles）提取为内置默认数据表，行为不变、可被配置覆盖。
 
 ## L0 细分计划
 

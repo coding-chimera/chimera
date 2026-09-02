@@ -29,7 +29,6 @@ import { optionalOmitUndefined, withStatics } from "@/util/schema"
 import * as ProviderTransform from "./transform"
 import { ModelID, ProviderID } from "./schema"
 import { CodexModel } from "./codex-model"
-import { ProviderUltra } from "./ultra"
 import { ResponsesTransport } from "./responses-transport"
 import {
   bindingFromTransportIdentity,
@@ -1056,7 +1055,6 @@ export const Model = Schema.Struct({
   backend_semantics: optionalOmitUndefined(BackendSemantics),
   capability_model_id: optionalOmitUndefined(Schema.String),
   reasoning_efforts: optionalOmitUndefined(Schema.Array(Schema.Literals(CodexModel.REASONING_EFFORTS))),
-  ultra: optionalOmitUndefined(Schema.Boolean),
   capabilities: ProviderCapabilities,
   cost: ProviderCost,
   limit: ProviderLimit,
@@ -1208,8 +1206,6 @@ function fromModelsDevModel(provider: ModelsDev.Provider, model: ModelsDev.Model
     release_date: model.release_date ?? "",
     variants: {},
   }
-
-  if (ProviderUltra.isUltraModel(base)) base.ultra = true
 
   return {
     ...base,
@@ -1443,12 +1439,6 @@ const layer: Layer.Layer<
         const cfg = yield* config.get()
         const modelsDev = yield* modelsDevSvc.get()
         const database = mapValues(modelsDev, fromModelsDevProvider)
-
-        for (const provider of Object.values(database)) {
-          for (const model of Object.values(provider.models)) {
-            if (ProviderUltra.isUltraModel(model, cfg.ultra_models)) model.ultra = true
-          }
-        }
 
         const providers: Record<ProviderID, Info> = {} as Record<ProviderID, Info>
         const languages = new Map<string, LanguageModelV3>()
@@ -1907,11 +1897,10 @@ const layer: Layer.Layer<
 
             const configModel = configProvider?.models?.[modelID]
             const configuredBackendSemantics = configModel?.backend_semantics ?? configProvider?.backend_semantics
-            if (ProviderUltra.isUltraModel(model, cfg.ultra_models)) model.ultra = true
             if (configuredBackendSemantics) {
               model.backend_semantics = configuredBackendSemantics
               model.variants = mapValues(ProviderTransform.variants(model), (v) => v)
-            } else if (!model.variants || Object.keys(model.variants).length === 0 || (model.ultra && !model.variants.ultra)) {
+            } else if (!model.variants || Object.keys(model.variants).length === 0) {
               model.variants = mapValues(ProviderTransform.variants(model), (v) => v)
             }
 

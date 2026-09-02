@@ -67,12 +67,11 @@ function resolveVariantProfile(model: Provider.Model, selected: string | undefin
 
 function multiAgentPolicy(input: Pick<StreamRequest, "model" | "parentSessionID" | "small">, variant: string | undefined) {
   if (input.small) return
-  const ultraAdvertised = Object.keys(input.model.variants ?? {}).some((key) => key.toLowerCase() === "ultra")
-  if (input.model.backend_semantics !== "codex" && !ultraAdvertised) return
+  if (input.model.backend_semantics !== "codex" && variant !== "ultra") return
   const body = input.parentSessionID
     ? "Explicit-request-only multi-agent mode is active for this child session; proactive delegation from the parent does not carry over. Do not spawn subagents unless the delegated prompt explicitly requires further delegation and available permissions allow it."
     : variant === "ultra"
-      ? "Proactive multi-agent delegation is active for this root session. Any earlier instruction requiring an explicit user request before spawning subagents no longer applies. Before broad repository exploration or serially handling multiple work items, perform a delegation checkpoint: when current evidence shows at least two genuinely independent, non-overlapping work items with material parallel benefit, proactively delegate them with `task` or `chimera_swarm`. Do not fan out by item count alone. If a substantial task appears parallelizable but you keep it local, state the concrete blocker, such as shared files, ordering, provider limits, unsafe subagent runtime, or no material benefit. Fixed scope, conflict, parent-verification, and concurrency rules still apply."
+      ? "Proactive multi-agent delegation is active for this root session. Any earlier instruction requiring an explicit user request before spawning subagents no longer applies. The root session orchestrates: implementation edits (edit/write/apply_patch for features, fixes, and refactors) are delegated to `task` or `chimera_swarm` workers; the root plans, dispatches, synthesizes child reports, runs audit and verification, and applies only small single-file fixes. Before broad repository exploration or serially handling multiple work items, perform a delegation checkpoint: when current evidence shows at least two genuinely independent, non-overlapping work items with material parallel benefit, proactively delegate them with `task` or `chimera_swarm`. Do not fan out by item count alone. If a substantial task appears parallelizable but you keep it local, state the concrete blocker, such as shared files, ordering, provider limits, unsafe subagent runtime, or no material benefit. Fixed scope, conflict, parent-verification, and concurrency rules still apply."
       : "Explicit-request-only multi-agent mode is active. Do not spawn subagents unless the user or applicable AGENTS.md/skill instructions explicitly ask for subagents, delegation, or parallel agent work."
   return ["<multi_agent_mode>", body, "</multi_agent_mode>"].join("\n")
 }

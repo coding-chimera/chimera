@@ -2958,6 +2958,7 @@ test("models.dev normalization exposes k3 and kimi-for-coding-fast as active mod
           input: ["text"],
           output: ["text"],
         },
+        reasoning_efforts: ["low", "medium", "high", "max"],
         reasoning_options: [{ type: "effort", values: ["low", "medium", "high", "max"] }],
         limit: {
           context: 1_048_576,
@@ -3182,6 +3183,7 @@ test("all variants can be disabled via config", async () => {
                   variants: {
                     high: { disabled: true },
                     max: { disabled: true },
+                    ultra: { disabled: true },
                   },
                 },
               },
