@@ -2125,6 +2125,14 @@ export class CodeGraph {
   }
 
   /**
+   * Search nodes by text, additionally returning per-term FTS hit counts
+   * and the candidate-pool size before the final limit slice.
+   */
+  searchNodesDetailed(query: string, options?: SearchOptions) {
+    return this.queries.searchNodesDetailed(query, options);
+  }
+
+  /**
    * Find the project's "primary route file" — the file with the densest
    * concentration of framework-emitted `route` nodes (≥3 routes, ≥30%
    * of all non-test routes). Used to inline the routing config in

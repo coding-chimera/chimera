@@ -335,6 +335,8 @@ describe("tool.chimera", () => {
 
       expect(result.title).toBe("Chimera search")
       expect(result.output).toContain("trackedSearch")
+      expect(result.output).toContain("terms: trackedSearch(")
+      expect(result.output).toContain("candidates before limit")
       expect(result.metadata.results.some((item) => item.node.name === "trackedSearch")).toBe(true)
     }),
   )
@@ -455,6 +457,23 @@ describe("tool.chimera", () => {
       expect(result.output).toContain("Impact evidence")
       expect(result.output).toContain("cause_chain")
       expect(result.metadata.seeds.length).toBeGreaterThan(0)
+    }),
+  )
+
+  it.instance("lists closest candidate symbols when impact seed does not resolve", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "source.ts"), "export function trackedImpactSource() { return 1 }\n"))
+      yield* initGraph()
+
+      const result = yield* runImpact({ symbol: "impactWobble" })
+
+      expect(result.title).toBe("Chimera impact")
+      expect(result.output).toContain("No graph seed resolved")
+      expect(result.output).toContain("Closest symbol candidates")
+      expect(result.output).toContain("trackedImpactSource")
+      expect(result.output).toContain("Ref: node:")
+      expect(result.metadata.seeds).toHaveLength(0)
     }),
   )
 

@@ -327,13 +327,26 @@ export function formatChangedBlock(lines: string[], startLine: number, endLine: 
   ].join("\n")
 }
 
+export function formatWrittenBlock(lines: string[], limit = 20) {
+  if (lines.length === 0) return "Written content anchors: none"
+  const block = formatLines(lines)
+  if (block.length <= limit) return ["Written content anchors (usable directly for follow-up anchored edits):", ...block].join("\n")
+  const head = Math.floor(limit / 2)
+  const tail = limit - head
+  return [
+    `Written content anchors: ${block.length} lines total, showing first ${head} and last ${tail}:`,
+    ...block.slice(0, head),
+    `... (${block.length - limit} lines omitted)`,
+    ...block.slice(block.length - tail),
+  ].join("\n")
+}
+
 export function mismatchMessage(lines: string[], anchor: LineAnchor) {
   const start = Math.max(1, anchor.line - 2)
   const end = Math.min(lines.length, anchor.line + 2)
   const context = snapshotLines(lines.slice(start - 1, end), start).map((line) => `${line.line === anchor.line ? ">>> " : "    "}${formatLine(line)}`)
   return [
-    `Hashline anchor mismatch for ${anchor.line}#${anchor.id}. Re-read the target range and retry with the current LINE#ID.`,
-    "Current context:",
+    `Hashline anchor mismatch for ${anchor.line}#${anchor.id}; no unique content match exists in the file. The file currently has ${lines.length} lines. Current anchors:`,
     ...context,
   ].join("\n")
 }

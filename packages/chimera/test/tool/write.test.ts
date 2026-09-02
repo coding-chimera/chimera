@@ -422,3 +422,32 @@ describe("tool.write", () => {
     )
   })
 })
+
+describe("tool.write hashline anchors", () => {
+  it.instance("returns hashline anchors for the written content", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "anchored.txt")
+      const result = yield* run({ filePath: filepath, content: "first\nsecond\n" })
+
+      expect(result.output).toContain("File written successfully. 2 lines written.")
+      expect(result.output).toContain("Written content anchors")
+      expect(result.output).toMatch(/1#[A-Z]{2}\|first/)
+      expect(result.output).toMatch(/2#[A-Z]{2}\|second/)
+    }),
+  )
+
+  it.instance("truncates hashline anchors to head and tail for large content", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "large.txt")
+      const content = Array.from({ length: 40 }, (_, index) => `row ${index + 1}`).join("\n")
+      const result = yield* run({ filePath: filepath, content })
+
+      expect(result.output).toContain("showing first 10 and last 10")
+      expect(result.output).toMatch(/1#[A-Z]{2}\|row 1/)
+      expect(result.output).toMatch(/40#[A-Z]{2}\|row 40/)
+      expect(result.output).not.toContain("row 20")
+    }),
+  )
+})

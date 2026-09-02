@@ -21,8 +21,11 @@ import {
   changedRange,
   fileHash,
   formatChangedBlock,
+  formatLine,
+  formatLines,
   joinText,
   lineHash,
+  lineInfo,
   mismatchMessage,
   normalizeInsertLines,
   normalizeLineEndings,
@@ -64,6 +67,7 @@ type NormalizedEdit = {
   lines: string[]
   anchored: boolean
   key: string
+  relocations: string[]
 }
 
 const locks = new Map<string, Semaphore.Semaphore>()
@@ -85,26 +89,45 @@ function withLocks<T, E, R>(filePaths: string[], effect: Effect.Effect<T, E, R>)
 }
 
 function verifyAnchor(lines: string[], anchor: LineAnchor) {
-  if (anchor.line < 1 || anchor.line > lines.length) {
-    throw new Error(`Hashline anchor ${anchor.line}#${anchor.id} is outside the current file. Re-read the target range.`)
+  if (anchor.line >= 1 && anchor.line <= lines.length && lineHash(anchor.line, lines[anchor.line - 1] ?? "") === anchor.id) {
+    return { line: anchor.line, note: undefined as string | undefined }
   }
-  const current = lineHash(anchor.line, lines[anchor.line - 1] ?? "")
-  if (current !== anchor.id) throw new Error(mismatchMessage(lines, anchor))
+  const candidates = lines.flatMap((content, index) => (lineHash(index + 1, content) === anchor.id ? [index + 1] : []))
+  if (candidates.length === 1) {
+    return { line: candidates[0], note: `anchor ${anchor.line}#${anchor.id} relocated to line ${candidates[0]} (unique content match)` }
+  }
+  if (candidates.length > 1) {
+    throw new Error(
+      [
+        `Hashline anchor ${anchor.line}#${anchor.id} is ambiguous: ${candidates.length} lines in the current file share this anchor id. No edit was applied.`,
+        "Matching lines:",
+        ...candidates.map((line) => formatLine(lineInfo(line, lines[line - 1] ?? ""))),
+      ].join("\n"),
+    )
+  }
+  if (anchor.line < 1 || anchor.line > lines.length) {
+    const tailStart = Math.max(1, lines.length - 4)
+    throw new Error(
+      [
+        `Hashline anchor ${anchor.line}#${anchor.id} is outside the current file and has no unique content match. The file currently has ${lines.length} lines.`,
+        ...(lines.length > 0 ? ["File tail:", ...formatLines(lines.slice(tailStart - 1), tailStart)] : []),
+      ].join("\n"),
+    )
+  }
+  throw new Error(mismatchMessage(lines, anchor))
 }
 
 function normalizeEdit(input: EditInput, index: number, lines: string[], exists: boolean): NormalizedEdit {
   const rawReplacement = normalizeReplacement(input.lines)
 
   if (input.op === "replace") {
-    const start = parseAnchor(input.pos, "replace.pos")
-    const end = input.end ? parseAnchor(input.end, "replace.end") : start
-    if (!exists) throw new Error("File not found; anchored replace cannot create files. Use unanchored append/prepend or write.")
-    verifyAnchor(lines, start)
-    verifyAnchor(lines, end)
+    const start = verifyAnchor(lines, parseAnchor(input.pos, "replace.pos"))
+    const end = input.end ? verifyAnchor(lines, parseAnchor(input.end, "replace.end")) : start
     if (start.line > end.line) throw new Error(`Invalid replace range: ${input.pos} is after ${input.end}`)
     const replacement = normalizeReplaceLines(lines, start.line, end.line, rawReplacement)
     const key = JSON.stringify({ op: input.op, pos: input.pos?.trim(), end: input.end?.trim(), lines: replacement })
-    return { op: input.op, index, startLine: start.line, endLine: end.line, lines: replacement, anchored: true, key }
+    const relocations = [start.note, end.note].filter((note): note is string => Boolean(note))
+    return { op: input.op, index, startLine: start.line, endLine: end.line, lines: replacement, anchored: true, key, relocations }
   }
 
   const anchorText = input.pos ?? input.end
@@ -117,17 +140,26 @@ function normalizeEdit(input: EditInput, index: number, lines: string[], exists:
       lines: rawReplacement,
       anchored: false,
       key: JSON.stringify({ op: input.op, pos: input.pos?.trim(), end: input.end?.trim(), lines: rawReplacement }),
+      relocations: [],
     }
   }
 
   if (!exists) throw new Error("File not found; anchored insert cannot create files. Use unanchored append/prepend or write.")
   if (rawReplacement.length === 0) throw new Error(`Anchored ${input.op} requires non-empty lines.`)
-  const anchor = parseAnchor(anchorText, `${input.op}.pos`)
-  verifyAnchor(lines, anchor)
+  const anchor = verifyAnchor(lines, parseAnchor(anchorText, `${input.op}.pos`))
   const replacement = normalizeInsertLines(lines, anchor.line, input.op, rawReplacement)
   if (replacement.length === 0) throw new Error(`Anchored ${input.op} requires non-empty lines.`)
   const key = JSON.stringify({ op: input.op, pos: input.pos?.trim(), end: input.end?.trim(), lines: replacement })
-  return { op: input.op, index, startLine: anchor.line, endLine: anchor.line, lines: replacement, anchored: true, key }
+  return {
+    op: input.op,
+    index,
+    startLine: anchor.line,
+    endLine: anchor.line,
+    lines: replacement,
+    anchored: true,
+    key,
+    relocations: anchor.note ? [anchor.note] : [],
+  }
 }
 
 function normalizeEdits(edits: ReadonlyArray<EditInput>, lines: string[], exists: boolean) {
@@ -166,7 +198,7 @@ function normalizeEdits(edits: ReadonlyArray<EditInput>, lines: string[], exists
     }
   }
 
-  return { edits: normalized, deduplicated }
+  return { edits: normalized, deduplicated, relocations: normalized.flatMap((edit) => edit.relocations) }
 }
 
 function applyEdits(lines: string[], edits: NormalizedEdit[]) {
@@ -256,6 +288,7 @@ export const EditTool = Tool.define(
           let create = false
           let deleted = false
           let deduplicatedEdits = 0
+          let anchorRelocations: string[] = []
           let hashline: Record<string, unknown> | undefined
           const changeID = `chg_${ulid()}`
 
@@ -308,6 +341,7 @@ export const EditTool = Tool.define(
                 } else {
                   const normalized = normalizeEdits(params.edits, before.lines, Boolean(info))
                   deduplicatedEdits = normalized.deduplicated
+                  anchorRelocations = normalized.relocations
                   if (!info && normalized.edits.some((edit) => edit.anchored)) throw new Error(`File ${filePath} not found`)
                   if (!info && !normalized.edits.every((edit) => edit.op === "append" || edit.op === "prepend")) {
                     throw new Error("Missing files can only be created with unanchored append/prepend edits. Prefer write for new files.")
@@ -433,6 +467,9 @@ export const EditTool = Tool.define(
             "",
             changedBlock,
           ].join("\n")
+          if (anchorRelocations.length > 0) {
+            output += `\n\nAnchor relocations:\n${anchorRelocations.map((note) => `- ${note}`).join("\n")}`
+          }
           if (!deleted) yield* lsp.touchFile(finalPath, "document")
           const diagnostics = yield* lsp.diagnostics()
           const diagnosticCount = Chimera.countOracleDiagnostics(diagnostics)

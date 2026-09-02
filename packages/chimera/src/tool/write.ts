@@ -12,6 +12,7 @@ import { Format } from "../format"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { InstanceState } from "@/effect/instance-state"
 import { trimDiff } from "./edit"
+import { formatWrittenBlock, splitText } from "./hashline"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import * as Bom from "@/util/bom"
 import { Chimera } from "@/chimera"
@@ -50,6 +51,7 @@ export const WriteTool = Tool.define(
           const desiredBom = source.bom || next.bom
           const contentOld = source.text
           const contentNew = next.text
+          let written = contentNew
 
           const diff = trimDiff(createTwoFilesPatch(filepath, filepath, contentOld, contentNew))
           const predesign = yield* Chimera.requirePredesignForMutation({ toolID: "write", ctx, files: [filepath] })
@@ -79,7 +81,7 @@ export const WriteTool = Tool.define(
             Effect.gen(function* () {
               yield* fs.writeWithDirs(filepath, Bom.join(contentNew, desiredBom))
               if (yield* format.file(filepath)) {
-                yield* Bom.syncFile(fs, filepath, desiredBom)
+                written = yield* Bom.syncFile(fs, filepath, desiredBom)
               }
               yield* bus.publish(File.Event.Edited, { file: filepath })
               yield* bus.publish(FileWatcher.Event.Updated, {
@@ -91,6 +93,8 @@ export const WriteTool = Tool.define(
 
           const lineCount = contentNew === "" ? 0 : contentNew.replace(/\n$/, "").split(/\r?\n/).length
           let output = `File written successfully. ${lineCount} lines written.`
+          const writtenLines = splitText(written).lines
+          if (writtenLines.length > 0) output += `\n\n${formatWrittenBlock(writtenLines)}`
           yield* lsp.touchFile(filepath, "document")
           const diagnostics = yield* lsp.diagnostics()
           const diagnosticCount = Chimera.countOracleDiagnostics(diagnostics)

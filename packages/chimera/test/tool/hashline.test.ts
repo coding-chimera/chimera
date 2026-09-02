@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test"
-import { lineHash, normalizeInsertLines, normalizeReplaceLines, normalizeReplacement } from "../../src/tool/hashline"
+import {
+  formatWrittenBlock,
+  lineHash,
+  mismatchMessage,
+  normalizeInsertLines,
+  normalizeReplaceLines,
+  normalizeReplacement,
+} from "../../src/tool/hashline"
 
 describe("tool.hashline", () => {
   test("hashes significant lines with whitespace-sensitive omo-cid2 semantics", () => {
@@ -51,3 +58,21 @@ describe("tool.hashline", () => {
     ])
   })
 })
+
+  test("mismatchMessage reports current anchors factually without re-read guidance", () => {
+    const message = mismatchMessage(["one", "two", "three"], { line: 2, id: "ZZ" })
+    expect(message).toContain(`2#${lineHash(2, "two")}|two`)
+    expect(message).toContain("currently has 3 lines")
+    expect(message).not.toContain("Re-read")
+  })
+
+  test("formatWrittenBlock emits hashline anchors with head and tail truncation", () => {
+    const short = formatWrittenBlock(["only"])
+    expect(short).toContain(`1#${lineHash(1, "only")}|only`)
+
+    const lines = Array.from({ length: 30 }, (_, index) => `line ${index + 1}`)
+    const block = formatWrittenBlock(lines)
+    expect(block).toContain(`1#${lineHash(1, "line 1")}|line 1`)
+    expect(block).toContain(`30#${lineHash(30, "line 30")}|line 30`)
+    expect(block).toContain("omitted")
+  })

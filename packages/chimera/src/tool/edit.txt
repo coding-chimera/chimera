@@ -9,7 +9,7 @@ Usage:
 - Multiple edits for the same file should be sent in one call. All anchors are validated against the same pre-edit snapshot and then applied bottom-up.
 - ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
 - Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked.
-- The edit will FAIL if any Hashline anchor no longer matches the current file. Re-read the target range and retry with the new `LINE#ID`.
+- Stale anchors self-heal: when an anchor no longer matches its line, the tool scans the file for a unique content match and relocates the anchor automatically, reporting the relocation in the output. Ambiguous or missing matches fail with the current `LINE#ID` anchors in the error, usable directly for retry.
 - The edit will FAIL for overlapping ranges, empty anchored inserts, and no-op edits.
 - Legacy `oldString` / `newString` / `replaceAll` parameters are not supported.
 - If this tool reports Chimera pre-design is required, call `chimera_predesign` with intent and likely files/symbols, then retry the mutation.

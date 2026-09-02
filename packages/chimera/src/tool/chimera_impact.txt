@@ -56,11 +56,7 @@ Skip this tool when:
 3. If the target project is not initialized, the tool returns a structured error: tell the user to run `chimera graph init` followed by `chimera graph index` in that project themselves (indexing large repositories can take a long time); never initialize another project's graph from this session.
 ## Recovery From Empty Results
 
-If the tool says no seed resolved, do not retry with the same blank or ambiguous inputs. Resolve a seed first:
-
-1. Known file: call `chimera_file_symbols` with `filePath`, and add `range` or `kind` if useful.
-2. Unknown file: call `chimera_search` with a focused symbol, module, API, or architecture term.
-3. Multiple possible matches: choose the intended file or exact `nodeID` before calling this tool again.
+When no seed resolves, the tool output already lists the closest candidate symbols it could find (name, kind, file:line, `Ref: node:<id>`); `- None found.` under `Closest symbol candidates` means the graph has no near matches for the provided seed.
 
 ## After This Tool
 

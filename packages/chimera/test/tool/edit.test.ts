@@ -464,3 +464,111 @@ describe("tool.edit", () => {
     })
   })
 })
+
+describe("tool.edit anchor relocation", () => {
+  test("relocates a shifted anchor with a unique content match and reports it", async () => {
+    await using tmp = await tmpdir()
+    const filepath = path.join(tmp.path, "shift.txt")
+    await fs.writeFile(filepath, "alpha\ntarget line\ngamma\n", "utf-8")
+    const stale = anchor(2, "target line")
+    await fs.writeFile(filepath, "inserted\nalpha\ntarget line\ngamma\n", "utf-8")
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const edit = await resolve()
+        const result = await Effect.runPromise(
+          edit.execute({ filePath: filepath, edits: [{ op: "replace", pos: stale, lines: "replaced line" }] }, ctx),
+        )
+
+        expect(result.output).toContain("anchor 2#")
+        expect(result.output).toContain("relocated to line 3 (unique content match)")
+        expect(await fs.readFile(filepath, "utf-8")).toBe("inserted\nalpha\nreplaced line\ngamma\n")
+      },
+    })
+  })
+
+  test("relocates an out-of-bounds anchor with a unique content match", async () => {
+    await using tmp = await tmpdir()
+    const filepath = path.join(tmp.path, "oob.txt")
+    await fs.writeFile(filepath, "a\nb\nc\nd\ntarget\n", "utf-8")
+    const stale = anchor(5, "target")
+    await fs.writeFile(filepath, "target\n", "utf-8")
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const edit = await resolve()
+        const result = await Effect.runPromise(
+          edit.execute({ filePath: filepath, edits: [{ op: "replace", pos: stale, lines: "done" }] }, ctx),
+        )
+
+        expect(result.output).toContain("relocated to line 1 (unique content match)")
+        expect(await fs.readFile(filepath, "utf-8")).toBe("done\n")
+      },
+    })
+  })
+
+  test("rejects anchors with duplicate content matches and applies no edit", async () => {
+    await using tmp = await tmpdir()
+    const filepath = path.join(tmp.path, "dup.txt")
+    await fs.writeFile(filepath, "x\ndup\nmid\ndup\n", "utf-8")
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const edit = await resolve()
+        await expect(
+          Effect.runPromise(edit.execute({ filePath: filepath, edits: [{ op: "replace", pos: anchor(1, "dup"), lines: "y" }] }, ctx)),
+        ).rejects.toThrow("ambiguous")
+        expect(await fs.readFile(filepath, "utf-8")).toBe("x\ndup\nmid\ndup\n")
+      },
+    })
+  })
+
+  test("reports file line count and tail anchors for out-of-bounds anchors with no match", async () => {
+    await using tmp = await tmpdir()
+    const filepath = path.join(tmp.path, "gone.txt")
+    await fs.writeFile(filepath, "aaa\nbbb\n", "utf-8")
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const edit = await resolve()
+        const message = await Effect.runPromise(
+          edit.execute({ filePath: filepath, edits: [{ op: "replace", pos: anchor(5, "ghost"), lines: "y" }] }, ctx),
+        ).then(
+          () => "",
+          (error: unknown) => (error instanceof Error ? error.message : String(error)),
+        )
+        expect(message).toContain("currently has 2 lines")
+        expect(message).toContain("File tail:")
+        expect(message).toMatch(/2#[A-Z]{2}\|bbb/)
+        expect(message).not.toContain("Re-read")
+      },
+    })
+  })
+
+  test("reports fresh anchors factually for in-bounds mismatches with no match", async () => {
+    await using tmp = await tmpdir()
+    const filepath = path.join(tmp.path, "mismatch.txt")
+    await fs.writeFile(filepath, "aaa\nbbb\n", "utf-8")
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const edit = await resolve()
+        const message = await Effect.runPromise(
+          edit.execute({ filePath: filepath, edits: [{ op: "replace", pos: anchor(1, "ccc"), lines: "y" }] }, ctx),
+        ).then(
+          () => "",
+          (error: unknown) => (error instanceof Error ? error.message : String(error)),
+        )
+        expect(message).toContain("Hashline anchor mismatch")
+        expect(message).toContain("currently has 2 lines")
+        expect(message).toMatch(/1#[A-Z]{2}\|aaa/)
+        expect(message).not.toContain("Re-read")
+      },
+    })
+  })
+})
