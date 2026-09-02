@@ -99,6 +99,7 @@ test("Bedrock: loads when bearer token from auth.json is present", async () => {
   })
 
   const authPath = path.join(Global.Path.data, "auth.json")
+  const originalBearer = process.env.AWS_BEARER_TOKEN_BEDROCK
 
   // Save original auth.json if it exists
   let originalAuth: string | undefined
@@ -132,6 +133,10 @@ test("Bedrock: loads when bearer token from auth.json is present", async () => {
       },
     })
   } finally {
+    // The bedrock loader bridges api-key auth into process.env for the AWS SDK;
+    // restore it so later files in the shared test process don't autoload bedrock.
+    if (originalBearer === undefined) delete process.env.AWS_BEARER_TOKEN_BEDROCK
+    else process.env.AWS_BEARER_TOKEN_BEDROCK = originalBearer
     // Restore original or delete
     if (originalAuth !== undefined) {
       await Filesystem.write(authPath, originalAuth)

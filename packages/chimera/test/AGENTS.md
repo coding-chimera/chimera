@@ -142,3 +142,21 @@ Use `provideTmpdirInstance(...)` or `tmpdirScoped()` plus `provideInstance(...)`
 - Yield services directly with `yield* MyService.Service` or `yield* MyTool`.
 - Avoid custom `ManagedRuntime`, `attach(...)`, or ad hoc `run(...)` wrappers when `testEffect(...)` already provides the runtime.
 - When a test needs instance-local state, prefer `it.instance(...)` over manual `Instance.provide(...)` inside Promise-style tests.
+
+## Cross-Test Pollution (shared single process)
+
+`bun test` runs every test file in ONE process. The preload (`test/preload.ts`) isolates XDG dirs and scrubs provider API keys once at startup, but anything written later persists for the rest of the run:
+
+- **`process.env` writes leak across files.** Some production code writes env vars as a side effect — e.g. the amazon-bedrock loader bridges api-key auth into `process.env.AWS_BEARER_TOKEN_BEDROCK` during `provider.list()` and never removes it, so every later test file autoloads bedrock with its full models.dev model list (this once broke subagent-catalog assertions in `test/session/prompt.test.ts`). Tests that exercise such paths must save/restore the variable in `finally` (see `test/provider/amazon-bedrock.test.ts`).
+- **`Env.set()` is not `process.env`.** It mutates an `InstanceState`-scoped copy per directory; it neither pollutes other directories nor protects code that reads `process.env` directly.
+- **Config providers merge with the catalog.** Enabling a provider id that exists in the models fixture (e.g. `openai` in `test/session/prompt.test.ts`'s `providerCfg`) pulls in the fixture's full model list for that provider, so assertions on rendered model catalogs break when the fixture grows (the subagent disclosure has a 4000-character budget). Prefer provider ids absent from the fixture, or assert on content that survives truncation.
+- **The auth store file is shared** (`Global.Path.data/auth.json` under the preload XDG dir). Tests writing entries must remove them in `finally`; a mid-test failure skips non-`finally` cleanup.
+
+### Debugging suite-only failures
+
+A test that passes standalone but fails in the full suite is almost always cross-test pollution. To find the polluter:
+
+1. Run directory groups plus the victim file (`bun test test/config test/provider test/session/prompt.test.ts`) and halve the set until a single file reproduces it.
+2. `-t` filtering still loads every module but skips non-matching test bodies — it detects import-time pollution only. Runtime pollution needs full-body runs.
+3. Piped `bun test` output is heavily buffered; for per-file timing use `--reporter=junit --reporter-outfile=...` and analyze the XML afterwards.
+4. Tests that apply DB migrations directly must use `Database.applyMigrations` (not drizzle's `migrate`) so lineage-aware repair logic applies — see `test/storage/json-migration.test.ts`.
