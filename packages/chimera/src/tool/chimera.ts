@@ -960,6 +960,16 @@ function uniqueStrings(items: string[]) {
   return [...new Set(items)]
 }
 
+function symbolCandidateTerms(symbol: string) {
+  return uniqueStrings(
+    symbol
+      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+      .split(/[^A-Za-z0-9]+/)
+      .map((term) => term.trim())
+      .filter((term) => term.length >= 3 && term.toLowerCase() !== symbol.toLowerCase()),
+  )
+}
+
 const DependentRelations: RelationKind[] = [
   "CalledBy",
   "ImportedBy",
@@ -2349,7 +2359,8 @@ export const ChimeraSearchTool = Tool.define<typeof SearchParameters, SearchMeta
               const limit = bounded(params.limit, 10, 50)
               const snapshot = state.graph.snapshot()
               const kinds = params.kind ? [params.kind] : undefined
-              const results = state.graph.searchNodes(params.query, { kinds, limit })
+              const detailed = state.graph.searchNodesDetailed(params.query, { kinds, limit })
+              const results = detailed.results
 
               return {
                 title: "Chimera search",
@@ -2357,6 +2368,9 @@ export const ChimeraSearchTool = Tool.define<typeof SearchParameters, SearchMeta
                   ...(state.crossProject ? [`Project: ${state.projectRoot} (cross-project, read-only)`] : []),
                   `Static graph evidence (${results.length} result${results.length === 1 ? "" : "s"}):`,
                   ...results.map((result) => formatNode(result.node)),
+                  ...(detailed.terms.length
+                    ? [`terms: ${detailed.terms.map((term) => `${term.term}(${term.count})`).join(" ")} · ${detailed.total} candidates before limit`]
+                    : []),
                 ].join("\n"),
                 metadata: {
                   projectRoot: state.projectRoot,
@@ -2641,19 +2655,49 @@ export const ChimeraImpactTool = Tool.define<typeof ImpactParameters, ImpactMeta
               const normalizedFile = file?.graphPath
               const kinds = params.kind ? [params.kind] : undefined
               const nodeID = chimeraRefID(params.ref, ["node"]) ?? params.nodeID?.trim()
+              const symbolResults = params.symbol ? state.graph.searchNodes(params.symbol, { kinds, limit: 5 }) : []
               const seedNodes = uniqueNodes(
                 nodeID
                   ? [state.graph.node(nodeID)].filter((node): node is CodeGraphNode => Boolean(node))
                   : normalizedFile && params.range
                     ? state.graph.nodesIntersectingRange(normalizedFile, params.range, { kinds, smallestOnly: false })
                     : params.symbol
-                      ? state.graph.searchNodes(params.symbol, { kinds, limit: 5 }).map((result) => result.node)
+                      ? symbolResults.map((result) => result.node)
                       : normalizedFile
                         ? state.graph.nodesInFile(normalizedFile).filter((node) => !params.kind || node.kind === params.kind).slice(0, 5)
                         : [],
               )
               if (seedNodes.length === 0 && !normalizedFile) {
-                throw new Error("chimera_impact requires ref, nodeID, symbol, or filePath that resolves to at least one graph seed")
+                const candidates = uniqueNodes([
+                  ...symbolResults.map((result) => result.node),
+                  ...(symbolResults.length === 0 && params.symbol
+                    ? symbolCandidateTerms(params.symbol).flatMap((term) =>
+                        state.graph.searchNodes(term, { kinds, limit: 5 }).map((result) => result.node),
+                      )
+                    : []),
+                ]).slice(0, 5)
+                return {
+                  title: "Chimera impact",
+                  output: [
+                    ...(state.crossProject ? [`Project: ${state.projectRoot} (cross-project, read-only)`, ""] : []),
+                    "Static graph evidence:",
+                    "",
+                    "Seed symbols:",
+                    "- No graph seed resolved for the provided ref/nodeID/symbol.",
+                    "",
+                    `Closest symbol candidates (${candidates.length}):`,
+                    ...(candidates.length ? candidates.map((node) => formatNode(node)) : ["- None found."]),
+                  ].join("\n"),
+                  metadata: {
+                    projectRoot: state.projectRoot,
+                    crossProject: state.crossProject === true,
+                    snapshot,
+                    seeds: [],
+                    impacted: [],
+                    fileDependents: [],
+                    evidence: [],
+                  },
+                }
               }
 
               const impact = buildImpactEvidence({

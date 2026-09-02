@@ -144,6 +144,10 @@ export class CodeGraphAdapter {
     return this.graph.searchNodes(query, options)
   }
 
+  searchNodesDetailed(query: string, options: SearchOptions = {}) {
+    return this.graph.searchNodesDetailed(query, options)
+  }
+
   files() {
     return this.graph.getFiles()
   }

@@ -215,6 +215,102 @@ function rowToFileSemanticRecord(row: FileSemanticRow): FileSemanticRecord {
 }
 
 /**
+ * searchNodes outcome plus telemetry: the final (filtered, truncated)
+ * results, one entry per free-text query token with that token's real
+ * FTS hit count, and the merged candidate-pool size before the final
+ * limit slice. Lets callers see when a high-frequency token dwarfed the
+ * over-fetch window instead of silently dropping a rare token's matches.
+ */
+export interface SearchNodesDetailedResult {
+  results: SearchResult[];
+  terms: Array<{ term: string; count: number }>;
+  total: number;
+}
+
+/**
+ * Merge per-token FTS candidate lists for multi-token queries. Each token
+ * keeps a guaranteed quota of slots (in its own BM25 score order) so a
+ * rare token survives alongside a high-frequency one; the remaining
+ * budget up to `ftsLimit` is then filled by global score across all
+ * tokens. Nodes matching several tokens are deduped by first claim, and
+ * quota slots a token cannot fill are released into the global fill.
+ */
+function mergePerTermCandidates(
+  perTerm: SearchResult[][],
+  limit: number,
+  ftsLimit: number
+): SearchResult[] {
+  const quota = Math.max(1, Math.min(2, Math.floor(limit / perTerm.length)));
+  const seen = new Set<string>();
+  const merged: SearchResult[] = [];
+  for (const candidates of perTerm) {
+    let taken = 0;
+    for (const r of candidates) {
+      if (taken >= quota) break;
+      if (seen.has(r.node.id)) continue;
+      seen.add(r.node.id);
+      merged.push(r);
+      taken++;
+    }
+  }
+  const rest = perTerm
+    .flatMap(candidates => candidates)
+    .filter(r => !seen.has(r.node.id))
+    .sort((a, b) => b.score - a.score);
+  for (const r of rest) {
+    if (merged.length >= ftsLimit) break;
+    seen.add(r.node.id);
+    merged.push(r);
+  }
+  return merged;
+}
+
+/**
+ * Final-window per-term quota, applied after global rescoring and hard
+ * filters. Each query token keeps `quota` slots in the returned window
+ * (its own candidates in rescored-score order, deduped by node id — a
+ * node matching several tokens occupies only one slot), then remaining
+ * slots are filled by global score. Without this, exact-name bonuses
+ * (+60~80) on a high-frequency token's namesakes always outrank a rare
+ * token's prefix-only matches and the rare token vanishes from the final
+ * window despite surviving the candidate-pool merge.
+ */
+function applyFinalWindowQuota(
+  results: SearchResult[],
+  perTerm: SearchResult[][],
+  limit: number
+): SearchResult[] {
+  const membership = new Map<string, Set<number>>();
+  perTerm.forEach((list, i) => {
+    for (const r of list) {
+      const entry = membership.get(r.node.id);
+      if (entry) entry.add(i);
+      else membership.set(r.node.id, new Set([i]));
+    }
+  });
+  const quota = Math.max(1, Math.min(2, Math.floor(limit / perTerm.length)));
+  const seen = new Set<string>();
+  const windowed: SearchResult[] = [];
+  perTerm.forEach((_, i) => {
+    let taken = 0;
+    for (const r of results) {
+      if (taken >= quota) break;
+      if (seen.has(r.node.id) || !membership.get(r.node.id)?.has(i)) continue;
+      seen.add(r.node.id);
+      windowed.push(r);
+      taken++;
+    }
+  });
+  for (const r of results) {
+    if (windowed.length >= limit) break;
+    if (seen.has(r.node.id)) continue;
+    seen.add(r.node.id);
+    windowed.push(r);
+  }
+  return windowed;
+}
+
+/**
  * Query builder for the knowledge graph database
  */
 export class QueryBuilder {
@@ -783,6 +879,15 @@ export class QueryBuilder {
    * 3. Score results based on match quality
    */
   searchNodes(query: string, options: SearchOptions = {}): SearchResult[] {
+    return this.searchNodesDetailed(query, options).results;
+  }
+
+  /**
+   * searchNodes plus per-term telemetry. Shares the full implementation
+   * with searchNodes (which returns `.results` of this) so the two entry
+   * points can never drift apart.
+   */
+  searchNodesDetailed(query: string, options: SearchOptions = {}): SearchNodesDetailedResult {
     const { limit = 100, offset = 0 } = options;
 
     // Parse field-qualified bits out of the raw query (kind:, lang:,
@@ -809,13 +914,21 @@ export class QueryBuilder {
     const languages = mergedLanguages;
 
     // First try FTS5 with prefix matching
-    let results = text
-      ? this.searchNodesFTS(text, { kinds, languages, limit, offset })
+    let results: SearchResult[];
+    let terms: Array<{ term: string; count: number }> = [];
+    let perTerm: SearchResult[][] = [];
+    if (text) {
+      const fts = this.searchNodesFTS(text, { kinds, languages, limit, offset });
+      results = fts.results;
+      terms = fts.terms;
+      perTerm = fts.perTerm;
+    } else {
       // Over-fetch by 5× when running filter-only (no text). The
       // post-scoring path: + name: filters can be very selective, so
       // a smaller multiplier risks returning fewer than `limit`
       // results despite the DB having plenty of matches.
-      : this.searchAllByFilters({ kinds, languages, limit: limit * 5 });
+      results = this.searchAllByFilters({ kinds, languages, limit: limit * 5 });
+    }
 
     // If no FTS results, try LIKE-based substring search
     if (results.length === 0 && text.length >= 2) {
@@ -839,8 +952,8 @@ export class QueryBuilder {
     if (results.length > 0 && query) {
       const existingIds = new Set(results.map(r => r.node.id));
       const maxFtsScore = Math.max(...results.map(r => r.score));
-      const terms = query.split(/\s+/).filter(t => t.length >= 2);
-      for (const term of terms) {
+      const exactNameTerms = query.split(/\s+/).filter(t => t.length >= 2);
+      for (const term of exactNameTerms) {
         let sql = 'SELECT * FROM nodes WHERE name = ? COLLATE NOCASE';
         const params: (string | number)[] = [term];
         if (kinds && kinds.length > 0) {
@@ -873,16 +986,13 @@ export class QueryBuilder {
           + nameMatchBonus(r.node.name, scoringQuery),
       }));
       results.sort((a, b) => b.score - a.score);
-      // Trim to requested limit after rescoring
-      if (results.length > limit) {
-        results = results.slice(0, limit);
-      }
     }
 
-    // Apply path: + name: filters AFTER scoring. Scoring already uses
-    // path/name as a soft signal; the explicit filters here are a hard
-    // gate. Done last so the FTS limit fetched plenty of candidates to
-    // narrow from.
+    // Apply path: + name: filters AFTER scoring but BEFORE the final
+    // slice. Scoring already uses path/name as a soft signal; the
+    // explicit filters here are a hard gate. Filtering before the limit
+    // trim keeps a filtered query returning a full `limit` when the
+    // wider candidate pool still has enough matches.
     if (pathFilters.length > 0) {
       const lowered = pathFilters.map((p) => p.toLowerCase());
       results = results.filter((r) => {
@@ -898,7 +1008,17 @@ export class QueryBuilder {
       });
     }
 
-    return results;
+    const total = results.length;
+    // Trim to the requested window after rescoring + hard filters.
+    // Multi-token queries reserve a guaranteed per-term quota inside the
+    // final window so exact-name bonuses on a high-frequency token cannot
+    // evict a rare token's matches; single-token keeps the plain slice.
+    if (perTerm.length > 1) {
+      results = applyFinalWindowQuota(results, perTerm, limit);
+    } else if (results.length > limit) {
+      results = results.slice(0, limit);
+    }
+    return { results, terms, total };
   }
 
   /**
@@ -994,9 +1114,19 @@ export class QueryBuilder {
   }
 
   /**
-   * FTS5 search with prefix matching
+   * FTS5 search with prefix matching.
+   *
+   * Multi-token queries run one FTS query PER token and merge the
+   * BM25-ranked candidate lists with a guaranteed per-term quota, so a
+   * high-frequency token (e.g. `prompt` in a prompt-heavy codebase)
+   * cannot silently crowd a rare token's matches out of the over-fetch
+   * window. Single-token queries keep the historical single-query path
+   * exactly (offset applied in SQL).
    */
-  private searchNodesFTS(query: string, options: SearchOptions): SearchResult[] {
+  private searchNodesFTS(
+    query: string,
+    options: SearchOptions
+  ): { results: SearchResult[]; terms: Array<{ term: string; count: number }>; perTerm: SearchResult[][] } {
     const { kinds, languages, limit = 100, offset = 0 } = options;
 
     // `::` is a qualifier separator in Rust/C++/Ruby, not a token char,
@@ -1018,35 +1148,72 @@ export class QueryBuilder {
       // Strip FTS5 boolean operators to prevent query manipulation
       .filter(term => !/^(AND|OR|NOT|NEAR)$/i.test(term));
 
-    // Per token, OR the whole-token prefix with an AND-of-parts group:
-    //   SystemPrompt -> ("SystemPrompt"* OR ("system"* AND "prompt"*))
-    // AND (not a flat OR over the parts) keeps precision: `newFunc` becomes
-    // ("newFunc"* OR ("new"* AND "func"*)) and so cannot match an unrelated
-    // `renamedFunc`, preserving the rename guard in sync.test.ts.
-    const ftsQuery = tokens
-      .map(token => {
-        const whole = `"${token}"*`;
-        const parts = splitIdentifierWords(token)
-          .filter(part => !/^(AND|OR|NOT|NEAR)$/i.test(part));
-        if (parts.length < 2) return whole;
-        const andGroup = parts.map(part => `"${part}"*`).join(' AND ');
-        return `(${whole} OR (${andGroup}))`;
-      })
-      .join(' OR ');
-
-    if (!ftsQuery) {
-      return [];
+    if (tokens.length === 0) {
+      return { results: [], terms: [], perTerm: [] };
     }
 
-    // BM25 column weights: id=0, name=20, qualified_name=5, docstring=1, signature=2, search_text=3
-    // Heavy name weight ensures exact/prefix name matches rank above incidental
-    // mentions in long docstrings or qualified names of nested symbols. search_text
-    // (split identifier words) carries a modest weight so compound-part matches
-    // ("prompt" → "SystemPrompt") surface as candidates without outranking real
-    // name hits; post-hoc nameMatchBonus does the final ranking.
     // Fetch 5x requested limit so post-hoc rescoring (kindBonus, pathRelevance,
     // nameMatchBonus) can promote results that BM25 alone undervalues.
     const ftsLimit = Math.max(limit * 5, 100);
+    const ftsOptions = { kinds, languages };
+
+    const terms = tokens.map(token => ({
+      term: token,
+      count: this.countFtsMatches(this.buildFtsTokenQuery(token), ftsOptions),
+    }));
+
+    // Single-token: identical to the historical behaviour — one FTS query
+    // with the offset applied in SQL.
+    if (tokens.length === 1) {
+      const results = this.runFtsPrefixQuery(this.buildFtsTokenQuery(tokens[0]), {
+        ...ftsOptions,
+        limit: ftsLimit,
+        offset,
+      });
+      return { results, terms, perTerm: [results] };
+    }
+
+    // Multi-token: each token gets its own BM25-ranked window, merged with
+    // a guaranteed per-term quota; the offset is applied to the final merged
+    // list, never per-term.
+    const perTerm = tokens.map(token =>
+      this.runFtsPrefixQuery(this.buildFtsTokenQuery(token), { ...ftsOptions, limit: ftsLimit, offset: 0 })
+    );
+    const merged = mergePerTermCandidates(perTerm, limit, ftsLimit);
+    return { results: merged.slice(offset, offset + ftsLimit), terms, perTerm };
+  }
+
+  /**
+   * Per token, OR the whole-token prefix with an AND-of-parts group:
+   *   SystemPrompt -> ("SystemPrompt"* OR ("system"* AND "prompt"*))
+   * AND (not a flat OR over the parts) keeps precision: `newFunc` becomes
+   * ("newFunc"* OR ("new"* AND "func"*)) and so cannot match an unrelated
+   * `renamedFunc`, preserving the rename guard in sync.test.ts.
+   */
+  private buildFtsTokenQuery(token: string): string {
+    const whole = `"${token}"*`;
+    const parts = splitIdentifierWords(token)
+      .filter(part => !/^(AND|OR|NOT|NEAR)$/i.test(part));
+    if (parts.length < 2) return whole;
+    const andGroup = parts.map(part => `"${part}"*`).join(' AND ');
+    return `(${whole} OR (${andGroup}))`;
+  }
+
+  /**
+   * Execute one FTS5 prefix query and return BM25-ranked rows.
+   *
+   * BM25 column weights: id=0, name=20, qualified_name=5, docstring=1, signature=2, search_text=3
+   * Heavy name weight ensures exact/prefix name matches rank above incidental
+   * mentions in long docstrings or qualified names of nested symbols. search_text
+   * (split identifier words) carries a modest weight so compound-part matches
+   * ("prompt" → "SystemPrompt") surface as candidates without outranking real
+   * name hits; post-hoc nameMatchBonus does the final ranking.
+   */
+  private runFtsPrefixQuery(
+    ftsQuery: string,
+    options: { kinds?: NodeKind[]; languages?: Language[]; limit: number; offset: number }
+  ): SearchResult[] {
+    const { kinds, languages, limit, offset } = options;
 
     let sql = `
       SELECT nodes.*, bm25(nodes_fts, 0, 20, 5, 1, 2, 3) as score
@@ -1068,7 +1235,7 @@ export class QueryBuilder {
     }
 
     sql += ' ORDER BY score LIMIT ? OFFSET ?';
-    params.push(ftsLimit, offset);
+    params.push(limit, offset);
 
     try {
       const rows = this.db.prepare(sql).all(...params) as (NodeRow & { score: number })[];
@@ -1079,6 +1246,44 @@ export class QueryBuilder {
     } catch {
       // FTS query failed, return empty
       return [];
+    }
+  }
+
+  /**
+   * Real (untruncated) hit count for one FTS5 prefix query, so
+   * searchNodesDetailed can report how many nodes each token actually
+   * matched instead of guessing from the over-fetch window length.
+   */
+  private countFtsMatches(
+    ftsQuery: string,
+    options: { kinds?: NodeKind[]; languages?: Language[] }
+  ): number {
+    const { kinds, languages } = options;
+
+    let sql = `
+      SELECT COUNT(*) as count
+      FROM nodes_fts
+      JOIN nodes ON nodes_fts.id = nodes.id
+      WHERE nodes_fts MATCH ?
+    `;
+
+    const params: (string | number)[] = [ftsQuery];
+
+    if (kinds && kinds.length > 0) {
+      sql += ` AND nodes.kind IN (${kinds.map(() => '?').join(',')})`;
+      params.push(...kinds);
+    }
+
+    if (languages && languages.length > 0) {
+      sql += ` AND nodes.language IN (${languages.map(() => '?').join(',')})`;
+      params.push(...languages);
+    }
+
+    try {
+      const row = this.db.prepare(sql).get(...params) as { count: number } | undefined;
+      return row?.count ?? 0;
+    } catch {
+      return 0;
     }
   }
 

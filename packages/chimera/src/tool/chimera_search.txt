@@ -5,7 +5,7 @@ Use this tool when you need graph evidence for symbol names, qualified names, si
 Do NOT use this tool for arbitrary source-code literals, regex searches, or counting matches. Use `grep` for raw source text and `glob` for filename patterns.
 
 Query phrasing:
-- Multi-word queries are OR-of-prefix: each whitespace-separated word is matched as a prefix and the results are unioned. "session prompt" finds symbols matching `session*` OR `prompt*`.
+- Multi-word queries are OR-of-prefix: each whitespace-separated word is matched as a prefix and the results are unioned. "session prompt" finds symbols matching `session*` OR `prompt*`. Each free-text term keeps a guaranteed quota of slots in the merged result window, so a rare term is not crowded out by a high-frequency one. When the query has free-text terms, the output ends with a fact line `terms: <term>(<hits>) ... · <N> candidates before limit`; filter-only queries omit that line.
 - Prefer separate concept words over fake glued compounds. Type "system prompt" for broad concept discovery; use "SystemPrompt" only when searching for a real compound identifier, because compound queries require their identifier parts together.
 - Real compound identifiers are also matched by their parts, so "prompt" finds `SystemPrompt`/`buildSystemPrompt`. Prefer real symbol words over long natural-language phrases.
 - Field filters narrow results and compose with the text: `kind:function`, `lang:typescript` (alias `language:`), `path:src/api` (substring of file path), `name:auth` (substring of symbol name). Example: `kind:method name:send transport`.
