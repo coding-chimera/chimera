@@ -2717,7 +2717,7 @@ describe("ProviderTransform.variants", () => {
     })
   })
 
-  test("plain GPT-5.6 supports declared max without inheriting ultra", () => {
+  test("plain GPT-5.6 supports declared max and now advertises ultra at max", () => {
     const model = createMockModel({
       id: "custom/gpt-5.6",
       providerID: "custom",
@@ -2733,10 +2733,11 @@ describe("ProviderTransform.variants", () => {
     expect(ProviderTransform.variants(model)).toEqual({
       low: { reasoningEffort: "low" },
       max: { reasoningEffort: "max" },
+      ultra: { reasoningEffort: "max" },
     })
   })
 
-  test("plain GPT-5.6 does not infer max or ultra without provider metadata", () => {
+  test("plain GPT-5.6 does not infer max but advertises ultra at its highest inferred effort", () => {
     const model = createMockModel({
       id: "custom/gpt-5.6",
       providerID: "custom",
@@ -2748,17 +2749,17 @@ describe("ProviderTransform.variants", () => {
         npm: "@ai-sdk/openai-compatible",
       },
     })
-    expect(Object.keys(ProviderTransform.variants(model))).toEqual(["low", "medium", "high", "xhigh"])
+    expect(Object.keys(ProviderTransform.variants(model))).toEqual(["low", "medium", "high", "xhigh", "ultra"])
     expect(ProviderTransform.variants(model).max).toBeUndefined()
-    expect(ProviderTransform.variants(model).ultra).toBeUndefined()
+    expect(ProviderTransform.variants(model).ultra).toEqual({ reasoningEffort: "xhigh" })
     expect(ProviderTransform.smallOptions(model)).toEqual({})
   })
 
-  test("kimi k3 advertises Ultra with the provider-legal maximum", () => {
+  test("kimi k3 advertises Ultra at its provider-legal maximum via reasoning metadata", () => {
     const model = createMockModel({
       id: "k3",
-      ultra: true,
       providerID: "kimi-for-coding",
+      reasoning_efforts: ["low", "medium", "high", "max"],
       api: {
         id: "k3",
         url: "https://api.kimi.com/coding/v1",
@@ -2807,7 +2808,7 @@ describe("ProviderTransform.variants", () => {
     })
   })
 
-  test("deepseek-v4-pro does not inherit the Ultra profile", () => {
+  test("deepseek-v4-pro advertises Ultra over its declared reasoning efforts", () => {
     const model = createMockModel({
       id: "deepseek-v4-pro",
       providerID: "deepseek",
@@ -2818,7 +2819,7 @@ describe("ProviderTransform.variants", () => {
         npm: "@ai-sdk/openai-compatible",
       },
     })
-    expect(ProviderTransform.variants(model).ultra).toBeUndefined()
+    expect(ProviderTransform.variants(model).ultra).toEqual({ reasoningEffort: "max" })
   })
 
   test("deepseek-v4-pro advertises Ultra when the ultra flag is set", () => {
@@ -2883,7 +2884,7 @@ describe("ProviderTransform.variants", () => {
         npm: "@ai-sdk/openai-compatible",
       },
     })
-    expect(Object.keys(ProviderTransform.variants(model))).toEqual(["low", "medium", "high", "xhigh", "max"])
+    expect(Object.keys(ProviderTransform.variants(model))).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"])
   })
 
 
@@ -2913,9 +2914,9 @@ describe("ProviderTransform.variants", () => {
       },
     })
     const result = ProviderTransform.variants(model)
-    expect(Object.keys(result)).toEqual(["low", "medium", "high", "xhigh"])
+    expect(Object.keys(result)).toEqual(["low", "medium", "high", "xhigh", "ultra"])
     expect(result.max).toBeUndefined()
-    expect(result.ultra).toBeUndefined()
+    expect(result.ultra).toEqual({ reasoningEffort: "xhigh" })
   })
 
   test("codex semantics is a no-op for unknown model families", () => {
@@ -2937,15 +2938,15 @@ describe("ProviderTransform.variants", () => {
     expect(ProviderTransform.variants(model)).toEqual(ProviderTransform.variants(legacy))
   })
 
-  test("returns empty object when model has no reasoning capabilities", () => {
+  test("advertises only the pure ultra profile when model has no reasoning capabilities", () => {
     const model = createMockModel({
       capabilities: { reasoning: false },
     })
     const result = ProviderTransform.variants(model)
-    expect(result).toEqual({})
+    expect(result).toEqual({ ultra: {} })
   })
 
-  test("deepseek returns empty object", () => {
+  test("deepseek advertises only the pure ultra profile", () => {
     const model = createMockModel({
       id: "deepseek/deepseek-chat",
       providerID: "deepseek",
@@ -2956,10 +2957,10 @@ describe("ProviderTransform.variants", () => {
       },
     })
     const result = ProviderTransform.variants(model)
-    expect(result).toEqual({})
+    expect(result).toEqual({ ultra: {} })
   })
 
-  test("minimax returns empty object", () => {
+  test("minimax advertises only the pure ultra profile", () => {
     const model = createMockModel({
       id: "minimax/minimax-model",
       providerID: "minimax",
@@ -2970,7 +2971,7 @@ describe("ProviderTransform.variants", () => {
       },
     })
     const result = ProviderTransform.variants(model)
-    expect(result).toEqual({})
+    expect(result).toEqual({ ultra: {} })
   })
 
   test("glm returns empty object", () => {
@@ -2984,7 +2985,7 @@ describe("ProviderTransform.variants", () => {
       },
     })
     const result = ProviderTransform.variants(model)
-    expect(result).toEqual({})
+    expect(result).toEqual({ ultra: {} })
   })
 
   test("tencent GLM-5.2 returns official reasoning effort variants", () => {
@@ -3002,6 +3003,7 @@ describe("ProviderTransform.variants", () => {
     expect(result).toEqual({
       high: { reasoningEffort: "high" },
       max: { reasoningEffort: "max" },
+      ultra: { reasoningEffort: "max" },
     })
   })
 
@@ -3021,6 +3023,7 @@ describe("ProviderTransform.variants", () => {
     expect(result).toEqual({
       high: { reasoningEffort: "high" },
       max: { reasoningEffort: "max" },
+      ultra: { reasoningEffort: "max" },
     })
   })
 
@@ -3039,6 +3042,7 @@ describe("ProviderTransform.variants", () => {
     expect(result).toEqual({
       high: { reasoningEffort: "high" },
       max: { reasoningEffort: "max" },
+      ultra: { reasoningEffort: "max" },
     })
   })
 
@@ -3053,7 +3057,7 @@ describe("ProviderTransform.variants", () => {
       },
     })
     const result = ProviderTransform.variants(model)
-    expect(result).toEqual({})
+    expect(result).toEqual({ ultra: {} })
   })
 
   test("nvidia Kimi K2.6 returns extended reasoning effort variants", () => {
@@ -3067,7 +3071,7 @@ describe("ProviderTransform.variants", () => {
       },
     })
     const result = ProviderTransform.variants(model)
-    expect(Object.keys(result)).toEqual(["none", "minimal", "low", "medium", "high", "xhigh", "max"])
+    expect(Object.keys(result)).toEqual(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"])
     expect(result.medium).toEqual({ reasoningEffort: "medium" })
     expect(result.max).toEqual({ reasoningEffort: "max" })
   })
@@ -3086,6 +3090,7 @@ describe("ProviderTransform.variants", () => {
     const result = ProviderTransform.variants(model)
     expect(result).toEqual({
       high: { reasoningEffort: "high" },
+      ultra: { reasoningEffort: "high" },
     })
   })
 
@@ -3103,6 +3108,7 @@ describe("ProviderTransform.variants", () => {
     const result = ProviderTransform.variants(model)
     expect(result).toEqual({
       high: { reasoningEffort: "high" },
+      ultra: { reasoningEffort: "high" },
     })
   })
 
@@ -3118,7 +3124,7 @@ describe("ProviderTransform.variants", () => {
       capabilities: { reasoning: false },
     })
     const result = ProviderTransform.variants(model)
-    expect(result).toEqual({})
+    expect(result).toEqual({ ultra: {} })
   })
 
   test("mistral large with reasoning returns empty object (only small supports reasoning)", () => {
@@ -3133,7 +3139,7 @@ describe("ProviderTransform.variants", () => {
       capabilities: { reasoning: true },
     })
     const result = ProviderTransform.variants(model)
-    expect(result).toEqual({})
+    expect(result).toEqual({ ultra: {} })
   })
 
   describe("@openrouter/ai-sdk-provider", () => {
@@ -3148,7 +3154,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(result).toEqual({})
+      expect(result).toEqual({ ultra: {} })
     })
 
     test("gpt models return OPENAI_EFFORTS with reasoning", () => {
@@ -3162,7 +3168,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["none", "minimal", "low", "medium", "high", "xhigh"])
+      expect(Object.keys(result)).toEqual(["none", "minimal", "low", "medium", "high", "xhigh", "ultra"])
       expect(result.low).toEqual({ reasoning: { effort: "low" } })
       expect(result.high).toEqual({ reasoning: { effort: "high" } })
     })
@@ -3178,7 +3184,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["none", "minimal", "low", "medium", "high", "xhigh"])
+      expect(Object.keys(result)).toEqual(["none", "minimal", "low", "medium", "high", "xhigh", "ultra"])
     })
 
     test("grok-4 returns empty object", () => {
@@ -3192,7 +3198,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(result).toEqual({})
+      expect(result).toEqual({ ultra: {} })
     })
 
     test("grok-4.5 returns low medium high with reasoning", () => {
@@ -3206,7 +3212,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "medium", "high"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "ultra"])
       expect(result.low).toEqual({ reasoning: { effort: "low" } })
       expect(result.medium).toEqual({ reasoning: { effort: "medium" } })
       expect(result.high).toEqual({ reasoning: { effort: "high" } })
@@ -3223,7 +3229,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "high"])
+      expect(Object.keys(result)).toEqual(["low", "high", "ultra"])
       expect(result.low).toEqual({ reasoning: { effort: "low" } })
       expect(result.high).toEqual({ reasoning: { effort: "high" } })
     })
@@ -3241,7 +3247,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "medium", "high", "max"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "max", "ultra"])
       expect(result.medium).toEqual({
         thinking: {
           type: "adaptive",
@@ -3261,7 +3267,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "medium", "high", "max"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "max", "ultra"])
       expect(result.medium).toEqual({
         thinking: {
           type: "adaptive",
@@ -3281,7 +3287,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "medium", "high", "max"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "max", "ultra"])
       expect(result.high).toEqual({
         thinking: {
           type: "adaptive",
@@ -3301,7 +3307,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "medium", "high", "xhigh", "max"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"])
       expect(result.xhigh).toEqual({
         thinking: {
           type: "adaptive",
@@ -3327,7 +3333,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "medium", "high", "xhigh", "max"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"])
     })
 
     test("anthropic models return anthropic thinking options", () => {
@@ -3341,7 +3347,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["high", "max"])
+      expect(Object.keys(result)).toEqual(["high", "max", "ultra"])
       expect(result.high).toEqual({
         thinking: {
           type: "enabled",
@@ -3367,7 +3373,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["none", "minimal", "low", "medium", "high", "xhigh"])
+      expect(Object.keys(result)).toEqual(["none", "minimal", "low", "medium", "high", "xhigh", "ultra"])
       expect(result.low).toEqual({ reasoningEffort: "low" })
       expect(result.high).toEqual({ reasoningEffort: "high" })
     })
@@ -3385,7 +3391,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "medium", "high"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "ultra"])
       expect(result.low).toEqual({
         reasoningEffort: "low",
         reasoningSummary: "auto",
@@ -3404,7 +3410,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "medium", "high", "xhigh"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "xhigh", "ultra"])
     })
 
     test("gpt-5.1-codex-mini does not include xhigh", () => {
@@ -3418,7 +3424,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "medium", "high"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "ultra"])
     })
 
     test("gpt-5.1-codex does not include xhigh", () => {
@@ -3432,7 +3438,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "medium", "high"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "ultra"])
     })
 
     test("gpt-5.2 includes xhigh", () => {
@@ -3446,7 +3452,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "medium", "high", "xhigh"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "xhigh", "ultra"])
       expect(result.xhigh).toEqual({
         reasoningEffort: "xhigh",
         reasoningSummary: "auto",
@@ -3465,7 +3471,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "medium", "high", "xhigh"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "xhigh", "ultra"])
     })
 
     test("gpt-5.3-codex includes xhigh", () => {
@@ -3479,7 +3485,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "medium", "high", "xhigh"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "xhigh", "ultra"])
     })
 
     test("gpt-5.4 includes xhigh", () => {
@@ -3494,7 +3500,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "medium", "high", "xhigh"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "xhigh", "ultra"])
     })
   })
 
@@ -3510,7 +3516,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "medium", "high"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "ultra"])
       expect(result.low).toEqual({ reasoningEffort: "low" })
       expect(result.high).toEqual({ reasoningEffort: "high" })
     })
@@ -3528,7 +3534,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "medium", "high"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "ultra"])
       expect(result.low).toEqual({ reasoningEffort: "low" })
       expect(result.high).toEqual({ reasoningEffort: "high" })
     })
@@ -3546,7 +3552,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(result).toEqual({})
+      expect(result).toEqual({ ultra: {} })
     })
 
     test("grok-3-mini returns low and high with reasoningEffort", () => {
@@ -3560,7 +3566,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "high"])
+      expect(Object.keys(result)).toEqual(["low", "high", "ultra"])
       expect(result.low).toEqual({ reasoningEffort: "low" })
       expect(result.high).toEqual({ reasoningEffort: "high" })
     })
@@ -3576,7 +3582,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "medium", "high"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "ultra"])
       expect(result.low).toEqual({ reasoningEffort: "low" })
       expect(result.medium).toEqual({ reasoningEffort: "medium" })
       expect(result.high).toEqual({ reasoningEffort: "high" })
@@ -3595,7 +3601,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "medium", "high"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "ultra"])
       expect(result.low).toEqual({ reasoningEffort: "low" })
       expect(result.medium).toEqual({ reasoningEffort: "medium" })
       expect(result.high).toEqual({ reasoningEffort: "high" })
@@ -3621,7 +3627,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "medium", "high"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "ultra"])
       expect(result.high).toEqual({ reasoningEffort: "high" })
     })
   })
@@ -3638,7 +3644,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "medium", "high"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "ultra"])
       expect(result.low).toEqual({ reasoningEffort: "low" })
       expect(result.high).toEqual({ reasoningEffort: "high" })
     })
@@ -3656,7 +3662,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "medium", "high"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "ultra"])
       expect(result.low).toEqual({ reasoningEffort: "low" })
       expect(result.high).toEqual({ reasoningEffort: "high" })
     })
@@ -3680,7 +3686,7 @@ describe("ProviderTransform.variants", () => {
           },
         })
         const result = ProviderTransform.variants(model)
-        expect(Object.keys(result)).toEqual(["low", "medium", "high", "max"])
+        expect(Object.keys(result)).toEqual(["low", "medium", "high", "max", "ultra"])
         expect(result.max).toEqual({ reasoningEffort: "max" })
       }
     })
@@ -3698,7 +3704,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(result).toEqual({})
+      expect(result).toEqual({ ultra: {} })
     })
 
     test("standard azure models return custom efforts with reasoningSummary", () => {
@@ -3712,7 +3718,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "medium", "high"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "ultra"])
       expect(result.low).toEqual({
         reasoningEffort: "low",
         reasoningSummary: "auto",
@@ -3731,7 +3737,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["minimal", "low", "medium", "high"])
+      expect(Object.keys(result)).toEqual(["minimal", "low", "medium", "high", "ultra"])
     })
   })
 
@@ -3747,7 +3753,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(result).toEqual({})
+      expect(result).toEqual({ ultra: {} })
     })
 
     test("standard openai models return custom efforts with reasoningSummary", () => {
@@ -3762,7 +3768,7 @@ describe("ProviderTransform.variants", () => {
         release_date: "2024-06-01",
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["minimal", "low", "medium", "high"])
+      expect(Object.keys(result)).toEqual(["minimal", "low", "medium", "high", "ultra"])
       expect(result.low).toEqual({
         reasoningEffort: "low",
         reasoningSummary: "auto",
@@ -3782,7 +3788,7 @@ describe("ProviderTransform.variants", () => {
         release_date: "2025-11-14",
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["none", "minimal", "low", "medium", "high"])
+      expect(Object.keys(result)).toEqual(["none", "minimal", "low", "medium", "high", "ultra"])
     })
 
     test("models after 2025-12-04 include 'xhigh' effort", () => {
@@ -3797,7 +3803,7 @@ describe("ProviderTransform.variants", () => {
         release_date: "2025-12-05",
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["none", "minimal", "low", "medium", "high", "xhigh"])
+      expect(Object.keys(result)).toEqual(["none", "minimal", "low", "medium", "high", "xhigh", "ultra"])
     })
 
     test("dotted gpt-5.x ids include 'minimal' (regression: matcher used to miss gpt-5.4)", () => {
@@ -3812,7 +3818,7 @@ describe("ProviderTransform.variants", () => {
         release_date: "2026-03-05",
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["none", "minimal", "low", "medium", "high", "xhigh"])
+      expect(Object.keys(result)).toEqual(["none", "minimal", "low", "medium", "high", "xhigh", "ultra"])
     })
 
     test("gpt-50 (lookalike) does not get gpt-5 family treatment", () => {
@@ -3827,7 +3833,7 @@ describe("ProviderTransform.variants", () => {
         release_date: "2024-01-01",
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "medium", "high"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "ultra"])
     })
   })
 
@@ -3843,7 +3849,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "medium", "high", "max"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "max", "ultra"])
       expect(result.high).toEqual({
         thinking: {
           type: "adaptive",
@@ -3863,7 +3869,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "medium", "high", "xhigh", "max"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"])
       expect(result.xhigh).toEqual({
         thinking: {
           type: "adaptive",
@@ -3899,6 +3905,13 @@ describe("ProviderTransform.variants", () => {
           },
           effort: "medium",
         },
+        ultra: {
+          thinking: {
+            type: "adaptive",
+            display: "summarized",
+          },
+          effort: "medium",
+        },
       })
     })
 
@@ -3913,7 +3926,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["high", "max"])
+      expect(Object.keys(result)).toEqual(["high", "max", "ultra"])
       expect(result.high).toEqual({
         thinking: {
           type: "enabled",
@@ -3941,7 +3954,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "medium", "high", "max"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "max", "ultra"])
       expect(result.max).toEqual({
         reasoningConfig: {
           type: "adaptive",
@@ -3961,7 +3974,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "medium", "high", "xhigh", "max"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"])
       expect(result.xhigh).toEqual({
         reasoningConfig: {
           type: "adaptive",
@@ -3989,7 +4002,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "medium", "high"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "ultra"])
       expect(result.low).toEqual({
         reasoningConfig: {
           type: "enabled",
@@ -4011,7 +4024,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["high", "max"])
+      expect(Object.keys(result)).toEqual(["high", "max", "ultra"])
       expect(result.high).toEqual({
         thinkingConfig: {
           includeThoughts: true,
@@ -4037,7 +4050,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "high"])
+      expect(Object.keys(result)).toEqual(["low", "high", "ultra"])
       expect(result.low).toEqual({
         thinkingConfig: {
           includeThoughts: true,
@@ -4065,7 +4078,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["high", "max"])
+      expect(Object.keys(result)).toEqual(["high", "max", "ultra"])
     })
 
     test("other vertex models return low and high with thinkingLevel", () => {
@@ -4079,7 +4092,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "high"])
+      expect(Object.keys(result)).toEqual(["low", "high", "ultra"])
     })
   })
 
@@ -4095,7 +4108,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(result).toEqual({})
+      expect(result).toEqual({ ultra: {} })
     })
   })
 
@@ -4111,7 +4124,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["none", "low", "medium", "high"])
+      expect(Object.keys(result)).toEqual(["none", "low", "medium", "high", "ultra"])
       expect(result.none).toEqual({
         reasoningEffort: "none",
       })
@@ -4133,7 +4146,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(result).toEqual({})
+      expect(result).toEqual({ ultra: {} })
     })
   })
 
@@ -4149,7 +4162,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["high", "max"])
+      expect(Object.keys(result)).toEqual(["high", "max", "ultra"])
       expect(result.high).toEqual({
         thinking: {
           type: "enabled",
@@ -4175,7 +4188,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "medium", "high", "max"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "max", "ultra"])
       expect(result.low).toEqual({
         thinking: {
           type: "adaptive",
@@ -4201,7 +4214,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["high", "max"])
+      expect(Object.keys(result)).toEqual(["high", "max", "ultra"])
       expect(result.high).toEqual({
         thinkingConfig: {
           includeThoughts: true,
@@ -4227,7 +4240,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "medium", "high"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "ultra"])
       expect(result.low).toEqual({ reasoningEffort: "low" })
       expect(result.high).toEqual({ reasoningEffort: "high" })
     })
@@ -4243,7 +4256,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "medium", "high"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "ultra"])
       expect(result.low).toEqual({ reasoningEffort: "low" })
       expect(result.high).toEqual({ reasoningEffort: "high" })
     })
@@ -4259,7 +4272,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(result).toEqual({})
+      expect(result).toEqual({ ultra: {} })
     })
 
     test("mistral models return empty object", () => {
@@ -4273,7 +4286,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(result).toEqual({})
+      expect(result).toEqual({ ultra: {} })
     })
   })
 
@@ -4300,14 +4313,14 @@ describe("ProviderTransform.variants", () => {
     test("openai gpt-5.2-codex includes xhigh", () => {
       const result = ProviderTransform.variants(cfModel("openai/gpt-5.2-codex", "2025-12-11"))
       expect(result.xhigh).toEqual({ reasoningEffort: "xhigh" })
-      expect(Object.keys(result)).toEqual(["low", "medium", "high", "xhigh"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "xhigh", "ultra"])
     })
 
     test("openai gpt-4o (no reasoning) returns empty", () => {
       const model = cfModel("openai/gpt-4o")
       model.capabilities.reasoning = false
       const result = ProviderTransform.variants(model)
-      expect(result).toEqual({})
+      expect(result).toEqual({ ultra: {} })
     })
 
     test("non-openai upstream falls back to widely-supported OAI efforts", () => {
@@ -4316,7 +4329,44 @@ describe("ProviderTransform.variants", () => {
         low: { reasoningEffort: "low" },
         medium: { reasoningEffort: "medium" },
         high: { reasoningEffort: "high" },
+        ultra: { reasoningEffort: "high" },
       })
+    })
+  })
+
+  describe("universal ultra variant", () => {
+    test("advertises ultra at the highest effort for an ordinary openai-compatible model", () => {
+      const model = createMockModel({
+        id: "custom-org/generic-reasoner",
+        providerID: "custom-org",
+        release_date: "2025-12-10",
+        api: {
+          id: "generic-reasoner",
+          url: "https://api.custom.test",
+          npm: "@ai-sdk/openai-compatible",
+        },
+      })
+      const result = ProviderTransform.variants(model)
+      expect(result.xhigh).toEqual({ reasoningEffort: "xhigh" })
+      expect(result.ultra).toEqual({ reasoningEffort: "xhigh" })
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "xhigh", "ultra"])
+    })
+
+    test("codex model always advertises ultra mapped to its top effort", () => {
+      const model = createMockModel({
+        id: "custom/gpt-5.6-sol",
+        providerID: "custom",
+        backend_semantics: "codex",
+        capabilities: { reasoning: true },
+        api: {
+          id: "gpt-5.6-sol",
+          url: "https://api.custom.test",
+          npm: "@ai-sdk/openai-compatible",
+        },
+      })
+      const result = ProviderTransform.variants(model)
+      expect(result.ultra).toEqual({ reasoningEffort: "max" })
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"])
     })
   })
 })

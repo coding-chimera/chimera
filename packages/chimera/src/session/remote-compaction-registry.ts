@@ -8,8 +8,8 @@ import type { Provider } from "@/provider/provider"
  * Third-party relay providers (e.g. dahetao) may proxy this ability but are not
  * inherently trustworthy — eligibility is determined by the model, not the provider.
  *
- * The `remote_compaction_models` chimera.json config key extends these defaults
- * (same pattern as `ultra_models`). Entries match the model api id exactly or as
+ * The `remote_compaction_models` chimera.json config key extends these defaults.
+ * Entries match the model api id exactly or as
  * a versioned prefix ("<entry>-..."), so "gpt-5.6" covers gpt-5.6-luna,
  * gpt-5.6-sol, and dated variants.
  *

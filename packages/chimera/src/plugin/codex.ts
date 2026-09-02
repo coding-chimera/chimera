@@ -22,11 +22,10 @@ function codexReasoningVariants(model: {
   api: { id: string }
   capability_model_id?: string
   reasoning_efforts?: readonly unknown[]
-  ultra?: boolean
 }) {
   const capabilityID = model.capability_model_id ?? CodexModel.capabilityModelID(model.api.id)
   if (!capabilityID) return
-  const efforts = CodexModel.reasoningEfforts(capabilityID, model.reasoning_efforts, model.ultra === true)
+  const efforts = CodexModel.reasoningEfforts(capabilityID, model.reasoning_efforts)
   if (efforts.length === 0) return
   const top = CodexModel.highestReasoningEffort(efforts)
   return Object.fromEntries(

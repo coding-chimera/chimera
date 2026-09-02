@@ -1271,6 +1271,8 @@ export type DelegationConfig = {
     [key: string]: string
   }
   scheduling?: DelegationScheduling
+  max_depth?: number
+  max_concurrent?: number
 }
 
 export type Config = {
@@ -1602,7 +1604,6 @@ export type Model = {
   backend_semantics?: "openai" | "codex" | "alibailian"
   capability_model_id?: string
   reasoning_efforts?: Array<"none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max">
-  ultra?: boolean
   capabilities: {
     temperature: boolean
     reasoning: boolean

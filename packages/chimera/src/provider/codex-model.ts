@@ -75,14 +75,14 @@ export function highestReasoningEffort(efforts: readonly string[]) {
   return REASONING_EFFORTS.filter((effort) => efforts.includes(effort)).at(-1)
 }
 
-export function reasoningEfforts(capabilityID: string, configured?: readonly unknown[], ultra?: boolean) {
+export function reasoningEfforts(capabilityID: string, configured?: readonly unknown[]) {
   const current = profile(capabilityID)
   const preferred = current?.codexEfforts
   if (!preferred || (current.requiresConfiguredEfforts && configured === undefined)) return []
   const available = configured === undefined ? undefined : normalizeReasoningEfforts(configured)
   const efforts = available ? preferred.filter((effort) => available.includes(effort)) : [...preferred]
-  if (!efforts.length || !ultra) return efforts
-  return [...efforts, "ultra" as const]
+  if (!efforts.length) return efforts
+  return [...efforts, "ultra"]
 }
 
 export function smallReasoningEffort(capabilityID: string, configured?: readonly unknown[]) {

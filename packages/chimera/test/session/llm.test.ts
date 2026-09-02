@@ -703,7 +703,7 @@ describe("session.llm.stream", () => {
 
         const max = await capture("max", "max")
         expect(max.reasoning_effort).toBe("max")
-        expect(promptForRole(max, "system")).toContain("Explicit-request-only multi-agent mode is active.")
+        expect(promptForRole(max, "system")).not.toContain("Explicit-request-only multi-agent mode is active.")
 
         const child = await capture("ultra", "child", SessionID.make("session-kimi-parent"))
         expect(child.reasoning_effort).toBe("max")
@@ -791,7 +791,7 @@ describe("session.llm.stream", () => {
         expect(JSON.stringify(ultra)).not.toContain('"ultra"')
         expect(promptForRole(ultra, "system")).toContain("Proactive multi-agent delegation is active for this root session.")
         expect(promptForRole(ultra, "system")).toContain("You are running on the ultra tier")
-        expect(promptForRole(ultra, "system")).toContain("Ultra delegation discipline")
+        expect(promptForRole(ultra, "system")).toContain("Orchestrator discipline")
         expect(promptForRole(ultra, "system")).not.toContain("up to 16 parallel workers")
         expect(promptForRole(ultra, "system")).not.toContain("normal operating width")
         expect(promptForRole(ultra, "system")).toContain("swarm 派发纪律")
@@ -799,7 +799,7 @@ describe("session.llm.stream", () => {
 
         const max = await capture("max", "max")
         expect(max.reasoning_effort).toBe("max")
-        expect(promptForRole(max, "system")).toContain("Explicit-request-only multi-agent mode is active.")
+        expect(promptForRole(max, "system")).not.toContain("Explicit-request-only multi-agent mode is active.")
         expect(promptForRole(max, "system")).not.toContain("swarm 派发纪律")
 
         const child = await capture("ultra", "child", SessionID.make("session-deepseek-parent"))
@@ -924,7 +924,7 @@ describe("session.llm.stream", () => {
                 env: [],
                 models: {
                   k3: { reasoning: true },
-                  plain: { reasoning: true },
+                  plain: { reasoning: true, variants: { ultra: { disabled: true } } },
                 },
                 options: {
                   apiKey: "test-kimi-key",
@@ -979,7 +979,7 @@ describe("session.llm.stream", () => {
         const body = (await request).body
         expect(body.reasoning_effort).toBe("max")
         expect(JSON.stringify(body)).not.toContain('"ultra"')
-        expect(promptForRole(body, "system")).toContain("Explicit-request-only multi-agent mode is active.")
+        expect(promptForRole(body, "system")).not.toContain("Explicit-request-only multi-agent mode is active.")
         expect(promptForRole(body, "system")).not.toContain("Proactive multi-agent delegation")
 
         const plainSessionID = SessionID.make("session-kimi-unadvertised")

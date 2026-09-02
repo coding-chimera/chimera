@@ -57,9 +57,6 @@ function mergeConfigConcatArrays(target: Info, source: Info): Info {
   if (target.instructions && source.instructions) {
     merged.instructions = Array.from(new Set([...target.instructions, ...source.instructions]))
   }
-  if (target.ultra_models && source.ultra_models) {
-    merged.ultra_models = Array.from(new Set([...target.ultra_models, ...source.ultra_models]))
-  }
   if (target.remote_compaction_models && source.remote_compaction_models) {
     merged.remote_compaction_models = Array.from(new Set([...target.remote_compaction_models, ...source.remote_compaction_models]))
   }
@@ -180,7 +177,7 @@ export const Info = Schema.Struct({
   }),
   ultra_models: Schema.optional(Schema.mutable(Schema.Array(Schema.String))).annotate({
     description:
-      "Model names that advertise the ultra tier (highest declared reasoning effort plus proactive multi-agent delegation). Matched as case-insensitive substrings of the model or api id; extends the built-in defaults.",
+      "Deprecated: ultra is now advertised on every model, so this key no longer affects behavior. Kept only so existing configs parse without error; entries are ignored.",
   }),
   remote_compaction_models: Schema.optional(Schema.mutable(Schema.Array(Schema.String))).annotate({
     description:

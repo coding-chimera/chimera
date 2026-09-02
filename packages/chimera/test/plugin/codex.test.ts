@@ -66,7 +66,6 @@ describe("plugin.codex", () => {
           },
           "gpt-5.6-sol": {
             id: "gpt-5.6-sol",
-            ultra: true,
             providerID: "openai",
             api: { id: "gpt-5.6-sol" },
             limit: { context: 1_050_000, input: 922_000, output: 128_000 },
@@ -114,9 +113,13 @@ describe("plugin.codex", () => {
       output: 0,
       cache: { read: 0, write: 0 },
     })
-    expect(Object.keys(models["gpt-5.6"]?.variants ?? {})).toEqual(["low", "max"])
-    expect(models["gpt-5.6"]?.variants?.ultra).toBeUndefined()
-    expect(Object.keys(models["gpt-5.5"]?.variants ?? {})).toEqual(["low", "medium", "high", "xhigh"])
+    expect(Object.keys(models["gpt-5.6"]?.variants ?? {})).toEqual(["low", "max", "ultra"])
+    expect(models["gpt-5.6"]?.variants?.ultra).toEqual({
+      reasoningEffort: "max",
+      reasoningSummary: "auto",
+      include: ["reasoning.encrypted_content"],
+    })
+    expect(Object.keys(models["gpt-5.5"]?.variants ?? {})).toEqual(["low", "medium", "high", "xhigh", "ultra"])
     expect(Object.keys(models["gpt-5.6-sol"]?.variants ?? {})).toEqual([
       "low",
       "medium",
@@ -141,6 +144,7 @@ describe("plugin.codex", () => {
       "high",
       "xhigh",
       "max",
+      "ultra",
     ])
   })
 
