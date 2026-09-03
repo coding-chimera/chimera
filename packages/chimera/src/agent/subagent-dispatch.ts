@@ -250,6 +250,16 @@ export const SubagentDispatch = Effect.gen(function* () {
       resumed: Boolean(prepared.existing),
     }
     const startedAt = Date.now()
+    let firstStreamedDeltaAt: number | undefined
+    const firstStreamedDelta = (parts: MessageV2.Part[]): number | undefined => {
+      const starts = parts.flatMap((part) => {
+        if (part.type === "text") return part.time ? [part.time.start] : []
+        if (part.type === "reasoning") return [part.time.start]
+        if (part.type === "tool" && "time" in part.state) return [part.state.time.start]
+        return []
+      })
+      return starts.length === 0 ? undefined : Math.min(...starts)
+    }
     const boundTelemetry = (() => {
       if (!input.telemetry) return undefined
       try {
@@ -323,6 +333,7 @@ export const SubagentDispatch = Effect.gen(function* () {
               },
               parts,
             })
+            firstStreamedDeltaAt = firstStreamedDelta(result.parts)
             if (input.abort.aborted) return yield* Effect.interrupt
             if (result.info.role === "assistant" && result.info.error) {
               return yield* Effect.fail(
@@ -355,8 +366,13 @@ export const SubagentDispatch = Effect.gen(function* () {
       .pipe(
         Effect.onExit((exit) => {
           const durationMs = Math.max(0, Date.now() - startedAt)
+          const ttftMs = firstStreamedDeltaAt === undefined ? undefined : Math.max(0, firstStreamedDeltaAt - startedAt)
           if (Exit.isSuccess(exit)) {
-            return telemetry("delegation.finished", { status: "completed", durationMs })
+            return telemetry("delegation.finished", {
+              status: "completed",
+              durationMs,
+              ...(ttftMs === undefined ? {} : { ttftMs }),
+            })
           }
           if (input.abort.aborted) {
             return telemetry("delegation.cancelled", {
@@ -364,6 +380,7 @@ export const SubagentDispatch = Effect.gen(function* () {
               finishReason: "cancelled",
               errorClass: "cancelled",
               durationMs,
+              ...(ttftMs === undefined ? {} : { ttftMs }),
             })
           }
           if (Cause.hasInterruptsOnly(exit.cause)) {
@@ -371,6 +388,7 @@ export const SubagentDispatch = Effect.gen(function* () {
               status: "interrupted",
               finishReason: "interrupted",
               durationMs,
+              ...(ttftMs === undefined ? {} : { ttftMs }),
             })
           }
           return telemetry("delegation.failed", {
@@ -378,6 +396,7 @@ export const SubagentDispatch = Effect.gen(function* () {
             finishReason: "unknown",
             errorClass: "unknown",
             durationMs,
+            ...(ttftMs === undefined ? {} : { ttftMs }),
           })
         }),
       )

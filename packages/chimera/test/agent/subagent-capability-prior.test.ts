@@ -155,4 +155,19 @@ describe("subagent capability prior", () => {
     expect(reconstructScore(anchor("broken", Number.NaN, "max"), "max")).toBeUndefined()
     expect(relativeMaxGap(opus, "ultra")).toBeUndefined()
   })
+
+  test("prefers an exact anchor over the dash-aligned prefix fallback", () => {
+    expect(capabilityAnchor("gpt-5.6-luna")).toMatchObject({ identity: "gpt-5.6-luna", score: 0.67 })
+  })
+
+  test("falls back to the longest dash-aligned anchor prefix", () => {
+    expect(capabilityAnchor("deepseek-v4-flash-0731")).toMatchObject({ identity: "deepseek-v4-flash", score: 0.53 })
+    expect(capabilityAnchor("glm-5.2-fast-preview")).toMatchObject({ identity: "glm-5.2", score: 0.44 })
+    expect(capabilityAnchor("gpt-5.6-luna-2026")).toMatchObject({ identity: "gpt-5.6-luna", score: 0.67 })
+  })
+
+  test("keeps the anchor prefix fallback dash-aligned", () => {
+    expect(capabilityAnchor("qwen3.8-maximum")).toBeUndefined()
+    expect(capabilityAnchor("completely-unknown-model")).toBeUndefined()
+  })
 })

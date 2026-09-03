@@ -7,9 +7,13 @@ import { Permission } from "@/permission"
 import { ProjectID } from "@/project/schema"
 import { Provider } from "@/provider/provider"
 import { ModelID, ProviderID } from "@/provider/schema"
-import { Effect } from "effect"
+import * as Log from "@opencode-ai/core/util/log"
+import { Cause, Effect } from "effect"
 import { SubagentModelCatalog } from "./subagent-model-catalog"
 import { buildSchedulingView, resolveArchetypes, selectionForWorkload, validateWorkload } from "./subagent-model-scheduling"
+import { SubagentSpeedEvidence, type RouteSpeedEvidence } from "./subagent-speed-evidence"
+
+const log = Log.create({ service: "subagent-model-scheduling-runtime" })
 
 export interface CurrentViewInput {
   ruleset: Permission.Ruleset
@@ -40,6 +44,12 @@ export const make = Effect.gen(function* () {
     const archetypes = resolveArchetypes(cfg.delegation?.scheduling)
     if (cfg.delegation?.scheduling?.enabled === false) return { catalog, view: undefined, archetypes }
     const auths = yield* auth.all().pipe(Effect.catchTag("AuthError", () => Effect.succeed({})))
+    const speedEvidence = yield* SubagentSpeedEvidence.recentSpeedEvidence({ projectID: input.projectID }).pipe(
+      Effect.catchCause((cause) => {
+        log.warn("speed evidence unavailable; falling back to static speed norms", { cause: Cause.pretty(cause) })
+        return Effect.succeed(new Map<string, RouteSpeedEvidence>())
+      }),
+    )
     const view = buildSchedulingView({
       routes: catalog.routes,
       config: cfg.delegation?.scheduling,
@@ -50,6 +60,8 @@ export const make = Effect.gen(function* () {
           return cost ? [[route.model, cost]] : []
         }),
       ),
+      speedEvidence: Object.fromEntries(speedEvidence),
+      topTierDisabledMinSizeClass: cfg.delegation?.scheduling?.topTierDisabledMinSizeClass,
       limit: input.limit,
     })
     return { catalog, view, archetypes: view.archetypes }

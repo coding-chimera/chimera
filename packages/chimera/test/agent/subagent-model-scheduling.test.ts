@@ -6,14 +6,16 @@ import {
 } from "../../src/agent/subagent-capability-prior"
 import type { ModelPricing } from "../../src/agent/subagent-model-pricing"
 import type { ModelRoute } from "../../src/agent/subagent-model-catalog"
+import { resolveSizeClass, staticSpeedNorm } from "../../src/agent/subagent-model-size"
+import { tpsToNorm, type RouteSpeedEvidence } from "../../src/agent/subagent-speed-evidence"
 import {
   buildSchedulingView,
   DEFAULT_ARCHETYPES,
   DEFAULT_POLICY,
   disclosure,
   disclosureProjection,
+  resolveEffort,
   resolveSchedule,
-  selectVariant,
   selectionForWorkload,
   validateWorkload,
 } from "../../src/agent/subagent-model-scheduling"
@@ -27,6 +29,7 @@ function route(identity: string, providerID: string, variants: string[] = []): M
     model: `${providerID}/${identity}`,
     name: identity,
     variants,
+    sizeClass: resolveSizeClass({ identity }),
     source: "config",
     dormant: false,
     preferred: false,
@@ -54,7 +57,7 @@ describe("subagent model scheduling", () => {
     expect(result).toHaveLength(1)
     expect(result[0]?.variant).toBe("low")
     expect(result[0]?.quality.source).toBe("curve")
-    expect(result[0]?.quality.value).toBeCloseTo(0.3906, 6)
+    expect(result[0]?.quality.value).toBeCloseTo(reconstructScore(capabilityAnchor("deepseek-v4-pro")!, "low")!)
     expect(result[0]?.unitCostUsd).toBeCloseTo(0.124, 6)
     expect(result[0]?.unitCostSource).toBe("provider-pricing")
     expect(result[0]?.quota).toBeUndefined()
@@ -90,7 +93,7 @@ describe("subagent model scheduling", () => {
 
   test("keeps minimal reasoning unproven while pricing its token basket", () => {
     const result = resolveSchedule({
-      routes: [route("gpt-5.6-sol", "metered", ["minimal"])],
+      routes: [route("gpt-5.6-sol", "metered", ["minimal", "max"])],
       archetype: { ...archetype("builder"), minQuality: 0.4, effortCap: "minimal" },
       regimes: { metered: "metered" },
       pricing: { "metered/gpt-5.6-sol": pricing() },
@@ -106,11 +109,28 @@ describe("subagent model scheduling", () => {
   })
 
   test("marks non-empty variant sets without a selectable reasoning tier as effort-mismatched", () => {
-    expect(selectVariant(["ultra"], "low")).toEqual({ variant: undefined, mismatch: true })
-    expect(selectVariant(["none"], "low")).toEqual({ variant: undefined, mismatch: true })
-    expect(selectVariant([], "low")).toEqual({ variant: undefined, mismatch: false })
-    expect(selectVariant(["ultra", "low"], "low")).toEqual({ variant: "low", mismatch: false })
-    expect(selectVariant(["max"], "low")).toEqual({ variant: "max", mismatch: true })
+    const cap = { ...archetype("builder"), minQuality: 0.1, effortCap: "low" }
+    expect(resolveEffort(route("gpt-5.6-sol", "metered", ["ultra"]), cap)).toMatchObject({
+      variant: undefined,
+      effortMismatch: true,
+    })
+    expect(resolveEffort(route("gpt-5.6-sol", "metered", ["none"]), cap)).toMatchObject({
+      variant: undefined,
+      effortMismatch: true,
+    })
+    expect(resolveEffort(route("gpt-5.6-sol", "metered", []), cap)).toMatchObject({
+      variant: undefined,
+      effortMismatch: false,
+    })
+    expect(resolveEffort(route("gpt-5.5", "metered", ["ultra", "low"]), cap)).toMatchObject({
+      variant: "low",
+      effortMismatch: false,
+    })
+    // A cap below every offered tier no longer dispatches above the cap.
+    expect(resolveEffort(route("gpt-5.6-sol", "metered", ["max"]), cap)).toMatchObject({
+      variant: undefined,
+      effortMismatch: true,
+    })
 
     const result = resolveSchedule({
       routes: [route("gpt-5.6-sol", "metered", ["ultra"])],
@@ -356,7 +376,7 @@ describe("subagent model scheduling", () => {
     expect(text).toContain("scheduling lines omitted")
   })
 
-  test("fills the lowest non-ultra variant when the archetype has no effort cap", () => {
+  test("fills the lowest sufficient tier when the archetype has no effort cap", () => {
     const result = resolveSchedule({
       routes: [route("deepseek-v4-flash", "test-relay", ["low", "high", "max", "ultra"])],
       archetype: archetype("scout"),
@@ -365,5 +385,165 @@ describe("subagent model scheduling", () => {
     })
 
     expect(result[0]?.variant).toBe("low")
+  })
+})
+
+describe("effort resolution", () => {
+  const open = { name: "open", description: "", minQuality: 0.5, weights: { quality: 1, speed: 0, cost: 0 } }
+
+  test("anchored big model passes at the lowest sufficient tier", () => {
+    const result = resolveEffort(route("claude-opus-5", "anthropic", ["low", "medium", "high", "max"]), archetype("scout"))
+    expect(result.variant).toBe("low")
+    expect(result.quality).toBeCloseTo(reconstructScore(capabilityAnchor("claude-opus-5")!, "low")!)
+    expect(result.qualitySource).toBe("curve")
+    expect(result.effortMismatch).toBe(false)
+  })
+
+  test("unanchored small model climbs tiers until minQuality is met", () => {
+    const result = resolveEffort(route("tiny-helper", "test", ["low", "medium", "high"]), archetype("builder"))
+    expect(result.variant).toBe("high")
+    expect(result.quality).toBeCloseTo(0.5, 6)
+    expect(result.qualitySource).toBe("heuristic")
+  })
+
+  test("drops the highest tier for XL routes but L routes keep max", () => {
+    const qwen = resolveEffort(route("qwen3.8-max", "test-relay", ["low", "medium", "high", "xhigh"]), open)
+    expect(qwen.variant).not.toBe("xhigh")
+
+    const kimi = resolveEffort(route("kimi-k3", "moonshot", ["low", "high", "max"]), open)
+    expect(kimi.variant).not.toBe("max")
+
+    const large = resolveEffort(route("deepseek-v4-pro", "deepseek", ["low", "max"]), open)
+    expect(large.variant).toBe("max")
+  })
+
+  test("respects the archetype effort cap", () => {
+    const result = resolveEffort(route("deepseek-v4-pro", "deepseek", ["low", "high", "max"]), archetype("builder"))
+    expect(result.variant).toBe("high")
+  })
+
+  test("returns the heuristic fallback for a route without tiered variants", () => {
+    const result = resolveEffort(route("alpha", "test"), archetype("scout"))
+    expect(result.variant).toBeUndefined()
+    expect(result.quality).toBeCloseTo(0.45, 6)
+    expect(result.qualitySource).toBe("heuristic")
+    expect(result.effortMismatch).toBe(false)
+  })
+
+  test("scores quality at the dispatched tier rather than the anchor tier", () => {
+    const anchor = capabilityAnchor("deepseek-v4-flash")!
+    const result = resolveSchedule({
+      routes: [route("deepseek-v4-flash", "test-relay", ["low", "max"])],
+      archetype: { ...archetype("scout"), minQuality: 0.3 },
+      regimes: { "test-relay": "metered" },
+      pricing: { "test-relay/deepseek-v4-flash": pricing() },
+    })
+
+    expect(result[0]?.variant).toBe("low")
+    expect(result[0]?.quality.value).toBeCloseTo(reconstructScore(anchor, "low")!)
+    expect(result[0]?.quality.value).toBeLessThan(anchor.score)
+    expect(result[0]?.quality.source).toBe("curve")
+  })
+})
+
+describe("size gating and layering", () => {
+  test("scout excludes XL routes while builder does not gate size", () => {
+    const routes = [route("qwen3.8-max", "test-relay", ["low", "max"]), route("deepseek-v4-flash", "test-relay", ["low", "max"])]
+    const regimes = { "test-relay": "metered" as const }
+
+    const scouted = resolveSchedule({ routes, archetype: archetype("scout"), regimes })
+    expect(scouted.map((item) => item.route)).toEqual(["test-relay/deepseek-v4-flash"])
+
+    const built = resolveSchedule({ routes, archetype: archetype("builder"), regimes })
+    expect(built.map((item) => item.route)).toEqual(["test-relay/qwen3.8-max", "test-relay/deepseek-v4-flash"])
+  })
+
+  test("keeps routes with an unknown size class eligible", () => {
+    const result = resolveSchedule({
+      routes: [route("mystery-model", "test", ["low"])],
+      archetype: archetype("scout"),
+      regimes: { test: "metered" },
+    })
+    expect(result.map((item) => item.route)).toEqual(["test/mystery-model"])
+  })
+
+  test("layers proven candidates before unproven regardless of score", () => {
+    const result = resolveSchedule({
+      routes: [
+        route("mystery-model", "metered", ["low"]),
+        route("deepseek-v4-flash", "metered", ["low"]),
+      ],
+      archetype: archetype("scout"),
+      regimes: { metered: "metered" },
+      pricing: {
+        "metered/mystery-model": pricing(0.01, 0.02, 0.005, 0.01),
+        "metered/deepseek-v4-flash": pricing(),
+      },
+    })
+
+    expect(result.map((item) => item.route)).toEqual(["metered/deepseek-v4-flash", "metered/mystery-model"])
+    expect(result[0]?.unproven).toBe(false)
+    expect(result[1]?.unproven).toBe(true)
+    expect(result[1]!.score).toBeGreaterThan(result[0]!.score)
+  })
+
+  test("flags an archetype with no proven candidate in the disclosure", () => {
+    const view = buildSchedulingView({
+      routes: [route("mystery-model", "test", ["low"])],
+      authTypes: { test: "oauth" },
+    })
+
+    expect(view.recommendations.scout?.every((item) => item.unproven)).toBe(true)
+    expect(disclosure(view)).toContain("no-proven-candidate (unproven fallback)")
+  })
+})
+
+describe("speed evidence", () => {
+  const evidenceRoute = route("deepseek-v4-flash", "test-relay", ["low"])
+  const input = {
+    routes: [evidenceRoute],
+    archetype: archetype("scout"),
+    regimes: { "test-relay": "metered" as const },
+    pricing: { "test-relay/deepseek-v4-flash": pricing() },
+  }
+
+  test("uses trustworthy measured speed once past the prior-sample threshold", () => {
+    const evidence: RouteSpeedEvidence = {
+      samples: 12,
+      trustworthy: true,
+      decodeTokPerSec: { low: 108 },
+      decodeSamples: { low: 12 },
+    }
+    const result = resolveSchedule({ ...input, speedEvidence: { "test-relay/deepseek-v4-flash": evidence } })
+
+    expect(result[0]?.speedNorm).toBeCloseTo(tpsToNorm(108), 6)
+    expect(result[0]?.speedSource).toBe("local")
+    expect(result[0]?.rationale).toContain("108 tps local (n=12)")
+  })
+
+  test("blends sparse measured speed with the static norm", () => {
+    const evidence: RouteSpeedEvidence = {
+      samples: 2,
+      trustworthy: true,
+      decodeTokPerSec: { low: 108 },
+      decodeSamples: { low: 2 },
+    }
+    const staticNorm = staticSpeedNorm({ sizeClass: "L", identity: "deepseek-v4-flash" })
+    const expected = (2 * tpsToNorm(108) + 3 * staticNorm) / 5
+    const result = resolveSchedule({ ...input, speedEvidence: { "test-relay/deepseek-v4-flash": evidence } })
+
+    expect(result[0]?.speedNorm).toBeCloseTo(expected, 6)
+    expect(result[0]?.speedSource).toBe("blended")
+    expect(result[0]?.rationale).toContain("tps blended (n=2)")
+  })
+
+  test("falls back to the static norm when evidence is untrustworthy", () => {
+    const evidence: RouteSpeedEvidence = { samples: 12, trustworthy: false, decodeTokPerSec: { low: 108 } }
+    const result = resolveSchedule({ ...input, speedEvidence: { "test-relay/deepseek-v4-flash": evidence } })
+    const staticNorm = staticSpeedNorm({ sizeClass: "L", identity: "deepseek-v4-flash" })
+
+    expect(result[0]?.speedNorm).toBeCloseTo(staticNorm, 6)
+    expect(result[0]?.speedSource).toBe("heuristic")
+    expect(result[0]?.rationale).toContain("static")
   })
 })

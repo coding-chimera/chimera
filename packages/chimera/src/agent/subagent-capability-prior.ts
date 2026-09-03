@@ -1,7 +1,7 @@
 export * as SubagentCapabilityPrior from "./subagent-capability-prior"
 
 import { ModelIdentity } from "../provider/model-identity"
-
+import { matchByDashPrefix } from "./subagent-model-size"
 export const CAPABILITY_PRIOR_VERSION = "deepswe-v1.1-curve-v1"
 export const SEMANTIC_TIERS = ["low", "medium", "high", "xhigh", "max"] as const
 export const REASONING_TIER_ORDER = ["minimal", ...SEMANTIC_TIERS] as const
@@ -93,7 +93,10 @@ export function normalizeIdentity(identity: string | undefined): string | undefi
 export function capabilityAnchor(identity: string | undefined): CapabilityAnchor | undefined {
   const normalized = normalizeIdentity(identity)
   if (!normalized) return undefined
-  return CAPABILITY_ANCHORS.find((anchor) => anchor.identity === normalized)
+  const exact = CAPABILITY_ANCHORS.find((anchor) => anchor.identity === normalized)
+  if (exact) return exact
+  const matches = CAPABILITY_ANCHORS.filter((anchor) => matchByDashPrefix(anchor.identity, normalized))
+  return matches.toSorted((a, b) => b.identity.length - a.identity.length)[0]
 }
 
 export function semanticTier(tier: string | undefined): SemanticTier | undefined {

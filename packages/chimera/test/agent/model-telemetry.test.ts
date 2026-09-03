@@ -971,6 +971,35 @@ describe("ModelTelemetry", () => {
     expect(Database.use((db) => db.select().from(ModelTelemetryOracleLinkTable).where(eq(ModelTelemetryOracleLinkTable.project_id, projectID)).all())).toEqual([])
   })
 
+  test("preserves execution ttftMs through schema decode and append/read round-trip", async () => {
+    const projectID = project()
+    const input = event({
+      projectID,
+      eventID: `ttft-${randomUUID()}`,
+      overrides: {
+        execution: { status: "completed", durationMs: 5_000, ttftMs: 1_240 },
+      },
+    })
+    const decoded = Schema.decodeUnknownSync(Event)(input, { onExcessProperty: "error" })
+    expect(decoded.execution?.ttftMs).toBe(1_240)
+
+    await append(input)
+    const persisted = read(projectID, 10).find((item) => item.eventID === input.eventID)
+    expect(persisted?.execution).toMatchObject({ status: "completed", durationMs: 5_000, ttftMs: 1_240 })
+  })
+
+  test("rejects negative or non-finite execution ttftMs on append", () => {
+    const projectID = project()
+    expectValidationError(
+      () => append(event({ projectID, overrides: { execution: { status: "completed", durationMs: 10, ttftMs: -1 } } })),
+      "invalid-event",
+    )
+    expectValidationError(
+      () => append(event({ projectID, overrides: { execution: { status: "completed", durationMs: 10, ttftMs: 1 / 0 } } })),
+      "invalid-event",
+    )
+  })
+
   function delegationFixtureMarker(projectID: ProjectID) {
     return projectID
   }

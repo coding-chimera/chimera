@@ -7,6 +7,7 @@ import { Permission } from "@/permission"
 import { ProjectID } from "@/project/schema"
 import { Provider } from "@/provider/provider"
 import { ModelIdentity } from "../provider/model-identity"
+import { resolveSizeClass, type SizeClass } from "./subagent-model-size"
 
 export interface ModelRoute {
   identity: string
@@ -16,6 +17,7 @@ export interface ModelRoute {
   model: string
   name: string
   variants: string[]
+  sizeClass?: SizeClass
   source: Provider.Info["source"]
   dormant: boolean
   preferred: boolean
@@ -153,6 +155,10 @@ export function buildSnapshot(input: BuildSnapshotInput): Snapshot {
             model: `${providerID}/${modelID}`,
             name: model.name,
             variants: Object.keys(model.variants ?? {}).sort(),
+            sizeClass: resolveSizeClass({
+              identity: resolved.identity,
+              configured: configured[providerID]?.models?.[modelID]?.size_class,
+            }),
             source: provider.source,
             dormant: false,
             preferred: false,

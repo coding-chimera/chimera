@@ -31,6 +31,9 @@ export const Model = Schema.Struct({
   capability_model_id: Schema.optional(Schema.String).annotate({
     description: "Canonical model ID used for capability lookup without changing the request model ID",
   }),
+  size_class: Schema.optional(Schema.Literals(["S", "M", "L", "XL"])).annotate({
+    description: "Size class for subagent scheduling; overrides the size inferred from the model identity",
+  }),
   reasoning_efforts: Schema.optional(
     Schema.mutable(Schema.Array(Schema.Literals(CodexModel.REASONING_EFFORTS))),
   ).annotate({
