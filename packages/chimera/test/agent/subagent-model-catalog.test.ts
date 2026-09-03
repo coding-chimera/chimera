@@ -156,6 +156,41 @@ describe("api-exact identity", () => {
     expect(snap.routes[0].identity).not.toBe("gpt-5.6-derived")
   })
 })
+describe("size class resolution", () => {
+  test("resolves size class from identity and honors config override", () => {
+    const openai = provider(ProviderID.openai, {
+      "qwen-max": model({ id: ModelID.make("qwen-max"), api: { id: "qwen3.8-max", url: "https://example.com", npm: "@ai-sdk/openai" } }),
+      "ds-pro": model({ id: ModelID.make("ds-pro"), api: { id: "deepseek-v4-pro", url: "https://example.com", npm: "@ai-sdk/openai" } }),
+      haiku: model({ id: ModelID.make("haiku"), api: { id: "claude-haiku", url: "https://example.com", npm: "@ai-sdk/openai" } }),
+    })
+    const snap = SubagentModelCatalog.buildSnapshot({
+      providers: { openai },
+      configuredProviders: { openai: { models: { "qwen-max": { size_class: "S" } } } },
+    })
+    const byID = Object.fromEntries(snap.routes.map((route) => [route.modelID, route.sizeClass]))
+    // config override wins over the XL class inferred from qwen3.8-max
+    expect(byID["qwen-max"]).toBe("S")
+    expect(byID["ds-pro"]).toBe("L")
+    expect(byID["haiku"]).toBe("S")
+  })
+
+  test("leaves size class undefined for unknown identities without config", () => {
+    const openai = provider(ProviderID.openai, { "gpt-5.2": model({ id: ModelID.make("gpt-5.2") }) })
+    const snap = SubagentModelCatalog.buildSnapshot({ providers: { openai } })
+    expect(snap.routes[0].sizeClass).toBeUndefined()
+  })
+
+  test("matches size class by dash prefix for dated deployments", () => {
+    const openai = provider(ProviderID.openai, {
+      "flash-0731": model({
+        id: ModelID.make("flash-0731"),
+        api: { id: "deepseek-v4-flash-0731", url: "https://example.com", npm: "@ai-sdk/openai" },
+      }),
+    })
+    const snap = SubagentModelCatalog.buildSnapshot({ providers: { openai } })
+    expect(snap.routes[0].sizeClass).toBe("L")
+  })
+})
 
 describe("stable sorting and variant names", () => {
   test("routes sort deterministically by identity and variants expose only sorted names", () => {

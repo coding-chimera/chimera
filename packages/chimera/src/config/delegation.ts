@@ -22,11 +22,13 @@ export const SchedulingArchetype = Schema.Struct({
   description: Schema.optional(Schema.String),
   minQuality: Schema.optional(Schema.Number),
   effortCap: Schema.optional(Schema.String),
+  maxSizeClass: Schema.optional(Schema.Literals(["S", "M", "L", "XL"])),
   weights: Schema.optional(
     Schema.Struct({
       quality: Schema.Number,
       speed: Schema.Number,
       cost: Schema.Number,
+      size: Schema.optional(Schema.Number),
     }),
   ),
   budgetUsdPerWorker: Schema.optional(Schema.Number),
@@ -48,6 +50,7 @@ export const Scheduling = Schema.Struct({
       }),
     ),
   ),
+  topTierDisabledMinSizeClass: Schema.optional(Schema.Literals(["S", "M", "L", "XL"])),
 })
   .annotate({ identifier: "DelegationScheduling" })
   .pipe(withStatics((s) => ({ zod: zod(s) })))

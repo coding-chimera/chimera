@@ -4,23 +4,23 @@ import {
   CAPABILITY_PRIOR_VERSION,
   REASONING_TIER_ORDER,
   capabilityAnchor,
-  lowestNonUltraVariant,
   reconstructScore,
-  semanticTier,
 } from "./subagent-capability-prior"
 import { projectCost, type BillingDisposition, type CostSource, type ModelPricing } from "./subagent-model-pricing"
 import type { ModelRoute } from "./subagent-model-catalog"
+import { SIZE_CLASSES, staticSpeedNorm, type SizeClass } from "./subagent-model-size"
+import { blendedSpeedNorm, TPS_MAX, TPS_MIN, type RouteSpeedEvidence } from "./subagent-speed-evidence"
 
 export type BillingRegime = BillingDisposition
 export type SpendPolicy = "subscription-first" | "metered-first"
 export type EvidenceSource = "deepswe-anchor" | "curve" | "blended" | "local" | "heuristic" | "none"
 export type QuotaGateState = "ok" | "strained" | "exhausted" | "no-data"
 
-
 export interface WorkloadWeights {
   quality: number
   speed: number
   cost: number
+  size?: number
 }
 
 export interface WorkloadArchetype {
@@ -28,6 +28,7 @@ export interface WorkloadArchetype {
   description: string
   minQuality: number
   effortCap?: string
+  maxSizeClass?: SizeClass
   weights: WorkloadWeights
   budgetUsdPerWorker?: number
 }
@@ -36,6 +37,7 @@ export interface WorkloadArchetypeOverride {
   description?: string
   minQuality?: number
   effortCap?: string
+  maxSizeClass?: SizeClass
   weights?: WorkloadWeights
   budgetUsdPerWorker?: number
 }
@@ -63,7 +65,7 @@ export interface ModelCostProfile {
   identity: string
   regime: BillingRegime
   quality: { value: number; tier?: string; source: EvidenceSource }
-  speed: { norm: number; source: EvidenceSource }
+  speed: { norm: number; source: EvidenceSource; tps?: number; samples?: number }
   unitCost: { usd?: number; source: CostSource; reason?: string }
   quota?: QuotaGate
 }
@@ -81,6 +83,8 @@ export interface ScheduleRecommendation {
   unitCostReason?: string
   quota?: QuotaGate
   speedNorm: number
+  speedSource: EvidenceSource
+  sizeClass?: SizeClass
   rationale: string
   overflow: boolean
   unproven: boolean
@@ -104,8 +108,30 @@ interface Candidate {
   overflow: boolean
 }
 
+export interface EffortResolution {
+  variant?: string
+  tier?: string
+  quality: number
+  qualitySource: EvidenceSource
+  effortMismatch: boolean
+}
+
 export const DISCLOSURE_MAX_CHARS = 1500
 export const EFFORT_ORDER = REASONING_TIER_ORDER
+export const HEURISTIC_TIER_QUALITY: Record<string, number> = {
+  low: 0.4,
+  medium: 0.45,
+  high: 0.5,
+  xhigh: 0.52,
+  max: 0.54,
+}
+export const SIZE_SMALLNESS: Record<SizeClass, number> = { S: 1, M: 0.67, L: 0.33, XL: 0 }
+export const DEFAULT_TOP_TIER_DISABLED_MIN_SIZE_CLASS: SizeClass = "XL"
+
+const FALLBACK_HEURISTIC_QUALITY = 0.45
+// Mirrors the fast-identity demotion in staticSpeedNorm so disclosure can explain static norms.
+const FAST_IDENTITY_PATTERN = /fast|flash/i
+
 const IDENTITY_CONFIDENCE_RANK = {
   "provider-scoped": 0,
   "api-exact": 1,
@@ -122,31 +148,25 @@ export const DEFAULT_ARCHETYPES: WorkloadArchetype[] = [
   {
     name: "scout",
     description: "Read-only discovery and localization; prefer fast, inexpensive models.",
-    minQuality: 0.35,
-    weights: { quality: 0.1, speed: 0.5, cost: 0.4 },
+    minQuality: 0.3,
+    maxSizeClass: "L",
+    weights: { quality: 0.1, speed: 0.45, cost: 0.3, size: 0.15 },
   },
   {
     name: "builder",
     description: "Parallel implementation; require stronger cognition while capping reasoning effort.",
-    minQuality: 0.55,
-    effortCap: "low",
-    weights: { quality: 0.6, speed: 0.1, cost: 0.3 },
+    minQuality: 0.5,
+    effortCap: "high",
+    weights: { quality: 0.5, speed: 0.1, cost: 0.25, size: 0.1 },
   },
   {
     name: "reviewer",
     description: "Review and audit follow-up; favor quality with moderate reasoning effort.",
-    minQuality: 0.55,
+    minQuality: 0.5,
     effortCap: "medium",
-    weights: { quality: 0.5, speed: 0.2, cost: 0.3 },
+    weights: { quality: 0.5, speed: 0.2, cost: 0.3, size: 0 },
   },
 ]
-
-
-export function heuristicSpeedNorm(identity: string) {
-  if (/flash|luna|spark|lite|fast|k2\.7/i.test(identity)) return 1
-  if (/pro|sol|terra|opus|fable|ultra|k3|max/i.test(identity)) return 0.3
-  return 0.6
-}
 
 function mergeArchetype(base: WorkloadArchetype, override: WorkloadArchetypeOverride | undefined) {
   if (!override) return { ...base, weights: { ...base.weights } }
@@ -219,29 +239,69 @@ export function quotaGate(input: {
   return { state: "ok", remainingPercent: input.remainingPercent }
 }
 
-export function selectVariant(variants: string[], effortCap?: string) {
-  if (!effortCap) return { variant: undefined, mismatch: false }
-  const cap = EFFORT_ORDER.indexOf(effortCap as (typeof EFFORT_ORDER)[number])
-  if (cap < 0) return { variant: undefined, mismatch: false }
-  const eligible = variants
-    .filter((variant) => {
-      const index = EFFORT_ORDER.indexOf(variant as (typeof EFFORT_ORDER)[number])
-      return index >= 0 && index <= cap
-    })
-    .toSorted(
-      (a, b) =>
-        EFFORT_ORDER.indexOf(b as (typeof EFFORT_ORDER)[number]) -
-        EFFORT_ORDER.indexOf(a as (typeof EFFORT_ORDER)[number]),
-    )
-  if (eligible[0]) return { variant: eligible[0], mismatch: false }
-  const lowest = variants
-    .filter((variant) => EFFORT_ORDER.includes(variant as (typeof EFFORT_ORDER)[number]))
-    .toSorted(
-      (a, b) =>
-        EFFORT_ORDER.indexOf(a as (typeof EFFORT_ORDER)[number]) -
-        EFFORT_ORDER.indexOf(b as (typeof EFFORT_ORDER)[number]),
-    )[0]
-  return { variant: lowest, mismatch: lowest !== undefined || variants.length > 0 }
+function tierIndex(variant: string) {
+  return REASONING_TIER_ORDER.indexOf(variant.trim().toLowerCase() as (typeof REASONING_TIER_ORDER)[number])
+}
+
+function sizeClassRank(sizeClass: SizeClass | undefined) {
+  return sizeClass === undefined ? -1 : SIZE_CLASSES.indexOf(sizeClass)
+}
+
+function exceedsMaxSizeClass(sizeClass: SizeClass | undefined, maxSizeClass: SizeClass | undefined) {
+  if (sizeClass === undefined || maxSizeClass === undefined) return false
+  return sizeClassRank(sizeClass) > sizeClassRank(maxSizeClass)
+}
+
+function normToTps(norm: number) {
+  return TPS_MIN * (TPS_MAX / TPS_MIN) ** norm
+}
+
+/**
+ * Picks the dispatch variant for one route under one archetype: the lowest
+ * eligible reasoning tier whose quality at that tier meets minQuality, falling
+ * back to the highest eligible tier (flagged unproven downstream). Quality is
+ * always evaluated at the tier actually selected for dispatch.
+ */
+export function resolveEffort(
+  route: ModelRoute,
+  archetype: WorkloadArchetype,
+  opts: { topTierDisabledMinSizeClass?: SizeClass } = {},
+): EffortResolution {
+  const anchor = capabilityAnchor(route.identity)
+  const tiered = route.variants
+    .filter((variant) => tierIndex(variant) >= 0)
+    .toSorted((a, b) => tierIndex(a) - tierIndex(b))
+  const minSizeClass = opts.topTierDisabledMinSizeClass ?? DEFAULT_TOP_TIER_DISABLED_MIN_SIZE_CLASS
+  const topTierDisabled = sizeClassRank(route.sizeClass) >= sizeClassRank(minSizeClass)
+  const offered = topTierDisabled ? tiered.slice(0, -1) : tiered
+  const cap = archetype.effortCap === undefined ? -1 : tierIndex(archetype.effortCap)
+  const eligible = cap < 0 ? offered : offered.filter((variant) => tierIndex(variant) <= cap)
+  if (eligible.length === 0) {
+    return {
+      variant: undefined,
+      tier: undefined,
+      quality: FALLBACK_HEURISTIC_QUALITY,
+      qualitySource: "heuristic",
+      effortMismatch: route.variants.length > 0,
+    }
+  }
+  const qualityAt = (variant: string): { value: number; source: EvidenceSource } => {
+    const reconstructed = anchor === undefined ? undefined : reconstructScore(anchor, variant)
+    if (anchor !== undefined && reconstructed !== undefined) {
+      return { value: reconstructed, source: variant === anchor.anchorTier ? "deepswe-anchor" : "curve" }
+    }
+    return { value: HEURISTIC_TIER_QUALITY[variant] ?? FALLBACK_HEURISTIC_QUALITY, source: "heuristic" }
+  }
+  const selected =
+    eligible.find((variant) => qualityAt(variant).value >= archetype.minQuality) ?? eligible[eligible.length - 1]
+  const quality = qualityAt(selected)
+  return {
+    variant: selected,
+    tier: selected,
+    quality: quality.value,
+    qualitySource: quality.source,
+    effortMismatch: false,
+  }
 }
 
 export function buildProfile(input: {
@@ -251,25 +311,29 @@ export function buildProfile(input: {
   quota?: QuotaGate
   workload: string
   effort?: string
+  quality: { value: number; tier?: string; source: EvidenceSource }
+  speedEvidence?: RouteSpeedEvidence
 }): ModelCostProfile {
-  const anchor = capabilityAnchor(input.route.identity)
-  const tier = semanticTier(input.effort) ?? (input.effort === undefined ? anchor?.anchorTier : undefined)
-  const score = anchor && tier ? reconstructScore(anchor, tier) : undefined
+  const speed = blendedSpeedNorm(
+    input.speedEvidence,
+    staticSpeedNorm({ sizeClass: input.route.sizeClass, identity: input.route.identity }),
+    input.effort,
+  )
   const cost = projectCost({
     pricing: input.pricing,
     disposition: input.regime,
     workload: input.workload,
-    tier: input.effort ?? anchor?.anchorTier ?? "medium",
+    tier: input.effort ?? "medium",
   })
   return {
     route: input.route.model,
     identity: input.route.identity,
     regime: input.regime,
-    quality:
-      score === undefined
-        ? { value: 0.45, source: "heuristic" }
-        : { value: score, tier, source: tier === anchor?.anchorTier ? "deepswe-anchor" : "curve" },
-    speed: { norm: heuristicSpeedNorm(input.route.identity), source: "heuristic" },
+    quality: input.quality,
+    speed:
+      speed.source === "heuristic"
+        ? { norm: speed.norm, source: speed.source }
+        : { norm: speed.norm, source: speed.source, tps: normToTps(speed.norm), samples: input.speedEvidence?.samples ?? 0 },
     unitCost:
       cost.status === "known"
         ? { usd: cost.usd, source: cost.source }
@@ -285,6 +349,10 @@ function normalized(value: number, values: number[]) {
   return (value - min) / (max - min)
 }
 
+function sizeSmallness(sizeClass: SizeClass | undefined) {
+  return sizeClass === undefined ? 0.5 : SIZE_SMALLNESS[sizeClass]
+}
+
 function scoreCandidates(candidates: Candidate[], archetype: WorkloadArchetype) {
   const quality = candidates.map((candidate) => candidate.quality)
   const speed = candidates.map((candidate) => candidate.profile.speed.norm)
@@ -295,12 +363,14 @@ function scoreCandidates(candidates: Candidate[], archetype: WorkloadArchetype) 
   )
   const fallbackCost = knownPositiveCosts.length === 0 ? Number.EPSILON : Math.max(...knownPositiveCosts) * 1.1
   const cost = candidates.map((candidate) => candidate.profile.unitCost.usd ?? fallbackCost)
+  const sizeWeight = archetype.weights.size ?? 0
   return candidates.map((candidate, index) => ({
     ...candidate,
     score:
       archetype.weights.quality * normalized(candidate.quality, quality) +
       archetype.weights.speed * normalized(candidate.profile.speed.norm, speed) +
       archetype.weights.cost * (1 - normalized(cost[index], cost)) +
+      (sizeWeight > 0 ? sizeWeight * sizeSmallness(candidate.route.sizeClass) : 0) +
       (candidate.route.preferred ? 0.05 : 0),
   }))
 }
@@ -314,6 +384,17 @@ function candidateOrder(a: Candidate, b: Candidate) {
     IDENTITY_CONFIDENCE_RANK[b.route.identityConfidence] - IDENTITY_CONFIDENCE_RANK[a.route.identityConfidence] ||
     a.route.model.localeCompare(b.route.model)
   )
+}
+
+function speedRationale(candidate: Candidate) {
+  const speed = candidate.profile.speed
+  if (speed.source === "local" || speed.source === "blended") {
+    const tps = Math.round(speed.tps ?? normToTps(speed.norm))
+    return `${speed.source === "blended" ? "~" : ""}${tps} tps ${speed.source} (n=${speed.samples ?? 0})`
+  }
+  const norm = Math.round(speed.norm * 100) / 100
+  if (candidate.route.sizeClass === undefined) return `${norm} static`
+  return `${norm} static (${candidate.route.sizeClass}${FAST_IDENTITY_PATTERN.test(candidate.route.identity) ? "+fast" : ""})`
 }
 
 function rationale(candidate: Candidate) {
@@ -331,11 +412,11 @@ function rationale(candidate: Candidate) {
         : candidate.profile.unitCost.usd === undefined
           ? "cost unknown"
           : `$${candidate.profile.unitCost.usd.toFixed(2)}/task ${candidate.profile.unitCost.source}`
-  const speed = candidate.profile.speed.norm >= 0.8 ? "fast" : candidate.profile.speed.norm >= 0.5 ? "normal" : "slow"
   return [
     quality,
     cost,
-    `${speed} ${candidate.profile.speed.source}`,
+    speedRationale(candidate),
+    candidate.route.sizeClass === undefined ? undefined : `size ${candidate.route.sizeClass}`,
     candidate.unproven ? "unproven" : undefined,
     candidate.effortMismatch ? "effort-mismatch" : undefined,
   ]
@@ -357,6 +438,8 @@ function recommendation(candidate: Candidate, archetype: WorkloadArchetype): Sch
     unitCostReason: candidate.profile.unitCost.reason,
     quota: candidate.profile.quota,
     speedNorm: candidate.profile.speed.norm,
+    speedSource: candidate.profile.speed.source,
+    ...(candidate.route.sizeClass === undefined ? {} : { sizeClass: candidate.route.sizeClass }),
     rationale: rationale(candidate),
     overflow: candidate.overflow,
     unproven: candidate.unproven,
@@ -371,12 +454,17 @@ export function resolveSchedule(input: {
   regimes?: Record<string, BillingRegime>
   quota?: Record<string, QuotaGate>
   policy?: SchedulingPolicy
+  speedEvidence?: Record<string, RouteSpeedEvidence>
+  topTierDisabledMinSizeClass?: SizeClass
   limit?: number
 }): ScheduleRecommendation[] {
   const policy = input.policy ?? DEFAULT_POLICY
   const candidates = input.routes.flatMap((route): Candidate[] => {
     if (route.suppressed || route.dormant) return []
-    const selected = selectVariant(route.variants, input.archetype.effortCap)
+    if (exceedsMaxSizeClass(route.sizeClass, input.archetype.maxSizeClass)) return []
+    const effort = resolveEffort(route, input.archetype, {
+      topTierDisabledMinSizeClass: input.topTierDisabledMinSizeClass,
+    })
     const profile = buildProfile({
       route,
       regime:
@@ -387,13 +475,12 @@ export function resolveSchedule(input: {
       pricing: input.pricing?.[route.model],
       quota: input.quota?.[route.model],
       workload: input.archetype.name,
-      effort: selected.variant,
+      effort: effort.variant,
+      quality: { value: effort.quality, tier: effort.tier, source: effort.qualitySource },
+      speedEvidence: input.speedEvidence?.[route.model],
     })
     if (profile.quota?.state === "exhausted") return []
-    const quality = profile.quality.value
-    const belowThreshold = quality < input.archetype.minQuality
-    const unproven = profile.quality.source === "heuristic" || (belowThreshold && profile.quality.source === "curve")
-    if (belowThreshold && !unproven) return []
+    const unproven = effort.qualitySource === "heuristic" || effort.quality < input.archetype.minQuality
     if (
       input.archetype.budgetUsdPerWorker !== undefined &&
       profile.unitCost.usd !== undefined &&
@@ -404,9 +491,9 @@ export function resolveSchedule(input: {
       {
         route,
         profile,
-        variant: selected.variant ?? lowestNonUltraVariant(route.variants),
-        effortMismatch: selected.mismatch,
-        quality,
+        variant: effort.variant,
+        effortMismatch: effort.effortMismatch,
+        quality: effort.quality,
         score: 0,
         unproven,
         overflow: false,
@@ -458,6 +545,8 @@ export function buildSchedulingView(input: {
   authTypes?: Record<string, string | undefined>
   pricing?: Record<string, ModelPricing>
   quota?: Record<string, QuotaGate>
+  speedEvidence?: Record<string, RouteSpeedEvidence>
+  topTierDisabledMinSizeClass?: SizeClass
   limit?: number
 }): SchedulingView {
   const archetypes = resolveArchetypes(input.config)
@@ -468,7 +557,7 @@ export function buildSchedulingView(input: {
       detectRegime(
         input.authTypes?.[route.providerID],
         input.config?.overrides?.[route.model]?.billing ??
-        input.config?.overrides?.[route.identity]?.billing ?? input.config?.overrides?.[route.providerID]?.billing,
+          input.config?.overrides?.[route.identity]?.billing ?? input.config?.overrides?.[route.providerID]?.billing,
       ),
     ]),
   )
@@ -484,6 +573,8 @@ export function buildSchedulingView(input: {
           regimes,
           quota: input.quota,
           policy,
+          speedEvidence: input.speedEvidence,
+          topTierDisabledMinSizeClass: input.topTierDisabledMinSizeClass,
           limit: input.limit,
         }),
       ]),
@@ -505,14 +596,15 @@ export function disclosure(view: SchedulingView, maxChars = DISCLOSURE_MAX_CHARS
   const lines = view.archetypes.flatMap((archetype) => {
     const recommendations = view.recommendations[archetype.name] ?? []
     if (recommendations.length === 0) return [`- ${archetype.name}: no feasible current route`]
+    const marker = recommendations.some((item) => !item.unproven) ? "" : " no-proven-candidate (unproven fallback)"
     if (recommendations.every((item) => item.overflow)) {
       return [
-        `- ${archetype.name}: ${archetype.description}`,
+        `- ${archetype.name}: ${archetype.description}${marker}`,
         `  overflow only: ${displayRecommendation(recommendations[0])}`,
       ]
     }
     return [
-      `- ${archetype.name}: ${archetype.description}`,
+      `- ${archetype.name}: ${archetype.description}${marker}`,
       `  pick: ${displayRecommendation(recommendations[0])}`,
       ...(recommendations[1] ? [`  alt: ${displayRecommendation(recommendations[1])}`] : []),
     ]

@@ -182,6 +182,7 @@ export const Execution = Schema.Struct({
   finishReason: Schema.optional(FinishReason),
   errorClass: Schema.optional(ErrorClass),
   durationMs: Schema.optional(NonNegativeFinite),
+  ttftMs: Schema.optional(NonNegativeFinite),
 })
 export type Execution = Schema.Schema.Type<typeof Execution>
 
@@ -573,6 +574,7 @@ function normalizeExecution(input: Partial<Execution> | undefined): Execution | 
     ...(typeof input.durationMs === "number" && Number.isFinite(input.durationMs)
       ? { durationMs: Math.max(0, input.durationMs) }
       : {}),
+    ...(typeof input.ttftMs === "number" && Number.isFinite(input.ttftMs) ? { ttftMs: Math.max(0, input.ttftMs) } : {}),
   }
 }
 

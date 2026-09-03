@@ -210,9 +210,11 @@ describe("subagent_model_schedule tool", () => {
       expect(result.title).toBe("subagent_model_schedule")
       expect(output.priorVersion).toBe(CAPABILITY_PRIOR_VERSION)
       expect(Object.keys(output.recommendations)).toEqual(["scout", "builder", "reviewer", "triage"])
-      expect(output.recommendations.scout[0]).toMatchObject({
+      expect(output.recommendations.scout).toEqual([])
+      expect(output.recommendations.builder[0]).toMatchObject({
         route: "subscription/gpt-5.6-sol",
         regime: "subscription",
+        variant: "medium",
         unitCostUsd: 0,
         quota: { state: "no-data" },
       })
@@ -223,7 +225,7 @@ describe("subagent_model_schedule tool", () => {
     Effect.gen(function* () {
       const info = yield* SubagentModelScheduleTool
       const def = yield* Tool.init(info)
-      const result = yield* def.execute({ workload: "scout" }, context([]))
+      const result = yield* def.execute({ workload: "builder" }, context([]))
       const output = JSON.parse(result.output)
       const recommendation = output.recommendations[0]
 
@@ -233,7 +235,7 @@ describe("subagent_model_schedule tool", () => {
         unitCostSource: "provider-pricing",
       })
       expect(recommendation.quota).toBeUndefined()
-      expect(recommendation.unitCostUsd).toBeCloseTo(0.118, 6)
+      expect(recommendation.unitCostUsd).toBeCloseTo(0.132, 6)
     }),
   )
 
@@ -241,7 +243,7 @@ describe("subagent_model_schedule tool", () => {
     Effect.gen(function* () {
       const info = yield* SubagentModelScheduleTool
       const def = yield* Tool.init(info)
-      const result = yield* def.execute({ workload: "scout" }, context([]))
+      const result = yield* def.execute({ workload: "builder" }, context([]))
       const recommendation = JSON.parse(result.output).recommendations[0]
 
       expect(recommendation).toMatchObject({
@@ -259,7 +261,7 @@ describe("subagent_model_schedule tool", () => {
     Effect.gen(function* () {
       const info = yield* SubagentModelScheduleTool
       const def = yield* Tool.init(info)
-      const result = yield* def.execute({ workload: "scout" }, context([]))
+      const result = yield* def.execute({ workload: "builder" }, context([]))
       const recommendation = JSON.parse(result.output).recommendations[0]
 
       expect(recommendation).toMatchObject({
@@ -290,7 +292,7 @@ describe("subagent_model_schedule tool", () => {
     Effect.gen(function* () {
       const info = yield* SubagentModelScheduleTool
       const def = yield* Tool.init(info)
-      const result = yield* def.execute({ workload: "scout" }, context([]))
+      const result = yield* def.execute({ workload: "builder" }, context([]))
       const output = JSON.parse(result.output)
 
       expect(output.recommendations).toEqual([])

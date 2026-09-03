@@ -273,7 +273,10 @@ describe("tool.registry", () => {
       expect(descriptions).toContain("subagent_model_routes")
       expect(descriptions).toContain("## Subagent Model Scheduling")
       expect(descriptions).toContain("No model selector + workload => scheduler picks")
-      expect(descriptions).not.toMatch(/deepseek\/deepseek-v4-flash|gpt-\d|anthropic\/|openai\//i)
+      // opencode/gpt-5-nano is the test provider fixture the scheduler now climbs to; keep guarding real provider routes.
+      expect(descriptions.replace(/opencode\/gpt-5-nano/g, "")).not.toMatch(
+        /deepseek\/deepseek-v4-flash|gpt-\d|anthropic\/|openai\//i,
+      )
     }),
   )
 
