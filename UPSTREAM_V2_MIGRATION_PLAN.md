@@ -32,7 +32,7 @@
 |---|---|---|---|
 | L0 | grep 权限修复 + 插件 v2 host + codemode 包 | ✅ 完成 | 安全行为；无破坏 |
 | L1 | schema/protocol 包 + Effect beta.59→83 | ✅ 完成 | 无感知（typecheck/test 绿） |
-| L2 | LayerNode 最小子集 + effect-drizzle-sqlite + 日志 shim | ~3-4 天 | 无感知 |
+| L2 | LayerNode 最小子集 + effect-drizzle-sqlite + 日志 shim | ✅ 完成 | 无感知 |
 | L3 | 提示词层改 `SystemContext.Source`；Session V2 按子能力接入（快照/回滚/epochs 先）；V1 主路径不动 | ~2 周 | 快照/回滚等可见能力 |
 | L4 | packages/llm + 逐 provider 迁移（DeepSeek 先）+ 模型能力配置化 | ~2 周 | 新 provider、`model_capabilities` 配置生效 |
 | L5 | Agent 子代理调度适配新 State 系统 | ~1 周 | task/swarm 在新底座上 |
@@ -90,11 +90,13 @@ Model schema 扩展字段：`sampling.{temperature,top_p,top_k}`、`reasoning_pr
 
 执行顺序：L0.1 → L0.3 前置实验（决定 Effect 升级是否提前）→ L0.2 → L0.3。
 
-## L2 细分计划
+## L2 细分计划 ✅ 已完成（2026-09-02）
 
-目标：搬入新底座骨架（LayerNode 服务组装机制 + effect-drizzle-sqlite），**不接任何现有代码**，为 L3 Session V2 打地基。行为零变化。
+目标：搬入新底座骨架（LayerNode 服务组装机制 + effect-drizzle-sqlite），不接任何现有代码，为 L3 Session V2 打地基。行为零变化。
 
-### L2.1 — LayerNode 最小子集
+实际结果：L2.1 搬入 6 文件（`runtime.ts`/`memo-map.ts` 本仓已有等价实现，跳过；`app-node-builder.ts` 改为注入式签名以切断对上游 30+ v2 服务模块的依赖链，`node-build.test.ts` 因此未搬，location-map 自动路径暂无测试覆盖——L3 接 location 栈时补）；L2.2 整包搬入零适配（drizzle-orm 固定 1.0.0-rc.2，不动根 catalog 的 beta.19）；L2.3 确认并存即可。提交：`8025a5942b`、`d1e1caad04`。
+
+### L2.1 — LayerNode 最小子集 ✅
 
 从上游 `packages/core/src/effect/` 搬入（`/Volumes/workspace/opencode` 只读参考）：
 
@@ -106,7 +108,7 @@ Model schema 扩展字段：`sampling.{temperature,top_p,top_k}`、`reasoning_pr
 - [ ] 搬入上游对应测试：`test/effect/layer-node/` + `keyed-mutex.test.ts`（observability.test.ts 视是否搬 observability 模块而定）
 - [ ] 验证：新测试全过 + `bun typecheck` 绿
 
-### L2.2 — effect-drizzle-sqlite 包
+### L2.2 — effect-drizzle-sqlite 包 ✅
 
 - [ ] 从上游 `packages/effect-drizzle-sqlite/` 整包搬入（src/ 含 effect-sqlite、sqlite-core、up-migrations、internal；test/、examples/ 视情况）
 - [ ] 包名按本仓惯例保留 `@opencode-ai/effect-drizzle-sqlite`，private
@@ -114,7 +116,7 @@ Model schema 扩展字段：`sampling.{temperature,top_p,top_k}`、`reasoning_pr
 - [ ] 不从 `src/storage/db.ts` 迁移任何东西——现有存储层不动
 - [ ] 验证：包内 `bun typecheck` + `bun test` 全过
 
-### L2.3 — 日志 shim（并存保证）
+### L2.3 — 日志 shim（并存保证）✅
 
 - [ ] 确认现有 `@opencode-ai/core/util/log` 在 beta.83 下继续工作（L1 已验证 typecheck 绿，此项多为确认）
 - [ ] 若 LayerNode 落地需要上游 observability/logging，则以独立模块搬入，**不改** 84 处现有 `util/log` 调用点
