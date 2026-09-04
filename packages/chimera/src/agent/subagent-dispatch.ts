@@ -276,10 +276,11 @@ export const SubagentDispatch = Effect.gen(function* () {
         | "delegation.failed"
         | "delegation.cancelled",
       execution?: ModelTelemetry.Execution,
+      usage?: ModelTelemetry.Usage,
     ) =>
       Effect.sync(() => {
         if (!boundTelemetry) return
-        void ModelTelemetry.recordShadowLifecycle(boundTelemetry, eventType, execution)
+        void ModelTelemetry.recordShadowLifecycle(boundTelemetry, eventType, execution, usage)
       }).pipe(Effect.ignore)
     yield* telemetry("delegation.prepared")
     const runCancel = yield* EffectBridge.make()
@@ -368,11 +369,22 @@ export const SubagentDispatch = Effect.gen(function* () {
           const durationMs = Math.max(0, Date.now() - startedAt)
           const ttftMs = firstStreamedDeltaAt === undefined ? undefined : Math.max(0, firstStreamedDeltaAt - startedAt)
           if (Exit.isSuccess(exit)) {
-            return telemetry("delegation.finished", {
+            const usage =
+              exit.value.info.role === "assistant"
+                ? {
+                    input: exit.value.info.tokens.input,
+                    output: exit.value.info.tokens.output,
+                    reasoning: exit.value.info.tokens.reasoning,
+                    cacheRead: exit.value.info.tokens.cache.read,
+                    cacheWrite: exit.value.info.tokens.cache.write,
+                  }
+                : undefined
+            const finishedExecution: ModelTelemetry.Execution = {
               status: "completed",
               durationMs,
               ...(ttftMs === undefined ? {} : { ttftMs }),
-            })
+            }
+            return telemetry("delegation.finished", finishedExecution, usage)
           }
           if (input.abort.aborted) {
             return telemetry("delegation.cancelled", {

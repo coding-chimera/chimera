@@ -172,6 +172,59 @@ describe("aggregateSpeedEvents", () => {
     expect(evidence!.decodeTokPerSec["unknown"]).toBeCloseTo(104.1667, 4)
   })
 })
+describe("speedEvidenceFromEvents", () => {
+  test("accepts a finished event with execution and usage and produces a decode sample", () => {
+    const action = Telemetry.actionForRoute({
+      route: "openai/gpt-5.6-luna",
+      identity: "gpt-5.6-luna",
+      variant: "max",
+      selectionSource: "scheduler",
+    })
+    const event: Telemetry.Event = {
+      schemaVersion: 1,
+      eventID: `speed-evidence-${randomUUID()}`,
+      eventType: "delegation.finished",
+      episodeID: `episode-${randomUUID()}`,
+      decisionID: `decision-${randomUUID()}`,
+      delegationID: `delegation-${randomUUID()}`,
+      workload: "builder",
+      action,
+      execution: { status: "completed", durationMs: 4_000, ttftMs: 1_000 },
+      usage: { input: 500, output: 300, reasoning: 25, cacheRead: 0, cacheWrite: 0 },
+      createdAt: Date.now(),
+    }
+    const evidence = SpeedEvidence.speedEvidenceFromEvents([event])
+    const route = evidence.get("openai/gpt-5.6-luna")
+    expect(route).toBeDefined()
+    expect(route!.samples).toBe(1)
+    expect(route!.trustworthy).toBe(true)
+    expect(route!.ttftMs).toBe(1_000)
+    expect(route!.prefillTokPerSec).toBe(500)
+    // decode = (300 + 25) * 1000 / (4000 - 1000) = 108.33
+    expect(route!.decodeTokPerSec["max"]).toBeCloseTo(325 / 3, 6)
+  })
+
+  test("drops events that carry execution but no usage", () => {
+    const action = Telemetry.actionForRoute({
+      route: "openai/gpt-5.6-luna",
+      identity: "gpt-5.6-luna",
+      selectionSource: "scheduler",
+    })
+    const event: Telemetry.Event = {
+      schemaVersion: 1,
+      eventID: `speed-evidence-${randomUUID()}`,
+      eventType: "delegation.finished",
+      episodeID: `episode-${randomUUID()}`,
+      decisionID: `decision-${randomUUID()}`,
+      delegationID: `delegation-${randomUUID()}`,
+      workload: "builder",
+      action,
+      execution: { status: "completed", durationMs: 4_000 },
+      createdAt: Date.now(),
+    }
+    expect(SpeedEvidence.speedEvidenceFromEvents([event]).size).toBe(0)
+  })
+})
 
 describe("recentSpeedEvidence", () => {
   test("pulls recent terminal events from the telemetry store and aggregates them", async () => {

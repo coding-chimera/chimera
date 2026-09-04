@@ -145,17 +145,17 @@ describe("subagent model scheduling", () => {
   test("ranks an eligible subscription route first at zero paid USD", () => {
     const result = resolveSchedule({
       routes: [
-        route("claude-opus-5", "metered", ["medium", "max"]),
+        route("kimi-k3", "metered", ["medium", "max"]),
         route("gpt-5.6-sol", "subscription", ["medium", "max"]),
       ],
       archetype: archetype("reviewer"),
       regimes: { metered: "metered", subscription: "subscription" },
-      pricing: { "metered/claude-opus-5": pricing(3, 15, 0.3, 3.75) },
+      pricing: { "metered/kimi-k3": pricing(3, 15, 0.3, 3.75) },
     })
 
     expect(result.map((item) => item.route)).toEqual([
       "subscription/gpt-5.6-sol",
-      "metered/claude-opus-5",
+      "metered/kimi-k3",
     ])
     expect(result[0]?.unitCostUsd).toBe(0)
     expect(result[0]?.unitCostSource).toBe("subscription")
@@ -168,14 +168,14 @@ describe("subagent model scheduling", () => {
 
   test("uses quota only as a feasibility gate for subscription routes", () => {
     const routes = [
-      route("claude-opus-5", "metered", ["medium", "max"]),
+      route("kimi-k3", "metered", ["medium", "max"]),
       route("gpt-5.6-sol", "subscription", ["medium", "max"]),
     ]
     const input = {
       routes,
       archetype: archetype("reviewer"),
       regimes: { metered: "metered" as const, subscription: "subscription" as const },
-      pricing: { "metered/claude-opus-5": pricing() },
+      pricing: { "metered/kimi-k3": pricing() },
     }
 
     const strained = resolveSchedule({
@@ -183,7 +183,7 @@ describe("subagent model scheduling", () => {
       quota: { "subscription/gpt-5.6-sol": { state: "strained", remainingPercent: 20 } },
     })
     expect(strained.map((item) => item.route)).toEqual([
-      "metered/claude-opus-5",
+      "metered/kimi-k3",
       "subscription/gpt-5.6-sol",
     ])
     expect(strained[1]?.overflow).toBe(true)
@@ -206,24 +206,24 @@ describe("subagent model scheduling", () => {
       ...input,
       quota: { "subscription/gpt-5.6-sol": { state: "exhausted", remainingPercent: 5 } },
     })
-    expect(exhausted.map((item) => item.route)).toEqual(["metered/claude-opus-5"])
+    expect(exhausted.map((item) => item.route)).toEqual(["metered/kimi-k3"])
   })
 
   test("retains strained subscription overflow under metered-first policy", () => {
     const result = resolveSchedule({
       routes: [
-        route("claude-opus-5", "metered", ["medium", "max"]),
+        route("kimi-k3", "metered", ["medium", "max"]),
         route("gpt-5.6-sol", "subscription", ["medium", "max"]),
       ],
       archetype: archetype("reviewer"),
       regimes: { metered: "metered", subscription: "subscription" },
-      pricing: { "metered/claude-opus-5": pricing() },
+      pricing: { "metered/kimi-k3": pricing() },
       quota: { "subscription/gpt-5.6-sol": { state: "strained", remainingPercent: 20 } },
       policy: { ...DEFAULT_POLICY, spend: "metered-first" },
     })
 
     expect(result.map((item) => item.route)).toEqual([
-      "metered/claude-opus-5",
+      "metered/kimi-k3",
       "subscription/gpt-5.6-sol",
     ])
     expect(result[1]?.overflow).toBe(true)
@@ -444,6 +444,25 @@ describe("effort resolution", () => {
     expect(result[0]?.quality.value).toBeLessThan(anchor.score)
     expect(result[0]?.quality.source).toBe("curve")
   })
+
+  test("an anchored model clears minQuality only at xhigh under the builder effort cap", () => {
+    const qwen = resolveEffort(route("qwen3.8-max", "test-relay", ["low", "medium", "high", "xhigh", "max"]), {
+      ...archetype("builder"),
+      minQuality: 0.57,
+    })
+    expect(qwen.variant).toBe("xhigh")
+    expect(qwen.quality).toBe(0.57)
+    expect(qwen.qualitySource).toBe("deepswe-anchor")
+    expect(qwen.effortMismatch).toBe(false)
+
+    const capped = resolveEffort(route("qwen3.8-max", "test-relay", ["low", "medium", "high", "xhigh", "max"]), {
+      ...archetype("builder"),
+      minQuality: 0.57,
+      effortCap: "high",
+    })
+    expect(capped.variant).toBe("high")
+  })
+
 })
 
 describe("size gating and layering", () => {
@@ -496,6 +515,38 @@ describe("size gating and layering", () => {
     expect(view.recommendations.scout?.every((item) => item.unproven)).toBe(true)
     expect(disclosure(view)).toContain("no-proven-candidate (unproven fallback)")
   })
+
+  test("reviewer's minSizeClass XL gate keeps XL routes and excludes smaller ones", () => {
+    const routes = [route("qwen3.8-max", "test-relay", ["low", "max"]), route("deepseek-v4-flash", "test-relay", ["low", "max"])]
+    const regimes = { "test-relay": "metered" as const }
+
+    const reviewed = resolveSchedule({ routes, archetype: archetype("reviewer"), regimes })
+    expect(reviewed.map((item) => item.route)).toEqual(["test-relay/qwen3.8-max"])
+  })
+
+  test("passes routes with an unknown size class through the reviewer gate", () => {
+    const result = resolveSchedule({
+      routes: [route("mystery-model", "test", ["low"])],
+      archetype: archetype("reviewer"),
+      regimes: { test: "metered" },
+    })
+    expect(result.map((item) => item.route)).toEqual(["test/mystery-model"])
+  })
+
+  test("excludes suppressed and dormant routes from schedule candidates", () => {
+    const routes = [
+      { ...route("mystery-suppressed", "test", ["low"]), suppressed: true },
+      { ...route("mystery-dormant", "test", ["low"]), dormant: true },
+      route("mystery-model", "test", ["low"]),
+    ]
+    const result = resolveSchedule({
+      routes,
+      archetype: archetype("builder"),
+      regimes: { test: "metered" },
+    })
+    expect(result.map((item) => item.route)).toEqual(["test/mystery-model"])
+  })
+
 })
 
 describe("speed evidence", () => {

@@ -1000,6 +1000,23 @@ describe("ModelTelemetry", () => {
     )
   })
 
+  test("round-trips usage through shadow lifecycle recording", async () => {
+    const projectID = project()
+    const sessionID = session(projectID)
+    const delegation = ModelTelemetry.bindShadowDelegation({ delegation: shadowFixture(projectID), sessionID })
+    const usage: Telemetry.Usage = { input: 123, output: 45, reasoning: 6, cacheRead: 7, cacheWrite: 8 }
+    await ModelTelemetry.recordShadowLifecycle(
+      delegation,
+      "delegation.finished",
+      { status: "completed", durationMs: 100, ttftMs: 30 },
+      usage,
+    )
+    await ModelTelemetry.drainBestEffort()
+    const stored = read(projectID, 10).find((item) => item.eventID === `${delegation.delegationID}:delegation.finished`)
+    expect(stored?.execution).toMatchObject({ status: "completed", durationMs: 100, ttftMs: 30 })
+    expect(stored?.usage).toEqual(usage)
+  })
+
   function delegationFixtureMarker(projectID: ProjectID) {
     return projectID
   }

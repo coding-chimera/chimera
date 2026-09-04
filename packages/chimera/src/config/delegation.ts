@@ -23,6 +23,7 @@ export const SchedulingArchetype = Schema.Struct({
   minQuality: Schema.optional(Schema.Number),
   effortCap: Schema.optional(Schema.String),
   maxSizeClass: Schema.optional(Schema.Literals(["S", "M", "L", "XL"])),
+  minSizeClass: Schema.optional(Schema.Literals(["S", "M", "L", "XL"])),
   weights: Schema.optional(
     Schema.Struct({
       quality: Schema.Number,

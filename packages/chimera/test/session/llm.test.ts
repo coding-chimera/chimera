@@ -792,6 +792,8 @@ describe("session.llm.stream", () => {
         expect(promptForRole(ultra, "system")).toContain("Proactive multi-agent delegation is active for this root session.")
         expect(promptForRole(ultra, "system")).toContain("You are running on the ultra tier")
         expect(promptForRole(ultra, "system")).toContain("Orchestrator discipline")
+        expect(promptForRole(ultra, "system")).not.toContain("same model family")
+        expect(promptForRole(ultra, "system")).toContain("prefer the scheduler's current recommendations")
         expect(promptForRole(ultra, "system")).not.toContain("up to 16 parallel workers")
         expect(promptForRole(ultra, "system")).not.toContain("normal operating width")
         expect(promptForRole(ultra, "system")).toContain("swarm 派发纪律")

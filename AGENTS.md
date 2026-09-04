@@ -4,6 +4,7 @@
 - Check live git refs before choosing a diff base; do not assume `dev` or `main` is the intended base.
 - Prefer automation: execute requested actions without confirmation unless blocked by missing info or safety/irreversibility.
 - `memory.md` is a temporary cross-session memory pad for this checkout. Read it when resuming interrupted local work, keep entries concise, remove stale notes, and never store secrets or durable project documentation there.
+- Subagent scheduling: never run subagents on `kimi-k3` (it is the root-session model in this checkout; keep children on other routes). Builders follow size-tiered effort: large models (L/XL) take a low reasoning `variant`, small flash-class models take `variant: high`, and `model` + `variant` are always passed explicitly so dispatch never auto-fills. Scouting/exploration declares `workload: scout` and lets the scheduler pick; fan out with swarm.
 
 ## Module map (maintenance surface)
 
