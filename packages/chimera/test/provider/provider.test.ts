@@ -3966,6 +3966,85 @@ test("opencode loader keeps paid models when auth exists", async () => {
   }
 })
 
+test("free_models false removes the opencode anonymous free tier", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "chimera.json"),
+        JSON.stringify({
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+          free_models: false,
+        }),
+      )
+    },
+  })
+
+  const providers = await WithInstance.provide({
+    directory: tmp.path,
+    fn: () => list(),
+  })
+  expect(providers[ProviderID.make("opencode")]).toBeUndefined()
+})
+
+test("free_models false hides opencode free models when a credential exists", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "chimera.json"),
+        JSON.stringify({
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+          free_models: false,
+          provider: {
+            opencode: {
+              options: {
+                apiKey: "test-key",
+              },
+            },
+          },
+        }),
+      )
+    },
+  })
+
+  const models = await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const providers = await list()
+      const item = providers[ProviderID.make("opencode")]
+      expect(item).toBeDefined()
+      return Object.values(item.models)
+    },
+  })
+  expect(models.length).toBeGreaterThan(0)
+  expect(models.every((model) => model.cost.input > 0)).toBe(true)
+})
+
+test("free_models default keeps the opencode anonymous free tier", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "chimera.json"),
+        JSON.stringify({
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+        }),
+      )
+    },
+  })
+
+  const counts = await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const providers = await list()
+      const item = providers[ProviderID.make("opencode")]
+      expect(item).toBeDefined()
+      const models = Object.values(item.models)
+      return { total: models.length, free: models.filter((model) => model.cost.input === 0).length }
+    },
+  })
+  expect(counts.total).toBeGreaterThan(0)
+  expect(counts.free).toBe(counts.total)
+})
+
 test("warmed Provider reads refresh concurrently after auth revision and canonicalize stale models", async () => {
   const providerID = ProviderID.make("phase5-auth")
   const modelID = ModelID.make("model")
