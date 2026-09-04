@@ -18,6 +18,7 @@ Parameter rules:
 - `projectPath` is optional and queries another already-initialized Chimera project instead of the current session project: pass an absolute or relative path to that project, or to any subdirectory inside it, and it is walk-up resolved to the nearest initialized graph root (current `.chimera/`, or compatible legacy `.codegraph/`). Omitting it keeps current-project behavior, and a `projectPath` resolving to the current project root behaves the same as omitting it.
 - Cross-project search is strictly read-only: it never initializes, syncs, watches, writes, or records anything in the target project, and `refresh` is ignored in cross-project mode. Results are labeled `Project: <resolved root> (cross-project, read-only)`.
 - If the target project is not initialized, the tool returns a structured error: tell the user to run `chimera graph init` and then `chimera graph index` in that project themselves (indexing large repositories can take a long time); never initialize another project's graph from this session. Cross-project search is for understanding another repository only; modify another repository from a session opened there.
+- If the target project is initialized but its graph database schema is older than this binary expects, the tool returns the same structured zero-result state with `needsMigration: true` (plus `schemaVersion`/`requiredVersion`) instead of searching; the read-only surface never migrates, so tell the user to run `chimera graph index` in that project themselves.
 
 Common calls:
 - Find a symbol or component by name.

@@ -17,6 +17,7 @@ import {
 import {
   CodeGraph,
   getGraphDataRootInfo,
+  GraphSchemaMigrationRequiredError,
   readIndexJob,
   NODE_KINDS,
   type CodeGraphSnapshot,
@@ -423,6 +424,9 @@ type StatusMetadata = {
   storePath: string
   obligationsArtifact: string
   initialized?: boolean
+  needsMigration?: boolean
+  schemaVersion?: number
+  requiredVersion?: number
   dataRoot?: string
   dataRootStatus?: string
   jobStatus?: unknown
@@ -439,6 +443,9 @@ type SearchMetadata = {
   projectRoot: string
   crossProject?: boolean
   initialized?: boolean
+  needsMigration?: boolean
+  schemaVersion?: number
+  requiredVersion?: number
   dataRoot?: string
   dataRootStatus?: string
   jobStatus?: unknown
@@ -478,7 +485,10 @@ type PredesignMetadata = {
 type ImpactMetadata = {
   projectRoot: string
   crossProject?: boolean
-  snapshot: CodeGraphSnapshot
+  needsMigration?: boolean
+  schemaVersion?: number
+  requiredVersion?: number
+  snapshot?: CodeGraphSnapshot
   seeds: Array<FrozenSemanticObject | null>
   impacted: Array<FrozenSemanticObject | null>
   fileDependents: string[]
@@ -774,6 +784,27 @@ function withProjectGraphForTool<A, E, R>(
     use,
   ).pipe(
     Effect.ensuring(Effect.sync(() => reporter.done())),
+  )
+}
+
+function schemaMigrationGuidance(crossProject: boolean) {
+  return crossProject
+    ? "Ask the user to run `chimera graph index` in that project to migrate the graph database; do not migrate another project's graph from this session."
+    : "Run `chimera graph index` in this project to migrate the graph database."
+}
+
+function schemaMigrationStatusLine(error: GraphSchemaMigrationRequiredError) {
+  return `Chimera graph database schema version ${error.currentVersion} is outdated (requires ${error.requiredVersion}); the read-only graph surface cannot migrate it.`
+}
+
+function catchSchemaMigrationRequired<A, E, R, B>(
+  effect: Effect.Effect<A, E, R>,
+  fallback: (error: GraphSchemaMigrationRequiredError) => B,
+): Effect.Effect<A | B, E, R> {
+  return effect.pipe(
+    Effect.catchDefect((defect) =>
+      defect instanceof GraphSchemaMigrationRequiredError ? Effect.succeed(fallback(defect)) : Effect.die(defect),
+    ),
   )
 }
 
@@ -2254,10 +2285,11 @@ export const ChimeraStatusTool = Tool.define<typeof StatusParameters, StatusMeta
             },
           }
         }
-        return yield* withProjectGraphForTool(
-          ctx as Tool.Context,
-          params.refresh !== false,
-          { init: false, readOnly: true, projectPath: params.projectPath },
+        return yield* catchSchemaMigrationRequired(
+          withProjectGraphForTool(
+            ctx as Tool.Context,
+            params.refresh !== false,
+            { init: false, readOnly: true, projectPath: params.projectPath },
           (state) =>
             Effect.gen(function* () {
               const snapshot = state.graph.snapshot()
@@ -2306,6 +2338,35 @@ export const ChimeraStatusTool = Tool.define<typeof StatusParameters, StatusMeta
                 },
               }
             }),
+          ),
+          (error) => ({
+            title: "Chimera status",
+            output: [
+              schemaMigrationStatusLine(error),
+              `Project: ${root}${target.crossProject ? " (cross-project, read-only)" : ""}`,
+              `Data root: ${dataRoot.dataRoot}`,
+              `Data root status: ${dataRoot.dataRootStatus}`,
+              job ? `Graph job: ${job.kind} ${job.status}` : undefined,
+              schemaMigrationGuidance(target.crossProject === true),
+            ].filter(Boolean).join("\n"),
+            metadata: {
+              initialized: true,
+              needsMigration: true,
+              schemaVersion: error.currentVersion,
+              requiredVersion: error.requiredVersion,
+              projectRoot: root,
+              crossProject: target.crossProject,
+              dataRoot: dataRoot.dataRoot,
+              dataRootStatus: dataRoot.dataRootStatus,
+              jobStatus: job,
+              artifact: "",
+              storePath: dataRoot.databasePath,
+              obligationsArtifact: "",
+              provenanceRecords: 0,
+              obligationCounts: { pending: 0, claimed: 0, resolved: 0, ignored: 0, stale: 0 },
+              pendingObligations: 0,
+            },
+          }),
         )
       }).pipe(Effect.orDie),
   }),
@@ -2350,10 +2411,11 @@ export const ChimeraSearchTool = Tool.define<typeof SearchParameters, SearchMeta
             },
           }
         }
-        return yield* withProjectGraphForTool(
-          ctx as Tool.Context,
-          params.refresh !== false,
-          { init: false, readOnly: true, projectPath: params.projectPath },
+        return yield* catchSchemaMigrationRequired(
+          withProjectGraphForTool(
+            ctx as Tool.Context,
+            params.refresh !== false,
+            { init: false, readOnly: true, projectPath: params.projectPath },
           (state) =>
             Effect.sync(() => {
               const limit = bounded(params.limit, 10, 50)
@@ -2387,6 +2449,27 @@ export const ChimeraSearchTool = Tool.define<typeof SearchParameters, SearchMeta
                 },
               }
             }),
+          ),
+          (error) => ({
+            title: "Chimera search",
+            output: [
+              ...(target.crossProject ? [`Project: ${root} (cross-project, read-only)`] : []),
+              "Static graph evidence (0 results):",
+              `- ${schemaMigrationStatusLine(error)} ${schemaMigrationGuidance(target.crossProject === true)}`,
+            ].join("\n"),
+            metadata: {
+              initialized: true,
+              needsMigration: true,
+              schemaVersion: error.currentVersion,
+              requiredVersion: error.requiredVersion,
+              projectRoot: root,
+              crossProject: target.crossProject,
+              dataRoot: dataRoot.dataRoot,
+              dataRootStatus: dataRoot.dataRootStatus,
+              jobStatus: job,
+              results: [],
+            },
+          }),
         )
       }).pipe(Effect.orDie),
   }),
@@ -2405,10 +2488,11 @@ export const ChimeraFileSymbolsTool = Tool.define<typeof FileSymbolsParameters, 
           refresh: params.refresh !== false,
         })
         const instance = yield* InstanceState.context
-        return yield* withProjectGraphForTool(
-          ctx as Tool.Context,
-          params.refresh !== false,
-          { init: false, projectPath: params.projectPath },
+        return yield* catchSchemaMigrationRequired(
+          withProjectGraphForTool(
+            ctx as Tool.Context,
+            params.refresh !== false,
+            { init: false, projectPath: params.projectPath },
           (state) =>
             Effect.gen(function* () {
               const limit = bounded(params.limit, 10, 50)
@@ -2448,6 +2532,27 @@ export const ChimeraFileSymbolsTool = Tool.define<typeof FileSymbolsParameters, 
                 },
               }
             }),
+          ),
+          (error) => {
+            const target = Chimera.resolveProjectGraphTarget(params.projectPath, contextProjectRoot(instance))
+            return {
+              title: "Chimera file symbols",
+              output: [
+                ...(target.crossProject ? [`Project: ${target.root} (cross-project, read-only)`] : []),
+                "Static graph evidence (0 results):",
+                `- ${schemaMigrationStatusLine(error)} ${schemaMigrationGuidance(target.crossProject === true)}`,
+              ].join("\n"),
+              metadata: {
+                initialized: true,
+                needsMigration: true,
+                schemaVersion: error.currentVersion,
+                requiredVersion: error.requiredVersion,
+                projectRoot: target.root,
+                crossProject: target.crossProject,
+                results: [],
+              },
+            }
+          },
         )
       }).pipe(Effect.orDie),
   }),
@@ -2639,10 +2744,11 @@ export const ChimeraImpactTool = Tool.define<typeof ImpactParameters, ImpactMeta
           refresh: params.refresh !== false,
         })
         const instance = yield* InstanceState.context
-        return yield* withProjectGraphForTool(
-          ctx as Tool.Context,
-          params.refresh !== false,
-          { init: false, projectPath: params.projectPath },
+        return yield* catchSchemaMigrationRequired(
+          withProjectGraphForTool(
+            ctx as Tool.Context,
+            params.refresh !== false,
+            { init: false, projectPath: params.projectPath },
           (state) =>
             Effect.gen(function* () {
               const depth = bounded(params.depth, 2, 5)
@@ -2746,6 +2852,29 @@ export const ChimeraImpactTool = Tool.define<typeof ImpactParameters, ImpactMeta
                 },
               }
             }),
+          ),
+          (error) => {
+            const target = Chimera.resolveProjectGraphTarget(params.projectPath, contextProjectRoot(instance))
+            return {
+              title: "Chimera impact",
+              output: [
+                ...(target.crossProject ? [`Project: ${target.root} (cross-project, read-only)`] : []),
+                "Static graph evidence:",
+                `- ${schemaMigrationStatusLine(error)} ${schemaMigrationGuidance(target.crossProject === true)}`,
+              ].join("\n"),
+              metadata: {
+                needsMigration: true,
+                schemaVersion: error.currentVersion,
+                requiredVersion: error.requiredVersion,
+                projectRoot: target.root,
+                crossProject: target.crossProject,
+                seeds: [],
+                impacted: [],
+                fileDependents: [],
+                evidence: [],
+              },
+            }
+          },
         )
       }).pipe(Effect.orDie),
   }),

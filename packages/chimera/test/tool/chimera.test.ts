@@ -8,6 +8,8 @@ import { ChimeraPromptContext } from "@/chimera/prompt-context"
 import { readAuditRuns, readPredesignRuns } from "@/chimera/store"
 import { SessionToolMetadata } from "@/chimera/session-tool-metadata"
 import { DatabaseConnection, getDatabasePath } from "@/graph"
+import { createDatabase } from "@/graph/db/sqlite-adapter"
+import { CURRENT_SCHEMA_VERSION, getCurrentVersion } from "@/graph/db/migrations"
 import { Agent } from "@/agent/agent"
 import { ModelTelemetry } from "@/agent/model-telemetry"
 import { InstanceState } from "@/effect/instance-state"
@@ -204,6 +206,25 @@ const trackWrite = Effect.fn("ChimeraToolTest.trackWrite")(function* (input: {
   )
 })
 
+const downgradeGraphSchema = (root: string, version = 6) => {
+  const raw = createDatabase(getDatabasePath(root))
+  try {
+    raw.db.exec("DELETE FROM schema_versions")
+    raw.db.prepare("INSERT INTO schema_versions (version, applied_at, description) VALUES (?, ?, ?)").run(version, Date.now(), "test downgrade")
+  } finally {
+    raw.db.close()
+  }
+}
+
+const graphSchemaVersion = (root: string) => {
+  const raw = createDatabase(getDatabasePath(root))
+  try {
+    return getCurrentVersion(raw.db)
+  } finally {
+    raw.db.close()
+  }
+}
+
 describe("tool.chimera", () => {
   it.instance("documents CodePlan atomic label glossary for audit workflows", () =>
     Effect.gen(function* () {
@@ -302,6 +323,33 @@ describe("tool.chimera", () => {
     }),
   )
 
+
+  it.instance("reports structured migration-required status for outdated graph schema", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "tracked.ts"), "export const tracked = 1\n"))
+      yield* initGraph()
+      yield* Effect.sync(() => downgradeGraphSchema(test.directory))
+
+      const status = yield* runStatus({ refresh: false })
+      expect(status.title).toBe("Chimera status")
+      expect(status.output).toContain("schema version 6 is outdated")
+      expect(status.output).toContain("chimera graph index")
+      expect(status.metadata.initialized).toBe(true)
+      expect(status.metadata.needsMigration).toBe(true)
+      expect(status.metadata.schemaVersion).toBe(6)
+      expect(status.metadata.requiredVersion).toBe(CURRENT_SCHEMA_VERSION)
+
+      const search = yield* runSearch({ query: "tracked", refresh: false })
+      expect(search.output).toContain("Static graph evidence (0 results):")
+      expect(search.output).toContain("chimera graph index")
+      expect(search.metadata.needsMigration).toBe(true)
+      expect(search.metadata.results).toHaveLength(0)
+
+      // Read-only tools must not migrate the database
+      expect(graphSchemaVersion(test.directory)).toBe(6)
+    }),
+  )
 
   it.instance("closes read-only scoped graph state without closing cached graph state", () =>
     Effect.gen(function* () {
@@ -1570,6 +1618,43 @@ describe("cross-project projectPath", () => {
 
       expect(yield* Effect.promise(() => Bun.file(path.join(bRoot, ".chimera")).exists())).toBe(false)
       expect(yield* Effect.promise(() => Bun.file(path.join(bRoot, ".codegraph")).exists())).toBe(false)
+    }),
+  )
+  it.instance("reports structured migration-required status for outdated cross-project schema", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "local.ts"), "export const local = 1\n"))
+      yield* initGraph()
+      const bRoot = yield* projectB()
+      yield* Effect.sync(() => downgradeGraphSchema(bRoot))
+
+      const status = yield* runStatus({ projectPath: bRoot, refresh: false })
+      expect(status.output).toContain(crossMarkerLine(bRoot))
+      expect(status.output).toContain("schema version 6 is outdated")
+      expect(status.output).toContain("in that project")
+      expect(status.metadata.needsMigration).toBe(true)
+      expect(status.metadata.crossProject).toBe(true)
+      expect(status.metadata.projectRoot).toBe(bRoot)
+
+      const search = yield* runSearch({ query: "crossProjectMarker", projectPath: bRoot, refresh: false })
+      expect(search.output).toContain(crossMarkerLine(bRoot))
+      expect(search.output).toContain("chimera graph index")
+      expect(search.metadata.needsMigration).toBe(true)
+      expect(search.metadata.results).toHaveLength(0)
+
+      const symbols = yield* runFileSymbols({ filePath: "shared.ts", projectPath: bRoot, refresh: false })
+      expect(symbols.output).toContain(crossMarkerLine(bRoot))
+      expect(symbols.output).toContain("chimera graph index")
+      expect(symbols.metadata.needsMigration).toBe(true)
+      expect(symbols.metadata.results).toHaveLength(0)
+
+      const impact = yield* runImpact({ symbol: "crossProjectMarker", projectPath: bRoot, refresh: false })
+      expect(impact.output).toContain(crossMarkerLine(bRoot))
+      expect(impact.output).toContain("chimera graph index")
+      expect(impact.metadata.needsMigration).toBe(true)
+
+      // The cross-project read-only surface must not migrate the target database
+      expect(graphSchemaVersion(bRoot)).toBe(6)
     }),
   )
 })

@@ -123,6 +123,28 @@ export class DatabaseError extends CodeGraphError {
 }
 
 /**
+ * Graph database schema is older than the current code expects and the
+ * connection is read-only, so the pending migrations cannot be applied.
+ * Read-only surfaces must catch this and report a structured status
+ * instead of surfacing a raw error.
+ */
+export class GraphSchemaMigrationRequiredError extends CodeGraphError {
+  readonly currentVersion: number;
+  readonly requiredVersion: number;
+
+  constructor(currentVersion: number, requiredVersion: number) {
+    super(
+      `Database schema version ${currentVersion} requires migration to ${requiredVersion}, but the connection is read-only. Run 'chimera graph index' in the target project to migrate the graph database.`,
+      'SCHEMA_MIGRATION_REQUIRED',
+      { currentVersion, requiredVersion },
+    );
+    this.name = 'GraphSchemaMigrationRequiredError';
+    this.currentVersion = currentVersion;
+    this.requiredVersion = requiredVersion;
+  }
+}
+
+/**
  * Error with search operations
  */
 export class SearchError extends CodeGraphError {
