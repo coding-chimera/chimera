@@ -134,6 +134,7 @@ export {
   FileError,
   ParseError,
   DatabaseError,
+  GraphSchemaMigrationRequiredError,
   SearchError,
   VectorError,
   ConfigError,

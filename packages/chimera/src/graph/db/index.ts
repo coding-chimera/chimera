@@ -8,6 +8,7 @@ import { createDatabase, type SqliteDatabase, type SqliteBackend } from './sqlit
 import * as fs from 'fs';
 import * as path from 'path';
 import { SchemaVersion } from '../types';
+import { GraphSchemaMigrationRequiredError } from '../errors';
 import { runMigrations, getCurrentVersion, CURRENT_SCHEMA_VERSION } from './migrations';
 import {
   StorageExtension,
@@ -140,9 +141,7 @@ export class DatabaseConnection {
       const currentVersion = getCurrentVersion(db);
       if (currentVersion < CURRENT_SCHEMA_VERSION) {
         if (options.readOnly) {
-          throw new Error(
-            `Database schema version ${currentVersion} requires migration to ${CURRENT_SCHEMA_VERSION}, but the connection is read-only`
-          );
+          throw new GraphSchemaMigrationRequiredError(currentVersion, CURRENT_SCHEMA_VERSION);
         }
         runMigrations(db, currentVersion);
       }

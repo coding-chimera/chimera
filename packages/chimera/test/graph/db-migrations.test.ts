@@ -13,6 +13,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { DatabaseConnection } from '../../src/graph/db';
+import { GraphSchemaMigrationRequiredError } from '../../src/graph/errors';
 import { createDatabase } from '../../src/graph/db/sqlite-adapter';
 import {
   CURRENT_SCHEMA_VERSION,
@@ -147,6 +148,72 @@ const OLD_V6_SHAPE = `
 
   CREATE TABLE project_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);
 `;
+
+describe('read-only open with outdated schema', () => {
+  function downgradeSchemaVersion(version: number): void {
+    const conn = DatabaseConnection.initialize(dbPath());
+    try {
+      conn.getDb().exec('DELETE FROM schema_versions');
+      conn
+        .getDb()
+        .prepare('INSERT INTO schema_versions (version, applied_at, description) VALUES (?, ?, ?)')
+        .run(version, Date.now(), 'test downgrade');
+    } finally {
+      conn.close();
+    }
+  }
+
+  function recordedVersion(): number {
+    const raw = createDatabase(dbPath());
+    try {
+      return getCurrentVersion(raw.db);
+    } finally {
+      raw.db.close();
+    }
+  }
+
+  it('throws a typed migration-required error with repair guidance and does not migrate', () => {
+    downgradeSchemaVersion(6);
+
+    let caught: unknown;
+    try {
+      DatabaseConnection.open(dbPath(), { readOnly: true });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(GraphSchemaMigrationRequiredError);
+    const error = caught as GraphSchemaMigrationRequiredError;
+    expect(error.currentVersion).toBe(6);
+    expect(error.requiredVersion).toBe(CURRENT_SCHEMA_VERSION);
+    expect(error.message).toContain('chimera graph index');
+    expect(recordedVersion()).toBe(6);
+  });
+
+  it('still auto-migrates on a writable open', () => {
+    downgradeSchemaVersion(6);
+
+    const conn = DatabaseConnection.open(dbPath());
+    try {
+      expect(getCurrentVersion(conn.getDb())).toBe(CURRENT_SCHEMA_VERSION);
+      expectV11Objects(conn.getDb());
+    } finally {
+      conn.close();
+    }
+  });
+
+  it('opens a current-version database read-only without error', () => {
+    DatabaseConnection.initialize(dbPath()).close();
+
+    const conn = DatabaseConnection.open(dbPath(), { readOnly: true });
+    try {
+      expect(conn.isReadOnly()).toBe(true);
+      expect(getCurrentVersion(conn.getDb())).toBe(CURRENT_SCHEMA_VERSION);
+    } finally {
+      conn.close();
+    }
+  });
+});
 
 describe('schema v11', () => {
   it('fresh database carries all objects and reports the current version', () => {
