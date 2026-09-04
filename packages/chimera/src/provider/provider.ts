@@ -298,14 +298,20 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         if (input.env.some((item) => env[item])) return true
         return false
       })
+      const cfg = yield* dep.config()
       const ok =
-        hasKey ||
-        Boolean(yield* dep.auth(input.id)) ||
-        Boolean((yield* dep.config()).provider?.["opencode"]?.options?.apiKey)
+        hasKey || Boolean(yield* dep.auth(input.id)) || Boolean(cfg.provider?.["opencode"]?.options?.apiKey)
 
       if (!ok) {
         for (const [key, value] of Object.entries(input.models)) {
           if (value.cost.input === 0) continue
+          delete input.models[key]
+        }
+      }
+
+      if (cfg.free_models === false) {
+        for (const [key, value] of Object.entries(input.models)) {
+          if (value.cost.input !== 0) continue
           delete input.models[key]
         }
       }

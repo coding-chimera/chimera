@@ -175,6 +175,10 @@ export const Info = Schema.Struct({
   enabled_providers: Schema.optional(Schema.mutable(Schema.Array(Schema.String))).annotate({
     description: "When set, ONLY these providers will be enabled. All other providers will be ignored",
   }),
+  free_models: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Allow providers to expose free-of-charge models without a configured credential (currently the opencode provider's anonymous free tier). Set to false in restricted environments (for example corporate intranets) where external free models must not be used: without a credential the provider is not loaded at all, and with a credential its $0 models are hidden. Defaults to true",
+  }),
   ultra_models: Schema.optional(Schema.mutable(Schema.Array(Schema.String))).annotate({
     description:
       "Deprecated: ultra is now advertised on every model, so this key no longer affects behavior. Kept only so existing configs parse without error; entries are ignored.",
