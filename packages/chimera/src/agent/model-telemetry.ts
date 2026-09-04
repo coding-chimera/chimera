@@ -578,6 +578,20 @@ function normalizeExecution(input: Partial<Execution> | undefined): Execution | 
   }
 }
 
+function normalizeUsage(input: Partial<Usage> | undefined): Usage | undefined {
+  if (!input) return undefined
+  const count = (value: unknown) =>
+    typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0
+  return {
+    input: count(input.input),
+    output: count(input.output),
+    reasoning: count(input.reasoning),
+    cacheRead: count(input.cacheRead),
+    cacheWrite: count(input.cacheWrite),
+    ...(input.cost === undefined ? {} : { cost: input.cost }),
+  }
+}
+
 export function actionForRoute(input: ActionInput): Action {
   const resolutionSource = normalizeResolutionSource(input.resolutionSource)
   const route = safeRoute(input.route)
@@ -707,6 +721,7 @@ function lifecycleEvent(
   eventType: "delegation.prepared" | "delegation.started" | "delegation.finished" | "delegation.failed" | "delegation.cancelled",
   execution: Execution | undefined,
   fanout: Fanout | undefined,
+  usage?: Usage,
  ) {
   return {
     schemaVersion: 1,
@@ -720,6 +735,7 @@ function lifecycleEvent(
     workload: input.workload,
     action: input.action,
     ...(execution ? { execution } : {}),
+    ...(usage ? { usage } : {}),
     ...(fanout ? { fanout } : {}),
     createdAt: Date.now(),
   }
@@ -729,15 +745,17 @@ export function recordShadowLifecycle(
   input: ShadowDelegation,
   eventType: "delegation.prepared" | "delegation.started" | "delegation.finished" | "delegation.failed" | "delegation.cancelled",
   execution?: Execution,
+  usage?: Usage,
  ) {
   const normalized = normalizeExecution(execution)
-  const event = lifecycleEvent(input, eventType, normalized, input.fanout)
+  const normalizedUsage = normalizeUsage(usage)
+  const event = lifecycleEvent(input, eventType, normalized, input.fanout, normalizedUsage)
   if (!input.fanout) return appendBestEffort({ projectID: input.projectID, event })
   if (appendQueueSize >= BEST_EFFORT_QUEUE_LIMIT) return Promise.resolve(undefined)
   const appendInput = boundedTelemetrySnapshot({ projectID: input.projectID, event })
   const fallbackInput = boundedTelemetrySnapshot({
     projectID: input.projectID,
-    event: lifecycleEvent(input, eventType, normalized, undefined),
+    event: lifecycleEvent(input, eventType, normalized, undefined, normalizedUsage),
   })
   if (!appendInput || !fallbackInput) return Promise.resolve(undefined)
   const decision = delegationDecisions.get(input)

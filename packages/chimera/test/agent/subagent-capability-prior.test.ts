@@ -22,7 +22,7 @@ function anchor(identity: string, score: number, anchorTier: SemanticTier): Capa
 describe("subagent capability prior", () => {
   test("exposes the code-data calibration candidates as defaults", () => {
     expect(DEFAULT_CAPABILITY_PRIOR_PARAMS).toMatchObject({
-      rho: 0.62,
+      rho: 0.75,
       p: 4.5,
       q: 0.75,
       provenance: "code-data",
@@ -30,7 +30,7 @@ describe("subagent capability prior", () => {
   })
 
   test("keeps one compact anchor per proven identity with no cost/steps/per-tier fields", () => {
-    expect(CAPABILITY_ANCHORS).toHaveLength(22)
+    expect(CAPABILITY_ANCHORS).toHaveLength(23)
     expect(new Set(CAPABILITY_ANCHORS.map((item) => item.identity)).size).toBe(CAPABILITY_ANCHORS.length)
     for (const item of CAPABILITY_ANCHORS) {
       expect(Object.keys(item).sort()).toEqual(["anchorTier", "identity", "score", "source", "uncertainty"])
@@ -82,9 +82,9 @@ describe("subagent capability prior", () => {
   })
 
   test("matches the shared curve R(t)=1-(1-rho)(1-t)^p", () => {
-    expect(sharedCurve(0)).toBeCloseTo(0.62)
+    expect(sharedCurve(0)).toBeCloseTo(0.75)
     expect(sharedCurve(1)).toBe(1)
-    expect(sharedCurve(0.5)).toBeCloseTo(0.9832062, 6)
+    expect(sharedCurve(0.5)).toBeCloseTo(0.9889515, 6)
     expect(sharedCurve(0)).toBeLessThan(sharedCurve(0.5)!)
     expect(sharedCurve(0.5)).toBeLessThan(sharedCurve(1)!)
   })

@@ -28,6 +28,7 @@ export interface WorkloadArchetype {
   description: string
   minQuality: number
   effortCap?: string
+  minSizeClass?: SizeClass
   maxSizeClass?: SizeClass
   weights: WorkloadWeights
   budgetUsdPerWorker?: number
@@ -37,6 +38,7 @@ export interface WorkloadArchetypeOverride {
   description?: string
   minQuality?: number
   effortCap?: string
+  minSizeClass?: SizeClass
   maxSizeClass?: SizeClass
   weights?: WorkloadWeights
   budgetUsdPerWorker?: number
@@ -156,7 +158,7 @@ export const DEFAULT_ARCHETYPES: WorkloadArchetype[] = [
     name: "builder",
     description: "Parallel implementation; require stronger cognition while capping reasoning effort.",
     minQuality: 0.5,
-    effortCap: "high",
+    effortCap: "xhigh",
     weights: { quality: 0.5, speed: 0.1, cost: 0.25, size: 0.1 },
   },
   {
@@ -164,6 +166,7 @@ export const DEFAULT_ARCHETYPES: WorkloadArchetype[] = [
     description: "Review and audit follow-up; favor quality with moderate reasoning effort.",
     minQuality: 0.5,
     effortCap: "medium",
+    minSizeClass: "XL",
     weights: { quality: 0.5, speed: 0.2, cost: 0.3, size: 0 },
   },
 ]
@@ -250,6 +253,11 @@ function sizeClassRank(sizeClass: SizeClass | undefined) {
 function exceedsMaxSizeClass(sizeClass: SizeClass | undefined, maxSizeClass: SizeClass | undefined) {
   if (sizeClass === undefined || maxSizeClass === undefined) return false
   return sizeClassRank(sizeClass) > sizeClassRank(maxSizeClass)
+}
+
+function belowMinSizeClass(sizeClass: SizeClass | undefined, minSizeClass: SizeClass | undefined) {
+  if (sizeClass === undefined || minSizeClass === undefined) return false
+  return sizeClassRank(sizeClass) < sizeClassRank(minSizeClass)
 }
 
 function normToTps(norm: number) {
@@ -462,6 +470,7 @@ export function resolveSchedule(input: {
   const candidates = input.routes.flatMap((route): Candidate[] => {
     if (route.suppressed || route.dormant) return []
     if (exceedsMaxSizeClass(route.sizeClass, input.archetype.maxSizeClass)) return []
+    if (belowMinSizeClass(route.sizeClass, input.archetype.minSizeClass)) return []
     const effort = resolveEffort(route, input.archetype, {
       topTierDisabledMinSizeClass: input.topTierDisabledMinSizeClass,
     })

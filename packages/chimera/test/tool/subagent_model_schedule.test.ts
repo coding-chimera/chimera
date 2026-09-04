@@ -214,7 +214,7 @@ describe("subagent_model_schedule tool", () => {
       expect(output.recommendations.builder[0]).toMatchObject({
         route: "subscription/gpt-5.6-sol",
         regime: "subscription",
-        variant: "medium",
+        variant: "low",
         unitCostUsd: 0,
         quota: { state: "no-data" },
       })
@@ -235,7 +235,7 @@ describe("subagent_model_schedule tool", () => {
         unitCostSource: "provider-pricing",
       })
       expect(recommendation.quota).toBeUndefined()
-      expect(recommendation.unitCostUsd).toBeCloseTo(0.132, 6)
+      expect(recommendation.unitCostUsd).toBeCloseTo(0.124, 6)
     }),
   )
 

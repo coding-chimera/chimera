@@ -2,7 +2,7 @@ export * as SubagentCapabilityPrior from "./subagent-capability-prior"
 
 import { ModelIdentity } from "../provider/model-identity"
 import { matchByDashPrefix } from "./subagent-model-size"
-export const CAPABILITY_PRIOR_VERSION = "deepswe-v1.1-curve-v1"
+export const CAPABILITY_PRIOR_VERSION = "deepswe-v1.1-curve-v2"
 export const SEMANTIC_TIERS = ["low", "medium", "high", "xhigh", "max"] as const
 export const REASONING_TIER_ORDER = ["minimal", ...SEMANTIC_TIERS] as const
 export type SemanticTier = (typeof SEMANTIC_TIERS)[number]
@@ -43,7 +43,7 @@ export interface CapabilityAnchor {
 }
 
 export const DEFAULT_CAPABILITY_PRIOR_PARAMS = {
-  rho: 0.62,
+  rho: 0.75,
   p: 4.5,
   q: 0.75,
   provenance: "code-data",
@@ -68,6 +68,7 @@ export const CAPABILITY_ANCHORS: CapabilityAnchor[] = [
   { identity: "grok-4.6", score: 0.67, anchorTier: "xhigh", source: "deepswe", uncertainty: 0.02 },
   { identity: "deepseek-v4-pro", score: 0.63, anchorTier: "max", source: "deepswe", uncertainty: 0.06 },
   { identity: "claude-opus-4.8", score: 0.59, anchorTier: "max", source: "deepswe", uncertainty: 0.02 },
+  { identity: "qwen3.8-flash", score: 0.587, anchorTier: "max", source: "deepswe", uncertainty: 0.04 },
   { identity: "qwen3.8-max", score: 0.57, anchorTier: "xhigh", source: "deepswe", uncertainty: 0.03 },
   { identity: "muse-spark-1.2", score: 0.55, anchorTier: "xhigh", source: "deepswe", uncertainty: 0.02 },
   { identity: "claude-sonnet-5", score: 0.54, anchorTier: "max", source: "deepswe", uncertainty: 0.04 },

@@ -208,19 +208,19 @@ const seed = Effect.fn("TaskToolTest.seed")(function* (title = "Pinned", agentNa
   return { chat, assistant }
 })
 
-function stubOps(opts?: { onPrompt?: (input: SessionPrompt.PromptInput) => void; text?: string }): TaskPromptOps {
+function stubOps(opts?: { onPrompt?: (input: SessionPrompt.PromptInput) => void; text?: string; tokens?: MessageV2.TokenUsage }): TaskPromptOps {
   return {
     cancel: () => Effect.void,
     resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
     prompt: (input) =>
       Effect.sync(() => {
         opts?.onPrompt?.(input)
-        return reply(input, opts?.text ?? "done")
+        return reply(input, opts?.text ?? "done", opts?.tokens)
       }),
   }
 }
 
-function reply(input: SessionPrompt.PromptInput, text: string): MessageV2.WithParts {
+function reply(input: SessionPrompt.PromptInput, text: string, tokens?: MessageV2.TokenUsage): MessageV2.WithParts {
   const id = MessageID.ascending()
   return {
     info: {
@@ -232,7 +232,7 @@ function reply(input: SessionPrompt.PromptInput, text: string): MessageV2.WithPa
       agent: input.agent ?? "general",
       cost: 0,
       path: { cwd: "/tmp", root: "/tmp" },
-      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      tokens: tokens ?? { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
       modelID: input.model?.modelID ?? ref.modelID,
       providerID: input.model?.providerID ?? ref.providerID,
       time: { created: Date.now() },
@@ -2063,7 +2063,7 @@ describe("tool.task", () => {
 
       expect(Exit.isFailure(exit)).toBe(true)
       if (Exit.isFailure(exit)) {
-        expect(Cause.pretty(exit.cause)).toContain("Available variants: max, xhigh, high")
+        expect(Cause.pretty(exit.cause)).toContain("Available variants: ultra, max, xhigh, high")
       }
       expect(yield* sessions.children(chat.id)).toHaveLength(0)
     }),
@@ -2867,7 +2867,7 @@ describe("tool.task", () => {
           messageID: assistant.id,
           agent: "build",
           abort: new AbortController().signal,
-          extra: { promptOps: stubOps() },
+          extra: { promptOps: stubOps({ tokens: { input: 10, output: 20, reasoning: 3, cache: { read: 4, write: 5 } } }) },
           messages: [],
           metadata: () => Effect.void,
           ask: () => Effect.void,
@@ -2892,6 +2892,13 @@ describe("tool.task", () => {
       expect(new Set(lifecycle.map((event) => event.delegationID)).size).toBe(1)
       expect(lifecycle.find((event) => event.eventType === "delegation.finished")?.execution).toMatchObject({
         status: "completed",
+      })
+      expect(lifecycle.find((event) => event.eventType === "delegation.finished")?.usage).toEqual({
+        input: 10,
+        output: 20,
+        reasoning: 3,
+        cacheRead: 4,
+        cacheWrite: 5,
       })
       const visible = `${JSON.stringify(result.metadata)}\n${result.output}`
       const telemetryIDs = new Set(
