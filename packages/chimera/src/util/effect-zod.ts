@@ -262,7 +262,13 @@ function body(ast: SchemaAST.AST): z.ZodTypeAny {
 }
 
 function opt(ast: SchemaAST.AST): z.ZodTypeAny {
-  if (ast._tag !== "Union") return fail(ast)
+  if (ast._tag !== "Union") {
+    // optionalKey-marked node without an Undefined union member — produced by
+    // the @opencode-ai/schema optional() helper, where the key is optional
+    // but the value schema carries no Undefined arm. Walk the same node with
+    // the optional context cleared and mark the result optional.
+    return walk({ ...ast, context: undefined } as SchemaAST.AST).optional()
+  }
   const items = ast.types.filter((item) => item._tag !== "Undefined")
   const inner =
     items.length === 1

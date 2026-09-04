@@ -14,6 +14,7 @@
     "opencode": "./bin/opencode"
   },
   "exports": {
+    "./system-context": "./src/system-context/index.ts",
     "./*": "./src/*.ts"
   },
   "imports": {},

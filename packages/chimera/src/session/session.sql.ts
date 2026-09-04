@@ -1,4 +1,5 @@
 import { sqliteTable, text, integer, index, primaryKey } from "drizzle-orm/sqlite-core"
+import type { SystemContext } from "@opencode-ai/core/system-context"
 import { ProjectTable } from "../project/project.sql"
 import type { MessageV2 } from "./message-v2"
 import type { SessionMessage } from "../v2/session-message"
@@ -149,4 +150,14 @@ export const PermissionTable = sqliteTable("permission", {
     .references(() => ProjectTable.id, { onDelete: "cascade" }),
   ...Timestamps,
   data: text({ mode: "json" }).notNull().$type<Permission.Ruleset>(),
+})
+
+export const SessionContextEpochTable = sqliteTable("session_context_epoch", {
+  session_id: text()
+    .$type<SessionID>()
+    .primaryKey()
+    .references(() => SessionTable.id, { onDelete: "cascade" }),
+  baseline: text().notNull(),
+  snapshot: text({ mode: "json" }).notNull().$type<SystemContext.Snapshot>(),
+  baseline_seq: integer().notNull(),
 })

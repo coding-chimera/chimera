@@ -14,6 +14,8 @@ import { lowestNonUltraVariant } from "@/agent/subagent-capability-prior"
 import type { MessageV2 } from "./message-v2"
 import { Plugin } from "@/plugin"
 import { SystemPrompt } from "./system"
+import { ContextEpoch } from "./context-epoch"
+import { SessionSystemContext } from "./system-context"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { Permission } from "@/permission"
 import { PermissionID } from "@/permission/schema"
@@ -96,6 +98,28 @@ export type StreamRequest = Omit<StreamInput, "abort"> & {
   abort: AbortSignal
 }
 
+// Assembles the attributed system prompt segments in send order. Joining the
+// segment contents is byte-identical to the legacy unattributed assembly.
+export function systemSegments(
+  input: Pick<StreamRequest, "model" | "agent" | "small" | "parentSessionID" | "system" | "user">,
+  multiAgent: string | undefined,
+  variant: string | undefined,
+): SystemPrompt.Segment[] {
+  return [
+    // use agent prompt otherwise provider prompt
+    ...(input.agent.prompt
+      ? [{ key: "agent/system", content: input.agent.prompt }]
+      : SystemPrompt.providerSegments(input.model)),
+    ...SystemPrompt.overlaySegments(input.model),
+    ...(multiAgent ? [{ key: "policy/multi-agent", content: multiAgent }] : []),
+    ...(!input.small && !input.parentSessionID ? SystemPrompt.ultraVariantSegments(input.model, variant) : []),
+    // any custom prompt passed into this call
+    ...input.system.flatMap((content, index) => (content ? [{ key: `input/system/${index}`, content }] : [])),
+    // any custom prompt from last user message
+    ...(input.user.system ? [{ key: "user/system/0", content: input.user.system }] : []),
+  ]
+}
+
 export type Event = Result["fullStream"] extends AsyncIterable<infer T> ? T : never
 
 export interface Interface {
@@ -107,7 +131,7 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/LL
 const live: Layer.Layer<
   Service,
   never,
-  Auth.Service | Config.Service | Provider.Service | Plugin.Service | Permission.Service
+  Auth.Service | Config.Service | Provider.Service | Plugin.Service | Permission.Service | ContextEpoch.Service
 > = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -116,6 +140,7 @@ const live: Layer.Layer<
     const provider = yield* Provider.Service
     const plugin = yield* Plugin.Service
     const perm = yield* Permission.Service
+    const epoch = yield* ContextEpoch.Service
 
     const run = Effect.fn("LLM.run")(function* (input: StreamRequest) {
       const l = log
@@ -154,22 +179,20 @@ const live: Layer.Layer<
         )
       }
       const multiAgent = multiAgentPolicy(input, profile.key)
-      const system: string[] = []
-      system.push(
-        [
-          // use agent prompt otherwise provider prompt
-          ...(input.agent.prompt ? [input.agent.prompt] : SystemPrompt.provider(input.model)),
-          ...SystemPrompt.overlay(input.model),
-          ...(multiAgent ? [multiAgent] : []),
-          ...(!input.small && !input.parentSessionID ? SystemPrompt.ultraVariant(input.model, profile.key) : []),
-          // any custom prompt passed into this call
-          ...input.system,
-          // any custom prompt from last user message
-          ...(input.user.system ? [input.user.system] : []),
-        ]
-          .filter((x) => x)
-          .join("\n"),
-      )
+      const segments = systemSegments(input, multiAgent, profile.key)
+      // experimental.system_context: the first turn stores the assembled
+      // baseline, later turns reuse it and inject source changes as an extra
+      // system message. Small calls (title/summary) own no epoch. Epoch
+      // failures degrade to the default assembly.
+      const prepared =
+        !input.small && cfg.experimental?.system_context
+          ? Option.getOrUndefined(
+              yield* SessionSystemContext.prepare(epoch, SessionID.make(input.sessionID), segments),
+            )
+          : undefined
+      const system: string[] = prepared
+        ? [prepared.baseline, ...(prepared.delta ? [prepared.delta] : [])]
+        : [segments.map((segment) => segment.content).join("\n")]
 
       const header = system[0]
       yield* plugin.trigger(
@@ -553,6 +576,7 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(Config.defaultLayer),
     Layer.provide(Provider.defaultLayer),
     Layer.provide(Plugin.defaultLayer),
+    Layer.provide(ContextEpoch.defaultLayer),
   ),
 )
 

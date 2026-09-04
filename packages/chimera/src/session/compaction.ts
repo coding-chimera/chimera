@@ -591,9 +591,11 @@ export const layer: Layer.Layer<
           })
           yield* EventV2.run(sync, SessionEvent.Compaction.Ended.Sync, {
             sessionID: input.sessionID,
+            messageID: SessionEvent.messageID(input.parentID),
             timestamp: DateTime.makeUnsafe(Date.now()),
+            reason: input.auto ? "auto" : "manual",
             text,
-            include: selected.tail_start_id,
+            recent: selected.tail_start_id ?? "",
           })
           yield* bus.publish(Event.Compacted, { sessionID: input.sessionID })
           return "continue"
@@ -690,9 +692,11 @@ export const layer: Layer.Layer<
         )
         yield* EventV2.run(sync, SessionEvent.Compaction.Ended.Sync, {
           sessionID: input.sessionID,
+          messageID: SessionEvent.messageID(input.parentID),
           timestamp: DateTime.makeUnsafe(Date.now()),
+          reason: input.auto ? "auto" : "manual",
           text: summary ?? "",
-          include: selected.tail_start_id,
+          recent: selected.tail_start_id ?? "",
         })
         yield* bus.publish(Event.Compacted, { sessionID: input.sessionID })
       }
@@ -724,6 +728,7 @@ export const layer: Layer.Layer<
       })
       yield* EventV2.run(sync, SessionEvent.Compaction.Started.Sync, {
         sessionID: input.sessionID,
+        messageID: SessionEvent.messageID(msg.id),
         timestamp: DateTime.makeUnsafe(Date.now()),
         reason: input.auto ? "auto" : "manual",
       })

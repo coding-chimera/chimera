@@ -326,6 +326,7 @@ export const layer: Layer.Layer<
             // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
             yield* EventV2.run(sync, SessionEvent.Reasoning.Started.Sync, {
               sessionID: ctx.sessionID,
+              assistantMessageID: SessionEvent.messageID(ctx.assistantMessage.id),
               reasoningID: value.id,
               timestamp: DateTime.makeUnsafe(Date.now()),
             })
@@ -359,6 +360,7 @@ export const layer: Layer.Layer<
             // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
             yield* EventV2.run(sync, SessionEvent.Reasoning.Ended.Sync, {
               sessionID: ctx.sessionID,
+              assistantMessageID: SessionEvent.messageID(ctx.assistantMessage.id),
               reasoningID: value.id,
               text: ctx.reasoningMap[value.id].text,
               timestamp: DateTime.makeUnsafe(Date.now()),
@@ -378,6 +380,7 @@ export const layer: Layer.Layer<
             // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
             yield* EventV2.run(sync, SessionEvent.Tool.Input.Started.Sync, {
               sessionID: ctx.sessionID,
+              assistantMessageID: SessionEvent.messageID(ctx.assistantMessage.id),
               callID: value.id,
               name: value.toolName,
               timestamp: DateTime.makeUnsafe(Date.now()),
@@ -413,6 +416,7 @@ export const layer: Layer.Layer<
             // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
             yield* EventV2.run(sync, SessionEvent.Tool.Input.Ended.Sync, {
               sessionID: ctx.sessionID,
+              assistantMessageID: SessionEvent.messageID(ctx.assistantMessage.id),
               callID: value.id,
               text: "",
               timestamp: DateTime.makeUnsafe(Date.now()),
@@ -428,6 +432,7 @@ export const layer: Layer.Layer<
             // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
             yield* EventV2.run(sync, SessionEvent.Tool.Called.Sync, {
               sessionID: ctx.sessionID,
+              assistantMessageID: SessionEvent.messageID(ctx.assistantMessage.id),
               callID: value.toolCallId,
               tool: value.toolName,
               input: value.input,
@@ -485,6 +490,7 @@ export const layer: Layer.Layer<
             // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
             yield* EventV2.run(sync, SessionEvent.Tool.Success.Sync, {
               sessionID: ctx.sessionID,
+              assistantMessageID: SessionEvent.messageID(ctx.assistantMessage.id),
               callID: value.toolCallId,
               structured: SessionToolMetadata.forPersistence(toolCall?.part.tool ?? value.toolName, output.metadata),
               content: [
@@ -513,6 +519,7 @@ export const layer: Layer.Layer<
             // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
             yield* EventV2.run(sync, SessionEvent.Tool.Failed.Sync, {
               sessionID: ctx.sessionID,
+              assistantMessageID: SessionEvent.messageID(ctx.assistantMessage.id),
               callID: value.toolCallId,
               error: {
                 type: "unknown",
@@ -536,12 +543,13 @@ export const layer: Layer.Layer<
               // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
               yield* EventV2.run(sync, SessionEvent.Step.Started.Sync, {
                 sessionID: ctx.sessionID,
+                assistantMessageID: SessionEvent.messageID(ctx.assistantMessage.id),
                 agent: input.assistantMessage.agent,
-                model: {
+                model: SessionEvent.modelRef({
                   id: Modelv2.ID.make(ctx.model.id),
                   providerID: Modelv2.ProviderID.make(ctx.model.providerID),
                   variant: Modelv2.VariantID.make(input.assistantMessage.variant ?? "default"),
-                },
+                }),
                 snapshot: ctx.snapshot,
                 timestamp: DateTime.makeUnsafe(Date.now()),
               })
@@ -567,6 +575,7 @@ export const layer: Layer.Layer<
               // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
               yield* EventV2.run(sync, SessionEvent.Step.Ended.Sync, {
                 sessionID: ctx.sessionID,
+                assistantMessageID: SessionEvent.messageID(ctx.assistantMessage.id),
                 finish: value.finishReason,
                 cost: usage.cost,
                 tokens: usage.tokens,
@@ -623,16 +632,19 @@ export const layer: Layer.Layer<
             return
           }
 
-          case "text-start":
+          case "text-start": {
+            const textID = PartID.ascending()
             if (!ctx.assistantMessage.summary) {
               // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
               yield* EventV2.run(sync, SessionEvent.Text.Started.Sync, {
                 sessionID: ctx.sessionID,
+                assistantMessageID: SessionEvent.messageID(ctx.assistantMessage.id),
+                textID,
                 timestamp: DateTime.makeUnsafe(Date.now()),
               })
             }
             ctx.currentText = {
-              id: PartID.ascending(),
+              id: textID,
               messageID: ctx.assistantMessage.id,
               sessionID: ctx.assistantMessage.sessionID,
               type: "text",
@@ -643,6 +655,7 @@ export const layer: Layer.Layer<
             yield* session.updatePart(ctx.currentText)
             ctx.currentTextRaw = ""
             return
+          }
 
           case "text-delta": {
             if (!ctx.currentText) return
@@ -703,6 +716,8 @@ export const layer: Layer.Layer<
               // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
               yield* EventV2.run(sync, SessionEvent.Text.Ended.Sync, {
                 sessionID: ctx.sessionID,
+                assistantMessageID: SessionEvent.messageID(ctx.assistantMessage.id),
+                textID: ctx.currentText.id,
                 text: ctx.currentText.text,
                 timestamp: DateTime.makeUnsafe(Date.now()),
               })
@@ -794,6 +809,7 @@ export const layer: Layer.Layer<
           // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
           yield* EventV2.run(sync, SessionEvent.Step.Failed.Sync, {
             sessionID: ctx.sessionID,
+            assistantMessageID: SessionEvent.messageID(ctx.assistantMessage.id),
             error: {
               type: "unknown",
               message: errorMessage(e),

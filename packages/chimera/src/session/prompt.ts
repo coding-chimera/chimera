@@ -1150,6 +1150,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             yield* sessions.updatePart(part)
             yield* EventV2.run(sync, SessionEvent.Shell.Started.Sync, {
               sessionID: input.sessionID,
+              messageID: SessionEvent.messageID(msg.id),
               timestamp: DateTime.makeUnsafe(started),
               callID,
               command: input.command,
@@ -1457,6 +1458,7 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
       if (current?.agent !== info.agent) {
         yield* EventV2.run(sync, SessionEvent.AgentSwitched.Sync, {
           sessionID: input.sessionID,
+          messageID: SessionEvent.messageID(info.id),
           timestamp: DateTime.makeUnsafe(info.time.created),
           agent: info.agent,
         })
@@ -1468,12 +1470,13 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
       ) {
         yield* EventV2.run(sync, SessionEvent.ModelSwitched.Sync, {
           sessionID: input.sessionID,
+          messageID: SessionEvent.messageID(info.id),
           timestamp: DateTime.makeUnsafe(info.time.created),
-          model: {
+          model: SessionEvent.modelRef({
             id: Modelv2.ID.make(info.model.modelID),
             providerID: Modelv2.ProviderID.make(info.model.providerID),
             variant: Modelv2.VariantID.make(info.model.variant ?? "default"),
-          },
+          }),
         })
       }
 
@@ -1854,6 +1857,10 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
       // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
       yield* EventV2.run(sync, SessionEvent.Prompted.Sync, {
         sessionID: input.sessionID,
+        messageID: SessionEvent.messageID(info.id),
+        // Fork has no prompt queue; prompts are processed directly, so
+        // delivery uses the upstream default until real delivery semantics land.
+        delivery: "steer",
         timestamp: DateTime.makeUnsafe(info.time.created),
         prompt: {
           text: nextPrompt.text.join("\n"),
@@ -1865,6 +1872,7 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
         // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
         yield* EventV2.run(sync, SessionEvent.Synthetic.Sync, {
           sessionID: input.sessionID,
+          messageID: SessionEvent.messageID(info.id),
           timestamp: DateTime.makeUnsafe(info.time.created),
           text,
         })
