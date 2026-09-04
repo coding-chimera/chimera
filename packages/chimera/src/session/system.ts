@@ -36,9 +36,14 @@ type ModelIDs = ReturnType<typeof ids>
 // wins). By default a key matches as a case-insensitive substring of the
 // api id; `scope: "both"` also matches the provider id, `exact` restricts
 // matching to the exact model slug, and `match` overrides the predicate.
-// Adding a layer for a new model family is normally just a new txt file plus
+// Adding a layer for a new model family is normally a new txt file plus
 // one entry here.
+//
+// `key` is the stable SystemContext source attribution for the layer (for
+// example `model/deepseek`); it identifies the layer across turns, not the
+// resolved model slug.
 type LayerEntry = {
+  key: string
   keys: string[]
   content: string
   exact?: boolean
@@ -47,14 +52,20 @@ type LayerEntry = {
 }
 
 const SPECIALIZATIONS: LayerEntry[] = [
-  { keys: ["gpt-4", "o1", "o3"], content: PROMPT_GPT4 },
-  { keys: ["gpt-5.5"], content: PROMPT_GPT55, exact: true },
-  { keys: ["codex"], content: PROMPT_CODEX, match: (modelIDs) => modelIDs.apiID.includes("gpt") && modelIDs.apiID.includes("codex") },
-  { keys: ["gpt"], content: PROMPT_GPT },
-  { keys: ["gemini"], content: PROMPT_GEMINI },
-  { keys: ["claude"], content: PROMPT_CLAUDE },
-  { keys: ["trinity"], content: PROMPT_TRINITY },
+  { key: "model/gpt-4", keys: ["gpt-4", "o1", "o3"], content: PROMPT_GPT4 },
+  { key: "model/gpt-5.5", keys: ["gpt-5.5"], content: PROMPT_GPT55, exact: true },
   {
+    key: "model/codex",
+    keys: ["codex"],
+    content: PROMPT_CODEX,
+    match: (modelIDs) => modelIDs.apiID.includes("gpt") && modelIDs.apiID.includes("codex"),
+  },
+  { key: "model/gpt", keys: ["gpt"], content: PROMPT_GPT },
+  { key: "model/gemini", keys: ["gemini"], content: PROMPT_GEMINI },
+  { key: "model/claude", keys: ["claude"], content: PROMPT_CLAUDE },
+  { key: "model/trinity", keys: ["trinity"], content: PROMPT_TRINITY },
+  {
+    key: "model/kimi",
     keys: ["kimi"],
     content: PROMPT_KIMI,
     match: (modelIDs) => {
@@ -67,15 +78,15 @@ const SPECIALIZATIONS: LayerEntry[] = [
       return modelIDs.providerID.startsWith("kimi-for-coding")
     },
   },
-  { keys: ["deepseek"], content: PROMPT_DEEPSEEK, scope: "both" },
+  { key: "model/deepseek", keys: ["deepseek"], content: PROMPT_DEEPSEEK, scope: "both" },
 ]
 
 const OVERLAYS: LayerEntry[] = [
-  { keys: ["deepseek"], content: PROMPT_DEEPSEEK_OVERLAY, scope: "both" },
+  { key: "overlay/deepseek", keys: ["deepseek"], content: PROMPT_DEEPSEEK_OVERLAY, scope: "both" },
 ]
 
 const ULTRA_LAYERS: LayerEntry[] = [
-  { keys: ["deepseek"], content: PROMPT_DEEPSEEK_ULTRA, scope: "both" },
+  { key: "variant/ultra-deepseek", keys: ["deepseek"], content: PROMPT_DEEPSEEK_ULTRA, scope: "both" },
 ]
 
 function matches(entry: LayerEntry, modelIDs: ModelIDs) {
@@ -87,25 +98,51 @@ function matches(entry: LayerEntry, modelIDs: ModelIDs) {
 
 function matchLayer(entries: LayerEntry[], model: Provider.Model) {
   const modelIDs = ids(model)
-  return entries.find((entry) => matches(entry, modelIDs))?.content
+  return entries.find((entry) => matches(entry, modelIDs))
+}
+
+// One attributed prompt segment in the system assembly order.
+export interface Segment {
+  readonly key: string
+  readonly content: string
+}
+
+export function providerSegments(model: Provider.Model): Segment[] {
+  const tuned = matchLayer(SPECIALIZATIONS, model)
+  return [
+    { key: "core/default", content: PROMPT_DEFAULT },
+    { key: "core/workflow", content: PROMPT_WORKFLOW },
+    { key: "core/chimera", content: PROMPT_CHIMERA },
+    ...(tuned ? [{ key: tuned.key, content: tuned.content }] : []),
+  ]
 }
 
 export function provider(model: Provider.Model) {
-  const tuned = matchLayer(SPECIALIZATIONS, model)
-  return [PROMPT_DEFAULT, PROMPT_WORKFLOW, PROMPT_CHIMERA, ...(tuned ? [tuned] : [])]
+  return providerSegments(model).map((segment) => segment.content)
+}
+
+export function overlaySegments(model: Provider.Model): Segment[] {
+  const found = matchLayer(OVERLAYS, model)
+  return found ? [{ key: found.key, content: found.content }] : []
 }
 
 export function overlay(model: Provider.Model) {
-  const found = matchLayer(OVERLAYS, model)
-  return found ? [found] : []
+  return overlaySegments(model).map((segment) => segment.content)
 }
 
 // Ultra root sessions always receive the generic ultra layer, plus a
 // model-specific ultra layer when one is registered for the model.
-export function ultraVariant(model: Provider.Model, variant: string | undefined) {
+export function ultraVariantSegments(model: Provider.Model, variant: string | undefined): Segment[] {
   if (variant !== "ultra") return []
   const specific = matchLayer(ULTRA_LAYERS, model)
-  return [PROMPT_ULTRA, ...(specific ? [specific] : [])]
+  return [
+    { key: "variant/ultra", content: PROMPT_ULTRA },
+    ...(specific ? [{ key: specific.key, content: specific.content }] : []),
+  ]
+}
+
+export function ultraVariant(model: Provider.Model, variant: string | undefined) {
+  return ultraVariantSegments(model, variant).map((segment) => segment.content)
 }
 
 export interface Interface {

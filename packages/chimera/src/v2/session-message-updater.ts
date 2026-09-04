@@ -1,6 +1,7 @@
 import { produce, type WritableDraft } from "immer"
 import { SessionEvent } from "./session-event"
 import { SessionMessage } from "./session-message"
+import { Modelv2 } from "./model"
 
 export type MemoryState = {
   messages: SessionMessage.Message[]
@@ -109,7 +110,11 @@ export function update<Result>(adapter: Adapter<Result>, event: SessionEvent.Eve
           id: event.id,
           type: "model-switched",
           metadata: event.metadata,
-          model: event.data.model,
+          model: {
+            id: Modelv2.ID.make(event.data.model.id),
+            providerID: Modelv2.ProviderID.make(event.data.model.providerID),
+            variant: Modelv2.VariantID.make(event.data.model.variant ?? "default"),
+          },
           time: { created: event.data.timestamp },
         }),
       )
@@ -403,11 +408,17 @@ export function update<Result>(adapter: Adapter<Result>, event: SessionEvent.Eve
         adapter.updateCompaction(
           produce(currentCompaction, (draft) => {
             draft.summary = event.data.text
-            draft.include = event.data.include
+            draft.include = event.data.recent
           }),
         )
       }
     },
+    "session.next.moved": () => {},
+    "session.next.prompt.admitted": () => {},
+    "session.next.context.updated": () => {},
+    "session.next.revert.staged": () => {},
+    "session.next.revert.cleared": () => {},
+    "session.next.revert.committed": () => {},
   })
 
   return adapter.finish()

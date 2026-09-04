@@ -1,407 +1,171 @@
-import { SessionID } from "@/session/schema"
-import { NonNegativeInt } from "@/util/schema"
-import { EventV2 } from "./event"
-import { FileAttachment, Prompt } from "./session-prompt"
-import { Schema } from "effect"
-export { FileAttachment }
-import { ToolOutput } from "./tool-output"
-import { V2Schema } from "./schema"
+import { SyncEvent } from "@/sync"
+import { MessageID } from "@/session/schema"
 import { Modelv2 } from "./model"
+import { Event as SchemaEvent } from "@opencode-ai/schema/event"
+import { Model } from "@opencode-ai/schema/model"
+import { Provider } from "@opencode-ai/schema/provider"
+import { SessionMessage as SchemaSessionMessage } from "@opencode-ai/schema/session-message"
+import { SessionEvent as SchemaSessionEvent } from "@opencode-ai/schema/session-event"
 
-export const Source = Schema.Struct({
-  start: NonNegativeInt,
-  end: NonNegativeInt,
-  text: Schema.String,
-}).annotate({
-  identifier: "session.next.event.source",
-})
-export type Source = Schema.Schema.Type<typeof Source>
-
-const Base = {
-  timestamp: V2Schema.DateTimeUtcFromMillis,
-  sessionID: SessionID,
+// The session event contract (shapes, versions, durable metadata) is owned by
+// @opencode-ai/schema. This bridge attaches the fork's SyncEvent publish
+// definition to each canonical definition so the flag-gated EventV2 channel
+// (see ./event.ts) can run and project them. Schema stays the single source
+// of truth; this file only wires publishing.
+function bridge<D extends SchemaEvent.Definition>(def: D) {
+  const Sync = SyncEvent.define({
+    type: def.type,
+    version: def.durable?.version ?? 1,
+    aggregate: def.durable?.aggregate ?? "sessionID",
+    schema: def.data,
+  })
+  return Object.assign(def, { Sync }) as D & { Sync: SyncEvent.Definition<D["type"], D["data"], D["data"]> }
 }
 
-export const UnknownError = Schema.Struct({
-  type: Schema.Literal("unknown"),
-  message: Schema.String,
-}).annotate({
-  identifier: "Session.Error.Unknown",
-})
-export type UnknownError = Schema.Schema.Type<typeof UnknownError>
+// Fork V1 identifiers share the msg_ wire prefix with schema's
+// SessionMessage.ID, so values round-trip; these adapt the distinct
+// TypeScript brands at the emit boundary.
+export function messageID(id: MessageID): SchemaSessionMessage.ID {
+  return SchemaSessionMessage.ID.make(id)
+}
 
-export const AgentSwitched = EventV2.define({
-  type: "session.next.agent.switched",
-  aggregate: "sessionID",
-  version: 1,
-  schema: {
-    ...Base,
-    agent: Schema.String,
-  },
-})
-export type AgentSwitched = Schema.Schema.Type<typeof AgentSwitched>
+export function modelRef(model: Modelv2.Ref): Model.Ref {
+  return {
+    id: Model.ID.make(model.id),
+    providerID: Provider.ID.make(model.providerID),
+    variant: model.variant,
+  }
+}
 
-export const ModelSwitched = EventV2.define({
-  type: "session.next.model.switched",
-  aggregate: "sessionID",
-  version: 1,
-  schema: {
-    ...Base,
-    model: Modelv2.Ref,
-  },
-})
-export type ModelSwitched = Schema.Schema.Type<typeof ModelSwitched>
+export const Source = SchemaSessionEvent.Source
+export type Source = typeof Source.Type
 
-export const Prompted = EventV2.define({
-  type: "session.next.prompted",
-  aggregate: "sessionID",
-  version: 1,
-  schema: {
-    ...Base,
-    prompt: Prompt,
-  },
-})
-export type Prompted = Schema.Schema.Type<typeof Prompted>
+export const UnknownError = SchemaSessionEvent.UnknownError
+export type UnknownError = SchemaSessionEvent.UnknownError
 
-export const Synthetic = EventV2.define({
-  type: "session.next.synthetic",
-  aggregate: "sessionID",
-  schema: {
-    ...Base,
-    text: Schema.String,
-  },
-})
-export type Synthetic = Schema.Schema.Type<typeof Synthetic>
+export const FileAttachment = SchemaSessionEvent.FileAttachment
+
+export const AgentSwitched = bridge(SchemaSessionEvent.AgentSwitched)
+export type AgentSwitched = typeof AgentSwitched.Type
+
+export const ModelSwitched = bridge(SchemaSessionEvent.ModelSwitched)
+export type ModelSwitched = typeof ModelSwitched.Type
+
+export const Moved = bridge(SchemaSessionEvent.Moved)
+export type Moved = typeof Moved.Type
+
+export const Prompted = bridge(SchemaSessionEvent.Prompted)
+export type Prompted = typeof Prompted.Type
+
+export const PromptAdmitted = bridge(SchemaSessionEvent.PromptAdmitted)
+export type PromptAdmitted = typeof PromptAdmitted.Type
+
+export const ContextUpdated = bridge(SchemaSessionEvent.ContextUpdated)
+export type ContextUpdated = typeof ContextUpdated.Type
+
+export const Synthetic = bridge(SchemaSessionEvent.Synthetic)
+export type Synthetic = typeof Synthetic.Type
 
 export namespace Shell {
-  export const Started = EventV2.define({
-    type: "session.next.shell.started",
-    aggregate: "sessionID",
-    schema: {
-      ...Base,
-      callID: Schema.String,
-      command: Schema.String,
-    },
-  })
-  export type Started = Schema.Schema.Type<typeof Started>
+  export const Started = bridge(SchemaSessionEvent.Shell.Started)
+  export type Started = typeof Started.Type
 
-  export const Ended = EventV2.define({
-    type: "session.next.shell.ended",
-    aggregate: "sessionID",
-    schema: {
-      ...Base,
-      callID: Schema.String,
-      output: Schema.String,
-    },
-  })
-  export type Ended = Schema.Schema.Type<typeof Ended>
+  export const Ended = bridge(SchemaSessionEvent.Shell.Ended)
+  export type Ended = typeof Ended.Type
 }
 
 export namespace Step {
-  export const Started = EventV2.define({
-    type: "session.next.step.started",
-    aggregate: "sessionID",
-    schema: {
-      ...Base,
-      agent: Schema.String,
-      model: Modelv2.Ref,
-      snapshot: Schema.String.pipe(Schema.optional),
-    },
-  })
-  export type Started = Schema.Schema.Type<typeof Started>
+  export const Started = bridge(SchemaSessionEvent.Step.Started)
+  export type Started = typeof Started.Type
 
-  export const Ended = EventV2.define({
-    type: "session.next.step.ended",
-    aggregate: "sessionID",
-    schema: {
-      ...Base,
-      finish: Schema.String,
-      cost: Schema.Finite,
-      tokens: Schema.Struct({
-        input: NonNegativeInt,
-        output: NonNegativeInt,
-        reasoning: NonNegativeInt,
-        cache: Schema.Struct({
-          read: NonNegativeInt,
-          write: NonNegativeInt,
-        }),
-      }),
-      snapshot: Schema.String.pipe(Schema.optional),
-    },
-  })
-  export type Ended = Schema.Schema.Type<typeof Ended>
+  export const Ended = bridge(SchemaSessionEvent.Step.Ended)
+  export type Ended = typeof Ended.Type
 
-  export const Failed = EventV2.define({
-    type: "session.next.step.failed",
-    aggregate: "sessionID",
-    schema: {
-      ...Base,
-      error: UnknownError,
-    },
-  })
-  export type Failed = Schema.Schema.Type<typeof Failed>
+  export const Failed = bridge(SchemaSessionEvent.Step.Failed)
+  export type Failed = typeof Failed.Type
 }
 
 export namespace Text {
-  export const Started = EventV2.define({
-    type: "session.next.text.started",
-    aggregate: "sessionID",
-    schema: {
-      ...Base,
-    },
-  })
-  export type Started = Schema.Schema.Type<typeof Started>
+  export const Started = bridge(SchemaSessionEvent.Text.Started)
+  export type Started = typeof Started.Type
 
-  export const Delta = EventV2.define({
-    type: "session.next.text.delta",
-    aggregate: "sessionID",
-    schema: {
-      ...Base,
-      delta: Schema.String,
-    },
-  })
-  export type Delta = Schema.Schema.Type<typeof Delta>
+  export const Delta = bridge(SchemaSessionEvent.Text.Delta)
+  export type Delta = typeof Delta.Type
 
-  export const Ended = EventV2.define({
-    type: "session.next.text.ended",
-    aggregate: "sessionID",
-    schema: {
-      ...Base,
-      text: Schema.String,
-    },
-  })
-  export type Ended = Schema.Schema.Type<typeof Ended>
+  export const Ended = bridge(SchemaSessionEvent.Text.Ended)
+  export type Ended = typeof Ended.Type
 }
 
 export namespace Reasoning {
-  export const Started = EventV2.define({
-    type: "session.next.reasoning.started",
-    aggregate: "sessionID",
-    schema: {
-      ...Base,
-      reasoningID: Schema.String,
-    },
-  })
-  export type Started = Schema.Schema.Type<typeof Started>
+  export const Started = bridge(SchemaSessionEvent.Reasoning.Started)
+  export type Started = typeof Started.Type
 
-  export const Delta = EventV2.define({
-    type: "session.next.reasoning.delta",
-    aggregate: "sessionID",
-    schema: {
-      ...Base,
-      reasoningID: Schema.String,
-      delta: Schema.String,
-    },
-  })
-  export type Delta = Schema.Schema.Type<typeof Delta>
+  export const Delta = bridge(SchemaSessionEvent.Reasoning.Delta)
+  export type Delta = typeof Delta.Type
 
-  export const Ended = EventV2.define({
-    type: "session.next.reasoning.ended",
-    aggregate: "sessionID",
-    schema: {
-      ...Base,
-      reasoningID: Schema.String,
-      text: Schema.String,
-    },
-  })
-  export type Ended = Schema.Schema.Type<typeof Ended>
+  export const Ended = bridge(SchemaSessionEvent.Reasoning.Ended)
+  export type Ended = typeof Ended.Type
 }
 
 export namespace Tool {
   export namespace Input {
-    export const Started = EventV2.define({
-      type: "session.next.tool.input.started",
-      aggregate: "sessionID",
-      schema: {
-        ...Base,
-        callID: Schema.String,
-        name: Schema.String,
-      },
-    })
-    export type Started = Schema.Schema.Type<typeof Started>
+    export const Started = bridge(SchemaSessionEvent.Tool.Input.Started)
+    export type Started = typeof Started.Type
 
-    export const Delta = EventV2.define({
-      type: "session.next.tool.input.delta",
-      aggregate: "sessionID",
-      schema: {
-        ...Base,
-        callID: Schema.String,
-        delta: Schema.String,
-      },
-    })
-    export type Delta = Schema.Schema.Type<typeof Delta>
+    export const Delta = bridge(SchemaSessionEvent.Tool.Input.Delta)
+    export type Delta = typeof Delta.Type
 
-    export const Ended = EventV2.define({
-      type: "session.next.tool.input.ended",
-      aggregate: "sessionID",
-      schema: {
-        ...Base,
-        callID: Schema.String,
-        text: Schema.String,
-      },
-    })
-    export type Ended = Schema.Schema.Type<typeof Ended>
+    export const Ended = bridge(SchemaSessionEvent.Tool.Input.Ended)
+    export type Ended = typeof Ended.Type
   }
 
-  export const Called = EventV2.define({
-    type: "session.next.tool.called",
-    aggregate: "sessionID",
-    schema: {
-      ...Base,
-      callID: Schema.String,
-      tool: Schema.String,
-      input: Schema.Record(Schema.String, Schema.Unknown),
-      provider: Schema.Struct({
-        executed: Schema.Boolean,
-        metadata: Schema.Record(Schema.String, Schema.Unknown).pipe(Schema.optional),
-      }),
-    },
-  })
-  export type Called = Schema.Schema.Type<typeof Called>
+  export const Called = bridge(SchemaSessionEvent.Tool.Called)
+  export type Called = typeof Called.Type
 
-  export const Progress = EventV2.define({
-    type: "session.next.tool.progress",
-    aggregate: "sessionID",
-    schema: {
-      ...Base,
-      callID: Schema.String,
-      structured: ToolOutput.Structured,
-      content: Schema.Array(ToolOutput.Content),
-    },
-  })
-  export type Progress = Schema.Schema.Type<typeof Progress>
+  export const Progress = bridge(SchemaSessionEvent.Tool.Progress)
+  export type Progress = typeof Progress.Type
 
-  export const Success = EventV2.define({
-    type: "session.next.tool.success",
-    aggregate: "sessionID",
-    schema: {
-      ...Base,
-      callID: Schema.String,
-      structured: ToolOutput.Structured,
-      content: Schema.Array(ToolOutput.Content),
-      provider: Schema.Struct({
-        executed: Schema.Boolean,
-        metadata: Schema.Record(Schema.String, Schema.Unknown).pipe(Schema.optional),
-      }),
-    },
-  })
-  export type Success = Schema.Schema.Type<typeof Success>
+  export const Success = bridge(SchemaSessionEvent.Tool.Success)
+  export type Success = typeof Success.Type
 
-  export const Failed = EventV2.define({
-    type: "session.next.tool.failed",
-    aggregate: "sessionID",
-    schema: {
-      ...Base,
-      callID: Schema.String,
-      error: UnknownError,
-      provider: Schema.Struct({
-        executed: Schema.Boolean,
-        metadata: Schema.Record(Schema.String, Schema.Unknown).pipe(Schema.optional),
-      }),
-    },
-  })
-  export type Failed = Schema.Schema.Type<typeof Failed>
+  export const Failed = bridge(SchemaSessionEvent.Tool.Failed)
+  export type Failed = typeof Failed.Type
 }
 
-export const RetryError = Schema.Struct({
-  message: Schema.String,
-  statusCode: NonNegativeInt.pipe(Schema.optional),
-  isRetryable: Schema.Boolean,
-  responseHeaders: Schema.Record(Schema.String, Schema.String).pipe(Schema.optional),
-  responseBody: Schema.String.pipe(Schema.optional),
-  metadata: Schema.Record(Schema.String, Schema.String).pipe(Schema.optional),
-}).annotate({
-  identifier: "session.next.retry_error",
-})
-export type RetryError = Schema.Schema.Type<typeof RetryError>
+export const RetryError = SchemaSessionEvent.RetryError
+export type RetryError = typeof RetryError.Type
 
-export const Retried = EventV2.define({
-  type: "session.next.retried",
-  aggregate: "sessionID",
-  schema: {
-    ...Base,
-    attempt: NonNegativeInt,
-    error: RetryError,
-  },
-})
-export type Retried = Schema.Schema.Type<typeof Retried>
+export const Retried = bridge(SchemaSessionEvent.Retried)
+export type Retried = typeof Retried.Type
 
 export namespace Compaction {
-  export const Started = EventV2.define({
-    type: "session.next.compaction.started",
-    aggregate: "sessionID",
-    schema: {
-      ...Base,
-      reason: Schema.Union([Schema.Literal("auto"), Schema.Literal("manual")]),
-    },
-  })
-  export type Started = Schema.Schema.Type<typeof Started>
+  export const Started = bridge(SchemaSessionEvent.Compaction.Started)
+  export type Started = typeof Started.Type
 
-  export const Delta = EventV2.define({
-    type: "session.next.compaction.delta",
-    aggregate: "sessionID",
-    schema: {
-      ...Base,
-      text: Schema.String,
-    },
-  })
+  export const Delta = bridge(SchemaSessionEvent.Compaction.Delta)
+  export type Delta = typeof Delta.Type
 
-  export const Ended = EventV2.define({
-    type: "session.next.compaction.ended",
-    aggregate: "sessionID",
-    schema: {
-      ...Base,
-      text: Schema.String,
-      include: Schema.String.pipe(Schema.optional),
-    },
-  })
-  export type Ended = Schema.Schema.Type<typeof Ended>
+  export const Ended = bridge(SchemaSessionEvent.Compaction.Ended)
+  export type Ended = typeof Ended.Type
 }
 
-export const All = Schema.Union(
-  [
-    AgentSwitched,
-    ModelSwitched,
-    Prompted,
-    Synthetic,
-    Shell.Started,
-    Shell.Ended,
-    Step.Started,
-    Step.Ended,
-    Step.Failed,
-    Text.Started,
-    Text.Delta,
-    Text.Ended,
-    Tool.Input.Started,
-    Tool.Input.Delta,
-    Tool.Input.Ended,
-    Tool.Called,
-    Tool.Progress,
-    Tool.Success,
-    Tool.Failed,
-    Reasoning.Started,
-    Reasoning.Delta,
-    Reasoning.Ended,
-    Retried,
-    Compaction.Started,
-    Compaction.Delta,
-    Compaction.Ended,
-  ],
-  {
-    mode: "oneOf",
-  },
-).pipe(Schema.toTaggedUnion("type"))
+export namespace RevertEvent {
+  export const Staged = bridge(SchemaSessionEvent.RevertEvent.Staged)
+  export type Staged = typeof Staged.Type
 
-// user
-// assistant
-// assistant
-// assistant
-// user
-// compaction marker
-// -> text
-// assistant
+  export const Cleared = bridge(SchemaSessionEvent.RevertEvent.Cleared)
+  export type Cleared = typeof Cleared.Type
 
-export type Event = Schema.Schema.Type<typeof All>
-export type Type = Event["type"]
+  export const Committed = bridge(SchemaSessionEvent.RevertEvent.Committed)
+  export type Committed = typeof Committed.Type
+}
+
+export const Definitions = SchemaSessionEvent.Definitions
+export const DurableDefinitions = SchemaSessionEvent.DurableDefinitions
+export const Durable = SchemaSessionEvent.Durable
+export type DurableEvent = SchemaSessionEvent.DurableEvent
+export const All = SchemaSessionEvent.All
+export type Event = SchemaSessionEvent.Event
+export type Type = SchemaSessionEvent.Type
 
 export * as SessionEvent from "./session-event"

@@ -145,6 +145,9 @@ export default [
   SyncEvent.project(SessionEvent.Synthetic.Sync, (db, data, event) => {
     update(db, { id: SessionMessage.ID.make(event.id), type: "session.next.synthetic", data })
   }),
+  SyncEvent.project(SessionEvent.ContextUpdated.Sync, (db, data, event) => {
+    update(db, { id: SessionMessage.ID.make(event.id), type: "session.next.context.updated", data })
+  }),
   SyncEvent.project(SessionEvent.Shell.Started.Sync, (db, data, event) => {
     update(db, { id: SessionMessage.ID.make(event.id), type: "session.next.shell.started", data })
   }),
@@ -200,4 +203,10 @@ export default [
   SyncEvent.project(SessionEvent.Compaction.Ended.Sync, (db, data, event) => {
     update(db, { id: SessionMessage.ID.make(event.id), type: "session.next.compaction.ended", data })
   }),
+  // V1 revert persists through sessions.setRevert/clearRevert (projected via
+  // session.updated); these v2 emissions are additive on the flag-gated
+  // channel, so their projectors intentionally do not write state.
+  SyncEvent.project(SessionEvent.RevertEvent.Staged.Sync, () => {}),
+  SyncEvent.project(SessionEvent.RevertEvent.Cleared.Sync, () => {}),
+  SyncEvent.project(SessionEvent.RevertEvent.Committed.Sync, () => {}),
 ]

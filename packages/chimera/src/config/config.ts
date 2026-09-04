@@ -321,6 +321,10 @@ export const Info = Schema.Struct({
       mcp_timeout: Schema.optional(PositiveInt).annotate({
         description: "Timeout in milliseconds for model context protocol (MCP) requests",
       }),
+      system_context: Schema.optional(Schema.Boolean).annotate({
+        description:
+          "Enable SystemContext source tracking and context epoch persistence for the system prompt: the first turn stores the assembled baseline and later turns reuse it, injecting source changes as an extra system message instead of rebuilding the baseline. When off, assembly is byte-identical to the default path and no epoch DB access happens.",
+      }),
     }),
   ),
 })

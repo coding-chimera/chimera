@@ -13,6 +13,7 @@ import { SyncEvent } from "@/sync"
 import { V2Schema } from "./schema"
 import { optionalOmitUndefined } from "@/util/schema"
 import { Modelv2 } from "./model"
+import { SessionMessage as SchemaSessionMessage } from "@opencode-ai/schema/session-message"
 
 export const Delivery = Schema.Literals(["immediate", "deferred"]).annotate({
   identifier: "Session.Delivery",
@@ -273,6 +274,7 @@ export const layer = Layer.effect(
       switchAgent: Effect.fn("V2Session.switchAgent")(function* (input) {
         yield* EventV2.run(sync, SessionEvent.AgentSwitched.Sync, {
           sessionID: input.sessionID,
+          messageID: SchemaSessionMessage.ID.create(),
           timestamp: DateTime.makeUnsafe(Date.now()),
           agent: input.agent,
         })
@@ -280,8 +282,9 @@ export const layer = Layer.effect(
       switchModel: Effect.fn("V2Session.switchModel")(function* (input) {
         yield* EventV2.run(sync, SessionEvent.ModelSwitched.Sync, {
           sessionID: input.sessionID,
+          messageID: SchemaSessionMessage.ID.create(),
           timestamp: DateTime.makeUnsafe(Date.now()),
-          model: input.model,
+          model: SessionEvent.modelRef(input.model),
         })
       }),
       subagent: Effect.fn("V2Session.subagent")(function* (input) {

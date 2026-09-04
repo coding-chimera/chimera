@@ -1,8 +1,10 @@
-import { Effect, Layer, Context, Schema } from "effect"
+import { Effect, Layer, Context, Schema, DateTime } from "effect"
 import { Bus } from "../bus"
 import { Snapshot } from "../snapshot"
 import { Storage } from "@/storage/storage"
 import { SyncEvent } from "../sync"
+import { EventV2 } from "@/v2/event"
+import { SessionEvent } from "@/v2/session-event"
 import * as Log from "@opencode-ai/core/util/log"
 import { zod } from "@/util/effect-zod"
 import { withStatics } from "@/util/schema"
@@ -89,6 +91,23 @@ export const layer = Layer.effect(
           files: diffs.length,
         },
       })
+      // V1 revert completes atomically; surface it on the flag-gated v2
+      // channel as a staged+committed pair (no-op when the flag is off).
+      yield* EventV2.run(sync, SessionEvent.RevertEvent.Staged.Sync, {
+        sessionID: input.sessionID,
+        timestamp: DateTime.makeUnsafe(Date.now()),
+        revert: {
+          messageID: SessionEvent.messageID(rev.messageID),
+          partID: rev.partID,
+          snapshot: rev.snapshot,
+          diff: rev.diff,
+        },
+      })
+      yield* EventV2.run(sync, SessionEvent.RevertEvent.Committed.Sync, {
+        sessionID: input.sessionID,
+        timestamp: DateTime.makeUnsafe(Date.now()),
+        messageID: SessionEvent.messageID(rev.messageID),
+      })
       return yield* sessions.get(input.sessionID).pipe(Effect.orDie)
     })
 
@@ -99,6 +118,10 @@ export const layer = Layer.effect(
       if (!session.revert) return session
       if (session.revert.snapshot) yield* snap.restore(session.revert.snapshot)
       yield* sessions.clearRevert(input.sessionID)
+      yield* EventV2.run(sync, SessionEvent.RevertEvent.Cleared.Sync, {
+        sessionID: input.sessionID,
+        timestamp: DateTime.makeUnsafe(Date.now()),
+      })
       return yield* sessions.get(input.sessionID).pipe(Effect.orDie)
     })
 
