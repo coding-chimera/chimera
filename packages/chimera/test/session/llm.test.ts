@@ -619,6 +619,165 @@ describe("session.llm.stream", () => {
     })
   })
 
+  test("sends agent sampling overrides on OpenAI-compatible Chat", async () => {
+    const server = state.server
+    if (!server) throw new Error("Server not initialized")
+
+    const providerID = "sampling-compatible"
+    const modelID = "test-sampling-model"
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(
+          path.join(dir, "chimera.json"),
+          JSON.stringify({
+            $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+            enabled_providers: [providerID],
+            provider: {
+              [providerID]: {
+                name: "Sampling Compatible",
+                npm: "@ai-sdk/openai-compatible",
+                wire_api: "chat",
+                env: [],
+                models: { [modelID]: { reasoning: false } },
+                options: {
+                  apiKey: "test-sampling-key",
+                  baseURL: `${server.url.origin}/v1`,
+                },
+              },
+            },
+          }),
+        )
+      },
+    })
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const resolved = await getModel(ProviderID.make(providerID), ModelID.make(modelID))
+        const request = waitRequest(
+          "/chat/completions",
+          new Response(createChatStream("Hello"), {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          }),
+        )
+        const sessionID = SessionID.make("session-sampling-1")
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+          topK: 40,
+          minP: 0.05,
+          repetitionPenalty: 1.1,
+          presencePenalty: 0.5,
+          frequencyPenalty: 0.25,
+        } satisfies Agent.Info
+        const user = {
+          id: MessageID.make("user-sampling-1"),
+          sessionID,
+          role: "user",
+          time: { created: Date.now() },
+          agent: agent.name,
+          model: { providerID: ProviderID.make(providerID), modelID: resolved.id },
+        } satisfies MessageV2.User
+
+        await drain({
+          user,
+          sessionID,
+          model: resolved,
+          agent,
+          system: ["runtime-system"],
+          messages: [{ role: "user", content: "Hello" }],
+          tools: {},
+        })
+
+        const body = (await request).body
+        expect(body.top_k).toBe(40)
+        expect(body.min_p).toBe(0.05)
+        expect(body.repetition_penalty).toBe(1.1)
+        expect(body.presence_penalty).toBe(0.5)
+        expect(body.frequency_penalty).toBe(0.25)
+      },
+    })
+  })
+
+  test("sends qwen3.8 family sampling defaults on OpenAI-compatible Chat", async () => {
+    const server = state.server
+    if (!server) throw new Error("Server not initialized")
+
+    const providerID = "sampling-qwen"
+    const modelID = "qwen3.8-test-model"
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(
+          path.join(dir, "chimera.json"),
+          JSON.stringify({
+            $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+            enabled_providers: [providerID],
+            provider: {
+              [providerID]: {
+                name: "Sampling Qwen",
+                npm: "@ai-sdk/openai-compatible",
+                wire_api: "chat",
+                env: [],
+                models: { [modelID]: { reasoning: false, temperature: true } },
+                options: {
+                  apiKey: "test-sampling-key",
+                  baseURL: `${server.url.origin}/v1`,
+                },
+              },
+            },
+          }),
+        )
+      },
+    })
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const resolved = await getModel(ProviderID.make(providerID), ModelID.make(modelID))
+        const request = waitRequest(
+          "/chat/completions",
+          new Response(createChatStream("Hello"), {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          }),
+        )
+        const sessionID = SessionID.make("session-sampling-qwen-1")
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        } satisfies Agent.Info
+        const user = {
+          id: MessageID.make("user-sampling-qwen-1"),
+          sessionID,
+          role: "user",
+          time: { created: Date.now() },
+          agent: agent.name,
+          model: { providerID: ProviderID.make(providerID), modelID: resolved.id },
+        } satisfies MessageV2.User
+
+        await drain({
+          user,
+          sessionID,
+          model: resolved,
+          agent,
+          system: ["runtime-system"],
+          messages: [{ role: "user", content: "Hello" }],
+          tools: {},
+        })
+
+        const body = (await request).body
+        expect(body.temperature).toBe(1.0)
+        expect(body.top_p).toBe(0.95)
+        expect(body.top_k).toBe(20)
+      },
+    })
+  })
+
   test("activates the Ultra profile for Kimi k3 on OpenAI-compatible Chat", async () => {
     const server = state.server
     if (!server) throw new Error("Server not initialized")

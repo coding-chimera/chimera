@@ -33,6 +33,11 @@ export const Info = Schema.Struct({
   native: Schema.optional(Schema.Boolean),
   hidden: Schema.optional(Schema.Boolean),
   topP: Schema.optional(Schema.Finite),
+  topK: Schema.optional(Schema.Finite),
+  minP: Schema.optional(Schema.Finite),
+  presencePenalty: Schema.optional(Schema.Finite),
+  frequencyPenalty: Schema.optional(Schema.Finite),
+  repetitionPenalty: Schema.optional(Schema.Finite),
   temperature: Schema.optional(Schema.Finite),
   color: Schema.optional(Schema.String),
   permission: Permission.Ruleset,
@@ -273,6 +278,11 @@ export const layer = Layer.effect(
           item.description = value.description ?? item.description
           item.temperature = value.temperature ?? item.temperature
           item.topP = value.top_p ?? item.topP
+          item.topK = value.top_k ?? item.topK
+          item.minP = value.min_p ?? item.minP
+          item.presencePenalty = value.presence_penalty ?? item.presencePenalty
+          item.frequencyPenalty = value.frequency_penalty ?? item.frequencyPenalty
+          item.repetitionPenalty = value.repetition_penalty ?? item.repetitionPenalty
           item.mode = value.mode ?? item.mode
           item.color = value.color ?? item.color
           item.hidden = value.hidden ?? item.hidden

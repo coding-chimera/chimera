@@ -191,6 +191,39 @@ test("custom agent from config creates new agent", async () => {
   })
 })
 
+test("custom agent config maps sampling overrides to named runtime fields", async () => {
+  await using tmp = await tmpdir({
+    config: {
+      agent: {
+        sampling_agent: {
+          top_k: 40,
+          min_p: 0.05,
+          presence_penalty: 0.5,
+          frequency_penalty: 0.25,
+          repetition_penalty: 1.1,
+        },
+      },
+    },
+  })
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const custom = await load(tmp.path, (svc) => svc.get("sampling_agent"))
+      expect(custom).toBeDefined()
+      expect(custom?.topK).toBe(40)
+      expect(custom?.minP).toBe(0.05)
+      expect(custom?.presencePenalty).toBe(0.5)
+      expect(custom?.frequencyPenalty).toBe(0.25)
+      expect(custom?.repetitionPenalty).toBe(1.1)
+      expect(custom?.options).not.toHaveProperty("top_k")
+      expect(custom?.options).not.toHaveProperty("min_p")
+      expect(custom?.options).not.toHaveProperty("presence_penalty")
+      expect(custom?.options).not.toHaveProperty("frequency_penalty")
+      expect(custom?.options).not.toHaveProperty("repetition_penalty")
+    },
+  })
+})
+
 test("custom agent config overrides native agent properties", async () => {
   await using tmp = await tmpdir({
     config: {

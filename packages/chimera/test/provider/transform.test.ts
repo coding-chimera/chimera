@@ -864,6 +864,63 @@ describe("ProviderTransform.providerOptions", () => {
   })
 })
 
+describe("ProviderTransform.samplingOptions", () => {
+  const createModel = (npm: string) =>
+    ({
+      id: "test/test-model",
+      providerID: "my-proxy",
+      api: { id: "test-model", url: "https://api.test.com", npm },
+    }) as any
+
+  test("maps configured agent fields to snake-case wire keys on openai-compatible", () => {
+    expect(
+      ProviderTransform.samplingOptions(createModel("@ai-sdk/openai-compatible"), {
+        topK: 40,
+        minP: 0.05,
+        repetitionPenalty: 1.1,
+      }),
+    ).toEqual({ top_k: 40, min_p: 0.05, repetition_penalty: 1.1 })
+  })
+
+  test("keeps zero values instead of dropping them", () => {
+    const model = createModel("@ai-sdk/openai-compatible")
+    expect(ProviderTransform.samplingOptions(model, { topK: 0 })).toEqual({ top_k: 0 })
+  })
+
+  test("omits keys the agent does not configure", () => {
+    const model = createModel("@ai-sdk/openai-compatible")
+    expect(ProviderTransform.samplingOptions(model, { minP: 0.1 })).toEqual({ min_p: 0.1 })
+    expect(ProviderTransform.samplingOptions(model, {})).toEqual({})
+  })
+
+  test("returns {} for strict SDKs like @ai-sdk/openai", () => {
+    expect(
+      ProviderTransform.samplingOptions(createModel("@ai-sdk/openai"), {
+        topK: 40,
+        minP: 0.05,
+        repetitionPenalty: 1.1,
+      }),
+    ).toEqual({})
+  })
+})
+
+describe("ProviderTransform sampling defaults - qwen3.8", () => {
+  const createModel = (id: string) => ({ id, api: { id, npm: "@ai-sdk/openai-compatible" } }) as any
+
+  test("qwen3.8 uses official recommended defaults", () => {
+    expect(ProviderTransform.temperature(createModel("test/qwen3.8-max-0902"))).toBe(1.0)
+    expect(ProviderTransform.topP(createModel("test/qwen3.8-max-0902"))).toBe(0.95)
+    expect(ProviderTransform.topK(createModel("test/qwen3.8-max-0902"))).toBe(20)
+  })
+
+  test("other qwen models keep existing defaults", () => {
+    expect(ProviderTransform.temperature(createModel("test/qwen3-max"))).toBe(0.55)
+    expect(ProviderTransform.topP(createModel("test/qwen3-max"))).toBe(1)
+    expect(ProviderTransform.topK(createModel("test/qwen3-max"))).toBeUndefined()
+  })
+})
+
+
 describe("ProviderTransform.schema - gemini array items", () => {
   test("adds missing items for array properties", () => {
     const geminiModel = {
