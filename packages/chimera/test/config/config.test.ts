@@ -638,6 +638,46 @@ test("handles agent configuration", async () => {
   })
 })
 
+test("keeps agent sampling overrides as named fields, not options", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await writeConfig(dir, {
+        $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+        agent: {
+          test_agent: {
+            model: "test/model",
+            temperature: 0.7,
+            top_p: 0.9,
+            top_k: 40,
+            min_p: 0.05,
+            presence_penalty: 0.5,
+            frequency_penalty: 0.25,
+            repetition_penalty: 1.1,
+          },
+        },
+      })
+    },
+  })
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const agent = (await load()).agent?.["test_agent"]
+      expect(agent?.temperature).toBe(0.7)
+      expect(agent?.top_p).toBe(0.9)
+      expect(agent?.top_k).toBe(40)
+      expect(agent?.min_p).toBe(0.05)
+      expect(agent?.presence_penalty).toBe(0.5)
+      expect(agent?.frequency_penalty).toBe(0.25)
+      expect(agent?.repetition_penalty).toBe(1.1)
+      expect(agent?.options).not.toHaveProperty("top_k")
+      expect(agent?.options).not.toHaveProperty("min_p")
+      expect(agent?.options).not.toHaveProperty("presence_penalty")
+      expect(agent?.options).not.toHaveProperty("frequency_penalty")
+      expect(agent?.options).not.toHaveProperty("repetition_penalty")
+    },
+  })
+})
+
 test("treats agent variant as model-scoped setting (not provider option)", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
@@ -2942,4 +2982,27 @@ test("parseManagedPlist handles empty config", async () => {
     "test:mobileconfig",
   )
   expect(config.$schema).toBe("https://coding-chimera.github.io/chimera/schemas/config.json")
+})
+
+test("parses delegation scheduling capability_anchors", () => {
+  const config = ConfigParse.effectSchema(
+    Config.Info,
+    {
+      delegation: {
+        scheduling: {
+          capability_anchors: {
+            "qwen3.8-max-0902": { score: 0.693, tier: "max", uncertainty: 0.05 },
+            "future-model": { score: 0.5 },
+          },
+        },
+      },
+    },
+    "test",
+  )
+  expect(config.delegation?.scheduling?.capability_anchors?.["qwen3.8-max-0902"]).toEqual({
+    score: 0.693,
+    tier: "max",
+    uncertainty: 0.05,
+  })
+  expect(config.delegation?.scheduling?.capability_anchors?.["future-model"]).toEqual({ score: 0.5 })
 })

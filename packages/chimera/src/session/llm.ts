@@ -214,7 +214,21 @@ const live: Layer.Layer<
             sessionID: input.sessionID,
             providerOptions: item.options,
           })
-      const options = mergeOptions(mergeOptions(mergeOptions(base, input.model.options), input.agent.options), profile.options)
+      const topK = input.agent.topK ?? ProviderTransform.topK(input.model)
+      const options = mergeOptions(
+        mergeOptions(
+          mergeOptions(
+            mergeOptions(base, input.model.options),
+            ProviderTransform.samplingOptions(input.model, {
+              topK,
+              minP: input.agent.minP,
+              repetitionPenalty: input.agent.repetitionPenalty,
+            }),
+          ),
+          input.agent.options,
+        ),
+        profile.options,
+      )
       const effort = options.reasoningEffort
       if (
         item.wire_api === "chat" &&
@@ -254,7 +268,9 @@ const live: Layer.Layer<
             ? (input.agent.temperature ?? ProviderTransform.temperature(input.model))
             : undefined,
           topP: input.agent.topP ?? ProviderTransform.topP(input.model),
-          topK: ProviderTransform.topK(input.model),
+          topK,
+          presencePenalty: input.agent.presencePenalty,
+          frequencyPenalty: input.agent.frequencyPenalty,
           maxOutputTokens: ProviderTransform.maxOutputTokens(input.model),
           options,
         },
@@ -493,6 +509,8 @@ const live: Layer.Layer<
         temperature: params.temperature,
         topP: params.topP,
         topK: params.topK,
+        presencePenalty: params.presencePenalty,
+        frequencyPenalty: params.frequencyPenalty,
         providerOptions: ProviderTransform.providerOptions(input.model, params.options),
         activeTools: Object.keys(tools).filter((x) => x !== "invalid"),
         tools,

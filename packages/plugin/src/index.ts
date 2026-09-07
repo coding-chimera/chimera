@@ -250,6 +250,8 @@ export interface Hooks {
       temperature: number
       topP: number
       topK: number
+      presencePenalty?: number
+      frequencyPenalty?: number
       maxOutputTokens: number | undefined
       options: Record<string, any>
     },

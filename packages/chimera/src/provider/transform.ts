@@ -464,6 +464,8 @@ export function message(msgs: ModelMessage[], model: Provider.Model, options: Re
 
 export function temperature(model: Provider.Model) {
   const id = model.id.toLowerCase()
+  // Qwen3.8 official recommendation: temperature=1.0, top_p=0.95, top_k=20
+  if (id.includes("qwen3.8")) return 1.0
   if (id.includes("qwen")) return 0.55
   if (id.includes("claude")) return undefined
   if (id.includes("gemini")) return 1.0
@@ -482,6 +484,7 @@ export function temperature(model: Provider.Model) {
 
 export function topP(model: Provider.Model) {
   const id = model.id.toLowerCase()
+  if (id.includes("qwen3.8")) return 0.95
   if (id.includes("qwen")) return 1
   if (["minimax-m2", "gemini", "kimi-k2.5", "kimi-k2p5", "kimi-k2-5"].some((s) => id.includes(s))) {
     return 0.95
@@ -491,12 +494,26 @@ export function topP(model: Provider.Model) {
 
 export function topK(model: Provider.Model) {
   const id = model.id.toLowerCase()
+  if (id.includes("qwen3.8")) return 20
   if (id.includes("minimax-m2")) {
     if (["m2.", "m25", "m21"].some((s) => id.includes(s))) return 40
     return 20
   }
   if (id.includes("gemini")) return 64
   return undefined
+}
+
+// Only @ai-sdk/openai-compatible spreads unknown providerOptions keys verbatim onto the wire; strict SDKs drop or reject them.
+export function samplingOptions(
+  model: Provider.Model,
+  sampling: { topK?: number; minP?: number; repetitionPenalty?: number },
+) {
+  if (model.api.npm !== "@ai-sdk/openai-compatible") return {}
+  return {
+    ...(sampling.topK != null ? { top_k: sampling.topK } : {}),
+    ...(sampling.minP != null ? { min_p: sampling.minP } : {}),
+    ...(sampling.repetitionPenalty != null ? { repetition_penalty: sampling.repetitionPenalty } : {}),
+  }
 }
 
 const WIDELY_SUPPORTED_EFFORTS = ["low", "medium", "high"]
