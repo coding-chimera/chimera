@@ -11,6 +11,7 @@ Parameter rules:
 - Cross-project `projectPath` is strictly read-only and must not initialize graph data, migrate legacy data, or create `.chimera/`, `.codegraph/`, DB, lock, job, or migration files in the target project. No sync or watch is started for the target graph and `refresh` is ignored in cross-project mode. Cross-project results are labeled `Project: <resolved root> (cross-project, read-only)`.
 - If the target project is not initialized, the tool returns a structured error telling you to run `chimera graph init` there first and then `chimera graph index`; cross-project access assumes the target is already indexed. Use cross-project status to understand another repository only.
 - If the target project is initialized but its graph database schema is older than this binary expects, the tool returns a structured status with `schemaVersion`, `requiredVersion`, and `needsMigration: true` instead of graph stats; the read-only surface never migrates, so tell the user to run `chimera graph index` in that project themselves.
+- The ready status reports a `missingFiles` count when git-tracked source files are absent from the index (typically committed files whose clean worktree is invisible to the refresh fast path). `missingFiles: 0` means the index covers every git-visible source file; a positive count means the graph can miss symbols until a refresh or full sync reconciles them.
 
 Common calls:
 - Check graph readiness before graph-backed exploration.

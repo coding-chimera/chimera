@@ -10,7 +10,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { CodeGraph } from '../../src/graph';
 import { Node, Edge } from '../../src/graph/types';
-import { getCodeGraphDir, getGraphDataRootInfo, isInitialized, migrateLegacyGraphData, probeLegacyGraphDataRoot, readIndexJob, validateDirectory } from '../../src/graph/directory';
+import { INDEX_JOB_FILENAME, getCodeGraphDir, getGraphDataRootInfo, isInitialized, migrateLegacyGraphData, probeLegacyGraphDataRoot, readIndexJob, validateDirectory } from '../../src/graph/directory';
 import { DatabaseConnection, getDatabasePath } from '../../src/graph/db';
 import { createDatabase } from '../../src/graph/db/sqlite-adapter';
 import { CURRENT_SCHEMA_VERSION } from '../../src/graph/db/migrations';
@@ -22,7 +22,7 @@ async function runGraphCli(args: string[], cwd: string) {
     cwd,
     stdout: 'pipe',
     stderr: 'pipe',
-    env: { ...process.env, CODEGRAPH_NO_DAEMON: '1' },
+    env: { ...process.env, CODEGRAPH_NO_DAEMON: '1', CODEGRAPH_ALLOW_UNSAFE_NODE: '1' },
   });
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(child.stdout).text(),
@@ -210,6 +210,9 @@ describe('CodeGraph Foundation', () => {
 
       const content = fs.readFileSync(gitignorePath, 'utf-8');
       expect(content).toContain('*.db');
+      expect(content).toContain(INDEX_JOB_FILENAME);
+      expect(content).toContain('node_modules');
+      expect(content).toContain('.gitignore');
 
       cg.close();
     });
@@ -577,5 +580,114 @@ describe('Query Builder', () => {
   it('should return empty array for files when none tracked', () => {
     const files = cg.getFiles();
     expect(files).toEqual([]);
+  });
+});
+
+describe('Index job stale normalization', () => {
+  let tempDir: string;
+
+  function writeRunningJob(dir: string, pid: number, message?: string): void {
+    const job = {
+      schemaVersion: 1,
+      id: `index:${pid}:1`,
+      kind: 'index',
+      status: 'running',
+      pid,
+      startedAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      ...(message !== undefined ? { message } : {}),
+    };
+    fs.writeFileSync(path.join(dir, '.chimera', INDEX_JOB_FILENAME), JSON.stringify(job, null, 2) + '\n', 'utf-8');
+  }
+
+  beforeEach(() => {
+    tempDir = createTempDir();
+    fs.mkdirSync(path.join(tempDir, '.chimera'), { recursive: true });
+  });
+
+  afterEach(() => {
+    cleanupTempDir(tempDir);
+  });
+
+  it('normalizes a running job from a dead process to failed with an interrupted message', () => {
+    const deadPid = 99999999;
+    writeRunningJob(tempDir, deadPid, 'indexing project files');
+
+    const result = readIndexJob(tempDir);
+
+    expect(result?.status).toBe('failed');
+    expect(result?.message).toBe(`interrupted: process ${deadPid} exited before completion; indexing project files`);
+    expect(result?.pid).toBe(deadPid);
+    expect(result?.startedAt).toBe('2026-01-01T00:00:00.000Z');
+    // Read-time normalization must never rewrite the job file.
+    expect(fs.readFileSync(path.join(tempDir, '.chimera', INDEX_JOB_FILENAME), 'utf-8')).toContain('"status": "running"');
+  });
+
+  it('keeps a running job owned by the current process as running', () => {
+    writeRunningJob(tempDir, process.pid, 'indexing project files');
+
+    const result = readIndexJob(tempDir);
+
+    expect(result?.status).toBe('running');
+    expect(result?.message).toBe('indexing project files');
+  });
+
+  it('keeps a running job from another live process as running', async () => {
+    const child = Bun.spawn([process.execPath, '-e', 'process.stdin.resume();']);
+    try {
+      writeRunningJob(tempDir, child.pid, 'indexing project files');
+      expect(readIndexJob(tempDir)?.status).toBe('running');
+    } finally {
+      child.kill();
+      await child.exited;
+    }
+  });
+});
+
+describe('.gitignore convergence', () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = createTempDir();
+  });
+
+  afterEach(() => {
+    cleanupTempDir(tempDir);
+  });
+
+  it('upgrades a config-side .gitignore with graph rules, preserving custom lines', () => {
+    const dataRoot = path.join(tempDir, '.chimera');
+    fs.mkdirSync(dataRoot, { recursive: true });
+    // Byte-identical to the config writer template (src/config/config.ts ensureGitignore)
+    // plus a user custom line, reproducing the config-first-writer scenario.
+    fs.writeFileSync(
+      path.join(dataRoot, '.gitignore'),
+      ['node_modules', 'package.json', 'package-lock.json', 'bun.lock', '.gitignore', 'my-local-rule'].join('\n') + '\n',
+      'utf-8',
+    );
+
+    const cg = CodeGraph.initSync(tempDir);
+    const content = fs.readFileSync(path.join(dataRoot, '.gitignore'), 'utf-8');
+
+    expect(content).toContain('*.db');
+    expect(content).toContain(INDEX_JOB_FILENAME);
+    expect(content).toContain('node_modules');
+    expect(content).toContain('package-lock.json');
+    expect(content).toContain('bun.lock');
+    expect(content).toContain('my-local-rule');
+    cg.close();
+  });
+
+  it('leaves a .gitignore that already has graph rules untouched', () => {
+    const dataRoot = path.join(tempDir, '.chimera');
+    fs.mkdirSync(dataRoot, { recursive: true });
+    const gitignorePath = path.join(dataRoot, '.gitignore');
+    const original = '# Chimera local graph data\n*.db\n*.db-wal\n*.db-shm\ncache/\n*.log\nindex-job.json\n.dirty\n';
+    fs.writeFileSync(gitignorePath, original, 'utf-8');
+
+    const cg = CodeGraph.initSync(tempDir);
+
+    expect(fs.readFileSync(gitignorePath, 'utf-8')).toBe(original);
+    cg.close();
   });
 });

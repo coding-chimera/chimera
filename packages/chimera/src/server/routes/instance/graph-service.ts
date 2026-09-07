@@ -78,6 +78,10 @@ export const graphStatus = Effect.fn("GraphService.status")(function* () {
       stats: state.graph.stats(),
       backend: state.graph.backend(),
       journalMode: state.graph.journalMode(),
+      // Git-visible source files absent from the index: committed files with a
+      // clean worktree are invisible to the refresh fast path, so report the gap
+      // instead of silently claiming the graph is fully in sync.
+      missingFiles: state.graph.missingTrackedFiles().length,
     })),
   )
 })

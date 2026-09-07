@@ -1657,4 +1657,73 @@ describe("cross-project projectPath", () => {
       expect(graphSchemaVersion(bRoot)).toBe(6)
     }),
   )
+  it.instance("reports missing indexed git-tracked files in status", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "tracked.ts"), "export const tracked = 1\n"))
+      yield* initGraph()
+
+      // Commit a new file while the working tree stays clean: git status is
+      // empty, so the status must surface the index gap explicitly.
+      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "late.ts"), "export const late = 1\n"))
+      yield* Effect.promise(() => Bun.$`git add late.ts && git commit -q -m add-late`.cwd(test.directory))
+
+      const result = yield* runStatus({ refresh: false })
+      expect(result.metadata.missingFiles).toBe(1)
+      expect(result.output).toContain("Graph is missing 1 git-tracked file from the index")
+    }),
+    { git: true },
+  )
+  it.instance("refreshes committed files that git status cannot see and throttles the reconcile", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "tracked.ts"), "export const tracked = 1\n"))
+
+      // Build the index with sync disabled (the defect scenario: the graph was
+      // indexed while the later file did not exist yet).
+      yield* Chimera.openProjectGraph({ init: true, watch: false })
+
+      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "late.ts"), "export const late = 1\n"))
+      yield* Effect.promise(() => Bun.$`git add late.ts && git commit -q -m add-late`.cwd(test.directory))
+
+      // The first refresh must reconcile the committed-but-unindexed file even
+      // though git status reports a clean worktree.
+      const state = yield* Chimera.openProjectGraph({ sync: true, watch: false })
+      expect(state.graph.files().map((file) => file.path)).toContain("late.ts")
+      expect((yield* runStatus({ refresh: false })).metadata.missingFiles).toBe(0)
+
+      // The reconcile is throttled, so a second committed file is not picked
+      // up by an immediate refresh.
+      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "gamma.ts"), "export const gamma = 1\n"))
+      yield* Effect.promise(() => Bun.$`git add gamma.ts && git commit -q -m add-gamma`.cwd(test.directory))
+      yield* Chimera.openProjectGraph({ sync: true, watch: false })
+
+      expect((yield* runStatus({ refresh: false })).metadata.missingFiles).toBe(1)
+    }),
+    { git: true },
+  )
+
+  it.instance("evicts a cached graph state whose database was removed externally", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "tracked.ts"), "export const tracked = 1\n"))
+      yield* initGraph()
+      expect(yield* Effect.promise(() => Bun.file(path.join(test.directory, ".chimera", "codegraph.db")).exists())).toBe(true)
+
+      // External removal (rm -rf .chimera) must not reuse the stale cached
+      // handle: the next open fails cleanly instead of querying an unlinked
+      // database, and the evicted cache rebuilds on re-init.
+      yield* Effect.promise(() => fs.rm(path.join(test.directory, ".chimera"), { recursive: true, force: true }))
+
+      const exit = yield* Chimera.openProjectGraph({ sync: true, watch: false }).pipe(Effect.exit)
+      const exitMessage = Exit.isFailure(exit) ? Cause.prettyErrors(exit.cause).join(" ") : ""
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(exitMessage).toContain("not initialized")
+
+      yield* initGraph()
+      const status = yield* runStatus({ refresh: false })
+      expect(status.metadata.initialized).toBe(true)
+      expect(status.metadata.missingFiles).toBe(0)
+    }),
+  )
 })

@@ -18,6 +18,7 @@ import {
   getStorageExtensionVersion,
 } from './extensions';
 import { DATABASE_FILENAME, getGraphDataRootInfo } from '../directory';
+import * as Log from '@opencode-ai/core/util/log';
 
 export type { SqliteDatabase, SqliteBackend } from './sqlite-adapter';
 export type {
@@ -153,6 +154,10 @@ export class DatabaseConnection {
       return conn;
     } catch (error) {
       try { conn.close(); } catch { }
+      Log.create({ service: 'chimera.graph-db' }).error('graph database open failed', {
+        path: dbPath,
+        error: error instanceof Error ? error.message : String(error),
+      });
       throw error;
     }
   }
