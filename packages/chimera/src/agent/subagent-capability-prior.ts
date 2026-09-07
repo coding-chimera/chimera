@@ -2,7 +2,7 @@ export * as SubagentCapabilityPrior from "./subagent-capability-prior"
 
 import { ModelIdentity } from "../provider/model-identity"
 import { matchByDashPrefix } from "./subagent-model-size"
-export const CAPABILITY_PRIOR_VERSION = "deepswe-v1.1-curve-v2"
+export const CAPABILITY_PRIOR_VERSION = "deepswe-v1.2-curve-v2"
 export const SEMANTIC_TIERS = ["low", "medium", "high", "xhigh", "max"] as const
 export const REASONING_TIER_ORDER = ["minimal", ...SEMANTIC_TIERS] as const
 export type SemanticTier = (typeof SEMANTIC_TIERS)[number]
@@ -38,7 +38,7 @@ export interface CapabilityAnchor {
   identity: string
   score: number
   anchorTier: SemanticTier
-  source: "deepswe"
+  source: "deepswe" | "config"
   uncertainty?: number
 }
 
@@ -62,6 +62,7 @@ export const CAPABILITY_ANCHORS: CapabilityAnchor[] = [
   { identity: "gpt-5.6-sol", score: 0.73, anchorTier: "max", source: "deepswe", uncertainty: 0.03 },
   { identity: "claude-fable-5", score: 0.7, anchorTier: "max", source: "deepswe", uncertainty: 0.04 },
   { identity: "gpt-5.6-terra", score: 0.7, anchorTier: "max", source: "deepswe", uncertainty: 0.03 },
+  { identity: "qwen3.8-max-0902", score: 0.693, anchorTier: "max", source: "deepswe", uncertainty: 0.05 },
   { identity: "kimi-k3", score: 0.69, anchorTier: "max", source: "deepswe", uncertainty: 0.05 },
   { identity: "gpt-5.6-luna", score: 0.67, anchorTier: "max", source: "deepswe", uncertainty: 0.04 },
   { identity: "gpt-5.5", score: 0.67, anchorTier: "xhigh", source: "deepswe", uncertainty: 0.06 },
@@ -91,12 +92,15 @@ export function normalizeIdentity(identity: string | undefined): string | undefi
   return ModelIdentity.normalize(identity)
 }
 
-export function capabilityAnchor(identity: string | undefined): CapabilityAnchor | undefined {
+export function capabilityAnchor(
+  identity: string | undefined,
+  anchors: readonly CapabilityAnchor[] = CAPABILITY_ANCHORS,
+): CapabilityAnchor | undefined {
   const normalized = normalizeIdentity(identity)
   if (!normalized) return undefined
-  const exact = CAPABILITY_ANCHORS.find((anchor) => anchor.identity === normalized)
+  const exact = anchors.find((anchor) => anchor.identity === normalized)
   if (exact) return exact
-  const matches = CAPABILITY_ANCHORS.filter((anchor) => matchByDashPrefix(anchor.identity, normalized))
+  const matches = anchors.filter((anchor) => matchByDashPrefix(anchor.identity, normalized))
   return matches.toSorted((a, b) => b.identity.length - a.identity.length)[0]
 }
 
@@ -108,6 +112,29 @@ export function semanticTier(tier: string | undefined): SemanticTier | undefined
 export function tierCoordinate(tier: string | undefined): number | undefined {
   const normalized = semanticTier(tier)
   return normalized === undefined ? undefined : TIER_COORDINATES[normalized]
+}
+
+export interface CapabilityAnchorInput {
+  score: number
+  tier?: string
+  uncertainty?: number
+}
+
+export function configuredAnchors(input: Record<string, CapabilityAnchorInput> | undefined): CapabilityAnchor[] {
+  return Object.entries(input ?? {}).flatMap(([identity, value]) => {
+    const normalized = normalizeIdentity(identity)
+    const tier = semanticTier(value.tier ?? "max")
+    if (!normalized || !tier || !Number.isFinite(value.score)) return []
+    return [
+      {
+        identity: normalized,
+        score: value.score,
+        anchorTier: tier,
+        source: "config" as const,
+        ...(value.uncertainty === undefined ? {} : { uncertainty: value.uncertainty }),
+      },
+    ]
+  })
 }
 
 export function validateCapabilityPriorParams(params: CapabilityPriorParams): Error | undefined {

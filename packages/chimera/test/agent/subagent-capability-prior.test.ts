@@ -30,7 +30,7 @@ describe("subagent capability prior", () => {
   })
 
   test("keeps one compact anchor per proven identity with no cost/steps/per-tier fields", () => {
-    expect(CAPABILITY_ANCHORS).toHaveLength(23)
+    expect(CAPABILITY_ANCHORS).toHaveLength(24)
     expect(new Set(CAPABILITY_ANCHORS.map((item) => item.identity)).size).toBe(CAPABILITY_ANCHORS.length)
     for (const item of CAPABILITY_ANCHORS) {
       expect(Object.keys(item).sort()).toEqual(["anchorTier", "identity", "score", "source", "uncertainty"])

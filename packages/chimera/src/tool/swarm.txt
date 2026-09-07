@@ -14,7 +14,7 @@ The tool publishes each worker incrementally through `metadata.childRuns` (`queu
 
 Concurrency defaults to 16 and is capped at 16. Treat 16 as a capacity ceiling, not a target: use full concurrency only for independent work with disjoint scopes, and lower it for shared files, ordered dependencies, provider limits, or contended state.
 
-Optional `workload`: declare one homogeneous delegation archetype for the whole fan-out. Pass `workload` alone to let the current cost-aware scheduler select one concrete route and non-ultra variant, which every worker reuses. Pass `workload` with `model_profile`, `model`, or `model_identity` to keep that explicit selector authoritative while validating and recording the workload for attribution. Unknown workload names are rejected with the current valid names. Split heterogeneous work into separate swarms.
+Optional `workload`: declare one homogeneous delegation archetype for the whole fan-out. Pass `workload` alone to let the current cost-aware scheduler select one concrete route and non-ultra variant, which every worker reuses. Pass `workload` with `model_profile`, `model`, or `model_identity` to keep that explicit selector authoritative while validating and recording the workload for attribution. Unknown workload names are rejected with the current valid names. Split heterogeneous work into separate swarms. A model excluded from the declared workload by `delegation.scheduling.archetypes.<workload>.excludeModels` fails the whole fan-out before any child is created (resume excepted); choose another model or omit workload.
 
 Optional `model_profile` names a `delegation.model_profiles` entry and applies its configured model and variant to the fan-out.
 

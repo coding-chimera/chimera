@@ -33,6 +33,10 @@ export const SchedulingArchetype = Schema.Struct({
     }),
   ),
   budgetUsdPerWorker: Schema.optional(Schema.Number),
+  excludeModels: Schema.optional(Schema.Array(Schema.String)).annotate({
+    description:
+      "Exact model routes (provider/modelID), model identities, or provider IDs excluded from this workload archetype. Excluded routes never become scheduler candidates for this workload, and a dispatch declaring this workload with an excluded model fails unless it resumes an existing session. Other workloads are unaffected.",
+  }),
 })
 export type SchedulingArchetype = Schema.Schema.Type<typeof SchedulingArchetype>
 
@@ -52,6 +56,19 @@ export const Scheduling = Schema.Struct({
     ),
   ),
   topTierDisabledMinSizeClass: Schema.optional(Schema.Literals(["S", "M", "L", "XL"])),
+  capability_anchors: Schema.optional(
+    Schema.Record(
+      Schema.String,
+      Schema.Struct({
+        score: Schema.Number,
+        tier: Schema.optional(Schema.String),
+        uncertainty: Schema.optional(Schema.Number),
+      }),
+    ),
+  ).annotate({
+    description:
+      "User-supplied capability anchors for the subagent scheduler, keyed by model identity. Each entry sets the model's quality score (0..1) at the given reasoning tier (default \"max\"); identities match exactly or as a dash prefix for versioned model ids, and entries take precedence over the built-in anchors so newly released models can be scheduled without a code update.",
+  }),
 })
   .annotate({ identifier: "DelegationScheduling" })
   .pipe(withStatics((s) => ({ zod: zod(s) })))

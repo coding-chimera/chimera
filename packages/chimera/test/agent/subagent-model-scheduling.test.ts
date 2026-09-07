@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import {
   CAPABILITY_PRIOR_VERSION,
   capabilityAnchor,
+  configuredAnchors,
   reconstructScore,
 } from "../../src/agent/subagent-capability-prior"
 import type { ModelPricing } from "../../src/agent/subagent-model-pricing"
@@ -14,6 +15,7 @@ import {
   DEFAULT_POLICY,
   disclosure,
   disclosureProjection,
+  exclusionMatch,
   resolveEffort,
   resolveSchedule,
   selectionForWorkload,
@@ -596,5 +598,137 @@ describe("speed evidence", () => {
     expect(result[0]?.speedNorm).toBeCloseTo(staticNorm, 6)
     expect(result[0]?.speedSource).toBe("heuristic")
     expect(result[0]?.rationale).toContain("static")
+  })
+})
+
+describe("workload model exclusions", () => {
+  const routes = [
+    route("qwen3.8-flash", "test-relay", ["low"]),
+    route("deepseek-v4-flash", "test-relay", ["low"]),
+  ]
+  const regimes = { "test-relay": "metered" as const }
+
+  test("excludes routes by identity for the configured workload only", () => {
+    const scouted = resolveSchedule({
+      routes,
+      archetype: { ...archetype("scout"), excludeModels: ["qwen3.8-flash"] },
+      regimes,
+    })
+    expect(scouted.map((item) => item.route)).toEqual(["test-relay/deepseek-v4-flash"])
+
+    const built = resolveSchedule({ routes, archetype: archetype("builder"), regimes })
+    expect(built.map((item) => item.route).toSorted()).toEqual([
+      "test-relay/deepseek-v4-flash",
+      "test-relay/qwen3.8-flash",
+    ])
+  })
+
+  test("excludes routes by full route string", () => {
+    const result = resolveSchedule({
+      routes,
+      archetype: { ...archetype("scout"), excludeModels: ["test-relay/qwen3.8-flash"] },
+      regimes,
+    })
+    expect(result.map((item) => item.route)).toEqual(["test-relay/deepseek-v4-flash"])
+  })
+
+  test("excludes every route of a provider when the provider ID is listed", () => {
+    const result = resolveSchedule({
+      routes,
+      archetype: { ...archetype("scout"), excludeModels: ["test-relay"] },
+      regimes,
+    })
+    expect(result).toEqual([])
+  })
+
+  test("applies config exclusions per workload in the scheduling view", () => {
+    const view = buildSchedulingView({
+      routes: [route("alpha", "shared"), route("beta", "shared")],
+      authTypes: { shared: "api" },
+      config: { archetypes: { scout: { excludeModels: ["alpha"] } } },
+    })
+
+    expect(view.recommendations.scout?.map((item) => item.route)).toEqual(["shared/beta"])
+    expect(view.recommendations.builder?.map((item) => item.route)).toContain("shared/alpha")
+    expect(selectionForWorkload(view, "scout")).toMatchObject({ workload: "scout", model: "shared/beta" })
+  })
+
+  test("exclusionMatch hits each key type once and misses otherwise", () => {
+    const routeLike = { model: "prov/model", providerID: "prov", identity: "ident" }
+    expect(exclusionMatch({ excludeModels: ["prov/model"] }, routeLike)).toBe("prov/model")
+    expect(exclusionMatch({ excludeModels: ["prov"] }, routeLike)).toBe("prov")
+    expect(exclusionMatch({ excludeModels: ["ident"] }, routeLike)).toBe("ident")
+    expect(exclusionMatch({ excludeModels: ["other"] }, routeLike)).toBeUndefined()
+    expect(exclusionMatch({ excludeModels: ["ident"] }, { model: "prov/model", providerID: "prov" })).toBeUndefined()
+    expect(exclusionMatch({}, routeLike)).toBeUndefined()
+  })
+})
+
+describe("configured capability anchors", () => {
+  test("built-in anchor covers qwen3.8-max-0902 at max tier", () => {
+    const anchor = capabilityAnchor("qwen3.8-max-0902")!
+    expect(anchor.identity).toBe("qwen3.8-max-0902")
+    expect(anchor.score).toBeCloseTo(0.693, 6)
+    expect(anchor.anchorTier).toBe("max")
+    expect(capabilityAnchor("qwen3.8-max")?.score).toBe(0.57)
+  })
+
+  test("configured anchor lifts an unanchored identity through the scheduling view", () => {
+    const view = buildSchedulingView({
+      routes: [route("brand-new-model", "test-relay", ["low", "max"])],
+      authTypes: { "test-relay": "api" },
+      config: { capability_anchors: { "brand-new-model": { score: 0.8 } } },
+    })
+    const item = view.recommendations.scout?.[0]
+    expect(item?.quality.source).toBe("curve")
+    expect(item?.quality.value).toBeCloseTo(
+      reconstructScore({ identity: "brand-new-model", score: 0.8, anchorTier: "max", source: "config" }, "low")!,
+    )
+    expect(item?.unproven).toBe(false)
+  })
+
+  test("configured anchors take precedence over built-in anchors", () => {
+    const routes = () => [route("deepseek-v4-flash", "test-relay", ["low", "max"])]
+    const overridden = buildSchedulingView({
+      routes: routes(),
+      authTypes: { "test-relay": "api" },
+      config: { capability_anchors: { "deepseek-v4-flash": { score: 0.99 } } },
+    })
+    const builtin = buildSchedulingView({ routes: routes(), authTypes: { "test-relay": "api" } })
+    expect(overridden.recommendations.builder?.[0]?.quality.value).toBeCloseTo(
+      reconstructScore({ identity: "deepseek-v4-flash", score: 0.99, anchorTier: "max", source: "config" }, "low")!,
+    )
+    expect(overridden.recommendations.builder?.[0]?.quality.value).toBeGreaterThan(
+      builtin.recommendations.builder?.[0]?.quality.value ?? 0,
+    )
+  })
+
+  test("configured anchor entries also match versioned identities by dash prefix", () => {
+    const view = buildSchedulingView({
+      routes: [route("my-model-20260901", "test-relay", ["low", "max"])],
+      authTypes: { "test-relay": "api" },
+      config: { capability_anchors: { "my-model": { score: 0.8 } } },
+    })
+    expect(view.recommendations.scout?.[0]?.quality.source).toBe("curve")
+  })
+
+  test("skips invalid configured entries and falls back to heuristic quality", () => {
+    const view = buildSchedulingView({
+      routes: [route("mystery-model", "test-relay", ["low"])],
+      authTypes: { "test-relay": "api" },
+      config: { capability_anchors: { "mystery-model": { score: 0.9, tier: "bogus" } } },
+    })
+    expect(view.recommendations.scout?.[0]?.quality).toEqual({ value: 0.4, source: "heuristic" })
+  })
+
+  test("resolveSchedule accepts an explicit anchor list", () => {
+    const result = resolveSchedule({
+      routes: [route("brand-new-model", "test-relay", ["low", "max"])],
+      archetype: archetype("scout"),
+      regimes: { "test-relay": "metered" },
+      anchors: configuredAnchors({ "brand-new-model": { score: 0.8 } }),
+    })
+    expect(result[0]?.quality.source).toBe("curve")
+    expect(result[0]?.unproven).toBe(false)
   })
 })

@@ -1,10 +1,14 @@
 export * as SubagentModelScheduling from "./subagent-model-scheduling"
 
 import {
+  CAPABILITY_ANCHORS,
   CAPABILITY_PRIOR_VERSION,
   REASONING_TIER_ORDER,
   capabilityAnchor,
+  configuredAnchors,
   reconstructScore,
+  type CapabilityAnchor,
+  type CapabilityAnchorInput,
 } from "./subagent-capability-prior"
 import { projectCost, type BillingDisposition, type CostSource, type ModelPricing } from "./subagent-model-pricing"
 import type { ModelRoute } from "./subagent-model-catalog"
@@ -32,6 +36,7 @@ export interface WorkloadArchetype {
   maxSizeClass?: SizeClass
   weights: WorkloadWeights
   budgetUsdPerWorker?: number
+  excludeModels?: string[]
 }
 
 export interface WorkloadArchetypeOverride {
@@ -42,6 +47,7 @@ export interface WorkloadArchetypeOverride {
   maxSizeClass?: SizeClass
   weights?: WorkloadWeights
   budgetUsdPerWorker?: number
+  excludeModels?: string[]
 }
 
 export interface SchedulingPolicy {
@@ -55,6 +61,7 @@ export interface SchedulingConfigInput extends Partial<SchedulingPolicy> {
   enabled?: boolean
   archetypes?: Record<string, WorkloadArchetypeOverride>
   overrides?: Record<string, { billing?: BillingRegime }>
+  capability_anchors?: Record<string, CapabilityAnchorInput>
 }
 
 export interface QuotaGate {
@@ -200,6 +207,18 @@ export function resolveArchetypes(config?: SchedulingConfigInput): WorkloadArche
   return [...defaults, ...custom]
 }
 
+export function exclusionMatch(
+  archetype: Pick<WorkloadArchetype, "excludeModels">,
+  route: { model: string; providerID: string; identity?: string },
+): string | undefined {
+  return archetype.excludeModels?.find(
+    (entry) =>
+      entry === route.model ||
+      entry === route.providerID ||
+      (route.identity !== undefined && entry === route.identity),
+  )
+}
+
 export function validateWorkload(workload: string | undefined, archetypes: WorkloadArchetype[]) {
   if (workload === undefined) return undefined
   if (archetypes.some((archetype) => archetype.name === workload)) return undefined
@@ -273,9 +292,9 @@ function normToTps(norm: number) {
 export function resolveEffort(
   route: ModelRoute,
   archetype: WorkloadArchetype,
-  opts: { topTierDisabledMinSizeClass?: SizeClass } = {},
+  opts: { topTierDisabledMinSizeClass?: SizeClass; anchors?: readonly CapabilityAnchor[] } = {},
 ): EffortResolution {
-  const anchor = capabilityAnchor(route.identity)
+  const anchor = capabilityAnchor(route.identity, opts.anchors)
   const tiered = route.variants
     .filter((variant) => tierIndex(variant) >= 0)
     .toSorted((a, b) => tierIndex(a) - tierIndex(b))
@@ -464,15 +483,18 @@ export function resolveSchedule(input: {
   policy?: SchedulingPolicy
   speedEvidence?: Record<string, RouteSpeedEvidence>
   topTierDisabledMinSizeClass?: SizeClass
+  anchors?: readonly CapabilityAnchor[]
   limit?: number
 }): ScheduleRecommendation[] {
   const policy = input.policy ?? DEFAULT_POLICY
   const candidates = input.routes.flatMap((route): Candidate[] => {
     if (route.suppressed || route.dormant) return []
+    if (exclusionMatch(input.archetype, route)) return []
     if (exceedsMaxSizeClass(route.sizeClass, input.archetype.maxSizeClass)) return []
     if (belowMinSizeClass(route.sizeClass, input.archetype.minSizeClass)) return []
     const effort = resolveEffort(route, input.archetype, {
       topTierDisabledMinSizeClass: input.topTierDisabledMinSizeClass,
+      anchors: input.anchors,
     })
     const profile = buildProfile({
       route,
@@ -560,6 +582,9 @@ export function buildSchedulingView(input: {
 }): SchedulingView {
   const archetypes = resolveArchetypes(input.config)
   const policy = resolvePolicy(input.config)
+  const anchors = input.config?.capability_anchors
+    ? [...configuredAnchors(input.config.capability_anchors), ...CAPABILITY_ANCHORS]
+    : undefined
   const regimes = Object.fromEntries(
     input.routes.map((route) => [
       route.model,
@@ -584,6 +609,7 @@ export function buildSchedulingView(input: {
           policy,
           speedEvidence: input.speedEvidence,
           topTierDisabledMinSizeClass: input.topTierDisabledMinSizeClass,
+          anchors,
           limit: input.limit,
         }),
       ]),

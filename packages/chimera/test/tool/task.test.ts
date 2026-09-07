@@ -78,6 +78,30 @@ const disabledSchedulingConfig = {
   },
 }
 
+const excludedSchedulingConfig = {
+  ...delegationConfig,
+  delegation: {
+    ...delegationConfig.delegation,
+    scheduling: {
+      archetypes: {
+        scout: { excludeModels: ["test/test-model"] },
+      },
+    },
+  },
+}
+
+const identityExcludedSchedulingConfig = {
+  ...delegationConfig,
+  delegation: {
+    ...delegationConfig.delegation,
+    scheduling: {
+      archetypes: {
+        scout: { excludeModels: ["test-model"] },
+      },
+    },
+  },
+}
+
 const twoProviderConfig = {
   ...delegationConfig,
   provider: {
@@ -2798,6 +2822,175 @@ describe("tool.task", () => {
         expect(yield* sessions.children(chat.id)).toHaveLength(0)
       }),
     { config: delegationConfig },
+  )
+
+  it.instance(
+    "execute fails before creating a child when the workload excludes the requested model",
+    () =>
+      Effect.gen(function* () {
+        const sessions = yield* Session.Service
+        const { chat, assistant } = yield* seed()
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+        const asks: Array<{ permission?: string }> = []
+        let prompted = false
+
+        const exit = yield* def
+          .execute(
+            {
+              description: "inspect bug",
+              prompt: "look into the cache key path",
+              subagent_type: "general",
+              workload: "scout",
+              model: "test/test-model",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: { promptOps: stubOps({ onPrompt: () => (prompted = true) }) },
+              messages: [],
+              metadata: () => Effect.void,
+              ask: (input) =>
+                Effect.sync(() => {
+                  asks.push(input)
+                }),
+            },
+          )
+          .pipe(Effect.exit)
+
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit)) {
+          const message = Cause.prettyErrors(exit.cause).join("\n")
+          expect(message).toContain('is excluded from workload "scout"')
+          expect(message).toContain("delegation.scheduling.archetypes.scout.excludeModels")
+        }
+        expect(asks.map((item) => item.permission)).toEqual(["task"])
+        expect(prompted).toBe(false)
+        expect(yield* sessions.children(chat.id)).toHaveLength(0)
+      }),
+    { config: excludedSchedulingConfig },
+  )
+
+  it.instance(
+    "execute matches workload exclusions against the resolved model identity",
+    () =>
+      Effect.gen(function* () {
+        const sessions = yield* Session.Service
+        const { chat, assistant } = yield* seed()
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+
+        const exit = yield* def
+          .execute(
+            {
+              description: "inspect bug",
+              prompt: "look into the cache key path",
+              subagent_type: "general",
+              workload: "scout",
+              model: "test/test-model",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: { promptOps: stubOps() },
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+          .pipe(Effect.exit)
+
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit)) {
+          expect(Cause.prettyErrors(exit.cause).join("\n")).toContain('is excluded from workload "scout"')
+        }
+        expect(yield* sessions.children(chat.id)).toHaveLength(0)
+      }),
+    { config: identityExcludedSchedulingConfig },
+  )
+
+  it.instance(
+    "execute keeps a model dispatchable under workloads that do not exclude it",
+    () =>
+      Effect.gen(function* () {
+        const sessions = yield* Session.Service
+        const { chat, assistant } = yield* seed()
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+        let seen: SessionPrompt.PromptInput | undefined
+
+        const result = yield* def.execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+            workload: "builder",
+            model: "test/test-model",
+            variant: "max",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps: stubOps({ onPrompt: (input) => (seen = input) }) },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+
+        expect(seen?.model).toEqual(ref)
+        expect(seen?.variant).toBe("max")
+        expect(result.metadata.execution).toMatchObject({ workload: "builder", source: "request-model", resumed: false })
+        expect(yield* sessions.children(chat.id)).toHaveLength(1)
+      }),
+    { config: excludedSchedulingConfig },
+  )
+
+  it.instance(
+    "execute resumes a locked child even when its model is excluded from the declared workload",
+    () =>
+      Effect.gen(function* () {
+        const sessions = yield* Session.Service
+        const { chat, assistant } = yield* seed()
+        const child = yield* sessions.create({
+          parentID: chat.id,
+          title: "Existing child",
+          agent: "general",
+          model: { id: ref.modelID, providerID: ref.providerID },
+        })
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+
+        const result = yield* def.execute(
+          {
+            description: "inspect bug",
+            prompt: "continue the cache key path",
+            subagent_type: "general",
+            workload: "scout",
+            task_id: child.id,
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps: stubOps() },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+
+        expect(result.metadata.sessionId).toBe(child.id)
+        expect(result.metadata.execution).toMatchObject({ workload: "scout", source: "resume", resumed: true })
+      }),
+    { config: excludedSchedulingConfig },
   )
 
   it.instance(

@@ -22,7 +22,7 @@ export const Parameters = Schema.Struct({
   subagent_type: Schema.String.annotate({ description: "The type of specialized agent to use for this task" }),
   workload: Schema.optional(Schema.String).annotate({
     description:
-      "Delegation workload archetype. Without a model selector, the scheduler chooses a current route; with an explicit selector, workload is validation and attribution only.",
+      "Delegation workload archetype. Without a model selector, the scheduler chooses a current route; with an explicit selector, workload is validation and attribution only. A model excluded from a workload by delegation.scheduling.archetypes.<workload>.excludeModels cannot be dispatched with that workload declaration (resume excepted).",
   }),
   model_profile: Schema.optional(Schema.String).annotate({
     description:
