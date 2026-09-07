@@ -3,6 +3,7 @@ import { ConfigDelegation } from "@/config/delegation"
 import { ConfigSubagentRouting } from "@/config/subagent-routing"
 import { EffectBridge } from "@/effect/bridge"
 import { Permission } from "@/permission"
+import { ModelIdentity } from "@/provider/model-identity"
 import { Provider } from "@/provider/provider"
 import { ModelID, ProviderID } from "@/provider/schema"
 import { MessageV2 } from "@/session/message-v2"
@@ -17,6 +18,7 @@ import { DelegationLimiter } from "./delegation-limiter"
 import { resolveSubagentExecution, type ResolvedSubagentExecution, type SubagentExecutionMetadata } from "./subagent-execution"
 import * as ModelTelemetry from "./model-telemetry"
 import { SubagentModelCatalog } from "./subagent-model-catalog"
+import { exclusionMatch, resolveArchetypes } from "./subagent-model-scheduling"
 import { deriveSubagentSessionPermission } from "./subagent-permissions"
 
 export interface SubagentPromptOps {
@@ -171,6 +173,33 @@ export const SubagentDispatch = Effect.gen(function* () {
             )
         : undefined,
     })
+    if (input.workload !== undefined && resolved.source !== "resume") {
+      const archetype = resolveArchetypes(cfg.delegation?.scheduling).find((item) => item.name === input.workload)
+      if (archetype?.excludeModels?.length) {
+        const info = yield* provider
+          .getModel(resolved.model.providerID, resolved.model.modelID)
+          .pipe(Effect.catchCause(() => Effect.succeed(undefined)))
+        const identity = ModelIdentity.resolve({
+          providerID: resolved.model.providerID,
+          modelID: resolved.model.modelID,
+          apiID: info?.api.id,
+          explicitCapabilityModelID:
+            cfg.provider?.[resolved.model.providerID]?.models?.[resolved.model.modelID]?.capability_model_id,
+        }).identity
+        const matched = exclusionMatch(archetype, {
+          model: `${resolved.model.providerID}/${resolved.model.modelID}`,
+          providerID: resolved.model.providerID,
+          identity,
+        })
+        if (matched !== undefined) {
+          return yield* Effect.fail(
+            new Error(
+              `Model ${resolved.model.providerID}/${resolved.model.modelID} is excluded from workload "${input.workload}" by delegation.scheduling.archetypes.${input.workload}.excludeModels (matched "${matched}"). Choose another model or omit workload; the model stays eligible for workloads that do not exclude it.`,
+            ),
+          )
+        }
+      }
+    }
     if (resolved.profile !== undefined) {
       yield* (input.authorizeProfile?.(resolved.profile) ?? Effect.void)
     }

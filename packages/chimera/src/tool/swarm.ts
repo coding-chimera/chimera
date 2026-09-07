@@ -50,7 +50,7 @@ export const Parameters = Schema.Struct({
   }),
   workload: Schema.optional(Schema.String).annotate({
     description:
-      "Delegation workload archetype. Without a model selector, the scheduler chooses one current route for the whole fan-out; with an explicit selector, workload is validation and attribution only.",
+      "Delegation workload archetype. Without a model selector, the scheduler chooses one current route for the whole fan-out; with an explicit selector, workload is validation and attribution only. A model excluded from a workload by delegation.scheduling.archetypes.<workload>.excludeModels cannot be dispatched with that workload declaration (resume excepted).",
   }),
   model_profile: Schema.optional(Schema.String).annotate({
     description:
