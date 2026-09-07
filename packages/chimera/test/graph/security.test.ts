@@ -67,6 +67,15 @@ describe('FileLock', () => {
 
     lock1.release();
   });
+  it('stale-lock guidance points to the chimera graph unlock command', () => {
+    const lock = new FileLock(lockPath);
+    lock.acquire();
+    try {
+      expect(() => new FileLock(lockPath).acquire()).toThrow(/run 'chimera graph unlock'/);
+    } finally {
+      lock.release();
+    }
+  });
 
   it('should detect and remove stale locks from dead processes', () => {
     // Write a lock file with a PID that doesn't exist

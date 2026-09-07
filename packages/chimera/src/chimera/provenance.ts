@@ -1,6 +1,7 @@
 import path from "path"
 import fs from "fs"
 import { Effect, Exit, Option, Schema } from "effect"
+import * as Log from "@opencode-ai/core/util/log"
 import type { Interface as BusInterface } from "@/bus"
 import { BusEvent } from "@/bus/bus-event"
 import { InstanceState } from "@/effect/instance-state"
@@ -9,7 +10,7 @@ import type { Tool } from "@/tool/tool"
 import { classifyChangeRecord, classifyFileBoundary, collectFileProjections, collectIncidentRelations } from "./change-classifier"
 import { ProjectionMemo } from "./projection-memo"
 import { CodeGraphAdapter } from "./codegraph-adapter"
-import { findNearestCodeGraphRoot, getCodeGraphDir, isInitialized, type CodeGraphSnapshot, type IndexProgress as CodeGraphIndexProgress, type SyncResult as CodeGraphSyncResult } from "@/graph"
+import { findNearestCodeGraphRoot, getCodeGraphDir, getDatabasePath, isInitialized, type CodeGraphSnapshot, type IndexProgress as CodeGraphIndexProgress, type SyncResult as CodeGraphSyncResult } from "@/graph"
 import { validateProjectPath } from "@/graph/utils"
 import { ModelTelemetry } from "@/agent/model-telemetry"
 import { Session } from "@/session/session"
@@ -34,6 +35,13 @@ const TOOL_PROVENANCE_FILE = "tool-provenance.jsonl"
 const ORACLE_RESULT_FILE = "oracle-results.jsonl"
 const TOOL_DEDUPE_WINDOW_MS = 15_000
 const EMPTY_GRAPH_RETRY_MS = 2_000
+const MISSING_RECONCILE_INTERVAL_MS = 10 * 60 * 1000
+const GRAPH_DB_GONE_PATTERN = /SQLITE_IOERR|disk I\/O error|unable to open database/i
+const graphLog = Log.create({ service: "chimera.provenance" })
+
+function isGraphDataGoneError(error: unknown): boolean {
+  return error instanceof Error && GRAPH_DB_GONE_PATTERN.test(error.message)
+}
 
 export const ToolMutationRecorded = BusEvent.define(
   "chimera.tool.mutation.recorded",
@@ -190,6 +198,8 @@ export interface ProjectGraphState {
   /** True when the graph belongs to a different project than the current session. Cross-project states are read-only. */
   crossProject?: boolean
   lastRefreshAttemptAt?: number
+  /** Last time the git-tracked missing-file reconcile ran (throttled by MISSING_RECONCILE_INTERVAL_MS). */
+  lastMissingReconcileAt?: number
   refreshPromise?: Promise<void>
 }
 
@@ -463,28 +473,55 @@ async function refreshProjectGraph(state: ProjectGraphState, onProgress?: (progr
   if (empty && state.lastRefreshAttemptAt && now - state.lastRefreshAttemptAt < EMPTY_GRAPH_RETRY_MS) return
 
   state.refreshPromise = (async () => {
-    if (empty) {
-      state.lastRefreshAttemptAt = now
-      await state.graph.sync({ onProgress })
-      return
-    }
+    try {
+      if (empty) {
+        state.lastRefreshAttemptAt = now
+        await state.graph.sync({ onProgress })
+        return
+      }
 
-    const pendingFiles = uniqueAbsolute(state.projectRoot, state.graph.pendingFiles().map((file) => file.path))
-    if (pendingFiles.length > 0) {
-      await state.graph.syncFiles(pendingFiles, { onProgress })
-      return
-    }
+      const pendingFiles = uniqueAbsolute(state.projectRoot, state.graph.pendingFiles().map((file) => file.path))
+      if (pendingFiles.length > 0) {
+        await state.graph.syncFiles(pendingFiles, { onProgress })
+        return
+      }
 
-    const gitChangedFiles = hasGitMetadata(state.projectRoot) ? state.graph.changedFiles() : undefined
-    const changedFiles = gitChangedFiles
-      ? uniqueAbsolute(state.projectRoot, [
-          ...gitChangedFiles.added,
-          ...gitChangedFiles.modified,
-          ...gitChangedFiles.removed,
-        ])
-      : []
-    if (changedFiles.length > 0) {
-      await state.graph.syncFiles(changedFiles, { onProgress })
+      const gitChangedFiles = hasGitMetadata(state.projectRoot) ? state.graph.changedFiles() : undefined
+      const changedFiles = gitChangedFiles
+        ? uniqueAbsolute(state.projectRoot, [
+            ...gitChangedFiles.added,
+            ...gitChangedFiles.modified,
+            ...gitChangedFiles.removed,
+          ])
+        : []
+      if (changedFiles.length > 0) {
+        await state.graph.syncFiles(changedFiles, { onProgress })
+      }
+
+      // Git-tracked files the fast path cannot see: committed with a clean working
+      // tree and never indexed, so `git status` reports nothing. Reconcile against
+      // git ls-files on a module-level throttle — the fast path above stays cheap
+      // while missed files still self-repair within the interval.
+      if (!state.lastMissingReconcileAt || now - state.lastMissingReconcileAt >= MISSING_RECONCILE_INTERVAL_MS) {
+        state.lastMissingReconcileAt = now
+        const missingFiles = state.graph.missingTrackedFiles()
+        if (missingFiles.length > 0) {
+          await state.graph.syncFiles(uniqueAbsolute(state.projectRoot, missingFiles), { onProgress })
+        }
+      }
+    } catch (error) {
+      if (isGraphDataGoneError(error)) {
+        graphStates.delete(state.projectRoot)
+        graphLog.error("graph refresh failed: graph database is missing or unreadable", {
+          root: state.projectRoot,
+          error: error instanceof Error ? error.message : String(error),
+        })
+        throw new Error(
+          `Chimera graph data for ${state.projectRoot} is missing or unreadable (${error instanceof Error ? error.message : String(error)}); ` +
+          "it was likely removed externally \u2014 re-initialize the graph or run a full re-index before retrying.",
+        )
+      }
+      throw error
     }
   })().finally(() => {
     delete state.refreshPromise
@@ -607,8 +644,20 @@ function openGraphState(
 ): Promise<ProjectGraphState> {
   const cached = options.readOnly ? undefined : graphStates.get(root)
   if (cached) {
-    if (options.watch) cached.then(startFilesystemWatcher).catch(() => undefined)
-    return cached
+    // A cached handle keeps working against an unlinked sqlite file, so requests
+    // against externally-removed graph data (e.g. rm -rf .chimera) surface
+    // SQLITE_IOERR with a handle that never refreshes. Convert that into a cache
+    // eviction and rebuild through the normal open path.
+    if (!fs.existsSync(getDatabasePath(root))) {
+      graphStates.delete(root)
+      graphLog.error("evicting cached graph state: graph database is missing", {
+        root,
+        databasePath: getDatabasePath(root),
+      })
+    } else {
+      if (options.watch) cached.then(startFilesystemWatcher).catch(() => undefined)
+      return cached
+    }
   }
 
   const init = options.init ?? false
@@ -631,6 +680,16 @@ function openGraphState(
   if (options.readOnly) return promise
   const tracked = promise.catch((error) => {
     graphStates.delete(root)
+    if (isGraphDataGoneError(error)) {
+      graphLog.error("graph open failed: graph database is missing or unreadable", {
+        root,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      throw new Error(
+        `Chimera graph database for ${root} is missing or unreadable (${error instanceof Error ? error.message : String(error)}); ` +
+        "if the graph data was deleted externally, re-initialize it or run a full re-index before retrying.",
+      )
+    }
     throw error
   })
   graphStates.set(root, tracked)

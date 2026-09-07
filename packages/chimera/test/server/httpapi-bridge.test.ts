@@ -374,6 +374,19 @@ describe("HttpApi server", () => {
     ).toEqual({ type: "string" })
   })
 
+  test("documents the graph status index-gap count", () => {
+    const effect = effectOpenApi() as OpenApiSpec
+    const responses = effect.paths["/graph/status"]?.["get"]?.responses as
+      Record<string, { content?: Record<string, { schema?: OpenApiSchema }> }> | undefined
+    const statusSchema = responses?.["200"]?.content?.["application/json"]?.schema
+    const missingFiles = statusSchema?.properties?.["missingFiles"]
+    expect(missingFiles?.anyOf?.some((item) => item.type === "number")).toBe(true)
+    // The legacy Hono route serves the same service payload via passthrough, so
+    // the operation contract stays aligned even though only the Effect schema
+    // pins the field.
+    expect(effect.paths["/graph/status"]?.["get"]?.operationId).toBe("graph.status")
+  })
+
   test("keeps SDK component names normalized and separates TUI event payloads", () => {
     const spec = effectOpenApi()
     const schemas = spec.components?.schemas ?? {}

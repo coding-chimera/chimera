@@ -1920,6 +1920,26 @@ export class ExtractionOrchestrator {
 
     return { added, modified, removed };
   }
+
+  /**
+   * List git-visible source files that are not present in the index.
+   *
+   * The git fast path in getChangedFiles() cannot see committed files while
+   * the working tree is clean, so an index created before such a file was
+   * added is never repaired by the refresh fast paths (git status reports
+   * nothing, and the file is not yet in the files table). This is the
+   * lightweight reconcile used by refresh/status: it reuses the exact same
+   * visible-file predicate as scanDirectory (git ls-files plus built-in
+   * default ignores) and diffs the result against the files table.
+   * Non-git projects return an empty list — their full reconcile already runs
+   * through sync()'s scanDirectory pass.
+   */
+  listMissingTrackedFiles(): string[] {
+    const gitFiles = getGitVisibleFiles(this.rootDir);
+    if (!gitFiles) return [];
+    const indexed = new Set(this.queries.getAllFiles().map((file) => file.path));
+    return [...gitFiles].filter((filePath) => isSourceFile(filePath) && !indexed.has(filePath));
+  }
 }
 
 // Re-export useful types and functions

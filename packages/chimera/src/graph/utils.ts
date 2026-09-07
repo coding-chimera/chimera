@@ -214,16 +214,16 @@ export class FileLock {
         const observedStat = fs.fstatSync(fd);
         const lockAge = Date.now() - observedStat.mtimeMs;
 
-        if (owner?.pid !== undefined && this.isProcessAlive(owner.pid)) {
+        if (owner?.pid !== undefined && isProcessAlive(owner.pid)) {
           throw new Error(
             `CodeGraph database is locked by another process (PID ${owner.pid}). ` +
-            `If this is stale, run 'codegraph unlock' or delete ${this.lockPath}`
+            `If this is stale, run 'chimera graph unlock' or delete ${this.lockPath}`
           );
         }
         if (owner?.pid === undefined && lockAge < FileLock.STALE_TIMEOUT_MS) {
           throw new Error(
             'CodeGraph database is locked by another process. ' +
-            `If this is stale, run 'codegraph unlock' or delete ${this.lockPath}`
+            `If this is stale, run 'chimera graph unlock' or delete ${this.lockPath}`
           );
         }
 
@@ -234,7 +234,7 @@ export class FileLock {
           this.restoreQuarantinedLock(quarantinePath);
           throw new Error(
             'CodeGraph database is locked by another process. ' +
-            `If this is stale, run 'codegraph unlock' or delete ${this.lockPath}`
+            `If this is stale, run 'chimera graph unlock' or delete ${this.lockPath}`
           );
         }
         fs.unlinkSync(quarantinePath);
@@ -264,7 +264,7 @@ export class FileLock {
       if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
         throw new Error(
           'CodeGraph database is locked by another process. ' +
-          `If this is stale, run 'codegraph unlock' or delete ${this.lockPath}`
+          `If this is stale, run 'chimera graph unlock' or delete ${this.lockPath}`
         );
       }
       throw err;
@@ -418,16 +418,16 @@ export class FileLock {
     this.heartbeat = undefined;
   }
 
-  /**
-   * Check if a process is still running
-   */
-  private isProcessAlive(pid: number): boolean {
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch (err: unknown) {
-      return (err as NodeJS.ErrnoException).code === 'EPERM';
-    }
+}
+/**
+ * Check if a process is still running
+ */
+export function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err: unknown) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
   }
 }
 

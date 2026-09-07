@@ -54,6 +54,7 @@ export const GraphStatusResponse = Schema.Struct({
   stats: Schema.optional(Schema.Unknown),
   backend: Schema.optional(Schema.String),
   journalMode: Schema.optional(Schema.String),
+  missingFiles: Schema.optional(Schema.Number),
 })
 
 export const GraphNodeResult = Schema.Struct({

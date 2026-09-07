@@ -5,11 +5,12 @@ import { Config, Effect, FileSystem, Layer, Path } from "effect"
 import { HttpClient, HttpClientRequest, HttpRouter, HttpServer } from "effect/unstable/http"
 import * as Socket from "effect/unstable/socket/Socket"
 import { InstancePaths } from "../../src/server/routes/instance/httpapi/groups/instance"
+import { GraphPaths } from "../../src/server/routes/instance/httpapi/groups/graph"
+import { CodeGraph } from "../../src/graph"
 import { ExperimentalHttpApiServer } from "../../src/server/routes/instance/httpapi/server"
 import { resetDatabase } from "../fixture/db"
 import { disposeAllInstances, tmpdirScoped } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
-
 // Flip the experimental HttpApi flag so backend selection telemetry on the
 // production routes reports the right backend, and reset the database around
 // the test so per-instance state does not leak between runs. resetDatabase()
@@ -78,6 +79,35 @@ describe("instance HttpApi", () => {
       expect(yield* diff.json).toContainEqual(
         expect.objectContaining({ file: "changed.txt", additions: 1, status: "added" }),
       )
+    }),
+  )
+  it.live("serves graph status with the index-gap count", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      const fileSystem = yield* FileSystem.FileSystem
+      const pathApi = yield* Path.Path
+      yield* fileSystem.writeFileString(pathApi.join(dir, "tracked.ts"), "export const tracked = 1\n")
+
+      // Initialize + index through the real CodeGraph facade so the route reads
+      // an on-disk graph, not a fake.
+      yield* Effect.promise(async () => {
+        const graph = await CodeGraph.init(dir)
+        try {
+          await graph.indexAll()
+        } finally {
+          await graph.close()
+        }
+      })
+
+      // A new untracked source file on disk is absent from the index, so the
+      // route must report the index gap instead of claiming a full sync.
+      yield* fileSystem.writeFileString(pathApi.join(dir, "late.ts"), "export const late = 1\n")
+
+      const response = yield* HttpClientRequest.get(GraphPaths.status)
+        .pipe(directoryHeader(dir), HttpClient.execute)
+      expect(response.status).toBe(200)
+      const body = yield* response.json
+      expect(body).toMatchObject({ initialized: true, missingFiles: 1 })
     }),
   )
 })

@@ -124,6 +124,10 @@ export class CodeGraphAdapter {
     return this.graph.getChangedFiles()
   }
 
+  missingTrackedFiles(): string[] {
+    return this.graph.getMissingTrackedFiles()
+  }
+
   nodesIntersectingRange(filePath: string, range: SourceRange, options: RangeQueryOptions = {}) {
     return this.graph.getNodesIntersectingRange(filePath, range, options)
   }

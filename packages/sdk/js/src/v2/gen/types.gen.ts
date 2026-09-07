@@ -58,7 +58,10 @@ export type Event =
   | EventSessionPermissionSlot
   | EventSessionNextAgentSwitched
   | EventSessionNextModelSwitched
+  | EventSessionNextMoved
   | EventSessionNextPrompted
+  | EventSessionNextPromptAdmitted
+  | EventSessionNextContextUpdated
   | EventSessionNextSynthetic
   | EventSessionNextShellStarted
   | EventSessionNextShellEnded
@@ -82,6 +85,9 @@ export type Event =
   | EventSessionNextCompactionStarted
   | EventSessionNextCompactionDelta
   | EventSessionNextCompactionEnded
+  | EventSessionNextRevertStaged
+  | EventSessionNextRevertCleared
+  | EventSessionNextRevertCommitted
   | EventConfigModelSelectionUpdated
   | EventServerConnected
   | EventServerHeartbeat
@@ -899,7 +905,10 @@ export type GlobalEvent = {
     | EventSessionPermissionSlot
     | EventSessionNextAgentSwitched
     | EventSessionNextModelSwitched
+    | EventSessionNextMoved
     | EventSessionNextPrompted
+    | EventSessionNextPromptAdmitted
+    | EventSessionNextContextUpdated
     | EventSessionNextSynthetic
     | EventSessionNextShellStarted
     | EventSessionNextShellEnded
@@ -923,6 +932,9 @@ export type GlobalEvent = {
     | EventSessionNextCompactionStarted
     | EventSessionNextCompactionDelta
     | EventSessionNextCompactionEnded
+    | EventSessionNextRevertStaged
+    | EventSessionNextRevertCleared
+    | EventSessionNextRevertCommitted
     | EventConfigModelSelectionUpdated
     | EventServerConnected
     | EventServerHeartbeat
@@ -939,7 +951,10 @@ export type GlobalEvent = {
     | SyncEventSessionPermissionSlot
     | SyncEventSessionNextAgentSwitched
     | SyncEventSessionNextModelSwitched
+    | SyncEventSessionNextMoved
     | SyncEventSessionNextPrompted
+    | SyncEventSessionNextPromptAdmitted
+    | SyncEventSessionNextContextUpdated
     | SyncEventSessionNextSynthetic
     | SyncEventSessionNextShellStarted
     | SyncEventSessionNextShellEnded
@@ -963,6 +978,9 @@ export type GlobalEvent = {
     | SyncEventSessionNextCompactionStarted
     | SyncEventSessionNextCompactionDelta
     | SyncEventSessionNextCompactionEnded
+    | SyncEventSessionNextRevertStaged
+    | SyncEventSessionNextRevertCleared
+    | SyncEventSessionNextRevertCommitted
 }
 
 export type WebUiPreferencesUpdate = {
@@ -1040,6 +1058,11 @@ export type AgentConfig = {
   variant?: string
   temperature?: number
   top_p?: number
+  top_k?: number
+  min_p?: number
+  presence_penalty?: number
+  frequency_penalty?: number
+  repetition_penalty?: number
   prompt?: string
   tools?: {
     [key: string]: boolean
@@ -1123,6 +1146,7 @@ export type ProviderConfig = {
       remote_compaction?: boolean
       backend_semantics?: "openai" | "codex" | "alibailian"
       capability_model_id?: string
+      size_class?: "S" | "M" | "L" | "XL"
       reasoning_efforts?: Array<"none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max">
       release_date?: string
       attachment?: boolean
@@ -1248,17 +1272,29 @@ export type DelegationScheduling = {
       description?: string
       minQuality?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
       effortCap?: string
+      maxSizeClass?: "S" | "M" | "L" | "XL"
+      minSizeClass?: "S" | "M" | "L" | "XL"
       weights?: {
         quality: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
         speed: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
         cost: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        size?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
       }
       budgetUsdPerWorker?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      excludeModels?: Array<string>
     }
   }
   overrides?: {
     [key: string]: {
       billing?: "metered" | "subscription" | "free" | "unknown"
+    }
+  }
+  topTierDisabledMinSizeClass?: "S" | "M" | "L" | "XL"
+  capability_anchors?: {
+    [key: string]: {
+      score: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      tier?: string
+      uncertainty?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
     }
   }
 }
@@ -1314,6 +1350,7 @@ export type Config = {
   autoupdate?: boolean | "notify"
   disabled_providers?: Array<string>
   enabled_providers?: Array<string>
+  free_models?: boolean
   ultra_models?: Array<string>
   remote_compaction_models?: Array<string>
   model?: string
@@ -1421,6 +1458,7 @@ export type Config = {
     primary_tools?: Array<string>
     continue_loop_on_deny?: boolean
     mcp_timeout?: number
+    system_context?: boolean
   }
 }
 
@@ -1887,6 +1925,11 @@ export type Agent = {
   native?: boolean
   hidden?: boolean
   topP?: number
+  topK?: number
+  minP?: number
+  presencePenalty?: number
+  frequencyPenalty?: number
+  repetitionPenalty?: number
   temperature?: number
   color?: string
   permission: PermissionRuleset
@@ -2490,6 +2533,7 @@ export type SyncEventSessionNextAgentSwitched = {
   data: {
     timestamp: number
     sessionID: string
+    messageID: string
     agent: string
   }
 }
@@ -2503,11 +2547,22 @@ export type SyncEventSessionNextModelSwitched = {
   data: {
     timestamp: number
     sessionID: string
-    model: {
-      id: string
-      providerID: string
-      variant: string
-    }
+    messageID: string
+    model: ModelRef
+  }
+}
+
+export type SyncEventSessionNextMoved = {
+  type: "sync"
+  name: "session.next.moved.1"
+  id: string
+  seq: number
+  aggregateID: "sessionID"
+  data: {
+    timestamp: number
+    sessionID: string
+    location: LocationRef
+    subdirectory?: string
   }
 }
 
@@ -2520,7 +2575,38 @@ export type SyncEventSessionNextPrompted = {
   data: {
     timestamp: number
     sessionID: string
+    messageID: string
     prompt: Prompt
+    delivery: "steer" | "queue"
+  }
+}
+
+export type SyncEventSessionNextPromptAdmitted = {
+  type: "sync"
+  name: "session.next.prompt.admitted.1"
+  id: string
+  seq: number
+  aggregateID: "sessionID"
+  data: {
+    timestamp: number
+    sessionID: string
+    messageID: string
+    prompt: Prompt
+    delivery: "steer" | "queue"
+  }
+}
+
+export type SyncEventSessionNextContextUpdated = {
+  type: "sync"
+  name: "session.next.context.updated.1"
+  id: string
+  seq: number
+  aggregateID: "sessionID"
+  data: {
+    timestamp: number
+    sessionID: string
+    messageID: string
+    text: string
   }
 }
 
@@ -2533,6 +2619,7 @@ export type SyncEventSessionNextSynthetic = {
   data: {
     timestamp: number
     sessionID: string
+    messageID: string
     text: string
   }
 }
@@ -2546,6 +2633,7 @@ export type SyncEventSessionNextShellStarted = {
   data: {
     timestamp: number
     sessionID: string
+    messageID: string
     callID: string
     command: string
   }
@@ -2574,25 +2662,23 @@ export type SyncEventSessionNextStepStarted = {
   data: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
     agent: string
-    model: {
-      id: string
-      providerID: string
-      variant: string
-    }
+    model: ModelRef
     snapshot?: string
   }
 }
 
 export type SyncEventSessionNextStepEnded = {
   type: "sync"
-  name: "session.next.step.ended.1"
+  name: "session.next.step.ended.2"
   id: string
   seq: number
   aggregateID: "sessionID"
   data: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
     finish: string
     cost: number
     tokens: {
@@ -2605,18 +2691,20 @@ export type SyncEventSessionNextStepEnded = {
       }
     }
     snapshot?: string
+    files?: Array<string>
   }
 }
 
 export type SyncEventSessionNextStepFailed = {
   type: "sync"
-  name: "session.next.step.failed.1"
+  name: "session.next.step.failed.2"
   id: string
   seq: number
   aggregateID: "sessionID"
   data: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
     error: SessionErrorUnknown
   }
 }
@@ -2630,6 +2718,8 @@ export type SyncEventSessionNextTextStarted = {
   data: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
+    textID: string
   }
 }
 
@@ -2642,6 +2732,8 @@ export type SyncEventSessionNextTextDelta = {
   data: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
+    textID: string
     delta: string
   }
 }
@@ -2655,6 +2747,8 @@ export type SyncEventSessionNextTextEnded = {
   data: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
+    textID: string
     text: string
   }
 }
@@ -2668,7 +2762,9 @@ export type SyncEventSessionNextReasoningStarted = {
   data: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
     reasoningID: string
+    providerMetadata?: LlmProviderMetadata
   }
 }
 
@@ -2681,6 +2777,7 @@ export type SyncEventSessionNextReasoningDelta = {
   data: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
     reasoningID: string
     delta: string
   }
@@ -2695,8 +2792,10 @@ export type SyncEventSessionNextReasoningEnded = {
   data: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
     reasoningID: string
     text: string
+    providerMetadata?: LlmProviderMetadata
   }
 }
 
@@ -2709,6 +2808,7 @@ export type SyncEventSessionNextToolInputStarted = {
   data: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
     callID: string
     name: string
   }
@@ -2723,6 +2823,7 @@ export type SyncEventSessionNextToolInputDelta = {
   data: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
     callID: string
     delta: string
   }
@@ -2737,6 +2838,7 @@ export type SyncEventSessionNextToolInputEnded = {
   data: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
     callID: string
     text: string
   }
@@ -2751,6 +2853,7 @@ export type SyncEventSessionNextToolCalled = {
   data: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
     callID: string
     tool: string
     input: {
@@ -2758,9 +2861,7 @@ export type SyncEventSessionNextToolCalled = {
     }
     provider: {
       executed: boolean
-      metadata?: {
-        [key: string]: unknown
-      }
+      metadata?: LlmProviderMetadata
     }
   }
 }
@@ -2774,11 +2875,12 @@ export type SyncEventSessionNextToolProgress = {
   data: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
     callID: string
     structured: {
       [key: string]: unknown
     }
-    content: Array<ToolTextContent | ToolFileContent>
+    content: Array<LlmToolContent>
   }
 }
 
@@ -2791,16 +2893,17 @@ export type SyncEventSessionNextToolSuccess = {
   data: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
     callID: string
     structured: {
       [key: string]: unknown
     }
-    content: Array<ToolTextContent | ToolFileContent>
+    content: Array<LlmToolContent>
+    outputPaths?: Array<string>
+    result?: unknown
     provider: {
       executed: boolean
-      metadata?: {
-        [key: string]: unknown
-      }
+      metadata?: LlmProviderMetadata
     }
   }
 }
@@ -2814,13 +2917,13 @@ export type SyncEventSessionNextToolFailed = {
   data: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
     callID: string
     error: SessionErrorUnknown
+    result?: unknown
     provider: {
       executed: boolean
-      metadata?: {
-        [key: string]: unknown
-      }
+      metadata?: LlmProviderMetadata
     }
   }
 }
@@ -2848,6 +2951,7 @@ export type SyncEventSessionNextCompactionStarted = {
   data: {
     timestamp: number
     sessionID: string
+    messageID: string
     reason: "auto" | "manual"
   }
 }
@@ -2861,6 +2965,7 @@ export type SyncEventSessionNextCompactionDelta = {
   data: {
     timestamp: number
     sessionID: string
+    messageID: string
     text: string
   }
 }
@@ -2874,8 +2979,48 @@ export type SyncEventSessionNextCompactionEnded = {
   data: {
     timestamp: number
     sessionID: string
+    messageID: string
+    reason: "auto" | "manual"
     text: string
-    include?: string
+    recent: string
+  }
+}
+
+export type SyncEventSessionNextRevertStaged = {
+  type: "sync"
+  name: "session.next.revert.staged.1"
+  id: string
+  seq: number
+  aggregateID: "sessionID"
+  data: {
+    timestamp: number
+    sessionID: string
+    revert: RevertState
+  }
+}
+
+export type SyncEventSessionNextRevertCleared = {
+  type: "sync"
+  name: "session.next.revert.cleared.1"
+  id: string
+  seq: number
+  aggregateID: "sessionID"
+  data: {
+    timestamp: number
+    sessionID: string
+  }
+}
+
+export type SyncEventSessionNextRevertCommitted = {
+  type: "sync"
+  name: "session.next.revert.committed.1"
+  id: string
+  seq: number
+  aggregateID: "sessionID"
+  data: {
+    timestamp: number
+    sessionID: string
+    messageID: string
   }
 }
 
@@ -3397,8 +3542,15 @@ export type EventSessionNextAgentSwitched = {
   properties: {
     timestamp: number
     sessionID: string
+    messageID: string
     agent: string
   }
+}
+
+export type ModelRef = {
+  id: string
+  providerID: string
+  variant?: string
 }
 
 export type EventSessionNextModelSwitched = {
@@ -3407,11 +3559,24 @@ export type EventSessionNextModelSwitched = {
   properties: {
     timestamp: number
     sessionID: string
-    model: {
-      id: string
-      providerID: string
-      variant: string
-    }
+    messageID: string
+    model: ModelRef
+  }
+}
+
+export type LocationRef = {
+  directory: string
+  workspaceID?: string
+}
+
+export type EventSessionNextMoved = {
+  id: string
+  type: "session.next.moved"
+  properties: {
+    timestamp: number
+    sessionID: string
+    location: LocationRef
+    subdirectory?: string
   }
 }
 
@@ -3440,7 +3605,32 @@ export type EventSessionNextPrompted = {
   properties: {
     timestamp: number
     sessionID: string
+    messageID: string
     prompt: Prompt
+    delivery: "steer" | "queue"
+  }
+}
+
+export type EventSessionNextPromptAdmitted = {
+  id: string
+  type: "session.next.prompt.admitted"
+  properties: {
+    timestamp: number
+    sessionID: string
+    messageID: string
+    prompt: Prompt
+    delivery: "steer" | "queue"
+  }
+}
+
+export type EventSessionNextContextUpdated = {
+  id: string
+  type: "session.next.context.updated"
+  properties: {
+    timestamp: number
+    sessionID: string
+    messageID: string
+    text: string
   }
 }
 
@@ -3450,6 +3640,7 @@ export type EventSessionNextSynthetic = {
   properties: {
     timestamp: number
     sessionID: string
+    messageID: string
     text: string
   }
 }
@@ -3460,6 +3651,7 @@ export type EventSessionNextShellStarted = {
   properties: {
     timestamp: number
     sessionID: string
+    messageID: string
     callID: string
     command: string
   }
@@ -3482,12 +3674,9 @@ export type EventSessionNextStepStarted = {
   properties: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
     agent: string
-    model: {
-      id: string
-      providerID: string
-      variant: string
-    }
+    model: ModelRef
     snapshot?: string
   }
 }
@@ -3498,6 +3687,7 @@ export type EventSessionNextStepEnded = {
   properties: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
     finish: string
     cost: number
     tokens: {
@@ -3510,6 +3700,7 @@ export type EventSessionNextStepEnded = {
       }
     }
     snapshot?: string
+    files?: Array<string>
   }
 }
 
@@ -3524,6 +3715,7 @@ export type EventSessionNextStepFailed = {
   properties: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
     error: SessionErrorUnknown
   }
 }
@@ -3534,6 +3726,8 @@ export type EventSessionNextTextStarted = {
   properties: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
+    textID: string
   }
 }
 
@@ -3543,6 +3737,8 @@ export type EventSessionNextTextDelta = {
   properties: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
+    textID: string
     delta: string
   }
 }
@@ -3553,7 +3749,15 @@ export type EventSessionNextTextEnded = {
   properties: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
+    textID: string
     text: string
+  }
+}
+
+export type LlmProviderMetadata = {
+  [key: string]: {
+    [key: string]: unknown
   }
 }
 
@@ -3563,7 +3767,9 @@ export type EventSessionNextReasoningStarted = {
   properties: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
     reasoningID: string
+    providerMetadata?: LlmProviderMetadata
   }
 }
 
@@ -3573,6 +3779,7 @@ export type EventSessionNextReasoningDelta = {
   properties: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
     reasoningID: string
     delta: string
   }
@@ -3584,8 +3791,10 @@ export type EventSessionNextReasoningEnded = {
   properties: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
     reasoningID: string
     text: string
+    providerMetadata?: LlmProviderMetadata
   }
 }
 
@@ -3595,6 +3804,7 @@ export type EventSessionNextToolInputStarted = {
   properties: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
     callID: string
     name: string
   }
@@ -3606,6 +3816,7 @@ export type EventSessionNextToolInputDelta = {
   properties: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
     callID: string
     delta: string
   }
@@ -3617,6 +3828,7 @@ export type EventSessionNextToolInputEnded = {
   properties: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
     callID: string
     text: string
   }
@@ -3628,6 +3840,7 @@ export type EventSessionNextToolCalled = {
   properties: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
     callID: string
     tool: string
     input: {
@@ -3635,9 +3848,7 @@ export type EventSessionNextToolCalled = {
     }
     provider: {
       executed: boolean
-      metadata?: {
-        [key: string]: unknown
-      }
+      metadata?: LlmProviderMetadata
     }
   }
 }
@@ -3654,17 +3865,20 @@ export type ToolFileContent = {
   name?: string
 }
 
+export type LlmToolContent = ToolTextContent | ToolFileContent
+
 export type EventSessionNextToolProgress = {
   id: string
   type: "session.next.tool.progress"
   properties: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
     callID: string
     structured: {
       [key: string]: unknown
     }
-    content: Array<ToolTextContent | ToolFileContent>
+    content: Array<LlmToolContent>
   }
 }
 
@@ -3674,16 +3888,17 @@ export type EventSessionNextToolSuccess = {
   properties: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
     callID: string
     structured: {
       [key: string]: unknown
     }
-    content: Array<ToolTextContent | ToolFileContent>
+    content: Array<LlmToolContent>
+    outputPaths?: Array<string>
+    result?: unknown
     provider: {
       executed: boolean
-      metadata?: {
-        [key: string]: unknown
-      }
+      metadata?: LlmProviderMetadata
     }
   }
 }
@@ -3694,13 +3909,13 @@ export type EventSessionNextToolFailed = {
   properties: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
     callID: string
     error: SessionErrorUnknown
+    result?: unknown
     provider: {
       executed: boolean
-      metadata?: {
-        [key: string]: unknown
-      }
+      metadata?: LlmProviderMetadata
     }
   }
 }
@@ -3735,6 +3950,7 @@ export type EventSessionNextCompactionStarted = {
   properties: {
     timestamp: number
     sessionID: string
+    messageID: string
     reason: "auto" | "manual"
   }
 }
@@ -3745,6 +3961,7 @@ export type EventSessionNextCompactionDelta = {
   properties: {
     timestamp: number
     sessionID: string
+    messageID: string
     text: string
   }
 }
@@ -3755,8 +3972,55 @@ export type EventSessionNextCompactionEnded = {
   properties: {
     timestamp: number
     sessionID: string
+    messageID: string
+    reason: "auto" | "manual"
     text: string
-    include?: string
+    recent: string
+  }
+}
+
+export type FileDiff = {
+  path: string
+  status: "added" | "modified" | "deleted"
+  additions: number
+  deletions: number
+  patch: string
+}
+
+export type RevertState = {
+  messageID: string
+  partID?: string
+  snapshot?: string
+  diff?: string
+  files?: Array<FileDiff>
+}
+
+export type EventSessionNextRevertStaged = {
+  id: string
+  type: "session.next.revert.staged"
+  properties: {
+    timestamp: number
+    sessionID: string
+    revert: RevertState
+  }
+}
+
+export type EventSessionNextRevertCleared = {
+  id: string
+  type: "session.next.revert.cleared"
+  properties: {
+    timestamp: number
+    sessionID: string
+  }
+}
+
+export type EventSessionNextRevertCommitted = {
+  id: string
+  type: "session.next.revert.committed"
+  properties: {
+    timestamp: number
+    sessionID: string
+    messageID: string
   }
 }
 
@@ -3981,11 +4245,7 @@ export type SessionMessageAssistant = {
   }
   type: "assistant"
   agent: string
-  model: {
-    id: string
-    providerID: string
-    variant: string
-  }
+  model: ModelRef
   content: Array<SessionMessageAssistantText | SessionMessageAssistantReasoning | SessionMessageAssistantTool>
   snapshot?: {
     start?: string
@@ -5087,6 +5347,7 @@ export type GraphStatusResponses = {
     stats?: unknown
     backend?: string
     journalMode?: string
+    missingFiles?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
   }
 }
 

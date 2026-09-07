@@ -74,36 +74,86 @@ async function loadClackPrompts(): Promise<typeof import('@clack/prompts')> {
 // later, leading to a steady stream of "what is this OOM" reports.
 // Hard-exit before any WASM work; allow override via env var for users
 // who patched V8 themselves or want to test a future fix.
+// Read-only/recovery commands that never compile grammars bypass the hard
+// exit with a short warning instead (see isGuardExemptSubcommand below).
 let prepared = false;
 
 function unsafeNodeOverrideEnabled(): boolean {
   return process.env.CHIMERA_ALLOW_UNSAFE_NODE === '1' || process.env.CODEGRAPH_ALLOW_UNSAFE_NODE === '1';
 }
 
-function prepareRuntime(): void {
+// Commands the Node version guard never needs to block: they don't load
+// tree-sitter grammars (only the WASM runtime bootstrap, after the relaunch
+// below applies --liftoff-only) or any graph runtime at all.
+const GUARD_EXEMPT_COMMANDS = new Set<string>(['unlock', 'status', 'help', 'version']);
+const GUARD_EXEMPT_OPTIONS = new Set<string>(['--help', '-h', '--version', '-V']);
+
+/**
+ * Parse the Node major from a `process.versions.node` string like "26.3.0".
+ */
+export function parseNodeMajor(nodeVersion: string): number {
+  return parseInt(nodeVersion.split('.')[0] ?? '0', 10);
+}
+
+export type NodeGuardLevel = 'ok' | 'unsupported-major' | 'too-old';
+
+/**
+ * Classify a Node version against the hard-block boundary (25+; see the
+ * banner comment above) and the supported floor ({@link MIN_NODE_MAJOR}).
+ */
+export function classifyNodeGuardLevel(nodeVersion: string, minNodeMajor: number = MIN_NODE_MAJOR): NodeGuardLevel {
+  const nodeMajor = parseNodeMajor(nodeVersion);
+  if (nodeMajor >= 25) return 'unsupported-major';
+  if (nodeMajor < minNodeMajor) return 'too-old';
+  return 'ok';
+}
+
+/**
+ * True when argv's first token is a guard-exempt command. Exempt set:
+ * `unlock` (pure filesystem: isInitialized + lockfile removal), `status`
+ * (read-only status readout), and plain help/version output - none of these
+ * compile tree-sitter grammars.
+ */
+export function isGuardExemptSubcommand(argv: readonly string[]): boolean {
+  const first = argv[0];
+  if (first === undefined) return false;
+  if (first.startsWith('-')) return GUARD_EXEMPT_OPTIONS.has(first);
+  return GUARD_EXEMPT_COMMANDS.has(first);
+}
+
+/**
+ * One-line warning shown instead of the hard block for exempt commands.
+ * Keeps the CHIMERA_ALLOW_UNSAFE_NODE=1 escape hatch visible so users know
+ * how to force-enable the remaining commands.
+ */
+export function buildGuardExemptWarning(nodeVersion: string, nodeMajor: number, command: string): string {
+  const problem = nodeMajor >= 25
+    ? `Unsupported Node.js version ${nodeVersion} (25+; tree-sitter WASM compile can crash)`
+    : `Node.js ${nodeMajor} is below the supported floor (${MIN_NODE_MAJOR}+)`;
+  return `[Chimera] ${problem} - "${command}" is read-only/recovery and does not compile tree-sitter grammars, so it is allowed. Other commands require CHIMERA_ALLOW_UNSAFE_NODE=1 to force-enable on this Node.`;
+}
+
+function prepareRuntime(argv: readonly string[]): void {
   if (prepared) return;
   prepared = true;
 
   const nodeVersion = process.versions.node;
-  const nodeMajor = parseInt(nodeVersion.split('.')[0] ?? '0', 10);
+  const nodeMajor = parseNodeMajor(nodeVersion);
+  const guardLevel = classifyNodeGuardLevel(nodeVersion);
 
-  if (nodeMajor >= 25) {
-    process.stderr.write(buildNode25BlockBanner(nodeVersion) + '\n');
-    if (!unsafeNodeOverrideEnabled()) {
-      process.exit(1);
+  if (guardLevel !== 'ok') {
+    if (isGuardExemptSubcommand(argv)) {
+      process.stderr.write(buildGuardExemptWarning(nodeVersion, nodeMajor, argv[0] ?? '') + '\n');
+    } else {
+      const banner = guardLevel === 'too-old'
+        ? buildNodeTooOldBanner(nodeVersion)
+        : buildNode25BlockBanner(nodeVersion);
+      process.stderr.write(banner + '\n');
+      if (!unsafeNodeOverrideEnabled()) {
+        process.exit(1);
+      }
+      // Override active - banner shown for visibility, continuing.
     }
-    // Override active — banner shown for visibility, continuing.
-  }
-
-  // Enforce the supported Node floor. `engines` in package.json only *warns* on
-  // install (unless engine-strict), so hard-block here to actually keep users off
-  // unsupported versions. Mirrors the 25+ block above. See package.json `engines`.
-  if (nodeMajor < MIN_NODE_MAJOR) {
-    process.stderr.write(buildNodeTooOldBanner(nodeVersion) + '\n');
-    if (!unsafeNodeOverrideEnabled()) {
-      process.exit(1);
-    }
-    // Override active — banner shown for visibility, continuing.
   }
 
   // Re-exec with V8's `--liftoff-only` if it isn't already set, so tree-sitter's
@@ -111,6 +161,8 @@ function prepareRuntime(): void {
   // memory: Zone`) on Node >= 22. No-op under the bundled launcher, which already
   // passes the flag. Must run before any grammar (in the parse worker, which
   // inherits this process's flags) is compiled. See ../extraction/wasm-runtime-flags.
+  // Kept for exempt commands too: `status` reaches TreeSitter.Parser.init() via
+  // CodeGraph.open() and needs the flag as well.
   relaunchWithWasmRuntimeFlagsIfNeeded(import.meta.filename);
 
   process.on('uncaughtException', (error) => {
@@ -128,7 +180,7 @@ export type RunChimeraCliOptions = {
 };
 
 export async function runChimeraCli(argv = process.argv.slice(2), options: RunChimeraCliOptions = {}): Promise<void> {
-  prepareRuntime();
+  prepareRuntime(argv);
 
   if (argv.length === 0 && options.defaultToInstaller) {
     try {

@@ -293,4 +293,87 @@ describe('Sync Module', () => {
       expect(result.changedFilePaths).toBeUndefined();
     });
   });
-});
+
+  });
+
+  describe('getMissingTrackedFiles()', () => {
+    let repoDir: string;
+    let cg: CodeGraph;
+
+    const runGit = (args: string[]) =>
+      execFileSync('git', args, { cwd: repoDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+
+    beforeEach(async () => {
+      repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-missing-'));
+      runGit(['init', '--quiet']);
+      runGit(['config', 'user.email', 'test@codegraph.test']);
+      runGit(['config', 'user.name', 'Test']);
+      runGit(['config', 'commit.gpgsign', 'false']);
+      fs.writeFileSync(path.join(repoDir, 'alpha.ts'), 'export const alpha = 1;');
+      runGit(['add', 'alpha.ts']);
+      runGit(['commit', '--quiet', '-m', 'alpha']);
+
+      cg = CodeGraph.initSync(repoDir);
+      await cg.indexAll();
+    });
+
+    afterEach(() => {
+      if (cg) {
+        cg.destroy();
+      }
+      if (fs.existsSync(repoDir)) {
+        fs.rmSync(repoDir, { recursive: true, force: true });
+      }
+    });
+
+    it('lists committed source files that are absent from the index', () => {
+      expect(cg.getMissingTrackedFiles()).toEqual([]);
+
+      // Commit a new file while the working tree stays clean: git status is
+      // empty, so the refresh fast path would never re-index it.
+      fs.writeFileSync(path.join(repoDir, 'beta.ts'), 'export const beta = 2;');
+      runGit(['add', 'beta.ts']);
+      runGit(['commit', '--quiet', '-m', 'beta']);
+
+      expect(cg.getChangedFiles()).toEqual({ added: [], modified: [], removed: [] });
+      expect(cg.getMissingTrackedFiles()).toEqual(['beta.ts']);
+    });
+
+    it('is empty after syncing the missing files', async () => {
+      fs.writeFileSync(path.join(repoDir, 'beta.ts'), 'export const beta = 2;');
+      runGit(['add', 'beta.ts']);
+      runGit(['commit', '--quiet', '-m', 'beta']);
+
+      await cg.syncFiles(cg.getMissingTrackedFiles());
+      expect(cg.getMissingTrackedFiles()).toEqual([]);
+
+      const nodes = cg.searchNodes('beta');
+      expect(nodes.length).toBeGreaterThan(0);
+    });
+
+    it('ignores non-source files committed since indexing', () => {
+      fs.writeFileSync(path.join(repoDir, 'notes.txt'), 'just some notes');
+      runGit(['add', 'notes.txt']);
+      runGit(['commit', '--quiet', '-m', 'notes']);
+
+      expect(cg.getMissingTrackedFiles()).toEqual([]);
+    });
+
+    it('returns an empty list for non-git projects', () => {
+      const plain = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-missing-nogit-'));
+      try {
+        fs.writeFileSync(path.join(plain, 'plain.ts'), 'export const plain = 1;');
+        const plainCg = CodeGraph.initSync(plain);
+        try {
+          expect(plainCg.getMissingTrackedFiles()).toEqual([]);
+        } finally {
+          plainCg.destroy();
+        }
+      } finally {
+        if (fs.existsSync(plain)) {
+          fs.rmSync(plain, { recursive: true, force: true });
+        }
+      }
+    });
+  });
+

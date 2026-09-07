@@ -10,7 +10,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { createDatabase } from './db/sqlite-adapter';
 import { CURRENT_SCHEMA_VERSION, getCurrentVersion, runMigrations } from './db/migrations';
-import { FileLock } from './utils';
+import { FileLock, isProcessAlive } from './utils';
 
 export const CHIMERA_DIR = '.chimera';
 export const LEGACY_CODEGRAPH_DIR = '.codegraph';
@@ -146,6 +146,14 @@ export function readIndexJob(projectRoot: string): GraphJobState | undefined {
   try {
     const parsed = JSON.parse(fs.readFileSync(jobPath, 'utf-8')) as GraphJobState;
     if (parsed.schemaVersion !== 1) return undefined;
+    if (parsed.status === 'running' && parsed.pid !== process.pid && !isProcessAlive(parsed.pid)) {
+      const interruptedDetail = parsed.message ? `; ${parsed.message}` : '';
+      return {
+        ...parsed,
+        status: 'failed' as const,
+        message: `interrupted: process ${parsed.pid} exited before completion${interruptedDetail}`,
+      };
+    }
     return parsed;
   } catch {
     return undefined;
@@ -324,7 +332,34 @@ ${INDEX_JOB_FILENAME}
 
 # Hook markers
 .dirty
+
+# Config
+node_modules
+package.json
+package-lock.json
+bun.lock
+.gitignore
 `;
+}
+
+/**
+ * Ensure the graph data root's .gitignore carries the graph rules and is
+ * convergent with the config-side writer (which only writes when missing):
+ * re-write as the superset template plus any custom lines when graph rules
+ * are absent, leave a file that already has them untouched.
+ */
+function ensureGraphGitignore(dataRoot: string): void {
+  const gitignorePath = path.join(dataRoot, '.gitignore');
+  if (!fs.existsSync(gitignorePath)) {
+    fs.writeFileSync(gitignorePath, gitignoreContent(), 'utf-8');
+    return;
+  }
+  const existing = fs.readFileSync(gitignorePath, 'utf-8');
+  if (existing.includes('*.db')) return;
+  const templateLines = new Set(gitignoreContent().split('\n').map((line) => line.trim()));
+  const customLines = existing.split(/\r?\n/).filter((line) => line.trim() !== '' && !templateLines.has(line.trim()));
+  const preserved = customLines.length > 0 ? `\n# Preserved custom entries\n${customLines.join('\n')}\n` : '';
+  fs.writeFileSync(gitignorePath, gitignoreContent() + preserved, 'utf-8');
 }
 const REQUIRED_CHIMERA_TABLES = ['schema_versions', 'nodes', 'edges', 'files', 'unresolved_refs'] as const;
 
@@ -593,11 +628,7 @@ export function createDirectory(projectRoot: string): void {
 
   fs.mkdirSync(dataRoot, { recursive: true });
   excludeCodeGraphFromGit(projectRoot);
-
-  const gitignorePath = path.join(dataRoot, '.gitignore');
-  if (!fs.existsSync(gitignorePath)) {
-    fs.writeFileSync(gitignorePath, gitignoreContent(), 'utf-8');
-  }
+  ensureGraphGitignore(dataRoot);
 }
 
 export function removeDirectory(projectRoot: string): void {
@@ -711,12 +742,11 @@ export function validateDirectory(projectRoot: string, options: { repair?: boole
     return { valid: false, errors };
   }
 
-  const gitignorePath = path.join(codegraphDir, '.gitignore');
-  if (!fs.existsSync(gitignorePath) && repair) {
+  if (repair) {
     try {
-      fs.writeFileSync(gitignorePath, gitignoreContent(), 'utf-8');
+      ensureGraphGitignore(codegraphDir);
     } catch {
-      errors.push(`.gitignore missing in ${path.basename(codegraphDir)} directory and could not be created`);
+      errors.push(`.gitignore in ${path.basename(codegraphDir)} directory could not be created or updated`);
     }
   }
 

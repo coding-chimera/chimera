@@ -1827,6 +1827,17 @@ export class CodeGraph {
   }
 
   /**
+   * List git-visible source files that are not present in the index.
+   *
+   * Catches committed files a refresh's git-status fast path cannot see:
+   * working tree is clean, so `git status` reports nothing while the file is
+   * also absent from the files table. See listMissingTrackedFiles().
+   */
+  getMissingTrackedFiles(): string[] {
+    return this.orchestrator.listMissingTrackedFiles();
+  }
+
+  /**
    * Extract nodes and edges from source code (without storing)
    */
   extractFromSource(filePath: string, source: string): ExtractionResult {

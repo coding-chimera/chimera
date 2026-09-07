@@ -434,6 +434,7 @@ type StatusMetadata = {
   stats?: unknown
   backend?: string
   journalMode?: string
+  missingFiles?: number
   provenanceRecords: number
   obligationCounts: ObligationCounts
   pendingObligations: number
@@ -2298,6 +2299,7 @@ export const ChimeraStatusTool = Tool.define<typeof StatusParameters, StatusMeta
                 ? yield* Effect.promise(() => storedProvenanceRecordCountReadOnly(state.projectRoot, state.artifact))
                 : yield* provenanceRecordCount(state.projectRoot, state.artifact)
               const obligations = yield* readObligationSummary(state.projectRoot, state.artifact, state.storePath, 0, state.crossProject === true)
+              const missingFiles = state.crossProject ? 0 : state.graph.missingTrackedFiles().length
 
               return {
                 title: "Chimera status",
@@ -2317,6 +2319,9 @@ export const ChimeraStatusTool = Tool.define<typeof StatusParameters, StatusMeta
                   `Chimera store: ${state.storePath}`,
                   `Tool provenance records: ${provenanceRecords}`,
                   `Pending obligations: ${obligations.counts.pending}`,
+                  ...(missingFiles > 0
+                    ? [`Graph is missing ${missingFiles} git-tracked file${missingFiles === 1 ? "" : "s"} from the index; run a refresh or full sync to reconcile.`]
+                    : []),
                 ].filter(Boolean).join("\n"),
                 metadata: {
                   initialized: true,
@@ -2332,6 +2337,7 @@ export const ChimeraStatusTool = Tool.define<typeof StatusParameters, StatusMeta
                   stats,
                   backend: String(state.graph.backend()),
                   journalMode: state.graph.journalMode(),
+                  missingFiles,
                   provenanceRecords,
                   obligationCounts: obligations.counts,
                   pendingObligations: obligations.counts.pending,
