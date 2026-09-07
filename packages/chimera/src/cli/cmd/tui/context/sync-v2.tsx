@@ -279,7 +279,7 @@ export const { use: useSyncV2, provider: SyncProviderV2 } = createSimpleContext(
             const match = activeCompaction(draft)
             if (!match) return
             match.summary = event.properties.text
-            match.include = event.properties.include
+            match.include = event.properties.recent
           })
           break
       }
