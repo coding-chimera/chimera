@@ -1,11 +1,11 @@
 # Upstream v2 底座迁移计划
 
-状态：L0 + L1 + L2 + L3 已完成（L3 落地 2026-09-04，本地未 push；细分计划与验收见下文）——Effect beta.83、schema/protocol 包、插件 v2 host、codemode、grep 权限修复、LayerNode、effect-drizzle-sqlite、SystemContext 引擎/context epochs/提示词 Source 化/v2 事件契约收编均已落地
+状态：L0 + L1 + L2 + L3 已完成并推送（L3 落地 2026-09-04，五线程拆分 8 提交，origin/main 已同步；细分计划与验收见下文）——Effect beta.83、schema/protocol 包、插件 v2 host、codemode、grep 权限修复、LayerNode、effect-drizzle-sqlite、SystemContext 引擎/context epochs/提示词 Source 化/v2 事件契约收编均已落地。特性侧：fork 点以来上游全量 feat/安全 fix 分诊已完成，见「上游特性同步（F 线）」章节与 `UPSTREAM_FEATURE_TRIAGE.md`。
 制定：2026-08-28，基于对上游 opencode（`refs/remotes/upstream/dev` = `755ebdb94`，v1.18.25）与本 fork（fork 点 `98e091796`，2026-05-07，opencode v1.14.40）的 swarm 探测 + 跨仓图精读（上游克隆仓 `/Volumes/workspace/opencode`，图已索引）。制定基线已过期：2026-09-04 上游 HEAD 为 `9f69463f1d`，与 L3 侦察基线一致。
 
 ## 背景事实
 
-- 上游领先 3266 commits（约 3.5 个月），本 fork 独有 225 commits（Chimera graph/audit、改名、多模型调度等）。
+- 上游领先 3266 commits（约 3.5 个月），本 fork 独有 225 commits（Chimera graph/audit、改名、多模型调度等）。（2026-09-04 复测：fork 点口径 3273 / v1.14.40 tag 口径 3299，其中 feat 388、fix 1044——全量分诊见 F 线章节）
 - 上游已做系统性 Effect 化重构：新增 `packages/core`（322 文件）、`llm`、`schema`、`protocol`、`server`、`client`、`tui`、`session-ui`、`codemode`、`effect-drizzle-sqlite`；`packages/opencode` 变为薄 CLI 壳（但自身也是过渡态，v1 runtime 365 文件未搬空，v1/v2 经 server routes mergeAll + event-v2-bridge 并存）。
 - 双方共同改动 246 个文件，不可直接 git merge；核心热区 `packages/opencode/src` → `packages/chimera/src`（56 文件）。
 - 上游 Effect `4.0.0-beta.57 → beta.83`；本 fork 当前 catalog 为 `beta.59`。
@@ -196,6 +196,40 @@ Model schema 扩展字段：`sampling.{temperature,top_p,top_k}`、`reasoning_pr
 - epoch 表清理策略：已随 session 删除 FK cascade（L3.2 迁移测试覆盖）
 - 上游 registry 全家桶（builtins/instructions/skill-guidance/reference-guidance 的 Source 化）留待 L4+ 评估，本期只做模型层 Source 化
 
+## 上游特性同步（F 线）：分诊结论与批次计划（2026-09-04）
+
+定位：与 L4~L6 底座绞杀并行的**特性侧**工作流。决策#1「不做零散 cherry-pick」针对架构层；F 线是**系统分诊后的批次化执行**，两者不冲突。fork 点以来上游累积的特性缺口此前从未分诊，本次完成全量覆盖。
+
+分诊范围与总量：`v1.14.40..9f69463f1d`（3299 commits：388 feat / 1044 fix），6 个并行只读分诊代理 + root 汇总对账。**388 feat 全量五分类：①直接可移植 12、②需适配 66、③fork 已等价 11、④无关 288、⑤已同步 11**（各组对账吻合）。**安全/权限关键词 fix 43 条全量横切审计：无 P0，但 5 条 fork 需修（含 1 条 P1）**；fix(tui) 91 条主题级归纳。逐条明细（落点、适配点、fork 证据路径、排除证据）= `UPSTREAM_FEATURE_TRIAGE.md`。
+
+### 批次计划
+
+| 批次 | 内容 | 规模 | 前置/备注 |
+|---|---|---|---|
+| **F0 安全/正确性修复** | **P1 `08faeb3893`** run 模式子代理权限应答被过滤 → 子代理挂起 → 整个 run 卡死（fork 重子代理工作流直接命中，headless/CI 高危；落点 `src/cli/cmd/run.ts:570-590`，~10 行）。P2×4：`a9c810cbbc` $ARGUMENTS 文件双重注入（prompt.ts:2355-2368）、`c035c35eba` OPENCODE_PERMISSION 坏 JSON 启动崩溃（config.ts:818-819）、`dc978cb889` permission/question id 校验（两处 one-liner）、`3a4c253969` textVerbosity 注入门控（transform.ts:1172-1181，中继生态挂 gpt-5.x id 即请求失败）。随批核查 `f4851e3bd9` question 按目录路由 | ~1 天 | 无前置，立即可做 |
+| **F1 高价值特性** | **`ae92f3158f` Copilot token 计费（现网风险，建议提到最前）**：上游 Copilot API 已切 token 计费，fork models.ts 旧 schema 存在解析/计费失配；`f965db9e13` headerTimeout 可配（中继+长推理生态防挂起，四落点全在近零适配）；`ffea6c7974` HTTP API 响应压缩（自包含中间件）；`85ce6a5f95` 图片自动缩放（fork 现状大图直通上下文，free/中继模型爆仓风险）；`c2b1ebd9dc` 定价 tiers（subagent_model_schedule 以 $/task 消费定价，直接受益）；`9b7b6cb30f` worktree 命名去重；`9f42bd4a85` bedrock mantle 加载侧补齐（fork 认得出跑不了）；CLI 小件包：Modal 发现/xAI Grok OAuth/plugin dispose/mcp add 非交互/logout 搜索/全局配置 seeding/Cohere North | ~3-5 天 | 无硬前置 |
+| **F2 MCP 专项** | 8 条一次做完（fork MCP 面停在 fork 点形态，逐条 cherry-pick 会反复冲突）：`921b1c6a34` SDK v2 升级（1.27.1→1.29.0+patch；拆步：依赖升级+OAuth/session-recovery 先行，code-mode 后置）、`e8e83afbce` server instructions 注入、`c6cc13e183` resource templates、`3f3f120825` resource 读工具、`f55a931f59` roots、`07b983e82f` logs、`7e7ad37736` cwd、`a131811cdc` mcp__ 命名约定（**契约变更**：permission 通配/prompt 引用/TUI 显示须同批） | ~1 周 | MCP fix（29 条）随本批消化 |
+| **F3 TUI 批次** | feat(tui) ②17 条，路径映射 `packages/tui/src/X` ↔ `packages/chimera/src/cli/cmd/tui/X`（同源但结构性分叉，无①直搬项）；fix(tui) 91 条按主题消化，优先 C 族（子代理/工具行渲染，10 条）、B 族（thinking，6）、G 族（事件流/同步，8） | ~1 周 | 3 条依赖后端能力（project-copy/background-job），决策#2/#5 不批则降④；diff-viewer 族（feat 7+fix 7）随决策#2 |
+| **L4/L5 并入项** | llm 包 8 条 + native-llm + connector auth + opencode integration×2 + provider↔integration 映射 + variant.ts 配置化落点（`42bb793574`，计划书已点名）随 L4 整包 vendor 自然吸收，勿单独 cherry-pick；`03afae5b95` v1 加载 v2 config 为 L4/L5 启动第一批（防用户 v2 配置在 chimera 下丢失）；sdk/client v2 表面 5 条 L4/L5 启动时复评升② | 随 L4/L5 | — |
+
+建议执行顺序：**F0 → F1（Copilot 计费提到最前）→ 产品拍板一轮 → F2 → L4（含并入项）→ F3 → L5**。
+
+### 需产品拍板（11 项，门控对应批次；全表见分诊文档 §8）
+
+desktop 是否重启维护（壳级 7 条④→②）；TUI diff-viewer 是否引入；run split-footer 55 文件架构是否整搬；scout/reference 物化仓库体系 vs fork 跨项目 graph（可组合：先物化再 graph init）；后台异步子代理是否按 fork 调度架构重设计（`22de34c4de`+`8feb4a31c7`+`3003867c25`，关联 memory.md 挂起的 edit-intent claims L2）；codemode v1 接线是否启用（包已 vendor 但运行时零引用，vendor 意图需澄清）；opencode 品牌 integration/zen provider 是否保留（L4 内）；NVIDIA X-BILLING-INVOKE-ORIGIN 值 OpenCode vs Chimera；Codex strict 策略（fork `codex-responses.ts:1150` 显式 strict:false 与上游相反）；TUI yolo permission mode；newweb 多服务器权限状态串台复核（独立立项，非上游移植）。
+
+### fix backlog 方法学（详见分诊文档 §7）
+
+1044 fix 中：43 条安全关键词已全量逐条（→F0）；fix(tui) 91 条主题级（→F3）；无关表面 ~427 条（app227/stats84/desktop33/console27/ui21/acp19/data16）直接封板；**core 相关 backlog ≈374 条不单独展开**——随对应特性批次消化（MCP fix 随 F2、provider/openai/llm/core fix 随 L4、tui fix 随 F3、session/compaction fix 随 F1 对应项），并在 L4 开工前跑一次独立关键词筛（crash/hang/loss/leak/corrupt/race）防漏 P1 级——F0 的 P1（#43675）即为此类筛法命中。
+
+### F 线验收
+
+1. 每批次落地后：`bun typecheck` + 聚焦测试绿 + 单批次单提交可回退
+2. F0 落地后回归验证：run 模式子代理触发权限询问 → 正确弹出并应答（不再挂死）
+3. 每批开工前 re-fetch 上游做增量关键词筛（衔接「待定」节的周期性同步节奏）
+4. 分诊文档随批次推进勾选状态，避免二次分诊
+
+
 ## 顺带发现的本仓问题（独立于迁移）
 
 - `chimera graph status` 不支持 `-p/--projectPath`（`query` 有、`status` 没有，帮助文案与实际 flag 不符）。
@@ -208,3 +242,4 @@ Model schema 扩展字段：`sampling.{temperature,top_p,top_k}`、`reasoning_pr
 
 - ACP 是否恢复（默认否）。
 - 上游跟踪分支 `upstream-sync` 的建立与周期性同步节奏（建议每层开始时 re-fetch 一次）。
+- F 线（特性同步）已于 2026-09-04 完成全量分诊并纳入本计划（见「上游特性同步（F 线）」章节 + `UPSTREAM_FEATURE_TRIAGE.md`）；周期同步节奏建议以 F 批次为锚：每批开工前 re-fetch 上游做增量关键词筛。

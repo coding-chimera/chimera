@@ -103,7 +103,18 @@ loop 挂起修复前的对比基线（本机 macOS, bun 1.4.0, `bun test --timeo
 - scout/探测：workload=scout 让调度器选（当前 pick deepseek-v4-flash low），仍可用 swarm
 - 旧约"实现子代理只用 kimi-k3 且必须显式 variant: high"（上游 v2 迁移条目，2026-09-03 早些时候）自此废止
 - 根 AGENTS.md 调度行已按本新规改写（2026-09-04，随 faf8a419df 提交）
+- 2026-09-04 用户谕示增补：qwen3.8-flash 仓库理解有严重缺陷，禁作 scout（scout 结论无下游复验），builder 保留（大模型收尾）。NL2Repo-Bench 无稳定长期指标获取办法，按配置化处理、不改评分锚点。机制=新增 archetype 级 `delegation.scheduling.archetypes.<workload>.excludeModels`（条目精确匹配完整路由 provider/modelID、identity 或 providerID；调度候选过滤 exclusionMatch/resolveSchedule + 显式派发 prepare 强制报错，resume 除外；不依赖 scheduling.enabled）。实现：src/config/delegation.ts、src/agent/subagent-model-scheduling.ts、src/agent/subagent-dispatch.ts + task.test.ts/scheduling.test.ts 用例；全局配置 ~/.config/chimera/chimera.jsonc 已写入 scout 排除 ["qwen3.8-flash"]（生效需跑新构建）。SDK v2 gen 的 DelegationScheduling 类型随既有“SDK/OpenAPI 重生成”待办一并更新，本次未单独跑。
 
 ### 工作区核对修复（2026-09-04，已提交）
 
 - 五线程工作区审查发现并修复三处编辑事故：processor.ts text-start case 外不可达死代码残留（删除）；revert.ts v2 事件块误带重复 sessions.setRevert（删除重复，保留原调用+新事件）；resolveSchedule 误删 suppressed/dormant 路由过滤（恢复+补回归测试 test/agent/subagent-model-scheduling.test.ts）。processor/revert 修复随 608804036f、调度过滤守护+回归测试随 faf8a419df 提交
+
+### 上游特性同步 F 线：分诊完成（2026-09-04，文档未提交）
+
+- 388 feat（v1.14.40..9f69463f1d）全量五分类：①可直搬 12 / ②需适配 66 / ③fork 已等价 11 / ④无关 288 / ⑤已同步 11；安全关键词 fix 43 条横切审计：无 P0、fork 需修 5 条——**P1 `08faeb3893` #43675 run 模式子代理权限应答被 sessionID 过滤丢弃→run 挂死**（run.ts:570-590，~10 行，headless/CI 高危）；P2×4 a9c810cbbc（$ARGUMENTS 双重注入）/c035c35eba（坏 JSON 崩启动）/dc978cb889（id 校验）/3a4c253969（textVerbosity 中继注入）。另高优 `ae92f3158f` Copilot token 计费（上游 API 已切换、fork models.ts 旧 schema，现网风险）
+- 落地文件：`UPSTREAM_FEATURE_TRIAGE.md`（新增，逐条明细/落点/适配点/排除证据/11 项产品决策清单/fix backlog 方法学）+ `UPSTREAM_V2_MIGRATION_PLAN.md` 新增「上游特性同步（F 线）」章节（F0~F3 批次+L4/L5 并入项），状态行已同步修正为已推送
+- 建议顺序：F0（~1 天）→ F1（3-5 天，Copilot 计费提到最前）→ 产品拍板 11 项 → F2 MCP 专项（~1 周，8 条一次做完防反复冲突，含 a131811cdc 命名契约变更须同批）→ L4（llm 族 15 条随整包吸收；03afae5b95 v2-compat 打头阵）→ F3 TUI（~1 周，路径映射 packages/tui/src↔src/cli/cmd/tui，优先 fix 主题 C/B/G）→ L5
+- fix backlog ~910 未逐条：无关表面 ~427 封板；core 相关 ≈374 随批次消化 + L4 开工前关键词筛（crash/hang/loss/leak/corrupt/race）防漏 P1
+- TUI 同源判定：fork TUI 与上游同源但结构性分叉（@tui/* 别名+专有模块；上游独有 diff-viewer/command-palette 等）→ feat(tui) ②17/④10，无①直搬项；desktop 39 全④（7 条壳级基建可复议）；app/ui/i18n 125 + stats/go/console/web/nix 53 + acp 12 全④（acp=既有拍板）
+- 分诊来源：6 个 swarm 代理（reviewer=qwen3.8-max medium ×3 一次成功；scout 首派 muse-spark 区域不可用失败，重派 deepseek-v4-flash low ×3 成功）；报告全文在本会话 tool-output（会话级存储），结论已全部落入两份文档
+- F4 后台子代理决策简报完成（2026-09-04，reviewer qwen3.8-max + 2 深读子代理，锚点已复核）：**关键修正=task_status 轮询已被上游删除（dabf2dc013），终态=task(background=true)+注入驱动自动续跑；全链 12 提交非 3 条**。提案：P1 最小闭环 ~3-5 人日（引擎子集+task 参数+config flag 默认关+级联取消，无新表无新事件，与 F2 并行）/P2 并入 L5 或排后（swarm 状态通道被 prompt.ts:684 门挡、预算借用前提冲突）/P3 与 F3 合并（promotion+claims L2，**claims L2 仅依赖 P1**：inject=挂起设计 L1 pull 注入缺的 push 通道）。九拍板点见 TRIAGE §10.5/计划书 F4 节；简报全文=会话 tool-output ses_f8597876bffe4nWvyOGOp2V9Ot
