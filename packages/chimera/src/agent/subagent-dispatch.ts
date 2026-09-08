@@ -23,8 +23,10 @@ import { deriveSubagentSessionPermission } from "./subagent-permissions"
 
 export interface SubagentPromptOps {
   cancel(sessionID: SessionID): Effect.Effect<void>
-  resolvePromptParts(template: string): Effect.Effect<SessionPrompt.PromptInput["parts"]>
+  resolvePromptParts(template: string): Effect.Effect<SessionPrompt.PromptInput['parts']>
   prompt(input: SessionPrompt.PromptInput): Effect.Effect<MessageV2.WithParts>
+  /** Session-addressable synthetic injection; provided by the session prompt layer for background completion notifications. */
+  injectSynthetic?: (input: { sessionID: SessionID; text: string }) => Effect.Effect<MessageV2.WithParts, InstanceType<typeof NotFoundError>>
 }
 
 export type SubagentDispatchStarted = {
@@ -83,7 +85,13 @@ export type SubagentDispatchPrepareInput = Pick<
 export type SubagentDispatchRunPreparedInput = Pick<
   SubagentDispatchInput,
   "description" | "prompt" | "promptOps" | "abort" | "onStarted" | "telemetry"
-> & { prepared: SubagentDispatchPrepared }
+> & { prepared: SubagentDispatchPrepared; materialized?: SubagentDispatchMaterialized }
+
+export type SubagentDispatchMaterialized = {
+  nextSession: Session.Info
+  execution: SubagentExecutionMetadata
+  atDepthCap: boolean
+}
 
 export const SubagentDispatch = Effect.gen(function* () {
   const agents = yield* Agent.Service
@@ -219,8 +227,10 @@ export const SubagentDispatch = Effect.gen(function* () {
       return (yield* delegationDepth(parent)) + 1
     })
 
-  const runPrepared = Effect.fn("SubagentDispatch.runPrepared")(function* (input: SubagentDispatchRunPreparedInput) {
-    const prepared = input.prepared
+  const materialize = Effect.fn("SubagentDispatch.materialize")(function* (
+    prepared: SubagentDispatchPrepared,
+    description: string,
+  ) {
     const parentAgent = prepared.parent.agent
       ? yield* agents.get(prepared.parent.agent).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
       : undefined
@@ -244,7 +254,7 @@ export const SubagentDispatch = Effect.gen(function* () {
       prepared.existing ??
       (yield* sessions.create({
         parentID: prepared.parentSessionID,
-        title: input.description + ` (@${prepared.subagent.name} subagent)`,
+        title: description + ` (@${prepared.subagent.name} subagent)`,
         agent: prepared.subagent.name,
         model: {
           id: prepared.resolved.model.modelID,
@@ -278,6 +288,16 @@ export const SubagentDispatch = Effect.gen(function* () {
       source: prepared.resolved.source,
       resumed: Boolean(prepared.existing),
     }
+
+    return { nextSession, atDepthCap, execution }
+  })
+
+  const runPreparedCore = Effect.fn("SubagentDispatch.runPreparedCore")(function* (
+    prepared: SubagentDispatchPrepared,
+    input: SubagentDispatchRunPreparedInput,
+    materialized: SubagentDispatchMaterialized,
+  ) {
+    const { nextSession, atDepthCap, execution } = materialized
     const startedAt = Date.now()
     let firstStreamedDeltaAt: number | undefined
     const firstStreamedDelta = (parts: MessageV2.Part[]): number | undefined => {
@@ -387,60 +407,54 @@ export const SubagentDispatch = Effect.gen(function* () {
       )
     })
 
-    const result = yield* limiter
-      .run({
-        parentSessionID: prepared.parentSessionID,
-        sessionID: nextSession.id,
-        effect: runWork,
-      })
-      .pipe(
-        Effect.onExit((exit) => {
-          const durationMs = Math.max(0, Date.now() - startedAt)
-          const ttftMs = firstStreamedDeltaAt === undefined ? undefined : Math.max(0, firstStreamedDeltaAt - startedAt)
-          if (Exit.isSuccess(exit)) {
-            const usage =
-              exit.value.info.role === "assistant"
-                ? {
-                    input: exit.value.info.tokens.input,
-                    output: exit.value.info.tokens.output,
-                    reasoning: exit.value.info.tokens.reasoning,
-                    cacheRead: exit.value.info.tokens.cache.read,
-                    cacheWrite: exit.value.info.tokens.cache.write,
-                  }
-                : undefined
-            const finishedExecution: ModelTelemetry.Execution = {
-              status: "completed",
-              durationMs,
-              ...(ttftMs === undefined ? {} : { ttftMs }),
-            }
-            return telemetry("delegation.finished", finishedExecution, usage)
+    const result = yield* runWork.pipe(
+      Effect.onExit((exit) => {
+        const durationMs = Math.max(0, Date.now() - startedAt)
+        const ttftMs = firstStreamedDeltaAt === undefined ? undefined : Math.max(0, firstStreamedDeltaAt - startedAt)
+        if (Exit.isSuccess(exit)) {
+          const usage =
+            exit.value.info.role === "assistant"
+              ? {
+                  input: exit.value.info.tokens.input,
+                  output: exit.value.info.tokens.output,
+                  reasoning: exit.value.info.tokens.reasoning,
+                  cacheRead: exit.value.info.tokens.cache.read,
+                  cacheWrite: exit.value.info.tokens.cache.write,
+                }
+              : undefined
+          const finishedExecution: ModelTelemetry.Execution = {
+            status: "completed",
+            durationMs,
+            ...(ttftMs === undefined ? {} : { ttftMs }),
           }
-          if (input.abort.aborted) {
-            return telemetry("delegation.cancelled", {
-              status: "cancelled",
-              finishReason: "cancelled",
-              errorClass: "cancelled",
-              durationMs,
-              ...(ttftMs === undefined ? {} : { ttftMs }),
-            })
-          }
-          if (Cause.hasInterruptsOnly(exit.cause)) {
-            return telemetry("delegation.cancelled", {
-              status: "interrupted",
-              finishReason: "interrupted",
-              durationMs,
-              ...(ttftMs === undefined ? {} : { ttftMs }),
-            })
-          }
-          return telemetry("delegation.failed", {
-            status: "failed",
-            finishReason: "unknown",
-            errorClass: "unknown",
+          return telemetry("delegation.finished", finishedExecution, usage)
+        }
+        if (input.abort.aborted) {
+          return telemetry("delegation.cancelled", {
+            status: "cancelled",
+            finishReason: "cancelled",
+            errorClass: "cancelled",
             durationMs,
             ...(ttftMs === undefined ? {} : { ttftMs }),
           })
-        }),
-      )
+        }
+        if (Cause.hasInterruptsOnly(exit.cause)) {
+          return telemetry("delegation.cancelled", {
+            status: "interrupted",
+            finishReason: "interrupted",
+            durationMs,
+            ...(ttftMs === undefined ? {} : { ttftMs }),
+          })
+        }
+        return telemetry("delegation.failed", {
+          status: "failed",
+          finishReason: "unknown",
+          errorClass: "unknown",
+          durationMs,
+          ...(ttftMs === undefined ? {} : { ttftMs }),
+        })
+      }),
+    )
 
     return {
       title: input.description,
@@ -464,6 +478,26 @@ export const SubagentDispatch = Effect.gen(function* () {
     }
   })
 
+  const runPrepared = Effect.fn("SubagentDispatch.runPrepared")(function* (input: SubagentDispatchRunPreparedInput) {
+    const prepared = input.prepared
+    const materialized = input.materialized ?? (yield* materialize(prepared, input.description))
+    return yield* limiter.run({
+      parentSessionID: prepared.parentSessionID,
+      sessionID: materialized.nextSession.id,
+      effect: runPreparedCore(prepared, input, materialized),
+    })
+  })
+
+  // Background tasks run outside the delegation limiter: the background job
+  // engine's background_concurrent cap governs their concurrency instead, so
+  // long-running background jobs never borrow permits from the shared
+  // max_concurrent pool that foreground delegation depends on.
+  const runPreparedBackground = Effect.fn("SubagentDispatch.runPreparedBackground")(function* (
+    input: SubagentDispatchRunPreparedInput & { materialized: SubagentDispatchMaterialized },
+  ) {
+    return yield* runPreparedCore(input.prepared, input, input.materialized)
+  })
+
   const run = Effect.fn("SubagentDispatch.run")(function* (input: SubagentDispatchInput) {
     const prepared = yield* prepare(input)
     return yield* runPrepared({
@@ -477,5 +511,5 @@ export const SubagentDispatch = Effect.gen(function* () {
     })
   })
 
-  return { prepare, runPrepared, run }
+  return { prepare, materialize, runPrepared, runPreparedBackground, run }
 })

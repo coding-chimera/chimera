@@ -39,6 +39,7 @@ import { Parameters as SubagentModelRoutes } from "../../src/tool/subagent_model
 import { Parameters as SubagentModelPrefer } from "../../src/tool/subagent_model_prefer"
 import { Parameters as SubagentModelSuppress } from "../../src/tool/subagent_model_suppress"
 import { Parameters as Task } from "../../src/tool/task"
+import { Parameters as TaskCancel } from "../../src/tool/task-cancel"
 import { Parameters as Todo } from "../../src/tool/todo"
 import { Parameters as WebFetch } from "../../src/tool/webfetch"
 import { Parameters as WebSearch } from "../../src/tool/websearch"
@@ -81,6 +82,7 @@ describe("tool parameters", () => {
     test("subagent_model_prefer", () => expect(toJsonSchema(SubagentModelPrefer)).toMatchSnapshot())
     test("subagent_model_suppress", () => expect(toJsonSchema(SubagentModelSuppress)).toMatchSnapshot())
     test("task", () => expect(toJsonSchema(Task)).toMatchSnapshot())
+    test("task_cancel", () => expect(toJsonSchema(TaskCancel)).toMatchSnapshot())
     test("todo", () => expect(toJsonSchema(Todo)).toMatchSnapshot())
     test("webfetch", () => expect(toJsonSchema(WebFetch)).toMatchSnapshot())
     test("websearch", () => expect(toJsonSchema(WebSearch)).toMatchSnapshot())
@@ -349,6 +351,17 @@ describe("tool parameters", () => {
     })
   })
 
+  describe("task_cancel", () => {
+    test("accepts task_id", () => {
+      expect(parse(TaskCancel, { task_id: "ses_123" })).toEqual({ task_id: "ses_123" })
+    })
+    test("rejects missing task_id", () => {
+      expect(accepts(TaskCancel, {})).toBe(false)
+    })
+    test("rejects non-string task_id", () => {
+      expect(accepts(TaskCancel, { task_id: 123 })).toBe(false)
+    })
+  })
   describe("todo", () => {
     test("accepts todos array", () => {
       const parsed = parse(Todo, {

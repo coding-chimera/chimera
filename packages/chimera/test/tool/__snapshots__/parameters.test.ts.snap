@@ -1117,6 +1117,10 @@ exports[`tool parameters JSON Schema (wire shape) task 1`] = `
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "background": {
+      "description": "Run the agent in the background and return immediately. You will be notified automatically when it completes. DO NOT sleep, poll, or proactively check on its progress",
+      "type": "boolean",
+    },
     "command": {
       "description": "The command that triggered this task",
       "type": "string",
@@ -1158,7 +1162,7 @@ exports[`tool parameters JSON Schema (wire shape) task 1`] = `
       "type": "string",
     },
     "workload": {
-      "description": "Delegation workload archetype. Without a model selector, the scheduler chooses a current route; with an explicit selector, workload is validation and attribution only.",
+      "description": "Delegation workload archetype. Without a model selector, the scheduler chooses a current route; with an explicit selector, workload is validation and attribution only. A model excluded from a workload by delegation.scheduling.archetypes.<workload>.excludeModels cannot be dispatched with that workload declaration (resume excepted).",
       "type": "string",
     },
   },
@@ -1166,6 +1170,22 @@ exports[`tool parameters JSON Schema (wire shape) task 1`] = `
     "description",
     "prompt",
     "subagent_type",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) task_cancel 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "task_id": {
+      "description": "The task_id (a session id) of the background task to cancel.",
+      "type": "string",
+    },
+  },
+  "required": [
+    "task_id",
   ],
   "type": "object",
 }
@@ -1387,7 +1407,7 @@ exports[`tool parameters JSON Schema (wire shape) chimera_swarm 1`] = `
       "type": "string",
     },
     "workload": {
-      "description": "Delegation workload archetype. Without a model selector, the scheduler chooses one current route for the whole fan-out; with an explicit selector, workload is validation and attribution only.",
+      "description": "Delegation workload archetype. Without a model selector, the scheduler chooses one current route for the whole fan-out; with an explicit selector, workload is validation and attribution only. A model excluded from a workload by delegation.scheduling.archetypes.<workload>.excludeModels cannot be dispatched with that workload declaration (resume excepted).",
       "type": "string",
     },
   },

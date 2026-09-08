@@ -1,0 +1,15 @@
+Cancel a background task started by this session, interrupting its subagent run.
+
+Use this when:
+- First-wins fan-out: you launched several independent background probes (task with background=true) to answer one question; the first one that returns enough information makes the remaining probes obsolete. Cancel the rest instead of letting them keep running and consuming the background_concurrent budget.
+- A background task is no longer needed: its goal became obsolete, you already have the answer, or continuing would just waste work and overlap files/topics you are about to touch.
+- The user asks you to stop a background task you started.
+
+Rules:
+- You can only cancel tasks you started yourself: a task whose parent session is not this session is rejected with an error. Each task belongs to the session that launched it.
+- Calling it on a task that already finished (completed, cancelled, or error) is not an error: it returns a short terminal-state snapshot and does nothing.
+- Cancelling a running task also interrupts the task's child run, and cancellation propagates recursively to any further background tasks that child had launched.
+- Pass the exact task_id the task tool returned (the job/session id). A task_id that does not exist is reported as an error.
+- One action per call: pass exactly one task_id. Cancel tasks one at a time.
+
+This tool only cancels background-mode tasks. It does not start, pause, resume, or alter tasks, and calling it never affects the current run.

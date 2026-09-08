@@ -7,6 +7,7 @@ import { GlobTool } from "./glob"
 import { GrepTool } from "./grep"
 import { ReadTool } from "./read"
 import { TaskTool } from "./task"
+import { TaskCancelTool } from "./task-cancel"
 import { ChimeraSwarmTool } from "./swarm"
 import { SubagentModelScheduleTool } from "./subagent_model_schedule"
 import { SubagentModelRoutesTool } from "./subagent_model_routes"
@@ -51,6 +52,7 @@ import * as Tool from "./tool"
 import { Config } from "@/config/config"
 import { ConfigSubagentRouting } from "@/config/subagent-routing"
 import { DelegationLimiter } from "@/agent/delegation-limiter"
+import { BackgroundJob } from "@/agent/background-job"
 import { type ToolContext as PluginToolContext, type ToolDefinition } from "@opencode-ai/plugin"
 import { Schema } from "effect"
 import z from "zod"
@@ -121,6 +123,7 @@ export const layer = Layer.effect(
     const truncate = yield* Truncate.Service
     const invalid = yield* InvalidTool
     const task = yield* TaskTool
+    const taskCancel = yield* TaskCancelTool
     const read = yield* ReadTool
     const question = yield* QuestionTool
     const todo = yield* TodoWriteTool
@@ -259,6 +262,7 @@ export const layer = Layer.effect(
           write: Tool.init(writetool),
           workbrief: Tool.init(workbrief),
           task: Tool.init(task),
+          taskCancel: Tool.init(taskCancel),
           fetch: Tool.init(webfetch),
           todo: Tool.init(todo),
           search: Tool.init(websearch),
@@ -312,6 +316,7 @@ export const layer = Layer.effect(
             tool.write,
             tool.workbrief,
             tool.task,
+            tool.taskCancel,
             tool.chimeraSwarm,
             tool.subagentModelRoutes,
             tool.subagentModelSchedule,
@@ -461,7 +466,14 @@ export const layer = Layer.effect(
 export const defaultLayer = Layer.suspend(() =>
   Layer.provide(
     layer.pipe(
-      Layer.provide(Layer.mergeAll(Config.defaultLayer, ConfigSubagentRouting.defaultLayer, DelegationLimiter.defaultLayer)),
+      Layer.provide(
+        Layer.mergeAll(
+          Config.defaultLayer,
+          ConfigSubagentRouting.defaultLayer,
+          DelegationLimiter.defaultLayer,
+          BackgroundJob.defaultLayer,
+        ),
+      ),
       Layer.provide(Auth.defaultLayer),
       Layer.provide(Plugin.defaultLayer),
       Layer.provide(Question.defaultLayer),
