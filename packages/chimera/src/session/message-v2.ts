@@ -1323,6 +1323,17 @@ export function fromError(
             message: e.message,
           },
         },
+      ).toObject()
+    case e instanceof ProviderError.HeaderTimeoutError:
+      return new APIError(
+        {
+          message: e.message,
+          isRetryable: true,
+          metadata: {
+            code: e.name,
+            timeoutMs: String(e.ms),
+          },
+        },
         { cause: e },
       ).toObject()
     case APICallError.isInstance(e):
