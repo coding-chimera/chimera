@@ -126,6 +126,7 @@ export const WriteTool = Tool.define(
             output += `\n\nLSP errors detected in other files:\n${block}`
           }
 
+          output += `\n\nPropagation audit recommended: run chimera_audit_recent before treating this change as complete (skip only when the edit is trivial or intentionally scoped).`
           return {
             title: path.relative(instance.worktree, filepath),
             metadata: {
