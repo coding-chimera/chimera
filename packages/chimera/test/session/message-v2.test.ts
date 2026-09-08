@@ -5,6 +5,7 @@ import { ProviderTransform } from "@/provider/transform"
 import type { Provider } from "@/provider/provider"
 import { ModelID, ProviderID } from "../../src/provider/schema"
 import { SessionID, MessageID, PartID } from "../../src/session/schema"
+import { ProviderError } from "../../src/provider/error"
 import { Question } from "../../src/question"
 import { decodeRemoteCompactionInput } from "../../src/session/remote-compaction-codec"
 
@@ -1524,6 +1525,16 @@ describe("session.message-v2.fromError", () => {
         responseBody: JSON.stringify(input),
       },
     })
+  })
+
+  test("converts ProviderHeaderTimeoutError to retryable APIError", () => {
+    const result = MessageV2.fromError(new ProviderError.HeaderTimeoutError(250), { providerID })
+
+    expect(MessageV2.APIError.isInstance(result)).toBe(true)
+    if (!MessageV2.APIError.isInstance(result)) throw new Error("expected APIError")
+    expect(result.data.isRetryable).toBe(true)
+    expect(result.data.message).toBe("Provider response headers timed out after 250ms")
+    expect(result.data.metadata).toMatchObject({ code: "ProviderHeaderTimeoutError", timeoutMs: "250" })
   })
 
   test("serializes response error codes", () => {

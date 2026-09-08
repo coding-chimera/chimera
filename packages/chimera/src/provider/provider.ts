@@ -35,6 +35,7 @@ import {
   inspectRemoteCompactionRequest,
   rewriteRemoteCompactionRequest,
 } from "@/session/remote-compaction-codec"
+import * as ProviderError from "./error"
 
 const log = Log.create({ service: "provider" })
 const KIMI_FOR_CODING_ID = "kimi-for-coding"
@@ -44,6 +45,7 @@ const KIMI_FOR_CODING_FAST_NAME = "kimi-for-coding-fast"
 const K3_ID = "k3"
 const K3_NAME = "k3"
 const MODEL_DISCOVERY_TIMEOUT = 5_000
+const OPENAI_HEADER_TIMEOUT_DEFAULT = 300_000
 
 function shouldUseCopilotResponsesApi(modelID: string): boolean {
   const match = /^gpt-(\d+)/.exec(modelID)
@@ -97,6 +99,15 @@ function wrapSSE(res: Response, ms: number, ctl: AbortController) {
     status: res.status,
     statusText: res.statusText,
   })
+}
+
+function timeoutController(ms: number) {
+  const ctl = new AbortController()
+  const id = setTimeout(() => ctl.abort(new ProviderError.HeaderTimeoutError(ms)), ms)
+  return {
+    signal: ctl.signal,
+    clear: () => clearTimeout(id),
+  }
 }
 
 type BundledSDK = {
@@ -327,7 +338,7 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         async getModel(sdk: any, modelID: string, _options?: Record<string, any>) {
           return sdk.responses(modelID)
         },
-        options: {},
+        options: { headerTimeout: OPENAI_HEADER_TIMEOUT_DEFAULT },
       }),
     xai: () =>
       Effect.succeed({
@@ -2026,7 +2037,9 @@ const layer: Layer.Layer<
 
         const customFetch = options["fetch"]
         const chunkTimeout = options["chunkTimeout"]
+        const headerTimeout = options["headerTimeout"]
         delete options["chunkTimeout"]
+        delete options["headerTimeout"]
         const replayTransport = () =>
           ResponsesTransport.make({
             providerID: model.providerID,
@@ -2044,10 +2057,13 @@ const layer: Layer.Layer<
           const fetchFn = customFetch ?? fetch
           const opts = init ?? {}
           const chunkAbortCtl = typeof chunkTimeout === "number" && chunkTimeout > 0 ? new AbortController() : undefined
+          const headerTimeoutMs = headerTimeout === false ? undefined : headerTimeout
+          const headerTimeoutCtl = typeof headerTimeoutMs === "number" ? timeoutController(headerTimeoutMs) : undefined
           const signals: AbortSignal[] = []
 
           if (opts.signal) signals.push(opts.signal)
           if (chunkAbortCtl) signals.push(chunkAbortCtl.signal)
+          if (headerTimeoutCtl) signals.push(headerTimeoutCtl.signal)
           if (options["timeout"] !== undefined && options["timeout"] !== null && options["timeout"] !== false)
             signals.push(AbortSignal.timeout(options["timeout"]))
 
@@ -2057,16 +2073,20 @@ const layer: Layer.Layer<
             opts.method === "POST" && typeof opts.body === "string"
               ? inspectRemoteCompactionRequest(opts.body)
               : "none"
-          if (remoteCompaction !== "none" && (model.wire_api ?? provider.wire_api) !== "responses")
+          if (remoteCompaction !== "none" && (model.wire_api ?? provider.wire_api) !== "responses") {
+            headerTimeoutCtl?.clear()
             throw new Error("Remote compaction replay requires the Responses wire API")
+          }
           if (remoteCompaction !== "none" && typeof opts.body === "string") {
             const transport = replayTransport()
             const rewritten = rewriteRemoteCompactionRequest(
               opts.body,
               bindingFromTransportIdentity(transport.identity),
             )
-            if (rewritten.envelope === "provider-v2" && !transport.identity.replay.eligible)
+            if (rewritten.envelope === "provider-v2" && !transport.identity.replay.eligible) {
+              headerTimeoutCtl?.clear()
               throw new Error(`Remote compaction replay is unavailable: ${transport.identity.replay.reason}`)
+            }
             opts.body = rewritten.body
             if (rewritten.envelope === "provider-v2") {
               const headers = new Headers(opts.headers)
@@ -2101,7 +2121,7 @@ const layer: Layer.Layer<
             ...opts,
             // @ts-ignore see here: https://github.com/oven-sh/bun/issues/16682
             timeout: false,
-          })
+          }).finally(() => headerTimeoutCtl?.clear())
 
           if (!chunkAbortCtl) return res
           return wrapSSE(res, chunkTimeout, chunkAbortCtl)
