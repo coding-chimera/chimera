@@ -25,6 +25,7 @@
 - When a project is uninitialized, read-only graph tools should return structured status such as `initialized`, `dataRoot`, `dataRootStatus`, and `jobStatus` rather than initializing automatically.
 - Only explicit write flows (`chimera graph init`, `index`, `sync`, `migrate-data`) may create or migrate graph data. Never silently move, merge, or delete legacy `.codegraph/` data.
 - When changing graph CLI, Chimera tools, prompt context, storage paths, watcher/extraction ignores, or installer behavior, update agent-facing prompt/tool guidance and focused tests in the same change.
+- Keep `src/graph/` free of `@opencode-ai/core` imports: the lazy `require('../index')` sites in `src/graph/mcp/{engine,tools}.ts` must not transitively reach modules containing top-level await (for example `core/util/log` -> `core/global`), or `bun run build` fails to compile the single binary. Use graph-internal diagnostics instead (`defaultLogger` in `src/graph/errors.ts`, or `process.stderr` writes with the `[CodeGraph]` prefix).
 
 ## Agent tool visibility and permission allowlists
 
