@@ -21,7 +21,8 @@
 
 - **LayerNode 最小子集**：上游 `packages/core/src/effect/` 实为 8 个源文件（外加 `dfdf` 垃圾文件，勿搬）+ `test/effect/` 6 个测试（其中 `layer-node/` 目录内 3 个）；核心 `layer-node.ts`（333 行，含编译期依赖检查）。坑：`packages/core/src/location-services.ts:92-95` 注释（该文件在 effect/ 之外）要求 replacements 必须在 hoist 期应用；上游 `runtime.ts:3,8` 硬编码 Observability（本仓处置：不绑定上游实现——跳过搬运、保留本仓已适配版）。
 - **Session V2 上游未完成**：V2 `compact/shell/skill/wait` 为桩，tool 定义解析/retry/状态持久化未勾选（`llm.ts:43-91` 头注释）。V1/V2 接口不同形状，绞杀层需 "V1 Interface → V2 + SessionV1 事件兼容" 适配器。
-- **ProviderV2/ModelV2 是数据 schema**（`packages/schema/src/provider.ts:8-61`），不在 llm 包；llm 包只有运行时（`Route`/`Protocol`/`Auth`/`Provider.Definition`）。
+建议执行顺序：**F0 → F1（Copilot 计费提到最前）→ F2 ∥ claims P1/P2（已解冻）→ L4（含并入项）→ F3 ∥ F4-P3 → L5（吸收 F4-P2）**。其余 10 项拍板不阻塞上述批次，可穿插进行。
+批次进度（2026-09-07）：**F0 ✅ 完成**（5 修复+测试落地，未 commit）；**F4-P1 ✅ 完成**（四阶段，见下方完成记录，未 commit）；F1/F2/claims P1P2 未启动。
 - **配置化精确落点**：`core/src/plugin/variant.ts`——上游只硬编码了 glm-5.2，v1 的 `reasoning_options` 数据驱动（`transform.ts:1653-1671`）尚未移植到 v2。我们直接在此实现数据驱动 variants 生成。
 - v2 `supported()` 只映射 `@ai-sdk/{openai,anthropic,openai-compatible}`；`api.type:"native"` 无 runner 路由。迁移 DeepSeek 前需核对 models.dev 快照的 npm 字段。
 - 上游把 `@opencode-ai/core` 放在 devDependencies 靠 bun hoisting——**勿照抄**，发布 npm 包会缺依赖。
@@ -172,7 +173,7 @@ Model schema 扩展字段：`sampling.{temperature,top_p,top_k}`、`reasoning_pr
 
 ### L3.4 — session 事件契约收编到 packages/schema ✅ 已完成（2026-09-04）
 
-- [x] packages/chimera 增 `@opencode-ai/schema` workspace 依赖；`src/v2/session-event.ts` 重写为桥接（407→171 行）：事件形状/durable 元数据以 schema 为权威，fork 侧派生 SyncEvent 发布定义，保留 flag 门控发布机制；补齐 Moved/PromptAdmitted/ContextUpdated/RevertEvent.*/Step.Started.messageID
+| **F4 后台异步子代理（P1 已完成 2026-09-07）** | 按上游 HEAD 终态做——`task(background=true)` + Deferred 驱动合成消息注入自动续跑父循环（**task_status 轮询已被上游 dabf2dc013 删除，不作引入目标**）；全链 12 提交。P1 最小闭环已落地（引擎+task 接线+可寻址 inject+task_cancel+级联取消+backgroundTasks section+验收矩阵，见下方完成记录）；P2 swarm/预算/dispose 整合；P3 TUI ctrl+b promotion + server 端点 + SDK 重生成 + claims L2 接线。拍板详情见「F4 拍板记录」与分诊文档 §10 | P1 ✅ ~4 人日实际（四阶段）；P2 ~2-4；P3 ~3-5 | P2 并入 L5 或排 L5 后；P3 与 F3 合并（吸收 `3003867c25`）；claims L2 的 inject 前置已就绪 |
 - [x] V1 revert/unrevert 行为不变，flag 门控通道增发 RevertEvent.Staged+Committed/Cleared；projectors-next 补三个 no-op projector（V1 已自行持久化）
 - [x] revert 列类型对齐**放弃**：schema Revert.State 的 messageID 品牌与 V1 Session.Info.revert 类型不兼容，留待 session-message 对齐后续项
 - [x] 验证：typecheck 绿 + v2/revert-event/httpapi-session 等测试全绿（2 个预存失败经 git stash 复核确认）
@@ -196,7 +197,7 @@ Model schema 扩展字段：`sampling.{temperature,top_p,top_k}`、`reasoning_pr
 - epoch 表清理策略：已随 session 删除 FK cascade（L3.2 迁移测试覆盖）
 - 上游 registry 全家桶（builtins/instructions/skill-guidance/reference-guidance 的 Source 化）留待 L4+ 评估，本期只做模型层 Source 化
 
-## 上游特性同步（F 线）：分诊结论与批次计划（2026-09-04）
+## 上游特性同步（F 线）：分诊结论与批次计划（分诊与拍板 2026-09-07）
 
 定位：与 L4~L6 底座绞杀并行的**特性侧**工作流。决策#1「不做零散 cherry-pick」针对架构层；F 线是**系统分诊后的批次化执行**，两者不冲突。fork 点以来上游累积的特性缺口此前从未分诊，本次完成全量覆盖。
 
@@ -210,14 +211,60 @@ Model schema 扩展字段：`sampling.{temperature,top_p,top_k}`、`reasoning_pr
 | **F1 高价值特性** | **`ae92f3158f` Copilot token 计费（现网风险，建议提到最前）**：上游 Copilot API 已切 token 计费，fork models.ts 旧 schema 存在解析/计费失配；`f965db9e13` headerTimeout 可配（中继+长推理生态防挂起，四落点全在近零适配）；`ffea6c7974` HTTP API 响应压缩（自包含中间件）；`85ce6a5f95` 图片自动缩放（fork 现状大图直通上下文，free/中继模型爆仓风险）；`c2b1ebd9dc` 定价 tiers（subagent_model_schedule 以 $/task 消费定价，直接受益）；`9b7b6cb30f` worktree 命名去重；`9f42bd4a85` bedrock mantle 加载侧补齐（fork 认得出跑不了）；CLI 小件包：Modal 发现/xAI Grok OAuth/plugin dispose/mcp add 非交互/logout 搜索/全局配置 seeding/Cohere North | ~3-5 天 | 无硬前置 |
 | **F2 MCP 专项** | 8 条一次做完（fork MCP 面停在 fork 点形态，逐条 cherry-pick 会反复冲突）：`921b1c6a34` SDK v2 升级（1.27.1→1.29.0+patch；拆步：依赖升级+OAuth/session-recovery 先行，code-mode 后置）、`e8e83afbce` server instructions 注入、`c6cc13e183` resource templates、`3f3f120825` resource 读工具、`f55a931f59` roots、`07b983e82f` logs、`7e7ad37736` cwd、`a131811cdc` mcp__ 命名约定（**契约变更**：permission 通配/prompt 引用/TUI 显示须同批） | ~1 周 | MCP fix（29 条）随本批消化 |
 | **F3 TUI 批次** | feat(tui) ②17 条，路径映射 `packages/tui/src/X` ↔ `packages/chimera/src/cli/cmd/tui/X`（同源但结构性分叉，无①直搬项）；fix(tui) 91 条按主题消化，优先 C 族（子代理/工具行渲染，10 条）、B 族（thinking，6）、G 族（事件流/同步，8） | ~1 周 | 3 条依赖后端能力（project-copy/background-job），决策#2/#5 不批则降④；diff-viewer 族（feat 7+fix 7）随决策#2 |
+| **F4 后台异步子代理（已拍板 2026-09-07：做，默认打开）** | 按上游 HEAD 终态做——`task(background=true)` + Deferred 驱动合成消息注入自动续跑父循环（**task_status 轮询已被上游 dabf2dc013 删除，不作引入目标**）；全链 12 提交。P1 最小闭环（background-job 引擎子集 + task background 参数 + **cancel 表面（first-wins 用例）** + **会话可寻址 inject（跨 thread claims 用例）** + `delegation.background_subagents` 默认 true + background_concurrent 上限 + 级联取消）；P2 swarm/预算/dispose 整合；P3 TUI ctrl+b promotion + server 端点 + SDK 重生成 + claims L2 接线。拍板详情见下方「F4 拍板记录」与分诊文档 §10 | P1 ~3-5 人日（+cancel 表面/可寻址 inject ~1）；P2 ~2-4；P3 ~3-5 | P1 可立即开工、与 F2 并行；P2 并入 L5 或排 L5 后；P3 与 F3 合并（吸收 `3003867c25`）；claims P1/P2 与 F4-P1 并行、claims L2 依赖 F4-P1 inject |
 | **L4/L5 并入项** | llm 包 8 条 + native-llm + connector auth + opencode integration×2 + provider↔integration 映射 + variant.ts 配置化落点（`42bb793574`，计划书已点名）随 L4 整包 vendor 自然吸收，勿单独 cherry-pick；`03afae5b95` v1 加载 v2 config 为 L4/L5 启动第一批（防用户 v2 配置在 chimera 下丢失）；sdk/client v2 表面 5 条 L4/L5 启动时复评升② | 随 L4/L5 | — |
 
-建议执行顺序：**F0 → F1（Copilot 计费提到最前）→ 产品拍板一轮 → F2 → L4（含并入项）→ F3 → L5**。
+建议执行顺序：**F0 → F1（Copilot 计费提到最前）→ F2 ∥ F4-P1（已拍板可立即开工）∥ claims P1/P2（已解冻）→ L4（含并入项）→ F3 ∥ F4-P3 → L5（吸收 F4-P2）**。其余 10 项拍板不阻塞 F0/F1/F2/F4-P1，可穿插进行（它们门控的是：F3 三条后端依赖 TUI 项、codemode 接线、L4 内品牌/strict 选择、desktop/diff-viewer/split-footer/reference 取舍）。
 
 ### 需产品拍板（11 项，门控对应批次；全表见分诊文档 §8）
 
-desktop 是否重启维护（壳级 7 条④→②）；TUI diff-viewer 是否引入；run split-footer 55 文件架构是否整搬；scout/reference 物化仓库体系 vs fork 跨项目 graph（可组合：先物化再 graph init）；后台异步子代理是否按 fork 调度架构重设计（`22de34c4de`+`8feb4a31c7`+`3003867c25`，关联 memory.md 挂起的 edit-intent claims L2）；codemode v1 接线是否启用（包已 vendor 但运行时零引用，vendor 意图需澄清）；opencode 品牌 integration/zen provider 是否保留（L4 内）；NVIDIA X-BILLING-INVOKE-ORIGIN 值 OpenCode vs Chimera；Codex strict 策略（fork `codex-responses.ts:1150` 显式 strict:false 与上游相反）；TUI yolo permission mode；newweb 多服务器权限状态串台复核（独立立项，非上游移植）。
+desktop 是否重启维护（壳级 7 条④→②）；TUI diff-viewer 是否引入；run split-footer 55 文件架构是否整搬；scout/reference 物化仓库体系 vs fork 跨项目 graph（可组合：先物化再 graph init）；**后台异步子代理：已拍板（2026-09-07）——做、默认打开、claims 同步解冻，详见 F4 拍板记录**；codemode v1 接线是否启用（包已 vendor 但运行时零引用，vendor 意图需澄清）；opencode 品牌 integration/zen provider 是否保留（L4 内）；NVIDIA X-BILLING-INVOKE-ORIGIN 值 OpenCode vs Chimera；Codex strict 策略（fork `codex-responses.ts:1150` 显式 strict:false 与上游相反）；TUI yolo permission mode；newweb 多服务器权限状态串台复核（独立立项，非上游移植）。
 
+### F4：后台异步子代理（已拍板 2026-09-07；提案与简报见下，拍板记录见节末）
+
+关键修正：分诊时锁定的 task_status 轮询工具已被上游上线 11 天后整体删除（`dabf2dc013`，2026-05-25）；HEAD 终态 = `task(background=true)` 立即返回 + Deferred 驱动向父会话注入合成消息**自动续跑**（带 "DO NOT sleep, poll" 反轮询指导）。完整能力链 12 核心提交 + 3 TUI 边缘 fix（分诊文档 §10.1）。上游 flag 至 HEAD 仍默认关（未毕业）→ fork 用 config `experimental.background_subagents` 默认关，照抄上游"关时 jsonSchema 换窄、字节不变"门控手法（HEAD task.ts:362-366）。
+
+fork 侧有利事实（均经锚点核验，详见分诊文档 §10.3）：机制层原语全数现成——子代理 work fiber 本就 fork 在 instance scope、等待方只 Deferred.await（runner.ts:80-136 支持重新 attach）；合成消息原语在（message-v2.ts:125 + prompt.ts:1884-1908）；task_model 授权/路由全前置在 prepare，后台化=派发点立即 fork，授权面零改动（前提：不做排队延迟启动）；`experimental.system_context` 已验证 flag 模式；memory_job 是将来要 durable 时的现成模板。主要冲突点：delegation-limiter 借用机制以"父阻塞"为前提（后台子终生持 permit，需拍板 background_concurrent 独立上限）；swarm 状态通道被 prompt.ts:684 running/pending 门挡住（需换通道，三选一）；closeout 责任改为"子会话内自收尾 + 父在注入轮汇总"。
+
+分期（详细落点/验收/回退见分诊文档 §10.4）：
+
+- **P1 最小闭环（~3-5 人日，拍板后与 F2 并行，文件交集≈零）**：新建 `src/agent/background-job.ts` 引擎子集（list/get/start/extend/wait/cancel，done Deferred，interrupt-only→cancelled，同 id 去重；job id=子会话 id；**有意不持久化**，崩溃后从持久化子会话降级重建）+ task.ts background 参数与换窄门控 + 级联取消（run-state.ts:88-96 挂 BFS 传递闭包、session.ts:711-734 挂单层清理）+ task.txt/系统提示词同改。无新表无新事件。验收：flag 关全量字节不变；flag 开 E2E 六场景 + 注入轮撞 compaction 用例。
+- **P2 swarm/预算/dispose 整合（~2-4 人日，并入 L5 或排 L5 后避免返工）**：预算策略（background_concurrent 视拍板）+ swarm 后台化（forEach→fork+句柄，状态通道选型）+ closeout 协议成文 + dispose 矩阵。
+- **P3 TUI/WebUI 表面 + claims L2（~3-5 人日，与 F3 合并）**：引擎补 promote/waitForPromotion（不中断不重启纤维）+ TUI ctrl+b（fork 键位在 context/keybind.tsx）+ server experimental 端点双 parity + SDK 重生成 + newweb capabilities 门控；claims L2 = 释放钩子经 P1 inject 通道唤醒 parked 代理（L1 是 pull 型注入，parked 代理没有下一轮，inject 正是缺失的 push 通道）——**claims L2 仅依赖 P1**。与 F3 去重：`3003867c25` 在 P3 吸收，F3 清单标记。
+
+L5 seam 条款：P1 把后台语义隔离在"引擎服务 + task 工具分支"两个 seam 内；若 L5 整包引入 v2 runtime，换用上游 core/background-job.ts 引擎（`76ee87ead8` 随包到位）、协议不动（~0.5-1 人日吸收）。"等 L5 白嫖"的代价 = 产品面与 claims L2 阻塞数月且以 L5 整包引入为前提，不建议。
+
+九个拍板点（详见分诊文档 §10.5）：①做不做（建议做）②工具形态（建议 task 加参数）③查询面（建议不复活 task_status，可见性走 prompt-context section）④注入语义（自动续跑 vs noReply，可 config 化）⑤预算语义（background_concurrent？级联取消=建议是）⑥P2 时机（建议并入 L5 或排后）⑦持久化（建议内存+降级重建）⑧是否同时解冻 claims 设计（其 P1/P2 纯 fork 文件可独立先行）⑨L5 换引擎条款（建议接受）。
+
+残余风险：上游自身仍锁实验 flag（fork 同样默认关灰度）；注入自动续跑 × fork 特有路径（remote-compaction/hash-diff/ultra 策略）未验证；swarm 状态通道是 P2 最大不确定项（三选项各 ~1 人日级差异）。
+
+#### F4 拍板记录（2026-09-07 用户谕示）
+
+- **①=做，且默认打开**（推翻简报与上游的"默认关灰度"建议）：flag 保留但降为 kill-switch 语义，命名建议移出 experimental 命名空间（`delegation.background_subagents` 默认 true）；"关时字节不变"从灰度手段降级为回退保障。用户姿态：有问题就修。
+- **两个一等用例（用户提出，直接改写 P1 需求）**：
+  1. **先到的赢（first-wins）并行探查**：并行 N 路后台探查，任一路提早带回足够结论 → 主代理立即取消其余各路，不再干等。→ **P1 新增需求：面向模型的 cancel 表面**（按 task_id 取消后台任务；引擎 cancel 本在 P1 清单，需补模型可见入口——形态：task 参数 vs 独立小工具 task_cancel，按 one-action-per-tool 风格实现时定）；swarm 原生 first-wins 等 P2，P1 期间 task.txt/系统提示词教"N× task(background) 手动 fan-out + 取消落败者"模式。
+  2. **跨会话（同项目跨 thread）编辑同步**：同项目跨 thread 行为会大量增多，多 thread 编辑同一文件的冲突自然依赖 predesign → edit-intent claims：两边先后/同时完成 predesign 后，先完成方的释放广播唤醒另一等待 thread 开工。→ **P1 的 inject 原语必须做成会话可寻址**（按 sessionID 向目标会话注入，而非写死 job 的父会话），claims L2 复用同一通道零额外引擎改造。
+- **⑧=claims 解冻**：跨 thread 同步升级为一等需求。claims P1/P2（纯 fork 文件、零上游冲突）与 F4-P1 并行先行；claims L2 在 F4-P1 inject 就绪后落地；重启前重核五个漂移锚点（store.ts / provenance.ts:801 / prompt-context.ts / edit.ts:262 / write.ts:55）。
+- **④被锁死=自动续跑**：用例 1 要求首完成即时唤醒（否则 first-wins 取消不成立），noReply 降为省 token 的 config 逃生口。
+- **⑤升级**：默认开 → `background_concurrent` 独立上限**随 P1 落地**（防预算蚕食从保险变为必须，值可配，打满=拒绝并报错不排队）；级联取消=是（用户停止=停整棵树，孤儿 job 不烧 token/permit）。
+- **②③⑥⑦⑨按建议执行**：task 加 background 参数（关时 jsonSchema 换窄）／不复活 task_status、可见性走 prompt-context "Background tasks" section／P2 并入 L5 或排后／内存引擎+崩溃降级重建／L5 seam 换引擎条款接受。
+- **默认开的验收强化**：P1 测试矩阵必含——注入轮×compaction 相撞、ultra/多代理策略×后台派发、上限打满拒绝行为、级联取消 BFS、cancel 表面、跨会话 inject 寻址、kill-switch 关闭时字节不变。WebUI 兼容注意：默认开即 background part metadata 立刻到 newweb，P1 采用兼容渲染或接受 raw 展示至 P3。
+- **新增开放问题（不阻塞 P1）**：跨进程唤醒——inject 限同进程会话；独立 CLI 进程里的 parked thread 无法被 inject 唤醒（WebUI 多 thread 同进程不受影响）。claims L2 需 poll→inject 桥（各进程轻量轮询项目 DB 的 claims 释放记录、唤醒本进程 parked 会话），列为 claims L2 设计点。
+
+#### F4-P1 完成记录（2026-09-07，未 commit）
+
+四阶段串行派工（builder=deepseek-v4-flash-0731 high，root 逐阶段 diff 复审+独立重跑）：
+
+1. **阶段1 引擎**：`src/agent/background-job.ts`（382 行：list/get/start/extend/wait/cancel，done Deferred，tail 串行 extend，token 防 ABA，interrupt-only→cancelled，内存注册表有意不持久化，BackgroundJobLimitError 打满拒绝不排队）+ config `delegation.background_subagents`（默认 true，kill-switch）/`background_concurrent`（默认 16）。
+2. **阶段2 task 接线**：`background` 参数（双 schema，kill-switch 关时 jsonSchema 换窄+description 字节不变，照抄上游手法）；后台派发=prepare 授权/路由/遥测照常→materialize 建子会话→jobs.start（fork run）→notify 纤维 wait 终态→injectSynthetic 注入父会话自动续跑（`<task_result>/<task_error>` fork 文案）；resume 撞 running→extend 串行。**会话可寻址 inject 原语**（prompt.ts injectSynthetic，claims L2 可直接复用）；dispatch 拆分 materialize/runPreparedCore/runPreparedBackground，同步路径 limiter 与行为零变化（task.test 66/66）。
+3. **阶段3 cancel 表面+级联**：新工具 `task_cancel`（.ts+.txt，归属守卫=仅派发会话可取消、终态幂等、kill-switch 关清晰报错、可见性跟随 task 不进 explore allowlist）；run-state.cancel 入口 BFS 传递闭包（pending frontier+cancelled visited+running 过滤保终止，防环测试锁 onInterrupt 恰一次）+ 自然递归链核实成立（双保险）；session.remove 单层清理；BackgroundJob.defaultLayer 三处挂点凭层 memoization+InstanceState 同实例（测试实证）。
+4. **阶段4 可见性+矩阵**：prompt-context `backgroundTasks` section（仅本会话 running job、三重门控、缺席零字节、参与 hash-diff）；容量预检前移 materialize 之前（超限不留孤儿会话）；injectSynthetic 类型化 NotFoundError+notify ignoreCause({log:true})（父会话已删时安静落空不杀纤维）；**矩阵A 注入×compaction 相撞=完整 E2E**（llm.hold 栅门，存储一致+三轮续跑+无重复消化）；**矩阵B ultra×后台**（显式 ultra 拒绝+父 ultra 剥离测试锁定）。
+
+**与拍板记录的实现偏差（root 复审认可）**：后台 run 不经 DelegationLimiter——拍板⑤默认口径为"后台子终生占 permit+独立上限"，实现改为完全解耦（background_concurrent(16) 独辖后台，永不蚕食前台 max_concurrent(128)，总并发上界 128+16 仍有界）：解耦从根上消除"蚕食"问题，优于缓解方案，意图不变。
+
+**验证**：F4 测试家族 113 pass/0 fail（7 文件）+ typecheck 绿 + test/session 495 pass（唯一失败=compaction abort 时序预存，memory.md beta.59 基线佐证）+ tool 目录仅预存 tool.chimera 1 条（stash 复核）。各阶段 predesign/audit 齐全（阶段4：predesign_215fa11fcf145101、audit_aaeab1fee6da4988 等），obligations 0。
+
+**残余/非阻塞**：swarm 原生 first-wins 等 P2（P1 期用 N×task(background)+task_cancel 手动模式，task.txt 已教）；newweb `(background)` 专属渲染属 P3（metadata 已发布）；跨进程唤醒（claims L2 poll→inject 桥）仍开放；compaction 时序用例高负载偶败（预存）。
 ### fix backlog 方法学（详见分诊文档 §7）
 
 1044 fix 中：43 条安全关键词已全量逐条（→F0）；fix(tui) 91 条主题级（→F3）；无关表面 ~427 条（app227/stats84/desktop33/console27/ui21/acp19/data16）直接封板；**core 相关 backlog ≈374 条不单独展开**——随对应特性批次消化（MCP fix 随 F2、provider/openai/llm/core fix 随 L4、tui fix 随 F3、session/compaction fix 随 F1 对应项），并在 L4 开工前跑一次独立关键词筛（crash/hang/loss/leak/corrupt/race）防漏 P1 级——F0 的 P1（#43675）即为此类筛法命中。

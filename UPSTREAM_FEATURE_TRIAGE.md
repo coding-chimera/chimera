@@ -1,6 +1,6 @@
 # 上游 opencode 特性同步分诊明细（F 线附件）
 
-制定：2026-09-04。方法：6 个并行只读分诊代理（3 reviewer + 3 scout）+ root 汇总对账。
+制定：2026-09-07。方法：6 个并行只读分诊代理（3 reviewer + 3 scout）+ root 汇总对账。
 范围：上游 `/Volumes/workspace/opencode`（只读，HEAD=`9f69463f1d`，2026-08-31）`v1.14.40..HEAD`，共 3299 commits（fork 点口径 3273）；**388 feat 全量五分类** + **安全/权限关键词 fix 全量 43 条** + **fix(tui) 91 条主题级归纳**。其余 ~910 fix 的处置方法见 §7。
 版本分桶（feat）：v1.15=32 / v1.16=87 / v1.17=31 / v1.18=169 / v1.18.0..HEAD=69。
 
@@ -172,7 +172,7 @@ diff-viewer 族 7（`17d66ee4fe`/`ee008923f3`/`05f335ce62`/`7a4d18390a`/`6eec983
 | 2 | TUI diff-viewer 子系统是否引入 | feat 8 条 + fix 主题 A 7 条 |
 | 3 | run split-footer 交互架构（55 文件）是否整搬 | `7f2b5ee8c2` |
 | 4 | scout/reference 物化仓库体系 vs fork 跨项目 graph（可组合：先物化再 graph init） | `5cf9abe743`+`4bae84c8b0` |
-| 5 | 后台异步子代理是否按 fork 调度架构重设计引入（task_status 轮询已被上游删除，终态=注入驱动自动续跑） | `22de34c4de`+`8feb4a31c7`+`3003867c25` 及全链 12 提交；**决策简报已完成：九个拍板点见 §10，F4 提案草案在计划书**；关联 memory.md 挂起的 edit-intent claims L2（仅依赖 F4-P1） |
+| 5 | 后台异步子代理是否按 fork 调度架构重设计引入（task_status 轮询已被上游删除，终态=注入驱动自动续跑） | **已拍板 2026-09-07：做、默认打开、claims 同步解冻**——九点拍板详情见 §10.8 与计划书 F4 拍板记录；`22de34c4de`+`8feb4a31c7`+`3003867c25` 及全链 12 提交进 F4 |
 | 6 | codemode v1 接线是否启用（vendor 意图澄清） | `ed6dc879be`+`abaab29cb3` |
 | 7 | opencode 品牌 integration/zen provider 是否保留 | `cf80b5c470`/`c556bddda3`（L4 内） |
 | 8 | NVIDIA X-BILLING-INVOKE-ORIGIN 值：OpenCode vs Chimera | `d34a0194ec` |
@@ -185,11 +185,11 @@ diff-viewer 族 7（`17d66ee4fe`/`ee008923f3`/`05f335ce62`/`7a4d18390a`/`6eec983
 6 个分诊代理完整报告（本机 tool-output，会话级存储，重要结论已全部收入本文档）：R1=`tool_07a179568001lL1QjCM0LBtHzY`、R2=`tool_07a1ddea3003SoFVocofThg53K`、R3=`tool_07a0f0d95001Nrbi7BL2Sgl6v9`、S1=`tool_07a20d791001KCrrM4iMg05eC4`、S2=`tool_07a236280003nRakTVUZv7pVCt`、S3=`tool_07a1ff5aa0015m8p6EEDs8Asrv`。
 首次调度尝试中 scout 组因 `opencode/muse-spark-1.2-contributor-free` 区域不可用失败，重派 `deepseek-v4-flash-0731`(low) 成功；reviewer 组 `qwen3.8-max`(medium) 一次成功。
 
-## 10. 决策简报：后台异步子代理（决策项 #5 展开，2026-09-04）
+## 10. 决策简报：后台异步子代理（决策项 #5 展开，2026-09-07；**已拍板，见 §10.8**）
 
 来源：reviewer 决策简报（qwen3.8-max medium，含 2 个深读子代理，全部承重锚点经逐条 read/grep 复核；全文在本会话 tool-output，task_id `ses_f8597876bffe4nWvyOGOp2V9Ot`）。
 
-**一句话建议：做，但按上游 HEAD 终态做，不按分诊时的 5 月中间态做**——P1 最小闭环（~3-5 人日，config flag 默认关，拍板后与 F2 并行）→ P2（swarm/预算/dispose，并入 L5 或排 L5 后）→ P3（TUI/WebUI 表面 + claims L2，与 F3 合并）。
+**一句话建议：做，但按上游 HEAD 终态做，不按分诊时的 5 月中间态做**——P1 最小闭环（~3-5 人日，拍板后与 F2 并行）→ P2（swarm/预算/dispose，并入 L5 或排 L5 后）→ P3（TUI/WebUI 表面 + claims L2，与 F3 合并）。（拍板更新 2026-09-07："做"已确认且**默认打开**——本简报"flag 默认关"被推翻，P1 另增 cancel 表面与会话可寻址 inject 两项需求，见 §10.8）
 
 ### 10.1 对分诊的关键修正
 
@@ -251,3 +251,13 @@ L5 seam 条款：P1 把后台语义隔离在"引擎服务 + task 工具分支"�
 
 - `8feb4a31c7`（原 R1 ④带升级条款）→ 随决策项 #5 批准升②，与 `22de34c4de`/`3003867c25` 及全链 12 提交统一进 F4 批次。
 - `3003867c25`（原 S2 feat(tui) ②17 之一）→ F4-P3 吸收，F3 清单中标记去重。
+
+### 10.8 拍板记录（2026-09-07 用户谕示；完整版=计划书 F4 拍板记录）
+
+- **①=做，且默认打开**（推翻本简报"默认关灰度"建议；flag 降为 kill-switch，建议命名 `delegation.background_subagents` 默认 true；"关时字节不变"降为回退保障）。用户姿态：有问题就修。
+- **两个一等用例改写 P1 需求**：① first-wins 并行探查（N 路后台探查、任一路提早带回结论即取消其余）→ P1 新增**面向模型的 cancel 表面**（按 task_id 取消；形态 task 参数 vs 独立小工具实现时定）；② 跨 thread 编辑同步（predesign 定 edit-intent claims，先完成方释放广播唤醒等待方）→ P1 的 **inject 原语必须会话可寻址**（按 sessionID 注入，不写死父会话）。
+- **⑧=claims 解冻**：claims P1/P2（纯 fork 文件）与 F4-P1 并行，claims L2 等 inject 就绪；重启前重核五个漂移锚点。
+- **④锁死自动续跑**（first-wins 需即时唤醒）；**⑤ background_concurrent 上限随 P1 落地**（打满=拒绝不排队）、级联取消=是；**②③⑥⑦⑨按建议执行**。
+- **开放问题**：跨进程唤醒——inject 限同进程会话，独立 CLI 进程的 parked thread 唤不醒（WebUI 多 thread 同进程不受影响）；claims L2 需 poll→inject 桥（各进程轻量轮询项目 DB claims 释放记录、唤醒本进程 parked 会话）。
+- 日期勘误：本文档与简报实际制定于 2026-09-07（此前误标 09-04，已修正）。
+- **P1 落地完成（2026-09-07，未 commit）**：四阶段串行（引擎→task 接线+可寻址 inject→task_cancel+BFS 级联→backgroundTasks section+验收矩阵），F4 测试家族 113 全绿+typecheck 绿；矩阵 A（注入×compaction）完整 E2E、矩阵 B（ultra×后台）测试锁定。实现级偏差一处（root 认可）：后台 run 不经 DelegationLimiter，由 background_concurrent(16) 独辖——优于拍板默认的"终生占 permit"，意图不变。打磨两项（容量预检前移防孤儿会话、injectSynthetic typed NotFound+notify 吞全因）已随阶段4落地。完成记录=计划书 F4-P1 节。
