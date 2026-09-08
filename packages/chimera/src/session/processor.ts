@@ -167,6 +167,18 @@ type ToolCall = {
   sessionID: MessageV2.ToolPart["sessionID"]
   done: Deferred.Deferred<void>
 }
+// Temporary bridge: Copilot billing survives only in raw provider chunks here.
+export function copilotTotalNanoAiu(value: unknown) {
+  if (!value || typeof value !== "object") return
+  const raw = value as Record<string, unknown>
+  const response =
+    raw.response && typeof raw.response === "object" ? (raw.response as Record<string, unknown>) : undefined
+  const usage = raw.copilot_usage ?? response?.copilot_usage
+  if (!usage || typeof usage !== "object") return
+  const total = (usage as Record<string, unknown>).total_nano_aiu
+  if (typeof total !== "number" || !Number.isFinite(total) || total < 0) return
+  return total
+}
 
 interface ProcessorContext extends Input {
   toolcalls: Record<string, ToolCall>
@@ -178,6 +190,7 @@ interface ProcessorContext extends Input {
   currentText: MessageV2.TextPart | undefined
   currentTextRaw: string | undefined
   reasoningMap: Record<string, MessageV2.ReasoningPart>
+  copilotTotalNanoAiu: number | undefined
 }
 
 type StreamEvent = Event
@@ -238,6 +251,7 @@ export const layer: Layer.Layer<
         currentText: undefined,
         currentTextRaw: undefined,
         reasoningMap: {},
+        copilotTotalNanoAiu: undefined,
       }
       let aborted = false
       const slog = log.clone().tag("session.id", input.sessionID).tag("messageID", input.assistantMessage.id)
@@ -599,10 +613,21 @@ export const layer: Layer.Layer<
 
           case "finish-step": {
             const completedSnapshot = yield* snapshot.track()
+            const metadata =
+              ctx.copilotTotalNanoAiu === undefined
+                ? value.providerMetadata
+                : {
+                    ...value.providerMetadata,
+                    copilot: {
+                      ...value.providerMetadata?.copilot,
+                      totalNanoAiu: ctx.copilotTotalNanoAiu,
+                    },
+                  }
+            ctx.copilotTotalNanoAiu = undefined
             const usage = Session.getUsage({
               model: ctx.model,
               usage: value.usage,
-              metadata: value.providerMetadata,
+              metadata,
               estimatedInputTokens: ctx.estimatedInputTokens,
             })
             if (!ctx.assistantMessage.summary) {
@@ -764,6 +789,10 @@ export const layer: Layer.Layer<
             yield* session.updatePart(ctx.currentText)
             ctx.currentTextRaw = undefined
             ctx.currentText = undefined
+            return
+
+          case "raw":
+            ctx.copilotTotalNanoAiu = copilotTotalNanoAiu(value.rawValue) ?? ctx.copilotTotalNanoAiu
             return
 
           case "finish":

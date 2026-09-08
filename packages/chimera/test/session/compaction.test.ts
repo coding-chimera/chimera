@@ -3260,6 +3260,122 @@ describe("SessionNs.getUsage", () => {
     expect(result.tokens.cache.read).toBe(200)
     expect(result.tokens.cache.write).toBe(300)
   })
+
+  test("selects the closest tier below exceeded context tokens", () => {
+    const model = createModel({
+      context: 1_000_000,
+      output: 32_000,
+      cost: {
+        input: 1,
+        output: 2,
+        cache: { read: 0, write: 0 },
+        tiers: [
+          { input: 4, output: 8, cache: { read: 0, write: 0 }, tier: { type: "context", size: 200_000 } },
+          { input: 8, output: 16, cache: { read: 0, write: 0 }, tier: { type: "context", size: 500_000 } },
+        ],
+      },
+    })
+    // 300k exceeds the 200k tier but not the 500k tier
+    const result = SessionNs.getUsage({
+      model,
+      usage: {
+        inputTokens: 300_000,
+        outputTokens: 1_000,
+        totalTokens: 301_000,
+        inputTokenDetails: { noCacheTokens: undefined, cacheReadTokens: undefined, cacheWriteTokens: undefined },
+        outputTokenDetails: { textTokens: undefined, reasoningTokens: undefined },
+      },
+    })
+    expect(result.cost).toBe((300_000 * 4 + 1_000 * 8) / 1_000_000)
+  })
+
+  test("falls back to base pricing when context stays below every tier size", () => {
+    const model = createModel({
+      context: 1_000_000,
+      output: 32_000,
+      cost: {
+        input: 1,
+        output: 2,
+        cache: { read: 0, write: 0 },
+        tiers: [{ input: 4, output: 8, cache: { read: 0, write: 0 }, tier: { type: "context", size: 200_000 } }],
+      },
+    })
+    const result = SessionNs.getUsage({
+      model,
+      usage: {
+        inputTokens: 100_000,
+        outputTokens: 1_000,
+        totalTokens: 101_000,
+        inputTokenDetails: { noCacheTokens: undefined, cacheReadTokens: undefined, cacheWriteTokens: undefined },
+        outputTokenDetails: { textTokens: undefined, reasoningTokens: undefined },
+      },
+    })
+    expect(result.cost).toBe((100_000 * 1 + 1_000 * 2) / 1_000_000)
+  })
+
+  test("falls back to experimentalOver200K when no tier matches and context exceeds 200k", () => {
+    const model = createModel({
+      context: 1_000_000,
+      output: 32_000,
+      cost: {
+        input: 1,
+        output: 2,
+        cache: { read: 0, write: 0 },
+        tiers: [{ input: 4, output: 8, cache: { read: 0, write: 0 }, tier: { type: "context", size: 500_000 } }],
+        experimentalOver200K: { input: 7, output: 14, cache: { read: 0, write: 0 } },
+      },
+    })
+    const result = SessionNs.getUsage({
+      model,
+      usage: {
+        inputTokens: 300_000,
+        outputTokens: 1_000,
+        totalTokens: 301_000,
+        inputTokenDetails: { noCacheTokens: undefined, cacheReadTokens: undefined, cacheWriteTokens: undefined },
+        outputTokenDetails: { textTokens: undefined, reasoningTokens: undefined },
+      },
+    })
+    expect(result.cost).toBe((300_000 * 7 + 1_000 * 14) / 1_000_000)
+  })
+
+  test("uses Copilot total nano AIU as the authoritative cost", () => {
+    const model = createModel({ context: 100_000, output: 32_000 })
+    const result = SessionNs.getUsage({
+      model,
+      usage: {
+        inputTokens: 10,
+        outputTokens: 5,
+        totalTokens: 15,
+        inputTokenDetails: { noCacheTokens: undefined, cacheReadTokens: undefined, cacheWriteTokens: undefined },
+        outputTokenDetails: { textTokens: undefined, reasoningTokens: undefined },
+      },
+      metadata: { copilot: { totalNanoAiu: 4_473_525_000 } },
+    })
+    expect(result.cost).toBe(0.04473525)
+  })
+
+  test("falls back to token pricing when Copilot usage is missing or invalid", () => {
+    const model = createModel({
+      context: 100_000,
+      output: 32_000,
+      cost: { input: 1, output: 2, cache: { read: 0, write: 0 } },
+    })
+    const usage = {
+      inputTokens: 1_000,
+      outputTokens: 500,
+      totalTokens: 1_500,
+      inputTokenDetails: { noCacheTokens: undefined, cacheReadTokens: undefined, cacheWriteTokens: undefined },
+      outputTokenDetails: { textTokens: undefined, reasoningTokens: undefined },
+    }
+    for (const totalNanoAiu of [undefined, -1, Infinity]) {
+      const result = SessionNs.getUsage({
+        model,
+        usage,
+        metadata: { copilot: totalNanoAiu === undefined ? {} : { totalNanoAiu } },
+      })
+      expect(result.cost).toBe((1_000 * 1 + 500 * 2) / 1_000_000)
+    }
+  })
 })
 
 
