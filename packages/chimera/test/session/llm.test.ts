@@ -2468,3 +2468,94 @@ describe("session.llm.stream", () => {
     })
   })
 })
+
+describe("session.llm effort byte-identity", () => {
+  test("medium and xhigh variants are byte-identical in the system prompt and differ only in wire effort", async () => {
+    const server = state.server
+    if (!server) throw new Error("Server not initialized")
+
+    const providerID = "custom-effort-byteidentity"
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(
+          path.join(dir, "chimera.json"),
+          JSON.stringify({
+            $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+            enabled_providers: [providerID],
+            provider: {
+              [providerID]: {
+                name: "Custom Effort Byteidentity",
+                npm: "@ai-sdk/openai-compatible",
+                wire_api: "chat",
+                env: [],
+                models: {
+                  "effort-model": {
+                    reasoning: true,
+                    variants: {
+                      medium: { reasoningEffort: "medium" },
+                      xhigh: { reasoningEffort: "xhigh" },
+                    },
+                  },
+                },
+                options: {
+                  apiKey: "test-effort-byteidentity-key",
+                  baseURL: `${server.url.origin}/v1`,
+                },
+              },
+            },
+          }),
+        )
+      },
+    })
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const resolved = await getModel(ProviderID.make(providerID), ModelID.make("effort-model"))
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        } satisfies Agent.Info
+        const capture = async (variant: string, label: string) => {
+          const request = waitRequest(
+            "/chat/completions",
+            new Response(createChatStream(label), {
+              status: 200,
+              headers: { "Content-Type": "text/event-stream" },
+            }),
+          )
+          const sessionID = SessionID.make(`session-effort-byteidentity-${label}`)
+          const user = {
+            id: MessageID.make(`user-effort-byteidentity-${label}`),
+            sessionID,
+            role: "user",
+            time: { created: Date.now() },
+            agent: agent.name,
+            model: { providerID: ProviderID.make(providerID), modelID: resolved.id, variant },
+          } satisfies MessageV2.User
+          await drain({
+            user,
+            sessionID,
+            model: resolved,
+            agent,
+            system: ["runtime-system"],
+            messages: [{ role: "user", content: "Hello" }],
+            tools: {},
+          })
+          return (await request).body
+        }
+
+        const medium = await capture("medium", "medium")
+        const xhigh = await capture("xhigh", "xhigh")
+
+        // Effort rides only provider options for non-ultra variants: the final
+        // system prompt is byte-identical, so the knob is observable on the wire.
+        expect(systemPromptFrom(medium)).toBe(systemPromptFrom(xhigh))
+        expect(medium.reasoning_effort).toBe("medium")
+        expect(xhigh.reasoning_effort).toBe("xhigh")
+      },
+    })
+  })
+})

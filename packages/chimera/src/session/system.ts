@@ -6,6 +6,8 @@ import PROMPT_CLAUDE from "./prompt/claude.txt"
 import PROMPT_CHIMERA from "./prompt/chimera.txt"
 import PROMPT_DEFAULT from "./prompt/default.txt"
 import PROMPT_WORKFLOW from "./prompt/workflow.txt"
+import PROMPT_BROWSER from "./prompt/browser.txt"
+import PROMPT_WORKBRIEF from "./prompt/workbrief.txt"
 import PROMPT_GPT4 from "./prompt/gpt-4.txt"
 import PROMPT_GEMINI from "./prompt/gemini.txt"
 import PROMPT_GPT from "./prompt/gpt.txt"
@@ -112,8 +114,19 @@ export function providerSegments(model: Provider.Model): Segment[] {
   return [
     { key: "core/default", content: PROMPT_DEFAULT },
     { key: "core/workflow", content: PROMPT_WORKFLOW },
-    { key: "core/chimera", content: PROMPT_CHIMERA },
     ...(tuned ? [{ key: tuned.key, content: tuned.content }] : []),
+  ]
+}
+
+// Capability layers are injected conditionally based on the tools present in
+// the (permission-filtered) tool set for the turn.
+export function capabilitySegments(tools: Record<string, unknown>): Segment[] {
+  return [
+    ...(Object.keys(tools).some((name) => name.startsWith("chimera_"))
+      ? [{ key: "core/chimera", content: PROMPT_CHIMERA }]
+      : []),
+    ...(tools["workbrief"] ? [{ key: "core/workbrief", content: PROMPT_WORKBRIEF }] : []),
+    ...(tools["browser_open"] ? [{ key: "core/browser", content: PROMPT_BROWSER }] : []),
   ]
 }
 

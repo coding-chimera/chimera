@@ -101,7 +101,10 @@ export type StreamRequest = Omit<StreamInput, "abort"> & {
 // Assembles the attributed system prompt segments in send order. Joining the
 // segment contents is byte-identical to the legacy unattributed assembly.
 export function systemSegments(
-  input: Pick<StreamRequest, "model" | "agent" | "small" | "parentSessionID" | "system" | "user">,
+  input: Pick<
+    StreamRequest,
+    "model" | "agent" | "small" | "parentSessionID" | "system" | "user" | "tools"
+  >,
   multiAgent: string | undefined,
   variant: string | undefined,
 ): SystemPrompt.Segment[] {
@@ -111,6 +114,9 @@ export function systemSegments(
       ? [{ key: "agent/system", content: input.agent.prompt }]
       : SystemPrompt.providerSegments(input.model)),
     ...SystemPrompt.overlaySegments(input.model),
+    // capability layers (chimera/workbrief/browser) only in the non-override
+    // branch: an agent.prompt override replaces the entire provider stack.
+    ...(!input.agent.prompt ? SystemPrompt.capabilitySegments(input.tools) : []),
     ...(multiAgent ? [{ key: "policy/multi-agent", content: multiAgent }] : []),
     ...(!input.small && !input.parentSessionID ? SystemPrompt.ultraVariantSegments(input.model, variant) : []),
     // any custom prompt passed into this call
@@ -179,7 +185,11 @@ const live: Layer.Layer<
         )
       }
       const multiAgent = multiAgentPolicy(input, profile.key)
-      const segments = systemSegments(input, multiAgent, profile.key)
+      // Resolve the permission-filtered tools first: capability segments
+      // (core/chimera, core/workbrief, core/browser) must gate on the tools
+      // the model can actually see, not the raw pre-permission list.
+      const tools = resolveTools(input)
+      const segments = systemSegments({ ...input, tools }, multiAgent, profile.key)
       // experimental.system_context: the first turn stores the assembled
       // baseline, later turns reuse it and inject source changes as an extra
       // system message. Small calls (title/summary) own no epoch. Epoch
@@ -290,7 +300,6 @@ const live: Layer.Layer<
         },
       )
 
-      const tools = resolveTools(input)
       if (supportsOpenAIHostedWebSearch(input) && tools[OPENAI_HOSTED_WEB_SEARCH_TOOL] === undefined) {
         tools[OPENAI_HOSTED_WEB_SEARCH_TOOL] = openai.tools.webSearch({
           externalWebAccess: true,

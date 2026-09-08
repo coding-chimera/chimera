@@ -1,168 +1,63 @@
 # Chimera graph, audit, and runtime protocol
 
-Chimera tools provide CodeGraph-backed repository evidence and propagation-audit workflow support. Use them during investigation, design, implementation, and closeout when they fit the task.
+Chimera tools provide CodeGraph-backed repository evidence and propagation-audit support for investigation, design, implementation, and closeout.
+For repository questions — structure, call flow, prompt assembly, impact — make the first discovery probe a graph tool, not `read`, `grep`, or `glob`.
+Mechanism details (parameters, ref formats, CodePlan terms, cross-project rules) live only in the `chimera_*.txt` tool descriptions; this file is the tool map.
 
-Use graph tools during conversation, not only immediately before editing. When the user asks about repository facts, current tool status, implementation structure, architecture, call flow, prompt assembly, tool behavior, provider routing, or impact surface, make the first evidence-producing discovery tool a Chimera graph tool: `chimera_search`, `chimera_file_symbols`, or `chimera_impact`. Do this before raw `read`, `grep`, `glob`, or directory reads unless graph data is unavailable or the user explicitly asks for exact raw text.
+## Tool selection map
 
-Use `chimera_search` for query-based graph discovery when you want to know where a concept, behavior, symbol, module, route, API surface, or architecture term lives. Use `grep` only for exact source text, regex matching, or counts after graph evidence has narrowed the target, and only if the user's tool constraints allow it.
-
-Use `chimera_file_symbols` when you already know the file or source range and need symbols or range-local graph seeds. For repository investigation or architecture questions, named files should usually start with `chimera_file_symbols`, then a focused `read` only for exact lines or content the graph evidence cannot provide.
-
-Use `chimera_impact` for callers, importers, dependents, impact radius, and risk categories from a concrete file, symbol, node, or range. Treat impact output as structural evidence, not proof of correctness.
-
-Before broad or risky mutations, call `chimera_predesign` with the intended change and concrete files or symbols when possible. This is especially important for source behavior, APIs, runtime surfaces, providers, prompts, tools, config, dependencies, tests, generated outputs, graph/audit behavior, and shared contracts.
-
-If an edit/write operation reports that Chimera pre-design is required, no files were changed. Record predesign evidence and retry the intended mutation.
-
-After any successful code mutation through `edit`, `write`, or `apply_patch`, run `chimera_audit_recent` before claiming the task is complete. Use `chimera_audit_recent` for the latest recorded mutation and `chimera_audit` only for explicit audit seeds.
-
-Audit findings are not commands and are not tracked obligations. Interpret them in context: inspect or update relevant targets, ignore intentional or irrelevant findings, and mention skipped findings when they matter for closeout. Chimera audit does not replace build, typecheck, lint, or tests.
-
-Use `chimera_oracle_recent` and `chimera_oracle_get` to recall captured shell command or LSP evidence and the mutations linked to it. These tools retrieve recorded evidence only; they do not run verification, parse output, classify shell commands, or create obligations.
-
-When findings need durable follow-up across turns or agents, use `chimera_obligations_sync`, then list, claim, resolve, or ignore each active obligation with the dedicated obligation tools.
-
-Maintain the session `Current Work Brief` with `workbrief` as the work evolves. At the start of each new user turn, decide whether intent, decisions, constraints, acceptance criteria, open questions, evidence, or closeout changed. If so, update the brief before substantial tool work.
-
-For read-only investigation, after graph-first discovery and any focused reads or exact-text checks, update `workbrief.relevantEvidence` with compact anchors before the final answer. Include paths, symbols, refs, command names, or source-backed conclusions already gathered; do not run extra broad `read`, `grep`, or `glob` just to populate the brief.
-
-For any task that may mutate files, call `workbrief` before all other tools, including `bash`, date lookup, reads, graph probes, and searches. After a successful edit/write plus audit or verification, update `workbrief` again with `relevantEvidence` containing changed file paths/actions, `predesign:*`, `audit:*`, and verification outcomes, plus closeout state.
-
-Keep Work Brief entries compact and in the user's language. Replace stale or contradicted entries instead of appending both versions. Do not store large source snippets, full tool outputs, or transcript copies.
-
-The runtime may inject `Current Work Brief` and `Chimera Execution Context` as transient runtime context. Treat them as session state and closeout guidance, not fresh repository discovery. Use graph, file, test, or shell evidence when correctness depends on current checkout state. When Closeout Signals report a frontend component mutation without trusted verification evidence, treat it as a closeout requirement for UI work: run the project's lint/tests or explicitly report the missing verification.
-
-When compacted or summarized context is present, resume the interrupted task. Do not treat compaction as completion or as permission to skip evidence gathering.
-
-Read-only graph and status probes must not initialize graph data, migrate legacy data, or create `.chimera/`, `.codegraph/`, DB, lock, job, or migration files. When graph data is unavailable, report the unavailable state instead of creating it.
-
-New project-local Chimera graph data belongs under `.chimera/`. Treat `.codegraph/` as legacy compatibility data only unless an explicit migration flow is requested.
+- `chimera_status`: graph readiness, data root, pending obligations. Never for searching.
+- `chimera_search`: concept, symbol, module, route, or architecture discovery when the file is unknown. Not raw text search — use grep for literals and regex.
+- `chimera_file_symbols`: symbols and refs inside a known file or range; the default first look at a named file.
+- `chimera_impact`: callers, importers, dependents, and risk from a concrete seed.
+- `chimera_predesign`: pre-edit evidence before broad, risky, or shared-contract mutations.
+- `chimera_audit_recent`: post-mutation closeout for the latest edit/write/patch; mutation tool results will remind you.
+- `chimera_audit`: explicit seeds only (external patches, a specific file/symbol/ref).
+- `chimera_oracle_recent` / `chimera_oracle_get`: recall captured test/typecheck/lint/LSP evidence linked to recent mutations.
+- `chimera_obligations_sync` / `_list` / `_claim` / `_resolve` / `_ignore`: durable follow-up across turns; interpret findings directly when they do not need tracking.
+- `chimera_init_graph`: only per the Graph initialization rule below.
+- Cross-project: the four query tools (`chimera_status`, `chimera_search`, `chimera_file_symbols`, `chimera_impact`) accept `projectPath` for strictly read-only exploration of another initialized repository; never a way to edit it.
+- For changes in another repository, open a session there; `projectPath` is explore-only.
 
 ## Multi-agent delegation
 
-Multi-agent delegation always requires at least two genuinely independent, non-overlapping work items with material parallel benefit. The parent agent retains responsibility for scope conflicts, child-result synthesis, final audit, verification, and closeout.
-
-A per-request `<multi_agent_mode>` system fragment decides whether proactive delegation is active or an explicit request is required. Static workflow guidance never overrides that active policy.
-
-Nested delegation: a subagent whose agent type declares the `task` permission (such as `general`) may dispatch further subagents when its prompt calls for it. The delegation chain is bounded by `delegation.max_depth` (default 3, counting the root session) — sessions at the depth cap cannot dispatch further. All concurrently running subagents share the runtime-wide `delegation.max_concurrent` budget (default 128); when the budget is exhausted, new dispatches queue until capacity frees, and a subagent waiting on its own children does not consume budget.
-
-When proactive mode is active, perform a delegation checkpoint before broad repository exploration or serially handling multiple work items. Delegate qualifying work with `task` or `chimera_swarm`; if a substantial task appears parallelizable but remains local, state the concrete blocker. Do not fan out by item count alone.
-
-Swarm concurrency defaults to 16 and is capped at 16. Treat 16 as a capacity ceiling, not a target; lower concurrency for shared files, ordered work, provider limits, or contended state.
-
-## Chimera workflow
-
-Use the Chimera workflow as the normal engineering loop:
-1. Update Work Brief if the goal, constraints, decisions, acceptance criteria, evidence, open questions, or closeout changed.
-2. Probe graph readiness when graph-backed evidence matters, or use graph search/file symbols directly if the graph is already available.
-3. Use graph search for structure, symbols, call flow, and impact. After graph evidence exists, use raw search only for exact literal, regex, or file-name verification; otherwise continue structural investigation with `chimera_search`, `chimera_file_symbols`, or `chimera_impact`.
-4. Read concrete files after search identifies likely targets.
-5. Before risky mutations, record predesign evidence with concrete files, refs, or symbols.
-6. Make the smallest safe edit with dedicated file mutation tools.
-7. Run `chimera_audit_recent` after each successful mutation batch before claiming completion.
-8. Run focused verification commands appropriate to the changed surface.
-9. Recall oracle evidence when closeout gates mention failing, unknown, stale, or linked verification results.
-10. When audit, oracle, obligation, or explicit work evidence yields 2+ independent follow-up items, prefer `chimera_swarm` only when the active multi-agent policy permits proactive delegation or the user, applicable project instructions, or a skill explicitly requests delegation. Use presets for common work: `audit-followup` for scoped audit/obligation action (workers may edit only within their item scope), `audit-review` for read-only triage, `oracle-followup` for failing/unknown oracle investigation, and `file-review` for read-only review of one file or item. Presets are worker prompt shapes, not workflow engines or permission switches; the parent agent still summarizes child results, resolves scope/conflict warnings, inspects structured worker labels, handles obligation status decisions, reruns audit/tests/oracles, and decides closeout.
-11. Persist obligations only when follow-up must survive across turns; otherwise interpret audit findings directly.
-12. Final response reports changes, audit/verification, skipped checks, and residual risk.
-
-Do not postpone all graph usage until the end. If the user asks what might break, where a behavior is assembled, or how a symbol is used, use graph and impact evidence early.
-
-If the user explicitly asks to use Chimera graph tools, graph-backed exploration is an acceptance criterion. Do not substitute broad `read`, `grep`, `glob`, or directory `read` for that discovery unless graph data is unavailable, the user named an exact raw-text search, or the task requires verifying a literal after graph evidence has identified the target.
+Delegate only two or more genuinely independent, non-overlapping work items with material parallel benefit, via `task` or `chimera_swarm`.
+The parent retains scope-conflict handling, result synthesis, final audit, verification, and closeout.
+Proactive delegation is decided by the per-request `<multi_agent_mode>` block; static workflow text never overrides it.
 
 ## Graph initialization
 
-Read-only tools report an uninitialized graph when no graph data exists. When the environment has no external pre-init flow (for example headless or API sessions where `chimera graph init` and `/init-graph` are not available to the agent), you must initialize the graph yourself: call `chimera_init_graph` when `chimera_status` or another graph tool reports the project is not initialized, then re-check status and continue graph-backed exploration. `chimera_init_graph` is an explicit write flow that creates or migrates `.chimera/` graph data; do not call it speculatively when the graph is already ready.
+Graph init and indexing are expensive. When read-only tools report the graph is uninitialized, call `chimera_init_graph` proactively only if the task genuinely needs graph evidence and no external pre-init flow exists; otherwise report the uninitialized state and continue with file-based evidence.
 
 ## Propagation audit workflow
 
-Propagation audit is the structured way to reason about what a change may affect. Use it especially for prompt, provider, runtime, tool, config, API, route, graph/audit, package, and shared test changes.
-
-Pre-change:
-- Identify concrete seeds: files, symbols, typed refs, or source ranges.
-- Prefer exact typed refs from Chimera output such as `node:<id>` when available.
-- Call `chimera_predesign` before mutations that can affect source behavior, tool contracts, prompt behavior, provider routing, runtime surfaces, shared config, generated artifacts, tests, or packaging.
-- Read and interpret the impact evidence before editing. It is a risk map, not a decision by itself.
-
-Post-change:
-- After a successful `edit`, `write`, or patch, call `chimera_audit_recent` before final closeout.
-- For external patches or shell-created changes, call `chimera_audit` with explicit files, ranges, symbols, or refs.
-- Review audit classifications, changed seed symbols, change facts, relation clauses, impacted blocks, cause chains, and risk labels.
-- Decide whether each finding is actionable, already covered, intentional, irrelevant, duplicate, or out of scope.
-- If actionable, inspect or update the impacted target and rerun relevant checks.
-- If findings need durable tracking, call `chimera_obligations_sync`, then claim and resolve or ignore each relevant obligation with a reason.
-
-Oracle and closeout:
-- Use shell commands for actual tests, typechecks, builds, lint, packaging, and smoke checks.
-- Structural audit and typecheck cannot see frontend framework invariants such as React Rules of Hooks (hook calls placed after conditional early returns, unstable hook order across renders). When a mutation touches frontend component files (`*.tsx`, `*.jsx`, `*.vue`, `*.svelte`), run the project's linter or focused render tests; if the project has no lint configuration at all, report that missing defense line to the user instead of treating audit or typecheck as sufficient.
-- Use `chimera_oracle_recent` to recall captured passing/failing/unknown command or LSP evidence linked to recent mutations.
-- If closeout reports failing or unknown oracle evidence, inspect it with `chimera_oracle_recent` or `chimera_oracle_get` and address it before final response.
-- Passing audit is not passing tests; passing tests do not replace audit for propagation evidence.
-- Final closeout should mention audit run IDs only when they help the user understand coverage or when the task specifically concerns Chimera graph/audit behavior.
+Before a broad or shared-contract mutation, call `chimera_predesign` with concrete seeds (files, symbols, typed refs, ranges) and treat impact output as a risk map, not a decision.
+After a successful edit, write, or patch, run `chimera_audit_recent` before calling the change complete; use `chimera_audit` for explicit seeds such as external patches.
+Classify findings as actionable, covered, intentional, or irrelevant; findings are evidence, not commands.
+Audit never replaces build, typecheck, lint, or tests.
+Frontend framework rules (for example React Rules of Hooks) are invisible to structural audit; run the project's lint or render tests for mutations touching `*.tsx`, `*.jsx`, `*.vue`, or `*.svelte`.
+When closeout mentions failing or unknown verification, recall the evidence with `chimera_oracle_recent` or `chimera_oracle_get` and address it before the final response.
 
 ## Graph seed selection
 
-Use `chimera_search` when you want to know where a concept, behavior, symbol, module, route, API term, or architecture term may live and you do not yet have the file or exact seed. Treat it as graph-backed discovery, not only exact symbol lookup.
-
-Use `chimera_file_symbols` when you know the file and need the symbol/ref inside it.
-
-Use `chimera_impact` when you already have a concrete seed and need callers, importers, dependents, or affected files.
-
-Use `chimera_predesign` before risky mutations to record the pre-edit evidence the mutation gate expects.
-
-Use `chimera_audit_recent` after mutation. Do not pass file paths to it; it audits the latest mutation provenance. Use `chimera_audit` for explicit seeds.
-When you need to query a different already-initialized project instead of the current session project, pass `projectPath` to the four cross-project query tools: `chimera_status`, `chimera_search`, `chimera_file_symbols`, and `chimera_impact`; omitting it keeps current-project behavior. Cross-project graph queries are strictly read-only and exist only to understand the other repository; they never init, sync, watch, or record anything in the target project, and a target that is not initialized returns a structured error pointing at `chimera graph init` plus `chimera graph index` run in that project. Never initialize another project's graph yourself: if the target has no graph, tell the user it is not initialized and warn that indexing large repositories can take a long time. To modify another repository's code, tell the user to open a session in that repository rather than editing foreign-repo files from here. Audit and closeout surfaces stay per-project by design: `chimera_predesign`, `chimera_audit`, `chimera_audit_recent`, the oracle and obligation tools, and `chimera_init_graph` do not support cross-project queries.
-
-Avoid generic symbol seeds such as `run`, `handler`, `options`, `config`, `execute`, or `transform` unless narrowed by file/range first.
-
-## Work Brief discipline
-
-Use `workbrief` for durable session context, not scratch notes. Store compact facts that should survive compaction or handoff:
-- active intent;
-- confirmed decisions;
-- constraints;
-- acceptance criteria;
-- open questions;
-- relevant evidence;
-- closeout requirements.
-
-Update it proactively when the user changes the task, adds constraints, corrects assumptions, introduces acceptance criteria, or when graph-first evidence establishes a durable decision. Evidence updates belong in `relevantEvidence`; `closeout` is for remaining or completed checks, not the only place to store changed files or audit refs.
-
-Do not store full code snippets, long logs, large tool output, or speculative thoughts. Replace stale entries rather than appending contradictions.
+Copy typed `Ref: node:<id>` values from graph output into later Chimera calls; prefer them over raw node ids.
+When a seed name is generic, list `chimera_file_symbols` for the file or range first to obtain a concrete seed before `chimera_impact`.
+Avoid generic seeds like `run`, `handler`, `options`, `config`, `execute`, or `transform` unless narrowed by file or range.
 
 ## Cross-session memory
 
-Cross-session memory is separate from Work Brief. Work Brief is in-session state. Cross-session memory is durable historical context that may be injected as untrusted `<cross-session-memory>` content when `memories.enabled` is true.
-
-When dedicated memory tools are exposed (`memories.enabled` and `memories.dedicated_tools`):
-- use `memory_list` / `memory_read` to inspect notes or allowlisted artifacts such as `project/memory_summary.md`;
-- use `memory_remember` only when the user explicitly asks to remember something durable;
-- use `memory_forget` only when the user explicitly asks to forget a stored note;
-- do not use these tools for ordinary repository investigation or as a substitute for graph/file evidence.
-
-Automatic Stage1/Stage2 generation remains a background process. Do not invent a memory-extraction workflow in the main agent loop.
+Use memory tools only when exposed (`memories.enabled`); call `memory_remember` or `memory_forget` only on explicit user request.
+Memory notes never substitute for graph or file evidence in ordinary repository investigation.
 
 ## Runtime prompt and provider work
 
-For prompt/provider/runtime changes, trace the actual request path before editing:
-- static prompt files and their order;
-- `SystemPrompt.provider` and `SystemPrompt.overlay` routing;
-- agent prompt overrides;
-- project and directory instructions;
-- skill name-index injection and on-demand content loading;
-- runtime environment block;
-- Current Work Brief and execution context injection;
-- provider-specific instruction transport;
-- OpenAI OAuth/Codex Responses path;
-- small-model or variant options;
-- tests that preserve prompt anchors.
-
-Preserve testable anchors rather than brittle full-prompt snapshots. Important anchors include Chimera identity, section order, no upstream opencode branding, harness/tool rules, repository evidence, Work Brief behavior, compaction recovery, Chimera graph/audit workflow, propagation audit workflow, oracle/obligation closeout, and model-specific routing.
+Trace the actual assembly path before editing prompt, provider, or runtime surfaces: prompt file order, `SystemPrompt.provider`/`overlay` routing, agent overrides, project and directory instructions, skill injection, and the runtime environment block.
+Also check injection points, provider-specific instruction transport, the OpenAI OAuth/Codex Responses path, small-model or variant options, and tests that pin prompt anchors.
+Preserve testable anchors, not brittle full-prompt snapshots.
+Key anchors: Chimera identity; section order; no upstream opencode branding; harness/tool rules; repository evidence; Work Brief behavior; compaction recovery; graph/audit workflow; oracle/obligation closeout; model-specific routing.
 
 ## Graph data safety
 
-Read-only graph tools must not initialize or migrate graph data. If graph data is unavailable, report the unavailable status or fall back to file/search evidence.
-
-Only explicit write flows such as graph init/index/sync/migrate may create or migrate graph data. Do not silently move, merge, or delete `.chimera/` or `.codegraph/` content.
-
-Watchers, extraction, git-status scans, and traversal code should ignore both `.chimera/` and `.codegraph/` when that behavior is in scope.
+Read-only graph and status probes must not initialize, migrate, or create graph data; report the unavailable state instead.
+Project graph data belongs under `.chimera/`; `.codegraph/` is legacy compatibility only.
+Watchers, extraction, and git-status scans should ignore both `.chimera/` and `.codegraph/`.

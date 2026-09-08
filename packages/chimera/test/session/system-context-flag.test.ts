@@ -24,6 +24,7 @@ type AssemblyInput = {
   variant?: string
   system: string[]
   userSystem?: string
+  tools?: Record<string, unknown>
 }
 
 // The exact legacy assembly expression that systemSegments replaces.
@@ -31,6 +32,7 @@ function legacyAssembly(input: AssemblyInput) {
   return [
     ...(input.agentPrompt ? [input.agentPrompt] : SystemPrompt.provider(input.model)),
     ...SystemPrompt.overlay(input.model),
+    ...(!input.agentPrompt ? SystemPrompt.capabilitySegments(input.tools ?? {}).map((segment) => segment.content) : []),
     ...(input.multiAgent ? [input.multiAgent] : []),
     ...(!input.small && !input.parentSessionID ? SystemPrompt.ultraVariant(input.model, input.variant) : []),
     ...input.system,
@@ -49,6 +51,7 @@ function segments(input: AssemblyInput) {
       parentSessionID: input.parentSessionID,
       system: input.system,
       user: { system: input.userSystem },
+      tools: input.tools ?? {},
     } as unknown as Parameters<typeof LLM.systemSegments>[0],
     input.multiAgent,
     input.variant,
@@ -75,8 +78,21 @@ describe("system context flag off: assembly byte-identity", () => {
     { model: gpt, agentPrompt: "You are a custom agent.", system: ["injected"] },
     // small child session: ultra layers skipped even when variant says ultra
     { model: deepseek, small: true, parentSessionID: "ses_parent", variant: "ultra", system: ["child extra"] },
-    // non-ultra variant on a model with no overlay
-    { model: gpt, variant: "max", system: [], userSystem: "user extras" },
+    // non-ultra variant on a model with no overlay, tools that match no capability key
+    { model: gpt, variant: "max", tools: { read: {}, bash: {} }, system: [], userSystem: "user extras" },
+    // capability segments gate on the tool set and land after the model/overlay layers
+    {
+      model: unknownModel,
+      tools: { workbrief: {}, browser_open: {}, chimera_search: {}, write: {} },
+      system: ["with tools"],
+    },
+    // an agent prompt override suppresses capability segments even when tools match
+    {
+      model: gpt,
+      agentPrompt: "You are a custom agent.",
+      tools: { workbrief: {}, browser_open: {}, chimera_search: {} },
+      system: ["override"],
+    },
   ]
 
   for (const [index, input] of cases.entries()) {
@@ -96,7 +112,6 @@ describe("system context flag off: assembly byte-identity", () => {
     expect(assembled.map((segment) => segment.key)).toEqual([
       "core/default",
       "core/workflow",
-      "core/chimera",
       "model/deepseek",
       "overlay/deepseek",
       "policy/multi-agent",
@@ -107,6 +122,21 @@ describe("system context flag off: assembly byte-identity", () => {
       "input/system/2",
       "user/system/0",
     ])
+  })
+
+  test("capability segment keys land in send order, gated on the tool set", () => {
+    const withCapability = segments(cases[5])
+    expect(withCapability.map((segment) => segment.key)).toEqual([
+      "core/default",
+      "core/workflow",
+      "core/chimera",
+      "core/workbrief",
+      "core/browser",
+      "input/system/0",
+    ])
+    expect(withCapability.map((segment) => segment.content).join("\n")).toBe(legacyAssembly(cases[5]))
+    // agent prompt override suppresses capability segments even when tools match
+    expect(segments(cases[6]).map((segment) => segment.key)).toEqual(["agent/system", "input/system/0"])
   })
 })
 
