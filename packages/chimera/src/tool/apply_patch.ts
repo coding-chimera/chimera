@@ -329,6 +329,7 @@ export const ApplyPatchTool = Tool.define(
         output += `\n\nLSP errors detected in ${rel}, please fix:\n${block}`
       }
 
+      output += `\n\nPropagation audit recommended: run chimera_audit_recent before treating this change as complete (skip only when the edit is trivial or intentionally scoped).`
       return {
         title,
         metadata: {
