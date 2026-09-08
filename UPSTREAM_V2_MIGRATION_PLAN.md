@@ -1,6 +1,6 @@
 # Upstream v2 底座迁移计划
 
-状态：L0 + L1 + L2 + L3 已完成并推送（L3 落地 2026-09-04，五线程拆分 8 提交，origin/main 已同步；细分计划与验收见下文）——Effect beta.83、schema/protocol 包、插件 v2 host、codemode、grep 权限修复、LayerNode、effect-drizzle-sqlite、SystemContext 引擎/context epochs/提示词 Source 化/v2 事件契约收编均已落地。特性侧：fork 点以来上游全量 feat/安全 fix 分诊已完成，见「上游特性同步（F 线）」章节与 `UPSTREAM_FEATURE_TRIAGE.md`。
+状态：L0 + L1 + L2 + L3 已完成并推送（L3 落地 2026-09-04，五线程拆分 8 提交，origin/main 已同步；细分计划与验收见下文）——Effect beta.83、schema/protocol 包、插件 v2 host、codemode、grep 权限修复、LayerNode、effect-drizzle-sqlite、SystemContext 引擎/context epochs/提示词 Source 化/v2 事件契约收编均已落地。特性侧：fork 点以来上游全量 feat/安全 fix 分诊已完成，见「上游特性同步（F 线）」章节与 `UPSTREAM_FEATURE_TRIAGE.md`。批次：F0 ✅（bdaffa827）、F4-P1 ✅（a143b3c23）已推送；**F1 ✅ 完成（2026-09-08，本地 8 commit 未 push，见「F1 完成记录」）**；F2/claims P1P2 未启动。
 制定：2026-08-28，基于对上游 opencode（`refs/remotes/upstream/dev` = `755ebdb94`，v1.18.25）与本 fork（fork 点 `98e091796`，2026-05-07，opencode v1.14.40）的 swarm 探测 + 跨仓图精读（上游克隆仓 `/Volumes/workspace/opencode`，图已索引）。制定基线已过期：2026-09-04 上游 HEAD 为 `9f69463f1d`，与 L3 侦察基线一致。
 
 ## 背景事实
@@ -22,7 +22,7 @@
 - **LayerNode 最小子集**：上游 `packages/core/src/effect/` 实为 8 个源文件（外加 `dfdf` 垃圾文件，勿搬）+ `test/effect/` 6 个测试（其中 `layer-node/` 目录内 3 个）；核心 `layer-node.ts`（333 行，含编译期依赖检查）。坑：`packages/core/src/location-services.ts:92-95` 注释（该文件在 effect/ 之外）要求 replacements 必须在 hoist 期应用；上游 `runtime.ts:3,8` 硬编码 Observability（本仓处置：不绑定上游实现——跳过搬运、保留本仓已适配版）。
 - **Session V2 上游未完成**：V2 `compact/shell/skill/wait` 为桩，tool 定义解析/retry/状态持久化未勾选（`llm.ts:43-91` 头注释）。V1/V2 接口不同形状，绞杀层需 "V1 Interface → V2 + SessionV1 事件兼容" 适配器。
 建议执行顺序：**F0 → F1（Copilot 计费提到最前）→ F2 ∥ claims P1/P2（已解冻）→ L4（含并入项）→ F3 ∥ F4-P3 → L5（吸收 F4-P2）**。其余 10 项拍板不阻塞上述批次，可穿插进行。
-批次进度（2026-09-07）：**F0 ✅ 完成**（5 修复+测试落地，未 commit）；**F4-P1 ✅ 完成**（四阶段，见下方完成记录，未 commit）；F1/F2/claims P1P2 未启动。
+批次进度（2026-09-08）：**F0 ✅**（bdaffa827 已推送）；**F4-P1 ✅**（a143b3c23 已推送）；**F1 ✅ 完成**（本地 8 commit 未 push：7dd57693a 图片缩放+seeding / 5571bb670 headerTimeout / 9fd39ccb9 压缩 / aaddd6fbb CLI 双件 / 0efb73724 插件三件套 / 3c396f636 mantle+Cohere / 8674add7f Copilot 计费+tiers / b6a42ec70 SDK 重生成，见下方「F1 完成记录」）；F2/claims P1P2 未启动（队列下一步：F2 ∥ claims P1/P2）。
 - **配置化精确落点**：`core/src/plugin/variant.ts`——上游只硬编码了 glm-5.2，v1 的 `reasoning_options` 数据驱动（`transform.ts:1653-1671`）尚未移植到 v2。我们直接在此实现数据驱动 variants 生成。
 - v2 `supported()` 只映射 `@ai-sdk/{openai,anthropic,openai-compatible}`；`api.type:"native"` 无 runner 路由。迁移 DeepSeek 前需核对 models.dev 快照的 npm 字段。
 - 上游把 `@opencode-ai/core` 放在 devDependencies 靠 bun hoisting——**勿照抄**，发布 npm 包会缺依赖。
@@ -251,7 +251,7 @@ L5 seam 条款：P1 把后台语义隔离在"引擎服务 + task 工具分支"�
 - **默认开的验收强化**：P1 测试矩阵必含——注入轮×compaction 相撞、ultra/多代理策略×后台派发、上限打满拒绝行为、级联取消 BFS、cancel 表面、跨会话 inject 寻址、kill-switch 关闭时字节不变。WebUI 兼容注意：默认开即 background part metadata 立刻到 newweb，P1 采用兼容渲染或接受 raw 展示至 P3。
 - **新增开放问题（不阻塞 P1）**：跨进程唤醒——inject 限同进程会话；独立 CLI 进程里的 parked thread 无法被 inject 唤醒（WebUI 多 thread 同进程不受影响）。claims L2 需 poll→inject 桥（各进程轻量轮询项目 DB 的 claims 释放记录、唤醒本进程 parked 会话），列为 claims L2 设计点。
 
-#### F4-P1 完成记录（2026-09-07，未 commit）
+#### F4-P1 完成记录（2026-09-07，已提交 a143b3c23 并推送）
 
 四阶段串行派工（builder=deepseek-v4-flash-0731 high，root 逐阶段 diff 复审+独立重跑）：
 
@@ -265,6 +265,27 @@ L5 seam 条款：P1 把后台语义隔离在"引擎服务 + task 工具分支"�
 **验证**：F4 测试家族 113 pass/0 fail（7 文件）+ typecheck 绿 + test/session 495 pass（唯一失败=compaction abort 时序预存，memory.md beta.59 基线佐证）+ tool 目录仅预存 tool.chimera 1 条（stash 复核）。各阶段 predesign/audit 齐全（阶段4：predesign_215fa11fcf145101、audit_aaeab1fee6da4988 等），obligations 0。
 
 **残余/非阻塞**：swarm 原生 first-wins 等 P2（P1 期用 N×task(background)+task_cancel 手动模式，task.txt 已教）；newweb `(background)` 专属渲染属 P3（metadata 已发布）；跨进程唤醒（claims L2 poll→inject 桥）仍开放；compaction 时序用例高负载偶败（预存）。
+#### F1 完成记录（2026-09-08，本地 8 commit **未 push**——用户指令禁 push）
+
+落地清单（每项经 ali-internal-audit 内容审计 + chimera_audit 显式种子 + 父级独立复验）：
+
+1. `7dd57693a` 图片自动缩放 + 全局配置 seeding（85ce6a5f95+981e00971a 终态 + 487575773d）：photon-node 0.3.4 精确锁定 + wasm 补丁（上游终态版）；Image.normalize 接 prompt/processor（ResizerUnavailableError 降级直通）；prompt-harness fixture 源头供给 Image 层（一处治愈 5 个传播面测试文件）；seeding 品牌 = chimera.jsonc + coding-chimera schema URL。
+2. `5571bb670` headerTimeout（f965db9e13+67caf894e0 终态）：schema/HeaderTimeoutError/openai loader 默认 300s/fetch wrapper abort 信号（fork replay・itemId strip・UA 守卫全保留）；**父拍板：ResponsesTransport 不透传**（fork 特有路径，最小 parity 面，已记偏差）。
+3. `9fd39ccb9` HTTP 响应压缩（ffea6c7974 HEAD 终态）：Effect httpapi 后端 zlib 中间件（跳过条件全套），errorLayer↔cors 之间装配；Hono 后端已有压缩不动。
+4. `aaddd6fbb` CLI 双件（ba57718b05+3f0ef9b71c）：mcp add 非交互（add [name]+--url/--env/--header）+ logout 模糊搜索；子进程测试以仓库 cwd + 显式 env spawn（pitfalls #32 教训）。
+5. `0efb73724` 插件三件套（519d344470+341c64cc97+b32debb8a3 HEAD device-only 终态）：Hooks.dispose+宿主 finalizer 错误隔离、Modal 动态发现（不预置 URL 模板）、xAI device flow（不带 loopback 回调页；referrer/User-Agent 功能参数保留）。
+6. `3c396f636` bedrock mantle + Cohere North（9f42bd4a85+0bb677cef9）：bedrock 4.0.96→4.0.112；BUNDLED_PROVIDERS/选择函数/getModel 第4参（Wave 3 复用）/itemId strip/sdkKey/variants/store/media 八点补齐；north temperature+variants；**citation_options 随上游 db9391e8a6 回退同步删除**（侦察漏查回退提交，builder 实现时标记，父核实上游 HEAD 后删除——坑 #1 第二实例）；@aws-sdk/credential-providers 未 bump（mantle 不需要，实测绿）。
+7. `8674add7f` Copilot token 计费 + 定价 tiers（ae92f3158f+ec50db334b+373cd08b98+b8374b5a7c+561afb401a 合并终态 + c2b1ebd9dc；getUsage 同函数体故单 builder 合流）：/models 改 effect Schema 宽容解码+usable 守卫+pickerEnabled 暴露集（修复 P0 解析炸→静默回退）；AIC→USD 换算（含 batch_size 防除零）；includeRawChunks→processor raw case→finish-step 合并重置→getUsage totalNanoAiu/1e11 权威成本三元；X-GitHub-Api-Version 2026-06-01 + title X-Interaction-Type；small_model hook 完整移植（UTILITY_MODELS 顺序首中）；endpoint 内存态路由；tiers 三级级联选档 + ModelPricing 类型透传（effectivePricing 消费不变——basket 全<200k 收益≈0，主收益=session 成本精度）。**f1407e41c4（M10：copilot providerMetadata 键改名+itemId 剥离名单）不并入→独立 backlog**（跨 vendored 文件+codex-responses 边界，父拍板）。
+8. `b6a42ec70` SDK v2 types 重生成：headerTimeout/attachment/tiers/delegation-background 四 schema 面落地，**L3 v2 事件漂移与 F0 schema 精化的既有待办一并结清**（单文件 +32/-2）。
+
+范围拍板与排除：`9b7b6cb30f` worktree 命名去重 = **N/A 跳过**（fork 从未继承上游 list()/外部工作区特性面，candidate() 已有创建名去重；若将来引入外部工作区再评）。
+
+验证：全树 typecheck 0 错（chimera+plugin 双包）；集成门禁 test/session+provider+agent 48 文件 **1217 pass/1 fail**（唯一失败=对账表预存 compaction abort 时序 flake）；各波聚焦测试全绿（I1 210+109/P1 184+15/S1 15/S2 4/L1 126/W2 368/W3 142+20）；终态单二进制 build --single --skip-install --no-webui 通过（photon wasm+bedrock 4.0.112 打包无破坏；**未运行新二进制**，运行冒烟留给用户）。
+
+过程事故与清理（详见 skill pitfalls #30-33）：I1 builder 被手动中止留半编辑态挡全树验证→父小修+同 task_id 续派完成；edit 锚点事故吞测试 env 行→mcp-add 子进程一度污染真实 ~/.config/chimera/chimera.jsonc（mcp.github/local）→已精确清理复核；bun.lock 内网镜像 URL 18 处→空串槽脱敏（协议入 pitfalls #33）。
+
+残余非阻塞：单二进制 photon wasm 运行冒烟待用户；baseline（AVX2）target 构建未验；M10 backlog；web/docs config.mdx attachment 段未做；copilot chat 路径 raw usage 离线不可证（不带时回退 token 估算，可接受）；UTILITY_MODELS 代际会过时（上游同款跟随）。
+
 ### fix backlog 方法学（详见分诊文档 §7）
 
 1044 fix 中：43 条安全关键词已全量逐条（→F0）；fix(tui) 91 条主题级（→F3）；无关表面 ~427 条（app227/stats84/desktop33/console27/ui21/acp19/data16）直接封板；**core 相关 backlog ≈374 条不单独展开**——随对应特性批次消化（MCP fix 随 F2、provider/openai/llm/core fix 随 L4、tui fix 随 F3、session/compaction fix 随 F1 对应项），并在 L4 开工前跑一次独立关键词筛（crash/hang/loss/leak/corrupt/race）防漏 P1 级——F0 的 P1（#43675）即为此类筛法命中。
