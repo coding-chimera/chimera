@@ -584,7 +584,9 @@ describe("ProviderTransform.options - gpt-5 textVerbosity", () => {
     const result = ProviderTransform.options({ model, sessionID, providerOptions: {} })
     expect(result.reasoningSummary).toBe("auto")
     expect(result.include).toEqual(["reasoning.encrypted_content"])
+    expect(result.store).toBe(false)
   })
+
 })
 
 describe("ProviderTransform.options - gateway", () => {
@@ -683,6 +685,21 @@ describe("ProviderTransform.providerOptions", () => {
 
     expect(ProviderTransform.providerOptions(model, { cachePoint: { type: "default" } })).toEqual({
       bedrock: { cachePoint: { type: "default" } },
+    })
+  })
+
+  test("maps Bedrock Mantle provider options to OpenAI namespace", () => {
+    const model = createModel({
+      providerID: "amazon-bedrock",
+      api: {
+        id: "openai.gpt-5.5",
+        url: "https://bedrock-mantle.us-east-2.api.aws/openai/v1",
+        npm: "@ai-sdk/amazon-bedrock/mantle",
+      },
+    })
+
+    expect(ProviderTransform.providerOptions(model, { reasoningEffort: "medium" })).toEqual({
+      openai: { reasoningEffort: "medium" },
     })
   })
 
@@ -920,6 +937,12 @@ describe("ProviderTransform sampling defaults - qwen3.8", () => {
     expect(ProviderTransform.temperature(createModel("test/qwen3-max"))).toBe(0.55)
     expect(ProviderTransform.topP(createModel("test/qwen3-max"))).toBe(1)
     expect(ProviderTransform.topK(createModel("test/qwen3-max"))).toBeUndefined()
+  })
+})
+
+describe("ProviderTransform.temperature - Cohere North", () => {
+  test("defaults north-mini-code models to 1.0", () => {
+    expect(ProviderTransform.temperature({ id: "cohere/North-Mini-Code-1-0-latest" } as any)).toBe(1.0)
   })
 })
 
@@ -3749,6 +3772,49 @@ describe("ProviderTransform.variants", () => {
         expect(Object.keys(result)).toEqual(["low", "medium", "high", "max", "ultra"])
         expect(result.max).toEqual({ reasoningEffort: "max" })
       }
+    })
+
+    test("north-mini-code-1-0 returns only none and high", () => {
+      const model = createMockModel({
+        id: "cohere/north-mini-code-1-0",
+        providerID: "cohere",
+        api: {
+          id: "North-Mini-Code-1-0-latest",
+          url: "https://api.cohere.com/compatibility/v1",
+          npm: "@ai-sdk/openai-compatible",
+        },
+      })
+      const result = ProviderTransform.variants(model)
+      expect(Object.keys(result)).toEqual(["none", "high", "ultra"])
+      expect(result.none).toEqual({ reasoningEffort: "none" })
+      expect(result.high).toEqual({ reasoningEffort: "high" })
+    })
+  })
+
+  describe("@ai-sdk/amazon-bedrock/mantle", () => {
+    test("gpt-5.5 returns OpenAI-style reasoning variants", () => {
+      const model = createMockModel({
+        id: "amazon-bedrock/openai.gpt-5.5",
+        providerID: "amazon-bedrock",
+        api: {
+          id: "openai.gpt-5.5",
+          url: "https://bedrock-mantle.us-east-2.api.aws/openai/v1",
+          npm: "@ai-sdk/amazon-bedrock/mantle",
+        },
+        release_date: "2026-04-23",
+      })
+      const result = ProviderTransform.variants(model)
+      expect(Object.keys(result)).toEqual(["none", "low", "medium", "high", "xhigh", "ultra"])
+      expect(result.medium).toEqual({
+        reasoningEffort: "medium",
+        reasoningSummary: "auto",
+        include: ["reasoning.encrypted_content"],
+      })
+      expect(result.ultra).toEqual({
+        reasoningEffort: "xhigh",
+        reasoningSummary: "auto",
+        include: ["reasoning.encrypted_content"],
+      })
     })
   })
 

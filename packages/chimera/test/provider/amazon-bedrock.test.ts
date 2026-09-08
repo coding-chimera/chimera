@@ -2,7 +2,7 @@ import { test, expect, describe } from "bun:test"
 import path from "path"
 import { unlink } from "fs/promises"
 
-import { ProviderID } from "../../src/provider/schema"
+import { ProviderID, ModelID } from "../../src/provider/schema"
 import { tmpdir } from "../fixture/fixture"
 import { Instance } from "../../src/project/instance"
 import { WithInstance } from "../../src/project/with-instance"
@@ -444,5 +444,88 @@ describe("Bedrock cross-region prefix detection", () => {
     const modelID = "cohere.command-r-plus-v1:0"
     const hasPrefix = crossRegionPrefixes.some((prefix) => modelID.startsWith(prefix))
     expect(hasPrefix).toBe(false)
+  })
+})
+
+describe("Bedrock Mantle", () => {
+  const mantleProviderModelConfig = {
+    provider: { npm: "@ai-sdk/amazon-bedrock/mantle" },
+    limit: { context: 272_000, output: 32_000 },
+    modalities: {
+      input: ["text", "image", "pdf"] as Array<"text" | "image" | "pdf">,
+      output: ["text"] as Array<"text">,
+    },
+  }
+
+  const mantleOpenAIModelConfig = {
+    ...mantleProviderModelConfig,
+    provider: {
+      npm: "@ai-sdk/amazon-bedrock/mantle",
+      api: "https://bedrock-mantle.us-east-2.api.aws/openai/v1",
+    },
+  }
+
+  const run = <A, E>(fn: (provider: Provider.Interface) => Effect.Effect<A, E, never>) =>
+    AppRuntime.runPromise(
+      Effect.gen(function* () {
+        const provider = yield* Provider.Service
+        return yield* fn(provider)
+      }),
+    )
+
+  const getModel = (providerID: ProviderID, modelID: ModelID) =>
+    run((provider) => provider.getModel(providerID, modelID))
+
+  const getLanguage = (model: Provider.Model) => run((provider) => provider.getLanguage(model))
+
+  test("gpt-oss-safeguard uses chat completions; other openai models use responses (BUNDLED_PROVIDERS mantle registered)", async () => {
+    const originalBearer = process.env.AWS_BEARER_TOKEN_BEDROCK
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Filesystem.write(
+          path.join(dir, "chimera.json"),
+          JSON.stringify({
+            $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+            provider: {
+              "amazon-bedrock": {
+                options: { region: "us-east-2" },
+                models: {
+                  "openai.gpt-5.5": mantleOpenAIModelConfig,
+                  "openai.gpt-oss-safeguard-120b": mantleProviderModelConfig,
+                },
+              },
+            },
+          }),
+        )
+      },
+    })
+    try {
+      process.env.AWS_BEARER_TOKEN_BEDROCK = "test-bearer-token"
+      await WithInstance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const responsesModel = await getModel(
+            ProviderID.amazonBedrock,
+            ModelID.make("openai.gpt-5.5"),
+          )
+          const responsesLanguage = await getLanguage(responsesModel)
+          expect((responsesLanguage as { provider: string }).provider).toBe("bedrock-mantle.responses")
+          expect((responsesLanguage as { modelId: string }).modelId).toBe("openai.gpt-5.5")
+
+          const chatModel = await getModel(
+            ProviderID.amazonBedrock,
+            ModelID.make("openai.gpt-oss-safeguard-120b"),
+          )
+          const chatLanguage = await getLanguage(chatModel)
+          expect((chatLanguage as { provider: string }).provider).toBe("bedrock-mantle.chat")
+          expect((chatLanguage as { modelId: string }).modelId).toBe("openai.gpt-oss-safeguard-120b")
+        },
+      })
+    } finally {
+      // The bedrock loader bridges api-key auth into process.env for the AWS SDK;
+      // restore it so later files in the shared test process don't autoload bedrock.
+      if (originalBearer === undefined) delete process.env.AWS_BEARER_TOKEN_BEDROCK
+      else process.env.AWS_BEARER_TOKEN_BEDROCK = originalBearer
+    }
   })
 })
