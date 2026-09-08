@@ -8,7 +8,7 @@ import { createDatabase, type SqliteDatabase, type SqliteBackend } from './sqlit
 import * as fs from 'fs';
 import * as path from 'path';
 import { SchemaVersion } from '../types';
-import { GraphSchemaMigrationRequiredError } from '../errors';
+import { GraphSchemaMigrationRequiredError, defaultLogger } from '../errors';
 import { runMigrations, getCurrentVersion, CURRENT_SCHEMA_VERSION } from './migrations';
 import {
   StorageExtension,
@@ -18,7 +18,10 @@ import {
   getStorageExtensionVersion,
 } from './extensions';
 import { DATABASE_FILENAME, getGraphDataRootInfo } from '../directory';
-import * as Log from '@opencode-ai/core/util/log';
+// Boundary invariant: never import @opencode-ai/core modules from src/graph/.
+// The lazy require('../index') sites in mcp/{engine,tools}.ts must not transitively
+// reach a top-level await (core/util/log -> core/global), or bun compile fails.
+// Use ../errors defaultLogger ([CodeGraph] console diagnostics) instead.
 
 export type { SqliteDatabase, SqliteBackend } from './sqlite-adapter';
 export type {
@@ -154,7 +157,7 @@ export class DatabaseConnection {
       return conn;
     } catch (error) {
       try { conn.close(); } catch { }
-      Log.create({ service: 'chimera.graph-db' }).error('graph database open failed', {
+      defaultLogger.error('graph database open failed', {
         path: dbPath,
         error: error instanceof Error ? error.message : String(error),
       });
