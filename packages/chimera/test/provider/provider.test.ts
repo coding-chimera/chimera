@@ -1,4 +1,4 @@
-import { test, expect } from "bun:test"
+import { test, expect, mock } from "bun:test"
 import { mkdir, unlink } from "fs/promises"
 import path from "path"
 
@@ -1827,6 +1827,160 @@ test("getSmallModel respects config small_model override", async () => {
   })
 })
 
+test("cost() maps models.dev tiers onto provider cost tiers", async () => {
+  const originalFetch = globalThis.fetch
+  const previous = process.env.OPENCODE_AUTH_CONTENT
+  process.env.OPENCODE_AUTH_CONTENT = "{}"
+  await using tmp = await tmpdir({ config: { provider: {} } })
+  try {
+    // isolate model discovery: the sandbox can reach api.githubcopilot.com
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 })),
+    ) as unknown as typeof fetch
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        set("GITHUB_TOKEN", "test-token")
+        const providers = await list()
+        const copilot = providers[ProviderID.make("github-copilot")]
+        expect(copilot).toBeDefined()
+        const model = copilot.models[ModelID.make("gpt-5")]
+        expect(model).toBeDefined()
+        expect(model.cost.tiers).toEqual([
+          {
+            input: 8,
+            output: 30,
+            cache: { read: 0.8, write: 10 },
+            tier: { type: "context", size: 272000 },
+          },
+        ])
+        expect(model.cost.input).toBe(0)
+      },
+    })
+  } finally {
+    globalThis.fetch = originalFetch
+    await AppRuntime.runPromise(Auth.Service.use((auth) => auth.remove(ProviderID.make("github-copilot"))))
+    if (previous === undefined) delete process.env.OPENCODE_AUTH_CONTENT
+    if (previous !== undefined) process.env.OPENCODE_AUTH_CONTENT = previous
+  }
+})
+
+test("copilot loader honors advertised endpoints over the gpt-5 heuristic", async () => {
+  const originalFetch = globalThis.fetch
+  const previous = process.env.OPENCODE_AUTH_CONTENT
+  process.env.OPENCODE_AUTH_CONTENT = "{}"
+  await using tmp = await tmpdir({ config: { provider: {} } })
+  try {
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 })),
+    ) as unknown as typeof fetch
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        set("GITHUB_TOKEN", "test-token")
+        const responseModel = await getModel(ProviderID.make("github-copilot"), ModelID.make("gpt-5.2-codex"))
+        const chatModel = await getModel(ProviderID.make("github-copilot"), ModelID.make("claude-opus-4.6"))
+        const responseApi = responseModel.api as { endpoint?: string }
+        const chatApi = chatModel.api as { endpoint?: string }
+        responseApi.endpoint = "responses"
+        chatApi.endpoint = "chat"
+        const responsesLanguage = await getLanguage(responseModel)
+        const chatLanguage = await getLanguage(chatModel)
+        expect((responsesLanguage as { constructor: { name: string } }).constructor.name).toBe(
+          "OpenAIResponsesLanguageModel",
+        )
+        expect((chatLanguage as { constructor: { name: string } }).constructor.name).toBe(
+          "OpenAICompatibleChatLanguageModel",
+        )
+
+        delete responseApi.endpoint
+        const heuristic = await getLanguage(chatModel)
+        expect((heuristic as { constructor: { name: string } }).constructor.name).toBe(
+          "OpenAICompatibleChatLanguageModel",
+        )
+      },
+    })
+  } finally {
+    globalThis.fetch = originalFetch
+    await AppRuntime.runPromise(Auth.Service.use((auth) => auth.remove(ProviderID.make("github-copilot"))))
+    if (previous === undefined) delete process.env.OPENCODE_AUTH_CONTENT
+    if (previous !== undefined) process.env.OPENCODE_AUTH_CONTENT = previous
+  }
+})
+
+test("getSmallModel returns the Copilot utility model from the small_model hook", async () => {
+  const originalFetch = globalThis.fetch
+  const providerID = ProviderID.make("github-copilot")
+  const previous = process.env.OPENCODE_AUTH_CONTENT
+  process.env.OPENCODE_AUTH_CONTENT = "{}"
+  await using tmp = await tmpdir({ config: { provider: {} } })
+  try {
+    globalThis.fetch = mock(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            data: [
+              {
+                model_picker_enabled: true,
+                id: "gpt-5.4-nano",
+                name: "GPT-5.4 Nano",
+                version: "gpt-5.4-nano-2026-06-01",
+                capabilities: {
+                  family: "gpt",
+                  limits: {
+                    max_context_window_tokens: 64000,
+                    max_output_tokens: 16384,
+                    max_prompt_tokens: 64000,
+                  },
+                  supports: { streaming: true, tool_calls: true },
+                },
+              },
+              {
+                model_picker_enabled: true,
+                id: "gpt-5",
+                name: "GPT-5",
+                version: "gpt-5-2026-06-01",
+                capabilities: {
+                  family: "gpt",
+                  limits: {
+                    max_context_window_tokens: 200000,
+                    max_output_tokens: 16384,
+                    max_prompt_tokens: 200000,
+                  },
+                  supports: { streaming: true, tool_calls: true },
+                },
+              },
+            ],
+          }),
+          { status: 200 },
+        ),
+      ),
+    ) as unknown as typeof fetch
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await runWithAuth((_provider, auth) =>
+          auth.set(providerID, {
+            type: "oauth",
+            refresh: "refresh-token",
+            access: "access-token",
+            expires: Date.now() + 60_000,
+          }),
+        )
+        const model = await getSmallModel(providerID)
+        expect(model).toBeDefined()
+        expect(String(model?.providerID)).toBe("github-copilot")
+        expect(String(model?.id)).toBe("gpt-5.4-nano")
+      },
+    })
+  } finally {
+    globalThis.fetch = originalFetch
+    await AppRuntime.runPromise(Auth.Service.use((auth) => auth.remove(providerID)))
+    if (previous === undefined) delete process.env.OPENCODE_AUTH_CONTENT
+    if (previous !== undefined) process.env.OPENCODE_AUTH_CONTENT = previous
+  }
+})
 test("provider.sort prioritizes preferred models", () => {
   const models = [
     { id: "random-model", name: "Random" },

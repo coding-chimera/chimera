@@ -1,5 +1,5 @@
 import { NodeFileSystem } from "@effect/platform-node"
-import { expect } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { Cause, Effect, Exit, Fiber, Layer, Stream } from "effect"
 import path from "path"
 import type { Agent } from "../../src/agent/agent"
@@ -17,7 +17,7 @@ import { DatabaseConnection, getDatabasePath } from "@/graph"
 import { Session } from "@/session/session"
 import { LLM } from "../../src/session/llm"
 import { MessageV2 } from "../../src/session/message-v2"
-import { SessionProcessor } from "../../src/session/processor"
+import { SessionProcessor, copilotTotalNanoAiu } from "../../src/session/processor"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionStatus } from "../../src/session/status"
 import { SessionSummary } from "../../src/session/summary"
@@ -91,6 +91,56 @@ function providerCfg(url: string) {
       },
     },
   }
+}
+
+const copilotCfg = {
+  provider: {
+    "github-copilot-test": {
+      name: "Copilot Test",
+      id: "github-copilot-test",
+      env: [],
+      npm: "@ai-sdk/openai-compatible",
+      models: {
+        "test-model": {
+          id: "test-model",
+          name: "Test Model",
+          attachment: false,
+          reasoning: false,
+          temperature: false,
+          tool_call: true,
+          release_date: "2025-01-01",
+          limit: { context: 100000, output: 10000 },
+          cost: { input: 1, output: 2 },
+          options: {},
+        },
+      },
+      options: {
+        apiKey: "test-key",
+        baseURL: "http://localhost:1/v1",
+      },
+    },
+  },
+}
+
+function copilotProviderCfg(url: string) {
+  return {
+    ...copilotCfg,
+    provider: {
+      ...copilotCfg.provider,
+      "github-copilot-test": {
+        ...copilotCfg.provider["github-copilot-test"],
+        options: {
+          ...copilotCfg.provider["github-copilot-test"].options,
+          baseURL: url,
+        },
+      },
+    },
+  }
+}
+
+const copilotRef = {
+  providerID: ProviderID.make("github-copilot-test"),
+  modelID: ModelID.make("test-model"),
 }
 
 function agent(): Agent.Info {
@@ -1588,5 +1638,119 @@ failingImageIt.live("session.processor appends omitted image notice when resizin
         expect(toolPart.state.attachments).toBeUndefined()
       }),
     { git: true, config: providerCfg("http://localhost:1/v1") },
+  ),
+)
+
+describe("copilotTotalNanoAiu", () => {
+  test("extracts total_nano_aiu from top-level copilot_usage", () => {
+    expect(copilotTotalNanoAiu({ copilot_usage: { total_nano_aiu: 123 } })).toBe(123)
+  })
+  test("extracts total_nano_aiu nested under response", () => {
+    expect(copilotTotalNanoAiu({ response: { copilot_usage: { total_nano_aiu: 456 } } })).toBe(456)
+  })
+  test("rejects missing, non-object, negative, and non-finite values", () => {
+    for (const value of [undefined, null, "5", NaN, Number.POSITIVE_INFINITY, -1]) {
+      expect(copilotTotalNanoAiu({ copilot_usage: { total_nano_aiu: value } })).toBeUndefined()
+      expect(copilotTotalNanoAiu({ response: { copilot_usage: { total_nano_aiu: value } } })).toBeUndefined()
+    }
+    expect(copilotTotalNanoAiu({})).toBeUndefined()
+    expect(copilotTotalNanoAiu("not-object")).toBeUndefined()
+    expect(copilotTotalNanoAiu(null)).toBeUndefined()
+  })
+})
+
+it.live("session.processor charges Copilot nano-AIU usage as the authoritative step cost", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+
+        yield* llm.push(
+          raw({
+            head: [
+              {
+                id: "chatcmpl-copilot",
+                object: "chat.completion.chunk",
+                choices: [{ delta: { role: "assistant" } }],
+              },
+              {
+                id: "chatcmpl-copilot",
+                object: "chat.completion.chunk",
+                choices: [{ delta: { content: "hi" } }],
+              },
+            ],
+            tail: [
+              {
+                id: "chatcmpl-copilot",
+                object: "chat.completion.chunk",
+                choices: [{ delta: {}, finish_reason: "stop" }],
+                usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+                copilot_usage: { total_nano_aiu: 4_473_525_000 },
+              },
+            ],
+          }),
+        )
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "hi")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(copilotRef.providerID, copilotRef.modelID)
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+        })
+
+        const value = yield* handle.process({
+          user: parent,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "hi" }],
+          tools: {},
+        })
+
+        expect(value).toBe("continue")
+        const info = yield* session.get(chat.id)
+        expect(info.usage!.cost.total).toBe(4_473_525_000 / 100_000_000_000)
+      }),
+    { git: true, config: (url) => copilotProviderCfg(url) },
+  ),
+)
+
+it.live("session.processor falls back to token pricing without Copilot raw usage", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+
+        yield* llm.text("hello", { usage: { input: 1_000, output: 500 } })
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "hi")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(copilotRef.providerID, copilotRef.modelID)
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+        })
+
+        const value = yield* handle.process({
+          user: parent,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "hi" }],
+          tools: {},
+        })
+
+        expect(value).toBe("continue")
+        const info = yield* session.get(chat.id)
+        expect(info.usage!.cost.total).toBe((1_000 * 1 + 500 * 2) / 1_000_000)
+      }),
+    { git: true, config: (url) => copilotProviderCfg(url) },
   ),
 )

@@ -358,8 +358,12 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
     "github-copilot": () =>
       Effect.succeed({
         autoload: false,
-        async getModel(sdk: any, modelID: string, _options?: Record<string, any>) {
+        async getModel(sdk: any, modelID: string, _options?: Record<string, any>, model?: Model) {
           if (useLanguageModel(sdk)) return sdk.languageModel(modelID)
+          if (model && "endpoint" in model.api) {
+            if (model.api.endpoint === "responses" && sdk.responses) return sdk.responses(modelID)
+            if (model.api.endpoint === "chat" && sdk.chat) return sdk.chat(modelID)
+          }
           return shouldUseCopilotResponsesApi(modelID) ? sdk.responses(modelID) : sdk.chat(modelID)
         },
         options: {},
@@ -1039,10 +1043,21 @@ const ProviderCacheCost = Schema.Struct({
   write: Schema.Finite,
 })
 
+const ProviderCostTier = Schema.Struct({
+  input: Schema.Finite,
+  output: Schema.Finite,
+  cache: ProviderCacheCost,
+  tier: Schema.Struct({
+    type: Schema.Literal("context"),
+    size: Schema.Finite,
+  }),
+})
+
 const ProviderCost = Schema.Struct({
   input: Schema.Finite,
   output: Schema.Finite,
   cache: ProviderCacheCost,
+  tiers: optionalOmitUndefined(Schema.Array(ProviderCostTier)),
   experimentalOver200K: optionalOmitUndefined(
     Schema.Struct({
       input: Schema.Finite,
@@ -1051,6 +1066,7 @@ const ProviderCost = Schema.Struct({
     }),
   ),
 })
+
 
 const ProviderLimit = Schema.Struct({
   context: Schema.Finite,
@@ -1170,6 +1186,17 @@ function cost(c: ModelsDev.Model["cost"]): Model["cost"] {
       read: c?.cache_read ?? 0,
       write: c?.cache_write ?? 0,
     },
+  }
+  if (c?.tiers) {
+    result.tiers = c.tiers.map((item) => ({
+      input: item.input,
+      output: item.output,
+      cache: {
+        read: item.cache_read ?? 0,
+        write: item.cache_write ?? 0,
+      },
+      tier: item.tier,
+    }))
   }
   if (c?.context_over_200k) {
     result.experimentalOver200K = {
@@ -2304,6 +2331,19 @@ const layer: Layer.Layer<
 
       const provider = s.providers[providerID]
       if (!provider) return undefined
+
+      const experimental = yield* plugin.trigger<"experimental.provider.small_model">(
+        "experimental.provider.small_model",
+        { provider },
+        { model: undefined },
+      )
+      if (experimental.model) {
+        return {
+          ...experimental.model,
+          id: ModelID.make(experimental.model.id),
+          providerID: ProviderID.make(experimental.model.providerID),
+        }
+      }
 
       let priority = [
         "claude-haiku-4-5",

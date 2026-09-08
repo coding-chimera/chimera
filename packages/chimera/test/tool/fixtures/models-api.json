@@ -50871,7 +50871,13 @@
         "last_updated": "2025-08-07",
         "modalities": { "input": ["text", "image"], "output": ["text"] },
         "open_weights": false,
-        "cost": { "input": 0, "output": 0 },
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "tiers": [
+            { "input": 8, "output": 30, "cache_read": 0.8, "cache_write": 10, "tier": { "type": "context", "size": 272000 } }
+          ]
+        },
         "limit": { "context": 128000, "output": 128000 }
       },
       "claude-haiku-4.5": {

@@ -14,6 +14,18 @@ export interface ModelPricing {
     read: number
     write: number
   }
+  tiers?: {
+    input: number
+    output: number
+    cache: {
+      read: number
+      write: number
+    }
+    tier: {
+      type: "context"
+      size: number
+    }
+  }[]
   experimentalOver200K?: {
     input: number
     output: number

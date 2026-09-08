@@ -282,6 +282,10 @@ export interface Hooks {
       metadata: any
     },
   ) => Promise<void>
+  "experimental.provider.small_model"?: (
+    input: { provider: ProviderV2 },
+    output: { model?: ModelV2 },
+  ) => Promise<void>
   "experimental.chat.messages.transform"?: (
     input: {},
     output: {
