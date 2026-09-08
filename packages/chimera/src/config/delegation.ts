@@ -6,6 +6,8 @@ import { PositiveInt, withStatics } from "@/util/schema"
 
 export const DEFAULT_MAX_DEPTH = 3
 export const DEFAULT_MAX_CONCURRENT = 128
+export const DEFAULT_BACKGROUND_SUBAGENTS = true
+export const DEFAULT_BACKGROUND_CONCURRENT = 16
 
 export const ModelProfile = Schema.Struct({
   model: ConfigModelID.annotate({
@@ -85,6 +87,14 @@ export const Info = Schema.Struct({
   max_concurrent: Schema.optional(PositiveInt).annotate({
     description:
       "Runtime-wide budget of concurrently running subagents (default 128). New dispatches queue when the budget is exhausted; subagents waiting on their own children do not consume budget.",
+  }),
+  background_subagents: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Enable background subagents (default true). Turning this off is a kill-switch: background dispatch falls back to synchronous delegation behavior.",
+  }),
+  background_concurrent: Schema.optional(PositiveInt).annotate({
+    description:
+      "Independent cap on concurrently running background jobs (default 16). Jobs at the cap are rejected with an error rather than queued, so background work cannot crowd out the delegation.max_concurrent budget.",
   }),
 })
   .annotate({ identifier: "DelegationConfig" })

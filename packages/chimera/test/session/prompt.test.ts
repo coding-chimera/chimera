@@ -5,7 +5,7 @@ import { beforeEach, expect, test } from "bun:test"
 import { Cause, Effect, Exit, Fiber, Layer } from "effect"
 import path from "path"
 import fs from "fs/promises"
-import { fileURLToPath } from "url"
+import { fileURLToPath, pathToFileURL } from "url"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { Agent as AgentSvc } from "../../src/agent/agent"
 import { Bus } from "../../src/bus"
@@ -3351,3 +3351,53 @@ test("cutoff note tells the model to act immediately after output budget exhaust
   expect(CUTOFF_NOTE).toContain("no tool call or text produced")
   expect(CUTOFF_NOTE).toContain("Immediately perform one concrete action")
 })
+
+// Regression for #31245: a command template referencing @file plus the same
+// file already passed in input.parts used to inject the file content twice.
+// resolvePromptParts file parts must be deduplicated against input.parts.
+it.live("command file references deduplicate against input.parts (regression for #31245)", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ dir, llm }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({ title: "Dedup" })
+      const unique = "dedup-probe-manifest.json"
+      const filePath = path.join(dir, unique)
+      yield* Effect.promise(() => fs.writeFile(filePath, "{ \"name\": \"probe\" }\n"))
+      yield* llm.text("done")
+
+      yield* prompt.command({
+        sessionID: chat.id,
+        command: "dedup",
+        arguments: "",
+        parts: [
+          {
+            type: "file",
+            url: pathToFileURL(filePath).href,
+            filename: unique,
+            mime: "text/plain",
+          },
+        ],
+      })
+
+      const inputs = yield* llm.inputs
+      const request = JSON.stringify(inputs)
+      // The file content must be injected exactly once: deduplicated between
+      // the template (@file) part and the identical input.parts file part.
+      // The content block is rendered via the Read tool with this unique line.
+      const occurrences = request.split("End of file - total 1 lines").length - 1
+      expect(occurrences).toBe(1)
+    }),
+    {
+      git: true,
+      config: (url) => ({
+        ...providerCfg(url),
+        command: {
+          dedup: {
+            template: "Read @dedup-probe-manifest.json and summarize"
+          },
+        },
+      }),
+    },
+  )
+)

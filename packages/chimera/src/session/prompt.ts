@@ -37,9 +37,11 @@ import { Question } from "@/question"
 import { pathToFileURL, fileURLToPath } from "url"
 import { Config } from "@/config/config"
 import { ConfigSubagentRouting } from "@/config/subagent-routing"
+import { ConfigDelegation } from "@/config/delegation"
 import { Auth } from "@/auth"
 import { SubagentModelSchedulingRuntime } from "@/agent/subagent-model-scheduling-runtime"
 import { SubagentModelScheduling } from "@/agent/subagent-model-scheduling"
+import { BackgroundJob } from "@/agent/background-job"
 import { ConfigMarkdown } from "@/config/markdown"
 import { SessionSummary } from "./summary"
 import { WorkBrief } from "./work-brief"
@@ -74,6 +76,7 @@ import { RemoteCompaction } from "./remote-compaction"
 import * as DateTime from "effect/DateTime"
 import { eq } from "@/storage/db"
 import * as Database from "@/storage/db"
+import { NotFoundError } from "@/storage/storage"
 import { SessionTable } from "./session.sql"
 import { Memory } from "@/memory/memory"
 
@@ -93,7 +96,7 @@ const STRUCTURED_OUTPUT_SYSTEM_PROMPT = `IMPORTANT: The user has requested struc
 const log = Log.create({ service: "session.prompt" })
 
 type RuntimeContextSection = {
-  key: "workBrief" | "chimera" | "subagentModels" | "subagentScheduling"
+  key: "workBrief" | "chimera" | "subagentModels" | "subagentScheduling" | "backgroundTasks"
   title: string
   content: string
   hash: string
@@ -108,6 +111,18 @@ type RuntimeContextMetadata = {
 
 function hash(input: string) {
   return createHash("sha256").update(input).digest("hex")
+}
+
+// Renders a descriptive model label for a background job's metadata.model
+// ({ providerID, modelID, variant? }) when present; undefined when missing or malformed.
+function backgroundJobModel(metadata?: Record<string, unknown>) {
+  if (!metadata || typeof metadata !== "object") return undefined
+  const model = metadata.model
+  if (!model || typeof model !== "object") return undefined
+  const { providerID, modelID, variant } = model as { providerID?: unknown; modelID?: unknown; variant?: unknown }
+  if (typeof providerID !== "string" || typeof modelID !== "string") return undefined
+  const base = `${providerID}/${modelID}`
+  return typeof variant === "string" && variant.length > 0 ? `${base} @${variant}` : base
 }
 
 function runtimeContextHash(sections: RuntimeContextSection[]) {
@@ -196,6 +211,11 @@ export interface Interface {
   readonly shell: (input: ShellInput) => Effect.Effect<MessageV2.WithParts>
   readonly command: (input: CommandInput) => Effect.Effect<MessageV2.WithParts>
   readonly resolvePromptParts: (template: string) => Effect.Effect<PromptInput["parts"]>
+  readonly injectSynthetic: (input: InjectSyntheticInput) => Effect.Effect<MessageV2.WithParts, InstanceType<typeof NotFoundError>>
+}
+export type InjectSyntheticInput = {
+  sessionID: SessionID
+  text: string
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionPrompt") {}
@@ -225,6 +245,7 @@ export const layer = Layer.effect(
     const scope = yield* Scope.Scope
     const instruction = yield* Instruction.Service
     const state = yield* SessionRunState.Service
+    const background = yield* Effect.serviceOption(BackgroundJob.Service)
     const revert = yield* SessionRevert.Service
     const summary = yield* SessionSummary.Service
     const workBrief = yield* WorkBrief.Service
@@ -246,6 +267,7 @@ export const layer = Layer.effect(
         cancel: (sessionID: SessionID) => cancel(sessionID),
         resolvePromptParts: (template: string) => resolvePromptParts(template),
         prompt: (input: PromptInput) => prompt(input),
+        injectSynthetic: (input: InjectSyntheticInput) => injectSynthetic(input),
       } satisfies TaskPromptOps
     })
 
@@ -325,6 +347,35 @@ export const layer = Layer.effect(
       const subagentScheduling = subagentSchedulingView
         ? SubagentModelScheduling.disclosure(subagentSchedulingView)
         : undefined
+      const backgroundTasks = yield* Effect.gen(function* () {
+        const jobs = Option.getOrUndefined(background)
+        if (!jobs) return undefined
+        const bgCfg = yield* config.get()
+        const backgroundEnabled =
+          bgCfg.delegation?.background_subagents ?? ConfigDelegation.DEFAULT_BACKGROUND_SUBAGENTS
+        if (!backgroundEnabled) return undefined
+        const running = (yield* jobs.list()).filter(
+          (job) =>
+            job.status === "running" &&
+            typeof job.metadata?.parentSessionId === "string" &&
+            job.metadata.parentSessionId === input.sessionID,
+        )
+        if (running.length === 0) return undefined
+        const now = Date.now()
+        const lines = running.map((job) => {
+          const elapsed = Math.max(0, Math.floor((now - job.started_at) / 1000))
+          const title = job.title ? ` — ${job.title}` : ""
+          const model = backgroundJobModel(job.metadata)
+          return `- task_id: ${job.id}${title}; running for ${elapsed}s${model ? `; model: ${model}` : ""}`
+        })
+        return [
+          "## Background Tasks",
+          "",
+          ...lines,
+          "",
+          `${running.length} running background ${running.length === 1 ? "task" : "tasks"}. You will be notified automatically when a task finishes — do not sleep, poll, or check its progress. Cancel one with the task_cancel tool using its task_id.`,
+        ].join("\n")
+      })
       return [
         workBriefSuffix ? { key: "workBrief" as const, title: "Current Work Brief", content: workBriefSuffix, hash: hash(workBriefSuffix) } : undefined,
         chimeraContextSuffix
@@ -349,6 +400,14 @@ export const layer = Layer.effect(
               title: "Subagent Model Scheduling",
               content: subagentScheduling,
               hash: hash(SubagentModelScheduling.disclosureProjection(subagentSchedulingView)),
+            }
+          : undefined,
+        backgroundTasks
+          ? {
+              key: "backgroundTasks" as const,
+              title: "Background Tasks",
+              content: backgroundTasks,
+              hash: hash(backgroundTasks),
             }
           : undefined,
       ].filter((section): section is RuntimeContextSection => Boolean(section))
@@ -1908,6 +1967,18 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
       },
     )
 
+    const injectSynthetic = Effect.fn("SessionPrompt.injectSynthetic")(function* (input: InjectSyntheticInput) {
+      // Typed failure (NotFoundError) instead of Effect.orDie: a notify path that
+      // injects into an already-removed session must be able to catch this as an
+      // ordinary failure rather than letting an unexpected defect kill its fiber.
+      const session = yield* sessions.get(input.sessionID)
+      return yield* prompt({
+        sessionID: input.sessionID,
+        agent: session.agent,
+        parts: [{ type: "text", synthetic: true, text: input.text }],
+      })
+    })
+
     const lastAssistant = Effect.fnUntraced(function* (sessionID: SessionID) {
       const match = yield* sessions.findMessage(sessionID, (m) => m.info.role !== "user")
       if (Option.isSome(match)) return match.value
@@ -2353,6 +2424,15 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
       }
 
       const templateParts = yield* resolvePromptParts(template)
+      const inputFiles = new Set(
+        input.parts
+          ?.filter((part) => part.type === "file" && new URL(part.url).protocol === "file:")
+          .map((part) => fileURLToPath(part.url)),
+      )
+
+      const uniqueTemplateParts = templateParts.filter(
+        (part) => part.type !== "file" || !inputFiles.has(fileURLToPath(part.url)),
+      )
       const isSubtask = (agent.mode === "subagent" && cmd.subtask !== false) || cmd.subtask === true
       const parts = (isSubtask
         ? [
@@ -2365,7 +2445,8 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
               prompt: templateParts.find((y) => y.type === "text")?.text ?? "",
             },
           ]
-        : [...templateParts, ...(input.parts ?? [])]
+        : [...uniqueTemplateParts, ...(input.parts ?? [])]
+
       ).map((part) =>
         part.type === "text"
           ? { ...part, metadata: { ...part.metadata, memorySource: "command" } }
@@ -2459,6 +2540,7 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
       shell,
       command,
       resolvePromptParts,
+      injectSynthetic,
     })
   }),
 )

@@ -66,3 +66,6 @@ Since the user is greeting, use the greeting-responder agent to respond with a f
 </commentary>
 assistant: "I'm going to use the Task tool to launch the with the greeting-responder agent"
 </example>
+
+Cancelling background tasks:
+Background-mode tasks run until they finish and notify you automatically. When a background task is no longer needed — its work became obsolete, another background task already answered the question, or the user asked you to stop it — cancel it with the task_cancel tool using the task_id this tool returned. Cancelling a background task interrupts its subagent run and cascades to any further background tasks it launched. You can only cancel tasks you started yourself (the session is checked).

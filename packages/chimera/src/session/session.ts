@@ -5,6 +5,7 @@ import { Bus } from "@/bus"
 import { Decimal } from "decimal.js"
 import { type ProviderMetadata, type LanguageModelUsage } from "ai"
 import { Flag } from "@opencode-ai/core/flag/flag"
+import { BackgroundJob } from "@/agent/background-job"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 
 import { Database } from "@/storage/db"
@@ -632,6 +633,7 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
     const storage = yield* Storage.Service
     const sync = yield* SyncEvent.Service
     const config = yield* Config.Service
+    const background = Option.getOrUndefined(yield* Effect.serviceOption(BackgroundJob.Service))
 
     const createNext = Effect.fn("Session.createNext")(function* (input: {
       id?: SessionID
@@ -724,6 +726,13 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
           Effect.as(true),
           Effect.catchCause(() => Effect.succeed(false)),
         )
+
+        // Cancel the background jobs this session owns or dispatched: the
+        // session is being deleted, so its running tasks and any tasks it
+        // launched can no longer deliver results. Single-level on purpose —
+        // the child recursion above triggers each child session's own cleanup.
+        // Gated on the instance so cleanup still works without one.
+        if (hasInstance) yield* cancelBackgroundJobs(background, sessionID)
 
         deleteSessionMemory({ sessionID })
         yield* sync.run(Event.Deleted, { sessionID, info: session }, { publish: hasInstance })
@@ -1023,11 +1032,34 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
 )
 
 export const defaultLayer = layer.pipe(
+  Layer.provide(BackgroundJob.defaultLayer),
   Layer.provide(Bus.layer),
   Layer.provide(Storage.defaultLayer),
   Layer.provide(SyncEvent.defaultLayer),
   Layer.provide(Config.defaultLayer),
 )
+
+// Single-level cleanup: cancel running background jobs directly associated
+// with the removed session — the session itself as a job (job.id or
+// metadata.sessionId match) and jobs it dispatched (metadata.parentSessionId
+// match). Deleting nested sessions recurses through Session.remove, so each
+// level cleans its own jobs; no transitive closure is needed here.
+const cancelBackgroundJobs = Effect.fn("Session.cancelBackgroundJobs")(function* (
+  background: BackgroundJob.Interface | undefined,
+  sessionID: SessionID,
+) {
+  if (!background) return
+  yield* Effect.forEach(
+    (yield* background.list()).filter((job) => {
+      if (job.status !== "running") return false
+      if (job.id === sessionID) return true
+      if (typeof job.metadata?.sessionId === "string" && job.metadata.sessionId === sessionID) return true
+      return typeof job.metadata?.parentSessionId === "string" && job.metadata.parentSessionId === sessionID
+    }),
+    (job) => background.cancel(job.id),
+    { concurrency: "unbounded", discard: true },
+  )
+})
 
 function* listByProject(
   input: ListInput & {
