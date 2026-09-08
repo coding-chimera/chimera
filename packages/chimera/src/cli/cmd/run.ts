@@ -458,8 +458,13 @@ export const RunCommand = effectCmd({
 
         async function loop() {
           const toggles = new Map<string, boolean>()
+          const sessions = new Set([sessionID])
 
           for await (const event of events.stream) {
+            if (event.type === "session.created" && event.properties.info.parentID) {
+              if (sessions.has(event.properties.info.parentID)) sessions.add(event.properties.sessionID)
+            }
+
             const promptStatsEvent = event as unknown as {
               type: string
               properties?: { sessionID?: string }
@@ -569,7 +574,7 @@ export const RunCommand = effectCmd({
 
             if (event.type === "permission.asked") {
               const permission = event.properties
-              if (permission.sessionID !== sessionID) continue
+              if (!sessions.has(permission.sessionID)) continue
 
               if (args["dangerously-skip-permissions"]) {
                 await sdk.permission.reply({

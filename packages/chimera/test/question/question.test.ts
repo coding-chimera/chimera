@@ -1,5 +1,5 @@
-import { afterEach, expect } from "bun:test"
-import { Cause, Effect, Exit, Fiber, Layer } from "effect"
+import { afterEach, describe, expect, test } from "bun:test"
+import { Cause, Effect, Exit, Fiber, Layer, Schema } from "effect"
 import { Question } from "../../src/question"
 import { Instance } from "../../src/project/instance"
 import { WithInstance } from "../../src/project/with-instance"
@@ -426,7 +426,20 @@ it.live("pending question rejects on instance reload", () =>
     yield* Effect.promise(() => reloadTestInstance({ directory: dir }))
 
     const exit = yield* Fiber.await(fiber)
-    expect(Exit.isFailure(exit)).toBe(true)
     if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBeInstanceOf(Question.RejectedError)
   }),
 )
+
+// Regression for #26456: question ids must carry the `que` prefix so a
+// malformed request id fails schema decoding instead of silently no-op'ing.
+describe("QuestionID prefix validation", () => {
+  test("accepts ascending question ids", () => {
+    const id = QuestionID.ascending()
+    expect(String(id).startsWith("que_")).toBe(true)
+    expect(Schema.decodeUnknownSync(QuestionID)(id)).toBe(id)
+  })
+
+  test("rejects non-que ids", () => {
+    expect(() => Schema.decodeUnknownSync(QuestionID)("malformed-id")).toThrow()
+  })
+})

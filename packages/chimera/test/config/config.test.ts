@@ -3006,3 +3006,49 @@ test("parses delegation scheduling capability_anchors", () => {
   })
   expect(config.delegation?.scheduling?.capability_anchors?.["future-model"]).toEqual({ score: 0.5 })
 })
+
+// Regression for #28388: malformed OPENCODE_PERMISSION JSON used to crash config
+// load with an unhandled SyntaxError. Loading with invalid JSON must not throw,
+// and valid JSON must still apply.
+describe("OPENCODE_PERMISSION env var", () => {
+  test("does not crash when OPENCODE_PERMISSION contains invalid JSON", async () => {
+    const previous = process.env.OPENCODE_PERMISSION
+    process.env.OPENCODE_PERMISSION = "{invalid"
+    try {
+      await using tmp = await tmpdir({ config: { model: "test/model" } })
+      await WithInstance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const config = await load()
+          expect(config).toBeDefined()
+          // Permission from the env var was skipped on parse failure.
+          expect(config.permission ?? []).toEqual([])
+        },
+      })
+    } finally {
+      if (previous === undefined) delete process.env.OPENCODE_PERMISSION
+      else process.env.OPENCODE_PERMISSION = previous
+    }
+  })
+
+  test("applies valid OPENCODE_PERMISSION JSON", async () => {
+    const previous = process.env.OPENCODE_PERMISSION
+    process.env.OPENCODE_PERMISSION = JSON.stringify({
+      bash: { "npm *": "allow" },
+    })
+    try {
+      await using tmp = await tmpdir({ config: { model: "test/model" } })
+      await WithInstance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const config = await load()
+          const bash = config.permission?.bash as Record<string, string> | undefined
+          expect(bash?.["npm *"]).toBe("allow")
+        },
+      })
+    } finally {
+      if (previous === undefined) delete process.env.OPENCODE_PERMISSION
+      else process.env.OPENCODE_PERMISSION = previous
+    }
+  })
+})
