@@ -81,6 +81,7 @@ import { workspaceRouterMiddleware, workspaceRoutingLayer } from "./middleware/w
 import { disposeMiddleware } from "./lifecycle"
 import { memoMap } from "@opencode-ai/core/effect/memo-map"
 import * as ServerBackend from "@/server/backend"
+import { compressionLayer } from "./middleware/compression"
 import { errorLayer } from "./middleware/error"
 
 export const context = Context.makeUnsafe<unknown>(new Map())
@@ -161,6 +162,7 @@ export function createRoutes(corsOptions?: CorsOptions) {
   return Layer.mergeAll(rootApiRoutes, eventApiRoutes, instanceRoutes, newwebUiRoute, uiRoute).pipe(
     Layer.provide([
       errorLayer,
+      compressionLayer,
       cors(corsOptions),
       runtime,
       Account.defaultLayer,
