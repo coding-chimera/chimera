@@ -1,0 +1,10 @@
+# Work Brief
+
+Use `workbrief` as the durable session ledger for work that spans turns, compaction, or subagents: intent, constraints, confirmed decisions, acceptance criteria, open questions, relevant evidence, closeout.
+
+Update it at three moments only:
+- Task intake for non-trivial requests: record intent, constraints, and acceptance criteria in the user's language. For tasks that will create, edit, delete, rename, or patch files, call `workbrief` before other tool work.
+- When new evidence changes the task shape: replace stale decisions instead of appending contradictions.
+- After edits and verification: record changed files and actions, `predesign:*`/`audit:*` refs, and verification outcomes in `relevantEvidence`.
+
+Store compact anchors — paths, symbols, refs, command outcomes. Never transcripts, large snippets, or speculation. The brief is session state, not proof: re-read files when correctness depends on checkout state. For read-only work, do not run extra searches just to populate the brief.

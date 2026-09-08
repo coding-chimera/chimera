@@ -1,10 +1,11 @@
-import { describe, expect } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect"
 import type { Agent } from "../../src/agent/agent"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { Skill } from "../../src/skill"
 import { Permission } from "../../src/permission"
 import { SystemPrompt } from "../../src/session/system"
+import { LLM } from "../../src/session/llm"
 import { testEffect } from "../lib/effect"
 
 const skills: Skill.Info[] = [
@@ -52,7 +53,7 @@ const it = testEffect(
 )
 
 describe("session.system", () => {
-  it.effect("assembles base, workflow, Chimera protocol, then model overlay", () =>
+  it.effect("assembles base and workflow, then model overlay", () =>
     Effect.gen(function* () {
       const unknown = SystemPrompt.provider({
         providerID: "local",
@@ -65,86 +66,40 @@ describe("session.system", () => {
 
       expect(unknown).not.toContain("# Harness and tool boundary")
       expect(unknown).toContain("# Tool selection and harness boundary")
-      expect(unknown).toContain("Tool results, injected context")
-      expect(unknown).toContain("# Software engineering workflow")
-      expect(unknown).toContain("## Verification strategy")
-      expect(unknown).toContain("Verification discipline")
-      expect(unknown).toContain("## Browser workflow")
-      expect(unknown).toContain("`browser_open` -> `browser_snapshot`")
-      expect(unknown).toContain("untrusted external content")
-      expect(unknown).toContain("latest snapshot of the same tab")
-      expect(unknown).toContain("browser_screenshot")
-      expect(unknown).toContain("browser_close")
-      expect(unknown).toContain("# Chimera graph, audit, and runtime protocol")
-      expect(unknown).toContain("## Chimera workflow")
-      expect(unknown).toContain("## Propagation audit workflow")
+      expect(unknown).toContain("tool results, injected context")
       expect(unknown).toContain("You are Chimera")
       expect(unknown).toContain("# Response contract")
       expect(unknown).toContain("# Planning and task tracking")
-      expect(unknown).toContain("When compacted or summarized context is present")
-      expect(unknown).toContain("workbrief")
-      expect(unknown).toContain("chimera_predesign")
-      expect(unknown).toContain("chimera_audit_recent")
-      expect(unknown).toContain("chimera_oracle_recent")
-      expect(unknown).toContain("chimera_obligations_sync")
-      expect(unknown).toContain("chimera_swarm")
-      expect(unknown).toContain("2+ independent follow-up items")
-      expect(unknown).toContain("audit-followup")
-      expect(unknown).toContain("worker prompt shapes")
-      expect(unknown).toContain("parent agent still summarizes child results")
-      expect(unknown).toContain("reruns audit/tests/oracles")
-      expect(unknown).toContain("<multi_agent_mode>")
-      expect(unknown).toContain("genuinely independent, non-overlapping")
-      expect(unknown).toContain("active multi-agent policy permits proactive delegation")
-      expect(unknown).toContain("defaults to 16 and is capped at 16")
-      expect(unknown).toContain("Nested delegation")
-      expect(unknown).toContain("delegation.max_depth")
-      expect(unknown).toContain("depth cap cannot dispatch further")
-      expect(unknown).toContain("perform a delegation checkpoint before broad repository exploration")
-      expect(unknown).toContain("state the concrete blocker")
-      expect(unknown).toContain("Do not fan out by item count alone.")
-      expect(unknown).toContain("## Chimera-style Work Brief operating model")
-      expect(unknown).toContain("Reference tool flows:")
-      expect(unknown).toContain("workbrief` is the first tool call")
-      expect(unknown).toContain("File change task: `workbrief` first")
-      expect(unknown).toContain("workbrief.relevantEvidence")
-      expect(unknown).toContain("2-4 compact anchors")
-      expect(unknown).toContain("graph-first discovery")
-      expect(unknown).toContain("Do not run extra `read`, `grep`, or `glob` only to fill the brief")
-      expect(unknown).toContain("changed file paths/actions")
-      expect(unknown).toContain("graph-only exploration")
-      expect(unknown).toContain("first evidence-producing discovery tool")
-      expect(unknown).toContain("start with `chimera_file_symbols`")
-      expect(unknown).toContain("After graph evidence exists, use raw search only for exact literal, regex, or file-name verification")
-      expect(unknown).toContain("Do not substitute broad `read`, `grep`, `glob`, or directory `read`")
-      expect(unknown).toContain("base prompt, workflow prompt, Chimera protocol prompt")
-      expect(unknown).not.toContain("base prompt, harness prompt")
-      expect(unknown).toContain("relevantEvidence")
-      expect(unknown).toContain("when you want to know where a concept, behavior")
-      expect(unknown).toContain("graph-backed discovery")
-      expect(unknown).toContain("chimera_obligations_sync")
-      expect(unknown).toContain("Presets are worker prompt shapes")
-      expect(unknown).toContain("durable session ledger")
-      expect(unknown).toContain("state memory; Chimera graph/audit tools are repository evidence")
-      expect(unknown).toContain("Work Brief and todo serve different jobs")
-      expect(unknown).toContain("When the user names a concrete file")
-      expect(unknown).toContain("The todo tool is session-local progress state")
+      expect(unknown).toContain("# Procedure proportionality")
+      expect(unknown).toContain("# Repository evidence")
+      expect(unknown).toContain("# Safety and external effects")
+      expect(unknown).toContain("# Code editing rules")
+      expect(unknown).toContain("# Git rules")
       expect(unknown).toContain("Do not create, modify, or populate `.env`")
       expect(unknown).not.toContain("You are opencode")
       expect(unknown).not.toContain("github.com/anomalyco/opencode")
+
+      expect(unknown).toContain("# Software engineering workflow")
+      expect(unknown).toContain("## Verification strategy")
+      expect(unknown).toContain("Verification discipline")
+      expect(unknown).toContain("## Completion contract")
+      expect(unknown).toContain("When compacted context exists, rebuild repository evidence when needed")
       expect(unknown.indexOf("# Tool selection and harness boundary")).toBeLessThan(
         unknown.indexOf("# Software engineering workflow"),
       )
-      expect(unknown.indexOf("# Software engineering workflow")).toBeLessThan(
-        unknown.indexOf("# Chimera graph, audit, and runtime protocol"),
-      )
-      expect(unknown.indexOf("## Browser workflow")).toBeLessThan(
-        unknown.indexOf("# Chimera graph, audit, and runtime protocol"),
-      )
+
+      // Capability layers (chimera/workbrief/browser) are injected per-tool by
+      // LLM.systemSegments, never part of provider().
+      expect(unknown).not.toContain("# Chimera graph, audit, and runtime protocol")
+      expect(unknown).not.toContain("## Tool selection map")
+      expect(unknown).not.toContain("# Work Brief")
+      expect(unknown).not.toContain("# Browser workflow")
       expect(unknown).not.toContain("kimi-for-coding（Kimi-K2.7）")
-      expect(kimi).toContain("# Chimera graph, audit, and runtime protocol")
+
+      expect(kimi).toContain("# Procedure proportionality")
       expect(kimi).toContain("kimi-for-coding（Kimi-K2.7）")
-      expect(kimi.indexOf("# Chimera graph, audit, and runtime protocol")).toBeLessThan(
+      expect(kimi).not.toContain("# Chimera graph, audit, and runtime protocol")
+      expect(kimi.indexOf("# Software engineering workflow")).toBeLessThan(
         kimi.indexOf("kimi-for-coding（Kimi-K2.7）"),
       )
       yield* Effect.void
@@ -170,7 +125,7 @@ describe("session.system", () => {
       expect(provider).toContain("即使用户给出具体文件")
       expect(provider).toContain("明确禁止 grep/global search")
       expect(provider).toContain("chimera_predesign")
-      expect(provider).toContain("# Chimera graph, audit, and runtime protocol")
+      expect(provider).toContain("# Procedure proportionality")
       expect(overlay).toContain("# DeepSeek runtime overlay")
       expect(overlay).toContain("DeepSeek 使用提示")
       yield* Effect.void
@@ -220,31 +175,31 @@ describe("session.system", () => {
         api: { id: "gpt-5.4" },
       } as unknown as Parameters<typeof SystemPrompt.provider>[0]).join("\n")
 
-      expect(raw).toContain("# Chimera graph, audit, and runtime protocol")
+      expect(raw).toContain("# Procedure proportionality")
       expect(raw).toContain("model-specific overlay")
       expect(raw).toContain("actual model slug")
-      expect(raw).toContain("When compacted or summarized context is present")
+      expect(raw).toContain("When compacted context exists, rebuild repository evidence when needed")
       expect(raw).toContain("request path")
       expect(raw).toContain("Codex OAuth and OpenAI API")
       expect(raw).toContain("propagation audit workflow")
       expect(raw).toContain("prompt/provider/runtime request path tracing")
-      expect(namespaced).toContain("# Chimera graph, audit, and runtime protocol")
+      expect(namespaced).toContain("# Procedure proportionality")
       expect(namespaced).toContain("model-specific overlay")
       expect(namespaced).toContain("actual model slug")
-      expect(namespaced).toContain("When compacted or summarized context is present")
+      expect(namespaced).toContain("When compacted context exists, rebuild repository evidence when needed")
       expect(namespaced).toContain("request path")
       expect(namespaced).toContain("Codex OAuth and OpenAI API")
       expect(namespaced).toContain("propagation audit workflow")
       expect(namespaced).toContain("prompt/provider/runtime request path tracing")
-      expect(codexNamespaced).toContain("# Chimera graph, audit, and runtime protocol")
+      expect(codexNamespaced).toContain("# Procedure proportionality")
       expect(codexNamespaced).toContain("model-specific overlay")
       expect(codexNamespaced).toContain("actual model slug")
-      expect(codexNamespaced).toContain("When compacted or summarized context is present")
+      expect(codexNamespaced).toContain("When compacted context exists, rebuild repository evidence when needed")
       expect(codexNamespaced).toContain("request path")
       expect(codexNamespaced).toContain("Codex OAuth and OpenAI API")
       expect(codexNamespaced).toContain("propagation audit workflow")
       expect(codexNamespaced).toContain("prompt/provider/runtime request path tracing")
-      expect(fallback).toContain("# Chimera graph, audit, and runtime protocol")
+      expect(fallback).toContain("# Procedure proportionality")
       expect(fallback).not.toContain("Codex OAuth and OpenAI API")
       yield* Effect.void
     }),
@@ -308,11 +263,11 @@ describe("session.system", () => {
       expect(stable).toContain("chimera_predesign")
       expect(stable).toContain("chimera_audit_recent")
       expect(stable).toContain("最终回复契约")
-      expect(stable).toContain("# Chimera graph, audit, and runtime protocol")
+      expect(stable).toContain("# Procedure proportionality")
       expect(legacyAlias).toContain("kimi-for-coding（Kimi-K2.7）")
-      expect(legacyAlias).toContain("# Chimera graph, audit, and runtime protocol")
+      expect(legacyAlias).toContain("# Procedure proportionality")
       expect(apiNamed).toContain("kimi-for-coding（Kimi-K2.7）")
-      expect(apiNamed).toContain("# Chimera graph, audit, and runtime protocol")
+      expect(apiNamed).toContain("# Procedure proportionality")
       yield* Effect.void
     }),
   )
@@ -334,10 +289,10 @@ describe("session.system", () => {
 
       expect(relayed).not.toContain("kimi-for-coding（Kimi-K2.7）")
       expect(relayed).not.toContain("中文 Kimi Layer")
-      expect(relayed).toContain("# Chimera graph, audit, and runtime protocol")
+      expect(relayed).toContain("# Procedure proportionality")
       expect(providerHosted).not.toContain("kimi-for-coding（Kimi-K2.7）")
       expect(providerHosted).not.toContain("中文 Kimi Layer")
-      expect(providerHosted).toContain("# Chimera graph, audit, and runtime protocol")
+      expect(providerHosted).toContain("# Procedure proportionality")
       expect(k2).toContain("kimi-for-coding（Kimi-K2.7）")
       yield* Effect.void
     }),
@@ -360,9 +315,9 @@ describe("session.system", () => {
           api: { id: item.apiID },
         } as unknown as Parameters<typeof SystemPrompt.provider>[0]).join("\n")
 
-        expect(prompt).toContain("# Chimera graph, audit, and runtime protocol")
+        expect(prompt).toContain("# Software engineering workflow")
         expect(prompt).toContain(item.marker)
-        expect(prompt.indexOf("# Chimera graph, audit, and runtime protocol")).toBeLessThan(prompt.indexOf(item.marker))
+        expect(prompt.indexOf("# Software engineering workflow")).toBeLessThan(prompt.indexOf(item.marker))
       }
 
       yield* Effect.void
@@ -407,4 +362,74 @@ describe("session.system", () => {
       expect(output).not.toContain("# alpha-skill")
     }),
   )
+})
+
+describe("session.system capability segments", () => {
+  const capabilityTools = { workbrief: {}, browser_open: {}, chimera_search: {}, write: {} }
+
+  test("capability keys are present exactly when their gate tool is present", () => {
+    expect(SystemPrompt.capabilitySegments(capabilityTools).map((segment) => segment.key)).toEqual([
+      "core/chimera",
+      "core/workbrief",
+      "core/browser",
+    ])
+    expect(SystemPrompt.capabilitySegments({ workbrief: {} }).map((segment) => segment.key)).toEqual([
+      "core/workbrief",
+    ])
+    expect(SystemPrompt.capabilitySegments({ browser_open: {} }).map((segment) => segment.key)).toEqual([
+      "core/browser",
+    ])
+    expect(SystemPrompt.capabilitySegments({ chimera_search: {} }).map((segment) => segment.key)).toEqual([
+      "core/chimera",
+    ])
+    expect(SystemPrompt.capabilitySegments({ read: {}, bash: {} })).toEqual([])
+    expect(SystemPrompt.capabilitySegments({})).toEqual([])
+  })
+
+  test("capability content anchors arrive with the gated segments", () => {
+    const joined = SystemPrompt.capabilitySegments(capabilityTools)
+      .map((segment) => segment.content)
+      .join("\n")
+    expect(joined).toContain("# Chimera graph, audit, and runtime protocol")
+    expect(joined).toContain("## Tool selection map")
+    expect(joined).toContain("# Work Brief")
+    expect(joined).toContain("# Browser workflow")
+    expect(joined).toContain("<multi_agent_mode>")
+    expect(joined).toContain("`browser_open` -> `browser_snapshot`")
+  })
+
+  test("systemSegments injects capability segments in send order, gated on the tool set", () => {
+    const base = {
+      model: { providerID: "local", api: { id: "unknown-model" } },
+      agent: {},
+      small: false,
+      parentSessionID: undefined,
+      system: [],
+      user: {},
+      tools: {},
+    } as unknown as Parameters<typeof LLM.systemSegments>[0]
+    const keysFor = (tools: Record<string, unknown>, agentPrompt?: string): string[] =>
+      LLM.systemSegments(
+        {
+          ...base,
+          tools,
+          agent: agentPrompt ? { prompt: agentPrompt } : {},
+        } as unknown as Parameters<typeof LLM.systemSegments>[0],
+        undefined,
+        undefined,
+      ).map((segment) => segment.key)
+
+    expect(keysFor(capabilityTools)).toEqual([
+      "core/default",
+      "core/workflow",
+      "core/chimera",
+      "core/workbrief",
+      "core/browser",
+    ])
+    expect(keysFor({})).toEqual(["core/default", "core/workflow"])
+    expect(keysFor({ read: {}, bash: {} })).toEqual(["core/default", "core/workflow"])
+    // An agent.prompt override replaces the entire provider stack, capability
+    // segments included, even when the tools are present.
+    expect(keysFor(capabilityTools, "You are a custom agent.")).toEqual(["agent/system"])
+  })
 })
