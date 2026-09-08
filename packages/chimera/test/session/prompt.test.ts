@@ -14,6 +14,7 @@ import { ChimeraPromptContext } from "@/chimera/prompt-context"
 import { Config } from "@/config/config"
 import { ConfigSubagentRouting } from "@/config/subagent-routing"
 import { Auth } from "@/auth"
+import { Image } from "../../src/image/image"
 import { LSP } from "@/lsp/lsp"
 import { MCP } from "../../src/mcp"
 import { Permission } from "../../src/permission"
@@ -222,7 +223,7 @@ const lsp = Layer.succeed(
 const status = SessionStatus.layer.pipe(Layer.provideMerge(Bus.layer))
 const run = SessionRunState.layer.pipe(Layer.provide(status))
 const infra = Layer.mergeAll(NodeFileSystem.layer, CrossSpawnSpawner.defaultLayer)
-function makeHttp() {
+function makeHttp(imageLayer: Layer.Layer<Image.Service> = Image.defaultLayer) {
   const deps = Layer.mergeAll(
     Session.defaultLayer,
     Snapshot.defaultLayer,
@@ -261,7 +262,7 @@ function makeHttp() {
     Layer.provideMerge(deps),
   )
   const trunc = Truncate.layer.pipe(Layer.provideMerge(deps))
-  const proc = SessionProcessor.layer.pipe(Layer.provide(summary), Layer.provideMerge(deps))
+  const proc = SessionProcessor.layer.pipe(Layer.provide(summary), Layer.provide(imageLayer), Layer.provideMerge(deps))
   const compact = SessionCompaction.layer.pipe(
     Layer.provide(RemoteCompaction.disabledLayer),
     Layer.provideMerge(proc),
@@ -271,7 +272,9 @@ function makeHttp() {
     TestLLMServer.layer,
     SessionPrompt.layer.pipe(
       Layer.provide(SessionRevert.defaultLayer),
+      Layer.provide(imageLayer),
       Layer.provide(RemoteCompaction.disabledLayer),
+      Layer.provide(summary),
       Layer.provide(summary),
       Layer.provideMerge(run),
       Layer.provideMerge(compact),
@@ -288,6 +291,11 @@ function makeHttp() {
 }
 
 const it = testEffect(makeHttp())
+const unavailableImage = Layer.succeed(
+  Image.Service,
+  Image.Service.of({ normalize: () => Effect.fail(new Image.ResizerUnavailableError()) }),
+)
+const itNoResizer = testEffect(makeHttp(unavailableImage))
 const unix = process.platform !== "win32" ? it.live : it.live.skip
 
 // Config that registers a custom "test" provider with a "test-model" model
@@ -605,6 +613,94 @@ it.live("allows the locked remote compaction model", () =>
         expect(lock?.modelID).toBe(locked.modelID)
       }),
     { git: true, config: cfg },
+  ),
+)
+
+it.live("normalizes over-limit image attachments before persisting", () =>
+  provideTmpdirInstance(
+    () =>
+      Effect.gen(function* () {
+        const { prompt, sessions, chat } = yield* boot()
+        const fixture = yield* Effect.promise(() =>
+          Bun.file(path.join(import.meta.dir, "..", "image", "fixtures", "picture-5mb-base64.png")).arrayBuffer(),
+        )
+        const url = `data:image/png;base64,${Buffer.from(fixture).toString("base64")}`
+        yield* prompt.prompt({
+          sessionID: chat.id,
+          agent: "build",
+          model: ref,
+          noReply: true,
+          parts: [{ type: "file", mime: "image/png", url }],
+        })
+
+        const filePart = (yield* sessions.messages({ sessionID: chat.id }))
+          .flatMap((message) => message.parts)
+          .find((part) => part.type === "file")
+        expect(filePart).toBeDefined()
+        if (filePart?.type === "file") {
+          expect(filePart.url).not.toBe(url)
+          expect(filePart.url.startsWith("data:")).toBe(true)
+          expect(filePart.url.length).toBeLessThan(url.length)
+        }
+      }),
+    { git: true, config: cfg },
+  ),
+)
+
+itNoResizer.live("persists the original image attachment when the resizer is unavailable", () =>
+    provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const { prompt, sessions, chat } = yield* boot()
+          const fixture = yield* Effect.promise(() =>
+            Bun.file(path.join(import.meta.dir, "..", "image", "fixtures", "picture-5mb-base64.png")).arrayBuffer(),
+          )
+          const url = `data:image/png;base64,${Buffer.from(fixture).toString("base64")}`
+          yield* prompt.prompt({
+            sessionID: chat.id,
+            agent: "build",
+            model: ref,
+            noReply: true,
+            parts: [{ type: "file", mime: "image/png", url }],
+          })
+
+          const filePart = (yield* sessions.messages({ sessionID: chat.id }))
+            .flatMap((message) => message.parts)
+            .find((part) => part.type === "file")
+          expect(filePart?.type === "file" ? filePart.url : undefined).toBe(url)
+        }),
+      { git: true, config: cfg },
+    ),
+  )
+
+it.live("fails with a size error when auto_resize is disabled and the image is over-limit", () =>
+  provideTmpdirInstance(
+    () =>
+      Effect.gen(function* () {
+        const { prompt, chat } = yield* boot()
+        const fixture = yield* Effect.promise(() =>
+          Bun.file(path.join(import.meta.dir, "..", "image", "fixtures", "picture-5mb-base64.png")).arrayBuffer(),
+        )
+        const url = `data:image/png;base64,${Buffer.from(fixture).toString("base64")}`
+        const exit = yield* prompt
+          .prompt({
+            sessionID: chat.id,
+            agent: "build",
+            model: ref,
+            noReply: true,
+            parts: [{ type: "file", mime: "image/png", url }],
+          })
+          .pipe(Effect.exit)
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBeInstanceOf(Image.SizeError)
+      }),
+    {
+      git: true,
+      config: {
+        ...cfg,
+        attachment: { image: { auto_resize: false } },
+      },
+    },
   ),
 )
 

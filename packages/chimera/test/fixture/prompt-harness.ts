@@ -43,6 +43,7 @@ import { ToolRegistry } from "@/tool/registry"
 import { Truncate } from "@/tool/truncate"
 import { WorkBrief } from "../../src/session/work-brief"
 import { TestLLMServer } from "../lib/llm-server"
+import { Image } from "../../src/image/image"
 import type { Config as ConfigInfo } from "@/config/config"
 
 let routingState: ConfigSubagentRouting.State = ConfigSubagentRouting.empty()
@@ -183,7 +184,7 @@ export function makePromptHarness() {
     Layer.provideMerge(deps),
   )
   const trunc = Truncate.layer.pipe(Layer.provideMerge(deps))
-  const proc = SessionProcessor.layer.pipe(Layer.provide(summary), Layer.provideMerge(deps))
+  const proc = SessionProcessor.layer.pipe(Layer.provide(summary), Layer.provide(Image.defaultLayer), Layer.provideMerge(deps))
   const compact = SessionCompaction.layer.pipe(
     Layer.provide(RemoteCompaction.disabledLayer),
     Layer.provideMerge(proc),
@@ -192,6 +193,9 @@ export function makePromptHarness() {
   return Layer.mergeAll(
     TestLLMServer.layer,
     SessionPrompt.layer.pipe(
+      Layer.provide(SessionRevert.defaultLayer),
+      Layer.provide(Image.defaultLayer),
+      Layer.provide(RemoteCompaction.disabledLayer),
       Layer.provide(SessionRevert.defaultLayer),
       Layer.provide(RemoteCompaction.disabledLayer),
       Layer.provide(summary),

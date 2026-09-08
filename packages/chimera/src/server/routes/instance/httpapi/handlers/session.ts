@@ -239,7 +239,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
         model: `${ctx.payload.providerID}/${ctx.payload.modelID}`,
         command: Command.Default.INIT,
         arguments: "",
-      })
+      }).pipe(Effect.mapError(() => new HttpApiError.BadRequest({})))
       return true
     })
 
@@ -320,9 +320,10 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       params: { sessionID: SessionID }
       payload: typeof CommandPayload.Type
     }) {
-      return yield* promptSvc.command({ ...ctx.payload, sessionID: ctx.params.sessionID })
+      return yield* promptSvc.command({ ...ctx.payload, sessionID: ctx.params.sessionID }).pipe(
+        Effect.mapError(() => new HttpApiError.BadRequest({})),
+      )
     })
-
     const shell = Effect.fn("SessionHttpApi.shell")(function* (ctx: {
       params: { sessionID: SessionID }
       payload: typeof ShellPayload.Type

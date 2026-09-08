@@ -8,6 +8,7 @@ import { Bus } from "../../src/bus"
 import { SessionToolMetadata } from "@/chimera/session-tool-metadata"
 import { recordAuditRun } from "@/chimera/store"
 import { Config } from "@/config/config"
+import { Image } from "../../src/image/image"
 import { Permission } from "../../src/permission"
 import { Plugin } from "../../src/plugin"
 import { Provider } from "@/provider/provider"
@@ -176,7 +177,7 @@ const deps = Layer.mergeAll(
 ).pipe(Layer.provideMerge(infra))
 const env = Layer.mergeAll(
   TestLLMServer.layer,
-  SessionProcessor.layer.pipe(Layer.provide(summary), Layer.provideMerge(deps)),
+  SessionProcessor.layer.pipe(Layer.provide(summary), Layer.provide(Image.defaultLayer), Layer.provideMerge(deps)),
 )
 
 const it = testEffect(env)
@@ -214,7 +215,11 @@ const providerExecutedDeps = Layer.mergeAll(
   status,
   SyncEvent.defaultLayer,
 ).pipe(Layer.provideMerge(infra))
-const providerExecutedEnv = SessionProcessor.layer.pipe(Layer.provide(summary), Layer.provideMerge(providerExecutedDeps))
+const providerExecutedEnv = SessionProcessor.layer.pipe(
+  Layer.provide(summary),
+  Layer.provide(Image.defaultLayer),
+  Layer.provideMerge(providerExecutedDeps),
+)
 const providerExecutedIt = testEffect(providerExecutedEnv)
 
 const metadataToolMetadata = defer<Record<string, unknown>>()
@@ -276,7 +281,11 @@ const metadataToolDeps = Layer.mergeAll(
   status,
   SyncEvent.defaultLayer,
 ).pipe(Layer.provideMerge(infra))
-const metadataToolEnv = SessionProcessor.layer.pipe(Layer.provide(summary), Layer.provideMerge(metadataToolDeps))
+const metadataToolEnv = SessionProcessor.layer.pipe(
+  Layer.provide(summary),
+  Layer.provide(Image.defaultLayer),
+  Layer.provideMerge(metadataToolDeps),
+)
 const metadataToolIt = testEffect(metadataToolEnv)
 
 const failedToolInput = { filePath: "/tmp/example.ts", edits: [{ op: "replace", pos: "1#AA", lines: "next" }] }
@@ -306,7 +315,11 @@ const failedToolDeps = Layer.mergeAll(
   status,
   SyncEvent.defaultLayer,
 ).pipe(Layer.provideMerge(infra))
-const failedToolEnv = SessionProcessor.layer.pipe(Layer.provide(summary), Layer.provideMerge(failedToolDeps))
+const failedToolEnv = SessionProcessor.layer.pipe(
+  Layer.provide(summary),
+  Layer.provide(Image.defaultLayer),
+  Layer.provideMerge(failedToolDeps),
+)
 const failedToolIt = testEffect(failedToolEnv)
 
 const boot = Effect.fn("test.boot")(function* () {
@@ -1403,5 +1416,177 @@ it.live("session.processor effect tests mark interruptions aborted without manua
         expect(state).toMatchObject({ type: "idle" })
       }),
     { git: true, config: (url) => providerCfg(url) },
+  ),
+)
+
+const imageToolURL = defer<string>()
+const imageToolLLM = Layer.succeed(
+  LLM.Service,
+  LLM.Service.of({
+    stream: () =>
+      Stream.fromEffect(Effect.promise(() => imageToolURL.promise)).pipe(
+        Stream.flatMap((url) =>
+          Stream.fromIterable([
+            { type: "start" },
+            { type: "tool-input-start", id: "call_image", toolName: "web_search" },
+            { type: "tool-input-end", id: "call_image" },
+            { type: "tool-call", toolCallId: "call_image", toolName: "web_search", input: {} },
+            {
+              type: "tool-result",
+              toolCallId: "call_image",
+              toolName: "web_search",
+              input: {},
+              output: {
+                title: "Image search",
+                output: "found images",
+                metadata: {},
+                attachments: [
+                  {
+                    id: PartID.ascending(),
+                    messageID: MessageID.ascending(),
+                    sessionID: SessionID.make("ses_test"),
+                    type: "file" as const,
+                    mime: "image/png",
+                    url,
+                  },
+                ],
+              },
+            },
+            { type: "finish" },
+          ] as LLM.Event[]),
+        ),
+      ),
+  }),
+)
+const imageToolDeps = Layer.mergeAll(
+  Session.defaultLayer,
+  Snapshot.defaultLayer,
+  AgentSvc.defaultLayer,
+  Permission.defaultLayer,
+  Plugin.defaultLayer,
+  Config.defaultLayer,
+  imageToolLLM,
+  Provider.defaultLayer,
+  status,
+  SyncEvent.defaultLayer,
+).pipe(Layer.provideMerge(infra))
+const imageToolEnv = SessionProcessor.layer.pipe(
+  Layer.provide(summary),
+  Layer.provide(Image.defaultLayer),
+  Layer.provideMerge(imageToolDeps),
+)
+const imageToolIt = testEffect(imageToolEnv)
+
+const failingImage = Layer.succeed(
+  Image.Service,
+  Image.Service.of({
+    normalize: () =>
+      Effect.fail(
+        new Image.SizeError({ bytes: 1, max: 1, width: 1, height: 1, max_width: 1, max_height: 1 }),
+      ),
+  }),
+)
+const failingImageEnv = SessionProcessor.layer.pipe(
+  Layer.provide(summary),
+  Layer.provide(failingImage),
+  Layer.provideMerge(imageToolDeps),
+)
+const failingImageIt = testEffect(failingImageEnv)
+
+imageToolIt.live("session.processor normalizes image attachments from tool results", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const fixture = yield* Effect.promise(() =>
+          Bun.file(path.join(import.meta.dir, "..", "image", "fixtures", "picture-5mb-base64.png")).arrayBuffer(),
+        )
+        const url = `data:image/png;base64,${Buffer.from(fixture).toString("base64")}`
+        imageToolURL.resolve(url)
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "search")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+        })
+        const value = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies MessageV2.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "search" }],
+          tools: {},
+        })
+        const toolPart = MessageV2.parts(msg.id).find(
+          (part): part is MessageV2.ToolPart => part.type === "tool" && part.callID === "call_image",
+        )
+        expect(value).toBe("continue")
+        expect(toolPart?.state.status).toBe("completed")
+        if (toolPart?.state.status !== "completed") throw new Error("image tool result was not completed")
+        const attachment = toolPart.state.attachments?.[0]
+        expect(attachment?.mime).toBe("image/png")
+        expect(attachment?.url).toBeDefined()
+        if (attachment) expect(attachment.url.length).toBeLessThan(url.length)
+      }),
+    { git: true, config: providerCfg("http://localhost:1/v1") },
+  ),
+)
+
+failingImageIt.live("session.processor appends omitted image notice when resizing fails", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const fixture = yield* Effect.promise(() =>
+          Bun.file(path.join(import.meta.dir, "..", "image", "fixtures", "picture-5mb-base64.png")).arrayBuffer(),
+        )
+        const url = `data:image/png;base64,${Buffer.from(fixture).toString("base64")}`
+        imageToolURL.resolve(url)
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "search")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+        })
+        const value = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies MessageV2.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "search" }],
+          tools: {},
+        })
+        const toolPart = MessageV2.parts(msg.id).find(
+          (part): part is MessageV2.ToolPart => part.type === "tool" && part.callID === "call_image",
+        )
+        expect(value).toBe("continue")
+        expect(toolPart?.state.status).toBe("completed")
+        if (toolPart?.state.status !== "completed") throw new Error("image tool result was not completed")
+        expect(toolPart.state.output).toContain("[1 image omitted: could not be resized below the image size limit.]")
+        expect(toolPart.state.attachments).toBeUndefined()
+      }),
+    { git: true, config: providerCfg("http://localhost:1/v1") },
   ),
 )
