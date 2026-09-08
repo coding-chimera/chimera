@@ -566,6 +566,9 @@ describe("ProviderTransform.options - gpt-5 textVerbosity", () => {
     expect(result.reasoningEffort).toBe("medium")
     expect(result.reasoningSummary).toBeUndefined()
     expect(result.include).toBeUndefined()
+    // Regression for #43915: openai-compatible relays must not receive the
+    // OpenAI-specific textVerbosity parameter even for gpt-5.x ids.
+    expect(result.textVerbosity).toBeUndefined()
   })
 
   test("gpt-5 mantle receives reasoningSummary and encrypted reasoning include", () => {

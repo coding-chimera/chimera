@@ -1,6 +1,6 @@
-import { afterEach, test, expect } from "bun:test"
+import { afterEach, describe, test, expect } from "bun:test"
 import os from "os"
-import { Cause, Effect, Exit, Fiber, Layer } from "effect"
+import { Cause, Effect, Exit, Fiber, Layer, Schema } from "effect"
 import { Bus } from "../../src/bus"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Permission } from "../../src/permission"
@@ -1186,3 +1186,17 @@ it.live("reply - task_profile always approval only approves the answered profile
     yield* Fiber.await(gamma)
   }),
 )
+
+// Regression for #26456: permission ids must carry the `per` prefix so a
+// malformed request id fails schema decoding instead of silently no-op'ing.
+describe("PermissionID prefix validation", () => {
+  test("accepts ascending permission ids", () => {
+    const id = PermissionID.ascending()
+    expect(String(id).startsWith("per_")).toBe(true)
+    expect(Schema.decodeUnknownSync(PermissionID)(id)).toBe(id)
+  })
+
+  test("rejects non-per ids", () => {
+    expect(() => Schema.decodeUnknownSync(PermissionID)("malformed-id")).toThrow()
+  })
+})
