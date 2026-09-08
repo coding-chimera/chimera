@@ -33,6 +33,8 @@ function sdkKey(npm: string): string | undefined {
       return "azure"
     case "@ai-sdk/openai":
       return "openai"
+    case "@ai-sdk/amazon-bedrock/mantle":
+      return "openai"
     case "@ai-sdk/amazon-bedrock":
       return "bedrock"
     case "@ai-sdk/anthropic":
@@ -464,6 +466,7 @@ export function message(msgs: ModelMessage[], model: Provider.Model, options: Re
 
 export function temperature(model: Provider.Model) {
   const id = model.id.toLowerCase()
+  if (id.includes("north-mini-code")) return 1.0
   // Qwen3.8 official recommendation: temperature=1.0, top_p=0.95, top_k=20
   if (id.includes("qwen3.8")) return 1.0
   if (id.includes("qwen")) return 0.55
@@ -788,6 +791,9 @@ function baseVariants(model: Provider.Model): Record<string, Record<string, any>
     case "venice-ai-sdk-provider":
     // https://docs.venice.ai/overview/guides/reasoning-models#reasoning-effort
     case "@ai-sdk/openai-compatible":
+      if (apiID.includes("north-mini-code")) {
+        return Object.fromEntries(["none", "high"].map((effort) => [effort, { reasoningEffort: effort }]))
+      }
       const efforts = [...WIDELY_SUPPORTED_EFFORTS]
       if (apiID.includes("deepseek-v4") || isClaudeCompatibleModel) {
         efforts.push("max")
@@ -814,6 +820,7 @@ function baseVariants(model: Provider.Model): Record<string, Record<string, any>
           },
         ]),
       )
+    case "@ai-sdk/amazon-bedrock/mantle":
     case "@ai-sdk/openai": {
       // https://v5.ai-sdk.dev/providers/ai-sdk-providers/openai
       const efforts = openaiReasoningEfforts(model.api.id, model.release_date)
@@ -1083,7 +1090,8 @@ export function options(input: {
   if (
     input.model.providerID === "openai" ||
     input.model.api.npm === "@ai-sdk/openai" ||
-    input.model.api.npm === "@ai-sdk/github-copilot"
+    input.model.api.npm === "@ai-sdk/github-copilot" ||
+    input.model.api.npm === "@ai-sdk/amazon-bedrock/mantle"
   ) {
     result["store"] = false
   }

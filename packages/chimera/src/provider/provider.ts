@@ -119,6 +119,7 @@ type BundledSDK = {
 
 const BUNDLED_PROVIDERS: Record<string, () => Promise<(opts: any) => BundledSDK>> = {
   "@ai-sdk/amazon-bedrock": () => import("@ai-sdk/amazon-bedrock").then((m) => m.createAmazonBedrock),
+  "@ai-sdk/amazon-bedrock/mantle": () => import("@ai-sdk/amazon-bedrock/mantle").then((m) => m.createBedrockMantle),
   "@ai-sdk/anthropic": () => import("@ai-sdk/anthropic").then((m) => m.createAnthropic),
   "@ai-sdk/azure": () => import("@ai-sdk/azure").then((m) => m.createAzure),
   "@ai-sdk/google": () => import("@ai-sdk/google").then((m) => m.createGoogleGenerativeAI),
@@ -144,7 +145,7 @@ const BUNDLED_PROVIDERS: Record<string, () => Promise<(opts: any) => BundledSDK>
   "venice-ai-sdk-provider": () => import("venice-ai-sdk-provider").then((m) => m.createVenice),
 }
 
-type CustomModelLoader = (sdk: any, modelID: string, options?: Record<string, any>) => Promise<any>
+type CustomModelLoader = (sdk: any, modelID: string, options?: Record<string, any>, model?: Model) => Promise<any>
 type CustomVarsLoader = (options: Record<string, any>) => Record<string, string>
 type CustomDiscoverModels = () => Promise<Record<string, Model>>
 type CustomLoader = (provider: Info) => Effect.Effect<{
@@ -290,6 +291,12 @@ function selectAzureLanguageModel(sdk: any, modelID: string, useChat: boolean) {
   if (sdk.messages) return sdk.messages(modelID)
   if (sdk.chat) return sdk.chat(modelID)
   return sdk.languageModel(modelID)
+}
+
+function selectBedrockMantleLanguageModel(sdk: BundledSDK, modelID: string) {
+  if (modelID === "openai.gpt-oss-safeguard-20b" || modelID === "openai.gpt-oss-safeguard-120b")
+    return sdk.chat?.(modelID) ?? sdk.languageModel(modelID)
+  return sdk.responses?.(modelID) ?? sdk.languageModel(modelID)
 }
 
 function custom(dep: CustomDep): Record<string, CustomLoader> {
@@ -471,7 +478,9 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
       return {
         autoload: true,
         options: providerOptions,
-        async getModel(sdk: any, modelID: string, options?: Record<string, any>) {
+        async getModel(sdk: any, modelID: string, options?: Record<string, any>, model?: Model) {
+          if (model?.api.npm === "@ai-sdk/amazon-bedrock/mantle") return selectBedrockMantleLanguageModel(sdk, modelID)
+
           // Skip region prefixing if model already has a cross-region inference profile prefix
           // Models from models.dev may already include prefixes like us., eu., global., etc.
           const crossRegionPrefixes = ["global.", "us.", "eu.", "jp.", "apac.", "au."]
@@ -2097,7 +2106,9 @@ const layer: Layer.Layer<
 
           // Strip openai itemId metadata following what codex does
           if (
-            (model.api.npm === "@ai-sdk/openai" || model.api.npm === "@ai-sdk/azure") &&
+            (model.api.npm === "@ai-sdk/openai" ||
+              model.api.npm === "@ai-sdk/azure" ||
+              model.api.npm === "@ai-sdk/amazon-bedrock/mantle") &&
             opts.body &&
             opts.method === "POST"
           ) {
@@ -2243,10 +2254,15 @@ const layer: Layer.Layer<
               return sdk.languageModel(canonical.api.id)
             }
             if (s.modelLoaders[canonical.providerID])
-              return s.modelLoaders[canonical.providerID](sdk, canonical.api.id, {
-                ...provider.options,
-                ...canonical.options,
-              })
+              return s.modelLoaders[canonical.providerID](
+                sdk,
+                canonical.api.id,
+                {
+                  ...provider.options,
+                  ...canonical.options,
+                },
+                canonical,
+              )
             return sdk.languageModel(canonical.api.id)
           })()
           s.models.set(key, language)

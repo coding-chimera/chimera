@@ -749,6 +749,89 @@ describe("session.message-v2.toModelMessage", () => {
     })
   })
 
+  test("preserves jpeg tool-result media for bedrock mantle models", async () => {
+    const mantleModel: Provider.Model = {
+      ...model,
+      id: ModelID.make("amazon-bedrock/openai.gpt-5.5"),
+      providerID: ProviderID.make("amazon-bedrock"),
+      api: {
+        id: "openai.gpt-5.5",
+        url: "https://bedrock-mantle.us-east-2.api.aws/openai/v1",
+        npm: "@ai-sdk/amazon-bedrock/mantle",
+      },
+      capabilities: {
+        ...model.capabilities,
+        attachment: true,
+        input: {
+          ...model.capabilities.input,
+          image: true,
+          pdf: true,
+        },
+      },
+    }
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01]).toString(
+      "base64",
+    )
+    const userID = "m-user-mantle"
+    const assistantID = "m-assistant-mantle"
+    const input: MessageV2.WithParts[] = [
+      {
+        info: userInfo(userID),
+        parts: [
+          {
+            ...basePart(userID, "u1-mantle"),
+            type: "text",
+            text: "run tool",
+          },
+        ] as MessageV2.Part[],
+      },
+      {
+        info: assistantInfo(assistantID, userID),
+        parts: [
+          {
+            ...basePart(assistantID, "a1-mantle"),
+            type: "tool",
+            callID: "call-mantle-1",
+            tool: "read",
+            state: {
+              status: "completed",
+              input: { filePath: "/tmp/mantle-demo.png" },
+              output: "Image read successfully",
+              title: "Read",
+              metadata: {},
+              time: { start: 0, end: 1 },
+              attachments: [
+                {
+                  ...basePart(assistantID, "file-mantle-1"),
+                  type: "file",
+                  mime: "image/jpeg",
+                  filename: "mantle-demo.png",
+                  url: `data:image/jpeg;base64,${jpeg}`
+                },
+              ],
+            },
+          },
+        ] as MessageV2.Part[],
+      },
+    ]
+
+    const result = ProviderTransform.message(await MessageV2.toModelMessages(input, mantleModel), mantleModel, {})
+    expect(result).toHaveLength(3)
+    expect(result[2].role).toBe("tool")
+    expect(result[2].content[0]).toMatchObject({
+      type: "tool-result",
+      toolCallId: "call-mantle-1",
+      toolName: "read",
+      output: {
+        type: "content",
+        value: [
+          { type: "text", text: "Image read successfully" },
+          { type: "media", mediaType: "image/jpeg", data: jpeg },
+        ],
+      },
+    })
+  })
+
   test("omits provider metadata when assistant model differs", async () => {
     const userID = "m-user"
     const assistantID = "m-assistant"
