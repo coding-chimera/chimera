@@ -1,4 +1,4 @@
-import { Cause, Deferred, Effect, Layer, Context, Scope } from "effect"
+import { Cause, Deferred, Effect, Exit, Layer, Context, Scope } from "effect"
 import * as Stream from "effect/Stream"
 import { Agent } from "@/agent/agent"
 import { Bus } from "@/bus"
@@ -30,6 +30,7 @@ import * as DateTime from "effect/DateTime"
 import { MemoryCitation } from "@/memory/citation"
 import { getNote, markSessionPolluted, projectScope, recordNoteUsage, recordStage1Usage } from "@/memory/store"
 import type { ProjectID } from "@/project/schema"
+import { Image } from "@/image/image"
 
 const DOOM_LOOP_THRESHOLD = 3
 const log = Log.create({ service: "session.processor" })
@@ -197,6 +198,7 @@ export const layer: Layer.Layer<
   | SessionSummary.Service
   | SessionStatus.Service
   | SyncEvent.Service
+  | Image.Service
 > = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -208,6 +210,7 @@ export const layer: Layer.Layer<
     const llm = yield* LLM.Service
     const permission = yield* Permission.Service
     const plugin = yield* Plugin.Service
+    const image = yield* Image.Service
     const summary = yield* SessionSummary.Service
     const scope = yield* Scope.Scope
     const status = yield* SessionStatus.Service
@@ -487,18 +490,48 @@ export const layer: Layer.Layer<
           case "tool-result": {
             const toolCall = yield* readToolCall(value.toolCallId)
             const output = normalizeToolOutput(toolCall?.part, value.output)
+            const toolAttachments: MessageV2.FilePart[] = (Array.isArray(output.attachments) ? output.attachments : []).filter(
+              (attachment: unknown): attachment is MessageV2.FilePart =>
+                isRecord(attachment) &&
+                attachment.type === "file" &&
+                typeof attachment.mime === "string" &&
+                typeof attachment.url === "string",
+            )
+            const normalized = yield* Effect.forEach(toolAttachments, (attachment) =>
+              attachment.mime.startsWith("image/")
+                ? image
+                    .normalize(attachment)
+                    .pipe(
+                      Effect.catchIf(
+                        (error) => error instanceof Image.ResizerUnavailableError,
+                        () => Effect.succeed(attachment),
+                      ),
+                      Effect.exit,
+                    )
+                : Effect.succeed(Exit.succeed<MessageV2.FilePart>(attachment)),
+            )
+            const omitted = normalized.filter(Exit.isFailure).length
+            const attachments = normalized.filter(Exit.isSuccess).map((item) => item.value)
+            const toolOutput = {
+              ...output,
+              output:
+                omitted === 0
+                  ? output.output
+                  : `${output.output}\n\n[${omitted} image${omitted === 1 ? "" : "s"} omitted: could not be resized below the image size limit.]`,
+              attachments: attachments?.length ? attachments : undefined,
+            }
             // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
             yield* EventV2.run(sync, SessionEvent.Tool.Success.Sync, {
               sessionID: ctx.sessionID,
               assistantMessageID: SessionEvent.messageID(ctx.assistantMessage.id),
               callID: value.toolCallId,
-              structured: SessionToolMetadata.forPersistence(toolCall?.part.tool ?? value.toolName, output.metadata),
+              structured: SessionToolMetadata.forPersistence(toolCall?.part.tool ?? value.toolName, toolOutput.metadata),
               content: [
                 {
                   type: "text",
-                  text: output.output,
+                  text: toolOutput.output,
                 },
-                ...(output.attachments?.map((item: MessageV2.FilePart) => ({
+                ...(toolOutput.attachments?.map((item: MessageV2.FilePart) => ({
                   type: "file" as const,
                   uri: item.url,
                   mime: item.mime,
@@ -510,9 +543,10 @@ export const layer: Layer.Layer<
               },
               timestamp: DateTime.makeUnsafe(Date.now()),
             })
-            yield* completeToolCall(value.toolCallId, output)
+            yield* completeToolCall(value.toolCallId, toolOutput)
             return
           }
+
 
           case "tool-error": {
             const toolCall = yield* readToolCall(value.toolCallId)
@@ -916,6 +950,9 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(Plugin.defaultLayer),
     Layer.provide(SessionSummary.defaultLayer),
     Layer.provide(SessionStatus.defaultLayer),
+    Layer.provide(SyncEvent.defaultLayer),
+    Layer.provide(Image.defaultLayer),
+    Layer.provide(Bus.layer),
     Layer.provide(SyncEvent.defaultLayer),
     Layer.provide(Bus.layer),
     Layer.provide(Config.defaultLayer),

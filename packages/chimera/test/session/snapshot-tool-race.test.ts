@@ -44,6 +44,7 @@ import { Plugin } from "../../src/plugin"
 import { Provider as ProviderSvc } from "@/provider/provider"
 import { Env } from "../../src/env"
 import { Question } from "../../src/question"
+import { Image } from "../../src/image/image"
 import { Skill } from "../../src/skill"
 import { SystemPrompt } from "../../src/session/system"
 import { Todo } from "../../src/session/todo"
@@ -162,7 +163,11 @@ function makeHttp() {
     Layer.provideMerge(deps),
   )
   const trunc = Truncate.layer.pipe(Layer.provideMerge(deps))
-  const proc = SessionProcessor.layer.pipe(Layer.provide(SessionSummary.defaultLayer), Layer.provideMerge(deps))
+  const proc = SessionProcessor.layer.pipe(
+    Layer.provide(SessionSummary.defaultLayer),
+    Layer.provide(Image.defaultLayer),
+    Layer.provideMerge(deps),
+  )
   const compact = SessionCompaction.layer.pipe(
     Layer.provide(RemoteCompaction.disabledLayer),
     Layer.provideMerge(proc),
@@ -173,6 +178,7 @@ function makeHttp() {
     SessionSummary.defaultLayer,
     SessionPrompt.layer.pipe(
       Layer.provide(SessionRevert.defaultLayer),
+      Layer.provide(Image.defaultLayer),
       Layer.provide(RemoteCompaction.disabledLayer),
       Layer.provide(SessionSummary.defaultLayer),
       Layer.provideMerge(run),
@@ -252,7 +258,7 @@ it.live("tool execution produces non-empty session diff (snapshot race)", () =>
       const result = yield* prompt.loop({ sessionID: session.id })
       expect(result.info.role).toBe("assistant")
 
-      // Verify the file was created
+
       const filePath = path.join(dir, "race-test.txt")
       const fileExists = yield* Effect.promise(() =>
         fs

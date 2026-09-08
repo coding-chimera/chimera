@@ -58,6 +58,7 @@ import { Shell } from "@/shell/shell"
 import { ShellID } from "@/tool/shell/id"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { Truncate } from "@/tool/truncate"
+import { Image } from "@/image/image"
 import { decodeDataUrl } from "@/util/data-url"
 import { Cause, Effect, Exit, Latch, Layer, Option, Scope, Context, Schema, Types } from "effect"
 import { zod } from "@/util/effect-zod"
@@ -206,10 +207,11 @@ const elog = EffectLogger.create({ service: "session.prompt" })
 
 export interface Interface {
   readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
-  readonly prompt: (input: PromptInput) => Effect.Effect<MessageV2.WithParts>
+  readonly prompt: (input: PromptInput) => Effect.Effect<MessageV2.WithParts, Image.Error>
   readonly loop: (input: LoopInput) => Effect.Effect<MessageV2.WithParts>
   readonly shell: (input: ShellInput) => Effect.Effect<MessageV2.WithParts>
-  readonly command: (input: CommandInput) => Effect.Effect<MessageV2.WithParts>
+  readonly command: (input: CommandInput) => Effect.Effect<MessageV2.WithParts, Image.Error>
+
   readonly resolvePromptParts: (template: string) => Effect.Effect<PromptInput["parts"]>
   readonly injectSynthetic: (input: InjectSyntheticInput) => Effect.Effect<MessageV2.WithParts, InstanceType<typeof NotFoundError>>
 }
@@ -241,6 +243,7 @@ export const layer = Layer.effect(
     const lsp = yield* LSP.Service
     const registry = yield* ToolRegistry.Service
     const truncate = yield* Truncate.Service
+    const image = yield* Image.Service
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
     const scope = yield* Scope.Scope
     const instruction = yield* Instruction.Service
@@ -266,7 +269,7 @@ export const layer = Layer.effect(
       return {
         cancel: (sessionID: SessionID) => cancel(sessionID),
         resolvePromptParts: (template: string) => resolvePromptParts(template),
-        prompt: (input: PromptInput) => prompt(input),
+        prompt: (input: PromptInput) => prompt(input).pipe(Effect.catch(Effect.die)),
         injectSynthetic: (input: InjectSyntheticInput) => injectSynthetic(input),
       } satisfies TaskPromptOps
     })
@@ -1813,7 +1816,7 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
         return [{ ...part, messageID: info.id, sessionID: input.sessionID }]
       })
 
-      const parts = yield* Effect.forEach(input.parts, resolvePart, { concurrency: "unbounded" }).pipe(
+      const resolvedParts = yield* Effect.forEach(input.parts, resolvePart, { concurrency: "unbounded" }).pipe(
         Effect.map((x) => x.flat().map(assign)),
       )
 
@@ -1826,7 +1829,18 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
           messageID: input.messageID,
           variant: input.variant,
         },
-        { message: info, parts },
+        { message: info, parts: resolvedParts },
+      )
+
+      const parts = yield* Effect.forEach(resolvedParts, (part) =>
+        part.type === "file" && part.mime.startsWith("image/")
+          ? image.normalize(part).pipe(
+              Effect.catchIf(
+                (error) => error instanceof Image.ResizerUnavailableError,
+                () => Effect.succeed(part),
+              ),
+            )
+          : Effect.succeed(part),
       )
 
       const parsed = MessageV2.Info.zod.safeParse(info)
@@ -1940,8 +1954,7 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
       return { info, parts }
     }, Effect.scoped)
 
-    const prompt: (input: PromptInput) => Effect.Effect<MessageV2.WithParts> = Effect.fn("SessionPrompt.prompt")(
-      function* (input: PromptInput) {
+    const prompt: (input: PromptInput) => Effect.Effect<MessageV2.WithParts, Image.Error> = Effect.fn("SessionPrompt.prompt")(function* (input: PromptInput) {
         const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
         yield* revert.cleanup(session)
         const message = yield* createUserMessage(input)
@@ -1976,7 +1989,7 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
         sessionID: input.sessionID,
         agent: session.agent,
         parts: [{ type: "text", synthetic: true, text: input.text }],
-      })
+      }).pipe(Effect.catch(Effect.die))
     })
 
     const lastAssistant = Effect.fnUntraced(function* (sessionID: SessionID) {
@@ -2566,7 +2579,13 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(Question.defaultLayer),
     Layer.provide(Layer.mergeAll(Session.defaultLayer, SessionRevert.defaultLayer, SyncEvent.defaultLayer)),
     Layer.provide(
-      Layer.mergeAll(SessionSummary.defaultLayer, WorkBrief.defaultLayer, ChimeraPromptContext.defaultLayer, Memory.defaultLayer),
+      Layer.mergeAll(
+        SessionSummary.defaultLayer,
+        WorkBrief.defaultLayer,
+        ChimeraPromptContext.defaultLayer,
+        Memory.defaultLayer,
+        Image.defaultLayer,
+      ),
     ),
     Layer.provide(
       Layer.mergeAll(

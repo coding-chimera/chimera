@@ -142,6 +142,54 @@ test("loads config with defaults when no files exist", async () => {
   })
 })
 
+test("creates global chimera.jsonc config with schema when no global configs exist", async () => {
+  await using tmp = await tmpdir()
+  const prev = Global.Path.config
+  ;(Global.Path as { config: string }).config = tmp.path
+  await clear(true)
+
+  try {
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await load()
+      },
+    })
+
+    const content = await Filesystem.readText(path.join(tmp.path, "chimera.jsonc"))
+    expect(content).toContain('"$schema": "https://coding-chimera.github.io/chimera/schemas/config.json"')
+  } finally {
+    ;(Global.Path as { config: string }).config = prev
+    await clear(true)
+  }
+})
+
+test("does not create global config when OPENCODE_CONFIG_DIR is set", async () => {
+  await using tmp = await tmpdir()
+  await using custom = await tmpdir()
+  const prevConfig = Global.Path.config
+  const prevEnv = process.env.OPENCODE_CONFIG_DIR
+  ;(Global.Path as { config: string }).config = tmp.path
+  process.env.OPENCODE_CONFIG_DIR = custom.path
+  await clear(true)
+
+  try {
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await load()
+      },
+    })
+
+    expect(await Filesystem.exists(path.join(tmp.path, "chimera.jsonc"))).toBe(false)
+  } finally {
+    ;(Global.Path as { config: string }).config = prevConfig
+    if (prevEnv === undefined) delete process.env.OPENCODE_CONFIG_DIR
+    else process.env.OPENCODE_CONFIG_DIR = prevEnv
+    await clear(true)
+  }
+})
+
 test("loads JSON config file", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
@@ -179,6 +227,70 @@ test("loads shell config field", async () => {
     },
   })
 })
+
+test("loads attachment.image config defaults", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await writeConfig(dir, {
+        $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+      })
+    },
+  })
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const config = await load()
+      expect(config.attachment).toBeUndefined()
+    },
+  })
+})
+
+test("loads custom attachment.image config", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await writeConfig(dir, {
+        $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+        attachment: {
+          image: { auto_resize: false, max_width: 4096, max_height: 2048, max_base64_bytes: 1048576 },
+        },
+      })
+    },
+  })
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const config = await load()
+      expect(config.attachment?.image).toEqual({
+        auto_resize: false,
+        max_width: 4096,
+        max_height: 2048,
+        max_base64_bytes: 1048576,
+      })
+    },
+  })
+})
+
+test("loads attachment.image with auto_resize false only", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await writeConfig(dir, {
+        $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+        attachment: {
+          image: { auto_resize: false },
+        },
+      })
+    },
+  })
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const config = await load()
+      expect(config.attachment?.image).toEqual({ auto_resize: false })
+    },
+  })
+})
+
+
 
 test("updates config and preserves empty shell sentinel", async () => {
   await using tmp = await tmpdir({

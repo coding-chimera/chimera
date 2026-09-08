@@ -25,6 +25,7 @@ import { containsPath } from "../project/instance-context"
 import { zod } from "@/util/effect-zod"
 import { NonNegativeInt, PositiveInt, withStatics, type DeepMutable } from "@/util/schema"
 import { ConfigAgent } from "./agent"
+import { ConfigAttachment } from "./attachment"
 import { ConfigCommand } from "./command"
 import { ConfigDelegation } from "./delegation"
 import { ConfigFormatter } from "./formatter"
@@ -256,6 +257,9 @@ export const Info = Schema.Struct({
     description: "Subagent model delegation: named model profiles and role routes",
   }),
   tools: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)),
+  attachment: Schema.optional(ConfigAttachment.Info).annotate({
+    description: "Attachment handling configuration",
+  }),
   enterprise: Schema.optional(
     Schema.Struct({
       url: Schema.optional(Schema.String).annotate({ description: "Enterprise URL" }),
@@ -521,6 +525,16 @@ export const layer = Layer.effect(
 
     const loadGlobal = Effect.fnUntraced(function* () {
       let result: Info = {}
+      // Seed the default global config with the schema for editor completion, but avoid writing when the user
+      // explicitly routes config through env-provided paths or content.
+      if (!Flag.OPENCODE_CONFIG && !Flag.OPENCODE_CONFIG_DIR && !Flag.OPENCODE_CONFIG_CONTENT) {
+        const file = globalConfigFile()
+        if (!existsSync(file)) {
+          yield* fs
+            .writeWithDirs(file, JSON.stringify({ $schema: "https://coding-chimera.github.io/chimera/schemas/config.json" }, null, 2))
+            .pipe(Effect.catch(() => Effect.void))
+        }
+      }
       result = mergeConfig(result, yield* loadFile(path.join(Global.Path.config, "config.json")))
       result = mergeConfig(result, yield* loadFile(path.join(Global.Path.config, `${ConfigPaths.APP_CONFIG_NAME}.json`)))
       result = mergeConfig(result, yield* loadFile(path.join(Global.Path.config, `${ConfigPaths.APP_CONFIG_NAME}.jsonc`)))

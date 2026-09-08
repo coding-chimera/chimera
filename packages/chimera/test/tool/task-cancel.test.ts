@@ -668,7 +668,7 @@ describe("cascade: real harness", () => {
           const promptOps: TaskPromptOps = {
             cancel: (sessionID) => prompt.cancel(sessionID),
             resolvePromptParts: (template) => prompt.resolvePromptParts(template),
-            prompt: (input) => prompt.prompt(input),
+            prompt: (input) => prompt.prompt(input).pipe(Effect.catch(Effect.die)),
             injectSynthetic: (input) => prompt.injectSynthetic(input),
           }
           const gate = defer<void>()
@@ -740,7 +740,7 @@ describe("cascade: real harness", () => {
           const promptOps: TaskPromptOps = {
             cancel: (sessionID) => prompt.cancel(sessionID),
             resolvePromptParts: (template) => prompt.resolvePromptParts(template),
-            prompt: (input) => prompt.prompt(input),
+            prompt: (input) => prompt.prompt(input).pipe(Effect.catch(Effect.die)),
             injectSynthetic: (input) => prompt.injectSynthetic(input),
           }
           const gate = defer<void>()

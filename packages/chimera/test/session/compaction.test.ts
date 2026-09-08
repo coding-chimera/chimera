@@ -5,6 +5,7 @@ import * as Stream from "effect/Stream"
 import { FetchHttpClient } from "effect/unstable/http"
 import z from "zod"
 import { Bus } from "../../src/bus"
+import { Image } from "../../src/image/image"
 import { Config } from "@/config/config"
 import { Auth } from "@/auth"
 import { Agent } from "../../src/agent/agent"
@@ -307,6 +308,7 @@ function liveRuntime(layer: Layer.Layer<LLM.Service>, provider = ProviderTest.fa
   const status = SessionStatus.layer.pipe(Layer.provide(bus))
   const processor = SessionProcessorModule.SessionProcessor.layer.pipe(
     Layer.provide(summary),
+    Layer.provide(Image.defaultLayer),
     Layer.provide(SyncEvent.defaultLayer),
   )
   return ManagedRuntime.make(
