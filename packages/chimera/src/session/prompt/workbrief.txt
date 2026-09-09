@@ -1,10 +1,13 @@
 # Work Brief
 
-Use `workbrief` as the durable session ledger for work that spans turns, compaction, or subagents: intent, constraints, confirmed decisions, acceptance criteria, open questions, relevant evidence, closeout.
+`workbrief` maintains the session's active work board: goal, constraints, confirmed decisions, acceptance criteria, open questions, relevant evidence, and closeout state. The board is re-injected into your context on every turn and survives compaction — write it as current steering for the next turn, not as a log, and replace stale entries instead of appending contradictions. It is also the sync surface with the user: what you record is what the user sees you intend to do, and the acceptance criteria you record constrain what you do.
 
-Update it at three moments only:
-- Task intake for non-trivial requests: record intent, constraints, and acceptance criteria in the user's language. For tasks that will create, edit, delete, rename, or patch files, call `workbrief` before other tool work.
-- When new evidence changes the task shape: replace stale decisions instead of appending contradictions.
-- After edits and verification: record changed files and actions, `predesign:*`/`audit:*` refs, and verification outcomes in `relevantEvidence`.
+Update it at the boundaries of work:
+- Start: when a non-trivial task arrives, record intent, constraints, and acceptance criteria in the user's language. For tasks that will create, edit, delete, rename, or patch files, call `workbrief` before other tool work.
+- New turn: when a new user message arrives, first decide whether it changes the goal, decisions, constraints, or closeout; if it does, update the board before substantial tool work.
+- Shape change: when new evidence reshapes the task, update the affected fields — decisions, constraints, acceptance criteria, open questions, evidence.
+- End: when you consider the work done or blocked, update closeout and evidence so the next turn does not chase a stale goal; record changed files and actions, `predesign:*`/`audit:*` refs, and verification outcomes.
 
-Store compact anchors — paths, symbols, refs, command outcomes. Never transcripts, large snippets, or speculation. The brief is session state, not proof: re-read files when correctness depends on checkout state. For read-only work, do not run extra searches just to populate the brief.
+Skip updates when nothing durable changed: purely conversational messages, single trivial actions, or transient detail that belongs in files, tool output, or the final response.
+
+Keep entries as compact anchors — paths, symbols, refs, command outcomes; never transcripts, large snippets, or speculation. The board is session state, not proof: re-read files when correctness depends on checkout state. For read-only work, do not run extra searches just to populate the brief.

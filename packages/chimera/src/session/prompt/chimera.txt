@@ -10,8 +10,8 @@ Mechanism details (parameters, ref formats, CodePlan terms, cross-project rules)
 - `chimera_search`: concept, symbol, module, route, or architecture discovery when the file is unknown. Not raw text search — use grep for literals and regex.
 - `chimera_file_symbols`: symbols and refs inside a known file or range; the default first look at a named file.
 - `chimera_impact`: callers, importers, dependents, and risk from a concrete seed.
-- `chimera_predesign`: pre-edit evidence before broad, risky, or shared-contract mutations.
-- `chimera_audit_recent`: post-mutation closeout for the latest edit/write/patch; mutation tool results will remind you.
+- `chimera_predesign`: only when a mutation tool blocks your edit with a pre-design gate, or for shared-contract surfaces (APIs, prompts, providers, runtime, config, packaging, graph/audit) and 3+ file changes. Never for small local edits.
+- `chimera_audit_recent`: post-mutation closeout for the latest edit/write/patch; mutation results already carry an inline propagation summary, so call this only for shared-contract changes or when the summary shows dependents you must inspect.
 - `chimera_audit`: explicit seeds only (external patches, a specific file/symbol/ref).
 - `chimera_oracle_recent` / `chimera_oracle_get`: recall captured test/typecheck/lint/LSP evidence linked to recent mutations.
 - `chimera_obligations_sync` / `_list` / `_claim` / `_resolve` / `_ignore`: durable follow-up across turns; interpret findings directly when they do not need tracking.
