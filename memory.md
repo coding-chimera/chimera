@@ -130,3 +130,11 @@ loop 挂起修复前的对比基线（本机 macOS, bun 1.4.0, `bun test --timeo
 - 事故与清理（已沉淀 pitfalls #30-33 + #1 第二实例）：I1 手动中止留半编辑态→同 task_id 续派完成；edit 锚点事故吞 env 行→mcp-add 子进程一度污染真实 ~/.config/chimera/chimera.jsonc（mcp.github/local）→已精确清理复核；bun.lock 内网镜像 URL→空串槽脱敏协议；progress.md 已勘误 patch1（旧记录 patch2 不准）
 - 权威记录：计划书「F1 完成记录」节 + skill progress.md（已全量刷新）；（上方 F4-P1 两条的“未提交”标记已过期，a143b3c23 已推送）
 - 下一接力：F2 MCP 专项（8 条一次做完）∥ claims P1/P2（5 锚点需重核，F1 后 prompt/processor/config 均大改必漂）
+
+### 方向③ codegraph 分诊完成（2026-09-09，文档已入库）
+
+- `UPSTREAM_GRAPH_TRIAGE.md`（仓库根）：a5a8942..6a056ec5（as-of 08-26，禁 fetch）179 条全量五分类 ①8/②68/④101/⑤2，对账平衡；7 代理 swarm（5 reviewer + 2 scout），组报告路径在文档 §8
+- P1×8：340d4b0 Swift regex hang（1 行）/474f051 tsconfig extends/02c0e2c WAL 泄漏/8c1e821+ca88d3b#1 valve file-cap/d8f2eea spread crash/03893b0 edge drift（chimera_impact 直接消费污染边）/f2a5df3 stale-slice/c74e8b0 debounce
+- 关键结构事实：fork wasm-only 无 kernel/无 resolver-pool（④101 条根因）；双消费面（agent chimera_* + MCP tools.ts）；基线前缺口账本立账（function-ref #807/c-fnptr #954/#825/#1292 等）
+- **待用户：16 项拍板一轮过**（文档 §5，每项带建议；核心：A grammar pin 采纳/B union 采纳/D resolver-pool 暂不/E kernel 不移植/F function-ref 独立战役/G C-deferral 缓议/P explore 史诗后排）；拍板后 G0（~1 天）可立即先行
+- 批次轮廓：G0 小修→G1 WAL+收敛战役→G7 perf；G2 watcher/G3 检索质量/G5 generated 检测/G8 CLI 小件独立；G4 语法精度（等拍板 A/B）；G6 explore CG 史诗最后（~1-2 周）
