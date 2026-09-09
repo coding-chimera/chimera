@@ -7,6 +7,7 @@ import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { LSP } from "@/lsp/lsp"
 import DESCRIPTION from "./read.txt"
 import { InstanceState } from "@/effect/instance-state"
+import { DiscoveryNudge } from "@/chimera/discovery-nudge"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { Instruction } from "../session/instruction"
 import type { ToolPart, WithParts } from "../session/message-v2"
@@ -757,10 +758,11 @@ export const ReadTool = Tool.define(
       if (loaded.length > 0) {
         output += `\n\n<system-reminder>\n${loaded.map((item) => item.content).join("\n\n")}\n</system-reminder>`
       }
+      const hint = yield* DiscoveryNudge.noteTextTool(ctx.sessionID, instance.worktree === "/" ? instance.directory : instance.worktree)
 
       return {
         title,
-        output,
+        output: hint ? `${output}\n\n${hint}` : output,
         metadata: {
           preview: visible.slice(0, 20).map((item) => item.content).join("\n"),
           truncated,

@@ -50,6 +50,7 @@ import {
   writePersistentObligationStore,
   type OracleRecord,
 } from "@/chimera/store"
+import { DiscoveryNudge } from "@/chimera/discovery-nudge"
 import * as Tool from "./tool"
 import INIT_GRAPH_DESCRIPTION from "./chimera_init_graph.txt"
 import STATUS_DESCRIPTION from "./chimera_status.txt"
@@ -2763,6 +2764,7 @@ export const ChimeraSearchTool = Tool.define<typeof SearchParameters, SearchMeta
           refresh: params.refresh !== false,
         })
         if (!params.query.trim()) throw new Error("chimera_search requires a non-empty query")
+        yield* DiscoveryNudge.noteGraphQuery(ctx.sessionID)
         const instance = yield* InstanceState.context
         const target = Chimera.resolveProjectGraphTarget(params.projectPath, contextProjectRoot(instance))
         const root = target.root
@@ -2868,6 +2870,7 @@ export const ChimeraFileSymbolsTool = Tool.define<typeof FileSymbolsParameters, 
           projectPath: params.projectPath,
           refresh: params.refresh !== false,
         })
+        yield* DiscoveryNudge.noteGraphQuery(ctx.sessionID)
         const instance = yield* InstanceState.context
         return yield* catchSchemaMigrationRequired(
           withProjectGraphForTool(
@@ -3127,6 +3130,7 @@ export const ChimeraImpactTool = Tool.define<typeof ImpactParameters, ImpactMeta
           projectPath: params.projectPath,
           refresh: params.refresh !== false,
         })
+        yield* DiscoveryNudge.noteGraphQuery(ctx.sessionID)
         const instance = yield* InstanceState.context
         return yield* catchSchemaMigrationRequired(
           withProjectGraphForTool(
