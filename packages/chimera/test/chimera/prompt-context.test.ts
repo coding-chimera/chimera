@@ -335,4 +335,24 @@ describe("chimera prompt-context push graph context", () => {
       { git: true, config: (url) => testProviderConfig(url) },
     ),
   )
+
+  it.live("splits compound backtick snippets into identifier tokens", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ dir }) {
+        yield* withGraphPushFlag("1")
+        yield* Effect.promise(() => fs.writeFile(path.join(dir, "calls.ts"), "export function resolveTrackedCall(a: number) { return a }\n"))
+        yield* initGraph()
+        const sessions = yield* Session.Service
+        const session = yield* sessions.create({ title: "Push snippet split" })
+        yield* sessionWithUserText(sessions, session.id, "Update `resolveTrackedCall(value, 0.85)` to accept an options object instead.")
+
+        const context = yield* (yield* ChimeraPromptContext.Service).render(session.id, sessions)
+
+        expect(context ?? "").toContain(GRAPH_PUSH_HEADER)
+        expect(context ?? "").toContain("resolveTrackedCall (function)")
+        expect(context ?? "").not.toContain("resolveTrackedCall(value, 0.85)")
+      }),
+      { git: true, config: (url) => testProviderConfig(url) },
+    ),
+  )
 })

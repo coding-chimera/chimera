@@ -288,14 +288,26 @@ function pushDebug(message: string) {
 
 /**
  * Extract up to GRAPH_PUSH_MAX_TOKENS code-flavored tokens from the latest user message text.
- * Longest-first, deduped, English filler filtered. Sources: backtick-wrapped words,
- * path-like strings (contain "/" + a code extension), and camelCase/snake_case identifiers (>= 6 chars).
+ * Longest-first, deduped, English filler filtered. Sources: backtick-wrapped words
+ * (compound snippets are split into identifier fragments), path-like strings
+ * (contain "/" + a code extension), and camelCase/snake_case identifiers (>= 6 chars).
  */
 function extractCodeTokens(text: string) {
   const candidates: string[] = []
   for (const match of text.matchAll(CODE_TOKEN_BACKTICK)) {
     const inner = match[1]!.trim()
-    if (inner) candidates.push(inner)
+    if (!inner) continue
+    // A single identifier or path stays whole. Compound snippets (call
+    // expressions, punctuated code) are split into code-like identifier
+    // fragments: searching the raw snippet matches parameter-name noise across
+    // the repo instead of the intended symbol (bench-observed).
+    if (/^[\w./~-]+$/.test(inner)) {
+      candidates.push(inner)
+      continue
+    }
+    for (const part of inner.split(/[^\w./~-]+/)) {
+      if (part.length >= 6 && (part.includes("_") || /[a-z][A-Z]/.test(part))) candidates.push(part)
+    }
   }
   for (const match of text.matchAll(CODE_TOKEN_PATH)) candidates.push(match[0])
   for (const match of text.matchAll(CODE_TOKEN_WORD)) {
