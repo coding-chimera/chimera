@@ -142,6 +142,8 @@
 - 工具 `.txt` 描述**不动**（描述里已有 audit 指引，B4 是事件触发侧的补强，正是维度 4 的落点）。
 - 对应地，A3 地图中 audit_recent 一行即为提示词侧唯一表述。
 
+> **修订（2026-09-09，R2/R3 基准实验后）**：B4 语义已演进两步——①R2：提示行升级为内联传播探测（`src/chimera/propagation-probe.ts`，edit/write/apply_patch 成功输出直接携带 ≤3 行依赖摘要，500ms 预算，复用 audit 核心，永不 init/sync）；②R3：实验证明 "Deep audit: chimera_audit_recent" 尾巴会被模型当指令执行（audit_recent 调用率 100%，邀请效应），探测输出去邀请化为纯信息摘要（"Propagation check: N dependent file(s)..."），降级路径（图未初始化/超时/异常）静默。原 B4 提示行字符串已退役，仅存于测试负向锁。
+
 ## 3. 权威文本块（英文，施工人员以此为准，可打磨措辞但不得改变语义与强度）
 
 ### Rule force 阶梯头（default.txt，身份句之后）
@@ -215,17 +217,23 @@ Graph init and indexing are expensive. When read-only tools report the graph is 
 ```
 
 ### workbrief.txt 全文
+
+设计定位（用户澄清，2026-09-08 修订）：workbrief 是 goal 能力的前置件——开工即写、每回合重注入的**临时计划板**（目标/问题/验收），收工即改（生命周期闭环），同时是**用户同步面**（用户透过它看 agent 意图，写入的验收标准反向约束 agent 行为）。规范文本必须体现这四个属性；v1 的 "durable ledger + three moments only" 存档式措辞曾导致会话不再同步计划（已修复）。
+
 ```
 # Work Brief
 
-Use `workbrief` as the durable session ledger for work that spans turns, compaction, or subagents: intent, constraints, confirmed decisions, acceptance criteria, open questions, relevant evidence, closeout.
+`workbrief` maintains the session's active work board: goal, constraints, confirmed decisions, acceptance criteria, open questions, relevant evidence, and closeout state. The board is re-injected into your context on every turn and survives compaction — write it as current steering for the next turn, not as a log, and replace stale entries instead of appending contradictions. It is also the sync surface with the user: what you record is what the user sees you intend to do, and the acceptance criteria you record constrain what you do.
 
-Update it at three moments only:
-- Task intake for non-trivial requests: record intent, constraints, and acceptance criteria in the user's language. For tasks that will create, edit, delete, rename, or patch files, call `workbrief` before other tool work.
-- When new evidence changes the task shape: replace stale decisions instead of appending contradictions.
-- After edits and verification: record changed files and actions, `predesign:*`/`audit:*` refs, and verification outcomes in `relevantEvidence`.
+Update it at the boundaries of work:
+- Start: when a non-trivial task arrives, record intent, constraints, and acceptance criteria in the user's language. For tasks that will create, edit, delete, rename, or patch files, call `workbrief` before other tool work.
+- New turn: when a new user message arrives, first decide whether it changes the goal, decisions, constraints, or closeout; if it does, update the board before substantial tool work.
+- Shape change: when new evidence reshapes the task, update the affected fields — decisions, constraints, acceptance criteria, open questions, evidence.
+- End: when you consider the work done or blocked, update closeout and evidence so the next turn does not chase a stale goal; record changed files and actions, `predesign:*`/`audit:*` refs, and verification outcomes.
 
-Store compact anchors — paths, symbols, refs, command outcomes. Never transcripts, large snippets, or speculation. The brief is session state, not proof: re-read files when correctness depends on checkout state. For read-only work, do not run extra searches just to populate the brief.
+Skip updates when nothing durable changed: purely conversational messages, single trivial actions, or transient detail that belongs in files, tool output, or the final response.
+
+Keep entries as compact anchors — paths, symbols, refs, command outcomes; never transcripts, large snippets, or speculation. The board is session state, not proof: re-read files when correctness depends on checkout state. For read-only work, do not run extra searches just to populate the brief.
 ```
 
 ### browser.txt 全文
