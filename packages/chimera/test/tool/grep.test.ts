@@ -3,6 +3,8 @@ import fs from "fs/promises"
 import path from "path"
 import { Effect, Layer } from "effect"
 import { GrepTool } from "../../src/tool/grep"
+import { CodeGraph } from "../../src/graph"
+import { DiscoveryNudge } from "../../src/chimera/discovery-nudge"
 import { provideInstance, TestInstance, tmpdirScoped } from "../fixture/fixture"
 import { SessionID, MessageID } from "../../src/session/schema"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
@@ -89,6 +91,28 @@ describe("tool.grep", () => {
         ctx,
       )
       expect(result.metadata.matches).toBeGreaterThan(0)
+    }),
+  )
+
+  it.instance("appends the graph discovery hint to the 4th search result on an indexed project", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => Bun.write(path.join(test.directory, "needle.txt"), "needle one\nneedle two\nneedle three\n"))
+      const graph = yield* Effect.promise(() => CodeGraph.init(test.directory, { index: true }))
+      graph.close()
+      const nudgeCtx = { ...ctx, sessionID: SessionID.make("ses_grep_nudge") }
+      const info = yield* GrepTool
+      const grep = yield* info.init()
+      const search = () => grep.execute({ pattern: "needle", path: test.directory }, nudgeCtx)
+      const first = yield* search()
+      const second = yield* search()
+      const third = yield* search()
+      expect(first.metadata.matches).toBeGreaterThan(0)
+      expect(first.output).not.toContain(DiscoveryNudge.GRAPH_DISCOVERY_HINT)
+      expect(second.output).not.toContain(DiscoveryNudge.GRAPH_DISCOVERY_HINT)
+      expect(third.output).not.toContain(DiscoveryNudge.GRAPH_DISCOVERY_HINT)
+      const fourth = yield* search()
+      expect(fourth.output).toContain(DiscoveryNudge.GRAPH_DISCOVERY_HINT)
     }),
   )
 

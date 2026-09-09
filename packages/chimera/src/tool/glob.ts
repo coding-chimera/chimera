@@ -2,6 +2,7 @@ import path from "path"
 import { Effect, Option, Schema } from "effect"
 import * as Stream from "effect/Stream"
 import { InstanceState } from "@/effect/instance-state"
+import { DiscoveryNudge } from "@/chimera/discovery-nudge"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { Ripgrep } from "../file/ripgrep"
 import { assertExternalDirectoryEffect } from "./external-directory"
@@ -83,13 +84,14 @@ export const GlobTool = Tool.define(
             }
           }
 
+          const hint = yield* DiscoveryNudge.noteTextTool(ctx.sessionID, ins.worktree === "/" ? ins.directory : ins.worktree)
           return {
             title: path.relative(ins.worktree, search),
             metadata: {
               count: files.length,
               truncated,
             },
-            output: output.join("\n"),
+            output: hint ? `${output.join("\n")}\n\n${hint}` : output.join("\n"),
           }
         }).pipe(Effect.orDie),
     }
