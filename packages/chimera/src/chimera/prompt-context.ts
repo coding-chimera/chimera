@@ -1,15 +1,25 @@
 import path from "path"
-import { Context, Effect, Layer } from "effect"
+import { Context, Effect, Layer, Option } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import { readAuditRuns, readOracleResults, readPersistentObligationStore, readPredesignRuns, readRecentProvenanceRecords, type AuditRunRecord, type OracleRecord, type PredesignRunRecord } from "./store"
 import type { ToolMutationRecord } from "./provenance"
 import type { SessionID } from "@/session/schema"
+import type { MessageV2 } from "@/session/message-v2"
+import { Session } from "@/session/session"
 import { getGraphDataRootInfo } from "@/graph"
 
 const MAX_RECENT_MUTATIONS = 3
 const MAX_RECENT_PREDESIGNS = 3
 const MAX_ACTIVE_OBLIGATIONS = 8
 const MAX_ITEM_CHARS = 300
+const MAX_SCAN_MESSAGES = 20
+const MAX_SCAN_PARTS = 60
+const MIN_TEXT_EXPLORATION_CALLS = 4
+const GRAPH_DISCOVERY_HINT_HEADER = "## Graph discovery hint"
+const GRAPH_DISCOVERY_HINT_BODY =
+  'This project is indexed. One chimera_search or chimera_impact call can replace several grep/read steps for symbol, caller, reference, and impact questions; chimera_file_symbols answers "what is in this file".'
+const GRAPH_QUERY_TOOLS = new Set<string>(["chimera_search", "chimera_file_symbols", "chimera_impact"])
+const TEXT_EXPLORATION_TOOLS = new Set<string>(["grep", "glob", "read", "bash"])
 
 type PromptObligation = {
   id: string
@@ -202,9 +212,40 @@ function closeoutGate(recent: ToolMutationRecord[], obligations: PromptObligatio
   ]
 }
 
-function renderContext(recent: ToolMutationRecord[], obligations: PromptObligation[], predesigns: PredesignRunRecord[], audits: AuditRunRecord[], oracles: OracleRecord[]) {
+function discoveryCounts(messages: readonly MessageV2.WithParts[]) {
+  let graphCalls = 0
+  let textCalls = 0
+  let markerSeen = false
+  let scanned = 0
+  outer: for (let index = messages.length - 1; index >= 0; index--) {
+    for (const part of messages[index].parts) {
+      if (scanned >= MAX_SCAN_PARTS) break outer
+      scanned += 1
+      if (part.type === "tool") {
+        if (GRAPH_QUERY_TOOLS.has(part.tool)) graphCalls += 1
+        else if (TEXT_EXPLORATION_TOOLS.has(part.tool)) textCalls += 1
+      } else if (part.type === "text" && part.text.includes(GRAPH_DISCOVERY_HINT_HEADER)) {
+        markerSeen = true
+      }
+    }
+  }
+  return { graphCalls, textCalls, markerSeen }
+}
+
+const graphDiscoveryHint = Effect.fnUntraced(function* (root: string, sessionID: SessionID) {
+  const sessions = yield* Effect.serviceOption(Session.Service)
+  if (Option.isNone(sessions)) return undefined
+  if (getGraphDataRootInfo(root).dataRootStatus === "uninitialized") return undefined
+  const messages = yield* sessions.value.messages({ sessionID, limit: MAX_SCAN_MESSAGES }).pipe(Effect.option)
+  if (Option.isNone(messages)) return undefined
+  const counts = discoveryCounts(messages.value)
+  if (counts.graphCalls > 0 || counts.textCalls < MIN_TEXT_EXPLORATION_CALLS || counts.markerSeen) return undefined
+  return [GRAPH_DISCOVERY_HINT_HEADER, GRAPH_DISCOVERY_HINT_BODY]
+})
+
+function renderContext(recent: ToolMutationRecord[], obligations: PromptObligation[], predesigns: PredesignRunRecord[], audits: AuditRunRecord[], oracles: OracleRecord[], hint: readonly string[] | undefined) {
   const nonPassingOracles = oracles.filter((oracle) => oracle.status !== "pass")
-  if (recent.length === 0 && obligations.length === 0 && predesigns.length === 0 && audits.length === 0 && nonPassingOracles.length === 0) return undefined
+  if (recent.length === 0 && obligations.length === 0 && predesigns.length === 0 && audits.length === 0 && nonPassingOracles.length === 0 && !hint) return undefined
   return [
     "## Chimera Execution Context",
     "",
@@ -243,6 +284,7 @@ function renderContext(recent: ToolMutationRecord[], obligations: PromptObligati
     "",
     "Closeout Signals:",
     ...closeoutSignals(recent, obligations, predesigns, oracles),
+    ...(hint ? ["", ...hint] : []),
   ].join("\n")
 }
 
@@ -257,7 +299,8 @@ export const layer = Layer.effect(
       const store = yield* Effect.promise(() => readObligationsWithFallback(root))
       const audits = yield* Effect.promise(() => readAuditRuns(root, { limit: 20 }))
       const oracles = yield* Effect.promise(() => readOraclesWithFallback(root, sessionID))
-      return renderContext(recentMutations(records, sessionID), activeObligations(store), recentPredesigns(predesigns, sessionID), audits, oracles)
+      const hint = yield* graphDiscoveryHint(root, sessionID)
+      return renderContext(recentMutations(records, sessionID), activeObligations(store), recentPredesigns(predesigns, sessionID), audits, oracles, hint)
     })
 
     return Service.of({ render })
