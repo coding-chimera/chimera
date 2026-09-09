@@ -1,4 +1,6 @@
 import { afterEach, describe, expect } from "bun:test"
+import fs from "fs/promises"
+import path from "path"
 import { Effect } from "effect"
 import { Chimera } from "@/chimera"
 import { ChimeraPromptContext } from "@/chimera/prompt-context"
@@ -24,6 +26,9 @@ const ref = {
 const HINT_HEADER = "## Graph discovery hint"
 // The text-exploration tools whose presence (≥4 calls) makes the nudge relevant.
 const TEXT_TOOLS = ["bash", "read", "grep", "glob"]
+
+const GRAPH_PUSH_HEADER = "## Graph context (auto)"
+const GRAPH_PUSH_ENV = "CHIMERA_GRAPH_PUSH_CONTEXT"
 
 function userMessage(sessionID: SessionID): MessageV2.User {
   return {
@@ -124,6 +129,45 @@ function persistedHintBlock(sessions: Session.Interface, sessionID: SessionID) {
   })
 }
 
+// -- Push-style graph context helpers --
+
+// Real user input arrives as non-synthetic text parts; synthetic parts (runtime
+// context snapshots, injected reminders) are production text and must never seed
+// token extraction.
+function userTextPart(sessionID: SessionID, messageID: MessageID, text: string): MessageV2.TextPart {
+  return {
+    id: PartID.ascending(),
+    messageID,
+    sessionID,
+    type: "text",
+    text,
+  } satisfies MessageV2.TextPart
+}
+
+function sessionWithUserText(sessions: Session.Interface, sessionID: SessionID, text: string) {
+  return Effect.gen(function* () {
+    const message = yield* sessions.updateMessage(userMessage(sessionID))
+    yield* sessions.updatePart(userTextPart(sessionID, message.id, text))
+  })
+}
+
+// Sets CHIMERA_GRAPH_PUSH_CONTEXT for the duration of the test scope and restores
+// the prior value afterwards (process.env writes leak across files otherwise).
+function withGraphPushFlag(value: string | undefined) {
+  return Effect.acquireRelease(
+    Effect.sync(() => {
+      const original = process.env[GRAPH_PUSH_ENV]
+      if (value === undefined) delete process.env[GRAPH_PUSH_ENV]
+      else process.env[GRAPH_PUSH_ENV] = value
+      return original
+    }),
+    (original) =>
+      Effect.sync(() => {
+        if (original === undefined) delete process.env[GRAPH_PUSH_ENV]
+        else process.env[GRAPH_PUSH_ENV] = original
+      }),
+  )
+}
 describe("chimera prompt-context graph discovery hint", () => {
   it.live(
     "injects the hint when the graph is ready, the session has >=4 text-exploration calls, and zero graph-query calls",
@@ -194,6 +238,69 @@ describe("chimera prompt-context graph discovery hint", () => {
         const context = yield* (yield* ChimeraPromptContext.Service).render(session.id)
 
         expect(context ?? "").not.toContain(HINT_HEADER)
+      }),
+      { git: true, config: (url) => testProviderConfig(url) },
+    ),
+  )
+})
+
+describe("chimera prompt-context push graph context", () => {
+  it.live("skips the section when the env flag is off", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* () {
+        yield* withGraphPushFlag(undefined)
+        yield* initGraph()
+        const sessions = yield* Session.Service
+        const session = yield* sessions.create({ title: "Push flag off" })
+        yield* sessionWithUserText(sessions, session.id, "Update `trackedPushSymbol` to accept an options object.")
+
+        const context = yield* (yield* ChimeraPromptContext.Service).render(session.id)
+
+        expect(context ?? "").not.toContain(GRAPH_PUSH_HEADER)
+      }),
+      { git: true, config: (url) => testProviderConfig(url) },
+    ),
+  )
+
+  it.live("injects the section with hit lines when the flag is on, the graph is initialized, and the message is code-like", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ dir }) {
+        yield* withGraphPushFlag("1")
+        // Fixture symbol the graph index can actually resolve.
+        yield* Effect.promise(() => fs.writeFile(path.join(dir, "search.ts"), "export function trackedPushSymbol() { return 1 }\n"))
+        yield* initGraph()
+        const sessions = yield* Session.Service
+        const session = yield* sessions.create({ title: "Push flag on" })
+        yield* sessionWithUserText(
+          sessions,
+          session.id,
+          "Update `trackedPushSymbol` to accept an options object and adjust src/tool/search.ts accordingly.",
+        )
+
+        const context = yield* (yield* ChimeraPromptContext.Service).render(session.id)
+
+        expect(context).toBeDefined()
+        expect(context).toBeDefined()
+        expect(context).toContain(GRAPH_PUSH_HEADER)
+        expect(context).toContain("trackedPushSymbol (function)")
+        expect(context).toContain("(auto-generated from your message keywords; query tools available for deeper exploration)")
+      }),
+      { git: true, config: (url) => testProviderConfig(url) },
+    ),
+  )
+
+  it.live("skips the section for a plain natural-language message even with the flag on", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* () {
+        yield* withGraphPushFlag("1")
+        yield* initGraph()
+        const sessions = yield* Session.Service
+        const session = yield* sessions.create({ title: "Push natural language" })
+        yield* sessionWithUserText(sessions, session.id, "Please help me understand the project structure and how everything fits together.")
+
+        const context = yield* (yield* ChimeraPromptContext.Service).render(session.id)
+
+        expect(context ?? "").not.toContain(GRAPH_PUSH_HEADER)
       }),
       { git: true, config: (url) => testProviderConfig(url) },
     ),
