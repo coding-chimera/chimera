@@ -2,7 +2,8 @@ import path from "path"
 import { Context, Effect, Layer, Option } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import { readAuditRuns, readOracleResults, readPersistentObligationStore, readPredesignRuns, readRecentProvenanceRecords, type AuditRunRecord, type OracleRecord, type PredesignRunRecord } from "./store"
-import { Chimera, type ToolMutationRecord } from "./provenance"
+import type { ToolMutationRecord } from "./provenance"
+import { CodeGraphAdapter } from "./codegraph-adapter"
 import type { SessionID } from "@/session/schema"
 import type { MessageV2 } from "@/session/message-v2"
 import { Session } from "@/session/session"
@@ -26,7 +27,11 @@ const GRAPH_PUSH_ENV = "CHIMERA_GRAPH_PUSH_CONTEXT"
 const GRAPH_PUSH_HEADER = "## Graph context (auto)"
 const GRAPH_PUSH_TRAILER = "(auto-generated from your message keywords; query tools available for deeper exploration)"
 const GRAPH_PUSH_BUDGET_CHARS = 600
-const GRAPH_PUSH_QUERY_TIMEOUT_MS = 300
+// Covers the once-per-process cold open of large graph DBs; later renders reuse
+// the cached read-only handle and finish in milliseconds. Override for experiments.
+const GRAPH_PUSH_QUERY_TIMEOUT_MS = 3000
+const GRAPH_PUSH_TIMEOUT_ENV = "CHIMERA_GRAPH_PUSH_TIMEOUT_MS"
+const GRAPH_PUSH_DEBUG_ENV = "CHIMERA_GRAPH_PUSH_DEBUG"
 const GRAPH_PUSH_MAX_TOKENS = 3
 const GRAPH_PUSH_HITS_PER_TOKEN = 3
 const GRAPH_PUSH_MIN_TEXT_CHARS = 20
@@ -58,7 +63,7 @@ type ObligationStore = {
 }
 
 export interface Interface {
-  readonly render: (sessionID: SessionID) => Effect.Effect<string | undefined>
+  readonly render: (sessionID: SessionID, sessions: Session.Interface) => Effect.Effect<string | undefined>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/ChimeraPromptContext") {}
@@ -242,11 +247,9 @@ function discoveryCounts(messages: readonly MessageV2.WithParts[]) {
   return { graphCalls, textCalls, markerSeen }
 }
 
-const graphDiscoveryHint = Effect.fnUntraced(function* (root: string, sessionID: SessionID) {
-  const sessions = yield* Effect.serviceOption(Session.Service)
-  if (Option.isNone(sessions)) return undefined
+const graphDiscoveryHint = Effect.fnUntraced(function* (root: string, sessionID: SessionID, sessions: Session.Interface) {
   if (getGraphDataRootInfo(root).dataRootStatus === "uninitialized") return undefined
-  const messages = yield* sessions.value.messages({ sessionID, limit: MAX_SCAN_MESSAGES }).pipe(Effect.option)
+  const messages = yield* sessions.messages({ sessionID, limit: MAX_SCAN_MESSAGES }).pipe(Effect.option)
   if (Option.isNone(messages)) return undefined
   const counts = discoveryCounts(messages.value)
   if (counts.graphCalls > 0 || counts.textCalls < MIN_TEXT_EXPLORATION_CALLS || counts.markerSeen) return undefined
@@ -272,6 +275,15 @@ const COMMON_ENGLISH_FILLER = new Set([
 function graphPushContextEnabled() {
   const value = process.env[GRAPH_PUSH_ENV]?.toLowerCase()
   return value === "1" || value === "true"
+}
+
+function graphPushTimeoutMs() {
+  const value = Number(process.env[GRAPH_PUSH_TIMEOUT_ENV])
+  return Number.isFinite(value) && value > 0 ? value : GRAPH_PUSH_QUERY_TIMEOUT_MS
+}
+
+function pushDebug(message: string) {
+  if (process.env[GRAPH_PUSH_DEBUG_ENV] === "1") process.stderr.write(`[graph-push] ${message}\n`)
 }
 
 /**
@@ -333,26 +345,41 @@ function renderGraphPushSection(hits: Array<{ token: string; node: CodeGraphNode
 }
 
 /**
+ * Process-lifetime read-only graph handles for the push section.
+ * Chimera.withProjectGraph's readOnly path bypasses the shared graphStates cache
+ * and closes the handle on release (provenance.ts openGraphState/withProjectGraph),
+ * which made every render a full cold open of the graph DB — hundreds of ms on
+ * real-size repos, always over a turn-start budget. Open failures evict the entry;
+ * a DB replaced under a live handle degrades to search errors and the push silently
+ * stops for that root until process restart (acceptable for an experimental flag).
+ */
+const pushGraphHandles = new Map<string, Promise<CodeGraphAdapter>>()
+
+function openPushGraph(root: string) {
+  const cached = pushGraphHandles.get(root)
+  if (cached) return cached
+  const promise = CodeGraphAdapter.open(root, { readOnly: true })
+  promise.catch(() => pushGraphHandles.delete(root))
+  pushGraphHandles.set(root, promise)
+  return promise
+}
+
+/**
  * Query the graph for the extracted tokens and render the "## Graph context (auto)"
- * section. Shares the chimera_search core (CodeGraphAdapter.searchNodesDetailed via
- * Chimera.withProjectGraph) with readOnly/sync:false/watch:false/init:false so the
- * push never initializes, syncs, or watches graph data. Timeout and any failure
- * degrade to a silent skip.
+ * section. Uses CodeGraphAdapter.searchNodesDetailed (the chimera_search core) on a
+ * read-only handle: the push never initializes, syncs, or watches graph data.
+ * Timeout and any failure degrade to a silent skip.
  */
 const queryGraphPushContext = Effect.fnUntraced(function* (root: string, tokens: string[]) {
-  const section = yield* Chimera.withProjectGraph(
-    { readOnly: true, sync: false, watch: false, init: false },
-    (state) =>
-      Effect.gen(function* () {
-        const hits: Array<{ token: string; node: CodeGraphNode }> = []
-        for (const token of tokens) {
-          const detailed = state.graph.searchNodesDetailed(token, { limit: GRAPH_PUSH_HITS_PER_TOKEN })
-          for (const result of detailed.results.slice(0, GRAPH_PUSH_HITS_PER_TOKEN)) hits.push({ token, node: result.node })
-        }
-        return renderGraphPushSection(hits)
-      }),
-  )
-  return section
+  const graph = yield* Effect.promise(() => openPushGraph(root))
+  return yield* Effect.sync(() => {
+    const hits: Array<{ token: string; node: CodeGraphNode }> = []
+    for (const token of tokens) {
+      const detailed = graph.searchNodesDetailed(token, { limit: GRAPH_PUSH_HITS_PER_TOKEN })
+      for (const result of detailed.results.slice(0, GRAPH_PUSH_HITS_PER_TOKEN)) hits.push({ token, node: result.node })
+    }
+    return renderGraphPushSection(hits)
+  })
 })
 
 /**
@@ -360,23 +387,39 @@ const queryGraphPushContext = Effect.fnUntraced(function* (root: string, tokens:
  * code-flavored tokens. Off by default; every check is cheap and all failures
  * degrades to no section.
  */
-const graphPushContextSection = Effect.fnUntraced(function* (sessionID: SessionID) {
+const graphPushContextSection = Effect.fnUntraced(function* (sessionID: SessionID, sessions: Session.Interface) {
+  pushDebug(`enter: flag=${process.env[GRAPH_PUSH_ENV] ?? "unset"}`)
   if (!graphPushContextEnabled()) return undefined
   const instance = yield* InstanceState.context
   const root = projectRoot(instance)
-  if (!isInitialized(root)) return undefined
-  const sessions = yield* Effect.serviceOption(Session.Service)
-  if (Option.isNone(sessions)) return undefined
-  const messages = yield* sessions.value.messages({ sessionID, limit: MAX_SCAN_MESSAGES }).pipe(Effect.option)
-  if (Option.isNone(messages)) return undefined
+  if (!isInitialized(root)) {
+    pushDebug(`skip: graph not initialized (root=${root})`)
+    return undefined
+  }
+  const messages = yield* sessions.messages({ sessionID, limit: MAX_SCAN_MESSAGES }).pipe(Effect.option)
+  if (Option.isNone(messages)) {
+    pushDebug("skip: session messages fetch failed")
+    return undefined
+  }
   const tokens = latestUserCodeTokens(messages.value)
-  if (tokens.length === 0) return undefined
-  const section = yield* queryGraphPushContext(root, tokens).pipe(
-    Effect.timeout(GRAPH_PUSH_QUERY_TIMEOUT_MS),
-    Effect.option,
-    Effect.catchDefect(() => Effect.succeed(Option.none())),
+  if (tokens.length === 0) {
+    pushDebug("skip: no code tokens in latest user message")
+    return undefined
+  }
+  const startedAt = Date.now()
+  const section = Option.getOrUndefined(
+    yield* queryGraphPushContext(root, tokens).pipe(
+      Effect.timeout(graphPushTimeoutMs()),
+      Effect.option,
+      Effect.catchDefect(() => Effect.succeed(Option.none())),
+    ),
   )
-  return Option.isNone(section) ? undefined : section.value
+  pushDebug(
+    section === undefined
+      ? `miss: tokens=${JSON.stringify(tokens)} elapsed=${Date.now() - startedAt}ms (timeout, query failure, or zero hits)`
+      : `hit: tokens=${JSON.stringify(tokens)} chars=${section.length} elapsed=${Date.now() - startedAt}ms`,
+  )
+  return section
 })
 function renderContext(recent: ToolMutationRecord[], obligations: PromptObligation[], predesigns: PredesignRunRecord[], audits: AuditRunRecord[], oracles: OracleRecord[], hint: readonly string[] | undefined, graphContext: string | undefined) {
   const nonPassingOracles = oracles.filter((oracle) => oracle.status !== "pass")
@@ -427,7 +470,7 @@ function renderContext(recent: ToolMutationRecord[], obligations: PromptObligati
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
-    const render = Effect.fn("ChimeraPromptContext.render")(function* (sessionID: SessionID) {
+    const render = Effect.fn("ChimeraPromptContext.render")(function* (sessionID: SessionID, sessions: Session.Interface) {
       const instance = yield* InstanceState.context
       const root = projectRoot(instance)
       const records = yield* Effect.promise(() => readProvenanceWithFallback(root))
@@ -435,8 +478,8 @@ export const layer = Layer.effect(
       const store = yield* Effect.promise(() => readObligationsWithFallback(root))
       const audits = yield* Effect.promise(() => readAuditRuns(root, { limit: 20 }))
       const oracles = yield* Effect.promise(() => readOraclesWithFallback(root, sessionID))
-      const hint = yield* graphDiscoveryHint(root, sessionID)
-      const graphContext = yield* graphPushContextSection(sessionID)
+      const hint = yield* graphDiscoveryHint(root, sessionID, sessions)
+      const graphContext = yield* graphPushContextSection(sessionID, sessions)
       return renderContext(recentMutations(records, sessionID), activeObligations(store), recentPredesigns(predesigns, sessionID), audits, oracles, hint, graphContext)
     })
 

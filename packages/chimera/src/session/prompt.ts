@@ -331,7 +331,7 @@ export const layer = Layer.effect(
     }) {
       const [workBriefSuffix, chimeraContextSuffix] = yield* Effect.all([
         workBrief.render(input.sessionID),
-        chimeraPromptContext.render(input.sessionID),
+        chimeraPromptContext.render(input.sessionID, sessions),
       ])
       const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
       const agent = yield* agents.get(input.agent)
