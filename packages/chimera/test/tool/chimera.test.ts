@@ -38,6 +38,7 @@ import { Tool } from "@/tool/tool"
 import { Truncate } from "@/tool/truncate"
 import { disposeAllInstances, provideTmpdirInstance, TestInstance, tmpdir } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
+import type { Session } from "@/session/session"
 
 const ctx = {
   sessionID: SessionID.make("ses_test-chimera-session"),
@@ -49,6 +50,11 @@ const ctx = {
   metadata: () => Effect.void,
   ask: () => Effect.void,
 }
+
+// render() now takes an explicit Session.Interface; these tests exercise only
+// the provenance/oracle sections, where the messages reader is never consulted
+// (hint needs >=4 text-tool parts, push needs the env flag).
+const stubSessions = { messages: () => Effect.succeed([]) } as unknown as Session.Interface
 
 const it = testEffect(Layer.mergeAll(Bus.layer, Agent.defaultLayer, Truncate.defaultLayer, ChimeraPromptContext.layer))
 
@@ -855,7 +861,7 @@ describe("tool.chimera", () => {
       expect(parsed.swarmFollowup?.from).toBe("failing_or_unknown_oracles")
 
       const promptContext = yield* ChimeraPromptContext.Service
-      const context = yield* promptContext.render(ctx.sessionID)
+      const context = yield* promptContext.render(ctx.sessionID, stubSessions)
       expect(context).toContain("failing/unknown oracle evidence is linked to the latest mutation")
       expect(context).toContain("apocalypse: block")
       expect(context).toContain("ordinary: warn")
@@ -879,7 +885,7 @@ describe("tool.chimera", () => {
       })
 
       const promptContext = yield* ChimeraPromptContext.Service
-      const context = yield* promptContext.render(ctx.sessionID)
+      const context = yield* promptContext.render(ctx.sessionID, stubSessions)
 
       expect(context).toContain("ordinary: warn — latest mutation still needs recorded chimera_audit_recent evidence")
       expect(context).not.toContain("ordinary: block")
@@ -902,7 +908,7 @@ describe("tool.chimera", () => {
       })
 
       const promptContext = yield* ChimeraPromptContext.Service
-      const context = yield* promptContext.render(ctx.sessionID)
+      const context = yield* promptContext.render(ctx.sessionID, stubSessions)
       expect(context).toContain("Frontend component mutation without trusted verification evidence")
 
       yield* Chimera.recordToolOracle({
@@ -922,7 +928,7 @@ describe("tool.chimera", () => {
         },
       })
 
-      const verified = yield* promptContext.render(ctx.sessionID)
+      const verified = yield* promptContext.render(ctx.sessionID, stubSessions)
       expect(verified).not.toContain("Frontend component mutation without trusted verification evidence")
     }),
   )
@@ -942,7 +948,7 @@ describe("tool.chimera", () => {
       })
 
       const promptContext = yield* ChimeraPromptContext.Service
-      const plainContext = yield* promptContext.render(ctx.sessionID)
+      const plainContext = yield* promptContext.render(ctx.sessionID, stubSessions)
       expect(plainContext).not.toContain("Frontend component mutation")
 
       yield* trackWrite({
@@ -972,7 +978,7 @@ describe("tool.chimera", () => {
         },
       })
 
-      const context = yield* promptContext.render(ctx.sessionID)
+      const context = yield* promptContext.render(ctx.sessionID, stubSessions)
       expect(context).toContain("Frontend component mutation without trusted verification evidence")
     }),
   )
@@ -1354,7 +1360,7 @@ describe("tool.chimera", () => {
       expect(status.metadata.pendingObligations).toBe(synced.metadata.obligations.length)
 
       const promptContext = yield* ChimeraPromptContext.Service
-      const context = yield* promptContext.render(ctx.sessionID)
+      const context = yield* promptContext.render(ctx.sessionID, stubSessions)
       expect(context).toContain("## Chimera Execution Context")
       expect(context).toContain("Active Obligations")
       expect(context).toContain("Closeout Gate")

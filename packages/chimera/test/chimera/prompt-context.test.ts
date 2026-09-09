@@ -177,9 +177,9 @@ describe("chimera prompt-context graph discovery hint", () => {
           yield* initGraph()
           const sessions = yield* Session.Service
           const session = yield* sessions.create({ title: "Hint" })
-          yield* sessionWithToolParts(sessions, session.id, TEXT_TOOLS)
+        yield* sessionWithToolParts(sessions, session.id, TEXT_TOOLS)
 
-          const context = yield* (yield* ChimeraPromptContext.Service).render(session.id)
+        const context = yield* (yield* ChimeraPromptContext.Service).render(session.id, sessions)
 
           expect(context).toBeDefined()
           expect(context).toContain(HINT_HEADER)
@@ -200,7 +200,7 @@ describe("chimera prompt-context graph discovery hint", () => {
         const session = yield* sessions.create({ title: "Hint used graph" })
         yield* sessionWithToolParts(sessions, session.id, TEXT_TOOLS, ["chimera_search"])
 
-        const context = yield* (yield* ChimeraPromptContext.Service).render(session.id)
+        const context = yield* (yield* ChimeraPromptContext.Service).render(session.id, sessions)
 
         expect(context ?? "").not.toContain(HINT_HEADER)
       }),
@@ -216,7 +216,7 @@ describe("chimera prompt-context graph discovery hint", () => {
         const session = yield* sessions.create({ title: "Hint too early" })
         yield* sessionWithToolParts(sessions, session.id, TEXT_TOOLS.slice(0, 3))
 
-        const context = yield* (yield* ChimeraPromptContext.Service).render(session.id)
+        const context = yield* (yield* ChimeraPromptContext.Service).render(session.id, sessions)
 
         expect(context ?? "").not.toContain(HINT_HEADER)
       }),
@@ -235,7 +235,7 @@ describe("chimera prompt-context graph discovery hint", () => {
         // message; its marker line is what makes the once-per-session guarantee.
         yield* persistedHintBlock(sessions, session.id)
 
-        const context = yield* (yield* ChimeraPromptContext.Service).render(session.id)
+        const context = yield* (yield* ChimeraPromptContext.Service).render(session.id, sessions)
 
         expect(context ?? "").not.toContain(HINT_HEADER)
       }),
@@ -254,7 +254,7 @@ describe("chimera prompt-context push graph context", () => {
         const session = yield* sessions.create({ title: "Push flag off" })
         yield* sessionWithUserText(sessions, session.id, "Update `trackedPushSymbol` to accept an options object.")
 
-        const context = yield* (yield* ChimeraPromptContext.Service).render(session.id)
+        const context = yield* (yield* ChimeraPromptContext.Service).render(session.id, sessions)
 
         expect(context ?? "").not.toContain(GRAPH_PUSH_HEADER)
       }),
@@ -277,7 +277,7 @@ describe("chimera prompt-context push graph context", () => {
           "Update `trackedPushSymbol` to accept an options object and adjust src/tool/search.ts accordingly.",
         )
 
-        const context = yield* (yield* ChimeraPromptContext.Service).render(session.id)
+        const context = yield* (yield* ChimeraPromptContext.Service).render(session.id, sessions)
 
         expect(context).toBeDefined()
         expect(context).toBeDefined()
@@ -298,9 +298,39 @@ describe("chimera prompt-context push graph context", () => {
         const session = yield* sessions.create({ title: "Push natural language" })
         yield* sessionWithUserText(sessions, session.id, "Please help me understand the project structure and how everything fits together.")
 
-        const context = yield* (yield* ChimeraPromptContext.Service).render(session.id)
+        const context = yield* (yield* ChimeraPromptContext.Service).render(session.id, sessions)
 
         expect(context ?? "").not.toContain(GRAPH_PUSH_HEADER)
+      }),
+      { git: true, config: (url) => testProviderConfig(url) },
+    ),
+  )
+
+  it.live("injects with debug logging on and falls back to the default timeout for invalid overrides", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ dir }) {
+        yield* withGraphPushFlag("1")
+        const originalDebug = process.env["CHIMERA_GRAPH_PUSH_DEBUG"]
+        const originalTimeout = process.env["CHIMERA_GRAPH_PUSH_TIMEOUT_MS"]
+        process.env["CHIMERA_GRAPH_PUSH_DEBUG"] = "1"
+        process.env["CHIMERA_GRAPH_PUSH_TIMEOUT_MS"] = "not-a-number"
+        try {
+          yield* Effect.promise(() => fs.writeFile(path.join(dir, "debug.ts"), "export function trackedPushDebug() { return 1 }\n"))
+          yield* initGraph()
+          const sessions = yield* Session.Service
+          const session = yield* sessions.create({ title: "Push debug env" })
+          yield* sessionWithUserText(sessions, session.id, "Update `trackedPushDebug` to accept an options object.")
+
+          const context = yield* (yield* ChimeraPromptContext.Service).render(session.id, sessions)
+
+          expect(context ?? "").toContain(GRAPH_PUSH_HEADER)
+          expect(context ?? "").toContain("trackedPushDebug (function)")
+        } finally {
+          if (originalDebug === undefined) delete process.env["CHIMERA_GRAPH_PUSH_DEBUG"]
+          else process.env["CHIMERA_GRAPH_PUSH_DEBUG"] = originalDebug
+          if (originalTimeout === undefined) delete process.env["CHIMERA_GRAPH_PUSH_TIMEOUT_MS"]
+          else process.env["CHIMERA_GRAPH_PUSH_TIMEOUT_MS"] = originalTimeout
+        }
       }),
       { git: true, config: (url) => testProviderConfig(url) },
     ),
