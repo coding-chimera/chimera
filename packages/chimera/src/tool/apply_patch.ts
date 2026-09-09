@@ -15,6 +15,7 @@ import { File } from "../file"
 import { Format } from "../format"
 import * as Bom from "@/util/bom"
 import { Chimera } from "@/chimera"
+import { inlinePropagationCheck } from "@/chimera/propagation-probe"
 
 export const Parameters = Patch.PatchParamsSchema
 
@@ -329,7 +330,8 @@ export const ApplyPatchTool = Tool.define(
         output += `\n\nLSP errors detected in ${rel}, please fix:\n${block}`
       }
 
-      output += `\n\nPropagation audit recommended: run chimera_audit_recent before treating this change as complete (skip only when the edit is trivial or intentionally scoped).`
+      const probeLine = yield* inlinePropagationCheck(fileChanges.flatMap((change) => (change.movePath ? [change.filePath, change.movePath] : [change.filePath])))
+      output += `\n\n${probeLine}`
       return {
         title,
         metadata: {

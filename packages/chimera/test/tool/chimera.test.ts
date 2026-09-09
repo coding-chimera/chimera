@@ -5,9 +5,11 @@ import { Cause, Effect, Exit, Layer } from "effect"
 import { Bus } from "@/bus"
 import { Chimera } from "@/chimera"
 import { ChimeraPromptContext } from "@/chimera/prompt-context"
+import type { ProjectGraphState } from "@/chimera"
 import { readAuditRuns, readPredesignRuns } from "@/chimera/store"
 import { SessionToolMetadata } from "@/chimera/session-tool-metadata"
 import { DatabaseConnection, getDatabasePath } from "@/graph"
+import type { Node as CodeGraphNode } from "@/graph"
 import { createDatabase } from "@/graph/db/sqlite-adapter"
 import { CURRENT_SCHEMA_VERSION, getCurrentVersion } from "@/graph/db/migrations"
 import { Agent } from "@/agent/agent"
@@ -30,6 +32,7 @@ import {
   ChimeraPredesignTool,
   ChimeraSearchTool,
   ChimeraStatusTool,
+  enrichQueryOutput,
 } from "@/tool/chimera"
 import { Tool } from "@/tool/tool"
 import { Truncate } from "@/tool/truncate"
@@ -232,11 +235,14 @@ describe("tool.chimera", () => {
       const auditRecent = yield* ChimeraAuditRecentTool.pipe(Effect.flatMap((info) => info.init()))
       const obligationsSync = yield* ChimeraObligationsSyncTool.pipe(Effect.flatMap((info) => info.init()))
 
-      for (const description of [audit.description, auditRecent.description, obligationsSync.description]) {
-        expect(description).toContain("CodePlan atomic label glossary")
-        expect(description).toContain("`MMS` modified method signature")
-        expect(description).toContain("`MMB` modified method body")
-        expect(description).toContain("`DI` deleted import/using statement")
+      expect(audit.description).toContain("CodePlan atomic label glossary")
+      expect(audit.description).toContain("`MMS` modified method signature")
+      expect(audit.description).toContain("`MMB` modified method body")
+      expect(audit.description).toContain("`DI` deleted import/using statement")
+
+      for (const description of [auditRecent.description, obligationsSync.description]) {
+        expect(description).toContain("See chimera_audit description for the CodePlan atomic label glossary")
+        expect(description).not.toContain("`MMB` modified method body")
       }
     }),
   )
@@ -1724,6 +1730,211 @@ describe("cross-project projectPath", () => {
       const status = yield* runStatus({ refresh: false })
       expect(status.metadata.initialized).toBe(true)
       expect(status.metadata.missingFiles).toBe(0)
+    }),
+  )
+})
+
+describe("search/file_symbols output enrichment", () => {
+  it.instance("search output carries definition excerpts and companion test hints", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        fs.writeFile(
+          path.join(test.directory, "glyphs.ts"),
+          "export function trackedGlyph() {\n  return 'glyph'\n}\n",
+        ),
+      )
+      yield* Effect.promise(() =>
+        fs.writeFile(
+          path.join(test.directory, "glyphs.test.ts"),
+          "import { trackedGlyph } from './glyphs'\nexport function glyphCompanion() { return trackedGlyph() }\n",
+        ),
+      )
+      yield* initGraph()
+
+      const result = yield* runSearch({ query: "trackedGlyph" })
+
+      expect(result.output).toContain("trackedGlyph")
+      expect(result.output).toContain("  return 'glyph'")
+      expect(result.output).toContain("  Tests: glyphs.test.ts")
+      expect(result.output).toContain("terms: trackedGlyph(")
+      expect(result.metadata.results.some((item) => item.node.name === "trackedGlyph")).toBe(true)
+    }),
+  )
+
+  it.instance("file_symbols output carries definition excerpts and companion test hints", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        fs.writeFile(
+          path.join(test.directory, "glyphs.ts"),
+          "export function trackedGlyph() {\n  return 'glyph'\n}\n",
+        ),
+      )
+      yield* Effect.promise(() =>
+        fs.writeFile(
+          path.join(test.directory, "glyphs.test.ts"),
+          "import { trackedGlyph } from './glyphs'\n",
+        ),
+      )
+      yield* initGraph()
+
+      const result = yield* runFileSymbols({ filePath: "glyphs.ts" })
+
+      expect(result.output).toContain("trackedGlyph")
+      expect(result.output).toContain("  return 'glyph'")
+      expect(result.output).toContain("  Tests: glyphs.test.ts")
+      expect(result.metadata.results.some((item) => item.node.name === "trackedGlyph")).toBe(true)
+    }),
+  )
+
+  it.instance("search top hits carry Refs blocks with caller source lines", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        fs.writeFile(
+          path.join(test.directory, "glyphs.ts"),
+          "export function trackedGlyph() {\n  return 'glyph'\n}\n",
+        ),
+      )
+      yield* Effect.promise(() => fs.mkdir(path.join(test.directory, "consumers"), { recursive: true }))
+      yield* Effect.promise(() =>
+        fs.writeFile(
+          path.join(test.directory, "consumers", "one.ts"),
+          "import { trackedGlyph } from '../glyphs'\nexport const alpha = trackedGlyph()\nexport const beta = trackedGlyph()\n",
+        ),
+      )
+      yield* Effect.promise(() =>
+        fs.writeFile(
+          path.join(test.directory, "consumers", "two.ts"),
+          "import { trackedGlyph } from '../glyphs'\nexport const gamma = trackedGlyph()\nexport const delta = trackedGlyph()\n",
+        ),
+      )
+      yield* initGraph()
+
+      const result = yield* runSearch({ query: "trackedGlyph" })
+
+      expect(result.metadata.results.some((item) => item.node.name === "trackedGlyph")).toBe(true)
+      expect(result.metadata.results.some((item) => item.node.name === "trackedGlyph")).toBe(true)
+      expect(result.output).toMatch(/Refs\(\d+\):/)
+      expect(result.output).toContain("consumers/one.ts:2 export const alpha = trackedGlyph()")
+      expect(result.output).toContain("consumers/two.ts:2 export const gamma = trackedGlyph()")
+    }),
+  )
+
+  it.instance("refs enrichment degrades by budget: source text, then low-ranked blocks", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        fs.writeFile(
+          path.join(test.directory, "glyphs.ts"),
+          "export function trackedGlyph() {\n  return 'glyph'\n}\nexport function secondGlyph() {\n  return trackedGlyph()\n}\n",
+        ),
+      )
+      yield* Effect.promise(() => fs.mkdir(path.join(test.directory, "consumers"), { recursive: true }))
+      yield* Effect.promise(() =>
+        fs.writeFile(
+          path.join(test.directory, "consumers", "one.ts"),
+          "import { trackedGlyph } from '../glyphs'\nexport const alpha = trackedGlyph()\n",
+        ),
+      )
+      yield* Effect.promise(() =>
+        fs.writeFile(
+          path.join(test.directory, "consumers", "two.ts"),
+          "import { trackedGlyph } from '../glyphs'\nexport const beta = trackedGlyph()\n",
+        ),
+      )
+      yield* Effect.promise(() =>
+        fs.writeFile(
+          path.join(test.directory, "consumers", "three.ts"),
+          "import { trackedGlyph } from '../glyphs'\nexport const zeta = trackedGlyph()\n",
+        ),
+      )
+
+      const glyphNode = (id: string, name: string, filePath: string, startLine: number, endLine: number, kind: CodeGraphNode["kind"] = "function") =>
+        ({ id, kind, name, qualifiedName: id, filePath, language: "typescript" as const, startLine, endLine, startColumn: 0, endColumn: 0, isExported: true, updatedAt: 0 })
+      const glyph = glyphNode("fn:glyphs:trackedGlyph", "trackedGlyph", "glyphs.ts", 1, 3)
+      const second = glyphNode("fn:glyphs:secondGlyph", "secondGlyph", "glyphs.ts", 4, 6)
+      const oneAlpha = glyphNode("fn:one:alpha", "alpha", "consumers/one.ts", 2, 3)
+      const twoBeta = glyphNode("fn:two:beta", "beta", "consumers/two.ts", 2, 3)
+      const threeZeta = glyphNode("fn:three:zeta", "zeta", "consumers/three.ts", 2, 3)
+      const oneFile = glyphNode("file:one", "one.ts", "consumers/one.ts", 1, 2, "file")
+      const twoFile = glyphNode("file:two", "two.ts", "consumers/two.ts", 1, 2, "file")
+      const threeFile = glyphNode("file:three", "three.ts", "consumers/three.ts", 1, 2, "file")
+      const relation = (other: ReturnType<typeof glyphNode>, edgeKind: "calls" | "imports", line: number) => ({
+        relation: edgeKind === "imports" ? "ImportedBy" : "CalledBy",
+        direction: "incoming",
+        edgeKind,
+        edge: { source: other.id, target: glyph.id, kind: edgeKind, line, column: 1 },
+        otherNode: other,
+        sourceNode: other,
+        targetNode: glyph,
+        provenance: undefined,
+        quality: "exact",
+      })
+      const fakeGraph = {
+        files: () => [] as { path: string }[],
+        incomingRelations: (id: string) => id === glyph.id
+            ? [relation(oneAlpha, "calls", 2), relation(twoBeta, "calls", 2), relation(threeZeta, "calls", 2),
+               relation(oneFile, "imports", 1), relation(twoFile, "imports", 1), relation(threeFile, "imports", 1)]
+          : id === second.id ? [relation(twoFile, "imports", 1)] : [],
+      }
+      const state = { projectRoot: test.directory, artifact: "test", storePath: "test", graph: fakeGraph } as unknown as ProjectGraphState
+      const run = (budgetBytes: number) =>
+        Effect.promise(() => enrichQueryOutput(state, [glyph, second], { refs: true, budgetBytes }))
+
+      // Thresholds computed with the same per-line cost the formatter uses (1 + utf8 bytes):
+      // hit1 (6 sites) renders `Refs(6):` + 3 symbol sites + 2 file-level sites + `+1 more` hint;
+      // hit2 (1 site) renders `Refs(1):` + 1 file-level site; excerpts cover both glyphs.ts hits.
+      const bytes = (line: string) => 1 + new TextEncoder().encode(line).length
+      const sumBytes = (lines: string[]) => lines.reduce((total, line) => total + bytes(line), 0)
+      const bareHit1 = sumBytes([
+        "  Refs(6):",
+        "  consumers/one.ts:2",
+        "  consumers/two.ts:2",
+        "  consumers/three.ts:2",
+        "  consumers/one.ts:1 (file-level)",
+        "  consumers/two.ts:1 (file-level)",
+        "  +1 more (chimera_impact ref:node:fn:glyphs:trackedGlyph 可展开)",
+      ])
+      const bareHit2 = sumBytes(["  Refs(1):", "  consumers/two.ts:1 (file-level)"])
+      const excerptTotal = sumBytes([
+        "  export function trackedGlyph() {",
+        "  return 'glyph'",
+        "  }",
+        "  export function secondGlyph() {",
+        "  return trackedGlyph()",
+        "  }",
+      ])
+
+      const full = yield* run(100000)
+      expect(full.lines).toContain("  Refs(6):")
+      expect(full.lines).toContain("  consumers/one.ts:2 export const alpha = trackedGlyph()")
+      expect(full.lines.some((line) => line.startsWith("  +1 more (chimera_impact ref:node:fn:glyphs:trackedGlyph"))).toBe(true)
+      expect(full.lines).toContain("  Refs(1):")
+      expect(full.lines).toContain("  return 'glyph'")
+
+      // Budget = bare hit1 + bare hit2 + excerpts: Refs source text is stripped, blocks kept.
+      const bare = yield* run(bareHit1 + bareHit2 + excerptTotal)
+      expect(bare.lines).toContain("  Refs(6):")
+      expect(bare.lines).toContain("  consumers/one.ts:2")
+      expect(bare.lines).toContain("  consumers/three.ts:1 (file-level)")
+      expect(bare.lines.some((line) => line.startsWith("  +1 more (chimera_impact"))).toBe(true)
+      expect(bare.lines).not.toContain("export const alpha = trackedGlyph()")
+      expect(bare.lines.every((line) => !/^  consumers\/[^:]+:\d+ [^(]/.test(line))).toBe(true)
+      expect(bare.lines).toContain("  return 'glyph'")
+
+      // Budget = bare hit1 + excerpts - 1: the lower-ranked Refs block drops before excerpts do.
+      const noRefs = yield* run(bareHit1 + excerptTotal - 1)
+      expect(noRefs.lines.some((line) => line.startsWith("  Refs("))).toBe(false)
+      expect(noRefs.lines).toContain("  return 'glyph'")
+      expect(noRefs.lines).toContain("  export function secondGlyph() {")
+
+      // Budget 1: no enrichment survives.
+      const none = yield* run(1)
+      expect(none.lines.some((line) => line.startsWith("  Refs("))).toBe(false)
+      expect(none.lines).not.toContain("  return 'glyph'")
+      expect(none.lines).not.toContain("  Tests:")
     }),
   )
 })

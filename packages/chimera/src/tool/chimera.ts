@@ -100,11 +100,11 @@ const Range = Schema.Struct({
 })
 
 const RefreshDescription =
-  "Refresh CodeGraph when stale: the index is empty, watcher has pending files, or git reports dirty source files. Defaults to true."
+  "Refresh CodeGraph when stale (empty index, pending watcher files, or dirty git sources). Defaults to true."
 const ChimeraRefDescription =
-  "Typed Chimera ref copied from a previous tool output, formatted like `node:<id>`, `audit:<id>`, `predesign:<id>`, `oracle:<id>`, `obligation:<id>`, or `change:<id>`. Prefer this over legacy raw id fields when available."
+  "Typed Chimera ref from a previous tool output, formatted like `node:<id>`, `audit:<id>`, `predesign:<id>`, `oracle:<id>`, `obligation:<id>`, or `change:<id>`."
 const ChimeraRefsDescription =
-  "Typed Chimera refs copied from previous tool outputs. Currently `node:<id>` refs are accepted here; prefer refs over legacy nodeIDs when available."
+  "Typed Chimera refs from previous tool outputs; currently `node:<id>` refs are accepted here."
 export const InitGraphParameters = Schema.Struct({
   refresh: Schema.optional(Schema.Boolean).annotate({
     description: RefreshDescription,
@@ -113,7 +113,7 @@ export const InitGraphParameters = Schema.Struct({
 
 export const StatusParameters = Schema.Struct({
   projectPath: Schema.optional(Schema.String).annotate({
-    description: "Path to another project with an initialized Chimera graph for read-only cross-project queries. Omit to use the current project.",
+    description: "Optional path to another initialized Chimera project (or a subdirectory of it) for read-only cross-project queries."
   }),
   refresh: Schema.optional(Schema.Boolean).annotate({
     description: RefreshDescription,
@@ -122,7 +122,7 @@ export const StatusParameters = Schema.Struct({
 
 export const SearchParameters = Schema.Struct({
   query: Schema.String.annotate({
-    description: "Symbol or CodeGraph-indexed text query. This is not raw literal/code-string search; use Grep for arbitrary source text.",
+    description: "Symbol or CodeGraph-indexed text query."
   }),
   kind: Schema.optional(NodeKind).annotate({
     description: "Optional CodeGraph node kind filter.",
@@ -131,7 +131,7 @@ export const SearchParameters = Schema.Struct({
     description: "Maximum results to return. Defaults to 10, capped at 50.",
   }),
   projectPath: Schema.optional(Schema.String).annotate({
-    description: "Path to another project with an initialized Chimera graph for read-only cross-project queries. Omit to use the current project.",
+    description: "Optional path to another initialized Chimera project (or a subdirectory of it) for read-only cross-project queries."
   }),
   refresh: Schema.optional(Schema.Boolean).annotate({
     description: RefreshDescription,
@@ -152,7 +152,7 @@ export const FileSymbolsParameters = Schema.Struct({
     description: "Maximum results to return. Defaults to 10, capped at 50.",
   }),
   projectPath: Schema.optional(Schema.String).annotate({
-    description: "Path to another project with an initialized Chimera graph for read-only cross-project queries. Omit to use the current project.",
+    description: "Optional path to another initialized Chimera project (or a subdirectory of it) for read-only cross-project queries."
   }),
   refresh: Schema.optional(Schema.Boolean).annotate({
     description: RefreshDescription,
@@ -173,7 +173,7 @@ export const PredesignParameters = Schema.Struct({
     description: ChimeraRefsDescription,
   }),
   nodeIDs: Schema.optional(Schema.Array(Schema.String)).annotate({
-    description: "Legacy exact CodeGraph node ids to use as pre-edit graph seeds. Prefer refs when available.",
+    description: "Legacy exact CodeGraph node ids to use as pre-edit graph seeds."
   }),
   depth: Schema.optional(Schema.Number).annotate({
     description: "Graph traversal depth for pre-edit impact discovery. Defaults to 2, capped at 5.",
@@ -196,7 +196,7 @@ export const ImpactParameters = Schema.Struct({
     description: "Symbol name to analyze. Used when ref/nodeID is not supplied.",
   }),
   nodeID: Schema.optional(Schema.String).annotate({
-    description: "Legacy exact CodeGraph node id to analyze. Prefer ref when available.",
+    description: "Legacy exact CodeGraph node id to analyze."
   }),
   filePath: Schema.optional(Schema.String).annotate({
     description: "File to analyze for file-level dependents; absolute or project-relative.",
@@ -214,13 +214,13 @@ export const ImpactParameters = Schema.Struct({
     description: "Maximum impacted symbols/files to return. Defaults to 20, capped at 100.",
   }),
   projectPath: Schema.optional(Schema.String).annotate({
-    description: "Path to another project with an initialized Chimera graph for read-only cross-project queries. Omit to use the current project.",
+    description: "Optional path to another initialized Chimera project (or a subdirectory of it) for read-only cross-project queries."
   }),
   refresh: Schema.optional(Schema.Boolean).annotate({
     description: RefreshDescription,
   }),
 }).annotate({
-  description: "Provide at least one impact seed: ref, nodeID, symbol, or filePath. Use range only with filePath.",
+  description: "Provide at least one impact seed: ref, nodeID, symbol, or filePath."
 })
 
 export const ContextParameters = Schema.Struct({
@@ -234,7 +234,7 @@ export const ContextParameters = Schema.Struct({
     description: ChimeraRefDescription,
   }),
   nodeID: Schema.optional(Schema.String).annotate({
-    description: "Legacy exact CodeGraph node id to use as the context focus when query and symbol are omitted. Prefer ref when available.",
+    description: "Legacy exact CodeGraph node id to use as context focus when query and symbol are omitted."
   }),
   filePath: Schema.optional(Schema.String).annotate({
     description: "File path to use as the context query when query, symbol, and ref/nodeID are omitted.",
@@ -260,7 +260,7 @@ export const ContextParameters = Schema.Struct({
 
 export const RecentAuditParameters = Schema.Struct({
   limit: Schema.optional(Schema.Number).annotate({
-    description: "Maximum propagation findings to return. Defaults to 30, capped at 100.",
+    description: "Maximum propagation findings to return. Defaults to 10, capped at 100."
   }),
   refresh: Schema.optional(Schema.Boolean).annotate({
     description: RefreshDescription,
@@ -281,7 +281,7 @@ export const OracleGetParameters = Schema.Struct({
     description: ChimeraRefDescription,
   }),
   oracleID: Schema.optional(Schema.String).annotate({
-    description: "Legacy oracle record id to retrieve. Prefer ref when available.",
+    description: "Legacy oracle record id to retrieve."
   }),
   maxOutputChars: Schema.optional(Schema.Number).annotate({
     description: "Maximum shell output characters to include in structured output. Defaults to 20000, capped at 200000.",
@@ -305,7 +305,7 @@ export const AuditParameters = Schema.Struct({
     description: ChimeraRefDescription,
   }),
   nodeID: Schema.optional(Schema.String).annotate({
-    description: "Legacy exact CodeGraph node id to use as an audit seed. Prefer ref when available.",
+    description: "Legacy exact CodeGraph node id to use as an audit seed."
   }),
   kind: Schema.optional(NodeKind).annotate({
     description: "Optional node kind filter when resolving audit seed symbols.",
@@ -314,13 +314,13 @@ export const AuditParameters = Schema.Struct({
     description: "Impact traversal depth. Defaults to 2, capped at 5.",
   }),
   limit: Schema.optional(Schema.Number).annotate({
-    description: "Maximum propagation findings to return. Defaults to 30, capped at 100.",
+    description: "Maximum propagation findings to return. Defaults to 10, capped at 100."
   }),
   refresh: Schema.optional(Schema.Boolean).annotate({
     description: RefreshDescription,
   }),
 }).annotate({
-  description: "Provide at least one explicit audit seed: files, filePath, symbol, ref, or nodeID. Use chimera_audit_recent for the latest mutation.",
+  description: "Provide at least one explicit audit seed: files, filePath, symbol, ref, or nodeID."
 })
 
 export const ObligationsListParameters = Schema.Struct({
@@ -328,7 +328,7 @@ export const ObligationsListParameters = Schema.Struct({
     description: "Optional status filter for list.",
   }),
   limit: Schema.optional(Schema.Number).annotate({
-    description: "Maximum obligations to list. Defaults to 30, capped at 100.",
+    description: "Maximum obligations to list. Defaults to 20, capped at 100."
   }),
   refresh: Schema.optional(Schema.Boolean).annotate({
     description: RefreshDescription,
@@ -352,7 +352,7 @@ export const ObligationsSyncParameters = Schema.Struct({
     description: ChimeraRefDescription,
   }),
   nodeID: Schema.optional(Schema.String).annotate({
-    description: "Legacy exact CodeGraph node id to audit and sync into obligations. Prefer ref when available.",
+    description: "Legacy exact CodeGraph node id to audit and sync into obligations."
   }),
   kind: Schema.optional(NodeKind).annotate({
     description: "Optional CodeGraph node kind filter when resolving sync seed symbols.",
@@ -361,7 +361,7 @@ export const ObligationsSyncParameters = Schema.Struct({
     description: "Impact traversal depth for sync. Defaults to 2, capped at 5.",
   }),
   limit: Schema.optional(Schema.Number).annotate({
-    description: "Maximum obligations to list or sync. Defaults to 30, capped at 100.",
+    description: "Maximum obligations to list or sync. Defaults to 20, capped at 100."
   }),
   refresh: Schema.optional(Schema.Boolean).annotate({
     description: RefreshDescription,
@@ -375,7 +375,7 @@ export const ObligationClaimParameters = Schema.Struct({
     description: ChimeraRefDescription,
   }),
   obligationID: Schema.optional(Schema.String).annotate({
-    description: "Legacy obligation id to claim. Prefer ref when available.",
+    description: "Legacy obligation id to claim."
   }),
 })
 
@@ -384,7 +384,7 @@ export const ObligationResolveParameters = Schema.Struct({
     description: ChimeraRefDescription,
   }),
   obligationID: Schema.optional(Schema.String).annotate({
-    description: "Legacy obligation id to resolve. Prefer ref when available.",
+    description: "Legacy obligation id to resolve."
   }),
   note: Schema.optional(Schema.String).annotate({
     description: "Optional short note stating the evidence or update that resolved the obligation.",
@@ -396,7 +396,7 @@ export const ObligationIgnoreParameters = Schema.Struct({
     description: ChimeraRefDescription,
   }),
   obligationID: Schema.optional(Schema.String).annotate({
-    description: "Legacy obligation id to ignore. Prefer ref when available.",
+    description: "Legacy obligation id to ignore."
   }),
   reason: Schema.String.annotate({
     description: "Required reason for ignoring the obligation.",
@@ -974,6 +974,388 @@ function formatNodePreview(node: CodeGraphNode) {
   return `- ${node.qualifiedName || node.name} (${node.kind}) ${node.filePath}:${node.startLine}-${node.endLine}\n  Ref: ${chimeraRef("node", node.id)}`
 }
 
+// -- search / file-symbols output enrichment (definition excerpts + Tests hints + Refs) --
+//
+// Both `chimera_search` and `chimera_file_symbols` append, in the formatting layer only:
+//   1. a <=3-line source excerpt for the first 5 symbol-kind hits whose file is on disk,
+//   2. a `Tests: <path>` line (up to 2 paths) at the tail of each host file's last hit block,
+//      probing companion test files via the graph's file records first and a bounded fs fallback, and
+//   3. (search only) a `Refs(<N>):` block for the top 3 definition hits listing cross-file
+//      call/reference sites with trimmed source lines.
+// Total bytes added by these features is capped at SEARCH_ENRICH_BUDGET_BYTES per response.
+
+const SYMBOL_EXCERPT_KINDS: ReadonlySet<CodeGraphNode["kind"]> = new Set([
+  "class",
+  "component",
+  "constant",
+  "enum",
+  "field",
+  "function",
+  "interface",
+  "method",
+  "property",
+  "protocol",
+  "struct",
+  "trait",
+  "type_alias",
+  "variable",
+])
+
+const SEARCH_ENRICH_BUDGET_BYTES = 4096
+const SEARCH_EXCERPT_HITS = 5
+const SEARCH_TESTS_PER_FILE = 2
+// Refs block bounds (search only).
+const SEARCH_REFS_HITS = 3
+const SEARCH_REFS_MAX = 5
+const SEARCH_REFS_FILE_LEVEL_MAX = 3
+const SEARCH_REFS_SOURCE_CHARS = 100
+const SEARCH_REFS_TIMEOUT_MS = 300
+
+/** Incoming relations that make a search hit worth a Refs block (same set impact's callers chain uses). */
+const DependentRelations: RelationKind[] = [
+  "CalledBy",
+  "ImportedBy",
+  "UsedBy",
+  "InstantiatedBy",
+  "BaseClassOf",
+  "OverriddenBy",
+  "DecoratedBy",
+]
+
+/** Companion-test marker in a graph path: `__tests__/` dir segment or `.test.`/`.spec.` suffix. */
+const TEST_PATH = /__tests__|\.(test|spec)\./i
+
+function utf8ByteLength(text: string) {
+  return new TextEncoder().encode(text).length
+}
+
+function sourceStem(sourcePath: string) {
+  return path.posix.basename(sourcePath, path.posix.extname(sourcePath))
+}
+
+/** Closeness of a companion-test candidate to its host file; lower is better. */
+function companionTestScore(host: string, candidate: string) {
+  const dir = path.posix.dirname(host)
+  const stem = sourceStem(host)
+  const ext = path.posix.extname(host)
+  const sameDir = candidate.startsWith(`${dir}/__tests__/`)
+    ? 0
+    : candidate.startsWith(`${dir}/`)
+      ? 1
+      : candidate.startsWith("test/")
+        ? 2
+        : 4
+  const extMatch = candidate.includes(`${stem}.test${ext}`)
+    ? 1
+    : candidate.includes(`${stem}.spec${ext}`)
+      ? 2
+      : 4
+  return Math.min(sameDir, extMatch)
+}
+
+/** Graph-backed companion test lookup: indexed files containing the host stem that look testish. */
+function companionTestsFromGraph(hostFiles: string[], graphFiles: string[]) {
+  const found = new Map(hostFiles.map((file) => [file, [] as string[]]))
+  for (const candidate of graphFiles) {
+    if (!TEST_PATH.test(candidate)) continue
+    for (const host of hostFiles) {
+      const list = found.get(host) ?? []
+      if (list.length >= SEARCH_TESTS_PER_FILE || candidate === host || !candidate.includes(sourceStem(host))) continue
+      list.push(candidate)
+    }
+  }
+  for (const [host, list] of found) {
+    list.sort((a, b) => companionTestScore(host, a) - companionTestScore(host, b) || a.localeCompare(b))
+  }
+  return found
+}
+
+/** Bounded fs fallback (at most 6 candidates) mirroring common test-file conventions. */
+function companionTestFileCandidates(sourcePath: string) {
+  const ext = path.posix.extname(sourcePath)
+  const stem = sourceStem(sourcePath)
+  const dir = path.posix.dirname(sourcePath)
+  return [
+    path.posix.join(dir, "__tests__", `${stem}.test${ext}`),
+    path.posix.join(dir, `${stem}.test${ext}`),
+    path.posix.join(dir, "__tests__", `${stem}${ext}`),
+    path.posix.join("test", path.posix.basename(dir), `${stem}.test${ext}`),
+    path.posix.join("test", dir, `${stem}.test${ext}`),
+    `${stem}.test${ext}`,
+  ]
+}
+
+async function companionTestsOnDisk(root: string, sourcePath: string) {
+  const found: string[] = []
+  for (const candidate of companionTestFileCandidates(sourcePath)) {
+    if (found.length >= SEARCH_TESTS_PER_FILE) break
+    const exists = await Bun.file(path.join(root, candidate)).exists().catch(() => false)
+    if (exists) found.push(candidate)
+  }
+  return found
+}
+
+/** <=3 trimmed source lines from the node's definition start; silently skipped when unavailable. */
+async function definitionExcerpt(node: CodeGraphNode, root: string) {
+  if (!SYMBOL_EXCERPT_KINDS.has(node.kind) || node.startLine <= 0) return undefined
+  const file = Bun.file(path.join(root, node.filePath))
+  const exists = await file.exists().catch(() => false)
+  if (!exists) return undefined
+  const text = await file.text().catch(() => undefined)
+  if (text === undefined) return undefined
+  const lines = text.split("\n")
+  if (node.startLine > lines.length) return undefined
+  return lines
+    .slice(node.startLine - 1, node.startLine + 2)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 3)
+    .map((line) => `  ${line.slice(0, 120)}`)
+}
+
+export interface EnrichQueryOptions {
+  /** Append `Refs(<N>):` caller/reference-site blocks for the top definition hits (chimera_search only). */
+  refs?: boolean
+  /** Per-response enrichment byte cap override (test seam); defaults to SEARCH_ENRICH_BUDGET_BYTES. */
+  budgetBytes?: number
+}
+
+interface RefSite {
+  path: string
+  line: number
+  fileLevel: boolean
+  source?: string
+}
+
+/** One rendered Refs line plus the state needed to drop its source text when over budget. */
+interface RenderedRefsLine {
+  line: string
+  bare: string
+  sourceBytes: number
+}
+
+/** Incoming caller/reference sites for one symbol — the same callers chain `chimera_impact` uses. */
+async function refSitesForNode(state: ProjectGraphState, node: CodeGraphNode): Promise<RefSite[]> {
+  let relations: CodeGraphRelation[]
+  try {
+    relations = state.graph.incomingRelations(node.id, { relations: [...DependentRelations] })
+  } catch {
+    return []
+  }
+  if (relations.length === 0) return []
+  const ownSpan = node.startLine > 0 && node.endLine >= node.startLine
+  const sites: RefSite[] = []
+  const seen = new Set<string>()
+  for (const relation of relations) {
+    const other = relation.otherNode
+    if (!other.filePath) continue
+    const line = relation.edge?.line ?? other.startLine
+    if (line <= 0) continue
+    // Skip the hit symbol's own definition span in its own file.
+    if (ownSpan && other.filePath === node.filePath && line >= node.startLine && line <= node.endLine) continue
+    const fileLevel = relation.relation === "ImportedBy"
+    const key = `${other.filePath}:${line}:${fileLevel ? "file" : "symbol"}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    sites.push({ path: other.filePath, line, fileLevel })
+  }
+  await attachRefSources(state, sites)
+  sites.sort((a, b) => a.path.localeCompare(b.path) || a.line - b.line)
+  return sites
+}
+
+/** Trimmed source line (<=100 chars) for each RefSite, read once per referenced file. */
+async function attachRefSources(state: ProjectGraphState, sites: RefSite[]) {
+  const linesByFile = new Map<string, Set<number>>()
+  for (const site of sites) {
+    const lines = linesByFile.get(site.path) ?? new Set<number>()
+    lines.add(site.line)
+    linesByFile.set(site.path, lines)
+  }
+  const sourcesByFile = new Map<string, Map<number, string>>()
+  for (const [file, lineNumbers] of linesByFile) {
+    const fileLines = await readSourceLines(state.projectRoot, file)
+    if (!fileLines) continue
+    const found = new Map<number, string>()
+    for (const line of lineNumbers) {
+      const text = fileLines[line - 1]?.trim().slice(0, SEARCH_REFS_SOURCE_CHARS)
+      if (text) found.set(line, text)
+    }
+    if (found.size > 0) sourcesByFile.set(file, found)
+  }
+  for (const site of sites) {
+    site.source = sourcesByFile.get(site.path)?.get(site.line)
+  }
+}
+
+async function readSourceLines(root: string, file: string) {
+  try {
+    return (await Bun.file(path.join(root, file)).text()).split("\n")
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Compact `Refs(<N>):` block: symbol-level call/reference sites first, then up to 3 file-level
+ * imports tagged `(file-level)`; more than the display cap keeps a `+N more` impact hint.
+ */
+function renderRefsBlock(node: CodeGraphNode, sites: RefSite[]): RenderedRefsLine[] {
+  if (sites.length === 0) return []
+  const head = `  Refs(${sites.length}):`
+  const out: RenderedRefsLine[] = [{ line: head, bare: head, sourceBytes: 0 }]
+  const symbolSites = sites.filter((site) => !site.fileLevel)
+  const fileSites = sites.filter((site) => site.fileLevel)
+  const shown: RefSite[] = []
+  for (const site of symbolSites) {
+    if (shown.length >= SEARCH_REFS_MAX) break
+    shown.push(site)
+  }
+  for (const site of fileSites) {
+    if (shown.length >= SEARCH_REFS_MAX || shown.filter((s) => s.fileLevel).length >= SEARCH_REFS_FILE_LEVEL_MAX) break
+    shown.push(site)
+  }
+  for (const site of shown) {
+    const bare = `  ${site.path}:${site.line}${site.fileLevel ? " (file-level)" : ""}`
+    out.push(site.source
+      ? { line: `${bare} ${site.source}`, bare, sourceBytes: utf8ByteLength(` ${site.source}`) }
+      : { line: bare, bare, sourceBytes: 0 })
+  }
+  const more = sites.length - shown.length
+  if (more > 0) {
+    const hint = `  +${more} more (chimera_impact ref:${chimeraRef("node", node.id)} 可展开)`
+    out.push({ line: hint, bare: hint, sourceBytes: 0 })
+  }
+  return out
+}
+
+async function refsForHits(state: ProjectGraphState, nodes: CodeGraphNode[]) {
+  const out = new Map<string, RefSite[]>()
+  for (const node of nodes) {
+    out.set(node.id, await refSitesForNode(state, node))
+  }
+  return out
+}
+
+/** Refs queries are best-effort: a hard 300ms wall budget degrades to no Refs output. */
+async function refsWithBudget(state: ProjectGraphState, nodes: CodeGraphNode[]) {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timedOut = new Promise<Map<string, RefSite[]>>((resolve) => {
+    timer = setTimeout(() => resolve(new Map()), SEARCH_REFS_TIMEOUT_MS)
+  })
+  try {
+    return await Promise.race([refsForHits(state, nodes), timedOut])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+/**
+ * Formatting-layer enrichment shared by chimera_search and chimera_file_symbols.
+ * Returns the enriched per-hit block lines plus the byte cost of the new content.
+ * With `options.refs` (search only), top definition hits additionally gain a compact
+ * `Refs(<N>):` block of cross-file call/reference sites with trimmed source lines.
+ */
+export async function enrichQueryOutput(state: ProjectGraphState, nodes: CodeGraphNode[], options: EnrichQueryOptions = {}) {
+  if (nodes.length === 0) return { lines: [], addedBytes: 0 }
+  const budget = options.budgetBytes ?? SEARCH_ENRICH_BUDGET_BYTES
+  const graphFiles = state.graph.files().map((record) => record.path)
+  const hostFiles = uniqueStrings(nodes.map((node) => node.filePath))
+  const graphHints = companionTestsFromGraph(hostFiles, graphFiles)
+
+  // Tests hint per host file: graph records first, bounded fs check as fallback.
+  const testsPerFile = new Map<string, string[]>()
+  for (const host of hostFiles) {
+    const graphMatch = graphHints.get(host) ?? []
+    const tests = graphMatch.length > 0 ? graphMatch : await companionTestsOnDisk(state.projectRoot, host)
+    if (tests.length > 0) testsPerFile.set(host, tests)
+  }
+
+  // Definition excerpts for the first few symbol-kind hits.
+  const excerptLineByIndex = new Map<number, { index: number; line: string }[]>()
+  let symbolHits = 0
+  for (let index = 0; index < nodes.length && symbolHits < SEARCH_EXCERPT_HITS; index++) {
+    if (!SYMBOL_EXCERPT_KINDS.has(nodes[index]!.kind)) continue
+    symbolHits++
+    const excerpt = await definitionExcerpt(nodes[index]!, state.projectRoot)
+    if (excerpt) excerptLineByIndex.set(index, excerpt.map((line) => ({ index, line })))
+  }
+
+  // Append each file's Tests line at the tail of its last hit block.
+  const testsTailIndex = new Map<string, number>()
+  nodes.forEach((node, index) => {
+    if (testsPerFile.has(node.filePath)) testsTailIndex.set(node.filePath, index)
+  })
+  const testsLines: { index: number; line: string }[] = []
+  for (const [file, tests] of testsPerFile) {
+    testsLines.push({ index: testsTailIndex.get(file)!, line: `  Tests: ${tests.join(", ")}` })
+  }
+
+  // Refs blocks: incoming caller/reference sites for the top definition hits (search only).
+  const refsLineByIndex = new Map<number, RenderedRefsLine[]>()
+  if (options.refs) {
+    const topSymbols = nodes
+      .map((node, index) => ({ node, index }))
+      .filter((item) => SYMBOL_EXCERPT_KINDS.has(item.node.kind))
+      .slice(0, SEARCH_REFS_HITS)
+    const sitesByNode = await refsWithBudget(state, topSymbols.map((item) => item.node))
+    for (const item of topSymbols) {
+      const block = renderRefsBlock(item.node, sitesByNode.get(item.node.id) ?? [])
+      if (block.length > 0) refsLineByIndex.set(item.index, block)
+    }
+  }
+
+  // Budget guard: total bytes added <= SEARCH_ENRICH_BUDGET_BYTES. Drop order: Refs source text
+  // (keeping `path:line` sites), then lower-ranked Refs blocks, then excerpts (5th hit backward),
+  // then Tests lines (cheapest and most useful, dropped last).
+  let addedBytes = 0
+  const addLine = (line: string) => { addedBytes += 1 + utf8ByteLength(line) }
+  const removeLine = (line: string) => { addedBytes -= 1 + utf8ByteLength(line) }
+  for (const lines of excerptLineByIndex.values()) for (const item of lines) addLine(item.line)
+  for (const item of testsLines) addLine(item.line)
+  for (const lines of refsLineByIndex.values()) for (const item of lines) addLine(item.line)
+
+  if (addedBytes > budget) {
+    for (const lines of refsLineByIndex.values()) {
+      for (const item of lines) {
+        if (item.sourceBytes > 0) {
+          removeLine(item.line)
+          item.line = item.bare
+          addLine(item.line)
+          item.sourceBytes = 0
+        }
+        if (addedBytes <= budget) break
+      }
+      if (addedBytes <= budget) break
+    }
+  }
+  for (const index of [...refsLineByIndex.keys()].sort((a, b) => b - a)) {
+    if (addedBytes <= budget) break
+    for (const item of refsLineByIndex.get(index) ?? []) removeLine(item.line)
+    refsLineByIndex.delete(index)
+  }
+  for (const index of [...excerptLineByIndex.keys()].sort((a, b) => b - a)) {
+    if (addedBytes <= budget) break
+    for (const item of excerptLineByIndex.get(index) ?? []) removeLine(item.line)
+    excerptLineByIndex.delete(index)
+  }
+  for (const item of [...testsLines].reverse()) {
+    if (addedBytes <= budget) break
+    removeLine(item.line)
+    testsLines.splice(testsLines.indexOf(item), 1)
+  }
+
+  const combined = nodes.map((node) => formatNode(node).split("\n"))
+  for (const [index, lines] of excerptLineByIndex) {
+    for (const item of lines) combined[index]!.push(item.line)
+  }
+  for (const [index, lines] of refsLineByIndex) {
+    for (const item of lines) combined[index]!.push(item.line)
+  }
+  for (const item of testsLines) combined[item.index]!.push(item.line)
+  return { lines: combined.flat(), addedBytes }
+}
+
 function nodeMatchesQuery(node: CodeGraphNode, query: string | undefined) {
   const normalizedQuery = query?.trim().toLowerCase()
   if (!normalizedQuery) return true
@@ -1001,16 +1383,6 @@ function symbolCandidateTerms(symbol: string) {
       .filter((term) => term.length >= 3 && term.toLowerCase() !== symbol.toLowerCase()),
   )
 }
-
-const DependentRelations: RelationKind[] = [
-  "CalledBy",
-  "ImportedBy",
-  "UsedBy",
-  "InstantiatedBy",
-  "BaseClassOf",
-  "OverriddenBy",
-  "DecoratedBy",
-]
 
 function nodeTarget(node: CodeGraphNode) {
   return `${node.filePath}:${node.startLine} ${node.qualifiedName || node.name}`
@@ -1911,7 +2283,7 @@ function activeObligations(obligations: PersistentObligation[]) {
 function filterObligations(obligations: PersistentObligation[], params: ObligationsListParams) {
   return (params.status ? obligations.filter((item) => item.status === params.status) : activeObligations(obligations)).slice(
     0,
-    bounded(params.limit, 30, 100),
+    bounded(params.limit, 20, 100),
   )
 }
 
@@ -2122,7 +2494,7 @@ const buildAudit = Effect.fn("ChimeraTool.buildAudit")(function* (params: BuildA
   const source: AuditMetadata["source"] =
     explicitFiles.length || params.symbol || nodeID ? "input" : recentFiles.length ? "recent_provenance" : "git_diff"
   const depth = bounded(params.depth, 2, 5)
-  const limit = bounded(params.limit, 30, 100)
+  const limit = bounded(params.limit, 10, 100)
   if (explicitFileSeeds.length > 0) {
     yield* Effect.promise(() => syncExistingGraphFiles(state, explicitFileSeeds, "force")).pipe(Effect.orDie)
   } else if (recentFiles.length > 0) {
@@ -2423,19 +2795,22 @@ export const ChimeraSearchTool = Tool.define<typeof SearchParameters, SearchMeta
             params.refresh !== false,
             { init: false, readOnly: true, projectPath: params.projectPath },
           (state) =>
-            Effect.sync(() => {
+            Effect.gen(function* () {
               const limit = bounded(params.limit, 10, 50)
               const snapshot = state.graph.snapshot()
               const kinds = params.kind ? [params.kind] : undefined
               const detailed = state.graph.searchNodesDetailed(params.query, { kinds, limit })
               const results = detailed.results
+              const enriched = yield* Effect.promise(() => enrichQueryOutput(state, results.map((result) => result.node), { refs: true })).pipe(
+                Effect.orDie,
+              )
 
               return {
                 title: "Chimera search",
                 output: [
                   ...(state.crossProject ? [`Project: ${state.projectRoot} (cross-project, read-only)`] : []),
                   `Static graph evidence (${results.length} result${results.length === 1 ? "" : "s"}):`,
-                  ...results.map((result) => formatNode(result.node)),
+                  ...enriched.lines,
                   ...(detailed.terms.length
                     ? [`terms: ${detailed.terms.map((term) => `${term.term}(${term.count})`).join(" ")} · ${detailed.total} candidates before limit`]
                     : []),
@@ -2516,6 +2891,9 @@ export const ChimeraFileSymbolsTool = Tool.define<typeof FileSymbolsParameters, 
               )
                 .slice(0, limit)
                 .map((node) => ({ node }))
+              const enriched = yield* Effect.promise(() => enrichQueryOutput(state, results.map((result) => result.node))).pipe(
+                Effect.orDie,
+              )
 
               return {
                 title: "Chimera file symbols",
@@ -2525,7 +2903,7 @@ export const ChimeraFileSymbolsTool = Tool.define<typeof FileSymbolsParameters, 
                   ...(results.length === 0 && file.insideGraph && fileExists
                     ? ["- No indexed symbols found. File exists; possible unsupported parser, excluded path, or non-source file."]
                     : []),
-                  ...results.map((result) => formatNode(result.node)),
+                  ...enriched.lines,
                 ].join("\n"),
                 metadata: {
                   projectRoot: state.projectRoot,
@@ -3087,7 +3465,7 @@ export const ChimeraObligationsSyncTool = Tool.define<typeof ObligationsSyncPara
         )
         const result = upsertObligations(store, audit, new Date().toISOString())
         yield* writeObligationStore(state.projectRoot, artifact, result.store, auditRunID)
-        const obligations = result.touched.slice(0, bounded(params.limit, 30, 100))
+        const obligations = result.touched.slice(0, bounded(params.limit, 20, 100))
         const counts = obligationCounts(result.store.obligations)
         return {
           title: "Chimera obligations",

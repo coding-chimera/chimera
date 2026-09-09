@@ -16,6 +16,7 @@ import { formatWrittenBlock, splitText } from "./hashline"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import * as Bom from "@/util/bom"
 import { Chimera } from "@/chimera"
+import { inlinePropagationCheck } from "@/chimera/propagation-probe"
 
 const MAX_PROJECT_DIAGNOSTICS_FILES = 5
 
@@ -125,8 +126,8 @@ export const WriteTool = Tool.define(
             projectDiagnosticsCount++
             output += `\n\nLSP errors detected in other files:\n${block}`
           }
-
-          output += `\n\nPropagation audit recommended: run chimera_audit_recent before treating this change as complete (skip only when the edit is trivial or intentionally scoped).`
+          const probeLine = yield* inlinePropagationCheck([filepath])
+          output += `\n\n${probeLine}`
           return {
             title: path.relative(instance.worktree, filepath),
             metadata: {

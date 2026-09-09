@@ -1,66 +1,18 @@
 Analyze bounded file and symbol impact through Chimera's CodeGraph surface.
 
-Use this tool when you need static graph evidence about callers, importers, file dependents, impact radius, or risk categories for a known file, symbol, node id, or source range.
+Use this tool when you need static graph evidence about callers, importers, file dependents, or impact radius for a known file, symbol, node id, or source range — typically before changing a shared API, prompt, config, route, or tool surface, or when a user asks what a change might break.
 
-Do NOT use this tool as a replacement for tests, typecheck, build, or lint. It is structural graph evidence, not oracle verification.
+Do NOT use it as a replacement for tests, typecheck, build, or lint; it is structural evidence, not oracle verification. Skip it for raw text search (grep), when no concrete seed exists yet (`chimera_search` / `chimera_file_symbols` first), for post-mutation closeout (`chimera_audit_recent`), or for pre-edit gate evidence (`chimera_predesign`).
 
-## When to Use This Tool
+Seed selection:
+- Pass at least one concrete, non-empty seed: `ref`, `nodeID`, `symbol`, or `filePath`. Blank seed strings are not a valid query and fail.
+- Prefer `ref` copied exactly from a prior `Ref: node:<id>`; legacy `nodeID` only for an exact id without a typed ref.
+- Use `filePath` for file-level dependents and importers; add `range` to seed from a known line range. Explicit `filePath` seeds are synced from the filesystem before resolution, even when untracked by git.
+- Use `symbol` only when the name is specific enough; generic names like `run`, `handler`, or `options` may match unrelated symbols. For generic, duplicated, or file-local names, resolve via `chimera_file_symbols` first and pass the copied `ref`.
 
-Use this tool when you have a concrete seed and need to understand what may be affected:
+When no seed resolves, output lists the closest candidate symbols with refs; `- None found.` means the graph has no near match.
 
-1. Before changing a shared API, exported function, provider transform, prompt, config, route, or tool surface.
-2. When `chimera_file_symbols` or `chimera_search` has already identified a likely graph node and you need callers, dependents, or nearby risk.
-3. When a user asks what a change might break, what calls a symbol, what imports a file, or how far a change may propagate.
-4. When comparing file-level impact against a narrower symbol or range seed before choosing an edit shape.
+`projectPath`: optional path to another initialized Chimera project (or its subdirectory) for strictly read-only cross-project queries; never initializes or writes there. Seeds resolve against the target graph and `filePath` seeds are not filesystem-synced. See `chimera_status` for full cross-project rules.
 
-## Seed Selection Rules
-
-Pass at least one concrete, non-empty seed: `ref`, `nodeID`, `symbol`, or `filePath`.
-
-1. Prefer `ref` when a previous Chimera output printed `Ref: node:<id>`; copy it exactly instead of extracting the raw id.
-2. Use legacy `nodeID` only when you already have an exact CodeGraph node id without a typed ref.
-3. Use `filePath` for file-level dependents and importers. Existing explicit `filePath` seeds are synced from the filesystem before impact seed resolution, even when the file is not yet tracked by git.
-4. Use `filePath` plus `range` when the relevant code is in a known line range. This resolves seed symbols intersecting that range.
-5. Use `symbol` only when the name is specific enough to identify the intended seed. Generic names such as `run`, `handler`, `options`, `transform`, or `variants` may match unrelated symbols across packages or languages.
-6. If a symbol name is generic, duplicated, or known to live in a specific file, first call `chimera_file_symbols` with `filePath` and optional `range`, then call `chimera_impact` with the copied `Ref: node:<id>` value as `ref`.
-7. Use `kind` only as a narrowing filter when you know the CodeGraph node kind you want.
-
-Omit seed fields you do not know. Do not pass empty strings for `ref`, `nodeID`, `symbol`, or `filePath`. A call with blank seed fields is not a valid impact query and will fail.
-
-## When NOT to Use This Tool
-
-Skip this tool when:
-
-1. You need arbitrary raw text search, regex matches, or counts. Use grep for that.
-2. You do not yet have any concrete seed. Use `chimera_search` for query-based discovery or `chimera_file_symbols` for symbols in a known file.
-3. You need post-mutation propagation closeout from the latest edit. Use `chimera_audit_recent`.
-4. You need to record pre-edit evidence for a risky mutation gate. Use `chimera_predesign`.
-
-## Parameters
-
-- `ref`: typed Chimera ref such as `node:<id>` copied from prior output; preferred exact node seed.
-- `nodeID`: legacy exact CodeGraph node id to analyze when no typed ref is available.
-- `symbol`: symbol name to resolve and analyze; use only when specific enough.
-- `filePath`: absolute or project-relative file path for file-level impact.
-- `range`: optional source range inside `filePath`; meaningful only with `filePath`.
-- `kind`: optional node kind filter for symbol or range resolution.
-- `depth`: graph traversal depth; defaults to 2 and is capped at 5.
-- `limit`: maximum impacted symbols/files; defaults to 20 and is capped at 100.
-- `refresh`: controls whether stale graph signals may trigger a sync.
-- `projectPath`: optional absolute or relative path to another already-initialized Chimera project to query cross-project; omit to query the current session project.
-
-## Cross-project queries (`projectPath`)
-
-1. `projectPath` makes impact analysis run against another already-initialized Chimera project instead of the session project. The path may point at that project directly or at any subdirectory inside it; it is walk-up resolved to the nearest initialized graph root (current `.chimera/`, or compatible legacy `.codegraph/`). Seeds resolve against the target project's graph. Omitting `projectPath`, or a value that resolves to the current project root, queries the current session project exactly as before.
-2. Cross-project impact is strictly read-only: the tool never initializes, syncs, watches, writes, or records anything in the target project, `filePath` seeds are not synced from the filesystem in this mode (the filesystem-sync note under Seed Selection Rules applies to current-project calls only), and `refresh` is ignored. Output is labeled `Project: <resolved root> (cross-project, read-only)`. Use cross-project impact to understand another repository only.
-3. If the target project is not initialized, the tool returns a structured error: tell the user to run `chimera graph init` followed by `chimera graph index` in that project themselves (indexing large repositories can take a long time); never initialize another project's graph from this session.
-4. If the target project is initialized but its graph database schema is older than this binary expects, the tool returns a structured error with `needsMigration: true` (plus `schemaVersion`/`requiredVersion`) instead of impact evidence; the read-only surface never migrates, so tell the user to run `chimera graph index` in that project themselves.
-## Recovery From Empty Results
-
-When no seed resolves, the tool output already lists the closest candidate symbols it could find (name, kind, file:line, `Ref: node:<id>`); `- None found.` under `Closest symbol candidates` means the graph has no near matches for the provided seed.
-
-## After This Tool
-
-- Interpret impacted files or symbols in the current task context before claiming completion.
-- Treat the output as risk and propagation evidence, not as proof that behavior is correct.
-- Run build, typecheck, lint, or tests separately when correctness matters.
+After this tool:
+- Treat output as risk and propagation evidence, not proof of correctness; interpret it in task context and run build/typecheck/lint/tests separately when correctness matters.

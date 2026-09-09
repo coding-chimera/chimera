@@ -63,7 +63,7 @@ Output: Creates directory 'foo'"
 exports[`tool parameters JSON Schema (wire shape) chimera_audit 1`] = `
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "Provide at least one explicit audit seed: files, filePath, symbol, ref, or nodeID. Use chimera_audit_recent for the latest mutation.",
+  "description": "Provide at least one explicit audit seed: files, filePath, symbol, ref, or nodeID.",
   "properties": {
     "depth": {
       "description": "Impact traversal depth. Defaults to 2, capped at 5.",
@@ -110,11 +110,11 @@ exports[`tool parameters JSON Schema (wire shape) chimera_audit 1`] = `
       "type": "string",
     },
     "limit": {
-      "description": "Maximum propagation findings to return. Defaults to 30, capped at 100.",
+      "description": "Maximum propagation findings to return. Defaults to 10, capped at 100.",
       "type": "number",
     },
     "nodeID": {
-      "description": "Legacy exact CodeGraph node id to use as an audit seed. Prefer ref when available.",
+      "description": "Legacy exact CodeGraph node id to use as an audit seed.",
       "type": "string",
     },
     "range": {
@@ -143,11 +143,11 @@ exports[`tool parameters JSON Schema (wire shape) chimera_audit 1`] = `
       "type": "object",
     },
     "ref": {
-      "description": "Typed Chimera ref copied from a previous tool output, formatted like \`node:<id>\`, \`audit:<id>\`, \`predesign:<id>\`, \`oracle:<id>\`, \`obligation:<id>\`, or \`change:<id>\`. Prefer this over legacy raw id fields when available.",
+      "description": "Typed Chimera ref from a previous tool output, formatted like \`node:<id>\`, \`audit:<id>\`, \`predesign:<id>\`, \`oracle:<id>\`, \`obligation:<id>\`, or \`change:<id>\`.",
       "type": "string",
     },
     "refresh": {
-      "description": "Refresh CodeGraph when stale: the index is empty, watcher has pending files, or git reports dirty source files. Defaults to true.",
+      "description": "Refresh CodeGraph when stale (empty index, pending watcher files, or dirty git sources). Defaults to true.",
       "type": "boolean",
     },
     "symbol": {
@@ -164,11 +164,11 @@ exports[`tool parameters JSON Schema (wire shape) chimera_audit_recent 1`] = `
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "limit": {
-      "description": "Maximum propagation findings to return. Defaults to 30, capped at 100.",
+      "description": "Maximum propagation findings to return. Defaults to 10, capped at 100.",
       "type": "number",
     },
     "refresh": {
-      "description": "Refresh CodeGraph when stale: the index is empty, watcher has pending files, or git reports dirty source files. Defaults to true.",
+      "description": "Refresh CodeGraph when stale (empty index, pending watcher files, or dirty git sources). Defaults to true.",
       "type": "boolean",
     },
   },
@@ -218,7 +218,7 @@ exports[`tool parameters JSON Schema (wire shape) chimera_file_symbols 1`] = `
       "type": "number",
     },
     "projectPath": {
-      "description": "Path to another project with an initialized Chimera graph for read-only cross-project queries. Omit to use the current project.",
+      "description": "Optional path to another initialized Chimera project (or a subdirectory of it) for read-only cross-project queries.",
       "type": "string",
     },
     "range": {
@@ -247,7 +247,7 @@ exports[`tool parameters JSON Schema (wire shape) chimera_file_symbols 1`] = `
       "type": "object",
     },
     "refresh": {
-      "description": "Refresh CodeGraph when stale: the index is empty, watcher has pending files, or git reports dirty source files. Defaults to true.",
+      "description": "Refresh CodeGraph when stale (empty index, pending watcher files, or dirty git sources). Defaults to true.",
       "type": "boolean",
     },
   },
@@ -283,18 +283,18 @@ exports[`tool parameters JSON Schema (wire shape) chimera_predesign 1`] = `
       "type": "number",
     },
     "nodeIDs": {
-      "description": "Legacy exact CodeGraph node ids to use as pre-edit graph seeds. Prefer refs when available.",
+      "description": "Legacy exact CodeGraph node ids to use as pre-edit graph seeds.",
       "items": {
         "type": "string",
       },
       "type": "array",
     },
     "refresh": {
-      "description": "Refresh CodeGraph when stale: the index is empty, watcher has pending files, or git reports dirty source files. Defaults to true.",
+      "description": "Refresh CodeGraph when stale (empty index, pending watcher files, or dirty git sources). Defaults to true.",
       "type": "boolean",
     },
     "refs": {
-      "description": "Typed Chimera refs copied from previous tool outputs. Currently \`node:<id>\` refs are accepted here; prefer refs over legacy nodeIDs when available.",
+      "description": "Typed Chimera refs from previous tool outputs; currently \`node:<id>\` refs are accepted here.",
       "items": {
         "type": "string",
       },
@@ -318,7 +318,7 @@ exports[`tool parameters JSON Schema (wire shape) chimera_predesign 1`] = `
 exports[`tool parameters JSON Schema (wire shape) chimera_impact 1`] = `
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "Provide at least one impact seed: ref, nodeID, symbol, or filePath. Use range only with filePath.",
+  "description": "Provide at least one impact seed: ref, nodeID, symbol, or filePath.",
   "properties": {
     "depth": {
       "description": "Graph traversal depth for symbol impact. Defaults to 2, capped at 5.",
@@ -362,11 +362,11 @@ exports[`tool parameters JSON Schema (wire shape) chimera_impact 1`] = `
       "type": "number",
     },
     "nodeID": {
-      "description": "Legacy exact CodeGraph node id to analyze. Prefer ref when available.",
+      "description": "Legacy exact CodeGraph node id to analyze.",
       "type": "string",
     },
     "projectPath": {
-      "description": "Path to another project with an initialized Chimera graph for read-only cross-project queries. Omit to use the current project.",
+      "description": "Optional path to another initialized Chimera project (or a subdirectory of it) for read-only cross-project queries.",
       "type": "string",
     },
     "range": {
@@ -395,11 +395,11 @@ exports[`tool parameters JSON Schema (wire shape) chimera_impact 1`] = `
       "type": "object",
     },
     "ref": {
-      "description": "Typed Chimera ref copied from a previous tool output, formatted like \`node:<id>\`, \`audit:<id>\`, \`predesign:<id>\`, \`oracle:<id>\`, \`obligation:<id>\`, or \`change:<id>\`. Prefer this over legacy raw id fields when available.",
+      "description": "Typed Chimera ref from a previous tool output, formatted like \`node:<id>\`, \`audit:<id>\`, \`predesign:<id>\`, \`oracle:<id>\`, \`obligation:<id>\`, or \`change:<id>\`.",
       "type": "string",
     },
     "refresh": {
-      "description": "Refresh CodeGraph when stale: the index is empty, watcher has pending files, or git reports dirty source files. Defaults to true.",
+      "description": "Refresh CodeGraph when stale (empty index, pending watcher files, or dirty git sources). Defaults to true.",
       "type": "boolean",
     },
     "symbol": {
@@ -416,11 +416,11 @@ exports[`tool parameters JSON Schema (wire shape) chimera_obligation_claim 1`] =
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "obligationID": {
-      "description": "Legacy obligation id to claim. Prefer ref when available.",
+      "description": "Legacy obligation id to claim.",
       "type": "string",
     },
     "ref": {
-      "description": "Typed Chimera ref copied from a previous tool output, formatted like \`node:<id>\`, \`audit:<id>\`, \`predesign:<id>\`, \`oracle:<id>\`, \`obligation:<id>\`, or \`change:<id>\`. Prefer this over legacy raw id fields when available.",
+      "description": "Typed Chimera ref from a previous tool output, formatted like \`node:<id>\`, \`audit:<id>\`, \`predesign:<id>\`, \`oracle:<id>\`, \`obligation:<id>\`, or \`change:<id>\`.",
       "type": "string",
     },
   },
@@ -437,7 +437,7 @@ exports[`tool parameters JSON Schema (wire shape) chimera_obligation_ignore 1`] 
       "type": "string",
     },
     "obligationID": {
-      "description": "Legacy obligation id to ignore. Prefer ref when available.",
+      "description": "Legacy obligation id to ignore.",
       "type": "string",
     },
     "reason": {
@@ -445,7 +445,7 @@ exports[`tool parameters JSON Schema (wire shape) chimera_obligation_ignore 1`] 
       "type": "string",
     },
     "ref": {
-      "description": "Typed Chimera ref copied from a previous tool output, formatted like \`node:<id>\`, \`audit:<id>\`, \`predesign:<id>\`, \`oracle:<id>\`, \`obligation:<id>\`, or \`change:<id>\`. Prefer this over legacy raw id fields when available.",
+      "description": "Typed Chimera ref from a previous tool output, formatted like \`node:<id>\`, \`audit:<id>\`, \`predesign:<id>\`, \`oracle:<id>\`, \`obligation:<id>\`, or \`change:<id>\`.",
       "type": "string",
     },
   },
@@ -465,11 +465,11 @@ exports[`tool parameters JSON Schema (wire shape) chimera_obligation_resolve 1`]
       "type": "string",
     },
     "obligationID": {
-      "description": "Legacy obligation id to resolve. Prefer ref when available.",
+      "description": "Legacy obligation id to resolve.",
       "type": "string",
     },
     "ref": {
-      "description": "Typed Chimera ref copied from a previous tool output, formatted like \`node:<id>\`, \`audit:<id>\`, \`predesign:<id>\`, \`oracle:<id>\`, \`obligation:<id>\`, or \`change:<id>\`. Prefer this over legacy raw id fields when available.",
+      "description": "Typed Chimera ref from a previous tool output, formatted like \`node:<id>\`, \`audit:<id>\`, \`predesign:<id>\`, \`oracle:<id>\`, \`obligation:<id>\`, or \`change:<id>\`.",
       "type": "string",
     },
   },
@@ -482,11 +482,11 @@ exports[`tool parameters JSON Schema (wire shape) chimera_obligations_list 1`] =
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "limit": {
-      "description": "Maximum obligations to list. Defaults to 30, capped at 100.",
+      "description": "Maximum obligations to list. Defaults to 20, capped at 100.",
       "type": "number",
     },
     "refresh": {
-      "description": "Refresh CodeGraph when stale: the index is empty, watcher has pending files, or git reports dirty source files. Defaults to true.",
+      "description": "Refresh CodeGraph when stale (empty index, pending watcher files, or dirty git sources). Defaults to true.",
       "type": "boolean",
     },
     "status": {
@@ -555,11 +555,11 @@ exports[`tool parameters JSON Schema (wire shape) chimera_obligations_sync 1`] =
       "type": "string",
     },
     "limit": {
-      "description": "Maximum obligations to list or sync. Defaults to 30, capped at 100.",
+      "description": "Maximum obligations to list or sync. Defaults to 20, capped at 100.",
       "type": "number",
     },
     "nodeID": {
-      "description": "Legacy exact CodeGraph node id to audit and sync into obligations. Prefer ref when available.",
+      "description": "Legacy exact CodeGraph node id to audit and sync into obligations.",
       "type": "string",
     },
     "range": {
@@ -588,11 +588,11 @@ exports[`tool parameters JSON Schema (wire shape) chimera_obligations_sync 1`] =
       "type": "object",
     },
     "ref": {
-      "description": "Typed Chimera ref copied from a previous tool output, formatted like \`node:<id>\`, \`audit:<id>\`, \`predesign:<id>\`, \`oracle:<id>\`, \`obligation:<id>\`, or \`change:<id>\`. Prefer this over legacy raw id fields when available.",
+      "description": "Typed Chimera ref from a previous tool output, formatted like \`node:<id>\`, \`audit:<id>\`, \`predesign:<id>\`, \`oracle:<id>\`, \`obligation:<id>\`, or \`change:<id>\`.",
       "type": "string",
     },
     "refresh": {
-      "description": "Refresh CodeGraph when stale: the index is empty, watcher has pending files, or git reports dirty source files. Defaults to true.",
+      "description": "Refresh CodeGraph when stale (empty index, pending watcher files, or dirty git sources). Defaults to true.",
       "type": "boolean",
     },
     "symbol": {
@@ -613,11 +613,11 @@ exports[`tool parameters JSON Schema (wire shape) chimera_oracle_get 1`] = `
       "type": "number",
     },
     "oracleID": {
-      "description": "Legacy oracle record id to retrieve. Prefer ref when available.",
+      "description": "Legacy oracle record id to retrieve.",
       "type": "string",
     },
     "ref": {
-      "description": "Typed Chimera ref copied from a previous tool output, formatted like \`node:<id>\`, \`audit:<id>\`, \`predesign:<id>\`, \`oracle:<id>\`, \`obligation:<id>\`, or \`change:<id>\`. Prefer this over legacy raw id fields when available.",
+      "description": "Typed Chimera ref from a previous tool output, formatted like \`node:<id>\`, \`audit:<id>\`, \`predesign:<id>\`, \`oracle:<id>\`, \`obligation:<id>\`, or \`change:<id>\`.",
       "type": "string",
     },
   },
@@ -663,15 +663,15 @@ exports[`tool parameters JSON Schema (wire shape) chimera_search 1`] = `
       "type": "number",
     },
     "projectPath": {
-      "description": "Path to another project with an initialized Chimera graph for read-only cross-project queries. Omit to use the current project.",
+      "description": "Optional path to another initialized Chimera project (or a subdirectory of it) for read-only cross-project queries.",
       "type": "string",
     },
     "query": {
-      "description": "Symbol or CodeGraph-indexed text query. This is not raw literal/code-string search; use Grep for arbitrary source text.",
+      "description": "Symbol or CodeGraph-indexed text query.",
       "type": "string",
     },
     "refresh": {
-      "description": "Refresh CodeGraph when stale: the index is empty, watcher has pending files, or git reports dirty source files. Defaults to true.",
+      "description": "Refresh CodeGraph when stale (empty index, pending watcher files, or dirty git sources). Defaults to true.",
       "type": "boolean",
     },
   },
@@ -687,11 +687,11 @@ exports[`tool parameters JSON Schema (wire shape) chimera_status 1`] = `
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "projectPath": {
-      "description": "Path to another project with an initialized Chimera graph for read-only cross-project queries. Omit to use the current project.",
+      "description": "Optional path to another initialized Chimera project (or a subdirectory of it) for read-only cross-project queries.",
       "type": "string",
     },
     "refresh": {
-      "description": "Refresh CodeGraph when stale: the index is empty, watcher has pending files, or git reports dirty source files. Defaults to true.",
+      "description": "Refresh CodeGraph when stale (empty index, pending watcher files, or dirty git sources). Defaults to true.",
       "type": "boolean",
     },
   },
@@ -1369,15 +1369,15 @@ exports[`tool parameters JSON Schema (wire shape) chimera_swarm 1`] = `
       "type": "number",
     },
     "model": {
-      "description": "Exact provider/model route to run every worker with. Mutually exclusive with model_profile and model_identity; when resuming an existing session, the session's persisted model must match.",
+      "description": "Exact provider/model route to run every worker with.",
       "type": "string",
     },
     "model_identity": {
-      "description": "Current runtime model identity to resolve once before starting workers. Mutually exclusive with model_profile and model; use provider to narrow an identity when needed.",
+      "description": "Current runtime model identity to resolve before starting workers.",
       "type": "string",
     },
     "model_profile": {
-      "description": "Name of a delegation.model_profiles entry to run every worker with. Mutually exclusive with model and model_identity; omit to use the subagent route, configured model, or parent model.",
+      "description": "Name of a delegation.model_profiles entry to run every worker with.",
       "type": "string",
     },
     "preset": {
@@ -1395,7 +1395,7 @@ exports[`tool parameters JSON Schema (wire shape) chimera_swarm 1`] = `
       "type": "string",
     },
     "provider": {
-      "description": "Current provider ID used only to narrow model_identity. Never use with exact model or model_profile.",
+      "description": "Current provider ID used only to narrow model_identity.",
       "type": "string",
     },
     "subagent_type": {
@@ -1403,11 +1403,11 @@ exports[`tool parameters JSON Schema (wire shape) chimera_swarm 1`] = `
       "type": "string",
     },
     "variant": {
-      "description": "Model variant to use with model or model_identity. Only allowed when the resolved model advertises it. Subagents do not support the ultra variant; it is reserved for root sessions. When omitted for a model that advertises variants but configures no default options, dispatch fills the highest non-ultra variant.",
+      "description": "Model variant to use with model or model_identity, when the resolved model advertises one.",
       "type": "string",
     },
     "workload": {
-      "description": "Delegation workload archetype. Without a model selector, the scheduler chooses one current route for the whole fan-out; with an explicit selector, workload is validation and attribution only. A model excluded from a workload by delegation.scheduling.archetypes.<workload>.excludeModels cannot be dispatched with that workload declaration (resume excepted).",
+      "description": "Delegation workload archetype; omit to let the scheduler pick a route, or declare it for attribution and validation when a model selector is given.",
       "type": "string",
     },
   },

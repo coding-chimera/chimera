@@ -1,30 +1,10 @@
 Persist Chimera audit findings as tracked obligations.
 
-Use this tool when audit findings need durable follow-up across turns or agents. Synced findings preserve CodePlan-focused fields from audit output, including atomic labels, statement effects, relation clauses, impacted blocks, and cause chains.
+Use this tool only when audit findings need durable follow-up across turns or agents. For a one-shot task, interpret the audit results directly instead of syncing.
 
-Do NOT use this tool to claim, resolve, or ignore an existing obligation. Use the single-obligation tools for status changes.
+Do NOT use it to claim, resolve, or ignore an existing obligation — use the single-obligation tools for status changes.
 
-Parameter rules:
-- With no explicit seed, sync from the latest successful Chimera tool mutation or git diff fallback.
-- Provide `files`, `filePath`, `symbol`, `ref`, or legacy `nodeID` to sync explicit audit seeds.
-- Prefer `ref` copied from `Ref: node:<id>` output when targeting a specific graph node.
-- Existing explicit `files` / `filePath` seeds are synced from the filesystem before audit seed resolution, even when they are not yet tracked by git.
-- Use `range` only with `filePath`.
-- `depth` and `limit` bound audit traversal and output size.
-- `refresh` controls whether stale graph signals may trigger a sync.
-
-Common calls:
-- Persist findings from `chimera_audit_recent` after a risky mutation.
-- Persist explicit audit findings for a changed file or symbol.
+Mechanics: with no explicit seed it syncs from the latest successful mutation (git diff fallback); provide `files`/`filePath`/`symbol`/`ref`/legacy `nodeID` for explicit seeds, preferring `ref` copied from `Ref: node:<id>`. Explicit file seeds are filesystem-synced before resolution, even when untracked. `range` requires `filePath`. See chimera_audit description for the CodePlan atomic label glossary.
 
 After this tool:
-- Copy `Ref: obligation:<id>` from output when calling `chimera_obligation_claim`, `chimera_obligation_resolve`, or `chimera_obligation_ignore`.
-- Use `chimera_obligation_claim`, `chimera_obligation_resolve`, or `chimera_obligation_ignore` as each active obligation is handled.
-
-CodePlan atomic label glossary:
-- Modification labels: `MMB` modified method body, `MMS` modified method signature, `MF` modified field, `MC` modified class declaration, `MCC` modified constructor signature, `MI` modified import/using statement.
-- Addition labels: `AM` added method, `AF` added field, `AC` added class declaration, `ACC` added constructor, `AI` added import/using statement.
-- Deletion labels: `DM` deleted method, `DF` deleted field, `DC` deleted class declaration, `DCC` deleted constructor, `DI` deleted import/using statement.
-- When synced findings include `codeplan_atomic_label` evidence, use it as the paper-style atomic-change classification that selects relation-clause propagation rules.
-- When synced findings include `statement_effect`, use it as the CodeGraph-backed method-body escape/effect summary.
-- When synced findings include `relation_clause` and `impacted_block`, treat them as the CodePlan propagation clause and affected block selected by the may-impact rule.
+- Copy `Ref: obligation:<id>` from output and handle each active obligation with `chimera_obligation_claim`, `chimera_obligation_resolve`, or `chimera_obligation_ignore`.

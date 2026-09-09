@@ -87,7 +87,10 @@ describe("tool.write", () => {
         const result = yield* run({ filePath: filepath, content: "Hello, World!" })
 
         expect(result.output).toContain("File written successfully. 1 lines written.")
-        expect(result.output).toContain("Propagation audit recommended: run chimera_audit_recent before treating this change as complete (skip only when the edit is trivial or intentionally scoped).")
+        // Graph is uninitialized here, so the probe degrades silently; lock out the old B4 invitation wording instead of requiring any propagation line.
+        expect(result.output).not.toContain("Deep audit")
+        expect(result.output).not.toContain("Propagation audit recommended")
+
         expect(result.metadata.exists).toBe(false)
 
         const content = yield* Effect.promise(() => fs.readFile(filepath, "utf-8"))

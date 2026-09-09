@@ -2,16 +2,7 @@ Ignore one tracked Chimera obligation with a reason.
 
 Use this tool when an active obligation is intentionally not pursued because it is irrelevant, out of scope, duplicate, stale, or otherwise non-actionable.
 
-Do NOT use this tool for obligations you reviewed and completed. Use `chimera_obligation_resolve` for completed work.
-
-Parameter rules:
-- Prefer `ref` copied from `Ref: obligation:<id>` output.
-- `obligationID` remains accepted as a legacy raw obligation id.
-- `reason` is required.
-- `note` is optional supporting context.
-
-Common calls:
-- Ignore a duplicate, out-of-scope, or false-positive obligation with a short reason.
+Do NOT use it for obligations you reviewed and completed — use `chimera_obligation_resolve` for completed work. Prefer `ref` copied from `Ref: obligation:<id>` output; `reason` is required.
 
 After this tool:
 - Mention skipped obligations and reasons when they matter for final closeout.

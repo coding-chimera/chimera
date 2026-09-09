@@ -50,26 +50,22 @@ export const Parameters = Schema.Struct({
   }),
   workload: Schema.optional(Schema.String).annotate({
     description:
-      "Delegation workload archetype. Without a model selector, the scheduler chooses one current route for the whole fan-out; with an explicit selector, workload is validation and attribution only. A model excluded from a workload by delegation.scheduling.archetypes.<workload>.excludeModels cannot be dispatched with that workload declaration (resume excepted).",
+      "Delegation workload archetype; omit to let the scheduler pick a route, or declare it for attribution and validation when a model selector is given."
   }),
   model_profile: Schema.optional(Schema.String).annotate({
-    description:
-      "Name of a delegation.model_profiles entry to run every worker with. Mutually exclusive with model and model_identity; omit to use the subagent route, configured model, or parent model.",
+    description: "Name of a delegation.model_profiles entry to run every worker with."
   }),
   model: Schema.optional(Schema.String).annotate({
-    description:
-      "Exact provider/model route to run every worker with. Mutually exclusive with model_profile and model_identity; when resuming an existing session, the session's persisted model must match.",
+    description: "Exact provider/model route to run every worker with."
   }),
   model_identity: Schema.optional(Schema.String).annotate({
-    description:
-      "Current runtime model identity to resolve once before starting workers. Mutually exclusive with model_profile and model; use provider to narrow an identity when needed.",
+    description: "Current runtime model identity to resolve before starting workers."
   }),
   provider: Schema.optional(Schema.String).annotate({
-    description: "Current provider ID used only to narrow model_identity. Never use with exact model or model_profile.",
+    description: "Current provider ID used only to narrow model_identity."
   }),
   variant: Schema.optional(Schema.String).annotate({
-    description:
-      "Model variant to use with model or model_identity. Only allowed when the resolved model advertises it. Subagents do not support the ultra variant; it is reserved for root sessions. When omitted for a model that advertises variants but configures no default options, dispatch fills the highest non-ultra variant."
+    description: "Model variant to use with model or model_identity, when the resolved model advertises one."
   }),
   description: Schema.optional(Schema.String).annotate({
     description: "Short base description for child task titles.",
