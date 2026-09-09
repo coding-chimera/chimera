@@ -1,36 +1,16 @@
 Run a first-pass Chimera propagation audit for explicit changed files, a changed symbol, a node id, or a source range.
 
-Use this tool when you know the audit seed and want non-persistent propagation findings from CodeGraph-backed structural evidence.
+Use this tool when the audit seed comes from another source — files changed by an external patch or shell command, or one specific symbol, route handler, or config surface — and you want non-persistent propagation findings.
 
-Findings are not commands and are not tracked obligations. Default output is CodePlan-focused: change facts show atomic labels and statement effects, and propagation findings show relation clauses, impacted blocks, and cause chains; lower-level language/heuristic signals stay in metadata unless explicitly inspected.
+Do NOT use it as the default post-mutation audit; use `chimera_audit_recent` after successful file mutations.
 
-Do NOT use this as the default post-mutation audit. Use `chimera_audit_recent` after successful file mutations.
-
-Parameter rules:
-- Provide at least one of `files`, `filePath`, `symbol`, `ref`, or legacy `nodeID`.
-- Prefer `ref` when prior output printed `Ref: node:<id>`; copy it exactly rather than extracting raw ids.
-- Existing explicit `files` / `filePath` seeds are synced from the filesystem before audit seed resolution, even when they are not yet tracked by git.
-- Use `range` only with `filePath`.
-- Use `kind` only when resolving seed symbols needs a node-kind filter.
-- `depth` defaults to 2 and is capped at 5.
-- `limit` defaults to 30 and is capped at 100.
-- `refresh` controls whether stale graph signals may trigger a sync.
-
-Common calls:
-- Audit changed files from an external patch or shell command.
-- Audit a specific exported symbol, route handler, or config surface.
+Mechanics: provide at least one seed (`files`, `filePath`, `symbol`, `ref`, or legacy `nodeID`), preferring `ref` copied from `Ref: node:<id>`; `range` requires `filePath`. Explicit file seeds are filesystem-synced before resolution, even when untracked by git. Findings are structural evidence, not commands or tracked obligations.
 
 After this tool:
-- Interpret findings in the current task context; inspect or update relevant targets as needed.
-- Intentional, irrelevant, duplicate, or temporary-cleanup findings can be skipped with a brief note when that matters for closeout.
-- Run build, typecheck, lint, or tests separately when correctness matters.
-- For mutations touching frontend component files (`*.tsx`/`*.jsx`/`*.vue`/`*.svelte`), also run the project's lint or render tests: framework-rule violations (for example React hook calls after conditional early returns) are invisible to structural audit.
-- Use `chimera_obligations_sync` when findings need durable tracking.
+- Interpret findings in task context; intentional, irrelevant, or duplicate findings can be skipped with a brief note. Use build/typecheck/lint/tests for oracle verification; for frontend component files (`*.tsx`/`*.jsx`/`*.vue`/`*.svelte`) also run lint or render tests — framework-rule violations are invisible to structural audit. Use `chimera_obligations_sync` only for durable tracking.
 
-CodePlan atomic label glossary:
-- Modification labels: `MMB` modified method body, `MMS` modified method signature, `MF` modified field, `MC` modified class declaration, `MCC` modified constructor signature, `MI` modified import/using statement.
-- Addition labels: `AM` added method, `AF` added field, `AC` added class declaration, `ACC` added constructor, `AI` added import/using statement.
-- Deletion labels: `DM` deleted method, `DF` deleted field, `DC` deleted class declaration, `DCC` deleted constructor, `DI` deleted import/using statement.
-- When audit output shows `codeplan_atomic_label`, use it as the paper-style atomic-change classification that selects relation-clause propagation rules.
-- When output shows `statement_effect`, use it as the CodeGraph-backed method-body escape/effect summary.
-- When output shows `relation_clause` and `impacted_block`, treat them as the CodePlan propagation clause and affected block selected by the may-impact rule.
+CodePlan atomic label glossary (canonical; other tool descriptions refer here):
+- Modification: `MMB` modified method body, `MMS` modified method signature, `MF` modified field, `MC` modified class declaration, `MCC` modified constructor signature, `MI` modified import/using statement.
+- Addition: `AM` added method, `AF` added field, `AC` added class declaration, `ACC` added constructor, `AI` added import/using statement.
+- Deletion: `DM` deleted method, `DF` deleted field, `DC` deleted class declaration, `DCC` deleted constructor, `DI` deleted import/using statement.
+- `codeplan_atomic_label` selects relation-clause propagation rules; `statement_effect` summarizes method-body escape/effect; `relation_clause` + `impacted_block` are the clause and block chosen by the may-impact rule.

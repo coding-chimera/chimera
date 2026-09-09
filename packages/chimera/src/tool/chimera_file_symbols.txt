@@ -2,24 +2,12 @@ List indexed symbols for a known file or source range.
 
 Use this tool when you already know the file path and need CodeGraph nodes inside that file, or nodes intersecting a specific range.
 
-Do NOT use this tool for open-ended search. Use `chimera_search` for query-based graph search and `grep` for raw source text.
+Do NOT use it for open-ended search — use `chimera_search` for query-based graph search and `grep` for raw source text.
 
-Parameter rules:
-- `filePath` is required and may be absolute or project-relative.
-- Existing explicit `filePath` values are synced from the filesystem before symbol resolution, even when the file is not yet tracked by git.
-- `range` is meaningful only with `filePath`; it narrows results to intersecting symbols.
-- `kind` filters node kind.
-- `limit` defaults to 10 and is capped at 50.
-- `refresh` defaults to true and controls whether stale graph signals may trigger a sync.
-- `projectPath` is optional and lists symbols from another already-initialized Chimera project instead of the current session project: pass an absolute or relative path to that project, or to any subdirectory inside it, and it is walk-up resolved to the nearest initialized graph root (current `.chimera/`, or compatible legacy `.codegraph/`). `filePath` is then resolved against the target project's indexed records. Omitting `projectPath` keeps current-project behavior, and a `projectPath` resolving to the current project root behaves the same as omitting it.
-- Cross-project listing is strictly read-only: `filePath` is not synced from the filesystem in this mode (the filesystem-sync rule above applies to current-project calls only), nothing is initialized, written, or recorded in the target project, and `refresh` is ignored. Output is labeled `Project: <resolved root> (cross-project, read-only)`.
-- If the target project is not initialized, the tool returns a structured error: tell the user to run `chimera graph init` and then `chimera graph index` in that project themselves (indexing large repositories can take a long time); never initialize another project's graph from this session. Cross-project listing is for understanding another repository only.
-- If the target project is initialized but its graph database schema is older than this binary expects, the tool returns the same structured zero-result state with `needsMigration: true` (plus `schemaVersion`/`requiredVersion`) instead of symbols; the read-only surface never migrates, so tell the user to run `chimera graph index` in that project themselves.
+Mechanics: explicit `filePath` values are filesystem-synced before resolution, even when untracked by git. `range` requires `filePath` and narrows to intersecting symbols.
+- Output enrichment: symbol hits append up to 3 lines of source definition excerpt each, and the host file lists up to 2 companion test files as a `Tests: <path>` line (total added output is budget-capped at 2KB).
 
-Common calls:
-- List exported functions/classes/components in a changed file.
-- Resolve the smallest graph seeds for a line range before impact or audit.
+`projectPath`: optional path to another initialized Chimera project (or its subdirectory) for strictly read-only cross-project queries; never initializes or writes there. In cross-project mode `filePath` resolves against the target's indexed records and is not filesystem-synced. See `chimera_status` for full cross-project rules.
 
 After this tool:
-- Copy `Ref: node:<id>` from symbol output when a later Chimera tool accepts `ref` or `refs`; prefer that over raw `nodeID`.
-- Use `chimera_impact` or `chimera_audit` when the listed symbols may propagate behavior.
+- Copy `Ref: node:<id>` from output when a later Chimera tool accepts `ref` or `refs`; use `chimera_impact` or `chimera_audit` when the listed symbols may propagate behavior.

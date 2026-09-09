@@ -14,6 +14,7 @@ import { assertExternalDirectoryEffect } from "./external-directory"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import * as Bom from "@/util/bom"
 import { Chimera } from "@/chimera"
+import { inlinePropagationCheck } from "@/chimera/propagation-probe"
 import { ulid } from "ulid"
 import {
   DISPLAY_ALGORITHM,
@@ -490,7 +491,7 @@ export const EditTool = Tool.define(
           const block = LSP.Diagnostic.report(finalPath, diagnostics[normalizedFilePath] ?? [])
           if (block) output += `\n\nLSP errors detected in this file, please fix:\n${block}`
 
-          output += `\n\nPropagation audit recommended: run chimera_audit_recent before treating this change as complete (skip only when the edit is trivial or intentionally scoped).`
+          output += `\n\n${yield* inlinePropagationCheck(renamePath ? [filePath, renamePath] : [filePath])}`
           return {
             metadata: {
               diagnostics,

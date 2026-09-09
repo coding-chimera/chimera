@@ -2,31 +2,16 @@ Search Chimera's CodeGraph-backed graph index by query.
 
 Use this tool when you need graph evidence for symbol names, qualified names, signatures, or CodeGraph-indexed text.
 
-Do NOT use this tool for arbitrary source-code literals, regex searches, or counting matches. Use `grep` for raw source text and `glob` for filename patterns.
+Do NOT use it for arbitrary source-code literals, regex searches, or match counting — use `grep` for raw source text and `glob` for filename patterns.
 
 Query phrasing:
-- Multi-word queries are OR-of-prefix: each whitespace-separated word is matched as a prefix and the results are unioned. "session prompt" finds symbols matching `session*` OR `prompt*`. Each free-text term keeps a guaranteed quota of slots in the merged result window, so a rare term is not crowded out by a high-frequency one. When the query has free-text terms, the output ends with a fact line `terms: <term>(<hits>) ... · <N> candidates before limit`; filter-only queries omit that line.
-- Prefer separate concept words over fake glued compounds. Type "system prompt" for broad concept discovery; use "SystemPrompt" only when searching for a real compound identifier, because compound queries require their identifier parts together.
-- Real compound identifiers are also matched by their parts, so "prompt" finds `SystemPrompt`/`buildSystemPrompt`. Prefer real symbol words over long natural-language phrases.
-- Field filters narrow results and compose with the text: `kind:function`, `lang:typescript` (alias `language:`), `path:src/api` (substring of file path), `name:auth` (substring of symbol name). Example: `kind:method name:send transport`.
+- Multi-word queries are OR-of-prefix: each word matches as a prefix and results are unioned; "session prompt" finds `session*` OR `prompt*`. Each free-text term keeps a guaranteed quota of result slots. With free-text terms, output ends with a `terms: <term>(<hits>) ... · <N> candidates before limit` fact line.
+- Prefer separate concept words ("system prompt") for broad discovery; use a glued compound ("SystemPrompt") only when searching a real compound identifier. Real compounds also match by parts, so "prompt" finds `buildSystemPrompt`.
+- Field filters compose with the text: `kind:function`, `lang:typescript` (alias `language:`), `path:src/api`, `name:auth`. Example: `kind:method name:send transport`.
+- Output enrichment: the first 5 symbol hits append up to 3 lines of source definition excerpt each, and each hit's host file lists up to 2 companion test files as a `Tests: <path>` line (total added output is budget-capped at 4KB).
+- Top 3 definition hits also carry a `Refs(<N>):` block of call/reference sites with trimmed source lines (file-level imports tagged `(file-level)`). One search call usually replaces grep + triage + a follow-up impact/read.
 
-Parameter rules:
-- `query` is required. Keep it focused on a symbol, module, route, API surface, or architecture term.
-- Use `kind` only when you know the CodeGraph node kind you want.
-- Use `limit` to keep results compact.
-- `refresh` controls whether stale graph signals may trigger a sync for an initialized graph; it must not initialize graph data or migrate legacy data when the project is unavailable.
-- `projectPath` is optional and queries another already-initialized Chimera project instead of the current session project: pass an absolute or relative path to that project, or to any subdirectory inside it, and it is walk-up resolved to the nearest initialized graph root (current `.chimera/`, or compatible legacy `.codegraph/`). Omitting it keeps current-project behavior, and a `projectPath` resolving to the current project root behaves the same as omitting it.
-- Cross-project search is strictly read-only: it never initializes, syncs, watches, writes, or records anything in the target project, and `refresh` is ignored in cross-project mode. Results are labeled `Project: <resolved root> (cross-project, read-only)`.
-- If the target project is not initialized, the tool returns a structured error: tell the user to run `chimera graph init` and then `chimera graph index` in that project themselves (indexing large repositories can take a long time); never initialize another project's graph from this session. Cross-project search is for understanding another repository only; modify another repository from a session opened there.
-- If the target project is initialized but its graph database schema is older than this binary expects, the tool returns the same structured zero-result state with `needsMigration: true` (plus `schemaVersion`/`requiredVersion`) instead of searching; the read-only surface never migrates, so tell the user to run `chimera graph index` in that project themselves.
-
-Common calls:
-- Find a symbol or component by name.
-- Find graph-indexed API or route terms.
-- Locate likely declarations before reading files.
-- If the graph is uninitialized, the tool returns the structured unavailable state with zero results rather than creating graph data; call `chimera_init_graph` first to initialize the project graph.
+`projectPath`: optional path to another initialized Chimera project (or its subdirectory) for strictly read-only cross-project queries; never initializes or writes there. See `chimera_status` for full cross-project rules. An uninitialized graph returns the structured unavailable state with zero results — call `chimera_init_graph` first.
 
 After this tool:
-- Copy `Ref: node:<id>` from result output when a later Chimera tool accepts `ref` or `refs`; prefer that over raw `nodeID`.
-- Use `chimera_impact` for dependency or caller impact.
-- Use `read` only after graph evidence points to concrete files.
+- Copy `Ref: node:<id>` when a later tool accepts `ref`/`refs`; use `chimera_impact` for caller impact, and `read` only after graph evidence points to concrete files.

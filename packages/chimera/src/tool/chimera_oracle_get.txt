@@ -1,15 +1,5 @@
 Retrieve one captured Chimera oracle result by typed ref or legacy id.
 
-Use this tool after `chimera_oracle_recent` or when a specific oracle ref/id is known and you need the raw captured shell or LSP evidence plus the mutation provenance linked to that result.
+Use this tool when a specific oracle ref/id is known (prefer `ref` copied from `Ref: oracle:<id>` output) and you need the raw captured shell or LSP evidence plus the mutation provenance linked to that result.
 
-The runtime captures raw shell command results and raw LSP diagnostics automatically. This tool returns recorded evidence only; it does not rerun commands, parse test output, classify shell commands as test/typecheck/lint/build, or create obligations.
-
-Parameter rules:
-- Prefer `ref` copied from `oracle.ref` or `Ref: oracle:<id>` output.
-- `oracleID` remains accepted as a legacy raw oracle id.
-- `maxOutputChars` limits shell output included in the structured result; defaults to 20000 and is capped at 200000.
-
-Output shape:
-- The result contains structured `oracle`, `linkWindow`, and `linkedChanges` data.
-- `oracle.payload.shell` contains the raw captured shell command, cwd, exit, output, truncation state, and output path when available.
-- `oracle.payload.lsp` contains the raw captured LSP diagnostics and diagnostic count.
+Returns recorded evidence only; it never reruns commands, classifies them, or creates obligations. Payload: structured `oracle`, `linkWindow`, and `linkedChanges` data — `oracle.payload.shell` carries the command, cwd, exit code, output, and truncation state; `oracle.payload.lsp` carries the diagnostics. `maxOutputChars` bounds included shell output.

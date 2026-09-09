@@ -2,30 +2,11 @@ Run the default Chimera propagation audit for the latest successful tool mutatio
 
 Use this tool after successful `edit`, `write`, or `apply_patch` mutations before claiming a code-change task is complete.
 
-This returns non-persistent propagation findings from CodeGraph-backed structural evidence. Findings are not commands and are not tracked obligations. Default output is CodePlan-focused: change facts show atomic labels and statement effects, and propagation findings show relation clauses, impacted blocks, and cause chains; lower-level language/heuristic signals stay in metadata unless explicitly inspected.
+Do NOT pass file paths to this tool — it audits the latest mutation automatically; use `chimera_audit` for explicit files, symbols, or node ids. One audit per mutation batch is enough — do not also run chimera_audit on the same files afterwards; chimera_audit is for explicit seeds from other sources (external patches, a specific symbol).
 
-Do NOT pass file paths to this tool. If you need to audit explicit files, symbols, or node ids, use `chimera_audit`.
+Mechanics: findings are structural evidence, not commands or tracked obligations. Provenance files missing graph records are filesystem-synced before classification. Set `refresh` to false only when current graph state is known sufficient.
 
-Parameter rules:
-- `limit` controls how many propagation findings are returned.
-- Recent provenance files that still exist but are missing graph records or symbols are synced from the filesystem before audit classification.
-- `refresh` defaults to true. Set it to false only when the current graph state is known to be sufficient.
-
-Common calls:
-- Audit propagation after a successful `edit`, `write`, or `apply_patch`.
-- Re-run the latest mutation audit with a smaller `limit` for compact closeout.
+See chimera_audit description for the CodePlan atomic label glossary.
 
 After this tool:
-- Interpret findings in the current task context; inspect or update relevant targets as needed.
-- Intentional, irrelevant, duplicate, or temporary-cleanup findings can be skipped with a brief note when that matters for closeout.
-- Use build, typecheck, lint, or tests for oracle verification; this audit is structural graph evidence only.
-- For mutations touching frontend component files (`*.tsx`/`*.jsx`/`*.vue`/`*.svelte`), also run the project's lint or render tests: framework-rule violations (for example React hook calls after conditional early returns) are invisible to structural audit.
-- Use `chimera_obligations_sync` when findings need tracked follow-up.
-
-CodePlan atomic label glossary:
-- Modification labels: `MMB` modified method body, `MMS` modified method signature, `MF` modified field, `MC` modified class declaration, `MCC` modified constructor signature, `MI` modified import/using statement.
-- Addition labels: `AM` added method, `AF` added field, `AC` added class declaration, `ACC` added constructor, `AI` added import/using statement.
-- Deletion labels: `DM` deleted method, `DF` deleted field, `DC` deleted class declaration, `DCC` deleted constructor, `DI` deleted import/using statement.
-- When audit output shows `codeplan_atomic_label`, use it as the paper-style atomic-change classification that selects relation-clause propagation rules.
-- When output shows `statement_effect`, use it as the CodeGraph-backed method-body escape/effect summary.
-- When output shows `relation_clause` and `impacted_block`, treat them as the CodePlan propagation clause and affected block selected by the may-impact rule.
+- Interpret findings in task context; intentional, irrelevant, duplicate, or temporary-cleanup findings can be skipped with a brief note. Use build/typecheck/lint/tests for oracle verification, and for frontend component files (`*.tsx`/`*.jsx`/`*.vue`/`*.svelte`) also run lint or render tests. Use `chimera_obligations_sync` only for tracked follow-up.

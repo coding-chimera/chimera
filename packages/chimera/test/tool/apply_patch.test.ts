@@ -113,7 +113,10 @@ describe("tool.apply_patch freeform", () => {
 
         expect(result.title).toContain("Success. Updated the following files")
         expect(result.output).toContain("Success. Updated the following files")
-        expect(result.output).toContain("Propagation audit recommended: run chimera_audit_recent before treating this change as complete (skip only when the edit is trivial or intentionally scoped).")
+        // Graph is uninitialized here, so the probe degrades silently; lock out the old B4 invitation wording instead of requiring any propagation line.
+        expect(result.output).not.toContain("Deep audit")
+        expect(result.output).not.toContain("Propagation audit recommended")
+
         // Strict formatting assertions for slashes
         expect(result.output).toMatch(/A nested\/new\.txt/)
         expect(result.output).toMatch(/D delete\.txt/)
