@@ -2818,7 +2818,9 @@ export const ChimeraSearchTool = Tool.define<typeof SearchParameters, SearchMeta
               const snapshot = state.graph.snapshot()
               const kinds = params.kind ? [params.kind] : undefined
               const detailed = state.graph.searchNodesDetailed(params.query, { kinds, limit: effectiveLimit })
-              const results = detailed.results
+              // The search core guarantees per-term quota slots, so a multi-word
+              // sentence query can exceed effectiveLimit; enforce the cap explicitly.
+              const results = sentenceLike ? detailed.results.slice(0, SENTENCE_QUERY_TRUNCATED_RESULTS) : detailed.results
               const enriched = yield* Effect.promise(() => enrichQueryOutput(state, results.map((result) => result.node), { refs: true })).pipe(
                 Effect.orDie,
               )
