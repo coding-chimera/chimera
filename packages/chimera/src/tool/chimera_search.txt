@@ -6,7 +6,7 @@ Do NOT use it for arbitrary source-code literals, regex searches, or match count
 
 Query phrasing:
 - Multi-word queries are OR-of-prefix: each word matches as a prefix and the results are unioned; "session prompt" finds `session*` OR `prompt*`. Each free-text term keeps a guaranteed quota of slots in the merged result window, so a rare term is not crowded out by a high-frequency one. When the query has free-text terms, the output ends with a fact line `terms: <term>(<hits>) ... · <N> candidates before limit`; filter-only queries omit that line.
-- Sentence-shaped queries (4+ plain-lowercase natural-language words with no identifier/path shape) are treated as low-confidence: results truncate to the top 3 and a guidance line is prepended. Search identifier, symbol, or path terms instead; use grep for literal text.
+- Sentence-shaped queries (3+ plain-lowercase natural-language words with no identifier/path shape) are treated as low-confidence: results truncate to the top 3 and a guidance line is prepended. Search identifier, symbol, or path terms instead; use grep for literal text.
 - Prefer separate concept words ("system prompt") for broad discovery; use a glued compound ("SystemPrompt") only when searching a real compound identifier. Real compounds also match by parts, so "prompt" finds `buildSystemPrompt`.
 - Field filters compose with the text: `kind:function`, `lang:typescript` (alias `language:`), `path:src/api`, `name:auth`. Example: `kind:method name:send transport`.
 - Output enrichment: the first 5 symbol hits append up to 3 lines of source definition excerpt each, and each hit's host file lists up to 2 companion test files as a `Tests: <path>` line (total added output is budget-capped at 4KB).

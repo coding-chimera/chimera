@@ -2751,13 +2751,13 @@ export const ChimeraStatusTool = Tool.define<typeof StatusParameters, StatusMeta
   }),
 )
 
-// Sentence-shaped queries (>=4 free-text plain-lowercase words with no code
+// Sentence-shaped queries (>=3 free-text plain-lowercase words with no code
 // shape) are low-confidence against the prefix-OR search core: weak-model bench
 // runs showed whole-prompt queries returning generated-SDK and unrelated-util
 // symbols, flooding ~3KB of noise into the context. Truncate those to the top 3
 // results and prepend a correction guide. Identifier, path, filter, and short
 // concept queries ("system prompt") are untouched.
-const SENTENCE_QUERY_MIN_FREE_TERMS = 4
+const SENTENCE_QUERY_MIN_FREE_TERMS = 3
 const SENTENCE_QUERY_TRUNCATED_RESULTS = 3
 export function isSentenceLikeQuery(query: string) {
   const freeTerms = query.split(/\s+/).filter((term) => term.length > 0 && !term.includes(":"))

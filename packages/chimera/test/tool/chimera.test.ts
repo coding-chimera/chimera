@@ -63,6 +63,8 @@ describe("isSentenceLikeQuery", () => {
   test("flags whole-prompt natural-language queries", () => {
     expect(isSentenceLikeQuery("access level extraction default visibility")).toBe(true)
     expect(isSentenceLikeQuery("make the indexer report a meaningful default")).toBe(true)
+    // G-round bench gap: a 3-word lowercase query returned 15 cross-package noise hits.
+    expect(isSentenceLikeQuery("visibility extractor lang")).toBe(true)
   })
 
   test("keeps identifier, path, filter, and short concept queries untouched", () => {
