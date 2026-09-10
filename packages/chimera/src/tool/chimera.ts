@@ -2751,6 +2751,20 @@ export const ChimeraStatusTool = Tool.define<typeof StatusParameters, StatusMeta
   }),
 )
 
+// Sentence-shaped queries (>=4 free-text plain-lowercase words with no code
+// shape) are low-confidence against the prefix-OR search core: weak-model bench
+// runs showed whole-prompt queries returning generated-SDK and unrelated-util
+// symbols, flooding ~3KB of noise into the context. Truncate those to the top 3
+// results and prepend a correction guide. Identifier, path, filter, and short
+// concept queries ("system prompt") are untouched.
+const SENTENCE_QUERY_MIN_FREE_TERMS = 4
+const SENTENCE_QUERY_TRUNCATED_RESULTS = 3
+export function isSentenceLikeQuery(query: string) {
+  const freeTerms = query.split(/\s+/).filter((term) => term.length > 0 && !term.includes(":"))
+  if (freeTerms.length < SENTENCE_QUERY_MIN_FREE_TERMS) return false
+  return !freeTerms.some((term) => /[A-Z_/.`]/.test(term))
+}
+
 export const ChimeraSearchTool = Tool.define<typeof SearchParameters, SearchMetadata, never>(
   "chimera_search",
   Effect.succeed({
@@ -2799,9 +2813,11 @@ export const ChimeraSearchTool = Tool.define<typeof SearchParameters, SearchMeta
           (state) =>
             Effect.gen(function* () {
               const limit = bounded(params.limit, 10, 50)
+              const sentenceLike = isSentenceLikeQuery(params.query)
+              const effectiveLimit = sentenceLike ? Math.min(limit, SENTENCE_QUERY_TRUNCATED_RESULTS) : limit
               const snapshot = state.graph.snapshot()
               const kinds = params.kind ? [params.kind] : undefined
-              const detailed = state.graph.searchNodesDetailed(params.query, { kinds, limit })
+              const detailed = state.graph.searchNodesDetailed(params.query, { kinds, limit: effectiveLimit })
               const results = detailed.results
               const enriched = yield* Effect.promise(() => enrichQueryOutput(state, results.map((result) => result.node), { refs: true })).pipe(
                 Effect.orDie,
@@ -2811,6 +2827,9 @@ export const ChimeraSearchTool = Tool.define<typeof SearchParameters, SearchMeta
                 title: "Chimera search",
                 output: [
                   ...(state.crossProject ? [`Project: ${state.projectRoot} (cross-project, read-only)`] : []),
+                  ...(sentenceLike
+                    ? [`Query shape: this reads like a natural-language sentence; graph search matches symbol/path prefixes, so only the top ${results.length} loose match(es) are shown. Re-search with identifier, symbol, or path terms for precise evidence, or use grep for literal text.`]
+                    : []),
                   `Static graph evidence (${results.length} result${results.length === 1 ? "" : "s"}):`,
                   ...enriched.lines,
                   ...(detailed.terms.length

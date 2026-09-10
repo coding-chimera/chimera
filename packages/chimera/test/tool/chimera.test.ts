@@ -1,4 +1,4 @@
-import { afterEach, describe, expect } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import fs from "fs/promises"
 import path from "path"
 import { Cause, Effect, Exit, Layer } from "effect"
@@ -33,6 +33,7 @@ import {
   ChimeraSearchTool,
   ChimeraStatusTool,
   enrichQueryOutput,
+  isSentenceLikeQuery,
 } from "@/tool/chimera"
 import { Tool } from "@/tool/tool"
 import { Truncate } from "@/tool/truncate"
@@ -53,10 +54,25 @@ const ctx = {
 
 // render() now takes an explicit Session.Interface; these tests exercise only
 // the provenance/oracle sections, where the messages reader is never consulted
-// (hint needs >=4 text-tool parts, push needs the env flag).
+// (the discovery hint needs >=4 text-tool parts to fire).
 const stubSessions = { messages: () => Effect.succeed([]) } as unknown as Session.Interface
 
 const it = testEffect(Layer.mergeAll(Bus.layer, Agent.defaultLayer, Truncate.defaultLayer, ChimeraPromptContext.layer))
+
+describe("isSentenceLikeQuery", () => {
+  test("flags whole-prompt natural-language queries", () => {
+    expect(isSentenceLikeQuery("access level extraction default visibility")).toBe(true)
+    expect(isSentenceLikeQuery("make the indexer report a meaningful default")).toBe(true)
+  })
+
+  test("keeps identifier, path, filter, and short concept queries untouched", () => {
+    expect(isSentenceLikeQuery("system prompt")).toBe(false)
+    expect(isSentenceLikeQuery("getVisibility hook contract")).toBe(false)
+    expect(isSentenceLikeQuery("kind:function name:send transport")).toBe(false)
+    expect(isSentenceLikeQuery("packages/chimera/src/graph/extraction/tree-sitter.ts visibility default")).toBe(false)
+    expect(isSentenceLikeQuery("resolveMethodOnType(capitalized, methodName, ref, context)")).toBe(false)
+  })
+})
 
 afterEach(async () => {
   await disposeAllInstances()
