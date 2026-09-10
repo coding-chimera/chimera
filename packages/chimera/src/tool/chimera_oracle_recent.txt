@@ -1,6 +1,6 @@
 List recent Chimera oracle results captured from shell commands and LSP diagnostics.
 
-Use this tool when a verification, typecheck, test, lint, build, or LSP result needs to be recalled together with the code mutations that happened before it in the same session and project.
+Failing and unknown results linked to your recent mutations are already inlined in the runtime context with their refs — prefer `chimera_oracle_get` on those. Use this tool when you need a wider recall window: results not linked to recent mutations, passing evidence, or earlier history in the same session and project.
 
 The runtime captures raw shell results and LSP diagnostics automatically; this tool only retrieves the captured records — it never runs verification commands or classifies them. By default it returns failing and unknown results; set `includePassing` to true when passing oracle evidence is needed. Shell output is shortened in the list view.
 

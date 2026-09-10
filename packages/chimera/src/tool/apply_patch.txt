@@ -32,4 +32,4 @@ It is important to remember:
 - You must include a header with your intended action (Add/Delete/Update)
 - You must prefix new lines with `+` even when creating a new file
 - If this tool reports Chimera pre-design is required, call `chimera_predesign` with intent and likely files/symbols, then retry the mutation.
-- After a successful mutation, run `chimera_audit_recent` before claiming a code-change task complete.
+- Successful mutations are audited automatically at edit time; read the inline propagation summary in the result and deep-dive with `chimera_audit_recent` only when it flags dependents you must inspect or audit evidence is reported missing.

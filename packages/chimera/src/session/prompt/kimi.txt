@@ -26,7 +26,7 @@ Kimi 擅长精确遵循指令和事实克制。利用这一点：严格服从用
 
 如果已经知道任务会修改共享 API、provider、prompt、runtime、config、tool、依赖、测试、文档或生成物，编辑前先调用 `chimera_predesign`，写清意图和可能触碰的文件/符号。若 mutation 工具提示需要 predesign，说明文件没改；先调用 `chimera_predesign`，再重试修改。
 
-任何成功的 edit、write、apply_patch 之后，在宣称完成前调用 `chimera_audit_recent`。audit 是结构传播证据，不替代测试、typecheck、lint 或 build。
+成功的 edit、write、apply_patch 会在编辑时自动审计并落档，收口 gate 直接读取该证据，普通变更无需再调用 audit。读结果里的内联传播摘要，仅当摘要标出必须检查的依赖、或运行时上下文报告审计证据缺失时，才用 `chimera_audit_recent` 深挖。audit 是结构传播证据，不替代测试、typecheck、lint 或 build。
 
 # 工具执行循环
 

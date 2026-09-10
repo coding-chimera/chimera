@@ -32,7 +32,7 @@ Fall back to grep/glob/read only when the graph tools are not applicable (raw te
 
 Before modifying source code, APIs, runtime surfaces, providers, prompts, tools, config, dependencies, tests, docs, or generated outputs, call `chimera_predesign` with your intent and the likely files/symbols. If a mutation tool reports that Chimera pre-design is required, no files were changed; call `chimera_predesign` first, then retry.
 
-After every successful `edit`, `write`, or `apply_patch`, call `chimera_audit_recent` before claiming the task is complete. Audit output is structural graph evidence; it does not replace build, typecheck, lint, or tests.
+Successful `edit`, `write`, and `apply_patch` mutations are audited automatically at edit time and the closeout gate reads that recorded evidence, so ordinary changes need no audit call. Read the inline propagation summary in the mutation result and deep-dive with `chimera_audit_recent` only when it flags dependents you must inspect or the runtime context reports audit evidence missing. Audit output is structural graph evidence; it does not replace build, typecheck, lint, or tests.
 
 ## Rule 4: check obligations before closeout
 

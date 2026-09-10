@@ -17,7 +17,7 @@ import { Session } from "@/session/session"
 import { Config } from "@/config/config"
 import { Agent } from "@/agent/agent"
 import { Permission } from "@/permission"
-import { appendProvenanceRecord, databaseStorePath, readPredesignRuns, readProvenanceRecords, readRecentProvenanceRecords, recordOracleResult, writeChangeFacts, type OracleLinkedChange, type OracleStatus, type OracleVerificationKind } from "./store"
+import { appendProvenanceRecord, databaseStorePath, readPredesignRuns, readProvenanceRecords, readRecentProvenanceRecords, recordAuditRun, recordOracleResult, writeChangeFacts, type OracleLinkedChange, type OracleStatus, type OracleVerificationKind } from "./store"
 import { TOOL_MUTATION_PREDESIGN_REQUIRED } from "./guidance"
 
 type ShadowOracleRecorder = (input: {
@@ -834,10 +834,25 @@ export function trackToolMutation<A, E, R>(
     }
 
     yield* Effect.promise(() => appendProvenanceRecord(s.projectRoot, s.artifact, record)).pipe(Effect.orDie)
+    const facts = Exit.isSuccess(exit) ? classifyChangeRecord({ record, beforeNodes, afterNodes, beforeRelations, afterRelations }) : []
     if (Exit.isSuccess(exit)) {
-      const facts = classifyChangeRecord({ record, beforeNodes, afterNodes, beforeRelations, afterRelations })
       yield* Effect.promise(() => writeChangeFacts(s.projectRoot, facts)).pipe(Effect.orDie)
     }
+    // Audit evidence is recorded here rather than by a model ritual call: the
+    // classification inputs already exist, and the closeout gate keys on the
+    // provenanceID. Bench evidence: 27/27 model-invoked audit_recent runs had
+    // zero follow-up actions, so the call was tax, not verification.
+    yield* Effect.promise(() =>
+      recordAuditRun(s.projectRoot, {
+        source: "track-tool-mutation",
+        provenanceID: record.id,
+        changedFiles: files.map((file) => file.graphPath ?? file.absolutePath),
+        snapshotRevision: after.revision,
+        seedNodes: [],
+        obligations: [],
+        payload: { auto: true, status: record.status, changeFacts: facts.length },
+      }),
+    ).pipe(Effect.orDie)
     rememberToolFiles(s.projectRoot, files)
     if (input.bus) {
       yield* input.bus.publish(ToolMutationRecorded, {
