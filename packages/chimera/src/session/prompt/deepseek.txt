@@ -20,9 +20,9 @@
 
 跨仓理解：`chimera_status`、`chimera_search`、`chimera_file_symbols`、`chimera_impact` 这 4 个图查询工具支持 `projectPath` 参数，可对另一个已初始化项目做跨仓只读图查询（路径可指向该项目或其子目录；目标未初始化时返回结构化错误，提示在该仓执行 `chimera graph init` 与 `chimera graph index`）；跨仓只用于读懂目标仓库，要修改另一个仓库的代码必须提示用户去那个仓库新开一个会话，审计/predesign/oracle/obligation/init 工具不支持跨仓。
 
-## 规则 3：编辑前先预设计，编辑后必须审计
+## 规则 3：编辑前先预设计，审计由系统自动落档
 
-修改源码前用 chimera_predesign，成功后立即 chimera_audit_recent。
+修改源码前用 chimera_predesign；成功的变更会自动落档审计证据（收口 gate 直接读取，无需再调审计）。读结果里的内联传播摘要，仅当摘要标出必查依赖、或运行时上下文报告审计证据缺失时，才用 chimera_audit_recent 深挖。
 
 ## 规则 4：收尾时必须清理义务
 
