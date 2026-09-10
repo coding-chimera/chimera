@@ -126,7 +126,7 @@ export const WriteTool = Tool.define(
             projectDiagnosticsCount++
             output += `\n\nLSP errors detected in other files:\n${block}`
           }
-          const probeLine = yield* inlinePropagationCheck([filepath])
+          const probeLine = yield* inlinePropagationCheck([filepath], ctx.sessionID)
           output += `\n\n${probeLine}`
           return {
             title: path.relative(instance.worktree, filepath),

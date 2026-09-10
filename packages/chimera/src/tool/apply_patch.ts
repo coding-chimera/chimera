@@ -330,7 +330,7 @@ export const ApplyPatchTool = Tool.define(
         output += `\n\nLSP errors detected in ${rel}, please fix:\n${block}`
       }
 
-      const probeLine = yield* inlinePropagationCheck(fileChanges.flatMap((change) => (change.movePath ? [change.filePath, change.movePath] : [change.filePath])))
+      const probeLine = yield* inlinePropagationCheck(fileChanges.flatMap((change) => (change.movePath ? [change.filePath, change.movePath] : [change.filePath])), ctx.sessionID)
       output += `\n\n${probeLine}`
       return {
         title,
