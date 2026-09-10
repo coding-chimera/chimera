@@ -3,11 +3,10 @@ import { Context, Effect, Layer, Option } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import { readAuditRuns, readOracleResults, readPersistentObligationStore, readPredesignRuns, readRecentProvenanceRecords, type AuditRunRecord, type OracleRecord, type PredesignRunRecord } from "./store"
 import type { ToolMutationRecord } from "./provenance"
-import { CodeGraphAdapter } from "./codegraph-adapter"
 import type { SessionID } from "@/session/schema"
 import type { MessageV2 } from "@/session/message-v2"
 import { Session } from "@/session/session"
-import { getGraphDataRootInfo, isInitialized, type Node as CodeGraphNode } from "@/graph"
+import { getGraphDataRootInfo } from "@/graph"
 
 const MAX_RECENT_MUTATIONS = 3
 const MAX_RECENT_PREDESIGNS = 3
@@ -21,20 +20,6 @@ const GRAPH_DISCOVERY_HINT_BODY =
   'This project is indexed. One chimera_search or chimera_impact call can replace several grep/read steps for symbol, caller, reference, and impact questions; chimera_file_symbols answers "what is in this file".'
 const GRAPH_QUERY_TOOLS = new Set<string>(["chimera_search", "chimera_file_symbols", "chimera_impact"])
 const TEXT_EXPLORATION_TOOLS = new Set<string>(["grep", "glob", "read", "bash"])
-
-// -- Push-style graph context (experimental, env-flag gated; default off) --
-const GRAPH_PUSH_ENV = "CHIMERA_GRAPH_PUSH_CONTEXT"
-const GRAPH_PUSH_HEADER = "## Graph context (auto)"
-const GRAPH_PUSH_TRAILER = "(auto-generated from your message keywords; query tools available for deeper exploration)"
-const GRAPH_PUSH_BUDGET_CHARS = 600
-// Covers the once-per-process cold open of large graph DBs; later renders reuse
-// the cached read-only handle and finish in milliseconds. Override for experiments.
-const GRAPH_PUSH_QUERY_TIMEOUT_MS = 3000
-const GRAPH_PUSH_TIMEOUT_ENV = "CHIMERA_GRAPH_PUSH_TIMEOUT_MS"
-const GRAPH_PUSH_DEBUG_ENV = "CHIMERA_GRAPH_PUSH_DEBUG"
-const GRAPH_PUSH_MAX_TOKENS = 3
-const GRAPH_PUSH_HITS_PER_TOKEN = 3
-const GRAPH_PUSH_MIN_TEXT_CHARS = 20
 
 type PromptObligation = {
   id: string
@@ -256,186 +241,9 @@ const graphDiscoveryHint = Effect.fnUntraced(function* (root: string, sessionID:
   return [GRAPH_DISCOVERY_HINT_HEADER, GRAPH_DISCOVERY_HINT_BODY]
 })
 
-// Path-like tokens require at least one "/" plus a code extension (e.g. src/tool/chimera.ts).
-const CODE_TOKEN_PATH = /(?:[A-Za-z0-9_./~-]*\/[A-Za-z0-9_.~-]+)\.(?:ts|tsx|js|jsx|mjs|cjs|vue|svelte|py|go|rs|java|c|cc|cpp|h|hh|rb|php|sql|sh|json|yml|yaml|md)\b/g
-// Word-level tokens: identifiers >= 6 chars that look like code (snake_case or)
-// camelCase — plain lowercase natural language never matches the camel gate.
-const CODE_TOKEN_WORD = /\b[A-Za-z_][A-Za-z0-9_]{5,}\b/g
-const CODE_TOKEN_BACKTICK = /`([^`\n]+)`/g
-
-// English filler short enough to slip through the code gates via backticks (e.g. `search`).
-const COMMON_ENGLISH_FILLER = new Set([
-  "about", "after", "again", "against", "before", "because", "being", "between", "could", "during",
-  "every", "first", "great", "might", "never", "often", "other", "really", "right", "should",
-  "since", "still", "such", "than", "their", "them", "there", "these", "they", "think",
-  "this", "those", "three", "through", "under", "using", "very", "were", "what", "when",
-  "where", "which", "while", "will", "would", "your",
-])
-
-function graphPushContextEnabled() {
-  const value = process.env[GRAPH_PUSH_ENV]?.toLowerCase()
-  return value === "1" || value === "true"
-}
-
-function graphPushTimeoutMs() {
-  const value = Number(process.env[GRAPH_PUSH_TIMEOUT_ENV])
-  return Number.isFinite(value) && value > 0 ? value : GRAPH_PUSH_QUERY_TIMEOUT_MS
-}
-
-function pushDebug(message: string) {
-  if (process.env[GRAPH_PUSH_DEBUG_ENV] === "1") process.stderr.write(`[graph-push] ${message}\n`)
-}
-
-/**
- * Extract up to GRAPH_PUSH_MAX_TOKENS code-flavored tokens from the latest user message text.
- * Longest-first, deduped, English filler filtered. Sources: backtick-wrapped words
- * (compound snippets are split into identifier fragments), path-like strings
- * (contain "/" + a code extension), and camelCase/snake_case identifiers (>= 6 chars).
- */
-function extractCodeTokens(text: string) {
-  const candidates: string[] = []
-  for (const match of text.matchAll(CODE_TOKEN_BACKTICK)) {
-    const inner = match[1]!.trim()
-    if (!inner) continue
-    // A single identifier or path stays whole. Compound snippets (call
-    // expressions, punctuated code) are split into code-like identifier
-    // fragments: searching the raw snippet matches parameter-name noise across
-    // the repo instead of the intended symbol (bench-observed).
-    if (/^[\w./~-]+$/.test(inner)) {
-      candidates.push(inner)
-      continue
-    }
-    for (const part of inner.split(/[^\w./~-]+/)) {
-      if (part.length >= 6 && (part.includes("_") || /[a-z][A-Z]/.test(part))) candidates.push(part)
-    }
-  }
-  for (const match of text.matchAll(CODE_TOKEN_PATH)) candidates.push(match[0])
-  for (const match of text.matchAll(CODE_TOKEN_WORD)) {
-    const word = match[0]
-    if (word.includes("_") || /[a-z][A-Z]/.test(word)) candidates.push(word)
-  }
-  return [...new Set(candidates)]
-    .filter((token) => token.length >= 2 && !COMMON_ENGLISH_FILLER.has(token.toLowerCase()))
-    .sort((a, b) => b.length - a.length)
-    .slice(0, GRAPH_PUSH_MAX_TOKENS)
-}
-
-function latestUserText(messages: readonly MessageV2.WithParts[]) {
-  for (let index = messages.length - 1; index >= 0; index--) {
-    const message = messages[index]!
-    if (message.info.role !== "user") continue
-    const text = message.parts
-      .filter((part): part is MessageV2.TextPart => part.type === "text")
-      .filter((part) => !part.synthetic && !part.ignored && !part.metadata?.runtimeContext)
-      .map((part) => part.text)
-      .join("\n")
-      .trim()
-    return text.length > 0 ? text : undefined
-  }
-  return undefined
-}
-
-function latestUserCodeTokens(messages: readonly MessageV2.WithParts[]) {
-  const text = latestUserText(messages)
-  if (text === undefined || text.length < GRAPH_PUSH_MIN_TEXT_CHARS) return []
-  return extractCodeTokens(text)
-}
-
-function renderGraphPushSection(hits: Array<{ token: string; node: CodeGraphNode }>) {
-  if (hits.length === 0) return undefined
-  const lineFor = ({ token, node }: { token: string; node: CodeGraphNode }) => {
-    const span = node.endLine >= node.startLine ? `${node.startLine}-${node.endLine}` : `${node.startLine}`
-    return `- ${token} → ${node.name || node.qualifiedName || "?"} (${node.kind}) ${node.filePath}:${span}`
-  }
-  let hitLines = hits.map(lineFor)
-  while (hitLines.length > 0) {
-    const section = [GRAPH_PUSH_HEADER, ...hitLines, "", GRAPH_PUSH_TRAILER].join("\n")
-    if (section.length <= GRAPH_PUSH_BUDGET_CHARS) return section
-    hitLines = hitLines.slice(0, -1)
-  }
-  return [GRAPH_PUSH_HEADER, "", GRAPH_PUSH_TRAILER].join("\n")
-}
-
-/**
- * Process-lifetime read-only graph handles for the push section.
- * Chimera.withProjectGraph's readOnly path bypasses the shared graphStates cache
- * and closes the handle on release (provenance.ts openGraphState/withProjectGraph),
- * which made every render a full cold open of the graph DB — hundreds of ms on
- * real-size repos, always over a turn-start budget. Open failures evict the entry;
- * a DB replaced under a live handle degrades to search errors and the push silently
- * stops for that root until process restart (acceptable for an experimental flag).
- */
-const pushGraphHandles = new Map<string, Promise<CodeGraphAdapter>>()
-
-function openPushGraph(root: string) {
-  const cached = pushGraphHandles.get(root)
-  if (cached) return cached
-  const promise = CodeGraphAdapter.open(root, { readOnly: true })
-  promise.catch(() => pushGraphHandles.delete(root))
-  pushGraphHandles.set(root, promise)
-  return promise
-}
-
-/**
- * Query the graph for the extracted tokens and render the "## Graph context (auto)"
- * section. Uses CodeGraphAdapter.searchNodesDetailed (the chimera_search core) on a
- * read-only handle: the push never initializes, syncs, or watches graph data.
- * Timeout and any failure degrade to a silent skip.
- */
-const queryGraphPushContext = Effect.fnUntraced(function* (root: string, tokens: string[]) {
-  const graph = yield* Effect.promise(() => openPushGraph(root))
-  return yield* Effect.sync(() => {
-    const hits: Array<{ token: string; node: CodeGraphNode }> = []
-    for (const token of tokens) {
-      const detailed = graph.searchNodesDetailed(token, { limit: GRAPH_PUSH_HITS_PER_TOKEN })
-      for (const result of detailed.results.slice(0, GRAPH_PUSH_HITS_PER_TOKEN)) hits.push({ token, node: result.node })
-    }
-    return renderGraphPushSection(hits)
-  })
-})
-
-/**
- * Gate: env flag on, graph initialized (cheap probe), latest user message carries
- * code-flavored tokens. Off by default; every check is cheap and all failures
- * degrades to no section.
- */
-const graphPushContextSection = Effect.fnUntraced(function* (sessionID: SessionID, sessions: Session.Interface) {
-  pushDebug(`enter: flag=${process.env[GRAPH_PUSH_ENV] ?? "unset"}`)
-  if (!graphPushContextEnabled()) return undefined
-  const instance = yield* InstanceState.context
-  const root = projectRoot(instance)
-  if (!isInitialized(root)) {
-    pushDebug(`skip: graph not initialized (root=${root})`)
-    return undefined
-  }
-  const messages = yield* sessions.messages({ sessionID, limit: MAX_SCAN_MESSAGES }).pipe(Effect.option)
-  if (Option.isNone(messages)) {
-    pushDebug("skip: session messages fetch failed")
-    return undefined
-  }
-  const tokens = latestUserCodeTokens(messages.value)
-  if (tokens.length === 0) {
-    pushDebug("skip: no code tokens in latest user message")
-    return undefined
-  }
-  const startedAt = Date.now()
-  const section = Option.getOrUndefined(
-    yield* queryGraphPushContext(root, tokens).pipe(
-      Effect.timeout(graphPushTimeoutMs()),
-      Effect.option,
-      Effect.catchDefect(() => Effect.succeed(Option.none())),
-    ),
-  )
-  pushDebug(
-    section === undefined
-      ? `miss: tokens=${JSON.stringify(tokens)} elapsed=${Date.now() - startedAt}ms (timeout, query failure, or zero hits)`
-      : `hit: tokens=${JSON.stringify(tokens)} chars=${section.length} elapsed=${Date.now() - startedAt}ms`,
-  )
-  return section
-})
-function renderContext(recent: ToolMutationRecord[], obligations: PromptObligation[], predesigns: PredesignRunRecord[], audits: AuditRunRecord[], oracles: OracleRecord[], hint: readonly string[] | undefined, graphContext: string | undefined) {
+function renderContext(recent: ToolMutationRecord[], obligations: PromptObligation[], predesigns: PredesignRunRecord[], audits: AuditRunRecord[], oracles: OracleRecord[], hint: readonly string[] | undefined) {
   const nonPassingOracles = oracles.filter((oracle) => oracle.status !== "pass")
-  if (recent.length === 0 && obligations.length === 0 && predesigns.length === 0 && audits.length === 0 && nonPassingOracles.length === 0 && !hint && !graphContext) return undefined
+  if (recent.length === 0 && obligations.length === 0 && predesigns.length === 0 && audits.length === 0 && nonPassingOracles.length === 0 && !hint) return undefined
   return [
     "## Chimera Execution Context",
     "",
@@ -475,7 +283,6 @@ function renderContext(recent: ToolMutationRecord[], obligations: PromptObligati
     "Closeout Signals:",
     ...closeoutSignals(recent, obligations, predesigns, oracles),
     ...(hint ? ["", ...hint] : []),
-    ...(graphContext ? ["", graphContext] : []),
   ].join("\n")
 }
 
@@ -491,8 +298,7 @@ export const layer = Layer.effect(
       const audits = yield* Effect.promise(() => readAuditRuns(root, { limit: 20 }))
       const oracles = yield* Effect.promise(() => readOraclesWithFallback(root, sessionID))
       const hint = yield* graphDiscoveryHint(root, sessionID, sessions)
-      const graphContext = yield* graphPushContextSection(sessionID, sessions)
-      return renderContext(recentMutations(records, sessionID), activeObligations(store), recentPredesigns(predesigns, sessionID), audits, oracles, hint, graphContext)
+      return renderContext(recentMutations(records, sessionID), activeObligations(store), recentPredesigns(predesigns, sessionID), audits, oracles, hint)
     })
 
     return Service.of({ render })
