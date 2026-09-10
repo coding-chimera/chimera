@@ -52,7 +52,7 @@ describe("chimera.propagation-probe", () => {
 
 describe("chimera.propagation-probe scope drift lines", () => {
   test("stays silent when targets and propagation are declared", () => {
-    expect(scopeDriftLines("predesign_1", ["a.ts", "b.ts"], ["a.ts"], ["b.ts"])).toEqual([])
+    expect(scopeDriftLines("predesign_1", ["a.ts", "b.ts"], ["a.ts"], [{ file: "b.ts" }])).toEqual([])
   })
 
   test("flags undeclared edit targets", () => {
@@ -63,14 +63,20 @@ describe("chimera.propagation-probe scope drift lines", () => {
   })
 
   test("flags propagation leaving the declared scope", () => {
-    const lines = scopeDriftLines("predesign_1", ["a.ts"], ["a.ts"], ["b.ts", "c.ts"])
+    const lines = scopeDriftLines("predesign_1", ["a.ts"], ["a.ts"], [{ file: "b.ts" }, { file: "c.ts" }])
     expect(lines.length).toBe(1)
     expect(lines[0]!).toContain("propagation reaches b.ts, c.ts")
   })
 
   test("caps displayed files and counts the overflow", () => {
-    const lines = scopeDriftLines("predesign_1", ["a.ts"], ["a.ts"], ["d1.ts", "d2.ts", "d3.ts", "d4.ts", "d5.ts"])
+    const lines = scopeDriftLines("predesign_1", ["a.ts"], ["a.ts"], [{ file: "d1.ts" }, { file: "d2.ts" }, { file: "d3.ts" }, { file: "d4.ts" }, { file: "d5.ts" }])
     expect(lines[0]!).toContain("d1.ts, d2.ts, d3.ts (+2 more)")
+  })
+
+  test("annotates second-hop propagation with the intermediate file", () => {
+    const lines = scopeDriftLines("predesign_1", ["a.ts", "b.ts"], ["a.ts"], [{ file: "b.ts" }, { file: "c.ts", via: "b.ts" }])
+    expect(lines.length).toBe(1)
+    expect(lines[0]!).toContain("propagation reaches c.ts (via b.ts)")
   })
 })
 
@@ -139,6 +145,42 @@ describe("chimera.propagation-probe predesign scope reconciliation", () => {
       const out = yield* inlinePropagationCheck([path.join(test.directory, "lib.ts")], SessionID.make("ses_scope-clean"))
 
       expect(out).toBe("Propagation check: 1 dependent file(s) may be affected: use.ts.")
+    }),
+  )
+
+  it.instance("names second-hop dependents through a declared pass-through file", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "a.ts"), "export const helperA = 1\n"))
+      yield* Effect.promise(() =>
+        fs.writeFile(path.join(test.directory, "b.ts"), 'import { helperA } from "./a.ts"\nexport function helperB() { return helperA }\n'),
+      )
+      yield* Effect.promise(() =>
+        fs.writeFile(path.join(test.directory, "c.ts"), 'import { helperB } from "./b.ts"\nconsole.log(helperB())\n'),
+      )
+      const graph = yield* Effect.promise(() => CodeGraph.init(test.directory, { index: true }))
+      graph.close()
+      const info = getGraphDataRootInfo(test.directory)
+      const artifact = path.join(info.dataRoot, "chimera", "predesign-runs.jsonl")
+      yield* Effect.promise(() =>
+        recordPredesignRun(test.directory, artifact, {
+          sessionID: "ses_scope-twohop",
+          messageID: "msg_scope-twohop",
+          agent: "build",
+          intent: "two-hop scope test",
+          files: ["a.ts", "b.ts"],
+          seedNodes: [],
+          impactedNodes: [],
+          fileDependents: [],
+          evidence: [],
+          snapshotRevision: "test-revision",
+          payload: {},
+        }),
+      )
+
+      const out = yield* inlinePropagationCheck([path.join(test.directory, "a.ts")], SessionID.make("ses_scope-twohop"))
+
+      expect(out).toContain("Scope check: propagation reaches c.ts (via b.ts)")
     }),
   )
 })

@@ -14,6 +14,7 @@ export const PROPAGATION_PROBE_TIMEOUT_MS = 500
 const MAX_PROBE_DEPENDENTS = 5
 const MAX_DISPLAY_DEPENDENTS = 3
 const MAX_SCOPE_DISPLAY = 3
+const MAX_SECOND_HOP = 20
 
 function projectRoot(directory: string, worktree: string) {
   return worktree === "/" ? directory : worktree
@@ -35,13 +36,14 @@ function formatProbe(dependents: string[]) {
 }
 
 /**
- * Compares the edit targets and their graph propagation against the file scope
- * the session's latest predesign declared. Pure and bounded: each drift kind
- * surfaces at most one line with display-capped file lists. The reminder only
- * exists when the model declared a scope itself — anchored to its own
- * declaration plus graph facts, never to guesswork.
+ * Compares the edit targets and their graph propagation (1-hop dependents
+ * plus, when scoped, 2-hop dependents annotated with the intermediate file)
+ * against the file scope the session's latest predesign declared. Pure and
+ * bounded: each drift kind surfaces at most one line with display-capped file
+ * lists. The reminder only exists when the model declared a scope itself —
+ * anchored to its own declaration plus graph facts, never to guesswork.
  */
-export function scopeDriftLines(predesignID: string, declared: string[], seeds: string[], dependents: string[]) {
+export function scopeDriftLines(predesignID: string, declared: string[], seeds: string[], propagation: Array<{ file: string; via?: string }>) {
   const declaredSet = new Set(declared)
   const shown = declared.slice(0, MAX_SCOPE_DISPLAY).join(", ") + (declared.length > MAX_SCOPE_DISPLAY ? ", ..." : "")
   const lines: string[] = []
@@ -50,10 +52,14 @@ export function scopeDriftLines(predesignID: string, declared: string[], seeds: 
     lines.push(`Scope check: edit target(s) ${outsideTargets.slice(0, MAX_SCOPE_DISPLAY).join(", ")} not declared in ${predesignID} (declared: ${shown}) — confirm this is intended, or record a new predesign covering them.`)
   }
   const scope = new Set([...declared, ...seeds])
-  const outsidePropagation = dependents.filter((file) => !scope.has(file))
-  if (outsidePropagation.length > 0) {
-    const extra = outsidePropagation.length > MAX_SCOPE_DISPLAY ? ` (+${outsidePropagation.length - MAX_SCOPE_DISPLAY} more)` : ""
-    lines.push(`Scope check: propagation reaches ${outsidePropagation.slice(0, MAX_SCOPE_DISPLAY).join(", ")}${extra}, outside the scope declared in ${predesignID} (declared: ${shown}); verify whether those files need changes too.`)
+  const outside = propagation.filter((entry) => !scope.has(entry.file))
+  if (outside.length > 0) {
+    const extra = outside.length > MAX_SCOPE_DISPLAY ? ` (+${outside.length - MAX_SCOPE_DISPLAY} more)` : ""
+    const named = outside
+      .slice(0, MAX_SCOPE_DISPLAY)
+      .map((entry) => (entry.via ? `${entry.file} (via ${entry.via})` : entry.file))
+      .join(", ")
+    lines.push(`Scope check: propagation reaches ${named}${extra}, outside the scope declared in ${predesignID} (declared: ${shown}); verify whether those files need changes too.`)
   }
   return lines
 }
@@ -82,12 +88,11 @@ async function latestPredesignFor(root: string, sessionID: SessionID) {
  * When `sessionID` is provided, the probe additionally reconciles the edit
  * against the session's latest predesign declaration: targets or propagation
  * outside the declared file scope append a bounded `Scope check:` reminder so
- * missed change surfaces surface at the moment of the edit.
- *
- * Degradation matrix: graph not initialized, all seeds outside the graph root,
- * the 500ms budget expiring, missing predesign records, or any open/query/read
- * failure (typed error or defect) all degrade silently (propagation line only,
- * or empty output) — a reminder without reliable anchors would be noise.
+ * missed change surfaces surface at the moment of the edit. Reconciliation
+ * propagation spans two hops (dependents of dependents, annotated with the
+ * intermediate file) so a pass-through module does not hide the real contract
+ * consumer; the plain propagation line stays 1-hop and the 2-hop expansion
+ * only runs when a declaration exists.
  */
 export function inlinePropagationCheck(changedFiles: string[], sessionID?: SessionID): Effect.Effect<string> {
   const probe = Effect.gen(function* () {
@@ -96,19 +101,33 @@ export function inlinePropagationCheck(changedFiles: string[], sessionID?: Sessi
     if (!isInitialized(root)) return ""
     const seeds = graphSeeds(root, changedFiles)
     if (seeds.length === 0) return ""
-    const dependents = yield* Chimera.withProjectGraph(
+    const predesign = sessionID !== undefined ? yield* Effect.promise(() => latestPredesignFor(root, sessionID)) : undefined
+    const scoped = predesign !== undefined && predesign.files.length > 0
+    const { dependents, secondHop } = yield* Chimera.withProjectGraph(
       { readOnly: false, sync: false, watch: false },
       (state) =>
-        Effect.sync(() =>
-          [...new Set(seeds.flatMap((seed) => state.graph.fileDependents(seed)))].filter((file) => !seeds.includes(file)),
-        ),
+        Effect.sync(() => {
+          const dependents = [...new Set(seeds.flatMap((seed) => state.graph.fileDependents(seed)))].filter((file) => !seeds.includes(file))
+          if (!scoped) return { dependents, secondHop: [] as Array<{ file: string; via: string }> }
+          // 2-hop expansion (declared scopes only): files depending on the
+          // direct dependents can carry the contract further (A -> B
+          // pass-through -> C hard-codes the old contract), and C is invisible
+          // to both a 1-hop probe and a grep on the changed symbol.
+          const seen = new Set([...seeds, ...dependents])
+          const secondHop: Array<{ file: string; via: string }> = []
+          for (const first of dependents.slice(0, MAX_PROBE_DEPENDENTS)) {
+            for (const second of state.graph.fileDependents(first)) {
+              if (seen.has(second) || secondHop.length >= MAX_SECOND_HOP) continue
+              seen.add(second)
+              secondHop.push({ file: second, via: first })
+            }
+          }
+          return { dependents, secondHop }
+        }),
     )
     const lines = [formatProbe(dependents.slice(0, MAX_PROBE_DEPENDENTS))]
-    if (sessionID !== undefined) {
-      const predesign = yield* Effect.promise(() => latestPredesignFor(root, sessionID))
-      if (predesign && predesign.files.length > 0) {
-        lines.push(...scopeDriftLines(predesign.id, graphSeeds(root, predesign.files), seeds, dependents))
-      }
+    if (predesign && predesign.files.length > 0) {
+      lines.push(...scopeDriftLines(predesign.id, graphSeeds(root, predesign.files), seeds, [...dependents.map((file) => ({ file })), ...secondHop]))
     }
     return lines.join("\n")
   })
