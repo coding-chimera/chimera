@@ -866,12 +866,15 @@ const PREDESIGN_TOOL_ID = "chimera_predesign"
  * Whether the acting agent can actually call chimera_predesign. Requiring a
  * predesign from an agent denied the tool deadlocks the session: every risky
  * edit is blocked with no way to satisfy the gate (bench-observed: a denied
- * arm accumulated 9 blocked edits and produced an empty diff). Mirrors the
- * tool-visibility sources of resolveTools (session/llm.ts): the config `tools`
- * map and the agent permission ruleset. Service unavailability degrades to
- * "available" (current gating behavior).
+ * arm accumulated 9 blocked edits and produced an empty diff). The
+ * authoritative signal is the per-request visibility snapshot computed in
+ * resolveTools (session/prompt.ts) and carried on ctx.extra — Config/Agent
+ * services are not reliably visible in tool-execution fibers. Service lookups
+ * remain as a fallback; total unavailability degrades to "available"
+ * (current gating behavior).
  */
-const predesignToolAvailable = Effect.fnUntraced(function* (agentName: string) {
+const predesignToolAvailable = Effect.fnUntraced(function* (ctx: Tool.Context) {
+  if (ctx.extra?.["chimeraPredesignAvailable"] === false) return false
   const config = yield* Effect.serviceOption(Config.Service)
   if (Option.isSome(config)) {
     const info = yield* config.value.get().pipe(Effect.option)
@@ -879,7 +882,7 @@ const predesignToolAvailable = Effect.fnUntraced(function* (agentName: string) {
   }
   const agents = yield* Effect.serviceOption(Agent.Service)
   if (Option.isSome(agents)) {
-    const agent = yield* agents.value.get(agentName).pipe(Effect.option)
+    const agent = yield* agents.value.get(ctx.agent).pipe(Effect.option)
     if (Option.isSome(agent) && Permission.disabled([PREDESIGN_TOOL_ID], agent.value.permission).has(PREDESIGN_TOOL_ID)) return false
   }
   return true
@@ -900,7 +903,7 @@ export const requirePredesignForMutation: (input: MutationPredesignInput) => Eff
   const destructiveRisk = Boolean(input.destructive || input.rename || input.multiFile) && risky.length > 0
   const required = risky.length > 0 || destructiveRisk
   if (!required) return { required, allowed: true as const, files, risks }
-  if (!(yield* predesignToolAvailable(input.ctx.agent))) return { required: false, allowed: true as const, files, risks }
+  if (!(yield* predesignToolAvailable(input.ctx))) return { required: false, allowed: true as const, files, risks }
 
   const records = yield* Effect.promise(() =>
     readPredesignRuns(root, predesignArtifact(root), { sessionID: input.ctx.sessionID, limit: 20 }),

@@ -358,10 +358,7 @@ export const layer = Layer.effect(
           bgCfg.delegation?.background_subagents ?? ConfigDelegation.DEFAULT_BACKGROUND_SUBAGENTS
         if (!backgroundEnabled) return undefined
         const running = (yield* jobs.list()).filter(
-          (job) =>
-            job.status === "running" &&
-            typeof job.metadata?.parentSessionId === "string" &&
-            job.metadata.parentSessionId === input.sessionID,
+          (job) => job.status === "running" && job.ownerSessionId === input.sessionID,
         )
         if (running.length === 0) return undefined
         const now = Date.now()
@@ -732,13 +729,21 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       const promptOps = yield* ops()
       const toolAbortGraceMs = 1000
       const contextMessages = toolContextMessages(messages)
+      // Tool-visibility snapshot for gates that must know whether a companion
+      // tool is callable (the predesign mutation gate must not require
+      // chimera_predesign from an agent denied that tool). Computed here — the
+      // single place where agent, session, and per-message tool overrides are
+      // all in scope — and passed through ctx.extra.
+      const chimeraPredesignAvailable =
+        input.tools?.["chimera_predesign"] !== false &&
+        !Permission.disabled(["chimera_predesign"], Permission.merge(agent.permission, session.permission ?? [])).has("chimera_predesign")
 
       const context = (args: any, options: ToolExecutionOptions): Tool.Context => ({
         sessionID: session.id,
         abort: options.abortSignal ? AbortSignal.any([input.abort, options.abortSignal]) : input.abort,
         messageID: processor.message.id,
         callID: options.toolCallId,
-        extra: { model, bypassAgentCheck, promptOps, readDedupMessages: messages },
+        extra: { model, bypassAgentCheck, promptOps, readDedupMessages: messages, chimeraPredesignAvailable },
         agent: agent.name,
         messages: contextMessages,
         metadata: (val) =>
