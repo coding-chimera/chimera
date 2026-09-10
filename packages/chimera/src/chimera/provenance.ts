@@ -14,6 +14,9 @@ import { findNearestCodeGraphRoot, getCodeGraphDir, getDatabasePath, isInitializ
 import { validateProjectPath } from "@/graph/utils"
 import { ModelTelemetry } from "@/agent/model-telemetry"
 import { Session } from "@/session/session"
+import { Config } from "@/config/config"
+import { Agent } from "@/agent/agent"
+import { Permission } from "@/permission"
 import { appendProvenanceRecord, databaseStorePath, readPredesignRuns, readProvenanceRecords, readRecentProvenanceRecords, recordOracleResult, writeChangeFacts, type OracleLinkedChange, type OracleStatus, type OracleVerificationKind } from "./store"
 import { TOOL_MUTATION_PREDESIGN_REQUIRED } from "./guidance"
 
@@ -857,6 +860,31 @@ export function trackToolMutation<A, E, R>(
   })
 }
 
+const PREDESIGN_TOOL_ID = "chimera_predesign"
+
+/**
+ * Whether the acting agent can actually call chimera_predesign. Requiring a
+ * predesign from an agent denied the tool deadlocks the session: every risky
+ * edit is blocked with no way to satisfy the gate (bench-observed: a denied
+ * arm accumulated 9 blocked edits and produced an empty diff). Mirrors the
+ * tool-visibility sources of resolveTools (session/llm.ts): the config `tools`
+ * map and the agent permission ruleset. Service unavailability degrades to
+ * "available" (current gating behavior).
+ */
+const predesignToolAvailable = Effect.fnUntraced(function* (agentName: string) {
+  const config = yield* Effect.serviceOption(Config.Service)
+  if (Option.isSome(config)) {
+    const info = yield* config.value.get().pipe(Effect.option)
+    if (Option.isSome(info) && info.value.tools?.[PREDESIGN_TOOL_ID] === false) return false
+  }
+  const agents = yield* Effect.serviceOption(Agent.Service)
+  if (Option.isSome(agents)) {
+    const agent = yield* agents.value.get(agentName).pipe(Effect.option)
+    if (Option.isSome(agent) && Permission.disabled([PREDESIGN_TOOL_ID], agent.value.permission).has(PREDESIGN_TOOL_ID)) return false
+  }
+  return true
+})
+
 export const requirePredesignForMutation: (input: MutationPredesignInput) => Effect.Effect<MutationPredesignDecision> = Effect.fn(
   "Chimera.requirePredesignForMutation",
 )(function* (input: MutationPredesignInput) {
@@ -872,6 +900,7 @@ export const requirePredesignForMutation: (input: MutationPredesignInput) => Eff
   const destructiveRisk = Boolean(input.destructive || input.rename || input.multiFile) && risky.length > 0
   const required = risky.length > 0 || destructiveRisk
   if (!required) return { required, allowed: true as const, files, risks }
+  if (!(yield* predesignToolAvailable(input.ctx.agent))) return { required: false, allowed: true as const, files, risks }
 
   const records = yield* Effect.promise(() =>
     readPredesignRuns(root, predesignArtifact(root), { sessionID: input.ctx.sessionID, limit: 20 }),
