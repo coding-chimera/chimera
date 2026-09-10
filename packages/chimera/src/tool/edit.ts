@@ -491,7 +491,7 @@ export const EditTool = Tool.define(
           const block = LSP.Diagnostic.report(finalPath, diagnostics[normalizedFilePath] ?? [])
           if (block) output += `\n\nLSP errors detected in this file, please fix:\n${block}`
 
-          output += `\n\n${yield* inlinePropagationCheck(renamePath ? [filePath, renamePath] : [filePath])}`
+          output += `\n\n${yield* inlinePropagationCheck(renamePath ? [filePath, renamePath] : [filePath], ctx.sessionID)}`
           return {
             metadata: {
               diagnostics,
