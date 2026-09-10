@@ -3093,29 +3093,15 @@ export const ChimeraPredesignTool = Tool.define<typeof PredesignParameters, Pred
               `- refs: ${inlinePreview(refs)}`,
               `- nodeIDs: ${inlinePreview(nodeIDs)}`,
               coverage.preciseFiles ? "- file coverage: explicit" : "- file coverage: session-level only; rerun with files for stricter coverage.",
-              `- detailed sections show up to ${PREDESIGN_OUTPUT_PREVIEW_LIMIT} items each; full evidence remains in metadata and the recorded run.`,
               "",
-              `Seed symbols (${seedNodes.length}):`,
-              ...previewList(seedNodes, "- No symbol seeds; file/session-level evidence only.", "seed symbols", formatNodePreview),
-              "",
-              "Change classification:",
-              ...(normalizedFiles.length
-                ? normalizedFiles.map((file) => formatClassification({ file, ...classifyFile(file) }))
-                : ["- No files supplied."]),
-              "",
-              `File dependents (${impact.fileDependents.length}):`,
-              ...previewList(impact.fileDependents, "- None found.", "file dependents", (file) => `- ${file}`),
-              "",
-              `Impacted symbols (${impact.impactedNodes.length}):`,
-              ...previewList(
-                impact.impactedNodes,
-                "- None found.",
-                "impacted symbols",
-                (node) => `${formatNodePreview(node)}\n  risk: ${riskForNode(node)}; reason: ${compactText(riskReasonForNode(node))}`,
-              ),
-              "",
-              `Impact evidence (${impact.evidence.length}):`,
-              ...previewList(impact.evidence, "- None found.", "evidence items", formatPredesignEvidence),
+              "Evidence summary:",
+              `- seeds: ${seedNodes.length} symbol(s); file dependents: ${impact.fileDependents.length}; impacted symbols: ${impact.impactedNodes.length}; evidence items: ${impact.evidence.length}`,
+              ...(impact.fileDependents.length ? [`- top dependents: ${impact.fileDependents.slice(0, 3).join(", ")}`] : []),
+              ...(impact.impactedNodes.length
+                ? [`- top impacted: ${impact.impactedNodes.slice(0, 3).map((node) => `${node.qualifiedName || node.name} (${node.kind})`).join("; ")}`]
+                : []),
+              "- Full evidence is stored in this run; mutations covered by this pre-design are audited automatically at edit time.",
+              "- Drill down only when a dependent needs inspection: chimera_impact with the refs above, or chimera_predesign rerun with narrower files.",
             ].join("\n"),
             metadata: {
               projectRoot: state.projectRoot,

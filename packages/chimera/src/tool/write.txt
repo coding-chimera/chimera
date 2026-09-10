@@ -8,4 +8,4 @@ Usage:
 - NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested by the User.
 - Only use emojis if the user explicitly requests it. Avoid writing emojis to files unless asked.
 - If this tool reports Chimera pre-design is required, call `chimera_predesign` with intent and likely files/symbols, then retry the mutation.
-- After a successful mutation, run `chimera_audit_recent` before claiming a code-change task complete.
+- Successful mutations are audited automatically at edit time; read the inline propagation summary in the result and deep-dive with `chimera_audit_recent` only when it flags dependents you must inspect or audit evidence is reported missing.

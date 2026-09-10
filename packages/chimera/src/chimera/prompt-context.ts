@@ -162,13 +162,15 @@ function frontendVerificationGap(recent: ToolMutationRecord[], oracles: OracleRe
   return "- Frontend component mutation without trusted verification evidence: run the project's lint/tests before closeout (framework invariants such as React hook ordering are invisible to structural audit); if the project has no lint configuration, report that gap to the user."
 }
 
-function closeoutSignals(recent: ToolMutationRecord[], obligations: PromptObligation[], predesigns: PredesignRunRecord[], oracles: OracleRecord[]) {
+function closeoutSignals(recent: ToolMutationRecord[], obligations: PromptObligation[], predesigns: PredesignRunRecord[], oracles: OracleRecord[], audits: AuditRunRecord[]) {
   const frontendGap = frontendVerificationGap(recent, oracles)
   return [
-    ...(recent.length ? ["- Recent mutation present: run `chimera_audit_recent` before claiming completion if not already done."] : []),
+    ...(recent.length && !latestAudit(audits, recent[0])
+      ? ["- Recent mutation present but no audit evidence was recorded (graph degraded during the edit?): run `chimera_audit_recent` before claiming completion."]
+      : []),
     ...(frontendGap ? [frontendGap] : []),
     ...(predesigns.length && recent.length === 0
-      ? ["- Pre-design evidence recorded; successful mutations still need `chimera_audit_recent` before closeout."]
+      ? ["- Pre-design evidence recorded; mutations are audited automatically when they land."]
       : []),
     ...(obligations.length ? ["- Active obligations remain: review, resolve, or ignore each relevant obligation before closeout."] : []),
     ...(recent.length || obligations.length || predesigns.length ? [] : ["- No Chimera closeout signals recorded."]),
@@ -194,14 +196,14 @@ function closeoutGate(recent: ToolMutationRecord[], obligations: PromptObligatio
   const audit = latestAudit(audits, latest)
   const linkedOracles = oracles.filter((oracle) => linkedToLatest(oracle, latest))
   const ordinaryReasons = [
-    latest && !audit ? "latest mutation still needs recorded chimera_audit_recent evidence" : undefined,
+    latest && !audit ? "latest mutation has no recorded audit evidence (auto-record degraded); run chimera_audit_recent" : undefined,
     obligations.length ? "active obligations remain; review, resolve, ignore, or explicitly justify ordinary closeout" : undefined,
-    linkedOracles.length ? "failing/unknown oracle evidence is linked to the latest mutation; recall before closeout" : undefined,
+    linkedOracles.length ? "failing/unknown oracle evidence is linked to the latest mutation; review the Linked Verification Evidence lines and address or dismiss each before closeout" : undefined,
   ].filter((item): item is string => Boolean(item))
   const apocalypseReasons = [
-    latest && !audit ? "latest mutation has no recorded audit run" : undefined,
+    latest && !audit ? "latest mutation has no recorded audit run (auto-record degraded); run chimera_audit_recent" : undefined,
     obligations.length ? "all active obligations must be resolved or ignored" : undefined,
-    linkedOracles.length ? "linked failing/unknown oracle evidence must be recalled and addressed" : undefined,
+    linkedOracles.length ? "linked failing/unknown oracle evidence must be addressed; summaries are inlined above, chimera_oracle_get fetches full output" : undefined,
     latest && audit ? undefined : !latest ? undefined : "verification evidence or not-applicable rationale must be explicit",
   ].filter((item): item is string => Boolean(item))
 
@@ -210,6 +212,46 @@ function closeoutGate(recent: ToolMutationRecord[], obligations: PromptObligatio
     gateLine("apocalypse", apocalypseReasons.length ? "block" : "pass", apocalypseReasons),
     audit ? `- latest audit evidence: ${audit.id} at ${audit.createdAt}` : "- latest audit evidence: none recorded for latest mutation",
   ]
+}
+
+const MAX_INLINE_ORACLES = 5
+
+function oracleSummaryLine(oracle: OracleRecord) {
+  const payload = oracle.payload as
+    | { shell?: { command?: string; exit?: number | null; output?: string }; lsp?: { diagnosticCount?: number; files?: string[] } }
+    | undefined
+  if (oracle.kind === "shell" && payload?.shell) {
+    const command = (payload.shell.command ?? "").split("\n")[0].trim().slice(0, 80)
+    const detail = (payload.shell.output ?? "").split("\n").map((line) => line.trim()).filter(Boolean).pop()?.slice(0, 120)
+    return {
+      key: `shell:${command}:${payload.shell.exit}`,
+      line: `- [${oracle.status}] shell exit ${payload.shell.exit ?? "?"}: ${command || "(no command)"}${detail ? ` — ${detail}` : ""} (oracle:${oracle.id})`,
+    }
+  }
+  if (oracle.kind === "lsp") {
+    const file = payload?.lsp?.files?.[0] ?? "unknown file"
+    return {
+      key: `lsp:${file}`,
+      line: `- [${oracle.status}] lsp: ${payload?.lsp?.diagnosticCount ?? "?"} diagnostic(s) in ${file} (oracle:${oracle.id})`,
+    }
+  }
+  return { key: `${oracle.kind}:${oracle.id}`, line: `- [${oracle.status}] ${oracle.kind} evidence (oracle:${oracle.id})` }
+}
+
+/**
+ * One-line summaries of failing/unknown oracles linked to recent mutations.
+ * The closeout gate no longer asks the model to recall this evidence with a
+ * tool call (bench: 14 recalls, 11.2KB each, action rate 1/14); the evidence
+ * rides the runtime block instead and chimera_oracle_get stays for deep dives.
+ */
+function linkedOracleLines(recent: ToolMutationRecord[], oracles: OracleRecord[]) {
+  const seen = new Set<string>()
+  return oracles
+    .filter((oracle) => oracle.linkedChanges.some((change) => recent.some((record) => record.id === change.id)))
+    .map(oracleSummaryLine)
+    .flatMap((summary) => (seen.has(summary.key) ? [] : (seen.add(summary.key), [summary])))
+    .slice(0, MAX_INLINE_ORACLES)
+    .map((summary) => summary.line)
 }
 
 function discoveryCounts(messages: readonly MessageV2.WithParts[]) {
@@ -243,6 +285,7 @@ const graphDiscoveryHint = Effect.fnUntraced(function* (root: string, sessionID:
 
 function renderContext(recent: ToolMutationRecord[], obligations: PromptObligation[], predesigns: PredesignRunRecord[], audits: AuditRunRecord[], oracles: OracleRecord[], hint: readonly string[] | undefined) {
   const nonPassingOracles = oracles.filter((oracle) => oracle.status !== "pass")
+  const oracleLines = linkedOracleLines(recent, nonPassingOracles)
   if (recent.length === 0 && obligations.length === 0 && predesigns.length === 0 && audits.length === 0 && nonPassingOracles.length === 0 && !hint) return undefined
   return [
     "## Chimera Execution Context",
@@ -276,12 +319,19 @@ function renderContext(recent: ToolMutationRecord[], obligations: PromptObligati
             `- ${item.id} [${item.status}] ${item.target}; risk: ${item.risk}; evidence: ${item.evidence}; lifecycle: ${item.replayLifecycle?.status ?? "unknown"}; reason: ${compact(item.staleReason ?? item.reason)}`,
       )
       : ["- None active."]),
+    ...(oracleLines.length
+      ? [
+          "",
+          "Linked Verification Evidence (failing/unknown results linked to recent mutations; full output via chimera_oracle_get with ref oracle:<id>):",
+          ...oracleLines,
+        ]
+      : []),
     "",
     "Closeout Gate:",
     ...closeoutGate(recent, obligations, audits, nonPassingOracles),
     "",
     "Closeout Signals:",
-    ...closeoutSignals(recent, obligations, predesigns, oracles),
+    ...closeoutSignals(recent, obligations, predesigns, oracles, audits),
     ...(hint ? ["", ...hint] : []),
   ].join("\n")
 }

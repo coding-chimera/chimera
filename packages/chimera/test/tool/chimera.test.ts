@@ -510,9 +510,12 @@ describe("tool.chimera", () => {
       const result = yield* runPredesign({ intent: "review many seeds", files: ["source.ts"], symbols })
 
       expect(result.metadata.seeds.length).toBeGreaterThan(12)
-      expect(result.output).toContain("detailed sections show up to 12 items each")
-      expect(result.output).toContain("more seed symbols omitted from pre-design output")
-      expect(result.output).toContain("full data remains in metadata")
+      expect(result.output).toContain("Evidence summary:")
+      expect(result.output).toContain(`seeds: ${result.metadata.seeds.length} symbol(s)`)
+      expect(result.output).not.toContain("Seed symbols (")
+      expect(result.output).not.toContain("Impact evidence (")
+      // The receipt is a compact gate-satisfaction record; bulk stays in metadata/store.
+      expect(result.output.length).toBeLessThan(2500)
     }),
   )
 
@@ -881,13 +884,45 @@ describe("tool.chimera", () => {
       const promptContext = yield* ChimeraPromptContext.Service
       const context = yield* promptContext.render(ctx.sessionID, stubSessions)
       expect(context).toContain("failing/unknown oracle evidence is linked to the latest mutation")
+      expect(context).toContain("Linked Verification Evidence")
+      expect(context).toContain("shell exit 1: bun typecheck")
       expect(context).toContain("apocalypse: block")
       expect(context).toContain("ordinary: warn")
       expect(context).not.toContain("ordinary: block")
     }),
   )
 
-  it.instance("keeps ordinary closeout as a warning when latest mutation lacks audit evidence", () =>
+  it.instance("records audit evidence automatically for tracked mutations", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filePath = path.join(test.directory, "auto-audit.ts")
+      yield* trackWrite({
+        filePath,
+        content: "export function autoAudit() { return 1 }\n",
+        callID: "call_chimera_auto_audit_mutation",
+        patch: `--- auto-audit.ts
++++ auto-audit.ts
+@@ -0,0 +1,1 @@
++export function autoAudit() { return 1 }
+`,
+      })
+
+      const audits = yield* Effect.promise(() => readAuditRuns(test.directory, { limit: 5 }))
+      const auto = audits.find((audit) => audit.source === "track-tool-mutation")
+      expect(auto).toBeDefined()
+      expect(auto?.provenanceID).toContain("call_chimera_auto_audit_mutation")
+
+      const promptContext = yield* ChimeraPromptContext.Service
+      const context = yield* promptContext.render(ctx.sessionID, stubSessions)
+
+      expect(context).toContain("ordinary: pass")
+      expect(context).toContain("apocalypse: pass")
+      expect(context).toContain("latest audit evidence: audit_")
+      expect(context).not.toContain("run `chimera_audit_recent` before claiming completion")
+    }),
+  )
+
+  it.instance("keeps ordinary closeout as a warning when audit evidence is missing for the latest mutation", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
       const filePath = path.join(test.directory, "ordinary-closeout.ts")
@@ -902,12 +937,22 @@ describe("tool.chimera", () => {
 `,
       })
 
+      // Simulate degraded auto-recording (or a legacy record written before
+      // audits were automatic): provenance stays, audit rows are dropped.
+      const raw = createDatabase(getDatabasePath(test.directory))
+      try {
+        raw.db.exec("DELETE FROM chimera_audit_run")
+      } finally {
+        raw.db.close()
+      }
+
       const promptContext = yield* ChimeraPromptContext.Service
       const context = yield* promptContext.render(ctx.sessionID, stubSessions)
 
-      expect(context).toContain("ordinary: warn — latest mutation still needs recorded chimera_audit_recent evidence")
+      expect(context).toContain("ordinary: warn — latest mutation has no recorded audit evidence")
       expect(context).not.toContain("ordinary: block")
       expect(context).toContain("apocalypse: block — latest mutation has no recorded audit run")
+      expect(context).toContain("run `chimera_audit_recent` before claiming completion")
       expect(context).toContain("latest audit evidence: none recorded for latest mutation")
     }),
   )

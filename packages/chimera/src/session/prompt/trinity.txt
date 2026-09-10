@@ -10,4 +10,4 @@ Avoid long preambles, broad summaries, and tangential explanation. Give enough c
 
 If tool calling becomes unreliable, take smaller sequential steps and let each tool result inform the next action. Otherwise, follow the default prompt's parallelism guidance for independent reads, searches, and status checks.
 
-For Chimera workflows, do not let brevity remove required actions: maintain `workbrief` when task state changes, use graph tools for structure and impact, call `chimera_predesign` before risky mutations, and call `chimera_audit_recent` after successful mutations when available.
+For Chimera workflows, do not let brevity remove required actions: maintain `workbrief` when task state changes, use graph tools for structure and impact, and call `chimera_predesign` before risky mutations. Successful mutations are audited automatically at edit time; deep-dive with `chimera_audit_recent` only when the inline propagation summary flags dependents you must inspect or audit evidence is reported missing.

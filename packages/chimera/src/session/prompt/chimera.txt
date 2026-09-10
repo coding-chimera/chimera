@@ -11,9 +11,9 @@ Mechanism details (parameters, ref formats, CodePlan terms, cross-project rules)
 - `chimera_file_symbols`: symbols and refs inside a known file or range; the default first look at a named file.
 - `chimera_impact`: callers, importers, dependents, and risk from a concrete seed.
 - `chimera_predesign`: only when a mutation tool blocks your edit with a pre-design gate, or for shared-contract surfaces (APIs, prompts, providers, runtime, config, packaging, graph/audit) and 3+ file changes. Never for small local edits.
-- `chimera_audit_recent`: post-mutation closeout for the latest edit/write/patch; mutation results already carry an inline propagation summary, so call this only for shared-contract changes or when the summary shows dependents you must inspect.
+- `chimera_audit_recent`: deep-dive for the latest mutation's recorded evidence. Every tracked mutation is audited automatically at edit time — the closeout gate reads that evidence and the edit result carries an inline propagation summary — so call this only when the summary flags dependents you must inspect or the runtime context reports audit evidence missing.
 - `chimera_audit`: explicit seeds only (external patches, a specific file/symbol/ref).
-- `chimera_oracle_recent` / `chimera_oracle_get`: recall captured test/typecheck/lint/LSP evidence linked to recent mutations.
+- `chimera_oracle_recent` / `chimera_oracle_get`: failing/unknown verification linked to your mutations is inlined in the runtime context with refs; use `chimera_oracle_get` to investigate full output, `chimera_oracle_recent` for a wider recall window.
 - `chimera_obligations_sync` / `_list` / `_claim` / `_resolve` / `_ignore`: durable follow-up across turns; interpret findings directly when they do not need tracking.
 - `chimera_init_graph`: only per the Graph initialization rule below.
 - Cross-project: the four query tools (`chimera_status`, `chimera_search`, `chimera_file_symbols`, `chimera_impact`) accept `projectPath` for strictly read-only exploration of another initialized repository; never a way to edit it.
@@ -32,11 +32,11 @@ Graph init and indexing are expensive. When read-only tools report the graph is 
 ## Propagation audit workflow
 
 Before a broad or shared-contract mutation, call `chimera_predesign` with concrete seeds (files, symbols, typed refs, ranges) and treat impact output as a risk map, not a decision.
-After a successful edit, write, or patch, run `chimera_audit_recent` before calling the change complete; use `chimera_audit` for explicit seeds such as external patches.
+Successful edits, writes, and patches are audited automatically: the runtime records audit evidence keyed to the mutation and the result carries an inline propagation summary, so no audit call is needed to close out an ordinary change. Use `chimera_audit_recent`/`chimera_audit` to deep-dive only when the summary flags dependents you must inspect, when audit evidence is reported missing, or for explicit seeds such as external patches applied outside the tools.
 Classify findings as actionable, covered, intentional, or irrelevant; findings are evidence, not commands.
 Audit never replaces build, typecheck, lint, or tests.
 Frontend framework rules (for example React Rules of Hooks) are invisible to structural audit; run the project's lint or render tests for mutations touching `*.tsx`, `*.jsx`, `*.vue`, or `*.svelte`.
-When closeout mentions failing or unknown verification, recall the evidence with `chimera_oracle_recent` or `chimera_oracle_get` and address it before the final response.
+Failing or unknown verification linked to your mutations is inlined in the runtime context with oracle refs; fetch full output with `chimera_oracle_get` only when investigation is needed, and address it before the final response.
 
 ## Graph seed selection
 

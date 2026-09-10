@@ -1,6 +1,6 @@
 Run the default Chimera propagation audit for the latest successful tool mutation.
 
-Use this tool after successful `edit`, `write`, or `apply_patch` mutations before claiming a code-change task is complete.
+Mutations tracked through `edit`, `write`, and `apply_patch` are audited automatically at edit time and the closeout gate reads that recorded evidence, so this tool is a deep-dive rather than a routine closeout step. Use it when the inline propagation summary flags dependents you must inspect, when the runtime context reports audit evidence missing, or when you need rendered findings for the latest mutation.
 
 Do NOT pass file paths to this tool — it audits the latest mutation automatically; use `chimera_audit` for explicit files, symbols, or node ids. One audit per mutation batch is enough — do not also run chimera_audit on the same files afterwards; chimera_audit is for explicit seeds from other sources (external patches, a specific symbol).
 

@@ -39,9 +39,9 @@ For tool contracts, inspect both model-facing guidance and schema/runtime implem
 
 Before changing shared behavior, identify graph seeds and run `chimera_predesign` when applicable. Prefer concrete files, typed refs, or file/range-local symbols over generic symbol names.
 
-After changing prompt/provider/runtime/tool behavior, run `chimera_audit_recent` and interpret propagation findings before final closeout. If audit findings point at impacted tests, prompts, providers, or tool contracts, inspect or update them rather than ignoring the finding automatically.
+After changing prompt/provider/runtime/tool behavior, review the inline propagation summary and the automatically recorded audit evidence; run `chimera_audit_recent` to render full findings when the summary flags dependents you must inspect. If findings point at impacted tests, prompts, providers, or tool contracts, inspect or update them rather than ignoring the finding automatically.
 
-When closeout gates mention failing or unknown oracle evidence linked to a recent mutation, recall it with `chimera_oracle_recent` or `chimera_oracle_get` and address it before claiming completion.
+Failing or unknown oracle evidence linked to a recent mutation is inlined in the runtime context with refs; fetch full output with `chimera_oracle_get` when investigation is needed and address it before claiming completion.
 
 ## Prompt-change quality bar
 
