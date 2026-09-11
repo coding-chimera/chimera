@@ -162,18 +162,19 @@ function frontendVerificationGap(recent: ToolMutationRecord[], oracles: OracleRe
   return "- Frontend component mutation without trusted verification evidence: run the project's lint/tests before closeout (framework invariants such as React hook ordering are invisible to structural audit); if the project has no lint configuration, report that gap to the user."
 }
 
-function closeoutSignals(recent: ToolMutationRecord[], obligations: PromptObligation[], predesigns: PredesignRunRecord[], oracles: OracleRecord[], audits: AuditRunRecord[]) {
+function closeoutSignals(recent: ToolMutationRecord[], obligations: PromptObligation[], predesigns: PredesignRunRecord[], oracles: OracleRecord[], audits: AuditRunRecord[], drift: string | undefined) {
   const frontendGap = frontendVerificationGap(recent, oracles)
   return [
     ...(recent.length && !latestAudit(audits, recent[0])
       ? ["- Recent mutation present but no audit evidence was recorded (graph degraded during the edit?): run `chimera_audit_recent` before claiming completion."]
       : []),
+    ...(drift ? [drift] : []),
     ...(frontendGap ? [frontendGap] : []),
     ...(predesigns.length && recent.length === 0
       ? ["- Pre-design evidence recorded; mutations are audited automatically when they land."]
       : []),
     ...(obligations.length ? ["- Active obligations remain: review, resolve, or ignore each relevant obligation before closeout."] : []),
-    ...(recent.length || obligations.length || predesigns.length ? [] : ["- No Chimera closeout signals recorded."]),
+    ...(recent.length || obligations.length || predesigns.length || drift ? [] : ["- No Chimera closeout signals recorded."]),
   ]
 }
 
@@ -254,6 +255,71 @@ function linkedOracleLines(recent: ToolMutationRecord[], oracles: OracleRecord[]
     .map((summary) => summary.line)
 }
 
+const MAX_SCOPE_DRIFT_DISPLAY = 5
+const SCOPE_REACHES_MARKER = "Scope check: propagation reaches"
+const SCOPE_LIST_END = ", outside the scope declared in"
+
+/**
+ * Files named by propagation scope checks in this session's tool outputs.
+ * Weak models reliably ignore these post-edit reminders (TB6 bench: flash
+ * acted on 0/4 post-edit scope lines while acting on 100% of surfaces it
+ * discovered pre-edit), so unreconciled flags resurface as a closeout
+ * signal — the zone where checklist compliance is observed.
+ */
+type ScopeFlag = { file: string; depth: number }
+
+function scopeFlaggedFiles(messages: readonly MessageV2.WithParts[]): ScopeFlag[] {
+  const flagged: ScopeFlag[] = []
+  let scanned = 0
+  outer: for (const message of messages) {
+    for (const part of message.parts) {
+      if (scanned >= MAX_SCAN_PARTS) break outer
+      scanned += 1
+      if (part.type !== "tool") continue
+      const output = (part.state as { output?: unknown }).output
+      if (typeof output !== "string" || !output.includes(SCOPE_REACHES_MARKER)) continue
+      for (const line of output.split("\n")) {
+        const start = line.indexOf(SCOPE_REACHES_MARKER)
+        if (start < 0) continue
+        // Normalize annotations before splitting: the via group contains a
+        // ", " separator, so fold it into a NUL-delimited depth marker.
+        const list = line.slice(start + SCOPE_REACHES_MARKER.length).split(SCOPE_LIST_END)[0]
+          .replace(/ \(\+\d+ more\)/g, "")
+          .replace(/ \(via [^)]*?, (\d+) hops\)/g, "\u0000$1")
+          .replace(/ \(via [^)]*\)/g, "\u00002")
+        for (const item of list.split(", ")) {
+          const [raw, rawDepth] = item.split("\u0000")
+          const file = (raw ?? "").trim()
+          if (!file || file.startsWith("(") || flagged.some((entry) => entry.file === file)) continue
+          const parsed = Number.parseInt(rawDepth ?? "1", 10)
+          flagged.push({ file, depth: Number.isFinite(parsed) && parsed >= 1 ? parsed : 2 })
+        }
+      }
+    }
+  }
+  return flagged
+}
+
+function scopeDriftSignal(flagged: ScopeFlag[], records: readonly ToolMutationRecord[], sessionID: SessionID, predesigns: PredesignRunRecord[]) {
+  if (flagged.length === 0) return undefined
+  const touched = new Set(
+    records
+      .filter((record) => record.tool.sessionID === sessionID)
+      .flatMap((record) => record.files.map((file) => file.graphPath ?? file.absolutePath)),
+  )
+  const declared = new Set(predesigns.flatMap((record) => record.files))
+  // Deep entries only: 1-hop dependents are trivially checkable by the model,
+  // and a bench drift list dominated by pass-through intermediates read as
+  // noise — the weak model dismissed the whole signal (1/4 signal-to-noise),
+  // while a precise deep list is exactly what it acted on.
+  const open = flagged
+    .filter((entry) => entry.depth >= 2 && !touched.has(entry.file) && !declared.has(entry.file))
+    .map((entry) => entry.file)
+  if (open.length === 0) return undefined
+  const shown = open.slice(0, MAX_SCOPE_DRIFT_DISPLAY).join(", ") + (open.length > MAX_SCOPE_DRIFT_DISPLAY ? ` (+${open.length - MAX_SCOPE_DRIFT_DISPLAY} more)` : "")
+  return `- Unreconciled scope drift: ${shown} — named by propagation scope checks during this session but never edited or declared in a predesign since. Reconcile each one before closeout: reading alone misses cross-encoding drift (a stale decimal 1 vs a new 0x02), so where feasible RUN each named file's exported functions once against the new behavior — stale hardcodes throw. Then edit it (record a predesign first if the gate asks) or explicitly state why it needs no change.`
+}
+
 function discoveryCounts(messages: readonly MessageV2.WithParts[]) {
   let graphCalls = 0
   let textCalls = 0
@@ -274,19 +340,18 @@ function discoveryCounts(messages: readonly MessageV2.WithParts[]) {
   return { graphCalls, textCalls, markerSeen }
 }
 
-const graphDiscoveryHint = Effect.fnUntraced(function* (root: string, sessionID: SessionID, sessions: Session.Interface) {
+const graphDiscoveryHint = Effect.fnUntraced(function* (root: string, messages: Option.Option<readonly MessageV2.WithParts[]>) {
   if (getGraphDataRootInfo(root).dataRootStatus === "uninitialized") return undefined
-  const messages = yield* sessions.messages({ sessionID, limit: MAX_SCAN_MESSAGES }).pipe(Effect.option)
   if (Option.isNone(messages)) return undefined
   const counts = discoveryCounts(messages.value)
   if (counts.graphCalls > 0 || counts.textCalls < MIN_TEXT_EXPLORATION_CALLS || counts.markerSeen) return undefined
   return [GRAPH_DISCOVERY_HINT_HEADER, GRAPH_DISCOVERY_HINT_BODY]
 })
 
-function renderContext(recent: ToolMutationRecord[], obligations: PromptObligation[], predesigns: PredesignRunRecord[], audits: AuditRunRecord[], oracles: OracleRecord[], hint: readonly string[] | undefined) {
+function renderContext(recent: ToolMutationRecord[], obligations: PromptObligation[], predesigns: PredesignRunRecord[], audits: AuditRunRecord[], oracles: OracleRecord[], hint: readonly string[] | undefined, drift: string | undefined) {
   const nonPassingOracles = oracles.filter((oracle) => oracle.status !== "pass")
   const oracleLines = linkedOracleLines(recent, nonPassingOracles)
-  if (recent.length === 0 && obligations.length === 0 && predesigns.length === 0 && audits.length === 0 && nonPassingOracles.length === 0 && !hint) return undefined
+  if (recent.length === 0 && obligations.length === 0 && predesigns.length === 0 && audits.length === 0 && nonPassingOracles.length === 0 && !hint && !drift) return undefined
   return [
     "## Chimera Execution Context",
     "",
@@ -331,7 +396,7 @@ function renderContext(recent: ToolMutationRecord[], obligations: PromptObligati
     ...closeoutGate(recent, obligations, audits, nonPassingOracles),
     "",
     "Closeout Signals:",
-    ...closeoutSignals(recent, obligations, predesigns, oracles, audits),
+    ...closeoutSignals(recent, obligations, predesigns, oracles, audits, drift),
     ...(hint ? ["", ...hint] : []),
   ].join("\n")
 }
@@ -347,8 +412,16 @@ export const layer = Layer.effect(
       const store = yield* Effect.promise(() => readObligationsWithFallback(root))
       const audits = yield* Effect.promise(() => readAuditRuns(root, { limit: 20 }))
       const oracles = yield* Effect.promise(() => readOraclesWithFallback(root, sessionID))
-      const hint = yield* graphDiscoveryHint(root, sessionID, sessions)
-      return renderContext(recentMutations(records, sessionID), activeObligations(store), recentPredesigns(predesigns, sessionID), audits, oracles, hint)
+      const messages = yield* sessions.messages({ sessionID, limit: MAX_SCAN_MESSAGES }).pipe(Effect.option)
+      const hint = yield* graphDiscoveryHint(root, messages)
+      const sessionPredesigns = recentPredesigns(predesigns, sessionID)
+      const drift = scopeDriftSignal(
+        scopeFlaggedFiles(Option.isSome(messages) ? messages.value : []),
+        records,
+        sessionID,
+        sessionPredesigns,
+      )
+      return renderContext(recentMutations(records, sessionID), activeObligations(store), sessionPredesigns, audits, oracles, hint, drift)
     })
 
     return Service.of({ render })
