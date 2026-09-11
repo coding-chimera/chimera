@@ -13,8 +13,11 @@ export const PROPAGATION_PROBE_TIMEOUT_MS = 500
 
 const MAX_PROBE_DEPENDENTS = 5
 const MAX_DISPLAY_DEPENDENTS = 3
-const MAX_SCOPE_DISPLAY = 3
-const MAX_SECOND_HOP = 20
+const MAX_SCOPE_DISPLAY = 5
+const MAX_WALK_DEPTH = 4
+const MAX_WALK_NODES = 40
+const MAX_FRONTIER_PER_DEPTH = 8
+const PASS_THROUGH_MAX_LINES = 40
 
 function projectRoot(directory: string, worktree: string) {
   return worktree === "/" ? directory : worktree
@@ -35,15 +38,32 @@ function formatProbe(dependents: string[]) {
   return `Propagation check: ${dependents.length} dependent file(s) may be affected: ${dependents.slice(0, MAX_DISPLAY_DEPENDENTS).join(", ")}.`
 }
 
+type WalkEntry = { file: string; via?: string; depth?: number }
+
 /**
- * Compares the edit targets and their graph propagation (1-hop dependents
- * plus, when scoped, 2-hop dependents annotated with the intermediate file)
- * against the file scope the session's latest predesign declared. Pure and
- * bounded: each drift kind surfaces at most one line with display-capped file
- * lists. The reminder only exists when the model declared a scope itself —
- * anchored to its own declaration plus graph facts, never to guesswork.
+ * Wrapper-likeness proxy for the transitive walk: small files tend to forward
+ * a contract unchanged (re-export/thin wrapper), so the walk continues
+ * through them; larger files adapt the contract locally and stop the walk —
+ * they are reported as candidates instead, and if one of them is edited its
+ * own probe run re-fires (the cascade extends effective reach without
+ * unbounded static expansion).
  */
-export function scopeDriftLines(predesignID: string, declared: string[], seeds: string[], propagation: Array<{ file: string; via?: string }>) {
+function passThroughLike(graph: { nodesInFile(filePath: string): Array<{ endLine: number }> }, file: string) {
+  const span = graph.nodesInFile(file).reduce((max, node) => Math.max(max, node.endLine), 0)
+  return span > 0 && span <= PASS_THROUGH_MAX_LINES
+}
+
+/**
+ * Compares the edit targets and their graph propagation (a bounded transitive
+ * walk over dependents, continuing through pass-through-like small files and
+ * annotated with the intermediate file and hop count) against the file scope
+ * the session's latest predesign declared. Pure and bounded: each drift kind
+ * surfaces at most one line with display-capped file lists, deepest hops
+ * first because grep on the changed symbol cannot reach them. The reminder
+ * only exists when the model declared a scope itself — anchored to its own
+ * declaration plus graph facts, never to guesswork.
+ */
+export function scopeDriftLines(predesignID: string, declared: string[], seeds: string[], propagation: WalkEntry[]) {
   const declaredSet = new Set(declared)
   const shown = declared.slice(0, MAX_SCOPE_DISPLAY).join(", ") + (declared.length > MAX_SCOPE_DISPLAY ? ", ..." : "")
   const lines: string[] = []
@@ -54,12 +74,21 @@ export function scopeDriftLines(predesignID: string, declared: string[], seeds: 
   const scope = new Set([...declared, ...seeds])
   const outside = propagation.filter((entry) => !scope.has(entry.file))
   if (outside.length > 0) {
-    const extra = outside.length > MAX_SCOPE_DISPLAY ? ` (+${outside.length - MAX_SCOPE_DISPLAY} more)` : ""
-    const named = outside
+    // Deepest hops first: 1-hop importers are trivially discoverable by the
+    // model, while multi-hop consumers are invisible to grep on the changed
+    // symbol and carry the highest stale-contract risk.
+    const ranked = [...outside].sort((left, right) => (right.depth ?? 1) - (left.depth ?? 1))
+    const extra = ranked.length > MAX_SCOPE_DISPLAY ? ` (+${ranked.length - MAX_SCOPE_DISPLAY} more)` : ""
+    const named = ranked
       .slice(0, MAX_SCOPE_DISPLAY)
-      .map((entry) => (entry.via ? `${entry.file} (via ${entry.via})` : entry.file))
+      .map((entry) => (entry.via ? `${entry.file} (via ${entry.via}${entry.depth !== undefined && entry.depth >= 2 ? `, ${entry.depth} hops` : ""})` : entry.file))
       .join(", ")
-    lines.push(`Scope check: propagation reaches ${named}${extra}, outside the scope declared in ${predesignID} (declared: ${shown}); verify whether those files need changes too.`)
+    const deepest = ranked.reduce((max, entry) => Math.max(max, entry.depth ?? (entry.via ? 2 : 1)), 1)
+    lines.push(
+      deepest >= 2
+        ? `Scope check: propagation reaches ${named}${extra}, outside the scope declared in ${predesignID} (declared: ${shown}). Entries marked (via ..., N hops) are deep consumers up to ${deepest} hops away that grep on the changed symbol cannot reach; they often hardcode the old contract. For each named file, list its hardcoded literals and constants and check every one against the NEW behavior — clean-looking imports do not prove safety, and stale hardcoded values usually throw only at runtime. Complete this check before closeout.`
+        : `Scope check: propagation reaches ${named}${extra}, outside the scope declared in ${predesignID} (declared: ${shown}); verify whether those files need changes too.`,
+    )
   }
   return lines
 }
@@ -89,10 +118,11 @@ async function latestPredesignFor(root: string, sessionID: SessionID) {
  * against the session's latest predesign declaration: targets or propagation
  * outside the declared file scope append a bounded `Scope check:` reminder so
  * missed change surfaces surface at the moment of the edit. Reconciliation
- * propagation spans two hops (dependents of dependents, annotated with the
- * intermediate file) so a pass-through module does not hide the real contract
- * consumer; the plain propagation line stays 1-hop and the 2-hop expansion
- * only runs when a declaration exists.
+ * propagation is a bounded transitive walk (depth-capped, node-capped,
+ * cycle-safe via a visited set) that continues through pass-through-like
+ * small files, so a chain of thin wrappers cannot hide the real contract
+ * consumer; the plain propagation line stays 1-hop and the walk only runs
+ * when a declaration exists.
  */
 export function inlinePropagationCheck(changedFiles: string[], sessionID?: SessionID): Effect.Effect<string> {
   const probe = Effect.gen(function* () {
@@ -103,31 +133,42 @@ export function inlinePropagationCheck(changedFiles: string[], sessionID?: Sessi
     if (seeds.length === 0) return ""
     const predesign = sessionID !== undefined ? yield* Effect.promise(() => latestPredesignFor(root, sessionID)) : undefined
     const scoped = predesign !== undefined && predesign.files.length > 0
-    const { dependents, secondHop } = yield* Chimera.withProjectGraph(
+    const { dependents, walk } = yield* Chimera.withProjectGraph(
       { readOnly: false, sync: false, watch: false },
       (state) =>
         Effect.sync(() => {
           const dependents = [...new Set(seeds.flatMap((seed) => state.graph.fileDependents(seed)))].filter((file) => !seeds.includes(file))
-          if (!scoped) return { dependents, secondHop: [] as Array<{ file: string; via: string }> }
-          // 2-hop expansion (declared scopes only): files depending on the
-          // direct dependents can carry the contract further (A -> B
-          // pass-through -> C hard-codes the old contract), and C is invisible
-          // to both a 1-hop probe and a grep on the changed symbol.
-          const seen = new Set([...seeds, ...dependents])
-          const secondHop: Array<{ file: string; via: string }> = []
-          for (const first of dependents.slice(0, MAX_PROBE_DEPENDENTS)) {
-            for (const second of state.graph.fileDependents(first)) {
-              if (seen.has(second) || secondHop.length >= MAX_SECOND_HOP) continue
-              seen.add(second)
-              secondHop.push({ file: second, via: first })
+          if (!scoped) return { dependents, walk: [] as WalkEntry[] }
+          // Bounded transitive walk (declared scopes only): a contract can
+          // flow through any number of pass-through wrappers (A -> B -> C ->
+          // D where only D hardcodes the old vocabulary) and dependency
+          // cycles (a -> b -> c -> a) are common in long-wired projects. The
+          // visited set makes the walk cycle-safe, depth/node caps keep it
+          // inside the 500ms budget, and continuation through small files
+          // only keeps the expansion narrow along wrapper chains.
+          const seen = new Set(seeds)
+          const walk: WalkEntry[] = []
+          let frontier = seeds.map((file) => ({ file, depth: 0 }))
+          while (frontier.length > 0) {
+            const next: Array<{ file: string; depth: number }> = []
+            for (const node of frontier.slice(0, MAX_FRONTIER_PER_DEPTH)) {
+              if (node.depth >= MAX_WALK_DEPTH) continue
+              for (const dep of state.graph.fileDependents(node.file)) {
+                if (seen.size >= MAX_WALK_NODES) break
+                if (seen.has(dep)) continue
+                seen.add(dep)
+                walk.push({ file: dep, via: node.depth === 0 ? undefined : node.file, depth: node.depth + 1 })
+                if (passThroughLike(state.graph, dep)) next.push({ file: dep, depth: node.depth + 1 })
+              }
             }
+            frontier = next
           }
-          return { dependents, secondHop }
+          return { dependents, walk }
         }),
     )
     const lines = [formatProbe(dependents.slice(0, MAX_PROBE_DEPENDENTS))]
     if (predesign && predesign.files.length > 0) {
-      lines.push(...scopeDriftLines(predesign.id, graphSeeds(root, predesign.files), seeds, [...dependents.map((file) => ({ file })), ...secondHop]))
+      lines.push(...scopeDriftLines(predesign.id, graphSeeds(root, predesign.files), seeds, walk))
     }
     return lines.join("\n")
   })
