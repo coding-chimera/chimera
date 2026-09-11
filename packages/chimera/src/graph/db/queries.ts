@@ -334,6 +334,7 @@ export class QueryBuilder {
     upsertFile?: SqliteStatement;
     deleteEdgesBySource?: SqliteStatement;
     deleteEdgesByTarget?: SqliteStatement;
+    deleteFileLevelImportEdgesBySource?: SqliteStatement;
     getEdgesBySource?: SqliteStatement;
     getEdgesByTarget?: SqliteStatement;
     insertFile?: SqliteStatement;
@@ -1547,6 +1548,22 @@ export class QueryBuilder {
       this.stmts.deleteEdgesBySource = this.db.prepare('DELETE FROM edges WHERE source = ?');
     }
     this.stmts.deleteEdgesBySource.run(sourceId);
+  }
+
+  /**
+   * Delete file-level `imports` edges whose source is `sourceId` and whose
+   * target is a `file`-kind node. The extractor also emits file→import-statement
+   * edges (target kind='import'); those syntax edges are owned by extraction
+   * and must survive — hence the target-kind filter.
+   */
+  deleteFileLevelImportEdgesBySource(sourceId: string): void {
+    if (!this.stmts.deleteFileLevelImportEdgesBySource) {
+      this.stmts.deleteFileLevelImportEdgesBySource = this.db.prepare(
+        "DELETE FROM edges WHERE source = ? AND kind = 'imports'"
+        + " AND target IN (SELECT id FROM nodes WHERE kind = 'file')"
+      );
+    }
+    this.stmts.deleteFileLevelImportEdgesBySource.run(sourceId);
   }
 
   /**
