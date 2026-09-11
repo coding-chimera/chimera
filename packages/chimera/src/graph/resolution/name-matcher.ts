@@ -5,7 +5,7 @@
  */
 
 import { Node } from '../types';
-import { UnresolvedRef, ResolvedRef, ResolutionContext } from './types';
+import { UnresolvedRef, ResolvedRef, ResolutionContext, ImportMapping } from './types';
 
 // Names defined more than this many times are never guessed by fuzzy scoring:
 // K definitions x K references is O(K²) work and stalls indexing on vendored/
@@ -20,6 +20,61 @@ function resolveAmbiguousNameCeiling(): number {
 }
 
 const AMBIGUOUS_NAME_CEILING = resolveAmbiguousNameCeiling();
+
+/**
+ * Import-aware veto for cross-file name binding (exact and fuzzy), applied
+ * per candidate.
+ *
+ * In import-disciplined languages a bare reference name that the calling
+ * file does NOT import is almost certainly a local binding the extractor
+ * deliberately does not index (e.g. a function-scoped `const openSession =
+ * ...` closure), and it must not bind to an unrelated file's same-named
+ * symbol just because that symbol is the graph's only candidate. Bench
+ * evidence: five fake layout.tsx -> wire-session `calls` edges polluted
+ * every downstream tool (scope checks, drift signals, impact, audit).
+ *
+ * A cross-file candidate is still allowed when:
+ * - the file has no import mappings at all (C, scripts, languages whose
+ *   includes are not extracted as imports — recall must not drop where
+ *   imports are not a usable signal; also covers partial mock contexts),
+ * - the reference name itself is imported (localName, or a dotted member
+ *   of an imported namespace/object), or
+ * - the candidate's file is reachable from the file's imports (resolvedPath
+ *   match, or the import source's last segment equals the candidate file's
+ *   name) — this keeps zustand-style destructuring working (`import
+ *   { useStore } from './store'` then a bare `fetchUser()` call on an
+ *   action defined in store.ts).
+ */
+function fileTailNoExt(filePath: string): string {
+  const tail = filePath.split('/').pop() ?? filePath;
+  const dot = tail.lastIndexOf('.');
+  return dot > 0 ? tail.slice(0, dot) : tail;
+}
+
+function refImportMappings(ref: UnresolvedRef, context: ResolutionContext): ImportMapping[] {
+  return typeof context.getImportMappings === 'function'
+    ? context.getImportMappings(ref.filePath, ref.language) ?? []
+    : [];
+}
+
+function crossFileCandidateAllowed(ref: UnresolvedRef, candidate: Node, imports: ImportMapping[]): boolean {
+  if (candidate.filePath === ref.filePath) return true;
+  if (imports.length === 0) return true;
+  const candidateTail = fileTailNoExt(candidate.filePath);
+  for (const imp of imports) {
+    if (imp.localName === ref.referenceName || ref.referenceName.startsWith(imp.localName + '.')) return true;
+    if (
+      imp.resolvedPath &&
+      (imp.resolvedPath === candidate.filePath ||
+        imp.resolvedPath.endsWith('/' + candidate.filePath) ||
+        candidate.filePath.endsWith('/' + imp.resolvedPath))
+    ) {
+      return true;
+    }
+    if (imp.source && fileTailNoExt(imp.source) === candidateTail) return true;
+  }
+  return false;
+}
 
 /**
  * Try to resolve a path-like reference (e.g., "snippets/drawer-menu.liquid")
@@ -89,12 +144,23 @@ export function matchByExactName(
     return null;
   }
 
+  // Import-aware veto: in import-disciplined files, a name that is neither
+  // imported nor reachable through an imported file is a local binding
+  // (closure/function-scoped const the extractor does not index), not a
+  // cross-file call.
+  const imports = refImportMappings(ref, context);
+  const reachable = candidates.filter((node) => crossFileCandidateAllowed(ref, node, imports));
+
+  if (reachable.length === 0) {
+    return null;
+  }
+
   // If only one match, use it — but penalize cross-language matches
-  if (candidates.length === 1) {
-    const isCrossLanguage = candidates[0]!.language !== ref.language;
+  if (reachable.length === 1) {
+    const isCrossLanguage = reachable[0]!.language !== ref.language;
     return {
       original: ref,
-      targetNodeId: candidates[0]!.id,
+      targetNodeId: reachable[0]!.id,
       confidence: isCrossLanguage ? 0.5 : 0.9,
       resolvedBy: 'exact-match',
     };
@@ -102,10 +168,10 @@ export function matchByExactName(
 
   // Too many same-named definitions: refuse to guess instead of scoring every
   // candidate (O(K²) stall protection, mirrors upstream CODEGRAPH_AMBIGUOUS_NAME_CEILING).
-  if (candidates.length > AMBIGUOUS_NAME_CEILING) return null;
+  if (reachable.length > AMBIGUOUS_NAME_CEILING) return null;
 
   // Multiple matches - try to narrow down
-  const bestMatch = findBestMatch(ref, candidates, context);
+  const bestMatch = findBestMatch(ref, reachable, context);
   if (bestMatch) {
     // Lower confidence when the match is from a distant/unrelated module
     const proximity = computePathProximity(ref.filePath, bestMatch.filePath);
@@ -683,9 +749,13 @@ export function matchFuzzy(
   const callableKinds = new Set(['function', 'method', 'class']);
   const callableCandidates = candidates.filter((n) => callableKinds.has(n.kind));
 
+  // Same import-aware veto as exact matching
+  const fuzzyImports = refImportMappings(ref, context);
+  const reachableCandidates = callableCandidates.filter((n) => crossFileCandidateAllowed(ref, n, fuzzyImports));
+
   // Prefer same-language matches
-  const sameLanguageCandidates = callableCandidates.filter(n => n.language === ref.language);
-  const finalCandidates = sameLanguageCandidates.length > 0 ? sameLanguageCandidates : callableCandidates;
+  const sameLanguageCandidates = reachableCandidates.filter(n => n.language === ref.language);
+  const finalCandidates = sameLanguageCandidates.length > 0 ? sameLanguageCandidates : reachableCandidates;
 
   if (finalCandidates.length === 1) {
     const isCrossLanguage = finalCandidates[0]!.language !== ref.language;

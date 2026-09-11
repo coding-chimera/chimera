@@ -11,7 +11,7 @@ import * as os from 'os';
 import { CodeGraph } from '../../src/graph';
 import { Node, UnresolvedReference } from '../../src/graph/types';
 import { ReferenceResolver, createResolver, ResolutionContext } from '../../src/graph/resolution';
-import { matchReference, matchByExactName } from '../../src/graph/resolution/name-matcher';
+import { matchReference, matchByExactName, matchFuzzy } from '../../src/graph/resolution/name-matcher';
 import { resolveImportPath, extractImportMappings, resolveJvmImport, loadCppIncludeDirs, clearCppIncludeDirCache } from '../../src/graph/resolution/import-resolver';
 import type { UnresolvedRef } from '../../src/graph/resolution/types';
 import { detectFrameworks, getAllFrameworkResolvers } from '../../src/graph/resolution/frameworks';
@@ -95,6 +95,124 @@ describe('Resolution Module', () => {
       expect(result).not.toBeNull();
       expect(result?.targetNodeId).toBe('func:test.ts:myFunction:10');
       expect(result?.resolvedBy).toBe('exact-match');
+    });
+
+    // Import-aware veto: a bare name the caller file does not import is a local
+    // binding (e.g. function-scoped closure const), not a cross-file call. Bench
+    // evidence: layout.tsx's local `const openSession` bound to an unrelated
+    // fixture's openSession, faking five cross-package edges.
+    const makeVetoNode = (filePath: string, name: string): Node => ({
+      id: `func:${filePath}:${name}:1`,
+      kind: 'function',
+      name,
+      qualifiedName: `${filePath}::${name}`,
+      filePath,
+      language: 'typescript',
+      startLine: 1,
+      endLine: 3,
+      startColumn: 0,
+      endColumn: 0,
+      updatedAt: Date.now(),
+    });
+
+    const vetoRef = (filePath: string, referenceName: string): UnresolvedRef => ({
+      fromNodeId: `caller:${filePath}:fn:5`,
+      referenceName,
+      referenceKind: 'calls' as const,
+      line: 5,
+      column: 10,
+      filePath,
+      language: 'typescript' as const,
+    });
+
+    it('vetoes cross-file exact matches when the caller file does not import the name', () => {
+      const foreign = makeVetoNode('transport/wire-session.ts', 'openSession');
+      const context: ResolutionContext = {
+        ...baseContext,
+        getNodesByName: (name) => (name === 'openSession' ? [foreign] : []),
+        getImportMappings: () => [
+          { localName: 'useState', exportedName: 'useState', source: 'react', isDefault: false, isNamespace: false },
+        ],
+      };
+      const ref = vetoRef('pages/layout.tsx', 'openSession');
+      expect(matchByExactName(ref, context)).toBeNull();
+      expect(matchReference(ref, context)).toBeNull();
+    });
+
+    it('vetoes cross-file fuzzy matches when the caller file does not import the name', () => {
+      const foreign = makeVetoNode('transport/wire-session.ts', 'openSession');
+      const context: ResolutionContext = {
+        ...baseContext,
+        getNodesByLowerName: (name) => (name === 'opensession' ? [foreign] : []),
+        getImportMappings: () => [
+          { localName: 'useState', exportedName: 'useState', source: 'react', isDefault: false, isNamespace: false },
+        ],
+      };
+      expect(matchFuzzy(vetoRef('pages/layout.tsx', 'openSession'), context)).toBeNull();
+    });
+
+    it('allows cross-file exact matches when the name is imported', () => {
+      const foreign = makeVetoNode('transport/wire-session.ts', 'openSession');
+      const context: ResolutionContext = {
+        ...baseContext,
+        getNodesByName: (name) => (name === 'openSession' ? [foreign] : []),
+        getImportMappings: () => [
+          { localName: 'openSession', exportedName: 'openSession', source: './wire-session', isDefault: false, isNamespace: false },
+        ],
+      };
+      const result = matchByExactName(vetoRef('transport/wire-legacy.ts', 'openSession'), context);
+      expect(result?.targetNodeId).toBe('func:transport/wire-session.ts:openSession:1');
+    });
+
+    it('keeps permissive name matching for files without import mappings', () => {
+      // C headers, scripts, and languages whose includes are not extracted as
+      // imports have no mappings; vetoing there would tank legitimate recall.
+      const foreign = makeVetoNode('lib/helper.ts', 'helperCall');
+      const context: ResolutionContext = {
+        ...baseContext,
+        getNodesByName: (name) => (name === 'helperCall' ? [foreign] : []),
+        getImportMappings: () => [],
+      };
+      const result = matchByExactName(vetoRef('main.c', 'helperCall'), context);
+      expect(result?.targetNodeId).toBe('func:lib/helper.ts:helperCall:1');
+    });
+
+    it('still matches same-file candidates when the name is not imported', () => {
+      const local = makeVetoNode('pages/layout.tsx', 'openSession');
+      const context: ResolutionContext = {
+        ...baseContext,
+        getNodesByName: (name) => (name === 'openSession' ? [local] : []),
+        getImportMappings: () => [
+          { localName: 'useState', exportedName: 'useState', source: 'react', isDefault: false, isNamespace: false },
+        ],
+      };
+      const result = matchByExactName(vetoRef('pages/layout.tsx', 'openSession'), context);
+      expect(result?.targetNodeId).toBe('func:pages/layout.tsx:openSession:1');
+    });
+
+    it('allows cross-file candidates in files reachable through an import (destructured store actions)', () => {
+      // zustand pattern: caller.ts imports useStore from './store', destructures
+      // `const { fetchUser } = useStore.getState()`, then calls fetchUser() bare.
+      // The action lives in store.ts, which IS import-reachable from caller.ts.
+      const action = makeVetoNode('store.ts', 'fetchUser');
+      const context: ResolutionContext = {
+        ...baseContext,
+        getNodesByName: (name) => (name === 'fetchUser' ? [action] : []),
+        getImportMappings: () => [
+          { localName: 'useStore', exportedName: 'useStore', source: './store', isDefault: false, isNamespace: false },
+        ],
+      };
+      const result = matchByExactName(vetoRef('caller.ts', 'fetchUser'), context);
+      expect(result?.targetNodeId).toBe('func:store.ts:fetchUser:1');
+    });
+
+    it('stays permissive when the context does not provide import mappings', () => {
+      // Smoke-test harnesses pass partial mock contexts without getImportMappings;
+      // the veto must degrade to the previous permissive behavior, not crash.
+      const foreign = makeVetoNode('other.ts', 'dup');
+      const partial = { getNodesByName: (name: string) => (name === 'dup' ? [foreign] : []) } as unknown as ResolutionContext;
+      const result = matchByExactName(vetoRef('main.ts', 'dup'), partial);
+      expect(result?.targetNodeId).toBe('func:other.ts:dup:1');
     });
 
     it('refuses to fuzzy-guess names defined beyond the ambiguity ceiling', () => {
