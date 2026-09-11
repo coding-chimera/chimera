@@ -17,7 +17,7 @@ import {
   ImportMapping,
 } from './types';
 import { matchReference } from './name-matcher';
-import { resolveViaImport, resolveJvmImport, extractImportMappings, extractReExports, loadCppIncludeDirs } from './import-resolver';
+import { resolveViaImport, resolveJvmImport, extractImportMappings, extractReExports, loadCppIncludeDirs, resolveImportPath } from './import-resolver';
 import { detectFrameworks } from './frameworks';
 import { synthesizeCallbackEdges } from './callback-synthesizer';
 import { loadProjectAliases, type AliasMap } from './path-aliases';
@@ -745,6 +745,75 @@ export class ReferenceResolver {
   }
 
   /**
+   * Materialize file-level `imports` edges (source file node → target file
+   * node) for the given files. The tree-sitter pipeline already emits
+   * file→import-statement edges, but those never cross files; the real
+   * dependency facts only lived in the in-memory import-mapping cache and
+   * were invisible to FILE_PROJECTION walks (getFileDependents and friends).
+   *
+   * Semantic notes:
+   * - Edges carry no refName (synthesized edges deliberately don't — see
+   *   createEdges) so target removal never resurrects them for re-resolution.
+   * - Each file's existing file→file import edges are deleted first (targets
+   *   restricted to kind='file', so syntax edges to kind='import' statement
+   *   nodes survive) then re-inserted from current content — idempotent under
+   *   the edges identity unique index.
+   * - Same-source mappings are deduped before resolution; the unique index
+   *   additionally collapses distinct specifiers resolving to one file.
+   * - External specifiers and unresolvable paths resolve to null and are skipped.
+   */
+  private materializeFileLevelImportEdges(filePaths: string[]): void {
+    if (filePaths.length === 0) return;
+
+    const edges: Edge[] = [];
+    const fileNodeCache = new Map<string, Node | undefined>();
+    const getFileNode = (filePath: string): Node | undefined => {
+      if (!fileNodeCache.has(filePath)) {
+        fileNodeCache.set(
+          filePath,
+          this.queries.getNodesByFile(filePath).find((n) => n.kind === 'file')
+        );
+      }
+      return fileNodeCache.get(filePath);
+    };
+
+    for (const filePath of filePaths) {
+      const fileRecord = this.queries.getFileByPath(filePath);
+      if (!fileRecord) continue;
+      const sourceNode = getFileNode(filePath);
+      if (!sourceNode) continue;
+
+      // Stale edges first: an import removed since the last pass must not
+      // linger (re-extraction cascade covers re-indexed files; this delete
+      // covers every other pass).
+      this.queries.deleteFileLevelImportEdgesBySource(sourceNode.id);
+
+      const mappings = this.context.getImportMappings(filePath, fileRecord.language);
+      if (mappings.length === 0) continue;
+
+      const seenSources = new Set<string>();
+      for (const imp of mappings) {
+        if (seenSources.has(imp.source)) continue;
+        seenSources.add(imp.source);
+        const resolvedPath = resolveImportPath(imp.source, filePath, fileRecord.language, this.context);
+        if (!resolvedPath || resolvedPath === filePath) continue;
+        const targetNode = getFileNode(resolvedPath);
+        if (!targetNode) continue;
+        edges.push({
+          source: sourceNode.id,
+          target: targetNode.id,
+          kind: 'imports',
+          line: 0,
+          column: 0,
+          metadata: { confidence: 0.9, resolvedBy: 'import' },
+        });
+      }
+    }
+
+    if (edges.length > 0) this.queries.insertEdges(edges);
+  }
+
+  /**
    * Delete unresolved rows by stable SQLite IDs when available, preserving
    * tuple-based deletion for extraction callers that do not have row IDs.
    */
@@ -785,6 +854,9 @@ export class ReferenceResolver {
     if (edges.length > 0) {
       this.queries.insertEdges(edges);
     }
+    // Persist file-level import edges — full sweep over every indexed file so
+    // import-only dependencies land even when no symbol ref crossed the boundary.
+    this.materializeFileLevelImportEdges(this.queries.getAllFilePaths());
 
     // Scoped sync resolves only the changed files' refs, but dynamic-dispatch
     // edges can depend on unchanged neighbors (e.g. base method -> new override).
@@ -838,6 +910,9 @@ export class ReferenceResolver {
       this.queries.insertEdges(edges.slice(i, i + PERSIST_CHUNK));
       await maybeYield();
     }
+    // Materialize file-level import edges for the involved files only.
+    const listFilePaths = [...new Set(refs.map((ref) => ref.filePath || this.getFilePathFromNodeId(ref.fromNodeId)))];
+    this.materializeFileLevelImportEdges(listFilePaths);
 
     const resolvedKeys = result.resolved.map((r) => ({
       fromNodeId: r.original.fromNodeId,
@@ -914,6 +989,10 @@ export class ReferenceResolver {
         this.queries.insertEdges(edges.slice(i, i + persistenceChunkSize));
         await maybeYield();
       }
+      // Materialize file-level import edges scoped to this batch's files;
+      // delete-then-insert keeps it idempotent across repeated batches.
+      const batchFilePaths = [...new Set(batch.map((ref) => ref.filePath || this.getFilePathFromNodeId(ref.fromNodeId)))];
+      this.materializeFileLevelImportEdges(batchFilePaths);
 
       // Resolved rows are deleted; unresolvable ones are parked as
       // status='failed' (upstream #1240) — both leave the pending set the batch
