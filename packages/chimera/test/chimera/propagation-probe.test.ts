@@ -69,8 +69,8 @@ describe("chimera.propagation-probe scope drift lines", () => {
   })
 
   test("caps displayed files and counts the overflow", () => {
-    const lines = scopeDriftLines("predesign_1", ["a.ts"], ["a.ts"], [{ file: "d1.ts" }, { file: "d2.ts" }, { file: "d3.ts" }, { file: "d4.ts" }, { file: "d5.ts" }])
-    expect(lines[0]!).toContain("d1.ts, d2.ts, d3.ts (+2 more)")
+    const lines = scopeDriftLines("predesign_1", ["a.ts"], ["a.ts"], [{ file: "d1.ts" }, { file: "d2.ts" }, { file: "d3.ts" }, { file: "d4.ts" }, { file: "d5.ts" }, { file: "d6.ts" }, { file: "d7.ts" }])
+    expect(lines[0]!).toContain("d1.ts, d2.ts, d3.ts, d4.ts, d5.ts (+2 more)")
   })
 
   test("annotates second-hop propagation with the intermediate file", () => {
@@ -180,7 +180,145 @@ describe("chimera.propagation-probe predesign scope reconciliation", () => {
 
       const out = yield* inlinePropagationCheck([path.join(test.directory, "a.ts")], SessionID.make("ses_scope-twohop"))
 
-      expect(out).toContain("Scope check: propagation reaches c.ts (via b.ts)")
+      expect(out).toContain("Scope check: propagation reaches c.ts (via b.ts, 2 hops)")
+    }),
+  )
+})
+
+describe("chimera.propagation-probe transitive walk", () => {
+  test("ranks deep consumers first and warns about hardcoded stale contracts", () => {
+    const lines = scopeDriftLines(
+      "predesign_1",
+      ["a.ts"],
+      ["a.ts"],
+      [
+        { file: "near.ts" },
+        { file: "deep.ts", via: "mid.ts", depth: 3 },
+        { file: "mid.ts", via: "near.ts", depth: 2 },
+      ],
+    )
+    expect(lines.length).toBe(1)
+    expect(lines[0]!).toContain("propagation reaches deep.ts (via mid.ts, 3 hops), mid.ts (via near.ts, 2 hops), near.ts")
+    expect(lines[0]!).toContain("hardcode the old contract")
+    expect(lines[0]!).toContain("up to 3 hops away")
+    expect(lines[0]!).toContain("clean-looking imports do not prove safety")
+  })
+
+  it.instance("names consumers beyond two hops through pass-through chains", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "a.ts"), "export const helperA = 1\n"))
+      yield* Effect.promise(() =>
+        fs.writeFile(path.join(test.directory, "b.ts"), 'import { helperA } from "./a.ts"\nexport function helperB() { return helperA }\n'),
+      )
+      yield* Effect.promise(() =>
+        fs.writeFile(path.join(test.directory, "c.ts"), 'import { helperB } from "./b.ts"\nexport function helperC() { return helperB() }\n'),
+      )
+      yield* Effect.promise(() =>
+        fs.writeFile(path.join(test.directory, "d.ts"), 'import { helperC } from "./c.ts"\nconsole.log(helperC())\n'),
+      )
+      const graph = yield* Effect.promise(() => CodeGraph.init(test.directory, { index: true }))
+      graph.close()
+      const info = getGraphDataRootInfo(test.directory)
+      const artifact = path.join(info.dataRoot, "chimera", "predesign-runs.jsonl")
+      yield* Effect.promise(() =>
+        recordPredesignRun(test.directory, artifact, {
+          sessionID: "ses_scope-deep",
+          messageID: "msg_scope-deep",
+          agent: "build",
+          intent: "deep walk test",
+          files: ["a.ts"],
+          seedNodes: [],
+          impactedNodes: [],
+          fileDependents: [],
+          evidence: [],
+          snapshotRevision: "test-revision",
+          payload: {},
+        }),
+      )
+
+      const out = yield* inlinePropagationCheck([path.join(test.directory, "a.ts")], SessionID.make("ses_scope-deep"))
+
+      expect(out).toContain("d.ts (via c.ts, 3 hops)")
+      expect(out).toContain("hardcode the old contract")
+    }),
+  )
+
+  it.instance("terminates on dependency cycles and names each file once", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        fs.writeFile(path.join(test.directory, "a.ts"), 'export const helperA = 1\nimport { helperC } from "./c.ts"\nconsole.log(helperC)\n'),
+      )
+      yield* Effect.promise(() =>
+        fs.writeFile(path.join(test.directory, "b.ts"), 'import { helperA } from "./a.ts"\nexport const helperB = helperA\n'),
+      )
+      yield* Effect.promise(() =>
+        fs.writeFile(path.join(test.directory, "c.ts"), 'import { helperB } from "./b.ts"\nexport const helperC = helperB\n'),
+      )
+      const graph = yield* Effect.promise(() => CodeGraph.init(test.directory, { index: true }))
+      graph.close()
+      const info = getGraphDataRootInfo(test.directory)
+      const artifact = path.join(info.dataRoot, "chimera", "predesign-runs.jsonl")
+      yield* Effect.promise(() =>
+        recordPredesignRun(test.directory, artifact, {
+          sessionID: "ses_scope-cycle",
+          messageID: "msg_scope-cycle",
+          agent: "build",
+          intent: "cycle walk test",
+          files: ["a.ts"],
+          seedNodes: [],
+          impactedNodes: [],
+          fileDependents: [],
+          evidence: [],
+          snapshotRevision: "test-revision",
+          payload: {},
+        }),
+      )
+
+      const out = yield* inlinePropagationCheck([path.join(test.directory, "a.ts")], SessionID.make("ses_scope-cycle"))
+
+      // The walk visits b then c, the cycle back to the seed terminates it,
+      // and deep-first ranking puts c (2 hops) before b (1 hop).
+      expect(out).toContain("propagation reaches c.ts (via b.ts, 2 hops), b.ts, outside")
+    }),
+  )
+
+  it.instance("stops the walk at large files instead of expanding their consumers", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "a.ts"), "export const helperA = 1\n"))
+      const filler = Array.from({ length: 45 }, (_, index) => `export const fill${index} = ${index}`).join("\n")
+      yield* Effect.promise(() =>
+        fs.writeFile(path.join(test.directory, "big.ts"), `import { helperA } from "./a.ts"\nexport const seeded = helperA\n${filler}\n`),
+      )
+      yield* Effect.promise(() =>
+        fs.writeFile(path.join(test.directory, "hidden.ts"), 'import { seeded } from "./big.ts"\nconsole.log(seeded)\n'),
+      )
+      const graph = yield* Effect.promise(() => CodeGraph.init(test.directory, { index: true }))
+      graph.close()
+      const info = getGraphDataRootInfo(test.directory)
+      const artifact = path.join(info.dataRoot, "chimera", "predesign-runs.jsonl")
+      yield* Effect.promise(() =>
+        recordPredesignRun(test.directory, artifact, {
+          sessionID: "ses_scope-bigstop",
+          messageID: "msg_scope-bigstop",
+          agent: "build",
+          intent: "big-file stop test",
+          files: ["a.ts"],
+          seedNodes: [],
+          impactedNodes: [],
+          fileDependents: [],
+          evidence: [],
+          snapshotRevision: "test-revision",
+          payload: {},
+        }),
+      )
+
+      const out = yield* inlinePropagationCheck([path.join(test.directory, "a.ts")], SessionID.make("ses_scope-bigstop"))
+
+      expect(out).toContain("big.ts")
+      expect(out).not.toContain("hidden.ts")
     }),
   )
 })
