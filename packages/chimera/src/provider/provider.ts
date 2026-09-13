@@ -31,6 +31,7 @@ import { ModelID, ProviderID } from "./schema"
 import { CodexModel } from "./codex-model"
 import { ResponsesTransport } from "./responses-transport"
 import { ReasoningText } from "./reasoning-text"
+import { ReasoningWire } from "./reasoning-wire"
 import {
   bindingFromTransportIdentity,
   inspectRemoteCompactionRequest,
@@ -2154,6 +2155,14 @@ const layer: Layer.Layer<
             // DeepSeek requires the previous reasoning text to be replayed as
             // content parts; the AI SDK only emits OpenAI-style reasoning summaries.
             if (ReasoningText.needed(model) && ReasoningText.mirrorIntoContent(body) > 0) changed = true
+            // The AI SDK also drops the reasoning options for models it does not classify
+            // as reasoning models; the session carries the resolved value on an internal
+            // header which is mirrored into the body and consumed here.
+            const wire = ReasoningWire.take(opts.headers)
+            if (wire) {
+              opts.headers = wire.headers
+              if (ReasoningWire.inject(body, wire.value)) changed = true
+            }
             if (changed) opts.body = JSON.stringify(body)
           }
           if (provider.source === "config" && model.headers) {

@@ -10,6 +10,7 @@ import { Instance } from "../../src/project/instance"
 import { WithInstance } from "../../src/project/with-instance"
 import { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
+import { ReasoningWire } from "@/provider/reasoning-wire"
 import { ModelsDev } from "@/provider/models"
 import { ProviderID, ModelID } from "../../src/provider/schema"
 import { Filesystem } from "@/util/filesystem"
@@ -2032,6 +2033,203 @@ describe("session.llm.stream", () => {
     })
   })
 
+  test("mirrors an explicitly selected DeepSeek effort onto the Responses wire", async () => {
+    const server = state.server
+    if (!server) throw new Error("Server not initialized")
+
+    const providerID = "custom-deepseek-effort"
+    const modelID = "deepseek-v4.1-flash-expires-on-0910"
+    const request = waitRequest(
+      "/responses",
+      createEventResponse(
+        [
+          {
+            type: "response.created",
+            response: { id: "resp-effort", created_at: Math.floor(Date.now() / 1000), model: modelID, service_tier: null },
+          },
+          { type: "response.output_text.delta", item_id: "msg-effort", delta: "ok", logprobs: null },
+          {
+            type: "response.completed",
+            response: {
+              incomplete_details: null,
+              usage: { input_tokens: 1, input_tokens_details: null, output_tokens: 1, output_tokens_details: null },
+              service_tier: null,
+            },
+          },
+        ],
+        true,
+      ),
+    )
+
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(
+          path.join(dir, "chimera.json"),
+          JSON.stringify({
+            $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+            enabled_providers: [providerID],
+            provider: {
+              [providerID]: {
+                name: "DeepSeek Responses",
+                npm: "@ai-sdk/openai",
+                wire_api: "responses",
+                env: [],
+                models: { [modelID]: { reasoning: true } },
+                options: { apiKey: "test-deepseek-effort-key", baseURL: `${server.url.origin}/v1` },
+              },
+            },
+          }),
+        )
+      },
+    })
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const resolved = await getModel(ProviderID.make(providerID), ModelID.make(modelID))
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        } satisfies Agent.Info
+
+        const sessionID = SessionID.make("session-deepseek-effort")
+        const user = {
+          id: MessageID.make("user-deepseek-effort"),
+          sessionID,
+          role: "user",
+          time: { created: Date.now() },
+          agent: agent.name,
+          model: { providerID: ProviderID.make(providerID), modelID: resolved.id, variant: "high" },
+        } satisfies MessageV2.User
+
+        await drain({
+          user,
+          sessionID,
+          model: resolved,
+          agent,
+          system: ["You are a helpful assistant."],
+          messages: [{ role: "user", content: "Hello" }],
+          tools: {},
+        })
+
+        const capture = await request
+        const body = capture.body as { reasoning?: unknown; include?: unknown; store?: unknown; input?: unknown }
+        expect(body.reasoning).toEqual({ effort: "high", summary: "auto" })
+        expect(body.include).toEqual(["reasoning.encrypted_content"])
+        expect(body.store).toBe(false)
+        expect((body.input as Array<{ role?: string }>)[0]?.role).toBe("system")
+        expect(capture.headers.get(ReasoningWire.HEADER)).toBeNull()
+      },
+    })
+  })
+
+  test("keeps the implicit DeepSeek default tier off the wire and mirrors configured options", async () => {
+    const server = state.server
+    if (!server) throw new Error("Server not initialized")
+
+    const modelID = "deepseek-v4.1-flash-expires-on-0910"
+    const implicitID = "custom-deepseek-implicit"
+    const configuredID = "custom-deepseek-configured"
+    const events = () => [
+      {
+        type: "response.created",
+        response: { id: "resp-defaults", created_at: Math.floor(Date.now() / 1000), model: modelID, service_tier: null },
+      },
+      { type: "response.output_text.delta", item_id: "msg-defaults", delta: "ok", logprobs: null },
+      {
+        type: "response.completed",
+        response: {
+          incomplete_details: null,
+          usage: { input_tokens: 1, input_tokens_details: null, output_tokens: 1, output_tokens_details: null },
+          service_tier: null,
+        },
+      },
+    ]
+    const implicitRequest = waitRequest("/responses", createEventResponse(events(), true))
+
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(
+          path.join(dir, "chimera.json"),
+          JSON.stringify({
+            $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+            enabled_providers: [implicitID, configuredID],
+            provider: {
+              [implicitID]: {
+                name: "DeepSeek Implicit",
+                npm: "@ai-sdk/openai",
+                wire_api: "responses",
+                env: [],
+                models: { [modelID]: { reasoning: true } },
+                options: { apiKey: "test-deepseek-implicit-key", baseURL: `${server.url.origin}/v1` },
+              },
+              [configuredID]: {
+                name: "DeepSeek Configured",
+                npm: "@ai-sdk/openai",
+                wire_api: "responses",
+                env: [],
+                models: {
+                  [modelID]: {
+                    reasoning: true,
+                    options: {
+                      reasoningEffort: "max",
+                      reasoningSummary: "auto",
+                      include: ["reasoning.encrypted_content"],
+                    },
+                  },
+                },
+                options: { apiKey: "test-deepseek-configured-key", baseURL: `${server.url.origin}/v1` },
+              },
+            },
+          }),
+        )
+      },
+    })
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        } satisfies Agent.Info
+        const run = async (providerID: string, label: string) => {
+          const resolved = await getModel(ProviderID.make(providerID), ModelID.make(modelID))
+          const sessionID = SessionID.make(`session-deepseek-defaults-${label}`)
+          const user = {
+            id: MessageID.make(`user-deepseek-defaults-${label}`),
+            sessionID,
+            role: "user",
+            time: { created: Date.now() },
+            agent: agent.name,
+            model: { providerID: ProviderID.make(providerID), modelID: resolved.id },
+          } satisfies MessageV2.User
+          await drain({
+            user,
+            sessionID,
+            model: resolved,
+            agent,
+            system: ["You are a helpful assistant."],
+            messages: [{ role: "user", content: "Hello" }],
+            tools: {},
+          })
+        }
+
+        await run(implicitID, "implicit")
+        const implicit = await implicitRequest
+        expect(implicit.body.reasoning).toBeUndefined()
+
+        const configuredRequest = waitRequest("/responses", createEventResponse(events(), true))
+        await run(configuredID, "configured")
+        const configured = await configuredRequest
+        expect(configured.body.reasoning).toEqual({ effort: "max", summary: "auto" })
+      },
+    })
+  })
   test("accepts user image attachments as data URLs for OpenAI models", async () => {
     const server = state.server
     if (!server) {

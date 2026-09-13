@@ -8,6 +8,7 @@ import { mergeDeep } from "remeda"
 import { GitLabWorkflowLanguageModel } from "gitlab-ai-provider"
 import { ProviderTransform } from "@/provider/transform"
 import { ReasoningText } from "@/provider/reasoning-text"
+import { ReasoningWire } from "@/provider/reasoning-wire"
 import { Config } from "@/config/config"
 import { InstanceState } from "@/effect/instance-state"
 import type { Agent } from "@/agent/agent"
@@ -187,13 +188,15 @@ const live: Layer.Layer<
       // TODO: move this to a proper hook
       const isOpenaiOauth = item.id === "openai" && info?.type === "oauth"
 
+      const hasConfiguredOptions =
+        Object.keys(input.model.options ?? {}).length > 0 || Object.keys(input.agent.options ?? {}).length > 0
       const profile: VariantProfile = input.small
         ? { options: {} }
-        : resolveVariantProfile(
-            input.model,
-            input.user.model.variant,
-            Object.keys(input.model.options ?? {}).length > 0 || Object.keys(input.agent.options ?? {}).length > 0,
-          )
+        : resolveVariantProfile(input.model, input.user.model.variant, hasConfiguredOptions)
+      // Only an explicit request (a selected variant or configured options) is mirrored onto
+      // the wire for models the AI SDK does not classify as reasoning models; the implicit
+      // default tier keeps whatever default the upstream applies.
+      const explicitReasoning = input.user.model.variant !== undefined || hasConfiguredOptions
       if (profile.unadvertisedUltra) {
         return yield* Effect.fail(
           new Error(
@@ -505,6 +508,11 @@ const live: Layer.Layer<
         ? (yield* InstanceState.context).project.id
         : undefined
 
+      const providerOptions = ProviderTransform.providerOptions(input.model, params.options)
+      const wireReasoning = ReasoningText.needed(input.model)
+        ? ReasoningWire.fromOptions(providerOptions, explicitReasoning)
+        : undefined
+
       return streamText({
         // Copilot returns the authoritative billed amount only in provider-specific response fields.
         includeRawChunks:
@@ -540,7 +548,7 @@ const live: Layer.Layer<
         topK: params.topK,
         presencePenalty: params.presencePenalty,
         frequencyPenalty: params.frequencyPenalty,
-        providerOptions: ProviderTransform.providerOptions(input.model, params.options),
+        providerOptions,
         activeTools: Object.keys(tools).filter((x) => x !== "invalid"),
         tools,
         toolChoice: input.toolChoice,
@@ -562,6 +570,7 @@ const live: Layer.Layer<
               }),
           ...input.model.headers,
           ...headers,
+          ...(wireReasoning ? { [ReasoningWire.HEADER]: ReasoningWire.encode(wireReasoning) } : {}),
         },
         maxRetries: input.retries ?? 0,
         messages,

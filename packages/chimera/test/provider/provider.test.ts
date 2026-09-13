@@ -11,6 +11,7 @@ import { ModelsDev } from "@/provider/models"
 import { Auth } from "@/auth"
 import { snapshot } from "../../src/provider/models-snapshot.js"
 import { Provider } from "@/provider/provider"
+import { ReasoningWire } from "@/provider/reasoning-wire"
 import { ProviderID, ModelID } from "../../src/provider/schema"
 import { Filesystem } from "@/util/filesystem"
 import { Env } from "../../src/env"
@@ -4311,4 +4312,77 @@ test("Provider freshness keeps two directory states isolated", async () => {
     if (previous === undefined) delete process.env.OPENCODE_AUTH_CONTENT
     if (previous !== undefined) process.env.OPENCODE_AUTH_CONTENT = previous
   }
+})
+test("custom Responses provider mirrors the internal reasoning header into the body", async () => {
+  const captures: { headers: Headers; body: Record<string, unknown> }[] = []
+  using server = Bun.serve({
+    port: 0,
+    async fetch(request) {
+      const body = request.method === "POST" ? ((await request.json()) as Record<string, unknown>) : {}
+      captures.push({ headers: request.headers, body })
+      return new Response(
+        [
+          `data: ${JSON.stringify({
+            type: "response.created",
+            response: { id: "resp-wire", created_at: 1, model: "deepseek-v4.1-flash-expires-on-0910", service_tier: null },
+          })}`,
+          `data: ${JSON.stringify({ type: "response.output_text.delta", item_id: "msg-wire", delta: "ok", logprobs: null })}`,
+          `data: ${JSON.stringify({
+            type: "response.completed",
+            response: {
+              incomplete_details: null,
+              usage: { input_tokens: 1, input_tokens_details: null, output_tokens: 1, output_tokens_details: null },
+              service_tier: null,
+            },
+          })}`,
+          "data: [DONE]",
+        ].join("\n\n") + "\n\n",
+        { status: 200, headers: { "Content-Type": "text/event-stream" } },
+      )
+    },
+  })
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "chimera.json"),
+        JSON.stringify({
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+          enabled_providers: ["wire-reasoning"],
+          provider: {
+            "wire-reasoning": {
+              name: "Wire Reasoning",
+              npm: "@ai-sdk/openai",
+              wire_api: "responses",
+              env: [],
+              models: { "deepseek-v4.1-flash-expires-on-0910": { reasoning: true } },
+              options: { apiKey: "wire-reasoning-key", baseURL: `${server.url.origin}/v1` },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const model = (await list())[ProviderID.make("wire-reasoning")].models["deepseek-v4.1-flash-expires-on-0910"]
+      const language = await getLanguage(model)
+
+      await language.doStream({
+        prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        headers: { [ReasoningWire.HEADER]: ReasoningWire.encode({ effort: "max", summary: "auto" }) },
+      })
+      await language.doStream({
+        prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      })
+
+      expect(captures.map((capture) => capture.body.reasoning)).toEqual([
+        { effort: "max", summary: "auto" },
+        undefined,
+      ])
+      expect(captures[0].headers.get(ReasoningWire.HEADER)).toBeNull()
+      expect(captures[0].headers.get("authorization")).toBe("Bearer wire-reasoning-key")
+      expect(captures[1].headers.get(ReasoningWire.HEADER)).toBeNull()
+    },
+  })
 })
