@@ -7,6 +7,7 @@ import { openai } from "@ai-sdk/openai"
 import { mergeDeep } from "remeda"
 import { GitLabWorkflowLanguageModel } from "gitlab-ai-provider"
 import { ProviderTransform } from "@/provider/transform"
+import { ReasoningText } from "@/provider/reasoning-text"
 import { Config } from "@/config/config"
 import { InstanceState } from "@/effect/instance-state"
 import type { Agent } from "@/agent/agent"
@@ -127,6 +128,22 @@ export function systemSegments(
 }
 
 export type Event = Result["fullStream"] extends AsyncIterable<infer T> ? T : never
+
+// DeepSeek streams its chain of thought through `response.reasoning_text.delta` events,
+// which the AI SDK drops. Re-emit them as reasoning deltas so the session processor
+// persists the text DeepSeek requires back on the next turn.
+async function* reasoningTextParts(parts: AsyncIterable<Event>): AsyncIterable<Event> {
+  for await (const part of parts) {
+    if (part.type === "raw") {
+      const delta = ReasoningText.deltaFromRaw(part.rawValue)
+      if (delta) {
+        yield { type: "reasoning-delta", id: delta.id, text: delta.text }
+        continue
+      }
+    }
+    yield part
+  }
+}
 
 export interface Interface {
   readonly stream: (input: StreamInput) => Stream.Stream<Event, unknown>
@@ -490,7 +507,8 @@ const live: Layer.Layer<
 
       return streamText({
         // Copilot returns the authoritative billed amount only in provider-specific response fields.
-        includeRawChunks: input.model.providerID.includes("github-copilot"),
+        includeRawChunks:
+          input.model.providerID.includes("github-copilot") || ReasoningText.needed(input.model),
         onError(error) {
           l.error("stream error", {
             error,
@@ -588,7 +606,10 @@ const live: Layer.Layer<
               abort: input.abort ? AbortSignal.any([input.abort, ctrl.signal]) : ctrl.signal,
             })
 
-            return Stream.fromAsyncIterable(result.fullStream, (e) => (e instanceof Error ? e : new Error(String(e))))
+            return Stream.fromAsyncIterable(
+              ReasoningText.needed(input.model) ? reasoningTextParts(result.fullStream) : result.fullStream,
+              (e) => (e instanceof Error ? e : new Error(String(e))),
+            )
           }),
         ),
       )

@@ -1873,6 +1873,165 @@ describe("session.llm.stream", () => {
   })
 
 
+  test("captures DeepSeek reasoning_text and replays it as content", async () => {
+    const server = state.server
+    if (!server) {
+      throw new Error("Server not initialized")
+    }
+
+    const providerID = "custom-deepseek-responses"
+    const modelID = "deepseek-v4.1-flash-expires-on-0910"
+    const reasoningText = "Step 1: plan. Step 2: act."
+
+    const inbound = [
+      {
+        type: "response.created",
+        response: { id: "resp-deepseek-1", created_at: Math.floor(Date.now() / 1000), model: modelID, service_tier: null },
+      },
+      { type: "response.output_item.added", output_index: 0, item: { type: "reasoning", id: "rs_1" } },
+      { type: "response.reasoning_text.delta", item_id: "rs_1", output_index: 0, content_index: 0, delta: "Step 1: plan. " },
+      { type: "response.reasoning_text.delta", item_id: "rs_1", output_index: 0, content_index: 0, delta: "Step 2: act." },
+      {
+        type: "response.output_item.done",
+        output_index: 0,
+        item: { type: "reasoning", id: "rs_1", summary: [], content: [{ type: "reasoning_text", text: reasoningText }], encrypted_content: "enc-1" },
+      },
+      { type: "response.output_text.delta", item_id: "msg_1", delta: "done", logprobs: null },
+      {
+        type: "response.completed",
+        response: {
+          incomplete_details: null,
+          usage: { input_tokens: 1, input_tokens_details: null, output_tokens: 1, output_tokens_details: null },
+          service_tier: null,
+        },
+      },
+    ]
+    const request = waitRequest("/responses", createEventResponse(inbound, true))
+
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(
+          path.join(dir, "chimera.json"),
+          JSON.stringify({
+            $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+            enabled_providers: [providerID],
+            provider: {
+              [providerID]: {
+                name: "DeepSeek Responses",
+                npm: "@ai-sdk/openai",
+                wire_api: "responses",
+                env: [],
+                models: { [modelID]: { reasoning: true } },
+                options: { apiKey: "test-deepseek-key", baseURL: `${server.url.origin}/v1` },
+              },
+            },
+          }),
+        )
+      },
+    })
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const resolved = await getModel(ProviderID.make(providerID), ModelID.make(modelID))
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        } satisfies Agent.Info
+
+        const sessionID = SessionID.make("session-deepseek-reasoning-1")
+        const user = {
+          id: MessageID.make("user-deepseek-1"),
+          sessionID,
+          role: "user",
+          time: { created: Date.now() },
+          agent: agent.name,
+          model: { providerID: ProviderID.make(providerID), modelID: resolved.id, variant: "default" },
+        } satisfies MessageV2.User
+
+        const events = await llm.runPromise((svc) =>
+          svc
+            .stream({
+              user,
+              sessionID,
+              model: resolved,
+              agent,
+              system: ["You are a helpful assistant."],
+              messages: [{ role: "user", content: "Hello" }],
+              tools: {},
+            })
+            .pipe(
+              Stream.runCollect,
+              Effect.map((items) => [...items]),
+            ),
+        )
+
+        await request
+        const deltas = events.filter((event) => event.type === "reasoning-delta")
+        expect(deltas.map((event) => (event as { text: string }).text).join("")).toBe(reasoningText)
+        expect(events.some((event) => event.type === "reasoning-start" && event.id === "rs_1:0")).toBe(true)
+
+        const outbound = [
+          {
+            type: "response.created",
+            response: { id: "resp-deepseek-2", created_at: Math.floor(Date.now() / 1000), model: modelID, service_tier: null },
+          },
+          { type: "response.output_text.delta", item_id: "msg_2", delta: "ok", logprobs: null },
+          {
+            type: "response.completed",
+            response: {
+              incomplete_details: null,
+              usage: { input_tokens: 1, input_tokens_details: null, output_tokens: 1, output_tokens_details: null },
+              service_tier: null,
+            },
+          },
+        ]
+        const followUp = waitRequest("/responses", createEventResponse(outbound, true))
+        const sessionID2 = SessionID.make("session-deepseek-reasoning-2")
+        const user2 = {
+          id: MessageID.make("user-deepseek-2"),
+          sessionID: sessionID2,
+          role: "user",
+          time: { created: Date.now() },
+          agent: agent.name,
+          model: { providerID: ProviderID.make(providerID), modelID: resolved.id, variant: "default" },
+        } satisfies MessageV2.User
+
+        await drain({
+          user: user2,
+          sessionID: sessionID2,
+          model: resolved,
+          agent,
+          system: ["You are a helpful assistant."],
+          messages: [
+            { role: "user", content: "Hello" },
+            {
+              role: "assistant",
+              content: [
+                {
+                  type: "reasoning",
+                  text: reasoningText,
+                  providerOptions: { openai: { itemId: "rs_1", reasoningEncryptedContent: "enc-1" } },
+                },
+                { type: "text", text: "done" },
+              ],
+            },
+            { role: "user", content: "Continue" },
+          ],
+          tools: {},
+        })
+
+        const capture = await followUp
+        const input = capture.body.input as Array<Record<string, unknown>>
+        const replayed = input.find((item) => item.type === "reasoning")
+        expect(replayed?.encrypted_content).toBe("enc-1")
+        expect(replayed?.content).toEqual([{ type: "reasoning_text", text: reasoningText }])
+      },
+    })
+  })
+
   test("accepts user image attachments as data URLs for OpenAI models", async () => {
     const server = state.server
     if (!server) {

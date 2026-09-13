@@ -30,6 +30,7 @@ import * as ProviderTransform from "./transform"
 import { ModelID, ProviderID } from "./schema"
 import { CodexModel } from "./codex-model"
 import { ResponsesTransport } from "./responses-transport"
+import { ReasoningText } from "./reasoning-text"
 import {
   bindingFromTransportIdentity,
   inspectRemoteCompactionRequest,
@@ -2141,14 +2142,19 @@ const layer: Layer.Layer<
           ) {
             const body = JSON.parse(opts.body as string)
             const keepIds = body.store === true
+            let changed = false
             if (!keepIds && Array.isArray(body.input)) {
               for (const item of body.input) {
                 if ("id" in item) {
                   delete item.id
+                  changed = true
                 }
               }
-              opts.body = JSON.stringify(body)
             }
+            // DeepSeek requires the previous reasoning text to be replayed as
+            // content parts; the AI SDK only emits OpenAI-style reasoning summaries.
+            if (ReasoningText.needed(model) && ReasoningText.mirrorIntoContent(body) > 0) changed = true
+            if (changed) opts.body = JSON.stringify(body)
           }
           if (provider.source === "config" && model.headers) {
             const userAgent = new Headers(model.headers).get("user-agent")
