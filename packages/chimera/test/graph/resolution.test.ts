@@ -13,7 +13,7 @@ import { Node, UnresolvedReference } from '../../src/graph/types';
 import { ReferenceResolver, createResolver, ResolutionContext } from '../../src/graph/resolution';
 import { matchReference, matchMethodCall, matchByExactName, matchFuzzy } from '../../src/graph/resolution/name-matcher';
 import { resolveImportPath, extractImportMappings, resolveJvmImport, loadCppIncludeDirs, clearCppIncludeDirCache } from '../../src/graph/resolution/import-resolver';
-import type { UnresolvedRef, FrameworkResolver } from '../../src/graph/resolution/types';
+import type { UnresolvedRef, ImportMapping, FrameworkResolver } from '../../src/graph/resolution/types';
 import { detectFrameworks, getAllFrameworkResolvers } from '../../src/graph/resolution/frameworks';
 import { QueryBuilder } from '../../src/graph/db/queries';
 import { DatabaseConnection, getDatabasePath } from '../../src/graph/db';
@@ -321,6 +321,197 @@ describe('Resolution Module', () => {
       const result = matchMethodCall(methodCallRef('app.ts', 'permissionEngine.checkRule'), context);
       expect(result?.targetNodeId).toBe('method:permission/PermissionRuleEngine.ts:checkRule:1');
       expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    // Strategy 0.5 fixtures: `receiver = new ClassName` declaration evidence
+    // read from statement/variable/constant node signatures.
+    const declNode = (
+      id: string,
+      kind: Node['kind'],
+      name: string,
+      filePath: string,
+      startLine: number,
+      extra: Partial<Pick<Node, 'qualifiedName' | 'signature' | 'language'>> = {},
+    ): Node => ({
+      id,
+      kind,
+      name,
+      qualifiedName: extra.qualifiedName ?? name,
+      filePath,
+      language: extra.language ?? 'typescript',
+      startLine,
+      endLine: startLine + 2,
+      startColumn: 0,
+      endColumn: 0,
+      updatedAt: Date.now(),
+      ...(extra.signature ? { signature: extra.signature } : {}),
+    });
+
+    const reactImport: ImportMapping = {
+      localName: 'useState',
+      exportedName: 'useState',
+      source: 'react',
+      isDefault: false,
+      isNamespace: false,
+    };
+
+    const declContext = (nodesByFile: Record<string, Node[]>, imports: ImportMapping[] = []): ResolutionContext => {
+      const all = Object.values(nodesByFile).flat();
+      return {
+        ...baseContext,
+        getNodesInFile: (filePath) => nodesByFile[filePath] ?? [],
+        getNodesByName: (name) => all.filter((n) => n.name === name),
+        getImportMappings: () => imports,
+      };
+    };
+
+    const declRef = (
+      filePath: string,
+      referenceName: string,
+      line: number,
+      language: Node['language'] = 'typescript',
+    ): UnresolvedRef => ({
+      fromNodeId: `caller:${filePath}:fn:${line}`,
+      referenceName,
+      referenceKind: 'calls',
+      line,
+      column: 10,
+      filePath,
+      language,
+    });
+
+    it('binds a same-file receiver from declaration evidence (const conn = new DatabaseConnection())', () => {
+      // Two same-named `close` methods defeat the old unique-candidate and
+      // word-overlap branches (receiver "conn" overlaps neither class); only
+      // the declaration evidence can bind this correctly.
+      const context = declContext({
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const conn = new DatabaseConnection()' }),
+          declNode('class:app.ts:DatabaseConnection', 'class', 'DatabaseConnection', 'app.ts', 20),
+          declNode('class:app.ts:Socket', 'class', 'Socket', 'app.ts', 30),
+          declNode('method:app.ts:close:21', 'method', 'close', 'app.ts', 21, { qualifiedName: 'DatabaseConnection.close' }),
+          declNode('method:app.ts:close:31', 'method', 'close', 'app.ts', 31, { qualifiedName: 'Socket.close' }),
+        ],
+      });
+      const result = matchMethodCall(declRef('app.ts', 'conn.close', 5), context);
+      expect(result?.targetNodeId).toBe('method:app.ts:close:21');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    it('does not bind a cross-file declared class the caller file does not import', () => {
+      const context = declContext({
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const conn = new DatabaseConnection()' }),
+        ],
+        'db/connection.ts': [
+          declNode('class:db/connection.ts:1', 'class', 'DatabaseConnection', 'db/connection.ts', 1),
+          declNode('method:db/connection.ts:close:10', 'method', 'close', 'db/connection.ts', 10, { qualifiedName: 'DatabaseConnection.close' }),
+        ],
+      }, [reactImport]);
+      expect(matchMethodCall(declRef('app.ts', 'conn.close', 5), context)).toBeNull();
+    });
+
+    it('binds a cross-file declared class through import evidence', () => {
+      const context = declContext({
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const conn = new DatabaseConnection()' }),
+        ],
+        'db/connection.ts': [
+          declNode('class:db/connection.ts:1', 'class', 'DatabaseConnection', 'db/connection.ts', 1),
+          declNode('method:db/connection.ts:close:10', 'method', 'close', 'db/connection.ts', 10, { qualifiedName: 'DatabaseConnection.close' }),
+        ],
+      }, [
+        { localName: 'DatabaseConnection', exportedName: 'DatabaseConnection', source: './connection', isDefault: false, isNamespace: false },
+      ]);
+      const result = matchMethodCall(declRef('app.ts', 'conn.close', 5), context);
+      expect(result?.targetNodeId).toBe('method:db/connection.ts:close:10');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    it('falls through for builtins with no class node (const m = new Map())', () => {
+      // Map has no graph class node, so the declaration evidence comes up
+      // empty and the original strategies run unchanged — here they find no
+      // `get` method candidate, so no instance-method edge may appear.
+      const context = declContext({
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const m = new Map()' }),
+        ],
+      });
+      expect(matchMethodCall(declRef('app.ts', 'm.get', 5), context)).toBeNull();
+    });
+
+    it('vetoes word-overlap guessing when the declared class lacks the method', () => {
+      // reportBuilder is declared as new LocalReport(); ReportBuilderEngine
+      // shares ≥2 receiver words with the receiver and declares the same-named
+      // method, which the old overlap branch would have bound. Declaration
+      // evidence says the receiver cannot be a ReportBuilderEngine, so the
+      // whole match is vetoed.
+      const context = declContext({
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const reportBuilder = new LocalReport()' }),
+          declNode('class:app.ts:LocalReport', 'class', 'LocalReport', 'app.ts', 20),
+        ],
+        'engine/ReportBuilderEngine.ts': [
+          declNode('class:engine/ReportBuilderEngine.ts:1', 'class', 'ReportBuilderEngine', 'engine/ReportBuilderEngine.ts', 1),
+          declNode('method:engine/ReportBuilderEngine.ts:generate:10', 'method', 'generate', 'engine/ReportBuilderEngine.ts', 10, { qualifiedName: 'ReportBuilderEngine.generate' }),
+        ],
+        'misc/Widget.ts': [
+          declNode('method:misc/Widget.ts:generate:5', 'method', 'generate', 'misc/Widget.ts', 5, { qualifiedName: 'Widget.generate' }),
+        ],
+      }, [reactImport]);
+      expect(matchMethodCall(declRef('app.ts', 'reportBuilder.generate', 5), context)).toBeNull();
+    });
+
+    it('binds from a bare reassignment statement (let q; q = new Queue())', () => {
+      const context = declContext({
+        'app.ts': [
+          declNode('var:app.ts:3', 'variable', 'q', 'app.ts', 3),
+          declNode('stmt:app.ts:4', 'statement', 'stmt@4:10', 'app.ts', 4, { signature: 'q = new Queue()' }),
+          declNode('class:app.ts:Queue', 'class', 'Queue', 'app.ts', 20),
+          declNode('method:app.ts:push:21', 'method', 'push', 'app.ts', 21, { qualifiedName: 'Queue.push' }),
+          declNode('class:app.ts:Stack', 'class', 'Stack', 'app.ts', 30),
+          declNode('method:app.ts:push:31', 'method', 'push', 'app.ts', 31, { qualifiedName: 'Stack.push' }),
+        ],
+      });
+      const result = matchMethodCall(declRef('app.ts', 'q.push', 6), context);
+      expect(result?.targetNodeId).toBe('method:app.ts:push:21');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    it('uses the nearest declaration before the call line (reassignment retypes)', () => {
+      const context = declContext({
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const svc = new Alpha()' }),
+          declNode('stmt:app.ts:7', 'statement', 'stmt@7:10', 'app.ts', 7, { signature: 'svc = new Beta()' }),
+          declNode('class:app.ts:Alpha', 'class', 'Alpha', 'app.ts', 20),
+          declNode('class:app.ts:Beta', 'class', 'Beta', 'app.ts', 30),
+          declNode('method:app.ts:doWork:31', 'method', 'doWork', 'app.ts', 31, { qualifiedName: 'Beta.doWork' }),
+        ],
+      });
+      const result = matchMethodCall(declRef('app.ts', 'svc.doWork', 9), context);
+      expect(result?.targetNodeId).toBe('method:app.ts:doWork:31');
+      expect(result?.resolvedBy).toBe('instance-method');
+      // Control: a call between the two declarations sees Alpha, which
+      // declares no doWork — the veto must beat the word-overlap guess.
+      expect(matchMethodCall(declRef('app.ts', 'svc.doWork', 4), context)).toBeNull();
+    });
+
+    it('skips declaration evidence for java refs (existing field-type path unchanged)', () => {
+      // The constant node would be read as `helper = new OrderHelper()` if
+      // Strategy 0.5 ran for java, and OrderHelper declares no fetch — a veto.
+      // Pre-change behavior must survive: Strategy 1 binds the same-named
+      // `helper` class via the qualified-name path.
+      const context = declContext({
+        'Order.java': [
+          declNode('const:Order.java:helper', 'constant', 'helper', 'Order.java', 3, { signature: '= new OrderHelper()', language: 'java' }),
+          declNode('class:Order.java:OrderHelper', 'class', 'OrderHelper', 'Order.java', 10, { language: 'java' }),
+          declNode('class:Order.java:helper', 'class', 'helper', 'Order.java', 30, { language: 'java' }),
+          declNode('method:Order.java:fetch:31', 'method', 'fetch', 'Order.java', 31, { qualifiedName: 'helper.fetch', language: 'java' }),
+        ],
+      });
+      const result = matchMethodCall(declRef('Order.java', 'helper.fetch', 12, 'java'), context);
+      expect(result?.targetNodeId).toBe('method:Order.java:fetch:31');
+      expect(result?.resolvedBy).toBe('qualified-name');
     });
 
     it('refuses to fuzzy-guess names defined beyond the ambiguity ceiling', () => {
