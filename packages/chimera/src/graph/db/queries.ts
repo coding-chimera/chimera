@@ -75,6 +75,7 @@ interface NodeRow {
   is_abstract: number;
   decorators: string | null;
   type_parameters: string | null;
+  params_json: string | null;
   updated_at: number;
 }
 
@@ -138,6 +139,23 @@ function referenceNameTail(referenceName: string): string {
   const idx = Math.max(referenceName.lastIndexOf('.'), referenceName.lastIndexOf(':'));
   return idx >= 0 ? referenceName.slice(idx + 1) : referenceName;
 }
+/**
+ * nodes.params_json carries the compact [{"n":name,"t":type}] shape (smaller
+ * rows than the public {name,type} pairs); expand it back, dropping
+ * malformed entries so a corrupt blob degrades to "no evidence".
+ */
+function parseParamsJson(json: string): Node['params'] {
+  const entries = safeJsonParse(json, [] as Array<{ n?: unknown; t?: unknown }>);
+  const params = entries.flatMap((e) =>
+    typeof e.n === 'string' && typeof e.t === 'string' ? [{ name: e.n, type: e.t }] : [],
+  );
+  return params.length > 0 ? params : undefined;
+}
+
+/** Inverse of parseParamsJson for the node write path. */
+function serializeParamsJson(params: Node['params']): string | null {
+  return params?.length ? JSON.stringify(params.map((p) => ({ n: p.name, t: p.type }))) : null;
+}
 
 /**
  * Convert database row to Node object
@@ -164,6 +182,7 @@ function rowToNode(row: NodeRow): Node {
     isAbstract: row.is_abstract === 1,
     decorators: row.decorators ? safeJsonParse(row.decorators, undefined) : undefined,
     typeParameters: row.type_parameters ? safeJsonParse(row.type_parameters, undefined) : undefined,
+    params: row.params_json ? parseParamsJson(row.params_json) : undefined,
     updatedAt: row.updated_at,
   };
 }
@@ -380,13 +399,13 @@ export class QueryBuilder {
           start_line, end_line, start_column, end_column,
           docstring, signature, visibility,
           is_exported, is_async, is_static, is_abstract,
-          decorators, type_parameters, return_type, search_text, updated_at
+          decorators, type_parameters, return_type, params_json, search_text, updated_at
         ) VALUES (
           @id, @kind, @name, @qualifiedName, @filePath, @language,
           @startLine, @endLine, @startColumn, @endColumn,
           @docstring, @signature, @visibility,
           @isExported, @isAsync, @isStatic, @isAbstract,
-          @decorators, @typeParameters, @returnType, @searchText, @updatedAt
+          @decorators, @typeParameters, @returnType, @paramsJson, @searchText, @updatedAt
         )
       `);
     }
@@ -430,6 +449,7 @@ export class QueryBuilder {
       decorators: node.decorators ? JSON.stringify(node.decorators) : null,
       typeParameters: node.typeParameters ? JSON.stringify(node.typeParameters) : null,
       returnType: node.returnType ?? null,
+      paramsJson: serializeParamsJson(node.params),
       searchText: buildSearchText(node.name, node.qualifiedName ?? node.name),
       updatedAt: node.updatedAt ?? Date.now(),
     });
@@ -472,6 +492,7 @@ export class QueryBuilder {
           decorators = @decorators,
           type_parameters = @typeParameters,
           return_type = @returnType,
+          params_json = @paramsJson,
           search_text = @searchText,
         WHERE id = @id
       `);
@@ -507,6 +528,7 @@ export class QueryBuilder {
       decorators: node.decorators ? JSON.stringify(node.decorators) : null,
       typeParameters: node.typeParameters ? JSON.stringify(node.typeParameters) : null,
       returnType: node.returnType ?? null,
+      paramsJson: serializeParamsJson(node.params),
       searchText: buildSearchText(node.name, node.qualifiedName ?? node.name),
       updatedAt: node.updatedAt ?? Date.now(),
     });

@@ -7,20 +7,23 @@ export function matchByDashPrefix(entry: string, candidate: string): boolean {
 export const SIZE_CLASSES = ["S", "M", "L", "XL"] as const
 export type SizeClass = (typeof SIZE_CLASSES)[number]
 
+// Serving-weight bands by total parameters: S <=150B, M 150-500B, L 500B-1.6T, XL >1.6T (2026-09-14).
+// Closed-source entries stay fixed regardless of rumored sizes; their serving stacks carry provider-targeted optimizations.
 const SIZE_CLASS_TABLE: Record<string, SizeClass> = {
   "kimi-k3": "XL",
   "qwen3.8-max": "XL",
   "gpt-5.6-sol": "XL",
   "claude-fable-5": "XL",
   "deepseek-v4-pro": "L",
-  "deepseek-v4-flash": "L",
-  "qwen3.8-flash": "L",
+  "deepseek-v4.1-flash": "L",
   "claude-opus-5": "L",
   "claude-opus-4.8": "L",
-  "glm-5.2": "M",
+  "glm-5.2": "L",
+  "deepseek-v4-flash": "M",
   "gpt-5.6-terra": "M",
   "claude-sonnet-5": "M",
   "claude-sonnet-4.6": "M",
+  "qwen3.8-flash": "S",
   "gpt-5.6-luna": "S",
   "claude-haiku": "S",
 }

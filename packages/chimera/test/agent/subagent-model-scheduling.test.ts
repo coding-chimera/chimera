@@ -492,17 +492,17 @@ describe("size gating and layering", () => {
     const result = resolveSchedule({
       routes: [
         route("mystery-model", "metered", ["low"]),
-        route("deepseek-v4-flash", "metered", ["low"]),
+        route("deepseek-v4-pro", "metered", ["low"]),
       ],
       archetype: archetype("scout"),
       regimes: { metered: "metered" },
       pricing: {
         "metered/mystery-model": pricing(0.01, 0.02, 0.005, 0.01),
-        "metered/deepseek-v4-flash": pricing(),
+        "metered/deepseek-v4-pro": pricing(),
       },
     })
 
-    expect(result.map((item) => item.route)).toEqual(["metered/deepseek-v4-flash", "metered/mystery-model"])
+    expect(result.map((item) => item.route)).toEqual(["metered/deepseek-v4-pro", "metered/mystery-model"])
     expect(result[0]?.unproven).toBe(false)
     expect(result[1]?.unproven).toBe(true)
     expect(result[1]!.score).toBeGreaterThan(result[0]!.score)
@@ -581,7 +581,7 @@ describe("speed evidence", () => {
       decodeTokPerSec: { low: 108 },
       decodeSamples: { low: 2 },
     }
-    const staticNorm = staticSpeedNorm({ sizeClass: "L", identity: "deepseek-v4-flash" })
+    const staticNorm = staticSpeedNorm({ sizeClass: evidenceRoute.sizeClass, identity: "deepseek-v4-flash" })
     const expected = (2 * tpsToNorm(108) + 3 * staticNorm) / 5
     const result = resolveSchedule({ ...input, speedEvidence: { "test-relay/deepseek-v4-flash": evidence } })
 
@@ -593,7 +593,7 @@ describe("speed evidence", () => {
   test("falls back to the static norm when evidence is untrustworthy", () => {
     const evidence: RouteSpeedEvidence = { samples: 12, trustworthy: false, decodeTokPerSec: { low: 108 } }
     const result = resolveSchedule({ ...input, speedEvidence: { "test-relay/deepseek-v4-flash": evidence } })
-    const staticNorm = staticSpeedNorm({ sizeClass: "L", identity: "deepseek-v4-flash" })
+    const staticNorm = staticSpeedNorm({ sizeClass: evidenceRoute.sizeClass, identity: "deepseek-v4-flash" })
 
     expect(result[0]?.speedNorm).toBeCloseTo(staticNorm, 6)
     expect(result[0]?.speedSource).toBe("heuristic")

@@ -10,16 +10,16 @@ describe("subagent model size", () => {
       ["gpt-5.6-sol", "XL"],
       ["claude-fable-5", "XL"],
       ["deepseek-v4-pro", "L"],
-      ["deepseek-v4-flash", "L"],
-      ["qwen3.8-flash", "L"],
+      ["deepseek-v4.1-flash", "L"],
       ["claude-opus-5", "L"],
       ["claude-opus-4.8", "L"],
-      ["glm-5.2", "M"],
+      ["glm-5.2", "L"],
+      ["deepseek-v4-flash", "M"],
       ["gpt-5.6-terra", "M"],
       ["claude-sonnet-5", "M"],
       ["claude-sonnet-4.6", "M"],
+      ["qwen3.8-flash", "S"],
       ["gpt-5.6-luna", "S"],
-      ["claude-haiku", "S"],
     ]
     for (const [identity, sizeClass] of expected) {
       expect(resolveSizeClass({ identity })).toBe(sizeClass)
@@ -27,7 +27,7 @@ describe("subagent model size", () => {
   })
 
   test("normalizes whitespace and case before table lookup", () => {
-    expect(resolveSizeClass({ identity: "  DeepSeek-V4-Flash " })).toBe("L")
+    expect(resolveSizeClass({ identity: "  DeepSeek-V4-Flash " })).toBe("M")
   })
 
   test("lets a valid configured override win over the built-in table", () => {
@@ -39,8 +39,8 @@ describe("subagent model size", () => {
   })
 
   test("matches dash-aligned prefixes with the longest entry winning", () => {
-    expect(resolveSizeClass({ identity: "deepseek-v4-flash-0731" })).toBe("L")
-    expect(resolveSizeClass({ identity: "glm-5.2-fast-preview" })).toBe("M")
+    expect(resolveSizeClass({ identity: "deepseek-v4-flash-0731" })).toBe("M")
+    expect(resolveSizeClass({ identity: "glm-5.2-fast-preview" })).toBe("L")
     expect(resolveSizeClass({ identity: "qwen3.8-max-0902" })).toBe("XL")
   })
 
