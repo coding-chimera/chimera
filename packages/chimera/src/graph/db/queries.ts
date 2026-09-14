@@ -67,6 +67,7 @@ interface NodeRow {
   end_column: number;
   docstring: string | null;
   signature: string | null;
+  return_type: string | null;
   visibility: string | null;
   is_exported: number;
   is_async: number;
@@ -155,6 +156,7 @@ function rowToNode(row: NodeRow): Node {
     endColumn: row.end_column,
     docstring: row.docstring ?? undefined,
     signature: row.signature ?? undefined,
+    returnType: row.return_type ?? undefined,
     visibility: row.visibility as Node['visibility'],
     isExported: row.is_exported === 1,
     isAsync: row.is_async === 1,
@@ -378,13 +380,13 @@ export class QueryBuilder {
           start_line, end_line, start_column, end_column,
           docstring, signature, visibility,
           is_exported, is_async, is_static, is_abstract,
-          decorators, type_parameters, search_text, updated_at
+          decorators, type_parameters, return_type, search_text, updated_at
         ) VALUES (
           @id, @kind, @name, @qualifiedName, @filePath, @language,
           @startLine, @endLine, @startColumn, @endColumn,
           @docstring, @signature, @visibility,
           @isExported, @isAsync, @isStatic, @isAbstract,
-          @decorators, @typeParameters, @searchText, @updatedAt
+          @decorators, @typeParameters, @returnType, @searchText, @updatedAt
         )
       `);
     }
@@ -427,6 +429,7 @@ export class QueryBuilder {
       isAbstract: node.isAbstract ? 1 : 0,
       decorators: node.decorators ? JSON.stringify(node.decorators) : null,
       typeParameters: node.typeParameters ? JSON.stringify(node.typeParameters) : null,
+      returnType: node.returnType ?? null,
       searchText: buildSearchText(node.name, node.qualifiedName ?? node.name),
       updatedAt: node.updatedAt ?? Date.now(),
     });
@@ -468,8 +471,8 @@ export class QueryBuilder {
           is_abstract = @isAbstract,
           decorators = @decorators,
           type_parameters = @typeParameters,
+          return_type = @returnType,
           search_text = @searchText,
-          updated_at = @updatedAt
         WHERE id = @id
       `);
     }
@@ -503,6 +506,7 @@ export class QueryBuilder {
       isAbstract: node.isAbstract ? 1 : 0,
       decorators: node.decorators ? JSON.stringify(node.decorators) : null,
       typeParameters: node.typeParameters ? JSON.stringify(node.typeParameters) : null,
+      returnType: node.returnType ?? null,
       searchText: buildSearchText(node.name, node.qualifiedName ?? node.name),
       updatedAt: node.updatedAt ?? Date.now(),
     });

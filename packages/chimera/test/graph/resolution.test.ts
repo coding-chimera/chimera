@@ -331,7 +331,7 @@ describe('Resolution Module', () => {
       name: string,
       filePath: string,
       startLine: number,
-      extra: Partial<Pick<Node, 'qualifiedName' | 'signature' | 'language'>> = {},
+      extra: Partial<Pick<Node, 'qualifiedName' | 'signature' | 'language' | 'returnType'>> = {},
     ): Node => ({
       id,
       kind,
@@ -345,6 +345,7 @@ describe('Resolution Module', () => {
       endColumn: 0,
       updatedAt: Date.now(),
       ...(extra.signature ? { signature: extra.signature } : {}),
+      ...(extra.returnType ? { returnType: extra.returnType } : {}),
     });
 
     const reactImport: ImportMapping = {
@@ -514,6 +515,120 @@ describe('Resolution Module', () => {
       expect(result?.resolvedBy).toBe('qualified-name');
     });
 
+    // Strategy 0.5 extension: factory-return and type-annotation evidence.
+    // `createQueue(): Queue` names the receiver's class one inference hop away;
+    // `const q: Queue` names it directly without construction.
+    it('binds a receiver from a factory return type (const q = createQueue(); q.push())', () => {
+      const context = declContext({
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const q = createQueue()' }),
+          declNode('fn:app.ts:createQueue', 'function', 'createQueue', 'app.ts', 20, { returnType: 'Queue' }),
+          declNode('class:app.ts:Queue', 'class', 'Queue', 'app.ts', 30),
+          declNode('method:app.ts:push:31', 'method', 'push', 'app.ts', 31, { qualifiedName: 'Queue.push' }),
+          declNode('class:app.ts:Stack', 'class', 'Stack', 'app.ts', 40),
+          declNode('method:app.ts:push:41', 'method', 'push', 'app.ts', 41, { qualifiedName: 'Stack.push' }),
+        ],
+      });
+      const result = matchMethodCall(declRef('app.ts', 'q.push', 5), context);
+      expect(result?.targetNodeId).toBe('method:app.ts:push:31');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    it('binds a factory imported from another file', () => {
+      const context = declContext({
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const q = createQueue()' }),
+        ],
+        'queue.ts': [
+          declNode('fn:queue.ts:createQueue', 'function', 'createQueue', 'queue.ts', 20, { returnType: 'Queue' }),
+          declNode('class:queue.ts:Queue', 'class', 'Queue', 'queue.ts', 30),
+          declNode('method:queue.ts:push:31', 'method', 'push', 'queue.ts', 31, { qualifiedName: 'Queue.push' }),
+        ],
+      }, [
+        { localName: 'createQueue', exportedName: 'createQueue', source: './queue', isDefault: false, isNamespace: false },
+      ]);
+      const result = matchMethodCall(declRef('app.ts', 'q.push', 5), context);
+      expect(result?.targetNodeId).toBe('method:queue.ts:push:31');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    it('does not bind a factory whose file the caller does not import', () => {
+      const context = declContext({
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const q = createQueue()' }),
+        ],
+        'queue.ts': [
+          declNode('fn:queue.ts:createQueue', 'function', 'createQueue', 'queue.ts', 20, { returnType: 'Queue' }),
+          declNode('class:queue.ts:Queue', 'class', 'Queue', 'queue.ts', 30),
+          declNode('method:queue.ts:push:31', 'method', 'push', 'queue.ts', 31, { qualifiedName: 'Queue.push' }),
+        ],
+      }, [reactImport]);
+      expect(matchMethodCall(declRef('app.ts', 'q.push', 5), context)).toBeNull();
+    });
+
+    it('binds from a variable type annotation (const q: Queue = make())', () => {
+      const context = declContext({
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const q: Queue = make()' }),
+          declNode('class:app.ts:Queue', 'class', 'Queue', 'app.ts', 30),
+          declNode('method:app.ts:push:31', 'method', 'push', 'app.ts', 31, { qualifiedName: 'Queue.push' }),
+          declNode('class:app.ts:Stack', 'class', 'Stack', 'app.ts', 40),
+          declNode('method:app.ts:push:41', 'method', 'push', 'app.ts', 41, { qualifiedName: 'Stack.push' }),
+        ],
+      });
+      const result = matchMethodCall(declRef('app.ts', 'q.push', 5), context);
+      expect(result?.targetNodeId).toBe('method:app.ts:push:31');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    it('binds a top-level annotation read from source when the variable signature is init-only', () => {
+      const context: ResolutionContext = {
+        ...declContext({
+          'app.ts': [
+            declNode('var:app.ts:3', 'variable', 'q', 'app.ts', 3, { signature: '= make()' }),
+            declNode('class:app.ts:Queue', 'class', 'Queue', 'app.ts', 30),
+            declNode('method:app.ts:push:31', 'method', 'push', 'app.ts', 31, { qualifiedName: 'Queue.push' }),
+            declNode('class:app.ts:Stack', 'class', 'Stack', 'app.ts', 40),
+            declNode('method:app.ts:push:41', 'method', 'push', 'app.ts', 41, { qualifiedName: 'Stack.push' }),
+          ],
+        }),
+        readFile: (filePath) => (filePath === 'app.ts' ? 'const q: Queue = make()\n' : null),
+      };
+      const result = matchMethodCall(declRef('app.ts', 'q.push', 5), context);
+      expect(result?.targetNodeId).toBe('method:app.ts:push:31');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    it('does not bind a receiver whose factory returns a generic type (Promise<Queue>)', () => {
+      const context = declContext({
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const q = createQueue()' }),
+          declNode('fn:app.ts:createQueue', 'function', 'createQueue', 'app.ts', 20, { returnType: 'Promise<Queue>' }),
+          declNode('class:app.ts:Queue', 'class', 'Queue', 'app.ts', 30),
+          declNode('method:app.ts:push:31', 'method', 'push', 'app.ts', 31, { qualifiedName: 'Queue.push' }),
+          declNode('class:app.ts:Stack', 'class', 'Stack', 'app.ts', 40),
+          declNode('method:app.ts:push:41', 'method', 'push', 'app.ts', 41, { qualifiedName: 'Stack.push' }),
+        ],
+      });
+      expect(matchMethodCall(declRef('app.ts', 'q.push', 5), context)).toBeNull();
+    });
+
+    it('prefers direct construction over a factory return for the same receiver', () => {
+      const context = declContext({
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const q = new Queue()' }),
+          declNode('stmt:app.ts:5', 'statement', 'stmt@5:10', 'app.ts', 5, { signature: 'q = createStack()' }),
+          declNode('fn:app.ts:createStack', 'function', 'createStack', 'app.ts', 20, { returnType: 'Stack' }),
+          declNode('class:app.ts:Queue', 'class', 'Queue', 'app.ts', 30),
+          declNode('method:app.ts:push:31', 'method', 'push', 'app.ts', 31, { qualifiedName: 'Queue.push' }),
+          declNode('class:app.ts:Stack', 'class', 'Stack', 'app.ts', 40),
+          declNode('method:app.ts:push:41', 'method', 'push', 'app.ts', 41, { qualifiedName: 'Stack.push' }),
+        ],
+      });
+      const result = matchMethodCall(declRef('app.ts', 'q.push', 7), context);
+      expect(result?.targetNodeId).toBe('method:app.ts:push:31');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
     it('refuses to fuzzy-guess names defined beyond the ambiguity ceiling', () => {
       // Upstream #999: K definitions x K references is O(K²) work that stalls
       // indexing on vendored/duplicated code. Beyond the ceiling the fuzzy

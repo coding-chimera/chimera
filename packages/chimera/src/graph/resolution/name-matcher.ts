@@ -432,17 +432,43 @@ const DECLARATION_EVIDENCE_LANGUAGES: ReadonlySet<Language> = new Set([
   'jsx',
 ]);
 
+// Receiver-declaration evidence, strongest first: a direct `= new Class`
+// names the class outright; a type annotation names it without constructing;
+// a factory call only implies it through the callee's return type.
+type ReceiverEvidenceKind = 'new' | 'annotation' | 'factory';
+
 // Captures `receiver = new ClassName` inside statement signatures. Covers
-// the three shapes the extractor records: `const receiver = new X(`,
+// the three shapes the extractor records: `const receiver = new X(` ,
 // `let receiver = new X(`, and bare `receiver = new X(` (reassignment) —
 // in all three the word right before `=` is the receiver, so one global
 // regex indexes every declaration pair in a file per scan.
-const RECEIVER_NEW_DECLARATION = /\b(\w+)\s*=\s*new\s+(\w+)/g;
+const RECEIVER_NEW_DECLARATION = /\b(\w+)\s*=\s*new\s+([A-Za-z_$][\w$]*)/g;
+// `receiver = fnName(` — a bare factory call. The callee's return-type
+// annotation names the receiver's class one inference hop away (weakest).
+const RECEIVER_FACTORY_DECLARATION = /\b(\w+)\s*=\s*([A-Za-z_$][\w$]*)\s*\(/g;
+// `receiver: TypeName =` / `receiver: TypeName;` — an explicit type
+// annotation. Only a simple type name binds; generics/unions are dropped.
+const RECEIVER_ANNOTATION_DECLARATION = /\b(\w+)\s*:\s*([A-Za-z_$][\w$.]*)\s*[=;]/g;
+
+// Simple-identifier type layer: no generics (`<`), unions (`|`),
+// intersections (`&`), function arrows (`=>`), or whitespace. Anything
+// else is not structured enough to bind on, so it falls back.
+const SIMPLE_TYPE_NAME = /^[\w$.]+$/;
 
 interface ReceiverDeclaration {
-  className: string;
+  kind: ReceiverEvidenceKind;
+  /** 'new' → class name, 'annotation' → type name, 'factory' → callee name. */
+  name: string;
   line: number;
 }
+
+// Priority rank per evidence kind — higher wins when one receiver has
+// several declarations. Nearest line breaks ties within a kind.
+const RECEIVER_EVIDENCE_PRIORITY: Record<ReceiverEvidenceKind, number> = {
+  new: 2,
+  annotation: 1,
+  factory: 0,
+};
 
 interface ReceiverDeclarationEntry {
   /** Identity token: the exact node array the map was built from. When the
@@ -475,6 +501,12 @@ function receiverDeclarationsForFile(
   if (cached && cached.nodes === nodes) return cached.decls;
 
   const decls = new Map<string, ReceiverDeclaration[]>();
+  const add = (receiver: string, decl: ReceiverDeclaration): void => {
+    const existing = decls.get(receiver);
+    if (existing) existing.push(decl);
+    else decls.set(receiver, [decl]);
+  };
+
   for (const node of nodes) {
     if (node.kind !== 'statement' && node.kind !== 'variable' && node.kind !== 'constant') continue;
     if (!node.signature) continue;
@@ -482,27 +514,100 @@ function receiverDeclarationsForFile(
     // prefix the node name to feed both shapes through the same regex.
     const text = node.kind === 'statement' ? node.signature : `${node.name} ${node.signature}`;
     for (const match of text.matchAll(RECEIVER_NEW_DECLARATION)) {
-      const declaration = { className: match[2]!, line: node.startLine };
-      const existing = decls.get(match[1]!);
-      if (existing) existing.push(declaration);
-      else decls.set(match[1]!, [declaration]);
+      add(match[1]!, { kind: 'new', name: match[2]!, line: node.startLine });
+    }
+    for (const match of text.matchAll(RECEIVER_FACTORY_DECLARATION)) {
+      if (match[2] === 'new') continue; // direct construction handled above
+      add(match[1]!, { kind: 'factory', name: match[2]!, line: node.startLine });
+    }
+    for (const match of text.matchAll(RECEIVER_ANNOTATION_DECLARATION)) {
+      add(match[1]!, { kind: 'annotation', name: match[2]!, line: node.startLine });
     }
   }
+
+  // Top-level `const q: Queue = ...` is a variable node whose signature holds
+  // only the initializer, so annotation evidence for it must come from source.
+  const source = context.readFile(filePath);
+  if (source) {
+    const lines = source.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+      for (const match of lines[i]!.matchAll(RECEIVER_ANNOTATION_DECLARATION)) {
+        add(match[1]!, { kind: 'annotation', name: match[2]!, line: i + 1 });
+      }
+    }
+  }
+
   cache.set(filePath, { nodes, decls });
   return decls;
 }
 
 /**
+ * Highest-priority declaration at or before the call line; ties within a
+ * kind go to the nearest line (reassignment retypes the receiver).
+ */
+function selectReceiverDeclaration(
+  declarations: ReceiverDeclaration[] | undefined,
+  callLine: number,
+): ReceiverDeclaration | null {
+  let best: ReceiverDeclaration | null = null;
+  for (const candidate of declarations ?? []) {
+    if (candidate.line > callLine) continue;
+    if (!best) {
+      best = candidate;
+      continue;
+    }
+    const candidateRank = RECEIVER_EVIDENCE_PRIORITY[candidate.kind];
+    const bestRank = RECEIVER_EVIDENCE_PRIORITY[best.kind];
+    if (candidateRank > bestRank || (candidateRank === bestRank && candidate.line >= best.line)) {
+      best = candidate;
+    }
+  }
+  return best;
+}
+
+/**
+ * Resolve a declaration to the simple type name whose method the receiver
+ * call must target, or undefined when the evidence carries no class-bearing
+ * name. Factory evidence needs a same-language function/method whose
+ * `returnType` is a simple identifier — inferred/generic/union returns fall
+ * back rather than guess. Same-file factories win over import-reachable
+ * cross-file ones.
+ */
+function declaredReceiverTypeName(
+  declared: ReceiverDeclaration,
+  ref: UnresolvedRef,
+  context: ResolutionContext,
+  imports: ImportMapping[],
+): string | undefined {
+  if (declared.kind !== 'factory') {
+    return SIMPLE_TYPE_NAME.test(declared.name) ? declared.name : undefined;
+  }
+
+  const factories = context
+    .getNodesByName(declared.name)
+    .filter((n) => (n.kind === 'function' || n.kind === 'method') && n.language === ref.language);
+  const reachable = factories.filter(
+    (n) => n.filePath === ref.filePath || crossFileCandidateAllowed(ref, n, imports),
+  );
+  const ordered = [
+    ...reachable.filter((n) => n.filePath === ref.filePath),
+    ...reachable.filter((n) => n.filePath !== ref.filePath),
+  ];
+  return ordered.find((n) => n.returnType && SIMPLE_TYPE_NAME.test(n.returnType))?.returnType;
+}
+
+/**
  * Strategy 0.5: resolve `receiver.method()` from declaration evidence — an
- * earlier `const receiver = new ClassName()` statement (or top-level variable
- * initializer) in the same file names the receiver's class exactly, which is
- * a tier above the word-overlap guessing in Strategies 1-3.
+ * earlier `receiver = new ClassName()` / `receiver: TypeName` /
+ * `receiver = factory()` declaration in the same file names the receiver's
+ * class exactly, which is a tier above the word-overlap guessing in
+ * Strategies 1-3.
  *
- * Tri-state: `undefined` = no declaration evidence (fall through to the
- * heuristic strategies, zero behavior change); `null` = evidence found and
- * the declared class has no such method (veto the heuristics — the receiver
- * type is known, another class's same-named method cannot be it); otherwise
- * the bound method node.
+ * Tri-state: `undefined` = no usable declaration evidence (fall through to
+ * the heuristic strategies, zero behavior change); `null` = evidence found
+ * and the declared class has no such method (veto the heuristics — the
+ * receiver type is known, another class's same-named method cannot be it);
+ * otherwise the bound method node.
  */
 function matchMethodCallByDeclaration(
   receiverName: string,
@@ -510,24 +615,24 @@ function matchMethodCallByDeclaration(
   ref: UnresolvedRef,
   context: ResolutionContext,
 ): ResolvedRef | null | undefined {
-  // Nearest-declaration rule: the latest `= new` at or before the call line
-  // wins, so a reassignment after construction retypes the receiver.
-  let declared: ReceiverDeclaration | null = null;
-  for (const candidate of receiverDeclarationsForFile(ref.filePath, context).get(receiverName) ?? []) {
-    if (candidate.line > ref.line) continue;
-    if (!declared || candidate.line >= declared.line) declared = candidate;
-  }
+  const declared = selectReceiverDeclaration(
+    receiverDeclarationsForFile(ref.filePath, context).get(receiverName),
+    ref.line,
+  );
   if (!declared) return undefined;
 
   const imports = refImportMappings(ref, context);
+  const typeName = declaredReceiverTypeName(declared, ref, context, imports);
+  // Evidence whose type carries no graph class (builtins like Map/Set/Date),
+  // is not a simple identifier, or is vetoed by the caller file's imports is
+  // not evidence we can bind on — fall through instead of vetoing.
+  if (!typeName) return undefined;
+
   const classCandidates = context
-    .getNodesByName(declared.className)
+    .getNodesByName(typeName)
     .filter(
       (n) => (n.kind === 'class' || n.kind === 'struct' || n.kind === 'interface') && n.language === ref.language,
     );
-  // A declared type with no graph class (builtins like Map/Set/Date) or one
-  // vetoed by the caller file's imports is not evidence we can bind on —
-  // fall through instead of vetoing.
   const declClass = classCandidates.find((n) => crossFileCandidateAllowed(ref, n, imports));
   if (!declClass) return undefined;
 

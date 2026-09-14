@@ -4601,3 +4601,76 @@ void helperFunction(int count) {
     expect(getSupportedLanguages()).toContain('objc');
   });
 });
+
+describe('return_type extraction and persistence', () => {
+  it('persists the raw return-type annotation through the database', async () => {
+    const tempDir = createTempDir();
+    try {
+      fs.writeFileSync(
+        path.join(tempDir, 'queue.ts'),
+        `export class Queue<T> {
+  push(item: T): void {}
+}
+
+export function createQueue(): Queue<number> {
+  return new Queue<number>();
+}
+
+export function makeName(): string {
+  return 'x';
+}
+
+export function makeItems(): string | null {
+  return null;
+}
+`
+      );
+      const cg = CodeGraph.initSync(tempDir);
+      await cg.indexAll();
+      const nodes = cg.getNodesInFile('queue.ts');
+
+      const createQueue = nodes.find((n) => n.name === 'createQueue');
+      expect(createQueue?.returnType).toBe('Queue<number>');
+      // Survives the DB round-trip, not just the in-memory extraction result.
+      expect(cg.getNode(createQueue!.id)?.returnType).toBe('Queue<number>');
+
+      expect(nodes.find((n) => n.name === 'makeName')?.returnType).toBe('string');
+      expect(nodes.find((n) => n.name === 'makeItems')?.returnType).toBe('string | null');
+      const push = nodes.find((n) => n.kind === 'method' && n.name === 'push');
+      expect(push?.returnType).toBe('void');
+
+      cg.close();
+    } finally {
+      cleanupTempDir(tempDir);
+    }
+  });
+
+  it('leaves returnType unset when the function has no annotation', async () => {
+    const tempDir = createTempDir();
+    try {
+      fs.writeFileSync(
+        path.join(tempDir, 'plain.ts'),
+        `export function inferred() {
+  return 1;
+}
+`
+      );
+      const cg = CodeGraph.initSync(tempDir);
+      await cg.indexAll();
+      const node = cg.getNodesInFile('plain.ts').find((n) => n.name === 'inferred');
+      expect(node).toBeDefined();
+      expect(node?.returnType).toBeUndefined();
+      cg.close();
+    } finally {
+      cleanupTempDir(tempDir);
+    }
+  });
+
+  it('truncates a pathological structural return type at 200 characters', () => {
+    const members = Array.from({ length: 60 }, (_, i) => `k${i}: string`).join('; ');
+    const result = extractFromSource('big.ts', `export function big(): { ${members} } {\n  return {} as never;\n}\n`);
+    const fn = result.nodes.find((n) => n.name === 'big');
+    expect(fn?.returnType?.length).toBe(200);
+    expect(fn?.returnType?.startsWith('{ k0: string')).toBe(true);
+  });
+});

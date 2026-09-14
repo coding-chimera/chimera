@@ -564,6 +564,14 @@ export interface Node {
   /** Function/method signature */
   signature?: string;
 
+  /**
+   * Raw return-type annotation text for a function/method node (e.g.
+   * `Queue`, `Promise<void>`, `string | null`). Stored verbatim, not
+   * normalized — the resolver classifies the shape (simple identifier vs
+   * generic/union/inferred) before using it for receiver-type inference.
+   */
+  returnType?: string;
+
   /** Visibility modifier */
   visibility?: 'public' | 'private' | 'protected' | 'internal';
 
