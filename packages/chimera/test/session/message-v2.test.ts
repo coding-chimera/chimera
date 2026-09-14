@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { APICallError } from "ai"
+import { APICallError, TypeValidationError } from "ai"
 import { MessageV2 } from "../../src/session/message-v2"
 import { ProviderTransform } from "@/provider/transform"
 import type { Provider } from "@/provider/provider"
@@ -1788,5 +1788,29 @@ describe("session.message-v2.fromError", () => {
     const result = MessageV2.fromError(zlibError, { providerID, aborted: true })
 
     expect(result.name).toBe("MessageAbortedError")
+  })
+
+  test("recovers relay envelope from TypeValidationError as retryable APIError", () => {
+    const envelope = { code: "ClientError", message: "Backend buffer overflow.", request_id: "req-1" }
+    const result = MessageV2.fromError(new TypeValidationError({ value: envelope, cause: new Error("invalid_union") }), {
+      providerID,
+    })
+
+    expect(MessageV2.APIError.isInstance(result)).toBe(true)
+    if (!MessageV2.APIError.isInstance(result)) throw new Error("expected APIError")
+    expect(result.data.message).toBe("Backend buffer overflow.")
+    expect(result.data.isRetryable).toBe(true)
+    expect(result.data.responseBody).toBe(JSON.stringify(envelope))
+    expect(result.data.metadata).toMatchObject({ code: "ClientError", requestId: "req-1", retryLimit: "3" })
+  })
+
+  test("keeps non-envelope TypeValidationError as UnknownError", () => {
+    const result = MessageV2.fromError(
+      new TypeValidationError({ value: { choices: "invalid" }, cause: new Error("invalid_union") }),
+      { providerID },
+    )
+
+    expect(result.name).toBe("UnknownError")
+    expect(MessageV2.APIError.isInstance(result)).toBe(false)
   })
 })

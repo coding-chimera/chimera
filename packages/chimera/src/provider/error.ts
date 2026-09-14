@@ -1,4 +1,4 @@
-import { APICallError } from "ai"
+import { APICallError, TypeValidationError } from "ai"
 import { STATUS_CODES } from "http"
 import { iife } from "@/util/iife"
 import type { ProviderID } from "./schema"
@@ -110,6 +110,14 @@ function json(input: unknown) {
   return undefined
 }
 
+function safeStringify(input: unknown) {
+  try {
+    return JSON.stringify(input)
+  } catch {
+    return undefined
+  }
+}
+
 export type ParsedStreamError =
   | {
       type: "context_overflow"
@@ -167,6 +175,40 @@ export function parseStreamError(input: unknown): ParsedStreamError | undefined 
         isRetryable: true,
         responseBody,
       }
+  }
+}
+
+const VALIDATION_ERROR_RETRY_LIMIT = 3
+
+export type ParsedValidationError = {
+  message: string
+  isRetryable: boolean
+  responseBody?: string
+  metadata?: Record<string, string>
+}
+
+export function parseValidationError(input: unknown): ParsedValidationError | undefined {
+  if (!TypeValidationError.isInstance(input)) return
+  const value = json(input.value)
+  if (!value) return
+  const text = typeof value.message === "string" ? value.message.trim() : ""
+  if (!text) return
+  const code = typeof value.code === "string" ? value.code.trim() : ""
+  const requestId =
+    typeof value.request_id === "string"
+      ? value.request_id.trim()
+      : typeof value.requestId === "string"
+        ? value.requestId.trim()
+        : ""
+  return {
+    message: text,
+    isRetryable: true,
+    responseBody: safeStringify(value),
+    metadata: {
+      ...(code ? { code } : {}),
+      ...(requestId ? { requestId } : {}),
+      retryLimit: String(VALIDATION_ERROR_RETRY_LIMIT),
+    },
   }
 }
 

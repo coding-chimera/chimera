@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import type { NamedError } from "@opencode-ai/core/util/error"
-import { APICallError } from "ai"
+import { APICallError, TypeValidationError } from "ai"
 import { setTimeout as sleep } from "node:timers/promises"
 import { Effect, Layer, Schedule } from "effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
@@ -143,6 +143,36 @@ describe("session.retry.delay", () => {
       }),
     ),
   )
+
+  it.live("policy stops after the validation error retry limit", () =>
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const attempts: number[] = []
+        const error = MessageV2.fromError(
+          new TypeValidationError({
+            value: { code: "ClientError", message: "Backend buffer overflow.", request_id: "req-1" },
+            cause: new Error("invalid_union"),
+          }),
+          { providerID },
+        )
+        const step = yield* Schedule.toStepWithMetadata(
+          SessionRetry.policy({
+            parse: (err) => MessageV2.APIError.Schema.parse(err),
+            set: (info) =>
+              Effect.sync(() => {
+                attempts.push(info.attempt)
+              }),
+          }),
+        )
+        yield* step(error)
+        yield* step(error)
+        yield* step(error)
+        yield* step(error).pipe(Effect.ignore)
+
+        expect(attempts).toEqual([1, 2, 3])
+      }),
+    ),
+  )
 })
 
 describe("session.retry.retryable", () => {
@@ -280,6 +310,21 @@ describe("session.retry.retryable", () => {
     const retryable = SessionRetry.retryable(error)
     expect(retryable).toBeDefined()
     expect(retryable).toBe("Response decompression failed")
+  })
+
+  test("retries relay TypeValidationError envelopes with bounded limit", () => {
+    const error = MessageV2.fromError(
+      new TypeValidationError({
+        value: { code: "ClientError", message: "Backend buffer overflow.", request_id: "req-1" },
+        cause: new Error("invalid_union"),
+      }),
+      { providerID },
+    )
+
+    expect(MessageV2.APIError.isInstance(error)).toBe(true)
+    if (!MessageV2.APIError.isInstance(error)) throw new Error("expected APIError")
+    expect(SessionRetry.retryable(error)).toBe("Backend buffer overflow.")
+    expect(error.data.metadata?.retryLimit).toBe("3")
   })
 })
 

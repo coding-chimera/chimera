@@ -2,7 +2,7 @@ import { BusEvent } from "@/bus/bus-event"
 import { SessionID, MessageID, PartID } from "./schema"
 import z from "zod"
 import { NamedError } from "@opencode-ai/core/util/error"
-import { APICallError, convertToModelMessages, LoadAPIKeyError, type ModelMessage, type UIMessage } from "ai"
+import { APICallError, TypeValidationError, convertToModelMessages, LoadAPIKeyError, type ModelMessage, type UIMessage } from "ai"
 import { LSP } from "@/lsp/lsp"
 import { Snapshot } from "@/snapshot"
 import { SyncEvent } from "../sync"
@@ -1363,6 +1363,19 @@ export function fromError(
         },
         { cause: e },
       ).toObject()
+    case TypeValidationError.isInstance(e): {
+      const validation = ProviderError.parseValidationError(e)
+      if (!validation) return new NamedError.Unknown({ message: errorMessage(e) }, { cause: e }).toObject()
+      return new APIError(
+        {
+          message: validation.message,
+          isRetryable: validation.isRetryable,
+          responseBody: validation.responseBody,
+          metadata: validation.metadata,
+        },
+        { cause: e },
+      ).toObject()
+    }
     case e instanceof Error:
       return new NamedError.Unknown({ message: errorMessage(e) }, { cause: e }).toObject()
     default:
