@@ -4,8 +4,9 @@
  * Handles symbol name matching for reference resolution.
  */
 
-import { Node } from '../types';
+import { Language, Node } from '../types';
 import { UnresolvedRef, ResolvedRef, ResolutionContext, ImportMapping } from './types';
+import { LRUCache } from './lru-cache';
 
 // Names defined more than this many times are never guessed by fuzzy scoring:
 // K definitions x K references is O(K²) work and stalls indexing on vendored/
@@ -420,6 +421,131 @@ function inferJavaFieldReceiverType(
   return lastPart;
 }
 
+// Strategy 0.5 gate: receiver types are only inferable from `= new`
+// declaration evidence in the languages whose function bodies are indexed
+// as statement nodes. Mirrors CODEPLAN_STATEMENT_LANGUAGES in
+// extraction/tree-sitter.ts, which is module-local and cannot be imported.
+const DECLARATION_EVIDENCE_LANGUAGES: ReadonlySet<Language> = new Set([
+  'typescript',
+  'javascript',
+  'tsx',
+  'jsx',
+]);
+
+// Captures `receiver = new ClassName` inside statement signatures. Covers
+// the three shapes the extractor records: `const receiver = new X(`,
+// `let receiver = new X(`, and bare `receiver = new X(` (reassignment) —
+// in all three the word right before `=` is the receiver, so one global
+// regex indexes every declaration pair in a file per scan.
+const RECEIVER_NEW_DECLARATION = /\b(\w+)\s*=\s*new\s+(\w+)/g;
+
+interface ReceiverDeclaration {
+  className: string;
+  line: number;
+}
+
+interface ReceiverDeclarationEntry {
+  /** Identity token: the exact node array the map was built from. When the
+   *  resolver clears its per-file cache (sync / post-extract), getNodesInFile
+   *  hands back a new array and the entry is rebuilt on the next touch — no
+   *  stale declaration evidence survives inside a resolver's lifetime. */
+  nodes: Node[];
+  decls: Map<string, ReceiverDeclaration[]>;
+}
+
+// Per-context memo (WeakMap keyed by the ResolutionContext object): the
+// failing-reference batch is ~78k refs, and rescanning a file per ref is
+// unacceptable. Keying on the context object (each resolver builds exactly
+// one) also means per-file paths from different projects can never alias,
+// and the whole cache dies with the resolver.
+const RECEIVER_DECL_CACHES = new WeakMap<ResolutionContext, LRUCache<string, ReceiverDeclarationEntry>>();
+const RECEIVER_DECL_FILE_LIMIT = 256;
+
+function receiverDeclarationsForFile(
+  filePath: string,
+  context: ResolutionContext,
+): Map<string, ReceiverDeclaration[]> {
+  let cache = RECEIVER_DECL_CACHES.get(context);
+  if (!cache) {
+    cache = new LRUCache<string, ReceiverDeclarationEntry>(RECEIVER_DECL_FILE_LIMIT);
+    RECEIVER_DECL_CACHES.set(context, cache);
+  }
+  const nodes = context.getNodesInFile(filePath);
+  const cached = cache.get(filePath);
+  if (cached && cached.nodes === nodes) return cached.decls;
+
+  const decls = new Map<string, ReceiverDeclaration[]>();
+  for (const node of nodes) {
+    if (node.kind !== 'statement' && node.kind !== 'variable' && node.kind !== 'constant') continue;
+    if (!node.signature) continue;
+    // variable/constant signatures are initializer-only (`= new X(...)`), so
+    // prefix the node name to feed both shapes through the same regex.
+    const text = node.kind === 'statement' ? node.signature : `${node.name} ${node.signature}`;
+    for (const match of text.matchAll(RECEIVER_NEW_DECLARATION)) {
+      const declaration = { className: match[2]!, line: node.startLine };
+      const existing = decls.get(match[1]!);
+      if (existing) existing.push(declaration);
+      else decls.set(match[1]!, [declaration]);
+    }
+  }
+  cache.set(filePath, { nodes, decls });
+  return decls;
+}
+
+/**
+ * Strategy 0.5: resolve `receiver.method()` from declaration evidence — an
+ * earlier `const receiver = new ClassName()` statement (or top-level variable
+ * initializer) in the same file names the receiver's class exactly, which is
+ * a tier above the word-overlap guessing in Strategies 1-3.
+ *
+ * Tri-state: `undefined` = no declaration evidence (fall through to the
+ * heuristic strategies, zero behavior change); `null` = evidence found and
+ * the declared class has no such method (veto the heuristics — the receiver
+ * type is known, another class's same-named method cannot be it); otherwise
+ * the bound method node.
+ */
+function matchMethodCallByDeclaration(
+  receiverName: string,
+  methodName: string,
+  ref: UnresolvedRef,
+  context: ResolutionContext,
+): ResolvedRef | null | undefined {
+  // Nearest-declaration rule: the latest `= new` at or before the call line
+  // wins, so a reassignment after construction retypes the receiver.
+  let declared: ReceiverDeclaration | null = null;
+  for (const candidate of receiverDeclarationsForFile(ref.filePath, context).get(receiverName) ?? []) {
+    if (candidate.line > ref.line) continue;
+    if (!declared || candidate.line >= declared.line) declared = candidate;
+  }
+  if (!declared) return undefined;
+
+  const imports = refImportMappings(ref, context);
+  const classCandidates = context
+    .getNodesByName(declared.className)
+    .filter(
+      (n) => (n.kind === 'class' || n.kind === 'struct' || n.kind === 'interface') && n.language === ref.language,
+    );
+  // A declared type with no graph class (builtins like Map/Set/Date) or one
+  // vetoed by the caller file's imports is not evidence we can bind on —
+  // fall through instead of vetoing.
+  const declClass = classCandidates.find((n) => crossFileCandidateAllowed(ref, n, imports));
+  if (!declClass) return undefined;
+
+  const declClassName = declClass.name;
+  const methodNode = context.getNodesInFile(declClass.filePath).find(
+    (n) => n.kind === 'method' && n.name === methodName && n.qualifiedName.includes(declClassName),
+  );
+  // Declaration evidence is authoritative: the receiver's class is known, so
+  // a method it does not declare must not bind to another class's guess.
+  if (!methodNode) return null;
+  if (!crossFileCandidateAllowed(ref, methodNode, imports)) return null;
+  return {
+    original: ref,
+    targetNodeId: methodNode.id,
+    resolvedBy: 'instance-method',
+  };
+}
+
 /**
  * Try to resolve by method name on a class/object
  */
@@ -478,6 +604,16 @@ export function matchMethodCall(
       if (typedMatch) {
         return typedMatch;
       }
+    }
+  }
+
+  // Strategy 0.5: declaration-evidence receiver type (`const q = new Queue()`
+  // then `q.push()`). Only dot receivers, only languages whose statements the
+  // extractor indexes (see DECLARATION_EVIDENCE_LANGUAGES).
+  if (dotMatch && DECLARATION_EVIDENCE_LANGUAGES.has(ref.language)) {
+    const declarationMatch = matchMethodCallByDeclaration(objectOrClass!, methodName!, ref, context);
+    if (declarationMatch !== undefined) {
+      return declarationMatch;
     }
   }
 
