@@ -214,6 +214,16 @@ const SCOPE_OUTPUT = [
   "Scope check: propagation reaches deep.ts (via surface.ts, 3 hops), surface.ts (via relay.ts, 2 hops), relay.ts, outside the scope declared in predesign_drift (declared: main.ts). Entries marked (via ..., N hops) are deep consumers up to 3 hops away that grep on the changed symbol cannot reach; they often hardcode the old contract.",
 ].join("\n")
 
+// The same shape rendered by the symbol-level probe upgrade: consumer symbols
+// and symbol@file intermediates, with the path inside the shared ` (file:line)`
+// entry tail. Sessions can mix both formats; the scanner must parse each.
+const SCOPE_OUTPUT_NAMED = [
+  "Edit applied successfully.",
+  "",
+  "Propagation check: 1 dependent file(s) may be affected: relayUse (relay.ts:2).",
+  "Scope check: propagation reaches deepUse deep2 (deep.ts:4) (via wrap@surface.ts, 3 hops), surfaceFn (surface.ts:2) (via relayUse@relay.ts, 2 hops), relayUse (relay.ts:2), outside the scope declared in predesign_drift (declared: main.ts). Entries marked (via ..., N hops) are deep consumers up to 3 hops away that grep on the changed symbol cannot reach; they often hardcode the old contract.",
+].join("\n")
+
 function driftCtx(sessionID: SessionID, callID: string) {
   return {
     sessionID,
@@ -227,15 +237,34 @@ function driftCtx(sessionID: SessionID, callID: string) {
   }
 }
 
-function sessionWithScopeFlag(sessions: Session.Interface, sessionID: SessionID) {
+function sessionWithScopeFlag(sessions: Session.Interface, sessionID: SessionID, output = SCOPE_OUTPUT) {
   return Effect.gen(function* () {
     const parent = yield* sessions.updateMessage(userMessage(sessionID))
     const assistant = yield* sessions.updateMessage(assistantMessage(sessionID, parent.id))
-    yield* sessions.updatePart(toolPart(sessionID, assistant.id, "edit", "call_scope_flag", SCOPE_OUTPUT))
+    yield* sessions.updatePart(toolPart(sessionID, assistant.id, "edit", "call_scope_flag", output))
   })
 }
 
 describe("chimera prompt-context unreconciled scope drift", () => {
+  it.live("parses symbol-named entries from the new probe format", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* () {
+        yield* initGraph()
+        const sessions = yield* Session.Service
+        const session = yield* sessions.create({ title: "Drift named" })
+        yield* sessionWithScopeFlag(sessions, session.id, SCOPE_OUTPUT_NAMED)
+
+        const context = yield* (yield* ChimeraPromptContext.Service).render(session.id, sessions)
+
+        // Same reconciliation as the legacy line: deep entries surface by their
+        // file path extracted from the (file:line) tail; 1-hop entries stay out.
+        expect(context).toContain("Unreconciled scope drift: deep.ts, surface.ts")
+        expect(context).not.toContain("surface.ts, relay")
+      }),
+      { git: true, config: (url) => testProviderConfig(url) },
+    ),
+  )
+
   it.live("resurfaces scope-flagged files that were never edited or declared", () =>
     provideTmpdirServer(
       Effect.fnUntraced(function* () {

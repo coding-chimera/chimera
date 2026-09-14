@@ -9,6 +9,7 @@ import {
   classifyFileBoundary,
   collectFileProjections,
   collectIncidentRelations,
+  DependentRelations,
   type ChangeFact,
   type FileClassification,
   type ProjectGraphState,
@@ -31,7 +32,6 @@ import {
   type IndexProgress as CodeGraphIndexProgress,
   type Node as CodeGraphNode,
   type RelationEvidence as CodeGraphRelation,
-  type RelationKind,
 } from "@/graph"
 import { ProjectionMemo } from "@/chimera/projection-memo"
 import { deriveImpactLabels, type ImpactLabelResult } from "@/chimera/impact-label"
@@ -1012,16 +1012,6 @@ const SEARCH_REFS_FILE_LEVEL_MAX = 3
 const SEARCH_REFS_SOURCE_CHARS = 100
 const SEARCH_REFS_TIMEOUT_MS = 300
 
-/** Incoming relations that make a search hit worth a Refs block (same set impact's callers chain uses). */
-const DependentRelations: RelationKind[] = [
-  "CalledBy",
-  "ImportedBy",
-  "UsedBy",
-  "InstantiatedBy",
-  "BaseClassOf",
-  "OverriddenBy",
-  "DecoratedBy",
-]
 
 /** Companion-test marker in a graph path: `__tests__/` dir segment or `.test.`/`.spec.` suffix. */
 const TEST_PATH = /__tests__|\.(test|spec)\./i

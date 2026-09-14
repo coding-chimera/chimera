@@ -456,6 +456,7 @@ export const EditTool = Tool.define(
           const afterRangeList = (hashline?.afterRanges as ReturnType<typeof afterRanges> | undefined) ?? []
           const afterRange = afterRangeList[0]
           const changedBlock = afterRange ? formatChangedBlock(after.lines, afterRange.startLine, afterRange.endLine) : "Changed lines after edit: none"
+          const beforeRangeList = (hashline?.beforeRanges as ReturnType<typeof beforeRanges> | undefined) ?? []
           let output = [
             deleted ? "File deleted successfully." : "Edit applied successfully.",
             "",
@@ -463,7 +464,7 @@ export const EditTool = Tool.define(
             `- changeID: ${changeID}`,
             "",
             "Resolved target:",
-            `- before: ${targetRange(path.relative(displayRoot, filePath), (hashline?.beforeRanges as ReturnType<typeof beforeRanges> | undefined) ?? [])}`,
+            `- before: ${targetRange(path.relative(displayRoot, filePath), beforeRangeList)}`,
             `- after: ${targetRange(path.relative(displayRoot, finalPath), afterRangeList)}`,
             "",
             changedBlock,
@@ -491,7 +492,10 @@ export const EditTool = Tool.define(
           const block = LSP.Diagnostic.report(finalPath, diagnostics[normalizedFilePath] ?? [])
           if (block) output += `\n\nLSP errors detected in this file, please fix:\n${block}`
 
-          output += `\n\n${yield* inlinePropagationCheck(renamePath ? [filePath, renamePath] : [filePath], ctx.sessionID)}`
+          const probeTargets = renamePath
+            ? [{ file: filePath, ranges: beforeRangeList }, { file: renamePath }]
+            : [{ file: filePath, ranges: beforeRangeList }]
+          output += `\n\n${yield* inlinePropagationCheck(probeTargets, ctx.sessionID)}`
           return {
             metadata: {
               diagnostics,
