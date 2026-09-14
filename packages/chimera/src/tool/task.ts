@@ -29,7 +29,9 @@ const BACKGROUND_DESCRIPTION = [
   "Background mode: background=true launches the subagent asynchronously and returns immediately while the task keeps working.",
   "Foreground is the default; use it when you need the result before continuing.",
   "Use background only for independent work that can run while you continue elsewhere.",
+  "Resuming an already-finished task with background=true starts a new background run on the same subagent session and returns immediately with the same task_id — it never blocks the current turn, and you are notified as usual when the new run finishes.",
   "You will be notified automatically when it finishes — do not sleep, poll for progress, or duplicate its work while it runs.",
+  "When a dispatched subagent itself launches background tasks, its dispatch call is held open until every background result is delivered and the subagent's final response is ready; the parent receives periodic parked progress metadata (parked, waitingBackgroundTasks, parkElapsedMs) while waiting.",
 ].join(" ")
 
 const BACKGROUND_STARTED = [
@@ -295,22 +297,38 @@ export const TaskTool = Tool.define(
           )
         })
 
+      // While a synchronous dispatch is parked on the child's owned background jobs,
+      // publish the parked state so the parent sees the child is still working.
+      const onParkProgress = (materialized: SubagentDispatchMaterialized) =>
+        (info: { waiting: number; elapsedMs: number }) =>
+          ctx.metadata({
+            title: params.description,
+            metadata: {
+              sessionId: materialized.nextSession.id,
+              model: prepared.resolved.model,
+              execution: materialized.execution,
+              parked: true,
+              waitingBackgroundTasks: info.waiting,
+              parkElapsedMs: info.elapsedMs,
+            },
+          })
       // ── Background branch ──────────────────────────────────────────────────
       if (runInBackground) {
         const jobs = Option.getOrUndefined(background)
         if (!jobs) {
           return yield* Effect.fail(new Error("Background job service is not available in this runtime"))
         }
-        // Fresh dispatches (no existing session, or an existing session with no
-        // live job) are pre-rejected against the background concurrency cap BEFORE
-        // materialize, so an over-cap failure never leaves an orphan empty child
-        // session behind: materialize creates the child session (the job id) as a
-        // side effect. Resume paths (existing session + live job) skip the precheck
-        // because they attach to an already-materialized session.
+        // Every dispatch that will call jobs.start (fresh session, resume with no
+        // live job, or restart of a settled job) is pre-rejected against the
+        // background concurrency cap BEFORE materialize, so an over-cap failure
+        // never leaves an orphan empty child session behind: materialize creates
+        // the child session (the job id) as a side effect. Only the running-job
+        // extend path skips the precheck because it attaches to an
+        // already-materialized session without consuming a new slot.
         const resumedID = prepared.existing?.id
         const existingJob = resumedID ? yield* jobs.get(resumedID) : undefined
-        const fresh = !resumedID || !existingJob
-        if (fresh) {
+        const willStartJob = !resumedID || !existingJob || existingJob.status !== "running"
+        if (willStartJob) {
           const limit =
             cfg.delegation?.background_concurrent ?? ConfigDelegation.DEFAULT_BACKGROUND_CONCURRENT
           const runningCount =
@@ -325,7 +343,7 @@ export const TaskTool = Tool.define(
         }
         const materialized = yield* dispatch.materialize(prepared, params.description)
         const sessionID = materialized.nextSession.id
-        const notify = Effect.fn("TaskTool.notifyBackgroundResult")(function* (jobID: string) {
+        const notify = Effect.fn("TaskTool.notifyBackgroundResult")(function* (jobID: string, generation: number) {
           yield* jobs
             .wait({ id: jobID })
             .pipe(
@@ -344,30 +362,22 @@ export const TaskTool = Tool.define(
                 }
                 return Effect.void
               }),
+              // Delivery is final once the notify fiber finishes, no matter how
+              // the job settled, whether the injection succeeded, or whether the
+              // owner session still exists — quiescence keys off delivery. The
+              // generation binds the mark to this run: a same-id restart mid-
+              // injection must not be marked delivered by this stale fiber.
+              Effect.ensuring(jobs.markDelivered(jobID, generation).pipe(Effect.ignore)),
               Effect.ignoreCause({ log: true }),
               Effect.forkIn(scope, { startImmediately: true }),
             )
         })
-        const syncResume = Effect.fn("TaskTool.backgroundSyncResume")(function* () {
-          const result = yield* dispatch.runPrepared({
-            prepared,
-            description: params.description,
-            prompt: params.prompt,
-            promptOps,
-            abort: ctx.abort,
-            onStarted,
-            telemetry,
-            materialized,
-          })
-          return {
-            title: result.title,
-            metadata: result.metadata,
-            output: result.output,
-          }
-        })
+
         const freshStart = Effect.fn("TaskTool.backgroundFreshStart")(function* () {
-          // The capacity precheck already ran before materialize when this was a
-          // fresh dispatch; the engine re-checks the cap atomically inside start().
+          // The capacity precheck already ran before materialize for every path
+          // that reaches start(), settled-resume restarts included; the engine
+          // re-checks the cap atomically inside start(), and BackgroundJobLimitError
+          // is mapped to a plain Error below.
           const metadata = {
             sessionId: sessionID,
             model: prepared.resolved.model,
@@ -383,30 +393,60 @@ export const TaskTool = Tool.define(
               ),
             )
           }
-          const info = yield* jobs
-            .start({
+          for (let attempt = 0; ; attempt++) {
+            if (attempt >= 3) {
+              return yield* Effect.fail(
+                new Error(
+                  `Failed to dispatch background task ${params.description}: the same task_id (${sessionID}) is being concurrently restarted and this dispatch did not take effect after 3 attempts. Retry once the concurrent restart settles.`,
+                ),
+              )
+            }
+            // Generation check against start()'s running short-circuit: if a
+            // concurrent same-task_id dispatch restarted this session after our
+            // extend probe failed, start() returns their snapshot with the
+            // generation unchanged and never runs our prompt — the generation
+            // tells the two outcomes apart so the prompt is appended via extend
+            // instead of silently dropped behind a false STARTED.
+            const before = (yield* jobs.get(sessionID))?.generation
+            const info = yield* jobs
+              .start({
+                id: sessionID,
+                type: "task",
+                title: params.description,
+                ownerSessionId: ctx.sessionID,
+                metadata: {
+                  model: prepared.resolved.model,
+                  background: true,
+                },
+                onInterrupt: promptOps.cancel(sessionID).pipe(Effect.ignore),
+                run: runBackgroundPrepared(prepared, materialized, promptOps, telemetry, params.prompt, params.description),
+              })
+              .pipe(
+                Effect.catchTag("BackgroundJobLimitError", (error) =>
+                  Effect.fail(new Error(error.message)),
+                ),
+              )
+            if (info.generation !== before) {
+              yield* notify(info.id, info.generation)
+              return {
+                title: params.description,
+                metadata,
+                output: BACKGROUND_STARTED.replace("%s", sessionID),
+              }
+            }
+            const extended = yield* jobs.extend({
               id: sessionID,
-              type: "task",
-              title: params.description,
-              metadata: {
-                parentSessionId: ctx.sessionID,
-                sessionId: sessionID,
-                model: prepared.resolved.model,
-                background: true,
-              },
-              onInterrupt: promptOps.cancel(sessionID).pipe(Effect.ignore),
               run: runBackgroundPrepared(prepared, materialized, promptOps, telemetry, params.prompt, params.description),
             })
-            .pipe(
-              Effect.catchTag("BackgroundJobLimitError", (error) =>
-                Effect.fail(new Error(error.message)),
-              ),
-            )
-          yield* notify(info.id)
-          return {
-            title: params.description,
-            metadata,
-            output: BACKGROUND_STARTED.replace("%s", sessionID),
+            // The concurrent restart's own notify fiber owns result delivery, so
+            // this path never forks a second one.
+            if (extended) {
+              return {
+                title: params.description,
+                metadata,
+                output: BACKGROUND_UPDATED.replace("%s", sessionID),
+              }
+            }
           }
         })
 
@@ -426,16 +466,15 @@ export const TaskTool = Tool.define(
               output: BACKGROUND_UPDATED.replace("%s", sessionID),
             }
           }
-          // Job settled in the window between get and extend; re-read its state.
-          const settled = yield* jobs.get(sessionID)
-          if (settled?.status === "running") return yield* freshStart()
-          return yield* syncResume()
         }
-        if (existingJob) return yield* syncResume()
+        // Settled (or never started) — restart a new background run on the same session id.
         return yield* freshStart()
       }
 
       // ── Synchronous path (unchanged) ───────────────────────────────────────
+      // Materialize up front so the parked-progress metadata can address the child
+      // session by id; runPrepared would create the same session right after anyway.
+      const materialized = yield* dispatch.materialize(prepared, params.description)
       const result = yield* dispatch.runPrepared({
         prepared,
         description: params.description,
@@ -444,6 +483,8 @@ export const TaskTool = Tool.define(
         abort: ctx.abort,
         onStarted,
         telemetry,
+        materialized,
+        onParkProgress: onParkProgress(materialized),
       })
 
       return {

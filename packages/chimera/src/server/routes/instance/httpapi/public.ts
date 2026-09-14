@@ -71,7 +71,7 @@ const InstanceQueryParameters = [
 // Query schemas describe decoded Effect values, but the generated SDK needs the
 // public call shape. These keep SDK callers passing numbers/booleans while the
 // server still decodes string query params at runtime.
-const QueryNumberParameters = new Set(["start", "limit", "method"])
+const QueryNumberParameters = new Set(["start", "limit", "method", "timeout"])
 const QueryBooleanParameters = new Set(["roots", "archived"])
 const QueryParameterSchemas = {
   "GET /find/file limit": { type: "integer", minimum: 1, maximum: 200 },

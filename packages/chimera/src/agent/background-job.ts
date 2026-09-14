@@ -10,6 +10,19 @@ export type Info = {
   id: string
   type?: string
   title?: string
+  /** Owning session id: the session whose Background Tasks block lists this job and
+   * whose turn is parked until delivery completes. Kept as a loose string — the engine
+   * is session-agnostic. */
+  ownerSessionId?: string
+  /** Delivery state machine: "pending" from start until the notify fiber finishes
+   * injecting the result (markDelivered). Quiescence requires no running job and no
+   * delivery-pending job for an owner. */
+  delivery: "pending" | "delivered"
+  /** Run generation on this id: incremented each time start() creates a new run.
+   * start()'s running short-circuit returns the existing snapshot with the generation
+   * unchanged, so a caller can tell whether it actually created the job. Delivery
+   * marks may carry their generation; a stale-generation mark is a no-op. */
+  generation: number
   status: Status
   started_at: number
   completed_at?: number
@@ -21,6 +34,9 @@ export type Info = {
 type Active = {
   info: Info
   done: Deferred.Deferred<Info>
+  /** Completes when markDelivered runs; the settle-to-delivered in-flight window.
+   * Created at start and succeeded at most once (idempotent markDelivered). */
+  deliveryDone: Deferred.Deferred<void>
   scope: Scope.Closeable
   token: object
   pending: number
@@ -74,6 +90,10 @@ export type StartInput = {
   id: string
   type?: string
   title?: string
+  /** Owning session id; the engine derives metadata.parentSessionId from this (expand phase projection).
+   * Optional because the engine is session-agnostic — jobs started without an owner are engine-level only.
+   */
+  ownerSessionId?: string
   metadata?: Record<string, unknown>
   /** Interruption hook: fires when the job ends cancelled, for phase 2 to cancel the bound child session. */
   onInterrupt?: Effect.Effect<void>
@@ -102,6 +122,8 @@ export interface Interface {
   readonly extend: (input: ExtendInput) => Effect.Effect<boolean>
   readonly wait: (input: WaitInput) => Effect.Effect<WaitResult>
   readonly cancel: (id: string) => Effect.Effect<Info | undefined>
+  readonly markDelivered: (id: string, generation?: number) => Effect.Effect<void>
+  readonly waitOwnerQuiescent: (ownerSessionId: string) => Effect.Effect<void>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/BackgroundJob") {}
@@ -235,6 +257,7 @@ export const make = (config: Config.Interface) =>
       Effect.gen(function* () {
         const started_at = yield* Clock.currentTimeMillis
         const done = yield* Deferred.make<Info>()
+        const deliveryDone = yield* Deferred.make<void>()
         const tail = yield* Deferred.make<void>()
         const result = yield* SynchronizedRef.modifyEffect(
           state.jobs,
@@ -254,11 +277,19 @@ export const make = (config: Config.Interface) =>
                 id: input.id,
                 type: input.type,
                 title: input.title,
+                ownerSessionId: input.ownerSessionId,
+                delivery: "pending" as const,
+                generation: (existing?.info.generation ?? 0) + 1,
                 status: "running" as const,
                 started_at,
-                ...(input.metadata ? { metadata: input.metadata } : {}),
+                metadata: {
+                  ...input.metadata,
+                  sessionId: input.id,
+                  ...(input.ownerSessionId !== undefined ? { parentSessionId: input.ownerSessionId } : {}),
+                },
               },
               done,
+              deliveryDone,
               scope,
               token,
               pending: 1,
@@ -285,6 +316,62 @@ export const make = (config: Config.Interface) =>
         return result.info
       }),
     )
+  })
+
+  /**
+   * Marks the delivery of a job's background result as complete (idempotent: unknown
+   * ids and repeated calls are safe no-ops). The delivery state machine guards the
+   * in-flight window between settle and the notify fiber finishing the injection;
+   * waitOwnerQuiescent treats a delivery-pending job as still active for its owner.
+   * When `generation` is given, the mark applies only if the current entry is still
+   * that generation: a stale notify fiber from an earlier run on the same id (the
+   * entry was overwritten by a restart mid-injection) is a no-op instead of falsely
+   * delivering the newer run. Omitting it keeps the legacy by-id behavior.
+   */
+  const markDelivered: Interface["markDelivered"] = Effect.fn("BackgroundJob.markDelivered")(function* (
+    id: string,
+    generation?: number,
+  ) {
+    const result = yield* SynchronizedRef.modify(
+      state.jobs,
+      (jobs): readonly [Deferred.Deferred<void> | undefined, Map<string, Active>] => {
+        const job = jobs.get(id)
+        if (!job || job.info.delivery === "delivered") return [undefined, jobs]
+        if (generation !== undefined && job.info.generation !== generation) return [undefined, jobs]
+        return [job.deliveryDone, new Map(jobs).set(id, { ...job, info: { ...job.info, delivery: "delivered" } })]
+      },
+    )
+    if (result) yield* Deferred.succeed(result, undefined).pipe(Effect.ignore)
+  })
+
+  /**
+   * Waits until the owner has no running job and no delivery-pending job. Re-reads
+   * the snapshot after every wake-up so jobs registered mid-wait become visible; a
+   * settled-but-undelivered job keeps the wait alive until markDelivered (a stale-
+   * generation markDelivered is a no-op, so a same-id restart keeps the wait alive
+   * until the newest run settles and its own delivery completes). Each
+   * iteration awaits exactly the still-unresolved signal per job (done while
+   * running, deliveryDone once settled): awaiting an already-resolved deferred
+   * would hot-spin the loop for the whole settle-to-delivered window, which
+   * spans the entire woken turn. Naturally interruptible; deliberately has no
+   * timeout.
+   */
+  const waitOwnerQuiescent: Interface["waitOwnerQuiescent"] = Effect.fn("BackgroundJob.waitOwnerQuiescent")(function* (
+    ownerSessionId: string,
+  ) {
+    for (;;) {
+      const relevant = Array.from((yield* SynchronizedRef.get(state.jobs)).values()).filter(
+        (job) =>
+          job.info.ownerSessionId === ownerSessionId &&
+          (job.info.status === "running" || job.info.delivery === "pending"),
+      )
+      if (relevant.length === 0) return
+      yield* Effect.raceAll(
+        relevant.map((job) =>
+          job.info.status === "running" ? Deferred.await(job.done) : Deferred.await(job.deliveryDone),
+        ),
+      )
+    }
   })
 
   const extend: Interface["extend"] = Effect.fn("BackgroundJob.extend")(function* (input: ExtendInput) {
@@ -360,7 +447,7 @@ export const make = (config: Config.Interface) =>
     return result.info
   })
 
-  return Service.of({ list, get, start, extend, wait, cancel })
+  return Service.of({ list, get, start, extend, wait, cancel, markDelivered, waitOwnerQuiescent })
 })
 
 export const layer = Layer.effect(
@@ -375,6 +462,8 @@ export const layer = Layer.effect(
       extend: (input) => InstanceState.useEffect(state, (jobs) => jobs.extend(input)),
       wait: (input) => InstanceState.useEffect(state, (jobs) => jobs.wait(input)),
       cancel: (id) => InstanceState.useEffect(state, (jobs) => jobs.cancel(id)),
+      markDelivered: (id, generation) => InstanceState.useEffect(state, (jobs) => jobs.markDelivered(id, generation)),
+      waitOwnerQuiescent: (ownerSessionId) => InstanceState.useEffect(state, (jobs) => jobs.waitOwnerQuiescent(ownerSessionId)),
     })
   }),
 )

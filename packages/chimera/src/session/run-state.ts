@@ -129,14 +129,13 @@ export const defaultLayer = layer.pipe(
 )
 
 // BFS transitive closure over the background job graph (upstream
-// cancelBackgroundJobs): start from the cancelled session and expand through
-// job ids, metadata.sessionId, and metadata.parentSessionId until no running
-// job remains in reach. `cancelled` is the visited set for jobs (a job is
-// cancelled at most once — onInterrupt fires exactly on the running ->
-// cancelled transition, so the nested onInterrupt -> state.cancel(child)
-// recursion from task.ts cannot loop); `pending` is the frontier of session
-// ids to expand from. The `running` status filter means the loop always
-// terminates even with pathological metadata cycles.
+// cancelBackgroundJobs): start from the cancelled session and expand through job
+// ids and the typed ownerSessionId field until no running job remains in reach.
+// `cancelled` is the visited set for jobs (a job is cancelled at most once —
+// onInterrupt fires exactly on the running -> cancelled transition, so the nested
+// onInterrupt -> state.cancel(child) recursion from task.ts cannot loop); `pending`
+// is the frontier of session ids to expand from. The `running` status filter means
+// the loop always terminates even with pathological ownership cycles.
 const cancelBackgroundJobs = Effect.fn("SessionRunState.cancelBackgroundJobs")(function* (
   background: BackgroundJob.Interface,
   sessionID: SessionID,
@@ -148,8 +147,7 @@ const cancelBackgroundJobs = Effect.fn("SessionRunState.cancelBackgroundJobs")(f
     if (job.status !== "running") return false
     if (cancelled.has(job.id)) return false
     if (pending.has(job.id)) return true
-    if (typeof job.metadata?.sessionId === "string" && pending.has(job.metadata.sessionId)) return true
-    return typeof job.metadata?.parentSessionId === "string" && pending.has(job.metadata.parentSessionId)
+    return typeof job.ownerSessionId === "string" && pending.has(job.ownerSessionId)
   }
   let batch = jobs.filter(matches)
   while (batch.length > 0) {
@@ -161,7 +159,6 @@ const cancelBackgroundJobs = Effect.fn("SessionRunState.cancelBackgroundJobs")(f
             Effect.sync(() => {
               cancelled.add(job.id)
               pending.add(job.id)
-              if (typeof job.metadata?.sessionId === "string") pending.add(job.metadata.sessionId)
             }),
           ),
         ),

@@ -1,5 +1,6 @@
 import * as InstanceState from "@/effect/instance-state"
 import { InstanceRef, WorkspaceRef } from "@/effect/instance-ref"
+import { BackgroundJob } from "@/agent/background-job"
 import { Agent } from "@/agent/agent"
 import { Bus } from "@/bus"
 import { Command } from "@/command"
@@ -31,6 +32,8 @@ import {
   InitPayload,
   ListQuery,
   MessagesQuery,
+  QuiescenceQuery,
+  BackgroundQuiescence,
   PermissionResponsePayload,
   PromptPayload,
   RevertPayload,
@@ -56,6 +59,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const summary = yield* SessionSummary.Service
     const bus = yield* Bus.Service
     const scope = yield* Scope.Scope
+    const background = yield* BackgroundJob.Service
 
     const list = Effect.fn("SessionHttpApi.list")(function* (ctx: { query: typeof ListQuery.Type }) {
       const cursor = yield* Effect.try({
@@ -350,6 +354,28 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       return true
     })
 
+    const backgroundQuiescence = Effect.fn("SessionHttpApi.backgroundQuiescence")(function* (ctx: {
+      params: { sessionID: SessionID }
+      query: typeof QuiescenceQuery.Type
+    }) {
+      const count = Effect.fnUntraced(function* () {
+        const jobs = yield* background.list()
+        const owned = jobs.filter((job) => job.ownerSessionId === ctx.params.sessionID)
+        const running = owned.filter((job) => job.status === "running").length
+        const pendingDeliveries = owned.filter((job) => job.status !== "running" && job.delivery === "pending").length
+        return { running, pendingDeliveries }
+      })
+      const initial = yield* count()
+      if (initial.running === 0 && initial.pendingDeliveries === 0) {
+        return { quiescent: true, running: 0, pendingDeliveries: 0 }
+      }
+      const timeout = Math.min(Math.max(ctx.query.timeout ?? 30000, 1), 120000)
+      const outcome = yield* background.waitOwnerQuiescent(ctx.params.sessionID).pipe(Effect.timeoutOption(timeout))
+      if (outcome._tag === "Some") return { quiescent: true, running: 0, pendingDeliveries: 0 }
+      const current = yield* count()
+      return { quiescent: false, running: current.running, pendingDeliveries: current.pendingDeliveries }
+    })
+
     const deleteMessage = Effect.fn("SessionHttpApi.deleteMessage")(function* (ctx: {
       params: { sessionID: SessionID; messageID: MessageID }
     }) {
@@ -408,6 +434,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("revert", revert)
       .handle("unrevert", unrevert)
       .handle("permissionRespond", permissionRespond)
+      .handle("backgroundQuiescence", backgroundQuiescence)
       .handle("deleteMessage", deleteMessage)
       .handle("deletePart", deletePart)
       .handle("updatePart", updatePart)

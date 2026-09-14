@@ -5,6 +5,7 @@ import * as Socket from "effect/unstable/socket/Socket"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { Account } from "@/account/account"
 import { Agent } from "@/agent/agent"
+import { BackgroundJob } from "@/agent/background-job"
 import { Auth } from "@/auth"
 import { Bus } from "@/bus"
 import { Config } from "@/config/config"
@@ -189,6 +190,7 @@ export function createRoutes(corsOptions?: CorsOptions) {
       Question.defaultLayer,
       Ripgrep.defaultLayer,
       Session.defaultLayer,
+      BackgroundJob.defaultLayer,
       SessionCompaction.defaultLayer,
       RemoteCompaction.defaultLayer,
       SessionPrompt.defaultLayer,

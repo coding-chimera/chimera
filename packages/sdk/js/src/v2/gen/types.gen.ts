@@ -7056,6 +7056,47 @@ export type SessionUpdateResponses = {
 
 export type SessionUpdateResponse = SessionUpdateResponses[keyof SessionUpdateResponses]
 
+export type SessionBackgroundQuiescenceData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+    timeout?: number
+  }
+  url: "/session/{sessionID}/background/quiescence"
+}
+
+export type SessionBackgroundQuiescenceErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SessionBackgroundQuiescenceError =
+  SessionBackgroundQuiescenceErrors[keyof SessionBackgroundQuiescenceErrors]
+
+export type SessionBackgroundQuiescenceResponses = {
+  /**
+   * Background quiescence status
+   */
+  200: {
+    quiescent: boolean
+    running: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    pendingDeliveries: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  }
+}
+
+export type SessionBackgroundQuiescenceResponse =
+  SessionBackgroundQuiescenceResponses[keyof SessionBackgroundQuiescenceResponses]
+
 export type SessionChildrenData = {
   body?: never
   path: {

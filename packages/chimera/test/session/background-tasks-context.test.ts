@@ -75,9 +75,8 @@ const startOwnedJob = Effect.fn("BgCtxTest.startOwnedJob")(function* (sessionID:
     id,
     type: "task",
     title: "probe",
+    ownerSessionId: sessionID,
     metadata: {
-      parentSessionId: sessionID,
-      sessionId: id,
       model: { providerID: "test", modelID: "test-model", variant: "high" },
       background: true,
     },
