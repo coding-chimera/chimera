@@ -136,6 +136,12 @@ const INSTANTIATION_KINDS: ReadonlySet<string> = new Set([
 
 const CODEPLAN_STATEMENT_LANGUAGES: ReadonlySet<Language> = new Set(['typescript', 'javascript', 'tsx', 'jsx']);
 
+// Cap on stored return-type text. Structural literal types (object/tuple
+// types) can span hundreds of characters; the resolver only consumes the
+// simple-identifier layer, so anything longer is truncated rather than
+// bloating the column.
+const RETURN_TYPE_MAX_LENGTH = 200;
+
 const CODEPLAN_DEPENDENCY_STATEMENT_KINDS: ReadonlySet<string> = new Set([
   'expression_statement',
   'return_statement',
@@ -737,6 +743,7 @@ export class TreeSitterExtractor {
     const isExported = this.extractor.isExported?.(node, this.source);
     const isAsync = this.extractor.isAsync?.(node);
     const isStatic = this.extractor.isStatic?.(node);
+    const returnType = this.returnTypeNode(node);
 
     const funcNode = this.createNode('function', name, node, {
       docstring,
@@ -745,11 +752,12 @@ export class TreeSitterExtractor {
       isExported,
       isAsync,
       isStatic,
+      returnType: this.returnTypeText(returnType),
     });
     if (!funcNode) return;
 
     // Extract type annotations (parameter types and return type)
-    this.extractTypeAnnotations(node, funcNode.id);
+    this.extractTypeAnnotations(node, funcNode.id, returnType);
 
     // Extract decorators applied to the function (rare in JS/TS but
     // present in Python `@decorator def f():` and Java/Kotlin
@@ -853,12 +861,14 @@ export class TreeSitterExtractor {
     const visibility = this.extractor.getVisibility?.(node);
     const isAsync = this.extractor.isAsync?.(node);
     const isStatic = this.extractor.isStatic?.(node);
+    const returnType = this.returnTypeNode(node);
     const extraProps: Partial<Node> = {
       docstring,
       signature,
       visibility,
       isAsync,
       isStatic,
+      returnType: this.returnTypeText(returnType),
     };
     if (receiverType) {
       extraProps.qualifiedName = `${receiverType}::${name}`;
@@ -886,7 +896,7 @@ export class TreeSitterExtractor {
     }
 
     // Extract type annotations (parameter types and return type)
-    this.extractTypeAnnotations(node, methodNode.id);
+    this.extractTypeAnnotations(node, methodNode.id, returnType);
 
     // Extract decorators (`@Get('/list') list() {}`).
     this.extractDecoratorsFor(node, methodNode.id);
@@ -2812,10 +2822,41 @@ export class TreeSitterExtractor {
   ]);
 
   /**
+   * Resolve the return-type annotation node for a function/method
+   * declaration. Returns null when the language declares no `returnField`
+   * (we skip rather than probe a same-named field that may mean something
+   * else) or the declaration carries no return annotation.
+   */
+  private returnTypeNode(node: SyntaxNode): SyntaxNode | null {
+    const returnField = this.extractor?.returnField;
+    if (!returnField) return null;
+    return getChildByField(node, returnField);
+  }
+
+  /**
+   * Raw return-type annotation text (Queue, Promise<void>, string | null),
+   * truncated to RETURN_TYPE_MAX_LENGTH. Not normalized: the resolver
+   * classifies the shape before using it.
+   */
+  private returnTypeText(returnType: SyntaxNode | null): string | undefined {
+    if (!returnType) return undefined;
+    // TS wraps the annotation in a `type_annotation` node (`: Queue`), so the
+    // leading colon is part of the field text — strip it for a bare type.
+    const text = getNodeText(returnType, this.source).trim().replace(/^:\s*/, '');
+    if (!text) return undefined;
+    return text.length > RETURN_TYPE_MAX_LENGTH ? text.slice(0, RETURN_TYPE_MAX_LENGTH) : text;
+  }
+
+  /**
    * Extract type references from type annotations on a function/method/field node.
    * Creates 'references' edges for parameter types, return types, and field types.
+   *
+   * `resolvedReturnType` lets function/method callers pass the return-type
+   * node they already resolved for `Node.returnType`, avoiding a second
+   * field lookup; null means "already checked, none" and still falls back
+   * for callers whose language uses the default `return_type` field name.
    */
-  private extractTypeAnnotations(node: SyntaxNode, nodeId: string): void {
+  private extractTypeAnnotations(node: SyntaxNode, nodeId: string, resolvedReturnType?: SyntaxNode | null): void {
     if (!this.extractor) return;
     if (!this.TYPE_ANNOTATION_LANGUAGES.has(this.language)) return;
 
@@ -2837,7 +2878,7 @@ export class TreeSitterExtractor {
     }
 
     // Extract return type annotation
-    const returnType = getChildByField(node, this.extractor.returnField || 'return_type');
+    const returnType = resolvedReturnType ?? getChildByField(node, this.extractor.returnField || 'return_type');
     if (returnType) {
       this.extractTypeRefsFromSubtree(returnType, nodeId);
     }
