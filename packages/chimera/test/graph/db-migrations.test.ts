@@ -1,9 +1,10 @@
 /**
- * Schema migration v6 → v11 tests.
+ * Schema migration v6 → v12 tests.
  *
  * Chimera's v5/v6 (file_semantics, nodes.search_text) occupy the same numbers
  * as upstream codegraph's v5/v6 (nodes.return_type, edges identity dedup), so
- * the five upstream migrations are appended renumbered as chimera v7–v11.
+ * the five upstream migrations are appended renumbered as chimera v7–v11,
+ * and fork-side migrations continue from v12 (nodes.params_json).
  * These tests pin: a fresh database carries every object; an old chimera v6
  * database upgrades forward without rebuild or data loss; and the guarded
  * migrations are idempotent.
@@ -45,7 +46,7 @@ function objectNames(db: { prepare: (sql: string) => { all: () => unknown } }, t
     .all() as Array<{ name: string }>).map((r) => r.name);
 }
 
-function expectV11Objects(db: { prepare: (sql: string) => { all: () => unknown } }): void {
+function expectV12Objects(db: { prepare: (sql: string) => { all: () => unknown } }): void {
   // Fork lineage retained
   expect(tableColumns(db, 'nodes')).toContain('search_text');
   expect(objectNames(db, 'table')).toContain('file_semantics');
@@ -64,6 +65,8 @@ function expectV11Objects(db: { prepare: (sql: string) => { all: () => unknown }
   // v11: upstream v9
   expect(tableColumns(db, 'files')).toContain('generated');
   expect(objectNames(db, 'index')).toContain('idx_files_generated');
+  // v12: chimera param-annotation receiver types
+  expect(tableColumns(db, 'nodes')).toContain('params_json');
 }
 
 /** The chimera v6 shape: pre-v7 columns only (search_text/file_semantics present). */
@@ -196,7 +199,7 @@ describe('read-only open with outdated schema', () => {
     const conn = DatabaseConnection.open(dbPath());
     try {
       expect(getCurrentVersion(conn.getDb())).toBe(CURRENT_SCHEMA_VERSION);
-      expectV11Objects(conn.getDb());
+      expectV12Objects(conn.getDb());
     } finally {
       conn.close();
     }
@@ -215,13 +218,13 @@ describe('read-only open with outdated schema', () => {
   });
 });
 
-describe('schema v11', () => {
+describe('schema v12', () => {
   it('fresh database carries all objects and reports the current version', () => {
     const conn = DatabaseConnection.initialize(dbPath());
     try {
       expect(getCurrentVersion(conn.getDb())).toBe(CURRENT_SCHEMA_VERSION);
-      expect(CURRENT_SCHEMA_VERSION).toBe(11);
-      expectV11Objects(conn.getDb());
+      expect(CURRENT_SCHEMA_VERSION).toBe(12);
+      expectV12Objects(conn.getDb());
     } finally {
       conn.close();
     }
@@ -271,8 +274,8 @@ describe('migration from chimera v6', () => {
     const conn = DatabaseConnection.open(dbPath());
     try {
       const db = conn.getDb();
-      expect(getCurrentVersion(db)).toBe(11);
-      expectV11Objects(db);
+      expect(getCurrentVersion(db)).toBe(12);
+      expectV12Objects(db);
 
       // Duplicate edge collapsed by the v8 dedup, and the UNIQUE index now
       // makes INSERT OR IGNORE a real dedup.
@@ -306,7 +309,7 @@ describe('migration from chimera v6', () => {
   });
 
   it('is idempotent when re-run from an older recorded version', () => {
-    // The guarded scenario: a database that already carries the v7-v11
+    // The guarded scenario: a database that already carries the v7-v12
     // objects (created from current schema.sql) but is recorded at an older
     // version. Re-running must no-op the DDL instead of failing on duplicate
     // columns.
@@ -316,8 +319,8 @@ describe('migration from chimera v6', () => {
       runMigrations(raw.db, 6);
       raw.db.exec('DELETE FROM schema_versions WHERE version > 6');
       runMigrations(raw.db, 6);
-      expect(getCurrentVersion(raw.db)).toBe(11);
-      expectV11Objects(raw.db);
+      expect(getCurrentVersion(raw.db)).toBe(12);
+      expectV12Objects(raw.db);
     } finally {
       raw.db.close();
     }

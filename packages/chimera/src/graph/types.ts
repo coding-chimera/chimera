@@ -585,6 +585,13 @@ export interface Node {
   /** Generic type parameters */
   typeParameters?: string[];
 
+  /** Typed parameter pairs (name, declared type text) collected from
+   *  function/method annotations, serialized to nodes.params_json. Used by
+   *  receiver-type inference (`function f(q: Queue)` types the `q.push()`
+   *  receiver). Type text is stored raw — generics/unions survive here and
+   *  are filtered at resolution time. */
+  params?: Array<{ name: string; type: string }>;
+
   /** When the node was last updated */
   updatedAt: number;
 }

@@ -546,6 +546,93 @@ function matchMethodCallByDeclaration(
   };
 }
 
+interface TypedFunctionEntry {
+  /** Identity token, see ReceiverDeclarationEntry. */
+  nodes: Node[];
+  /** Function/method nodes that carry typed parameter pairs. */
+  functions: Node[];
+}
+
+// Same per-context memo pattern as RECEIVER_DECL_CACHES: the enclosing-
+// function lookup scans a file's node list, and the failing-ref batch makes
+// a per-ref rescan unacceptable.
+const TYPED_FN_CACHES = new WeakMap<ResolutionContext, LRUCache<string, TypedFunctionEntry>>();
+const TYPED_FN_FILE_LIMIT = 256;
+
+function typedFunctionsForFile(filePath: string, context: ResolutionContext): Node[] {
+  let cache = TYPED_FN_CACHES.get(context);
+  if (!cache) {
+    cache = new LRUCache<string, TypedFunctionEntry>(TYPED_FN_FILE_LIMIT);
+    TYPED_FN_CACHES.set(context, cache);
+  }
+  const nodes = context.getNodesInFile(filePath);
+  const cached = cache.get(filePath);
+  if (cached && cached.nodes === nodes) return cached.functions;
+
+  const functions = nodes.filter(
+    (n) => (n.kind === 'function' || n.kind === 'method') && n.params?.length,
+  );
+  cache.set(filePath, { nodes, functions });
+  return functions;
+}
+
+// A plain identifier or dotted qualified name (`Queue`, `db.Queue`) is the
+// only type shape this strategy can bind; the extractor collects generics,
+// unions, and function types verbatim and they fail this gate.
+const SIMPLE_PARAM_TYPE = /^[\w$.]+$/;
+
+/**
+ * Strategy 0.5b: resolve `receiver.method()` from a type annotation on the
+ * enclosing function's parameter — `function f(q: Queue) { q.push() }`
+ * binds `q.push` to `Queue.push`. Parameters are the largest remaining
+ * receiver-type source (`= new` never names them). Tri-state, class lookup,
+ * and veto semantics mirror matchMethodCallByDeclaration exactly; this runs
+ * only when no `= new` declaration exists for the receiver (above), so a
+ * conflicting declaration always wins.
+ */
+function matchMethodCallByParamType(
+  receiverName: string,
+  methodName: string,
+  ref: UnresolvedRef,
+  context: ResolutionContext,
+): ResolvedRef | null | undefined {
+  // Innermost typed function/method containing the call line (latest start wins).
+  let enclosing: Node | undefined;
+  for (const fn of typedFunctionsForFile(ref.filePath, context)) {
+    if (fn.startLine > ref.line || (fn.endLine ?? fn.startLine) < ref.line) continue;
+    if (!enclosing || fn.startLine >= enclosing.startLine) enclosing = fn;
+  }
+  const param = enclosing?.params?.find((p) => p.name === receiverName);
+  if (!param || !SIMPLE_PARAM_TYPE.test(param.type)) return undefined;
+
+  // `db.Queue` names the class `Queue` — match on the trailing segment.
+  const typeName = param.type.split('.').pop() ?? param.type;
+  const imports = refImportMappings(ref, context);
+  const classCandidates = context
+    .getNodesByName(typeName)
+    .filter(
+      (n) => (n.kind === 'class' || n.kind === 'struct' || n.kind === 'interface') && n.language === ref.language,
+    );
+  // An annotated type with no graph class (builtins like Promise/Map) or one
+  // vetoed by the caller file's imports is not evidence we can bind on —
+  // fall through instead of vetoing.
+  const paramClass = classCandidates.find((n) => crossFileCandidateAllowed(ref, n, imports));
+  if (!paramClass) return undefined;
+
+  const methodNode = context.getNodesInFile(paramClass.filePath).find(
+    (n) => n.kind === 'method' && n.name === methodName && n.qualifiedName.includes(paramClass.name),
+  );
+  // The annotation is authoritative: the receiver's class is known, so a
+  // method it does not declare must not bind to another class's guess.
+  if (!methodNode) return null;
+  if (!crossFileCandidateAllowed(ref, methodNode, imports)) return null;
+  return {
+    original: ref,
+    targetNodeId: methodNode.id,
+    resolvedBy: 'instance-method',
+  };
+}
+
 /**
  * Try to resolve by method name on a class/object
  */
@@ -614,6 +701,12 @@ export function matchMethodCall(
     const declarationMatch = matchMethodCallByDeclaration(objectOrClass!, methodName!, ref, context);
     if (declarationMatch !== undefined) {
       return declarationMatch;
+    }
+    // No `= new` evidence for this receiver — a typed parameter on the
+    // enclosing function is the next-strongest declaration of its type.
+    const paramTypeMatch = matchMethodCallByParamType(objectOrClass!, methodName!, ref, context);
+    if (paramTypeMatch !== undefined) {
+      return paramTypeMatch;
     }
   }
 
