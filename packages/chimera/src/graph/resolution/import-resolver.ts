@@ -978,7 +978,6 @@ export function resolveJvmImport(
   return {
     original: ref,
     targetNodeId: candidates[0]!.id,
-    confidence: 0.95,
     resolvedBy: 'import',
   };
 }
@@ -1004,7 +1003,6 @@ export function resolveViaImport(
       return {
         original: ref,
         targetNodeId: fileNode.id,
-        confidence: 0.9,
         resolvedBy: 'import',
       };
     }
@@ -1066,7 +1064,6 @@ export function resolveViaImport(
           return {
             original: ref,
             targetNodeId: targetNode.id,
-            confidence: 0.9,
             resolvedBy: 'import',
           };
         }
@@ -1121,7 +1118,6 @@ function resolveJavaImportedReference(
         return {
           original: ref,
           targetNodeId: node.id,
-          confidence: 0.9,
           resolvedBy: 'import',
         };
       }
@@ -1143,7 +1139,6 @@ function resolveJavaImportedReference(
             return {
               original: ref,
               targetNodeId: node.id,
-              confidence: 0.9,
               resolvedBy: 'import',
             };
           }
@@ -1203,7 +1198,6 @@ function resolveGoCrossPackageReference(
         return {
           original: ref,
           targetNodeId: node.id,
-          confidence: 0.9,
           resolvedBy: 'import',
         };
       }

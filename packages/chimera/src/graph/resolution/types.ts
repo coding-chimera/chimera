@@ -37,8 +37,11 @@ export interface ResolvedRef {
   original: UnresolvedRef;
   /** ID of the target node */
   targetNodeId: string;
-  /** Confidence score (0-1) */
-  confidence: number;
+  /** Definitive-evidence flag: a framework-native or canonical binding that
+   *  needs no corroboration (compiler macros, exact config-key matches).
+   *  resolveOne short-circuits on it — the explicit successor of the legacy
+   *  `confidence >= 0.9` threshold. */
+  authoritative?: boolean;
   /** How it was resolved */
   resolvedBy: 'exact-match' | 'import' | 'qualified-name' | 'framework' | 'fuzzy' | 'instance-method' | 'file-path';
 }

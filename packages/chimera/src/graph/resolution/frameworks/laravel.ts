@@ -61,7 +61,6 @@ export const laravelResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: result,
-          confidence: 0.85,
           resolvedBy: 'framework',
         };
       }
@@ -90,7 +89,7 @@ export const laravelResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: result,
-          confidence: 0.9,
+          authoritative: true,
           resolvedBy: 'framework',
         };
       }

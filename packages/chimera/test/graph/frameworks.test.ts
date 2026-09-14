@@ -510,7 +510,6 @@ describe('nestjsResolver.resolve', () => {
     const result = nestjsResolver.resolve(ref, context as any);
     expect(result?.targetNodeId).toBe(svcNode.id);
     expect(result?.resolvedBy).toBe('framework');
-    expect(result?.confidence).toBeGreaterThanOrEqual(0.85);
   });
 
   it('returns null for a name without a provider suffix', () => {
@@ -1061,9 +1060,6 @@ version = "0.1.0"
     const result = rustResolver.resolve(ref, context);
     expect(result?.targetNodeId).toBe(libNode.id);
     expect(result?.resolvedBy).toBe('framework');
-    // Workspace-manifest hits are unambiguous and must beat name-matcher's
-    // self-file matches (0.7) so cross-crate `imports` edges materialize.
-    expect(result?.confidence).toBeGreaterThanOrEqual(0.9);
   });
 
   it('resolves crate name from workspace member main.rs when lib.rs is absent', () => {

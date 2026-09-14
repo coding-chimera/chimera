@@ -110,7 +110,6 @@ describe('swiftObjcBridgeResolver integration', () => {
       expect(result).not.toBeNull();
       expect(result?.targetNodeId).toBe(objcTarget.id);
       expect(result?.resolvedBy).toBe('framework');
-      expect(result?.confidence).toBe(0.6);
     });
 
     it('does NOT bridge generic Cocoa names like "init" or "description"', () => {

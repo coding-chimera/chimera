@@ -103,13 +103,11 @@ export const nestjsResolver: FrameworkResolver = {
       return {
         original: ref,
         targetNodeId: target.id,
-        confidence: preferred ? 0.85 : 0.7,
         resolvedBy: 'framework',
       };
     }
     return null;
   },
-
   extract(filePath, content) {
     if (!/\.(m?js|tsx?|cjs)$/.test(filePath)) return { nodes: [], references: [] };
     const nodes: Node[] = [];

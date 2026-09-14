@@ -106,7 +106,7 @@ export const vueResolver: FrameworkResolver = {
       return {
         original: ref,
         targetNodeId: ref.fromNodeId,
-        confidence: 1.0,
+        authoritative: true,
         resolvedBy: 'framework',
       };
     }
@@ -116,7 +116,7 @@ export const vueResolver: FrameworkResolver = {
       return {
         original: ref,
         targetNodeId: ref.fromNodeId,
-        confidence: 1.0,
+        authoritative: true,
         resolvedBy: 'framework',
       };
     }
@@ -127,7 +127,7 @@ export const vueResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: ref.fromNodeId,
-          confidence: 1.0,
+          authoritative: true,
           resolvedBy: 'framework',
         };
       }
@@ -144,7 +144,7 @@ export const vueResolver: FrameworkResolver = {
             return {
               original: ref,
               targetNodeId: nodes[0]!.id,
-              confidence: 0.9,
+              authoritative: true,
               resolvedBy: 'framework',
             };
           }
@@ -163,7 +163,7 @@ export const vueResolver: FrameworkResolver = {
             return {
               original: ref,
               targetNodeId: nodes[0]!.id,
-              confidence: 0.9,
+              authoritative: true,
               resolvedBy: 'framework',
             };
           }
@@ -178,7 +178,6 @@ export const vueResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: result,
-          confidence: 0.8,
           resolvedBy: 'framework',
         };
       }

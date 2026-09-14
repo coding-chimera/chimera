@@ -42,7 +42,6 @@ export const swiftUIResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: result,
-          confidence: 0.85,
           resolvedBy: 'framework',
         };
       }
@@ -55,7 +54,6 @@ export const swiftUIResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: result,
-          confidence: 0.85,
           resolvedBy: 'framework',
         };
       }
@@ -68,7 +66,6 @@ export const swiftUIResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: result,
-          confidence: 0.7,
           resolvedBy: 'framework',
         };
       }
@@ -163,7 +160,6 @@ export const uikitResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: result,
-          confidence: 0.85,
           resolvedBy: 'framework',
         };
       }
@@ -176,7 +172,6 @@ export const uikitResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: result,
-          confidence: 0.8,
           resolvedBy: 'framework',
         };
       }
@@ -189,7 +184,6 @@ export const uikitResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: result,
-          confidence: 0.85,
           resolvedBy: 'framework',
         };
       }
@@ -202,7 +196,6 @@ export const uikitResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: result,
-          confidence: 0.8,
           resolvedBy: 'framework',
         };
       }
@@ -299,7 +292,6 @@ export const vaporResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: result,
-          confidence: 0.85,
           resolvedBy: 'framework',
         };
       }
@@ -312,7 +304,6 @@ export const vaporResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: result,
-          confidence: 0.75,
           resolvedBy: 'framework',
         };
       }
@@ -325,7 +316,6 @@ export const vaporResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: result,
-          confidence: 0.8,
           resolvedBy: 'framework',
         };
       }

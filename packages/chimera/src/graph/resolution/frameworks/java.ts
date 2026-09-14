@@ -77,7 +77,7 @@ export const springResolver: FrameworkResolver = {
       const best = candidates.reduce((a, b) =>
         canonicalConfigKey(a.qualifiedName).length <= canonicalConfigKey(b.qualifiedName).length ? a : b,
       );
-      return { original: ref, targetNodeId: best.id, confidence: 0.85, resolvedBy: 'framework' };
+      return { original: ref, targetNodeId: best.id, resolvedBy: 'framework' };
     }
     if (ref.referenceName.includes('.') && ref.language !== 'java' && ref.language !== 'kotlin') {
       // Spring config dotted key — only when the source language is Java/Kotlin
@@ -100,7 +100,7 @@ export const springResolver: FrameworkResolver = {
           && canonicalConfigKey(n.qualifiedName) === canonRef,
       );
       if (candidates.length === 1) {
-        return { original: ref, targetNodeId: candidates[0]!.id, confidence: 0.9, resolvedBy: 'framework' };
+        return { original: ref, targetNodeId: candidates[0]!.id, authoritative: true, resolvedBy: 'framework' };
       }
       if (candidates.length > 1) {
         // Multiple profile-specific files (application-dev.yml +
@@ -114,7 +114,7 @@ export const springResolver: FrameworkResolver = {
           return (isBase ? 0 : 1) * 1000 + base.length;
         };
         const best = candidates.reduce((a, b) => (score(a) <= score(b) ? a : b));
-        return { original: ref, targetNodeId: best.id, confidence: 0.75, resolvedBy: 'framework' };
+        return { original: ref, targetNodeId: best.id, resolvedBy: 'framework' };
       }
     }
 
@@ -125,7 +125,6 @@ export const springResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: result,
-          confidence: 0.85,
           resolvedBy: 'framework',
         };
       }
@@ -138,7 +137,6 @@ export const springResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: result,
-          confidence: 0.85,
           resolvedBy: 'framework',
         };
       }
@@ -151,7 +149,6 @@ export const springResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: result,
-          confidence: 0.85,
           resolvedBy: 'framework',
         };
       }
@@ -164,7 +161,6 @@ export const springResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: result,
-          confidence: 0.7,
           resolvedBy: 'framework',
         };
       }
@@ -177,7 +173,6 @@ export const springResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: result,
-          confidence: 0.8,
           resolvedBy: 'framework',
         };
       }

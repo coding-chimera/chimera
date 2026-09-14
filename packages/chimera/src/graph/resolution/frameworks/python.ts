@@ -25,15 +25,15 @@ export const djangoResolver: FrameworkResolver = {
   resolve(ref, context) {
     if (ref.referenceName.endsWith('Model') || /^[A-Z][a-z]+$/.test(ref.referenceName)) {
       const result = resolveByNameAndKind(ref.referenceName, CLASS_KINDS, MODEL_DIRS, context);
-      if (result) return { original: ref, targetNodeId: result, confidence: 0.8, resolvedBy: 'framework' };
+      if (result) return { original: ref, targetNodeId: result, resolvedBy: 'framework' };
     }
     if (ref.referenceName.endsWith('View') || ref.referenceName.endsWith('ViewSet')) {
       const result = resolveByNameAndKind(ref.referenceName, VIEW_KINDS, VIEW_DIRS, context);
-      if (result) return { original: ref, targetNodeId: result, confidence: 0.8, resolvedBy: 'framework' };
+      if (result) return { original: ref, targetNodeId: result, resolvedBy: 'framework' };
     }
     if (ref.referenceName.endsWith('Form')) {
       const result = resolveByNameAndKind(ref.referenceName, CLASS_KINDS, FORM_DIRS, context);
-      if (result) return { original: ref, targetNodeId: result, confidence: 0.8, resolvedBy: 'framework' };
+      if (result) return { original: ref, targetNodeId: result, resolvedBy: 'framework' };
     }
     // ORM dynamic dispatch: QuerySet._fetch_all (and siblings) call
     // `self._iterable_class(self)` — a runtime dispatch to the iterable class
@@ -43,7 +43,7 @@ export const djangoResolver: FrameworkResolver = {
     // to ModelIterable.__iter__ so the flow actually exists in the graph.
     if (ref.referenceName === '_iterable_class') {
       const target = resolveModelIterableIter(context);
-      if (target) return { original: ref, targetNodeId: target, confidence: 0.7, resolvedBy: 'framework' };
+      if (target) return { original: ref, targetNodeId: target, resolvedBy: 'framework' };
     }
     return null;
   },
@@ -56,7 +56,6 @@ export const djangoResolver: FrameworkResolver = {
 
   extract(filePath, content) {
     if (!filePath.endsWith('.py')) return { nodes: [], references: [] };
-
     const nodes: Node[] = [];
     const references: UnresolvedRef[] = [];
     const now = Date.now();
@@ -198,7 +197,7 @@ export const flaskResolver: FrameworkResolver = {
   resolve(ref, context) {
     if (ref.referenceName.endsWith('_bp') || ref.referenceName.endsWith('_blueprint')) {
       const result = resolveByNameAndKind(ref.referenceName, VARIABLE_KINDS, [], context);
-      if (result) return { original: ref, targetNodeId: result, confidence: 0.8, resolvedBy: 'framework' };
+      if (result) return { original: ref, targetNodeId: result, resolvedBy: 'framework' };
     }
     return null;
   },
@@ -244,11 +243,11 @@ export const fastapiResolver: FrameworkResolver = {
   resolve(ref, context) {
     if (ref.referenceName.endsWith('_router') || ref.referenceName === 'router') {
       const result = resolveByNameAndKind(ref.referenceName, VARIABLE_KINDS, ROUTER_DIRS, context);
-      if (result) return { original: ref, targetNodeId: result, confidence: 0.8, resolvedBy: 'framework' };
+      if (result) return { original: ref, targetNodeId: result, resolvedBy: 'framework' };
     }
     if (ref.referenceName.startsWith('get_') || ref.referenceName.startsWith('Depends')) {
       const result = resolveByNameAndKind(ref.referenceName, FUNCTION_KINDS, DEP_DIRS, context);
-      if (result) return { original: ref, targetNodeId: result, confidence: 0.75, resolvedBy: 'framework' };
+      if (result) return { original: ref, targetNodeId: result, resolvedBy: 'framework' };
     }
     return null;
   },

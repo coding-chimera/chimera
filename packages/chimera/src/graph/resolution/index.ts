@@ -175,6 +175,20 @@ const CPP_BUILT_INS = new Set([
   'move', 'forward', 'swap',
 ]);
 
+// Evidence-class ordering for cross-strategy arbitration: a higher rank wins
+// when several strategies produced a candidate for the same reference. This
+// is an ordering over how the candidate was resolved (the evidence category),
+// not a calibrated probability.
+const RESOLVER_RANK: Record<ResolvedRef['resolvedBy'], number> = {
+  import: 6,
+  'qualified-name': 5,
+  'exact-match': 4,
+  'instance-method': 3,
+  'file-path': 2,
+  framework: 1,
+  fuzzy: 0,
+};
+
 /**
  * Reference Resolver
  *
@@ -631,7 +645,10 @@ export class ReferenceResolver {
   }
 
   /**
-   * Resolve a single reference
+   * Resolve a single reference. Strategies produce candidates tagged with an
+   * evidence category (`resolvedBy`); the strongest evidence class wins (see
+   * {@link RESOLVER_RANK}), with ties broken by file/language proximity to the
+   * reference rather than any numeric scoring.
    */
   resolveOne(ref: UnresolvedRef): ResolvedRef | null {
     // Skip built-in/external references
@@ -664,16 +681,21 @@ export class ReferenceResolver {
     // Strategy 1: Try framework-specific resolution
     for (const framework of this.frameworks) {
       const result = framework.resolve(ref, this.context);
-      if (result) {
-        if (result.confidence >= 0.9) return result; // High confidence, return immediately
-        candidates.push(result);
-      }
+      if (!result) continue;
+      // Authoritative evidence resolves immediately: `import`/`qualified-name`
+      // classes, or a framework result explicitly flagged `authoritative`
+      // (the successor of the legacy confidence >= 0.9 short-circuit).
+      if (result.authoritative || result.resolvedBy === 'import' || result.resolvedBy === 'qualified-name') return result;
+      candidates.push(result);
     }
 
     // Strategy 2: Try import-based resolution
     const importResult = resolveViaImport(ref, this.context);
     if (importResult) {
-      if (importResult.confidence >= 0.9) return importResult;
+      // Import evidence is always the strongest available — resolve
+      // immediately. (Today every import result carries `resolvedBy: 'import'`,
+      // so this is a straight short-circuit.)
+      if (importResult.resolvedBy === 'import' || importResult.resolvedBy === 'qualified-name') return importResult;
       candidates.push(importResult);
     }
 
@@ -685,10 +707,31 @@ export class ReferenceResolver {
 
     if (candidates.length === 0) return null;
 
-    // Return highest confidence candidate
-    return candidates.reduce((best, curr) =>
-      curr.confidence > best.confidence ? curr : best
-    );
+    // Pick the candidate with the strongest evidence class; equal classes
+    // fall to same-file, then same-language, then a deterministic id order.
+    return this.pickBestCandidate(ref, candidates);
+  }
+
+  /**
+   * Cross-strategy arbitration (see RESOLVER_RANK). Ties within one
+   * evidence class prefer a target in the reference's own file, then a
+   * same-language target, then the lexicographically smaller target id
+   * (deterministic across reindexes).
+   */
+  private pickBestCandidate(ref: UnresolvedRef, candidates: ResolvedRef[]): ResolvedRef {
+    return candidates.reduce((best, curr) => {
+      const rankDiff = RESOLVER_RANK[curr.resolvedBy] - RESOLVER_RANK[best.resolvedBy];
+      if (rankDiff !== 0) return rankDiff > 0 ? curr : best;
+      const bestNode = this.queries.getNodeById(best.targetNodeId);
+      const currNode = this.queries.getNodeById(curr.targetNodeId);
+      const bestSameFile = bestNode?.filePath === ref.filePath;
+      const currSameFile = currNode?.filePath === ref.filePath;
+      if (currSameFile !== bestSameFile) return currSameFile ? curr : best;
+      if (currNode && bestNode && currNode.language !== bestNode.language) {
+        return currNode.language === ref.language ? curr : best;
+      }
+      return curr.targetNodeId < best.targetNodeId ? curr : best;
+    });
   }
 
   /**
@@ -728,7 +771,6 @@ export class ReferenceResolver {
         line: ref.original.line,
         column: ref.original.column,
         metadata: {
-          confidence: ref.confidence,
           resolvedBy: ref.resolvedBy,
           // The ORIGINAL reference text (and kind, when kind promotion above
           // rewrote it). If this edge's target is later removed by a re-index,
@@ -805,7 +847,7 @@ export class ReferenceResolver {
           kind: 'imports',
           line: 0,
           column: 0,
-          metadata: { confidence: 0.9, resolvedBy: 'import' },
+          metadata: { resolvedBy: 'import' },
         });
       }
     }

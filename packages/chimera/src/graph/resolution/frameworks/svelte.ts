@@ -69,13 +69,13 @@ export const svelteResolver: FrameworkResolver = {
   resolve(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
     // Pattern 1: Svelte runes ($state, $derived, $effect, etc.)
     if (isRuneReference(ref.referenceName)) {
-      // Runes are compiler-provided — return a high-confidence "framework" resolution
+      // Runes are compiler-provided — return a "framework" resolution
       // so CodeGraph doesn't waste time searching for user-defined symbols.
       // We use the fromNodeId as targetNodeId since runes don't have real targets.
       return {
         original: ref,
         targetNodeId: ref.fromNodeId,
-        confidence: 1.0,
+        authoritative: true,
         resolvedBy: 'framework',
       };
     }
@@ -90,7 +90,6 @@ export const svelteResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: storeNode.id,
-          confidence: 0.85,
           resolvedBy: 'framework',
         };
       }
@@ -110,7 +109,7 @@ export const svelteResolver: FrameworkResolver = {
               return {
                 original: ref,
                 targetNodeId: nodes[0]!.id,
-                confidence: 0.9,
+                authoritative: true,
                 resolvedBy: 'framework',
               };
             }
@@ -123,7 +122,7 @@ export const svelteResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: ref.fromNodeId,
-          confidence: 1.0,
+          authoritative: true,
           resolvedBy: 'framework',
         };
       }
@@ -136,7 +135,6 @@ export const svelteResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: result,
-          confidence: 0.8,
           resolvedBy: 'framework',
         };
       }
