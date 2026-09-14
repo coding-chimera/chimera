@@ -571,8 +571,15 @@ export function matchMethodCall(
     const sameLanguageMethods = methods.filter(m => m.language === ref.language);
     const targetMethods = sameLanguageMethods.length > 0 ? sameLanguageMethods : methods;
 
-    // If only one same-language method with this name exists, use it
+    // If only one same-language method with this name exists, use it. Veto
+    // only this branch: a single candidate offers no receiver-word evidence
+    // to fall back on, so a cross-file bind must be import-reachable like the
+    // exact/fuzzy name matches.
     if (targetMethods.length === 1 && targetMethods[0]!.language === ref.language) {
+      const imports = refImportMappings(ref, context);
+      if (!crossFileCandidateAllowed(ref, targetMethods[0]!, imports)) {
+        return null;
+      }
       return {
         original: ref,
         targetNodeId: targetMethods[0]!.id,

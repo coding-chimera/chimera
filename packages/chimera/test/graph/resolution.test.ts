@@ -11,7 +11,7 @@ import * as os from 'os';
 import { CodeGraph } from '../../src/graph';
 import { Node, UnresolvedReference } from '../../src/graph/types';
 import { ReferenceResolver, createResolver, ResolutionContext } from '../../src/graph/resolution';
-import { matchReference, matchByExactName, matchFuzzy } from '../../src/graph/resolution/name-matcher';
+import { matchReference, matchMethodCall, matchByExactName, matchFuzzy } from '../../src/graph/resolution/name-matcher';
 import { resolveImportPath, extractImportMappings, resolveJvmImport, loadCppIncludeDirs, clearCppIncludeDirCache } from '../../src/graph/resolution/import-resolver';
 import type { UnresolvedRef } from '../../src/graph/resolution/types';
 import { detectFrameworks, getAllFrameworkResolvers } from '../../src/graph/resolution/frameworks';
@@ -213,6 +213,114 @@ describe('Resolution Module', () => {
       const partial = { getNodesByName: (name: string) => (name === 'dup' ? [foreign] : []) } as unknown as ResolutionContext;
       const result = matchByExactName(vetoRef('main.ts', 'dup'), partial);
       expect(result?.targetNodeId).toBe('func:other.ts:dup:1');
+    });
+
+    // Method-call unique-candidate veto: same shape as the exact/fuzzy veto
+    // above. A single repository-wide method candidate leaves no receiver-word
+    // evidence, so a cross-file bind requires import evidence.
+    const makeMethodNode = (filePath: string, name: string, qualifiedName?: string): Node => ({
+      id: `method:${filePath}:${name}:1`,
+      kind: 'method',
+      name,
+      qualifiedName: qualifiedName ?? `${filePath}::${name}`,
+      filePath,
+      language: 'typescript',
+      startLine: 1,
+      endLine: 3,
+      startColumn: 0,
+      endColumn: 0,
+      updatedAt: Date.now(),
+    });
+
+    const methodCallRef = (filePath: string, referenceName: string): UnresolvedRef => ({
+      fromNodeId: `caller:${filePath}:fn:5`,
+      referenceName,
+      referenceKind: 'calls' as const,
+      line: 5,
+      column: 10,
+      filePath,
+      language: 'typescript' as const,
+    });
+
+    it('vetoes a unique cross-file method candidate the caller file does not import (arr.push)', () => {
+      const push = makeMethodNode('collections/Queue.ts', 'push', 'Queue.push');
+      const context: ResolutionContext = {
+        ...baseContext,
+        getNodesByName: (name) => (name === 'push' ? [push] : []),
+        getImportMappings: () => [
+          { localName: 'useState', exportedName: 'useState', source: 'react', isDefault: false, isNamespace: false },
+        ],
+      };
+      expect(matchMethodCall(methodCallRef('app.ts', 'arr.push'), context)).toBeNull();
+    });
+
+    it('vetoes a unique cross-file method candidate the caller file does not import (x.t)', () => {
+      const t = makeMethodNode('utils/Transform.ts', 't', 'Transform.t');
+      const context: ResolutionContext = {
+        ...baseContext,
+        getNodesByName: (name) => (name === 't' ? [t] : []),
+        getImportMappings: () => [
+          { localName: 'useState', exportedName: 'useState', source: 'react', isDefault: false, isNamespace: false },
+        ],
+      };
+      expect(matchMethodCall(methodCallRef('app.ts', 'x.t'), context)).toBeNull();
+    });
+
+    it('binds a unique method when the receiver is imported (queue.push with import { queue })', () => {
+      const push = makeMethodNode('queue.ts', 'push', 'Queue.push');
+      const context: ResolutionContext = {
+        ...baseContext,
+        getNodesByName: (name) => (name === 'push' ? [push] : []),
+        getImportMappings: () => [
+          { localName: 'queue', exportedName: 'queue', source: './queue', isDefault: false, isNamespace: false },
+        ],
+      };
+      const result = matchMethodCall(methodCallRef('app.ts', 'queue.push'), context);
+      expect(result?.targetNodeId).toBe('method:queue.ts:push:1');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    it('binds a unique method when the candidate file is reachable through an import (store.fetchUser)', () => {
+      const fetchUser = makeMethodNode('store.ts', 'fetchUser', 'Store.fetchUser');
+      const context: ResolutionContext = {
+        ...baseContext,
+        getNodesByName: (name) => (name === 'fetchUser' ? [fetchUser] : []),
+        getImportMappings: () => [
+          { localName: 'useStore', exportedName: 'useStore', source: './store', isDefault: false, isNamespace: false },
+        ],
+      };
+      const result = matchMethodCall(methodCallRef('app.ts', 'store.fetchUser'), context);
+      expect(result?.targetNodeId).toBe('method:store.ts:fetchUser:1');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    it('binds a unique same-file method candidate (obj.method)', () => {
+      const format = makeMethodNode('app.ts', 'format', 'Helper.format');
+      const context: ResolutionContext = {
+        ...baseContext,
+        getNodesByName: (name) => (name === 'format' ? [format] : []),
+        getImportMappings: () => [
+          { localName: 'useState', exportedName: 'useState', source: 'react', isDefault: false, isNamespace: false },
+        ],
+      };
+      const result = matchMethodCall(methodCallRef('app.ts', 'obj.format'), context);
+      expect(result?.targetNodeId).toBe('method:app.ts:format:1');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    it('still binds unimported targets in the multi-candidate overlap branch (permissionEngine.checkRule)', () => {
+      const ruleEngine = makeMethodNode('permission/PermissionRuleEngine.ts', 'checkRule', 'PermissionRuleEngine.checkRule');
+      const legacyRule = makeMethodNode('legacy/RuleChecker.ts', 'checkRule', 'RuleChecker.checkRule');
+      const context: ResolutionContext = {
+        ...baseContext,
+        getNodesByName: (name) => (name === 'checkRule' ? [ruleEngine, legacyRule] : []),
+        getImportMappings: () => [
+          { localName: 'useState', exportedName: 'useState', source: 'react', isDefault: false, isNamespace: false },
+        ],
+      };
+      const result = matchMethodCall(methodCallRef('app.ts', 'permissionEngine.checkRule'), context);
+      expect(result?.targetNodeId).toBe('method:permission/PermissionRuleEngine.ts:checkRule:1');
+      expect(result?.resolvedBy).toBe('instance-method');
     });
 
     it('refuses to fuzzy-guess names defined beyond the ambiguity ceiling', () => {
