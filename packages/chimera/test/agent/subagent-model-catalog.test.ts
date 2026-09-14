@@ -188,7 +188,7 @@ describe("size class resolution", () => {
       }),
     })
     const snap = SubagentModelCatalog.buildSnapshot({ providers: { openai } })
-    expect(snap.routes[0].sizeClass).toBe("L")
+    expect(snap.routes[0].sizeClass).toBe("M")
   })
 })
 

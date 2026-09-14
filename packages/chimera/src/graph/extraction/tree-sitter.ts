@@ -216,6 +216,18 @@ const VALUE_REF_EXCLUDED_ANCESTORS: ReadonlySet<string> = new Set([
   'array_pattern',
 ]);
 
+//
+// Parameter type annotations (TS/TSX). Typed parameter pairs — (name,
+// declared type text) — are recorded on function/method nodes so the
+// resolver can bind `receiver.method()` when the receiver is a typed
+// parameter (`function f(q: Queue) { q.push() }`). Types are collected
+// RAW: generics/unions/function types are kept verbatim and gated out at
+// resolution time, so the extractor stays shape-agnostic.
+//
+const PARAM_TYPE_LANGUAGES: ReadonlySet<Language> = new Set(['typescript', 'tsx', 'javascript']);
+const PARAM_TYPE_MAX_CHARS = 200;
+const PARAMS_JSON_MAX_CHARS = 2000;
+
 /**
  * TreeSitterExtractor - Main extraction class
  */
@@ -753,6 +765,7 @@ export class TreeSitterExtractor {
       isAsync,
       isStatic,
       returnType: this.returnTypeText(returnType),
+      params: this.extractParamTypePairs(node),
     });
     if (!funcNode) return;
 
@@ -869,6 +882,7 @@ export class TreeSitterExtractor {
       isAsync,
       isStatic,
       returnType: this.returnTypeText(returnType),
+      params: this.extractParamTypePairs(node),
     };
     if (receiverType) {
       extraProps.qualifiedName = `${receiverType}::${name}`;
@@ -2845,6 +2859,41 @@ export class TreeSitterExtractor {
     const text = getNodeText(returnType, this.source).trim().replace(/^:\s*/, '');
     if (!text) return undefined;
     return text.length > RETURN_TYPE_MAX_LENGTH ? text.slice(0, RETURN_TYPE_MAX_LENGTH) : text;
+  }
+
+  /**
+   * Collect (parameter name, declared type) pairs from a function/method
+   * node's parameter list. Only identifier-bound parameters are recorded:
+   * destructuring patterns (`{ timeout }`) bind no receiver name, and rest
+   * patterns never carry a simple type. Type text keeps its raw
+   * `type_annotation` form (leading colon stripped) truncated at
+   * PARAM_TYPE_MAX_CHARS; collection stops once the pairs would exceed a
+   * PARAMS_JSON_MAX_CHARS serialization budget.
+   */
+  private extractParamTypePairs(node: SyntaxNode): Node['params'] {
+    if (!this.extractor || !PARAM_TYPE_LANGUAGES.has(this.language)) return undefined;
+    const params = getChildByField(node, this.extractor.paramsField || 'parameters');
+    if (!params) return undefined;
+
+    const collected: NonNullable<Node['params']> = [];
+    let budget = PARAMS_JSON_MAX_CHARS;
+    for (let i = 0; i < params.namedChildCount; i++) {
+      const child = params.namedChild(i);
+      // JavaScript parses parameters as bare identifiers (no annotation);
+      // TS wraps them in required/optional_parameter.
+      if (!child || (child.type !== 'required_parameter' && child.type !== 'optional_parameter')) continue;
+      const pattern = child.childForFieldName('pattern');
+      if (!pattern || pattern.type !== 'identifier') continue;
+      const annotation = child.childForFieldName('type');
+      if (!annotation) continue;
+      const name = getNodeText(pattern, this.source);
+      const type = getNodeText(annotation, this.source).replace(/^:\s*/, '').slice(0, PARAM_TYPE_MAX_CHARS);
+      if (!name || !type) continue;
+      if (name.length + type.length > budget) break;
+      budget -= name.length + type.length;
+      collected.push({ name, type });
+    }
+    return collected.length > 0 ? collected : undefined;
   }
 
   /**

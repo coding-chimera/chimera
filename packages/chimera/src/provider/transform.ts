@@ -482,6 +482,8 @@ export function temperature(model: Provider.Model) {
     }
     return 0.6
   }
+  // DSv4 family: harness standard mode (DeepSWE reference conditions)
+  if (id.includes("deepseek-v4")) return 1.0
   return undefined
 }
 
@@ -492,6 +494,7 @@ export function topP(model: Provider.Model) {
   if (["minimax-m2", "gemini", "kimi-k2.5", "kimi-k2p5", "kimi-k2-5"].some((s) => id.includes(s))) {
     return 0.95
   }
+  if (id.includes("deepseek-v4")) return 0.95
   return undefined
 }
 

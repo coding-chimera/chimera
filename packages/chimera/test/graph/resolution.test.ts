@@ -629,6 +629,125 @@ describe('Resolution Module', () => {
       expect(result?.targetNodeId).toBe('method:app.ts:push:31');
       expect(result?.resolvedBy).toBe('instance-method');
     });
+
+    // Strategy 0.5b fixtures: typed parameters on the enclosing function
+    // (`function f(q: Queue) { q.push() }`), read from node.params.
+    const paramFnNode = (
+      id: string,
+      name: string,
+      filePath: string,
+      startLine: number,
+      endLine: number,
+      params: NonNullable<Node['params']>,
+    ): Node => ({
+      id,
+      kind: 'function',
+      name,
+      qualifiedName: name,
+      filePath,
+      language: 'typescript',
+      startLine,
+      endLine,
+      startColumn: 0,
+      endColumn: 0,
+      updatedAt: Date.now(),
+      params,
+    });
+
+    it('binds a receiver from a typed parameter on the enclosing function (function drain(q: Queue))', () => {
+      // Two same-named `push` methods defeat the unique-candidate and
+      // word-overlap branches; only the annotation names the class.
+      const context = declContext({
+        'app.ts': [
+          paramFnNode('func:app.ts:drain:3', 'drain', 'app.ts', 3, 9, [{ name: 'q', type: 'Queue' }]),
+          declNode('class:app.ts:Queue', 'class', 'Queue', 'app.ts', 20),
+          declNode('method:app.ts:push:21', 'method', 'push', 'app.ts', 21, { qualifiedName: 'Queue.push' }),
+          declNode('class:app.ts:Stack', 'class', 'Stack', 'app.ts', 30),
+          declNode('method:app.ts:push:31', 'method', 'push', 'app.ts', 31, { qualifiedName: 'Stack.push' }),
+        ],
+      });
+      const result = matchMethodCall(declRef('app.ts', 'q.push', 5), context);
+      expect(result?.targetNodeId).toBe('method:app.ts:push:21');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    it('binds a cross-file parameter class through import evidence', () => {
+      const context = declContext({
+        'app.ts': [
+          paramFnNode('func:app.ts:drain:3', 'drain', 'app.ts', 3, 9, [{ name: 'q', type: 'Queue' }]),
+        ],
+        'collections/queue.ts': [
+          declNode('class:queue.ts:Queue', 'class', 'Queue', 'collections/queue.ts', 1),
+          declNode('method:queue.ts:push:10', 'method', 'push', 'collections/queue.ts', 10, { qualifiedName: 'Queue.push' }),
+        ],
+      }, [
+        { localName: 'Queue', exportedName: 'Queue', source: './queue', isDefault: false, isNamespace: false },
+      ]);
+      const result = matchMethodCall(declRef('app.ts', 'q.push', 5), context);
+      expect(result?.targetNodeId).toBe('method:queue.ts:push:10');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    it('does not bind a cross-file parameter class the caller file does not import', () => {
+      const context = declContext({
+        'app.ts': [
+          paramFnNode('func:app.ts:drain:3', 'drain', 'app.ts', 3, 9, [{ name: 'q', type: 'Queue' }]),
+        ],
+        'collections/queue.ts': [
+          declNode('class:queue.ts:Queue', 'class', 'Queue', 'collections/queue.ts', 1),
+          declNode('method:queue.ts:push:10', 'method', 'push', 'collections/queue.ts', 10, { qualifiedName: 'Queue.push' }),
+        ],
+      }, [reactImport]);
+      // The annotation class fails the import veto (fall through), and the
+      // unique cross-file candidate is then vetoed by Strategy 3 — no bind.
+      expect(matchMethodCall(declRef('app.ts', 'q.push', 5), context)).toBeNull();
+    });
+
+    it('skips generic parameter types (q: Promise<Queue> binds nothing)', () => {
+      const context = declContext({
+        'app.ts': [
+          paramFnNode('func:app.ts:drain:3', 'drain', 'app.ts', 3, 9, [{ name: 'q', type: 'Promise<Queue>' }]),
+        ],
+        'collections/queue.ts': [
+          declNode('class:queue.ts:Queue', 'class', 'Queue', 'collections/queue.ts', 1),
+          declNode('method:queue.ts:push:10', 'method', 'push', 'collections/queue.ts', 10, { qualifiedName: 'Queue.push' }),
+        ],
+      }, [reactImport]);
+      expect(matchMethodCall(declRef('app.ts', 'q.push', 5), context)).toBeNull();
+    });
+
+    it('vetoes word-overlap guessing when the parameter class lacks the method', () => {
+      // Widget.flush is the only `flush` candidate and shares the file with
+      // the receiver, so Strategy 3 would bind it without the annotation
+      // veto. The parameter type is authoritative — Queue declares no flush.
+      const context = declContext({
+        'app.ts': [
+          paramFnNode('func:app.ts:drain:3', 'drain', 'app.ts', 3, 9, [{ name: 'q', type: 'Queue' }]),
+          declNode('class:app.ts:Queue', 'class', 'Queue', 'app.ts', 20),
+          declNode('method:app.ts:flush:41', 'method', 'flush', 'app.ts', 41, { qualifiedName: 'Widget.flush' }),
+        ],
+      });
+      expect(matchMethodCall(declRef('app.ts', 'q.flush', 5), context)).toBeNull();
+    });
+
+    it('prefers `= new` declaration evidence over a conflicting parameter annotation', () => {
+      const context = declContext({
+        'app.ts': [
+          paramFnNode('func:app.ts:drain:3', 'drain', 'app.ts', 3, 12, [{ name: 'q', type: 'Queue' }]),
+          declNode('stmt:app.ts:4', 'statement', 'stmt@4:10', 'app.ts', 4, { signature: 'q = new Stack()' }),
+          declNode('class:app.ts:Queue', 'class', 'Queue', 'app.ts', 20),
+          declNode('method:app.ts:push:21', 'method', 'push', 'app.ts', 21, { qualifiedName: 'Queue.push' }),
+          declNode('class:app.ts:Stack', 'class', 'Stack', 'app.ts', 30),
+          declNode('method:app.ts:push:31', 'method', 'push', 'app.ts', 31, { qualifiedName: 'Stack.push' }),
+        ],
+      });
+      // Annotation says Queue (push:21); the nearer `= new Stack()` says
+      // Stack (push:31). Declaration evidence must win.
+      const result = matchMethodCall(declRef('app.ts', 'q.push', 6), context);
+      expect(result?.targetNodeId).toBe('method:app.ts:push:31');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
     it('refuses to fuzzy-guess names defined beyond the ambiguity ceiling', () => {
       // Upstream #999: K definitions x K references is O(K²) work that stalls
       // indexing on vendored/duplicated code. Beyond the ceiling the fuzzy
@@ -2497,6 +2616,60 @@ func main() {
           language: 'typescript',
         });
         expect(result?.targetNodeId).toBe(sameFile.id);
+      } finally {
+        db.close();
+      }
+    });
+  });
+
+  describe('Parameter annotation extraction (params_json)', () => {
+    it('stores typed parameter pairs on function nodes and skips destructuring/rest params', async () => {
+      const srcDir = path.join(tempDir, 'src');
+      fs.mkdirSync(srcDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(srcDir, 'queue.ts'),
+        `export function drain(q: Queue, done: Promise<number>, { timeout }: Options, ...rest: Item[]): number {
+  return q.push() + timeout + rest.length;
+}
+
+export class Queue {
+  push(): number { return 1; }
+}
+`
+      );
+
+      cg = await CodeGraph.init(tempDir, { index: true });
+
+      const drain = cg.getNodesByKind('function').find((n) => n.name === 'drain');
+      expect(drain).toBeDefined();
+      // Identifier-bound params only: destructuring and rest patterns skipped;
+      // generic type text kept raw for the resolver's simple-name gate.
+      expect(drain!.params).toEqual([
+        { name: 'q', type: 'Queue' },
+        { name: 'done', type: 'Promise<number>' },
+      ]);
+      // getNode round-trips through rowToNode — proves params_json persistence.
+      expect(cg.getNode(drain!.id)?.params).toEqual(drain!.params);
+
+      const db = DatabaseConnection.open(getDatabasePath(tempDir));
+      try {
+        const row = db
+          .getDb()
+          .prepare('SELECT params_json FROM nodes WHERE id = ?')
+          .get(drain!.id) as { params_json: string | null };
+        expect(JSON.parse(row.params_json!)).toEqual([{ n: 'q', t: 'Queue' }, { n: 'done', t: 'Promise<number>' }]);
+
+        // End-to-end: the annotation-typed receiver binds q.push → Queue.push.
+        const edgeRows = db
+          .getDb()
+          .prepare(
+            `select src.qualified_name as srcQn from edges e
+             join nodes src on e.source = src.id
+             join nodes dst on e.target = dst.id
+             where e.kind = 'calls' and dst.name = 'push' and src.id = ?`,
+          )
+          .all(drain!.id) as Array<{ srcQn: string }>;
+        expect(edgeRows).toHaveLength(1);
       } finally {
         db.close();
       }

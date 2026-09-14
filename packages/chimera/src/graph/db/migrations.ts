@@ -10,7 +10,7 @@ import { buildSearchText } from '../search/query-utils';
 /**
  * Current schema version
  */
-export const CURRENT_SCHEMA_VERSION = 11;
+export const CURRENT_SCHEMA_VERSION = 12;
 
 /**
  * Migration definition
@@ -265,6 +265,20 @@ const migrations: Migration[] = [
       db.exec(
         'CREATE INDEX IF NOT EXISTS idx_files_generated ON files(path) WHERE generated = 1'
       );
+    },
+  },
+  {
+    version: 12,
+    description:
+      'Add nodes.params_json — typed parameter (name, type) pairs for receiver-type inference from parameter annotations',
+    up: (db) => {
+      // Guard for idempotency — ALTER TABLE has no IF NOT EXISTS and a
+      // database created from current schema.sql already has the column
+      // (same pattern as v7).
+      const cols = db.prepare('PRAGMA table_info(nodes)').all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === 'params_json')) {
+        db.exec('ALTER TABLE nodes ADD COLUMN params_json TEXT');
+      }
     },
   },
 ];

@@ -940,6 +940,15 @@ describe("ProviderTransform sampling defaults - qwen3.8", () => {
   })
 })
 
+describe("ProviderTransform sampling defaults - deepseek-v4", () => {
+  const createModel = (id: string) => ({ id, api: { id, npm: "@ai-sdk/openai-compatible" } }) as any
+
+  test("deepseek-v4 family uses harness standard mode defaults", () => {
+    expect(ProviderTransform.temperature(createModel("ali-inc/deepseek-v4.1-flash"))).toBe(1.0)
+    expect(ProviderTransform.topP(createModel("ali-inc/deepseek-v4.1-flash"))).toBe(0.95)
+    expect(ProviderTransform.topK(createModel("ali-inc/deepseek-v4.1-flash"))).toBeUndefined()
+  })
+})
 describe("ProviderTransform.temperature - Cohere North", () => {
   test("defaults north-mini-code models to 1.0", () => {
     expect(ProviderTransform.temperature({ id: "cohere/North-Mini-Code-1-0-latest" } as any)).toBe(1.0)
