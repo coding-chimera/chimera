@@ -831,16 +831,19 @@ export class ReferenceResolver {
       this.queries.deleteFileLevelImportEdgesBySource(sourceNode.id);
 
       const mappings = this.context.getImportMappings(filePath, fileRecord.language);
-      if (mappings.length === 0) continue;
+      const reExports = this.context.getReExports?.(filePath, fileRecord.language) ?? [];
+      if (mappings.length === 0 && reExports.length === 0) continue;
 
+      // Import and re-export sources share one dedupe set: `export { x } from
+      // './a'` and `import { y } from './a'` are one file-level dependency.
       const seenSources = new Set<string>();
-      for (const imp of mappings) {
-        if (seenSources.has(imp.source)) continue;
-        seenSources.add(imp.source);
-        const resolvedPath = resolveImportPath(imp.source, filePath, fileRecord.language, this.context);
-        if (!resolvedPath || resolvedPath === filePath) continue;
+      const addSource = (source: string): void => {
+        if (seenSources.has(source)) return;
+        seenSources.add(source);
+        const resolvedPath = resolveImportPath(source, filePath, fileRecord.language, this.context);
+        if (!resolvedPath || resolvedPath === filePath) return;
         const targetNode = getFileNode(resolvedPath);
-        if (!targetNode) continue;
+        if (!targetNode) return;
         edges.push({
           source: sourceNode.id,
           target: targetNode.id,
@@ -849,7 +852,9 @@ export class ReferenceResolver {
           column: 0,
           metadata: { resolvedBy: 'import' },
         });
-      }
+      };
+      for (const imp of mappings) addSource(imp.source);
+      for (const reExport of reExports) addSource(reExport.source);
     }
 
     if (edges.length > 0) this.queries.insertEdges(edges);
@@ -1015,6 +1020,10 @@ export class ReferenceResolver {
       byMethod: {} as Record<string, number>,
     };
 
+    // Files whose file-level import edges were already swept inside the batch
+    // loop; the post-loop sweep below covers the rest.
+    const importEdgeSweptFiles = new Set<string>();
+
     // Process in batches. We always read from offset 0 because rows are
     // deleted after each batch, shifting the remaining rows forward.
     let previousRemaining = total + 1;
@@ -1035,6 +1044,7 @@ export class ReferenceResolver {
       // delete-then-insert keeps it idempotent across repeated batches.
       const batchFilePaths = [...new Set(batch.map((ref) => ref.filePath || this.getFilePathFromNodeId(ref.fromNodeId)))];
       this.materializeFileLevelImportEdges(batchFilePaths);
+      for (const batchPath of batchFilePaths) importEdgeSweptFiles.add(batchPath);
 
       // Resolved rows are deleted; unresolvable ones are parked as
       // status='failed' (upstream #1240) — both leave the pending set the batch
@@ -1098,6 +1108,15 @@ export class ReferenceResolver {
       if (remaining >= previousRemaining) break;
       previousRemaining = remaining;
     }
+
+    // Ref-less files never enter a batch: a barrel whose only cross-file
+    // dependency is `export { x } from './a'` emits no unresolved references,
+    // so sweep the files the batch loop skipped. Delete-then-insert keeps the
+    // whole pass idempotent; the non-batched path covers this in-file with a
+    // full sweep in resolveAndPersist.
+    this.materializeFileLevelImportEdges(
+      this.queries.getAllFilePaths().filter((filePath) => !importEdgeSweptFiles.has(filePath))
+    );
 
     // Dynamic-edge synthesis: now that all base `calls` edges are persisted,
     // synthesize observer/callback dispatch edges (dispatcher → registered

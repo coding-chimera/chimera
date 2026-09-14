@@ -154,6 +154,62 @@ const CODEPLAN_DEPENDENCY_STATEMENT_KINDS: ReadonlySet<string> = new Set([
   'labeled_statement',
 ]);
 
+//
+// Value-position identifier references (JS/TS). The extractor emits a
+// `references` edge for identifiers in value positions — object shorthand,
+// bare call arguments, JSX expression bodies, assignment right-hand sides —
+// so a function passed as a value stays visible across files. A handful of
+// positions are deliberately NOT value references: call callees and member
+// receivers are already covered by the receiver-qualified `calls` reference,
+// import/export specifiers are import wiring, type-annotation subtrees are
+// type positions, JSX tag/attribute names are names, and declaration names or
+// destructuring patterns are bindings.
+//
+
+/** Immediate-parent types whose identifier child is a declaration NAME. */
+const VALUE_REF_DECLARATION_PARENTS: ReadonlySet<string> = new Set([
+  // `variable_declarator` is deliberately absent: its NAME child is guarded by
+  // the generic name-field check, but its VALUE child is the assignment
+  // right-hand side this pass exists to collect.
+  'function_declaration',
+  'generator_function_declaration',
+  'function_signature',
+  'class_declaration',
+  'abstract_class_declaration',
+  'method_definition',
+  'interface_declaration',
+  'type_alias_declaration',
+  'enum_declaration',
+  'arrow_function',
+  'formal_parameters',
+  'required_parameter',
+  'optional_parameter',
+  'rest_pattern',
+]);
+
+/** Immediate-parent types whose identifier child is not a value reference. */
+const VALUE_REF_EXCLUDED_PARENTS: ReadonlySet<string> = new Set([
+  'call_expression',
+  'new_expression',
+  'member_expression',
+  'subscript_expression',
+  'import_specifier',
+  'export_specifier',
+  'namespace_import',
+  'jsx_opening_element',
+  'jsx_closing_element',
+  'jsx_self_closing_element',
+  'jsx_attribute',
+]);
+
+/** Ancestor types that disqualify an identifier anywhere inside them. */
+const VALUE_REF_EXCLUDED_ANCESTORS: ReadonlySet<string> = new Set([
+  'type_annotation',
+  'import_statement',
+  'object_pattern',
+  'array_pattern',
+]);
+
 /**
  * TreeSitterExtractor - Main extraction class
  */
@@ -169,6 +225,7 @@ export class TreeSitterExtractor {
   private extractor: LanguageExtractor | null = null;
   private nodeStack: string[] = []; // Stack of parent node IDs
   private methodIndex: Map<string, string> | null = null; // lookup key → node ID for Pascal defProc lookup
+  private valueReferenceKeys = new Set<string>(); // `${fromNodeId}\u0000${name}` dedup, per file
 
   constructor(filePath: string, source: string, language?: Language) {
     this.filePath = filePath;
@@ -312,7 +369,10 @@ export class TreeSitterExtractor {
       skipChildren = this.visitPascalNode(node);
       if (skipChildren) return;
     }
-
+    // Value-position identifiers (JS/TS). The generalized module-level walk
+    // collects them here; declaration handlers below walk their own bodies.
+    // Kept independent of skipChildren so declarations still short-circuit.
+    this.extractValueReference(node);
     // Check for function declarations
     // For Python/Ruby, function_definition inside a class should be treated as method
     if (this.extractor.functionTypes.includes(nodeType)) {
@@ -1148,6 +1208,9 @@ export class TreeSitterExtractor {
         const value = getChildByField(member, 'value');
         if (key && value && (value.type === 'arrow_function' || value.type === 'function_expression')) {
           this.extractFunction(value, this.objectKeyName(key));
+        } else if (value?.type === 'identifier') {
+          // `{ key: fn }` — a function passed as a value, not only called.
+          this.extractValueReference(value);
         }
       } else if (member.type === 'method_definition') {
         // Method shorthand: `{ fetchUser() {...} }`. extractMethod deliberately
@@ -1156,6 +1219,10 @@ export class TreeSitterExtractor {
         // falls through to it and the node spans the full method).
         const key = getChildByField(member, 'name');
         if (key) this.extractFunction(member, this.objectKeyName(key));
+      } else if (member.type === 'shorthand_property_identifier') {
+        // `{ fn }` — abbreviation of `{ fn: fn }`: a function passed as a value.
+        // The `_pattern` form is a destructuring binding, not a value.
+        this.extractValueReference(member);
       }
     }
   }
@@ -1310,15 +1377,16 @@ export class TreeSitterExtractor {
                   : null;
             const extractObjectMethods = isExported && !!objectOfFns;
 
-            // Visit the initializer body for calls — EXCEPT object literals (their
-            // function-valued properties are extracted below) and the store-factory
-            // call whose returned object we extract method-by-method below (walking
-            // the whole call would re-visit those method arrows and mis-attribute
-            // their inner calls to the file/module scope).
-            if (valueNode &&
-                valueNode.type !== 'object' &&
-                valueNode.type !== 'object_expression' &&
-                !(extractObjectMethods && valueNode.type === 'call_expression')) {
+            // Visit the initializer body for calls — EXCEPT object literals and the
+            // store-factory call whose returned object we extract method-by-method
+            // below (walking the whole call would re-visit those method arrows and
+            // mis-attribute their inner calls to the file/module scope). Object
+            // literals are not walked for calls either, but their identifier values
+            // (shorthand members, pair values) are surfaced so function-as-value
+            // dependencies stay visible.
+            if (valueNode && (valueNode.type === 'object' || valueNode.type === 'object_expression')) {
+              this.collectObjectValueReferences(valueNode);
+            } else if (valueNode && !(extractObjectMethods && valueNode.type === 'call_expression')) {
               this.visitFunctionBody(valueNode, '');
             }
 
@@ -1884,6 +1952,89 @@ export class TreeSitterExtractor {
   }
 
   /**
+   * Emit a `references` edge for a value-position identifier — object shorthand
+   * (`{ fn }`), a bare call argument (`register(fn)`), a JSX expression body
+   * (`onClick={fn}`), or an assignment right-hand side. Without this, a
+   * function passed as a value is invisible to cross-file dependency walks.
+   * Gated on the language config; names of two chars or fewer, declaration
+   * names, member receivers, import specifiers, type positions, JSX
+   * tag/attribute names, and destructuring bindings are skipped.
+   */
+  private extractValueReference(node: SyntaxNode): void {
+    if (!this.extractor?.valueReferenceTypes?.includes(node.type)) return;
+    if (this.nodeStack.length === 0) return;
+    const fromNodeId = this.nodeStack[this.nodeStack.length - 1];
+    if (!fromNodeId) return;
+    if (this.isNonReferenceValuePosition(node)) return;
+
+    const name = getNodeText(node, this.source);
+    if (name.length <= 2) return;
+    // Same symbol referenced twice from one scope is one dependency; the
+    // resolver would collapse the duplicate edges anyway.
+    const key = `${fromNodeId}\u0000${name}`;
+    if (this.valueReferenceKeys.has(key)) return;
+    this.valueReferenceKeys.add(key);
+
+    this.unresolvedReferences.push({
+      fromNodeId,
+      referenceName: name,
+      referenceKind: 'references',
+      line: node.startPosition.row + 1,
+      column: node.startPosition.column,
+    });
+  }
+
+  /**
+   * Guard an identifier out of value-reference collection when its position is
+   * a declaration name, a call callee/member receiver (already covered by the
+   * `calls` reference), an import/export specifier, a type position, a JSX
+   * tag/attribute name, or a destructuring binding.
+   */
+  private isNonReferenceValuePosition(node: SyntaxNode): boolean {
+    const parent = node.parent;
+    if (!parent) return false;
+    if (VALUE_REF_EXCLUDED_PARENTS.has(parent.type)) return true;
+    if (VALUE_REF_DECLARATION_PARENTS.has(parent.type)) return true;
+    // Object-literal keys are names; pair values are not keys and stay values.
+    if (parent.type === 'pair') {
+      return getChildByField(parent, 'key')?.id === node.id;
+    }
+    // Generic declaration-name position (`function foo`, `const foo`, …).
+    if (getChildByField(parent, 'name')?.id === node.id) return true;
+    return this.hasAncestorType(node, VALUE_REF_EXCLUDED_ANCESTORS);
+  }
+
+  /** Walk parent links looking for any of the given ancestor types. */
+  private hasAncestorType(node: SyntaxNode, types: ReadonlySet<string>): boolean {
+    let current = node.parent;
+    while (current) {
+      if (types.has(current.type)) return true;
+      current = current.parent;
+    }
+    return false;
+  }
+
+  /**
+   * Top-level object literals are skipped by the call walker (their
+   * function-valued properties are extracted separately), so surface the
+   * identifier values in them — shorthand members and pair values — here.
+   */
+  private collectObjectValueReferences(obj: SyntaxNode): void {
+    for (let i = 0; i < obj.namedChildCount; i++) {
+      const member = obj.namedChild(i);
+      if (!member) continue;
+      if (member.type === 'shorthand_property_identifier') {
+        this.extractValueReference(member);
+        continue;
+      }
+      if (member.type !== 'pair') continue;
+      const value = getChildByField(member, 'value');
+      if (value?.type === 'identifier') this.extractValueReference(value);
+      else if (value?.type === 'object' || value?.type === 'object_expression') this.collectObjectValueReferences(value);
+    }
+  }
+
+  /**
    * `new Foo(...)` / `Foo::new(...)` / object_creation_expression —
    * emit an `instantiates` reference to the class name. The resolver
    * then links it to the class node, producing the `instantiates`
@@ -2234,6 +2385,10 @@ export class TreeSitterExtractor {
             });
           }
         }
+      } else if (this.extractor!.valueReferenceTypes?.includes(nodeType)) {
+        // Value-position identifier inside a function body (bare argument,
+        // JSX expression, object shorthand, assignment RHS).
+        this.extractValueReference(node);
       }
 
       // Nested NAMED functions inside a body — function declarations and named
