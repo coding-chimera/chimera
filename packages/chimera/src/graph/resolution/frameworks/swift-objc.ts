@@ -28,9 +28,8 @@
  *    named those.
  *
  * **Provenance:** every edge produced here is recorded as a framework-
- * resolved reference (`resolvedBy: 'framework'`) with `confidence: 0.7`
- * (matches the django ORM dynamic-dispatch precedent — not exact, but
- * deterministic from the bridging rule).
+ * resolved reference (`resolvedBy: 'framework'`) — a heuristic bridge,
+ * not an exact match.
  */
 import { FrameworkResolver, ResolutionContext, ResolvedRef, UnresolvedRef } from '../types';
 import type { Node } from '../../types';
@@ -86,7 +85,6 @@ const GENERIC_NAMES = new Set([
   'self',
   'count',
   'length',
-  'value',
   'name',
   'data',
   'string',
@@ -195,7 +193,6 @@ function resolveSwiftCallToObjc(
   return {
     original: ref,
     targetNodeId: target.id,
-    confidence: 0.6,
     resolvedBy: 'framework',
   };
 }
@@ -236,7 +233,6 @@ function resolveObjcCallToSwift(
         return {
           original: ref,
           targetNodeId: match.id,
-          confidence: 0.6,
           resolvedBy: 'framework',
         };
       }

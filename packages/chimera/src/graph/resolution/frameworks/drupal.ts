@@ -363,9 +363,9 @@ export const drupalResolver: FrameworkResolver = {
         const fileNodes = context.getNodesInFile(cls.filePath);
         const method = fileNodes.find((n) => n.kind === 'method' && n.name === methodName);
         if (method) {
-          return { original: ref, targetNodeId: method.id, confidence: 0.9, resolvedBy: 'framework' };
+          return { original: ref, targetNodeId: method.id, authoritative: true, resolvedBy: 'framework' };
         }
-        return { original: ref, targetNodeId: cls.id, confidence: 0.7, resolvedBy: 'framework' };
+        return { original: ref, targetNodeId: cls.id, resolvedBy: 'framework' };
       }
     }
 
@@ -376,7 +376,7 @@ export const drupalResolver: FrameworkResolver = {
         const classNodes = context.getNodesByName(className);
         const cls = classNodes.find((n) => n.kind === 'class');
         if (cls) {
-          return { original: ref, targetNodeId: cls.id, confidence: 0.85, resolvedBy: 'framework' };
+          return { original: ref, targetNodeId: cls.id, resolvedBy: 'framework' };
         }
       }
     }
@@ -391,7 +391,6 @@ export const drupalResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: candidates[0]!.id,
-          confidence: 0.75,
           resolvedBy: 'framework',
         };
       }

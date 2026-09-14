@@ -102,7 +102,6 @@ export function matchByFilePath(
     return {
       original: ref,
       targetNodeId: exactMatch.id,
-      confidence: 0.95,
       resolvedBy: 'file-path',
     };
   }
@@ -113,17 +112,15 @@ export function matchByFilePath(
     return {
       original: ref,
       targetNodeId: suffixMatch.id,
-      confidence: 0.85,
       resolvedBy: 'file-path',
     };
   }
 
-  // If only one file node with this name, use it with lower confidence
+  // If only one file node with this name, use it
   if (fileNodes.length === 1) {
     return {
       original: ref,
       targetNodeId: fileNodes[0]!.id,
-      confidence: 0.7,
       resolvedBy: 'file-path',
     };
   }
@@ -155,13 +152,11 @@ export function matchByExactName(
     return null;
   }
 
-  // If only one match, use it — but penalize cross-language matches
+  // If only one reachable candidate, use it
   if (reachable.length === 1) {
-    const isCrossLanguage = reachable[0]!.language !== ref.language;
     return {
       original: ref,
       targetNodeId: reachable[0]!.id,
-      confidence: isCrossLanguage ? 0.5 : 0.9,
       resolvedBy: 'exact-match',
     };
   }
@@ -173,13 +168,9 @@ export function matchByExactName(
   // Multiple matches - try to narrow down
   const bestMatch = findBestMatch(ref, reachable, context);
   if (bestMatch) {
-    // Lower confidence when the match is from a distant/unrelated module
-    const proximity = computePathProximity(ref.filePath, bestMatch.filePath);
-    const confidence = proximity >= 30 ? 0.7 : 0.4;
     return {
       original: ref,
       targetNodeId: bestMatch.id,
-      confidence,
       resolvedBy: 'exact-match',
     };
   }
@@ -205,7 +196,6 @@ export function matchByQualifiedName(
     return {
       original: ref,
       targetNodeId: candidates[0]!.id,
-      confidence: 0.95,
       resolvedBy: 'qualified-name',
     };
   }
@@ -220,7 +210,6 @@ export function matchByQualifiedName(
         return {
           original: ref,
           targetNodeId: candidate.id,
-          confidence: 0.85,
           resolvedBy: 'qualified-name',
         };
       }
@@ -235,7 +224,6 @@ function resolveMethodOnType(
   methodName: string,
   ref: UnresolvedRef,
   context: ResolutionContext,
-  confidence: number,
   resolvedBy: ResolvedRef['resolvedBy'],
   /**
    * Optional FQN that identifies WHICH class declaration `typeName`
@@ -276,7 +264,6 @@ function resolveMethodOnType(
       return {
         original: ref,
         targetNodeId: chosen.id,
-        confidence,
         resolvedBy,
       };
     }
@@ -285,7 +272,6 @@ function resolveMethodOnType(
   return {
     original: ref,
     targetNodeId: matches[0]!.id,
-    confidence,
     resolvedBy,
   };
 }
@@ -460,7 +446,6 @@ export function matchMethodCall(
         methodName!,
         ref,
         context,
-        0.9,
         'instance-method',
       );
       if (typedMatch) {
@@ -487,7 +472,6 @@ export function matchMethodCall(
         methodName!,
         ref,
         context,
-        0.9,
         'instance-method',
         importedFqn,
       );
@@ -517,7 +501,6 @@ export function matchMethodCall(
         return {
           original: ref,
           targetNodeId: methodNode.id,
-          confidence: 0.85,
           resolvedBy: 'qualified-name',
         };
       }
@@ -546,7 +529,6 @@ export function matchMethodCall(
           return {
             original: ref,
             targetNodeId: methodNode.id,
-            confidence: 0.8,
             resolvedBy: 'instance-method',
           };
         }
@@ -583,7 +565,6 @@ export function matchMethodCall(
       return {
         original: ref,
         targetNodeId: targetMethods[0]!.id,
-        confidence: 0.7,
         resolvedBy: 'instance-method',
       };
     }
@@ -611,7 +592,6 @@ export function matchMethodCall(
         return {
           original: ref,
           targetNodeId: bestMatch.id,
-          confidence: 0.65,
           resolvedBy: 'instance-method',
         };
       }
@@ -741,7 +721,7 @@ function findBestMatch(
 }
 
 /**
- * Fuzzy match - last resort with lower confidence
+ * Fuzzy match - last resort.
  */
 export function matchFuzzy(
   ref: UnresolvedRef,
@@ -765,11 +745,9 @@ export function matchFuzzy(
   const finalCandidates = sameLanguageCandidates.length > 0 ? sameLanguageCandidates : reachableCandidates;
 
   if (finalCandidates.length === 1) {
-    const isCrossLanguage = finalCandidates[0]!.language !== ref.language;
     return {
       original: ref,
       targetNodeId: finalCandidates[0]!.id,
-      confidence: isCrossLanguage ? 0.3 : 0.5,
       resolvedBy: 'fuzzy',
     };
   }
@@ -778,20 +756,21 @@ export function matchFuzzy(
 }
 
 /**
- * Match all strategies in order of confidence
+ * Match all strategies in a fixed try order (first hit wins) — the order is
+ * evidence strength, not a calibrated probability.
  */
 export function matchReference(
   ref: UnresolvedRef,
   context: ResolutionContext
 ): ResolvedRef | null {
-  // Try strategies in order of confidence
+  // Try strategies in fixed order (first hit wins)
   let result: ResolvedRef | null;
 
   // 0. File path match (e.g., "snippets/drawer-menu.liquid" → file node)
   result = matchByFilePath(ref, context);
   if (result) return result;
 
-  // 1. Qualified name match (highest confidence)
+  // 1. Qualified name match
   result = matchByQualifiedName(ref, context);
   if (result) return result;
 
@@ -803,7 +782,7 @@ export function matchReference(
   result = matchByExactName(ref, context);
   if (result) return result;
 
-  // 4. Fuzzy match (lowest confidence)
+  // 4. Fuzzy match
   result = matchFuzzy(ref, context);
   if (result) return result;
 

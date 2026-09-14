@@ -434,7 +434,7 @@ describe('drupalResolver.resolve', () => {
     const resolved = drupalResolver.resolve(ref, ctx);
     expect(resolved).not.toBeNull();
     expect(resolved!.targetNodeId).toBe('method:abc123');
-    expect(resolved!.confidence).toBeGreaterThanOrEqual(0.85);
+    expect(resolved!.resolvedBy).toBe('framework');
   });
 
   it('resolves a _form FQCN (no ::method) to the class node', () => {

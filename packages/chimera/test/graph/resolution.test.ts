@@ -13,7 +13,7 @@ import { Node, UnresolvedReference } from '../../src/graph/types';
 import { ReferenceResolver, createResolver, ResolutionContext } from '../../src/graph/resolution';
 import { matchReference, matchMethodCall, matchByExactName, matchFuzzy } from '../../src/graph/resolution/name-matcher';
 import { resolveImportPath, extractImportMappings, resolveJvmImport, loadCppIncludeDirs, clearCppIncludeDirCache } from '../../src/graph/resolution/import-resolver';
-import type { UnresolvedRef } from '../../src/graph/resolution/types';
+import type { UnresolvedRef, FrameworkResolver } from '../../src/graph/resolution/types';
 import { detectFrameworks, getAllFrameworkResolvers } from '../../src/graph/resolution/frameworks';
 import { QueryBuilder } from '../../src/graph/db/queries';
 import { DatabaseConnection, getDatabasePath } from '../../src/graph/db';
@@ -450,8 +450,8 @@ describe('Resolution Module', () => {
       expect(result?.resolvedBy).toBe('exact-match');
     });
 
-    it('should lower confidence for cross-module exact matches', () => {
-      // Only one candidate but in a completely different module
+    it('should still resolve cross-module exact matches', () => {
+      // Both candidates are in entirely different modules from the caller
       const candidates: Node[] = [
         {
           id: 'func:apps/app_b/src/server.py:navigate:10',
@@ -508,9 +508,9 @@ describe('Resolution Module', () => {
 
       const result = matchReference(ref, context);
 
-      // Should still resolve but with low confidence
+      // Still resolves — the evidence category is exact-match, not a proximity score
       expect(result).not.toBeNull();
-      expect(result?.confidence).toBeLessThanOrEqual(0.4);
+      expect(result?.resolvedBy).toBe('exact-match');
     });
 
     it('should match qualified name references', () => {
@@ -2109,6 +2109,90 @@ func main() {
         expect(stdlibFile).toBeUndefined();
       } finally {
         fs.rmSync(tempProject, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('Evidence-class arbitration', () => {
+    it('prefers an import candidate over an exact-match candidate for the same name', async () => {
+      // Both src/lib.ts and src/dupe.ts declare formatDate, so the name-matcher
+      // produced an exact-match candidate as well — the import evidence class
+      // must still win the arbitration.
+      const srcDir = path.join(tempDir, 'src');
+      fs.mkdirSync(srcDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(srcDir, 'lib.ts'),
+        `export function formatDate(date: Date): string { return date.toISOString(); }\n`
+      );
+      fs.writeFileSync(
+        path.join(srcDir, 'dupe.ts'),
+        `export function formatDate(): string { return 'dupe'; }\n`
+      );
+      fs.writeFileSync(
+        path.join(srcDir, 'main.ts'),
+        `import { formatDate } from './lib';\nexport function test(): void { formatDate(new Date()); }\n`
+      );
+      cg = await CodeGraph.init(tempDir, { index: true });
+      cg.resolveReferences();
+      const mainFn = cg
+        .getNodesByKind('function')
+        .find((n) => n.name === 'test' && n.filePath === 'src/main.ts');
+      expect(mainFn).toBeDefined();
+      const calls = cg.getOutgoingEdges(mainFn!.id).filter((e) => e.kind === 'calls');
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.metadata?.resolvedBy).toBe('import');
+      expect(cg.getNode(calls[0]!.target)?.filePath.replace(/\\/g, '/')).toBe('src/lib.ts');
+    });
+
+    it('breaks same-rank ties by preferring a target in the reference source file', () => {
+      const db = DatabaseConnection.initialize(path.join(tempDir, 'arbitration.db'));
+      try {
+        const queries = new QueryBuilder(db.getDb());
+        const resolver = new ReferenceResolver(tempDir, queries);
+        const other = {
+          id: 'func:lib/other.ts:WidgetA:1', kind: 'function' as const, name: 'WidgetA',
+          qualifiedName: 'lib/other.ts::WidgetA', filePath: 'lib/other.ts', language: 'typescript' as const,
+          startLine: 1, endLine: 2, startColumn: 0, endColumn: 0, updatedAt: Date.now(),
+        };
+        const sameFile = {
+          id: 'func:app.ts:WidgetB:1', kind: 'function' as const, name: 'WidgetB',
+          qualifiedName: 'app.ts::WidgetB', filePath: 'app.ts', language: 'typescript' as const,
+          startLine: 1, endLine: 2, startColumn: 0, endColumn: 0, updatedAt: Date.now(),
+        };
+        queries.insertNode(other);
+        queries.insertNode(sameFile);
+
+        // Two framework resolvers produce same-rank ('framework') candidates;
+        // the tie-break must pick the target living in the ref's own file.
+        const stub = (targetNodeId: string): FrameworkResolver => ({
+          name: 'stub',
+          detect: () => true,
+          claimsReference: (name) => name === 'app.WidgetMethod',
+          resolve: (ref) =>
+            ref.referenceName === 'app.WidgetMethod'
+              ? { original: ref, targetNodeId, resolvedBy: 'framework' }
+              : null,
+        });
+        (resolver as unknown as { frameworks: FrameworkResolver[] }).frameworks = [
+          stub(other.id),
+          stub(sameFile.id),
+        ];
+
+        // Name path: 'app.WidgetMethod' is claimed by the stubs but has no
+        // matching node or qualified name, so name-matcher stays out of the
+        // race — the candidates array holds exactly the two framework hits.
+        const result = resolver.resolveOne({
+          fromNodeId: 'func:app.ts:caller:1',
+          referenceName: 'app.WidgetMethod',
+          referenceKind: 'calls',
+          line: 1,
+          column: 0,
+          filePath: 'app.ts',
+          language: 'typescript',
+        });
+        expect(result?.targetNodeId).toBe(sameFile.id);
+      } finally {
+        db.close();
       }
     });
   });

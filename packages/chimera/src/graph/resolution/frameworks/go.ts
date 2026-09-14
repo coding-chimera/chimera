@@ -32,7 +32,6 @@ export const goResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: result,
-          confidence: 0.8,
           resolvedBy: 'framework',
         };
       }
@@ -45,7 +44,6 @@ export const goResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: result,
-          confidence: 0.8,
           resolvedBy: 'framework',
         };
       }
@@ -58,7 +56,6 @@ export const goResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: result,
-          confidence: 0.75,
           resolvedBy: 'framework',
         };
       }
@@ -71,7 +68,6 @@ export const goResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: result,
-          confidence: 0.7,
           resolvedBy: 'framework',
         };
       }

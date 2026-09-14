@@ -53,7 +53,7 @@ export const playResolver: FrameworkResolver = {
         .getNodesInFile(cls.filePath)
         .find((n) => METHOD_KINDS.has(n.kind) && n.name === methodName);
       if (method) {
-        return { original: ref, targetNodeId: method.id, confidence: 0.9, resolvedBy: 'framework' };
+        return { original: ref, targetNodeId: method.id, authoritative: true, resolvedBy: 'framework' };
       }
     }
     return null;

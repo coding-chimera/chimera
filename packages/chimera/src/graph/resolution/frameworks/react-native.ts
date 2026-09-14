@@ -427,7 +427,6 @@ export const reactNativeBridgeResolver: FrameworkResolver = {
     return {
       original: ref,
       targetNodeId: target.node.id,
-      confidence: 0.6,
       resolvedBy: 'framework',
     };
   },

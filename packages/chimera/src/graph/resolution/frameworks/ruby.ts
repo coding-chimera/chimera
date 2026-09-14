@@ -46,7 +46,7 @@ export const railsResolver: FrameworkResolver = {
     if (ca) {
       const result = resolveControllerAction(ca[1]!, ca[2]!, context);
       if (result) {
-        return { original: ref, targetNodeId: result, confidence: 0.85, resolvedBy: 'framework' };
+        return { original: ref, targetNodeId: result, resolvedBy: 'framework' };
       }
       return null;
     }
@@ -58,7 +58,6 @@ export const railsResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: result,
-          confidence: 0.8,
           resolvedBy: 'framework',
         };
       }
@@ -71,7 +70,6 @@ export const railsResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: result,
-          confidence: 0.85,
           resolvedBy: 'framework',
         };
       }
@@ -84,7 +82,6 @@ export const railsResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: result,
-          confidence: 0.8,
           resolvedBy: 'framework',
         };
       }
@@ -97,7 +94,6 @@ export const railsResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: result,
-          confidence: 0.8,
           resolvedBy: 'framework',
         };
       }

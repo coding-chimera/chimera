@@ -39,7 +39,6 @@ export const reactResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: result,
-          confidence: 0.8,
           resolvedBy: 'framework',
         };
       }
@@ -52,7 +51,6 @@ export const reactResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: result,
-          confidence: 0.85,
           resolvedBy: 'framework',
         };
       }
@@ -65,7 +63,6 @@ export const reactResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: result,
-          confidence: 0.8,
           resolvedBy: 'framework',
         };
       }

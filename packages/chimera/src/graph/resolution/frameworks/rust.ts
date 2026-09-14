@@ -36,7 +36,6 @@ export const rustResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: result,
-          confidence: 0.8,
           resolvedBy: 'framework',
         };
       }
@@ -49,7 +48,6 @@ export const rustResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: result,
-          confidence: 0.8,
           resolvedBy: 'framework',
         };
       }
@@ -62,7 +60,6 @@ export const rustResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: result,
-          confidence: 0.7,
           resolvedBy: 'framework',
         };
       }
@@ -73,14 +70,12 @@ export const rustResolver: FrameworkResolver = {
       const result = resolveModule(ref.referenceName, context);
       if (result) {
         // Workspace-manifest hits are an exact crate-name -> crate-root
-        // mapping straight from Cargo.toml, so we trust them above
-        // name-matcher self-file matches (which otherwise win at 0.7
-        // because every file containing `use foo::...` has its own
-        // import node named `foo`).
+        // mapping straight from Cargo.toml (the framework strategy's most
+        // precise case); the orchestrator still ranks framework evidence
+        // below name-matcher hits.
         return {
           original: ref,
           targetNodeId: result.targetId,
-          confidence: result.fromWorkspace ? 0.95 : 0.6,
           resolvedBy: 'framework',
         };
       }
