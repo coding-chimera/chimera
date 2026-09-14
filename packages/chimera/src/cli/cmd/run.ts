@@ -513,6 +513,21 @@ export const RunCommand = effectCmd({
               if (emit("prompt_stats", { stats: promptStatsEvent.properties })) continue
             }
 
+            const retriedEvent = event as unknown as {
+              type: string
+              properties?: { sessionID?: string; attempt?: number; error?: { message?: string } }
+            }
+            if (retriedEvent.type === "session.next.retried" && retriedEvent.properties && retriedEvent.properties.sessionID === sessionID) {
+              // Provider retries become first-class `retry` events in the JSON stream
+              // and one status line on a TTY: silent backoff is indistinguishable
+              // from a hang, and bench analysis attributed 60-300s pre-spikes to
+              // queueing that were suspected retries.
+              if (args.format !== "json" && process.stdout.isTTY) {
+                inline({ icon: "↻", title: `provider retry (attempt ${retriedEvent.properties.attempt})` })
+              }
+              if (emit("retry", { attempt: retriedEvent.properties.attempt, error: retriedEvent.properties.error?.message })) continue
+            }
+
             if (
               event.type === "message.updated" &&
               event.properties.info.role === "assistant" &&
