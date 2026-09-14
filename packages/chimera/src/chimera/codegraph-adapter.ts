@@ -33,6 +33,21 @@ import {
   type TaskInput,
   type WatchOptions,
 } from "@/graph"
+/**
+ * Incoming relations that mark another symbol as a consumer of the focal symbol
+ * (the same set the impact tool's callers chain uses). Shared by
+ * `buildImpactEvidence` and the inline propagation probe's symbol walk so
+ * impact naming and drift naming cannot drift apart.
+ */
+export const DependentRelations: RelationKind[] = [
+  "CalledBy",
+  "ImportedBy",
+  "UsedBy",
+  "InstantiatedBy",
+  "BaseClassOf",
+  "OverriddenBy",
+  "DecoratedBy",
+]
 import { ProjectionMemo } from "./projection-memo"
 
 export interface OpenOptions {

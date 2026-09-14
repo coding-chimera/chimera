@@ -330,7 +330,19 @@ export const ApplyPatchTool = Tool.define(
         output += `\n\nLSP errors detected in ${rel}, please fix:\n${block}`
       }
 
-      const probeLine = yield* inlinePropagationCheck(fileChanges.flatMap((change) => (change.movePath ? [change.filePath, change.movePath] : [change.filePath])), ctx.sessionID)
+      // Probe targets carry old-side hunk ranges of each update diff so the
+      // probe can seed symbol-level propagation against the still-unsynced
+      // graph; moves (content lands at a new path) and diffs without parsable
+      // `@@ -line,count @@` headers fall back to file-level naming.
+      const probeTargets = fileChanges.flatMap((change) => {
+        if (change.movePath) return [{ file: change.filePath }, { file: change.movePath }]
+        const ranges = change.type === "update" ? [...change.diff.matchAll(/^@@ -(\d+)(?:,(\d+))?/gm)].flatMap((hunk) => {
+          const count = hunk[2] === undefined ? 1 : Number(hunk[2])
+          return count > 0 ? [{ startLine: Number(hunk[1]), endLine: Number(hunk[1]) + count - 1 }] : []
+        }) : []
+        return [{ file: change.filePath, ...(ranges.length > 0 ? { ranges } : {}) }]
+      })
+      const probeLine = yield* inlinePropagationCheck(probeTargets, ctx.sessionID)
       output += `\n\n${probeLine}`
       return {
         title,

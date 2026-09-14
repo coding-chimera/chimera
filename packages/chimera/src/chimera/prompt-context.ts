@@ -7,6 +7,7 @@ import type { SessionID } from "@/session/schema"
 import type { MessageV2 } from "@/session/message-v2"
 import { Session } from "@/session/session"
 import { getGraphDataRootInfo } from "@/graph"
+import { PROPAGATION_ENTRY_FILE } from "./propagation-probe"
 
 const MAX_RECENT_MUTATIONS = 3
 const MAX_RECENT_PREDESIGNS = 3
@@ -289,7 +290,12 @@ function scopeFlaggedFiles(messages: readonly MessageV2.WithParts[]): ScopeFlag[
           .replace(/ \(via [^)]*\)/g, "\u00002")
         for (const item of list.split(", ")) {
           const [raw, rawDepth] = item.split("\u0000")
-          const file = (raw ?? "").trim()
+          const text = (raw ?? "").trim()
+          // Symbol-named entries `symbols (file:line)` carry the path in the
+          // probe's shared entry-tail regex; legacy entries are bare paths and
+          // fall through unchanged (old format still exists in session history
+          // this scanner re-reads).
+          const file = PROPAGATION_ENTRY_FILE.exec(text)?.[1] ?? text
           if (!file || file.startsWith("(") || flagged.some((entry) => entry.file === file)) continue
           const parsed = Number.parseInt(rawDepth ?? "1", 10)
           flagged.push({ file, depth: Number.isFinite(parsed) && parsed >= 1 ? parsed : 2 })

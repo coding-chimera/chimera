@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test"
+import { PROPAGATION_PROBE_TIMEOUT_MS, inlinePropagationCheck, scopeDriftLines } from "../../src/chimera/propagation-probe"
 import { Effect, Layer } from "effect"
 import path from "path"
 import * as fs from "fs/promises"
-import { inlinePropagationCheck, scopeDriftLines } from "../../src/chimera/propagation-probe"
 import { recordPredesignRun } from "../../src/chimera/store"
 import { SessionID } from "../../src/session/schema"
 import { CodeGraph, getGraphDataRootInfo } from "../../src/graph"
@@ -17,7 +17,7 @@ describe("chimera.propagation-probe", () => {
       const test = yield* TestInstance
       const file = path.join(test.directory, "file.ts")
       yield* Effect.promise(() => fs.writeFile(file, "export const value = 1\n"))
-      const line = yield* inlinePropagationCheck([file])
+      const line = yield* inlinePropagationCheck([{ file }])
       expect(line).toBe("")
     }),
   )
@@ -28,7 +28,7 @@ describe("chimera.propagation-probe", () => {
       yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "solo.ts"), "export const solo = 1\n"))
       const graph = yield* Effect.promise(() => CodeGraph.init(test.directory, { index: true }))
       graph.close()
-      const line = yield* inlinePropagationCheck([path.join(test.directory, "solo.ts")])
+      const line = yield* inlinePropagationCheck([{ file: path.join(test.directory, "solo.ts") }])
       expect(line).toBe("Propagation check: no dependents found for the changed file(s).")
       expect(line).not.toContain("chimera_audit_recent")
     }),
@@ -43,7 +43,7 @@ describe("chimera.propagation-probe", () => {
       )
       const graph = yield* Effect.promise(() => CodeGraph.init(test.directory, { index: true }))
       graph.close()
-      const line = yield* inlinePropagationCheck([path.join(test.directory, "lib.ts")])
+      const line = yield* inlinePropagationCheck([{ file: path.join(test.directory, "lib.ts") }])
       expect(line).toBe("Propagation check: 1 dependent file(s) may be affected: use.ts.")
       expect(line).not.toContain("chimera_audit_recent")
     }),
@@ -108,7 +108,7 @@ describe("chimera.propagation-probe predesign scope reconciliation", () => {
         }),
       )
 
-      const out = yield* inlinePropagationCheck([path.join(test.directory, "lib.ts")], SessionID.make("ses_scope-drift"))
+      const out = yield* inlinePropagationCheck([{ file: path.join(test.directory, "lib.ts") }], SessionID.make("ses_scope-drift"))
 
       expect(out).toContain("Propagation check: 1 dependent file(s)")
       expect(out).toContain("Scope check: propagation reaches use.ts")
@@ -142,7 +142,7 @@ describe("chimera.propagation-probe predesign scope reconciliation", () => {
         }),
       )
 
-      const out = yield* inlinePropagationCheck([path.join(test.directory, "lib.ts")], SessionID.make("ses_scope-clean"))
+      const out = yield* inlinePropagationCheck([{ file: path.join(test.directory, "lib.ts") }], SessionID.make("ses_scope-clean"))
 
       expect(out).toBe("Propagation check: 1 dependent file(s) may be affected: use.ts.")
     }),
@@ -178,7 +178,7 @@ describe("chimera.propagation-probe predesign scope reconciliation", () => {
         }),
       )
 
-      const out = yield* inlinePropagationCheck([path.join(test.directory, "a.ts")], SessionID.make("ses_scope-twohop"))
+      const out = yield* inlinePropagationCheck([{ file: path.join(test.directory, "a.ts") }], SessionID.make("ses_scope-twohop"))
 
       expect(out).toContain("Scope check: propagation reaches c.ts (via b.ts, 2 hops)")
     }),
@@ -237,7 +237,7 @@ describe("chimera.propagation-probe transitive walk", () => {
         }),
       )
 
-      const out = yield* inlinePropagationCheck([path.join(test.directory, "a.ts")], SessionID.make("ses_scope-deep"))
+      const out = yield* inlinePropagationCheck([{ file: path.join(test.directory, "a.ts") }], SessionID.make("ses_scope-deep"))
 
       expect(out).toContain("d.ts (via c.ts, 3 hops)")
       expect(out).toContain("hardcode the old contract")
@@ -276,7 +276,7 @@ describe("chimera.propagation-probe transitive walk", () => {
         }),
       )
 
-      const out = yield* inlinePropagationCheck([path.join(test.directory, "a.ts")], SessionID.make("ses_scope-cycle"))
+      const out = yield* inlinePropagationCheck([{ file: path.join(test.directory, "a.ts") }], SessionID.make("ses_scope-cycle"))
 
       // The walk visits b then c, the cycle back to the seed terminates it,
       // and deep-first ranking puts c (2 hops) before b (1 hop).
@@ -315,10 +315,127 @@ describe("chimera.propagation-probe transitive walk", () => {
         }),
       )
 
-      const out = yield* inlinePropagationCheck([path.join(test.directory, "a.ts")], SessionID.make("ses_scope-bigstop"))
+      const out = yield* inlinePropagationCheck([{ file: path.join(test.directory, "a.ts") }], SessionID.make("ses_scope-bigstop"))
 
       expect(out).toContain("big.ts")
       expect(out).not.toContain("hidden.ts")
     }),
   )
+
+describe("chimera.propagation-probe symbol-level seeds", () => {
+  const noiseFixture = (directory: string) =>
+    Effect.gen(function* () {
+      yield* Effect.promise(() =>
+        fs.writeFile(path.join(directory, "lib.ts"), "export const helper = 1\nexport const unused = 2\n"),
+      )
+      yield* Effect.promise(() =>
+        fs.writeFile(
+          path.join(directory, "use.ts"),
+          'import { helper } from "./lib.ts"\nexport function consumer() { return helper }\n',
+        ),
+      )
+      yield* Effect.promise(() =>
+        fs.writeFile(
+          path.join(directory, "noise.ts"),
+          'import { unused } from "./lib.ts"\nconsole.log(unused)\n',
+        ),
+      )
+      const graph = yield* Effect.promise(() => CodeGraph.init(directory, { index: true }))
+      graph.close()
+    })
+  const recordScope = (directory: string, sessionID: string, files: string[], seedNodes: unknown[]) =>
+    Effect.promise(() =>
+      recordPredesignRun(directory, path.join(getGraphDataRootInfo(directory).dataRoot, "chimera", "predesign-runs.jsonl"), {
+        sessionID,
+        messageID: `msg_${sessionID}`,
+        agent: "build",
+        intent: "symbol seed test",
+        files,
+        seedNodes,
+        impactedNodes: [],
+        fileDependents: [],
+        evidence: [],
+        snapshotRevision: "test-revision",
+        payload: {},
+      }),
+    )
+
+  it.instance("names consumer symbols for ranged targets and skips files that import only untouched symbols", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* noiseFixture(test.directory)
+      const line = yield* inlinePropagationCheck([{ file: path.join(test.directory, "lib.ts"), ranges: [{ startLine: 1, endLine: 1 }] }])
+      expect(line).toContain("consumer (use.ts:2)")
+      expect(line).not.toContain("noise.ts")
+    }),
+  )
+
+  it.instance("falls back to file-level naming when ranges resolve no symbols (apply_patch / unresolvable hunks)", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* noiseFixture(test.directory)
+      const line = yield* inlinePropagationCheck([{ file: path.join(test.directory, "lib.ts"), ranges: [{ startLine: 99, endLine: 99 }] }])
+      expect(line).toContain("use.ts")
+      expect(line).toContain("noise.ts")
+      expect(line).not.toMatch(/\((use|noise)\.ts:/)
+    }),
+  )
+
+  it.instance("renders the walk intermediate as symbol@file for symbol-level propagation", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "a.ts"), "export const helperA = 1\n"))
+      yield* Effect.promise(() =>
+        fs.writeFile(
+          path.join(test.directory, "b.ts"),
+          'import { helperA } from "./a.ts"\nexport function helperB() { return helperA }\n',
+        ),
+      )
+      yield* Effect.promise(() =>
+        fs.writeFile(
+          path.join(test.directory, "c.ts"),
+          'import { helperB } from "./b.ts"\nexport function helperC() { return helperB() }\n',
+        ),
+      )
+      const graph = yield* Effect.promise(() => CodeGraph.init(test.directory, { index: true }))
+      graph.close()
+      yield* recordScope(test.directory, "ses_symbol-via", ["a.ts"], [])
+      const out = yield* inlinePropagationCheck(
+        [{ file: path.join(test.directory, "a.ts"), ranges: [{ startLine: 1, endLine: 1 }] }],
+        SessionID.make("ses_symbol-via"),
+      )
+      expect(out).toContain("helperC (c.ts:2) (via helperB@b.ts, 2 hops)")
+      expect(out).toContain("helperB (b.ts:2)")
+    }),
+  )
+
+  it.instance("re-seeds a range-less target from the predesign's persisted seedNodes", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* noiseFixture(test.directory)
+      yield* recordScope(test.directory, "ses_seednodes", ["lib.ts"], [
+        { payload: { filePath: "lib.ts", range: { startLine: 1, endLine: 1 } } },
+      ])
+      const out = yield* inlinePropagationCheck([{ file: path.join(test.directory, "lib.ts") }], SessionID.make("ses_seednodes"))
+      // seedNodes carry the touched-symbol fact: noise.ts (imports only
+      // `unused`) must not be named, and the consumer is named symbol-first.
+      expect(out).toContain("1 dependent file(s)")
+      expect(out).toContain("consumer (use.ts:2)")
+      expect(out).not.toContain("noise.ts")
+    }),
+  )
+
+  test("keeps the 500ms budget constant", () => {
+    expect(PROPAGATION_PROBE_TIMEOUT_MS).toBe(500)
+  })
+
+  test("renders merged symbol lists for one dependent file", () => {
+    const lines = scopeDriftLines("predesign_1", ["a.ts"], ["a.ts"], [
+      { file: "b.ts", symbols: ["topUse", "init"], line: 3, via: "helper@a.ts", depth: 2 },
+      { file: "c.ts" },
+    ])
+    expect(lines[0]).toContain("propagation reaches topUse init (b.ts:3) (via helper@a.ts, 2 hops), c.ts")
+  })
+})
+
 })
