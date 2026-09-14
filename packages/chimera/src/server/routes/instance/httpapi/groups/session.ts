@@ -41,6 +41,14 @@ export const MessagesQuery = Schema.Struct({
   limit: Schema.optional(Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0))),
   before: Schema.optional(Schema.String),
 })
+export const QuiescenceQuery = Schema.Struct({
+  timeout: Schema.optional(Schema.NumberFromString),
+})
+export const BackgroundQuiescence = Schema.Struct({
+  quiescent: Schema.Boolean,
+  running: Schema.Number,
+  pendingDeliveries: Schema.Number,
+})
 export const StatusMap = Schema.Record(Schema.String, SessionStatus.Info)
 export const UpdatePayload = Schema.Struct({
   title: Schema.optional(Schema.String),
@@ -95,6 +103,7 @@ export const SessionPaths = {
   revert: `${root}/:sessionID/revert`,
   unrevert: `${root}/:sessionID/unrevert`,
   permissions: `${root}/:sessionID/permissions/:permissionID`,
+  backgroundQuiescence: `${root}/:sessionID/background/quiescence`,
   deleteMessage: `${root}/:sessionID/message/:messageID`,
   deletePart: `${root}/:sessionID/message/:messageID/part/:partID`,
   updatePart: `${root}/:sessionID/message/:messageID/part/:partID`,
@@ -134,6 +143,19 @@ export const SessionApi = HttpApi.make("session")
             identifier: "session.get",
             summary: "Get session",
             description: "Retrieve detailed information about a specific OpenCode session.",
+          }),
+        ),
+        HttpApiEndpoint.get("backgroundQuiescence", SessionPaths.backgroundQuiescence, {
+          params: { sessionID: SessionID },
+          query: QuiescenceQuery,
+          success: described(BackgroundQuiescence, "Background quiescence status"),
+          error: [HttpApiError.BadRequest, HttpApiError.NotFound],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.backgroundQuiescence",
+            summary: "Get session background quiescence",
+            description:
+              "Long-poll until the session owns no running or delivery-pending background jobs, or until the timeout elapses. Returns the pending counts when not quiescent.",
           }),
         ),
         HttpApiEndpoint.get("children", SessionPaths.children, {

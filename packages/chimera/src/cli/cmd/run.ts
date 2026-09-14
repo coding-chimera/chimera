@@ -217,6 +217,38 @@ function normalizePath(input?: string) {
   return input
 }
 
+export type BackgroundQuiescenceState = {
+  quiescent: boolean
+  running: number
+  pendingDeliveries: number
+}
+
+export type DrainBackgroundJobsOptions = {
+  sessionID: string
+  poll: (timeoutMs: number) => Promise<BackgroundQuiescenceState>
+  pollTimeoutMs?: number
+  onWaiting?: (state: { running: number; pendingDeliveries: number; waitedSeconds: number }) => void
+  signal?: AbortSignal
+}
+
+/**
+ * After a run prompt/command returns, wait until the root session owns no
+ * running or delivery-pending background jobs. Each poll is a long-poll with
+ * `pollTimeoutMs`; a non-quiescent answer prints a progress line through
+ * `onWaiting` and polls again. Returns the final state (aborted polls also
+ * stop here).
+ */
+export async function drainBackgroundJobs(opts: DrainBackgroundJobsOptions): Promise<BackgroundQuiescenceState> {
+  const pollTimeoutMs = opts.pollTimeoutMs ?? 30000
+  const started = Date.now()
+  for (;;) {
+    const state = await opts.poll(pollTimeoutMs)
+    if (state.quiescent || opts.signal?.aborted) return state
+    const waitedSeconds = Math.floor((Date.now() - started) / 1000)
+    opts.onWaiting?.({ running: state.running, pendingDeliveries: state.pendingDeliveries, waitedSeconds })
+  }
+}
+
 export const RunCommand = effectCmd({
   command: "run [message..]",
   describe: "run Chimera with a message",
@@ -453,8 +485,13 @@ export const RunCommand = effectCmd({
           return false
         }
 
-        const events = await sdk.event.subscribe()
+        // Abort handle for the SSE stream: after the drain finishes there are
+        // no further events to consume, but the open stream (a real socket in
+        // --attach mode) would keep the process alive, so teardown is explicit.
+        const eventAbort = new AbortController()
+        const events = await sdk.event.subscribe(undefined, { signal: eventAbort.signal })
         let error: string | undefined
+        let drainFinished = false
 
         async function loop() {
           const toggles = new Map<string, boolean>()
@@ -569,6 +606,11 @@ export const RunCommand = effectCmd({
               event.properties.sessionID === sessionID &&
               event.properties.status.type === "idle"
             ) {
+              // During the post-prompt drain the root session may be woken by
+              // injected background-result turns; keep the stream subscribed so
+              // those turns keep printing. The stream is torn down when the
+              // process exits after the handler returns.
+              if (!drainFinished) continue
               break
             }
 
@@ -689,6 +731,52 @@ export const RunCommand = effectCmd({
             variant: args.variant,
             parts: [...files, { type: "text", text: message }],
           })
+        }
+
+        // Drain owned background jobs before exiting: the prompt/command has
+        // returned but background tasks dispatched by the root session may still
+        // be running, and their injected wake-up turns must be allowed to
+        // complete (and the result delivered) or the process would exit and
+        // orphan them. loop() stays subscribed during the drain so those turns
+        // keep printing.
+        try {
+          await drainBackgroundJobs({
+            sessionID,
+            poll: async (timeoutMs) => {
+              const response = await sdk.session.backgroundQuiescence(
+                { sessionID, timeout: timeoutMs },
+                { throwOnError: true },
+              )
+              const data = response.data
+              // The generated SDK types Schema.Number fields as
+              // `number | "NaN" | "Infinity" ...`; narrow to plain numbers.
+              return {
+                quiescent: data.quiescent,
+                running: Number(data.running),
+                pendingDeliveries: Number(data.pendingDeliveries),
+              }
+            },
+            onWaiting: ({ running, pendingDeliveries, waitedSeconds }) => {
+              const waiting = running + pendingDeliveries
+              UI.println(
+                UI.Style.TEXT_DIM,
+                `waiting for ${waiting} background task${waiting === 1 ? "" : "s"} to finish... (${waitedSeconds}s)`,
+                UI.Style.TEXT_NORMAL,
+              )
+            },
+          })
+        } catch (error) {
+          UI.println(
+            UI.Style.TEXT_WARNING_BOLD + "!",
+            UI.Style.TEXT_NORMAL,
+            `failed to wait for background tasks (${error instanceof Error ? error.message : String(error)}); exiting without draining`,
+          )
+        } finally {
+          drainFinished = true
+          // The final idle event is emitted before the quiescence poll returns,
+          // so loop() usually breaks on its own once the buffered events drain;
+          // the grace-period abort is the guaranteed teardown for both modes.
+          setTimeout(() => eventAbort.abort(), 1000).unref()
         }
       }
 

@@ -1048,10 +1048,10 @@ export const defaultLayer = layer.pipe(
 )
 
 // Single-level cleanup: cancel running background jobs directly associated
-// with the removed session — the session itself as a job (job.id or
-// metadata.sessionId match) and jobs it dispatched (metadata.parentSessionId
-// match). Deleting nested sessions recurses through Session.remove, so each
-// level cleans its own jobs; no transitive closure is needed here.
+// with the removed session — the session itself as a job (job.id match) and
+// jobs it dispatched (typed ownerSessionId match). Deleting nested sessions
+// recurses through Session.remove, so each level cleans its own jobs; no
+// transitive closure is needed here.
 const cancelBackgroundJobs = Effect.fn("Session.cancelBackgroundJobs")(function* (
   background: BackgroundJob.Interface | undefined,
   sessionID: SessionID,
@@ -1061,8 +1061,7 @@ const cancelBackgroundJobs = Effect.fn("Session.cancelBackgroundJobs")(function*
     (yield* background.list()).filter((job) => {
       if (job.status !== "running") return false
       if (job.id === sessionID) return true
-      if (typeof job.metadata?.sessionId === "string" && job.metadata.sessionId === sessionID) return true
-      return typeof job.metadata?.parentSessionId === "string" && job.metadata.parentSessionId === sessionID
+      return job.ownerSessionId === sessionID
     }),
     (job) => background.cancel(job.id),
     { concurrency: "unbounded", discard: true },

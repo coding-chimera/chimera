@@ -138,3 +138,29 @@ loop 挂起修复前的对比基线（本机 macOS, bun 1.4.0, `bun test --timeo
 - 关键结构事实：fork wasm-only 无 kernel/无 resolver-pool（④101 条根因）；双消费面（agent chimera_* + MCP tools.ts）；基线前缺口账本立账（function-ref #807/c-fnptr #954/#825/#1292 等）
 - **待用户：16 项拍板一轮过**（文档 §5，每项带建议；核心：A grammar pin 采纳/B union 采纳/D resolver-pool 暂不/E kernel 不移植/F function-ref 独立战役/G C-deferral 缓议/P explore 史诗后排）；拍板后 G0（~1 天）可立即先行
 - 批次轮廓：G0 小修→G1 WAL+收敛战役→G7 perf；G2 watcher/G3 检索质量/G5 generated 检测/G8 CLI 小件独立；G4 语法精度（等拍板 A/B）；G6 explore CG 史诗最后（~1-2 周）
+
+### F4-P1.5 嵌套后台孤儿化修复（2026-09-10，未 commit）
+
+- bug：子代理（mid）派后台 leaf 后回合结束，前台 dispatch 立即把"等待中"文本返 root → leaf 结果孤儿化（用户实测 mid-out 缺失）；run 模式对 root 自有 job 同样零等待（F12 根因）。scout 证实上游同样无保护（task.test.ts:897 明确断言不等待）——fork 自研分歧面，F 线同步注意冲突
+- 用户拍板：owner 迁移+双写兜底（AGENTS.md:47 契约）/ park 无超时但定时提示 main / run 聚合结果事件流自然流出 / 复用 background_subagents kill-switch / 三阶段串行 builder（deepseek-v4-flash-0731 high）+root 逐阶段复验
+- ①引擎：typed ownerSessionId + delivery(pending|delivered) 状态机 + markDelivered/waitOwnerQuiescent + engine 单写者投影；4 消费点迁 typed（prompt backgroundTasks/task-cancel/run-state BFS/session.remove）②dispatch：runPreparedCore park-until-quiescent + 重读最新 assistant 消息 + onParkProgress→ctx.metadata(30s) + BACKGROUND_DESCRIPTION 补句 + 同步路径 pre-materialize（等价）③run：GET /session/:id/background/quiescence 长轮询（clamp 1-120s）+ drainBackgroundJobs + SDK 重生成（backgroundQuiescence）+ loop() idle break 改 drainFinished 门控
+- root 复验抓两 bug：waitOwnerQuiescent 热自旋（settled job await 已 resolve done → 改按状态选唯一未决信号 running→done/settled→deliveryDone）；run loop() break 永不触发（末尾 idle 恒先于 drainFinished → attach SSE socket 挂进程 → subscribe 传 AbortController signal + drain finally 1s unref 宽限定时器兜底强关）
+- 验证：typecheck 绿（chimera+sdk/js）；终验 464 pass/0 fail（F4 家族+三阶段 22 文件）+ test/session 521 pass/0 fail（compaction flake 未现）；窗口用例（settle 但 delivery pending 仍阻塞）+drift-guard 已锁
+- 待办：用户真机复跑原场景（root→mid→leafA/B + run 模式，断言 mid-out/root-out）；contract phase（拆投影）等下个 F 线同步批次后确认（session.ts 已迁，fork 读者已清零）；未 commit 待用户发令
+
+### 工具爆发 bench（2026-09-14，harness 已入库未 commit）
+
+- 落点：`packages/chimera/script/bench/`（burst.ts 主入口 + env/sse/plugin/metrics）；跑法 `cd packages/chimera && bun run script/bench/burst.ts --scenario s1,s2,s3,s4 --sizes 1,5,10,25,50 --repeat 3 --out <json>`
+- 机制：TestLLMServer raw chunks 一次响应发 N 个并行 tool_calls（distinct index）→ 真实 streamText 无界并发执行；采样=.chimera/plugin 采样插件（tool.execute.before/after → globalThis）+ part 持久化 time.start/end 事后重建
+- 结论：50 调用爆发零错误零超时，无崩溃悬崖；但单 fiber + 每调用 ~7 次同步 SQLite tx 导致 exec 膨胀 ~6x（glob p50 69ms→428ms@n=50），吞吐 ~30-50 calls/s（只读）/161/s（write）；round 间 gap p50 ~20ms 健康
+- 优化候选（按 ROI）：①part 状态写批量化/去重 ②processor.ts:476 doom-loop 检查每 tool-call 全量 SELECT parts 的 O(N²) ③注意 bench 用 :memory: sqlite，生产 file-backed WAL 写放大更重
+- 局限：s4 write 爆发在未初始化 graph 的 tmpdir 跳过了审计/图同步开销；插件 event 钩子只见到少量事件类型（下限计数）
+
+### relay 非标错误包恢复（TypeValidationError 信封）（2026-09-14，已 commit e5f6a287d，未 push）
+
+- 症状：子代理派发偶发失败，报 "Type validation failed … invalid_union (choices|error)"，真实后端 message（如 "Backend buffer overflow."）丢失且不重试。
+- 根因：内部中转 provider 流式返回非 OpenAI 形状错误包 {code,message,request_id} → @ai-sdk/openai-compatible chunk union 校验失败抛 TypeValidationError → MessageV2.fromError 归 Unknown、SessionRetry 不重试。
+- 修复：provider/error.ts 新增 parseValidationError（还原 message/code/requestId/responseBody，retryLimit=3）+ safeStringify；message-v2.ts fromError 新增 TypeValidationError 分支（信封→可重试 APIError；非信封→Unknown 行为不变）。
+- 验证：bun test message-v2+retry 78 pass/0 fail（父级独立复跑）；bun typecheck 干净。
+- 文件：packages/chimera/src/provider/error.ts、src/session/message-v2.ts、test/session/message-v2.test.ts、test/session/retry.test.ts；predesign_e6de1b931263ed92；audit_1cbc14d080b66a7b。
+- 待办：relay 侧错误包归一化由用户另会话处理；提交前内网审计（ali-internal-audit）已通过。

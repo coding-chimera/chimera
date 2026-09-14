@@ -162,6 +162,8 @@ import type {
   RemoteCompactionPolicyPatch,
   SessionAbortErrors,
   SessionAbortResponses,
+  SessionBackgroundQuiescenceErrors,
+  SessionBackgroundQuiescenceResponses,
   SessionChildrenErrors,
   SessionChildrenResponses,
   SessionCommandErrors,
@@ -4041,6 +4043,44 @@ export class Session2 extends HeyApiClient {
         ...options?.headers,
         ...params.headers,
       },
+    })
+  }
+
+  /**
+   * Get session background quiescence
+   *
+   * Long-poll until the session owns no running or delivery-pending background jobs, or until the timeout elapses. Returns the pending counts when not quiescent.
+   */
+  public backgroundQuiescence<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+      timeout?: number
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "query", key: "timeout" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      SessionBackgroundQuiescenceResponses,
+      SessionBackgroundQuiescenceErrors,
+      ThrowOnError
+    >({
+      url: "/session/{sessionID}/background/quiescence",
+      ...options,
+      ...params,
     })
   }
 

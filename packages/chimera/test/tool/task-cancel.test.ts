@@ -467,14 +467,14 @@ describe("cascade: session run cancel", () => {
         yield* jobs.start({
           id: child,
           type: "task",
-          metadata: { parentSessionId: parent, sessionId: child },
+          ownerSessionId: parent,
           onInterrupt: state.cancel(child).pipe(Effect.ignore),
           run: blockedRun(childGate),
         })
         yield* jobs.start({
           id: grandchild,
           type: "task",
-          metadata: { parentSessionId: child, sessionId: grandchild },
+          ownerSessionId: child,
           onInterrupt: state.cancel(grandchild).pipe(Effect.ignore),
           run: blockedRun(grandGate),
         })
@@ -518,14 +518,18 @@ describe("cascade: session run cancel", () => {
           .pipe(Effect.forkScoped)
         // Self-referential: the job for "self" has an onInterrupt that
         // re-enters state.cancel("self"). The running-status filter keeps the
-        // recursion bounded regardless of the cycle-shaped metadata.
+        // recursion bounded regardless of the cycle-shaped ownership.
+        // Self-referential: the job for "self" has an onInterrupt that
+        // re-enters state.cancel("self"). The running-status filter keeps the
+        // recursion bounded regardless of the cycle-shaped ownership.
         yield* jobs.start({
           id: self,
           type: "task",
-          metadata: { parentSessionId: SessionID.make("root"), sessionId: self },
+          ownerSessionId: SessionID.make("root"),
           onInterrupt: state.cancel(self).pipe(Effect.ignore),
           run: blockedRun(gate),
         })
+        yield* Effect.sleep(20)
         yield* Effect.sleep(20)
 
         yield* state.cancel(self)
@@ -547,11 +551,13 @@ describe("cascade: session run cancel", () => {
         let aInterrupts = 0
         let bInterrupts = 0
         // A cycle is impossible to build through real delegation (parents are
-        // ancestors), but pathological metadata must not hang the BFS.
+        // ancestors), but pathological ownership must not hang the BFS.
+        // A cycle is impossible to build through real delegation (parents are
+        // ancestors), but pathological ownership must not hang the BFS.
         yield* jobs.start({
           id: "a",
           type: "task",
-          metadata: { parentSessionId: "b", sessionId: "a" },
+          ownerSessionId: "b",
           onInterrupt: Effect.sync(() => {
             aInterrupts += 1
           }),
@@ -560,7 +566,7 @@ describe("cascade: session run cancel", () => {
         yield* jobs.start({
           id: "b",
           type: "task",
-          metadata: { parentSessionId: "a", sessionId: "b" },
+          ownerSessionId: "a",
           onInterrupt: Effect.sync(() => {
             bInterrupts += 1
           }),
@@ -596,34 +602,34 @@ describe("session.remove cleanup", () => {
         const parent = yield* sessions.create({ title: "Parent" })
         const child = yield* sessions.create({ title: "Child", parentID: parent.id })
         const gate = yield* Deferred.make<void>()
-        // The parent session itself running as a background job (sessionId match).
+        // The parent session itself running as a background job (job.id === session id).
         yield* jobs.start({
-          id: "job_p",
+          id: parent.id,
           type: "task",
-          metadata: { sessionId: parent.id, parentSessionId: "ancestor_p" },
+          ownerSessionId: SessionID.make("ancestor_p"),
           run: blockedRun(gate),
         })
-        // A job the parent dispatched (parentSessionId match, cancelled here or
+        // A job the parent dispatched (ownerSessionId match, cancelled here or
         // through the child recursion).
         yield* jobs.start({
-          id: "job_c",
+          id: child.id,
           type: "task",
-          metadata: { sessionId: child.id, parentSessionId: parent.id },
+          ownerSessionId: parent.id,
           run: blockedRun(gate),
         })
         // Unrelated job from another parent — must survive.
         yield* jobs.start({
           id: "job_other",
           type: "task",
-          metadata: { sessionId: "unrelated", parentSessionId: "zygote" },
+          ownerSessionId: SessionID.make("zygote"),
           run: blockedRun(gate),
         })
         yield* Effect.sleep(20)
 
         yield* sessions.remove(parent.id)
 
-        expect((yield* jobs.get("job_p"))?.status).toBe("cancelled")
-        expect((yield* jobs.get("job_c"))?.status).toBe("cancelled")
+        expect((yield* jobs.get(parent.id))?.status).toBe("cancelled")
+        expect((yield* jobs.get(child.id))?.status).toBe("cancelled")
         expect((yield* jobs.get("job_other"))?.status).toBe("running")
         yield* Deferred.succeed(gate, undefined).pipe(Effect.ignore)
       }),

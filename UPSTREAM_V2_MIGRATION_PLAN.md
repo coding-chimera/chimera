@@ -22,7 +22,7 @@
 - **LayerNode 最小子集**：上游 `packages/core/src/effect/` 实为 8 个源文件（外加 `dfdf` 垃圾文件，勿搬）+ `test/effect/` 6 个测试（其中 `layer-node/` 目录内 3 个）；核心 `layer-node.ts`（333 行，含编译期依赖检查）。坑：`packages/core/src/location-services.ts:92-95` 注释（该文件在 effect/ 之外）要求 replacements 必须在 hoist 期应用；上游 `runtime.ts:3,8` 硬编码 Observability（本仓处置：不绑定上游实现——跳过搬运、保留本仓已适配版）。
 - **Session V2 上游未完成**：V2 `compact/shell/skill/wait` 为桩，tool 定义解析/retry/状态持久化未勾选（`llm.ts:43-91` 头注释）。V1/V2 接口不同形状，绞杀层需 "V1 Interface → V2 + SessionV1 事件兼容" 适配器。
 建议执行顺序：**F0 → F1（Copilot 计费提到最前）→ F2 ∥ claims P1/P2（已解冻）→ L4（含并入项）→ F3 ∥ F4-P3 → L5（吸收 F4-P2）**。其余 10 项拍板不阻塞上述批次，可穿插进行。
-批次进度（2026-09-08）：**F0 ✅**（bdaffa827 已推送）；**F4-P1 ✅**（a143b3c23 已推送）；**F1 ✅ 完成**（本地 8 commit 未 push：7dd57693a 图片缩放+seeding / 5571bb670 headerTimeout / 9fd39ccb9 压缩 / aaddd6fbb CLI 双件 / 0efb73724 插件三件套 / 3c396f636 mantle+Cohere / 8674add7f Copilot 计费+tiers / b6a42ec70 SDK 重生成，见下方「F1 完成记录」）；F2/claims P1P2 未启动（队列下一步：F2 ∥ claims P1/P2）。
+批次进度（2026-09-10）：**F0 ✅**（bdaffa827 已推送）；**F4-P1 ✅**（a143b3c23 已推送）；**F1 ✅ 完成**（本地 8 commit 未 push：7dd57693a 图片缩放+seeding / 5571bb670 headerTimeout / 9fd39ccb9 压缩 / aaddd6fbb CLI 双件 / 0efb73724 插件三件套 / 3c396f636 mantle+Cohere / 8674add7f Copilot 计费+tiers / b6a42ec70 SDK 重生成，见下方「F1 完成记录」）；**F4-P1.5 ✅ 嵌套后台孤儿化修复**（2026-09-10，本地未 commit，见下方「F4-P1.5 完成记录」）；F2/claims P1P2 未启动（队列下一步：F2 ∥ claims P1/P2）。
 - **配置化精确落点**：`core/src/plugin/variant.ts`——上游只硬编码了 glm-5.2，v1 的 `reasoning_options` 数据驱动（`transform.ts:1653-1671`）尚未移植到 v2。我们直接在此实现数据驱动 variants 生成。
 - v2 `supported()` 只映射 `@ai-sdk/{openai,anthropic,openai-compatible}`；`api.type:"native"` 无 runner 路由。迁移 DeepSeek 前需核对 models.dev 快照的 npm 字段。
 - 上游把 `@opencode-ai/core` 放在 devDependencies 靠 bun hoisting——**勿照抄**，发布 npm 包会缺依赖。
@@ -265,6 +265,20 @@ L5 seam 条款：P1 把后台语义隔离在"引擎服务 + task 工具分支"�
 **验证**：F4 测试家族 113 pass/0 fail（7 文件）+ typecheck 绿 + test/session 495 pass（唯一失败=compaction abort 时序预存，memory.md beta.59 基线佐证）+ tool 目录仅预存 tool.chimera 1 条（stash 复核）。各阶段 predesign/audit 齐全（阶段4：predesign_215fa11fcf145101、audit_aaeab1fee6da4988 等），obligations 0。
 
 **残余/非阻塞**：swarm 原生 first-wins 等 P2（P1 期用 N×task(background)+task_cancel 手动模式，task.txt 已教）；newweb `(background)` 专属渲染属 P3（metadata 已发布）；跨进程唤醒（claims L2 poll→inject 桥）仍开放；compaction 时序用例高负载偶败（预存）。
+
+#### F4-P1.5 完成记录（嵌套后台孤儿化修复，2026-09-10，本地未 commit）
+
+用户实测发现：root→mid（前台 task）→leafA/B（后台）场景下，mid 派发后台任务后自身回合结束即被 dispatch 当作完成、把"等待中"文本返回 root，root 写盘退出，leaf 聚合结果孤儿化（mid-out 缺失）。确诊两处断链：runPreparedCore 在子会话 loop break 时取最后文本当终态、不感知自有 background job；run 模式 prompt 返回即进程退出（src/cli 零等待）。scout 调研证实上游同样无保护（上游 task.test.ts:897 明确断言 background 完成不等待父 prompt）——fork 自研分歧面，F 线同步时注意冲突。
+
+用户拍板（2026-09-10）：owner 迁移+双写兜底（契约见 packages/chimera/AGENTS.md pitfall 节）；park 不设超时但定时提示 main；run 聚合结果经事件流自然流出；复用 background_subagents kill-switch；三阶段串行 builder（deepseek-v4-flash-0731 high）+ root 逐阶段复验。
+
+1. **阶段1 引擎**：typed `StartInput/Info.ownerSessionId` + `delivery(pending|delivered)` 状态机（start 即 pending；notify fiber 在 injectSynthetic **完整返回**——即唤醒回合跑完——后 ensuring markDelivered）+ `markDelivered`/`waitOwnerQuiescent` 原语（raceAll 后重读快照，封死"唤醒回合内又注册新 job"窗口）；engine 单写者投影 metadata.parentSessionId/sessionId（expand phase）；四消费点迁 typed（prompt backgroundTasks / task-cancel 归属守卫 / run-state BFS / session.remove 清理）。**root 复验抓热自旋**：settled job await 已 resolve 的 done deferred 会让 settle→delivery 窗口（=整个唤醒 LLM 回合）空转烧核 → 改为按状态选唯一未决信号（running→done，settled→deliveryDone）。
+2. **阶段2 dispatch park**：runPreparedCore 在 prompt() 返回后若 child 有未落定 owned job 则 park 至 waitOwnerQuiescent，quiescent 后**重读最新 assistant 消息**作为 output/error 判定——前台/后台路径共享 core，嵌套 background mid 同步被修（其 job 保持 running 至聚合完成）；onParkProgress 周期回调（默认 30s、进入 park 立报、无放弃型超时）→ task.ts 前台路径转 ctx.metadata（parked/waitingBackgroundTasks/parkElapsedMs）；BACKGROUND_DESCRIPTION 补子代理 park 语义句（kill-switch 关时字节不变）；同步路径 pre-materialize（时序等价，既有测试佐证）。
+3. **阶段3 run drain**：新路由 `GET /session/:id/background/quiescence`（长轮询，timeout 默认 30s、clamp [1,120000]，返回 quiescent/running/pendingDeliveries）+ SDK 重生成（sdk.session.backgroundQuiescence）；run.ts `drainBackgroundJobs` 在 prompt/command 返回后长轮询至 quiescent，每轮打印 waiting 进度行（聚合结果经 loop() 事件流自然流出）；loop() 的 idle break 改 drainFinished 门控以保持唤醒回合打印。**root 复验抓 attach 挂起**：末尾 idle 事件恒早于 drainFinished 置位 → break 永不触发 → attach 模式 SSE socket 把进程挂住 → subscribe 传 AbortController signal + drain finally 1s unref 宽限定时器兜底强关流。
+
+验证：typecheck 全程绿（chimera+sdk/js 双包）；终验矩阵 **464 pass/0 fail**（F4 家族+三阶段触改共 22 文件）+ **test/session 521 pass/0 fail**（既有 compaction flake 未复现）；关键窗口用例（settle 但 delivery pending 仍阻塞）+ drift-guard（投影≡typed 字段）已锁入引擎测试。predesign_4605530377c92c68 / predesign_db8894e81c17e5ce；audit_c0bfd9e0d68433db / audit_0abad7340d6678a9。
+
+残余/非阻塞：用户真机复跑原始场景待做（root→mid→leafA/B、run 模式、断言 mid-out/root-out 均产出）；parked 前台 dispatch 全程占用 DelegationLimiter permit（leaf 并发另由 background_concurrent 独立封顶，可接受）；contract phase（拆投影）按 AGENTS.md 等下个 F 线同步批次后确认（fork 侧 metadata 读者已清零）；run.ts 遇无此路由的旧 server 时 drain 降级为一行 warning 不卡死。
 #### F1 完成记录（2026-09-08，本地 8 commit **未 push**——用户指令禁 push）
 
 落地清单（每项经 ali-internal-audit 内容审计 + chimera_audit 显式种子 + 父级独立复验）：

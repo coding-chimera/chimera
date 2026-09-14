@@ -255,7 +255,8 @@ describe("agent.background-job", () => {
         yield* jobs.start({
           id: "ses_snap",
           type: "task",
-          metadata: { parentSessionId: "ses_parent", model: "p/m" },
+          ownerSessionId: "ses_parent",
+          metadata: { model: "p/m" },
           run: blocked(gate),
         })
         yield* Effect.sleep(20)
@@ -266,9 +267,254 @@ describe("agent.background-job", () => {
         const listedJob = listed.find((item) => item.id === "ses_snap")
         if (listedJob?.metadata) listedJob.metadata["tamper2"] = true
         const again = yield* jobs.get("ses_snap")
-        expect(again?.metadata).toEqual({ parentSessionId: "ses_parent", model: "p/m" })
+        expect(again?.metadata).toEqual({ sessionId: "ses_snap", parentSessionId: "ses_parent", model: "p/m" })
         yield* Deferred.succeed(gate, undefined)
         yield* jobs.wait({ id: "ses_snap" })
+      }),
+  )
+
+  it.instance(
+    "waitOwnerQuiescent returns immediately when the owner has no jobs",
+    () =>
+      Effect.gen(function* () {
+        const jobs = yield* BackgroundJob.Service
+        const out = yield* jobs.waitOwnerQuiescent("ghost-owner").pipe(Effect.as("done"), Effect.timeoutOption("200 millis"))
+        expect(out._tag).toBe("Some")
+      }),
+  )
+
+  it.instance(
+    "waitOwnerQuiescent blocks while an owned running job is active and resolves after settle + markDelivered",
+    () =>
+      Effect.gen(function* () {
+        const jobs = yield* BackgroundJob.Service
+        const gate = yield* Deferred.make<void>()
+        yield* jobs.start({ id: "q_run", ownerSessionId: "owner", run: blocked(gate) })
+        yield* Effect.sleep(20)
+        const waiter = yield* jobs.waitOwnerQuiescent("owner").pipe(Effect.forkScoped)
+        const blockedProbe = yield* Fiber.await(waiter).pipe(Effect.timeoutOption("40 millis"))
+        expect(blockedProbe._tag).toBe("None")
+        yield* Deferred.succeed(gate, undefined)
+        yield* jobs.markDelivered("q_run")
+        const settled = yield* Fiber.await(waiter).pipe(Effect.timeoutOption("80 millis"))
+        expect(settled?._tag).toBe("Some")
+      }),
+  )
+
+  it.instance(
+    "a settled but undelivered job still blocks quiescence until markDelivered (delivery window)",
+    () =>
+      Effect.gen(function* () {
+        const jobs = yield* BackgroundJob.Service
+        const gate = yield* Deferred.make<void>()
+        yield* jobs.start({ id: "q_win", ownerSessionId: "owner", run: blocked(gate) })
+        yield* Effect.sleep(20)
+        const waiter = yield* jobs.waitOwnerQuiescent("owner").pipe(Effect.forkScoped)
+        yield* Deferred.succeed(gate, undefined) // settle -> completed, delivery still pending
+        yield* Effect.sleep(30) // let the settle propagate
+        const during = yield* Fiber.await(waiter).pipe(Effect.timeoutOption("80 millis"))
+        expect(during._tag).toBe("None")
+        yield* jobs.markDelivered("q_win")
+        const after = yield* Fiber.await(waiter).pipe(Effect.timeoutOption("80 millis"))
+        expect(after?._tag).toBe("Some")
+      }),
+  )
+
+  it.instance(
+    "keeps blocking when the owner registers a new job while waiting",
+    () =>
+      Effect.gen(function* () {
+        const jobs = yield* BackgroundJob.Service
+        const gate1 = yield* Deferred.make<void>()
+        const gate2 = yield* Deferred.make<void>()
+        yield* jobs.start({ id: "q_first", ownerSessionId: "owner", run: blocked(gate1) })
+        yield* Effect.sleep(20)
+        const waiter = yield* jobs.waitOwnerQuiescent("owner").pipe(Effect.forkScoped)
+        yield* jobs.start({ id: "q_second", ownerSessionId: "owner", run: blocked(gate2) })
+        yield* Deferred.succeed(gate1, undefined)
+        yield* jobs.markDelivered("q_first")
+        const still = yield* Fiber.await(waiter).pipe(Effect.timeoutOption("80 millis"))
+        expect(still._tag).toBe("None") // q_second still running
+        yield* Deferred.succeed(gate2, undefined)
+        yield* jobs.markDelivered("q_second")
+        const settled = yield* Fiber.await(waiter).pipe(Effect.timeoutOption("80 millis"))
+        expect(settled?._tag).toBe("Some")
+      }),
+  )
+
+  it.instance(
+    "a cancelled job still blocks quiescence until markDelivered",
+    () =>
+      Effect.gen(function* () {
+        const jobs = yield* BackgroundJob.Service
+        const gate = yield* Deferred.make<void>()
+        yield* jobs.start({ id: "q_cx", ownerSessionId: "owner", run: blocked(gate) })
+        yield* Effect.sleep(20)
+        yield* jobs.cancel("q_cx")
+        const waiter = yield* jobs.waitOwnerQuiescent("owner").pipe(Effect.forkScoped)
+        const blockedProbe = yield* Fiber.await(waiter).pipe(Effect.timeoutOption("60 millis"))
+        expect(blockedProbe._tag).toBe("None")
+        yield* jobs.markDelivered("q_cx")
+        const settled = yield* Fiber.await(waiter).pipe(Effect.timeoutOption("80 millis"))
+        expect(settled?._tag).toBe("Some")
+      }),
+  )
+
+  it.instance(
+    "another owner's running job does not affect this owner's quiescence",
+    () =>
+      Effect.gen(function* () {
+        const jobs = yield* BackgroundJob.Service
+        const gate = yield* Deferred.make<void>()
+        yield* jobs.start({ id: "q_other", ownerSessionId: "someone-else", run: blocked(gate) })
+        yield* Effect.sleep(20)
+        const out = yield* jobs.waitOwnerQuiescent("me").pipe(Effect.as("done"), Effect.timeoutOption("100 millis"))
+        expect(out._tag).toBe("Some")
+        yield* Deferred.succeed(gate, undefined)
+        yield* jobs.markDelivered("q_other")
+      }),
+  )
+
+  it.instance(
+    "markDelivered is idempotent for unknown and repeat ids",
+    () =>
+      Effect.gen(function* () {
+        const jobs = yield* BackgroundJob.Service
+        yield* jobs.markDelivered("missing")
+        const gate = yield* Deferred.make<void>()
+        yield* jobs.start({ id: "q_alpha", ownerSessionId: "owner", run: blocked(gate) })
+        yield* jobs.markDelivered("q_alpha")
+        yield* jobs.markDelivered("q_alpha")
+        yield* Effect.sleep(20)
+        expect((yield* jobs.get("q_alpha"))?.delivery).toBe("delivered")
+        const waiter = yield* jobs.waitOwnerQuiescent("owner").pipe(Effect.forkScoped)
+        const blockedProbe = yield* Fiber.await(waiter).pipe(Effect.timeoutOption("40 millis"))
+        expect(blockedProbe._tag).toBe("None") // running status blocks regardless of delivery
+        yield* Deferred.succeed(gate, undefined)
+        const settled = yield* Fiber.await(waiter).pipe(Effect.timeoutOption("80 millis"))
+        expect(settled?._tag).toBe("Some")
+      }),
+  )
+
+  it.instance(
+    "same-id restart bumps generation; markDelivered with a stale generation is a no-op and the current generation delivers",
+    () =>
+      Effect.gen(function* () {
+        const jobs = yield* BackgroundJob.Service
+        const gate1 = yield* Deferred.make<void>()
+        const first = yield* jobs.start({ id: "g_run", ownerSessionId: "owner", run: blocked(gate1) })
+        expect(first.generation).toBe(1)
+        yield* Effect.sleep(20)
+        // Running short-circuit: the existing snapshot comes back with the generation unchanged.
+        const dup = yield* jobs.start({ id: "g_run", run: Effect.succeed("never") })
+        expect(dup.generation).toBe(1)
+        yield* Deferred.succeed(gate1, undefined)
+        yield* jobs.wait({ id: "g_run" })
+        expect((yield* jobs.get("g_run"))?.generation).toBe(1) // settle preserves generation
+
+        const gate2 = yield* Deferred.make<void>()
+        const second = yield* jobs.start({ id: "g_run", ownerSessionId: "owner", run: blocked(gate2) })
+        expect(second.generation).toBe(2)
+        yield* Effect.sleep(20)
+
+        // A stale notify fiber from generation 1 must not deliver the running generation 2.
+        yield* jobs.markDelivered("g_run", 1)
+        expect((yield* jobs.get("g_run"))?.delivery).toBe("pending")
+
+        yield* Deferred.succeed(gate2, undefined)
+        yield* jobs.wait({ id: "g_run" })
+        yield* jobs.markDelivered("g_run", 2)
+        expect((yield* jobs.get("g_run"))?.delivery).toBe("delivered")
+      }),
+  )
+
+  it.instance(
+    "waitOwnerQuiescent survives a stale delivery mark: same-id restart keeps the wait alive until the new generation settles and delivers",
+    () =>
+      Effect.gen(function* () {
+        const jobs = yield* BackgroundJob.Service
+        const gate1 = yield* Deferred.make<void>()
+        yield* jobs.start({ id: "q_gen", ownerSessionId: "owner", run: blocked(gate1) })
+        yield* Effect.sleep(20)
+        const waiter = yield* jobs.waitOwnerQuiescent("owner").pipe(Effect.forkScoped)
+        yield* Deferred.succeed(gate1, undefined)
+        yield* jobs.wait({ id: "q_gen" }) // settled, delivery pending: the long notify-injection window
+
+        // Restart over the settled entry while the old notify fiber is still injecting.
+        const gate2 = yield* Deferred.make<void>()
+        const second = yield* jobs.start({ id: "q_gen", ownerSessionId: "owner", run: blocked(gate2) })
+        expect(second.generation).toBe(2)
+        yield* Effect.sleep(20)
+
+        // The stale fiber finishes and marks by id + old generation: no-op.
+        yield* jobs.markDelivered("q_gen", 1)
+        expect((yield* jobs.get("q_gen"))?.delivery).toBe("pending")
+
+        yield* Deferred.succeed(gate2, undefined)
+        yield* jobs.wait({ id: "q_gen" })
+        const early = yield* Fiber.await(waiter).pipe(Effect.timeoutOption("80 millis"))
+        expect(early._tag).toBe("None") // settled but undelivered: not quiescent yet
+
+        yield* jobs.markDelivered("q_gen", 2)
+        const settled = yield* Fiber.await(waiter).pipe(Effect.timeoutOption("80 millis"))
+        expect(settled?._tag).toBe("Some")
+      }),
+  )
+
+  it.instance(
+    "markDelivered without a generation keeps the legacy by-id behavior",
+    () =>
+      Effect.gen(function* () {
+        const jobs = yield* BackgroundJob.Service
+        const gate = yield* Deferred.make<void>()
+        yield* jobs.start({ id: "q_legacy", ownerSessionId: "owner", run: blocked(gate) })
+        yield* Deferred.succeed(gate, undefined)
+        yield* jobs.wait({ id: "q_legacy" })
+        yield* jobs.markDelivered("q_legacy")
+        expect((yield* jobs.get("q_legacy"))?.delivery).toBe("delivered")
+        const quiet = yield* jobs.waitOwnerQuiescent("owner").pipe(Effect.as("ok"), Effect.timeoutOption("100 millis"))
+        expect(quiet._tag).toBe("Some")
+      }),
+  )
+
+  it.instance(
+    "engine projection drift-guard: metadata.parentSessionId === ownerSessionId and metadata.sessionId === id after start/extend/settle",
+    () =>
+      Effect.gen(function* () {
+        const jobs = yield* BackgroundJob.Service
+        const gate = yield* Deferred.make<void>()
+        yield* jobs.start({
+          id: "dg1",
+          ownerSessionId: "dg-owner",
+          metadata: { model: "p/m", background: true },
+          run: blocked(gate),
+        })
+        const atStart = yield* jobs.get("dg1")
+        expect(atStart?.ownerSessionId).toBe("dg-owner")
+        expect(atStart?.metadata?.parentSessionId).toBe(atStart?.ownerSessionId)
+        expect(atStart?.metadata?.sessionId).toBe("dg1")
+        expect(atStart?.delivery).toBe("pending")
+        expect(yield* jobs.extend({ id: "dg1", run: Effect.succeed("x") })).toBe(true)
+        const afterExtend = yield* jobs.get("dg1")
+        expect(afterExtend?.metadata?.parentSessionId).toBe(afterExtend?.ownerSessionId)
+        expect(afterExtend?.metadata?.sessionId).toBe("dg1")
+        yield* Deferred.succeed(gate, undefined)
+        yield* jobs.wait({ id: "dg1" })
+        const afterSettle = yield* jobs.get("dg1")
+        expect(afterSettle?.status).toBe("completed")
+        expect(afterSettle?.metadata?.parentSessionId).toBe(afterSettle?.ownerSessionId)
+        expect(afterSettle?.metadata?.sessionId).toBe("dg1")
+        expect(afterSettle?.delivery).toBe("pending") // engine never auto-delivers
+        yield* jobs.markDelivered("dg1")
+        expect((yield* jobs.get("dg1"))?.delivery).toBe("delivered")
+        const quiet = yield* jobs.waitOwnerQuiescent("dg-owner").pipe(Effect.as("ok"), Effect.timeoutOption("100 millis"))
+        expect(quiet._tag).toBe("Some")
+        // No owner: sessionId projection only; parentSessionId must not appear.
+        yield* jobs.start({ id: "dg2", run: Effect.succeed("y") })
+        const plain = yield* jobs.get("dg2")
+        expect(plain?.metadata?.sessionId).toBe("dg2")
+        expect(plain?.ownerSessionId).toBeUndefined()
+        expect("parentSessionId" in (plain?.metadata ?? {})).toBe(false)
       }),
   )
 })

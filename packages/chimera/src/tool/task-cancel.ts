@@ -47,11 +47,9 @@ export const TaskCancelTool = Tool.define(
               ),
             )
           }
-          if (info.metadata?.parentSessionId !== ctx.sessionID) {
+          if (info.ownerSessionId !== ctx.sessionID) {
             return yield* Effect.fail(
-              new Error(
-                `task_id ${taskId} was started by session ${String(info.metadata?.parentSessionId ?? "unknown")}, not this session (${ctx.sessionID}). You can only cancel background tasks you started yourself; a task started by another session is owned by it.`,
-              ),
+              new Error(`task_id ${taskId} was started by session ${String(info.ownerSessionId ?? "unknown")}, not this session (${ctx.sessionID}). You can only cancel background tasks you started yourself; a task started by another session is owned by it.`),
             )
           }
           if (info.status !== "running") {

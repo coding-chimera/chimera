@@ -11,15 +11,19 @@ import { MessageID, SessionID } from "@/session/schema"
 import { Session } from "@/session/session"
 import { NotFoundError } from "@/storage/storage"
 import { errorMessage } from "@/util/error"
-import { Cause, Effect, Exit } from "effect"
+import { Cause, Effect, Exit, Option } from "effect"
 import type { SessionPrompt } from "../session/prompt"
 import { Agent } from "./agent"
+import { BackgroundJob } from "./background-job"
 import { DelegationLimiter } from "./delegation-limiter"
 import { resolveSubagentExecution, type ResolvedSubagentExecution, type SubagentExecutionMetadata } from "./subagent-execution"
 import * as ModelTelemetry from "./model-telemetry"
 import { SubagentModelCatalog } from "./subagent-model-catalog"
 import { exclusionMatch, resolveArchetypes } from "./subagent-model-scheduling"
 import { deriveSubagentSessionPermission } from "./subagent-permissions"
+
+/** Default progress-notification cadence while a dispatch is parked on owned background jobs. */
+const PARK_PROGRESS_INTERVAL_MS = 30_000
 
 export interface SubagentPromptOps {
   cancel(sessionID: SessionID): Effect.Effect<void>
@@ -85,7 +89,14 @@ export type SubagentDispatchPrepareInput = Pick<
 export type SubagentDispatchRunPreparedInput = Pick<
   SubagentDispatchInput,
   "description" | "prompt" | "promptOps" | "abort" | "onStarted" | "telemetry"
-> & { prepared: SubagentDispatchPrepared; materialized?: SubagentDispatchMaterialized }
+> & {
+  prepared: SubagentDispatchPrepared
+  materialized?: SubagentDispatchMaterialized
+  /** Periodically invoked while the dispatch waits (parks) for owned background jobs to finish delivering. */
+  onParkProgress?: (info: { waiting: number; elapsedMs: number }) => Effect.Effect<void>
+  /** Progress-notification cadence while parked; never an abandonment timeout. Defaults to 30s. */
+  parkProgressIntervalMs?: number
+}
 
 export type SubagentDispatchMaterialized = {
   nextSession: Session.Info
@@ -100,6 +111,7 @@ export const SubagentDispatch = Effect.gen(function* () {
   const provider = yield* Provider.Service
   const routing = yield* ConfigSubagentRouting.Service
   const limiter = yield* DelegationLimiter.Service
+  const background = yield* Effect.serviceOption(BackgroundJob.Service)
 
   const prepare = Effect.fn("SubagentDispatch.prepare")(function* (input: SubagentDispatchPrepareInput) {
     const cfg = yield* config.get()
@@ -338,6 +350,41 @@ export const SubagentDispatch = Effect.gen(function* () {
       runCancel.fork(cancel)
     }
 
+    // Phase 2 park: after the child's turn completes, hold the dispatch until every
+    // background job owned by the child has settled AND been delivered (the notify
+    // fiber marks delivered only after the wake-up turn finished), then re-read the
+    // child's newest assistant message as the final result. Without the park, the
+    // wake-up turn is orphaned: the parent already consumed the "waiting" text and
+    // the injected result has no consumer. No owned job (or no background service)
+    // means the existing fast path runs byte-identical.
+    const settleOwnedBackgroundJobs = Effect.fnUntraced(function* (initial: MessageV2.WithParts) {
+      const service = Option.getOrUndefined(background)
+      if (!service) return initial
+      const ownedUnsettled = (jobs: BackgroundJob.Info[]) =>
+        jobs.filter(
+          (job) =>
+            job.ownerSessionId === nextSession.id &&
+            (job.status === "running" || job.delivery === "pending"),
+        )
+      if (ownedUnsettled(yield* service.list()).length === 0) return initial
+      const parkedAt = Date.now()
+      const interval = input.parkProgressIntervalMs ?? PARK_PROGRESS_INTERVAL_MS
+      const progress = (waiting: number, elapsedMs: number) =>
+        input.onParkProgress?.({ waiting, elapsedMs }) ?? Effect.void
+      // Immediate first tick so the parent sees the parked state right away.
+      yield* progress(ownedUnsettled(yield* service.list()).length, 0)
+      // Interval bounds only the progress cadence; quiescence is never abandoned.
+      for (;;) {
+        const quiescent = yield* service.waitOwnerQuiescent(nextSession.id).pipe(Effect.timeoutOption(interval))
+        if (Option.isSome(quiescent)) break
+        yield* progress(ownedUnsettled(yield* service.list()).length, Date.now() - parkedAt)
+      }
+      if (input.abort.aborted) return yield* Effect.interrupt
+      const latest = yield* sessions.findMessage(nextSession.id, (m) => m.info.role !== "user")
+      if (Option.isNone(latest)) return initial
+      return latest.value
+    })
+
     const runWork = Effect.gen(function* () {
       if (input.abort.aborted) {
         yield* (input.onStarted?.({ sessionId: nextSession.id, model: prepared.resolved.model, execution }) ?? Effect.void)
@@ -385,14 +432,15 @@ export const SubagentDispatch = Effect.gen(function* () {
             })
             firstStreamedDeltaAt = firstStreamedDelta(result.parts)
             if (input.abort.aborted) return yield* Effect.interrupt
-            if (result.info.role === "assistant" && result.info.error) {
+            const finalResult = yield* settleOwnedBackgroundJobs(result)
+            if (finalResult.info.role === "assistant" && finalResult.info.error) {
               return yield* Effect.fail(
                 new Error(
-                  `Subagent ${prepared.subagent.name} (${prepared.resolved.model.providerID}/${prepared.resolved.model.modelID}) failed: ${errorMessage(result.info.error)}`,
+                  `Subagent ${prepared.subagent.name} (${prepared.resolved.model.providerID}/${prepared.resolved.model.modelID}) failed: ${errorMessage(finalResult.info.error)}`,
                 ),
               )
             }
-            return result
+            return finalResult
           }),
         (_, exit) =>
           Effect.gen(function* () {
