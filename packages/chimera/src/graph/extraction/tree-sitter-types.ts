@@ -100,6 +100,15 @@ export interface LanguageExtractor {
   importTypes: string[];
   /** Node types that represent function calls */
   callTypes: string[];
+  /**
+   * Node types that represent a value-position identifier (JS/TS: `identifier`,
+   * `shorthand_property_identifier`). When declared, the extractor emits a
+   * `references` edge for identifiers in value positions — object shorthand,
+   * call arguments, JSX expression bodies, assignment right-hand sides — so a
+   * function passed as a value stays visible across files. Omitted by languages
+   * with no such convention (no-op).
+   */
+  valueReferenceTypes?: string[];
   /** Node types that represent variable declarations (const, let, var, etc.) */
   variableTypes: string[];
   /** Node types that represent class fields (extracted as 'field' kind inside class bodies) */

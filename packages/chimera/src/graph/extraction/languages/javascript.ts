@@ -11,6 +11,7 @@ export const javascriptExtractor: LanguageExtractor = {
   typeAliasTypes: [],
   importTypes: ['import_statement'],
   callTypes: ['call_expression'],
+  valueReferenceTypes: ['identifier', 'shorthand_property_identifier'],
   variableTypes: ['lexical_declaration', 'variable_declaration'],
   nameField: 'name',
   bodyField: 'body',
