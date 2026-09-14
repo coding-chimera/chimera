@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS nodes (
     decorators TEXT, -- JSON array
     type_parameters TEXT, -- JSON array
     return_type TEXT, -- normalized return/result type name for receiver-type inference (upstream v5, chimera v7)
+    params_json TEXT, -- JSON array [{"n":"q","t":"Queue"}] typed parameter pairs for receiver-type inference (chimera v12)
     search_text TEXT, -- identifier split into component words for FTS (see query-utils.buildSearchText)
     updated_at INTEGER NOT NULL
 );
