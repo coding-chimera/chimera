@@ -263,10 +263,16 @@ export class CodeGraphAdapter {
     snapshot = this.snapshot(),
   ): FrozenSemanticObject | null {
     const id = typeof nodeOrId === "string" ? nodeOrId : nodeOrId.id
-    const cached = memo.get(id)
+    // Revision-scoped key: a memo shared across a graph mutation (trackToolMutation
+    // projects before-nodes, syncs, then projects after-nodes with the same memo)
+    // must not serve the stale pre-sync object for a node whose id survived the
+    // edit — diffNodeSemantics would compare one object with itself and every
+    // signature/field semantic-diff fact would silently degrade to a body fact.
+    const memoKey = `${snapshot.revision}:${id}`
+    const cached = memo.get(memoKey)
     if (cached) return cached
     const projection = this.projectNode(nodeOrId, snapshot)
-    if (projection) memo.set(id, projection)
+    if (projection) memo.set(memoKey, projection)
     return projection
   }
 

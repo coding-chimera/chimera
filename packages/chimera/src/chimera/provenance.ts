@@ -787,8 +787,10 @@ export function trackToolMutation<A, E, R>(
     rememberToolFiles(s.projectRoot, files)
     const syncFiles = files.filter((file) => file.insideGraph).map((file) => file.absolutePath)
     const before = s.graph.snapshot()
-    // One memo per tool-call: before/after projections of the same nodes
-    // reuse the same frozen objects, halving projection work on hot paths.
+    // One memo per tool-call, keyed by graph revision inside projectNodeWithMemo:
+    // it dedupes repeated projections within a phase and across phases only while
+    // the graph is unchanged; syncFiles bumps the revision so after-projections
+    // never reuse stale pre-sync frozen objects.
     const memo = new ProjectionMemo()
     const beforeNodes = collectFileProjections(s.graph, files, before, memo)
     const beforeRelations = collectIncidentRelations(s.graph, beforeNodes, before)
