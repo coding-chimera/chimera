@@ -127,12 +127,14 @@ type ProbeGraph = {
  * Bounded dependents walk over the given targets. Targets whose ranges
  * resolve to symbols are seeded at symbol level and expanded through
  * `DependentRelations` incoming edges (which files, and which symbols in
- * them, actually consume the changed contract); every other target keeps the
- * legacy file-level `fileDependents` projection walk. Constraints are shared:
- * depth <= 4, <= 40 visited files, <= 8 frontier vertices per depth, visited
- * sets make it cycle-safe, and the caller's wall-clock budget is the backstop.
+ * them, actually consume the changed contract); same-file consumers bridge
+ * the walk toward their external callers and are never named, and every
+ * other target keeps the legacy file-level `fileDependents` projection walk.
+ * Constraints are shared: depth <= 4, <= 40 visited files, <= 8 frontier
+ * vertices per depth, visited sets make it cycle-safe, and the caller's
+ * wall-clock budget is the backstop.
  */
-function runWalk(graph: ProbeGraph, targets: Array<{ file: string; ranges?: SourceRange[] }>, maxDepth: number): WalkEntry[] {
+export function runWalk(graph: ProbeGraph, targets: Array<{ file: string; ranges?: SourceRange[] }>, maxDepth: number): WalkEntry[] {
   const seedFiles = new Set(targets.map((target) => target.file))
   const queried = new Set<string>()
   const passThrough = new Map<string, boolean>()
@@ -179,7 +181,15 @@ function runWalk(graph: ProbeGraph, targets: Array<{ file: string; ranges?: Sour
       queried.add(vertex.node.id)
       for (const relation of graph.incomingRelations(vertex.node.id, { relations: DependentRelations })) {
         const other = relation.otherNode
-        if (seedFiles.has(other.filePath) || entries.size >= MAX_WALK_NODES) continue
+        if (seedFiles.has(other.filePath)) {
+          // A seed-file consumer (the edited constant re-exposed by the file's
+          // own function) is intra-file contract evidence, not naming noise:
+          // the edit target is never named, so it always bridges the walk
+          // outward ungated and only becomes a via annotation downchain.
+          if (childDepth < maxDepth && !FILE_LEVEL_KINDS.has(other.kind) && !queried.has(other.id)) next.push({ file: other.filePath, node: other, depth: childDepth })
+          continue
+        }
+        if (entries.size >= MAX_WALK_NODES) continue
         const named = !FILE_LEVEL_KINDS.has(other.kind)
         const existing = entries.get(other.filePath)
         if (existing) {
