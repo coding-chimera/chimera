@@ -17,8 +17,15 @@ import { InstanceState } from "@/effect/instance-state"
 import { containsPath } from "@/project/instance-context"
 import { NonNegativeInt, withStatics } from "@/util/schema"
 import { zod, ZodOverride } from "@/util/effect-zod"
+import { withTimeout } from "@/util/timeout"
 
 const log = Log.create({ service: "lsp" })
+
+// Cap on how long a single LSP request may take to be answered. A hung server
+// must not stall the agent turn waiting on a request that will never resolve;
+// a timeout lands on the same null/[] "no data" result the per-request error
+// catches already produce, so callers need no new handling.
+const REQUEST_TIMEOUT_MS = 10_000
 
 export const Event = {
   Updated: BusEvent.define("lsp.updated", Schema.Struct({})),
@@ -140,8 +147,9 @@ export interface Interface {
   readonly hasClients: (file: string) => Effect.Effect<boolean>
   readonly touchFile: (input: string, diagnostics?: "document" | "full") => Effect.Effect<void>
   readonly diagnostics: () => Effect.Effect<Record<string, LSPClient.Diagnostic[]>>
-  readonly hover: (input: LocInput) => Effect.Effect<any>
+  readonly hover: (input: LocInput, timeoutMs?: number) => Effect.Effect<any>
   readonly definition: (input: LocInput) => Effect.Effect<any[]>
+  readonly typeDefinition: (input: LocInput, timeoutMs?: number) => Effect.Effect<any[]>
   readonly references: (input: LocInput) => Effect.Effect<any[]>
   readonly implementation: (input: LocInput) => Effect.Effect<any[]>
   readonly documentSymbol: (uri: string) => Effect.Effect<(DocumentSymbol | Symbol)[]>
@@ -240,7 +248,13 @@ export const layer = Layer.effect(
 
         yield* Effect.addFinalizer(() =>
           Effect.promise(async () => {
-            await Promise.all(s.clients.map((client) => client.shutdown()))
+            await Promise.all(
+              s.clients.map((client) =>
+                client.shutdown().catch((err) => {
+                  log.error("failed to shutdown LSP client", { err })
+                }),
+              ),
+            )
           }),
         )
 
@@ -271,6 +285,11 @@ export const layer = Layer.effect(
 
           if (!handle) return undefined
           log.info("spawned lsp server", { serverID: server.id, root })
+          // Nothing awaits `exited` on the service path; an intentional teardown
+          // kills the server with a signal, which fails that shared promise, so
+          // keep the shutdown-time interruption from surfacing as an unhandled
+          // rejection.
+          void handle.process.exited.catch(() => {})
 
           const client = await LSPClient.create({
             serverID: server.id,
@@ -417,50 +436,70 @@ export const layer = Layer.effect(
       return results
     })
 
-    const hover = Effect.fn("LSP.hover")(function* (input: LocInput) {
+    const hover = Effect.fn("LSP.hover")(function* (input: LocInput, timeoutMs?: number) {
       return yield* run(input.file, (client) =>
-        client.connection
-          .sendRequest("textDocument/hover", {
+        withTimeout(
+          client.connection.sendRequest("textDocument/hover", {
             textDocument: { uri: pathToFileURL(input.file).href },
             position: { line: input.line, character: input.character },
-          })
-          .catch(() => null),
+          }),
+          timeoutMs ?? REQUEST_TIMEOUT_MS,
+        ).catch(() => null),
       )
     })
 
     const definition = Effect.fn("LSP.definition")(function* (input: LocInput) {
       const results = yield* run(input.file, (client) =>
-        client.connection
-          .sendRequest("textDocument/definition", {
+        withTimeout(
+          client.connection.sendRequest("textDocument/definition", {
             textDocument: { uri: pathToFileURL(input.file).href },
             position: { line: input.line, character: input.character },
-          })
-          .catch(() => null),
+          }),
+          REQUEST_TIMEOUT_MS,
+        ).catch(() => null),
+      )
+      return results.flat().filter(Boolean)
+    })
+
+    // typeDefinition is sent blindly like the other request types: a server
+    // without the capability rejects or returns null and the result falls to an
+    // empty location list, so no capability negotiation is needed here.
+    const typeDefinition = Effect.fn("LSP.typeDefinition")(function* (input: LocInput, timeoutMs?: number) {
+      const results = yield* run(input.file, (client) =>
+        withTimeout(
+          client.connection.sendRequest("textDocument/typeDefinition", {
+            textDocument: { uri: pathToFileURL(input.file).href },
+            position: { line: input.line, character: input.character },
+          }),
+          timeoutMs ?? REQUEST_TIMEOUT_MS,
+        ).catch(() => null),
       )
       return results.flat().filter(Boolean)
     })
 
     const references = Effect.fn("LSP.references")(function* (input: LocInput) {
       const results = yield* run(input.file, (client) =>
-        client.connection
-          .sendRequest("textDocument/references", {
+        withTimeout(
+          client.connection.sendRequest("textDocument/references", {
             textDocument: { uri: pathToFileURL(input.file).href },
             position: { line: input.line, character: input.character },
             context: { includeDeclaration: true },
-          })
-          .catch(() => []),
+          }),
+          REQUEST_TIMEOUT_MS,
+        ).catch(() => []),
       )
       return results.flat().filter(Boolean)
     })
 
     const implementation = Effect.fn("LSP.implementation")(function* (input: LocInput) {
       const results = yield* run(input.file, (client) =>
-        client.connection
-          .sendRequest("textDocument/implementation", {
+        withTimeout(
+          client.connection.sendRequest("textDocument/implementation", {
             textDocument: { uri: pathToFileURL(input.file).href },
             position: { line: input.line, character: input.character },
-          })
-          .catch(() => null),
+          }),
+          REQUEST_TIMEOUT_MS,
+        ).catch(() => null),
       )
       return results.flat().filter(Boolean)
     })
@@ -468,15 +507,17 @@ export const layer = Layer.effect(
     const documentSymbol = Effect.fn("LSP.documentSymbol")(function* (uri: string) {
       const file = fileURLToPath(uri)
       const results = yield* run(file, (client) =>
-        client.connection.sendRequest("textDocument/documentSymbol", { textDocument: { uri } }).catch(() => []),
+        withTimeout(
+          client.connection.sendRequest("textDocument/documentSymbol", { textDocument: { uri } }),
+          REQUEST_TIMEOUT_MS,
+        ).catch(() => []),
       )
       return (results.flat() as (DocumentSymbol | Symbol)[]).filter(Boolean)
     })
 
     const workspaceSymbol = Effect.fn("LSP.workspaceSymbol")(function* (query: string) {
       const results = yield* runAll((client) =>
-        client.connection
-          .sendRequest<Symbol[]>("workspace/symbol", { query })
+        withTimeout(client.connection.sendRequest<Symbol[]>("workspace/symbol", { query }), REQUEST_TIMEOUT_MS)
           .then((result) => result.filter((x) => kinds.includes(x.kind)).slice(0, 10))
           .catch(() => [] as Symbol[]),
       )
@@ -485,12 +526,13 @@ export const layer = Layer.effect(
 
     const prepareCallHierarchy = Effect.fn("LSP.prepareCallHierarchy")(function* (input: LocInput) {
       const results = yield* run(input.file, (client) =>
-        client.connection
-          .sendRequest("textDocument/prepareCallHierarchy", {
+        withTimeout(
+          client.connection.sendRequest("textDocument/prepareCallHierarchy", {
             textDocument: { uri: pathToFileURL(input.file).href },
             position: { line: input.line, character: input.character },
-          })
-          .catch(() => []),
+          }),
+          REQUEST_TIMEOUT_MS,
+        ).catch(() => []),
       )
       return results.flat().filter(Boolean)
     })
@@ -500,14 +542,17 @@ export const layer = Layer.effect(
       direction: "callHierarchy/incomingCalls" | "callHierarchy/outgoingCalls",
     ) {
       const results = yield* run(input.file, async (client) => {
-        const items = await client.connection
-          .sendRequest<unknown[] | null>("textDocument/prepareCallHierarchy", {
+        const items = await withTimeout(
+          client.connection.sendRequest<unknown[] | null>("textDocument/prepareCallHierarchy", {
             textDocument: { uri: pathToFileURL(input.file).href },
             position: { line: input.line, character: input.character },
-          })
-          .catch(() => [] as unknown[])
+          }),
+          REQUEST_TIMEOUT_MS,
+        ).catch(() => [] as unknown[])
         if (!items?.length) return []
-        return client.connection.sendRequest(direction, { item: items[0] }).catch(() => [])
+        return withTimeout(client.connection.sendRequest(direction, { item: items[0] }), REQUEST_TIMEOUT_MS).catch(() =>
+          [],
+        )
       })
       return results.flat().filter(Boolean)
     })
@@ -528,6 +573,7 @@ export const layer = Layer.effect(
       diagnostics,
       hover,
       definition,
+      typeDefinition,
       references,
       implementation,
       documentSymbol,

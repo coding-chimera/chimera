@@ -866,6 +866,7 @@ exports[`tool parameters JSON Schema (wire shape) lsp 1`] = `
       "description": "The LSP operation to perform",
       "enum": [
         "goToDefinition",
+        "typeDefinition",
         "findReferences",
         "hover",
         "documentSymbol",

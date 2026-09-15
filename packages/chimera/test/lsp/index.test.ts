@@ -107,3 +107,40 @@ describe("lsp.spawn", () => {
     ),
   )
 })
+
+const fakeServerPath = path.join(__dirname, "../fixture/lsp/fake-lsp-server.js")
+
+describe("lsp.request", () => {
+  it.live(
+    "falls to no-data results when the server hangs past the request timeout",
+    () =>
+      provideTmpdirInstance(
+        (dir) =>
+          LSP.Service.use((lsp) =>
+            Effect.gen(function* () {
+              const file = path.join(dir, "test.ts")
+              const started = Date.now()
+              // Line 9999 is the fake server's hang sentinel; the injected short
+              // timeout keeps the test fast instead of waiting the real 10s.
+              expect(yield* lsp.hover({ file, line: 9999, character: 0 }, 50)).toEqual([null])
+              expect(yield* lsp.typeDefinition({ file, line: 9999, character: 0 }, 50)).toEqual([])
+              expect(Date.now() - started).toBeLessThan(5_000)
+
+              // Off the sentinel the server answers immediately, so the default
+              // (non-injected) timeout path resolves as well.
+              expect(yield* lsp.typeDefinition({ file, line: 0, character: 0 })).toEqual([])
+            }),
+          ),
+        {
+          config: {
+            lsp: {
+              fake: {
+                command: [process.execPath, fakeServerPath],
+                extensions: [".ts"],
+              },
+            },
+          },
+        },
+      ),
+  )
+})

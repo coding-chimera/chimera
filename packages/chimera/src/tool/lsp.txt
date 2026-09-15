@@ -2,6 +2,7 @@ Interact with Language Server Protocol (LSP) servers to get code intelligence fe
 
 Supported operations:
 - goToDefinition: Find where a symbol is defined
+- typeDefinition: Find where the type of a symbol is defined (e.g. the class behind a variable or factory call)
 - findReferences: Find all references to a symbol
 - hover: Get hover information (documentation, type info) for a symbol
 - documentSymbol: Get all symbols (functions, classes, variables) in a document
@@ -10,6 +11,8 @@ Supported operations:
 - prepareCallHierarchy: Get call hierarchy item at a position (functions/methods)
 - incomingCalls: Find all functions/methods that call the function at a position
 - outgoingCalls: Find all functions/methods called by the function at a position
+
+When resolving `receiver.method()` and the receiver's type is unclear (factory chains, unannotated variables), use typeDefinition on the receiver first; fall back to hover for a readable signature. Prefer typeDefinition for machine binding (returns locations), hover for humans.
 
 All operations require:
 - filePath: The file to operate on
