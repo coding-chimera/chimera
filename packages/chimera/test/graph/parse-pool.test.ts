@@ -11,7 +11,7 @@
  * parallelism safe.
  */
 import { describe, it, expect } from './vitest';
-import { ParseWorkerPool, resolveParsePoolSize, resolveParseTimeoutMs, type ParsePoolWorker, type ParseTask } from '../../src/graph/extraction/parse-pool';
+import { ParseWorkerPool, resolveParsePoolSize, resolveParseTimeoutMs, resolveGrammarLoadTimeoutMs, type ParsePoolWorker, type ParseTask } from '../../src/graph/extraction/parse-pool';
 import type { Language, ExtractionResult } from '../../src/graph/types';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -31,7 +31,7 @@ class FakeWorker implements ParsePoolWorker {
   private msgCb?: (m: unknown) => void;
   private exitCb?: (code: number) => void;
   alive = true;
-  constructor(private behavior: (m: ParseMsg) => Action, private onTerminate?: () => void) {}
+  constructor(private behavior: (m: ParseMsg) => Action, private onTerminate?: () => void, private wedgeGrammars = false) {}
   on(event: string, cb: (...args: any[]) => void): void {
     if (event === 'message') this.msgCb = cb;
     else if (event === 'exit') this.exitCb = cb;
@@ -43,6 +43,7 @@ class FakeWorker implements ParsePoolWorker {
   postMessage(msg: unknown): void {
     const type = (msg as { type?: string }).type;
     if (type === 'load-grammars') {
+      if (this.wedgeGrammars) return; // never ack — exercises the grammar-load watchdog
       setTimeout(() => { if (this.alive) this.msgCb?.({ type: 'grammars-loaded' }); }, 0);
       return;
     }
@@ -92,6 +93,17 @@ describe('resolveParseTimeoutMs', () => {
     expect(resolveParseTimeoutMs('abc')).toBe(10_000);
     expect(resolveParseTimeoutMs('0')).toBe(10_000);
     expect(resolveParseTimeoutMs('-5')).toBe(10_000);
+  });
+});
+
+describe('resolveGrammarLoadTimeoutMs', () => {
+  it('honors a positive numeric override and falls back to the 120s cold-start budget', () => {
+    expect(resolveGrammarLoadTimeoutMs('15000')).toBe(15000);
+    expect(resolveGrammarLoadTimeoutMs('1500.9')).toBe(1500);
+    expect(resolveGrammarLoadTimeoutMs(undefined)).toBe(120_000);
+    expect(resolveGrammarLoadTimeoutMs('')).toBe(120_000);
+    expect(resolveGrammarLoadTimeoutMs('abc')).toBe(120_000);
+    expect(resolveGrammarLoadTimeoutMs('0')).toBe(120_000);
   });
 });
 
@@ -212,5 +224,61 @@ describe('ParseWorkerPool', () => {
     await pool.destroy();
     await expect(p).rejects.toThrow(/destroyed/);
     await expect(pool.requestParse(task('y.ts'))).rejects.toThrow(/destroyed/);
+  });
+
+  it('grammar-load watchdog kills a wedged cold-start, charges the crash budget, respawns, and serves the queue', async () => {
+    // The pre-fix wedge: a worker never replies 'grammars-loaded' (TreeSitter
+    // WASM compile hung) → pending forever, MAX_CONCURRENT_SPAWN slots occupied,
+    // queue silently stalled. The watchdog must kill + respawn + budget-charge.
+    let spawned = 0, terminated = 0;
+    const pool = new ParseWorkerPool({
+      languages: ['typescript'] as Language[],
+      size: 1,
+      grammarLoadTimeoutMs: 40,
+      createWorker: () => {
+        const wedge = spawned++ === 0; // only the first cold-start wedges
+        return new FakeWorker(() => ({ result: result(6) }), () => { terminated++; }, wedge);
+      },
+    });
+    const internals = pool as unknown as { totalCrashes: number };
+    const res = await pool.requestParse(task('a.ts')); // queued behind the wedge, served post-respawn
+    expect(res.durationMs).toBe(6);
+    expect(terminated).toBe(1); // wedged worker killed
+    expect(internals.totalCrashes).toBe(1); // …and counted as a platform crash
+    await pool.destroy();
+  });
+
+  it('drain() reclaims past-budget pending workers when the watchdog timers were starved', async () => {
+    // Second protection: a main-thread stall means the scheduled watchdog
+    // callbacks were never serviced. The age sweep inside drain() must reclaim
+    // wedged workers without relying on those timers — here grammarLoadTimeoutMs
+    // is huge and only the recorded ages say the budget was exceeded.
+    let spawned = 0, terminated = 0;
+    const pool = new ParseWorkerPool({
+      languages: ['typescript'] as Language[],
+      size: 2,
+      grammarLoadTimeoutMs: 600_000,
+      createWorker: () => {
+        spawned++;
+        return new FakeWorker(() => ({ result: result(0) }), () => { terminated++; }, true); // every cold-start wedges
+      },
+    });
+    const internals = pool as unknown as {
+      totalCrashes: number;
+      grammarWaits: Map<unknown, { startedAt: number }>;
+    };
+    const p1 = pool.requestParse(task('a.ts'));
+    p1.catch(() => {});
+    // Simulate starved timers: rewind every recorded grammar-load start.
+    for (const wait of internals.grammarWaits.values()) wait.startedAt -= 600_000;
+    const p2 = pool.requestParse(task('b.ts')); // this drain pass runs the age sweep
+    p2.catch(() => {});
+    await sleep(20);
+    expect(terminated).toBeGreaterThanOrEqual(1); // the wedged eager worker reclaimed
+    expect(internals.totalCrashes).toBeGreaterThanOrEqual(1); // charged to the budget
+    expect(spawned).toBeGreaterThanOrEqual(3); // …and respawned
+    await pool.destroy();
+    await expect(p1).rejects.toThrow(/destroyed/);
+    await expect(p2).rejects.toThrow(/destroyed/);
   });
 });

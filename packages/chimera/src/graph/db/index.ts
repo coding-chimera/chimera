@@ -81,6 +81,14 @@ export class DatabaseConnection {
   private dbPath: string;
   private backend: SqliteBackend;
   private readOnly: boolean;
+  /**
+   * Lazily-opened connection dedicated to `wal_checkpoint` PRAGMAs. One
+   * connection is reused across all passes of all backfills: the old
+   * per-pass create+close churned fds and lock acquisition on every
+   * checkpoint attempt, which turned a pinned-WAL retry storm into pure
+   * main-thread spinning.
+   */
+  private checkpointConn: SqliteDatabase | null = null;
 
   private constructor(db: SqliteDatabase, dbPath: string, backend: SqliteBackend, readOnly = false) {
     this.db = db;
@@ -327,6 +335,22 @@ export class DatabaseConnection {
   }
 
   /**
+   * Database page size in bytes. A WAL frame is page_size + 24B of frame
+   * header; callers that only need a conservative byte estimate (the valve's
+   * partial-progress credit) can use this and under-credit the header.
+   * Defensive against a closed connection (the valve may still be draining a
+   * backfill when the DB shuts down): falls back to SQLite's common default.
+   */
+  getPageSizeBytes(): number {
+    try {
+      const row = this.db.pragma('page_size', { simple: true }) as number | undefined;
+      return typeof row === 'number' && row > 0 ? row : 4096;
+    } catch {
+      return 4096;
+    }
+  }
+
+  /**
    * Override wal_autocheckpoint (0 = fully defer automatic checkpoints).
    */
   setWalAutocheckpoint(pages: number): void {
@@ -335,11 +359,12 @@ export class DatabaseConnection {
 
   /**
    * Fold pending WAL frames into the main DB with PRAGMA wal_checkpoint(PASSIVE)
-   * on a SEPARATE connection, so the writer connection is never blocked.
-   * PASSIVE never blocks writers; the off-connection checkpoint is what the
-   * WalCheckpointValve uses to keep a deferred WAL bounded. Runs on the main
-   * thread (worker off-loading is a later refinement). Returns the checkpoint
-   * row, or null when the checkpoint is unavailable (e.g. non-WAL mode).
+   * on a SEPARATE, reused connection, so the writer connection is never
+   * blocked. PASSIVE never blocks writers; the off-connection checkpoint is
+   * what the WalCheckpointValve uses to keep a deferred WAL bounded. Runs on
+   * the main thread (worker off-loading is a later refinement). Returns the
+   * checkpoint row, or null when the checkpoint is unavailable (e.g. non-WAL
+   * mode).
    *
    * The checkpoint connection must be WRITABLE: SQLite folds WAL frames by
    * writing them back into the main DB file, so a read-only connection raises
@@ -362,37 +387,54 @@ export class DatabaseConnection {
 
   private async checkpointWal(mode: 'PASSIVE' | 'TRUNCATE'): Promise<{ busy: number; log: number; checkpointed: number } | null> {
     try {
-      const { db } = createDatabase(this.dbPath);
-      try {
-        // The checkpoint connection bypasses configureConnection (deliberately:
-        // it must stay writable and must not flip journal_mode), so give it the
-        // same busy timeout as the writer to avoid instant lock-contention failure.
-        db.pragma('busy_timeout = 5000');
-        const row = db.prepare(`PRAGMA wal_checkpoint(${mode})`).get() as
-          { busy?: number; log?: number; checkpointed?: number } | undefined;
-        if (!row) return null;
-        return {
-          busy: Number(row.busy ?? 0),
-          log: Number(row.log ?? 0),
-          checkpointed: Number(row.checkpointed ?? 0),
-        };
-      } finally {
-        db.close();
-      }
+      const db = this.getCheckpointConnection();
+      const row = db.prepare(`PRAGMA wal_checkpoint(${mode})`).get() as
+        { busy?: number; log?: number; checkpointed?: number } | undefined;
+      if (!row) return null;
+      return {
+        busy: Number(row.busy ?? 0),
+        log: Number(row.log ?? 0),
+        checkpointed: Number(row.checkpointed ?? 0),
+      };
     } catch (error) {
       // A writable checkpoint can fail transiently (busy writer, read-only
       // filesystem). Return null — the valve treats null as "machinery
       // unavailable" and retries next tick — but surface the reason instead of
-      // swallowing it silently.
+      // swallowing it silently. Drop the cached handle so a poisoned
+      // connection never sticks: the next call opens a fresh one.
+      this.closeCheckpointConnection();
       console.warn(`wal_checkpoint(${mode}) failed:`, error instanceof Error ? error.message : String(error));
       return null;
     }
   }
 
+  /** Open-on-demand checkpoint connection. Deliberately bypasses
+   * configureConnection: it must stay writable and must not flip journal_mode,
+   * but it does need the writer's busy timeout so lock contention waits
+   * instead of failing instantly. */
+  private getCheckpointConnection(): SqliteDatabase {
+    if (this.checkpointConn) return this.checkpointConn;
+    const { db } = createDatabase(this.dbPath);
+    db.pragma('busy_timeout = 5000');
+    this.checkpointConn = db;
+    return db;
+  }
+
+  private closeCheckpointConnection(): void {
+    if (!this.checkpointConn) return;
+    try {
+      this.checkpointConn.close();
+    } catch {
+      // already gone — clearing the reference is what matters
+    }
+    this.checkpointConn = null;
+  }
+
   /**
-   * Close the database connection
+   * Close the database connection (and the sidecar checkpoint connection).
    */
   close(): void {
+    this.closeCheckpointConnection();
     this.db.close();
   }
 

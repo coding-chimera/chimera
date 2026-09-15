@@ -89,6 +89,14 @@ const MAX_CONCURRENT_SPAWN = 2;
  * repo.
  */
 const CRASH_BUDGET = 100;
+/**
+ * How long a spawned worker may take to reply 'grammars-loaded' before the
+ * pool treats it as hung. Cold start compiles every requested grammar's WASM
+ * (TreeSitter.Language.load, grammars.ts) — tens of seconds on a loaded box,
+ * and the main thread cannot observe WHERE inside that load a worker is stuck,
+ * so the budget must cover the whole compile, not a slice of it.
+ */
+const DEFAULT_GRAMMAR_LOAD_TIMEOUT_MS = 120_000;
 
 /**
  * Resolve the base per-parse timeout from the `CODEGRAPH_PARSE_TIMEOUT_MS`
@@ -101,6 +109,19 @@ export function resolveParseTimeoutMs(envVal: string | undefined): number {
     if (Number.isFinite(n) && n > 0) return Math.floor(n);
   }
   return DEFAULT_PARSE_TIMEOUT_MS;
+}
+
+/**
+ * Resolve the per-worker grammar-load timeout from the
+ * `CODEGRAPH_GRAMMAR_LOAD_TIMEOUT_MS` override (same shape as
+ * CODEGRAPH_PARSE_TIMEOUT_MS); non-numeric / non-positive falls back.
+ */
+export function resolveGrammarLoadTimeoutMs(envVal: string | undefined): number {
+  if (envVal !== undefined && envVal !== '') {
+    const n = Number(envVal);
+    if (Number.isFinite(n) && n > 0) return Math.floor(n);
+  }
+  return DEFAULT_GRAMMAR_LOAD_TIMEOUT_MS;
 }
 
 /**
@@ -136,6 +157,12 @@ interface ParseJob {
   hardKillTimer?: ReturnType<typeof setTimeout>;
 }
 
+/** Per-pending-worker grammar-load watchdog bookkeeping. */
+interface GrammarWatch {
+  startedAt: number;
+  timer: ReturnType<typeof setTimeout>;
+}
+
 /** Shape of a message a worker posts back (grammar-load ack or a parse result). */
 interface ParseWorkerMessage {
   type?: string;
@@ -158,6 +185,8 @@ export interface ParseWorkerPoolOptions {
   parseTimeoutMs?: number;
   /** Worker factory (tests inject a fake). Defaults to a real `worker_threads` Worker. */
   createWorker?: () => ParsePoolWorker;
+  /** Grammar-load watchdog budget per worker (ms). Default 120s. */
+  grammarLoadTimeoutMs?: number;
   /** Optional verbose logger (the orchestrator's `[worker] …` logger). */
   log?: (msg: string) => void;
 }
@@ -171,6 +200,14 @@ export class ParseWorkerPool {
   // first parse doesn't spawn the whole pool before the eager worker reports
   // ready.
   private pending = new Set<ParsePoolWorker>();
+  /**
+   * Grammar-load watchdogs for pending (not yet 'grammars-loaded') workers.
+   * Doubles as the age registry for the drain() reclaim: the timer is the
+   * primary protection (kills a wedged cold-start even with zero further pool
+   * activity); `startedAt` lets drain() notice wedges whose timer has not
+   * been serviced yet.
+   */
+  private grammarWaits = new Map<ParsePoolWorker, GrammarWatch>();
   private parseCounts = new Map<ParsePoolWorker, number>();
   private nextId = 1;
   private totalCrashes = 0;
@@ -180,6 +217,7 @@ export class ParseWorkerPool {
   private readonly maxSize: number;
   private readonly recycleInterval: number;
   private readonly parseTimeoutMs: number;
+  private readonly grammarLoadTimeoutMs: number;
   private readonly createWorker: () => ParsePoolWorker;
   private readonly log: (msg: string) => void;
 
@@ -188,6 +226,7 @@ export class ParseWorkerPool {
     this.maxSize = Math.max(1, Math.min(opts.size, MAX_PARSE_POOL_SIZE));
     this.recycleInterval = opts.recycleInterval ?? DEFAULT_RECYCLE_INTERVAL;
     this.parseTimeoutMs = opts.parseTimeoutMs ?? DEFAULT_PARSE_TIMEOUT_MS;
+    this.grammarLoadTimeoutMs = opts.grammarLoadTimeoutMs ?? resolveGrammarLoadTimeoutMs(process.env.CODEGRAPH_GRAMMAR_LOAD_TIMEOUT_MS);
     this.log = opts.log ?? (() => {});
     if (opts.createWorker) {
       this.createWorker = opts.createWorker;
@@ -241,12 +280,22 @@ export class ParseWorkerPool {
     w.on('error', (e) => this.onWorkerGone(w, `Worker error: ${e?.message ?? 'unknown'}`));
     w.on('exit', (code) => { if (code !== 0) this.onWorkerGone(w, `Worker exited with code ${code}`); });
     // Load grammars; the worker replies 'grammars-loaded' and only then is idle.
+    // Watchdog: a worker that never replies (wedged WASM compile) would leave
+    // `pending` permanently occupied, and with MAX_CONCURRENT_SPAWN slots taken
+    // the queue would silently stall forever.
+    const watch = {
+      startedAt: Date.now(),
+      timer: setTimeout(() => this.onGrammarLoadTimeout(w), this.grammarLoadTimeoutMs),
+    };
+    watch.timer.unref?.();
+    this.grammarWaits.set(w, watch);
     w.postMessage({ type: 'load-grammars', languages: this.languages });
   }
 
   private onMessage(w: ParsePoolWorker, m: ParseWorkerMessage): void {
     if (m.type === 'grammars-loaded') {
       if (!this.workers.has(w)) return; // recycled/destroyed before ready
+      this.cancelGrammarWatch(w);
       this.pending.delete(w);
       this.idle.push(w);
       this.drain();
@@ -311,6 +360,7 @@ export class ParseWorkerPool {
   private removeWorker(w: ParsePoolWorker): void {
     this.workers.delete(w);
     this.pending.delete(w);
+    this.cancelGrammarWatch(w);
     this.parseCounts.delete(w);
     this.idle = this.idle.filter((x) => x !== w);
   }
@@ -352,6 +402,24 @@ export class ParseWorkerPool {
     job.hardKillTimer.unref?.();
   }
 
+  /** The grammar-load watchdog fired: this worker never acknowledged its grammars. */
+  private onGrammarLoadTimeout(w: ParsePoolWorker): void {
+    if (!this.grammarWaits.has(w)) return; // already loaded or gone
+    this.cancelGrammarWatch(w);
+    this.log(`Grammar load timed out after ${this.grammarLoadTimeoutMs}ms — killing worker and respawning`);
+    // A wedged grammar compile is worker-platform failure, not per-file work,
+    // so charge the crash budget (via onWorkerGone) and let the breaker stop
+    // the respawn loop if EVERY cold-start wedges.
+    this.onWorkerGone(w, `Worker grammar load timed out after ${this.grammarLoadTimeoutMs}ms`);
+  }
+
+  /** Stop watching a worker's grammar load (acknowledged, removed, or wedged). */
+  private cancelGrammarWatch(w: ParsePoolWorker): void {
+    const wait = this.grammarWaits.get(w);
+    if (wait) clearTimeout(wait.timer);
+    this.grammarWaits.delete(w);
+  }
+
   /** No result after the full hard-kill window — the worker really is hung. */
   private onHardTimeout(w: ParsePoolWorker, job: ParseJob, totalMs: number): void {
     if (job.settled || !this.workers.has(w)) return;
@@ -389,10 +457,24 @@ export class ParseWorkerPool {
       const w = this.idle.pop()!;
       this.dispatch(w, job);
     }
-    // Hang-prevention: if there's queued work but nothing can ever run it (no
-    // idle workers, none spawning, none alive), fail it instead of hanging
-    // forever. Reached only when the crash budget is exhausted or after
-    // destroy.
+    // Hang-prevention #1 (worker reclaim): queued work, nobody idle, nobody
+    // dispatchable — every live worker is stuck in grammar load past the
+    // budget. The per-worker watchdog timer above is the PRIMARY guard (it
+    // fires even with no pool activity); this drain-time sweep is the
+    // SECONDARY one, for when the main thread stalls long enough that the
+    // timers phase lags behind this dispatch pass. Together they bound the
+    // MAX_CONCURRENT_SPAWN deadlock: 2 wedged cold-starts used to freeze the
+    // queue forever with pending=2, idle=0, and size>0.
+    if (this.queue.length && this.idle.length === 0 && this.workers.size > 0 && this.pending.size === this.workers.size) {
+      const now = Date.now();
+      for (const w of [...this.pending]) {
+        const wait = this.grammarWaits.get(w);
+        if (wait && now - wait.startedAt >= this.grammarLoadTimeoutMs) this.onGrammarLoadTimeout(w);
+      }
+    }
+    // Hang-prevention #2 (queue fail): nothing can EVER run the queue — no
+    // workers at all (crash budget exhausted, or destroyed). Fail it loudly
+    // instead of hanging.
     if (this.queue.length && this.idle.length === 0 && this.pending.size === 0 && this.workers.size === 0) {
       const reason = this.destroyed ? 'parse pool destroyed' : 'parse pool exhausted its worker crash budget';
       for (const job of this.queue.splice(0)) this.settle(job, undefined, new Error(reason));
@@ -423,6 +505,8 @@ export class ParseWorkerPool {
     const ws = [...this.workers];
     this.workers.clear();
     this.pending.clear();
+    for (const wait of this.grammarWaits.values()) clearTimeout(wait.timer);
+    this.grammarWaits.clear();
     this.parseCounts.clear();
     this.idle = [];
     for (const job of [...this.inflight.values(), ...this.queue]) {
