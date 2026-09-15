@@ -236,6 +236,12 @@ function handle(raw) {
     return
   }
 
+  // Test sentinel: requests carrying position line 9999 are never answered, so
+  // tests can exercise client-side request timeouts without a real wait.
+  if (typeof data.id !== "undefined" && data.params?.position?.line === 9999) {
+    return
+  }
+
   if (typeof data.id !== "undefined") {
     sendResponse(data.id, null)
   }

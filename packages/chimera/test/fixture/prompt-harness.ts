@@ -99,6 +99,7 @@ const lsp = Layer.succeed(
     diagnostics: () => Effect.succeed({}),
     hover: () => Effect.succeed(undefined),
     definition: () => Effect.succeed([]),
+    typeDefinition: () => Effect.succeed([]),
     references: () => Effect.succeed([]),
     implementation: () => Effect.succeed([]),
     documentSymbol: () => Effect.succeed([]),

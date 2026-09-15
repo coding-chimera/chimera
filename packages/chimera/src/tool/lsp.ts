@@ -10,6 +10,7 @@ import { AppFileSystem } from "@opencode-ai/core/filesystem"
 
 const operations = [
   "goToDefinition",
+  "typeDefinition",
   "findReferences",
   "hover",
   "documentSymbol",
@@ -83,6 +84,8 @@ export const LspTool = Tool.define(
             switch (args.operation) {
               case "goToDefinition":
                 return lsp.definition(position)
+              case "typeDefinition":
+                return lsp.typeDefinition(position)
               case "findReferences":
                 return lsp.references(position)
               case "hover":

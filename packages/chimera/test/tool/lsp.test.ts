@@ -30,6 +30,7 @@ const ctx = {
 }
 
 const workspaceSymbolQueries: string[] = []
+const typeDefinitionRequests: Array<{ file: string; line: number; character: number }> = []
 
 const lsp = Layer.succeed(
   LSP.Service,
@@ -41,6 +42,11 @@ const lsp = Layer.succeed(
     diagnostics: () => Effect.succeed({}),
     hover: () => Effect.succeed([]),
     definition: () => Effect.succeed([]),
+    typeDefinition: (input) =>
+      Effect.sync(() => {
+        typeDefinitionRequests.push(input)
+        return []
+      }),
     references: () => Effect.succeed([]),
     implementation: () => Effect.succeed([]),
     documentSymbol: () => Effect.succeed([]),
@@ -98,6 +104,35 @@ const asks = () => {
 }
 
 describe("tool.lsp", () => {
+  describe("typeDefinition", () => {
+    it.live("routes typeDefinition to the service with 0-based cursor", () =>
+      provideTmpdirInstance(
+        (dir) =>
+          Effect.gen(function* () {
+            typeDefinitionRequests.length = 0
+            const file = path.join(dir, "test.ts")
+            yield* put(file)
+
+            const { items, next } = asks()
+            const result = yield* run({ operation: "typeDefinition", filePath: file, line: 3, character: 7 }, next)
+            const req = items.find((item) => item.permission === "lsp")
+
+            expect(typeDefinitionRequests).toEqual([{ file, line: 2, character: 6 }])
+            expect(req).toBeDefined()
+            expect(req!.metadata).toEqual({
+              operation: "typeDefinition",
+              filePath: file,
+              line: 3,
+              character: 7,
+            })
+            expect(result.title).toBe("typeDefinition test.ts:3:7")
+            expect(result.output).toBe("No results found for typeDefinition")
+          }),
+        { git: true },
+      ),
+    )
+  })
+
   describe("permission metadata", () => {
     it.live("keeps cursor details for position-based operations", () =>
       provideTmpdirInstance(
