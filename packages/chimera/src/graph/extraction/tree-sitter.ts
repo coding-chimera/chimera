@@ -244,6 +244,8 @@ export class TreeSitterExtractor {
   private nodeStack: string[] = []; // Stack of parent node IDs
   private methodIndex: Map<string, string> | null = null; // lookup key → node ID for Pascal defProc lookup
   private valueReferenceKeys = new Set<string>(); // `${fromNodeId}\u0000${name}` dedup, per file
+  // TS interface member jobs held for the post-walk flush in extract().
+  private pendingInterfaceMembers: Array<{ container: Node; body: SyntaxNode }> = [];
 
   constructor(filePath: string, source: string, language?: Language) {
     this.filePath = filePath;
@@ -327,6 +329,14 @@ export class TreeSitterExtractor {
       if (packageNodeId) this.nodeStack.push(packageNodeId);
 
       this.visitNode(this.tree.rootNode);
+
+      // Flush TS interface member nodes after the whole walk: a contract
+      // member name (`interface Store { reset() }`) routinely matches the
+      // concrete implementation later in the same file (`reset: () => ...`),
+      // and first-match-by-name consumers must keep seeing the executable
+      // declaration first. Node ids contain line numbers, so position in the
+      // array is order-neutral for the graph itself.
+      this.flushPendingInterfaceMembers();
 
       if (packageNodeId) this.nodeStack.pop();
       this.nodeStack.pop();
@@ -517,8 +527,11 @@ export class TreeSitterExtractor {
     // TypeScript interface members: property_signature (`foo: T`, `foo?: T`)
     // and method_signature (`foo(arg: A): R`) both carry type annotations the
     // interface walker would otherwise drop. Extract them as `references`
-    // edges from the interface so resolvers can wire callers/impact for
-    // types that only appear in interface members.
+    // edges from the enclosing class-like node so resolvers can wire
+    // callers/impact for types that only appear in interface members. (Top-
+    // level TS interface signatures are node-ified by extractInterface
+    // instead and never reach this branch; it still covers other languages
+    // and nested inline object types inside member parameters.)
     else if (
       (nodeType === 'property_signature' || nodeType === 'method_signature') &&
       this.isInsideClassLikeNode() &&
@@ -946,16 +959,27 @@ export class TreeSitterExtractor {
     // Extract extends (interface inheritance)
     this.extractInheritance(node, interfaceNode.id);
 
-    // Visit body children for interface methods and nested types
+    // Visit body children for interface methods and nested types.
+    // Why interface members must become nodes: the resolver's class-candidate
+    // strategies bind `iface.method()` references to `kind === 'method'` nodes
+    // whose qualified name contains the interface, so a references-only walk
+    // left every TS interface member call unresolvable. TS contract shapes
+    // share the type-alias member walk; other children keep generic traversal.
     this.nodeStack.push(interfaceNode.id);
     let body = this.extractor.resolveBody?.(node, this.extractor.bodyField)
       ?? getChildByField(node, this.extractor.bodyField);
     if (!body) body = node;
+    const contractMembers = this.isTsContractLanguage;
     for (let i = 0; i < body.namedChildCount; i++) {
       const child = body.namedChild(i);
-      if (child) {
-        this.visitNode(child);
-      }
+      if (!child) continue;
+      if (contractMembers && (child.type === 'property_signature' || child.type === 'method_signature'))
+        continue;
+      this.visitNode(child);
+    }
+    if (contractMembers) {
+      // Created in the post-walk flush, not inline — see extract().
+      this.pendingInterfaceMembers.push({ container: interfaceNode, body });
     }
     this.nodeStack.pop();
   }
@@ -1612,7 +1636,7 @@ export class TreeSitterExtractor {
         // property/method nodes under the type alias so `recorder.stop()`
         // can attach the call edge to `RecorderHandle.stop` instead of
         // an unrelated class method picked by path-proximity (#359).
-        if (this.language === 'typescript' || this.language === 'tsx') {
+        if (this.isTsContractLanguage) {
           this.extractTsTypeAliasMembers(value, typeAliasNode);
         }
       }
@@ -1622,10 +1646,10 @@ export class TreeSitterExtractor {
 
   /**
    * Surface the members of a TypeScript `type X = { ... }` (or intersection
-   * thereof) as `property` / `method` nodes under the type-alias node. Only
-   * walks the immediate object_type / intersection operands so anonymous
-   * nested object types inside generic arguments (`Promise<{ ok: true }>`)
-   * don't produce phantom members.
+   * thereof) as contract member nodes under the type-alias node. Only
+   * collects the immediate object_type operands so anonymous nested object
+   * types inside generic arguments (`Promise<{ ok: true }>`) don't produce
+   * phantom members.
    */
   private extractTsTypeAliasMembers(value: SyntaxNode, typeAliasNode: Node): void {
     const objectTypes: SyntaxNode[] = [];
@@ -1641,7 +1665,23 @@ export class TreeSitterExtractor {
     }
 
     this.nodeStack.push(typeAliasNode.id);
-    for (const objType of objectTypes) {
+    this.extractTsContractMembers(typeAliasNode, objectTypes);
+    this.nodeStack.pop();
+  }
+
+  /**
+   * Shared contract-member walk for TypeScript object shapes: the
+   * `object_type` bodies of a `type X = { ... }` alias and the
+   * `interface_body` of an `interface Y { ... }`. Members become first-class
+   * `property` / `method` nodes (`qn = Container::member`) because the
+   * resolver's class-candidate strategies bind member references to
+   * `kind === 'method'` nodes under the container — `references` edges alone
+   * leave `iface.method()` unresolvable. Callers push the container node onto
+   * `nodeStack` so the file -> container -> member `contains` chain and the
+   * node id shape match the existing type-alias member behavior.
+   */
+  private extractTsContractMembers(containerNode: Node, bodies: SyntaxNode[]): void {
+    for (const objType of bodies) {
       for (let i = 0; i < objType.namedChildCount; i++) {
         const child = objType.namedChild(i);
         if (!child) continue;
@@ -1663,17 +1703,28 @@ export class TreeSitterExtractor {
         this.createNode(memberKind, memberName, child, {
           docstring,
           signature,
-          qualifiedName: `${typeAliasNode.name}::${memberName}`,
+          qualifiedName: `${containerNode.name}::${memberName}`,
         });
 
-        // Emit `references` edges from the type alias to types named in the
-        // member's signature, matching the interface-member behavior added in
-        // #432. We attach refs to the type-alias parent (consistent with
-        // interface property_signature treatment).
-        this.extractTypeAnnotations(child, typeAliasNode.id);
+        // Emit `references` edges from the container to types named in the
+        // member's signature (the #432 interface-member behavior; refs attach
+        // to the container node, consistent for aliases and interfaces).
+        this.extractTypeAnnotations(child, containerNode.id);
       }
     }
-    this.nodeStack.pop();
+  }
+
+  /**
+   * Materialize interface member nodes queued during the walk (see
+   * extractInterface). Runs while the tree and source are still live.
+   */
+  private flushPendingInterfaceMembers(): void {
+    for (const pending of this.pendingInterfaceMembers) {
+      this.nodeStack.push(pending.container.id);
+      this.extractTsContractMembers(pending.container, [pending.body]);
+      this.nodeStack.pop();
+    }
+    this.pendingInterfaceMembers = [];
   }
 
   /**
@@ -1689,6 +1740,16 @@ export class TreeSitterExtractor {
       if (inner && inner.type === 'function_type') return true;
     }
     return false;
+  }
+
+  /**
+   * The TS dialects whose contract shapes (`type X = {...}` and
+   * `interface Y {...}`) get first-class member nodes. Single gate shared by
+   * the type-alias and interface member walks so the language scope cannot
+   * drift apart.
+   */
+  private get isTsContractLanguage(): boolean {
+    return this.language === 'typescript' || this.language === 'tsx';
   }
 
   // extractExportedVariables removed — the walker now descends into

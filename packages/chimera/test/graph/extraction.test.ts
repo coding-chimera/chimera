@@ -238,6 +238,92 @@ interface MethodForm {
     expect(refs.some((r) => r.referenceName === 'IOrderField')).toBe(true);
   });
 
+  it('should create member nodes for interface signatures', () => {
+    // Resolution consumes these: Strategy 0.5/0.5b bind `iface.method()`
+    // references to `method` nodes whose qualifiedName contains the interface.
+    const code = `
+export interface ResolutionContext {
+  getNodesInFile(file: string): Node[];
+  cb: () => void;
+  label: string;
+  tag?: string;
+  optional?(value: number): boolean;
+}
+`;
+    const result = extractFromSource('context.ts', code);
+
+    const iface = result.nodes.find((n) => n.kind === 'interface');
+    expect(iface).toBeDefined();
+
+    const method = result.nodes.find((n) => n.name === 'getNodesInFile');
+    expect(method).toMatchObject({
+      kind: 'method',
+      name: 'getNodesInFile',
+      qualifiedName: 'ResolutionContext::getNodesInFile',
+      filePath: 'context.ts',
+      startLine: 3,
+      endLine: 3,
+    });
+    expect(method?.signature).toContain('getNodesInFile(file: string): Node[]');
+
+    // Function-typed property is method-shaped on the contract.
+    const cb = result.nodes.find((n) => n.name === 'cb');
+    expect(cb).toMatchObject({ kind: 'method', qualifiedName: 'ResolutionContext::cb' });
+
+    // Plain and optional data properties stay `property` nodes.
+    const label = result.nodes.find((n) => n.name === 'label');
+    expect(label).toMatchObject({ kind: 'property', qualifiedName: 'ResolutionContext::label' });
+    const tag = result.nodes.find((n) => n.name === 'tag');
+    expect(tag).toMatchObject({ kind: 'property', qualifiedName: 'ResolutionContext::tag' });
+    expect(tag?.signature).toContain('tag?: string');
+
+    // Optionality keeps the node a `method`; the `?` lives in the signature.
+    const optional = result.nodes.find((n) => n.name === 'optional');
+    expect(optional).toMatchObject({ kind: 'method', qualifiedName: 'ResolutionContext::optional' });
+    expect(optional?.signature).toContain('optional?(');
+
+    // Containment chain: file -> interface -> member.
+    for (const name of ['getNodesInFile', 'cb', 'label', 'tag', 'optional']) {
+      const node = result.nodes.find((n) => n.name === name);
+      expect(
+        result.edges.some((e) => e.source === iface?.id && e.target === node?.id && e.kind === 'contains'),
+        `interface should contain member ${name}`
+      ).toBe(true);
+    }
+    // Members must NOT inherit exportedness from the interface itself.
+    expect(cb?.isExported).toBeFalsy();
+  });
+
+  it('should create member nodes for interface members in tsx files', () => {
+    const code = `
+interface WidgetProps {
+  render(node: string): JSX.Element;
+  title: string;
+}
+`;
+    const result = extractFromSource('Widget.tsx', code);
+
+    expect(
+      result.nodes.find((n) => n.kind === 'method' && n.qualifiedName === 'WidgetProps::render')
+    ).toBeDefined();
+    expect(
+      result.nodes.find((n) => n.kind === 'property' && n.qualifiedName === 'WidgetProps::title')
+    ).toBeDefined();
+  });
+
+  it('should not create phantom members from nested object types in interface signatures', () => {
+    const code = `
+interface Outer {
+  handler(opts: { inner: string }): void;
+}
+`;
+    const result = extractFromSource('outer.ts', code);
+
+    const handler = result.nodes.find((n) => n.name === 'handler');
+    expect(handler).toMatchObject({ kind: 'method', qualifiedName: 'Outer::handler' });
+    expect(result.nodes.some((n) => n.name === 'inner')).toBe(false);
+  });
+
   it('should track function calls', () => {
     const code = `
 function main() {
@@ -403,6 +489,28 @@ type Internal = string;
     const exported = typeAliases.filter((n) => n.isExported);
     expect(exported).toHaveLength(2);
     expect(exported.map((n) => n.name).sort()).toEqual(['DateFormat', 'UnitSystem']);
+  });
+
+  it('should keep creating type-alias member nodes via the shared contract walk', () => {
+    // Regression guard: the interface fix refactors extractTsTypeAliasMembers
+    // onto the shared extractTsContractMembers helper.
+    const code = `
+export type RecorderHandle = {
+  stop(): string;
+  label: string;
+};
+`;
+    const result = extractFromSource('recorder.ts', code);
+
+    const alias = result.nodes.find((n) => n.kind === 'type_alias');
+    expect(alias?.name).toBe('RecorderHandle');
+    const stop = result.nodes.find((n) => n.name === 'stop');
+    expect(stop).toMatchObject({ kind: 'method', qualifiedName: 'RecorderHandle::stop' });
+    const label = result.nodes.find((n) => n.name === 'label');
+    expect(label).toMatchObject({ kind: 'property', qualifiedName: 'RecorderHandle::label' });
+    expect(
+      result.edges.some((e) => e.source === alias?.id && e.target === stop?.id && e.kind === 'contains')
+    ).toBe(true);
   });
 });
 
