@@ -113,8 +113,13 @@ function passThroughLike(graph: { nodesInFile(filePath: string): Array<{ endLine
   return span > 0 && span <= PASS_THROUGH_MAX_LINES
 }
 
-/** Walk frontier vertex: a symbol node, or a bare file for the legacy file-level projection path. */
-type WalkVertex = { file: string; node?: Node; depth: number }
+/**
+ * Walk frontier vertex: a symbol node, or a bare file for the legacy file-level
+ * projection path. `seed` marks an original seed vertex (the only vertices that
+ * carry no via label); same-file bridge vertices inherit the seed depth but are
+ * not seeds, so entries reached through them keep the bridge as via evidence.
+ */
+type WalkVertex = { file: string; node?: Node; depth: number; seed?: boolean }
 
 type ProbeGraph = {
   nodesInFile(filePath: string): Node[]
@@ -128,11 +133,12 @@ type ProbeGraph = {
  * resolve to symbols are seeded at symbol level and expanded through
  * `DependentRelations` incoming edges (which files, and which symbols in
  * them, actually consume the changed contract); same-file consumers bridge
- * the walk toward their external callers and are never named, and every
- * other target keeps the legacy file-level `fileDependents` projection walk.
- * Constraints are shared: depth <= 4, <= 40 visited files, <= 8 frontier
- * vertices per depth, visited sets make it cycle-safe, and the caller's
- * wall-clock budget is the backstop.
+ * the walk toward their external callers without consuming depth and are never
+ * named, and every other target keeps the legacy file-level `fileDependents`
+ * projection walk. Constraints are shared: external hops <= 4 (bridge jumps are
+ * free; depth counts external dependents only), <= 40 visited files, <= 8
+ * frontier vertices per level, visited sets make it cycle-safe, and the
+ * caller's wall-clock budget is the backstop.
  */
 export function runWalk(graph: ProbeGraph, targets: Array<{ file: string; ranges?: SourceRange[] }>, maxDepth: number): WalkEntry[] {
   const seedFiles = new Set(targets.map((target) => target.file))
@@ -157,15 +163,18 @@ export function runWalk(graph: ProbeGraph, targets: Array<{ file: string; ranges
       : []
     // Ranges that resolve to no symbols (a not-yet-indexed file, empty or
     // unparseable ranges) fall back to the file-level projection walk.
-    if (nodes.length === 0) return [{ file: target.file, depth: 0 }]
-    return nodes.map((node) => ({ file: target.file, node, depth: 0 }))
+    if (nodes.length === 0) return [{ file: target.file, depth: 0, seed: true }]
+    return nodes.map((node) => ({ file: target.file, node, depth: 0, seed: true }))
   })
   const entries = new Map<string, WalkEntry & { symbols: string[]; depth: number }>()
   while (frontier.length > 0) {
     const next: WalkVertex[] = []
     for (const vertex of frontier.slice(0, MAX_FRONTIER_PER_DEPTH)) {
       if (vertex.depth >= maxDepth) continue
-      const via = vertex.depth === 0 ? undefined : viaLabel(vertex)
+      // Seeds carry no via; bridge vertices do, even when they inherited the
+      // seed depth, because a same-file wrapper is exactly the intermediate the
+      // annotation exists to reveal (depth itself counts external hops only).
+      const via = vertex.seed ? undefined : viaLabel(vertex)
       const childDepth = vertex.depth + 1
       const continueThrough = childDepth < maxDepth
       if (!vertex.node) {
@@ -185,8 +194,16 @@ export function runWalk(graph: ProbeGraph, targets: Array<{ file: string; ranges
           // A seed-file consumer (the edited constant re-exposed by the file's
           // own function) is intra-file contract evidence, not naming noise:
           // the edit target is never named, so it always bridges the walk
-          // outward ungated and only becomes a via annotation downchain.
-          if (childDepth < maxDepth && !FILE_LEVEL_KINDS.has(other.kind) && !queried.has(other.id)) next.push({ file: other.filePath, node: other, depth: childDepth })
+          // outward ungated and only becomes a via annotation downchain. The
+          // bridge is depth-free so an intra-file wrapper chain (constant <-
+          // private helper <- exported function) cannot eat the external-hop
+          // budget that belongs to the real consumer chain. This stays bounded
+          // despite the per-jump depth gate being removed: a bridge vertex is
+          // only pushed when it is a non-FILE_LEVEL symbol not yet in `queried`,
+          // every node is expanded at most once (queried dedup), the seed file
+          // holds a finite symbol count, MAX_FRONTIER_PER_DEPTH caps each level,
+          // and the caller's 500ms wall-clock budget backstops the whole walk.
+          if (!FILE_LEVEL_KINDS.has(other.kind) && !queried.has(other.id)) next.push({ file: other.filePath, node: other, depth: vertex.depth })
           continue
         }
         if (entries.size >= MAX_WALK_NODES) continue
