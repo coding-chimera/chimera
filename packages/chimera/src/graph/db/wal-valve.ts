@@ -25,6 +25,15 @@
  * Backpressure: if the writer outruns the checkpointer past a hard cap of
  * growth (2× soft), {@link backpressure} pauses the writer (at a safe,
  * between-transactions boundary) until a FULL backfill lands.
+ *
+ * Anti-spin: when a foreign process pins the WAL (a reader snapshot or a
+ * held write lock), no passive pass can complete. The backfill loop must
+ * then degrade gracefully — bounded backoff between passes, partial
+ * progress credited to the baseline, and a cooldown that downgrades repeat
+ * triggers to a single probe — instead of re-running a full pass storm for
+ * every indexed file (a stall that pinned the main thread for minutes).
+ * The writer pause itself is never weakened: past the hard cap the writer
+ * still waits for the WAL to fall back below it.
  */
 
 import type { DatabaseConnection } from './index';
@@ -35,6 +44,17 @@ const DEFAULT_WAL_VALVE_MB = 256;
 const HARD_CAP_MULTIPLIER = 2;
 /** Passes attempted per writer pause before giving up (a pinned reader could stall forever). */
 const MAX_PAUSED_BACKFILL_PASSES = 20;
+/** First backoff wait between backfill passes; doubles up to the cap. */
+const BACKFILL_PASS_BACKOFF_BASE_MS = 10;
+const BACKFILL_PASS_BACKOFF_CAP_MS = 200;
+/**
+ * After a backfill round ends (success or give-up), a new round starting
+ * inside this window is downgraded to a single passive pass. A persistently
+ * pinned WAL gets one cheap probe per writer file, not a 20-pass storm per file.
+ */
+const BACKFILL_COOLDOWN_MS = 2000;
+/** Min gap between give-up logs — a pinned WAL triggers one per file otherwise. */
+const BUSY_GIVEUP_LOG_INTERVAL_MS = 30_000;
 /** How often the timer looks at the WAL file size. */
 const CHECK_INTERVAL_MS = 2000;
 
@@ -50,6 +70,18 @@ export function resolveWalValveMb(envVal: string | undefined): number {
   return DEFAULT_WAL_VALVE_MB;
 }
 
+/**
+ * Event-loop-friendly wait between backfill passes. The whole pause path is
+ * async (callers `await backpressure()`), so a timer parks only the writer —
+ * unlike a synchronous Atomics.wait, the pinned reader's process and all
+ * other async work keep making progress.
+ */
+const sleepTimer = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    const t = setTimeout(resolve, ms);
+    t.unref?.();
+  });
+
 export class WalCheckpointValve {
   private timer: ReturnType<typeof setInterval> | null = null;
   private inflight: Promise<void> | null = null;
@@ -61,6 +93,19 @@ export class WalCheckpointValve {
    * comment for why absolute size cannot be used.
    */
   private sizeAtLastFullBackfill = 0;
+  /**
+   * Cumulative checkpointed-frame position observed in the current WAL
+   * stream. The delta between passes is what a PASSIVE checkpoint actually
+   * folded — the only reliable progress signal, since a PASSIVE pass never
+   * shrinks the WAL file itself.
+   */
+  private checkpointedPagesSeen = 0;
+  /** When the last backfill round ended (success or give-up) — cooldown gate. */
+  private lastBackfillEndedAt = 0;
+  /** Last give-up log timestamp, for the rate limit. */
+  private lastGiveUpLoggedAt = 0;
+  /** Final checkpoint row of the current round, for the give-up log. */
+  private lastPassResult: { busy: number; log: number; checkpointed: number } | null = null;
   private readonly softBytes: number;
   private readonly hardBytes: number;
 
@@ -68,7 +113,9 @@ export class WalCheckpointValve {
     private readonly db: DatabaseConnection,
     softMb: number = resolveWalValveMb(process.env.CODEGRAPH_WAL_VALVE_MB),
     private readonly intervalMs: number = CHECK_INTERVAL_MS,
-    private readonly log: (msg: string) => void = () => {}
+    private readonly log: (msg: string) => void = () => {},
+    /** Injectable for tests: records the requested backoff delays without spending real time. */
+    private readonly sleep: (ms: number) => Promise<void> = sleepTimer
   ) {
     this.softBytes = softMb * 1024 * 1024;
     this.hardBytes = this.softBytes * HARD_CAP_MULTIPLIER;
@@ -143,26 +190,84 @@ export class WalCheckpointValve {
 
   /**
    * With the writer parked on the returned promise, loop passive passes until
-   * one reports the entire WAL backfilled. Gives up after a bounded number of
-   * passes — e.g. a reader pinning the WAL.
+   * one reports the entire WAL backfilled. Bounded two ways:
+   *  - within a round: MAX_PAUSED_BACKFILL_PASSES, with an exponential
+   *    backoff sleep (10ms → 200ms cap) between passes. A pinned reader needs
+   *    external progress; hammering checkpoints every microsecond cannot make
+   *    it happen, and each pass used to be a fresh connection open/close.
+   *  - across rounds: a round starting within BACKFILL_COOLDOWN_MS of the
+   *    previous round's end runs a SINGLE pass. This is the fix for the
+   *    per-file storm: hundreds of files each re-running 20 sync native
+   *    checkpoints while one external process holds the WAL.
+   * The writer pause itself is preserved: backpressure() still resolves only
+   * on a full backfill or after the (now cheap, now progressing) attempt.
    */
   private async backfillFully(): Promise<void> {
-    for (let i = 0; i < MAX_PAUSED_BACKFILL_PASSES; i++) {
-      if (this.inflight) await this.inflight; // fold in the stale in-flight pass first
-      const res = await this.db.checkpointWalPassive();
-      if (!res) {
-        // Checkpoint machinery unavailable (e.g. not in WAL mode, or a
-        // transient write failure) — surface it instead of silently spinning.
-        this.log('backfill pass: checkpoint machinery unavailable, giving up this cycle');
-        return;
+    const inCooldown = Date.now() - this.lastBackfillEndedAt < BACKFILL_COOLDOWN_MS;
+    const maxPasses = inCooldown ? 1 : MAX_PAUSED_BACKFILL_PASSES;
+    try {
+      for (let i = 0; i < maxPasses; i++) {
+        if (this.inflight) await this.inflight; // fold in the stale in-flight pass first
+        const res = await this.db.checkpointWalPassive();
+        if (!res) {
+          // Checkpoint machinery unavailable (e.g. not in WAL mode, or a
+          // transient write failure) — surface it instead of silently spinning.
+          this.log('backfill pass: checkpoint machinery unavailable, giving up this cycle');
+          return;
+        }
+        this.lastPassResult = res;
+        this.log(`backfill pass ${i + 1}: busy=${res.busy} log=${res.log} checkpointed=${res.checkpointed} wal=${this.mb(this.db.getWalSizeBytes())}`);
+        if (res.busy === 0 && res.log === res.checkpointed) {
+          this.sizeAtLastFullBackfill = this.db.getWalSizeBytes();
+          this.checkpointedPagesSeen = 0; // the writer's next commit restarts the WAL stream
+          return;
+        }
+        this.creditPartialProgress(res);
+        if (i + 1 < maxPasses) {
+          await this.sleep(Math.min(BACKFILL_PASS_BACKOFF_BASE_MS * 2 ** i, BACKFILL_PASS_BACKOFF_CAP_MS));
+        }
       }
-      this.log(`backfill pass ${i + 1}: busy=${res.busy} log=${res.log} checkpointed=${res.checkpointed} wal=${this.mb(this.db.getWalSizeBytes())}`);
-      if (res.busy === 0 && res.log === res.checkpointed) {
-        this.sizeAtLastFullBackfill = this.db.getWalSizeBytes();
-        return;
-      }
+      this.logGiveUp(maxPasses);
+    } finally {
+      this.lastBackfillEndedAt = Date.now();
     }
-    this.log(`backfill gave up after ${MAX_PAUSED_BACKFILL_PASSES} passes — WAL stays unbounded this cycle`);
+  }
+
+  /**
+   * Baseline advance by ACTUAL progress. A PASSIVE checkpoint reports the
+   * cumulative frame position it reached (`checkpointed` of `log`); a larger
+   * number than last seen means that many more pages folded into the main DB,
+   * so their bytes no longer count toward the un-backfilled backlog. Crediting
+   * them keeps growthBytes() honest across rounds: a partial pass no longer
+   * leaves the NEXT file's growth at the hard cap and re-triggering a fresh
+   * full pass storm. The credit is clamped to the WAL's current size (it can
+   * never exceed what is physically on disk), so a stale or oversized delta
+   * only ever under-counts growth, which is the safe direction.
+   */
+  private creditPartialProgress(res: { log: number; checkpointed: number }): void {
+    if (res.log < this.checkpointedPagesSeen) this.checkpointedPagesSeen = 0; // WAL stream restarted
+    const delta = res.checkpointed - this.checkpointedPagesSeen;
+    this.checkpointedPagesSeen = Math.max(this.checkpointedPagesSeen, res.checkpointed);
+    if (delta <= 0) return;
+    // A WAL frame is page_size + 24B of frame header; crediting raw page
+    // bytes slightly under-counts the folded size — conservative, see above.
+    this.sizeAtLastFullBackfill = Math.min(
+      this.sizeAtLastFullBackfill + delta * this.db.getPageSizeBytes(),
+      this.db.getWalSizeBytes()
+    );
+  }
+
+  /** Rate-limited forensics line: the give-up fires once per file otherwise. */
+  private logGiveUp(passesRun: number): void {
+    const now = Date.now();
+    if (now - this.lastGiveUpLoggedAt < BUSY_GIVEUP_LOG_INTERVAL_MS) return;
+    this.lastGiveUpLoggedAt = now;
+    const last = this.lastPassResult;
+    this.log(
+      `backfill gave up after ${passesRun} pass(es) — WAL stays unbounded this cycle` +
+        `${last ? ` (last pass busy=${last.busy} log=${last.log} checkpointed=${last.checkpointed})` : ''}` +
+        ` wal=${this.mb(this.db.getWalSizeBytes())} baseline=${this.mb(this.sizeAtLastFullBackfill)}`
+    );
   }
 
   private fire(): void {

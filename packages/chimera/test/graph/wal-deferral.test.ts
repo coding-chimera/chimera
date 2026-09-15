@@ -109,6 +109,21 @@ describe('DatabaseConnection WAL helpers', () => {
     expect(walSizeAfter).toBeLessThan(walSizeBefore);
     db.close();
   });
+
+  it('reuses one cached checkpoint connection across passes, closed with the DB', async () => {
+    const db = openDb();
+    db.setWalAutocheckpoint(0);
+    writeRows(db, 300);
+    const internals = db as unknown as { getCheckpointConnection: () => unknown; checkpointConn: unknown };
+    const first = internals.getCheckpointConnection();
+    expect(internals.getCheckpointConnection()).toBe(first); // cached, not reopened
+    await db.checkpointWalPassive();
+    await db.checkpointWalPassive();
+    await db.checkpointWalTruncate(); // both modes run on the same reused handle
+    expect(internals.getCheckpointConnection()).toBe(first);
+    db.close();
+    expect(internals.checkpointConn).toBeNull(); // sidecar closed with the DB
+  });
 });
 
 describe('WalCheckpointValve', () => {
@@ -196,6 +211,74 @@ describe('WalCheckpointValve', () => {
     expect(second).toBe(first); // same in-flight promise, not a second worker
     db.close();
     return first ?? undefined;
+  });
+});
+
+/** A checkpoint row the fake DB returns for every passive pass. */
+interface FakeCheckpointRow { busy: number; log: number; checkpointed: number }
+
+const MB = 1024 * 1024;
+
+/**
+ * The three DatabaseConnection methods the valve's backfill path touches,
+ * fakeable without a real DB — lets tests pin the pinned-WAL scenario
+ * (checkpoints permanently busy) that a live SQLite file cannot reproduce
+ * on demand.
+ */
+function fakeValveDb(opts: { walBytes: number; checkpoint: FakeCheckpointRow; pageSizeBytes?: number }) {
+  let calls = 0;
+  const db = {
+    getWalSizeBytes: () => opts.walBytes,
+    getPageSizeBytes: () => opts.pageSizeBytes ?? 4096,
+    checkpointWalPassive: async () => {
+      calls++;
+      return { ...opts.checkpoint };
+    },
+  } as unknown as DatabaseConnection;
+  return { db, callCount: () => calls };
+}
+
+describe('WalCheckpointValve pinned-WAL backoff (index-stall regression)', () => {
+  it('waits between backfill passes: 10ms exponential backoff capped at 200ms', async () => {
+    // A foreign reader pins the WAL: every PASSIVE pass reports busy with zero
+    // frames folded. Pre-fix this loop fired 20 synchronous checkpoints with
+    // no wait and a fresh connection each; now it is spaced out.
+    const { db, callCount } = fakeValveDb({ walBytes: 10 * MB, checkpoint: { busy: 1, log: 5000, checkpointed: 0 } });
+    const sleeps: number[] = [];
+    const valve = new WalCheckpointValve(db, 1, 2000, () => {}, async (ms) => { sleeps.push(ms); });
+    await valve.backpressure();
+    expect(callCount()).toBe(20); // the bounded attempt budget is unchanged
+    expect(sleeps).toEqual([10, 20, 40, 80, 160, ...Array.from({ length: 14 }, () => 200)]);
+  });
+
+  it('credits partial progress to the baseline so the next file passes without a storm', async () => {
+    // The checkpoint folds 2500 of 5000 pages then sticks busy. Pre-fix the
+    // baseline stayed at 0 → every subsequent file's backpressure re-ran the
+    // full 20-pass storm for the same unfolded remainder.
+    const { db, callCount } = fakeValveDb({ walBytes: 10 * MB, checkpoint: { busy: 1, log: 5000, checkpointed: 2500 } });
+    const valve = new WalCheckpointValve(db, 1, 2000, () => {}, async () => {});
+    await valve.backpressure();
+    expect(callCount()).toBe(20); // one round still exhausts its budget (WAL never lands fully)
+    const baseline = (valve as unknown as { sizeAtLastFullBackfill: number }).sizeAtLastFullBackfill;
+    expect(baseline).toBe(2500 * 4096); // folded pages credited once, not 20×
+    // growth = 10MB − 2500×4096 ≈ 24KB < hard cap (2MB) → next file never waits.
+    expect(valve.backpressure()).toBeNull();
+  });
+
+  it('downgrades repeat backfills inside the cooldown to a single probe and rate-limits the give-up log', async () => {
+    const logs: string[] = [];
+    const { db, callCount } = fakeValveDb({ walBytes: 10 * MB, checkpoint: { busy: 1, log: 5000, checkpointed: 0 } });
+    const valve = new WalCheckpointValve(db, 1, 2000, (m) => { logs.push(m); }, async () => {});
+    await valve.backpressure(); // round 1: full 20-pass attempt, gives up
+    expect(callCount()).toBe(20);
+    expect(logs.filter((l) => l.includes('gave up'))).toHaveLength(1);
+    await valve.backpressure(); // round 2 (inside BACKFILL_COOLDOWN_MS): one cheap probe
+    expect(callCount()).toBe(21);
+    expect(logs.filter((l) => l.includes('gave up'))).toHaveLength(1); // log rate-limited
+    // Cooldown expiry restores the full attempt budget.
+    (valve as unknown as { lastBackfillEndedAt: number }).lastBackfillEndedAt = 0;
+    await valve.backpressure();
+    expect(callCount()).toBe(41);
   });
 });
 

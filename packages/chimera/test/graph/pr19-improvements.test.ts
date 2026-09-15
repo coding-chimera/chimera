@@ -409,7 +409,7 @@ describe('Database Layer Improvements', () => {
     db.close();
   });
 
-  it.skipIf(!HAS_SQLITE)('should set low-rss pragmas on initialization', async () => {
+  it.skipIf(!HAS_SQLITE)('should set default memory pragmas on initialization', async () => {
     const { DatabaseConnection } = await import('../../src/graph/db');
 
     const dbPath = path.join(testDir, 'codegraph.db');
@@ -420,13 +420,14 @@ describe('Database Layer Improvements', () => {
     expect(synchronous).toBe(1);
 
     const cacheSize = rawDb.pragma('cache_size', { simple: true }) as number;
-    expect(cacheSize).toBe(-8192);
+    // defaults match upstream codegraph: 64MB cache, 256MB mmap (env-overridable)
+    expect(cacheSize).toBe(-65536);
 
     const tempStore = rawDb.pragma('temp_store', { simple: true });
     expect(tempStore).toBe(1);
 
     const mmapSize = rawDb.pragma('mmap_size', { simple: true }) as number;
-    expect(mmapSize).toBe(0);
+    expect(mmapSize).toBe(268435456);
 
     db.close();
   });
