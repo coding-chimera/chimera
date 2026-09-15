@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { PROPAGATION_PROBE_TIMEOUT_MS, inlinePropagationCheck, scopeDriftLines } from "../../src/chimera/propagation-probe"
+import { PROPAGATION_PROBE_TIMEOUT_MS, inlinePropagationCheck, runWalk, scopeDriftLines } from "../../src/chimera/propagation-probe"
+import { CodeGraphAdapter } from "../../src/chimera/codegraph-adapter"
 import { Effect, Layer } from "effect"
 import path from "path"
 import * as fs from "fs/promises"
@@ -436,6 +437,71 @@ describe("chimera.propagation-probe symbol-level seeds", () => {
     ])
     expect(lines[0]).toContain("propagation reaches topUse init (b.ts:3) (via helper@a.ts, 2 hops), c.ts")
   })
-})
 
+  it.instance("bridges through same-file consumers to name the external caller chain", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        fs.writeFile(path.join(test.directory, "frame.ts"), "export const MAGIC = 1\nexport function encode() { return MAGIC }\n"),
+      )
+      yield* Effect.promise(() =>
+        fs.writeFile(
+          path.join(test.directory, "channel.ts"),
+          'import { encode } from "./frame.ts"\nexport function send() { return encode() }\n',
+        ),
+      )
+      const graph = yield* Effect.promise(() => CodeGraph.init(test.directory, { index: true }))
+      graph.close()
+      yield* recordScope(test.directory, "ses_samefile-bridge", ["frame.ts"], [])
+      const out = yield* inlinePropagationCheck(
+        [{ file: path.join(test.directory, "frame.ts"), ranges: [{ startLine: 1, endLine: 1 }] }],
+        SessionID.make("ses_samefile-bridge"),
+      )
+      // The edited constant's only consumer is frame.ts's own encode(): the walk
+      // must bridge through it and still name channel.ts's send().
+      expect(out).toContain("Scope check: propagation reaches send (channel.ts:2) (via encode@frame.ts, 2 hops)")
+      expect(out).not.toContain("encode (frame.ts")
+    }),
+  )
+
+  it.instance("names nothing when the same-file consumer chain has no external consumers", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        fs.writeFile(path.join(test.directory, "hub.ts"), "function secret() { return 1 }\nfunction usesSecret() { return secret() }\n"),
+      )
+      const graph = yield* Effect.promise(() => CodeGraph.init(test.directory, { index: true }))
+      graph.close()
+      yield* recordScope(test.directory, "ses_closedloop", ["hub.ts"], [])
+      const out = yield* inlinePropagationCheck(
+        [{ file: path.join(test.directory, "hub.ts"), ranges: [{ startLine: 1, endLine: 1 }] }],
+        SessionID.make("ses_closedloop"),
+      )
+      // Bridging expands but finds no external entry: still silent (the TUI
+      // hub scenario must not regress into naming importers of the file).
+      expect(out).toContain("no dependents found")
+      expect(out).not.toContain("Scope check")
+    }),
+  )
+
+  it.instance("keeps the seed-file bridge symbol out of the walk entry set", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        fs.writeFile(path.join(test.directory, "frame.ts"), "export const MAGIC = 1\nexport function encode() { return MAGIC }\n"),
+      )
+      yield* Effect.promise(() =>
+        fs.writeFile(
+          path.join(test.directory, "channel.ts"),
+          'import { encode } from "./frame.ts"\nexport function send() { return encode() }\n',
+        ),
+      )
+      const adapter = yield* Effect.promise(() => CodeGraphAdapter.open(test.directory, { init: true, index: true }))
+      const entries = runWalk(adapter, [{ file: "frame.ts", ranges: [{ startLine: 1, endLine: 1 }] }], 4)
+      adapter.close()
+      expect(entries.map((entry) => entry.file).toSorted()).toEqual(["channel.ts"])
+    }),
+  )
+
+})
 })
