@@ -351,7 +351,7 @@ export const layer = Layer.effect(
             ...(memoryToolsEnabled
               ? [tool.memoryRemember, tool.memoryList, tool.memoryForget, tool.memoryRead]
               : []),
-            ...(Flag.OPENCODE_EXPERIMENTAL_LSP_TOOL ? [tool.lsp] : []),
+            tool.lsp,
             ...(Flag.OPENCODE_EXPERIMENTAL_PLAN_MODE && Flag.OPENCODE_CLIENT === "cli" ? [tool.plan] : []),
           ],
           task: tool.task,
