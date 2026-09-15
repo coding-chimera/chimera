@@ -458,8 +458,12 @@ describe("chimera.propagation-probe symbol-level seeds", () => {
         SessionID.make("ses_samefile-bridge"),
       )
       // The edited constant's only consumer is frame.ts's own encode(): the walk
-      // must bridge through it and still name channel.ts's send().
-      expect(out).toContain("Scope check: propagation reaches send (channel.ts:2) (via encode@frame.ts, 2 hops)")
+      // bridges through it (bridge jumps are depth-free now) and still names
+      // channel.ts's send(). The hops annotation is rendered from depth, which
+      // now counts external hops only: send sits at 1 external hop, so the
+      // ", 2 hops" suffix (emitted at depth >= 2) is gone while the via label
+      // still exposes the same-file bridge.
+      expect(out).toContain("Scope check: propagation reaches send (channel.ts:2) (via encode@frame.ts)")
       expect(out).not.toContain("encode (frame.ts")
     }),
   )
@@ -500,6 +504,43 @@ describe("chimera.propagation-probe symbol-level seeds", () => {
       const entries = runWalk(adapter, [{ file: "frame.ts", ranges: [{ startLine: 1, endLine: 1 }] }], 4)
       adapter.close()
       expect(entries.map((entry) => entry.file).toSorted()).toEqual(["channel.ts"])
+    }),
+  )
+
+  it.instance("keeps a double same-file bridge chain inside the 4-hop external budget", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        fs.writeFile(
+          path.join(test.directory, "core.ts"),
+          "export const MAGIC = 1\nfunction wrapA() { return MAGIC }\nexport function wrapB() { return wrapA() }\n",
+        ),
+      )
+      yield* Effect.promise(() =>
+        fs.writeFile(path.join(test.directory, "ext1.ts"), 'import { wrapB } from "./core.ts"\nexport function use1() { return wrapB() }\n'),
+      )
+      yield* Effect.promise(() =>
+        fs.writeFile(path.join(test.directory, "ext2.ts"), 'import { use1 } from "./ext1.ts"\nexport function use2() { return use1() }\n'),
+      )
+      yield* Effect.promise(() =>
+        fs.writeFile(path.join(test.directory, "ext3.ts"), 'import { use2 } from "./ext2.ts"\nexport function use3() { return use2() }\n'),
+      )
+      yield* Effect.promise(() =>
+        fs.writeFile(path.join(test.directory, "ext4.ts"), 'import { use3 } from "./ext3.ts"\nexport function use4() { return use3() }\n'),
+      )
+      const adapter = yield* Effect.promise(() => CodeGraphAdapter.open(test.directory, { init: true, index: true }))
+      // Under the old depth-consuming bridges the two same-file wrappers pushed
+      // this chain to external depth 6 (use3 at 5, use4 at 6) and both were
+      // dropped; with depth-free bridge jumps the wrappers stay at depth 0 and
+      // the four external hops land exactly on the MAX_WALK_DEPTH budget, so
+      // ext4.ts is still named with the full external via chain.
+      const entries = runWalk(adapter, [{ file: "core.ts", ranges: [{ startLine: 1, endLine: 1 }] }], 4)
+      adapter.close()
+      expect(entries.map((entry) => entry.file).toSorted()).toEqual(["ext1.ts", "ext2.ts", "ext3.ts", "ext4.ts"])
+      const deep = entries.find((entry) => entry.file === "ext4.ts")
+      expect(deep?.symbols).toContain("use4")
+      expect(deep?.via).toBe("use3@ext3.ts")
+      expect(deep?.depth).toBe(4)
     }),
   )
 
