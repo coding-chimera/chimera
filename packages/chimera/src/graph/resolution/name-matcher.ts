@@ -41,15 +41,65 @@ const AMBIGUOUS_NAME_CEILING = resolveAmbiguousNameCeiling();
  * - the reference name itself is imported (localName, or a dotted member
  *   of an imported namespace/object), or
  * - the candidate's file is reachable from the file's imports (resolvedPath
- *   match, or the import source's last segment equals the candidate file's
- *   name) — this keeps zustand-style destructuring working (`import
- *   { useStore } from './store'` then a bare `fetchUser()` call on an
- *   action defined in store.ts).
+ *   match, the import source's last segment equals the candidate file's
+ *   name, or a relative specifier directory-resolves onto a candidate
+ *   `index.<ext>` barrel file) — this keeps zustand-style destructuring
+ *   working (`import { useStore } from './store'` then a bare `fetchUser()`
+ *   call on an action defined in store.ts).
  */
 function fileTailNoExt(filePath: string): string {
   const tail = filePath.split('/').pop() ?? filePath;
   const dot = tail.lastIndexOf('.');
   return dot > 0 ? tail.slice(0, dot) : tail;
+}
+
+// Node/bundler directory-module convention: `import x from './db'` may name
+// `db/index.<ext>` instead of `db.<ext>`. A bare tail comparison misses those
+// (candidate tail `index` never equals the specifier tail `db`), which is the
+// dominant layout of graph/db/index.ts-style barrel modules. `index.d.ts`
+// (two dots) is included so declaration barrels bind like source barrels.
+const BARREL_INDEX_FILE = /^index\.[A-Za-z0-9]+(\.[A-Za-z0-9]+)?$/;
+
+/**
+ * Collapse POSIX path segments (`''`/`.` dropped, `..` pops) at string level.
+ * Returns null when the walk escapes the project root — such a specifier has
+ * no candidate inside the indexed tree, so it must not allow anything.
+ */
+function normalizeRelativeSegments(segments: string[]): string[] | null {
+  const out: string[] = [];
+  for (const segment of segments) {
+    if (segment === '' || segment === '.') continue;
+    if (segment === '..') {
+      if (out.length === 0) return null;
+      out.pop();
+      continue;
+    }
+    out.push(segment);
+  }
+  return out;
+}
+
+/**
+ * Whether a relative import specifier (`./x`, `../x`) directory-resolves onto
+ * a candidate `index.<ext>` barrel: caller-dir + specifier, normalized, must
+ * equal the candidate's parent dir exactly. Both paths are project-relative,
+ * so the comparison is string-level with no filesystem probe — an `index.*`
+ * file under an unrelated same-named directory stays vetoed. Bare/aliased
+ * specifiers have no directory semantics and return false.
+ */
+function barrelImportReachesFile(ref: UnresolvedRef, candidateFilePath: string, source: string): boolean {
+  if (!source.startsWith('./') && !source.startsWith('../')) return false;
+  const candidateSegments = candidateFilePath.split('/');
+  const candidateTail = candidateSegments[candidateSegments.length - 1] ?? '';
+  if (!BARREL_INDEX_FILE.test(candidateTail)) return false;
+  const resolved = normalizeRelativeSegments([
+    ...ref.filePath.split('/').slice(0, -1),
+    ...source.split('/'),
+  ]);
+  if (!resolved) return false;
+  const candidateDir = candidateSegments.slice(0, -1);
+  if (candidateDir.length !== resolved.length) return false;
+  return resolved.every((segment, i) => segment === candidateDir[i]);
 }
 
 function refImportMappings(ref: UnresolvedRef, context: ResolutionContext): ImportMapping[] {
@@ -73,6 +123,7 @@ function crossFileCandidateAllowed(ref: UnresolvedRef, candidate: Node, imports:
       return true;
     }
     if (imp.source && fileTailNoExt(imp.source) === candidateTail) return true;
+    if (imp.source && barrelImportReachesFile(ref, candidate.filePath, imp.source)) return true;
   }
   return false;
 }
@@ -443,23 +494,90 @@ type ReceiverEvidenceKind = 'new' | 'annotation' | 'factory';
 // in all three the word right before `=` is the receiver, so one global
 // regex indexes every declaration pair in a file per scan.
 const RECEIVER_NEW_DECLARATION = /\b(\w+)\s*=\s*new\s+([A-Za-z_$][\w$]*)/g;
-// `receiver = fnName(` — a bare factory call. The callee's return-type
-// annotation names the receiver's class one inference hop away (weakest).
-const RECEIVER_FACTORY_DECLARATION = /\b(\w+)\s*=\s*([A-Za-z_$][\w$]*)\s*\(/g;
+// `receiver = fnName(` / `receiver = await fnName(` — a factory call. The
+// callee's return-type annotation names the receiver's class one inference
+// hop away (weakest). The optional `await` is the high-yield shape
+// (`const cg = await open()` + `open(): Promise<Graph>`); the await flag is
+// decided from the match's own span (FACTORY_AWAITED_INIT), so
+// multi-declaration statements cannot cross-contaminate. Dotted callees
+// (`= await Foo.bar()`) stay out of scope: the bare last segment would not
+// say which class owns `bar`.
+const RECEIVER_FACTORY_DECLARATION = /\b(\w+)\s*=\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(/g;
+// The only `=` inside a factory match is the initializer, and `await` can
+// sit only between it and the callee, so testing the matched span is exact.
+const FACTORY_AWAITED_INIT = /=\s*await\s/;
 // `receiver: TypeName =` / `receiver: TypeName;` — an explicit type
-// annotation. Only a simple type name binds; generics/unions are dropped.
+// annotation. Only a simple type name binds here; structured annotations
+// go to the keyword-gated variant below (this shape still covers
+// keyword-less declarations like class properties).
 const RECEIVER_ANNOTATION_DECLARATION = /\b(\w+)\s*:\s*([A-Za-z_$][\w$.]*)\s*[=;]/g;
+// Keyword-declaration annotation with full type capture: `const receiver:
+// Type` up to a `= ; , )` or newline terminator, so `Promise<Queue>` and
+// `readonly Foo` survive capture and unwrapReceiverType decides binding.
+// Requiring const/let/var right before the name keeps object literals
+// (`{ key: value }`) — and parameter lists, which belong to Strategy 0.5b
+// via node.params — out of this evidence stream.
+const RECEIVER_ANNOTATION_FULL_DECLARATION =
+  /\b(?:const|let|var)\s+(\w+)\s*:\s*([^=;,\n)]+?)(?=\s*[=;,\n)])/g;
+// An `= await` sitting right after the annotation's terminator means the
+// receiver holds the resolved value (Promise-peelable).
+const ANNOTATION_AWAITED_INIT = /^\s*=\s*await\s/;
 
 // Simple-identifier type layer: no generics (`<`), unions (`|`),
 // intersections (`&`), function arrows (`=>`), or whitespace. Anything
 // else is not structured enough to bind on, so it falls back.
 const SIMPLE_TYPE_NAME = /^[\w$.]+$/;
 
+// The only two wrapper shapes this pass understands: a single `Promise<…>`
+// layer (peeled only for await-initialized receivers) and a leading
+// `readonly` qualifier over a simple name.
+const PROMISE_WRAPPING_TYPE = /^Promise\s*<([^<>]+)>$/;
+const READONLY_QUALIFIED_TYPE = /^readonly\s+([\w$.]+)$/;
+
+/**
+ * Peel a captured receiver type down to the simple project-class name a
+ * method call can bind to, or undefined (= not bindable evidence: fall
+ * through to the heuristic strategies, never veto).
+ *
+ * A `Promise<Inner>` type is peeled ONLY when the declaration was
+ * await-initialized (`const cg = await open()`). The non-await rule is the
+ * whole safety story here: `const q = makePromise()` leaves `q` holding the
+ * Promise itself, so `q.push()` is either a builtin Promise call (`q.then`)
+ * or statically-broken code — binding it to `Inner.push` would fabricate a
+ * `calls` edge no receiver ever dispatches through. Fall-through (undefined)
+ * keeps the weaker strategies' chance without claiming a known type.
+ *
+ * `readonly Inner` is a pure type-space modifier — it peels unconditionally.
+ * Everything else is not guessed: `X[]`, `Array<X>`/`ReadonlyArray<X>`,
+ * `Partial`/`Pick`/`Omit`/`Record` and other generics, nested
+ * `Promise<Promise<X>>` (only one peel layer), unions, and function types
+ * all stay opaque.
+ */
+function unwrapReceiverType(
+  typeText: string,
+  opts: { awaitInitialized: boolean },
+): string | undefined {
+  const trimmed = typeText.trim();
+  const promise = PROMISE_WRAPPING_TYPE.exec(trimmed);
+  if (promise) {
+    if (!opts.awaitInitialized) return undefined;
+    const inner = promise[1]!.trim();
+    return SIMPLE_TYPE_NAME.test(inner) ? inner : undefined;
+  }
+  const readonly = READONLY_QUALIFIED_TYPE.exec(trimmed);
+  if (readonly) return readonly[1]!;
+  return SIMPLE_TYPE_NAME.test(trimmed) ? trimmed : undefined;
+}
+
 interface ReceiverDeclaration {
   kind: ReceiverEvidenceKind;
   /** 'new' → class name, 'annotation' → type name, 'factory' → callee name. */
   name: string;
   line: number;
+  /** True when the initializer is awaited — `= await f()` for a factory,
+   *  or `= await` right after a `: T` annotation. Only Promise-wrapped
+   *  types consult it (unwrapReceiverType); 'new' evidence never sets it. */
+  awaitInitialized: boolean;
 }
 
 // Priority rank per evidence kind — higher wins when one receiver has
@@ -514,14 +632,29 @@ function receiverDeclarationsForFile(
     // prefix the node name to feed both shapes through the same regex.
     const text = node.kind === 'statement' ? node.signature : `${node.name} ${node.signature}`;
     for (const match of text.matchAll(RECEIVER_NEW_DECLARATION)) {
-      add(match[1]!, { kind: 'new', name: match[2]!, line: node.startLine });
+      add(match[1]!, { kind: 'new', name: match[2]!, line: node.startLine, awaitInitialized: false });
     }
     for (const match of text.matchAll(RECEIVER_FACTORY_DECLARATION)) {
       if (match[2] === 'new') continue; // direct construction handled above
-      add(match[1]!, { kind: 'factory', name: match[2]!, line: node.startLine });
+      add(match[1]!, {
+        kind: 'factory',
+        name: match[2]!,
+        line: node.startLine,
+        awaitInitialized: FACTORY_AWAITED_INIT.test(match[0]),
+      });
     }
     for (const match of text.matchAll(RECEIVER_ANNOTATION_DECLARATION)) {
-      add(match[1]!, { kind: 'annotation', name: match[2]!, line: node.startLine });
+      add(match[1]!, { kind: 'annotation', name: match[2]!, line: node.startLine, awaitInitialized: false });
+    }
+    for (const match of text.matchAll(RECEIVER_ANNOTATION_FULL_DECLARATION)) {
+      add(match[1]!, {
+        kind: 'annotation',
+        name: match[2]!,
+        line: node.startLine,
+        awaitInitialized: ANNOTATION_AWAITED_INIT.test(
+          match.input.slice((match.index ?? 0) + match[0].length),
+        ),
+      });
     }
   }
 
@@ -532,7 +665,17 @@ function receiverDeclarationsForFile(
     const lines = source.split(/\r?\n/);
     for (let i = 0; i < lines.length; i++) {
       for (const match of lines[i]!.matchAll(RECEIVER_ANNOTATION_DECLARATION)) {
-        add(match[1]!, { kind: 'annotation', name: match[2]!, line: i + 1 });
+        add(match[1]!, { kind: 'annotation', name: match[2]!, line: i + 1, awaitInitialized: false });
+      }
+      for (const match of lines[i]!.matchAll(RECEIVER_ANNOTATION_FULL_DECLARATION)) {
+        add(match[1]!, {
+          kind: 'annotation',
+          name: match[2]!,
+          line: i + 1,
+          awaitInitialized: ANNOTATION_AWAITED_INIT.test(
+            match.input.slice((match.index ?? 0) + match[0].length),
+          ),
+        });
       }
     }
   }
@@ -568,10 +711,11 @@ function selectReceiverDeclaration(
 /**
  * Resolve a declaration to the simple type name whose method the receiver
  * call must target, or undefined when the evidence carries no class-bearing
- * name. Factory evidence needs a same-language function/method whose
- * `returnType` is a simple identifier — inferred/generic/union returns fall
- * back rather than guess. Same-file factories win over import-reachable
- * cross-file ones.
+ * name (opaque shapes included — see unwrapReceiverType). Factory evidence
+ * needs a same-language function/method whose `returnType` unwraps to a
+ * simple identifier; a `Promise<Inner>` return only counts when the
+ * declaration awaited the call. Same-file factories win over
+ * import-reachable cross-file ones.
  */
 function declaredReceiverTypeName(
   declared: ReceiverDeclaration,
@@ -580,7 +724,7 @@ function declaredReceiverTypeName(
   imports: ImportMapping[],
 ): string | undefined {
   if (declared.kind !== 'factory') {
-    return SIMPLE_TYPE_NAME.test(declared.name) ? declared.name : undefined;
+    return unwrapReceiverType(declared.name, { awaitInitialized: declared.awaitInitialized });
   }
 
   const factories = context
@@ -593,14 +737,36 @@ function declaredReceiverTypeName(
     ...reachable.filter((n) => n.filePath === ref.filePath),
     ...reachable.filter((n) => n.filePath !== ref.filePath),
   ];
-  return ordered.find((n) => n.returnType && SIMPLE_TYPE_NAME.test(n.returnType))?.returnType;
+  for (const candidate of ordered) {
+    if (!candidate.returnType) continue;
+    const typeName = unwrapReceiverType(candidate.returnType, {
+      awaitInitialized: declared.awaitInitialized,
+    });
+    if (typeName) return typeName;
+  }
+  return undefined;
+}
+
+// A receiver's declared type may also name a TypeScript type alias whose
+// object shape carries first-class members: extractTsTypeAliasMembers emits
+// `X::m` method nodes for `type X = { m(): T }`, so those aliases bind
+// receiver calls exactly like a class/struct/interface would.
+function isReceiverContainerCandidate(node: Node, language: Language): boolean {
+  return (
+    (node.kind === 'class' ||
+      node.kind === 'struct' ||
+      node.kind === 'interface' ||
+      node.kind === 'type_alias') &&
+    node.language === language
+  );
 }
 
 /**
  * Strategy 0.5: resolve `receiver.method()` from declaration evidence — an
  * earlier `receiver = new ClassName()` / `receiver: TypeName` /
  * `receiver = factory()` declaration in the same file names the receiver's
- * class exactly, which is a tier above the word-overlap guessing in
+ * class exactly (a `Promise<Inner>` factory/annotation type only counts
+ * when awaited), which is a tier above the word-overlap guessing in
  * Strategies 1-3.
  *
  * Tri-state: `undefined` = no usable declaration evidence (fall through to
@@ -630,9 +796,7 @@ function matchMethodCallByDeclaration(
 
   const classCandidates = context
     .getNodesByName(typeName)
-    .filter(
-      (n) => (n.kind === 'class' || n.kind === 'struct' || n.kind === 'interface') && n.language === ref.language,
-    );
+    .filter((n) => isReceiverContainerCandidate(n, ref.language));
   const declClass = classCandidates.find((n) => crossFileCandidateAllowed(ref, n, imports));
   if (!declClass) return undefined;
 
@@ -681,11 +845,6 @@ function typedFunctionsForFile(filePath: string, context: ResolutionContext): No
   return functions;
 }
 
-// A plain identifier or dotted qualified name (`Queue`, `db.Queue`) is the
-// only type shape this strategy can bind; the extractor collects generics,
-// unions, and function types verbatim and they fail this gate.
-const SIMPLE_PARAM_TYPE = /^[\w$.]+$/;
-
 /**
  * Strategy 0.5b: resolve `receiver.method()` from a type annotation on the
  * enclosing function's parameter — `function f(q: Queue) { q.push() }`
@@ -708,16 +867,19 @@ function matchMethodCallByParamType(
     if (!enclosing || fn.startLine >= enclosing.startLine) enclosing = fn;
   }
   const param = enclosing?.params?.find((p) => p.name === receiverName);
-  if (!param || !SIMPLE_PARAM_TYPE.test(param.type)) return undefined;
+  if (!param) return undefined;
+  // Parameters hold exactly what callers pass — a `Promise<X>` parameter
+  // is the Promise itself (never await-initialized), so only a simple
+  // annotated type (or `readonly X`) binds; everything else falls through.
+  const declaredType = unwrapReceiverType(param.type, { awaitInitialized: false });
+  if (!declaredType) return undefined;
 
   // `db.Queue` names the class `Queue` — match on the trailing segment.
-  const typeName = param.type.split('.').pop() ?? param.type;
+  const typeName = declaredType.split('.').pop() ?? declaredType;
   const imports = refImportMappings(ref, context);
   const classCandidates = context
     .getNodesByName(typeName)
-    .filter(
-      (n) => (n.kind === 'class' || n.kind === 'struct' || n.kind === 'interface') && n.language === ref.language,
-    );
+    .filter((n) => isReceiverContainerCandidate(n, ref.language));
   // An annotated type with no graph class (builtins like Promise/Map) or one
   // vetoed by the caller file's imports is not evidence we can bind on —
   // fall through instead of vetoing.
