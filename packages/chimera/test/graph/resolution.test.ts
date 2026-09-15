@@ -599,11 +599,114 @@ describe('Resolution Module', () => {
       expect(result?.resolvedBy).toBe('instance-method');
     });
 
-    it('does not bind a receiver whose factory returns a generic type (Promise<Queue>)', () => {
+    it('does not bind a non-awaited factory returning a generic type (Promise<Queue>)', () => {
       const context = declContext({
         'app.ts': [
           declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const q = createQueue()' }),
           declNode('fn:app.ts:createQueue', 'function', 'createQueue', 'app.ts', 20, { returnType: 'Promise<Queue>' }),
+          declNode('class:app.ts:Queue', 'class', 'Queue', 'app.ts', 30),
+          declNode('method:app.ts:push:31', 'method', 'push', 'app.ts', 31, { qualifiedName: 'Queue.push' }),
+          declNode('class:app.ts:Stack', 'class', 'Stack', 'app.ts', 40),
+          declNode('method:app.ts:push:41', 'method', 'push', 'app.ts', 41, { qualifiedName: 'Stack.push' }),
+        ],
+      });
+      expect(matchMethodCall(declRef('app.ts', 'q.push', 5), context)).toBeNull();
+    });
+
+    it('binds an awaited factory through Promise unwrapping (const cg = await open())', () => {
+      // `open(): Promise<Graph>` plus the awaited initializer means cg really
+      // holds a Graph. The decoy Ledger.getNode keeps the unique-candidate
+      // and word-overlap branches out — only the declaration layer binds.
+      const context = declContext({
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const cg = await open()' }),
+          declNode('fn:app.ts:open', 'function', 'open', 'app.ts', 20, { returnType: 'Promise<Graph>' }),
+          declNode('class:app.ts:Graph', 'class', 'Graph', 'app.ts', 30),
+          declNode('method:app.ts:getNode:31', 'method', 'getNode', 'app.ts', 31, { qualifiedName: 'Graph.getNode' }),
+          declNode('class:app.ts:Ledger', 'class', 'Ledger', 'app.ts', 40),
+          declNode('method:app.ts:getNode:41', 'method', 'getNode', 'app.ts', 41, { qualifiedName: 'Ledger.getNode' }),
+        ],
+      });
+      const result = matchMethodCall(declRef('app.ts', 'cg.getNode', 5), context);
+      expect(result?.targetNodeId).toBe('method:app.ts:getNode:31');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    it('binds an awaited factory imported from another file through Promise unwrapping', () => {
+      const context = declContext({
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const cg = await open()' }),
+        ],
+        'graph.ts': [
+          declNode('fn:graph.ts:open', 'function', 'open', 'graph.ts', 20, { returnType: 'Promise<Graph>' }),
+          declNode('class:graph.ts:Graph', 'class', 'Graph', 'graph.ts', 30),
+          declNode('method:graph.ts:getNode:31', 'method', 'getNode', 'graph.ts', 31, { qualifiedName: 'Graph.getNode' }),
+        ],
+      }, [
+        { localName: 'open', exportedName: 'open', source: './graph', isDefault: false, isNamespace: false },
+      ]);
+      const result = matchMethodCall(declRef('app.ts', 'cg.getNode', 5), context);
+      expect(result?.targetNodeId).toBe('method:graph.ts:getNode:31');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    it('binds a Promise-annotated receiver when the initializer is awaited (const q: Promise<Queue> = await make())', () => {
+      // The await flag rides on the annotation capture itself, so the same
+      // Promise<Queue> type binds here where the bare `= make()` shape below
+      // must stay silent.
+      const context = declContext({
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const q: Promise<Queue> = await make()' }),
+          declNode('class:app.ts:Queue', 'class', 'Queue', 'app.ts', 30),
+          declNode('method:app.ts:push:31', 'method', 'push', 'app.ts', 31, { qualifiedName: 'Queue.push' }),
+          declNode('class:app.ts:Stack', 'class', 'Stack', 'app.ts', 40),
+          declNode('method:app.ts:push:41', 'method', 'push', 'app.ts', 41, { qualifiedName: 'Stack.push' }),
+        ],
+      });
+      const result = matchMethodCall(declRef('app.ts', 'q.push', 5), context);
+      expect(result?.targetNodeId).toBe('method:app.ts:push:31');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    it('falls through a non-awaited Promise annotation without vetoing later strategies', () => {
+      // q holds the Promise, so Queue.push must not bind — and the type is
+      // NOT authoritative either (fall-through, not veto): Stack.push is the
+      // only method candidate and still gets its Strategy 3 chance.
+      const context = declContext({
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const q: Promise<Queue> = make()' }),
+          declNode('class:app.ts:Queue', 'class', 'Queue', 'app.ts', 30),
+          declNode('class:app.ts:Stack', 'class', 'Stack', 'app.ts', 40),
+          declNode('method:app.ts:push:41', 'method', 'push', 'app.ts', 41, { qualifiedName: 'Stack.push' }),
+        ],
+      });
+      const result = matchMethodCall(declRef('app.ts', 'q.push', 5), context);
+      expect(result?.targetNodeId).toBe('method:app.ts:push:41');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    it('strips a readonly qualifier from an annotated receiver type (const q: readonly Queue = make())', () => {
+      const context = declContext({
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const q: readonly Queue = make()' }),
+          declNode('class:app.ts:Queue', 'class', 'Queue', 'app.ts', 30),
+          declNode('method:app.ts:push:31', 'method', 'push', 'app.ts', 31, { qualifiedName: 'Queue.push' }),
+          declNode('class:app.ts:Stack', 'class', 'Stack', 'app.ts', 40),
+          declNode('method:app.ts:push:41', 'method', 'push', 'app.ts', 41, { qualifiedName: 'Stack.push' }),
+        ],
+      });
+      const result = matchMethodCall(declRef('app.ts', 'q.push', 5), context);
+      expect(result?.targetNodeId).toBe('method:app.ts:push:31');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    it('does not peel utility generics (const q: Partial<Queue> = make() binds nothing)', () => {
+      // Partial<Queue> stays opaque (fall-through, no veto) and the two
+      // same-named push methods leave the word-overlap branches no bind
+      // either — nothing may resolve.
+      const context = declContext({
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const q: Partial<Queue> = make()' }),
           declNode('class:app.ts:Queue', 'class', 'Queue', 'app.ts', 30),
           declNode('method:app.ts:push:31', 'method', 'push', 'app.ts', 31, { qualifiedName: 'Queue.push' }),
           declNode('class:app.ts:Stack', 'class', 'Stack', 'app.ts', 40),
@@ -716,6 +819,24 @@ describe('Resolution Module', () => {
       expect(matchMethodCall(declRef('app.ts', 'q.push', 5), context)).toBeNull();
     });
 
+    it('does not peel a Promise parameter type (function drain(q: Promise<Queue>))', () => {
+      // Parameters can never be await-initialized — q holds the Promise.
+      // With two same-named push methods and no receiver-word overlap, only
+      // a parameter bind could resolve this; the opaque type must stay silent
+      // without vetoing (the veto semantics are covered by the Queue test
+      // below).
+      const context = declContext({
+        'app.ts': [
+          paramFnNode('func:app.ts:drain:3', 'drain', 'app.ts', 3, 9, [{ name: 'q', type: 'Promise<Queue>' }]),
+          declNode('class:app.ts:Queue', 'class', 'Queue', 'app.ts', 20),
+          declNode('method:app.ts:push:21', 'method', 'push', 'app.ts', 21, { qualifiedName: 'Queue.push' }),
+          declNode('class:app.ts:Stack', 'class', 'Stack', 'app.ts', 30),
+          declNode('method:app.ts:push:31', 'method', 'push', 'app.ts', 31, { qualifiedName: 'Stack.push' }),
+        ],
+      });
+      expect(matchMethodCall(declRef('app.ts', 'q.push', 5), context)).toBeNull();
+    });
+
     it('vetoes word-overlap guessing when the parameter class lacks the method', () => {
       // Widget.flush is the only `flush` candidate and shares the file with
       // the receiver, so Strategy 3 would bind it without the annotation
@@ -746,6 +867,104 @@ describe('Resolution Module', () => {
       const result = matchMethodCall(declRef('app.ts', 'q.push', 6), context);
       expect(result?.targetNodeId).toBe('method:app.ts:push:31');
       expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    // Gap B': `type X = { m(): T }` contract members are first-class method
+    // nodes (`X::m`, extractTsTypeAliasMembers), so a type-alias receiver type
+    // must pass the same candidate-class filter a class/interface would.
+    it('binds a type-alias receiver from annotation evidence (type Proc = { run(): void })', () => {
+      const context = declContext({
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const p: Proc = handler()' }),
+          declNode('alias:app.ts:Proc', 'type_alias', 'Proc', 'app.ts', 20),
+          declNode('method:app.ts:run:21', 'method', 'run', 'app.ts', 21, { qualifiedName: 'Proc::run' }),
+          declNode('class:app.ts:Runner', 'class', 'Runner', 'app.ts', 30),
+          declNode('method:app.ts:run:31', 'method', 'run', 'app.ts', 31, { qualifiedName: 'Runner.run' }),
+        ],
+      });
+      // The decoy Runner.run shares the method name; only the alias qn carries
+      // "Proc", so the bind must land on the type-alias contract member.
+      const result = matchMethodCall(declRef('app.ts', 'p.run', 5), context);
+      expect(result?.targetNodeId).toBe('method:app.ts:run:21');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    it('binds a cross-file type-alias receiver through import evidence', () => {
+      const context = declContext({
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const d: Proc = makeProc()' }),
+        ],
+        'proc.ts': [
+          declNode('alias:proc.ts:Proc', 'type_alias', 'Proc', 'proc.ts', 20),
+          declNode('method:proc.ts:run:21', 'method', 'run', 'proc.ts', 21, { qualifiedName: 'Proc::run' }),
+        ],
+      }, [
+        { localName: 'Proc', exportedName: 'Proc', source: './proc', isDefault: false, isNamespace: false },
+      ]);
+      const result = matchMethodCall(declRef('app.ts', 'd.run', 5), context);
+      expect(result?.targetNodeId).toBe('method:proc.ts:run:21');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    // Gap D: barrel/directory import specifiers. `./db` names `db/index.ts`
+    // (directory module) as much as `db.ts`; the bare tail comparison vetoed
+    // the former. The barrel arm is directory-consistency checked so an
+    // unrelated `index.*` file under a same-named directory stays vetoed.
+    it('binds a class reached through a directory-barrel import (./sub/db -> sub/db/index.ts)', () => {
+      const context = declContext({
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const conn: DatabaseConnection = openDb()' }),
+        ],
+        'sub/db/index.ts': [
+          declNode('class:sub/db/index.ts:DatabaseConnection', 'class', 'DatabaseConnection', 'sub/db/index.ts', 10),
+          declNode('method:sub/db/index.ts:query:11', 'method', 'query', 'sub/db/index.ts', 11, { qualifiedName: 'DatabaseConnection::query' }),
+        ],
+        // Decoy: same class/method shape under an unrelated same-named
+        // directory. The strict barrel rule must not let it through.
+        'other/sub/db/index.ts': [
+          declNode('class:other/sub/db/index.ts:DatabaseConnection', 'class', 'DatabaseConnection', 'other/sub/db/index.ts', 10),
+          declNode('method:other/sub/db/index.ts:query:11', 'method', 'query', 'other/sub/db/index.ts', 11, { qualifiedName: 'DatabaseConnection::query' }),
+        ],
+      }, [
+        { localName: 'DatabaseConnection', exportedName: 'DatabaseConnection', source: './sub/db', isDefault: false, isNamespace: false },
+      ]);
+      const result = matchMethodCall(declRef('app.ts', 'conn.query', 5), context);
+      expect(result?.targetNodeId).toBe('method:sub/db/index.ts:query:11');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    it('binds a class reached through the same-name-file import convention (./sub/db -> sub/db.ts)', () => {
+      const context = declContext({
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const conn: DatabaseConnection = openDb()' }),
+        ],
+        'sub/db.ts': [
+          declNode('class:sub/db.ts:DatabaseConnection', 'class', 'DatabaseConnection', 'sub/db.ts', 10),
+          declNode('method:sub/db.ts:query:11', 'method', 'query', 'sub/db.ts', 11, { qualifiedName: 'DatabaseConnection::query' }),
+        ],
+      }, [
+        { localName: 'DatabaseConnection', exportedName: 'DatabaseConnection', source: './sub/db', isDefault: false, isNamespace: false },
+      ]);
+      const result = matchMethodCall(declRef('app.ts', 'conn.query', 5), context);
+      expect(result?.targetNodeId).toBe('method:sub/db.ts:query:11');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    it('does not let a relative barrel specifier reach an unrelated same-named directory', () => {
+      // Caller is in pkg/, so `./sub/db` resolves to pkg/sub/db — a barrel at
+      // other/sub/db/ must stay vetoed and nothing may bind.
+      const context = declContext({
+        'pkg/app.ts': [
+          declNode('stmt:pkg/app.ts:3', 'statement', 'stmt@3:10', 'pkg/app.ts', 3, { signature: 'const conn: DatabaseConnection = openDb()' }),
+        ],
+        'other/sub/db/index.ts': [
+          declNode('class:other/sub/db/index.ts:DatabaseConnection', 'class', 'DatabaseConnection', 'other/sub/db/index.ts', 10),
+          declNode('method:other/sub/db/index.ts:query:11', 'method', 'query', 'other/sub/db/index.ts', 11, { qualifiedName: 'DatabaseConnection::query' }),
+        ],
+      }, [
+        { localName: 'DatabaseConnection', exportedName: 'DatabaseConnection', source: './sub/db', isDefault: false, isNamespace: false },
+      ]);
+      expect(matchMethodCall(declRef('pkg/app.ts', 'conn.query', 5), context)).toBeNull();
     });
 
     it('refuses to fuzzy-guess names defined beyond the ambiguity ceiling', () => {
