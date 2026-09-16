@@ -875,6 +875,7 @@ program
       const changes = cg.getChangedFiles();
       const backend = cg.getBackend();
       const journalMode = cg.getJournalMode();
+      const semantics = cg.getExtractionSemanticsStatus();
       const dataRoot = getGraphDataRootInfo(projectPath);
       const job = readIndexJob(projectPath);
       // JSON output mode
@@ -891,6 +892,9 @@ program
           dbSizeBytes: stats.dbSizeBytes,
           backend,
           journalMode,
+          needsReindex: semantics.needsReindex,
+          extractionSemanticsVersion: semantics.storedVersion,
+          requiredExtractionSemanticsVersion: semantics.currentVersion,
           nodesByKind: stats.nodesByKind,
           languages: Object.entries(stats.filesByLanguage).filter(([, count]) => count > 0).map(([lang]) => lang),
           pendingChanges: {
@@ -937,6 +941,15 @@ program
         ? chalk.green('wal')
         : chalk.yellow(`${journalMode || 'unknown'} ${getGlyphs().dash} WAL inactive; reads can block on writes`);
       console.log(`  Journal:   ${journalLabel}`);
+      // Extraction-semantics stamp: 'unknown (unstamped)' is the lenient
+      // legacy state (no warning); a mismatched stamp gets the yellow flag
+      // plus the recovery line below, mirroring the needsMigration posture.
+      const semanticsLabel = semantics.storedVersion === null
+        ? chalk.dim('unknown (unstamped; stamped by the next full index)')
+        : semantics.needsReindex
+          ? chalk.yellow(`v${semantics.storedVersion} ${getGlyphs().dash} does not match v${semantics.currentVersion}`)
+          : chalk.green(`v${semantics.storedVersion}`);
+      console.log(`  Semantics: ${semanticsLabel}`);
       console.log();
 
       // Node breakdown
@@ -977,6 +990,11 @@ program
         success('Index is up to date');
       }
       console.log();
+      if (semantics.needsReindex) {
+        warn(`Extraction semantics version v${semantics.storedVersion} does not match this binary's extractor (v${semantics.currentVersion})`)
+        info('Run "chimera graph index" to re-extract the graph')
+        console.log();
+      }
 
       cg.destroy();
     } catch (err) {

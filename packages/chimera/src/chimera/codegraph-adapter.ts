@@ -122,6 +122,14 @@ export class CodeGraphAdapter {
     return this.graph.getJournalMode()
   }
 
+  /**
+   * Read-only extraction-semantics stamp check of the underlying graph
+   * (needsReindex posture; see src/graph/db/extraction-version.ts).
+   */
+  extractionSemanticsStatus() {
+    return this.graph.getExtractionSemanticsStatus()
+  }
+
   async syncFiles(filePaths: string[], options: { onProgress?: (progress: IndexProgress) => void } = {}) {
     if (filePaths.length === 0) return emptySyncResult()
     return this.graph.syncFiles(filePaths, { onProgress: options.onProgress })
