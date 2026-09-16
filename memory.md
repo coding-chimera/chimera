@@ -12,6 +12,9 @@ Guidelines:
 
 ## Notes
 
+### Rust kernel wave2：TS 开闸完成、微损归零、已推送（2026-09-16）
+
+已推 origin/main（..5fa57a107）：分发接线+TS 开闸（c2207cc0a：build.ts 拷 .node 进平台包 bin/kernel/、postinstall warn-only 探测、DEFAULT_ROUTED=[lua,luau,ts,tsx,js,jsx]，字节一致路由不 bump 保持 v3）、tsjs builtin-type 过滤修复（e3e469e54：E2E 的 −10 边微损根因**不是**命名空间成员形态而是 is_builtin_type 误带兄弟语言大写尾块把 `Any` 当内置丢弃；修复后主仓 edges 复归 250,465、复现语料 87/87 字节一致）、parameters 快照刷新（5fa57a107）。生产 E2E：worker 内 napi 加载实证（2 worker 恰 2 条 loaded 日志）、nodes 五跑恒定 120,697、墙钟 22-26s 持平（parse 仅 2.4%，kernel 价值=鲁棒性+对齐非速度）、kill switch 等价。**kernel 战役主体完成：TS 主力四语言+lua/luau 跑在 Rust 核心上**。遗留工单：①wasm 臂返回类型 ref 双发卫生修（需 kernel 同批镜像，待拍板）②`bun src/index.ts graph` relaunch 姿态 bug（临时用 CODEGRAPH_NO_RELAUNCH=1）③发布面：linux glibc/musl+win prebuild 腿+CI 矩阵④kotlin/scala/dart 对账批（三张归因表在 wave1 报告）⑤rust 语料改固定集。下一步：扩展 bench（4 核心任务 n=3 对照 12/12 基线 + 13 恢复任务 n=1 探索）
 ### 第三波：G0+union 已推、Rust kernel 立项、bench 资产全恢复（2026-09-16）
 
 已推 origin/main（..4354468b7 三笔）：G0 上游移植批（Swift regex hang 1043ms→0.03ms、tsconfig extends 丢边、name-lookup 索引 seek、git -uall、availableParallelism）、union 脱壳（initializedDb.close/find.focus 12 条全部翻正，实测 initdb_close 12→0）、UPSTREAM_RUST_KERNEL_PLAN.md（B 案绞杀者，P0-P3，待拍板 K1-K5）。
