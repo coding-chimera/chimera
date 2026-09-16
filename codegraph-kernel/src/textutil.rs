@@ -156,6 +156,30 @@ pub fn init_signature(value_text: &str) -> String {
     }
 }
 
+/// Append `s` to `out` as a quoted JSON string (JSON.stringify escaping for
+/// the mandatory subset: quote, backslash, and C0 controls). Used for the
+/// node-row extraJson escape hatch — decode.ts JSON.parses the payload and
+/// Object.assigns it onto the Node, so any valid escaping round-trips.
+pub fn push_json_string(out: &mut String, s: &str) {
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{8}' => out.push_str("\\b"),
+            '\u{c}' => out.push_str("\\f"),
+            c if (c as u32) < 0x20 => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

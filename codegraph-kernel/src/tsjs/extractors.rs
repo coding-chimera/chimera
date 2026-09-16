@@ -5,11 +5,21 @@
 
 use crate::textutil as util;
 use super::{
-    body_of, is_builtin_type, is_literal_receiver, is_react_hoc, is_variable_type,
-    is_vue_collection_name, Extra, Scope, Walker,
+    body_of, is_builtin_type, is_codeplan_statement_kind, is_function_type,
+    is_instantiation_kind, is_literal_receiver, is_react_hoc, is_variable_type,
+    is_vue_collection_name, Extra, Scope, Variant, Walker,
 };
 use crate::buffers::edge_kind_index;
 use tree_sitter::Node;
+
+/// RETURN_TYPE_MAX_LENGTH (tree-sitter.ts) — stored return-type text cap.
+const RETURN_TYPE_MAX_LENGTH: usize = 200;
+/// PARAM_TYPE_MAX_CHARS / PARAMS_JSON_MAX_CHARS (tree-sitter.ts) — per-type
+/// and per-collection serialization budgets for the params pairs.
+const PARAM_TYPE_MAX_CHARS: usize = 200;
+const PARAMS_JSON_MAX_CHARS: usize = 2000;
+/// extractCodePlanStatement's `slice(0, 240)` signature cap (UTF-16 units).
+const STATEMENT_SIGNATURE_MAX: usize = 240;
 
 impl<'t> Walker<'t> {
     // --- extractFunction --------------------------------------------------------
@@ -34,11 +44,18 @@ impl<'t> Walker<'t> {
             }
         }
         if name == "<anonymous>" {
-            // Still walk the body: module wrappers hold named inner functions
-            // and calls that would otherwise be lost (#528).
-            if let Some(body) = body_of(node) {
-                self.visit_function_body(body);
-            }
+            // Fork parity: extractFunction RETURNS on <anonymous> without
+            // walking the body (tree-sitter.ts `if (name === '<anonymous>')
+            // return;`), and visitNode skips the children — so wrapper
+            // bodies reached through the visitNode dispatch (UMD factories,
+            // top-level IIFEs) contribute nothing on the wasm arm. The
+            // upstream #528 body-walk this port originally carried made the
+            // kernel discover wrapper-inner named functions/classes and
+            // their statement cascades that the fork never emits
+            // (node:extra-in-kernel:function/statement in the parity
+            // harness). Bodies reached through visitForCallsAndStructure
+            // still walk via its generic child recursion, matching the
+            // fork's fall-through for anonymous functions there.
             return;
         }
 
@@ -49,6 +66,8 @@ impl<'t> Walker<'t> {
             is_exported: Some(self.is_exported(node)),
             is_async: Some(self.is_async(node)),
             is_static: self.is_static(node),
+            return_type: self.return_type_text_of(node),
+            extra_json: self.extract_param_type_pairs_json(node),
             ..Extra::default()
         };
         let Some(row) = self.create_node("function", &name, node, extra) else {
@@ -166,6 +185,8 @@ impl<'t> Walker<'t> {
             visibility: self.visibility_of(node),
             is_async: Some(self.is_async(node)),
             is_static: self.is_static(node),
+            return_type: self.return_type_text_of(node),
+            extra_json: self.extract_param_type_pairs_json(node),
             ..Extra::default() // methods carry no isExported (mirrors extractMethod)
         };
         let Some(row) = self.create_node("method", &name, node, extra) else {
@@ -1135,6 +1156,180 @@ impl<'t> Walker<'t> {
         if !class_name.is_empty() {
             let from = self.top_row();
             self.push_ref(from, &class_name, edge_kind_index("instantiates").unwrap(), node);
+        }
+    }
+
+    // --- returnType / params (Node field parity, P1 tsjs batch) ------------------------
+
+    /// returnTypeNode + returnTypeText (tree-sitter.ts). Only the TS-family
+    /// configs declare `returnField: 'return_type'`; javascript/jsx declare
+    /// none, so the fork resolves a null annotation node there. Raw text,
+    /// leading colon stripped, truncated at RETURN_TYPE_MAX_LENGTH UTF-16
+    /// units — not normalized (the resolver classifies the shape).
+    fn return_type_text_of(&self, node: Node) -> Option<String> {
+        if !self.variant.is_ts() {
+            return None;
+        }
+        let rt = node.child_by_field_name("return_type")?;
+        let text = self.text(rt).trim();
+        let stripped = text.strip_prefix(':').map(|s| s.trim_start()).unwrap_or(text);
+        if stripped.is_empty() {
+            return None;
+        }
+        Some(util::slice_utf16(stripped, RETURN_TYPE_MAX_LENGTH).0)
+    }
+
+    /// extractParamTypePairs (tree-sitter.ts), serialized for the extraJson
+    /// escape hatch — the NODE wire row has no params column, and decode.ts
+    /// Object.assigns the parsed object onto the Node. Shape is the FORK
+    /// Node.params form {name, type} (the DB's {n,t} serialization happens
+    /// fork-side, downstream). PARAM_TYPE_LANGUAGES = typescript/tsx/
+    /// javascript (jsx excluded); the JS grammar naturally yields no pairs
+    /// (bare-identifier params are never required/optional_parameter).
+    fn extract_param_type_pairs_json(&self, node: Node) -> Option<String> {
+        if matches!(self.variant, Variant::Jsx) {
+            return None;
+        }
+        let params = node.child_by_field_name("parameters")?;
+        let mut budget = PARAMS_JSON_MAX_CHARS;
+        let mut json = String::from("{\"params\":[");
+        let mut count = 0usize;
+        for i in 0..params.named_child_count() {
+            let Some(child) = params.named_child(i) else { continue };
+            if !matches!(child.kind(), "required_parameter" | "optional_parameter") {
+                continue;
+            }
+            let Some(pattern) = child.child_by_field_name("pattern") else { continue };
+            if pattern.kind() != "identifier" {
+                continue;
+            }
+            let Some(annotation) = child.child_by_field_name("type") else { continue };
+            let name = self.text(pattern);
+            let raw = self.text(annotation);
+            let stripped = raw.strip_prefix(':').map(|s| s.trim_start()).unwrap_or(raw);
+            let ty = util::slice_utf16(stripped, PARAM_TYPE_MAX_CHARS).0;
+            if name.is_empty() || ty.is_empty() {
+                continue;
+            }
+            // JS `.length` is UTF-16 units on both sides of the budget check.
+            let cost = util::utf16_len(name) + util::utf16_len(&ty);
+            if cost > budget {
+                break;
+            }
+            budget -= cost;
+            if count > 0 {
+                json.push(',');
+            }
+            json.push_str("{\"name\":");
+            util::push_json_string(&mut json, name);
+            json.push_str(",\"type\":");
+            util::push_json_string(&mut json, &ty);
+            json.push('}');
+            count += 1;
+        }
+        if count == 0 {
+            return None;
+        }
+        json.push_str("]}");
+        Some(json)
+    }
+
+    // --- CodePlan statement nodes (fork-only semantics, P1 tsjs batch) ------------------
+
+    /// extractCodePlanStatement (tree-sitter.ts): triple gate — syntactic
+    /// statement shape (CODEPLAN_DEPENDENCY_STATEMENT_KINDS), stack-top scope
+    /// is function/method/component, and the subtree holds a call or
+    /// instantiation (pre-scan stops at nested function scopes). On pass:
+    /// emit the stmt node (name `stmt@<1-based row>:<UTF-16 col>`,
+    /// signature = whitespace-flattened source slice at 240 UTF-16 units),
+    /// push it as the attribution scope, walk the subtree once for
+    /// dependency refs, pop. The outer body walk keeps descending and
+    /// re-emits the same calls against the host function, and nested
+    /// qualifying statements each emit their own OVERLAPPING stmt node —
+    /// the fork's multi-attribution semantics (graph.test.ts pins that the
+    /// function AND the stmt both hold the Instantiates edge).
+    pub(super) fn extract_code_plan_statement(&mut self, node: Node<'t>) {
+        // CODEPLAN_STATEMENT_LANGUAGES covers all four tsjs variants, so the
+        // fork's language gate is structurally satisfied by this walker.
+        if !is_codeplan_statement_kind(node.kind()) {
+            return;
+        }
+        // currentStackNode().kind gate — the stack Scope carries the kind the
+        // TS side re-looks-up by id (same value: ids encode kind+name+line).
+        let parent_ok = self
+            .stack
+            .last()
+            .map(|s| matches!(s.kind, "function" | "method" | "component"))
+            .unwrap_or(false);
+        if !parent_ok {
+            return;
+        }
+        if !self.has_code_plan_statement_dependency(node, true) {
+            return;
+        }
+
+        let name = format!("stmt@{}:{}", node.start_position().row + 1, self.col_of(node));
+        let (signature, _) = util::slice_utf16(&collapse_ws(self.text(node).trim()), STATEMENT_SIGNATURE_MAX);
+        let Some(row) = self.create_node(
+            "statement",
+            &name,
+            node,
+            Extra { signature: Some(signature), ..Extra::default() },
+        ) else {
+            return;
+        };
+
+        self.stack.push(Scope { row, kind: "statement", name });
+        self.extract_code_plan_statement_dependencies(node, true);
+        self.stack.pop();
+    }
+
+    /// hasCodePlanStatementDependency: does the subtree hold a call_expression
+    /// or an INSTANTIATION_KINDS node? Stops at nested function scopes; the
+    /// root is exempt, mirroring the TS `current !== node` identity check
+    /// (web-tree-sitter hands fresh wrappers for every navigation, so only
+    /// the initial same-object call sees the root). extractBareCall is
+    /// undefined for the TS/JS configs — that TS branch never fires.
+    fn has_code_plan_statement_dependency(&self, node: Node, is_root: bool) -> bool {
+        stack_guard!();
+        if !is_root && is_function_type(node.kind()) {
+            return false;
+        }
+        if node.kind() == "call_expression" || is_instantiation_kind(node.kind()) {
+            return true;
+        }
+        for i in 0..node.named_child_count() {
+            if let Some(c) = node.named_child(i) {
+                if self.has_code_plan_statement_dependency(c, false) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// extractCodePlanStatementDependencies: attribute every call /
+    /// instantiation in the statement subtree to the stmt scope (current
+    /// stack top), recursing through children WITHOUT an early return after
+    /// a hit — nested calls (`foo(bar())`) each get their own ref — and
+    /// stopping at nested function scopes (their bodies attribute to their
+    /// own nodes). Like the TS original this walk performs no fn-ref
+    /// capture, no value-reference extraction, and no variable-annotation
+    /// handling — calls and instantiations only.
+    fn extract_code_plan_statement_dependencies(&mut self, node: Node<'t>, is_root: bool) {
+        stack_guard!();
+        if !is_root && is_function_type(node.kind()) {
+            return;
+        }
+        if node.kind() == "call_expression" {
+            self.extract_call(node);
+        } else if is_instantiation_kind(node.kind()) {
+            self.extract_instantiation(node);
+        }
+        for i in 0..node.named_child_count() {
+            if let Some(c) = node.named_child(i) {
+                self.extract_code_plan_statement_dependencies(c, false);
+            }
         }
     }
 

@@ -34,14 +34,18 @@ export const NODE_KINDS = [
   'type_alias',
   'namespace',
   'parameter',
-  'statement',
   'import',
   'export',
   'route',
   'component',
-  // Appended at the tail so the wire table stays index-aligned with the
-  // vendored kernel's NODE_KINDS table (union last); never reorder (6978acc).
+  // Tail-appended so the wire table stays index-aligned with the vendored
+  // kernel's NODE_KINDS table; never reorder (6978acc). 'union' landed
+  // first; 'statement' moved here from index 18 when the kernel's tsjs
+  // walker started emitting statement rows (P1 batch) — the two tables are
+  // now index-by-index equal. Safe to move: kinds persist as TEXT and the
+  // index order is wire-only.
   'union',
+  'statement',
 ] as const;
 
 export type NodeKind = (typeof NODE_KINDS)[number];

@@ -209,9 +209,14 @@ describe('decodeExtractBuffers — synthetic buffers', () => {
   });
 
   it('honors the nodeKinds override (kernel-own table) for diverged tables', () => {
-    // The vendored kernel's table: index 18 = 'import' (fork has 'statement').
+    // Synthetic diverged kernel table: 'statement' at index 18 (the pre-P1
+    // vendored shape) instead of the fork's tail index 23. Wire rows carry
+    // the BUILDER's (fork) indexes; production decode must re-resolve them
+    // through the kernel's own table (loader.kernelWireTables), so the same
+    // bytes decode to different kinds per table.
     const kernelTable = [
       ...NODE_KINDS.slice(0, 18),
+      'statement',
       'import',
       'export',
       'route',
@@ -219,12 +224,12 @@ describe('decodeExtractBuffers — synthetic buffers', () => {
       'union',
     ];
     const buffers = buildKernelBuffers({ nodes: [{ kind: 'statement', name: 'x', id: 'n0' }] });
-    // Fork-table decode: row kind index 18 → 'statement'.
+    // Fork-table decode: row kind index 23 → 'statement'.
     expect(decodeExtractBuffers(buffers, 'f.ts', 'typescript').nodes[0].kind).toBe('statement');
-    // Kernel-table decode of the SAME bytes: index 18 → 'import' — exactly the
-    // table-selective resolution production decode uses (loader.kernelWireTables);
-    // the P1 subset gate only rejects kernel-ONLY kinds, never index shifts.
-    expect(decodeExtractBuffers(buffers, 'f.ts', 'typescript', kernelTable).nodes[0].kind).toBe('import');
+    // Kernel-table decode of the SAME bytes: index 23 → 'union' — exactly the
+    // table-selective resolution production decode uses; the P1 subset gate
+    // only rejects kernel-ONLY kinds, never index shifts.
+    expect(decodeExtractBuffers(buffers, 'f.ts', 'typescript', kernelTable).nodes[0].kind).toBe('union');
   });
 
   it('honors the edgeKinds override (kernel-own table) for edge rows and ref rows', () => {
@@ -273,8 +278,8 @@ describe('decodeExtractBuffers — real vendored kernel buffers', () => {
       expect(Buffer.isBuffer(buffers[key])).toBe(true);
     }
     // Decode with the KERNEL's own table — what production decode does via
-    // loader.kernelWireTables() under the P1 subset contract (the fork table
-    // diverges at index 18 and never indexes these rows).
+    // loader.kernelWireTables(). Since the P1 tsjs batch the kernel and fork
+    // tables are index-by-index equal ('statement' tail-aligned on both).
     const result = decodeExtractBuffers(buffers, 'real.ts', 'typescript', info.nodeKinds);
     expect(result.errors).toEqual([]);
     const byName = new Map(result.nodes.map((n) => [n.name, n]));
@@ -283,10 +288,21 @@ describe('decodeExtractBuffers — real vendored kernel buffers', () => {
     // typeParameters emission shape is parity-harness territory (wave2), not P0.
     expect(byName.get('go')?.kind).toBe('method');
     expect(byName.get('go')?.isAsync).toBe(true);
-    // NOTE (wave2 parity input): the tsjs walker leaves returnType unset on
-    // `go` (the type rides in the signature text) while the go walker fills
-    // it (`Start() error` → returnType='error' — see the P0 smoke evidence).
-    // Byte-level returnType parity is the harness's job, not this test's.
+    // P1 tsjs batch: returnType (raw annotation text, colon stripped) and
+    // params (extraJson escape hatch, fork {name,type} shape) are emitted —
+    // byte-level parity against the wasm arm is the harness's job, this is
+    // the field-presence smoke (the P0-2a gap both fields had).
+    expect(byName.get('go')?.returnType).toBe('Promise<string>');
+    expect(byName.get('go')?.params).toEqual([{ name: 'x', type: 'number' }]);
+    expect(byName.get('top')?.returnType).toBe('string');
+    expect(byName.get('top')?.params).toEqual([{ name: 'a', type: 'string' }]);
+    // Statement emission (fork-only CodePlan semantics): `return String(x);`
+    // qualifies (call dependency, function parent); `this.n++` does not.
+    const stmt = result.nodes.find((n) => n.kind === 'statement');
+    expect(stmt?.name).toBe('stmt@5:51');
+    expect(stmt?.signature).toBe('return String(x);');
+    // `return a;` in top() has no call/new dependency — not eligible.
+    expect(result.nodes.filter((n) => n.kind === 'statement').length).toBe(1);
     expect(byName.get('n')?.kind).toBe('property');
     expect(byName.get('top')?.kind).toBe('function');
     expect(result.nodes.every((n) => n.id && n.kind && n.filePath === 'real.ts')).toBe(true);
@@ -294,31 +310,22 @@ describe('decodeExtractBuffers — real vendored kernel buffers', () => {
     expect(result.unresolvedReferences.length).toBeGreaterThan(0);
   });
 
-  runIt('real kernel NODE_KINDS vs fork: superset divergence (statement) gated only by kernel-only kinds', () => {
+  runIt('real kernel NODE_KINDS vs fork: tables are index-by-index equal (P1 tail alignment)', () => {
     if (!hasPrebuild()) {
       throw new Error('CODEGRAPH_KERNEL_EXPECT=1 but no prebuild staged — run packages/chimera/script/build-kernel.sh');
     }
     const info = requirePrebuild().contractInfo();
     // EDGE_KINDS: byte-equal with the fork wire table — trivially a subset.
     expect(info.edgeKinds).toEqual([...EDGE_KINDS]);
-    // NODE_KINDS table facts — under P1 only kernel-ONLY kinds gate the load,
-    // table-order/set divergence is legal (decode resolves through the
-    // kernel's own tables): fork carries 'statement'@18, kernel has
-    // import/export/route/component @18-21 and 'union'@22 instead.
-    expect(info.nodeKinds).not.toEqual([...NODE_KINDS]);
-    expect(info.nodeKinds.includes('union')).toBe(true);
-    expect(info.nodeKinds.includes('statement')).toBe(false);
-    expect(NODE_KINDS.includes('statement')).toBe(true);
-    expect(info.nodeKinds.slice(0, 18)).toEqual([...NODE_KINDS.slice(0, 18)]);
-    // Arm-flip expectation: the old byte-equal gate rejected this binary for
-    // TABLE-ORDER inequality; the subset gate can only reject it for the
-    // kernel-only kind 'union'. Before the G4 union chain lands 'union' in
-    // the fork's NODE_KINDS that rejection stands; once landed (this
-    // checkout) the remaining divergence is fork-exclusive 'statement' —
-    // allowed — and the real prebuild naturally FLIPS to accepted. The
-    // assertions follow the fork table, so the flip is automatic either way.
+    // NODE_KINDS: the P1 tsjs batch appended 'statement' at the kernel table
+    // tail and moved the fork's 'statement' from index 18 to the tail in the
+    // same change — the subset gate now passes as FULL index-by-index
+    // equality (the historical fork-exclusive-kind divergence is gone).
+    expect(info.nodeKinds).toEqual([...NODE_KINDS]);
+    expect(info.nodeKinds.includes('statement')).toBe(true);
+    expect(info.nodeKinds[info.nodeKinds.length - 1]).toBe('statement');
     const kernelOnly = info.nodeKinds.filter((k) => !(NODE_KINDS as readonly string[]).includes(k));
-    expect(kernelOnly).toEqual(NODE_KINDS.includes('union') ? [] : ['union']);
-    expect(verifyKernelContract(info)).toBe(NODE_KINDS.includes('union'));
+    expect(kernelOnly).toEqual([]);
+    expect(verifyKernelContract(info)).toBe(true);
   });
 });

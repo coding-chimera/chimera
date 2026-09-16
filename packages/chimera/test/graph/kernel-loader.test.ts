@@ -7,9 +7,11 @@
  *
  * P1 contract: verification is a NAME-based subset check (kernel ⊆ fork).
  * Wire indexes are decoded through the kernel's OWN tables (kernelWireTables
- * → decodeExtractBuffers), so index divergence is legal; fork-exclusive kinds
- * ('statement') are legal (the kernel never emits them); kernel-only kinds are
- * the only table-based rejection. The fork tables serve ONLY the subset check.
+ * → decodeExtractBuffers), so index divergence is legal; kernel-only kinds
+ * are the only table-based rejection. Since the P1 tsjs batch the REAL
+ * vendored tables are index-by-index equal ('statement' tail-aligned on
+ * both sides); the subset rule now only guards FUTURE divergence. The fork
+ * tables serve ONLY the subset check.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from './vitest';
@@ -37,7 +39,7 @@ const matchingInfo = (): KernelContractInfo => ({
   languages: ['typescript'],
 });
 
-/** The real vendored kernel's table shape: the fork's minus 'statement' (indexes 18+ shift down). */
+/** Synthetic fork-subset table (the pre-P1 vendored shape: fork minus 'statement'). */
 const kernelLikeNodeKinds = NODE_KINDS.filter((k) => k !== 'statement');
 
 describe('verifyKernelContract (P1 name-based subset: kernel ⊆ fork)', () => {
@@ -46,8 +48,10 @@ describe('verifyKernelContract (P1 name-based subset: kernel ⊆ fork)', () => {
   });
 
   it('accepts a kernel NodeKind table that is a fork subset — fork-only kinds and index shifts are legal', () => {
-    // The P1 unlock case: the real kernel table (fork minus 'statement') was
-    // the permanent P0 rejection; under the subset rule it verifies.
+    // The historical P1 unlock case: the then-vendored kernel table (fork
+    // minus 'statement') was the permanent P0 rejection; under the subset
+    // rule any name-subset verifies. (Since the P1 tsjs batch the REAL
+    // tables are index-equal — this synthetic shape guards the rule itself.)
     expect(verifyKernelContract({ ...matchingInfo(), nodeKinds: kernelLikeNodeKinds })).toBe(true);
     // Order never matters — decode resolves indexes through the kernel's own
     // table — so even a full reorder of known kinds is accepted.
@@ -84,15 +88,15 @@ describe('verifyKernelContract (P1 name-based subset: kernel ⊆ fork)', () => {
     expect(verifyKernelContract(info)).toBe(
       info.nodeKinds.filter((k) => !(NODE_KINDS as readonly string[]).includes(k)).length === 0
     );
-    // Expect-flip note: before the G4 union chain landed 'union' in the fork's
-    // NODE_KINDS, the kernel-only kind 'union' alone rejected this binary —
-    // rejected FOR A KERNEL-ONLY KIND, not for table-order inequality as under
-    // the old byte-equal gate. With union in the fork table (this checkout),
-    // kernelOnly is empty and the real kernel is ACCEPTED: its only remaining
-    // divergence is fork-exclusive 'statement', which the subset rule allows.
+    // Expect-flip history: before the G4 union chain landed 'union' in the
+    // fork's NODE_KINDS, the kernel-only kind 'union' alone rejected this
+    // binary. Since the P1 tsjs batch the kernel also carries 'statement'
+    // at its table tail and the fork's 'statement' moved to the tail too —
+    // the two tables are now index-by-index EQUAL, so kernelOnly is empty
+    // and the real prebuild verifies unconditionally.
     const kernelOnly = info.nodeKinds.filter((k) => !(NODE_KINDS as readonly string[]).includes(k));
-    expect(kernelOnly).toEqual(NODE_KINDS.includes('union') ? [] : ['union']);
-    expect(verifyKernelContract(info)).toBe(NODE_KINDS.includes('union'));
+    expect(kernelOnly).toEqual([]);
+    expect(verifyKernelContract(info)).toBe(true);
   });
 });
 
@@ -121,26 +125,24 @@ describe('verified wire tables drive production decode (fake subset kernel)', ()
     expect(kernelWireTables().edgeKinds).toEqual([...EDGE_KINDS]);
     const fake = makeFakeSubsetKernel();
     setKernelForTests(fake.mod);
-    expect(kernelWireTables().nodeKinds).toEqual(kernelLikeNodeKinds);
-    expect(kernelWireTables().edgeKinds).toEqual([...EDGE_KINDS].reverse());
-    setKernelForTests(null);
-    expect(kernelWireTables().nodeKinds).toEqual([...NODE_KINDS]);
+    expect(kernelWireTables().nodeKinds).toEqual([...NODE_KINDS].reverse());
   });
 
   it('tryKernelExtract decodes rows through the kernel tables, not fork indexes', () => {
     // Raw bytes are mis-aligned ON PURPOSE: the synthetic builder resolves kind
-    // names through the FORK tables, so the node row carries fork index 18
-    // ('statement') and the edge/ref rows fork indexes 0 ('contains') /
-    // 6 ('references'). A production decode must re-resolve those through the
-    // kernel's own tables: 18 → 'import' (kernel dropped 'statement'), and the
-    // reversed edge table maps 0 → 'decorates', 6 → 'implements'.
+    // names through the FORK tables, so the node row carries fork index 23
+    // ('statement', the tail) and the edge/ref rows fork indexes 0 ('contains')
+    // / 6 ('references'). A production decode must re-resolve those through
+    // the kernel's own tables: the fake's REVERSED node table maps 23 →
+    // 'file', and the reversed edge table maps 0 → 'decorates', 6 →
+    // 'implements'.
     const fake = makeFakeSubsetKernel();
     expect(verifyKernelContract(fake.mod.contractInfo())).toBe(true); // the P1 pass case
     setKernelForTests(fake.mod);
     process.env.CODEGRAPH_KERNEL_LANGS = 'typescript';
     const result = tryKernelExtract('x.ts', 'source', 'typescript');
     expect(result).not.toBeNull();
-    expect(result!.nodes[0].kind).toBe('import');
+    expect(result!.nodes[0].kind).toBe('file');
     expect(result!.edges[0].kind).toBe('decorates');
     expect(result!.unresolvedReferences[0].referenceKind).toBe('implements');
     // Same bytes decoded with the fork defaults map differently — proves the
@@ -150,10 +152,10 @@ describe('verified wire tables drive production decode (fake subset kernel)', ()
 });
 
 /**
- * Fake kernel whose contract is the REAL vendored shape: nodeKinds = fork
- * minus 'statement' (index shift at 18), edgeKinds = a full reorder — both
- * name-subsets of the fork. extractFile returns synthetic buffers built with
- * FORK indexes so the decode path can be caught mis-resolving.
+ * Fake kernel whose contract is a name-subset of the fork with a FULLY
+ * REVERSED kind order on both tables — decode must follow the fake's own
+ * tables, not fork indexes. extractFile returns synthetic buffers built
+ * with FORK indexes so the decode path can be caught mis-resolving.
  */
 function makeFakeSubsetKernel(): { mod: KernelModule; buffers: ReturnType<typeof buildKernelBuffers> } {
   const buffers = buildKernelBuffers({
@@ -166,7 +168,7 @@ function makeFakeSubsetKernel(): { mod: KernelModule; buffers: ReturnType<typeof
     contractInfo: () => ({
       abiVersion: KERNEL_ABI_VERSION,
       kernelVersion: 'fake-subset-kernel',
-      nodeKinds: kernelLikeNodeKinds,
+      nodeKinds: [...NODE_KINDS].reverse(),
       edgeKinds: [...EDGE_KINDS].reverse(),
       languages: ['typescript'],
     }),

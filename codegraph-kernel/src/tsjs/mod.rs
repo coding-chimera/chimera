@@ -71,6 +71,40 @@ fn is_variable_type(kind: &str) -> bool {
     matches!(kind, "lexical_declaration" | "variable_declaration")
 }
 
+/// CODEPLAN_DEPENDENCY_STATEMENT_KINDS (tree-sitter.ts) — the syntactic
+/// statement shapes eligible for CodePlan statement-node emission. All four
+/// tsjs languages are in CODEPLAN_STATEMENT_LANGUAGES, so no language gate
+/// is needed here.
+fn is_codeplan_statement_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "expression_statement"
+            | "return_statement"
+            | "lexical_declaration"
+            | "variable_declaration"
+            | "if_statement"
+            | "for_statement"
+            | "for_in_statement"
+            | "for_of_statement"
+            | "while_statement"
+            | "do_statement"
+            | "switch_statement"
+            | "try_statement"
+            | "throw_statement"
+            | "with_statement"
+            | "labeled_statement"
+    )
+}
+
+/// INSTANTIATION_KINDS (tree-sitter.ts) — only new_expression occurs in the
+/// TS/JS grammars; membership mirrors the TS set exactly.
+fn is_instantiation_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "new_expression" | "object_creation_expression" | "instance_creation_expression"
+    )
+}
+
 /// LITERAL_RECEIVER_TYPES (tree-sitter.ts) — full set; only a handful occur in
 /// TS/JS grammars but membership is what the TS code tests.
 fn is_literal_receiver(kind: &str) -> bool {
@@ -131,6 +165,11 @@ struct Extra {
     is_async: Option<bool>,
     is_static: Option<bool>,
     qualified_name: Option<String>,
+    /// returnType wire field (returnTypeText, tree-sitter.ts).
+    return_type: Option<String>,
+    /// extraJson escape hatch — decode.ts Object.assigns the parsed object
+    /// onto the Node (params ride here: the wire row has no params column).
+    extra_json: Option<String>,
 }
 
 struct ValueScope<'t> {
@@ -372,6 +411,8 @@ impl<'t> Walker<'t> {
         let id_ref = self.arena.put(&id);
         let doc_ref = opt_str(&mut self.arena, extra.docstring.as_deref());
         let sig_ref = opt_str(&mut self.arena, extra.signature.as_deref());
+        let ret_ref = opt_str(&mut self.arena, extra.return_type.as_deref());
+        let extra_json_ref = opt_str(&mut self.arena, extra.extra_json.as_deref());
         let row = self.tables.push_node(&NodeRow {
             kind: node_kind_index(kind).unwrap(),
             visibility: extra.visibility.unwrap_or(0),
@@ -387,8 +428,8 @@ impl<'t> Walker<'t> {
             signature: sig_ref,
             decorators: NONE_STR,
             type_parameters: NONE_STR,
-            return_type: NONE_STR,
-            extra_json: NONE_STR,
+            return_type: ret_ref,
+            extra_json: extra_json_ref,
         });
 
         // Containment edge from the current scope.
@@ -691,6 +732,15 @@ impl<'t> Walker<'t> {
         stack_guard!();
         let kind = node.kind();
         self.maybe_capture_fn_refs(node);
+
+        // CodePlan statement emission (fork-only semantics) runs FIRST for
+        // every visited node, exactly like visitForCallsAndStructure's
+        // leading extractCodePlanStatement call: the stmt node and its
+        // multi-attributed dependency refs land in the arrays before the
+        // normal walk re-emits the same calls against the enclosing
+        // function. Nested qualifying statements emit their own overlapping
+        // stmt nodes when the recursion below reaches them.
+        self.extract_code_plan_statement(node);
 
         if kind == "call_expression" {
             self.extract_call(node);

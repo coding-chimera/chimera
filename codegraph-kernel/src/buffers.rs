@@ -77,7 +77,11 @@ pub const EDGE_ROW_SIZE: usize = 44;
 pub const REF_ROW_SIZE: usize = 40;
 
 /// Mirror of NODE_KINDS in src/types.ts — order is the wire contract.
-pub const NODE_KINDS: [&str; 23] = [
+/// Both tables are index-by-index equal since the P1 tsjs batch: 'union'
+/// landed first (6978acc), then 'statement' moved to the tail on the fork
+/// side in the same batch that taught the tsjs walker to emit statement
+/// rows. Append, never reorder.
+pub const NODE_KINDS: [&str; 24] = [
     "file",
     "module",
     "class",
@@ -101,6 +105,7 @@ pub const NODE_KINDS: [&str; 23] = [
     "route",
     "component",
     "union",
+    "statement",
 ];
 
 /// Mirror of EDGE_KINDS in src/types.ts — order is the wire contract.
