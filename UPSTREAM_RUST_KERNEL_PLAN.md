@@ -69,6 +69,14 @@
 4. 验收：双路 diff 清零；resolution.test 130 基线全绿（receiver 推断吃 kernel 产出的 params/returnType 无回退）；cbench 17 任务 G 臂复跑 ≥12/12 基线；主仓重索引收益/回归实测
 5. c/cpp 前置战役启动（#1159/#1207 blanking 移植，triage P2 转正）
 
+### P1 前置实测修正（wave2 parity 基线，2026-09-16，harness=script/kernel-parity.ts，基线 JSON=/Volumes/workspace/cbench/kernel-parity/baseline-20260916.json）
+- 全语言基线：575 文件 · 43 字节一致 · 489 diff · 43 defer（全部真 defer，0 kernel error）。**lua 22/22 字节级全一致**；kotlin 2/6；ts 仅 2/199（statement 级联主导）
+- **grammar 钉版漂移是新发现的硬前置**：14/19 语言 native↔wasm grammar 修订不一致（js/jsx/c/rust abi 15↔14、csharp/swift 15↔13、kind/field 表内容差）——即 G4 转型批（fork wasm 侧重钉到 kernel 钉版修订），否则 parity diff 无法二分“语法版本噪声 vs 提取逻辑差异”。已对齐的 5 语言（kotlin/lua/luau/scala/dart）恰为字节一致/接近集——**首批路由波改为这 5 语言**（grammar-parity 测试已固化为门禁：对齐集严断言，漂移集显式 skip+名单在册，对齐一批勾销一批）
+- **params 前提修正**：wasm 臂产 params、kernel 全缺（1432 处 drift）——extraJson 补丁硬前置地位实锤；**returnType 缺口比预估宽**：tsjs 666 处外，c(112)/python(139)/csharp(29)/go(4) 也缺，按语言逐项补
+- **statement 级联量化**（tsjs 最大项）：wasm 侧 14673 个 stmt 节点 1:1 级联出 contains 边缺失(15628)+ref 重挂（calls missing 28802/from-drift 16041 大头是 wasm 挂 statement: 而 kernel 挂 function:）——Rust statement 发射批（阶段 a）落地后应归零，是 harness 的最大验证点
+- **ref:order-mismatch 128 文件**（ts75/tsx35/js18）列入 P1 对账显式项：同一 ref 行两臂相对次序反转，first-match-by-name 消费方风险；node 级 order-mismatch=0（flush 序本身一致）
+- 语料缺口：jsx/java/scala/dart/swift/ruby/r 无仓内真实样本（采纳前需补语料，上游 fixture 集候选）；edge metadata(valueRef) 形状 0 漂移（好消息）
+
 ### P2 切默认（+一个发布周期观察）
 - kernel 默认 on（全路由语言），wasm 保留回退（erroring 文件 defer/深嵌套栈守卫/无 prebuild 平台/CODEGRAPH_KERNEL=0）
 - postinstall/发布矩阵验证 kernel 加载；`--no-kernel` 变体是否需要 → 拍板点
