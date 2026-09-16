@@ -60,33 +60,6 @@ const GRAMMAR_LANGUAGES: Language[] = [
   'dart',
 ]
 
-/**
- * Languages whose native (kernel-pinned) and wasm (tree-sitter-wasms 0.1.11 +
- * vendored) grammars are known to be built from DIFFERENT revisions — measured
- * 2026-09-16 via this gate plus the parity harness baseline: abi/node-kind/
- * field-table drift (e.g. js/jsx/c/rust abi 15 vs 14, csharp/swift 15 vs 13).
- * Until the grammar-alignment batch re-pins the fork wasm side
- * (UPSTREAM_RUST_KERNEL_PLAN P1), asserting equality here would be a standing
- * red suite, so these skip with the drift on the record. Shrink this list as
- * languages align; the complement is asserted strictly.
- */
-const KNOWN_GRAMMAR_DRIFT: ReadonlySet<Language> = new Set([
-  'typescript',
-  'tsx',
-  'javascript',
-  'jsx',
-  'java',
-  'python',
-  'go',
-  'c',
-  'cpp',
-  'rust',
-  'csharp',
-  'ruby',
-  'php',
-  'swift',
-])
-
 if (!kernelBuilt && expectKernel) {
   it('CODEGRAPH_KERNEL_EXPECT=1 requires a staged kernel prebuild', () => {
     throw new Error(
@@ -102,7 +75,7 @@ describe.skipIf(!kernelBuilt)('kernel↔wasm grammar parity', () => {
     await loadGrammarsForLanguages(GRAMMAR_LANGUAGES)
   })
 
-  it.each(GRAMMAR_LANGUAGES.filter((language) => !KNOWN_GRAMMAR_DRIFT.has(language)))('%s: node-kind and field tables are identical', (language) => {
+  it.each(GRAMMAR_LANGUAGES)('%s: node-kind and field tables are identical', (language) => {
     const kernel = getKernel()
     expect(kernel).not.toBeNull()
     const native = kernelGrammarInfo(language)
@@ -123,15 +96,5 @@ describe.skipIf(!kernelBuilt)('kernel↔wasm grammar parity', () => {
     const wasmFields: string[] = []
     for (let i = 1; i <= wasmLang!.fieldCount; i++) wasmFields.push(wasmLang!.fieldNameForId(i) ?? '')
     expect(native!.fieldNames, 'field-name table (id by id)').toEqual(wasmFields)
-  })
-
-  it.each(GRAMMAR_LANGUAGES.filter((language) => KNOWN_GRAMMAR_DRIFT.has(language)))('%s: known grammar-revision drift — skipped until the alignment batch', (language) => {
-    // Intentionally unasserted while the fork wasm grammar revision differs
-    // from the kernel's pinned revision — see KNOWN_GRAMMAR_DRIFT.
-    expect(KNOWN_GRAMMAR_DRIFT.has(language)).toBe(true)
-  })
-
-  it('drift list is a strict subset of the grammar languages', () => {
-    for (const language of KNOWN_GRAMMAR_DRIFT) expect(GRAMMAR_LANGUAGES).toContain(language)
   })
 })

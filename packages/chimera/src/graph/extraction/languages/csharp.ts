@@ -19,7 +19,10 @@ export const csharpExtractor: LanguageExtractor = {
   nameField: 'name',
   bodyField: 'body',
   paramsField: 'parameters',
-  returnField: 'type',
+  // tree-sitter-c-sharp 0.23.x renamed method_declaration's return-type field
+  // `type` → `returns` (property/field types stay under `type` and are read
+  // directly by the property/field paths, not through returnField).
+  returnField: 'returns',
   getVisibility: (node) => {
     for (let i = 0; i < node.childCount; i++) {
       const child = node.child(i);
