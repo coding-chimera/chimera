@@ -54,7 +54,13 @@ export const EXTRACTION_SEMANTICS_METADATA_KEY = 'extraction_semantics_version';
 // v2: wasm grammar alignment batch — 14 languages re-vendored to the
 // kernel-pinned grammar revisions (src/graph/extraction/wasm/MANIFEST.md);
 // node-kind table changes alter stored extraction output.
-export const EXTRACTION_SEMANTICS_VERSION = 2;
+// v3: kernel first-wave routing — lua/luau move to the Rust kernel arm.
+//     Byte-parity gate passed except acceptable non-byte diffs (kernel-side
+//     docstring comment-marker normalization "-- x" -> "x" and lua's 1:1
+//     calls-ref rename "(handler)" -> "handler"), which change stored field
+//     values; see DEFAULT_ROUTED in src/graph/extraction/kernel/index.ts
+//     for the decision rule (byte-identical routing = no bump).
+export const EXTRACTION_SEMANTICS_VERSION = 3;
 
 /** Decoded shape of the stamp row. */
 export interface ExtractionSemanticsStamp {

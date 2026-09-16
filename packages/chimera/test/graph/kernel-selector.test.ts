@@ -1,16 +1,19 @@
 /**
- * Kernel selector gating tests (P0-2a acceptance):
- * - DEFAULT_ROUTED is EMPTY ⇒ with no CODEGRAPH_KERNEL_LANGS env, extractFromSource
- *   never consults the kernel and its output is identical to the pre-kernel wasm
- *   behavior (the byte-equivalence iron rule; the full 345-case
- *   extraction.test.ts suite is the repository-wide proof).
+ * Kernel selector gating tests (P0-2a acceptance, updated for the P1 first
+ * wave — DEFAULT_ROUTED = lua+luau):
+ * - Non-routed languages (ts/py/go/...) with no CODEGRAPH_KERNEL_LANGS env:
+ *   extractFromSource never consults the kernel and its output is identical
+ *   to the pre-kernel wasm behavior (the byte-equivalence iron rule; the
+ *   full 345-case extraction.test.ts suite is the repository-wide proof —
+ *   it pins CODEGRAPH_KERNEL=0 to stay on the wasm arm).
+ * - Default-routed languages (lua/luau) take the kernel arm with NO env,
+ *   and the CODEGRAPH_KERNEL=0 kill switch still returns them to wasm.
  * - CODEGRAPH_KERNEL_LANGS opts a language in ⇒ TS files take the kernel arm
  *   and the decoded ExtractionResult flows through extractFromSource.
  * - `defer:` signals fall back to the wasm arm (error recovery canonical) and
  *   the one-slot memo short-circuits repeat attempts.
  * - A framework extract() hook hit skips the kernel arm.
  * - CODEGRAPH_KERNEL=0 kill switch wins over routing env.
- *
  * The kernel arm is exercised with an INJECTED fake module (setKernelForTests):
  * the real vendored binary is contract-rejected at P0 (NODE_KINDS divergence —
  * see kernel-loader.test.ts), which is precisely the state these gates must
@@ -33,6 +36,7 @@ import { buildKernelBuffers } from './kernel-testutil';
 
 const TS_SOURCE = `export class Svc {\n  run(x: number): string { return String(x); }\n}\n`;
 const PY_SOURCE = `def top(a):\n    return a\n`;
+const LUA_SOURCE = `local core = {}\nfunction core.run(x)\n  return tostring(x)\nend\nreturn core\n`;
 
 /** Deterministic projection for byte-equivalence assertions (timestamps out). */
 function normalize(result: ExtractionResult): unknown {
@@ -65,7 +69,7 @@ function makeFakeKernel(opts?: { defer?: boolean }): { mod: KernelModule; calls:
         kernelVersion: 'fake-test-kernel',
         nodeKinds: [...NODE_KINDS],
         edgeKinds: [...EDGE_KINDS],
-        languages: ['typescript', 'python', 'go'],
+        languages: ['typescript', 'python', 'go', 'lua', 'luau'],
       };
     },
     grammarInfo() {
@@ -79,6 +83,7 @@ describe('extractFromSource kernel selector gating', () => {
   const savedEnv: Record<string, string | undefined> = {};
   let wasmBaselineTs: ExtractionResult;
   let wasmBaselinePy: ExtractionResult;
+  let wasmBaselineLua: ExtractionResult;
 
   beforeAll(async () => {
     await initGrammars();
@@ -91,6 +96,7 @@ describe('extractFromSource kernel selector gating', () => {
     resetKernelForTests();
     wasmBaselineTs = extractFromSource('svc.ts', TS_SOURCE, 'typescript');
     wasmBaselinePy = extractFromSource('top.py', PY_SOURCE, 'python');
+    wasmBaselineLua = extractFromSource('mod.lua', LUA_SOURCE, 'lua');
   });
 
   beforeEach(() => {
@@ -109,7 +115,7 @@ describe('extractFromSource kernel selector gating', () => {
     }
   });
 
-  it('P0 iron rule: DEFAULT_ROUTED empty + no env ⇒ kernel never consulted, wasm output unchanged', () => {
+  it('iron rule: non-routed language (typescript) + no env ⇒ kernel never consulted, wasm output unchanged', () => {
     const { mod, calls } = makeFakeKernel();
     setKernelForTests(mod);
     expect(kernelRoutes('typescript')).toBe(false);
@@ -119,6 +125,27 @@ describe('extractFromSource kernel selector gating', () => {
     // sanity: the wasm baseline is the real extractor output
     expect(result.nodes.some((n) => n.kind === 'class' && n.name === 'Svc')).toBe(true);
     expect(result.nodes.some((n) => n.name === 'kernelMarker')).toBe(false);
+  });
+
+  it('P1 first wave: DEFAULT_ROUTED lua/luau take the kernel arm with NO env', () => {
+    const { mod, calls } = makeFakeKernel();
+    setKernelForTests(mod);
+    expect(kernelRoutes('lua')).toBe(true);
+    expect(kernelRoutes('luau')).toBe(true);
+    const result = extractFromSource('mod.lua', LUA_SOURCE, 'lua');
+    expect(calls).toEqual([['mod.lua', LUA_SOURCE, 'lua']]);
+    expect(result.nodes.some((n) => n.name === 'kernelMarker')).toBe(true);
+    // the wasm baseline is still the real extractor output (no marker)
+    expect(wasmBaselineLua.nodes.some((n) => n.name === 'run' && n.kind !== 'file')).toBe(true);
+  });
+
+  it('kill switch CODEGRAPH_KERNEL=0 returns default-routed lua to the wasm arm', () => {
+    const { mod, calls } = makeFakeKernel();
+    setKernelForTests(mod);
+    process.env.CODEGRAPH_KERNEL = '0';
+    const result = extractFromSource('mod.lua', LUA_SOURCE, 'lua');
+    expect(calls.length).toBe(0);
+    expect(normalize(result)).toEqual(normalize(wasmBaselineLua));
   });
 
   it('CODEGRAPH_KERNEL_LANGS=typescript ⇒ TS files take the kernel arm and decode', () => {
