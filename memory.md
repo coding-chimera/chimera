@@ -12,6 +12,16 @@ Guidelines:
 
 ## Notes
 
+### 图召回+防御五路批次已推送（2026-09-15）
+
+已推 origin/main（a84c65722..7b2969f01 五笔）：接口成员建节点、name-matcher await/type_alias/barrel、WAL valve+parse-pool 卡死防御、LSP typeDefinition+全操作 10s 超时、ProjectionMemo revision 键修复（后者根因：memo 仅按 node id 键，trackToolMutation before/after 跨 sync 复用陈旧冻结对象 → 语义 diff 自比恒空，自 9e1766eb6 起 MMS/MF/MCC 事实全部静默退化为 body；test/tool/chimera.test.ts signature-delta 用例即其回归锚）。
+
+- 主仓重索引实测：114s 无卡死（WAL 防御生效实证，此前 763/2771 处挂死 8min+）；节点 117312、边 222764→240404（+7.9%）、references 29012→34150（+17.7%）、unresolved failed 207271→195608（−11663）、getNodesInFile 类失败 109→0
+- 已知环境失败基线更新：**15**（MCP daemon×7/roots×3/initialize×2/Node26 refusal×2/node:sqlite×1）——pr19 pragma 已修（期望对齐 64MB/256MB 默认）
+- 集成四目录（graph+chimera+tool+lsp）终态：1957 pass/15 fail，~7min
+- 残量缺口（缓议）：构造器参数属性/循环变量接收者证据（db.* ~422）、同名类消歧 E2/E5（~131，假边风险）、union 类型层（1.5%）
+- LSP 工具已转正（用户拍板，d5921900c 已推）：registry.ts 无条件注册 tool.lsp，core 旗标表条目保留减上游漂移；验证 typecheck+registry/parameters/lsp 104/104+prompt 79/79。注意：当前在跑的 G 臂 n=3（results-recall-post）用的是转正前 17:58 构建的二进制，测的是纯召回批次；LSP 转正+残量批次的效果需下次重建后的 bench 轮验证
+
 ### P0 plan: aijws/grok-4.5 thinking intensity (DONE)
 
 Status: implemented and verified 2026-07-14.
