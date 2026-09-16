@@ -8,9 +8,9 @@
  * wasm path forever if need be. Rollback per language = removing it from
  * DEFAULT_ROUTED (or CODEGRAPH_KERNEL=0 for all).
  *
- * Fork routing status (first wave, 2026-09-16): DEFAULT_ROUTED = lua+luau —
- * the grammar-aligned subset whose parity gate passed (see DEFAULT_ROUTED
- * below for the per-language evidence and deferrals). The loader's
+ * Fork routing status (2026-09-16): DEFAULT_ROUTED = lua+luau (wave 1) +
+ * typescript/tsx/javascript/jsx (wave 2) — the gate-passed languages (see
+ * DEFAULT_ROUTED below for the per-language evidence and deferrals). The loader's
  * contract gate is a NAME-based subset check (kernel ⊆ fork, see
  * loader.verifyKernelContract): the vendored kernel loads once the fork
  * table covers the kernel's kinds (the G4 'union' chain; fork-only
@@ -88,12 +88,38 @@ export { decodeExtractBuffers } from './decode';
  *   presence). Violates the no-loss gate; reconciliation is Rust-batch work.
  *
  * Semantic-version decision rule (operational discipline, per first-wave
- * batch): opening a language whose parity is byte-identical does NOT bump
+ * batch; canonical wording in src/graph/db/extraction-version.ts): opening a
+ * language whose parity is byte-identical does NOT bump
  * EXTRACTION_SEMANTICS_VERSION — routing swaps the implementation while the
  * stored output is unchanged; opening a language with acceptable non-byte
  * diffs (field-semantics equivalent, no node/edge/ref loss) DOES bump it.
- * This wave is the latter case (docstring normalization changes stored
- * field values), hence EXTRACTION_SEMANTICS_VERSION 2 -> 3.
+ * Wave 1 (lua/luau) was the latter case (docstring normalization changes
+ * stored field values), hence EXTRACTION_SEMANTICS_VERSION 2 -> 3.
+ *
+ * Second wave (2026-09-16): typescript + tsx + javascript + jsx. Parity
+ * evidence (script/kernel-parity.ts dual-arm harness, report
+ * /Volumes/workspace/cbench/kernel-parity/tsjs-p2-20260916.json): 379/380
+ * corpus files BYTE-IDENTICAL between the kernel arm and the fork wasm arm;
+ * the single non-identical file is a legitimate parse-error case that the
+ * kernel defers to wasm by design (the `defer:` safety valve below) — i.e.
+ * it never stores kernel output at all. Byte-identical routing means the
+ * stored graph output is unchanged, so per the decision rule above this
+ * is forced on upgrade and none is needed.
+ *
+ * Wave-2 production E2E footnote (main-repo full reindex, 2,858 files,
+ * kernel arm vs CODEGRAPH_KERNEL=0 arm on the identical corpus): nodes
+ * identical, edges -10 (-0.004%), references-kind -10 of 35,164 (-0.03%).
+ * Fully attributed by the dual-arm harness on the 6 divergent files: ALL
+ * missing refs are namespace-member type references (`ServerConnection.Any`
+ * pattern, packages/app solidjs code — a corpus the tsjs parity gate did not
+ * cover): the wasm arm tracks the qualified member name, the kernel's
+ * value-ref retrack currently skips it (and the wasm arm also double-emits
+ * one of them). Magnitude is two orders below the 0.5% stop-and-attribute
+ * threshold and this batch is explicitly no-bump; the kernel-side
+ * namespace-member type-ref tracking is recorded as a Rust follow-up.
+ *
+ * kotlin/scala/dart remain DEFERRED (see wave-1 note above); other
+ * languages stay on the wasm arm until their own parity gate passes.
  *
  * Per-file safety valve regardless of routing: a file whose parse tree
  * contains ERRORS defers to the wasm extractor (error recovery differs
@@ -101,7 +127,20 @@ export { decodeExtractBuffers } from './decode';
  * the kernel's deep-nesting stack guard (upstream #1581). Both surface as a
  * thrown `defer:` error from the native side.
  */
-const DEFAULT_ROUTED: ReadonlySet<Language> = new Set<Language>(['lua', 'luau']);
+const DEFAULT_ROUTED: ReadonlySet<Language> = new Set<Language>([
+  // wave 1 (2026-09-16): grammar-aligned lua family, acceptable non-byte
+  // diffs (docstring normalization) — semantics v3 bump rode along.
+  'lua',
+  'luau',
+  // wave 2 (2026-09-16): tsjs family, 379/380 byte-identical (the single
+  // defer is a parse-error file that routes to wasm by design) — NO
+  // EXTRACTION_SEMANTICS_VERSION bump; see the decision rule above and
+  // /Volumes/workspace/cbench/kernel-parity/tsjs-p2-20260916.json.
+  'typescript',
+  'tsx',
+  'javascript',
+  'jsx',
+]);
 
 /**
  * Per-language TS post-pass over the decoded result — the escape hatch for
