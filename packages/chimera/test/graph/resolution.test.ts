@@ -716,6 +716,157 @@ describe('Resolution Module', () => {
       expect(matchMethodCall(declRef('app.ts', 'q.push', 5), context)).toBeNull();
     });
 
+    // Nullable-union peel fixtures. null/undefined declare no methods, so a
+    // sole non-nullish annotation member IS the receiver's class — the two
+    // shapes that motivated this batch (pool evidence: 10 failed
+    // `initializedDb.close` refs on `let initializedDb: DatabaseConnection |
+    // undefined`, 2 failed `find.focus` refs on `FileSearchHandle | null`).
+    it('binds a nullable-union annotated receiver (const d: Queue | undefined = make())', () => {
+      // Decoy Stack.push keeps the unique-candidate and word-overlap
+      // branches out — only the peeled annotation can bind.
+      const context = declContext({
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const d: Queue | undefined = make()' }),
+          declNode('class:app.ts:Queue', 'class', 'Queue', 'app.ts', 30),
+          declNode('method:app.ts:push:31', 'method', 'push', 'app.ts', 31, { qualifiedName: 'Queue.push' }),
+          declNode('class:app.ts:Stack', 'class', 'Stack', 'app.ts', 40),
+          declNode('method:app.ts:push:41', 'method', 'push', 'app.ts', 41, { qualifiedName: 'Stack.push' }),
+        ],
+      });
+      const result = matchMethodCall(declRef('app.ts', 'd.push', 5), context);
+      expect(result?.targetNodeId).toBe('method:app.ts:push:31');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    it('binds a nullable-union receiver whose class sits behind a directory-barrel import', () => {
+      // Mirrors the real graph/index.ts site: `./db` reaches db/index.ts
+      // only through the barrel arm of the import veto.
+      const context = declContext({
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'let initializedDb: DatabaseConnection | undefined = undefined' }),
+        ],
+        'db/index.ts': [
+          declNode('class:db/index.ts:DatabaseConnection', 'class', 'DatabaseConnection', 'db/index.ts', 1),
+          declNode('method:db/index.ts:close:10', 'method', 'close', 'db/index.ts', 10, { qualifiedName: 'DatabaseConnection::close' }),
+        ],
+      }, [
+        { localName: 'DatabaseConnection', exportedName: 'DatabaseConnection', source: './db', isDefault: false, isNamespace: false },
+      ]);
+      const result = matchMethodCall(declRef('app.ts', 'initializedDb.close', 5), context);
+      expect(result?.targetNodeId).toBe('method:db/index.ts:close:10');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    it('binds a type-alias receiver behind a `| null` annotation (const d: Proc | null = handler())', () => {
+      // The FileSearchHandle shape: contract members (`Proc::run`) bind
+      // exactly like class methods after the peel.
+      const context = declContext({
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const d: Proc | null = handler()' }),
+          declNode('alias:app.ts:Proc', 'type_alias', 'Proc', 'app.ts', 20),
+          declNode('method:app.ts:run:21', 'method', 'run', 'app.ts', 21, { qualifiedName: 'Proc::run' }),
+          declNode('class:app.ts:Runner', 'class', 'Runner', 'app.ts', 30),
+          declNode('method:app.ts:run:31', 'method', 'run', 'app.ts', 31, { qualifiedName: 'Runner::run' }),
+        ],
+      });
+      const result = matchMethodCall(declRef('app.ts', 'd.run', 5), context);
+      expect(result?.targetNodeId).toBe('method:app.ts:run:21');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    it('binds a union-typed parameter receiver (function drain(q: Queue | undefined))', () => {
+      // Parameters hold what callers pass; `Queue | undefined` still pins
+      // the value type, so Strategy 0.5b peels and binds like 0.5.
+      const context = declContext({
+        'app.ts': [
+          paramFnNode('func:app.ts:drain:3', 'drain', 'app.ts', 3, 9, [{ name: 'q', type: 'Queue | undefined' }]),
+          declNode('class:app.ts:Queue', 'class', 'Queue', 'app.ts', 20),
+          declNode('method:app.ts:push:21', 'method', 'push', 'app.ts', 21, { qualifiedName: 'Queue.push' }),
+          declNode('class:app.ts:Stack', 'class', 'Stack', 'app.ts', 30),
+          declNode('method:app.ts:push:31', 'method', 'push', 'app.ts', 31, { qualifiedName: 'Stack.push' }),
+        ],
+      });
+      const result = matchMethodCall(declRef('app.ts', 'q.push', 5), context);
+      expect(result?.targetNodeId).toBe('method:app.ts:push:21');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    it('does not peel a two-class union (const x: Queue | Stack binds nothing)', () => {
+      const context = declContext({
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const x: Queue | Stack = pick()' }),
+          declNode('class:app.ts:Queue', 'class', 'Queue', 'app.ts', 30),
+          declNode('method:app.ts:push:31', 'method', 'push', 'app.ts', 31, { qualifiedName: 'Queue.push' }),
+          declNode('class:app.ts:Stack', 'class', 'Stack', 'app.ts', 40),
+          declNode('method:app.ts:push:41', 'method', 'push', 'app.ts', 41, { qualifiedName: 'Stack.push' }),
+        ],
+      });
+      expect(matchMethodCall(declRef('app.ts', 'x.push', 5), context)).toBeNull();
+    });
+
+    it('falls through an unpeelable union without vetoing later strategies', () => {
+      // Red line: a multi-class union stays non-authoritative — with Queue
+      // declaring no push, the single Stack.push candidate must still get
+      // its Strategy 3 chance.
+      const context = declContext({
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const x: Queue | Stack = pick()' }),
+          declNode('class:app.ts:Queue', 'class', 'Queue', 'app.ts', 30),
+          declNode('class:app.ts:Stack', 'class', 'Stack', 'app.ts', 40),
+          declNode('method:app.ts:push:41', 'method', 'push', 'app.ts', 41, { qualifiedName: 'Stack.push' }),
+        ],
+      });
+      const result = matchMethodCall(declRef('app.ts', 'x.push', 5), context);
+      expect(result?.targetNodeId).toBe('method:app.ts:push:41');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    it('does not peel a pipe inside generic arguments (const x: Handler<Queue | Stack>)', () => {
+      // The naive split yields the non-simple members `Handler<Queue` and
+      // `Stack>` — two survivors bail, no class is inferred.
+      const context = declContext({
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const x: Handler<Queue | Stack> = pick()' }),
+          declNode('class:app.ts:Queue', 'class', 'Queue', 'app.ts', 30),
+          declNode('method:app.ts:push:31', 'method', 'push', 'app.ts', 31, { qualifiedName: 'Queue.push' }),
+          declNode('class:app.ts:Stack', 'class', 'Stack', 'app.ts', 40),
+          declNode('method:app.ts:push:41', 'method', 'push', 'app.ts', 41, { qualifiedName: 'Stack.push' }),
+        ],
+      });
+      expect(matchMethodCall(declRef('app.ts', 'x.push', 5), context)).toBeNull();
+    });
+
+    it('does not peel a structured survivor (const x: Array<Queue> | null)', () => {
+      // One survivor, but `Array<Queue>` is not a simple name — the same
+      // gate that keeps bare `Array<Queue>` opaque decides for the union.
+      const context = declContext({
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const x: Array<Queue> | null = arr()' }),
+          declNode('class:app.ts:Queue', 'class', 'Queue', 'app.ts', 30),
+          declNode('method:app.ts:push:31', 'method', 'push', 'app.ts', 31, { qualifiedName: 'Queue.push' }),
+          declNode('class:app.ts:Stack', 'class', 'Stack', 'app.ts', 40),
+          declNode('method:app.ts:push:41', 'method', 'push', 'app.ts', 41, { qualifiedName: 'Stack.push' }),
+        ],
+      });
+      expect(matchMethodCall(declRef('app.ts', 'x.push', 5), context)).toBeNull();
+    });
+
+    it('does not peel a non-awaited Promise in a union (const q: Promise<Queue> | null = make())', () => {
+      // The await rule composes: q holds the Promise, so `Queue.push` must
+      // not bind off this evidence; the union survivor falls back to the
+      // same await-gated opacity as the bare Promise type.
+      const context = declContext({
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const q: Promise<Queue> | null = make()' }),
+          declNode('class:app.ts:Queue', 'class', 'Queue', 'app.ts', 30),
+          declNode('method:app.ts:push:31', 'method', 'push', 'app.ts', 31, { qualifiedName: 'Queue.push' }),
+          declNode('class:app.ts:Stack', 'class', 'Stack', 'app.ts', 40),
+          declNode('method:app.ts:push:41', 'method', 'push', 'app.ts', 41, { qualifiedName: 'Stack.push' }),
+        ],
+      });
+      expect(matchMethodCall(declRef('app.ts', 'q.push', 5), context)).toBeNull();
+    });
+
     it('prefers direct construction over a factory return for the same receiver', () => {
       const context = declContext({
         'app.ts': [
