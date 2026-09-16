@@ -161,6 +161,14 @@ fn is_value_ref_excluded_ancestor(kind: &str) -> bool {
 }
 
 /// BUILTIN_TYPES (tree-sitter.ts) — names that never become type references.
+///
+/// STRICT mirror of the fork wasm set: it contains the lowercase `any` but
+/// NO capitalized entries — names like `Any` (the `ServerConnection.Any`
+/// leaf `type_identifier` inside a `nested_type_identifier`) and `String`
+/// ARE emitted as type references wasm-side. The capitalized Scala/Java
+/// block carried by the sibling language modules' copies of this list must
+/// NOT appear here: it suppressed the `Any` refs that regressed main-repo
+/// edges by 10 (kernel-parity tsjs-p2 follow-up).
 fn is_builtin_type(name: &str) -> bool {
     matches!(
         name,
@@ -171,8 +179,6 @@ fn is_builtin_type(name: &str) -> bool {
             | "int" | "long" | "short" | "byte" | "float" | "double"
             | "int8" | "int16" | "int32" | "int64" | "uint8" | "uint16" | "uint32" | "uint64"
             | "float32" | "float64" | "complex64" | "complex128" | "rune" | "error"
-            | "Int" | "Long" | "Short" | "Byte" | "Float" | "Double" | "Boolean" | "Char"
-            | "Unit" | "String" | "Any" | "AnyRef" | "AnyVal" | "Nothing" | "Null"
     )
 }
 
