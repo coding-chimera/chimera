@@ -12,6 +12,7 @@ import {
   assertNoEmbeddedBuildPaths,
   createPlatformPackageManifest,
   npmPlatformTargets,
+  type NpmPlatformTarget,
   packageLicenseFiles,
   parsePackageVariant,
   parsePackageVariantMetadata,
@@ -87,6 +88,47 @@ async function copyWebTreeSitterRuntime(targetDir: string) {
   for (const file of ["tree-sitter.cjs", "tree-sitter.wasm"]) {
     await fs.promises.copyFile(path.join(webTreeSitterRuntimeDir, file), path.join(runtimeDir, file))
   }
+}
+
+/**
+ * Copy the native codegraph-kernel addon (when prebuilt for this target) into
+ * the platform package at bin/kernel/codegraph-kernel.node — the loader's
+ * execPath-adjacent search candidate (src/graph/extraction/kernel/loader.ts,
+ * candidate 2: <dir of binary>/kernel/codegraph-kernel.node), same asset
+ * convention as copyGraphGrammarWasms above.
+ *
+ * A MISSING prebuild is a warning, not a build failure, by design: the kernel
+ * is optional everywhere and every load failure degrades to the wasm
+ * extraction arm (loader resolves to null; indexing stays correct, just
+ * slower). Platforms whose prebuild hasn't been built yet therefore ship
+ * without the kernel and automatically take the wasm fallback.
+ *
+ * musl targets are skipped: a glibc-linked .node will not dlopen on musl and
+ * the prebuild layout (<os>-<arch>) cannot express the libc split yet —
+ * musl/windows prebuild legs plus the CI build matrix are release-side
+ * follow-ups (UPSTREAM_RUST_KERNEL_PLAN.md §2.3 / §3 P0.5).
+ */
+async function copyKernelPrebuild(targetBinDir: string, target: NpmPlatformTarget) {
+  if (target.abi !== undefined) return
+  const source = path.join(
+    dir,
+    "..",
+    "..",
+    "codegraph-kernel",
+    "prebuilds",
+    `${target.os}-${target.arch}`,
+    "codegraph-kernel.node",
+  )
+  if (!fs.existsSync(source)) {
+    console.warn(
+      `kernel: no prebuild for ${target.os}-${target.arch} (${path.relative(dir, source)}) — shipping without the native kernel; wasm fallback applies`,
+    )
+    return
+  }
+  const kernelDir = path.join(targetBinDir, "kernel")
+  await fs.promises.mkdir(kernelDir, { recursive: true })
+  await fs.promises.copyFile(source, path.join(kernelDir, "codegraph-kernel.node"))
+  console.log(`kernel: bundled ${path.relative(dir, source)} -> ${path.relative(dir, kernelDir)}/codegraph-kernel.node`)
 }
 
 const singleFlag = process.argv.includes("--single")
@@ -322,6 +364,7 @@ for (const item of targets) {
 
   await copyGraphGrammarWasms(path.join(dir, "dist", name, "bin"))
   await copyWebTreeSitterRuntime(path.join(dir, "dist", name, "bin"))
+  await copyKernelPrebuild(path.join(dir, "dist", name, "bin"), item)
 
   // Smoke test: only run if binary is for current platform
   if (item.os === process.platform && item.arch === process.arch && !item.abi) {
