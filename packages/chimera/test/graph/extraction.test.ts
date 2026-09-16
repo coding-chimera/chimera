@@ -4,7 +4,7 @@
  * Tests for the tree-sitter extraction system.
  */
 
-import { describe, it, expect, beforeAll, beforeEach, afterEach } from './vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from './vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -14,9 +14,24 @@ import { detectLanguage, isLanguageSupported, getSupportedLanguages, initGrammar
 import { normalizePath } from '../../src/graph/utils';
 import { clearProjectConfigCache } from '../../src/graph/config';
 
+// wasm-arm iron-rule proof: this suite asserts tree-sitter(wasm) extraction
+// semantics, so pin the kernel kill switch — otherwise a staged kernel
+// prebuild + DEFAULT_ROUTED (lua/luau first wave) would make the lua/luau
+// cases machine-dependent (kernel arm on dev boxes, wasm arm in CI).
+// Restored in afterAll so later files in the shared bun-test process see a
+// clean env.
+let savedKernelEnv: string | undefined;
+
 beforeAll(async () => {
+  savedKernelEnv = process.env.CODEGRAPH_KERNEL;
+  process.env.CODEGRAPH_KERNEL = '0';
   await initGrammars();
   await loadAllGrammars();
+});
+
+afterAll(() => {
+  if (savedKernelEnv === undefined) delete process.env.CODEGRAPH_KERNEL;
+  else process.env.CODEGRAPH_KERNEL = savedKernelEnv;
 });
 
 // Create a temporary directory for each test

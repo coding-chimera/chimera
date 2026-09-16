@@ -8,14 +8,15 @@
  * wasm path forever if need be. Rollback per language = removing it from
  * DEFAULT_ROUTED (or CODEGRAPH_KERNEL=0 for all).
  *
- * Fork routing status (P1 subset batch): DEFAULT_ROUTED is EMPTY — no
- * language has passed the fork's parity harness yet (wave2). The loader's
- * contract gate is now a NAME-based subset check (kernel ⊆ fork, see
+ * Fork routing status (first wave, 2026-09-16): DEFAULT_ROUTED = lua+luau —
+ * the grammar-aligned subset whose parity gate passed (see DEFAULT_ROUTED
+ * below for the per-language evidence and deferrals). The loader's
+ * contract gate is a NAME-based subset check (kernel ⊆ fork, see
  * loader.verifyKernelContract): the vendored kernel loads once the fork
  * table covers the kernel's kinds (the G4 'union' chain; fork-only
- * 'statement' no longer blocks it), and env-enabled routing then really
- * engages the native arm. Wire rows always decode through the kernel's own
- * tables (kernelWireTables) — the fork tables are only the subset reference.
+ * 'statement' no longer blocks it), and routed languages really engage the
+ * native arm. Wire rows always decode through the kernel's own tables
+ * (kernelWireTables) — the fork tables are only the subset reference.
  * Override for experiments with
  *   CODEGRAPH_KERNEL_LANGS=<langs|all>  (replaces the default set), or
  *   CODEGRAPH_KERNEL=0                  (kill switch, everything → wasm).
@@ -66,12 +67,33 @@ export { decodeExtractBuffers } from './decode';
 
 /**
  * Languages routed to the kernel by default (gate-passed only — see
- * UPSTREAM_RUST_KERNEL_PLAN.md §3 P1 for the first-gate plan: ts/tsx/js/jsx
- * after the params extraJson patch + parity diff zero).
+ * UPSTREAM_RUST_KERNEL_PLAN.md §3 P1 for the first-gate plan; the P1 前置
+ * 实测修正 re-scoped wave 1 to the grammar-aligned subset).
  *
- * P0 acceptance rule: this set is EMPTY, so with no CODEGRAPH_KERNEL_LANGS
- * env the selector in extractFromSource never consults the kernel and the
- * extraction behavior is byte-identical to the pre-kernel fork.
+ * First wave (2026-09-16): lua + luau. Parity evidence
+ * (script/kernel-parity.ts; corpus = bottleneck node_modules lua ×22,
+ * upstream kernel-parity torture fixtures, hand-written luau samples under
+ * test/fixtures/kernel-corpus/):
+ * - lua 22/23 byte-identical; the single torture.lua diff is kernel-side
+ *   docstring comment-marker normalization ("-- x" -> "x") plus one 1:1
+ *   calls-ref rename ("(handler)" -> "handler") — no node/edge/ref loss,
+ *   field-semantics equivalent => acceptable non-byte diff.
+ * - luau 0/6 byte-identical but ALL diffs are the same docstring-marker
+ *   normalization family — no structural loss => acceptable.
+ * - kotlin/scala/dart DEFERRED (grammar-aligned but kernel-walker semantics
+ *   diverge structurally): kernel drops nodes/edges/refs the fork wasm arm
+ *   emits (scala field/contains, dart method/contains/calls/extends, kotlin
+ *   per-call chain decomposition) and adds whole families the wasm arm lacks
+ *   (field/constant nodes, references/decorates/implements refs, returnType
+ *   presence). Violates the no-loss gate; reconciliation is Rust-batch work.
+ *
+ * Semantic-version decision rule (operational discipline, per first-wave
+ * batch): opening a language whose parity is byte-identical does NOT bump
+ * EXTRACTION_SEMANTICS_VERSION — routing swaps the implementation while the
+ * stored output is unchanged; opening a language with acceptable non-byte
+ * diffs (field-semantics equivalent, no node/edge/ref loss) DOES bump it.
+ * This wave is the latter case (docstring normalization changes stored
+ * field values), hence EXTRACTION_SEMANTICS_VERSION 2 -> 3.
  *
  * Per-file safety valve regardless of routing: a file whose parse tree
  * contains ERRORS defers to the wasm extractor (error recovery differs
@@ -79,7 +101,7 @@ export { decodeExtractBuffers } from './decode';
  * the kernel's deep-nesting stack guard (upstream #1581). Both surface as a
  * thrown `defer:` error from the native side.
  */
-const DEFAULT_ROUTED: ReadonlySet<Language> = new Set<Language>();
+const DEFAULT_ROUTED: ReadonlySet<Language> = new Set<Language>(['lua', 'luau']);
 
 /**
  * Per-language TS post-pass over the decoded result — the escape hatch for
