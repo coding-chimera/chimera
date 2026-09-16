@@ -19,16 +19,19 @@ beforeAll(async () => {
 });
 
 describe('union NodeKind table contract', () => {
-  it("appends 'union' at the table tail without reordering (kernel alignment)", () => {
-    // The vendored kernel's NODE_KINDS ends [...,import,export,route,component,union];
-    // the fork table must keep every existing index stable and place 'union' last
-    // (append-never-reorder discipline, P0-2a contract verify is index-by-index).
-    expect(NODE_KINDS[NODE_KINDS.length - 1]).toBe('union');
+  it("keeps the tail-appended kinds ('union', then 'statement') index-aligned with the kernel", () => {
+    // The vendored kernel's NODE_KINDS ends [...,import,export,route,component,union,
+    // statement]; the fork table must match index-by-index. 'union' landed at
+    // the tail first (6978acc); 'statement' moved from index 18 to the tail in
+    // the P1 tsjs batch that taught the kernel walker to emit statement rows.
+    // Append-never-reorder discipline; kinds persist as TEXT, the index order
+    // is wire-only.
+    expect(NODE_KINDS[NODE_KINDS.length - 1]).toBe('statement');
     expect([...NODE_KINDS]).toEqual([
       'file', 'module', 'class', 'struct', 'interface', 'trait', 'protocol',
       'function', 'method', 'property', 'field', 'variable', 'constant',
       'enum', 'enum_member', 'type_alias', 'namespace', 'parameter',
-      'statement', 'import', 'export', 'route', 'component', 'union',
+      'import', 'export', 'route', 'component', 'union', 'statement',
     ]);
   });
 

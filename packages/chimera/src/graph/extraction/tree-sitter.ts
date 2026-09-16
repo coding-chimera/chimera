@@ -3648,7 +3648,8 @@ export function extractFromSource(
     result = extractor.extract();
   } else {
     // Native-kernel route (UPSTREAM_RUST_KERNEL_PLAN.md P0): gated per
-    // language (DEFAULT_ROUTED is empty — CODEGRAPH_KERNEL_LANGS opts in)
+    // language (DEFAULT_ROUTED is lua/luau since the first routing wave —
+    // CODEGRAPH_KERNEL_LANGS overrides the routed set)
     // and gated on no framework extract() hook hitting this file. Returns
     // null when not routed / no verified kernel loaded / kernel error /
     // `defer:` signal (parse-tree ERROR, deep-nesting stack guard) — the
