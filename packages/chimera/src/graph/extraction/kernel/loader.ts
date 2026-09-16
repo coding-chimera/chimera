@@ -3,7 +3,8 @@
  * codegraph-kernel .node addon.
  *
  * The kernel is OPTIONAL everywhere. Every failure mode here (no binary for
- * this platform, dlopen error, ABI/kind-table mismatch) resolves to `null`
+ * this platform, dlopen error, ABI mismatch, a kind table that is not a
+ * subset of the fork's) resolves to `null`
  * and the extraction path silently keeps using the wasm pipeline — a missing
  * or stale kernel must never break indexing, only skip the speedup. Set
  * CODEGRAPH_KERNEL_DEBUG=1 to see why a kernel didn't load.
@@ -100,6 +101,14 @@ function debug(msg: string): void {
 
 /** Languages the loaded binary supports (contract-verified). Empty when no kernel. */
 let kernelLanguages: ReadonlySet<string> = new Set();
+/**
+ * Wire kind tables of the loaded, contract-verified kernel (P1): the
+ * index order the kernel writes its rows with. Decode ALWAYS resolves
+ * wire indexes through these; the fork's NODE_KINDS/EDGE_KINDS serve only
+ * as the subset reference for verifyKernelContract. null = no verified
+ * kernel loaded (kernelWireTables() then falls back to the fork tables).
+ */
+let kernelTables: { nodeKinds: readonly string[]; edgeKinds: readonly string[] } | null = null;
 /** undefined = not attempted yet; null = attempted and unavailable. */
 let cached: KernelModule | null | undefined;
 
@@ -123,42 +132,48 @@ function candidatePaths(): string[] {
   return candidates;
 }
 
-/** Human-readable table diff for the contract-mismatch debug line / report. */
-function tableDiff(label: string, kernel: readonly string[], fork: readonly string[]): string {
-  const parts: string[] = [];
-  const max = Math.max(kernel.length, fork.length);
-  for (let i = 0; i < max; i++) {
-    if (kernel[i] !== fork[i]) parts.push(`[${i}] kernel='${kernel[i] ?? ''}' fork='${fork[i] ?? ''}'`);
-  }
-  return `${label}: ${parts.join(', ') || '(length differs only)'}`;
-}
-
 /**
- * Verify the binary speaks our wire contract: same ABI version and byte-equal
- * NodeKind/EdgeKind tables (kinds cross the boundary as indexes into these).
+ * Verify the binary speaks our wire contract: same ABI version, and each
+ * kernel kind table a SUBSET of the fork's BY NAME (kernel ⊆ fork — the
+ * direction is fixed: a kernel kind the fork doesn't know is refused so a
+ * future kernel cannot smuggle an unmapped kind past the gate; a fork-only
+ * kind like 'statement' is fine because the kernel simply never emits it).
  *
- * Fork status (P0-2a): the vendored upstream kernel's NODE_KINDS table does
- * NOT match the fork's (fork has 'statement' at index 18 and no 'union'; the
- * kernel has import/export/route/component at 18-21 and 'union' at 22), so
- * this check currently REJECTS the vendored binary and everything degrades to
- * wasm — the plan's "对账失败整体降级" posture. Aligning the tables (G4 union
- * NodeKind chain) is a follow-up decision, not part of this batch.
+ * Index alignment is deliberately NOT required (P1 subset batch): wire rows
+ * carry indexes into the KERNEL's own tables, which decode resolves through
+ * `kernelWireTables()` — so the fork's 'statement'@18 shifting the kernel's
+ * import/export/route/component/union down one index is legal divergence.
+ * The statement-survival research fixed the two-phase route: relaxing this
+ * gate unblocks non-tsjs language routing, which today produces no
+ * statement rows through the wasm arm either — zero audit downgrade.
  */
 export function verifyKernelContract(info: KernelContractInfo): boolean {
   if (info.abiVersion !== KERNEL_ABI_VERSION) {
     debug(`ABI ${info.abiVersion} != expected ${KERNEL_ABI_VERSION} — ignoring kernel`);
     return false;
   }
-  const sameTable = (a: readonly string[], b: readonly string[]) =>
-    a.length === b.length && a.every((v, i) => v === b[i]);
-  const diffs: string[] = [];
-  if (!sameTable(info.nodeKinds, NODE_KINDS)) diffs.push(tableDiff('nodeKinds', info.nodeKinds, NODE_KINDS));
-  if (!sameTable(info.edgeKinds, EDGE_KINDS)) diffs.push(tableDiff('edgeKinds', info.edgeKinds, EDGE_KINDS));
-  if (diffs.length > 0) {
-    debug(`NodeKind/EdgeKind tables differ from src/graph/types.ts — ignoring kernel (${diffs.join('; ')})`);
+  const kernelOnly = (kernel: readonly string[], fork: readonly string[]) =>
+    kernel.filter((kind) => !fork.includes(kind));
+  const missingNodeKinds = kernelOnly(info.nodeKinds, NODE_KINDS as readonly string[]);
+  const missingEdgeKinds = kernelOnly(info.edgeKinds, EDGE_KINDS as readonly string[]);
+  if (missingNodeKinds.length > 0 || missingEdgeKinds.length > 0) {
+    const parts: string[] = [];
+    if (missingNodeKinds.length > 0) parts.push(`nodeKinds kernel-only: '${missingNodeKinds.join("', '")}'`);
+    if (missingEdgeKinds.length > 0) parts.push(`edgeKinds kernel-only: '${missingEdgeKinds.join("', '")}'`);
+    debug(`kernel kind tables not a subset of the fork contract (src/graph/types.ts) — ignoring kernel (${parts.join('; ')})`);
     return false;
   }
   return true;
+}
+
+/**
+ * The verified kernel's own kind tables — the wire index order every
+ * production decode must use. Fork tables are returned only when no kernel
+ * is loaded (nothing kernel-side wrote those bytes; tests building
+ * fork-indexed synthetic buffers rely on this fallback).
+ */
+export function kernelWireTables(): { nodeKinds: readonly string[]; edgeKinds: readonly string[] } {
+  return kernelTables ?? { nodeKinds: NODE_KINDS, edgeKinds: EDGE_KINDS };
 }
 
 /**
@@ -185,6 +200,7 @@ export function getKernel(): KernelModule | null {
         continue;
       }
       kernelLanguages = new Set(info.languages);
+      kernelTables = { nodeKinds: info.nodeKinds, edgeKinds: info.edgeKinds };
       debug(`loaded ${candidate} (languages: ${[...kernelLanguages].join(', ')})`);
       cached = mod;
       break;
@@ -205,15 +221,20 @@ export function kernelSupports(language: string): boolean {
 export function resetKernelForTests(): void {
   cached = undefined;
   kernelLanguages = new Set();
+  kernelTables = null;
 }
 
 /**
  * Test hook (fork addition): install a fake KernelModule directly, bypassing
- * the search/contract path — lets selector tests exercise the kernel arm even
- * while the vendored binary's kind tables are rejected by verifyKernelContract.
+ * the search/contract path — lets selector tests exercise the kernel arm
+ * independently of the vendored binary's contract state. The fake's own
+ * contractInfo kind tables become the wire tables (kernelWireTables), so
+ * decode paths see exactly what a real load would have installed.
  * Pass null to clear.
  */
 export function setKernelForTests(mod: KernelModule | null): void {
   cached = mod;
-  kernelLanguages = mod ? new Set(mod.contractInfo().languages) : new Set();
+  const info = mod ? mod.contractInfo() : null;
+  kernelLanguages = info ? new Set(info.languages) : new Set();
+  kernelTables = info ? { nodeKinds: info.nodeKinds, edgeKinds: info.edgeKinds } : null;
 }

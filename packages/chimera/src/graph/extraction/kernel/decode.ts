@@ -3,14 +3,16 @@
  * JS-side pass over the per-file tables. See layout.ts for the byte layout
  * and codegraph-kernel/src/buffers.rs for the writer.
  *
- * Fork adaptations (P0-2a) vs upstream src/extraction/kernel/decode.ts:
- * - Kind tables come from the fork contract (NODE_KINDS in src/graph/types.ts,
- *   EDGE_KINDS in ./layout.ts). `nodeKinds` is an OPTIONAL override carrying
- *   the kernel binary's OWN table (contractInfo().nodeKinds) — required for
- *   tests/smoke that decode real vendored-kernel buffers while the fork and
- *   kernel tables diverge ('statement' vs 'union', indexes 18-22 shifted).
- *   The loader's strict contract gate means production decode only ever runs
- *   when the tables are byte-equal, so the default is safe.
+ * Fork adaptations (P0-2a, relaxed by the P1 subset batch) vs upstream
+ * src/extraction/kernel/decode.ts:
+ * - Kind tables default to the fork contract (NODE_KINDS in src/graph/types.ts,
+ *   EDGE_KINDS in ./layout.ts), but `nodeKinds`/`edgeKinds` are OPTIONAL
+ *   overrides carrying the kernel binary's OWN wire tables
+ *   (loader.kernelWireTables(), captured from contractInfo() at verify time).
+ *   The contract gate is a NAME-based subset check (kernel ⊆ fork), not an
+ *   index-equality one — so wire rows are ALWAYS decoded through the
+ *   kernel's own tables at production call sites; the fork tables only serve
+ *   the subset check and tests that build synthetic fork-indexed buffers.
  * - FUNCTION_REF_CODE (200) rows are DROPPED: the fork's
  *   UnresolvedReference.referenceKind is EdgeKind, which has no 'function_ref'
  *   member (upstream ReferenceKind does). Re-enabling them needs a fork
@@ -77,7 +79,8 @@ export function decodeExtractBuffers(
   buffers: KernelBuffers,
   filePath: string,
   language: Language,
-  nodeKinds: readonly string[] = NODE_KINDS
+  nodeKinds: readonly string[] = NODE_KINDS,
+  edgeKinds: readonly string[] = EDGE_KINDS
 ): ExtractionResult {
   const { meta, arena } = buffers;
   if (meta.length < META_SIZE) throw new Error(`kernel meta too short: ${meta.length}`);
@@ -145,7 +148,7 @@ export function decodeExtractBuffers(
     const edge: Edge = {
       source: sourceIdx === NONE ? str(arena, row, EDGE.sourceIdStr)! : idByRow[sourceIdx]!,
       target: targetIdx === NONE ? str(arena, row, EDGE.targetIdStr)! : idByRow[targetIdx]!,
-      kind: EDGE_KINDS[row.readUInt8(EDGE.kind)] as EdgeKind,
+      kind: edgeKinds[row.readUInt8(EDGE.kind)] as EdgeKind,
     };
     const line = u32opt(row, EDGE.line);
     if (line !== undefined) edge.line = line;
@@ -178,7 +181,7 @@ export function decodeExtractBuffers(
     const ref: UnresolvedReference = {
       fromNodeId: fromIdx === NONE ? str(arena, row, REF.fromIdStr)! : idByRow[fromIdx]!,
       referenceName: str(arena, row, REF.referenceName)!,
-      referenceKind: EDGE_KINDS[kindByte] as EdgeKind,
+      referenceKind: edgeKinds[kindByte] as EdgeKind,
       line: row.readUInt32LE(REF.line),
       column: row.readUInt32LE(REF.column),
     };
