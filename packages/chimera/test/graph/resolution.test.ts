@@ -1202,6 +1202,158 @@ describe('Resolution Module', () => {
       expect(result?.targetNodeId).toBe('method:app.ts:getNode:31');
       expect(result?.resolvedBy).toBe('instance-method');
     });
+      // why: kernel routing emits no statement nodes, so the stmt-signature
+      // loop above this batch's fixtures has nothing to read — a bind here
+      // can only come from the source-row scan of the same regex family.
+      // Decoy twins (Queue/Stack push, Graph/Ledger getNode) keep every
+      // heuristic branch inert (proven by the no-import null controls).
+      const kernelContext = (nodes: Node[], source: string): ResolutionContext => ({
+        ...declContext({ 'app.ts': nodes }),
+        readFile: (filePath) => (filePath === 'app.ts' ? source : null),
+      });
+
+      it('binds a source-scanned new-declaration without statement nodes (kernel shape const q = new Queue())', () => {
+        const context = kernelContext(
+          [
+            declNode('fn:app.ts:main:1', 'function', 'main', 'app.ts', 1),
+            declNode('class:app.ts:Queue', 'class', 'Queue', 'app.ts', 10),
+            declNode('method:app.ts:push:11', 'method', 'push', 'app.ts', 11, { qualifiedName: 'Queue::push' }),
+            declNode('class:app.ts:Stack', 'class', 'Stack', 'app.ts', 20),
+            declNode('method:app.ts:push:21', 'method', 'push', 'app.ts', 21, { qualifiedName: 'Stack::push' }),
+          ],
+          ['function main() {', '  const q = new Queue();', '  q.push();', '}', ''].join('\n'),
+        );
+        const result = matchMethodCall(declRef('app.ts', 'q.push', 3), context);
+        expect(result?.targetNodeId).toBe('method:app.ts:push:11');
+        expect(result?.resolvedBy).toBe('instance-method');
+      });
+
+      it('binds a source-scanned factory without statement nodes (kernel shape const q = createQueue())', () => {
+        const context = kernelContext(
+          [
+            declNode('fn:app.ts:main:1', 'function', 'main', 'app.ts', 1),
+            declNode('fn:app.ts:createQueue:10', 'function', 'createQueue', 'app.ts', 10, { returnType: 'Queue' }),
+            declNode('class:app.ts:Queue', 'class', 'Queue', 'app.ts', 20),
+            declNode('method:app.ts:push:21', 'method', 'push', 'app.ts', 21, { qualifiedName: 'Queue::push' }),
+            declNode('class:app.ts:Stack', 'class', 'Stack', 'app.ts', 30),
+            declNode('method:app.ts:push:31', 'method', 'push', 'app.ts', 31, { qualifiedName: 'Stack::push' }),
+          ],
+          ['function main() {', '  const q = createQueue();', '  q.push();', '}', ''].join('\n'),
+        );
+        const result = matchMethodCall(declRef('app.ts', 'q.push', 3), context);
+        expect(result?.targetNodeId).toBe('method:app.ts:push:21');
+        expect(result?.resolvedBy).toBe('instance-method');
+      });
+
+      it('binds a source-scanned awaited factory through Promise unwrapping without statement nodes', () => {
+        // The await flag must ride the source-scanned tuple too:
+        // FACTORY_AWAITED_INIT tests the match span, so `= await open()`
+        // peels Promise<Graph> exactly like the stmt-signature path.
+        const context = kernelContext(
+          [
+            declNode('fn:app.ts:main:1', 'function', 'main', 'app.ts', 1),
+            declNode('fn:app.ts:open:10', 'function', 'open', 'app.ts', 10, { returnType: 'Promise<Graph>' }),
+            declNode('class:app.ts:Graph', 'class', 'Graph', 'app.ts', 20),
+            declNode('method:app.ts:getNode:21', 'method', 'getNode', 'app.ts', 21, { qualifiedName: 'Graph::getNode' }),
+            declNode('class:app.ts:Ledger', 'class', 'Ledger', 'app.ts', 30),
+            declNode('method:app.ts:getNode:31', 'method', 'getNode', 'app.ts', 31, { qualifiedName: 'Ledger::getNode' }),
+          ],
+          ['async function main() {', '  const cg = await open();', '  cg.getNode();', '}', ''].join('\n'),
+        );
+        const result = matchMethodCall(declRef('app.ts', 'cg.getNode', 3), context);
+        expect(result?.targetNodeId).toBe('method:app.ts:getNode:21');
+        expect(result?.resolvedBy).toBe('instance-method');
+      });
+
+      it('binds a source-scanned dotted factory without statement nodes (const cg = await CodeGraph.open())', () => {
+        const context = kernelContext(
+          [
+            declNode('fn:app.ts:main:1', 'function', 'main', 'app.ts', 1),
+            declNode('class:app.ts:CodeGraph', 'class', 'CodeGraph', 'app.ts', 10),
+            declNode('method:app.ts:open:11', 'method', 'open', 'app.ts', 11, {
+              qualifiedName: 'CodeGraph::open',
+              returnType: 'Promise<CodeGraph>',
+            }),
+            declNode('method:app.ts:getNode:12', 'method', 'getNode', 'app.ts', 12, { qualifiedName: 'CodeGraph::getNode' }),
+            declNode('class:app.ts:Ledger', 'class', 'Ledger', 'app.ts', 20),
+            declNode('method:app.ts:getNode:21', 'method', 'getNode', 'app.ts', 21, { qualifiedName: 'Ledger::getNode' }),
+          ],
+          [
+            'function main() {',
+            '  const cg = await CodeGraph.open(projectPath);',
+            '  cg.getNode();',
+            '}',
+            '',
+          ].join('\n'),
+        );
+        const result = matchMethodCall(declRef('app.ts', 'cg.getNode', 3), context);
+        expect(result?.targetNodeId).toBe('method:app.ts:getNode:12');
+        expect(result?.resolvedBy).toBe('instance-method');
+      });
+
+      it('emits no source-scan evidence from declaration-shaped comment lines', () => {
+        // Red line: a raw source row is not the sanitized statement
+        // signature the stmt loop reads, so `//`, `*`, and `/*` openers must
+        // skip — otherwise a commented-out `new Queue()` would veto the
+        // heuristics with a type the receiver never holds.
+        const context = kernelContext(
+          [
+            declNode('fn:app.ts:main:1', 'function', 'main', 'app.ts', 1),
+            declNode('class:app.ts:Queue', 'class', 'Queue', 'app.ts', 10),
+            declNode('method:app.ts:push:11', 'method', 'push', 'app.ts', 11, { qualifiedName: 'Queue::push' }),
+            declNode('class:app.ts:Stack', 'class', 'Stack', 'app.ts', 20),
+            declNode('method:app.ts:push:21', 'method', 'push', 'app.ts', 21, { qualifiedName: 'Stack::push' }),
+          ],
+          [
+            'function main() {',
+            '  // const q = new Queue();',
+            '  /* const q = new Queue(); */',
+            '   * const q = new Queue();',
+            '  q.push();',
+            '}',
+            '',
+          ].join('\n'),
+        );
+        expect(matchMethodCall(declRef('app.ts', 'q.push', 5), context)).toBeNull();
+      });
+
+      it('keeps arbitration identical when stmt and source paths see the same declarations', () => {
+        // Dual-path no-flip: every source-scanned tuple of a single-line
+        // statement duplicates the stmt path's (kind/name/line/await), so
+        // the reassignment arbitration (nearest `new` before the call,
+        // veto between declarations) must give byte-identical results with
+        // the source channel open or closed.
+        const dualNodes = [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const svc = new Alpha()' }),
+          declNode('stmt:app.ts:7', 'statement', 'stmt@7:10', 'app.ts', 7, { signature: 'svc = new Beta()' }),
+          declNode('class:app.ts:Alpha', 'class', 'Alpha', 'app.ts', 20),
+          declNode('class:app.ts:Beta', 'class', 'Beta', 'app.ts', 30),
+          declNode('method:app.ts:doWork:31', 'method', 'doWork', 'app.ts', 31, { qualifiedName: 'Beta::doWork' }),
+        ];
+        const dualSource = [
+          'function main() {',
+          '  init();',
+          '  const svc = new Alpha();',
+          '  svc.doWork();',
+          '  warm();',
+          '  idle();',
+          '  svc = new Beta();',
+          '  drain();',
+          '  svc.doWork();',
+          '}',
+          '',
+        ].join('\n');
+        const stmtOnly = declContext({ 'app.ts': dualNodes });
+        const bothPaths = kernelContext(dualNodes, dualSource);
+        for (const context of [stmtOnly, bothPaths]) {
+          expect(matchMethodCall(declRef('app.ts', 'svc.doWork', 9), context)?.targetNodeId).toBe(
+            'method:app.ts:doWork:31',
+          );
+          // Control: a call between the two declarations sees Alpha, which
+          // declares no doWork — the veto must hold on both paths alike.
+          expect(matchMethodCall(declRef('app.ts', 'svc.doWork', 4), context)).toBeNull();
+        }
+      });
 
     // Import-reachability supplements: `import type X from 'm'` and
     // `await import('m')` are import evidence the static resolver regex

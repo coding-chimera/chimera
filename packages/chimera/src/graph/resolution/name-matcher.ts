@@ -761,10 +761,11 @@ function receiverDeclarationsForFile(
   if (source) {
     const lines = source.split(/\r?\n/);
     for (let i = 0; i < lines.length; i++) {
-      for (const match of lines[i]!.matchAll(RECEIVER_ANNOTATION_DECLARATION)) {
+      const line = lines[i]!;
+      for (const match of line.matchAll(RECEIVER_ANNOTATION_DECLARATION)) {
         add(match[1]!, { kind: 'annotation', name: match[2]!, line: i + 1, awaitInitialized: false });
       }
-      for (const match of lines[i]!.matchAll(RECEIVER_ANNOTATION_FULL_DECLARATION)) {
+      for (const match of line.matchAll(RECEIVER_ANNOTATION_FULL_DECLARATION)) {
         add(match[1]!, {
           kind: 'annotation',
           name: match[2]!,
@@ -772,6 +773,40 @@ function receiverDeclarationsForFile(
           awaitInitialized: ANNOTATION_AWAITED_INIT.test(
             match.input.slice((match.index ?? 0) + match[0].length),
           ),
+        });
+      }
+      // Source-row backstop for the kernel route, which emits no statement
+      // nodes: `= new` / `= factory()` / `= Prefix.factory()` evidence is
+      // re-derived from raw source so in-function declarations keep feeding
+      // Strategy 0.5 when the stmt-signature loop above has nothing to read.
+      // Single-line statements produce byte-identical duplicates of the stmt
+      // path's evidence (same kind/name/line/await tuple) — same no-flip
+      // property the two coexisting annotation regexes already rely on.
+      // Unlike a statement signature this is a raw source row, so a
+      // declaration-shaped comment would match verbatim: skip full comment
+      // lines (leading `//`, `*` continuation, or `/*` opener). String
+      // literals on live code rows stay an accepted risk, same tier as the
+      // annotation source scan above.
+      const trimmed = line.trim();
+      if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) continue;
+      for (const match of line.matchAll(RECEIVER_NEW_DECLARATION)) {
+        add(match[1]!, { kind: 'new', name: match[2]!, line: i + 1, awaitInitialized: false });
+      }
+      for (const match of line.matchAll(RECEIVER_FACTORY_DECLARATION)) {
+        if (match[2] === 'new') continue; // direct construction handled above
+        add(match[1]!, {
+          kind: 'factory',
+          name: match[2]!,
+          line: i + 1,
+          awaitInitialized: FACTORY_AWAITED_INIT.test(match[0]),
+        });
+      }
+      for (const match of line.matchAll(RECEIVER_DOTTED_FACTORY_DECLARATION)) {
+        add(match[1]!, {
+          kind: 'factory',
+          name: match[2]!,
+          line: i + 1,
+          awaitInitialized: FACTORY_AWAITED_INIT.test(match[0]),
         });
       }
     }
