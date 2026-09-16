@@ -57,7 +57,7 @@ function hasSignal(fact: ChangeFact, kind: string) {
 }
 
 function isClassLike(node: FrozenSemanticObject | null) {
-  return node?.payload.kind === "class" || node?.payload.kind === "interface" || node?.payload.kind === "struct" || node?.payload.kind === "trait" || node?.payload.kind === "protocol"
+  return node?.payload.kind === "class" || node?.payload.kind === "interface" || node?.payload.kind === "struct" || node?.payload.kind === "union" || node?.payload.kind === "trait" || node?.payload.kind === "protocol"
 }
 
 function isConstructorChange(fact: ChangeFact) {
@@ -143,14 +143,14 @@ function bodyLabel(fact: ChangeFact): ImpactLabelResult {
 function signatureLabel(fact: ChangeFact): ImpactLabel {
   const node = changedNode(fact)
   if (node?.payload.name === "constructor" || hasSignal(fact, "constructor_like")) return "constructor_signature"
-  if (node?.payload.kind === "class" || node?.payload.kind === "interface" || node?.payload.kind === "struct" || node?.payload.kind === "trait" || node?.payload.kind === "protocol") return "class_declaration"
+  if (node?.payload.kind === "class" || node?.payload.kind === "interface" || node?.payload.kind === "struct" || node?.payload.kind === "union" || node?.payload.kind === "trait" || node?.payload.kind === "protocol") return "class_declaration"
   return "method_signature"
 }
 
 function schemaLabel(fact: ChangeFact): ImpactLabel {
   const kind = changedNode(fact)?.payload.kind
   if (kind === "field" || kind === "property") return "field"
-  if (kind === "class" || kind === "interface" || kind === "struct" || kind === "trait" || kind === "protocol") return "class_declaration"
+  if (kind === "class" || kind === "interface" || kind === "struct" || kind === "union" || kind === "trait" || kind === "protocol") return "class_declaration"
   return "schema_contract"
 }
 

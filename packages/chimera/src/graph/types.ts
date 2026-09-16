@@ -39,6 +39,9 @@ export const NODE_KINDS = [
   'export',
   'route',
   'component',
+  // Appended at the tail so the wire table stays index-aligned with the
+  // vendored kernel's NODE_KINDS table (union last); never reorder (6978acc).
+  'union',
 ] as const;
 
 export type NodeKind = (typeof NODE_KINDS)[number];

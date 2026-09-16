@@ -65,7 +65,7 @@ const RUST_PATH_PREFIXES = new Set(['crate', 'super', 'self']);
  * multi-thousand-character wall of source that bloats the agent's context.
  */
 const CONTAINER_NODE_KINDS = new Set<NodeKind>([
-  'class', 'struct', 'interface', 'trait', 'protocol', 'enum', 'namespace', 'module',
+  'class', 'struct', 'union', 'interface', 'trait', 'protocol', 'enum', 'namespace', 'module',
 ]);
 
 /** Last `::` / `.` / `/`-separated segment of a qualified symbol. */
@@ -1455,7 +1455,7 @@ export class ToolHandler {
     const ROOT_CAP = 5; // only the symbols the query actually targeted
     const FILE_CAP = 4; // caller files listed per symbol before "+N more"
     const MEANINGFUL = new Set<string>([
-      'function', 'method', 'class', 'interface', 'struct', 'trait', 'protocol',
+      'function', 'method', 'class', 'interface', 'struct', 'union', 'trait', 'protocol',
       'enum', 'type_alias', 'component', 'constant', 'variable', 'property', 'field',
     ]);
     const rel = (p: string) => p.replace(/\\/g, '/');
@@ -2021,7 +2021,7 @@ export class ToolHandler {
     const superMany = new Map<string, boolean>();
     const definesPolymorphicSupertype = (nodes: Node[]): boolean => {
       for (const n of nodes) {
-        if (n.kind !== 'class' && n.kind !== 'interface' && n.kind !== 'struct'
+        if (n.kind !== 'class' && n.kind !== 'interface' && n.kind !== 'struct' && n.kind !== 'union'
             && n.kind !== 'trait' && n.kind !== 'protocol' && n.kind !== 'type_alias') continue;
         let many = superMany.get(n.id);
         if (many === undefined) {
@@ -2253,7 +2253,7 @@ export class ToolHandler {
       // query actually asked about (#185 follow-up — Session.swift in
       // Alamofire is the canonical case: the `Session` class spans ~1,400
       // lines). We want the granular symbols inside, not the envelope.
-      const ENVELOPE_KINDS = new Set(['file', 'module', 'class', 'struct', 'interface', 'enum', 'namespace', 'protocol', 'trait', 'component']);
+      const ENVELOPE_KINDS = new Set(['file', 'module', 'class', 'struct', 'union', 'interface', 'enum', 'namespace', 'protocol', 'trait', 'component']);
       // Cluster from this file's gathered nodes PLUS any callable the agent NAMED that
       // lives here. Explore's relevance gather can miss a named method def in a huge
       // non-sibling file — Django's query.py is 3,040 lines and `_fetch_all` (L2237)

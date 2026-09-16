@@ -53,6 +53,9 @@ export const cExtractor: LanguageExtractor = {
   methodTypes: [],
   interfaceTypes: [],
   structTypes: ['struct_specifier'],
+  // A bodiless `union U;` is a forward declaration; the aggregate extractor
+  // applies the same body requirement it uses for C structs (6978acc).
+  unionTypes: ['union_specifier'],
   enumTypes: ['enum_specifier'],
   enumMemberTypes: ['enumerator'],
   typeAliasTypes: ['type_definition'], // typedef
@@ -71,6 +74,7 @@ export const cExtractor: LanguageExtractor = {
       if (!child) continue;
       if (child.type === 'enum_specifier' && getChildByField(child, 'body')) return 'enum';
       if (child.type === 'struct_specifier' && getChildByField(child, 'body')) return 'struct';
+      if (child.type === 'union_specifier' && getChildByField(child, 'body')) return 'union';
     }
     return undefined;
   },
@@ -98,6 +102,9 @@ export const cppExtractor: LanguageExtractor = {
   methodTypes: ['function_definition'],
   interfaceTypes: [],
   structTypes: ['struct_specifier'],
+  // C++ unions additionally carry member functions, which extract through the
+  // same aggregate-body walk as structs while preserving their distinct kind.
+  unionTypes: ['union_specifier'],
   enumTypes: ['enum_specifier'],
   enumMemberTypes: ['enumerator'],
   typeAliasTypes: ['type_definition', 'alias_declaration'], // typedef and using
@@ -132,6 +139,7 @@ export const cppExtractor: LanguageExtractor = {
       if (!child) continue;
       if (child.type === 'enum_specifier' && getChildByField(child, 'body')) return 'enum';
       if (child.type === 'struct_specifier' && getChildByField(child, 'body')) return 'struct';
+      if (child.type === 'union_specifier' && getChildByField(child, 'body')) return 'union';
     }
     return undefined;
   },

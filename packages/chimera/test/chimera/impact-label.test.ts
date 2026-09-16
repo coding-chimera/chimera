@@ -74,6 +74,8 @@ describe("impact label", () => {
     expect(deriveImpactLabel(fact({ subjectKind: "signature", afterNode: node("function", "run") })).label).toBe("method_signature")
     expect(deriveImpactLabel(fact({ subjectKind: "signature", afterNode: node("method", "constructor") })).label).toBe("constructor_signature")
     expect(deriveImpactLabel(fact({ subjectKind: "schema", afterNode: node("field", "value") })).label).toBe("field")
+    // Union CodePlan parity (拍板 B): a union is class-like exactly like a struct.
+    expect(deriveImpactLabel(fact({ subjectKind: "schema", afterNode: node("union", "Packet") })).label).toBe("class_declaration")
     expect(deriveImpactLabel(fact({ subjectKind: "schema", afterNode: node("class", "Service") })).label).toBe("class_declaration")
     expect(deriveImpactLabel(fact({ subjectKind: "import" })).label).toBe("import_statement")
     expect(deriveImpactLabel(fact({ subjectKind: "export" })).label).toBe("export_boundary")
@@ -98,6 +100,9 @@ describe("impact label", () => {
       ["modify", "signature", node("method", "run"), undefined, "MMS"],
       ["modify", "schema", node("field", "value"), undefined, "MF"],
       ["modify", "signature", node("class", "Service"), undefined, "MC"],
+      ["modify", "signature", node("union", "Packet"), undefined, "MC"],
+      ["add", "signature", node("union", "Packet"), undefined, "AC"],
+      ["delete", "signature", node("union", "Packet"), undefined, "DC"],
       ["modify", "signature", node("method", "constructor"), undefined, "MCC"],
       ["modify", "import", undefined, undefined, "MI"],
       ["add", "signature", node("method", "run"), undefined, "AM"],

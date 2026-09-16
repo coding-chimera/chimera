@@ -2133,6 +2133,60 @@ def bootstrap():
       expect(callsToUserService).toHaveLength(0);
     });
 
+    // Union chain ported from upstream e922563/e219594 (UPSTREAM_GRAPH_TRIAGE §4.1):
+    it('promotes calls→instantiates when target resolves to a C++ union', async () => {
+      // `Packet()` value-initializes the union. The extractor emits a calls
+      // reference for that expression, so resolution must preserve the
+      // class-like promotion that unions received when they were structs.
+      fs.writeFileSync(
+        path.join(tempDir, 'packet.cpp'),
+        `union Packet { unsigned int raw; };
+
+void initialize() { Packet(); }
+`
+      );
+
+      cg = await CodeGraph.init(tempDir, { index: true });
+      cg.resolveReferences();
+
+      const packet = cg.getNodesByKind('union').find((n) => n.name === 'Packet');
+      const initialize = cg.getNodesByKind('function').find((n) => n.name === 'initialize');
+      expect(packet).toBeDefined();
+      expect(initialize).toBeDefined();
+
+      const outgoing = cg.getOutgoingEdges(initialize!.id);
+      expect(outgoing.some((e) => e.kind === 'instantiates' && e.target === packet!.id)).toBe(true);
+      expect(outgoing.some((e) => e.kind === 'calls' && e.target === packet!.id)).toBe(false);
+    });
+
+    it('resolves a static call through an imported C++ union to its member', async () => {
+      fs.writeFileSync(
+        path.join(tempDir, 'ops.hpp'),
+        `union Ops {
+  static int run() { return 1; }
+};
+`
+      );
+      fs.writeFileSync(
+        path.join(tempDir, 'main.cpp'),
+        `#include "ops.hpp"
+
+int invoke() { return Ops::run(); }
+`
+      );
+
+      cg = await CodeGraph.init(tempDir, { index: true });
+      cg.resolveReferences();
+
+      const invoke = cg.getNodesByKind('function').find((n) => n.name === 'invoke');
+      const run = cg.getNodesByKind('method').find((n) => n.name === 'run');
+      expect(invoke).toBeDefined();
+      expect(run).toBeDefined();
+
+      const outgoing = cg.getOutgoingEdges(invoke!.id);
+      expect(outgoing.some((e) => e.kind === 'calls' && e.target === run!.id)).toBe(true);
+    });
+
     it('resolves Go cross-package qualified calls via go.mod module path (#388)', async () => {
       // Pre-#388, every `pkga.FuncX(...)` call in a Go monorepo was flagged
       // external (isExternalImport returned true for any non-`/internal/`
@@ -2465,6 +2519,28 @@ func main() {
 
       const result = matchReference(ref, baseContext([fn, cls]));
       expect(result?.targetNodeId).toBe('class:logger.ts:Logger:10');
+    });
+
+    it('prefers a union candidate over a function for `instantiates` refs', () => {
+      const fn: Node = {
+        id: 'func:packet.cpp:Packet:5', kind: 'function', name: 'Packet',
+        qualifiedName: 'packet.cpp::Packet', filePath: 'packet.cpp', language: 'cpp',
+        startLine: 5, endLine: 7, startColumn: 0, endColumn: 0, updatedAt: Date.now(),
+      };
+      const union: Node = {
+        id: 'union:packet.hpp:Packet:10', kind: 'union', name: 'Packet',
+        qualifiedName: 'packet.hpp::Packet', filePath: 'packet.hpp', language: 'cpp',
+        startLine: 10, endLine: 14, startColumn: 0, endColumn: 0, updatedAt: Date.now(),
+      };
+      const ref = {
+        fromNodeId: 'func:main.cpp:initialize:1',
+        referenceName: 'Packet',
+        referenceKind: 'instantiates' as const,
+        line: 5, column: 0, filePath: 'main.cpp', language: 'cpp' as const,
+      };
+
+      const result = matchReference(ref, baseContext([fn, union]));
+      expect(result?.targetNodeId).toBe('union:packet.hpp:Packet:10');
     });
 
     it('prefers a function candidate over a non-function for `decorates` refs', () => {

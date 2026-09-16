@@ -319,7 +319,7 @@ function predesignSeedRanges(predesign: PredesignRunRecord) {
 // to name (G-arm tb5-v2 regression: declaring an intermediate symbol dropped
 // the deep-consumer hint and the cell failed 2/3).
 const SCOPE_SEED_KINDS = new Set([
-  "function", "method", "class", "struct", "interface", "trait", "protocol",
+  "function", "method", "class", "struct", "union", "interface", "trait", "protocol",
   "constant", "variable", "property", "field", "enum", "enum_member",
   "type_alias", "namespace", "route", "component",
 ])

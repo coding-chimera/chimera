@@ -203,6 +203,7 @@ export class GraphQueryManager {
     const allNodes: Node[] = [];
     const kinds: Node['kind'][] = [
       'class',
+      'union',
       'function',
       'method',
       'interface',
@@ -377,6 +378,7 @@ export class GraphQueryManager {
       'module',
       'class',
       'struct',
+      'union',
       'interface',
       'trait',
       'function',
