@@ -19,8 +19,18 @@ Guidelines:
 - 主仓重索引实测：114s 无卡死（WAL 防御生效实证，此前 763/2771 处挂死 8min+）；节点 117312、边 222764→240404（+7.9%）、references 29012→34150（+17.7%）、unresolved failed 207271→195608（−11663）、getNodesInFile 类失败 109→0
 - 已知环境失败基线更新：**15**（MCP daemon×7/roots×3/initialize×2/Node26 refusal×2/node:sqlite×1）——pr19 pragma 已修（期望对齐 64MB/256MB 默认）
 - 集成四目录（graph+chimera+tool+lsp）终态：1957 pass/15 fail，~7min
-- 残量缺口（缓议）：构造器参数属性/循环变量接收者证据（db.* ~422）、同名类消歧 E2/E5（~131，假边风险）、union 类型层（1.5%）
-- LSP 工具已转正（用户拍板，d5921900c 已推）：registry.ts 无条件注册 tool.lsp，core 旗标表条目保留减上游漂移；验证 typecheck+registry/parameters/lsp 104/104+prompt 79/79。注意：当前在跑的 G 臂 n=3（results-recall-post）用的是转正前 17:58 构建的二进制，测的是纯召回批次；LSP 转正+残量批次的效果需下次重建后的 bench 轮验证
+- 残量缺口状态（2026-09-16 更新）：同名类消歧 E2/E5 已做（三层保守排序）；db.* 大桶经逐站点分诊证实为不可救（外部 bun:sqlite 类型/无注解回调参数/union/ReturnType 别名）；真缺口 cg.* 簇已修（见下）；仍未做：for-of/构造器参数属性证据、union 脱壳（X | null）
+- LSP 工具已转正（用户拍板，d5921900c 已推）：registry.ts 无条件注册 tool.lsp，core 旗标表条目保留减上游漂移；验证 typecheck+registry/parameters/lsp 104/104+prompt 79/79
+
+### 第二波：残量召回+Scope check 抑制修复，G 臂 12/12 满分（2026-09-16）
+
+已推 origin/main（d5658fa01、a1050a08b、149c5564a）：
+
+- **残量召回批次**（d5658fa01）：点号工厂证据（`x = [await] Class.m()`，主仓 cg.* 失败 291→5）、import type 默认导入+动态 import 补充（纯 ALLOW 向）、闭包外层参数行走、同名类三层保守消歧；unresolved 再 −868、references +142；重索引 79s
+- **Scope check 抑制修复**（a1050a08b）：G 臂 recall-post 轮 tb5-v2 3/3→1/3 回归的根因——declared scope 把 predesign 全部模糊种子（searchNodes 文本命中含 import/stmt 节点）的文件都算已声明，召回富化后 `searchNodes("renderSize")` 命中 size-table.ts 的 import/stmt → 两跳隐藏面被吸收进 scope → 深度消费者提示静默消失。修复=declaredScopeFiles 只认定义类 kind+精确符号名/声明 nodeID。教训：**图富化会改变下游模糊匹配语义，enrichment 批次必须跟 bench 回归**
+- **G 臂 n=3 终局 verdict：12/12 满分**（tb5-v2 回 3/3 且三格 Scope check 均点名 size-table.ts；tb6-b 保持 3/3；零噪声零拒改；results-recall-post3）
+- **bench 资产事故与迁移**：用户自建 tmp 清理任务 03:42 吃掉 temp 里的 cbench（tasks 全清、repo-g .git 部分损毁）；已字节级恢复（verify.sh 从 session DB 找到创作会话 write 原文=原物，60 历史格回放 cmp 一致；repo-g 99 blob 以精确原 hash 重建，HEAD 7c4366f0 保留）。**cbench 永久家目录=/Volumes/workspace/cbench**（脚本 B= 路径已批量更新），备份 /Volumes/workspace/cbench-backup/cbench-20260916.tar.gz（1.0GB）。教训：临时区的东西被第二次引用就该搬家
+- 遗留：repo-g 深层历史 14 commit 后断链（bench 不受影响，可从主仓回灌）；repo-b 未修（B 臂要用先修 node_modules）；13 个旧任务目录未重建（tb1-*~tb5-v1，session DB 有原文可按同法恢复）；Node 26.3.0 非 LTS 警告（索引成功，建议 bench 环境切 Node 22）；dependabot 14 漏洞待用户决定是否排批次
 
 ### P0 plan: aijws/grok-4.5 thinking intensity (DONE)
 
