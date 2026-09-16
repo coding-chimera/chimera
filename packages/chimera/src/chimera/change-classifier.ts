@@ -119,7 +119,7 @@ type ProjectionGraph = Pick<CodeGraphAdapter, "nodesInFile" | "projectNode" | "p
 
 const CALLABLE_KINDS = new Set(["function", "method", "component"])
 const CONTAINER_KINDS = new Set(["file", "module"])
-const SCHEMA_KINDS = new Set(["interface", "type_alias", "enum", "field", "class", "struct", "property"])
+const SCHEMA_KINDS = new Set(["interface", "type_alias", "enum", "field", "class", "struct", "union", "property"])
 
 function isRecord(input: unknown): input is Record<string, unknown> {
   return typeof input === "object" && input !== null && !Array.isArray(input)

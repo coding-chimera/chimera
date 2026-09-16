@@ -900,6 +900,7 @@ function isReceiverContainerCandidate(node: Node, language: Language): boolean {
   return (
     (node.kind === 'class' ||
       node.kind === 'struct' ||
+      node.kind === 'union' ||
       node.kind === 'interface' ||
       node.kind === 'type_alias') &&
     node.language === language
@@ -1200,7 +1201,7 @@ export function matchMethodCall(
   const classCandidates = context.getNodesByName(objectOrClass!);
 
   for (const classNode of classCandidates) {
-    if (classNode.kind === 'class' || classNode.kind === 'struct' || classNode.kind === 'interface') {
+    if (classNode.kind === 'class' || classNode.kind === 'struct' || classNode.kind === 'union' || classNode.kind === 'interface') {
       // Skip cross-language class matches
       if (classNode.language !== ref.language) continue;
 
@@ -1228,7 +1229,7 @@ export function matchMethodCall(
   if (capitalizedReceiver !== objectOrClass) {
     const fuzzyClassCandidates = context.getNodesByName(capitalizedReceiver);
     for (const classNode of fuzzyClassCandidates) {
-      if (classNode.kind === 'class' || classNode.kind === 'struct' || classNode.kind === 'interface') {
+      if (classNode.kind === 'class' || classNode.kind === 'struct' || classNode.kind === 'union' || classNode.kind === 'interface') {
         // Skip cross-language class matches
         if (classNode.language !== ref.language) continue;
 
@@ -1398,6 +1399,7 @@ function findBestMatch(
       if (
         candidate.kind === 'class' ||
         candidate.kind === 'struct' ||
+        candidate.kind === 'union' ||
         candidate.kind === 'interface'
       ) {
         score += 25;

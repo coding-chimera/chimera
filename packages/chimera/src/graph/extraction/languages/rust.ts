@@ -8,6 +8,9 @@ export const rustExtractor: LanguageExtractor = {
   methodTypes: ['function_item'], // Methods are functions in impl blocks
   interfaceTypes: ['trait_item'],
   structTypes: ['struct_item'],
+  // Unions share struct member syntax and impl attachment, but retain their
+  // distinct semantic kind in the graph (6978acc).
+  unionTypes: ['union_item'],
   enumTypes: ['enum_item'],
   enumMemberTypes: ['enum_variant'],
   typeAliasTypes: ['type_item'], // Rust type aliases

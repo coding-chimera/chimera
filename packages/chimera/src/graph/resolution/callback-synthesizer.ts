@@ -447,8 +447,9 @@ function interfaceOverrideEdges(queries: QueryBuilder): Edge[] {
       .filter((n): n is Node => !!n && n.kind === 'method');
   // Concrete-side kinds vary by language: `class` covers Java / Kotlin /
   // C# / TS / Swift-classes / Scala-classes; `struct` covers Swift value
-  // types that conform to protocols. Iterate both.
-  const concreteKinds = ['class', 'struct'] as const;
+  // types that conform to protocols; `union` covers Rust/C++ unions that
+  // gained a real implements edge (5b0c4b8, #1515). Iterate all.
+  const concreteKinds = ['class', 'struct', 'union'] as const;
   for (const kind of concreteKinds) {
   for (const cls of queries.getNodesByKind(kind)) {
     const implMethods = methodsOf(cls.id).filter((n) => IFACE_OVERRIDE_LANGS.has(n.language));

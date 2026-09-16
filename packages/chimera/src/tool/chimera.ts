@@ -1023,6 +1023,7 @@ const SYMBOL_EXCERPT_KINDS: ReadonlySet<CodeGraphNode["kind"]> = new Set([
   "struct",
   "trait",
   "type_alias",
+  "union",
   "variable",
 ])
 

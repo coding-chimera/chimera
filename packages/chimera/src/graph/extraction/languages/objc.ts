@@ -63,6 +63,8 @@ export const objcExtractor: LanguageExtractor = {
   interfaceTypes: ['protocol_declaration'],
   interfaceKind: 'protocol',
   structTypes: ['struct_specifier'],
+  // Objective-C is a C superset: union declarations preserve their own kind.
+  unionTypes: ['union_specifier'],
   enumTypes: ['enum_specifier'],
   enumMemberTypes: ['enumerator'],
   typeAliasTypes: ['type_definition'],
@@ -88,6 +90,7 @@ export const objcExtractor: LanguageExtractor = {
       if (!child) continue;
       if (child.type === 'enum_specifier' && getChildByField(child, 'body')) return 'enum';
       if (child.type === 'struct_specifier' && getChildByField(child, 'body')) return 'struct';
+      if (child.type === 'union_specifier' && getChildByField(child, 'body')) return 'union';
     }
     return undefined;
   },

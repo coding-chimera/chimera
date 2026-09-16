@@ -225,7 +225,7 @@ function nodeSpanSize(node: Node): number {
 
 const CALLABLE_NODE_KINDS = new Set<Node['kind']>(['function', 'method', 'component']);
 const CONTAINER_NODE_KINDS = new Set<Node['kind']>(['file', 'module']);
-const SCHEMA_NODE_KINDS = new Set<Node['kind']>(['interface', 'type_alias', 'enum', 'field', 'class', 'struct', 'property']);
+const SCHEMA_NODE_KINDS = new Set<Node['kind']>(['interface', 'type_alias', 'enum', 'field', 'class', 'struct', 'union', 'property']);
 const BODY_NODE_KINDS = new Set<Node['kind']>(['statement']);
 const SEMANTIC_DIFF_FIELDS: NodeSemanticDiffField[] = [
   'kind',
@@ -598,7 +598,9 @@ function relationForEdge(edgeKind: Edge['kind'], direction: 'incoming' | 'outgoi
   return direction === 'incoming' ? 'ContainedBy' : 'Contains';
 }
 
-const CODEPLAN_CONSTRUCTABLE_NODE_KINDS = new Set<Node['kind']>(['class', 'struct']);
+// Union parity with struct per the CodePlan equal-weight ruling (5b0c4b8/#1515
+// line of upstream): a C++/Rust union can own constructors the same way.
+const CODEPLAN_CONSTRUCTABLE_NODE_KINDS = new Set<Node['kind']>(['class', 'struct', 'union']);
 const CODEPLAN_FIELD_NODE_KINDS = new Set<Node['kind']>(['field', 'property']);
 
 function isCodePlanConstructorNode(node: Node) {

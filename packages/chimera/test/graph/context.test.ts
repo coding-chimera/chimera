@@ -134,6 +134,13 @@ export function validateEmail(email: string): boolean {
 }
 `
     );
+    // A C union in the default search kinds set (ported from upstream e219594):
+    fs.writeFileSync(
+      path.join(srcDir, 'callback_ops.c'),
+      `union CallbackOps { int (*run)(int); };
+`
+    );
+
 
     // Initialize CodeGraph
     cg = CodeGraph.initSync(testDir);
@@ -187,6 +194,15 @@ export function validateEmail(email: string): boolean {
             name.toLowerCase().includes('checkout')
         )
       ).toBe(true);
+    });
+
+    it('includes union definitions in the default context search', async () => {
+      const result = await cg.findRelevantContext('CallbackOps');
+      const union = [...result.nodes.values()].find(
+        (node) => node.kind === 'union' && node.name === 'CallbackOps'
+      );
+
+      expect(union).toBeDefined();
     });
 
     it('should include edges in the result', async () => {
