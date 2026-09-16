@@ -8,11 +8,15 @@
  * wasm path forever if need be. Rollback per language = removing it from
  * DEFAULT_ROUTED (or CODEGRAPH_KERNEL=0 for all).
  *
- * Fork routing status (P0-2a): DEFAULT_ROUTED is EMPTY — no language has
- * passed the fork's parity harness yet (wave2), and the vendored kernel's
- * NodeKind table currently fails the loader's contract gate against the fork
- * ('statement' vs 'union' divergence), so even env-enabled routing degrades
- * to wasm with a real binary. Override for experiments with
+ * Fork routing status (P1 subset batch): DEFAULT_ROUTED is EMPTY — no
+ * language has passed the fork's parity harness yet (wave2). The loader's
+ * contract gate is now a NAME-based subset check (kernel ⊆ fork, see
+ * loader.verifyKernelContract): the vendored kernel loads once the fork
+ * table covers the kernel's kinds (the G4 'union' chain; fork-only
+ * 'statement' no longer blocks it), and env-enabled routing then really
+ * engages the native arm. Wire rows always decode through the kernel's own
+ * tables (kernelWireTables) — the fork tables are only the subset reference.
+ * Override for experiments with
  *   CODEGRAPH_KERNEL_LANGS=<langs|all>  (replaces the default set), or
  *   CODEGRAPH_KERNEL=0                  (kill switch, everything → wasm).
  *
@@ -33,6 +37,7 @@ import { defaultLogger } from '../../errors';
 import {
   getKernel,
   kernelSupports,
+  kernelWireTables,
   type KernelBuffers,
   type KernelGrammarInfo,
 } from './loader';
@@ -46,6 +51,7 @@ import {
 export {
   getKernel,
   kernelSupports,
+  kernelWireTables,
   resetKernelForTests,
   setKernelForTests,
   verifyKernelContract,
@@ -191,7 +197,16 @@ export function materializeKernelResult(
   language: Language,
   durationMs = 0
 ): ExtractionResult {
-  const decoded = decodeExtractBuffers(raw.buffers, filePath, language);
+  // Wire index order: the kernel's own verified tables — the fork tables
+  // only gate the subset check and never index-decode a kernel row.
+  const tables = kernelWireTables();
+  const decoded = decodeExtractBuffers(
+    raw.buffers,
+    filePath,
+    language,
+    tables.nodeKinds,
+    tables.edgeKinds
+  );
   decoded.durationMs = durationMs;
   return decoded;
 }
@@ -241,7 +256,9 @@ export function tryKernelExtract(
   const t0 = Date.now();
   try {
     const buffers = kernel.extractFile(filePath, source, language);
-    const result = decodeExtractBuffers(buffers, filePath, language);
+    // Kernel-own wire tables for decode — see materializeKernelResult.
+    const tables = kernelWireTables();
+    const result = decodeExtractBuffers(buffers, filePath, language, tables.nodeKinds, tables.edgeKinds);
     POST_PASSES[language]?.(result, source);
     result.durationMs = Date.now() - t0;
     return result;
