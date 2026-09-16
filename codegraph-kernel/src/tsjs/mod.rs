@@ -20,7 +20,7 @@ use crate::buffers::{
 };
 use crate::ids;
 use crate::langs;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use tree_sitter::{Node, Parser};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -45,10 +45,6 @@ impl Variant {
     /// aliases, visibility, isStatic. The JS family lacks all of those hooks.
     fn is_ts(self) -> bool {
         matches!(self, Variant::Typescript | Variant::Tsx)
-    }
-    /// VALUE_REF_LANGS includes typescript/tsx/javascript but NOT jsx.
-    fn value_refs(self) -> bool {
-        !matches!(self, Variant::Jsx)
     }
 }
 
@@ -105,22 +101,63 @@ fn is_instantiation_kind(kind: &str) -> bool {
     )
 }
 
-/// LITERAL_RECEIVER_TYPES (tree-sitter.ts) — full set; only a handful occur in
-/// TS/JS grammars but membership is what the TS code tests.
-fn is_literal_receiver(kind: &str) -> bool {
+/// valueReferenceTypes (languages/typescript.ts:15, languages/javascript.ts:14)
+/// — identical for all four tsjs variants (jsx maps to the javascript
+/// extractor), so extractValueReference needs no variant gate.
+fn is_value_reference_type(kind: &str) -> bool {
+    matches!(kind, "identifier" | "shorthand_property_identifier")
+}
+
+/// VALUE_REF_DECLARATION_PARENTS (tree-sitter.ts) — immediate-parent types
+/// whose identifier child is a declaration NAME. `variable_declarator` is
+/// deliberately absent: its NAME child is guarded by the generic name-field
+/// check, its VALUE child is the assignment RHS the pass exists to collect.
+fn is_value_ref_declaration_parent(kind: &str) -> bool {
     matches!(
         kind,
-        "string" | "string_literal" | "interpreted_string_literal" | "raw_string_literal"
-            | "template_string" | "concatenated_string" | "formatted_string" | "f_string"
-            | "line_string_literal" | "string_content" | "heredoc_body"
-            | "number" | "number_literal" | "integer" | "integer_literal" | "float"
-            | "float_literal" | "int_literal" | "decimal_integer_literal" | "real_literal"
-            | "char_literal" | "character_literal" | "rune_literal" | "regex" | "regex_literal"
-            | "true" | "false" | "boolean_literal" | "bool_literal" | "none" | "null" | "nil"
-            | "null_literal" | "undefined"
-            | "list" | "list_literal" | "array" | "array_literal" | "array_creation_expression"
-            | "dictionary" | "dict_literal" | "object" | "tuple" | "set"
+        "function_declaration"
+            | "generator_function_declaration"
+            | "function_signature"
+            | "class_declaration"
+            | "abstract_class_declaration"
+            | "method_definition"
+            | "interface_declaration"
+            | "type_alias_declaration"
+            | "enum_declaration"
+            | "arrow_function"
+            | "formal_parameters"
+            | "required_parameter"
+            | "optional_parameter"
+            | "rest_pattern"
     )
+}
+
+/// VALUE_REF_EXCLUDED_PARENTS (tree-sitter.ts) — immediate-parent types whose
+/// identifier child is not a value reference: callee/member-receiver positions
+/// are covered by the `calls` reference, import/export specifiers are import
+/// wiring, and JSX tag/attribute names are names, not values.
+fn is_value_ref_excluded_parent(kind: &str) -> bool {
+    matches!(
+        kind,
+        "call_expression"
+            | "new_expression"
+            | "member_expression"
+            | "subscript_expression"
+            | "import_specifier"
+            | "export_specifier"
+            | "namespace_import"
+            | "jsx_opening_element"
+            | "jsx_closing_element"
+            | "jsx_self_closing_element"
+            | "jsx_attribute"
+    )
+}
+
+/// VALUE_REF_EXCLUDED_ANCESTORS (tree-sitter.ts) — ancestor types that
+/// disqualify an identifier anywhere inside them (type positions, import
+/// statements, destructuring bindings).
+fn is_value_ref_excluded_ancestor(kind: &str) -> bool {
+    matches!(kind, "type_annotation" | "import_statement" | "object_pattern" | "array_pattern")
 }
 
 /// BUILTIN_TYPES (tree-sitter.ts) — names that never become type references.
@@ -137,15 +174,6 @@ fn is_builtin_type(name: &str) -> bool {
             | "Int" | "Long" | "Short" | "Byte" | "Float" | "Double" | "Boolean" | "Char"
             | "Unit" | "String" | "Any" | "AnyRef" | "AnyVal" | "Nothing" | "Null"
     )
-}
-
-/// REACT_COMPONENT_HOCS (tree-sitter.ts, #841).
-fn is_react_hoc(callee: &str) -> bool {
-    matches!(callee, "forwardRef" | "memo" | "React.forwardRef" | "React.memo")
-}
-
-fn is_vue_collection_name(name: &str) -> bool {
-    matches!(name, "actions" | "mutations" | "getters")
 }
 
 /// One scope-stack entry (TS keeps node IDs; rows are our equivalent).
@@ -172,10 +200,11 @@ struct Extra {
     extra_json: Option<String>,
 }
 
-struct ValueScope<'t> {
+/// One queued interface-member flush job (fork pendingInterfaceMembers).
+struct PendingInterface<'t> {
     row: u32,
-    node: Node<'t>,
     name: String,
+    body: Node<'t>,
 }
 
 pub struct Walker<'t> {
@@ -196,14 +225,14 @@ pub struct Walker<'t> {
     /// Simple names from `imports` refs (fn-ref flush gate).
     imported_names: HashSet<String>,
     fn_ref_cands: Vec<(u32, fnref::Candidate)>,
-    // Value-reference bookkeeping (flushValueRefs).
-    fs_values: HashMap<String, u32>,
-    fs_value_counts: HashMap<String, u32>,
-    value_scopes: Vec<ValueScope<'t>>,
-    vue_store_file: Option<bool>,
+    /// extractValueReference per-file dedup: `${fromNodeId}\u{0}${name}`.
+    value_ref_keys: HashSet<String>,
+    /// TS interface member jobs held for the post-walk flush — contract
+    /// members land AFTER same-file concrete implementations because
+    /// first-match-by-name consumers depend on seeing the executable
+    /// declaration first (fork flushPendingInterfaceMembers semantics).
+    pending_interface_members: Vec<PendingInterface<'t>>,
 }
-
-const MAX_VALUE_REF_NODES: usize = 20_000;
 
 pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut, String> {
     let variant = Variant::from_language(language)
@@ -245,10 +274,8 @@ pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut,
         defined_fn_names: HashSet::new(),
         imported_names: HashSet::new(),
         fn_ref_cands: Vec::new(),
-        fs_values: HashMap::new(),
-        fs_value_counts: HashMap::new(),
-        value_scopes: Vec::new(),
-        vue_store_file: None,
+        value_ref_keys: HashSet::new(),
+        pending_interface_members: Vec::new(),
     };
 
     // File node (TreeSitterExtractor.extract): id `file:<path>`, endLine =
@@ -283,9 +310,11 @@ pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut,
 
     w.visit_node(tree.root_node());
 
-    // End-of-file passes, in the TS extract() order.
+    // End-of-file passes, in the fork extract() order: the contract-member
+    // flush runs after the whole walk (see PendingInterface), then the #756
+    // fn-ref flush (FUNCTION_REF rows are dropped fork-side at decode).
+    w.flush_pending_interface_members();
     w.flush_fn_ref_candidates();
-    w.flush_value_refs(tree.root_node());
     w.stack.pop();
 
     let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
@@ -450,128 +479,137 @@ impl<'t> Walker<'t> {
         if kind == "function" || kind == "method" {
             self.defined_fn_names.insert(name.to_string());
         }
-        self.capture_value_ref_scope(kind, name, row, node);
         Some(row)
     }
 
-    // --- value references (captureValueRefScope / flushValueRefs) --------------
+    // --- value references (extractValueReference, fork unresolved-ref mechanism) ---
 
-    fn capture_value_ref_scope(&mut self, kind: &'static str, name: &str, row: u32, node: Node<'t>) {
-        if !self.variant.value_refs() {
+    /// extractValueReference (tree-sitter.ts): a value-position identifier —
+    /// object shorthand (`{ fn }`), a bare call argument (`register(fn)`), a
+    /// JSX expression body (`onClick={fn}`), an assignment right-hand side —
+    /// becomes an unresolved `references` ref against the current scope.
+    /// Without it, a function passed as a value is invisible to cross-file
+    /// dependency walks. Names of two UTF-16 units or fewer are skipped; the
+    /// (from-node-id, name) pair is deduped per file because the resolver
+    /// would collapse the duplicate edges anyway.
+    fn extract_value_reference(&mut self, node: Node<'t>) {
+        if !is_value_reference_type(node.kind()) {
             return;
         }
-        let target_kind_ok = kind == "constant" || kind == "variable";
-        if target_kind_ok
-            && util::utf16_len(name) >= 3
-            && util::has_upper_or_underscore().is_match(name)
-        {
-            let parent_ok = self
-                .stack
-                .last()
-                .map(|s| matches!(s.kind, "file" | "class" | "module" | "struct" | "enum"))
-                .unwrap_or(false);
-            if parent_ok {
-                self.fs_values.insert(name.to_string(), row);
-                *self.fs_value_counts.entry(name.to_string()).or_insert(0) += 1;
-            }
+        if self.stack.is_empty() {
+            return;
         }
-        if matches!(kind, "function" | "method" | "constant" | "variable") {
-            self.value_scopes.push(ValueScope { row, node, name: name.to_string() });
+        let from = self.top_row();
+        if self.is_non_reference_value_position(node) {
+            return;
+        }
+        let name = self.text(node);
+        if util::utf16_len(name) <= 2 {
+            return;
+        }
+        // Keyed on the node ID STRING, not the row — ids collide for
+        // same-(kind, name, line) nodes, and the TS side keys its dedupe on
+        // `${fromNodeId}\u0000${name}`.
+        let key = format!("{}\u{0}{}", self.node_ids[from as usize], name);
+        if !self.value_ref_keys.insert(key) {
+            return;
+        }
+        self.push_ref(from, name, edge_kind_index("references").unwrap(), node);
+    }
+
+    /// isNonReferenceValuePosition (tree-sitter.ts): guard an identifier out
+    /// of value-reference collection when its position is a declaration name,
+    /// a call callee/member receiver (already covered by the `calls`
+    /// reference), an import/export specifier, a type position, a JSX
+    /// tag/attribute name, or a destructuring binding.
+    fn is_non_reference_value_position(&self, node: Node) -> bool {
+        let Some(parent) = node.parent() else { return false };
+        if is_value_ref_excluded_parent(parent.kind()) {
+            return true;
+        }
+        if is_value_ref_declaration_parent(parent.kind()) {
+            return true;
+        }
+        // Object-literal keys are names; pair values are not keys and stay values.
+        if parent.kind() == "pair" {
+            return parent
+                .child_by_field_name("key")
+                .is_some_and(|k| k.id() == node.id());
+        }
+        // Generic declaration-name position (`function foo`, `const foo`, …).
+        if parent
+            .child_by_field_name("name")
+            .is_some_and(|n| n.id() == node.id())
+        {
+            return true;
+        }
+        // hasAncestorType(VALUE_REF_EXCLUDED_ANCESTORS) — starts at the parent.
+        let mut cur = Some(parent);
+        while let Some(c) = cur {
+            if is_value_ref_excluded_ancestor(c.kind()) {
+                return true;
+            }
+            cur = c.parent();
+        }
+        false
+    }
+
+    // --- TS contract members (flushPendingInterfaceMembers) -----------------------
+
+    /// Materialize interface member nodes queued during the walk (fork
+    /// flushPendingInterfaceMembers, called from extract() AFTER the whole
+    /// walk): a contract member name (`interface Store { reset() }`)
+    /// routinely matches the concrete implementation later in the same file
+    /// (`reset: () => ...`), and first-match-by-name consumers must keep
+    /// seeing the executable declaration first.
+    fn flush_pending_interface_members(&mut self) {
+        let pending = std::mem::take(&mut self.pending_interface_members);
+        for job in pending {
+            self.stack.push(Scope { row: job.row, kind: "interface", name: job.name.clone() });
+            self.extract_ts_contract_members(&job.name, job.row, &[job.body]);
+            self.stack.pop();
         }
     }
 
-    fn flush_value_refs(&mut self, root: Node<'t>) {
-        let scopes = std::mem::take(&mut self.value_scopes);
-        let mut targets = std::mem::take(&mut self.fs_values);
-        let counts = std::mem::take(&mut self.fs_value_counts);
-        if !self.variant.value_refs() || std::env::var("CODEGRAPH_VALUE_REFS").as_deref() == Ok("0") {
-            return;
-        }
-        if targets.is_empty() || scopes.is_empty() || util::is_generated_file(self.file_path) {
-            return;
-        }
-
-        // Shadow prune: count declarators of each target name across the whole
-        // tree; more declarators than file-scope nodes ⇒ an inner re-binding
-        // shadows the target. (TS/JS declarators are `variable_declarator`;
-        // the other kinds in the TS switch belong to other grammars.)
-        let mut decl_counts: HashMap<&str, u32> = HashMap::new();
-        let mut dstack: Vec<Node> = vec![root];
-        let mut dvisited = 0usize;
-        while let Some(n) = dstack.pop() {
-            if dvisited >= MAX_VALUE_REF_NODES {
-                break;
-            }
-            dvisited += 1;
-            if n.kind() == "variable_declarator" {
-                if let Some(first) = n.named_child(0) {
-                    if first.kind() == "identifier" {
-                        let nm = self.text(first);
-                        if targets.contains_key(nm) {
-                            *decl_counts.entry(nm).or_insert(0) += 1;
-                        }
-                    }
+    /// extractTsContractMembers (tree-sitter.ts): shared contract-member walk
+    /// for TS object shapes — the `object_type` bodies of a `type X = { ... }`
+    /// alias and the `interface_body` of an `interface Y { ... }`. Members
+    /// become first-class property/method nodes (`qn = Container::member`)
+    /// because the resolver's class-candidate strategies bind member
+    /// references to `kind === 'method'` nodes under the container.
+    fn extract_ts_contract_members(&mut self, container_name: &str, container_row: u32, bodies: &[Node<'t>]) {
+        for obj_type in bodies {
+            for i in 0..obj_type.named_child_count() {
+                let Some(child) = obj_type.named_child(i) else { continue };
+                if !matches!(child.kind(), "property_signature" | "method_signature") {
+                    continue;
                 }
-            }
-            for i in 0..n.named_child_count() {
-                if let Some(c) = n.named_child(i) {
-                    dstack.push(c);
+                let Some(name_node) = child.child_by_field_name("name") else { continue };
+                let member_name = self.text(name_node);
+                if member_name.is_empty() {
+                    continue;
                 }
-            }
-        }
-        let shadowed: Vec<String> = decl_counts
-            .iter()
-            .filter(|(nm, c)| **c > counts.get(**nm).copied().unwrap_or(1))
-            .map(|(nm, _)| nm.to_string())
-            .collect();
-        for nm in shadowed {
-            targets.remove(&nm);
-        }
-        if targets.is_empty() {
-            return;
-        }
-
-        let refs_kind = edge_kind_index("references").unwrap();
-        for scope in &scopes {
-            // Self-skip and per-scope dedupe compare node ID STRINGS (which
-            // collide for same-(kind, name, line) nodes), matching the TS side.
-            let mut seen: HashSet<&str> = HashSet::new();
-            let mut stack: Vec<Node> = vec![scope.node];
-            let mut visited = 0usize;
-            while let Some(n) = stack.pop() {
-                if visited >= MAX_VALUE_REF_NODES {
-                    break;
-                }
-                visited += 1;
-                if matches!(n.kind(), "identifier" | "constant" | "name" | "simple_identifier") {
-                    let ref_name = self.text(n);
-                    if let Some(&target_row) = targets.get(ref_name) {
-                        let target_id = self.node_ids[target_row as usize].as_str();
-                        if target_id != self.node_ids[scope.row as usize]
-                            && ref_name != scope.name
-                            && !seen.contains(&target_id)
-                        {
-                            seen.insert(target_id);
-                            let meta = self.arena.put(r#"{"valueRef":true}"#);
-                            self.tables.push_edge(&EdgeRow {
-                                source_idx: scope.row,
-                                target_idx: target_row,
-                                kind: refs_kind,
-                                provenance: 0,
-                                line: NONE,
-                                column: NONE,
-                                metadata_json: meta,
-                                source_id_str: NONE_STR,
-                                target_id_str: NONE_STR,
-                            });
-                        }
-                    }
-                }
-                for i in 0..n.named_child_count() {
-                    if let Some(c) = n.named_child(i) {
-                        stack.push(c);
-                    }
-                }
+                // `foo: () => T` and `foo(): T` are functionally a method on
+                // the type contract — treat the function-typed property
+                // signature as a method too so call sites can resolve to it.
+                let member_kind: &'static str = if child.kind() == "method_signature"
+                    || self.is_ts_function_typed_property(child)
+                {
+                    "method"
+                } else {
+                    "property"
+                };
+                let extra = Extra {
+                    docstring: crate::docstring::preceding_docstring_tsjs(child, self.src),
+                    signature: Some(self.text(child).to_string()),
+                    qualified_name: Some(format!("{container_name}::{member_name}")),
+                    ..Extra::default()
+                };
+                self.create_node(member_kind, member_name, child, extra);
+                // `references` refs from the CONTAINER to types named in the
+                // member's signature (#432) — consistent for aliases and
+                // interfaces.
+                self.extract_type_annotations(child, container_row);
             }
         }
     }
@@ -655,6 +693,11 @@ impl<'t> Walker<'t> {
 
         // Function-as-value capture — independent of the dispatch ladder.
         self.maybe_capture_fn_refs(node);
+        // Value-position identifiers (fork visitNode): the generalized
+        // module-level walk collects them here; declaration handlers below
+        // walk their own bodies. Kept independent of skip_children so
+        // declarations still short-circuit.
+        self.extract_value_reference(node);
 
         if is_function_type(kind) {
             // (the isInsideClassLike + methodTypes overlap is Python/Ruby-only)
@@ -664,17 +707,7 @@ impl<'t> Walker<'t> {
             self.extract_class(node);
             skip_children = true;
         } else if is_method_type(self.variant, kind) {
-            if classify_ts_class_member(node) == Member::Property {
-                let prop = self.extract_property(node);
-                if let (Some((row, name)), Some(value)) = (prop, node.child_by_field_name("value")) {
-                    self.stack.push(Scope { row, kind: "property", name });
-                    self.visit_function_body(value);
-                    self.stack.pop();
-                }
-                self.scan_fn_ref_subtree(node, 0);
-            } else {
-                self.extract_method(node);
-            }
+            self.extract_method(node);
             skip_children = true;
         } else if self.variant.is_ts() && kind == "interface_declaration" {
             self.extract_interface(node);
@@ -690,17 +723,6 @@ impl<'t> Walker<'t> {
             skip_children = true;
         } else if kind == "import_statement" {
             self.extract_import(node);
-        } else if kind == "export_statement" && node.child_by_field_name("source").is_some() {
-            // Re-export: `export { X } from './y'`.
-            self.emit_re_export_refs(node);
-        } else if kind == "export_statement" && self.looks_like_vue_store_file() {
-            // Vuex MODULE default export (`export default { actions: {…} }`).
-            if let Some(exported) = node.child_by_field_name("value") {
-                if matches!(exported.kind(), "object" | "object_expression") {
-                    self.extract_store_collection_methods(exported);
-                    skip_children = true;
-                }
-            }
         } else if kind == "call_expression" {
             self.extract_call(node);
         } else if kind == "new_expression" {
@@ -746,12 +768,10 @@ impl<'t> Walker<'t> {
             self.extract_call(node);
         } else if kind == "new_expression" {
             self.extract_instantiation(node);
-        }
-
-        // Local variable type annotations (TS family only).
-        if self.variant.is_ts() && kind == "variable_declarator" {
-            let owner = self.top_row();
-            self.extract_variable_type_annotation(node, owner);
+        } else if is_value_reference_type(kind) {
+            // Value-position identifier inside a function body (bare argument,
+            // JSX expression, object shorthand, assignment RHS).
+            self.extract_value_reference(node);
         }
 
         // Nested NAMED functions become their own nodes.
@@ -787,13 +807,11 @@ impl<'t> Walker<'t> {
 
     /// extractName / extractNameRaw for the TS/JS configs.
     fn extract_name(&self, node: Node) -> String {
-        // javascriptExtractor.resolveName: field_definition names its key the
-        // `property` field.
-        if !self.variant.is_ts() && node.kind() == "field_definition" {
-            if let Some(prop) = node.child_by_field_name("property") {
-                return self.text(prop).to_string();
-            }
-        }
+        // (the fork's javascript/typescript configs declare NO resolveName
+        // hook — a JS `field_definition` has no `name` field and its
+        // property_identifier key is not in the fallback scan set, so class
+        // fields extract as `<anonymous>` methods; upstream's resolveName
+        // property-field branch is NOT fork behavior.)
         if let Some(name_node) = node.child_by_field_name("name") {
             return self.text(name_node).to_string();
         }
@@ -885,38 +903,6 @@ impl<'t> Walker<'t> {
     }
 
     // (extract_* functions continue in impl blocks below)
-}
-
-/// classifyTsClassMember (#808): a class field is a METHOD only when its value
-/// is callable (arrow / function expression / HOF call wrapping one).
-#[derive(PartialEq)]
-enum Member {
-    Method,
-    Property,
-}
-
-fn classify_ts_class_member(node: Node) -> Member {
-    if !matches!(node.kind(), "public_field_definition" | "field_definition") {
-        return Member::Method;
-    }
-    for i in 0..node.named_child_count() {
-        let Some(child) = node.named_child(i) else { continue };
-        if matches!(child.kind(), "arrow_function" | "function_expression") {
-            return Member::Method;
-        }
-        if child.kind() == "call_expression" {
-            if let Some(args) = child.child_by_field_name("arguments") {
-                for j in 0..args.named_child_count() {
-                    if let Some(arg) = args.named_child(j) {
-                        if matches!(arg.kind(), "arrow_function" | "function_expression") {
-                            return Member::Method;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    Member::Property
 }
 
 /// typescriptExtractor.resolveBody / javascriptExtractor.resolveBody: the body
