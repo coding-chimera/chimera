@@ -445,11 +445,17 @@ interface GitChanges {
  * Use `git status` to detect changed files instead of scanning every file.
  * Returns null on failure so callers fall back to full scan.
  */
-function getGitChangedFiles(rootDir: string): GitChanges | null {
+export function getGitChangedFiles(rootDir: string): GitChanges | null {
   try {
     const output = execFileSync(
       'git',
-      ['status', '--porcelain', '--no-renames'],
+      // `-uall` lists individual untracked files instead of collapsing an
+      // entirely-untracked directory into one `?? dir/` entry, which would
+      // otherwise be dropped here (only embedded git repos are recursed into
+      // below). Nested untracked git repos still collapse to `?? repo/` even
+      // with `-uall` — git never crosses a repo boundary — so the recursion
+      // still handles them. (#1213)
+      ['status', '--porcelain', '--no-renames', '-uall'],
       { cwd: rootDir, encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }
     );
 
@@ -494,7 +500,7 @@ function getGitChangedFiles(rootDir: string): GitChanges | null {
           if (classifyGitDir(childDir) !== 'embedded') continue;
           try {
             const childOutput = execFileSync(
-              'git', ['status', '--porcelain', '--no-renames'],
+              'git', ['status', '--porcelain', '--no-renames', '-uall'],
               { cwd: childDir, encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }
             );
             const prefix = normalizePath(rel);
@@ -916,8 +922,11 @@ export class ExtractionOrchestrator {
     if (useWorker) {
       // CODEGRAPH_PARSE_WORKERS: explicit worker count; 1 = the old
       // single-worker behaviour (the conservative rollback). Unset →
-      // clamp(cores-1, 1, 8).
-      const poolSize = resolveParsePoolSize(process.env.CODEGRAPH_PARSE_WORKERS, os.cpus().length);
+      // clamp(cores-1, 1, 8), with cores from availableParallelism —
+      // cpuset/affinity-honest, where os.cpus() enumerates the host's CPUs
+      // and spawned 8 wasm workers (and their grammar heaps) inside a
+      // 2-CPU container for zero extra throughput (§7a.1). (#1333)
+      const poolSize = resolveParsePoolSize(process.env.CODEGRAPH_PARSE_WORKERS, os.availableParallelism());
       pool = new ParseWorkerPool({
         languages: neededLanguages,
         size: poolSize,
