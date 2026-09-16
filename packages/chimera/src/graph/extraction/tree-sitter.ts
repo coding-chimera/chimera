@@ -28,6 +28,7 @@ import {
   getAllFrameworkResolvers,
   getApplicableFrameworks,
 } from '../resolution/frameworks';
+import { tryKernelExtract } from './kernel';
 
 // Re-export for backward compatibility
 export { generateNodeId } from './tree-sitter-helpers';
@@ -3575,6 +3576,18 @@ export function extractFromSource(
   const detectedLanguage = language || detectLanguage(filePath, source);
   const fileExtension = path.extname(filePath).toLowerCase();
 
+  // Framework resolvers are computed once up front: the kernel selector below
+  // skips the native arm when a framework extract() hook hits this file, and
+  // the merge pass reuses the same list (identical behavior to computing it
+  // there — same filter, same order).
+  const frameworkResolvers =
+    frameworkNames && frameworkNames.length > 0
+      ? getApplicableFrameworks(
+          getAllFrameworkResolvers().filter((r) => frameworkNames.includes(r.name)),
+          detectedLanguage
+        )
+      : [];
+
   let result: ExtractionResult;
 
   // Use custom extractor for Svelte
@@ -3608,32 +3621,39 @@ export function extractFromSource(
     const extractor = new DfmExtractor(filePath, source);
     result = extractor.extract();
   } else {
-    const extractor = new TreeSitterExtractor(filePath, source, detectedLanguage);
-    result = extractor.extract();
+    // Native-kernel route (UPSTREAM_RUST_KERNEL_PLAN.md P0): gated per
+    // language (DEFAULT_ROUTED is empty — CODEGRAPH_KERNEL_LANGS opts in)
+    // and gated on no framework extract() hook hitting this file. Returns
+    // null when not routed / no verified kernel loaded / kernel error /
+    // `defer:` signal (parse-tree ERROR, deep-nesting stack guard) — the
+    // wasm TreeSitterExtractor below stays the fallback in every case (wasm
+    // error recovery is canonical).
+    const kernelResult = frameworkResolvers.some((fw) => fw.extract)
+      ? null
+      : tryKernelExtract(filePath, source, detectedLanguage);
+    if (kernelResult) {
+      result = kernelResult;
+    } else {
+      const extractor = new TreeSitterExtractor(filePath, source, detectedLanguage);
+      result = extractor.extract();
+    }
   }
 
   // Framework-specific extraction (routes, middleware, etc.)
-  if (frameworkNames && frameworkNames.length > 0) {
-    const allResolvers = getAllFrameworkResolvers();
-    const applicable = getApplicableFrameworks(
-      allResolvers.filter((r) => frameworkNames.includes(r.name)),
-      detectedLanguage
-    );
-    for (const fw of applicable) {
-      if (!fw.extract) continue;
-      try {
-        const fwResult = fw.extract(filePath, source);
-        result.nodes.push(...fwResult.nodes);
-        result.unresolvedReferences.push(...fwResult.references);
-      } catch (err) {
-        result.errors.push({
-          message: `Framework extractor '${fw.name}' failed: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-          filePath,
-          severity: 'warning',
-        });
-      }
+  for (const fw of frameworkResolvers) {
+    if (!fw.extract) continue;
+    try {
+      const fwResult = fw.extract(filePath, source);
+      result.nodes.push(...fwResult.nodes);
+      result.unresolvedReferences.push(...fwResult.references);
+    } catch (err) {
+      result.errors.push({
+        message: `Framework extractor '${fw.name}' failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+        filePath,
+        severity: 'warning',
+      });
     }
   }
 
