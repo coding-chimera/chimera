@@ -617,17 +617,35 @@ const READONLY_QUALIFIED_TYPE = /^readonly\s+([\w$.]+)$/;
  * `calls` edge no receiver ever dispatches through. Fall-through (undefined)
  * keeps the weaker strategies' chance without claiming a known type.
  *
- * `readonly Inner` is a pure type-space modifier — it peels unconditionally.
- * Everything else is not guessed: `X[]`, `Array<X>`/`ReadonlyArray<X>`,
- * `Partial`/`Pick`/`Omit`/`Record` and other generics, nested
- * `Promise<Promise<X>>` (only one peel layer), unions, and function types
- * all stay opaque.
+ * `readonly Inner` is a pure type-space modifier — it peels unconditionally,
+ * and so does a nullability union (`X | null` / `X | undefined`): null and
+ * undefined declare no methods, so a member call can only dispatch through
+ * the sole value-typed member. Everything else is not guessed: `X[]`,
+ * `Array<X>`/`ReadonlyArray<X>`, `Partial`/`Pick`/`Omit`/`Record` and other
+ * generics, nested `Promise<Promise<X>>` (only one peel layer), multi-member
+ * unions, and function types all stay opaque.
  */
 function unwrapReceiverType(
   typeText: string,
   opts: { awaitInitialized: boolean },
 ): string | undefined {
   const trimmed = typeText.trim();
+  // Nullable-union peel (pool evidence: `let initializedDb: DatabaseConnection
+  // | undefined` then `initializedDb?.close()` — 12 failed refs in-repo).
+  // Splitting first makes every `|` inside generic args (`Foo<A | B>`,
+  // `Array<A> | null`'s structured survivors) fail the single-simple-member
+  // test too, so this arm only ever converts today's opaque fall-through
+  // (undefined) into a bindable name or keeps it — it never vetoes.
+  if (trimmed.includes('|')) {
+    const survivors = trimmed
+      .split('|')
+      .map((member) => member.trim())
+      .filter((member) => member !== 'null' && member !== 'undefined');
+    if (survivors.length !== 1) return undefined;
+    // Survivors re-enter every rule above unchanged; a member of a split
+    // union can no longer contain `|`, so the recursion is one hop deep.
+    return unwrapReceiverType(survivors[0]!, opts);
+  }
   const promise = PROMISE_WRAPPING_TYPE.exec(trimmed);
   if (promise) {
     if (!opts.awaitInitialized) return undefined;
