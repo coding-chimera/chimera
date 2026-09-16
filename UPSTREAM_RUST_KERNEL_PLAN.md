@@ -6,6 +6,7 @@
 ## 1. 决策摘要
 
 **采纳姿势：B 案绞杀者（strangler）**——kernel 作为可选提取路径整体平移上游机制（loader + contract_info 对账 + 逐文件 defer 回退 + CODEGRAPH_KERNEL kill switch + 逐语言路由白名单），从基建+工装做起，**逐语言过 fork 自建 parity gate 才开闸**，wasm 路径保留至终态可选删除。
+**采纳动机（用户原话口径，2026-09-16）**：不是为加速——“这种东西用 Rust 实现起来更加方便些”。即提取层（AST 走树/文本处理/内存控制）属于 Rust 的舒适区：实现更直接、无 wasm 堆病理、类型系统兼得正确性；P0-1 实测墙钟收益仅 1.02-1.05× 不改变本计划优先级（§2.4）。
 
 选 B 不选 A（全量换轨）的理由：
 - 可逆性：kill switch 逐调用生效、按语言摘除路由即回滚；A 案语义对齐后回退需还原 TS 增强
@@ -25,7 +26,8 @@
 
 | fork 资产 | kernel 对应物 | 处置 |
 |---|---|---|
-| return_type 列（receiver 推断原料） | ✅ 原生产出（layout.ts:58，tsjs/python/go…） | parity 对账即可 |
+| return_type 列（receiver 推断原料） | ⚠️ **实测修正（P0-2a smoke）**：layout 字段在位、go/python 产出，但 **tsjs walker 对 `async go(): Promise<string>` 不产出 returnType**（类型只在 signature 文本） | **tsjs returnType 进 P1 Rust 补丁清单**（与 params 同批）；其余语言 parity 对账 |
+| **NODE_KINDS 表分歧（contract 门失败，路由硬前置）** | kernel=[…,import,export,route,component,union] vs fork=[…,statement,import,export,route,component]：**kernel 独有 union，fork 独有 statement**（fork 审计层 relation-clause/传播探针大量消费 stmt@ 节点） | 两条线：① union 链立项（拍板 B 已采纳，G4 残链提前）② **statement 存续策略调研中**（Rust 侧补发射 vs 替代方案）——对齐前 contract verify 恒失败，kernel 不可路由（P0 常态即此，降级链路已验证） |
 | **params_json（0.5/0.5b 硬依赖）** | ❌ **无对应物**（python 仅拼进 signature 文本） | **Rust extraJson 补丁**（见 §3 P1）；TS 后处理不成立（post-pass 无树；二次 wasm parse 吃掉收益）；放弃=召回战役资产回退，不可接受 |
 | TS 接口/type-alias 成员建节点 | ✅ 上游语义存在（tsjs/extractors.rs:847-855） | 对账 kind/qn 形态 + **flush 顺序语义**（fork 契约成员必须排同文件实现之后，first-match-by-name 消费方依赖；parity harness 含节点数组顺序断言） |
 | 值位置引用 valueReferenceTypes | ✅ 上游语义存在（tsjs/mod.rs:416-514，`{"valueRef":true}`、VALUE_REF_LANGS=ts/tsx/js、20k 上限、CODEGRAPH_VALUE_REFS 开关） | 对账排除集细节（fork：≤2 字符/声明位/callee/import specifier/类型位/解构绑定排除 + per-file dedup + 对象字面量补收）；边 kind/metadata 形状映射 |
@@ -36,17 +38,19 @@
 
 ### 2.3 分发与构建（fork 约束全部有先例）
 - .node 旁挂：grammar wasm 已随平台包 `bin/` 旁挂（execPath 相邻解析）；@parcel/watcher/node-pty 证明 bun compile 单二进制运行时 require napi .node 是既成模式（含 musl 变体先例）
-- 缺口三项（P0 验证）：① bun × napi-rs 3 五 Buffer 返回 smoke 实测；② musl 交叉腿（上游 CI 矩阵无 musl，fork linux 目标含 glibc+musl）；③ .node 体积（上游 CI artifact 才有，估 10-30MB LTO+strip 后）
+- 缺口三项进展（P0-2a 实测）：① bun × napi-rs 3 五 Buffer smoke **PASS**（Buffer.isBuffer/ArrayBuffer backing/byteOffset=0 全验，TS/Python/Go 三语言 decode 正常，defer 探针正常）；② musl 交叉腿脚本映射已备（build-kernel.sh），实机验证待做；③ **.node 实测 33.6 MiB/平台**（超 10-30MB 估计 ~13%，分发矩阵按此规划）；host 构建 1m01s（rustc 1.98.1+clang 21）
 - macOS 签名/inode 注意（build-kernel.sh:81-85：先 rm 再 cp 防签名缓存 SIGKILL）适用 darwin 平台包
 
 ### 2.4 性能预期（如实，不吹）
 - 上游 headline（单 native 线程 4.4× 于整个 wasm 池）已被上游自测修正：dubbo-on-Mac 的墙是**单写者 SQLite ingest（94%）**；kernel 真实端到端收益在 CPU 受限信封 1.25-1.5×（2 核 CI：Linux kernel 树 26min→<12min 为 kernel+pool sizing 合并效果）
-- fork 是主线程单写者 store、无 store-worker → **端到端收益可能低于上游同场景**；P0 必须先 profile fork parse 段占比（五桶计时基建现成），收益叙事以实测为准
+- fork 实测（P0-1 profile，2026-09-16，M2 8 核，3 次完整运行占比稳定）：**parse+extract 仅占墙钟 2-4%（~2.6s/110s），store ≈30%，resolution ≈51-56%**（store+resolution ≈81%，kernel 完全不触碰）→ **kernel 端到端预期 ≈1.02-1.05×**，受限核数信封在 fork 不会触发。单线程提取吞吐基线：411 文件/s、17.4k 节点/s（kernel parity harness 的对比基准）
+- **kernel 对 fork 的价值排序因此改写**：① 鲁棒性（profile 附带实锤：wasm parse 池 recycle 期间歇挂死 3/8 次、冻结 >400s——kernel 路由消除该病理路径；已另派 TS 侧诊治批先行防护）② 上游对齐/可维护性 ③ function-ref 免费补齐 ④ #1581 SIGSEGV 栓守卫——**墙钟收益不在其中**。若未来要动 fork 端到端性能，目标是 store/resolution 的 SQLite 吞吐（上游 store-worker/direct-to-store 家族重新入选项评估范围，本计划不含）
 - 战略收益（与性能无关）：提取层与上游 HEAD 对齐后，G4 grammar vendoring 动机消失、后续上游 kernel 演进按批同步、深嵌套栈守卫（#1581 SIGSEGV 级）等上游修复自动获得宿主
 
 ### 2.5 fork 缺 EXTRACTION_VERSION（必须同批新建）
 - fork 无任何提取版本化失效机制（project_metadata 表休眠无调用方）；kernel 切换/升级/grammar 变更都会造成旧图谱静默陈旧
 - P0 落地：提取版本键（挂 project_metadata，getMetadata/setMetadata 现成）+ 版本不符 needsReindex 报告（复用 GraphSchemaMigrationRequiredError 的 needsMigration 姿态）
+- **已落地（P0-3，2026-09-16）**：`EXTRACTION_SEMANTICS_VERSION=1`（db/extraction-version.ts，独立于 schema version）；stamp 写入点 = **indexAll 成功收尾 ∪ 空库 sync**（实施中发现 chimera_init_graph/MCP 建库走 init+sync 而非 indexAll，只写 indexAll 会使工具面建的库永无 stamp；非空库 sync 永不写，防部分重提取谎报最新）；键缺失宽容不报警（存量库免假警报）；needsReindex 姿态接入 status/search/impact/file_symbols 四读面 + graph CLI status（text/json），chimera_status.txt 描述同步。kernel 路由/grammar/提取语义变更时按常量旁 bump 纪律抬版本
 
 ## 3. 阶段计划
 
