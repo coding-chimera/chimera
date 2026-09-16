@@ -51,7 +51,10 @@ export const EXTRACTION_SEMANTICS_METADATA_KEY = 'extraction_semantics_version';
  * read-only surface (the stale-schema database fails open before content is
  * ever queried).
  */
-export const EXTRACTION_SEMANTICS_VERSION = 1;
+// v2: wasm grammar alignment batch — 14 languages re-vendored to the
+// kernel-pinned grammar revisions (src/graph/extraction/wasm/MANIFEST.md);
+// node-kind table changes alter stored extraction output.
+export const EXTRACTION_SEMANTICS_VERSION = 2;
 
 /** Decoded shape of the stamp row. */
 export interface ExtractionSemanticsStamp {

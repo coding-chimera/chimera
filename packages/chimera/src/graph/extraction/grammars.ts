@@ -83,7 +83,22 @@ const WASM_GRAMMAR_FILES: Record<GrammarLanguage, string> = {
   objc: 'tree-sitter-objc.wasm',
 };
 
-const VENDORED_GRAMMAR_LANGUAGES = new Set<GrammarLanguage>(['pascal', 'scala', 'lua', 'luau']);
+/**
+ * Languages whose grammar wasm is vendored under src/graph/extraction/wasm
+ * instead of resolved from the tree-sitter-wasms npm package. Every vendored
+ * file is revision-matched to the grammar the native extraction kernel
+ * compiles (codegraph-kernel/Cargo.toml pins), so the kernel path and the
+ * wasm fallback parse identically — the kernel-grammar-parity test asserts
+ * this. Provenance (upstream source path, pinned tag, sha256) is recorded in
+ * src/graph/extraction/wasm/MANIFEST.md; bump the crate pin and the vendored
+ * wasm together. Only `objc` still loads from tree-sitter-wasms (the kernel
+ * has no objc arm).
+ */
+const VENDORED_GRAMMAR_LANGUAGES = new Set<GrammarLanguage>([
+  'pascal', 'scala', 'lua', 'luau', 'kotlin', 'dart',
+  'typescript', 'tsx', 'javascript', 'jsx', 'java', 'python', 'go',
+  'c', 'cpp', 'rust', 'csharp', 'ruby', 'php', 'swift',
+]);
 
 function binaryAdjacentGrammarPath(wasmFile: string): string | undefined {
   const candidate = path.join(path.dirname(process.execPath), 'tree-sitter-wasms', 'out', wasmFile);

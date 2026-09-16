@@ -3039,8 +3039,11 @@ export class TreeSitterExtractor {
    * `tuple_type`, …) — none of which are `type_identifier`. Closes #381.
    */
   private extractCsharpTypeRefs(node: SyntaxNode, nodeId: string): void {
-    // Return type / property type — the field is named `type`.
-    const directType = getChildByField(node, 'type');
+    // A property's type is under the `type` field; a method/constructor's RETURN
+    // type is under `returns` (tree-sitter-c-sharp 0.23.x — older builds used
+    // `type` for both). A node carries only one of the two, so checking both
+    // covers return types and property types without conflating them.
+    const directType = getChildByField(node, 'type') ?? getChildByField(node, 'returns');
     if (directType) this.walkCsharpTypePosition(directType, nodeId);
 
     // Field declarations wrap declarators in a `variable_declaration`
