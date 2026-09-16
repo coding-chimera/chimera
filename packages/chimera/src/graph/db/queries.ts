@@ -2266,6 +2266,16 @@ export class QueryBuilder {
   // ===========================================================================
 
   /**
+   * Count of indexed files. Cheap gate used by CodeGraph.sync to detect a
+   * still-empty database: such a sync re-extracts every indexable file, so
+   * it earns the extraction-semantics stamp like a full indexAll (see
+   * db/extraction-version.ts).
+   */
+  getFileCount(): number {
+    return (this.db.prepare('SELECT COUNT(*) AS count FROM files').get() as { count: number }).count;
+  }
+
+  /**
    * Get a metadata value by key
    */
   getMetadata(key: string): string | null {

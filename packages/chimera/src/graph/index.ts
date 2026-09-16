@@ -55,7 +55,13 @@ import type {
   BuildContextOptions,
   FindRelevantContextOptions,
 } from './types';
-import { DatabaseConnection, getDatabasePath } from './db';
+import {
+  DatabaseConnection,
+  getDatabasePath,
+  EXTRACTION_SEMANTICS_METADATA_KEY,
+  encodeExtractionSemanticsStamp,
+  type ExtractionSemanticsStatus,
+} from './db';
 import { QueryBuilder } from './db/queries';
 import {
   isInitialized,
@@ -96,12 +102,18 @@ export * from './types';
 // facade. Exposed from the package entry so they no longer require deep imports
 // into dist/ (issue #354).
 export {
-  getDatabasePath,
-  DatabaseConnection,
-  type DatabaseOpenOptions,
-  type StorageExtension,
-  type StorageExtensionMigration,
+getDatabasePath,
+DatabaseConnection,
+type DatabaseOpenOptions,
+type StorageExtension,
+type StorageExtensionMigration,
   type StorageExtensionMigrationRecord,
+  EXTRACTION_SEMANTICS_METADATA_KEY,
+  EXTRACTION_SEMANTICS_VERSION,
+  checkExtractionSemantics,
+  encodeExtractionSemanticsStamp,
+  type ExtractionSemanticsStamp,
+  type ExtractionSemanticsStatus,
 } from './db';
 export { QueryBuilder } from './db/queries';
 export {
@@ -1388,6 +1400,19 @@ export class CodeGraph {
           result.edgesCreated = after.edges - before.edges;
         }
 
+        if (result.success) {
+          // Stamp the extraction semantics this database now holds: a full
+          // indexAll has just re-extracted every indexable file with the
+          // current extractor. An incremental sync into an existing database
+          // must not stamp (it re-extracts only a content-changed subset);
+          // an empty-database sync stamps in CodeGraph.sync. See
+          // db/extraction-version.ts for the bump discipline.
+          this.queries.setMetadata(
+            EXTRACTION_SEMANTICS_METADATA_KEY,
+            encodeExtractionSemanticsStamp(codegraphVersion),
+          );
+        }
+
         finishIndexJob(this.projectRoot, job, result.success ? 'succeeded' : 'failed', {
           phase: 'complete',
           current: result.filesIndexed,
@@ -1490,6 +1515,11 @@ export class CodeGraph {
         });
         options.onProgress?.(progress);
       };
+      // A sync into a still-empty database re-extracts every indexable file
+      // with the current extractor (identical guarantee to indexAll), so it
+      // earns the extraction-semantics stamp; a sync over existing content
+      // must never stamp.
+      const freshDatabase = this.queries.getFileCount() === 0;
       try {
         const result = await this.orchestrator.sync(onProgress);
 
@@ -1578,6 +1608,13 @@ export class CodeGraph {
           this.db.runMaintenance();
         } else if (orphanCount > 0) {
           this.db.runMaintenance();
+        }
+
+        if (freshDatabase) {
+          this.queries.setMetadata(
+            EXTRACTION_SEMANTICS_METADATA_KEY,
+            encodeExtractionSemanticsStamp(codegraphVersion),
+          );
         }
 
         finishIndexJob(this.projectRoot, job, 'succeeded', {
@@ -1930,6 +1967,16 @@ export class CodeGraph {
       edgeCount: stats.edgeCount,
       dbSizeBytes: stats.dbSizeBytes,
     };
+  }
+
+  /**
+   * Compare the database's extraction-semantics stamp against the current
+   * extractor. Pure read: reports needsReindex on read-only surfaces without
+   * ever writing the stamp or migrating anything; an unstamped (legacy)
+   * database is treated leniently and reports no signal.
+   */
+  getExtractionSemanticsStatus(): ExtractionSemanticsStatus {
+    return this.db.extractionSemanticsStatus();
   }
 
   /**

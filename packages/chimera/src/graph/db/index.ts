@@ -11,6 +11,10 @@ import { SchemaVersion } from '../types';
 import { GraphSchemaMigrationRequiredError, defaultLogger } from '../errors';
 import { runMigrations, getCurrentVersion, CURRENT_SCHEMA_VERSION } from './migrations';
 import {
+  checkExtractionSemantics,
+  type ExtractionSemanticsStatus,
+} from './extraction-version';
+import {
   StorageExtension,
   StorageExtensionMigrationRecord,
   applyStorageExtension,
@@ -30,6 +34,14 @@ export type {
   StorageExtensionMigrationRecord,
 } from './extensions';
 export { getPendingStorageExtensionMigrations } from './extensions';
+export {
+  EXTRACTION_SEMANTICS_METADATA_KEY,
+  EXTRACTION_SEMANTICS_VERSION,
+  checkExtractionSemantics,
+  encodeExtractionSemanticsStamp,
+  type ExtractionSemanticsStamp,
+  type ExtractionSemanticsStatus,
+} from './extraction-version';
 
 declare const CHIMERA_DB_SCHEMA: string | undefined;
 
@@ -237,6 +249,16 @@ export class DatabaseConnection {
       appliedAt: row.applied_at,
       description: row.description ?? undefined,
     };
+  }
+
+  /**
+   * Compare this database's extraction-semantics stamp against the current
+   * extractor. Pure SELECT: safe on a read-only connection, and it never
+   * stamps, creates, or migrates anything (see db/extraction-version.ts for
+   * the lenient unstamped policy).
+   */
+  extractionSemanticsStatus(): ExtractionSemanticsStatus {
+    return checkExtractionSemantics(this.db);
   }
 
   /**

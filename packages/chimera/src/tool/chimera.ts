@@ -22,6 +22,7 @@ import {
   readIndexJob,
   NODE_KINDS,
   type CodeGraphSnapshot,
+  type ExtractionSemanticsStatus,
   type CodePlanAtomicLabel,
   type CodePlanRelationGraphLabel,
   type CodePlanRelationKind,
@@ -426,6 +427,9 @@ type StatusMetadata = {
   obligationsArtifact: string
   initialized?: boolean
   needsMigration?: boolean
+  needsReindex?: boolean
+  extractionSemanticsVersion?: number | null
+  requiredExtractionSemanticsVersion?: number
   schemaVersion?: number
   requiredVersion?: number
   dataRoot?: string
@@ -446,6 +450,9 @@ type SearchMetadata = {
   crossProject?: boolean
   initialized?: boolean
   needsMigration?: boolean
+  needsReindex?: boolean
+  extractionSemanticsVersion?: number | null
+  requiredExtractionSemanticsVersion?: number
   schemaVersion?: number
   requiredVersion?: number
   dataRoot?: string
@@ -488,6 +495,9 @@ type ImpactMetadata = {
   projectRoot: string
   crossProject?: boolean
   needsMigration?: boolean
+  needsReindex?: boolean
+  extractionSemanticsVersion?: number | null
+  requiredExtractionSemanticsVersion?: number
   schemaVersion?: number
   requiredVersion?: number
   snapshot?: CodeGraphSnapshot
@@ -797,6 +807,20 @@ function schemaMigrationGuidance(crossProject: boolean) {
 
 function schemaMigrationStatusLine(error: GraphSchemaMigrationRequiredError) {
   return `Chimera graph database schema version ${error.currentVersion} is outdated (requires ${error.requiredVersion}); the read-only graph surface cannot migrate it.`
+}
+
+// needsReindex is the extraction-semantics twin of the needsMigration
+// posture above: the read-only surface reports the mismatch it found and
+// points at `chimera graph index` (the only flow that re-extracts every
+// file and re-stamps) instead of writing or reindexing from a query path.
+function extractionSemanticsGuidance(crossProject: boolean) {
+  return crossProject
+    ? "Ask the user to run `chimera graph index` in that project to re-extract the graph with the current extractor; do not reindex another project's graph from this session."
+    : "Run `chimera graph index` in this project to re-extract the graph with the current extractor."
+}
+
+function extractionSemanticsStatusLine(status: ExtractionSemanticsStatus) {
+  return `Chimera graph extraction semantics version ${status.storedVersion} does not match the current extractor (requires ${status.currentVersion}); the read-only graph surface cannot re-extract it.`
 }
 
 function catchSchemaMigrationRequired<A, E, R, B>(
@@ -2663,6 +2687,7 @@ export const ChimeraStatusTool = Tool.define<typeof StatusParameters, StatusMeta
                 : yield* provenanceRecordCount(state.projectRoot, state.artifact)
               const obligations = yield* readObligationSummary(state.projectRoot, state.artifact, state.storePath, 0, state.crossProject === true)
               const missingFiles = state.crossProject ? 0 : state.graph.missingTrackedFiles().length
+              const semantics = state.graph.extractionSemanticsStatus()
 
               return {
                 title: "Chimera status",
@@ -2685,6 +2710,9 @@ export const ChimeraStatusTool = Tool.define<typeof StatusParameters, StatusMeta
                   ...(missingFiles > 0
                     ? [`Graph is missing ${missingFiles} git-tracked file${missingFiles === 1 ? "" : "s"} from the index; run a refresh or full sync to reconcile.`]
                     : []),
+                  semantics.needsReindex
+                    ? `${extractionSemanticsStatusLine(semantics)} ${extractionSemanticsGuidance(state.crossProject === true)}`
+                    : undefined,
                 ].filter(Boolean).join("\n"),
                 metadata: {
                   initialized: true,
@@ -2701,6 +2729,9 @@ export const ChimeraStatusTool = Tool.define<typeof StatusParameters, StatusMeta
                   backend: String(state.graph.backend()),
                   journalMode: state.graph.journalMode(),
                   missingFiles,
+                  needsReindex: semantics.needsReindex,
+                  extractionSemanticsVersion: semantics.storedVersion,
+                  requiredExtractionSemanticsVersion: semantics.currentVersion,
                   provenanceRecords,
                   obligationCounts: obligations.counts,
                   pendingObligations: obligations.counts.pending,
@@ -2806,6 +2837,7 @@ export const ChimeraSearchTool = Tool.define<typeof SearchParameters, SearchMeta
               const sentenceLike = isSentenceLikeQuery(params.query)
               const effectiveLimit = sentenceLike ? Math.min(limit, SENTENCE_QUERY_TRUNCATED_RESULTS) : limit
               const snapshot = state.graph.snapshot()
+              const semantics = state.graph.extractionSemanticsStatus()
               const kinds = params.kind ? [params.kind] : undefined
               const detailed = state.graph.searchNodesDetailed(params.query, { kinds, limit: effectiveLimit })
               // The search core guarantees per-term quota slots, so a multi-word
@@ -2827,6 +2859,9 @@ export const ChimeraSearchTool = Tool.define<typeof SearchParameters, SearchMeta
                   ...(detailed.terms.length
                     ? [`terms: ${detailed.terms.map((term) => `${term.term}(${term.count})`).join(" ")} · ${detailed.total} candidates before limit`]
                     : []),
+                  ...(semantics.needsReindex
+                    ? [`- ${extractionSemanticsStatusLine(semantics)} ${extractionSemanticsGuidance(state.crossProject === true)}`]
+                    : []),
                 ].join("\n"),
                 metadata: {
                   projectRoot: state.projectRoot,
@@ -2836,6 +2871,9 @@ export const ChimeraSearchTool = Tool.define<typeof SearchParameters, SearchMeta
                   dataRootStatus: dataRoot.dataRootStatus,
                   jobStatus: job,
                   snapshot,
+                  ...(semantics.needsReindex
+                    ? { needsReindex: true, extractionSemanticsVersion: semantics.storedVersion, requiredExtractionSemanticsVersion: semantics.currentVersion }
+                    : {}),
                   results: results.map((result) => ({
                     ...result,
                     projection: state.graph.projectNode(result.node, snapshot),
@@ -2898,6 +2936,7 @@ export const ChimeraFileSymbolsTool = Tool.define<typeof FileSymbolsParameters, 
               }
               const fileExists = yield* Effect.promise(() => Bun.file(file.absolutePath).exists()).pipe(Effect.orDie)
               const snapshot = state.graph.snapshot()
+              const semantics = state.graph.extractionSemanticsStatus()
               const normalizedFile = file.graphPath
               const results = (params.range
                 ? state.graph.nodesIntersectingRange(normalizedFile, params.range, { kinds, smallestOnly: false })
@@ -2918,11 +2957,17 @@ export const ChimeraFileSymbolsTool = Tool.define<typeof FileSymbolsParameters, 
                     ? ["- No indexed symbols found. File exists; possible unsupported parser, excluded path, or non-source file."]
                     : []),
                   ...enriched.lines,
+                  ...(semantics.needsReindex
+                    ? [`- ${extractionSemanticsStatusLine(semantics)} ${extractionSemanticsGuidance(state.crossProject === true)}`]
+                    : []),
                 ].join("\n"),
                 metadata: {
                   projectRoot: state.projectRoot,
                   crossProject: state.crossProject === true,
                   snapshot,
+                  ...(semantics.needsReindex
+                    ? { needsReindex: true, extractionSemanticsVersion: semantics.storedVersion, requiredExtractionSemanticsVersion: semantics.currentVersion }
+                    : {}),
                   results: results.map((result) => ({
                     ...result,
                     projection: state.graph.projectNode(result.node, snapshot),
@@ -3143,6 +3188,7 @@ export const ChimeraImpactTool = Tool.define<typeof ImpactParameters, ImpactMeta
                 yield* Effect.promise(() => syncExistingGraphFiles(state, [file], "force")).pipe(Effect.orDie)
               }
               const snapshot = state.graph.snapshot()
+              const semantics = state.graph.extractionSemanticsStatus()
               const normalizedFile = file?.graphPath
               const kinds = params.kind ? [params.kind] : undefined
               const nodeID = chimeraRefID(params.ref, ["node"]) ?? params.nodeID?.trim()
@@ -3178,11 +3224,17 @@ export const ChimeraImpactTool = Tool.define<typeof ImpactParameters, ImpactMeta
                     "",
                     `Closest symbol candidates (${candidates.length}):`,
                     ...(candidates.length ? candidates.map((node) => formatNode(node)) : ["- None found."]),
+                    ...(semantics.needsReindex
+                      ? [`- ${extractionSemanticsStatusLine(semantics)} ${extractionSemanticsGuidance(state.crossProject === true)}`]
+                      : []),
                   ].join("\n"),
                   metadata: {
                     projectRoot: state.projectRoot,
                     crossProject: state.crossProject === true,
                     snapshot,
+                    ...(semantics.needsReindex
+                      ? { needsReindex: true, extractionSemanticsVersion: semantics.storedVersion, requiredExtractionSemanticsVersion: semantics.currentVersion }
+                      : {}),
                     seeds: [],
                     impacted: [],
                     fileDependents: [],
@@ -3225,11 +3277,17 @@ export const ChimeraImpactTool = Tool.define<typeof ImpactParameters, ImpactMeta
                   "",
                   "Impact evidence:",
                   ...(impact.evidence.length ? impact.evidence.map(formatEvidence) : ["- None found."]),
+                  ...(semantics.needsReindex
+                    ? [`- ${extractionSemanticsStatusLine(semantics)} ${extractionSemanticsGuidance(state.crossProject === true)}`]
+                    : []),
                 ].join("\n"),
                 metadata: {
                   projectRoot: state.projectRoot,
                   crossProject: state.crossProject === true,
                   snapshot,
+                  ...(semantics.needsReindex
+                    ? { needsReindex: true, extractionSemanticsVersion: semantics.storedVersion, requiredExtractionSemanticsVersion: semantics.currentVersion }
+                    : {}),
                   seeds: seedNodes.map((node) => state.graph.projectNode(node, snapshot)),
                   impacted: impact.impactedNodes.map((node) => state.graph.projectNode(node, snapshot)),
                   fileDependents: impact.fileDependents,
