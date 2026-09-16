@@ -967,6 +967,271 @@ describe('Resolution Module', () => {
       expect(matchMethodCall(declRef('pkg/app.ts', 'conn.query', 5), context)).toBeNull();
     });
 
+
+    // Batch: dotted factory evidence. `const cg = await CodeGraph.open()` —
+    // the class-prefixed callee names the method whose return type types the
+    // receiver. Same await/Promise rules as the bare factory.
+    it('binds a receiver from a dotted static factory (const cg = await CodeGraph.open())', () => {
+      const context = declContext({
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const cg = await CodeGraph.open(projectPath)' }),
+          declNode('method:app.ts:open:20', 'method', 'open', 'app.ts', 20, { qualifiedName: 'CodeGraph::open', returnType: 'Promise<CodeGraph>' }),
+          declNode('class:app.ts:CodeGraph', 'class', 'CodeGraph', 'app.ts', 30),
+          declNode('method:app.ts:getNode:31', 'method', 'getNode', 'app.ts', 31, { qualifiedName: 'CodeGraph::getNode' }),
+          declNode('class:app.ts:Ledger', 'class', 'Ledger', 'app.ts', 40),
+          declNode('method:app.ts:getNode:41', 'method', 'getNode', 'app.ts', 41, { qualifiedName: 'Ledger::getNode' }),
+        ],
+      });
+      const result = matchMethodCall(declRef('app.ts', 'cg.getNode', 5), context);
+      expect(result?.targetNodeId).toBe('method:app.ts:getNode:31');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    it('binds a `this.`-prefixed factory through the same-file method return type', () => {
+      // `const cg = this.getCodeGraph(path)` — the enclosing class's own
+      // method names the receiver's type directly (no Promise to peel).
+      const context = declContext({
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const cg = this.getCodeGraph(projectPath)' }),
+          declNode('method:app.ts:getCodeGraph:20', 'method', 'getCodeGraph', 'app.ts', 20, { qualifiedName: 'ToolHandler::getCodeGraph', returnType: 'CodeGraph' }),
+          declNode('class:app.ts:CodeGraph', 'class', 'CodeGraph', 'app.ts', 30),
+          declNode('method:app.ts:getNode:31', 'method', 'getNode', 'app.ts', 31, { qualifiedName: 'CodeGraph::getNode' }),
+          declNode('class:app.ts:Ledger', 'class', 'Ledger', 'app.ts', 40),
+          declNode('method:app.ts:getNode:41', 'method', 'getNode', 'app.ts', 41, { qualifiedName: 'Ledger::getNode' }),
+        ],
+      });
+      const result = matchMethodCall(declRef('app.ts', 'cg.getNode', 5), context);
+      expect(result?.targetNodeId).toBe('method:app.ts:getNode:31');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    it('does not bind a non-awaited dotted factory returning Promise<T> (falls through)', () => {
+      // Without the await the receiver holds the Promise — same rule as the
+      // bare factory. No veto either: nothing else binds, so null is the
+      // unbindable-heuristics outcome, not an evidence veto.
+      const context = declContext({
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const cg = CodeGraph.open(projectPath)' }),
+          declNode('method:app.ts:open:20', 'method', 'open', 'app.ts', 20, { qualifiedName: 'CodeGraph::open', returnType: 'Promise<CodeGraph>' }),
+          declNode('class:app.ts:CodeGraph', 'class', 'CodeGraph', 'app.ts', 30),
+          declNode('method:app.ts:getNode:31', 'method', 'getNode', 'app.ts', 31, { qualifiedName: 'CodeGraph::getNode' }),
+          declNode('class:app.ts:Ledger', 'class', 'Ledger', 'app.ts', 40),
+          declNode('method:app.ts:getNode:41', 'method', 'getNode', 'app.ts', 41, { qualifiedName: 'Ledger::getNode' }),
+        ],
+      });
+      expect(matchMethodCall(declRef('app.ts', 'cg.getNode', 5), context)).toBeNull();
+    });
+
+    it('does not bind factories behind deeper chains (a.b.c())', () => {
+      const context = declContext({
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const cg = await lib.CodeGraph.open(projectPath)' }),
+          declNode('method:app.ts:open:20', 'method', 'open', 'app.ts', 20, { qualifiedName: 'CodeGraph::open', returnType: 'Promise<CodeGraph>' }),
+          declNode('class:app.ts:CodeGraph', 'class', 'CodeGraph', 'app.ts', 30),
+          declNode('method:app.ts:getNode:31', 'method', 'getNode', 'app.ts', 31, { qualifiedName: 'CodeGraph::getNode' }),
+          declNode('class:app.ts:Ledger', 'class', 'Ledger', 'app.ts', 40),
+          declNode('method:app.ts:getNode:41', 'method', 'getNode', 'app.ts', 41, { qualifiedName: 'Ledger::getNode' }),
+        ],
+      });
+      expect(matchMethodCall(declRef('app.ts', 'cg.getNode', 5), context)).toBeNull();
+    });
+
+    it('falls through an unresolvable dotted prefix without vetoing the unique candidate', () => {
+      // `mgr.open()` names no graph member — the evidence must stay silent
+      // (fall-through, not veto): the single same-file getNode candidate
+      // keeps its Strategy 3 chance.
+      const context = declContext({
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const cg = await mgr.open()' }),
+          declNode('class:app.ts:Node', 'class', 'Node', 'app.ts', 30),
+          declNode('method:app.ts:getNode:31', 'method', 'getNode', 'app.ts', 31, { qualifiedName: 'Node::getNode' }),
+        ],
+      });
+      const result = matchMethodCall(declRef('app.ts', 'cg.getNode', 5), context);
+      expect(result?.targetNodeId).toBe('method:app.ts:getNode:31');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    // Import-reachability supplements: `import type X from 'm'` and
+    // `await import('m')` are import evidence the static resolver regex
+    // misses; they may only ALLOW cross-file binds, never open the
+    // "no imports -> permissive" default (merge requires a non-empty base).
+    it('binds a declared cross-file class through a type-only default import', () => {
+      const context: ResolutionContext = {
+        ...declContext({
+          'app.ts': [
+            declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const q = new Queue()' }),
+          ],
+          'queue.ts': [
+            declNode('class:queue.ts:Queue', 'class', 'Queue', 'queue.ts', 1),
+            declNode('method:queue.ts:close:10', 'method', 'close', 'queue.ts', 10, { qualifiedName: 'Queue::close' }),
+          ],
+        }, [reactImport]),
+        readFile: (filePath) =>
+          filePath === 'app.ts' ? "import { useState } from 'react';\nimport type Queue from './queue';\n" : null,
+      };
+      const result = matchMethodCall(declRef('app.ts', 'q.close', 5), context);
+      expect(result?.targetNodeId).toBe('method:queue.ts:close:10');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    it('binds through a dynamic import specifier (await import)', () => {
+      const context: ResolutionContext = {
+        ...declContext({
+          'app.ts': [
+            declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const conn = new DatabaseConnection()' }),
+          ],
+          'db/connection.ts': [
+            declNode('class:db/connection.ts:1', 'class', 'DatabaseConnection', 'db/connection.ts', 1),
+            declNode('method:db/connection.ts:close:10', 'method', 'close', 'db/connection.ts', 10, { qualifiedName: 'DatabaseConnection::close' }),
+          ],
+        }, [reactImport]),
+        readFile: (filePath) =>
+          filePath === 'app.ts' ? "import { useState } from 'react';\nconst load = async () => await import('./db/connection');\n" : null,
+      };
+      const result = matchMethodCall(declRef('app.ts', 'conn.close', 5), context);
+      expect(result?.targetNodeId).toBe('method:db/connection.ts:close:10');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    it('import supplements do not widen reachability to unrelated candidates', () => {
+      // The file imports a type-only `Queue` and nothing naming Widget —
+      // the single cross-file Widget.close candidate stays vetoed.
+      const context: ResolutionContext = {
+        ...declContext({
+          'app.ts': [
+            declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const q = new Queue()' }),
+          ],
+          'lib/Widget.ts': [
+            declNode('class:lib/Widget.ts:Widget', 'class', 'Widget', 'lib/Widget.ts', 1),
+            declNode('method:lib/Widget.ts:close:10', 'method', 'close', 'lib/Widget.ts', 10, { qualifiedName: 'Widget::close' }),
+          ],
+        }, [reactImport]),
+        readFile: (filePath) =>
+          filePath === 'app.ts' ? "import { useState } from 'react';\nimport type Queue from './queue';\n" : null,
+      };
+      // Queue has no class node at all (fall through), and Widget.close is the
+      // unique cross-file candidate the import veto still kills.
+      expect(matchMethodCall(declRef('app.ts', 'q.close', 5), context)).toBeNull();
+    });
+
+    // Closure-parameter walk: a receiver typed on an ENCLOSING function's
+    // parameter is visible in nested bodies; the innermost same-name
+    // declaration shadows it.
+    it('binds a receiver from an enclosing function parameter around a nested callback', () => {
+      const context = declContext({
+        'app.ts': [
+          paramFnNode('func:app.ts:create:3', 'create', 'app.ts', 3, 20, [{ name: 'q', type: 'Queue' }]),
+          paramFnNode('func:app.ts:handle:8', 'handle', 'app.ts', 8, 12, [{ name: 'event', type: 'Event' }]),
+          declNode('class:app.ts:Queue', 'class', 'Queue', 'app.ts', 30),
+          declNode('method:app.ts:push:31', 'method', 'push', 'app.ts', 31, { qualifiedName: 'Queue::push' }),
+          declNode('class:app.ts:Stack', 'class', 'Stack', 'app.ts', 40),
+          declNode('method:app.ts:push:41', 'method', 'push', 'app.ts', 41, { qualifiedName: 'Stack::push' }),
+        ],
+      });
+      // Call line 10 sits inside `handle` (which does not name q): the walk
+      // must step out to `create`, whose typed `q: Queue` binds the receiver.
+      const result = matchMethodCall(declRef('app.ts', 'q.push', 10), context);
+      expect(result?.targetNodeId).toBe('method:app.ts:push:31');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    it('prefers the innermost same-name parameter (lexical shadowing)', () => {
+      const context = declContext({
+        'app.ts': [
+          paramFnNode('func:app.ts:create:3', 'create', 'app.ts', 3, 20, [{ name: 'q', type: 'Queue' }]),
+          paramFnNode('func:app.ts:handle:8', 'handle', 'app.ts', 8, 12, [{ name: 'q', type: 'Stack' }]),
+          declNode('class:app.ts:Queue', 'class', 'Queue', 'app.ts', 30),
+          declNode('method:app.ts:push:31', 'method', 'push', 'app.ts', 31, { qualifiedName: 'Queue::push' }),
+          declNode('class:app.ts:Stack', 'class', 'Stack', 'app.ts', 40),
+          declNode('method:app.ts:push:41', 'method', 'push', 'app.ts', 41, { qualifiedName: 'Stack::push' }),
+        ],
+      });
+      const result = matchMethodCall(declRef('app.ts', 'q.push', 10), context);
+      expect(result?.targetNodeId).toBe('method:app.ts:push:41');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    // Same-name container disambiguation: a layer only decides when UNIQUE,
+    // ambiguity falls through to the old first-allowed behavior.
+    it('disambiguates same-named classes by same-file uniqueness (declaration path)', () => {
+      // The index order puts the WRONG `Prompt` first — `find()` would bind
+      // other/Prompt.render; same-file uniqueness must pick app.ts.
+      const context = declContext({
+        'other/Prompt.ts': [
+          declNode('class:other/Prompt.ts:Prompt', 'class', 'Prompt', 'other/Prompt.ts', 1),
+          declNode('method:other/Prompt.ts:render:10', 'method', 'render', 'other/Prompt.ts', 10, { qualifiedName: 'Prompt::render' }),
+        ],
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const p = new Prompt()' }),
+          declNode('class:app.ts:Prompt', 'class', 'Prompt', 'app.ts', 30),
+          declNode('method:app.ts:render:31', 'method', 'render', 'app.ts', 31, { qualifiedName: 'Prompt::render' }),
+        ],
+      }, [
+        reactImport,
+        { localName: 'usePrompt', exportedName: 'usePrompt', source: './Prompt', isDefault: false, isNamespace: false },
+      ]);
+      const result = matchMethodCall(declRef('app.ts', 'p.render', 5), context);
+      expect(result?.targetNodeId).toBe('method:app.ts:render:31');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    it('disambiguates same-named cross-file classes by a uniquely pinned import (param path)', () => {
+      // Both candidates are import-allowed (the './sub/Prompt' specifier tail
+      // matches each same-named file); only sub/Prompt.ts is pinned by the
+      // exact resolved path, so the import layer decides.
+      const context = declContext({
+        'other/Prompt.ts': [
+          declNode('class:other/Prompt.ts:Prompt', 'class', 'Prompt', 'other/Prompt.ts', 1),
+          declNode('method:other/Prompt.ts:render:10', 'method', 'render', 'other/Prompt.ts', 10, { qualifiedName: 'Prompt::render' }),
+        ],
+        'editor.ts': [
+          paramFnNode('func:editor.ts:edit:3', 'edit', 'editor.ts', 3, 9, [{ name: 'p', type: 'Prompt' }]),
+        ],
+        'sub/Prompt.ts': [
+          declNode('class:sub/Prompt.ts:Prompt', 'class', 'Prompt', 'sub/Prompt.ts', 1),
+          declNode('method:sub/Prompt.ts:render:10', 'method', 'render', 'sub/Prompt.ts', 10, { qualifiedName: 'Prompt::render' }),
+        ],
+      }, [
+        {
+          localName: 'Prompt',
+          exportedName: 'Prompt',
+          source: './sub/Prompt',
+          resolvedPath: 'sub/Prompt.ts',
+          isDefault: false,
+          isNamespace: false,
+        },
+        reactImport,
+      ]);
+      const result = matchMethodCall(declRef('editor.ts', 'p.render', 5), context);
+      expect(result?.targetNodeId).toBe('method:sub/Prompt.ts:render:10');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    it('keeps first-allowed behavior when every disambiguation layer is ambiguous', () => {
+      // Two same-named classes, neither same-file, neither pinned (the
+      // './anything/Prompt' tail match is allow-only) — the old find()
+      // semantics must survive untouched: the first allowed candidate wins.
+      const context = declContext({
+        'other/Prompt.ts': [
+          declNode('class:other/Prompt.ts:Prompt', 'class', 'Prompt', 'other/Prompt.ts', 1),
+          declNode('method:other/Prompt.ts:render:10', 'method', 'render', 'other/Prompt.ts', 10, { qualifiedName: 'Prompt::render' }),
+        ],
+        'z/Prompt.ts': [
+          declNode('class:z/Prompt.ts:Prompt', 'class', 'Prompt', 'z/Prompt.ts', 1),
+          declNode('method:z/Prompt.ts:render:10', 'method', 'render', 'z/Prompt.ts', 10, { qualifiedName: 'Prompt::render' }),
+        ],
+        'app.ts': [
+          declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const p = new Prompt()' }),
+        ],
+      }, [
+        { localName: 'Prompt', exportedName: 'Prompt', source: './x/Prompt', isDefault: false, isNamespace: false },
+        reactImport,
+      ]);
+      const result = matchMethodCall(declRef('app.ts', 'p.render', 5), context);
+      expect(result?.targetNodeId).toBe('method:other/Prompt.ts:render:10');
+    });
+
     it('refuses to fuzzy-guess names defined beyond the ambiguity ceiling', () => {
       // Upstream #999: K definitions x K references is O(K²) work that stalls
       // indexing on vendored/duplicated code. Beyond the ceiling the fuzzy

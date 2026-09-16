@@ -103,9 +103,17 @@ function barrelImportReachesFile(ref: UnresolvedRef, candidateFilePath: string, 
 }
 
 function refImportMappings(ref: UnresolvedRef, context: ResolutionContext): ImportMapping[] {
-  return typeof context.getImportMappings === 'function'
-    ? context.getImportMappings(ref.filePath, ref.language) ?? []
-    : [];
+  const base =
+    typeof context.getImportMappings === 'function'
+      ? (context.getImportMappings(ref.filePath, ref.language) ?? [])
+      : [];
+  // Empty base keeps the permissive default intact — supplements are only
+  // ever added to a file that already shows import discipline.
+  if (base.length === 0) return base;
+  const extras = importSupplementsForFile(ref.filePath, context);
+  if (extras.length === 0) return base;
+  const seen = new Set(base.map((m) => `${m.localName}\u0000${m.source}`));
+  return [...base, ...extras.filter((m) => !seen.has(`${m.localName}\u0000${m.source}`))];
 }
 
 function crossFileCandidateAllowed(ref: UnresolvedRef, candidate: Node, imports: ImportMapping[]): boolean {
@@ -126,6 +134,59 @@ function crossFileCandidateAllowed(ref: UnresolvedRef, candidate: Node, imports:
     if (imp.source && barrelImportReachesFile(ref, candidate.filePath, imp.source)) return true;
   }
   return false;
+}
+
+// Type-only default imports (`import type CodeGraph from '../index'`) and
+// dynamic specifiers (`await import('../index')`) are real reachability
+// evidence the import resolver's static regex misses (its `import\s+(\w+)`
+// arm swallows `type` as a bogus default name). They join the veto inputs
+// as ALLOW-only supplements — merged only when the resolver already found
+// at least one mapping, so the "file has no imports -> permissive" default
+// can never be closed by them; a dynamic specifier carries an empty local
+// name, matching no reference, only source/path tails.
+const TYPE_ONLY_DEFAULT_IMPORT =
+  /\bimport\s+type\s+([A-Za-z_$][\w$]*)\s*(?:,\s*\{[^}]*\})?\s*from\s*['"]([^'"]+)['"]/g;
+const DYNAMIC_IMPORT_SPECIFIER = /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
+
+const IMPORT_SUPPLEMENT_CACHES = new WeakMap<ResolutionContext, LRUCache<string, ImportMapping[]>>();
+const IMPORT_SUPPLEMENT_FILE_LIMIT = 256;
+
+function importSupplementsForFile(filePath: string, context: ResolutionContext): ImportMapping[] {
+  if (typeof context.readFile !== 'function') return [];
+  let cache = IMPORT_SUPPLEMENT_CACHES.get(context);
+  if (!cache) {
+    cache = new LRUCache<string, ImportMapping[]>(IMPORT_SUPPLEMENT_FILE_LIMIT);
+    IMPORT_SUPPLEMENT_CACHES.set(context, cache);
+  }
+  const cached = cache.get(filePath);
+  if (cached) return cached;
+  const source = context.readFile(filePath);
+  const supplements: ImportMapping[] = [];
+  if (source) {
+    for (const match of source.matchAll(TYPE_ONLY_DEFAULT_IMPORT)) {
+      supplements.push({
+        localName: match[1]!,
+        exportedName: 'default',
+        source: match[2]!,
+        isDefault: true,
+        isNamespace: false,
+      });
+    }
+    const seenSpecifiers = new Set<string>();
+    for (const match of source.matchAll(DYNAMIC_IMPORT_SPECIFIER)) {
+      if (seenSpecifiers.has(match[1]!)) continue;
+      seenSpecifiers.add(match[1]!);
+      supplements.push({
+        localName: '',
+        exportedName: '',
+        source: match[1]!,
+        isDefault: false,
+        isNamespace: false,
+      });
+    }
+  }
+  cache.set(filePath, supplements);
+  return supplements;
 }
 
 /**
@@ -506,6 +567,15 @@ const RECEIVER_FACTORY_DECLARATION = /\b(\w+)\s*=\s*(?:await\s+)?([A-Za-z_$][\w$
 // The only `=` inside a factory match is the initializer, and `await` can
 // sit only between it and the callee, so testing the matched span is exact.
 const FACTORY_AWAITED_INIT = /=\s*await\s/;
+
+// `receiver = [await] Prefix.callee(` — a dotted factory call. The prefix
+// pins WHICH member runs (a class's static/instance method, or `this`'s own
+// method), and that member's return-type annotation names the receiver's
+// class — the same one-hop inference the bare factory makes, for callees the
+// bare regex cannot see. Chains deeper than two segments are recorded here
+// but never bound (dottedFactoryTypeName falls through on them).
+const RECEIVER_DOTTED_FACTORY_DECLARATION =
+  /\b(\w+)\s*=\s*(?:await\s+)?((?:[A-Za-z_$][\w$]*\.)+[A-Za-z_$][\w$]*)\s*\(/g;
 // `receiver: TypeName =` / `receiver: TypeName;` — an explicit type
 // annotation. Only a simple type name binds here; structured annotations
 // go to the keyword-gated variant below (this shape still covers
@@ -571,7 +641,8 @@ function unwrapReceiverType(
 
 interface ReceiverDeclaration {
   kind: ReceiverEvidenceKind;
-  /** 'new' → class name, 'annotation' → type name, 'factory' → callee name. */
+  /** 'new' → class name, 'annotation' → type name, 'factory' → callee name
+   *  (possibly dotted: `Prefix.callee` or `this.callee`). */
   name: string;
   line: number;
   /** True when the initializer is awaited — `= await f()` for a factory,
@@ -636,6 +707,14 @@ function receiverDeclarationsForFile(
     }
     for (const match of text.matchAll(RECEIVER_FACTORY_DECLARATION)) {
       if (match[2] === 'new') continue; // direct construction handled above
+      add(match[1]!, {
+        kind: 'factory',
+        name: match[2]!,
+        line: node.startLine,
+        awaitInitialized: FACTORY_AWAITED_INIT.test(match[0]),
+      });
+    }
+    for (const match of text.matchAll(RECEIVER_DOTTED_FACTORY_DECLARATION)) {
       add(match[1]!, {
         kind: 'factory',
         name: match[2]!,
@@ -726,11 +805,59 @@ function declaredReceiverTypeName(
   if (declared.kind !== 'factory') {
     return unwrapReceiverType(declared.name, { awaitInitialized: declared.awaitInitialized });
   }
+  if (declared.name.includes('.')) {
+    return dottedFactoryTypeName(declared, ref, context, imports);
+  }
 
   const factories = context
     .getNodesByName(declared.name)
     .filter((n) => (n.kind === 'function' || n.kind === 'method') && n.language === ref.language);
   const reachable = factories.filter(
+    (n) => n.filePath === ref.filePath || crossFileCandidateAllowed(ref, n, imports),
+  );
+  const ordered = [
+    ...reachable.filter((n) => n.filePath === ref.filePath),
+    ...reachable.filter((n) => n.filePath !== ref.filePath),
+  ];
+  for (const candidate of ordered) {
+    if (!candidate.returnType) continue;
+    const typeName = unwrapReceiverType(candidate.returnType, {
+      awaitInitialized: declared.awaitInitialized,
+    });
+    if (typeName) return typeName;
+  }
+  return undefined;
+}
+
+/**
+ * Dotted factory evidence (`const cg = await CodeGraph.open(...)`,
+ * `cg = this.getCodeGraph(...)`): resolve the callee to a method whose
+ * qualified name ends `<prefix>::<callee>` (or, for `this.`, a method in the
+ * caller's own file), then read its return type under the same await/Promise
+ * rule as every other factory. An unresolvable prefix — any object that is
+ * not a graph-known member — yields undefined (fall-through), never a veto.
+ */
+function dottedFactoryTypeName(
+  declared: ReceiverDeclaration,
+  ref: UnresolvedRef,
+  context: ResolutionContext,
+  imports: ImportMapping[],
+): string | undefined {
+  const segments = declared.name.split('.');
+  const callee = segments.pop()!;
+  const prefix = segments.pop()!;
+  if (segments.length > 0) return undefined; // `a.b.c()` — too deep to trust
+
+  const viaThis = prefix === 'this';
+  const methods = context
+    .getNodesByName(callee)
+    .filter((n) => n.kind === 'method' && n.language === ref.language)
+    .filter((n) => {
+      if (viaThis) return n.filePath === ref.filePath;
+      const parts = n.qualifiedName.split(/::|\./);
+      return parts.length >= 2 && parts[parts.length - 2] === prefix && parts[parts.length - 1] === callee;
+    });
+  const reachable = methods.filter(
     (n) => n.filePath === ref.filePath || crossFileCandidateAllowed(ref, n, imports),
   );
   const ordered = [
@@ -759,6 +886,75 @@ function isReceiverContainerCandidate(node: Node, language: Language): boolean {
       node.kind === 'type_alias') &&
     node.language === language
   );
+}
+
+/**
+ * Relative specifier that names THIS candidate file exactly: caller dir +
+ * specifier (normalized) must equal the candidate's directory and file-name
+ * tail — strict path identity, unlike the loose same-name-tail arm the plain
+ * allow-check uses (that would pin every same-named file and make the
+ * disambiguation layer meaningless).
+ */
+function relativeSourceNamesFile(candidateFilePath: string, ref: UnresolvedRef, source: string): boolean {
+  if (!source.startsWith('./') && !source.startsWith('../')) return false;
+  const resolved = normalizeRelativeSegments([
+    ...ref.filePath.split('/').slice(0, -1),
+    ...source.split('/'),
+  ]);
+  if (!resolved) return false;
+  const candidateSegments = candidateFilePath.split('/');
+  const fileTail = fileTailNoExt(candidateSegments[candidateSegments.length - 1] ?? '');
+  if (resolved[resolved.length - 1] !== fileTail) return false;
+  const candidateDir = candidateSegments.slice(0, -1);
+  if (candidateDir.length !== resolved.length - 1) return false;
+  return candidateDir.every((segment, i) => segment === resolved[i]);
+}
+
+/**
+ * Import evidence that pins WHICH file a candidate came from: exact resolved
+ * path, a relative specifier naming the candidate file, or a directory-barrel
+ * specifier — the file-path sibling of the qualified-name suffix check in
+ * `matchByQualifiedName`. Used only to DISAMBIGUATE (a unique pin selects);
+ * it never vetoes, so a candidate the plain import veto allowed stays allowed.
+ */
+function importPinsFile(candidateFilePath: string, ref: UnresolvedRef, imports: ImportMapping[]): boolean {
+  for (const imp of imports) {
+    if (
+      imp.resolvedPath &&
+      (imp.resolvedPath === candidateFilePath ||
+        imp.resolvedPath.endsWith('/' + candidateFilePath) ||
+        candidateFilePath.endsWith('/' + imp.resolvedPath))
+    ) {
+      return true;
+    }
+    if (imp.source && relativeSourceNamesFile(candidateFilePath, ref, imp.source)) return true;
+    if (imp.source && barrelImportReachesFile(ref, candidateFilePath, imp.source)) return true;
+  }
+  return false;
+}
+
+/**
+ * Same-name container disambiguation for receiver-type binding. Plain
+ * `find()` takes whichever candidate the name index happens to return
+ * first — a coin flip when several files declare `Prompt` (or a test-local
+ * `Database`). Conservative layering: a layer only decides when its result
+ * is UNIQUE, any ambiguity falls to the next layer, and the last layer is
+ * the old first-allowed behavior (no regression):
+ *  1. exactly one allowed candidate lives in the caller's own file;
+ *  2. exactly one allowed candidate is pinned by an import statement;
+ *  3. the first allowed candidate (status quo).
+ */
+function pickContainerCandidate(
+  candidates: Node[],
+  ref: UnresolvedRef,
+  imports: ImportMapping[],
+): Node | undefined {
+  const allowed = candidates.filter((n) => crossFileCandidateAllowed(ref, n, imports));
+  const sameFile = allowed.filter((n) => n.filePath === ref.filePath);
+  if (sameFile.length === 1) return sameFile[0];
+  const pinned = allowed.filter((n) => importPinsFile(n.filePath, ref, imports));
+  if (pinned.length === 1) return pinned[0];
+  return allowed[0];
 }
 
 /**
@@ -797,7 +993,7 @@ function matchMethodCallByDeclaration(
   const classCandidates = context
     .getNodesByName(typeName)
     .filter((n) => isReceiverContainerCandidate(n, ref.language));
-  const declClass = classCandidates.find((n) => crossFileCandidateAllowed(ref, n, imports));
+  const declClass = pickContainerCandidate(classCandidates, ref, imports);
   if (!declClass) return undefined;
 
   const declClassName = declClass.name;
@@ -860,13 +1056,18 @@ function matchMethodCallByParamType(
   ref: UnresolvedRef,
   context: ResolutionContext,
 ): ResolvedRef | null | undefined {
-  // Innermost typed function/method containing the call line (latest start wins).
-  let enclosing: Node | undefined;
-  for (const fn of typedFunctionsForFile(ref.filePath, context)) {
-    if (fn.startLine > ref.line || (fn.endLine ?? fn.startLine) < ref.line) continue;
-    if (!enclosing || fn.startLine >= enclosing.startLine) enclosing = fn;
+  // Every typed function/method containing the call line, innermost first.
+  // A receiver typed on an ENCLOSING function's parameter is still visible
+  // in nested bodies (closure parameters), and the innermost declaration of
+  // the same name shadows outer ones — so the walk stops at the first hit.
+  const covering = typedFunctionsForFile(ref.filePath, context)
+    .filter((fn) => fn.startLine <= ref.line && (fn.endLine ?? fn.startLine) >= ref.line)
+    .sort((a, b) => b.startLine - a.startLine);
+  let param: NonNullable<Node['params']>[number] | undefined;
+  for (const fn of covering) {
+    param = fn.params?.find((p) => p.name === receiverName);
+    if (param) break;
   }
-  const param = enclosing?.params?.find((p) => p.name === receiverName);
   if (!param) return undefined;
   // Parameters hold exactly what callers pass — a `Promise<X>` parameter
   // is the Promise itself (never await-initialized), so only a simple
@@ -883,7 +1084,7 @@ function matchMethodCallByParamType(
   // An annotated type with no graph class (builtins like Promise/Map) or one
   // vetoed by the caller file's imports is not evidence we can bind on —
   // fall through instead of vetoing.
-  const paramClass = classCandidates.find((n) => crossFileCandidateAllowed(ref, n, imports));
+  const paramClass = pickContainerCandidate(classCandidates, ref, imports);
   if (!paramClass) return undefined;
 
   const methodNode = context.getNodesInFile(paramClass.filePath).find(
