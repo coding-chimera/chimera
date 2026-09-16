@@ -120,6 +120,42 @@ export function hashContent(content: string): string {
 const MAX_FILE_SIZE = 1024 * 1024;
 
 /**
+ * Transient-error whitelist for the ordered-commit store call (P1 reliability
+ * fix). Conservative by design: only the two message fragments SQLite produces
+ * when a CONCURRENT writer outlasts this connection's busy_timeout
+ * (`busy_timeout = 5000` in db/index.ts) are retried — SQLITE_BUSY /
+ * SQLITE_BUSY_SNAPSHOT errno strings and the canonical
+ * "database is locked" message. Schema, constraint, or logic errors never
+ * match, so a real bug still fails fast instead of being masked by retries.
+ */
+const STORE_TRANSIENT_ERROR_NEEDLES: readonly string[] = ['SQLITE_BUSY', 'database is locked'];
+
+/**
+ * Backoff schedule (ms) for a single commit after a transient failure: at most
+ * 3 retries, 100/500/2000ms. A writer transaction longer than ~2.6s beats the
+ * retry budget and the error surfaces as a flush failure — bounded, visible,
+ * never a silent freeze.
+ */
+const STORE_COMMIT_RETRY_DELAYS_MS: readonly number[] = [100, 500, 2000];
+
+function isTransientStoreError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return STORE_TRANSIENT_ERROR_NEEDLES.some((needle) => message.includes(needle));
+}
+
+/**
+ * Sleep via setTimeout — deliberately a MACROTASK. A Promise.resolve-based
+ * "delay" resolves inside the microtask queue, and draining microtasks never
+ * returns control to the timer phase; that exact starvation is what let the
+ * frozen-commit-cursor backpressure loop spin at ~100% CPU while every
+ * main-thread watchdog stayed unfired. Real timers keep the event loop's
+ * timer phase reachable.
+ */
+function sleepMacrotask(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
  * Directory names that are dependency, build, cache, or tooling output across the
  * languages/frameworks CodeGraph supports — curated from the canonical
  * github/gitignore templates. Excluded by default so the graph reflects your code,
@@ -976,7 +1012,9 @@ export class ExtractionOrchestrator {
       // Store in database on main thread (SQLite is not thread-safe)
       if (result.nodes.length > 0 || result.errors.length === 0) {
         const language = detectLanguage(filePath, content);
-        this.storeExtractionResult(filePath, content, language, stats, result);
+        // Awaited: the store may now spend macrotask backoff time on a
+        // transient SQLITE_BUSY retry (see commitExtractionResult).
+        await this.commitExtractionResult(filePath, content, language, stats, result);
       }
 
       if (result.errors.length > 0) {
@@ -1048,6 +1086,14 @@ export class ExtractionOrchestrator {
           }
         } catch (err) {
           flushError = err;
+          // Log AT SET TIME: a silent flushError froze the commit cursor and
+          // the `throw flushError` at the end of indexAll only ever landed
+          // after the feed loop escapes (see spin-proof comment there) — so
+          // the silent infinite-spin failure mode became undiagnosable.
+          // One line, with the message, through this file's own logger.
+          logWarn('Extraction flush failed; commit cursor frozen', {
+            error: err instanceof Error ? err.message : String(err),
+          });
         }
       });
       return flushChain;
@@ -1075,13 +1121,24 @@ export class ExtractionOrchestrator {
       // cursor lets later parses finish and buffer, which would otherwise grow
       // without bound. Wait for parses to settle (each may advance the cursor)
       // until the window has room.
-      while (nextSeq - nextToStore >= windowSize) {
+      // SPIN-PROOF escape (P1 fix): once the commit stream is dead (flushError
+      // set, or aborted — flushOrdered early-returns for both) the cursor
+      // freezes: with inFlight drained, every loop iteration awaits an
+      // already-resolved promise, a microtask-only cycle that never yields to
+      // the event loop's timer phase — and every main-thread defense (grammar
+      // watchdog, hard-kill, drain sweep, progress render) is a timer, so the
+      // hang ran invisibly at ~100% CPU. Escape on a dead commit stream and
+      // let indexAll fail fast with the logged error instead.
+      while (!aborted && !flushError && nextSeq - nextToStore >= windowSize) {
         if (inFlight.size > 0) await Promise.race(inFlight);
         else await flushOrdered();
       }
     };
 
-    for (let i = 0; i < files.length; i += FILE_IO_BATCH_SIZE) {
+    // `&& !flushError`: stop dispatching once the commit stream is dead — the
+    // feed escape above no longer throttles, so without this the remaining
+    // files would buffer unbounded before the throw at the drain.
+    for (let i = 0; i < files.length && !flushError; i += FILE_IO_BATCH_SIZE) {
       if (signal?.aborted) {
         aborted = true;
         break;
@@ -1113,6 +1170,7 @@ export class ExtractionOrchestrator {
       // Dispatch each readable file into the bounded parse window; the window
       // stores results on the main thread as they arrive.
       for (const { filePath, content, stats, error } of fileContents) {
+        if (flushError) break;
         if (signal?.aborted) {
           aborted = true;
           break;
@@ -1575,6 +1633,47 @@ export class ExtractionOrchestrator {
     }
 
     return result;
+  }
+
+  /**
+   * DB commit of one extraction result with bounded retry on transient
+   * write-lock contention (P1 reliability fix). This is the bulk indexAll
+   * commit — the flushChain call whose throw used to freeze the commit
+   * cursor. A transient error (conservative whitelist: SQLITE_BUSY /
+   * "database is locked", i.e. a concurrent writer outlasting the 5s
+   * busy_timeout) retries up to STORE_COMMIT_RETRY_DELAYS_MS.length times
+   * with MACROTASK backoff — a microtask "delay" would keep starving the
+   * timer phase, the exact starvation that made the original failure mode
+   * an unwatchdog-able hang. Anything else (and a still-failing last retry)
+   * rethrows to the flushChain catch, which now logs it and unblocks the
+   * feed loop. Re-running storeExtractionResult is safe: the file record
+   * (contentHash skip-guard) is written LAST, so a failed commit can never
+   * make its own retry skip the work, and node/edge inserts are
+   * INSERT OR REPLACE / INSERT OR IGNORE, so replaying a partially
+   * committed batch cannot collide.
+   */
+  private async commitExtractionResult(
+    filePath: string,
+    content: string,
+    language: Language,
+    stats: fs.Stats,
+    result: ExtractionResult
+  ): Promise<void> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        this.storeExtractionResult(filePath, content, language, stats, result);
+        return;
+      } catch (err) {
+        if (attempt >= STORE_COMMIT_RETRY_DELAYS_MS.length || !isTransientStoreError(err)) throw err;
+        logWarn('Transient store failure during ordered commit; retrying', {
+          filePath,
+          retry: attempt + 1,
+          delayMs: STORE_COMMIT_RETRY_DELAYS_MS[attempt],
+          error: err instanceof Error ? err.message : String(err),
+        });
+        await sleepMacrotask(STORE_COMMIT_RETRY_DELAYS_MS[attempt]);
+      }
+    }
   }
 
   /**
