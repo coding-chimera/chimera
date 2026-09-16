@@ -12,6 +12,15 @@ Guidelines:
 
 ## Notes
 
+### 第三波：G0+union 已推、Rust kernel 立项、bench 资产全恢复（2026-09-16）
+
+已推 origin/main（..4354468b7 三笔）：G0 上游移植批（Swift regex hang 1043ms→0.03ms、tsconfig extends 丢边、name-lookup 索引 seek、git -uall、availableParallelism）、union 脱壳（initializedDb.close/find.focus 12 条全部翻正，实测 initdb_close 12→0）、UPSTREAM_RUST_KERNEL_PLAN.md（B 案绞杀者，P0-P3，待拍板 K1-K5）。
+
+- **重索引假回归事故**：wave3 验证时 index -f 25min 不完（基线 79s），取证后确认=**环境 I/O 竞争**（bench 资产 builder 同期跑 bun install+1GB tar 备份同盘）；安静环境同二进制重跑 87s 正常。EXPLAIN 实锤 G0 的 lower() 形式 SEEK idx_nodes_lower_name（旧 COLLATE 形式全表 SCAN——fork 一直带着这个上游 bug）。教训：**索引计时类实测不得与重型 I/O 任务并发**
+- bench 资产灾后全量恢复：17 任务×{prompt,verify} 齐备（字节级原物+双向回放 oracle）；repo-b 重建（shallow，HEAD 精确对齐，preload 修复）；repo-g 泄漏解答已清+status 空；备份 v2=489MB；遗留：repo-g 对象库 31 处 broken link（HEAD 树完好，runner 不受影响，可从主仓补对象；实验用 --depth 1）
+- Rust kernel 双调研对表要点：kernel 同步调用设计→parse-pool 保留；值引用/接口成员/returnType 上游均有对应物（对账即可）；params_json 无对应物=唯一改 Rust 项（extraJson 补丁 tsjs 先行）；fork 无 EXTRACTION_VERSION 机制需 P0 新建；.node 旁挂有 @parcel/watcher+grammar wasm 双先例
+- 主仓图终态：nodes 117457 / edges 241451 / refs 34332 / failed 195014
+
 ### 图召回+防御五路批次已推送（2026-09-15）
 
 已推 origin/main（a84c65722..7b2969f01 五笔）：接口成员建节点、name-matcher await/type_alias/barrel、WAL valve+parse-pool 卡死防御、LSP typeDefinition+全操作 10s 超时、ProjectionMemo revision 键修复（后者根因：memo 仅按 node id 键，trackToolMutation before/after 跨 sync 复用陈旧冻结对象 → 语义 diff 自比恒空，自 9e1766eb6 起 MMS/MF/MCC 事实全部静默退化为 body；test/tool/chimera.test.ts signature-delta 用例即其回归锚）。
