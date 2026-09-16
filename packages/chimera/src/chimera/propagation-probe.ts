@@ -311,6 +311,51 @@ function predesignSeedRanges(predesign: PredesignRunRecord) {
   return ranges
 }
 
+// Seed kinds that can represent "the agent declared this symbol". Fuzzy text
+// matches (imports, statements, files, exports, parameters) are search
+// evidence, never scope: searchNodes("renderSize") legitimately surfaces a
+// consumer file's import/statement nodes, and absorbing their files into the
+// declared scope silenced the two-hop Scope check for the very file it exists
+// to name (G-arm tb5-v2 regression: declaring an intermediate symbol dropped
+// the deep-consumer hint and the cell failed 2/3).
+const SCOPE_SEED_KINDS = new Set([
+  "function", "method", "class", "struct", "interface", "trait", "protocol",
+  "constant", "variable", "property", "field", "enum", "enum_member",
+  "type_alias", "namespace", "route", "component",
+])
+
+/**
+ * Files a predesign declaration covers at symbol level: host files of
+ * definition-kind seeds whose name exactly equals a declared symbol, or
+ * whose node id was declared via nodeIDs/refs. The caller unions this with
+ * the declared file paths. Pure; exported as a test seam.
+ */
+export function declaredScopeFiles(predesign: PredesignRunRecord): string[] {
+  const raw = (predesign.payload ?? {}) as { symbols?: unknown; nodeIDs?: unknown; refs?: unknown }
+  const strings = (values: unknown) => (Array.isArray(values) ? values.filter((value): value is string => typeof value === "string") : [])
+  const symbols = new Set(strings(raw.symbols))
+  const ids = new Set([
+    ...strings(raw.nodeIDs),
+    ...strings(raw.refs).filter((ref) => ref.startsWith("node:")).map((ref) => ref.slice("node:".length)),
+  ])
+  const files: string[] = []
+  for (const seed of predesign.seedNodes) {
+    const frozen = seed as { payload?: { kind?: unknown; name?: unknown; filePath?: unknown }; source?: { codegraphId?: unknown } } | null
+    const file = frozen?.payload?.filePath
+    const kind = frozen?.payload?.kind
+    if (typeof file !== "string" || file.length === 0) continue
+    if (typeof kind !== "string" || !SCOPE_SEED_KINDS.has(kind)) continue
+    const codegraphId = frozen?.source?.codegraphId
+    if (typeof codegraphId === "string" && ids.has(codegraphId)) {
+      files.push(file)
+      continue
+    }
+    const name = frozen?.payload?.name
+    if (typeof name === "string" && symbols.has(name)) files.push(file)
+  }
+  return files
+}
+
 /**
  * Bounded inline propagation probe for change-tool success output.
  *
@@ -344,12 +389,13 @@ export function inlinePropagationCheck(targets: PropagationTarget[], sessionID?:
     if (seeds.length === 0) return ""
     const predesign = sessionID !== undefined ? yield* Effect.promise(() => latestPredesignFor(root, sessionID)) : undefined
     const seededRanges = predesign ? predesignSeedRanges(predesign) : new Map<string, SourceRange[]>()
-    // Declared scope prefers the predesign's persisted symbol seeds (their
-    // files are graph-resolved facts) and keeps the declared file paths as
-    // fallback/union so a predesign whose seeds are empty, or that declared a
-    // file the graph never indexed, still counts as declaring it.
+    // Declared scope = scope-quality seed files (exact declared-symbol
+    // resolutions or declared node ids) unioned with the declared file paths,
+    // so a predesign whose seeds are empty, or that declared a file the graph
+    // never indexed, still counts as declaring it. Fuzzy searchNodes matches
+    // are deliberately excluded — see SCOPE_SEED_KINDS.
     const declared = predesign
-      ? [...new Set([...seededRanges.keys(), ...graphSeeds(root, predesign.files)])]
+      ? [...new Set([...declaredScopeFiles(predesign), ...graphSeeds(root, predesign.files)])]
       : []
     const { dependents, walk } = yield* Chimera.withProjectGraph(
       { readOnly: false, sync: false, watch: false },

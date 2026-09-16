@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test"
-import { PROPAGATION_PROBE_TIMEOUT_MS, inlinePropagationCheck, runWalk, scopeDriftLines } from "../../src/chimera/propagation-probe"
+import { PROPAGATION_PROBE_TIMEOUT_MS, declaredScopeFiles, inlinePropagationCheck, runWalk, scopeDriftLines } from "../../src/chimera/propagation-probe"
 import { CodeGraphAdapter } from "../../src/chimera/codegraph-adapter"
 import { Effect, Layer } from "effect"
 import path from "path"
 import * as fs from "fs/promises"
-import { recordPredesignRun } from "../../src/chimera/store"
+import { recordPredesignRun, type PredesignRunRecord } from "../../src/chimera/store"
 import { SessionID } from "../../src/session/schema"
 import { CodeGraph, getGraphDataRootInfo } from "../../src/graph"
 import { testEffect } from "../lib/effect"
@@ -545,4 +545,59 @@ describe("chimera.propagation-probe symbol-level seeds", () => {
   )
 
 })
+})
+
+describe("chimera.propagation-probe declared scope files", () => {
+  const record = (seedNodes: unknown[], payload: unknown) =>
+    ({ seedNodes, payload }) as unknown as PredesignRunRecord
+  const seed = (kind: string, name: string, filePath: string, codegraphId?: string) => ({
+    payload: { kind, name, filePath, range: { startLine: 1, endLine: 2 } },
+    source: { codegraphId },
+  })
+
+  test("counts exact declared-symbol definition seeds and nothing else", () => {
+    // Regression anchor (G-arm tb5-v2): searchNodes("renderSize") fuzzy-matched
+    // the consumer file's import + statement nodes; absorbing size-table.ts into
+    // the declared scope silenced the two-hop deep-consumer Scope check.
+    const files = declaredScopeFiles(record(
+      [
+        seed("function", "formatSize", "size-format.ts", "n1"),
+        seed("function", "renderSize", "size-report.ts", "n2"),
+        seed("import", "./size-report", "size-table.ts", "n3"),
+        seed("statement", "stmt@11:2", "size-table.ts", "n4"),
+        seed("constant", "Collapse", "stories.tsx", "n5"),
+      ],
+      { symbols: ["formatSize", "renderSize"], nodeIDs: [], refs: [] },
+    ))
+    expect(files.toSorted()).toEqual(["size-format.ts", "size-report.ts"])
+  })
+
+  test("non-definition kinds never count even on an exact name match", () => {
+    const files = declaredScopeFiles(record(
+      [seed("import", "renderSize", "barrel.ts"), seed("parameter", "renderSize", "consumer.ts"), seed("export", "renderSize", "index.ts")],
+      { symbols: ["renderSize"], nodeIDs: [], refs: [] },
+    ))
+    expect(files).toEqual([])
+  })
+
+  test("declared node ids and node: refs pull their host file in", () => {
+    const files = declaredScopeFiles(record(
+      [seed("method", "unrelatedName", "impl.ts", "n9"), seed("function", "other", "other.ts", "n10")],
+      { symbols: [], nodeIDs: ["n9"], refs: ["node:n10"] },
+    ))
+    expect(files.toSorted()).toEqual(["impl.ts", "other.ts"])
+  })
+
+  test("files-only predesign absorbs no seed files", () => {
+    const files = declaredScopeFiles(record(
+      [seed("function", "anything", "somewhere.ts")],
+      { symbols: [], nodeIDs: [], refs: [] },
+    ))
+    expect(files).toEqual([])
+  })
+
+  test("malformed seeds and payloads degrade to empty, never throw", () => {
+    expect(declaredScopeFiles(record([null, {}, seed("function", "x", "")], undefined))).toEqual([])
+    expect(declaredScopeFiles(record([seed("function", "x", "x.ts")], { symbols: "nope", nodeIDs: 3 }))).toEqual([])
+  })
 })
