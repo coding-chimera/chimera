@@ -303,7 +303,10 @@ describe('decodeExtractBuffers — real vendored kernel buffers', () => {
     expect(stmt?.signature).toBe('return String(x);');
     // `return a;` in top() has no call/new dependency — not eligible.
     expect(result.nodes.filter((n) => n.kind === 'statement').length).toBe(1);
-    expect(byName.get('n')?.kind).toBe('property');
+    // P2 tsjs parity batch: the fork has NO #808 member classification —
+    // every methodTypes node (incl. a non-callable `private n = 0` field)
+    // goes through extractMethod and becomes a `method`.
+    expect(byName.get('n')?.kind).toBe('method');
     expect(byName.get('top')?.kind).toBe('function');
     expect(result.nodes.every((n) => n.id && n.kind && n.filePath === 'real.ts')).toBe(true);
     expect(result.edges.some((e) => e.kind === 'contains')).toBe(true);

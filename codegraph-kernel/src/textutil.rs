@@ -14,12 +14,6 @@ macro_rules! re {
     };
 }
 
-// RTK_HOOK_NAME_RE (tree-sitter.ts)
-re!(rtk_hook_name, r"^use[A-Z][A-Za-z0-9]*(?:Query|Mutation)$");
-// reactComponentHoc's styled test
-re!(styled_callee, r"^styled\b");
-// PascalCase component gate (#841)
-re!(pascal_case, r"^[A-Z]");
 // extractCall parenthesized-conversion normalization
 re!(paren_conversion, r"^\(\s*\*?\s*([A-Za-z_][\w.]*)\s*\)$");
 // flushFnRefCandidates SIMPLE_NAME
@@ -30,11 +24,6 @@ re!(qualified_import, r"^[A-Za-z_$][A-Za-z0-9_$.\\]*[.\\]([A-Za-z_$][A-Za-z0-9_$
 re!(lhs_last_name, r"([A-Za-z_$][A-Za-z0-9_$]*)\s*$");
 // extractTsTupleContractNames identifier test
 re!(ident_dollar, r"^[A-Za-z_$][A-Za-z0-9_$]*$");
-// looksLikeVueStoreFile signal (VUE_STORE_FILE_SIGNAL)
-re!(
-    vue_store_signal,
-    r"\bdefineStore\b|\bcreateStore\b|\bVuex\b|\bmutations\b|\bactions\b|\bgetters\b|\bnamespaced\b"
-);
 // value-ref target-name distinctiveness: /[A-Z_]/
 re!(has_upper_or_underscore, r"[A-Z_]");
 
