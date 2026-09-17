@@ -12,6 +12,14 @@ Guidelines:
 
 ## Notes
 
+### K-v2 P4：parity 重对账 + 挂账清账（2026-09-18，builder=P3 同 session resume，3 commits 未 push）
+
+- **交付**（eafd28a3d 挂账接线 / 6609c4594 scala RAW / 本记账批）：① cargo test 21/21（N Rust 测试面 21=21 零缺失；N 根 13 vitest 套件需 N npm workspace=端点安全内不可跑，fork harness 全语言扫代位其双臂自洽证明）② takeDeferredPreParse 接线（kernel adapter 全 N defer-memo 形：route 点 preParsedSource+deferSlot hoist+export；wasm fallback 消费 sourceIsPreParsed——已路由语言恒等变换，P5 c/cpp 路由前置）③ collectObjectValueReferences vestige 终裁=删除（两臂均无调用点，覆盖⊆#693 行走 hook+extractObjectLiteralFunctions 臂）④ scala return_type wire=fork RAW returnTypeText 镜像（N kernel 用 #750 bare 形=全语言扫描唯一残差 1/430，torture.scala qualRet；parity 裁判=wasm 臂；D5 类偏差注释+上游反馈候选）⑤ harness knownExpectations 重写=全计数器归零守卫语义（剥除族预算退役；dispatch 的 params“11 终态”假设与“P4 保留 order known 项”预期均被实测 0 取代）⑥ kotlin/scala/dart 双臂 value_ref 形态实测=**字节一致**（edgeMetadataShape=0）
+- **新基线**：9 路由语言 429/430 byte-parity、0 diff、1 合法 defer（tsx parse-error）、0 kernelErrors、exit 0；归档 cbench/kernel-parity/ksd-parity-p4-baseline-20260918.json（**取代 v4 时代全部基线**；short-corpus 5 语言 dart(7)/jsx(5)/kotlin(6)/luau(6)/scala(8)=语料覆盖事实非缺陷）
+- **.node**：darwin-arm64 sha256=189f7f8217da58e09caff88e4712f572fe3dbe1999b5c29b4e1d33df69a73d4e（scala 修复重建，双落点一致，取代 51f20349；其余 7 腿仍待 parent CI）
+- **主仓默认路由重索引**（92s 无卡死；强制全量路径=`CODEGRAPH_WASM_RELAUNCHED=1 CHIMERA_ALLOW_UNSAFE_NODE=1 bun src/index.ts graph index -f <root>`——bun 跑源码避开旧全局包混码与 Node26 V8 守卫，relaunch 在 bun 下错位故用守卫 env 跳过）：nodes 128,791→128,799 / edges 336,206→336,220 / unresolved 266,169→266,188 / stmt 66,725→66,733（vs P2 账面，<0.01%）——归因=本批自身 3 个 TS 文件的语料演进（tree-sitter.ts/kernel-index.ts/harness 皆被索引源码），kernel-vs-wasm 贡献≈0（与 byte-parity 一致）；4 file errors=nix 已知缺 blob
+- **P5 待办**：9 残留语言开路由决策 + chain-form resolver 配套（#1683/#1496 消费端）+ import-binding/materializeFileLevelImportEdges 双发卫生 + semantics v5 bump + FN_REF_EMISSION_ENABLED 翻牌
+
 ### K-v2 P2：fork wasm 提取层升级到上游 N 终态（2026-09-18，builder，6 commits 未 push）
 
 - **交付**（b1e732dd5 / 861ddbac0 / 2ee87c336 / b453778a1 / ef7b9d720 / 3f2445f5f）：① leaf 模块（function-ref.ts 新 vendor、tree-sitter-helpers #780、tree-sitter-types+valueReferenceTypes hook）② 语言面（19 配置采 N + 10 新语言文件 + astro/cfml/razor extractors + LANGUAGES 扩 13 成员 + grammars.ts N 注册表×fork cjs 多级加载器，blob 零新增——裁定⑤）③ 引擎 tree-sitter.ts = N 基底 + fork 补丁集全量重放（statement/value-ref D1 合并/params/RAW returnType/D3 稳定重排/D5 tsjs 作用域大写块/csharp returnField/fn-ref 门控休眠待 P5）④ index.ts cherry-pick #1728（info/exclude+excludesFile+嵌套剪枝，env.md 实弹验证）+ #1628 preload（.h→cpp+objc）⑤ P3 对表批：shadow-prune 改齐 kernel 公式（compute_shadowed_value_names 逐行镜像：decl>file??1、opens_binding_scope 七 kind 集、MAX 20k 预算、检查位=长度门后 dedup 前；纯局部单声明名保留）；params/returnType 与 kernel Extra 线字段逐条比对一致（200/2000/RAW-200-UTF16/jsx 排除/冒号剥离）
