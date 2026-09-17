@@ -19,6 +19,7 @@ import { Agent } from "@/agent/agent"
 import { Permission } from "@/permission"
 import { appendProvenanceRecord, databaseStorePath, readPredesignRuns, readProvenanceRecords, readRecentProvenanceRecords, recordAuditRun, recordOracleResult, writeChangeFacts, type OracleLinkedChange, type OracleStatus, type OracleVerificationKind } from "./store"
 import { TOOL_MUTATION_PREDESIGN_REQUIRED } from "./guidance"
+import { EditIntentClaims } from "./edit-intent"
 
 type ShadowOracleRecorder = (input: {
   projectID: string
@@ -140,8 +141,10 @@ type MutationPredesignDecision =
       predesign?: Awaited<ReturnType<typeof readPredesignRuns>>[number]
     }
   | {
-      required: true
+      required: boolean
       allowed: false
+      /** Which gate held the mutation back: the predesign evidence gate or the advisory edit-intent claim gate. */
+      blockedBy: "predesign" | "edit-intent-claim"
       files: ProvenanceFile[]
       risks: MutationPredesignRisk[]
       result: Tool.ExecuteResult
@@ -919,6 +922,26 @@ export const requirePredesignForMutation: (input: MutationPredesignInput) => Eff
   if (!isInitialized(root)) return { required: false, allowed: true as const, files, risks }
   const destructiveRisk = Boolean(input.destructive || input.rename || input.multiFile) && risky.length > 0
   const required = risky.length > 0 || destructiveRisk
+  // Advisory edit-intent claims gate every declared file regardless of risk
+  // classification and regardless of predesign availability: coordination is
+  // orthogonal to the predesign ceremony, and a blocked session queues as a
+  // waiter so the holder's release wakes it (L2 inject channel).
+  const claimConflicts = yield* EditIntentClaims.checkMutation({
+    projectRoot: root,
+    sessionID: input.ctx.sessionID,
+    toolID: input.toolID,
+    files,
+  })
+  if (claimConflicts.length > 0) {
+    return {
+      required,
+      allowed: false as const,
+      blockedBy: "edit-intent-claim" as const,
+      files,
+      risks,
+      result: EditIntentClaims.blockedResult({ toolID: input.toolID, conflicts: claimConflicts }),
+    }
+  }
   if (!required) return { required, allowed: true as const, files, risks }
   if (!(yield* predesignToolAvailable(input.ctx))) return { required: false, allowed: true as const, files, risks }
 
@@ -937,6 +960,7 @@ export const requirePredesignForMutation: (input: MutationPredesignInput) => Eff
   return {
     required,
     allowed: false as const,
+    blockedBy: "predesign" as const,
     files,
     risks,
     result: {
