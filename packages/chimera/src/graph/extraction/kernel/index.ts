@@ -8,9 +8,10 @@
  * wasm path forever if need be. Rollback per language = removing it from
  * DEFAULT_ROUTED (or CODEGRAPH_KERNEL=0 for all).
  *
- * Fork routing status (2026-09-16): DEFAULT_ROUTED = lua+luau (wave 1) +
- * typescript/tsx/javascript/jsx (wave 2) — the gate-passed languages (see
- * DEFAULT_ROUTED below for the per-language evidence and deferrals). The loader's
+ * Fork routing status (2026-09-17): DEFAULT_ROUTED = lua+luau (wave 1) +
+ * typescript/tsx/javascript/jsx (wave 2) + kotlin/scala/dart (wave 3) — the
+ * gate-passed languages (see DEFAULT_ROUTED below for the per-language
+ * evidence and deferrals). The loader's
  * contract gate is a NAME-based subset check (kernel ⊆ fork, see
  * loader.verifyKernelContract): the vendored kernel loads once the fork
  * table covers the kernel's kinds (the G4 'union' chain; fork-only
@@ -118,8 +119,35 @@ export { decodeExtractBuffers } from './decode';
  * threshold and this batch is explicitly no-bump; the kernel-side
  * namespace-member type-ref tracking is recorded as a Rust follow-up.
  *
- * kotlin/scala/dart remain DEFERRED (see wave-1 note above); other
- * languages stay on the wasm arm until their own parity gate passes.
+ * Third wave (2026-09-17): kotlin + scala + dart. The vendored R7b walkers
+ * were written against upstream's NEWER wasm (post-#708 returnType/type-refs,
+ * post-#750/#752/#761/#762 chained-call re-encode + dart ctor naming, post-
+ * #897 property value nodes + value-ref edges); the fork's oracles are the
+ * PRE-feature wasm configs (kotlin.ts @ upstream 34240eb, scala.ts @ 8506936,
+ * dart.ts @ a2ed181), so the three walkers were re-aligned to fork semantics
+ * (the three `fix(kernel): align the <lang> walker` commits): zero
+ * returnType/references/instantiates(scala)/decorates(kotlin+scala) emission,
+ * no property|constant value nodes (kotlin/dart), the stack-kind val/var
+ * classification (scala object vals are fields), bare per-call callee names
+ * (no chain re-encode, no literal-receiver skip, no paren conversion), the
+ * dart ctor naming/skip quirks + superclass first-named-child extends rule
+ * (`extends "with MixA"`), and the fork's simpler docstring cleaner (`///`
+ * keeps its third slash). Parity evidence (script/kernel-parity.ts dual-arm
+ * harness, report /Volumes/workspace/cbench/kernel-parity/
+ * ksd-parity-20260917.json): 21/21 corpus files BYTE-IDENTICAL (dart 7/7 —
+ * 182/175/157 n/e/r; kotlin 6/6 — 61/55/285; scala 8/8 — 169/161/71;
+ * 0 deferred, 0 kernel errors, losses=[] enrichments=[]).
+ *
+ * Semantics-version note for wave 3: byte-identical routing normally rides
+ * WITHOUT a bump (wave-2 rule), but the ksd corpus is short (<20 files per
+ * language — the in-repo ceiling) and the batch ships a re-built kernel
+ * binary, so per the canonical route-change clause in
+ * src/graph/db/extraction-version.ts the version bumps 3 -> 4: any
+ * out-of-corpus divergence must force a re-extraction instead of silently
+ * mixing kernel and wasm shapes inside one database.
+ *
+ * All other languages stay on the wasm arm until their own parity gate
+ * passes.
  *
  * Per-file safety valve regardless of routing: a file whose parse tree
  * contains ERRORS defers to the wasm extractor (error recovery differs
@@ -140,6 +168,14 @@ const DEFAULT_ROUTED: ReadonlySet<Language> = new Set<Language>([
   'tsx',
   'javascript',
   'jsx',
+  // wave 3 (2026-09-17): kotlin/scala/dart after the walkers were re-aligned
+  // to the fork's pre-#708/#750/#897 wasm oracles — 21/21 corpus files
+  // byte-identical; semantics v4 bump rides along (conservative: short
+  // corpus + re-built binary); see the third-wave note above and
+  // /Volumes/workspace/cbench/kernel-parity/ksd-parity-20260917.json.
+  'kotlin',
+  'scala',
+  'dart',
 ]);
 
 /**
