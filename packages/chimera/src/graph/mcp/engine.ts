@@ -14,6 +14,7 @@ import type CodeGraph from '../index';
 import { findNearestCodeGraphRoot } from '../directory';
 import { watchDisabledReason } from '../sync';
 import { ToolHandler } from './tools';
+import { releaseWriterLock, tryAcquireWriterLock, writerLockHeldMessage } from './writer-lock';
 
 // Lazy-load the heavy CodeGraph chain (sqlite + query/graph/context layers) OFF
 // the MCP startup path. It's only needed once a tool actually opens a project —
@@ -31,6 +32,14 @@ export interface MCPEngineOptions {
    * cheap. Honors {@link watchDisabledReason} regardless.
    */
   watch?: boolean;
+  /**
+   * Project root whose writer slot must be claimed synchronously before this
+   * engine can serve as a writer. Used by the proxy in-process fallback to
+   * fence the catch-up sync and the watcher against a second live writer
+   * (upstream 7440d2c47 #1740 / 1e4612375 #1834). Throws from the
+   * constructor when another live process holds the slot.
+   */
+  writerLockRoot?: string;
 }
 
 /**
@@ -49,12 +58,21 @@ export class MCPEngine {
   // Set on first `ensureInitialized` so subsequent sessions don't redo work.
   private initPromise: Promise<void> | null = null;
   private watcherStarted = false;
-  private opts: Required<MCPEngineOptions>;
+  /** Set when this engine holds writer.pid (#1740). */
+  private writerLockRoot: string | null = null;
+  private opts: Required<Omit<MCPEngineOptions, 'writerLockRoot'>>;
   private closed = false;
 
   constructor(opts: MCPEngineOptions = {}) {
     this.opts = { watch: opts.watch ?? true };
     this.toolHandler = new ToolHandler(null);
+    if (opts.writerLockRoot) {
+      const writer = tryAcquireWriterLock(opts.writerLockRoot, 'fallback');
+      if (writer.kind === 'taken') {
+        throw new Error(writerLockHeldMessage(writer.existing, writer.pidPath));
+      }
+      this.writerLockRoot = opts.writerLockRoot;
+    }
   }
 
   /**
@@ -142,10 +160,14 @@ export class MCPEngine {
    * Close everything. Used on graceful daemon shutdown (SIGTERM/idle timeout)
    * and on direct-mode stop. Idempotent.
    */
-  stop(): void {
-    if (this.closed) return;
+stop(): void {
+if (this.closed) return;
     this.closed = true;
-    this.toolHandler.closeAll();
+    if (this.writerLockRoot) {
+      releaseWriterLock(this.writerLockRoot);
+      this.writerLockRoot = null;
+    }
+this.toolHandler.closeAll();
     if (this.cg) {
       try { this.cg.close(); } catch { /* ignore */ }
       this.cg = null;
@@ -183,6 +205,24 @@ export class MCPEngine {
    */
   private startWatching(): void {
     if (!this.cg || this.watcherStarted || !this.opts.watch) return;
+
+    // #1740: only one live watcher/writer per project. Daemon and direct
+    // mode usually already hold writer.pid (the acquire is re-entrant for
+    // this pid); the proxy in-process fallback lands here fresh. If ANOTHER
+    // writer holds it, skip the watcher instead of contending on
+    // codegraph.lock until auto-sync degrades.
+    const lockRoot = this.projectPath;
+    if (lockRoot) {
+      const writer = tryAcquireWriterLock(lockRoot, 'fallback');
+      if (writer.kind === 'taken') {
+        process.stderr.write(
+          `[CodeGraph MCP] File watcher not started — ${writerLockHeldMessage(writer.existing, writer.pidPath)}\n`
+        );
+        this.watcherStarted = true;
+        return;
+      }
+      this.writerLockRoot = lockRoot;
+    }
 
     const disabledReason = watchDisabledReason(this.projectPath ?? process.cwd());
     if (disabledReason) {
