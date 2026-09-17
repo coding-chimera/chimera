@@ -57,6 +57,7 @@ describe('kernel layout constants (ABI v2, byte-aligned with buffers.rs)', () =>
       'instantiates',
       'overrides',
       'decorates',
+      'navigates',
     ]);
   });
 });
@@ -233,8 +234,9 @@ describe('decodeExtractBuffers — synthetic buffers', () => {
   });
 
   it('honors the edgeKinds override (kernel-own table) for edge rows and ref rows', () => {
-    // Reversed kernel edge table: wire index 0 decodes 'decorates' (fork:
-    // 'contains'), index 6 decodes 'implements' (fork: 'references').
+    // Reversed kernel edge table: wire index 0 decodes reversed[0] (fork:
+    // 'contains'), index 6 decodes reversed[6] (fork: 'references') — derived
+    // so contract-table growth can't stale the expectations.
     const kernelTable = [...EDGE_KINDS].reverse();
     const buffers = buildKernelBuffers({
       nodes: [{ kind: 'file', name: 'g.ts', id: 'file:g.ts' }],
@@ -245,8 +247,8 @@ describe('decodeExtractBuffers — synthetic buffers', () => {
     expect(viaFork.edges[0].kind).toBe('contains');
     expect(viaFork.unresolvedReferences[0].referenceKind).toBe('references');
     const viaKernel = decodeExtractBuffers(buffers, 'g.ts', 'typescript', undefined, kernelTable);
-    expect(viaKernel.edges[0].kind).toBe('decorates');
-    expect(viaKernel.unresolvedReferences[0].referenceKind).toBe('implements');
+    expect(viaKernel.edges[0].kind).toBe(kernelTable[0]);
+    expect(viaKernel.unresolvedReferences[0].referenceKind).toBe(kernelTable[6]);
   });
 });
 
@@ -318,8 +320,14 @@ describe('decodeExtractBuffers — real vendored kernel buffers', () => {
       throw new Error('CODEGRAPH_KERNEL_EXPECT=1 but no prebuild staged — run packages/chimera/script/build-kernel.sh');
     }
     const info = requirePrebuild().contractInfo();
-    // EDGE_KINDS: byte-equal with the fork wire table — trivially a subset.
-    expect(info.edgeKinds).toEqual([...EDGE_KINDS]);
+    // EDGE_KINDS: the fork table may lead the vendored kernel by RESERVED
+    // kinds only — K-v2 P1 appended 'navigates' (upstream buffers.rs parity;
+    // the kernel emitter lands with the P3 re-vendor). Every kernel kind must
+    // exist in the fork table (subset gate); the lead set is pinned so the
+    // reservation can't silently grow — after the P3 re-vendor it empties.
+    expect(info.edgeKinds.every((k) => (EDGE_KINDS as readonly string[]).includes(k))).toBe(true);
+    const forkEdgeLead = (EDGE_KINDS as readonly string[]).filter((k) => !info.edgeKinds.includes(k));
+    expect(forkEdgeLead).toEqual(['navigates']);
     // NODE_KINDS: the P1 tsjs batch appended 'statement' at the kernel table
     // tail and moved the fork's 'statement' from index 18 to the tail in the
     // same change — the subset gate now passes as FULL index-by-index
