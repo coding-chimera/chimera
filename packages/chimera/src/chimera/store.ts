@@ -1669,7 +1669,11 @@ export async function takeWokenEditIntentWaiters(
         for (const waiter of waiters) {
           const held = remaining.get(filePath, now, waiter.session_id) as CountRow | undefined
           if ((held?.count ?? 0) > 0) continue
-          wake.run(now, waiter.session_id, waiter.file_path)
+          // The conditional UPDATE is the atomicity point: concurrent takers
+          // serialize on the SQLite write lock and only the first sees
+          // changes > 0, so a waiter is woken exactly once.
+          const woke = wake.run(now, waiter.session_id, waiter.file_path)
+          if (Number(woke.changes ?? 0) === 0) continue
           result.push({ ...editIntentWaiterRecord(waiter), status: "woken", updatedAt: now })
         }
       }
