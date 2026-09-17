@@ -307,3 +307,9 @@ loop 挂起修复前的对比基线（本机 macOS, bun 1.4.0, `bun test --timeo
 
 - **P5-2 已亲验推送**：origin/main=`f59b20c96`。parent 复跑：parity go+rust+ts 抽格 exit 0（rust 25/25、knownExpectations 全零）、kernel 电池+selector+p51+钉桩+version 102/0、.node sha `ff65c3ce…` 双落点一致、**安静树全量 5,333 pass/25 fail=确定基线（环境15+SDK2+httpapi-config8）精确吻合零新增、负载敏感池零触发**（v5 bump 跨面零回归实证）、审计五类零命中。**19/20 kernel 语言已路由**（r 暂缓零语料）；needsReindex 实录=`Semantics: v4 — does not match v5`；重索引终态 129,318/302,325/305,887/67,162/v5/fnRef 543；stale-process 污染事故已清（混码增量 sync 158 条 raw fnr 边，全量重索引清除，pre 快照 cbench/k-v2-p5-2/db-pre/；pitfall 候选：编辑窗口内避免混码进程增量 sync）。
 - **K-v2 战役代码面收口**：P0→P1→P2→P3（+跟进）→P4→P5-1→P5-2 全链推送；PLAN K-v2 章已补 P5-1/P5-2/收口宣告三条目。**待用户授权批（「大更新」条件成就）**：P5-3 bench 重验（召回矩阵 matrix-d/f+G 臂 12 格+tb5-v2/tb6-b+tb3/tb4-v2v3 re-baseline，runner 依赖全局二进制重建）+8 腿 CI 重编+CI 首跑+Win 签名；P5-1 遗留六项待 P5-3 数据定取舍。可选：r 语料补全、混码污染存储层守卫（缓行）。上游反馈候选池：scala+七语言 RAW 镜像。下一战役=Rust 化规划调研（用户战略指令，触发条件已成就）。
+
+### Rust 化调研交付（2026-09-18，RUST_MIGRATION_PLAN.md 已入库，待用户决策）
+
+- **核心实测**：现网 `chimera web` 20h22m RSS **3.29GB**（footprint 2090MB，主体=JSC 堆 tag1 1779MB dirty）vs 短跑标定底座 410-460MB/8 路峰值 1002MB——长时维度泄漏实证（用户论断定量坐实）；另有 10 天孤儿 bun 进程 176MB。**PID 43877/18926 重启清理=待用户处置**（调研只读未动）。
+- **结论**：候选面 Top3=storage 访问层(+3.0)/graph resolution-store 引擎(+2.5)/server 纯逻辑面(+2.0)；session/bus/tool/pty/provider 五个 Effect 重灾区明确不迁；推荐 **A(napi 绞杀)主+B(watcher/daemon sidecar)补+C(Rust 宿主)远景 R6 决策点**；路线图 R0-R6，**R1=TS 侧泄漏修复批+24h soak harness（不写 Rust、不依赖 Rust 决策、其数据是 R2 立项裁判）——parent 建议先行，待用户拍板**。泄面清单：A 类无界常驻 10 项/B 类释放缺口 6 项（含 tui/worker.ts:44 GlobalBus.on 无 off 唯一未配对点）/C 类结构放大器 4 项；热点：processor.ts:476 O(N²) parts/每调用 ~7 同步 tx/gzipSync/SystemPrompt 无缓存重装配。盲区：3.29GB 无对象级归因（R1 soak 补）、零新 microbench（端点约束，R2/R3 立项需 CI 实测）。
+- **claims prompt-context flake 时序修已派**（非 graph 面，不污染 P5-3 基线；修后全量基线口径可望 25→24 确定+负载池收窄）。
