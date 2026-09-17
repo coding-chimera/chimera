@@ -78,6 +78,18 @@ export interface ExtractorContext {
  * language-specific details like signatures, visibility, and imports.
  */
 export interface LanguageExtractor {
+  /**
+   * Optional source transform applied immediately before the grammar parses the
+   * file. Used to work around grammar gaps that would otherwise corrupt the
+   * parse tree (e.g. C# blanks conditional-compilation directive lines the
+   * grammar mis-parses inside enum bodies). MUST preserve byte offsets (replace
+   * removed text with spaces, keep newlines) so node positions and getNodeText
+   * stay correct; the returned string is used for both parsing and extraction.
+   * `filePath` lets a transform key off the concrete file extension when one
+   * language id serves several dialects (C++ also parses `.metal` shaders).
+   */
+  preParse?: (source: string, filePath?: string) => string;
+
   // --- Node type mappings ---
 
   /** Node types that represent functions */
@@ -134,6 +146,16 @@ export interface LanguageExtractor {
   /** Override symbol name extraction (e.g. ObjC multi-part selectors). */
   resolveName?: (node: SyntaxNode, source: string) => string | undefined;
 
+  /**
+   * Post-process an already-extracted name to recover a real identifier from a
+   * name still mangled by a macro the pre-parse didn't blank (C/C++:
+   * `MACRO Ret name(` misparses to the name "Ret name"). Applied to every name
+   * this extractor produces, so it MUST be a no-op on a well-formed name — only
+   * C/C++ set it, because a mangled name there is unambiguous (an internal space),
+   * whereas e.g. Kotlin/Scala backtick identifiers legitimately contain spaces.
+   */
+  recoverMangledName?: (name: string) => string;
+
   /** Extract property name when the generic name walk fails (e.g. ObjC @property). */
   extractPropertyName?: (node: SyntaxNode, source: string) => string | null;
 
@@ -147,8 +169,18 @@ export interface LanguageExtractor {
   isAsync?: (node: SyntaxNode) => boolean;
   /** Check if node is static */
   isStatic?: (node: SyntaxNode) => boolean;
+  /** Check if a method/class is abstract (C++ pure virtual, Java abstract, …). Return true to set; undefined/false leaves the flag unset. */
+  isAbstract?: (node: SyntaxNode) => boolean | undefined;
   /** Check if variable declaration is a constant (const vs let/var) */
   isConst?: (node: SyntaxNode) => boolean;
+  /**
+   * Extract extra symbol-level modifier keywords to persist on the node's
+   * `decorators` list (e.g. Kotlin `expect`/`actual` multiplatform markers).
+   * Called generically for every created node; return undefined/[] when none.
+   * Used by the resolver to link `expect` declarations to their `actual`
+   * implementations across source sets.
+   */
+  extractModifiers?: (node: SyntaxNode) => string[] | undefined;
 
   // --- New config properties ---
 
@@ -156,6 +188,27 @@ export interface LanguageExtractor {
   extraClassNodeTypes?: string[];
   /** Whether methods can be top-level without enclosing class (Go: true) */
   methodsAreTopLevel?: boolean;
+  /**
+   * Skip a bodiless class node as a forward declaration / elaborated type,
+   * mirroring the bodiless-struct/enum skip. Set only for languages where a
+   * bodiless `class` specifier is NOT a complete definition — C/C++
+   * (`class Foo;` is a forward decl). Leave unset for languages where a
+   * bodiless class IS complete (Kotlin `class Empty`, Scala `case object`). (#1093)
+   */
+  skipBodilessClass?: boolean;
+  /**
+   * Keep a bodiless struct node — it IS a complete definition, not a forward
+   * declaration. Set only for languages where a bodiless `struct` is complete:
+   * Rust's unit struct (`struct Unit;`). Leave unset for C/C++, where
+   * `struct Foo;` is a forward declaration.
+   *
+   * Opposite polarity from `skipBodilessClass` (#1093) because the defaults
+   * differ: a bodiless CLASS is kept unless a language opts into skipping,
+   * a bodiless STRUCT is skipped unless a language opts into keeping. The
+   * hardcoded C# `record_declaration` carve-out (#831) is the same situation
+   * predating this flag.
+   */
+  allowBodilessStruct?: boolean;
   /** NodeKind to use for interface-like declarations (Rust: 'trait'). Default: 'interface' */
   interfaceKind?: NodeKind;
 
@@ -168,10 +221,37 @@ export interface LanguageExtractor {
   visitNode?: (node: SyntaxNode, ctx: ExtractorContext) => boolean;
 
   /**
+   * Synthesize members that exist at compile time but not in the source AST,
+   * called at the end of class extraction with the class still on the scope
+   * stack (so `ctx.createNode` attaches containment + qualified names) and the
+   * class's real members already extracted (so the hook can skip a member the
+   * source explicitly declares). Used by Java for Lombok-generated accessors
+   * (`@Getter`/`@Setter`/`@Data`/`@Value`/`@Builder` → `getX`/`setX`/`builder`/
+   * `equals`/`hashCode`/`toString` + the `log` field), which are otherwise
+   * invisible and break call-chain analysis (#912). The created nodes carry a
+   * `lombok` decorator + a docstring naming the generating annotation, so an
+   * agent can tell them apart from hand-written code.
+   */
+  synthesizeMembers?: (classNode: SyntaxNode, ctx: ExtractorContext) => void;
+
+  /**
    * Classify a class_declaration node when the grammar reuses one node type
    * for multiple concepts (e.g. Swift uses class_declaration for classes, structs, and enums).
    */
   classifyClassNode?: (node: SyntaxNode) => 'class' | 'struct' | 'enum' | 'interface' | 'trait';
+
+  /**
+   * Classify a methodTypes node when the grammar reuses one node type for
+   * both callable and data members (#808): TS/JS class FIELDS
+   * (`public_field_definition` / `field_definition`) are methods only when
+   * their value is callable (`onClick = () => {}`); a plain field
+   * (`public fonts: Fonts;`, `count = 0`) is a property. C++ also lists
+   * `field_declaration` in methodTypes so pure-virtual methods (`= 0`) can
+   * mint nodes (#1727); non-callable field_declarations return `'skip'` so
+   * the walker still descends (data-member initializers keep their call
+   * edges). Default: 'method'.
+   */
+  classifyMethodNode?: (node: SyntaxNode) => 'method' | 'property' | 'skip';
 
   /**
    * Resolve the body node for a function/method/class when it's not a child field.
@@ -197,6 +277,15 @@ export interface LanguageExtractor {
    * When present, the receiver type is included in the qualified name for better searchability.
    */
   getReceiverType?: (node: SyntaxNode, source: string) => string | undefined;
+
+  /**
+   * Extract a function/method's normalized return type name (bare class name,
+   * smart-pointer pointee unwrapped), stored on the node as `returnType`. Used
+   * by C/C++ so resolution can infer a chained receiver's type from what the
+   * inner call returns (`Foo::instance().bar()` → resolve `bar` on `Foo`,
+   * issue #645). Return undefined for primitives / void / constructors.
+   */
+  getReturnType?: (node: SyntaxNode, source: string) => string | undefined;
 
   /**
    * Resolve the actual node kind for a type alias declaration.
