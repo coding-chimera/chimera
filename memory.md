@@ -215,3 +215,12 @@ loop 挂起修复前的对比基线（本机 macOS, bun 1.4.0, `bun test --timeo
 - 铁律：**存活判定权威 = task_cancel 返回的终态快照**（运行中会被打断=活着，已结束返回 "already completed"）；进程/mtime/commit 足迹探针只作辅证，长调研期可 20+ 分钟零足迹。重派前必先 cancel 原对象。
 - 次生误报：parent 自己跑收口重编（build-kernel.sh --zig 五腿）被看护当 builder 越权红线上报——看护看不到 parent 侧命令归属。parent 在看护窗口内跑重型构建前应预期误报（或错峰）；zig 缓存 .o 对象文件≠可执行物，不触 EDR 模式。
 - 附带坑：build-kernel.sh 全局 --zig 会把 darwin 腿也推上 zig 路线并编译失败——darwin-x64 必须走 Apple 工具链（无 --zig），linux 四腿才用 --zig。
+
+### 自动循环推进交接（2026-09-17 下午，parent 获全权循环授权）
+
+- **用户拍板批**：kernel 路线 a（取舍原则=双实现比对水平取强者，纯 fork 增量保全）；#12 blockBinding 否决（不接 Claude 5.1+，后果备案）；#13 Astra 引入（品牌重写）；#14 chunkTimeout 默认 300s 跟随；G1 扩容批=做；CI 首跑+Win .node 签名=推迟到大更新后（安全姿势=推 ci 分支只跑 kernel-prebuild）；dependabot 批 1/2=批准（窗口=F2 阶段 A 锁文件 commit 后插批）；resolution 修复包并入 K-v2 P4。
+- **在途 agent（宿主重启则全灭，重派前先 task_cancel 权威判活）**：F2 MCP=ses_f51ff1e6bffepFlblkl3CdZ60d；claims P1P2=ses_f51fea452ffeP2k6XFqVA8uvoS；L4 小件批（Astra/timeout/四小件）=ses_f51de3f89ffertaU4d6QjTQxVB；K-v2 三方盘点=ses_f51e7ecceffeWkUX67aQ5XvOzw（含比对判定表）；看护×2=ses_f51fbcee3ffe…（F2/claims）、ses_f51dd0b71ffe…（L4）。
+- **lane 地图**：F2=mcp/sdk/package.json/bun.lock；claims=store/provenance/prompt-context/edit/write；L4 小件=provider/config/session prompt；K-v2=只读。锁文件仅 F2 可动。
+- **循环队列**：①任一 builder 完成→亲验→ali-internal-audit→push ②F2 阶段 A 落地→dependabot 插批（OSV 清单需重拉，memory 旧记录在 09-14 前条目）③F2+claims 都收口→派 G1 扩容批（吸收上游 5 修复：9b8bb4aba/58c07e874/72c1ff13c/1e4612375/7440d2c47）④K-v2 盘点回→起草战役计划入 UPSTREAM_RUST_KERNEL_PLAN.md K-v2 章→按取舍原则自裁比对判定→分批执行（semantics v5+bench 重验收尾）⑤文档三件套回写（TRIAGE §8 补 #12-15 索引含 #12 否决态/790fb5b86f 标注/f965db9e13 加注）随下一个 docs commit 合并。
+- **上游快照**：/Volumes/workspace/codegraph-snapshot/codegraph-ba3c21e50d…（codeload 下载，镜像未动仍禁 fetch）；opencode 漂移档案 /var/folders/…/upstream-drift/（tmp 有被清理风险，关键结论已入库 TRIAGE §11）。
+- **推送链**：origin/main=e622b41da。installed 二进制=wave3 全验证（v4 语义+9 语言路由）。
