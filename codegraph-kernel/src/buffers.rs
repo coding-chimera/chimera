@@ -77,10 +77,11 @@ pub const EDGE_ROW_SIZE: usize = 44;
 pub const REF_ROW_SIZE: usize = 40;
 
 /// Mirror of NODE_KINDS in src/types.ts — order is the wire contract.
-/// Both tables are index-by-index equal since the P1 tsjs batch: 'union'
-/// landed first (6978acc), then 'statement' moved to the tail on the fork
-/// side in the same batch that taught the tsjs walker to emit statement
-/// rows. Append, never reorder.
+/// K-v2 P3 double-append terminal state: the first 23 entries are
+/// index-by-index equal to the upstream N table; 'statement' is the
+/// fork-exclusive TAIL append (CodePlan statement nodes — upstream has no
+/// emitter; the fork's tsjs walker owns the whole mechanism). Append,
+/// never reorder.
 pub const NODE_KINDS: [&str; 24] = [
     "file",
     "module",
@@ -109,7 +110,12 @@ pub const NODE_KINDS: [&str; 24] = [
 ];
 
 /// Mirror of EDGE_KINDS in src/types.ts — order is the wire contract.
-pub const EDGE_KINDS: [&str; 12] = [
+/// K-v2 P3: index-by-index equal to the upstream N table (13 kinds,
+/// 'navigates' tail append per N). No extraction-layer emitter exists on
+/// either side — upstream's emitter lives in its resolution-layer router
+/// synthesizer family, which the fork skipped — so fork corpora produce
+/// zero navigates rows; the entry is a pure contract reservation.
+pub const EDGE_KINDS: [&str; 13] = [
     "contains",
     "calls",
     "imports",
@@ -122,6 +128,7 @@ pub const EDGE_KINDS: [&str; 12] = [
     "instantiates",
     "overrides",
     "decorates",
+    "navigates",
 ];
 
 /// ReferenceKind code for the internal-only `function_ref` (#756).

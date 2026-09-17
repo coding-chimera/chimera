@@ -140,10 +140,11 @@ export const EDGE_KINDS = [
   'instantiates',
   'overrides',
   'decorates',
-  // Append-only, matches upstream codegraph-kernel buffers.rs EDGE_KINDS[12].
+  // Append-only; index-by-index equal to upstream codegraph-kernel buffers.rs
+  // EDGE_KINDS since the K-v2 P3 re-vendor (N tail-appended 'navigates').
   // Emitter lives in upstream's resolution router synthesizer family (skipped
-  // by the fork), so fork corpora produce zero navigates edges; reserved here
-  // so a re-vendored kernel passes the kernel⊆fork subset gate (K-v2 P1).
+  // by the fork), so fork corpora produce zero navigates edges on both arms —
+  // pure contract reservation (K-v2 P1, consumed by the P3 re-vendor).
   'navigates',
 ] as const satisfies readonly EdgeKind[];
 
