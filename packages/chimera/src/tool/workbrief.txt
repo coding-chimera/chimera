@@ -44,11 +44,21 @@ Keep entries in the user's communication language. Keep them compact and specifi
 
 Do not store large source snippets, full tool outputs, long transcripts, speculative thoughts, or duplicate versions of the same fact. Do not use workbrief as a scratchpad for every step. Do not use it as a replacement for todo status updates.
 
-When the user corrects the brief, replace conflicting old entries instead of appending both versions.
+When the user corrects the brief, do not leave contradicting entries side by side. For `constraints` and `confirmedDecisions`, delete the superseded entries with the paired `constraints_remove` / `confirmedDecisions_remove` fields in the same call that adds the correction. For the other fields, supplying the field replaces the stored value.
 
-## Patch Semantics
+## Merge and Patch Semantics
 
-The tool uses patch semantics: omitted fields keep their previous values. Include only fields that should change. Set `clear` to true to reset the brief before applying supplied fields.
+Omitted fields keep their previous values. Include only fields that should change. Set `clear` to true to reset the whole brief before applying supplied fields.
+
+`constraints` and `confirmedDecisions` merge incrementally: supplied entries are appended to the end of the stored list, exact duplicates (after whitespace normalization) are ignored, and stored entries you did not supply are never dropped. Send only genuinely new entries; never restate the stored list and never compress it into placeholders such as "same as before" or "all previous constraints".
+
+To delete a stale, expired, or superseded entry, use the paired removal fields:
+
+- `constraints_remove` / `confirmedDecisions_remove` take an array of substring matchers. Every stored entry containing a matcher is removed. Matching is case-sensitive after whitespace normalization. One matcher can remove multiple entries; a matcher that hits nothing is skipped and reported as no-match in the tool result.
+- Removals run before additions in the same call, so remove + add expresses replacing a superseded entry.
+- The tool result lists every removed entry under `## Brief removals`. Check that list to catch accidental over-removal, and re-add the entry if the matcher was too broad.
+
+All other fields (`intent`, `acceptanceCriteria`, `openQuestions`, `relevantEvidence`, `closeout`) keep replace semantics: supplying the field replaces the entire stored value or list.
 
 Use `clear` when the active task has changed enough that old intent, constraints, evidence, or closeout items would mislead future work.
 
@@ -64,9 +74,10 @@ Assistant: Calls workbrief with:
 
 <example>
 User: Actually, the release must target coding-chimera/coding-chimera, not the chimera submodule.
-Assistant: Calls workbrief before continuing, replacing any conflicting release target decision with:
-- confirmedDecisions: Releases target the root/superproject repository coding-chimera/coding-chimera.
-- constraints: Do not publish future release assets on coding-chimera/chimera.
+Assistant: Calls workbrief before continuing, replacing the superseded decision via remove + add:
+- confirmedDecisions: ["Releases target the root/superproject repository coding-chimera/coding-chimera."]
+- confirmedDecisions_remove: ["chimera submodule"] (substring matcher for the old, now wrong decision)
+- constraints: ["Do not publish future release assets on coding-chimera/chimera."]
 </example>
 
 <example>
