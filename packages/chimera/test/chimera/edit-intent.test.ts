@@ -5,6 +5,7 @@ import { CodeGraph, getCodeGraphDir, DatabaseConnection, getDatabasePath } from 
 import { Chimera } from "@/chimera"
 import { EditIntentClaims } from "@/chimera/edit-intent"
 import {
+  currentHostBootID,
   readActiveEditIntentClaims,
   readEditIntentWaiters,
   recordPredesignRun,
@@ -120,6 +121,55 @@ describe("edit-intent claims store", () => {
     for (const batch of results) {
       for (const waiter of batch) expect(waiter.status).toBe("woken")
     }
+  })
+
+  test("waiter registration stamps the current host and the upsert re-stamps an explicit host", async () => {
+    await using tmp = await dbDir()
+    await registerEditIntentWaiter(tmp.path, { sessionID: "ses_b", filePath: "f.ts", blockerSessionID: "ses_a" })
+    const stamped = await readEditIntentWaiters(tmp.path, { sessionID: "ses_b", status: "waiting" })
+    expect(stamped[0]!.hostPID).toBe(process.pid)
+    expect(stamped[0]!.hostBootID).toBe(currentHostBootID())
+
+    // A re-registration (same session+file) overwrites the host identity —
+    // the post-restart repair path for rows stamped by a dead process.
+    await registerEditIntentWaiter(tmp.path, { sessionID: "ses_b", filePath: "f.ts", blockerSessionID: "ses_a", host: { pid: 4242, bootID: "boot_1_4242" } })
+    const restamped = await readEditIntentWaiters(tmp.path, { sessionID: "ses_b", status: "waiting" })
+    expect(restamped).toHaveLength(1)
+    expect(restamped[0]!.hostPID).toBe(4242)
+    expect(restamped[0]!.hostBootID).toBe("boot_1_4242")
+
+    // host: null keeps the pre-v6 shape (no host stamp).
+    await registerEditIntentWaiter(tmp.path, { sessionID: "ses_c", filePath: "f.ts", blockerSessionID: "ses_a", host: null })
+    const unstamped = await readEditIntentWaiters(tmp.path, { sessionID: "ses_c", status: "waiting" })
+    expect(unstamped[0]!.hostPID).toBeUndefined()
+    expect(unstamped[0]!.hostBootID).toBeUndefined()
+  })
+
+  test("host-filtered take only flips that host's waiters and stays exactly-once under races", async () => {
+    await using tmp = await dbDir()
+    await registerEditIntentClaims(tmp.path, claimInput("predesign_a", "ses_a", ["f.ts"]))
+    await registerEditIntentWaiter(tmp.path, { sessionID: "ses_local", filePath: "f.ts", blockerSessionID: "ses_a" })
+    await registerEditIntentWaiter(tmp.path, { sessionID: "ses_foreign", filePath: "f.ts", blockerSessionID: "ses_a", host: { pid: 4242, bootID: "boot_1_4242" } })
+    await registerEditIntentWaiter(tmp.path, { sessionID: "ses_legacy", filePath: "f.ts", blockerSessionID: "ses_a", host: null })
+    await releaseEditIntentClaims(tmp.path, "ses_a", "session_idle")
+
+    // A foreign host's take flips only the foreign row.
+    const foreignWoken = await takeWokenEditIntentWaiters(tmp.path, ["f.ts"], { hostBootID: "boot_1_4242" })
+    expect(foreignWoken.map((waiter) => waiter.sessionID)).toEqual(["ses_foreign"])
+
+    // Same-host takers racing the local row still wake it exactly once.
+    const results = await Promise.all([
+      takeWokenEditIntentWaiters(tmp.path, ["f.ts"], { hostBootID: currentHostBootID() }),
+      takeWokenEditIntentWaiters(tmp.path, ["f.ts"], { hostBootID: currentHostBootID() }),
+      takeWokenEditIntentWaiters(tmp.path, ["f.ts"], { hostBootID: currentHostBootID() }),
+    ])
+    expect(results.flat().map((waiter) => waiter.sessionID)).toEqual(["ses_local"])
+
+    // NULL-host rows match no host filter — only the unfiltered legacy take
+    // (or the orphan sweep) can consume them.
+    expect(await takeWokenEditIntentWaiters(tmp.path, ["f.ts"], { hostBootID: currentHostBootID() })).toHaveLength(0)
+    const legacyWoken = await takeWokenEditIntentWaiters(tmp.path, ["f.ts"])
+    expect(legacyWoken.map((waiter) => waiter.sessionID)).toEqual(["ses_legacy"])
   })
 
   test("releaseForSession groups wake targets per waiting session and renders the wake text", async () => {
@@ -444,5 +494,105 @@ describe("edit-intent claim context lines", () => {
     const after = await Effect.runPromise(EditIntentClaims.contextLines({ projectRoot: tmp.path, sessionID: "ses_b" }))
     expect(after.join("\n")).toContain("held by you")
     expect(after.join("\n")).not.toContain("blocked:")
+  })
+})
+
+describe("edit-intent cross-process poll bridge", () => {
+  test("poll is inert without the pending hint: foreign-hosted waiters are never touched", async () => {
+    await using tmp = await dbDir()
+    await registerEditIntentClaims(tmp.path, claimInput("predesign_a", "ses_a", ["f.ts"]))
+    // pid 1 (launchd/init) is always alive: the row stands in for a waiter
+    // hosted by a live foreign process.
+    await registerEditIntentWaiter(tmp.path, { sessionID: "ses_remote", filePath: "f.ts", blockerSessionID: "ses_a", host: { pid: 1, bootID: "boot_1_1" } })
+    await releaseEditIntentClaims(tmp.path, "ses_a", "session_idle")
+
+    // No waiter was registered through this process's gate, so the poll hint
+    // is unset and the tick costs zero DB access — the remote row stays put.
+    expect(await Effect.runPromise(EditIntentClaims.pollCrossProcessWakes({ projectRoot: tmp.path }))).toHaveLength(0)
+    const waiting = await readEditIntentWaiters(tmp.path, { status: "waiting" })
+    expect(waiting.map((waiter) => waiter.sessionID)).toEqual(["ses_remote"])
+  })
+
+  test("poll wakes this host's parked waiters after a release in another process, exactly once", async () => {
+    await using tmp = await dbDir()
+    await registerEditIntentClaims(tmp.path, claimInput("predesign_holder", "ses_holder", ["shared.ts"]))
+    // The local session queues through the real gate path (sets the poll hint).
+    const conflicts = await Effect.runPromise(
+      EditIntentClaims.checkMutation({
+        projectRoot: tmp.path,
+        sessionID: "ses_local",
+        toolID: "edit",
+        files: [{ absolutePath: "shared.ts", graphPath: "shared.ts" }],
+      }),
+    )
+    expect(conflicts).toHaveLength(1)
+
+    // Model the holder's release happening in another process: the raw store
+    // release flips the claim rows with no local bus event and no local take.
+    await releaseEditIntentClaims(tmp.path, "ses_holder", "session_idle")
+
+    const targets = await Effect.runPromise(EditIntentClaims.pollCrossProcessWakes({ projectRoot: tmp.path }))
+    expect(targets.map((target) => target.sessionID)).toEqual(["ses_local"])
+    expect(targets[0]!.files.map((file) => file.filePath)).toEqual(["shared.ts"])
+    expect(targets[0]!.reason).toBeUndefined()
+    expect(EditIntentClaims.wakeText(targets[0]!)).toContain("the holder finished")
+
+    // Exactly-once: the row is woken; the next tick finds nothing, consumes
+    // the hint, and further polls stay inert.
+    expect(await Effect.runPromise(EditIntentClaims.pollCrossProcessWakes({ projectRoot: tmp.path }))).toHaveLength(0)
+    expect(await Effect.runPromise(EditIntentClaims.pollCrossProcessWakes({ projectRoot: tmp.path }))).toHaveLength(0)
+    expect(await readEditIntentWaiters(tmp.path, { sessionID: "ses_local", status: "woken" })).toHaveLength(1)
+  })
+
+  test("poll never steals a foreign-hosted wake and lazily cancels dead-host leftovers", async () => {
+    await using tmp = await dbDir()
+    await registerEditIntentClaims(tmp.path, claimInput("predesign_holder", "ses_holder", ["shared.ts"]))
+    const conflicts = await Effect.runPromise(
+      EditIntentClaims.checkMutation({
+        projectRoot: tmp.path,
+        sessionID: "ses_local",
+        toolID: "edit",
+        files: [{ absolutePath: "shared.ts", graphPath: "shared.ts" }],
+      }),
+    )
+    expect(conflicts).toHaveLength(1)
+    // A live foreign host (pid 1): its wake belongs to its own process's poll.
+    await registerEditIntentWaiter(tmp.path, { sessionID: "ses_live_remote", filePath: "shared.ts", blockerSessionID: "ses_holder", host: { pid: 1, bootID: "boot_1_1" } })
+    // A dead host's leftover: no process can ever have this pid.
+    await registerEditIntentWaiter(tmp.path, { sessionID: "ses_dead_remote", filePath: "shared.ts", blockerSessionID: "ses_holder", host: { pid: 99999999, bootID: "boot_1_99999999" } })
+    await releaseEditIntentClaims(tmp.path, "ses_holder", "session_idle")
+
+    const targets = await Effect.runPromise(EditIntentClaims.pollCrossProcessWakes({ projectRoot: tmp.path }))
+    expect(targets.map((target) => target.sessionID)).toEqual(["ses_local"])
+
+    // The live foreign waiter stays waiting; the dead host's row was swept.
+    const waiting = await readEditIntentWaiters(tmp.path, { status: "waiting" })
+    expect(waiting.map((waiter) => waiter.sessionID)).toEqual(["ses_live_remote"])
+    const cancelled = await readEditIntentWaiters(tmp.path, { status: "cancelled" })
+    expect(cancelled.map((waiter) => waiter.sessionID)).toEqual(["ses_dead_remote"])
+  })
+
+  test("sweepStaleHosts cancels dead hosts immediately and NULL-host orphans only past the grace window", async () => {
+    await using tmp = await dbDir()
+    await registerEditIntentWaiter(tmp.path, { sessionID: "ses_dead", filePath: "f.ts", blockerSessionID: "ses_a", host: { pid: 99999998, bootID: "boot_1_99999998" } })
+    await registerEditIntentWaiter(tmp.path, { sessionID: "ses_malformed", filePath: "f.ts", blockerSessionID: "ses_a", host: { pid: 7, bootID: "not-a-boot-id" } })
+    await registerEditIntentWaiter(tmp.path, { sessionID: "ses_live", filePath: "f.ts", blockerSessionID: "ses_a", host: { pid: 1, bootID: "boot_1_1" } })
+    await registerEditIntentWaiter(tmp.path, { sessionID: "ses_self", filePath: "f.ts", blockerSessionID: "ses_a" })
+    await registerEditIntentWaiter(tmp.path, { sessionID: "ses_orphan_fresh", filePath: "f.ts", blockerSessionID: "ses_a", host: null })
+    await registerEditIntentWaiter(tmp.path, {
+      sessionID: "ses_orphan_old",
+      filePath: "f.ts",
+      blockerSessionID: "ses_a",
+      host: null,
+      now: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
+    })
+
+    const cancelled = await Effect.runPromise(EditIntentClaims.sweepStaleHosts({ projectRoot: tmp.path }))
+    expect(cancelled).toBe(3)
+
+    const waiting = await readEditIntentWaiters(tmp.path, { status: "waiting" })
+    expect(waiting.map((waiter) => waiter.sessionID).sort()).toEqual(["ses_live", "ses_orphan_fresh", "ses_self"])
+    const cancelledRows = await readEditIntentWaiters(tmp.path, { status: "cancelled" })
+    expect(cancelledRows.map((waiter) => waiter.sessionID).sort()).toEqual(["ses_dead", "ses_malformed", "ses_orphan_old"])
   })
 })
