@@ -138,6 +138,106 @@ it.live("OpenAI API auth gets default headerTimeout", () =>
   }),
 )
 
+it.live("default chunkTimeout is applied at fetch without changing provider options", () =>
+  Effect.gen(function* () {
+    const server = yield* Effect.acquireRelease(
+      Effect.promise(() => delayedBodyServer(250)),
+      (server) => Effect.sync(() => server.server.close()),
+    )
+
+    yield* provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const provider = yield* Provider.Service
+          const configured = yield* provider.getProvider(ProviderID.make("test"))
+          const signals: (AbortSignal | null | undefined)[] = []
+          configured.options.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+            signals.push(init?.signal)
+            return fetch(input, init)
+          }
+          const model = yield* provider.getModel(ProviderID.make("test"), ModelID.make("test-model"))
+          const language = yield* provider.getLanguage(model)
+          yield* Effect.acquireRelease(
+            Effect.promise(() =>
+              language.doStream({ prompt: [{ role: "user", content: [{ type: "text", text: "hello" }] }] }),
+            ),
+            (result) => Effect.promise(() => result.stream.cancel()),
+          )
+
+          // The 300_000ms default creates a chunk-abort controller, so fetch
+          // receives a combined signal even though nothing was configured,
+          // and the default is not written back into provider options.
+          expect(signals).toHaveLength(1)
+          expect(signals[0]).toBeInstanceOf(AbortSignal)
+          expect(configured.options.chunkTimeout).toBeUndefined()
+        }),
+      { config: providerConfig(server.url) },
+    )
+  }),
+)
+
+it.live("configured chunkTimeout aborts a stalled SSE body", () =>
+  Effect.gen(function* () {
+    const server = yield* Effect.acquireRelease(
+      Effect.promise(() => delayedBodyServer(250)),
+      (server) => Effect.sync(() => server.server.close()),
+    )
+
+    yield* provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const provider = yield* Provider.Service
+          const model = yield* provider.getModel(ProviderID.make("test"), ModelID.make("test-model"))
+          const result = streamText({
+            model: yield* provider.getLanguage(model),
+            onError() {},
+            messages: [{ role: "user", content: "hello" }],
+          })
+
+          const errors = yield* Effect.promise(async () => {
+            const errors: string[] = []
+            try {
+              for await (const part of result.fullStream) {
+                if (part.type === "error") errors.push(String(part.error))
+              }
+            } catch (error) {
+              errors.push(String(error))
+            }
+            return errors
+          })
+          expect(errors.join("\n")).toContain("SSE read timed out")
+        }),
+      { config: providerConfig(server.url, { chunkTimeout: 50 }) },
+    )
+  }),
+)
+
+it.live("chunkTimeout can be disabled with false", () =>
+  Effect.gen(function* () {
+    const server = yield* Effect.acquireRelease(
+      Effect.promise(() => delayedBodyServer(250)),
+      (server) => Effect.sync(() => server.server.close()),
+    )
+
+    yield* provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const provider = yield* Provider.Service
+          const configured = yield* provider.getProvider(ProviderID.make("test"))
+          expect(configured.options.chunkTimeout).toBe(false)
+          const model = yield* provider.getModel(ProviderID.make("test"), ModelID.make("test-model"))
+          const result = streamText({
+            model: yield* provider.getLanguage(model),
+            messages: [{ role: "user", content: "hello" }],
+          })
+
+          expect(yield* Effect.promise(() => result.text)).toBe("late")
+        }),
+      { config: providerConfig(server.url, { chunkTimeout: false }) },
+    )
+  }),
+)
+
 function providerConfig(url: string, options: Record<string, unknown> = {}) {
   const config = testProviderConfig(url)
   return {
@@ -156,6 +256,20 @@ async function delayedHeaderServer(delay: number): Promise<{ server: Server; url
     setTimeout(() => {
       res.writeHead(200, { "content-type": "text/event-stream" })
       res.end('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n')
+    }, delay)
+  })
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+  const address = server.address()
+  if (!address || typeof address === "string") throw new Error("server did not bind to a TCP port")
+  return { server, url: `http://127.0.0.1:${address.port}` }
+}
+
+async function delayedBodyServer(delay: number): Promise<{ server: Server; url: string }> {
+  const server = createServer((_, res) => {
+    res.writeHead(200, { "content-type": "text/event-stream" })
+    res.flushHeaders()
+    setTimeout(() => {
+      res.end('data: {"choices":[{"delta":{"content":"late"}}]}\n\ndata: [DONE]\n\n')
     }, delay)
   })
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
