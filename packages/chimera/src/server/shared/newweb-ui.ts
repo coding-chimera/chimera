@@ -133,9 +133,18 @@ function matchesEtag(header: string | undefined, etag: string) {
   return header.split(",").some((candidate) => candidate.trim() === etag)
 }
 
-function assetResponse(entry: CachedAsset, request?: { headers?: Record<string, string | undefined> }) {
+export type NewWebAsset = {
+  status: number
+  headers: Headers
+  /** Absent for a 304, which must not carry a body. */
+  body?: Uint8Array
+}
+
+type RequestHeaders = { headers?: Record<string, string | undefined> }
+
+function assetResult(entry: CachedAsset, request?: RequestHeaders): NewWebAsset {
   if (matchesEtag(request?.headers?.["if-none-match"], entry.etag)) {
-    return HttpServerResponse.empty({ status: 304, headers: entry.headers })
+    return { status: 304, headers: entry.headers }
   }
 
   const mime = entry.headers.get("content-type") ?? ""
@@ -146,39 +155,75 @@ function assetResponse(entry: CachedAsset, request?: { headers?: Record<string, 
   ) {
     const gzip = gzipOf(entry)
     if (gzip.byteLength < entry.body.byteLength) {
-      // Setting content-encoding here makes the compression middleware skip the
-      // response, so a cached asset is never re-gzipped per request.
+      // Setting content-encoding makes both compression middlewares (the Effect
+      // one and hono/compress) skip the response, so a cached asset is never
+      // re-gzipped per request.
       const headers = new Headers(entry.headers)
       headers.set("content-encoding", "gzip")
-      return HttpServerResponse.raw(gzip, { headers })
+      return { status: 200, headers, body: gzip }
     }
   }
 
-  return HttpServerResponse.raw(entry.body, { headers: entry.headers })
+  return { status: 200, headers: entry.headers, body: entry.body }
+}
+
+function syncManifest(embeddedWebUI: Record<string, string>) {
+  if (manifest === embeddedWebUI) return
+  manifest = embeddedWebUI
+  assets.clear()
+  cachedBytes = 0
+}
+
+function assetKey(requestPath: string, file: string) {
+  return `${newWebAssetPath(requestPath).startsWith("assets/") ? "immutable" : "revalidate"}\u0000${file}`
+}
+
+/**
+ * Cached response for an embedded asset, or undefined when its bytes are not
+ * cached yet and the caller has to read them with its own filesystem and pass
+ * them to `cacheNewWebAsset`. Both HTTP backends share this policy so their
+ * cache headers cannot drift apart.
+ */
+export function cachedNewWebAsset(requestPath: string, embeddedWebUI: Record<string, string>, request?: RequestHeaders) {
+  syncManifest(embeddedWebUI)
+  const file = resolveNewWebUIFile(requestPath, embeddedWebUI)
+  if (!file) return
+  const hit = assets.get(assetKey(requestPath, file))
+  if (!hit) return
+  return assetResult(hit, request)
+}
+
+/** Cache freshly read asset bytes and build this request's response. */
+export function cacheNewWebAsset(
+  requestPath: string,
+  embeddedWebUI: Record<string, string>,
+  file: string,
+  body: Uint8Array,
+  request?: RequestHeaders,
+) {
+  syncManifest(embeddedWebUI)
+  return assetResult(cacheAsset(assetKey(requestPath, file), file, newWebAssetPath(requestPath), body), request)
+}
+
+function effectResponse(asset: NewWebAsset) {
+  if (!asset.body) return HttpServerResponse.empty({ status: asset.status, headers: asset.headers })
+  return HttpServerResponse.raw(asset.body, { status: asset.status, headers: asset.headers })
 }
 
 export function serveEmbeddedNewWebUIEffect(
   requestPath: string,
   fs: AppFileSystem.Interface,
   embeddedWebUI: Record<string, string>,
-  request?: { headers?: Record<string, string | undefined> },
+  request?: RequestHeaders,
 ) {
-  if (manifest !== embeddedWebUI) {
-    manifest = embeddedWebUI
-    assets.clear()
-    cachedBytes = 0
-  }
-
   const file = resolveNewWebUIFile(requestPath, embeddedWebUI)
   if (!file) return Effect.succeed(notFound())
 
-  const assetPath = newWebAssetPath(requestPath)
-  const key = `${assetPath.startsWith("assets/") ? "immutable" : "revalidate"}\u0000${file}`
-  const hit = assets.get(key)
-  if (hit) return Effect.succeed(assetResponse(hit, request))
+  const hit = cachedNewWebAsset(requestPath, embeddedWebUI, request)
+  if (hit) return Effect.succeed(effectResponse(hit))
 
   return fs.readFile(file).pipe(
-    Effect.map((body) => assetResponse(cacheAsset(key, file, assetPath, body), request)),
+    Effect.map((body) => effectResponse(cacheNewWebAsset(requestPath, embeddedWebUI, file, body, request))),
     Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed(notFound())),
   )
 }

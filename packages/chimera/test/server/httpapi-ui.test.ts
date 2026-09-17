@@ -19,6 +19,7 @@ import { authorizationRouterMiddleware } from "../../src/server/routes/instance/
 import { ExperimentalHttpApiServer } from "../../src/server/routes/instance/httpapi/server"
 import { serveEmbeddedUIEffect, serveUIEffect } from "../../src/server/shared/ui"
 import { serveEmbeddedNewWebUIEffect } from "../../src/server/shared/newweb-ui"
+import { serveNewWebUI } from "../../src/server/routes/newweb-ui"
 import { Server } from "../../src/server/server"
 
 void Log.init({ print: false })
@@ -280,6 +281,70 @@ describe("HttpApi UI fallback", () => {
 
       const identity = await embeddedNewWebResponse("/assets/app.js", manifest)
       expect(identity.headers.get("content-encoding")).toBeNull()
+    } finally {
+      await rm(file, { force: true })
+    }
+  })
+
+  test("serves cached NewWeb assets with the same headers on the Hono backend", async () => {
+    Flag.OPENCODE_EXPERIMENTAL_HTTPAPI = false
+    const file = path.join(tmpdir(), `chimera-newweb-hono-${randomUUID()}.js`)
+    const body = "console.log('hono')\n".repeat(200)
+    await Bun.write(file, body)
+    const manifest = { "assets/app.js": file }
+
+    try {
+      const first = await serveNewWebUI(
+        new Request("http://localhost/assets/app.js", { headers: { "accept-encoding": "gzip, deflate, br" } }),
+        manifest,
+      )
+      expect(first.status).toBe(200)
+      expect(first.headers.get("cache-control")).toBe("public, max-age=31536000, immutable")
+      expect(first.headers.get("content-encoding")).toBe("gzip")
+      expect(first.headers.get("vary")).toContain("accept-encoding")
+      const etag = first.headers.get("etag")
+      expect(etag).toBeTruthy()
+      expect(gunzipSync(new Uint8Array(await first.arrayBuffer())).toString()).toBe(body)
+
+      // Source deleted: everything below can only come from the shared cache.
+      await rm(file, { force: true })
+      const revalidated = await serveNewWebUI(
+        new Request("http://localhost/assets/app.js", { headers: { "if-none-match": etag! } }),
+        manifest,
+      )
+      expect(revalidated.status).toBe(304)
+      expect(revalidated.headers.get("etag")).toBe(etag)
+
+      const identity = await serveNewWebUI(new Request("http://localhost/assets/app.js"), manifest)
+      expect(identity.status).toBe(200)
+      expect(identity.headers.get("content-encoding")).toBeNull()
+      expect(await identity.text()).toBe(body)
+
+      expect((await serveNewWebUI(new Request("http://localhost/assets/missing.js"), manifest)).status).toBe(404)
+    } finally {
+      await rm(file, { force: true })
+    }
+  })
+
+  test("revalidates the Hono SPA document with no-cache and 304", async () => {
+    Flag.OPENCODE_EXPERIMENTAL_HTTPAPI = false
+    const file = path.join(tmpdir(), `chimera-newweb-hono-${randomUUID()}.html`)
+    await Bun.write(file, "<html>hono</html>")
+    const manifest = { "index.html": file }
+
+    try {
+      const first = await serveNewWebUI(new Request("http://localhost/projects/demo"), manifest)
+      expect(first.status).toBe(200)
+      expect(first.headers.get("cache-control")).toBe("no-cache")
+      expect(first.headers.get("content-security-policy")).toBeTruthy()
+      const etag = first.headers.get("etag")
+      expect(await first.text()).toContain("hono")
+
+      const revalidated = await serveNewWebUI(
+        new Request("http://localhost/projects/demo", { headers: { "if-none-match": etag! } }),
+        manifest,
+      )
+      expect(revalidated.status).toBe(304)
     } finally {
       await rm(file, { force: true })
     }
