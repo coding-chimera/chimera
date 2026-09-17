@@ -79,7 +79,7 @@ it.live("headerTimeout aborts when response headers do not arrive", () =>
   }),
 )
 
-it.live("headerTimeout is opt-in for non-OpenAI providers", () =>
+it.live("headerTimeout can be disabled with false for non-OpenAI providers", () =>
   Effect.gen(function* () {
     const server = yield* Effect.acquireRelease(
       Effect.promise(() => delayedHeaderServer(100)),
@@ -98,12 +98,12 @@ it.live("headerTimeout is opt-in for non-OpenAI providers", () =>
 
           expect(yield* Effect.promise(() => result.text)).toBe("ok")
         }),
-      { config: providerConfig(server.url) },
+      { config: providerConfig(server.url, { headerTimeout: false }) },
     )
   }),
 )
 
-it.live("OpenAI Codex headerTimeout default can be disabled by config", () =>
+it.live("OpenAI Codex header and chunk timeout defaults can be disabled by config", () =>
   Effect.gen(function* () {
     yield* withAuthContent(
       Effect.gen(function* () {
@@ -113,8 +113,9 @@ it.live("OpenAI Codex headerTimeout default can be disabled by config", () =>
               const provider = yield* Provider.Service
               const openai = yield* provider.getProvider(ProviderID.openai)
               expect(openai.options.headerTimeout).toBe(false)
+              expect(openai.options.chunkTimeout).toBe(false)
             }),
-          { config: { provider: { openai: { options: { headerTimeout: false } } } } },
+          { config: { provider: { openai: { options: { headerTimeout: false, chunkTimeout: false } } } } },
         )
       }),
     )
@@ -138,43 +139,50 @@ it.live("OpenAI API auth gets default headerTimeout", () =>
   }),
 )
 
-it.live("default chunkTimeout is applied at fetch without changing provider options", () =>
-  Effect.gen(function* () {
-    const server = yield* Effect.acquireRelease(
-      Effect.promise(() => delayedBodyServer(250)),
-      (server) => Effect.sync(() => server.server.close()),
-    )
+for (const timeout of ["chunkTimeout", "headerTimeout"] as const) {
+  it.live(`default ${timeout} is applied at fetch without changing provider options`, () =>
+    Effect.gen(function* () {
+      const server = yield* Effect.acquireRelease(
+        Effect.promise(() => delayedBodyServer(250)),
+        (server) => Effect.sync(() => server.server.close()),
+      )
 
-    yield* provideTmpdirInstance(
-      () =>
-        Effect.gen(function* () {
-          const provider = yield* Provider.Service
-          const configured = yield* provider.getProvider(ProviderID.make("test"))
-          const signals: (AbortSignal | null | undefined)[] = []
-          configured.options.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
-            signals.push(init?.signal)
-            return fetch(input, init)
-          }
-          const model = yield* provider.getModel(ProviderID.make("test"), ModelID.make("test-model"))
-          const language = yield* provider.getLanguage(model)
-          yield* Effect.acquireRelease(
-            Effect.promise(() =>
-              language.doStream({ prompt: [{ role: "user", content: [{ type: "text", text: "hello" }] }] }),
-            ),
-            (result) => Effect.promise(() => result.stream.cancel()),
-          )
+      yield* provideTmpdirInstance(
+        () =>
+          Effect.gen(function* () {
+            const provider = yield* Provider.Service
+            const configured = yield* provider.getProvider(ProviderID.make("test"))
+            const signals: (AbortSignal | null | undefined)[] = []
+            configured.options.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+              signals.push(init?.signal)
+              return fetch(input, init)
+            }
+            const model = yield* provider.getModel(ProviderID.make("test"), ModelID.make("test-model"))
+            const language = yield* provider.getLanguage(model)
+            yield* Effect.acquireRelease(
+              Effect.promise(() =>
+                language.doStream({ prompt: [{ role: "user", content: [{ type: "text", text: "hello" }] }] }),
+              ),
+              (result) => Effect.promise(() => result.stream.cancel()),
+            )
 
-          // The 300_000ms default creates a chunk-abort controller, so fetch
-          // receives a combined signal even though nothing was configured,
-          // and the default is not written back into provider options.
-          expect(signals).toHaveLength(1)
-          expect(signals[0]).toBeInstanceOf(AbortSignal)
-          expect(configured.options.chunkTimeout).toBeUndefined()
-        }),
-      { config: providerConfig(server.url) },
-    )
-  }),
-)
+            // The 300_000ms default creates an abort controller for the timeout
+            // under test (the other one is explicitly disabled), so fetch
+            // receives a combined signal even though nothing was configured,
+            // and the default is not written back into provider options.
+            expect(signals).toHaveLength(1)
+            expect(signals[0]).toBeInstanceOf(AbortSignal)
+            expect(configured.options[timeout]).toBeUndefined()
+          }),
+        {
+          config: providerConfig(server.url, {
+            [timeout === "chunkTimeout" ? "headerTimeout" : "chunkTimeout"]: false,
+          }),
+        },
+      )
+    }),
+  )
+}
 
 it.live("configured chunkTimeout aborts a stalled SSE body", () =>
   Effect.gen(function* () {
