@@ -5,6 +5,7 @@ import path from "path"
 import {
   assertNoEmbeddedBuildPaths,
   createPlatformPackageManifest,
+  kernelPrebuildPlatformDir,
   npmPlatformTargets,
   packageLicense,
   packageLicenseFiles,
@@ -157,6 +158,34 @@ describe("script.package-variant", () => {
         variant: "no-webui",
       }),
     ).not.toHaveProperty("libc")
+  })
+
+  test("collapses the 12-package matrix onto the 8 kernel prebuild legs and guards the build-kernel.sh mapping", async () => {
+    const dirs = npmPlatformTargets.map(kernelPrebuildPlatformDir)
+    // The kernel artifact axis is (os, arch, libc): baseline (avx2: false)
+    // packages share the non-baseline prebuild, so 12 packages -> 8 legs.
+    expect([...new Set(dirs)].sort()).toEqual([
+      "darwin-arm64",
+      "darwin-x64",
+      "linux-arm64",
+      "linux-arm64-musl",
+      "linux-x64",
+      "linux-x64-musl",
+      "win32-arm64",
+      "win32-x64",
+    ])
+    // musl packages must read the -musl leg (a glibc-linked .node will not
+    // dlopen on musl); baseline-musl folds into the plain musl leg.
+    expect(kernelPrebuildPlatformDir({ os: "linux", arch: "x64", abi: "musl", avx2: false })).toBe("linux-x64-musl")
+    // The dir keeps the loader's process.platform spelling, not the npm
+    // package name's "windows".
+    expect(kernelPrebuildPlatformDir({ os: "win32", arch: "x64" })).toBe("win32-x64")
+    expect(platformPackageName(pkg.name, { os: "win32", arch: "x64" })).toBe("@coding-chimera/chimera-windows-x64")
+    // Drift guard: every leg must be producible by build-kernel.sh's platform_for.
+    const script = await fs.readFile(path.resolve(projectDir, "script/build-kernel.sh"), "utf8")
+    for (const dir of new Set(dirs)) {
+      expect(script).toContain(`echo "${dir}"`)
+    }
   })
 
   test("excludes stale tarballs from platform package contents", async () => {
