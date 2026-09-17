@@ -8,6 +8,7 @@ import type { MessageV2 } from "@/session/message-v2"
 import { Session } from "@/session/session"
 import { getGraphDataRootInfo } from "@/graph"
 import { PROPAGATION_ENTRY_FILE } from "./propagation-probe"
+import { EditIntentClaims } from "./edit-intent"
 
 const MAX_RECENT_MUTATIONS = 3
 const MAX_RECENT_PREDESIGNS = 3
@@ -354,10 +355,10 @@ const graphDiscoveryHint = Effect.fnUntraced(function* (root: string, messages: 
   return [GRAPH_DISCOVERY_HINT_HEADER, GRAPH_DISCOVERY_HINT_BODY]
 })
 
-function renderContext(recent: ToolMutationRecord[], obligations: PromptObligation[], predesigns: PredesignRunRecord[], audits: AuditRunRecord[], oracles: OracleRecord[], hint: readonly string[] | undefined, drift: string | undefined) {
+function renderContext(recent: ToolMutationRecord[], obligations: PromptObligation[], predesigns: PredesignRunRecord[], audits: AuditRunRecord[], oracles: OracleRecord[], hint: readonly string[] | undefined, drift: string | undefined, claimsLines: string[]) {
   const nonPassingOracles = oracles.filter((oracle) => oracle.status !== "pass")
   const oracleLines = linkedOracleLines(recent, nonPassingOracles)
-  if (recent.length === 0 && obligations.length === 0 && predesigns.length === 0 && audits.length === 0 && nonPassingOracles.length === 0 && !hint && !drift) return undefined
+  if (recent.length === 0 && obligations.length === 0 && predesigns.length === 0 && audits.length === 0 && nonPassingOracles.length === 0 && claimsLines.length === 0 && !hint && !drift) return undefined
   return [
     "## Chimera Execution Context",
     "",
@@ -397,6 +398,12 @@ function renderContext(recent: ToolMutationRecord[], obligations: PromptObligati
           ...oracleLines,
         ]
       : []),
+    ...(claimsLines.length
+      ? [
+          "",
+          ...claimsLines,
+        ]
+      : []),
     "",
     "Closeout Gate:",
     ...closeoutGate(recent, obligations, audits, nonPassingOracles),
@@ -427,7 +434,8 @@ export const layer = Layer.effect(
         sessionID,
         sessionPredesigns,
       )
-      return renderContext(recentMutations(records, sessionID), activeObligations(store), sessionPredesigns, audits, oracles, hint, drift)
+      const claimsLines = yield* EditIntentClaims.contextLines({ projectRoot: root, sessionID })
+      return renderContext(recentMutations(records, sessionID), activeObligations(store), sessionPredesigns, audits, oracles, hint, drift, claimsLines)
     })
 
     return Service.of({ render })
