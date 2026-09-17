@@ -85,6 +85,8 @@ function simplePragmaValue(row: unknown): unknown {
  */
 class NodeSqliteAdapter implements SqliteDatabase {
   private _db: any;
+  /** Active transaction depth — nested transaction() calls JOIN the outer unit. */
+  private txnDepth = 0;
 
   constructor(dbPath: string, options: CreateDatabaseOptions = {}) {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -146,7 +148,21 @@ class NodeSqliteAdapter implements SqliteDatabase {
 
   transaction<T>(fn: (...args: any[]) => T): (...args: any[]) => T {
     return (...args: any[]) => {
+      // Nested transactions JOIN the outer one: SQLite has no nested BEGIN,
+      // and composed query-layer helpers (insertNodes/insertEdges/deleteFile
+      // …) must stay atomic as ONE unit when a caller wraps them — the fork
+      // adaptation of upstream 58c07e874's replace-in-one-transaction rule.
+      // Standalone use is unchanged.
+      if (this.txnDepth > 0) {
+        this.txnDepth++;
+        try {
+          return fn(...args);
+        } finally {
+          this.txnDepth--;
+        }
+      }
       this._db.exec('BEGIN');
+      this.txnDepth++;
       try {
         const result = fn(...args);
         this._db.exec('COMMIT');
@@ -154,6 +170,8 @@ class NodeSqliteAdapter implements SqliteDatabase {
       } catch (error) {
         this._db.exec('ROLLBACK');
         throw error;
+      } finally {
+        this.txnDepth--;
       }
     };
   }
@@ -175,8 +193,10 @@ class NodeSqliteAdapter implements SqliteDatabase {
  * parameter objects so the query layer remains backend-agnostic.
  */
 class BunSqliteAdapter implements SqliteDatabase {
-  private _db: any;
+private _db: any;
   private _open = true;
+  /** Active transaction depth — nested transaction() calls JOIN the outer unit. */
+  private txnDepth = 0;
 
   constructor(dbPath: string, options: CreateDatabaseOptions = {}) {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -232,7 +252,17 @@ class BunSqliteAdapter implements SqliteDatabase {
 
   transaction<T>(fn: (...args: any[]) => T): (...args: any[]) => T {
     return (...args: any[]) => {
+      // Nested transactions JOIN the outer one — see NodeSqliteAdapter.
+      if (this.txnDepth > 0) {
+        this.txnDepth++;
+        try {
+          return fn(...args);
+        } finally {
+          this.txnDepth--;
+        }
+      }
       this._db.exec('BEGIN');
+      this.txnDepth++;
       try {
         const result = fn(...args);
         this._db.exec('COMMIT');
@@ -240,6 +270,8 @@ class BunSqliteAdapter implements SqliteDatabase {
       } catch (error) {
         this._db.exec('ROLLBACK');
         throw error;
+      } finally {
+        this.txnDepth--;
       }
     };
   }
