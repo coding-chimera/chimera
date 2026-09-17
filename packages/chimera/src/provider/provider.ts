@@ -45,6 +45,9 @@ const KIMI_FOR_CODING_FAST_NAME = "kimi-for-coding-fast"
 const K3_ID = "k3"
 const K3_NAME = "k3"
 const MODEL_DISCOVERY_TIMEOUT = 5_000
+// Same value as the global headerTimeout default applied in resolveSDK. Kept
+// as a provider-level option (as upstream does) so the OpenAI default stays
+// visible in openai.options and config-overridable.
 const OPENAI_HEADER_TIMEOUT_DEFAULT = 300_000
 
 function shouldUseCopilotResponsesApi(modelID: string): boolean {
@@ -2077,7 +2080,7 @@ const layer: Layer.Layer<
 
         const customFetch = options["fetch"]
         const chunkTimeout = options["chunkTimeout"] ?? 300_000
-        const headerTimeout = options["headerTimeout"]
+        const headerTimeout = options["headerTimeout"] ?? 300_000
         delete options["chunkTimeout"]
         delete options["headerTimeout"]
         const replayTransport = () =>
