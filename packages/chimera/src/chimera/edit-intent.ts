@@ -1,5 +1,8 @@
-import { Effect } from "effect"
+import { Effect, Schema } from "effect"
 import * as Log from "@opencode-ai/core/util/log"
+import type { Interface as BusInterface } from "@/bus"
+import { BusEvent } from "@/bus/bus-event"
+import { InstanceState } from "@/effect/instance-state"
 import type { Tool } from "@/tool/tool"
 import {
   cancelEditIntentWaiters,
@@ -60,7 +63,7 @@ export type EditIntentWakeFile = {
 
 export type EditIntentWakeTarget = {
   sessionID: string
-  files: EditIntentWakeFile[]
+  files: readonly EditIntentWakeFile[]
   reason?: EditIntentClaimReleaseReason
 }
 
@@ -307,6 +310,43 @@ export const releaseForSession = Effect.fn("EditIntentClaims.releaseForSession")
     }),
   )
   return groupWakeTargets(woken, input.reason)
+})
+
+/**
+ * Tree-world release broadcast. Sync-published session.deleted rides the
+ * module-level Bus runtime while layer-injected subscribers live in the
+ * layer tree — one world in production (shared memoMap) but split in test
+ * harnesses. session.remove() releases the claims directly and publishes
+ * this event with the computed wake targets so delivery to the
+ * SessionPrompt watcher (which owns injectSynthetic) is reliable in both.
+ */
+export const Released = BusEvent.define(
+  "chimera.edit_intent.released",
+  Schema.Struct({
+    projectRoot: Schema.String,
+    reason: Schema.Literal("session_removed"),
+    targets: Schema.Array(
+      Schema.Struct({
+        sessionID: Schema.String,
+        files: Schema.Array(Schema.Struct({ filePath: Schema.String, blockerSessionID: Schema.String })),
+      }),
+    ),
+  }),
+)
+
+export const publishRemovalRelease = Effect.fn("EditIntentClaims.publishRemovalRelease")(function* (input: {
+  bus: BusInterface
+  sessionID: string
+}) {
+  const instance = yield* InstanceState.context
+  const root = instance.worktree === "/" ? instance.directory : instance.worktree
+  const targets = yield* releaseForSession({ projectRoot: root, sessionID: input.sessionID, reason: "session_removed" })
+  if (targets.length === 0) return
+  yield* input.bus.publish(Released, {
+    projectRoot: root,
+    reason: "session_removed",
+    targets: targets.map((target) => ({ sessionID: target.sessionID, files: target.files })),
+  })
 })
 
 /**
