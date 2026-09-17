@@ -6,6 +6,11 @@ import { InstanceState } from "@/effect/instance-state"
 import type { Tool } from "@/tool/tool"
 import {
   cancelEditIntentWaiters,
+  cancelEditIntentWaitersByHostBootID,
+  cancelOrphanedEditIntentWaiters,
+  currentHostBootID,
+  EDIT_INTENT_CLAIM_DEFAULT_TTL_MS,
+  listEditIntentWaiterHosts,
   readActiveEditIntentClaims,
   readEditIntentWaiters,
   registerEditIntentClaims,
@@ -23,6 +28,17 @@ const log = Log.create({ service: "chimera.edit-intent" })
 const MAX_CONTEXT_FILES = 8
 const MAX_INTENT_CHARS = 140
 
+// Roots with waiters registered by this process; gates the cross-process poll
+// so a process without pending waiters does zero DB work per tick.
+const pendingPollRoots = new Set<string>()
+
+// Dead-host verdicts are cached permanently: a boot id embeds the process
+// start time, so even pid reuse produces a different id — dead never revives.
+const deadHostBootIDs = new Set<string>()
+
+/** Pre-v6 NULL-host waiter rows are swept only past this grace window so a mixed-version old binary can still wake its own un-stamped waiters. */
+const ORPHAN_SWEEP_GRACE_MS = EDIT_INTENT_CLAIM_DEFAULT_TTL_MS
+
 /**
  * Advisory file-level edit-intent claims for cross-session edit coordination.
  *
@@ -36,7 +52,12 @@ const MAX_INTENT_CHARS = 140
  *   crash fallback only;
  * - releases wake registered waiters through the session-addressable
  *   synthetic-message inject channel (the L2 push path); the prompt-context
- *   claims block is the L1 pull path for sessions between turns.
+ *   claims block is the L1 pull path for sessions between turns;
+ * - waits are host-scoped: every waiter row records the identity of the
+ *   process that registered it, a release only wakes waiters hosted by the
+ *   releasing process, and a light conditional poll in each process picks up
+ *   cross-process releases for its own parked sessions (poll→inject bridge),
+ *   lazily cancelling leftovers whose host process is provably dead.
  *
  * Every function degrades open: claim storage trouble must never block or
  * fail a mutation, so read/write errors collapse to "no claims".
@@ -136,6 +157,7 @@ const registerWaiters = Effect.fnUntraced(function* (
   conflicts: EditIntentConflict[],
   reason: string,
 ) {
+  if (conflicts.length > 0) pendingPollRoots.add(projectRoot)
   for (const conflict of conflicts) {
     yield* Effect.promise(() =>
       registerEditIntentWaiter(projectRoot, {
@@ -300,11 +322,13 @@ export const releaseForSession = Effect.fn("EditIntentClaims.releaseForSession")
     )
   }
   if (released.length === 0) return [] as EditIntentWakeTarget[]
+  // Host-scoped take: only waiters registered by this process can be injected
+  // into here; foreign-hosted waiters stay 'waiting' for their own process's
+  // poll to pick up (flipping them here would strand the wake forever).
   const woken = yield* Effect.promise(() =>
-    takeWokenEditIntentWaiters(
-      input.projectRoot,
-      released.map((claim) => claim.filePath),
-    ).catch((error) => {
+    takeWokenEditIntentWaiters(input.projectRoot, released.map((claim) => claim.filePath), {
+      hostBootID: currentHostBootID(),
+    }).catch((error) => {
       log.warn("edit-intent wake collection failed", { error })
       return [] as EditIntentWaiterRecord[]
     }),
@@ -365,12 +389,122 @@ export const drainForSession = Effect.fn("EditIntentClaims.drainForSession")(fun
     }),
   )
   if (pending.length === 0) return [] as EditIntentWakeTarget[]
+  // Host-scoped like the release take: this session runs in this process, so
+  // its own rows carry this host's boot id (upsert re-stamps after restarts).
   const woken = yield* Effect.promise(() =>
-    takeWokenEditIntentWaiters(
-      input.projectRoot,
-      pending.map((waiter) => waiter.filePath),
-    ).catch((error) => {
+    takeWokenEditIntentWaiters(input.projectRoot, pending.map((waiter) => waiter.filePath), {
+      hostBootID: currentHostBootID(),
+    }).catch((error) => {
       log.warn("edit-intent wake collection failed", { error })
+      return [] as EditIntentWaiterRecord[]
+    }),
+  )
+  return groupWakeTargets(woken)
+})
+
+/** boot_<process-start-ms>_<pid> — the pid component drives the liveness verdict. */
+function hostBootPID(hostBootID: string) {
+  const match = /^boot_(\d+)_(\d+)$/.exec(hostBootID)
+  if (!match) return undefined
+  return Number(match[2])
+}
+
+/**
+ * Liveness oracle for a recorded host boot id. Answers "dead" only when the
+ * pid is provably gone (signal 0 → ESRCH, or an impossible pid → EINVAL);
+ * EPERM means the process exists under another user — alive. Unparsable ids
+ * cannot belong to a live v6+ process (it only writes the canonical format),
+ * so they count as dead garbage. Caveat: the check runs in this process's pid
+ * namespace — processes in separate namespaces sharing one project volume can
+ * misjudge each other's hosts.
+ */
+function isHostBootAlive(hostBootID: string) {
+  if (hostBootID === currentHostBootID()) return true
+  if (deadHostBootIDs.has(hostBootID)) return false
+  const pid = hostBootPID(hostBootID)
+  if (pid === undefined) {
+    deadHostBootIDs.add(hostBootID)
+    return false
+  }
+  // While this process runs, no other process can hold its pid, so any id
+  // naming it counts as alive — never cancel rows we could be racing with.
+  if (pid === process.pid) return true
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    const alive = (error as { code?: string }).code === "EPERM"
+    if (!alive) deadHostBootIDs.add(hostBootID)
+    return alive
+  }
+}
+
+/**
+ * Lazy stale-boot cleanup (same philosophy as the claim TTL): waiters left
+ * 'waiting' by a dead process are inert garbage — no inject can ever reach
+ * their sessions — so an actively polling process cancels them once the
+ * recorded boot id proves the host is gone. NULL-host rows are pre-v6
+ * leftovers, cancelled only past ORPHAN_SWEEP_GRACE_MS so a still-live
+ * old-binary process keeps its own un-stamped wake path working.
+ */
+export const sweepStaleHosts = Effect.fn("EditIntentClaims.sweepStaleHosts")(function* (input: { projectRoot: string }) {
+  const hosts = yield* Effect.promise(() =>
+    listEditIntentWaiterHosts(input.projectRoot).catch((error) => {
+      log.warn("edit-intent waiter host listing failed", { error })
+      return [] as Array<{ hostPID: number | null; hostBootID: string | null }>
+    }),
+  )
+  let cancelled = 0
+  for (const host of hosts) {
+    const bootID = host.hostBootID
+    if (bootID === null || isHostBootAlive(bootID)) continue
+    cancelled += yield* Effect.promise(() =>
+      cancelEditIntentWaitersByHostBootID(input.projectRoot, bootID).catch((error) => {
+        log.warn("edit-intent stale-host waiter cancellation failed", { hostBootID: bootID, error })
+        return 0
+      }),
+    )
+  }
+  if (hosts.some((host) => host.hostBootID === null)) {
+    cancelled += yield* Effect.promise(() =>
+      cancelOrphanedEditIntentWaiters(input.projectRoot, {
+        orphanedBefore: new Date(Date.now() - ORPHAN_SWEEP_GRACE_MS).toISOString(),
+      }).catch((error) => {
+        log.warn("edit-intent orphan waiter cancellation failed", { error })
+        return 0
+      }),
+    )
+  }
+  if (cancelled > 0) log.info("edit-intent stale-host waiters cancelled", { projectRoot: input.projectRoot, cancelled })
+  return cancelled
+})
+
+/**
+ * Cross-process poll→inject bridge body, run on a light interval by the
+ * per-instance edit-intent watcher in session/prompt.ts. A release in another
+ * process flips claim rows but cannot inject into this process's parked
+ * sessions, so each tick takes the freed files of this host's own waiting
+ * waiters (host-filtered take; exactly-once via the conditional UPDATE
+ * changes-guard) and returns them as local inject targets. Gated by the
+ * pendingPollRoots hint set at waiter registration: zero own waiters means
+ * zero DB access for the tick. Stale-boot cleanup piggybacks on active ticks.
+ */
+export const pollCrossProcessWakes = Effect.fn("EditIntentClaims.pollCrossProcessWakes")(function* (input: { projectRoot: string }) {
+  if (!pendingPollRoots.has(input.projectRoot)) return [] as EditIntentWakeTarget[]
+  const own = yield* Effect.promise(() =>
+    readEditIntentWaiters(input.projectRoot, { status: "waiting", hostBootID: currentHostBootID(), limit: 200 }).catch((error) => {
+      log.warn("edit-intent cross-process poll read failed", { error })
+      return [] as EditIntentWaiterRecord[]
+    }),
+  )
+  if (own.length === 0) {
+    pendingPollRoots.delete(input.projectRoot)
+    return [] as EditIntentWakeTarget[]
+  }
+  yield* sweepStaleHosts({ projectRoot: input.projectRoot })
+  const woken = yield* Effect.promise(() =>
+    takeWokenEditIntentWaiters(input.projectRoot, own.map((waiter) => waiter.filePath), { hostBootID: currentHostBootID() }).catch((error) => {
+      log.warn("edit-intent cross-process wake collection failed", { error })
       return [] as EditIntentWaiterRecord[]
     }),
   )
