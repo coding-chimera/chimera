@@ -12,6 +12,7 @@ import PROMPT_GPT4 from "./prompt/gpt-4.txt"
 import PROMPT_GEMINI from "./prompt/gemini.txt"
 import PROMPT_GPT from "./prompt/gpt.txt"
 import PROMPT_GPT55 from "./prompt/gpt-5.5.txt"
+import PROMPT_ASTRA from "./prompt/gpt-astra.txt"
 import PROMPT_KIMI from "./prompt/kimi.txt"
 import PROMPT_DEEPSEEK from "./prompt/deepseek.txt"
 import PROMPT_DEEPSEEK_OVERLAY from "./prompt/deepseek-overlay.txt"
@@ -56,6 +57,9 @@ type LayerEntry = {
 const SPECIALIZATIONS: LayerEntry[] = [
   { key: "model/gpt-4", keys: ["gpt-4", "o1", "o3"], content: PROMPT_GPT4 },
   { key: "model/gpt-5.5", keys: ["gpt-5.5"], content: PROMPT_GPT55, exact: true },
+  // gpt-6 family (Astra). Ordered before model/codex and model/gpt to mirror
+  // the upstream if-chain, where the gpt-6 check precedes both.
+  { key: "model/gpt-astra", keys: ["gpt-6"], content: PROMPT_ASTRA },
   {
     key: "model/codex",
     keys: ["codex"],

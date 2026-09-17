@@ -236,6 +236,84 @@ describe("session.system", () => {
     }),
   )
 
+  it.effect("routes gpt-6 family ids to the Astra layer", () =>
+    Effect.gen(function* () {
+      const cases = [
+        { providerID: "openai", apiID: "gpt-6" },
+        { providerID: "openai", apiID: "gpt-6.0-astra" },
+        { providerID: "openai", apiID: "openai/gpt-6" },
+        { providerID: "test-relay", apiID: "gpt-6-sol" },
+        // Upstream match order: the gpt-6 check precedes the codex check, so
+        // a codex-namespaced gpt-6 still lands on the Astra layer.
+        { providerID: "openai", apiID: "codex/gpt-6" },
+      ]
+
+      for (const item of cases) {
+        const prompt = SystemPrompt.provider({
+          providerID: item.providerID,
+          api: { id: item.apiID },
+        } as unknown as Parameters<typeof SystemPrompt.provider>[0]).join("\n")
+
+        expect(prompt).toContain("powered by Chimera, a coding agent harness")
+        expect(prompt).toContain("# Working in codebases")
+        expect(prompt).not.toContain("OpenCode")
+        expect(prompt).not.toContain("## GPT Overlay")
+        expect(prompt).not.toContain("## Codex Overlay")
+        // The Astra layer stacks on top of the shared default/workflow prompts.
+        expect(prompt).toContain("# Software engineering workflow")
+        expect(prompt.indexOf("# Software engineering workflow")).toBeLessThan(
+          prompt.indexOf("# Working in codebases"),
+        )
+        expect(
+          SystemPrompt.providerSegments({
+            providerID: item.providerID,
+            api: { id: item.apiID },
+          } as unknown as Parameters<typeof SystemPrompt.provider>[0]).map((segment) => segment.key),
+        ).toEqual(["core/default", "core/workflow", "model/gpt-astra"])
+      }
+      yield* Effect.void
+    }),
+  )
+
+  it.effect("keeps non-gpt-6 model assembly byte-identical without the Astra layer", () =>
+    Effect.gen(function* () {
+      // Anchor for the #13 default-invariance requirement: with no gpt-6-family
+      // model, no assembled prompt may gain Astra content, and layer attribution
+      // stays exactly as before the layer was registered.
+      const cases = [
+        { providerID: "openai", apiID: "gpt-5.6", key: "model/gpt" },
+        { providerID: "openai", apiID: "gpt-5.6-sol", key: "model/gpt" },
+        { providerID: "openai", apiID: "gpt-5.6-luna", key: "model/gpt" },
+        { providerID: "openai", apiID: "gpt-5.5", key: "model/gpt-5.5" },
+        { providerID: "openai", apiID: "gpt-5.4", key: "model/gpt" },
+        { providerID: "openai", apiID: "gpt-5-codex", key: "model/codex" },
+        { providerID: "openai", apiID: "gpt-4.1", key: "model/gpt-4" },
+        { providerID: "openai", apiID: "o3", key: "model/gpt-4" },
+        { providerID: "anthropic", apiID: "claude-sonnet-4", key: "model/claude" },
+        { providerID: "google", apiID: "gemini-2.5-pro", key: "model/gemini" },
+        { providerID: "local", apiID: "unknown-model", key: undefined },
+      ]
+
+      for (const item of cases) {
+        const prompt = SystemPrompt.provider({
+          providerID: item.providerID,
+          api: { id: item.apiID },
+        } as unknown as Parameters<typeof SystemPrompt.provider>[0]).join("\n")
+
+        expect(prompt).not.toContain("powered by Chimera, a coding agent harness")
+        expect(prompt).not.toContain("# Working in codebases")
+        expect(prompt).not.toContain("gpt-astra")
+        expect(
+          SystemPrompt.providerSegments({
+            providerID: item.providerID,
+            api: { id: item.apiID },
+          } as unknown as Parameters<typeof SystemPrompt.provider>[0]).map((segment) => segment.key),
+        ).toEqual(item.key ? ["core/default", "core/workflow", item.key] : ["core/default", "core/workflow"])
+      }
+      yield* Effect.void
+    }),
+  )
+
   it.effect("routes Kimi For Coding provider models to the Kimi prompt", () =>
     Effect.gen(function* () {
       const stable = SystemPrompt.provider({
