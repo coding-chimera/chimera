@@ -277,7 +277,13 @@ export class Daemon {
  */
 export type AcquireResult =
   | { kind: 'acquired'; pidPath: string; info: DaemonLockInfo }
-  | { kind: 'taken'; existing: DaemonLockInfo | null; pidPath: string };
+  | {
+      kind: 'taken';
+      existing: DaemonLockInfo | null;
+      /** Exact record read after losing acquisition; null when it was unreadable. */
+      lockContents: string | null;
+      pidPath: string;
+    };
 
 /**
  * Atomically create the daemon pidfile with its full record already in place.
@@ -331,12 +337,15 @@ export function tryAcquireDaemonLock(projectRoot: string): AcquireResult {
 
   // Taken. Because the pidfile was link'd atomically it always holds a complete
   // record — `existing` is null only for a genuinely corrupt leftover, never a
-  // mid-write race.
+  // mid-write race. The raw contents ride along so the takeover loop can pin
+  // its stale-clear to the EXACT record it inspected (upstream 1e4612375).
   let existing: DaemonLockInfo | null = null;
+  let lockContents: string | null = null;
   try {
-    existing = decodeLockInfo(fs.readFileSync(pidPath, 'utf8'));
+    lockContents = fs.readFileSync(pidPath, 'utf8');
+    existing = decodeLockInfo(lockContents);
   } catch { /* unreadable lockfile — treat as malformed */ }
-  return { kind: 'taken', existing, pidPath };
+  return { kind: 'taken', existing, lockContents, pidPath };
 }
 
 /**
@@ -350,9 +359,18 @@ export function tryAcquireDaemonLock(projectRoot: string): AcquireResult {
  * compare-and-delete: bail if the file now holds a different pid, or any live
  * pid. Returns true when the stale lock is gone (or was already gone).
  */
-export function clearStaleDaemonLock(pidPath: string, expectedDeadPid?: number): boolean {
+export function clearStaleDaemonLock(
+  pidPath: string,
+  expectedDeadPid?: number,
+  opts: { expectedLockContents?: string } = {}
+): boolean {
   try {
     const raw = fs.readFileSync(pidPath, 'utf8');
+    // The identity record changed after the caller inspected it. Even the
+    // same PID may now advertise a freshly-bound socket, so the snapshot the
+    // caller disproved is not the record on disk — never delete it (upstream
+    // 1e4612375: preserve live locks across the inspect→clear race).
+    if (opts.expectedLockContents !== undefined && raw !== opts.expectedLockContents) return false;
     const info = decodeLockInfo(raw);
     if (info) {
       // A different pid took over since we read it — not ours to clear.
