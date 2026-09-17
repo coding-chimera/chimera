@@ -47,6 +47,7 @@ import { SessionSummary } from "./summary"
 import { WorkBrief } from "./work-brief"
 import { PromptStats } from "./prompt-stats"
 import { ChimeraPromptContext } from "@/chimera/prompt-context"
+import { EditIntentClaims } from "@/chimera/edit-intent"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { SessionProcessor } from "./processor"
 import { Tool } from "@/tool/tool"
@@ -2200,6 +2201,9 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
     }, Effect.scoped)
 
     const prompt: (input: PromptInput) => Effect.Effect<MessageV2.WithParts, Image.Error> = Effect.fn("SessionPrompt.prompt")(function* (input: PromptInput) {
+        // Arm the per-instance edit-intent release watcher (memoized; the
+        // subscriptions need instance context, which layer build lacks).
+        yield* InstanceState.get(editIntentWatch)
         const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
         yield* revert.cleanup(session)
         const message = yield* createUserMessage(input)
@@ -2792,6 +2796,62 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
       })
       return result
     })
+
+    // Edit-intent claims L2: release + wake. When a session's run goes idle
+    // (its work batch completed), its advisory claims release and the sessions
+    // queued behind them receive a synthetic release notice through the
+    // session-addressable inject channel — the same primitive background task
+    // completion uses. A session that was busy when its blocker released is
+    // drained on its own idle transition; a busy wake target consumes the
+    // notice in its running loop's next iteration. Session removal releases
+    // inside Session.remove and broadcasts EditIntentClaims.Released; this
+    // watcher injects for those targets too. Same-process only by design:
+    // parked threads in other CLI processes are the open cross-process
+    // poll→inject bridge design point.
+    //
+    // Bus is instance-scoped, so the subscriptions live in per-instance state
+    // (fibers forked in the instance scope, torn down on dispose); prompt()
+    // arms the watcher on the first run inside an instance.
+    const wakeEditIntentTargets = Effect.fnUntraced(function* (targets: EditIntentClaims.EditIntentWakeTarget[]) {
+      for (const target of targets) {
+        yield* injectSynthetic({
+          sessionID: SessionID.make(target.sessionID),
+          text: EditIntentClaims.wakeText(target),
+        }).pipe(Effect.ignoreCause({ log: true }))
+      }
+    })
+    const releaseEditIntentClaims = Effect.fnUntraced(function* (root: string, sessionID: SessionID) {
+      const released = yield* EditIntentClaims.releaseForSession({ projectRoot: root, sessionID, reason: "session_idle" })
+      const drained = yield* EditIntentClaims.drainForSession({ projectRoot: root, sessionID })
+      yield* wakeEditIntentTargets([...released, ...drained])
+    })
+    const editIntentWatch = yield* InstanceState.make(
+      Effect.fn("SessionPrompt.editIntentWatch")(function* (ctx) {
+        const root = ctx.worktree === "/" ? ctx.directory : ctx.worktree
+        yield* bus.subscribe(SessionStatus.Event.Idle).pipe(
+          Stream.runForEach((event) =>
+            releaseEditIntentClaims(root, event.properties.sessionID).pipe(
+              Effect.catchCause((cause) => Effect.sync(() => log.error("edit-intent idle release failed", { cause }))),
+            ),
+          ),
+          Effect.forkScoped,
+        )
+        yield* bus.subscribe(EditIntentClaims.Released).pipe(
+          Stream.runForEach((event) =>
+            wakeEditIntentTargets(
+              event.properties.targets.map((target) => ({
+                sessionID: target.sessionID,
+                files: target.files,
+                reason: event.properties.reason,
+              })),
+            ).pipe(
+              Effect.catchCause((cause) => Effect.sync(() => log.error("edit-intent removal wake failed", { cause }))),
+            ),
+          ),
+          Effect.forkScoped,
+        )
+      }),
+    )
 
     return Service.of({
       cancel,

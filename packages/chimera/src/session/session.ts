@@ -6,6 +6,7 @@ import { Decimal } from "decimal.js"
 import { type ProviderMetadata, type LanguageModelUsage } from "ai"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { BackgroundJob } from "@/agent/background-job"
+import { EditIntentClaims } from "@/chimera/edit-intent"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 
 import { Database } from "@/storage/db"
@@ -741,6 +742,14 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
         // the child recursion above triggers each child session's own cleanup.
         // Gated on the instance so cleanup still works without one.
         if (hasInstance) yield* cancelBackgroundJobs(background, sessionID)
+
+        // Release this session's advisory edit-intent claims and wake the
+        // sessions queued behind them (the SessionPrompt watcher injects the
+        // release notices). Isolated so claim trouble can never skip the
+        // removal cleanup below; the claim TTL is the crash fallback.
+        if (hasInstance) {
+          yield* EditIntentClaims.publishRemovalRelease({ bus, sessionID }).pipe(Effect.ignoreCause({ log: true }))
+        }
 
         deleteSessionMemory({ sessionID })
         yield* sync.run(Event.Deleted, { sessionID, info: session }, { publish: hasInstance })
