@@ -302,3 +302,8 @@ loop 挂起修复前的对比基线（本机 macOS, bun 1.4.0, `bun test --timeo
 - **P5-1 遗留排队（pending-parent 清单，待 P5-3 bench 数据定取舍）**：#1108 inferLocalReceiverType 全量移植（Go #1276/PHP 召回恢复）/resolveDeferredThisMemberRefs 超类型二次 pass/#1230 isLexicallyReachable 接入主过滤否/erlang arity+arkts 属性步/matchByQualifiedName #1079/#1180/fnRef×value-ref 标记优先序反转否。
 - **P5-2 在途**（同会话 resume ses_f4f0cf5bfffe…）：9 残留语言（go/java/python/rust/ccpp/php/ruby/csharp/swift）parity 先行验证→达标者开 kernel 路由（c/cpp 首次实弹 preParse 路径；残差不可修者暂缓合法）→EXTRACTION_SEMANTICS_VERSION v4→5 唯一授权 bump（needsReindex 用户面实录）→主仓重索引 delta 归因（pre=305,966/302,312）。看护 charter 已镜像（semantics v5=合法任务面非红线；开路由先于 parity 验证=观察项）；召回矩阵/G 臂 runner 仍禁本地跑（依赖全局二进制重建）。
 - **升级用户清单新增**：召回矩阵+G 臂 12 格重放需二进制重建授权（或 CI）——K-v2 全量落地后与 7 腿重编/CI 首跑/Win 签名同批处置。
+
+### K-v2 战役代码面全部推送完成（2026-09-18，parent 收口，覆盖上节 P5-2 在途条目）
+
+- **P5-2 已亲验推送**：origin/main=`f59b20c96`。parent 复跑：parity go+rust+ts 抽格 exit 0（rust 25/25、knownExpectations 全零）、kernel 电池+selector+p51+钉桩+version 102/0、.node sha `ff65c3ce…` 双落点一致、**安静树全量 5,333 pass/25 fail=确定基线（环境15+SDK2+httpapi-config8）精确吻合零新增、负载敏感池零触发**（v5 bump 跨面零回归实证）、审计五类零命中。**19/20 kernel 语言已路由**（r 暂缓零语料）；needsReindex 实录=`Semantics: v4 — does not match v5`；重索引终态 129,318/302,325/305,887/67,162/v5/fnRef 543；stale-process 污染事故已清（混码增量 sync 158 条 raw fnr 边，全量重索引清除，pre 快照 cbench/k-v2-p5-2/db-pre/；pitfall 候选：编辑窗口内避免混码进程增量 sync）。
+- **K-v2 战役代码面收口**：P0→P1→P2→P3（+跟进）→P4→P5-1→P5-2 全链推送；PLAN K-v2 章已补 P5-1/P5-2/收口宣告三条目。**待用户授权批（「大更新」条件成就）**：P5-3 bench 重验（召回矩阵 matrix-d/f+G 臂 12 格+tb5-v2/tb6-b+tb3/tb4-v2v3 re-baseline，runner 依赖全局二进制重建）+8 腿 CI 重编+CI 首跑+Win 签名；P5-1 遗留六项待 P5-3 数据定取舍。可选：r 语料补全、混码污染存储层守卫（缓行）。上游反馈候选池：scala+七语言 RAW 镜像。下一战役=Rust 化规划调研（用户战略指令，触发条件已成就）。
