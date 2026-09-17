@@ -8,10 +8,12 @@
  * wasm path forever if need be. Rollback per language = removing it from
  * DEFAULT_ROUTED (or CODEGRAPH_KERNEL=0 for all).
  *
- * Fork routing status (2026-09-17): DEFAULT_ROUTED = lua+luau (wave 1) +
- * typescript/tsx/javascript/jsx (wave 2) + kotlin/scala/dart (wave 3) — the
- * gate-passed languages (see DEFAULT_ROUTED below for the per-language
- * evidence and deferrals). The loader's
+ * Fork routing status (2026-09-18, K-v2 P5-2): DEFAULT_ROUTED = lua+luau
+ * (wave 1) + typescript/tsx/javascript/jsx (wave 2) + kotlin/scala/dart
+ * (wave 3) + go/java/python/rust/c/cpp/php/ruby/csharp/swift (wave 4) — the
+ * gate-passed languages, 19 of the 20 kernel languages (all but `r`, which
+ * has no parity corpus; deferral recorded in the K-v2 P5-2 report). See
+ * DEFAULT_ROUTED below for the per-language evidence and deferrals. The loader's
  * contract gate is a NAME-based subset check (kernel ⊆ fork, see
  * loader.verifyKernelContract): the vendored kernel loads once the fork
  * table covers the kernel's kinds (the G4 'union' chain; fork-only
@@ -180,6 +182,34 @@ const DEFAULT_ROUTED: ReadonlySet<Language> = new Set<Language>([
   'kotlin',
   'scala',
   'dart',
+  // wave 4 (2026-09-18, K-v2 P5-2): the nine residual kernel modules —
+  // go/java/python/rust/c/cpp/php/ruby/csharp/swift — after their parity gate:
+  // ALL zero-diff (in-repo sweep
+  // cbench/kernel-parity/ksd-parity-p52-residual9-final-20260918.json exit 0,
+  // plus the purpose-built fixture corpus for the thin languages,
+  // ksd-parity-p52 fixture run exit 0). The one drift class found (kernel
+  // BARE getReturnType wire vs the fork RAW returnTypeText oracle, P4-scala
+  // precedent) was fixed kernel-side: go/java/python/rust/csharp/php/swift
+  // return_type wires now mirror returnTypeText; the bare-shape reduction
+  // moved to the resolution layer (lookupCalleeReturnType normalization).
+  // c/cpp deferrals (23/86 on the macro-heavy node_modules corpus) are the
+  // by-design parse-error valve — wasm recovery is canonical, the harness
+  // documents the 10–40% policy band for C/C++, and P4's
+  // takeDeferredPreParse reuse path goes live with this wave. Short-corpus
+  // caveats (in-repo ceiling + fixture files): go(1+1) csharp(1+1) php(1+1)
+  // java(0+2 incl. Lombok) ruby(0+1) swift(0+1) — they ride the same
+  // N-vendored both-arm mechanisms validated by the deep-corpus languages
+  // (python 58, rust 25, c 51, cpp 35 files; refMissing/refExtra = 0).
+  'go',
+  'java',
+  'python',
+  'rust',
+  'c',
+  'cpp',
+  'php',
+  'ruby',
+  'csharp',
+  'swift',
 ]);
 
 /**

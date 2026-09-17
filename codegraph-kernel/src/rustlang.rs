@@ -48,24 +48,14 @@ use crate::buffers::{
 use crate::docstring::preceding_docstring;
 use crate::ids;
 use crate::textutil as util;
-use regex::Regex;
 use std::collections::{HashMap, HashSet};
-use std::sync::OnceLock;
 use tree_sitter::{Node, Parser};
 
 const MAX_VALUE_REF_NODES: usize = 20_000;
 
-/// JS `/<[^>]*>/g` — the non-nested generic strip (breaks on nested generics
-/// by design: `Result<Vec<Foo>, E>` → `Result, E>` → returnType undefined).
-fn generic_angle_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"<[^>]*>").unwrap())
-}
-/// JS `/^[A-Za-z_]\w*$/` (ASCII \w — the regex crate's \w is Unicode).
-fn simple_ident_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[A-Za-z_][0-9A-Za-z_]*$").unwrap())
-}
+/// RETURN_TYPE_MAX_LENGTH (tree-sitter.ts) — stored RAW return-type text cap
+/// (the fork returnTypeText budget; same value as the tsjs/scala modules').
+const RETURN_TYPE_MAX_LENGTH: usize = 200;
 
 struct Scope {
     row: u32,
@@ -380,25 +370,29 @@ impl<'t> Walker<'t> {
         2 // private — Rust defaults to private
     }
 
-    /// extractRustReturnType (languages/rust.ts:14).
+    /// Fork RAW returnType wire field (tree-sitter.ts returnTypeNode +
+    /// returnTypeText — K-v2 P5-2 realignment, same class as the P4 scala
+    /// fix). Upstream N put the extractRustReturnType BARE shape on the wire
+    /// (reference-type unwrap, primitive/unit/tuple → None, generics strip,
+    /// `Self` → `self` marker) because upstream wasm feeds Node.returnType
+    /// from the getReturnType hook; the fork's Node.returnType IS the RAW
+    /// annotation text (returnField 'return_type', no language gate — the
+    /// MMS/MCC signature audit keeps generics and the resolution layer
+    /// classifies the shape). Parity canonical = the fork wasm arm, so the
+    /// wire mirrors returnTypeText: trimmed raw text, leading colon stripped
+    /// (a no-op for the rust grammar), RETURN_TYPE_MAX_LENGTH UTF-16 cap,
+    /// empty → None. The bare-shape quirks moved to the resolution layer's
+    /// chain-receiver normalization (lookupCalleeReturnType). Fork deviation
+    /// from the N kernel, recorded in the same class as the tsjs D5 builtin
+    /// table — upstream-feedback candidate.
     fn return_type_of(&self, node: Node) -> Option<String> {
-        let mut rt = node.child_by_field_name("return_type")?;
-        if rt.kind() == "reference_type" {
-            rt = (0..rt.named_child_count())
-                .filter_map(|i| rt.named_child(i))
-                .find(|c| matches!(c.kind(), "type_identifier" | "scoped_type_identifier" | "generic_type"))
-                .unwrap_or(rt);
-        }
-        if matches!(rt.kind(), "primitive_type" | "unit_type" | "tuple_type") {
+        let rt = node.child_by_field_name("return_type")?;
+        let raw = self.text(rt).trim();
+        let stripped = raw.strip_prefix(':').map(|s| s.trim_start()).unwrap_or(raw);
+        if stripped.is_empty() {
             return None;
         }
-        let text = self.text(rt).trim();
-        let stripped = generic_angle_re().replace_all(text, "");
-        let last = stripped.rsplit("::").next().unwrap_or("").trim();
-        if last.is_empty() || !simple_ident_re().is_match(last) {
-            return None;
-        }
-        Some(if last == "Self" { "self".to_string() } else { last.to_string() })
+        Some(util::slice_utf16(stripped, RETURN_TYPE_MAX_LENGTH).0)
     }
 
     /// rustImplTypeName (languages/rust.ts) — the implementing type's simple

@@ -1,19 +1,21 @@
 /**
- * Kernel selector gating tests (P0-2a acceptance, updated for the wave-3
- * ksd opening — DEFAULT_ROUTED = lua+luau + typescript/tsx/javascript/jsx +
- * kotlin/scala/dart):
- * - Non-routed languages (python/ruby/...) with no CODEGRAPH_KERNEL_LANGS
- *   env: extractFromSource never consults the kernel and its output is
- *   identical to the pre-kernel wasm behavior (the byte-equivalence iron
- *   rule; the full 345-case extraction.test.ts suite is the repository-wide
- *   proof — it pins CODEGRAPH_KERNEL=0 to stay on the wasm arm).
+ * Kernel selector gating tests (P0-2a acceptance, updated for the wave-4
+ * K-v2 P5-2 opening — DEFAULT_ROUTED = lua+luau + typescript/tsx/javascript/jsx +
+ * kotlin/scala/dart + go/java/python/rust/c/cpp/php/ruby/csharp/swift; the
+ * only kernel-supported language left non-routed is `r`, awaiting a parity
+ * corpus):
+ * - Non-routed languages (`r`) with no CODEGRAPH_KERNEL_LANGS env:
+ *   extractFromSource never consults the kernel (the byte-equivalence iron
+ *   rule for the wasm arm; the python byte-equivalence rides the env-
+ *   replacement and kill-switch tests below, and the full 345-case
+ *   extraction.test.ts suite is the repository-wide proof — it pins
+ *   CODEGRAPH_KERNEL=0 to stay on the wasm arm).
  * - Default-routed languages (lua/luau wave 1; the tsjs family wave 2;
- *   kotlin/scala/dart wave 3) take
+ *   kotlin/scala/dart wave 3; the nine residual modules wave 4) take
  *   the kernel arm with NO env, and the CODEGRAPH_KERNEL=0 kill switch
  *   still returns them to wasm.
- * - CODEGRAPH_KERNEL_LANGS REPLACES the default set: opting python in moves
- *   python to the kernel arm and pulls default-routed typescript back to
- *   wasm.
+ * - CODEGRAPH_KERNEL_LANGS REPLACES the default set: opting typescript-only
+ *   in pulls default-routed python back to wasm.
  * - `defer:` signals fall back to the wasm arm (error recovery canonical)
  *   and the one-slot memo short-circuits repeat attempts.
  * - A framework extract() hook hit skips the kernel arm.
@@ -43,6 +45,17 @@ const TS_SOURCE = `export class Svc {\n  run(x: number): string { return String(
 const PY_SOURCE = `def top(a):\n    return a\n`;
 const LUA_SOURCE = `local core = {}\nfunction core.run(x)\n  return tostring(x)\nend\nreturn core\n`;
 const KT_SOURCE = `fun main() {\n    println(\"x\")\n}\n`;
+// The `r` wasm grammar blob is optional on dev checkouts (graceful
+// parser-init failure), so the iron-rule test gates on the SELECTOR (no
+// kernel call), not on r's wasm output bytes.
+const R_SOURCE = `add <- function(a, b) {\n  a + b\n}\n`;
+
+/** The real vendored kernel's 20-language contract (wave 4). */
+const ALL_KERNEL_LANGUAGES = [
+  'typescript', 'tsx', 'javascript', 'jsx', 'java', 'python', 'go', 'c', 'cpp',
+  'rust', 'csharp', 'ruby', 'php', 'swift', 'kotlin', 'r', 'lua', 'luau',
+  'scala', 'dart',
+];
 
 /** Deterministic projection for byte-equivalence assertions (timestamps out). */
 function normalize(result: ExtractionResult): unknown {
@@ -53,7 +66,7 @@ function normalize(result: ExtractionResult): unknown {
   );
 }
 
-function makeFakeKernel(opts?: { defer?: boolean }): { mod: KernelModule; calls: Array<[string, string, string]> } {
+function makeFakeKernel(opts?: { defer?: boolean; languages?: string[] }): { mod: KernelModule; calls: Array<[string, string, string]> } {
   const calls: Array<[string, string, string]> = [];
   const buffers = buildKernelBuffers({
     nodes: [
@@ -75,7 +88,7 @@ function makeFakeKernel(opts?: { defer?: boolean }): { mod: KernelModule; calls:
         kernelVersion: 'fake-test-kernel',
         nodeKinds: [...NODE_KINDS],
         edgeKinds: [...EDGE_KINDS],
-        languages: ['typescript', 'tsx', 'javascript', 'jsx', 'python', 'go', 'lua', 'luau', 'kotlin', 'scala', 'dart'],
+        languages: opts?.languages ?? ['typescript', 'tsx', 'javascript', 'jsx', 'python', 'go', 'lua', 'luau', 'kotlin', 'scala', 'dart'],
       };
     },
     grammarInfo() {
@@ -125,16 +138,30 @@ describe('extractFromSource kernel selector gating', () => {
     }
   });
 
-  it('iron rule: non-routed language (python) + no env ⇒ kernel never consulted, wasm output unchanged', () => {
-    const { mod, calls } = makeFakeKernel();
+  it('iron rule: non-routed language (r) + no env ⇒ kernel never consulted', () => {
+    // Wave 4 routed every kernel language except `r` (no parity corpus yet) —
+    // `r` is the living proof that DEFAULT_ROUTED membership is the only
+    // router: a supported-but-non-routed language never reaches the kernel.
+    const { mod, calls } = makeFakeKernel({ languages: ALL_KERNEL_LANGUAGES });
     setKernelForTests(mod);
-    expect(kernelRoutes('python')).toBe(false);
-    const result = extractFromSource('top.py', PY_SOURCE, 'python');
+    expect(kernelRoutes('r')).toBe(false);
+    extractFromSource('x.r', R_SOURCE, 'r');
     expect(calls.length).toBe(0);
-    expect(normalize(result)).toEqual(normalize(wasmBaselinePy));
-    // sanity: the wasm baseline is the real extractor output
-    expect(result.nodes.some((n) => n.kind === 'function' && n.name === 'top')).toBe(true);
-    expect(result.nodes.some((n) => n.name === 'kernelMarker')).toBe(false);
+  });
+
+  it('wave 4: DEFAULT_ROUTED go/java/python/rust/c/cpp/php/ruby/csharp/swift take the kernel arm with NO env', () => {
+    const { mod, calls } = makeFakeKernel({ languages: ALL_KERNEL_LANGUAGES });
+    setKernelForTests(mod);
+    for (const lang of ['go', 'java', 'python', 'rust', 'c', 'cpp', 'php', 'ruby', 'csharp', 'swift'] as const) {
+      expect(kernelRoutes(lang)).toBe(true);
+    }
+    // One extraction proves the selector really engages the native arm for a
+    // wave-4 language (python; byte-parity of the rest is the harness's job,
+    // see cbench/kernel-parity/ksd-parity-p52-*.json).
+    const result = extractFromSource('top.py', PY_SOURCE, 'python');
+    expect(calls).toEqual([['top.py', PY_SOURCE, 'python']]);
+    expect(result.nodes.some((n) => n.name === 'kernelMarker')).toBe(true);
+    expect(result.nodes.some((n) => n.name === 'top')).toBe(false);
   });
 
   it('wave 1: DEFAULT_ROUTED lua/luau take the kernel arm with NO env', () => {
@@ -212,18 +239,18 @@ describe('extractFromSource kernel selector gating', () => {
     expect(result.nodes.some((n) => n.kind === 'class' && n.name === 'Svc')).toBe(true);
   });
 
-  it('CODEGRAPH_KERNEL_LANGS=python opts python in and REPLACES the default set (typescript back to wasm)', () => {
+  it('CODEGRAPH_KERNEL_LANGS=typescript opts typescript in and REPLACES the default set (wave-4 python back to wasm)', () => {
     const { mod, calls } = makeFakeKernel();
     setKernelForTests(mod);
-    process.env.CODEGRAPH_KERNEL_LANGS = 'python';
-    expect(kernelRoutes('python')).toBe(true);
-    expect(kernelRoutes('typescript')).toBe(false);
+    process.env.CODEGRAPH_KERNEL_LANGS = 'typescript';
+    expect(kernelRoutes('typescript')).toBe(true);
+    expect(kernelRoutes('python')).toBe(false); // default-routed since wave 4, but env REPLACES
     const pyResult = extractFromSource('top.py', PY_SOURCE, 'python');
-    expect(calls).toEqual([['top.py', PY_SOURCE, 'python']]);
-    expect(pyResult.nodes.some((n) => n.name === 'kernelMarker')).toBe(true);
+    expect(calls.length).toBe(0); // no kernel call for the python file
+    expect(normalize(pyResult)).toEqual(normalize(wasmBaselinePy));
     const tsResult = extractFromSource('svc.ts', TS_SOURCE, 'typescript');
-    expect(calls.length).toBe(1); // no second kernel call for the TS file
-    expect(normalize(tsResult)).toEqual(normalize(wasmBaselineTs));
+    expect(calls).toEqual([['svc.ts', TS_SOURCE, 'typescript']]);
+    expect(tsResult.nodes.some((n) => n.name === 'kernelMarker')).toBe(true);
   });
 
   it('non-routed languages stay on the wasm arm even when another language is opted in', () => {

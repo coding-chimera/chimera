@@ -70,7 +70,20 @@ export const EXTRACTION_SEMANTICS_METADATA_KEY = 'extraction_semantics_version';
 //     re-extraction instead of silently mixing kernel and wasm shapes in
 //     one database. See DEFAULT_ROUTED (third-wave note) in
 //     src/graph/extraction/kernel/index.ts.
-export const EXTRACTION_SEMANTICS_VERSION = 4;
+// v5: K-v2 unification bump (P5-2, the planned P5 semantics step). Two
+//     route-change-clause triggers ride together: (1) wave-4 routing — the
+//     nine residual kernel modules (go/java/python/rust/c/cpp/php/ruby/
+//     csharp/swift) move to the Rust kernel arm after their parity gate
+//     (all zero-diff in-repo + fixture corpus; the returnType RAW-wire
+//     realignment of go/java/python/rust/csharp/php/swift ships in the same
+//     re-built binary); (2) the P5-1 resolution-layer mechanism port
+//     (D7/D8/D9 + FN_REF flip + imports-edge hygiene) changes stored edge
+//     populations (function_ref→references{fnRef} edges appear, false
+//     cross-file bindings are declined, duplicate imports edges collapse).
+//     Databases stamped v4 must fully re-extract AND re-resolve; see
+//     DEFAULT_ROUTED (wave-4 note) in src/graph/extraction/kernel/index.ts
+//     and the K-v2 P5 reports in memory.md.
+export const EXTRACTION_SEMANTICS_VERSION = 5;
 
 /** Decoded shape of the stamp row. */
 export interface ExtractionSemanticsStamp {

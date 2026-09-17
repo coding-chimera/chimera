@@ -36,6 +36,10 @@ use tree_sitter::{Node, Parser};
 
 const MAX_VALUE_REF_NODES: usize = 20_000;
 
+/// RETURN_TYPE_MAX_LENGTH (tree-sitter.ts) — stored RAW return-type text cap
+/// (the fork returnTypeText budget; same value as the tsjs/scala modules').
+const RETURN_TYPE_MAX_LENGTH: usize = 200;
+
 /// BUILTIN_TYPES (tree-sitter.ts) — full shared table (`Bool` is NOT in it;
 /// `Int`/`String`/`Double` are, via the Scala rows — checklist nuances).
 fn is_builtin_type(name: &str) -> bool {
@@ -81,16 +85,6 @@ fn is_literal_receiver(kind: &str) -> bool {
     )
 }
 
-/// `/^[A-Za-z_]\w*$/` with JS's ASCII `\w`.
-fn ascii_ident_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[A-Za-z_][0-9A-Za-z_]*$").unwrap())
-}
-/// getReturnType's generics strip (`/<[^>]*>/g`) — non-nesting (rust-class quirk).
-fn generic_args_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"<[^>]*>").unwrap())
-}
 /// extractStaticMemberRef's capitalized-receiver test.
 fn capitalized_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -500,43 +494,28 @@ impl<'t> Walker<'t> {
             .any(|c| c.kind() == "modifiers" && self.text(c).contains("async"))
     }
 
-    /// extractSwiftReturnType — POSITIONAL: first user_type/optional_type after
-    /// the name simple_identifier, before function_body; last dotted segment;
-    /// generics stripped non-nesting; Void → None.
+    /// Fork RAW returnType wire field (tree-sitter.ts returnTypeNode +
+    /// returnTypeText — K-v2 P5-2 realignment, same class as the P4 scala
+    /// fix). Upstream N put the extractSwiftReturnType POSITIONAL bare shape
+    /// on the wire (first user_type/optional_type after the name, generics
+    /// stripped, Void → None) because upstream wasm feeds Node.returnType
+    /// from the getReturnType hook; the fork's Node.returnType IS the RAW
+    /// `return_type` field text (returnField 'return_type', no language gate
+    /// — `[String]`, `Point?` reach the wire verbatim; fixture-verified 2/2
+    /// drift → 0). Parity canonical = the fork wasm arm: trimmed raw text,
+    /// leading colon stripped (a no-op for the swift grammar),
+    /// RETURN_TYPE_MAX_LENGTH UTF-16 cap, empty → None. The bare-shape
+    /// reduction (incl. optional-`?` strip) moved to the resolution layer's
+    /// chain-receiver normalization (lookupCalleeReturnType). Fork deviation
+    /// from the N kernel — upstream-feedback candidate.
     fn return_type_of(&self, node: Node) -> Option<String> {
-        let mut seen_name = false;
-        for i in 0..node.named_child_count() {
-            let Some(child) = node.named_child(i) else { continue };
-            if child.kind() == "simple_identifier" && !seen_name {
-                seen_name = true;
-                continue;
-            }
-            if !seen_name {
-                continue;
-            }
-            if child.kind() == "function_body" {
-                return None;
-            }
-            let type_node = match child.kind() {
-                "user_type" => Some(child),
-                "optional_type" => (0..child.named_child_count())
-                    .filter_map(|j| child.named_child(j))
-                    .find(|c| c.kind() == "user_type"),
-                _ => None,
-            };
-            if child.kind() == "user_type" || child.kind() == "optional_type" {
-                let Some(t) = type_node else { return None };
-                let name = generic_args_re()
-                    .replace_all(self.text(t).trim(), "")
-                    .into_owned();
-                let last = name.rsplit('.').next().unwrap_or("").trim();
-                if last.is_empty() || !ascii_ident_re().is_match(last) || last == "Void" {
-                    return None;
-                }
-                return Some(last.to_string());
-            }
+        let rt = node.child_by_field_name("return_type")?;
+        let raw = self.text(rt).trim();
+        let stripped = raw.strip_prefix(':').map(|s| s.trim_start()).unwrap_or(raw);
+        if stripped.is_empty() {
+            return None;
         }
-        None
+        Some(util::slice_utf16(stripped, RETURN_TYPE_MAX_LENGTH).0)
     }
 
     /// swiftPropertyInfo (tree-sitter.ts:277).
