@@ -204,22 +204,20 @@ const VALUE_REF_EXCLUDED_ANCESTORS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Function-body node types for the shadow-prune scan (D1 merge: absorbed
- * from the upstream flushValueRefs prune). A declarator under one of these
- * binds a name in an INNER scope; reads of that name elsewhere in the file
- * may resolve to the local binding, so a file-wide value reference would be
- * a false positive (upstream: "a real shadow makes declarators >
- * file-scope nodes"). The fork trunk applies the same detector at emission:
- * a name with any function-scoped declarator is skipped.
+ * Function-like node kinds that open an inner binding scope for the
+ * shadow-prune scan — EXACTLY the kernel's `opens_binding_scope` set
+ * (compute_shadowed_value_names, codegraph-kernel/src/tsjs/mod.rs). Both
+ * arms must keep this set and the `decl_counts > file_scope_counts ?? 1`
+ * formula identical or P4 parity grows false ref diffs.
  */
-const VALUE_REF_FUNCTION_ANCESTORS: ReadonlySet<string> = new Set([
+const VALUE_REF_BINDING_SCOPE_OPENERS: ReadonlySet<string> = new Set([
   'function_declaration',
   'generator_function_declaration',
+  'arrow_function',
   'function_expression',
   'generator_function',
-  'arrow_function',
   'method_definition',
-  'function_definition',
+  'function_signature',
 ]);
 
 //
@@ -631,10 +629,11 @@ export class TreeSitterExtractor {
   // end of extract() so first-match-by-name consumers keep seeing executable
   // declarations before contract members (see extract()).
   private interfaceMemberNodeIds = new Set<string>();
-  // D1 merge (shadow-prune absorbed): names bound by function-scoped
-  // declarators; the value-position trunk skips them because a local rebind
-  // shadows any file-scope/cross-file symbol of the same name.
-  private innerBoundValueNames: Set<string> | null = null;
+  // D1 merge (shadow-prune absorbed, both-arms-same-formula): names whose
+  // variable_declarator count exceeds their file-scope declaration count
+  // (default 1) — see scanShadowedValueNames and the kernel's
+  // compute_shadowed_value_names (codegraph-kernel/src/tsjs/mod.rs).
+  private shadowedValueNames: Set<string> | null = null;
   private errors: ExtractionError[] = [];
   private extractor: LanguageExtractor | null = null;
   private nodeStack: string[] = []; // Stack of parent node IDs
@@ -763,9 +762,9 @@ export class TreeSitterExtractor {
       if (packageNodeId) this.nodeStack.push(packageNodeId);
 
       // D1 merge (upstream shadow-prune absorbed into the fork value-position
-      // trunk): scan inner-scope bindings BEFORE the walk so emission can skip
-      // locally re-bound names (see scanInnerBoundValueNames).
-      this.scanInnerBoundValueNames();
+      // trunk): scan shadowed names BEFORE the walk so emission can skip them
+      // (formula identical to the kernel arm — see scanShadowedValueNames).
+      this.scanShadowedValueNames();
 
       this.visitNode(this.tree.rootNode);
 
@@ -5976,11 +5975,11 @@ export class TreeSitterExtractor {
 
     const name = getNodeText(node, this.source);
     if (name.length <= 2) return;
-    // D1 merge (upstream shadow-prune absorbed): a name bound by a
-    // function-scoped declarator somewhere in this file may resolve to that
-    // inner binding at the read site, so a file-wide value reference would be
-    // a false positive (upstream prunes such targets in flushValueRefs).
-    if (this.innerBoundValueNames?.has(name)) return;
+    // D1 merge (shadow-prune absorbed; same formula AND same check position
+    // as the kernel's extract_value_reference): a name re-bound by inner
+    // declarators beyond its file-scope declaration count has unreliable
+    // name-based attribution — skip it.
+    if (this.shadowedValueNames?.has(name)) return;
     // Same symbol referenced twice from one scope is one dependency; the
     // resolver would collapse the duplicate edges anyway.
     const key = `${fromNodeId}\u0000${name}`;
@@ -6048,42 +6047,47 @@ export class TreeSitterExtractor {
 
   /**
    * D1 merge — the upstream shadow-prune (flushValueRefs) absorbed into the
-   * fork value-position trunk. One syntax-level pass per file (post-parse,
-   * pre-walk) collecting names bound by function-scoped `variable_declarator`s:
-   * reads of such a name may resolve to the inner binding, so a file-wide
-   * value reference is a false positive. Upstream detects the same hazard by
-   * counting declarators vs file-scope target nodes at flush time; the trunk
-   * emits inline during the walk, so the detector runs up front. Trunk
-   * languages only (those declaring valueReferenceTypes); bounded by the
-   * upstream MAX_VALUE_REF_NODES budget. Function PARAMETERS shadowing a
-   * same-name symbol are not covered — matching the upstream prune's scope.
+   * fork value-position trunk. BOTH-ARMS-SAME-FORMULA: this is a line-by-line
+   * TS mirror of `compute_shadowed_value_names` (codegraph-kernel/src/tsjs/
+   * mod.rs, P3) — a name is shadowed when `decl_counts[name] >
+   * (file_scope_counts[name] ?? 1)`, where a `variable_declarator` under a
+   * function-like ancestor is inner-scoped (file-scope = no function-like
+   * ancestor; TS class fields are public_field_definition, never
+   * variable_declarator). Scan budget = MAX_VALUE_REF_NODES, as
+   * upstream/kernel. A pure-local SINGLE declarator is NOT shadowed
+   * (1 > 1 is false) — the trunk keeps emitting its refs (resolver veto
+   * handles the cross-file noise), exactly matching the kernel arm for P4
+   * parity. Trunk languages only (those declaring valueReferenceTypes).
    */
-  private scanInnerBoundValueNames(): void {
+  private scanShadowedValueNames(): void {
     if (!this.tree || !this.extractor?.valueReferenceTypes) return;
-    const inner = new Set<string>();
-    const stack: SyntaxNode[] = [this.tree.rootNode];
+    const declCounts = new Map<string, number>();
+    const fileScopeCounts = new Map<string, number>();
+    const stack: Array<[SyntaxNode, boolean]> = [[this.tree.rootNode, false]];
     let visited = 0;
-    while (stack.length > 0 && visited < TreeSitterExtractor.MAX_VALUE_REF_NODES) {
-      const n = stack.pop()!;
+    while (stack.length > 0) {
+      if (visited >= TreeSitterExtractor.MAX_VALUE_REF_NODES) break;
+      const [n, inBindingScope] = stack.pop()!;
       visited++;
+      const scope = inBindingScope || VALUE_REF_BINDING_SCOPE_OPENERS.has(n.type);
       if (n.type === 'variable_declarator') {
-        const nameNode = n.namedChild(0);
-        if (nameNode?.type === 'identifier') {
-          let p = n.parent;
-          let fnScoped = false;
-          while (p) {
-            if (VALUE_REF_FUNCTION_ANCESTORS.has(p.type)) { fnScoped = true; break; }
-            p = p.parent;
-          }
-          if (fnScoped) inner.add(getNodeText(nameNode, this.source));
+        const first = n.namedChild(0);
+        if (first?.type === 'identifier') {
+          const nm = getNodeText(first, this.source);
+          declCounts.set(nm, (declCounts.get(nm) ?? 0) + 1);
+          if (!scope) fileScopeCounts.set(nm, (fileScopeCounts.get(nm) ?? 0) + 1);
         }
       }
       for (let i = 0; i < n.namedChildCount; i++) {
         const c = n.namedChild(i);
-        if (c) stack.push(c);
+        if (c) stack.push([c, scope]);
       }
     }
-    this.innerBoundValueNames = inner;
+    const shadowed = new Set<string>();
+    for (const [nm, c] of declCounts) {
+      if (c > (fileScopeCounts.get(nm) ?? 1)) shadowed.add(nm);
+    }
+    this.shadowedValueNames = shadowed;
   }
 
   /**
