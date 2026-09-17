@@ -11,6 +11,7 @@ import { MessageV2 } from "../../src/session/message-v2"
 import { makePromptHarness, testProviderConfig } from "../fixture/prompt-harness"
 import { disposeAllInstances, provideTmpdirServer } from "../fixture/fixture"
 import { recordPredesignRun } from "@/chimera/store"
+import { EditIntentClaims } from "@/chimera/edit-intent"
 import { getGraphDataRootInfo } from "@/graph"
 import { InstanceState } from "@/effect/instance-state"
 import { testEffect } from "../lib/effect"
@@ -368,6 +369,59 @@ describe("chimera prompt-context unreconciled scope drift", () => {
 
         expect(context).toContain("Unreconciled scope drift: deep.ts")
         expect(context).not.toContain("deep.ts, surface.ts")
+      }),
+      { git: true, config: (url) => testProviderConfig(url) },
+    ),
+  )
+})
+
+describe("chimera prompt-context edit-intent claims", () => {
+  it.live("renders held and queued-behind claims, drops the blocked line after the holder releases, and stays absent without claims", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* () {
+        yield* initGraph()
+        const instance = yield* InstanceState.context
+        const dir = instance.worktree === "/" ? instance.directory : instance.worktree
+        const sessions = yield* Session.Service
+        const session = yield* sessions.create({ title: "Claims" })
+        const render = Effect.fnUntraced(function* () {
+          return yield* (yield* ChimeraPromptContext.Service).render(session.id, sessions)
+        })
+
+        // Zero claims: the block is absent entirely (zero bytes).
+        expect((yield* render()) ?? "").not.toContain("Edit Intent Claims")
+
+        // Another session holds surface.ts; this session queues behind it with
+        // its own predesign declaration (which also registers its claims).
+        yield* EditIntentClaims.registerFromPredesign({
+          projectRoot: dir,
+          sessionID: SessionID.make("ses_holder"),
+          agent: "build",
+          predesignID: "predesign_holder_ctx",
+          intent: "holder refactor",
+          files: ["surface.ts"],
+        })
+        yield* EditIntentClaims.registerFromPredesign({
+          projectRoot: dir,
+          sessionID: session.id,
+          agent: "build",
+          predesignID: "predesign_ctx",
+          intent: "queued refactor",
+          files: ["surface.ts", "own.ts"],
+        })
+
+        const context = yield* render()
+        expect(context).toContain("Edit Intent Claims:")
+        expect(context).toContain("held by you: own.ts, surface.ts")
+        expect(context).toContain("blocked: surface.ts is claimed by session ses_holder")
+        expect(context).toContain("your claim is queued")
+        expect(context).toContain("a release notice is injected automatically when the holder finishes")
+
+        // Holder release (+ wake take) drops the blocked line; held claims stay.
+        yield* EditIntentClaims.releaseForSession({ projectRoot: dir, sessionID: "ses_holder", reason: "session_idle" })
+        const after = yield* render()
+        expect(after).toContain("held by you: own.ts, surface.ts")
+        expect(after ?? "").not.toContain("blocked:")
       }),
       { git: true, config: (url) => testProviderConfig(url) },
     ),
