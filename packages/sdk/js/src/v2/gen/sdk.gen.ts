@@ -67,6 +67,8 @@ import type {
   GlobalPreferencesGetResponses,
   GlobalPreferencesUpdateErrors,
   GlobalPreferencesUpdateResponses,
+  GlobalPresenceErrors,
+  GlobalPresenceResponses,
   GlobalUpgradeErrors,
   GlobalUpgradeResponses,
   GraphFilesResponses,
@@ -589,6 +591,30 @@ export class Global extends HeyApiClient {
     return (options?.client ?? this.client).post<GlobalDisposeResponses, unknown, ThrowOnError>({
       url: "/global/dispose",
       ...options,
+    })
+  }
+
+  /**
+   * Report WebUI presence
+   *
+   * Presence heartbeat for the WebUI: refreshes the instance presence pin (TTL 90s by default) for every reported directory that currently has a loaded instance, protecting it from idle-TTL and memory-pressure eviction while the UI is open. Directories without a loaded instance are ignored; presence never boots an instance. The WebUI reports its active directories every 30s. Payloads above 512 directories are truncated.
+   */
+  public presence<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directories?: Array<string>
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "body", key: "directories" }] }])
+    return (options?.client ?? this.client).post<GlobalPresenceResponses, GlobalPresenceErrors, ThrowOnError>({
+      url: "/global/presence",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
     })
   }
 
