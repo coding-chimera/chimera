@@ -958,10 +958,11 @@ export class ExtractionOrchestrator {
     if (useWorker) {
       // CODEGRAPH_PARSE_WORKERS: explicit worker count; 1 = the old
       // single-worker behaviour (the conservative rollback). Unset →
-      // clamp(cores-1, 1, 8), with cores from availableParallelism —
-      // cpuset/affinity-honest, where os.cpus() enumerates the host's CPUs
-      // and spawned 8 wasm workers (and their grammar heaps) inside a
-      // 2-CPU container for zero extra throughput (§7a.1). (#1333)
+      // clamp(cores-1, 2, 8) — floor of 2 per upstream ca88d3b#4 — with
+      // cores from availableParallelism: cpuset/affinity-honest, where
+      // os.cpus() enumerates the host's CPUs and spawned 8 wasm workers
+      // (and their grammar heaps) inside a 2-CPU container for zero extra
+      // throughput (§7a.1). (#1333)
       const poolSize = resolveParsePoolSize(process.env.CODEGRAPH_PARSE_WORKERS, os.availableParallelism());
       pool = new ParseWorkerPool({
         languages: neededLanguages,

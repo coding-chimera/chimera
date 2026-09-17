@@ -129,8 +129,12 @@ export function resolveGrammarLoadTimeoutMs(envVal: string | undefined): number 
  * machine's core count.
  *   - explicit `0` or `1` → 1 worker (the old single-worker path; the rollback).
  *   - explicit `N` → N, clamped to [1, 16].
- *   - unset / blank / non-numeric → `clamp(cores - 1, 1, 8)` (leave a core for
- *     the main thread + UI; never zero — parsing always needs a worker).
+ *   - unset / blank / non-numeric → `clamp(cores - 1, 2, 8)` (leave a core for
+ *     the main thread + UI; FLOOR of 2 — upstream ca88d3b#4 (#1335) measured
+ *     ONE parse worker on a 2-CPU cpuset 34% slower than two (493s vs 369s):
+ *     the main thread's store/feed work does not fill the second core, and
+ *     the floor restored the baseline. Never zero — parsing always needs a
+ *     worker; the explicit env override keeps the 1-worker rollback.)
  */
 export function resolveParsePoolSize(envVal: string | undefined, cpuCount: number): number {
   if (envVal !== undefined && envVal !== '') {
@@ -140,7 +144,9 @@ export function resolveParsePoolSize(envVal: string | undefined, cpuCount: numbe
     }
     // non-numeric / negative → fall through to the default
   }
-  return Math.max(1, Math.min(cpuCount - 1, DEFAULT_PARSE_POOL_CAP));
+  // Floor of 2 on the default path (upstream ca88d3b#4): a single worker
+  // under-utilizes a small cpuset even with the store on the main thread.
+  return Math.max(2, Math.min(cpuCount - 1, DEFAULT_PARSE_POOL_CAP));
 }
 
 interface ParseJob {
