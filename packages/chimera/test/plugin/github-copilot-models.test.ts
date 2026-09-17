@@ -446,6 +446,51 @@ test("clears existing variants so refreshed models calculate provider-specific v
   expect(models["claude-opus-4.7"].variants).toBeUndefined()
 })
 
+test("requests summarized display for every adaptive thinking model", async () => {
+  const remoteModel = (id: string, family: string) => ({
+    model_picker_enabled: true,
+    id,
+    name: id,
+    version: `${id}-2026-04-16`,
+    supported_endpoints: ["/v1/messages"],
+    capabilities: {
+      family,
+      limits: {
+        max_context_window_tokens: 144000,
+        max_output_tokens: 64000,
+        max_prompt_tokens: 128000,
+      },
+      supports: {
+        adaptive_thinking: true,
+        reasoning_effort: ["low", "high"],
+        streaming: true,
+        tool_calls: true,
+      },
+    },
+  })
+  globalThis.fetch = mock(() =>
+    Promise.resolve(
+      new Response(
+        JSON.stringify({
+          data: [remoteModel("claude-opus-4.7", "claude-opus"), remoteModel("claude-sonnet-4.5", "claude-sonnet")],
+        }),
+        { status: 200 },
+      ),
+    ),
+  ) as unknown as typeof fetch
+
+  const { models } = await CopilotModels.get("https://api.githubcopilot.com")
+
+  // Upstream a9a6fad0fa: summarized display is no longer gated on opus-4.7;
+  // every adaptive-thinking model requests it.
+  for (const id of ["claude-opus-4.7", "claude-sonnet-4.5"]) {
+    expect(models[id].variants).toEqual({
+      low: { thinking: { type: "adaptive", display: "summarized" }, effort: "low" },
+      high: { thinking: { type: "adaptive", display: "summarized" }, effort: "high" },
+    })
+  }
+})
+
 test("remaps fallback oauth model urls to the enterprise host", async () => {
   globalThis.fetch = mock(() => Promise.reject(new Error("timeout"))) as unknown as typeof fetch
 
