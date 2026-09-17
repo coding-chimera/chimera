@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import fs from "fs/promises"
 import path from "path"
 import { DatabaseConnection, getDatabasePath, type FrozenRelation, type FrozenSemanticObject } from "@/graph"
-import { appendProvenanceRecord, compactCommittedChangeEvidence, readChangeFacts, readCommitChangeSummaries, readPersistentObligationStore, recordOracleResult, writeChangeFacts } from "../../src/chimera/store"
+import { appendProvenanceRecord, CHIMERA_STORAGE_EXTENSION, compactCommittedChangeEvidence, currentHostBootID, readChangeFacts, readCommitChangeSummaries, readEditIntentWaiters, readPersistentObligationStore, recordOracleResult, registerEditIntentWaiter, writeChangeFacts } from "../../src/chimera/store"
 import type { ChangeFact } from "../../src/chimera/change-classifier"
 import type { ToolMutationRecord } from "../../src/chimera/provenance"
 import { tmpdir } from "../fixture/fixture"
@@ -190,7 +190,7 @@ describe("Chimera store", () => {
     const db = DatabaseConnection.open(getDatabasePath(tmp.path))
     try {
       const tables = (db.getDb().prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((row) => row.name)
-      expect(db.getStorageExtensionVersion("chimera")).toBe(5)
+      expect(db.getStorageExtensionVersion("chimera")).toBe(6)
       expect(tables).toContain("chimera_change_event")
       expect(tables).toContain("chimera_semantic_snapshot")
       expect(tables).toContain("chimera_semantic_object")
@@ -202,6 +202,65 @@ describe("Chimera store", () => {
     } finally {
       db.close()
     }
+  })
+
+  test("upgrades a v5-era database additively: host columns appear, existing waiter rows survive, reopen is idempotent", async () => {
+    await using tmp = await tmpdir()
+    const dbPath = getDatabasePath(tmp.path)
+    DatabaseConnection.initialize(dbPath).close()
+
+    // Build a v5-era lineage: apply the chimera extension truncated to <= v5
+    // under the same extension id, then write a waiter row with the v5 shape.
+    // Already-applied migrations are never edited; v6 must arrive as its own
+    // additive step.
+    const legacy = DatabaseConnection.open(dbPath, {
+      storageExtensions: [{ id: "chimera", namespace: "chimera_", migrations: CHIMERA_STORAGE_EXTENSION.migrations.filter((migration) => migration.version <= 5) }],
+    })
+    try {
+      expect(legacy.getStorageExtensionVersion("chimera")).toBe(5)
+      legacy
+        .getDb()
+        .prepare(
+          "INSERT INTO chimera_edit_intent_waiter (session_id, file_path, blocker_session_id, status, created_at, updated_at) VALUES ('ses_legacy', 'f.ts', 'ses_blocker', 'waiting', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')",
+        )
+        .run()
+    } finally {
+      legacy.close()
+    }
+
+    // The first writable store open applies v6 (ALTER TABLE ADD COLUMN only).
+    await registerEditIntentWaiter(tmp.path, { sessionID: "ses_new", filePath: "f.ts", blockerSessionID: "ses_blocker" })
+
+    const db = DatabaseConnection.open(dbPath, { storageExtensions: [CHIMERA_STORAGE_EXTENSION] })
+    try {
+      expect(db.getStorageExtensionVersion("chimera")).toBe(6)
+      const columns = (db.getDb().prepare("PRAGMA table_info(chimera_edit_intent_waiter)").all() as Array<{ name: string }>).map((row) => row.name)
+      expect(columns).toContain("host_pid")
+      expect(columns).toContain("host_boot_id")
+    } finally {
+      db.close()
+    }
+
+    // Data preservation: the pre-v6 row survives with absent host identity;
+    // the new row is stamped with this process's identity at registration.
+    const waiters = await readEditIntentWaiters(tmp.path, { status: "waiting" })
+    expect(waiters).toHaveLength(2)
+    const legacyRow = waiters.find((waiter) => waiter.sessionID === "ses_legacy")!
+    expect(legacyRow.hostPID).toBeUndefined()
+    expect(legacyRow.hostBootID).toBeUndefined()
+    const newRow = waiters.find((waiter) => waiter.sessionID === "ses_new")!
+    expect(newRow.hostPID).toBe(process.pid)
+    expect(newRow.hostBootID).toBe(currentHostBootID())
+
+    // Idempotent: reopening and re-writing never re-runs v6 (no duplicate-column error).
+    await registerEditIntentWaiter(tmp.path, { sessionID: "ses_again", filePath: "f.ts", blockerSessionID: "ses_blocker" })
+    const reopen = DatabaseConnection.open(dbPath, { storageExtensions: [CHIMERA_STORAGE_EXTENSION] })
+    try {
+      expect(reopen.getStorageExtensionVersion("chimera")).toBe(6)
+    } finally {
+      reopen.close()
+    }
+    expect(await readEditIntentWaiters(tmp.path, { status: "waiting" })).toHaveLength(3)
   })
 
   test("stores raw change evidence outside payload_json to avoid duplicating large relation payloads", async () => {
