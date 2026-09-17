@@ -71,7 +71,17 @@ impl Describe for Reg { fn describe(&self) -> u32 { unsafe { self.raw } } }
     );
     const reg = result.nodes.find((n) => n.name === 'Reg');
     expect(reg?.kind).toBe('union');
-    const describe = result.nodes.find((n) => n.kind === 'method' && n.name === 'describe');
-    expect(describe?.qualifiedName).toBe('Reg::describe');
+    // N's rust config lists `function_signature_item` in methodTypes, so the
+    // TRAIT's bodiless signature now mints its own method node too (the Rust
+    // counterpart of #1638: contract members become visible anchors). Pick
+    // the impl-side method by qualified name instead of first-match-by-name.
+    const traitSig = result.nodes.find(
+      (n) => n.kind === 'method' && n.qualifiedName === 'Describe::describe'
+    );
+    expect(traitSig?.name).toBe('describe');
+    const describe = result.nodes.find(
+      (n) => n.kind === 'method' && n.qualifiedName === 'Reg::describe'
+    );
+    expect(describe?.name).toBe('describe');
   });
 });
