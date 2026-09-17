@@ -1,12 +1,14 @@
 /**
- * Kernel selector gating tests (P0-2a acceptance, updated for the wave-2
- * tsjs opening — DEFAULT_ROUTED = lua+luau+typescript/tsx/javascript/jsx):
+ * Kernel selector gating tests (P0-2a acceptance, updated for the wave-3
+ * ksd opening — DEFAULT_ROUTED = lua+luau + typescript/tsx/javascript/jsx +
+ * kotlin/scala/dart):
  * - Non-routed languages (python/ruby/...) with no CODEGRAPH_KERNEL_LANGS
  *   env: extractFromSource never consults the kernel and its output is
  *   identical to the pre-kernel wasm behavior (the byte-equivalence iron
  *   rule; the full 345-case extraction.test.ts suite is the repository-wide
  *   proof — it pins CODEGRAPH_KERNEL=0 to stay on the wasm arm).
- * - Default-routed languages (lua/luau wave 1; the tsjs family wave 2) take
+ * - Default-routed languages (lua/luau wave 1; the tsjs family wave 2;
+ *   kotlin/scala/dart wave 3) take
  *   the kernel arm with NO env, and the CODEGRAPH_KERNEL=0 kill switch
  *   still returns them to wasm.
  * - CODEGRAPH_KERNEL_LANGS REPLACES the default set: opting python in moves
@@ -40,6 +42,7 @@ import { buildKernelBuffers } from './kernel-testutil';
 const TS_SOURCE = `export class Svc {\n  run(x: number): string { return String(x); }\n}\n`;
 const PY_SOURCE = `def top(a):\n    return a\n`;
 const LUA_SOURCE = `local core = {}\nfunction core.run(x)\n  return tostring(x)\nend\nreturn core\n`;
+const KT_SOURCE = `fun main() {\n    println(\"x\")\n}\n`;
 
 /** Deterministic projection for byte-equivalence assertions (timestamps out). */
 function normalize(result: ExtractionResult): unknown {
@@ -72,7 +75,7 @@ function makeFakeKernel(opts?: { defer?: boolean }): { mod: KernelModule; calls:
         kernelVersion: 'fake-test-kernel',
         nodeKinds: [...NODE_KINDS],
         edgeKinds: [...EDGE_KINDS],
-        languages: ['typescript', 'tsx', 'javascript', 'jsx', 'python', 'go', 'lua', 'luau'],
+        languages: ['typescript', 'tsx', 'javascript', 'jsx', 'python', 'go', 'lua', 'luau', 'kotlin', 'scala', 'dart'],
       };
     },
     grammarInfo() {
@@ -165,6 +168,28 @@ describe('extractFromSource kernel selector gating', () => {
       expect.objectContaining({ fromNodeId: 'function:kernelMarker', referenceName: 'String', referenceKind: 'calls' }),
     ]);
     expect(typeof result.durationMs).toBe('number');
+  });
+
+  it('wave 3: DEFAULT_ROUTED kotlin/scala/dart take the kernel arm with NO env', () => {
+    const { mod, calls } = makeFakeKernel();
+    setKernelForTests(mod);
+    for (const lang of ['kotlin', 'scala', 'dart'] as const) {
+      expect(kernelRoutes(lang)).toBe(true);
+    }
+    const result = extractFromSource('Main.kt', KT_SOURCE, 'kotlin');
+    expect(calls).toEqual([['Main.kt', KT_SOURCE, 'kotlin']]);
+    expect(result.nodes.some((n) => n.name === 'kernelMarker')).toBe(true);
+    expect(result.nodes.some((n) => n.name === 'main')).toBe(false);
+  });
+
+  it('kill switch CODEGRAPH_KERNEL=0 returns default-routed kotlin to the wasm arm', () => {
+    const { mod, calls } = makeFakeKernel();
+    setKernelForTests(mod);
+    process.env.CODEGRAPH_KERNEL = '0';
+    expect(kernelRoutes('kotlin')).toBe(false);
+    const result = extractFromSource('Main.kt', KT_SOURCE, 'kotlin');
+    expect(calls.length).toBe(0);
+    expect(result.nodes.some((n) => n.kind === 'function' && n.name === 'main')).toBe(true);
   });
 
   it('kill switch CODEGRAPH_KERNEL=0 returns default-routed lua to the wasm arm', () => {

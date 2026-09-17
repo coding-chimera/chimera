@@ -60,7 +60,17 @@ export const EXTRACTION_SEMANTICS_METADATA_KEY = 'extraction_semantics_version';
 //     calls-ref rename "(handler)" -> "handler"), which change stored field
 //     values; see DEFAULT_ROUTED in src/graph/extraction/kernel/index.ts
 //     for the decision rule (byte-identical routing = no bump).
-export const EXTRACTION_SEMANTICS_VERSION = 3;
+// v4: kernel third-wave routing — kotlin/scala/dart move to the Rust kernel
+//     arm after their walkers were re-aligned to the fork's pre-#708/#750/
+//     #897 wasm oracles (21/21 corpus files byte-identical, losses and
+//     enrichments both zero). Conservative bump under the route-change
+//     clause above despite byte-parity: the per-language corpus is short
+//     (<20 files — the in-repo ceiling) and the batch ships a re-built
+//     kernel binary, so any out-of-corpus divergence must force a full
+//     re-extraction instead of silently mixing kernel and wasm shapes in
+//     one database. See DEFAULT_ROUTED (third-wave note) in
+//     src/graph/extraction/kernel/index.ts.
+export const EXTRACTION_SEMANTICS_VERSION = 4;
 
 /** Decoded shape of the stamp row. */
 export interface ExtractionSemanticsStamp {
