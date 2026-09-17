@@ -41,6 +41,16 @@
 - 缺口三项进展（P0-2a 实测）：① bun × napi-rs 3 五 Buffer smoke **PASS**（Buffer.isBuffer/ArrayBuffer backing/byteOffset=0 全验，TS/Python/Go 三语言 decode 正常，defer 探针正常）；② musl 交叉腿脚本映射已备（build-kernel.sh），实机验证待做；③ **.node 实测 33.6 MiB/平台**（超 10-30MB 估计 ~13%，分发矩阵按此规划）；host 构建 1m01s（rustc 1.98.1+clang 21）
 - macOS 签名/inode 注意（build-kernel.sh:81-85：先 rm 再 cp 防签名缓存 SIGKILL）适用 darwin 平台包
 
+- macOS 签名/inode 注意（build-kernel.sh:81-85：先 rm 再 cp 防签名缓存 SIGKILL）适用 darwin 平台包
+
+**发布面落地（2026-09-17，kernel prebuild 交叉编译发布面批）**：
+- **平台矩阵**：npm 发布 12 平台包（package-variant.ts npmPlatformTargets），kernel 产物轴 = (os, arch, libc)：baseline（avx2:false）包共享非 baseline 产物（crate 无 target-cpu 编译旗标）→ **12 包收敛 8 腿**：linux-{x64,arm64}{,-musl} + darwin-{arm64,x64} + win32-{x64,arm64}。目录命名 = kernelPrebuildPlatformDir（package-variant.ts 新助手，win32 拼写从 loader 的 process.platform，非包名的 windows）；与 build-kernel.sh platform_for 的漂移由 package-variant.test 守卫
+- **汇聚点**：publish.yml build-cli 在单 ubuntu runner 上交叉编译全部 12 个 Bun 二进制 → kernel prebuild 必须先以 artifact 汇到该 runner。新增 kernel-prebuild job（8 腿矩阵：ubuntu+zigbuild×4 linux、macos-26×2 darwin、windows-2025×2 msvc）→ upload → build-cli download（merge-multiple → codegraph-kernel/prebuilds/）→ copyKernelPrebuild 按包拷贝。**kernel 永不闸发布**：job continue-on-error + download continue-on-error + build.ts 缺腿 warn-only（wasm 回退）。publish.ts 原样重打包 bin/，npm 平台包 files:["bin"] 自动含 bin/kernel/
+- **选型实测**（本地 macOS/arm64，全部安全验证工具 file/objdump/otool/nm/shasum）：① **cargo-zigbuild = linux 全 4 腿正解**（本地+CI 同路线）：gnu 腿 `x86_64/aarch64-unknown-linux-gnu.2.28` 钉 glibc 地板（Node 18+/manylinux_2_28 世代；objdump -T 实测 GLIBC 符号上限 2.28、NEEDED libc.so.6），musl 腿见下；② **cross 淘汰**（docker daemon down，无 colima/podman）；③ **cargo-xwin 拒绝安装**（cargo install = 新落盘未签名可执行 + ~2GB SDK 下载，触端点安全红线模式）→ windows-msvc 腿 CI-only；④ **windows-gnu 本地探针被 napi-build 闸**：gnu 目标要求 libnode.dll 导入库（windows.rs:15 panic 实测复现）；**msvc 目标 napi-build 零额外输入**（源码核实 setup() 仅 gnu 分支有要求）→ CI windows 原生腿无此障碍
+- **musl cdylib 硬坑（实测新发现）**：rustc 1.98 在 musl 默认 +crt-static 下拒绝 cdylib（crt_static_allows_dylibs，"cannot produce cdylib"）；解法 = napi/alpine 惯例 `-C target-feature=-crt-static`，且必须走 **CARGO_ENCODED_RUSTFLAGS**（cargo-zigbuild 自组 encoded flags，cargo 优先级会掩掉普通 RUSTFLAGS —— 两路线实测对比确认）。产物 = 动态链 musl libc（NEEDED libc.so，alpine 加载器解析），非全静态
+- **darwin 地板钉版**：build-kernel.sh 钉 MACOSX_DEPLOYMENT_TARGET=11.0（否则产物 minos 随构建机漂移）；实测 darwin-x64 交叉腿（M2 arm 宿主 Apple 工具链，CI macos-26 同路线）minos 11.0 ✓；darwin-arm64 宿主重建与基线逐字节一致（sha 72c5e790…）✓
+- **Windows 命名坑结论：无需 loader 改动**。cargo 产 codegraph_kernel.dll → build-kernel.sh 统一改名 codegraph-kernel.node（napi/node-gyp 惯例；Node/Bun 在 win 的 dlopen=LoadLibrary 不辨扩展名）；loader 两个候选都是固定 .node 名，postinstall.mjs 的 -musl/-baseline 后缀探测与 win32→windows 映射复核无误，零改动
+- **本地产物证据**：6/8 腿已 staged+格式验证（ELF/Mach-O、GLIBC≤2.28、musl NEEDED、minos 11.0、napi_register_module_v1 全腿导出确认）；win32 两腿待 CI 首跑。端点安全：zigbuild 链接过程零拦截（红线⑧未再触发；zig 自托管子命令全家未碰）
 ### 2.4 性能预期（如实，不吹）
 - 上游 headline（单 native 线程 4.4× 于整个 wasm 池）已被上游自测修正：dubbo-on-Mac 的墙是**单写者 SQLite ingest（94%）**；kernel 真实端到端收益在 CPU 受限信封 1.25-1.5×（2 核 CI：Linux kernel 树 26min→<12min 为 kernel+pool sizing 合并效果）
 - fork 实测（P0-1 profile，2026-09-16，M2 8 核，3 次完整运行占比稳定）：**parse+extract 仅占墙钟 2-4%（~2.6s/110s），store ≈30%，resolution ≈51-56%**（store+resolution ≈81%，kernel 完全不触碰）→ **kernel 端到端预期 ≈1.02-1.05×**，受限核数信封在 fork 不会触发。单线程提取吞吐基线：411 文件/s、17.4k 节点/s（kernel parity harness 的对比基准）
@@ -59,7 +69,7 @@
 2. vendoring：crate 全量（MIT）+ build-kernel.sh + 上游 `src/extraction/kernel/*`（loader/layout/decode/contract-verify/defer memo）整体平移，适配 fork 路径与 `[CodeGraph]` 诊断纪律（禁 @opencode-ai/core）
 3. **双路 parity harness**（本计划的护栏核心）：同仓 wasm 臂 vs kernel 臂逐字节 diff ExtractionResult（含节点数组顺序、signature/docstring/qn 文本、id 逐字节）；上游 kernel-parity.mjs 骨架 + dump-diff gate 移植；数据根 .chimera
 4. EXTRACTION_VERSION 等价键 + needsReindex 报告
-5. 构建分发：.node 进平台包 bin/ 旁挂（grammar wasm 模式）；build.ts 拷贝链 + postinstall 验证项（kernel 加载探测 + 降级姿态）；musl 交叉腿；bun×napi Buffer smoke
+5. 构建分发：.node 进平台包 bin/ 旁挂（grammar wasm 模式）；build.ts 拷贝链 + postinstall 验证项（kernel 加载探测 + 降级姿态）；musl 交叉腿；bun×napi Buffer smoke（发布面 2026-09-17 落地：build.ts 矩阵感知拷贝 + build-kernel.sh 多腿 + publish.yml kernel-prebuild job，见 §2.3 增补；待 CI 首跑）
 6. 验收：extraction.test 345 用例全绿（wasm 臂零回归）；parity harness 在"kernel 未路由"状态空转正确
 
 ### P1 首批开闸（~2 周，主力价值语言先行）

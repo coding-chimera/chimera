@@ -66,8 +66,114 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
       repo: ${{ steps.version.outputs.repo }}
 
+  kernel-prebuild:
+    name: kernel-prebuild ${{ matrix.settings.platform }}
+    runs-on: ${{ matrix.settings.host }}
+    # Kernel legs are OPTIONAL release cargo: any failure here must not block
+    # a release — build-cli then ships the affected platform packages without
+    # the native kernel and the wasm extraction fallback applies (the
+    # copyKernelPrebuild warn-only contract in packages/chimera/script/build.ts).
+    continue-on-error: true
+    if: github.repository == 'coding-chimera/chimera'
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        settings:
+          # 8 kernel legs for the 12-package npm matrix: baseline (avx2:false)
+          # packages share the non-baseline artifact, so the axis is
+          # (os, arch, libc) — kernelPrebuildPlatformDir in
+          # packages/chimera/script/package-variant.ts is the naming source of
+          # truth (drift-guarded by test/script/package-variant.test.ts).
+          #
+          # Linux legs run through cargo-zigbuild on the ubuntu runner:
+          # glibc-versioned targets pin the artifact floor to 2.28 (Node 18+ /
+          # manylinux_2_28 generation) regardless of the runner's own glibc,
+          # musl legs opt out of +crt-static inside build-kernel.sh, and
+          # arm64 cross from x64 is zig-native.
+          - host: blacksmith-4vcpu-ubuntu-2404
+            platform: linux-x64
+            target: x86_64-unknown-linux-gnu.2.28
+            zig: true
+          - host: blacksmith-4vcpu-ubuntu-2404
+            platform: linux-arm64
+            target: aarch64-unknown-linux-gnu.2.28
+            zig: true
+          - host: blacksmith-4vcpu-ubuntu-2404
+            platform: linux-x64-musl
+            target: x86_64-unknown-linux-musl
+            zig: true
+          - host: blacksmith-4vcpu-ubuntu-2404
+            platform: linux-arm64-musl
+            target: aarch64-unknown-linux-musl
+            zig: true
+          # macOS: the arm runner cross-builds the x64 leg with the Apple
+          # toolchain (locally proven route); MACOSX_DEPLOYMENT_TARGET is
+          # pinned by build-kernel.sh (11.0) so artifacts keep a
+          # deterministic load floor instead of inheriting the runner's OS.
+          - host: macos-26
+            platform: darwin-arm64
+            target: aarch64-apple-darwin
+          - host: macos-26
+            platform: darwin-x64
+            target: x86_64-apple-darwin
+          # Windows: MSVC native + arm64 cross on github-hosted runners
+          # (blacksmith lacks the ARM64 MSVC toolchain — same split as the
+          # build-electron matrix). napi-build links msvc legs with no extra
+          # inputs; there is no local cross route (windows-gnu needs a
+          # libnode.dll import library, cargo-xwin rejected). The cargo .dll
+          # is staged as codegraph-kernel.node (napi/node-gyp convention).
+          - host: windows-2025
+            platform: win32-x64
+            target: x86_64-pc-windows-msvc
+          - host: windows-2025
+            platform: win32-arm64
+            target: aarch64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: mlugg/setup-zig@v2
+        if: matrix.settings.zig
+        with:
+          version: 0.16.0
+
+      - uses: taiki-e/install-action@v2
+        if: matrix.settings.zig
+        with:
+          tool: cargo-zigbuild
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: codegraph-kernel -> target
+
+      - name: Build and stage kernel prebuild
+        shell: bash
+        run: >
+          ./packages/chimera/script/build-kernel.sh
+          --target "${{ matrix.settings.target }}"
+          --platform "${{ matrix.settings.platform }}"
+          ${{ matrix.settings.zig && '--zig' || '' }}
+
+      - name: Verify staged prebuild
+        shell: bash
+        run: |
+          ls -la "codegraph-kernel/prebuilds/${{ matrix.settings.platform }}/"
+          test -s "codegraph-kernel/prebuilds/${{ matrix.settings.platform }}/codegraph-kernel.node"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernel-prebuild-${{ matrix.settings.platform }}
+          # Upload the prebuilds PARENT dir so the artifact keeps the
+          # <platform>/codegraph-kernel.node structure — build-cli merges all
+          # legs back with download-artifact merge-multiple.
+          path: codegraph-kernel/prebuilds
+
   build-cli:
-    needs: version
+    needs:
+      - version
+      - kernel-prebuild
     runs-on: blacksmith-4vcpu-ubuntu-2404
     if: github.repository == 'coding-chimera/chimera'
     steps:
@@ -85,6 +191,19 @@ jobs:
           opencode-app-id: ${{ vars.OPENCODE_APP_ID }}
           opencode-app-secret: ${{ secrets.OPENCODE_APP_SECRET }}
 
+      - name: Download kernel prebuilds
+        # Aggregation point for the kernel-prebuild matrix: legs land at
+        # codegraph-kernel/prebuilds/<platform>/codegraph-kernel.node, which
+        # copyKernelPrebuild (build.ts) reads per platform package. Warn-only
+        # by design — with zero or partial artifacts the affected packages
+        # ship without the native kernel (wasm fallback); the kernel must
+        # never gate a release.
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: kernel-prebuild-*
+          path: codegraph-kernel/prebuilds
+          merge-multiple: true
       - name: Build no-WebUI CLI and npm tarballs
         id: build
         run: |
