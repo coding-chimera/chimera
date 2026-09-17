@@ -110,3 +110,11 @@
 - 7 份组报告全文（会话 tool-output）：R1=tool_0842db4a2003SjEg1mCItqRmjk / R2=tool_0842bb0c2001ggq5vwmGWO3qoC / R3=tool_0842f323b001z74e3QEsmsatWw / R4=tool_0842d5719001C361R8ffQlE8fs / R5=tool_08426574b001JMdyHkbHR36UvQ / S1=tool_08417449c001KCah8PFMzwaCN8 / S2=tool_0841c6e82001iWo99mvOWOo0je；组清单文件 /tmp/graph-group-{R1..R5,S1,S2}.txt（临时，划分规则=类型优先+scope 正则+7 条人工纠偏）。
 - 已知局限：① 禁 fetch——as-of 2026-08-26 后的上游演进不可见，下次开工前若上游仓可更新应重跑漂移核查命令（directions.md）；② fork name-matcher/tree-sitter 分叉程度按锚点抽查，②类实际移植冲突面可能大于估计（R5 剩余风险）；③ tree-sitter-wasms 0.1.11 内 c/cpp 语法版本未开箱验证（依据上游 commit 正文自证）；④ 基线前缺口账本未逐条量化（只立账）。
 - 批次执行时沿用 F 线工作流 B：拆阶段以文件交集≈零为界（watcher.ts/tools.ts/queries.ts/extraction-index 是已知热点）、builder spec 带本文档对应节+组报告路径、每批 typecheck+test/graph 套件+对账、沉淀回写本文档勾选状态。
+
+## 13. G1 WAL/并发稳定性扩容批完成记录（2026-09-17）
+
+- **状态：✅ 完成**（8 commit f502c355d→1e54a46a0，每条带上游 sha；未 push 时点记录，随收口波次推送）。范围=原 G1 节（02c0e2c WAL 无界泄漏/8c1e821+ca88d3b#1 valve file-cap+barrier TRUNCATE/ca88d3b#4 parse 池 floor/d8f2eea loop-append）+漂移期扩容 5 条（9b8bb4aba fail-closed/58c07e874 edge 原子重绑（fork 形态：storeExtractionResult 单事务化）/1e4612375 legacy 锁两缺口/7440d2c47 第二写者 fail-fast（新 writer-lock.ts））。
+- **不适用项（四层证据在 builder 报告③）**：72c1ff13c orphan-sweep（fork resolver 零 edges 表读+无内存队列，结构性安全）；1e4612375 registry/manager/probe 面（fork 无宿主）；9b8bb4aba sync 接线半侧（fork sync 不 defer autocheckpoint）；d8f2eea salvage 半侧（无 #1575 基建）；ca88d3b#2/#3（resolver-pool 家族无宿主）。
+- **缓行项→独立批排期**：CG-33 收敛三件套（03893b0 ORDER BY+02ee151 definitionDelta+2cf63fd drift 测量工具）——文档自带“先跑 drift 基线”门槛且 ORDER BY 改变同名多定义选边与本批产物中立约束冲突；落地后 58c07e874/72c1ff13c 上游原生形态获宿主可复核归并。**G7 依赖序就绪**（7cc2366 db-scaled valve 与本批 file cap 成套）。
+- **验证**：双进程并发 22/22（cbench/g1-wal/：双 CLI 同 index 仲裁/index+sync 共存/pinned-reader fail-closed WAL 峰值有界 2.15MB<4MB cap/对照组无误杀）；产物 parity 三场景 9600/21600 逐字节一致；聚焦 104/0+typecheck×5 绿；全量 5304 pass/25 fail==基线零新增；主仓重索引冒烟 integrity=ok（counts +21/+36=会话内容漂移，产物中立性双重钉住）。
+- **行为变更入 release note**：WAL valve fail-closed（外部进程长期钉住 WAL 且超 cap 时 index 中止而非带病膨胀，错误文案含自救路径）；CHIMERA_INSTANCE_MEMORY_BUDGET_MB/CODEGRAPH_WAL_HEAL_MB/CODEGRAPH_WAL_VALVE_DEBUG 新 env。
