@@ -23,6 +23,14 @@ export const GlobalUpgradeInput = Schema.Struct({
   target: Schema.optional(Schema.String),
 })
 
+export const GlobalPresenceInput = Schema.Struct({
+  directories: Schema.Array(Schema.String),
+})
+
+const GlobalPresenceResult = Schema.Struct({
+  ok: Schema.Literal(true),
+})
+
 const GlobalUpgradeResult = Schema.Union([
   Schema.Struct({
     success: Schema.Literal(true),
@@ -40,6 +48,7 @@ export const GlobalPaths = {
   preferences: "/global/preferences",
   config: "/global/config",
   dispose: "/global/dispose",
+  presence: "/global/presence",
   upgrade: "/global/upgrade",
 } as const
 
@@ -111,6 +120,18 @@ export const GlobalApi = HttpApi.make("global").add(
           identifier: "global.dispose",
           summary: "Dispose instance",
           description: "Clean up and dispose all OpenCode instances, releasing all resources.",
+        }),
+      ),
+      HttpApiEndpoint.post("presence", GlobalPaths.presence, {
+        payload: GlobalPresenceInput,
+        success: described(GlobalPresenceResult, "Presence recorded"),
+        error: HttpApiError.BadRequest,
+      }).annotateMerge(
+        OpenApi.annotations({
+          identifier: "global.presence",
+          summary: "Report WebUI presence",
+          description:
+            "Presence heartbeat for the WebUI: refreshes the instance presence pin (TTL 90s by default) for every reported directory that currently has a loaded instance, protecting it from idle-TTL and memory-pressure eviction while the UI is open. Directories without a loaded instance are ignored; presence never boots an instance. The WebUI reports its active directories every 30s. Payloads above 512 directories are truncated.",
         }),
       ),
       HttpApiEndpoint.post("upgrade", GlobalPaths.upgrade, {

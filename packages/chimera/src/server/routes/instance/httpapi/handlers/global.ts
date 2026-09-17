@@ -5,6 +5,7 @@ import { Installation } from "@/installation"
 import { createGlobalEventStream } from "@/server/global-event-stream"
 import { disposeAllInstancesAndEmitGlobalDisposed } from "@/server/global-lifecycle"
 import { WebUIPreferences } from "@/server/webui-preferences"
+import { InstanceStore } from "@/project/instance-store"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import * as Log from "@opencode-ai/core/util/log"
 import { Effect, Schema } from "effect"
@@ -13,7 +14,7 @@ import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import * as Sse from "effect/unstable/encoding/Sse"
 import { RootHttpApi } from "../api"
-import { GlobalUpgradeInput } from "../groups/global"
+import { GlobalPresenceInput, GlobalUpgradeInput } from "../groups/global"
 
 const log = Log.create({ service: "server" })
 
@@ -68,6 +69,7 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
     const config = yield* Config.Service
     const installation = yield* Installation.Service
     const preferences = yield* WebUIPreferences.Service
+    const instances = yield* InstanceStore.Service
     const bridge = yield* EffectBridge.make()
 
     const health = Effect.fn("GlobalHttpApi.health")(function* () {
@@ -121,6 +123,28 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
     const dispose = Effect.fn("GlobalHttpApi.dispose")(function* () {
       yield* disposeAllInstancesAndEmitGlobalDisposed()
       return true
+    })
+
+    // Raw handler (house pattern for validated POST/PUT in this group, matching
+    // preferencesUpdateRaw/upgradeRaw): keeps malformed and schema-invalid bodies at 400
+    // instead of transport-level decode defects, aligned with the Hono zod validator.
+    const presenceRaw = Effect.fn("GlobalHttpApi.presenceRaw")(function* (ctx: {
+      request: HttpServerRequest.HttpServerRequest
+    }) {
+      const body = yield* Effect.orDie(ctx.request.text)
+      const json = parseBody(body)
+      if (json === undefined) {
+        return HttpServerResponse.jsonUnsafe({ ok: false, error: "Invalid request body" }, { status: 400 })
+      }
+      const payload = yield* Schema.decodeUnknownEffect(GlobalPresenceInput)(json).pipe(
+        Effect.map((payload) => ({ valid: true as const, payload })),
+        Effect.catch(() => Effect.succeed({ valid: false as const })),
+      )
+      if (!payload.valid) {
+        return HttpServerResponse.jsonUnsafe({ ok: false, error: "Invalid request body" }, { status: 400 })
+      }
+      yield* instances.presence(payload.payload.directories)
+      return HttpServerResponse.jsonUnsafe({ ok: true })
     })
 
     const upgrade = Effect.fn("GlobalHttpApi.upgrade")(function* (ctx: { payload: typeof GlobalUpgradeInput.Type }) {
@@ -182,6 +206,7 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
       .handle("configGet", configGet)
       .handle("configUpdate", configUpdate)
       .handle("dispose", dispose)
+      .handleRaw("presence", presenceRaw)
       .handleRaw("upgrade", upgradeRaw)
   }),
 )

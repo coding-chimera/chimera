@@ -39,7 +39,10 @@ export function withNetworkOptions<T>(yargs: Argv<T>) {
 }
 export const resolveNetworkOptions = Effect.fn("Cli.resolveNetworkOptions")(function* (args: NetworkOptions) {
   const config = yield* Config.Service.use((cfg) => cfg.getGlobal())
-  applyServerInstanceDefaults({ maxActiveInstances: config?.server?.maxActiveInstances })
+  applyServerInstanceDefaults({
+    maxActiveInstances: config?.server?.maxActiveInstances,
+    memoryBudgetMb: config?.server?.instanceMemoryBudgetMb,
+  })
   return resolveNetworkOptionsNoConfig(args, config)
 })
 

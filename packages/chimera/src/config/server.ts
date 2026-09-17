@@ -16,7 +16,11 @@ export const Server = Schema.Struct({
   }),
   maxActiveInstances: Schema.optional(PositiveInt).annotate({
     description:
-      "Maximum simultaneously active project instances kept by the server before LRU eviction (default: 4). Can also be set via CHIMERA_INSTANCE_MAX_ACTIVE_INSTANCES, which takes precedence.",
+      "Retired safety valve: maximum simultaneously active project instances before LRU eviction. Defaults to disabled (unlimited) since instance lifecycle is driven by consumer signals (request leases, session pins, WebUI presence) plus idle TTL, with RSS-budget pressure eviction as the backstop. Set an explicit positive value to restore the legacy count cap. Can also be set via CHIMERA_INSTANCE_MAX_ACTIVE_INSTANCES, which takes precedence.",
+  }),
+  instanceMemoryBudgetMb: Schema.optional(PositiveInt).annotate({
+    description:
+      "Process RSS budget in megabytes above which memory-pressure eviction disposes consumer-free project instances, coldest first, until RSS is back at 80% of the budget (default: 1024; acceptable maximum: 2048 — values above 2048 are not recommended because the server shares the machine with agent sessions, compilers, and other workloads). Can also be set via CHIMERA_INSTANCE_MEMORY_BUDGET_MB, which takes precedence.",
   }),
 })
   .annotate({ identifier: "ServerConfig" })

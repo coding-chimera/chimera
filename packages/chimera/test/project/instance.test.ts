@@ -6,7 +6,7 @@ import { disposeInstance, registerDisposer } from "../../src/effect/instance-reg
 import { InstanceBootstrap } from "../../src/project/bootstrap-service"
 import { Instance } from "../../src/project/instance"
 import { WithInstance } from "../../src/project/with-instance"
-import { InstanceStore } from "../../src/project/instance-store"
+import { InstanceStore, setInstanceMemoryRssProbe } from "../../src/project/instance-store"
 import { disposeAllInstances, tmpdir, tmpdirScoped } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
@@ -496,4 +496,206 @@ describe("InstanceStore", () => {
       expect(() => Instance.current).toThrow()
     }),
   )
+
+  test("presence heartbeat protects idle instances until its TTL expires", async () => {
+    const restore = withInstanceStoreEnv({
+      CHIMERA_INSTANCE_IDLE_TTL_MS: "40",
+      CHIMERA_INSTANCE_IDLE_SWEEP_MS: "10",
+      CHIMERA_INSTANCE_PRESENCE_TTL_MS: "60",
+      CHIMERA_INSTANCE_BOOT_GRACE_MS: "0",
+    })
+    const disposed: string[] = []
+    const off = registerDisposer(async (directory) => {
+      disposed.push(directory)
+    }, "test-presence-instance-disposer")
+    try {
+      await using dir = await tmpdir({ git: true })
+      await using neverLoaded = await tmpdir({ git: true })
+      await runIsolatedStore(
+        Effect.gen(function* () {
+          const store = yield* InstanceStore.Service
+          yield* store.load({ directory: dir.path })
+          // Directories without a loaded instance are ignored; presence never boots.
+          yield* store.presence([dir.path, neverLoaded.path])
+          yield* Effect.sleep("50 millis")
+          expect(disposed).not.toContain(dir.path)
+          expect(disposed).not.toContain(neverLoaded.path)
+          yield* Effect.sleep("60 millis")
+          expect(disposed).toContain(dir.path)
+          expect(disposed).not.toContain(neverLoaded.path)
+        }),
+      )
+    } finally {
+      off()
+      restore()
+    }
+  })
+
+  test("instances beyond the legacy default cap stay loaded when no cap is configured", async () => {
+    const restore = withInstanceStoreEnv({
+      CHIMERA_INSTANCE_IDLE_TTL_MS: "600000",
+      CHIMERA_INSTANCE_IDLE_SWEEP_MS: "15",
+      CHIMERA_INSTANCE_BOOT_GRACE_MS: "0",
+      CHIMERA_INSTANCE_SWEEP_DEBOUNCE_MS: "5",
+    })
+    const disposed: string[] = []
+    const off = registerDisposer(async (directory) => {
+      disposed.push(directory)
+    }, "test-no-cap-instance-disposer")
+    try {
+      const dirs: Awaited<ReturnType<typeof tmpdir>>[] = []
+      try {
+        for (let index = 0; index < 6; index++) dirs.push(await tmpdir({ git: true }))
+        await runIsolatedStore(
+          Effect.gen(function* () {
+            const store = yield* InstanceStore.Service
+            // Six concurrent instances: the retired count cap defaulted to 4 and used to
+            // evict the two coldest here. With no explicit cap, nothing is evicted.
+            for (const dir of dirs) yield* store.load({ directory: dir.path })
+            yield* Effect.sleep("60 millis")
+            expect(disposed).toEqual([])
+          }),
+        )
+      } finally {
+        for (const dir of dirs) await dir[Symbol.asyncDispose]()
+      }
+    } finally {
+      off()
+      restore()
+    }
+  })
+
+  test("memory pressure evicts coldest consumer-free instances until the watermark", async () => {
+    const restore = withInstanceStoreEnv({
+      CHIMERA_INSTANCE_IDLE_TTL_MS: "600000",
+      CHIMERA_INSTANCE_IDLE_SWEEP_MS: "10",
+      CHIMERA_INSTANCE_BOOT_GRACE_MS: "0",
+      CHIMERA_INSTANCE_SWEEP_DEBOUNCE_MS: "5",
+      CHIMERA_INSTANCE_MEMORY_BUDGET_MB: "160",
+    })
+    const disposed: string[] = []
+    // Synthetic RSS model: 60MB process floor + 30MB per live instance.
+    // Budget 160MB -> pressure at 4 live instances (180MB); watermark 128MB ->
+    // eviction stops at 2 live instances (120MB).
+    let live = 0
+    setInstanceMemoryRssProbe(() => (60 + 30 * live) * 1024 * 1024)
+    const off = registerDisposer(async (directory) => {
+      disposed.push(directory)
+      live -= 1
+    }, "test-pressure-instance-disposer")
+    try {
+      await using leased = await tmpdir({ git: true })
+      await using cold = await tmpdir({ git: true })
+      await using mid = await tmpdir({ git: true })
+      await using hot = await tmpdir({ git: true })
+      await runIsolatedStore(
+        Effect.gen(function* () {
+          const store = yield* InstanceStore.Service
+          // The leased instance is the coldest but holds a request lease: it must
+          // survive while warmer consumer-free instances are evicted first.
+          const lease = yield* store.lease({ directory: leased.path })
+          live = 1
+          yield* Effect.sleep("5 millis")
+          yield* store.load({ directory: cold.path })
+          live = 2
+          yield* Effect.sleep("5 millis")
+          yield* store.load({ directory: mid.path })
+          live = 3
+          yield* Effect.sleep("5 millis")
+          yield* store.load({ directory: hot.path })
+          live = 4
+          yield* Effect.sleep("80 millis")
+          expect(disposed).toEqual([cold.path, mid.path])
+          yield* lease.release
+        }),
+      )
+    } finally {
+      setInstanceMemoryRssProbe(undefined)
+      off()
+      restore()
+    }
+  })
+
+  test("streaming pins plus presence heartbeats keep eight instances alive under pressure", async () => {
+    const restore = withInstanceStoreEnv({
+      CHIMERA_INSTANCE_IDLE_TTL_MS: "600000",
+      CHIMERA_INSTANCE_IDLE_SWEEP_MS: "10",
+      CHIMERA_INSTANCE_BOOT_GRACE_MS: "0",
+      CHIMERA_INSTANCE_SWEEP_DEBOUNCE_MS: "5",
+      CHIMERA_INSTANCE_MEMORY_BUDGET_MB: "1",
+      CHIMERA_INSTANCE_PRESENCE_TTL_MS: "60000",
+    })
+    const disposed: string[] = []
+    // Always far over the 1MB budget: every sweep runs the pressure path.
+    setInstanceMemoryRssProbe(() => 512 * 1024 * 1024)
+    const off = registerDisposer(async (directory) => {
+      disposed.push(directory)
+    }, "test-consumer-signals-disposer")
+    const dirs: Awaited<ReturnType<typeof tmpdir>>[] = []
+    try {
+      for (let index = 0; index < 8; index++) dirs.push(await tmpdir({ git: true }))
+      await runIsolatedStore(
+        Effect.gen(function* () {
+          const store = yield* InstanceStore.Service
+          const pins: InstanceStore.Lease[] = []
+          for (const dir of dirs) {
+            const ctx = yield* store.load({ directory: dir.path })
+            // Streaming sessions hold pins for the whole run lifetime.
+            pins.push(yield* store.pin(ctx))
+          }
+          yield* store.presence(dirs.map((dir) => dir.path))
+          yield* Effect.sleep("100 millis")
+          expect(disposed).toEqual([])
+          for (const pin of pins) yield* pin.release
+        }),
+      )
+    } finally {
+      for (const dir of dirs) await dir[Symbol.asyncDispose]()
+      setInstanceMemoryRssProbe(undefined)
+      off()
+      restore()
+    }
+  })
+
+  test("sweep reconciles dangling pins against the session-side authority", async () => {
+    const restore = withInstanceStoreEnv({
+      CHIMERA_INSTANCE_IDLE_TTL_MS: "5",
+      CHIMERA_INSTANCE_IDLE_SWEEP_MS: "10",
+      CHIMERA_INSTANCE_BOOT_GRACE_MS: "0",
+      CHIMERA_INSTANCE_SWEEP_DEBOUNCE_MS: "5",
+    })
+    const disposed: string[] = []
+    const reconciledDirectories: string[] = []
+    const off = registerDisposer(async (directory) => {
+      disposed.push(directory)
+    }, "test-reconcile-instance-disposer")
+    try {
+      await using dir = await tmpdir({ git: true })
+      await runIsolatedStore(
+        Effect.gen(function* () {
+          const store = yield* InstanceStore.Service
+          const ctx = yield* store.load({ directory: dir.path })
+          yield* store.registerPinReconciler(() =>
+            Effect.gen(function* () {
+              const instance = yield* InstanceRef
+              if (instance) reconciledDirectories.push(instance.directory)
+              return { expectedPins: 0, busyStatuses: 0 }
+            }),
+          )
+          // Simulate a leaked session pin whose release never runs.
+          yield* store.pin(ctx)
+          // Two consecutive sweeps must observe the same mismatch before correction
+          // (two-strike confirmation), after which the dangling pin no longer blocks
+          // idle-TTL reclamation.
+          yield* Effect.sleep("120 millis")
+          expect(disposed).toContain(dir.path)
+          expect(reconciledDirectories).toContain(dir.path)
+        }),
+      )
+    } finally {
+      off()
+      restore()
+    }
+  })
 })
+
