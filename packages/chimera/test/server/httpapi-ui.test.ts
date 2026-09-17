@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto"
 import { rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { gunzipSync } from "node:zlib"
 import { afterEach, describe, expect, test } from "bun:test"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
@@ -98,11 +99,17 @@ function uiApp(input?: { password?: string; username?: string }) {
   }
 }
 
-function embeddedNewWebResponse(requestPath: string, embeddedWebUI: Record<string, string>) {
+function embeddedNewWebResponse(
+  requestPath: string,
+  embeddedWebUI: Record<string, string>,
+  headers?: Record<string, string>,
+) {
   return Effect.runPromise(
     Effect.gen(function* () {
       const fs = yield* AppFileSystem.Service
-      return yield* serveEmbeddedNewWebUIEffect(requestPath, fs, embeddedWebUI).pipe(Effect.map(HttpServerResponse.toWeb))
+      return yield* serveEmbeddedNewWebUIEffect(requestPath, fs, embeddedWebUI, { headers }).pipe(
+        Effect.map(HttpServerResponse.toWeb),
+      )
     }).pipe(Effect.provide(AppFileSystem.defaultLayer)),
   )
 }
@@ -188,6 +195,91 @@ describe("HttpApi UI fallback", () => {
       expect(await appRoute.text()).toContain("newweb")
       expect(asset.status).toBe(404)
       expect(await asset.json()).toEqual({ error: "Not Found" })
+    } finally {
+      await rm(file, { force: true })
+    }
+  })
+
+  test("serves embedded NewWeb assets from cache with immutable headers", async () => {
+    Flag.OPENCODE_EXPERIMENTAL_HTTPAPI = true
+    const file = path.join(tmpdir(), `chimera-newweb-${randomUUID()}.js`)
+    const body = "console.log('newweb')\n"
+    await Bun.write(file, body)
+    const manifest = { "assets/app.js": file }
+
+    try {
+      const first = await embeddedNewWebResponse("/assets/app.js", manifest)
+      expect(first.status).toBe(200)
+      expect(first.headers.get("content-type")).toContain("text/javascript")
+      expect(first.headers.get("cache-control")).toBe("public, max-age=31536000, immutable")
+      expect(first.headers.get("etag")).toBeTruthy()
+      expect(await first.text()).toBe(body)
+
+      // The file is gone, so a 200 with the same bytes proves the second
+      // response came from the in-memory asset cache instead of the disk.
+      await rm(file, { force: true })
+      const second = await embeddedNewWebResponse("/assets/app.js", manifest)
+      expect(second.status).toBe(200)
+      expect(second.headers.get("etag")).toBe(first.headers.get("etag"))
+      expect(await second.text()).toBe(body)
+    } finally {
+      await rm(file, { force: true })
+    }
+  })
+
+  test("revalidates the SPA document with no-cache and answers 304", async () => {
+    Flag.OPENCODE_EXPERIMENTAL_HTTPAPI = true
+    const file = path.join(tmpdir(), `chimera-newweb-${randomUUID()}.html`)
+    await Bun.write(file, "<html>newweb</html>")
+    const manifest = { "index.html": file }
+
+    try {
+      const first = await embeddedNewWebResponse("/projects/demo", manifest)
+      expect(first.status).toBe(200)
+      expect(first.headers.get("cache-control")).toBe("no-cache")
+      const etag = first.headers.get("etag")
+      expect(etag).toBeTruthy()
+      expect(await first.text()).toContain("newweb")
+
+      const revalidated = await embeddedNewWebResponse("/projects/demo", manifest, { "if-none-match": etag! })
+      expect(revalidated.status).toBe(304)
+      expect(revalidated.headers.get("etag")).toBe(etag)
+
+      const mismatched = await embeddedNewWebResponse("/projects/demo", manifest, { "if-none-match": '"stale"' })
+      expect(mismatched.status).toBe(200)
+      expect(await mismatched.text()).toContain("newweb")
+    } finally {
+      await rm(file, { force: true })
+    }
+  })
+
+  test("serves cached gzip bytes for compressible NewWeb assets", async () => {
+    Flag.OPENCODE_EXPERIMENTAL_HTTPAPI = true
+    const file = path.join(tmpdir(), `chimera-newweb-${randomUUID()}.js`)
+    const body = "console.log('newweb')\n".repeat(200)
+    await Bun.write(file, body)
+    const manifest = { "assets/app.js": file }
+    const acceptGzip = { "accept-encoding": "gzip, deflate, br" }
+
+    try {
+      const first = await embeddedNewWebResponse("/assets/app.js", manifest, acceptGzip)
+      expect(first.status).toBe(200)
+      expect(first.headers.get("content-encoding")).toBe("gzip")
+      expect(first.headers.get("vary")).toContain("accept-encoding")
+      const compressed = new Uint8Array(await first.arrayBuffer())
+      expect(compressed.byteLength).toBeLessThan(Buffer.byteLength(body))
+      expect(gunzipSync(compressed).toString()).toBe(body)
+
+      // Deleted source + gzip response proves both the raw bytes and the
+      // compressed variant are cached, so no request re-runs gzipSync.
+      await rm(file, { force: true })
+      const second = await embeddedNewWebResponse("/assets/app.js", manifest, acceptGzip)
+      expect(second.status).toBe(200)
+      expect(second.headers.get("content-encoding")).toBe("gzip")
+      expect(gunzipSync(new Uint8Array(await second.arrayBuffer())).toString()).toBe(body)
+
+      const identity = await embeddedNewWebResponse("/assets/app.js", manifest)
+      expect(identity.headers.get("content-encoding")).toBeNull()
     } finally {
       await rm(file, { force: true })
     }
