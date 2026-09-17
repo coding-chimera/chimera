@@ -12,6 +12,13 @@ Guidelines:
 
 ## Notes
 
+### K-v2 P2：fork wasm 提取层升级到上游 N 终态（2026-09-18，builder，4 commits 未 push）
+
+- **交付**（b1e732dd5 / 861ddbac0 / 2ee87c336 / b453778a1）：① leaf 模块（function-ref.ts 新 vendor、tree-sitter-helpers #780、tree-sitter-types+valueReferenceTypes hook）② 语言面（19 配置采 N + 10 新语言文件 + astro/cfml/razor extractors + LANGUAGES 扩 13 成员 + grammars.ts N 注册表×fork cjs 多级加载器，blob 零新增——裁定⑤）③ 引擎 tree-sitter.ts = N 基底 + fork 补丁集全量重放（statement/value-ref D1 合并/params/RAW returnType/D3 稳定重排/D5 tsjs 作用域大写块/csharp returnField/fn-ref 门控休眠待 P5）④ index.ts cherry-pick #1728（info/exclude+excludesFile+嵌套剪枝，env.md 实弹验证）+ #1628 preload（.h→cpp+objc）
+- **验证**：typecheck 绿×4 关口；wasm 臂（CODEGRAPH_KERNEL=0）聚焦套件 ~1150 pass/1 已知环境 fail（node:sqlite）；主仓重索引 77s：nodes 125,067→128,785、edges 262,211→329,702（+25.7%，N 特性族：#693/#528/#1638/#808/#1669/#1675/lua/react-hook）、stmt 66,719 存续、astro 7 文件新入库、nix 缺 blob 优雅降级实弹；semantics stamp 仍 v4（P5 bump）
+- **窗口白名单（P4 对账）**：kotlin/scala/dart valueRef=wasm 单臂发射（N VALUE_REF_LANGS 收窄仅剔 tsjs 族）；chain-form refs（#1683/#1496）fork resolver 未消费→unresolved +37k，P5 配套；fn-ref 双臂休眠（wasm 门控+kernel decode 丢 200）；object-literal/value-references 两测试默认路由（kernel 臂）下 fail=P3 在途 .node 双发 valueRef 所致，wasm 臂全绿
+- **遗留（parent/P5）**：takeDeferredPreParse 复用未接线（P3 kernel adapter 落地后 2 行回补）；FN_REF_EMISSION_ENABLED=false 待 P5 翻牌（ReferenceKind+matchFunctionRef）；liquid/svelte/vue/mybatis extractors 按盘点保留 fork 版（其 F-vs-N 差=跳过的上游 bugfix 演进：svelte/vue 行偏移修、liquid #383 安全+shopify JSON、vue #629 模板组件——建议独立小批采纳）；主仓 .chimera 现为 wasm 臂内容（KERNEL=0 重索引，避免烘入 P3 在途双发）
+
 ### K-v2 P3：vendored kernel re-vendor 到上游 N 终态（2026-09-17，builder，4 commits 未 push）
 
 - **交付**（commit 1fbe50624 快速道 / 5c02e09d1 慢道 tsjs+docstring / f859f27d0 buffers+适配层 / 本记账批）：9 文件整体采 N（kotlin/scala/dart/lua/python/ccpp/java/rustlang/fnref，剥除回滚+N 17 机制随入）；textutil=N+push_json_string 保全；tsjs 两件 = N 基底重放 fork 五件套（statement 全套/value-ref D1 合并含 shadow-prune 吸收 compute_shadowed_value_names/params_json/RAW returnType 200/D5 大写块仅 tsjs），D3 interface 按 N 源码序（PendingInterface 移除，保序归 P2 wasm 重排），D4 docstring 采 N；buffers 双 append 终态 NODE_KINDS 24+EDGE_KINDS 13；kernel-decode.test 领先集归零 []+#808 断言改 property；langs/lib/Cargo.toml/grammars 零动作确认。**wave3 条目里的 quirk 对齐件已全部被本批推翻（路线 a）**
