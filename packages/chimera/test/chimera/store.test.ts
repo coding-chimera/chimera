@@ -190,13 +190,15 @@ describe("Chimera store", () => {
     const db = DatabaseConnection.open(getDatabasePath(tmp.path))
     try {
       const tables = (db.getDb().prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((row) => row.name)
-      expect(db.getStorageExtensionVersion("chimera")).toBe(4)
+      expect(db.getStorageExtensionVersion("chimera")).toBe(5)
       expect(tables).toContain("chimera_change_event")
       expect(tables).toContain("chimera_semantic_snapshot")
       expect(tables).toContain("chimera_semantic_object")
       expect(tables).toContain("chimera_semantic_snapshot_ref")
       expect(tables).toContain("chimera_oracle_result")
       expect(tables).toContain("chimera_commit_change_summary")
+      expect(tables).toContain("chimera_edit_intent_claim")
+      expect(tables).toContain("chimera_edit_intent_waiter")
     } finally {
       db.close()
     }
