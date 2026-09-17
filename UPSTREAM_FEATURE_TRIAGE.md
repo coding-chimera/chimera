@@ -262,3 +262,83 @@ L5 seam 条款：P1 把后台语义隔离在"引擎服务 + task 工具分支"�
 - **开放问题**：跨进程唤醒——inject 限同进程会话，独立 CLI 进程的 parked thread 唤不醒（WebUI 多 thread 同进程不受影响）；claims L2 需 poll→inject 桥（各进程轻量轮询项目 DB claims 释放记录、唤醒本进程 parked 会话）。
 - 日期勘误：本文档与简报实际制定于 2026-09-07（此前误标 09-04，已修正）。
 - **P1 落地完成（2026-09-07，未 commit）**：四阶段串行（引擎→task 接线+可寻址 inject→task_cancel+BFS 级联→backgroundTasks section+验收矩阵），F4 测试家族 113 全绿+typecheck 绿；矩阵 A（注入×compaction）完整 E2E、矩阵 B（ultra×后台）测试锁定。实现级偏差一处（root 认可）：后台 run 不经 DelegationLimiter，由 background_concurrent(16) 独辖——优于拍板默认的"终生占 permit"，意图不变。打磨两项（容量预检前移防孤儿会话、injectSynthetic typed NotFound+notify 吞全因）已随阶段4落地。完成记录=计划书 F4-P1 节。
+
+## 11. 增量重分诊：快照后漂移 L4 面（2026-09-17，as-of 上游 88c6c7abc7）
+
+制定：2026-09-17（reviewer 代理，只读审计，未改任何代码）。范围：漂移窗 `9f69463f1d`(08-31)→`88c6c7abc7`(09-16) 共 132 条中的 **L4 运行时面 22 条**（scout 主题①-⑪ 20 条 + 增补 `b04697366f` headerTimeout 姊妹条、`55c54d14b8` dev 运行时条件条）。方法：上游只读镜像 `/Volumes/workspace/opencode` git show 12 条 + 归档 detail 6 条 + GitHub API 补详情 9 次（预算 ≤12，实耗 9）+ fork 本地 grep 逐条对照；沿用 §0 五分类口径与「落点/规模/拍板」三要素。基线：fork HEAD `154ff66aa`。
+
+### 11.1 总览与对账
+
+| 分类 | 条数 | commits |
+|---|---|---|
+| ①直接可移植 | 6 | `4eb29a64f0` `b04697366f` `69c172e8a7` `02a167e048` `500c46ec79` `a9a6fad0fa` |
+| ②需适配 | 14 | `3f39a329c3` `68abdce1a0` `9a71624d2d` `5cd8e68fdd` `23ec4f55c8` `bec9ee41af` `4502ee568e` `199a4cdbea` `0b082b065d` `8d1f8916d3` `ac1758c0e6` `1542195217` `7c2199d84a` `55c54d14b8` |
+| ③fork 已等价 | 0 | — |
+| ④无关 | 2 | `af1f9e6269` `216ba8f05f` |
+| ⑤已同步 | 0 | — |
+| **合计** | **22** | 分类之和 = 审计总条数 ✓ |
+
+### 11.2 逐条明细
+
+| commit | 上游标题 | 类 | fork 现状与证据 | 落点 | 规模 | 门控 |
+|---|---|---|---|---|---|---|
+| `3f39a329c3` | tolerate Anthropic thinking block binding (#46653) | ② | **零实现**：fork `transform.ts` 无 `blockBinding`/`anthropicBindsThinking`/`anthropicOmitsThinking`（grep 零命中）；钉 `@ai-sdk/anthropic` 3.0.71（上游 3.0.111，`package.json:107`）；`patches/` 无 anthropic/bedrock patch；上游含 anthropic +528 行 patch、bedrock +144 行 patch、transform +37、processor step-finish 日志 +14（fork 对应面 `processor.ts:654` 存在） | `src/provider/transform.ts` + `src/session/processor.ts` + `patches/` + 根 `package.json` patchedDependencies | L | 拍板#12 + 待深查（fork anthropic transform 基线分叉） |
+| `68abdce1a0` | config opt out of blockBinding (#46820) | ② | 三连之二：providerOptions `blockBinding:false` 显式 opt-out 并消费掉该键（+12 行）。随三连取 HEAD 终态整包，勿逐 commit 搬 | 同上 | S（随#12） | 拍板#12 |
+| `9a71624d2d` | scope thinking binding to Claude 5.1+ (#46848) | ② | 三连终态：`anthropicBindsThinking` 限 Claude 5.1+（mythos-5.1 明确排除），移植目标形态即此 | 同上 | S（随#12） | 拍板#12 |
+| `af1f9e6269` | remove azure discovery stuff (#46666) | ④ | fork `src/plugin/azure.ts` 仅 26 行纯 API-key auth，**从未有 discovery 面**，无可删。上游终态=Azure CLI auth 插件（`createAzureAuthHooks` 可测结构）——即既有 R2 ② 项 `790fb5b86f`，移植时以 HEAD 终形态为准（=本删除后形态） | 无（备注挂 `790fb5b86f`） | — | 无新拍板 |
+| `216ba8f05f` | stop Azure discovery logging to stdout (#46646) | ④ | 修复对象（discovery 日志）同日即被 `af1f9e6269` 整体删除，上游 HEAD 净零 | 无 | — | 无 |
+| `5cd8e68fdd` | port Astra system prompt from v2 (#48057) | ② | fork `src/session/prompt/` 无 `gpt-astra.txt`（ls 证实）、`system.ts` 无 astra（grep 零命中）；上游=gpt-6 系专用 46 行提示 + system.ts if 链插入；**fork system.ts 已重构为数据驱动层级表（`:57-65`，exact/match 语义）**，需按 layer entry 接入而非照搬；txt 自称 OpenCode，与 fork chimera.txt 叠加冲突，须品牌重写 | `src/session/prompt/gpt-astra.txt`（新增）+ `src/session/system.ts` | S-M | 拍板#13 |
+| `4eb29a64f0` | default chunk timeout to five minutes (#46890) | ① | fork `provider.ts:2075` `options["chunkTimeout"]` **无默认值**（现状默认=不超时；`:2095` 运行时无值即禁用）；`config/provider.ts:155` chunkTimeout 仅 PositiveInt 不收 `false`。移植=1 行 `?? 300_000` + schema union + 描述文案 | `src/provider/provider.ts` + `src/config/provider.ts` | S | 拍板#14（行为变更） |
+| `b04697366f` | default header timeout to five minutes (#46903) | ① | fork `provider.ts:2076` 无默认，仅 OpenAI 有 `OPENAI_HEADER_TIMEOUT_DEFAULT=300_000`（`:48,348`）；上游推广到全 provider 并同步 schema 描述。与上条同批 | 同上 | S | 拍板#14 |
+| `23ec4f55c8` | bump OpenAI SDK to 3.0.88 (#47659) | ② | fork 钉 3.0.53（`package.json:117`）。纯依赖 bump（lock+2 package.json）；fork 有自有 `src/provider/sdk/copilot/responses` vendor，bump 需回归 copilot/openai 路径 | 根/chimera/core `package.json` + `bun.lock` | M | 拍板#15（批次窗口） |
+| `bec9ee41af` | bump Azure SDK to 3.0.93 (#47664) | ② | fork 钉 3.0.49（`:108`）；lock 变动 +23-7 提示有传递依赖更新 | 同上 | S | #15 |
+| `4502ee568e` | bump bedrock to 4.0.166 (#45520) | ② | fork 钉 4.0.112（`:106`）。此 bump 是 `1542195217` patch（目标 4.0.166）与 blockBinding bedrock patch 的**硬前置**，且自带 reasoning/replay 修复 | 同上 | M | #15 |
+| `199a4cdbea` | bump @ai-sdk/gateway to 3.0.191 (#48710) | ② | fork 钉 3.0.104（`:112`）；连带 `@ai-sdk/provider` 3.0.8→3.0.16、`provider-utils` 4.0.23→4.0.51——**全 SDK 面公共底座 bump**，是六 bump 中影响面最大的一条 | 同上 | M | #15 |
+| `0b082b065d` | bump gitlab-ai-provider to 6.15.0 (#47792) | ② | fork 钉 6.6.0（`:174`）。与 `8d1f8916d3`(6.13)、`7c2199d84a`(6.14) 合并为一次 6.6→6.15 升级，勿重复 bump | 同上 | S | #15 |
+| `8d1f8916d3` | bump gitlab-ai-provider to 6.13.0 (#46914) | ② | 同上（被 6.15 吸收） | 同上 | S | #15 |
+| `02a167e048` | compare Codex GPT versions by major and minor (#47385) | ① | fork `codex-model.ts:96-97` `parseFloat(match[1]) > 5.4` = **上游修前形态**（`gpt-5.10` parseFloat→5.1 被误排除）；fork `capabilityModelID` 注册表可兜底已知模型，但未来新 id 仍命中此 bug。上游终态=major/minor 分别 Number 比较 | `src/provider/codex-model.ts:94-98` | S | 无 |
+| `500c46ec79` | allow integer GPT versions in Codex model filter (#47384) | ① | 同落点：fork 正则 `/^gpt-(\d+\.\d+)$/` 不匹配整数 `gpt-6`。与上条合并为一次移植（取 `02a167e048` 终态正则 `/^gpt-(\d+)(?:\.(\d+))?/`，注意 fork 有 `$` 锚与 `modelID()` 归一化差异） | 同上 | S | 无 |
+| `69c172e8a7` | handle SSE reader cancel rejections (#44944) | ① | fork `provider.ts:68` `void reader.cancel(err)` = **修前形态**（超时路径 cancel 竞速产生未处理 rejection）；上游两处落点，fork 无 `packages/core/src/aisdk.ts`（grep 证实），仅 provider.ts 一处适用。1 行改 `reader.cancel(err).catch(() => {})` | `src/provider/provider.ts:68` | S | 无 |
+| `ac1758c0e6` | preserve Bedrock DeepSeek model ids (#34441) | ② | fork `provider.ts:506-514` requiresPrefix 含裸 `"deepseek"`（非 r1 的 deepseek id 被过度加 `us.` 前缀）且无 `arn:` 直通（grep 零命中）；上游第二落点 `core/src/plugin/provider/amazon-bedrock.ts` **fork 无此文件**（fork mantle 路径=自有 `selectBedrockMantleLanguageModel`，`provider.ts:486`）→ 仅移植 provider.ts 两 hunk（`arn:` 直通 + `deepseek`→`deepseek.r1`） | `src/provider/provider.ts:490-520` | S | 无 |
+| `1542195217` | allow none reasoning effort in Bedrock SDK (#46671) | ② | 纯 patch 变更（`patches/@ai-sdk%2Famazon-bedrock@4.0.166.patch` +40：maxReasoningEffort enum 加 `none`）；fork 无该 patch 且钉 4.0.112 → **前置=`4502ee568e` bump**；fork 根 `patchedDependencies` 机制现成（根 `package.json:141-146`） | `patches/` + 根 `package.json` | M | #15 先行 |
+| `7c2199d84a` | add GitLab reasoning variants (#47306) | ② | fork `transform.ts` 无 `gitlab-ai-provider` case（grep 零命中，reasoningEffort switch 直接落空）→ GitLab Duo 模型无 reasoning variants；上游逻辑=gpt 系走 `reasoningEffort`、claude 系走 `thinking:{type:"adaptive"}`（+4 行）；**前置=gitlab ≥6.14**（并入 #15 gitlab 链） | `src/provider/transform.ts` reasoningEffort switch | S | #15 先行；低优（GitLab Duo 在 fork 生态小众） |
+| `a9a6fad0fa` | request summarized adaptive thinking (#48269) | ① | fork `plugin/github-copilot/models.ts:179` 与上游修前**逐字同形**（`opus-4.7` 门控 display）；移植=删门控改无条件 `display: "summarized"`，1 行 | `src/plugin/github-copilot/models.ts:179` | S | 无 |
+| `55c54d14b8` | use native runtime conditions in development (#46644) | ② | fork dev 脚本同样带 `--conditions=browser`（根 `package.json:9`、`packages/chimera/package.json:36-37`）；上游=bun 已原生解析运行时条件，删 flag（dev 脚本+测试 cli-process 共 9 处）。dev 工作流层非产品面；移植前需验证 fork `#db`/`#pty`/`#hono` 条件导入在无 flag 下解析一致 | 根/chimera `package.json` scripts + 测试 lib | S | 无（低优，顺手做） |
+
+### 11.3 主题决策简报（四题）
+
+**D1 blockBinding 三连（`3f39a329c3`→`9a71624d2d`→`68abdce1a0`）**——上游动机：Claude Fable 5.1+ 将 thinking 签名绑定到会话前缀（系统提示/工具列表/历史消息），任何前缀变更即**整请求拒绝**；opencode 每轮都会重渲染前缀（提示层切换、compaction、工具增删），属必踩雷。上游解法：patch `@ai-sdk/anthropic@3.0.111`（+528 行）与 bedrock patch 注入 `blockBinding.prefixMismatchBehavior="drop_block"` + thinking-binding-controls beta header，让 API 丢弃失配块而非拒绝；processor 在 step-finish 记录被 drop 的块供追查；config 可 `blockBinding:false` 退出；范围收敛到 Claude 5.1+（mythos-5.1 明确不做前缀检查故排除）。fork 缺口：零实现且**地基缺失**——无 anthropic adaptive-thinking 辅助函数族，anthropic 钉 3.0.71、bedrock 钉 4.0.112，patches/ 无对应 patch。不移植后果：fork 用户经直连或中继使用 Claude 5.1+ 时，compaction/提示层变更即硬失败，且随 Anthropic 把 enforcement 扩展到后续模型，影响面单调扩大。移植后果：牵动 SDK bump 批次与 patch 体系，回归面=全部 anthropic/bedrock 路径。**建议：移植，以 HEAD 终态整包（三连合成一次），排在 SDK bump 批次之后；开工前先深查 fork anthropic transform 基线与上游地基（`anthropicOmitsThinking`/`anthropicUsesModernAdaptiveThinking` 前置链）的分叉面。**
+
+**D2 Astra 系统提示层（`5cd8e68fdd`）**——上游动机：把 v2 的 Astra 提示移植回 v1，gpt-6 系改用独立 46 行提示（精简 harness 指令、强调自主推进、限制"X not Y"式框架话术）。fork 缺口：prompt/ 目录无 gpt-astra.txt，system.ts 无 gpt-6 分支；但 fork system.ts 已重构为数据驱动层级表（含 exact/match 语义，比上游 if 链更强），接入点是新增一个 layer entry。不移植后果：gpt-6 系模型落入通用 gpt.txt，仅提示未优化，非致命。移植后果：多一层提示词维护；**品牌冲突**——原文自称 "powered by OpenCode"，与 fork chimera.txt 叠加会自我矛盾，必须 Chimera 化重写而非照抄。**建议：门控拍板——仅当 fork 生态实际接入 gpt-6 系（当前 codex-model.ts 能力表最高到 gpt-5.6 系）才引入；引入则重写为 Chimera 品牌版。**
+
+**D3 timeout 默认 5min（`4eb29a64f0`+`b04697366f`）**——上游动机：chunk/header 超时配置面（fork F1 已同步自 `f965db9e13`）默认关闭，长挂起流不失败、持续占资源；上游拍板全局默认 300_000ms + `false` 显式禁用。fork 缺口：`provider.ts:2075-2076` 无默认值（现状=永不超时），chunkTimeout schema 不收 `false`。不移植后果：fork 生态以中继+长推理为主，中继半死挂起时请求无限悬挂（恰是 §4 ① `f965db9e13` 当初判「最高性价比」的同一痛点，只补了可配没补默认）。移植后果：行为变更——正常 chunk 间隔 >5min 且无 keepalive 的极端流会被误杀，但可配 `false` 关闭。**建议：移植（跟随上游默认 300_000），release note 标注行为变更；两条同批。**
+
+**D4 azure discovery 删除（`af1f9e6269`+`216ba8f05f`）**——上游动机：模型发现自动注入噪音大、行为不可控（前一天 `216ba8f05f` 刚修其 stdout 污染，次日即整体删除 -138 行），收敛到 Azure CLI auth 路线（终态=`createAzureAuthHooks` 可测结构）。fork 缺口：**无**——fork azure.ts 自分叉起就是 26 行纯 API-key auth，从未携带 discovery，故 scout 初判「fork 的 azure.ts 仍在」实为误报（文件在，但内容=上游删除后形态的子集）。后果与动作：无移植项；唯一关联是既有 R2 ② 项 `790fb5b86f`（Azure CLI auth）移植时**必须取上游 HEAD 终形态**（含本删除），不得按 `790fb5b86f` 提交时点形态搬。**建议：两条 ④ 关闭；在 `790fb5b86f` 执行单上标注「以 HEAD 终态为移植基准」。**
+
+### 11.4 拍板清单（编号续 §8，新增 #12-#15）
+
+| # | 决策 | 影响范围 |
+|---|---|---|
+| 12 | blockBinding 三连是否整包移植（HEAD 终态 + anthropic 3.0.111 bump + 双 patch；前置深查 fork anthropic transform 基线） | `3f39a329c3` `68abdce1a0` `9a71624d2d` + `4502ee568e` 联动 |
+| 13 | Astra 提示层是否引入（条件：gpt-6 系接入 + Chimera 品牌重写） | `5cd8e68fdd` |
+| 14 | timeout 默认 5min 行为变更是否跟随上游（建议跟随） | `4eb29a64f0` `b04697366f` |
+| 15 | SDK bump 批次执行窗口（建议作为 L4 开工的前置批次一次做完，避免逐条 bump 多次回归） | 6 条 bump + `1542195217`/`7c2199d84a`/blockBinding 的前置依赖 |
+
+### 11.5 L4 开工顺序建议（本节增量项内）
+
+1. **立即可做小件批**（无拍板、S 级、互不冲突）：`69c172e8a7`（1 行）→ `a9a6fad0fa`（1 行）→ `02a167e048`+`500c46ec79`（codex 过滤合并一次）→ `ac1758c0e6`（bedrock deepseek id 两 hunk）。
+2. **拍板#14 通过后并入小件批**：`4eb29a64f0`+`b04697366f`（timeout 默认，2 行默认值 + schema union）。
+3. **拍板#15：SDK bump 批次**（L4 provider 迁移开工前）：`23ec4f55c8`/`bec9ee41af`/`4502ee568e`/`199a4cdbea`/gitlab 链（`8d1f8916d3`+`0b082b065d`+`7c2199d84a` bump 部分）一次做完；`199a4cdbea` 因连带 provider/provider-utils 公共底座应放批内最后统一回归。
+4. **bump 批次后**：`1542195217`（bedrock none-effort patch 移植）、`7c2199d84a`（gitlab variants 逻辑 +4 行）。
+5. **拍板#12 + 深查完成后**：blockBinding 三连整包（本节最大件，L 级，含 anthropic bump 与双 patch）。
+6. `5cd8e68fdd`（Astra）随拍板#13，可无限期后置；`55c54d14b8`（dev conditions）非产品面，任意批次顺手做。
+
+### 11.6 待深查项（不硬判）
+
+- fork anthropic transform 基线与上游 adaptive-thinking 地基（`anthropicOmitsThinking`/`anthropicUsesModernAdaptiveThinking`/`sdkKey` 前置链）的分叉面——blockBinding 开工前必须回答「fork 需先补哪些地基 commit」。
+- gateway 3.0.191 + `@ai-sdk/provider` 3.0.16/`provider-utils` 4.0.51 与 fork 自有 `src/provider/sdk/copilot/responses` vendor 的兼容性。
+- `02a167e048` 移植时 fork `$` 锚正则与上游无锚正则对带后缀 id（如 `gpt-6-sol`）的行为差异——fork 有 `modelID()` 归一化，落地时以 fork 测试锁定。
+
+### 11.7 来源与 API 用量
+
+GitHub API 实耗 **9/12** 次（`23ec4f55c8` `bec9ee41af` `199a4cdbea` `0b082b065d` `02a167e048` `500c46ec79` `ac1758c0e6` `7c2199d84a` `a9a6fad0fa`，响应已归档 `/var/folders/…/chimera/upstream-drift/detail-*.json`）；其余 13 条取自本地只读镜像 git show（12 条）与既有归档（`5cd8e68fdd`/`55c54d14b8` 等 6 份 detail）。fork 证据全部为本地只读 grep/read，未改任何代码文件。
