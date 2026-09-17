@@ -161,12 +161,31 @@ export type EditIntentWaiterRecord = {
   blockerSessionID: string
   status: EditIntentWaiterStatus
   reason?: string
+  /** Host identity of the process whose session waits (v6+; absent on pre-v6 rows). */
+  hostPID?: number
+  hostBootID?: string
   createdAt: string
   updatedAt: string
 }
 
 /** Matches PREDESIGN_FRESH_WINDOW_MS in provenance.ts: a claim never outlives the predesign evidence it came from. */
 export const EDIT_INTENT_CLAIM_DEFAULT_TTL_MS = 2 * 60 * 60 * 1000
+
+/**
+ * Process-scoped host identity stamped onto waiter rows at registration time.
+ * The blocked session registers inside its own process, so this is accurate by
+ * construction. Format: boot_<process-start-ms>_<pid>. The cross-process
+ * poll→inject bridge uses it to (a) scope take to waiters this process can
+ * actually inject into, and (b) judge whether leftover waiters belong to a
+ * dead process (lazy stale-boot cleanup). Caveat: pid liveness is judged in
+ * the checking process's pid namespace, so processes in separate namespaces
+ * sharing one project volume can misjudge each other's hosts.
+ */
+const HOST_BOOT_ID = `boot_${Date.now() - Math.floor(performance.now())}_${process.pid}`
+
+export function currentHostBootID() {
+  return HOST_BOOT_ID
+}
 
 export type PredesignRunRecord = PredesignRunInput & {
   schemaVersion: 1
@@ -270,7 +289,7 @@ export type CommittedEvidenceCompactionResult = {
   dbBytesAfter?: number
 }
 
-const CHIMERA_STORAGE_EXTENSION: StorageExtension = {
+export const CHIMERA_STORAGE_EXTENSION: StorageExtension = {
   id: "chimera",
   namespace: "chimera_",
   migrations: [
@@ -541,6 +560,14 @@ CREATE TABLE IF NOT EXISTS chimera_edit_intent_waiter (
 
 CREATE INDEX IF NOT EXISTS chimera_edit_intent_waiter_file_status_idx ON chimera_edit_intent_waiter(file_path, status);
 CREATE INDEX IF NOT EXISTS chimera_edit_intent_waiter_session_status_idx ON chimera_edit_intent_waiter(session_id, status);
+`,
+    },
+    {
+      version: 6,
+      description: "Add host identity columns to edit-intent waiters for the cross-process poll-inject bridge",
+      sql: `
+ALTER TABLE chimera_edit_intent_waiter ADD COLUMN host_pid INTEGER;
+ALTER TABLE chimera_edit_intent_waiter ADD COLUMN host_boot_id TEXT;
 `,
     },
   ],
@@ -1465,6 +1492,8 @@ type EditIntentWaiterRow = {
   blocker_session_id: string
   status: string
   reason: string | null
+  host_pid: number | null
+  host_boot_id: string | null
   created_at: string
   updated_at: string
 }
@@ -1510,6 +1539,8 @@ function editIntentWaiterRecord(row: EditIntentWaiterRow): EditIntentWaiterRecor
     blockerSessionID: row.blocker_session_id,
     status: editIntentWaiterStatus(row.status),
     ...(row.reason ? { reason: row.reason } : {}),
+    ...(row.host_pid ? { hostPID: row.host_pid } : {}),
+    ...(row.host_boot_id ? { hostBootID: row.host_boot_id } : {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
@@ -1624,21 +1655,32 @@ export async function releaseEditIntentClaims(
 
 export async function registerEditIntentWaiter(
   projectRoot: string,
-  input: { sessionID: string; filePath: string; blockerSessionID: string; reason?: string; now?: string },
+  input: {
+    sessionID: string
+    filePath: string
+    blockerSessionID: string
+    reason?: string
+    now?: string
+    /** Defaults to the current process identity; null stamps no host (pre-v6 shape). */
+    host?: { pid: number; bootID: string } | null
+  },
 ): Promise<boolean> {
   const filePath = claimFilePath(input.filePath)
   if (!filePath) return false
   const now = input.now ?? new Date().toISOString()
+  const host = input.host === undefined ? { pid: process.pid, bootID: HOST_BOOT_ID } : input.host
   const wrote = await withDb(projectRoot, (db) => {
     db.prepare(`
-      INSERT INTO chimera_edit_intent_waiter (session_id, file_path, blocker_session_id, status, reason, created_at, updated_at)
-      VALUES (?, ?, ?, 'waiting', ?, ?, ?)
+      INSERT INTO chimera_edit_intent_waiter (session_id, file_path, blocker_session_id, status, reason, host_pid, host_boot_id, created_at, updated_at)
+      VALUES (?, ?, ?, 'waiting', ?, ?, ?, ?, ?)
       ON CONFLICT(session_id, file_path) DO UPDATE SET
         blocker_session_id = excluded.blocker_session_id,
         status = 'waiting',
         reason = excluded.reason,
+        host_pid = excluded.host_pid,
+        host_boot_id = excluded.host_boot_id,
         updated_at = excluded.updated_at
-    `).run(input.sessionID, filePath, input.blockerSessionID, input.reason ?? null, now, now)
+    `).run(input.sessionID, filePath, input.blockerSessionID, input.reason ?? null, host?.pid ?? null, host?.bootID ?? null, now, now)
     return true
   })
   return wrote ?? false
@@ -1649,11 +1691,19 @@ export async function registerEditIntentWaiter(
  * A waiter is only woken when no other session still holds an active,
  * unexpired claim on its file, so a release cascade with multiple holders
  * wakes the waiter exactly once, after the last holder lets go.
+ *
+ * With `hostBootID` set, only waiters registered by that host process are
+ * eligible. The waker can inject only into sessions living in its own
+ * process, and flipping a foreign-hosted waiter here would strand its wake
+ * forever (the owner's poll never sees a row that is no longer waiting) —
+ * foreign waiters stay waiting so their own host's poll takes them. The
+ * conditional UPDATE changes-guard below keeps exactly-once semantics for
+ * same-host takers racing on one row.
  */
 export async function takeWokenEditIntentWaiters(
   projectRoot: string,
   files: string[],
-  options: { now?: string } = {},
+  options: { now?: string; hostBootID?: string } = {},
 ): Promise<EditIntentWaiterRecord[]> {
   const now = options.now ?? new Date().toISOString()
   const targets = unique(files.map(claimFilePath).filter(Boolean))
@@ -1664,8 +1714,9 @@ export async function takeWokenEditIntentWaiters(
     db.transaction(() => {
       const remaining = db.prepare("SELECT COUNT(*) as count FROM chimera_edit_intent_claim WHERE file_path = ? AND status = 'active' AND expires_at > ? AND session_id != ?")
       const wake = db.prepare("UPDATE chimera_edit_intent_waiter SET status = 'woken', updated_at = ? WHERE session_id = ? AND file_path = ? AND status = 'waiting'")
+      const select = db.prepare(`SELECT * FROM chimera_edit_intent_waiter WHERE file_path = ? AND status = 'waiting'${options.hostBootID ? " AND host_boot_id = ?" : ""} ORDER BY created_at ASC, session_id ASC`)
       for (const filePath of targets) {
-        const waiters = db.prepare("SELECT * FROM chimera_edit_intent_waiter WHERE file_path = ? AND status = 'waiting' ORDER BY created_at ASC, session_id ASC").all(filePath) as EditIntentWaiterRow[]
+        const waiters = (options.hostBootID ? select.all(filePath, options.hostBootID) : select.all(filePath)) as EditIntentWaiterRow[]
         for (const waiter of waiters) {
           const held = remaining.get(filePath, now, waiter.session_id) as CountRow | undefined
           if ((held?.count ?? 0) > 0) continue
@@ -1685,7 +1736,7 @@ export async function takeWokenEditIntentWaiters(
 
 export async function readEditIntentWaiters(
   projectRoot: string,
-  options: { sessionID?: string; status?: EditIntentWaiterStatus; limit?: number } = {},
+  options: { sessionID?: string; status?: EditIntentWaiterStatus; hostBootID?: string; limit?: number } = {},
 ): Promise<EditIntentWaiterRecord[]> {
   const limit = Math.max(1, Math.min(200, Math.floor(options.limit ?? 50)))
   const where: string[] = []
@@ -1697,6 +1748,10 @@ export async function readEditIntentWaiters(
   if (options.status) {
     where.push("status = ?")
     params.push(options.status)
+  }
+  if (options.hostBootID) {
+    where.push("host_boot_id = ?")
+    params.push(options.hostBootID)
   }
   params.push(limit)
   const clause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""
@@ -1710,6 +1765,42 @@ export async function cancelEditIntentWaiters(projectRoot: string, sessionID: st
   const now = options.now ?? new Date().toISOString()
   const cancelled = await withDb(projectRoot, (db) => {
     const result = db.prepare("UPDATE chimera_edit_intent_waiter SET status = 'cancelled', updated_at = ? WHERE session_id = ? AND status = 'waiting'").run(now, sessionID)
+    return Number(result.changes ?? 0)
+  })
+  return cancelled ?? 0
+}
+
+/** Distinct host identities behind currently-waiting waiters (null boot id = pre-v6 row without a host stamp). */
+export async function listEditIntentWaiterHosts(projectRoot: string): Promise<Array<{ hostPID: number | null; hostBootID: string | null }>> {
+  const rows = await withReadOnlyDb(projectRoot, (db) =>
+    db.prepare("SELECT DISTINCT host_pid, host_boot_id FROM chimera_edit_intent_waiter WHERE status = 'waiting'").all() as Array<{
+      host_pid: number | null
+      host_boot_id: string | null
+    }>,
+  )
+  return (rows ?? []).map((row) => ({ hostPID: row.host_pid, hostBootID: row.host_boot_id }))
+}
+
+/** Cancel every still-waiting waiter registered by one host process (lazy stale-boot cleanup). */
+export async function cancelEditIntentWaitersByHostBootID(projectRoot: string, hostBootID: string, options: { now?: string } = {}): Promise<number> {
+  const now = options.now ?? new Date().toISOString()
+  const cancelled = await withDb(projectRoot, (db) => {
+    const result = db.prepare("UPDATE chimera_edit_intent_waiter SET status = 'cancelled', updated_at = ? WHERE status = 'waiting' AND host_boot_id = ?").run(now, hostBootID)
+    return Number(result.changes ?? 0)
+  })
+  return cancelled ?? 0
+}
+
+/**
+ * Cancel pre-v6 waiters without a host stamp whose updated_at is older than
+ * `orphanedBefore`. The grace window keeps mixed-version concurrency safe: a
+ * still-live old-binary process can wake its own un-stamped waiters through
+ * its unfiltered take until its claims hit the same TTL horizon.
+ */
+export async function cancelOrphanedEditIntentWaiters(projectRoot: string, options: { orphanedBefore: string; now?: string }): Promise<number> {
+  const now = options.now ?? new Date().toISOString()
+  const cancelled = await withDb(projectRoot, (db) => {
+    const result = db.prepare("UPDATE chimera_edit_intent_waiter SET status = 'cancelled', updated_at = ? WHERE status = 'waiting' AND host_boot_id IS NULL AND updated_at <= ?").run(now, options.orphanedBefore)
     return Number(result.changes ?? 0)
   })
   return cancelled ?? 0
