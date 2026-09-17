@@ -1,37 +1,57 @@
 import fs from "node:fs/promises"
-import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { Hono } from "hono"
-import { csp, cspForHtml } from "../shared/ui"
-import { embeddedNewWebUI, resolveNewWebUIFile, MISSING_EMBEDDED_NEW_WEB_UI_MESSAGE } from "../shared/newweb-ui"
+import { csp } from "../shared/ui"
+import {
+  cacheNewWebAsset,
+  cachedNewWebAsset,
+  embeddedNewWebUI,
+  resolveNewWebUIFile,
+  MISSING_EMBEDDED_NEW_WEB_UI_MESSAGE,
+  type NewWebAsset,
+} from "../shared/newweb-ui"
 
-export async function serveNewWebUI(request: Request) {
-  const embeddedWebUI = await embeddedNewWebUI()
-  const path = new URL(request.url).pathname
+function assetResponse(asset: NewWebAsset) {
+  // lib.dom pins BodyInit to Uint8Array<ArrayBuffer> while the shared cache
+  // stores Uint8Array<ArrayBufferLike>, so the legacy Hono path hands Response a
+  // fresh view. The effect-httpapi path stays zero-copy.
+  return new Response(asset.body ? new Uint8Array(asset.body) : null, {
+    status: asset.status,
+    headers: asset.headers,
+  })
+}
 
-  if (embeddedWebUI) {
-    const match = resolveNewWebUIFile(path, embeddedWebUI)
-    if (!match) return Response.json({ error: "Not Found" }, { status: 404 })
+function notFound() {
+  return Response.json({ error: "Not Found" }, { status: 404 })
+}
 
-    if (await fs.exists(match)) {
-      const mime = AppFileSystem.mimeType(match)
-      const headers = new Headers({ "content-type": mime })
-      const body = new Uint8Array(await fs.readFile(match))
-      if (mime.startsWith("text/html")) {
-        headers.set("content-security-policy", cspForHtml(new TextDecoder().decode(body)))
-      }
-      return new Response(body, { headers })
-    }
-
-    return Response.json({ error: "Not Found" }, { status: 404 })
+/**
+ * Legacy Hono WebUI route. Cache policy, ETag/304 handling and the asset byte
+ * and gzip caches live in `shared/newweb-ui` so this backend cannot drift from
+ * the effect-httpapi one. `embeddedWebUI` is injectable for tests; production
+ * reads the embedded manifest.
+ */
+export async function serveNewWebUI(request: Request, embeddedWebUI?: Record<string, string> | null) {
+  const manifest = embeddedWebUI === undefined ? await embeddedNewWebUI() : embeddedWebUI
+  if (!manifest) {
+    return new Response(MISSING_EMBEDDED_NEW_WEB_UI_MESSAGE, {
+      status: 503,
+      headers: {
+        "content-type": "text/plain; charset=utf-8",
+        "content-security-policy": csp(),
+      },
+    })
   }
 
-  return new Response(MISSING_EMBEDDED_NEW_WEB_UI_MESSAGE, {
-    status: 503,
-    headers: {
-      "content-type": "text/plain; charset=utf-8",
-      "content-security-policy": csp(),
-    },
-  })
+  const path = new URL(request.url).pathname
+  const headers = Object.fromEntries(request.headers.entries())
+  const cached = cachedNewWebAsset(path, manifest, { headers })
+  if (cached) return assetResponse(cached)
+
+  const file = resolveNewWebUIFile(path, manifest)
+  if (!file) return notFound()
+  const body = await fs.readFile(file).catch(() => undefined)
+  if (!body) return notFound()
+  return assetResponse(cacheNewWebAsset(path, manifest, file, new Uint8Array(body), { headers }))
 }
 
 export const NewWebUIRoutes = (): Hono => new Hono().all("/*", (c) => serveNewWebUI(c.req.raw))
