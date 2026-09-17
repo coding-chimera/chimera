@@ -164,7 +164,7 @@ describe('decodeExtractBuffers — synthetic buffers', () => {
     expect(result.edges[0].metadata).toBeUndefined();
   });
 
-  it('decodes refs: fromIdx + fromIdStr, candidates, REF_FLAG_FILE_PATH, and DROPS function_ref (fork adaptation)', () => {
+  it('decodes refs: fromIdx + fromIdStr, candidates, REF_FLAG_FILE_PATH, and function_ref (K-v2 P5-1 flip)', () => {
     const buffers = buildKernelBuffers({
       nodes: [{ kind: 'file', name: 'c.rb', id: 'file:c.rb' }],
       refs: [
@@ -174,8 +174,10 @@ describe('decodeExtractBuffers — synthetic buffers', () => {
       ],
     });
     const result = decodeExtractBuffers(buffers, 'c.rb', 'ruby');
-    // function_ref (wire code 200) has no fork ReferenceKind — row dropped.
-    expect(result.unresolvedReferences.length).toBe(2);
+    // K-v2 P5-1: wire code 200 now decodes to the internal-only 'function_ref'
+    // ReferenceKind (matchFunctionRef consumer + createEdges references-mapping
+    // landed), replacing the P2-era drop.
+    expect(result.unresolvedReferences.length).toBe(3);
     expect(result.unresolvedReferences[0]).toMatchObject({
       fromNodeId: 'file:c.rb',
       referenceName: 'puts',
@@ -191,6 +193,11 @@ describe('decodeExtractBuffers — synthetic buffers', () => {
       referenceKind: 'implements',
     });
     expect(result.unresolvedReferences[1].filePath).toBe('c.rb'); // REF_FLAG_FILE_PATH re-attach
+    expect(result.unresolvedReferences[2]).toMatchObject({
+      fromNodeId: 'file:c.rb',
+      referenceName: 'callback',
+      referenceKind: 'function_ref',
+    });
   });
 
   it('decodes the errors table when present', () => {

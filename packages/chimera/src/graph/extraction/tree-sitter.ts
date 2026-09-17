@@ -246,16 +246,16 @@ const BUILTIN_CAPITALIZED_EXEMPT_LANGUAGES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * K-v2 P2 fn-ref gate: upstream #756 emits `function_ref` unresolved refs and
+ * K-v2 P5-1 fn-ref flip: upstream #756 emits `function_ref` unresolved refs and
  * its resolution layer matches them via matchFunctionRef, persisting
- * `references` edges with {fnRef:true}. The fork's resolver has no
- * function_ref consumer yet (its UnresolvedReference.referenceKind is typed
- * EdgeKind; a generic resolve would persist invisible 'function_ref'-kind
- * edges), and the fork kernel decode drops wire code 200 — so emission stays
- * DORMANT on both arms until P5 ports ReferenceKind + matchFunctionRef.
- * Capture machinery is kept intact; flip this flag in P5.
+ * `references` edges with {fnRef:true}. As of P5-1 the fork carries the full
+ * stack: types.ts ReferenceKind = EdgeKind | 'function_ref',
+ * resolution/name-matcher.ts matchFunctionRef + resolveThisMemberFnRef, the
+ * createEdges function_ref→references mapping with fnRef metadata, and the
+ * kernel decode wire-code-200 mapping (P2's drop-200 gap closed). Both arms
+ * now emit symmetrically, so emission is ENABLED.
  */
-const FN_REF_EMISSION_ENABLED = false;
+const FN_REF_EMISSION_ENABLED = true;
 // ---------------------------------------------------------------------------
 
 /**
@@ -907,12 +907,12 @@ export class TreeSitterExtractor {
     const candidates = this.fnRefCandidates;
     this.fnRefCandidates = [];
 
-    // K-v2 P2: emission stays DORMANT while the fork resolver lacks the
-    // function_ref consumer (matchFunctionRef + ReferenceKind typing +
-    // 'references'-kind persistence with {fnRef:true}) — P5 flips
-    // FN_REF_EMISSION_ENABLED together with the resolution port. The fork
-    // kernel decode drops wire code 200, so both arms stay symmetric and no
-    // invisible 'function_ref'-kind edges can reach the store.
+    // K-v2 P5-1: FN_REF_EMISSION_ENABLED flipped ON together with the full
+    // consumer stack (ReferenceKind typing, matchFunctionRef +
+    // resolveThisMemberFnRef, createEdges function_ref→references mapping
+    // with {fnRef:true}, kernel decode wire-code-200 mapping). Both arms emit
+    // symmetrically — parity-verified refMissing/refExtra = 0. The flag stays
+    // as the single emergency kill-switch for the emission side.
     if (!FN_REF_EMISSION_ENABLED) return;
 
     // Generated/minified files (vendored jquery.min.js and friends): their
@@ -1000,7 +1000,7 @@ export class TreeSitterExtractor {
       this.unresolvedReferences.push({
         fromNodeId: c.fromNodeId,
         referenceName: c.name,
-        referenceKind: 'function_ref' as unknown as EdgeKind, // dormant; see FN_REF_EMISSION_ENABLED
+        referenceKind: 'function_ref', // P5-1: typed by ReferenceKind; consumed via matchFunctionRef
         line: c.line,
         column: c.column,
       });

@@ -16,7 +16,20 @@ import {
   FrameworkResolver,
   ImportMapping,
 } from './types';
-import { matchReference } from './name-matcher';
+import { matchReference, matchFunctionRef, isVisibleAcrossFiles, isUnresolvedJsMemberCall, clearNameMatcherMemos } from './name-matcher';
+import {
+  JS_BUILT_INS,
+  REACT_HOOKS,
+  PYTHON_BUILT_INS,
+  PYTHON_BUILT_IN_TYPES,
+  PYTHON_BUILT_IN_METHODS,
+  GO_STDLIB_PACKAGES,
+  GO_BUILT_INS,
+  PASCAL_UNIT_PREFIXES,
+  PASCAL_BUILT_INS,
+  C_BUILT_INS,
+  CPP_BUILT_INS,
+} from './js-builtins';
 import { resolveViaImport, resolveJvmImport, extractImportMappings, extractReExports, loadCppIncludeDirs, resolveImportPath } from './import-resolver';
 import { detectFrameworks } from './frameworks';
 import { synthesizeCallbackEdges } from './callback-synthesizer';
@@ -47,133 +60,10 @@ function resolveCacheLimit(): number {
 // Re-export types
 export * from './types';
 
-// Pre-built Sets for O(1) built-in lookups (allocated once, shared across all instances)
-const JS_BUILT_INS = new Set([
-  'console', 'window', 'document', 'global', 'process',
-  'Promise', 'Array', 'Object', 'String', 'Number', 'Boolean',
-  'Date', 'Math', 'JSON', 'RegExp', 'Error', 'Map', 'Set',
-  'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval',
-  'fetch', 'require', 'module', 'exports', '__dirname', '__filename',
-]);
-
-const REACT_HOOKS = new Set([
-  'useState', 'useEffect', 'useContext', 'useReducer', 'useCallback',
-  'useMemo', 'useRef', 'useLayoutEffect', 'useImperativeHandle', 'useDebugValue',
-]);
-
-const PYTHON_BUILT_INS = new Set([
-  'print', 'len', 'range', 'str', 'int', 'float', 'list', 'dict', 'set', 'tuple',
-  'open', 'input', 'type', 'isinstance', 'hasattr', 'getattr', 'setattr',
-  'super', 'self', 'cls', 'None', 'True', 'False',
-]);
-
-const PYTHON_BUILT_IN_TYPES = new Set([
-  'list', 'dict', 'set', 'tuple', 'str', 'int', 'float', 'bool',
-  'bytes', 'bytearray', 'frozenset', 'object', 'super',
-]);
-
-const PYTHON_BUILT_IN_METHODS = new Set([
-  'append', 'extend', 'insert', 'remove', 'pop', 'clear', 'sort', 'reverse', 'copy',
-  'update', 'keys', 'values', 'items', 'get',
-  'add', 'discard', 'union', 'intersection', 'difference',
-  'split', 'join', 'strip', 'lstrip', 'rstrip', 'replace', 'lower', 'upper',
-  'startswith', 'endswith', 'find', 'index', 'count', 'encode', 'decode',
-  'format', 'isdigit', 'isalpha', 'isalnum',
-  'read', 'write', 'readline', 'readlines', 'close', 'flush', 'seek',
-]);
-
-const GO_STDLIB_PACKAGES = new Set([
-  'fmt', 'os', 'io', 'net', 'http', 'log', 'math', 'sort', 'sync',
-  'time', 'path', 'bytes', 'strings', 'strconv', 'errors', 'context',
-  'json', 'xml', 'csv', 'html', 'template', 'regexp', 'reflect',
-  'runtime', 'testing', 'flag', 'bufio', 'crypto', 'encoding',
-  'filepath', 'hash', 'mime', 'rand', 'signal', 'sql', 'syscall',
-  'unicode', 'unsafe', 'atomic', 'binary', 'debug', 'exec', 'heap',
-  'ring', 'scanner', 'tar', 'zip', 'gzip', 'zlib', 'tls', 'url',
-  'user', 'pprof', 'trace', 'ast', 'build', 'parser', 'printer',
-  'token', 'types', 'cgo', 'plugin', 'race', 'ioutil',
-  // Kubernetes-common stdlib aliases
-  'utilruntime', 'utilwait', 'utilnet',
-]);
-
-const GO_BUILT_INS = new Set([
-  'make', 'new', 'len', 'cap', 'append', 'copy', 'delete', 'close',
-  'panic', 'recover', 'print', 'println', 'complex', 'real', 'imag',
-  'error', 'nil', 'true', 'false', 'iota',
-  'int', 'int8', 'int16', 'int32', 'int64',
-  'uint', 'uint8', 'uint16', 'uint32', 'uint64', 'uintptr',
-  'float32', 'float64', 'complex64', 'complex128',
-  'string', 'bool', 'byte', 'rune', 'any',
-]);
-
-const PASCAL_UNIT_PREFIXES = [
-  'System.', 'Winapi.', 'Vcl.', 'Fmx.', 'Data.', 'Datasnap.',
-  'Soap.', 'Xml.', 'Web.', 'REST.', 'FireDAC.', 'IBX.',
-  'IdHTTP', 'IdTCP', 'IdSSL',
-];
-
-const PASCAL_BUILT_INS = new Set([
-  'System', 'SysUtils', 'Classes', 'Types', 'Variants', 'StrUtils',
-  'Math', 'DateUtils', 'IOUtils', 'Generics.Collections', 'Generics.Defaults',
-  'Rtti', 'TypInfo', 'SyncObjs', 'RegularExpressions',
-  'SysInit', 'Windows', 'Messages', 'Graphics', 'Controls', 'Forms',
-  'Dialogs', 'StdCtrls', 'ExtCtrls', 'ComCtrls', 'Menus', 'ActnList',
-  'WriteLn', 'Write', 'ReadLn', 'Read', 'Inc', 'Dec', 'Ord', 'Chr',
-  'Length', 'SetLength', 'High', 'Low', 'Assigned', 'FreeAndNil',
-  'Format', 'IntToStr', 'StrToInt', 'FloatToStr', 'StrToFloat',
-  'Trim', 'UpperCase', 'LowerCase', 'Pos', 'Copy', 'Delete', 'Insert',
-  'Now', 'Date', 'Time', 'DateToStr', 'StrToDate',
-  'Raise', 'Exit', 'Break', 'Continue', 'Abort',
-  'True', 'False', 'nil', 'Self', 'Result',
-  'Create', 'Destroy', 'Free',
-  'TObject', 'TComponent', 'TPersistent', 'TInterfacedObject',
-  'TList', 'TStringList', 'TStrings', 'TStream', 'TMemoryStream', 'TFileStream',
-  'Exception', 'EAbort', 'EConvertError', 'EAccessViolation',
-  'IInterface', 'IUnknown',
-]);
-
-const C_BUILT_INS = new Set([
-  // Standard C library functions
-  'printf', 'fprintf', 'sprintf', 'snprintf', 'scanf', 'fscanf', 'sscanf',
-  'malloc', 'calloc', 'realloc', 'free',
-  'memcpy', 'memmove', 'memset', 'memcmp', 'memchr',
-  'strlen', 'strcpy', 'strncpy', 'strcat', 'strncat', 'strcmp', 'strncmp',
-  'strstr', 'strchr', 'strrchr', 'strtok', 'strdup',
-  'fopen', 'fclose', 'fread', 'fwrite', 'fgets', 'fputs', 'fputc', 'fgetc',
-  'feof', 'ferror', 'fflush', 'fseek', 'ftell', 'rewind',
-  'exit', 'abort', 'atexit', 'atoi', 'atol', 'atof', 'strtol', 'strtoul', 'strtod',
-  'qsort', 'bsearch',
-  'abs', 'labs', 'rand', 'srand',
-  'sin', 'cos', 'tan', 'sqrt', 'pow', 'log', 'log10', 'exp', 'ceil', 'floor', 'fabs',
-  'time', 'clock', 'difftime', 'mktime', 'localtime', 'gmtime', 'strftime', 'asctime',
-  'assert', 'errno',
-  'perror', 'remove', 'rename', 'tmpfile', 'tmpnam',
-  'getenv', 'system',
-  'signal', 'raise',
-  'setjmp', 'longjmp',
-  'va_start', 'va_end', 'va_arg', 'va_copy',
-  'NULL', 'EOF', 'BUFSIZ', 'FILENAME_MAX', 'RAND_MAX', 'EXIT_SUCCESS', 'EXIT_FAILURE',
-  'size_t', 'ptrdiff_t', 'wchar_t', 'intptr_t', 'uintptr_t',
-  'int8_t', 'int16_t', 'int32_t', 'int64_t',
-  'uint8_t', 'uint16_t', 'uint32_t', 'uint64_t',
-  'FILE',
-  // POSIX additions commonly seen
-  'stat', 'lstat', 'fstat', 'open', 'close', 'read', 'write', 'pipe',
-  'fork', 'exec', 'waitpid', 'getpid', 'getppid', 'kill', 'sleep', 'usleep',
-  'pthread_create', 'pthread_join', 'pthread_mutex_lock', 'pthread_mutex_unlock',
-  'dlopen', 'dlsym', 'dlclose',
-]);
-
-const CPP_BUILT_INS = new Set([
-  // iostream objects (often used without std:: prefix via using)
-  'cout', 'cin', 'cerr', 'clog', 'endl', 'flush', 'ws',
-  'std', // the namespace itself when used as std::something
-  // Common C++ keywords that leak as references
-  'nullptr', 'true', 'false', 'this', 'sizeof', 'alignof', 'typeid',
-  'static_cast', 'dynamic_cast', 'reinterpret_cast', 'const_cast',
-  'make_unique', 'make_shared', 'make_pair',
-  'move', 'forward', 'swap',
-]);
+// Built-in name tables live in ./js-builtins (K-v2 P5-1 / D7: upstream N
+// module skeleton — JS_BUILT_INS + TS_PRIMITIVE_TYPES consumed by BOTH
+// name-matcher and this file — unioned with the fork's multi-language
+// five-family sets).
 
 // Evidence-class ordering for cross-strategy arbitration: a higher rank wins
 // when several strategies produced a candidate for the same reference. This
@@ -183,11 +73,75 @@ const RESOLVER_RANK: Record<ResolvedRef['resolvedBy'], number> = {
   import: 6,
   'qualified-name': 5,
   'exact-match': 4,
+  // function_ref refs (#756) take a dedicated path in resolveOne and never
+  // reach cross-strategy arbitration in practice; ranked at exact-match tier
+  // (unique-or-drop exact-name evidence) so the Record stays exhaustive and
+  // any future arbitration involvement keeps exact-name strength.
+  'function-ref': 4,
   'instance-method': 3,
   'file-path': 2,
   framework: 1,
   fuzzy: 0,
 };
+
+// Call-receiver chain shape `<inner>().<method>` (upstream #1683/#645/#608
+// re-encoding). TS/JS/Python chains bypass the import strategy (the chain
+// names the ROOT's import, not the method's) and belong to the name-matcher's
+// store-accessor fallback.
+const CHAIN_SHAPE = /^(.+)\(\)\.(\w+)$/;
+
+// Kinds whose qualifiedName IS the class scope (a hook attributed to the
+// class body itself), used by resolveThisMemberFnRef (mirrors upstream
+// SUPERTYPE_BEARING_KINDS + 'module').
+const CLASS_SCOPE_KINDS = new Set<Node['kind']>([
+  'class', 'struct', 'interface', 'trait', 'protocol', 'enum', 'module',
+]);
+
+/**
+ * K-v2 P5-1 import-binding/re-export double-emission hygiene (P2 probe: a
+ * file that BOTH `import { X } from './y'` and `export { X } from './y'`
+ * emitted a binding ref AND a re-export ref — one dependency fact persisted
+ * as two file→symbol `imports` edges that only the line/col component of the
+ * edge identity index kept apart).
+ *
+ * A symbol-level `imports` edge is a file→symbol dependency FACT:
+ * multiplicity carries no graph information (dependents/impact walks traverse
+ * it once), so duplicates only inflate edge counts and double-count in
+ * edge-based metrics. Division of responsibility stays as EMITTED (binding
+ * refs cover local use, re-export refs cover barrel-only dependencies — a
+ * barrel that only re-exports still gets its edge); the collapse happens
+ * here, in the shared resolution layer, so BOTH extraction arms (wasm and
+ * kernel) converge without touching emission parity. file→file imports edges
+ * are already deduped by materializeFileLevelImportEdges (delete-then-insert
+ * + one edge per resolved source), and file→import-statement syntax edges
+ * target distinct per-statement nodes, so neither is affected.
+ *
+ * Deterministic keep-rule: lowest (line, column) wins — stable across
+ * reindexes. Documented consequence: the dropped occurrence's refName/line
+ * does not participate in edge resurrection (#1240); a full re-index re-emits
+ * every occurrence anyway, and resurrecting one occurrence suffices to
+ * re-resolve the dependency.
+ */
+function dedupeSymbolImportEdges(edges: Edge[]): Edge[] {
+  const keptIndex = new Map<string, number>();
+  const out: Edge[] = [];
+  for (const edge of edges) {
+    if (edge.kind !== 'imports') {
+      out.push(edge);
+      continue;
+    }
+    const key = `${edge.source}\u0000${edge.target}`;
+    const at = keptIndex.get(key);
+    if (at === undefined) {
+      keptIndex.set(key, out.length);
+      out.push(edge);
+      continue;
+    }
+    const rank = (e: Edge) => (e.line ?? 0) * 0x1000000 + (e.column ?? 0);
+    if (rank(edge) < rank(out[at]!)) out[at] = edge;
+  }
+  return out;
+}
 
 /**
  * Reference Resolver
@@ -204,6 +158,7 @@ export class ReferenceResolver {
   // codebases with 20k+ files (see issue: unbounded cache growth).
   private nodeCache: LRUCache<string, Node[]>; // per-file node cache
   private fileCache: LRUCache<string, string | null>; // per-file content cache
+  private linesCache: LRUCache<string, string[]>; // per-file split-lines cache (getFileLines)
   private importMappingCache: LRUCache<string, ImportMapping[]>;
   private reExportCache: LRUCache<string, ReExport[]>;
   private nameCache: LRUCache<string, Node[]>; // name → nodes cache
@@ -229,6 +184,7 @@ export class ReferenceResolver {
     const contentLimit = Math.max(64, Math.floor(limit / 5));
     this.nodeCache = new LRUCache(limit);
     this.fileCache = new LRUCache(contentLimit);
+    this.linesCache = new LRUCache(contentLimit);
     this.importMappingCache = new LRUCache(limit);
     this.reExportCache = new LRUCache(limit);
     this.nameCache = new LRUCache(limit);
@@ -307,6 +263,12 @@ export class ReferenceResolver {
     this.knownNames = null;
     this.knownFiles = null;
     this.cachesWarmed = false;
+    this.linesCache.clear();
+    // Source-derived name-matcher memos (sealed-module state, static-function
+    // reads, local-binding scans, store-binding eligibility, receiver
+    // declarations, import supplements) die with the file caches they were
+    // derived from (upstream clearNameMatcherMemos discipline).
+    clearNameMatcherMemos(this.context);
   }
 
   /**
@@ -453,6 +415,29 @@ export class ReferenceResolver {
 
       getCppIncludeDirs: () => {
         return loadCppIncludeDirs(this.projectRoot);
+      },
+
+      getFileLines: (filePath: string) => {
+        const cached = this.linesCache.get(filePath);
+        if (cached !== undefined) return cached;
+        // Shares the LRU file-content cache via readFile; the split result is
+        // memoized separately so line-oriented scans (sealed-module reads,
+        // bare-call shape checks, static-C detection) never re-split per ref.
+        const content = this.fileCache.has(filePath)
+          ? this.fileCache.get(filePath)
+          : this.context.readFile(filePath);
+        if (content === null || content === undefined) return [];
+        const lines = content.split('\n');
+        this.linesCache.set(filePath, lines);
+        return lines;
+      },
+
+      getNodeById: (id: string) => {
+        return this.queries.getNodeById(id) ?? undefined;
+      },
+
+      resolveImport: (r: UnresolvedRef) => {
+        return resolveViaImport(r, this.context);
       },
     };
   }
@@ -670,6 +655,35 @@ export class ReferenceResolver {
       return null;
     }
 
+    // Function-as-value refs (#756) get a dedicated, strictly-gated path:
+    // `this.<member>` values resolve ONLY against the enclosing class's own
+    // members; everything else tries import-based resolution first (an
+    // imported callback resolves through its import, the most precise
+    // cross-file signal), then matchFunctionRef (same-file first, unique-only
+    // cross-file, function/method targets only). They never reach the
+    // framework or fuzzy strategies below.
+    if (ref.referenceKind === 'function_ref') {
+      if (ref.referenceName.startsWith('this.')) {
+        return this.resolveThisMemberFnRef(ref);
+      }
+      const fnRefViaImport = resolveViaImport(ref, this.context);
+      if (fnRefViaImport) {
+        const target = this.queries.getNodeById(fnRefViaImport.targetNodeId);
+        if (
+          target &&
+          (target.kind === 'function' ||
+            target.kind === 'method' ||
+            // Python (#1478): an imported class used as a value (`return
+            // OrgSerializerFull`) resolves through its import like any
+            // callback — mirrors matchFunctionRef's bareClassOk.
+            (ref.language === 'python' && target.kind === 'class'))
+        ) {
+          return fnRefViaImport;
+        }
+      }
+      return matchFunctionRef(ref, this.context);
+    }
+
     // JVM FQN imports skip framework/name-matcher: `import com.example.Bar`
     // resolves directly through the qualifiedName index, which is unambiguous
     // even when several `Bar` classes exist in different packages.
@@ -689,6 +703,25 @@ export class ReferenceResolver {
       candidates.push(result);
     }
 
+    // A retained untyped qualified chain (`a.b.c`, 3+ segments) supplies
+    // effect/call-site evidence only. In particular, importing its root does
+    // not make the root its call target — nothing below may bind it.
+    if (isUnresolvedJsMemberCall(ref)) return null;
+
+    // A TS/JS/Python call-receiver chain (`useStore.getState().reset`, #1683)
+    // names the ROOT's import, not the method's: letting resolveViaImport see
+    // it binds the call to the imported store constant and the method is
+    // never looked up. The name-matcher owns the chain shape for these
+    // languages (store-accessor fallback or nothing) — the Java/Kotlin/C++
+    // chains keep their existing path below.
+    if (
+      ref.referenceKind === 'calls' &&
+      CHAIN_SHAPE.test(ref.referenceName) &&
+      (ref.language === 'typescript' || ref.language === 'javascript' || ref.language === 'tsx' || ref.language === 'jsx' || ref.language === 'python')
+    ) {
+      return matchReference(ref, this.context);
+    }
+
     // Strategy 2: Try import-based resolution
     const importResult = resolveViaImport(ref, this.context);
     if (importResult) {
@@ -700,7 +733,20 @@ export class ReferenceResolver {
     }
 
     // Strategy 3: Try name matching
-    const nameResult = matchReference(ref, this.context);
+    let nameResult = matchReference(ref, this.context);
+    if (nameResult) {
+      const target = this.queries.getNodeById(nameResult.targetNodeId);
+      // Post-pipeline visibility guard (K-v2 P5-1 / D8): a definition its
+      // language makes file-local — a C `static`, a Kotlin `private fun`, a
+      // Go unexported name in another package, a Rust non-`pub` item outside
+      // its module subtree, a binding in a sealed JS/TS module — cannot be
+      // what a name in another file means, whichever strategy chose it
+      // (upstream #1730/#1719). The rejection is FINAL: the reference stays
+      // unresolved rather than promoting another candidate.
+      if (target && !isVisibleAcrossFiles(target, ref, this.context)) {
+        nameResult = null;
+      }
+    }
     if (nameResult) {
       candidates.push(nameResult);
     }
@@ -735,11 +781,62 @@ export class ReferenceResolver {
   }
 
   /**
+   * Resolve a `this.<member>` function-as-value reference (#756/#808) to the
+   * ENCLOSING CLASS's own member — never a same-named symbol elsewhere. The
+   * registration idiom (`btn.on('click', this.handleClick)`) names a member of
+   * the class being defined, so the only valid target shares the from-symbol's
+   * qualified-name scope. Function/method targets only, same file required, no
+   * fallback of any kind.
+   *
+   * Scope-narrowed against upstream N: a member not found on the class itself
+   * stays unresolved here — N defers those to a second supertype pass
+   * (resolveDeferredThisMemberRefs, inherited-member walk over
+   * implements/extends edges) which the fork skeleton does not carry yet
+   * (pending-parent item in the K-v2 P5-1 report).
+   */
+  private resolveThisMemberFnRef(ref: UnresolvedRef): ResolvedRef | null {
+    const member = ref.referenceName.slice('this.'.length);
+    if (!member) return null;
+    const fromNode = this.queries.getNodeById(ref.fromNodeId);
+    if (!fromNode) return null;
+    // A hook declared at class-body level attributes to the CLASS node itself
+    // — its qualified name IS the scope. For members, strip the member segment.
+    let classPrefix: string;
+    if (CLASS_SCOPE_KINDS.has(fromNode.kind)) {
+      classPrefix = fromNode.qualifiedName;
+    } else {
+      const sep = fromNode.qualifiedName.lastIndexOf('::');
+      if (sep <= 0) return null; // not inside a class scope
+      classPrefix = fromNode.qualifiedName.slice(0, sep);
+    }
+    const candidates = this.context
+      .getNodesByQualifiedName(`${classPrefix}::${member}`)
+      .filter(
+        (n) =>
+          (n.kind === 'function' || n.kind === 'method') &&
+          n.filePath === ref.filePath &&
+          n.id !== ref.fromNodeId
+      );
+    if (candidates.length === 0) return null;
+    const target = candidates.reduce((a, b) => (a.startLine <= b.startLine ? a : b));
+    return {
+      original: ref,
+      targetNodeId: target.id,
+      resolvedBy: 'function-ref',
+    };
+  }
+
+  /**
    * Create edges from resolved references
    */
   createEdges(resolved: ResolvedRef[]): Edge[] {
-    return resolved.map((ref) => {
-      let kind = ref.original.referenceKind;
+    const edges = resolved.map((ref) => {
+      // `function_ref` (#756) is internal-only: it persists as a `references`
+      // edge (the registration site depends on the callback), distinguishable
+      // by metadata.fnRef. callers/impact already traverse `references`, so
+      // registration sites surface with no graph-layer changes.
+      let kind: Edge['kind'] =
+        ref.original.referenceKind === 'function_ref' ? 'references' : ref.original.referenceKind;
 
       // Promote "extends" to "implements" when a class/struct targets an interface
       if (kind === 'extends') {
@@ -776,17 +873,26 @@ export class ReferenceResolver {
         metadata: {
           resolvedBy: ref.resolvedBy,
           // The ORIGINAL reference text (and kind, when kind promotion above
-          // rewrote it). If this edge's target is later removed by a re-index,
-          // the edge is resurrected as exactly this ref and re-resolved
-          // (upstream #1240 removal case). Edges without refName (pre-existing,
-          // synthesized) are deliberately NOT resurrected: reconstructing from
-          // the target's plain name would strip receiver context and risk a
-          // rebind a full re-index would never make.
+          // rewrote it — calls→instantiates, extends→implements,
+          // function_ref→references). If this edge's target is later removed
+          // by a re-index, the edge is resurrected as exactly this ref and
+          // re-resolved (upstream #1240 removal case). Edges without refName
+          // (pre-existing, synthesized) are deliberately NOT resurrected:
+          // reconstructing from the target's plain name would strip receiver
+          // context and risk a rebind a full re-index would never make.
           refName: ref.original.referenceName,
           ...(ref.original.referenceKind !== kind ? { refKind: ref.original.referenceKind } : {}),
+          // Uniform marker for function-as-value edges (#756), regardless of
+          // which strategy resolved them (import vs matchFunctionRef) — lets
+          // tooling label "callback registration" and lets validation diff
+          // exactly the edges this feature added.
+          ...(ref.original.referenceKind === 'function_ref' ? { fnRef: true } : {}),
         },
       };
     });
+    // Import-binding/re-export double-emission hygiene (K-v2 P5-1) — see
+    // dedupeSymbolImportEdges for the adjudication and keep-rule.
+    return dedupeSymbolImportEdges(edges);
   }
 
   /**

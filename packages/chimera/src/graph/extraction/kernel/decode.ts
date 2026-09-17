@@ -13,10 +13,11 @@
  *   index-equality one — so wire rows are ALWAYS decoded through the
  *   kernel's own tables at production call sites; the fork tables only serve
  *   the subset check and tests that build synthetic fork-indexed buffers.
- * - FUNCTION_REF_CODE (200) rows are DROPPED: the fork's
- *   UnresolvedReference.referenceKind is EdgeKind, which has no 'function_ref'
- *   member (upstream ReferenceKind does). Re-enabling them needs a fork
- *   types.ts decision (plan §5 item F) — reported, not smuggled in here.
+ * - FUNCTION_REF_CODE (200) rows decode to referenceKind 'function_ref'
+ *   (K-v2 P5-1 flip): the fork's types.ts now carries the upstream
+ *   ReferenceKind union (EdgeKind | 'function_ref'), the resolver has the
+ *   matchFunctionRef consumer, and persistence maps function_ref to
+ *   'references' edges with metadata.fnRef — mirroring upstream decode.
  */
 
 import type {
@@ -27,6 +28,7 @@ import type {
   Language,
   Node,
   NodeKind,
+  ReferenceKind,
   UnresolvedReference,
 } from '../../types';
 import { NODE_KINDS } from '../../types';
@@ -165,11 +167,6 @@ export function decodeExtractBuffers(
   for (let i = 0; i < refCount; i++) {
     const row = buffers.refs.subarray(i * REF_ROW_SIZE, (i + 1) * REF_ROW_SIZE);
     const kindByte = row.readUInt8(REF.kind);
-    // Fork adaptation: 'function_ref' (wire code 200, upstream #756) has no
-    // fork ReferenceKind — drop the row instead of poisoning the store with an
-    // unknown kind string. See the file header; plan §5 item F tracks the
-    // types.ts decision that would let these flow through.
-    if (kindByte === FUNCTION_REF_CODE) continue;
     const fromIdx = row.readUInt32LE(REF.fromIdx);
     // No filePath/language on ordinary refs: the wasm extractors emit them
     // WITHOUT the denormalized fields (the store fills `ref.filePath ??
@@ -181,7 +178,13 @@ export function decodeExtractBuffers(
     const ref: UnresolvedReference = {
       fromNodeId: fromIdx === NONE ? str(arena, row, REF.fromIdStr)! : idByRow[fromIdx]!,
       referenceName: str(arena, row, REF.referenceName)!,
-      referenceKind: edgeKinds[kindByte] as EdgeKind,
+      // K-v2 P5-1: wire code 200 decodes to the internal-only 'function_ref'
+      // (upstream #756) instead of being dropped — the fork now carries the
+      // ReferenceKind union and the matchFunctionRef consumer.
+      referenceKind:
+        kindByte === FUNCTION_REF_CODE
+          ? 'function_ref'
+          : (edgeKinds[kindByte] as ReferenceKind),
       line: row.readUInt32LE(REF.line),
       column: row.readUInt32LE(REF.column),
     };

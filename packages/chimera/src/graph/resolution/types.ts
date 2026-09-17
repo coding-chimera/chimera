@@ -4,7 +4,7 @@
  * Types for the reference resolution system.
  */
 
-import { EdgeKind, Language, Node } from '../types';
+import { Language, Node, ReferenceKind } from '../types';
 
 /**
  * An unresolved reference from extraction
@@ -15,8 +15,9 @@ export interface UnresolvedRef {
   fromNodeId: string;
   /** The name being referenced */
   referenceName: string;
-  /** Type of reference */
-  referenceKind: EdgeKind;
+  /** Type of reference (EdgeKind, plus the internal-only 'function_ref' —
+   *  a function name used as a VALUE, #756; never persisted as an edge kind). */
+  referenceKind: ReferenceKind;
   /** Line where reference occurs */
   line: number;
   /** Column where reference occurs */
@@ -43,7 +44,7 @@ export interface ResolvedRef {
    *  `confidence >= 0.9` threshold. */
   authoritative?: boolean;
   /** How it was resolved */
-  resolvedBy: 'exact-match' | 'import' | 'qualified-name' | 'framework' | 'fuzzy' | 'instance-method' | 'file-path';
+  resolvedBy: 'exact-match' | 'import' | 'qualified-name' | 'framework' | 'fuzzy' | 'instance-method' | 'file-path' | 'function-ref';
 }
 
 /**
@@ -126,6 +127,24 @@ export interface ResolutionContext {
    * relative resolution fails. Optional so existing callers compile.
    */
   getCppIncludeDirs?(): string[];
+  /**
+   * Per-file line array for line-oriented source scans (sealed-module,
+   * static-C-function, bare-call shape reads). Optional — callers fall back
+   * to readFile + split when absent.
+   */
+  getFileLines?(filePath: string): string[];
+  /**
+   * Node lookup by id. Used by the owner-scoped self/this member resolvers
+   * (#1496/#1585/#1861), the function_ref path, and the store-accessor
+   * holder lookup (#1683) to read the CALLING symbol's qualified name.
+   */
+  getNodeById?(id: string): Node | undefined;
+  /**
+   * Import-evidence resolution for a synthetic ref (store-holder lookup
+   * #1683). The production resolver wires this to resolveViaImport; optional
+   * so test fixtures and external contexts compile without it.
+   */
+  resolveImport?(ref: UnresolvedRef): ResolvedRef | null;
 }
 
 /**
