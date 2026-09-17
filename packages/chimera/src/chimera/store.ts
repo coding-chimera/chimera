@@ -1630,7 +1630,7 @@ export async function readActiveEditIntentClaims(
     }
     params.push(limit)
     const rows = db
-      .prepare(`SELECT * FROM chimera_edit_intent_claim WHERE ${where.join(" AND ")} ORDER BY created_at ASC, id ASC, file_path ASC LIMIT ?`)
+      .prepare(`SELECT * FROM chimera_edit_intent_claim WHERE ${where.join(" AND ")} ORDER BY created_at ASC, rowid ASC LIMIT ?`)
       .all(...params) as EditIntentClaimRow[]
     return rows.map(editIntentClaimRecord)
   })

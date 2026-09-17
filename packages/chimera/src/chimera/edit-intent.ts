@@ -135,16 +135,22 @@ function earliestHolders(claims: EditIntentClaimRecord[]) {
  * First-come-first-served queue fairness: a foreign claim blocks the checking
  * session only when it outranks that session's own earliest claim on the file.
  * The front of the queue (or a session without any foreign competition) never
- * blocks, so a later predesign can not lock out an earlier holder. Claims
- * arrive created_at ASC; same-millisecond ties break deterministically on id.
+ * blocks, so a later predesign can not lock out an earlier holder.
+ *
+ * Claims arrive in registration order (`created_at` ASC, then SQLite `rowid`
+ * ASC), so the array index is the authoritative queue rank. A timestamp-only
+ * tie must not fall back to the claim id: predesign ids are arbitrary strings,
+ * so a later declaration whose id happens to sort lower would otherwise steal
+ * the queue front and hide the real holder.
  */
 function queueConflicts(claims: EditIntentClaimRecord[], sessionID: string) {
+  const arrivalRank = new Map(claims.map((claim, index) => [claim, index]))
   const own = earliestHolders(claims.filter((claim) => claim.sessionID === sessionID))
   const foreign = earliestHolders(claims.filter((claim) => claim.sessionID !== sessionID))
   const conflicts: EditIntentConflict[] = []
   for (const [filePath, holder] of foreign) {
     const mine = own.get(filePath)
-    const mineFirst = mine !== undefined && (mine.createdAt < holder.createdAt || (mine.createdAt === holder.createdAt && mine.id < holder.id))
+    const mineFirst = mine !== undefined && arrivalRank.get(mine)! < arrivalRank.get(holder)!
     if (mineFirst) continue
     conflicts.push(conflictFrom(holder, mine !== undefined))
   }
@@ -535,7 +541,9 @@ export const contextLines = Effect.fn("EditIntentClaims.contextLines")(function*
   // release inject is in flight) — they render nothing here.
   const blocked = waiters.filter((waiter) => currentHolders.has(waiter.filePath))
   if (own.length === 0 && blocked.length === 0) return [] as string[]
-  const ownFiles = uniquePaths(own.map((claim) => claim.filePath))
+  // Display order is alphabetical so the line is stable regardless of claim
+  // read order (which follows registration order for queue fairness).
+  const ownFiles = uniquePaths(own.map((claim) => claim.filePath)).sort()
   const ownShown = ownFiles.slice(0, MAX_CONTEXT_FILES)
   const ownOmitted = ownFiles.length - ownShown.length
   return [
