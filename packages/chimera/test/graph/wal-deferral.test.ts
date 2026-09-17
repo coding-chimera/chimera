@@ -18,7 +18,7 @@ import { describe, it, expect, beforeEach, afterEach, spyOn } from './vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { DatabaseConnection } from '../../src/graph/db';
+import { DatabaseConnection, WAL_HEAL_THRESHOLD_BYTES, resolveWalHealBytes } from '../../src/graph/db';
 import { WalCheckpointValve, resolveWalValveMb } from '../../src/graph/db/wal-valve';
 import CodeGraph from '../../src/graph';
 import type { IndexResult } from '../../src/graph/extraction';
@@ -385,6 +385,88 @@ describe('indexAll WAL deferral end-to-end', () => {
       indexAll.mockRestore();
       checkpoint.mockRestore();
       await cg.close();
+    }
+  });
+});
+
+describe('WAL heal at open (upstream 02c0e2c, #1431)', () => {
+  it('resolveWalHealBytes honors the MB override and falls back to 64MB', () => {
+    expect(resolveWalHealBytes('32')).toBe(32 * 1024 * 1024);
+    expect(resolveWalHealBytes('32.9')).toBe(Math.floor(32.9 * 1024 * 1024));
+    expect(resolveWalHealBytes('0')).toBe(64 * 1024 * 1024);
+    expect(resolveWalHealBytes('-5')).toBe(64 * 1024 * 1024);
+    expect(resolveWalHealBytes('abc')).toBe(64 * 1024 * 1024);
+    expect(resolveWalHealBytes('')).toBe(64 * 1024 * 1024);
+    expect(resolveWalHealBytes(undefined)).toBe(64 * 1024 * 1024);
+    expect(WAL_HEAL_THRESHOLD_BYTES).toBe(resolveWalHealBytes(process.env.CODEGRAPH_WAL_HEAL_MB));
+  });
+
+  it('clips resetting checkpoints via journal_size_limit on writable connections', () => {
+    const db = openDb();
+    const limit = db.getDb().pragma('journal_size_limit', { simple: true });
+    expect(limit).toBe(WAL_HEAL_THRESHOLD_BYTES);
+    db.close();
+  });
+
+  it('heals an oversized leftover WAL below the threshold', async () => {
+    const db = openDb();
+    db.setWalAutocheckpoint(0);
+    writeRows(db, 500); // ~2MB WAL — past the 1MB test threshold
+    const before = db.getWalSizeBytes();
+    expect(before).toBeGreaterThan(1024 * 1024);
+    const res = await db.healOversizedWal(1024 * 1024);
+    expect(res.healed).toBe(true);
+    expect(res.beforeBytes).toBe(before);
+    expect(res.afterBytes).toBeLessThanOrEqual(1024 * 1024);
+    expect(db.getWalSizeBytes()).toBeLessThanOrEqual(1024 * 1024);
+    db.close();
+  });
+
+  it('is a statSync no-op when the WAL is healthy', async () => {
+    const db = openDb();
+    db.setWalAutocheckpoint(0);
+    writeRows(db, 5);
+    const passive = spyOn(db, 'checkpointWalPassive');
+    const res = await db.healOversizedWal(); // default 64MB threshold
+    expect(res.healed).toBe(false);
+    expect(res.afterBytes).toBe(res.beforeBytes);
+    expect(passive).not.toHaveBeenCalled();
+    passive.mockRestore();
+    db.close();
+  });
+
+  it('single-flights concurrent heals into one checkpoint pass', async () => {
+    const db = openDb();
+    db.setWalAutocheckpoint(0);
+    writeRows(db, 500);
+    const passive = spyOn(db, 'checkpointWalPassive');
+    const [a, b] = await Promise.all([
+      db.healOversizedWal(1024 * 1024),
+      db.healOversizedWal(1024 * 1024),
+    ]);
+    expect(a).toBe(b); // same shared in-flight pass, not two racing heals
+    // Idle DB: the first PASSIVE+TRUNCATE pair lands under the threshold, so
+    // the bounded retry loop runs exactly one pass.
+    expect(passive).toHaveBeenCalledTimes(1);
+    passive.mockRestore();
+    db.close();
+  });
+
+  it('open() fires the heal for writable opens and never for read-only opens', () => {
+    const dbPath = path.join(tmpDir, 'test.db');
+    DatabaseConnection.initialize(dbPath).close();
+    const heal = spyOn(DatabaseConnection.prototype, 'healOversizedWal').mockImplementation(
+      async () => ({ healed: false, beforeBytes: 0, afterBytes: 0 })
+    );
+    try {
+      const ro = DatabaseConnection.open(dbPath, { readOnly: true });
+      expect(heal).not.toHaveBeenCalled();
+      ro.close();
+      const rw = DatabaseConnection.open(dbPath);
+      expect(heal).toHaveBeenCalledTimes(1);
+      rw.close();
+    } finally {
+      heal.mockRestore();
     }
   });
 });
