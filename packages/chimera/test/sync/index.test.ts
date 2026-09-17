@@ -428,6 +428,44 @@ describe("SyncEvent derived events", () => {
     ),
   )
 
+  // The derived session.updated is built from deriveEvent's post-commit row
+  // read, and convertEvent reuses that projection instead of reading the same
+  // row a second time (which also re-parsed summary_diffs, up to 1MB of JSON).
+  // The observable contract is unchanged: the bus event carries complete info.
+  it.live("derived session.updated bus payload carries the complete session info", () =>
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const svc = yield* Session.Service
+        const sync = yield* SyncEvent.Service
+        const info = yield* svc.create({ title: "derived-title" })
+        const captured = capture()
+        try {
+          yield* sync.run(Session.Event.PermissionSlot, {
+            sessionID: info.id,
+            rules: slotRules,
+            timestamp: 1234,
+          })
+          yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 0)))
+
+          const updated = captured.busEvents.find((event) => event.type === "session.updated") as
+            | { properties: { sessionID: string; info: Session.Info } }
+            | undefined
+          expect(updated?.properties.sessionID).toBe(info.id)
+          expect(updated?.properties.info).toMatchObject({
+            id: info.id,
+            title: "derived-title",
+            projectID: info.projectID,
+            directory: info.directory,
+            permission: slotRules,
+          })
+          expect(updated?.properties.info.time.created).toBe(info.time.created)
+        } finally {
+          captured.dispose()
+        }
+      }).pipe(Effect.provide(sessionLayers)),
+    ),
+  )
+
   it.live("replay with publish emits the same main and derived events", () =>
     provideTmpdirInstance(() =>
       Effect.gen(function* () {
