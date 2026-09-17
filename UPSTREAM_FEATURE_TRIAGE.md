@@ -342,3 +342,9 @@ L5 seam 条款：P1 把后台语义隔离在"引擎服务 + task 工具分支"�
 ### 11.7 来源与 API 用量
 
 GitHub API 实耗 **9/12** 次（`23ec4f55c8` `bec9ee41af` `199a4cdbea` `0b082b065d` `02a167e048` `500c46ec79` `ac1758c0e6` `7c2199d84a` `a9a6fad0fa`，响应已归档 `/var/folders/…/chimera/upstream-drift/detail-*.json`）；其余 13 条取自本地只读镜像 git show（12 条）与既有归档（`5cd8e68fdd`/`55c54d14b8` 等 6 份 detail）。fork 证据全部为本地只读 grep/read，未改任何代码文件。
+
+## 12. F2 执行修正（2026-09-17，镜像实锤，防后续批次重拾）
+
+- §4②及计划书 F2 行中的 `921b1c6a34`“MCP SDK v2 升级”：已被上游 `982a9044c5`（13h 后）整体回滚——终态=`sdk@1.29.0`+629 行 patch，**不是** `client@2.x`；F2 已按终态移植（commit `44bafa40c`）。
+- `a131811cdc`“mcp__ 命名约定（契约变更）”：已被上游 `947e0017f5`（11h 后）回滚；上游 HEAD `catalog.toolName` 与 fork 现状逐字相同（`<server>_<tool>`）。**此条从一切待办清单删除**，其“permission 通配/prompt 引用/TUI 显示须同批”告警随之失效；强行落地会静默破坏用户既有 permission 规则（实测影响面 6 处）。
+- F2 完成详情与 29 条 fix 对账表见计划书「F2 完成记录」节。
