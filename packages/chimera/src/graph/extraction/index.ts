@@ -800,6 +800,22 @@ export class ExtractionOrchestrator {
   }
 
   /**
+   * Remove a tracked file's graph data as ONE transaction, resurrecting its
+   * incoming cross-file edges as pending refs first (upstream #1240 removal
+   * case; atomic per the 58c07e874 rule). The ordering alone already prevents
+   * LOSING refs on a crash (the resurrect lands before the cascade), but a
+   * failure between the two used to leave resurrected refs whose edges also
+   * survived — a later rebind could then keep both rows, turning drift into
+   * duplication. One transaction makes the pair all-or-nothing.
+   */
+  private removeFileResurrectingRefs(filePath: string): void {
+    this.queries.transaction(() => {
+      this.resurrectIncomingRefs(filePath);
+      this.queries.deleteFile(filePath);
+    });
+  }
+
+  /**
    * Build a filesystem-backed ResolutionContext sufficient for framework
    * detection. Graph-query methods (getNodesByName etc.) return empty because
    * the DB hasn't been populated yet, but detect() only uses readFile,
@@ -1452,8 +1468,7 @@ export class ExtractionOrchestrator {
 
       if (!fs.existsSync(fullPath)) {
         if (tracked) {
-        this.resurrectIncomingRefs(filePath);
-        this.queries.deleteFile(filePath);
+          this.removeFileResurrectingRefs(filePath);
           changedFilePaths.push(filePath);
           changedFiles.push({ path: filePath, status: 'removed' });
           filesRemoved++;
@@ -1463,8 +1478,7 @@ export class ExtractionOrchestrator {
 
       if (!isSourceFile(filePath)) {
         if (tracked) {
-        this.resurrectIncomingRefs(filePath);
-        this.queries.deleteFile(filePath);
+          this.removeFileResurrectingRefs(filePath);
           changedFilePaths.push(filePath);
           changedFiles.push({ path: filePath, status: 'removed' });
           filesRemoved++;
@@ -1678,9 +1692,33 @@ export class ExtractionOrchestrator {
   }
 
   /**
-   * Store extraction result in database
+   * Store extraction result in database — as ONE atomic transaction (fork
+   * adaptation of upstream 58c07e874, #1833: make edge rebinding atomic).
+   *
+   * The store is a rebind: deleteFile cascades away this file's nodes AND
+   * every edge targeting them, and the snapshot re-attach/resurrect below is
+   * what puts the cross-file edges back. A crash between the delete and the
+   * re-insert used to lose those edges permanently — the next run's snapshot
+   * comes back empty (the rows are already gone) and the caller files are
+   * never revisited. One transaction makes the whole unit all-or-nothing:
+   * any failure rolls back to the pre-store state, which also makes the
+   * commitExtractionResult BUSY retry replay against a clean slate instead
+   * of a partially-committed one.
    */
   private storeExtractionResult(
+    filePath: string,
+    content: string,
+    language: Language,
+    stats: fs.Stats,
+    result: ExtractionResult
+  ): void {
+    this.queries.transaction(() => {
+      this.storeExtractionResultTxn(filePath, content, language, stats, result);
+    });
+  }
+
+  /** Transaction body of {@link storeExtractionResult}. */
+  private storeExtractionResultTxn(
     filePath: string,
     content: string,
     language: Language,
@@ -1847,8 +1885,7 @@ export class ExtractionOrchestrator {
         // removal case): the callers live in files this sync will not
         // revisit, so this is their only chance to rebind — or to park as
         // failed until the symbol reappears.
-        this.resurrectIncomingRefs(tracked.path);
-        this.queries.deleteFile(tracked.path);
+        this.removeFileResurrectingRefs(tracked.path);
         changedFilePaths.push(tracked.path);
         changedFiles.push({ path: tracked.path, status: 'removed' });
         filesRemoved++;

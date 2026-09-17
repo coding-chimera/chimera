@@ -384,6 +384,18 @@ export class QueryBuilder {
     this.db = db;
   }
 
+  /**
+   * Run a unit of work as ONE atomic transaction. Nested calls JOIN the
+   * outer transaction (the sqlite adapters track transaction depth), so
+   * composed query-layer helpers (insertNodes / insertEdges / deleteFile /
+   * insertUnresolvedRefsBatch …) stay atomic together — the fork adaptation
+   * of upstream 58c07e874's replace-in-one-transaction rule: a failure
+   * anywhere in the unit rolls ALL of it back.
+   */
+  transaction<T>(fn: () => T): T {
+    return this.db.transaction(fn)();
+  }
+
   // ===========================================================================
   // Node Operations
   // ===========================================================================
