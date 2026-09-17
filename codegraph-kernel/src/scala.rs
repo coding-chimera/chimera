@@ -92,16 +92,6 @@ fn is_scala_builtin(name: &str) -> bool {
     )
 }
 
-/// extractScalaReturnType's simple-name gate (`/^[A-Za-z_]\w*$/`).
-fn simple_type_name_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[A-Za-z_]\w*$").unwrap())
-}
-/// extractScalaReturnType's generic-args strip (`/\[[^\]]*\]/g`).
-fn bracket_args_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"\[[^\]]*\]").unwrap())
-}
 /// Static-member receiver gate (`/^[A-Z][A-Za-z0-9_]*$/`).
 fn cap_ident_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -117,6 +107,10 @@ fn ws_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"\s+").unwrap())
 }
+
+/// RETURN_TYPE_MAX_LENGTH (tree-sitter.ts) — stored RAW return-type text cap
+/// (the fork returnTypeText budget; same value as the tsjs module's).
+const RETURN_TYPE_MAX_LENGTH: usize = 200;
 
 struct Scope {
     row: u32,
@@ -453,20 +447,28 @@ impl<'t> Walker<'t> {
         }
     }
 
-    /// extractScalaReturnType (scala.ts:56-67).
+    /// Fork RAW returnType wire field (tree-sitter.ts returnTypeNode +
+    /// returnTypeText — K-v2 P4 realignment). Upstream N put the #750
+    /// getReturnType BARE last-segment shape (extractScalaReturnType) on the
+    /// wire here because upstream wasm emits no Node.returnType at all; the
+    /// fork's Node.returnType IS the RAW annotation text (no language gate;
+    /// the MMS/MCC signature audit keeps generics/qualified types and the TS
+    /// resolver classifies the shape — the fork's chain/receiver machinery
+    /// lives in the resolution layer and reads the RAW text). Parity
+    /// canonical = the fork wasm arm, so the wire mirrors returnTypeText:
+    /// trimmed raw text, leading colon stripped (a no-op for the scala
+    /// grammar), RETURN_TYPE_MAX_LENGTH UTF-16 cap, empty → None. The bare-
+    /// shape strip (extractScalaReturnType) stays wasm-side as the
+    /// getReturnType hook only. Fork deviation from the N kernel, recorded
+    /// in the same class as the tsjs D5 builtin table.
     fn return_type_of(&self, node: Node<'t>) -> Option<String> {
         let rt = node.child_by_field_name("return_type")?;
         let raw = self.text(rt).trim();
-        if raw.starts_with("this.") {
+        let stripped = raw.strip_prefix(':').map(|s| s.trim_start()).unwrap_or(raw);
+        if stripped.is_empty() {
             return None;
         }
-        let base = bracket_args_re().replace_all(raw, "");
-        let base = ws_re().replace_all(&base, "");
-        let last = base.split('.').next_back()?;
-        if last.is_empty() || !simple_type_name_re().is_match(last) {
-            return None;
-        }
-        Some(last.to_string())
+        Some(util::slice_utf16(stripped, RETURN_TYPE_MAX_LENGTH).0)
     }
 
     /// scalaBaseTypeName (tree-sitter.ts:201-224).
