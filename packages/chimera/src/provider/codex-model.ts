@@ -91,10 +91,23 @@ export function smallReasoningEffort(capabilityID: string, configured?: readonly
   return efforts.find((effort) => effort !== "ultra")
 }
 
+// The version fallback regex is unanchored (upstream terminal state): unknown
+// suffixed variants of allowed generations (e.g. gpt-6.0-astra) pass, matching
+// upstream. The fork's previous `$` anchor doubled as the only gate keeping
+// paid-API-only suffixed variants (gpt-5.5-pro) out of Codex OAuth; upstream
+// excludes those through an explicit DISALLOWED_MODELS set instead, so that
+// guard is ported alongside the regex to preserve the pinned exclusion.
+const DISALLOWED_MODELS = new Set(["gpt-5.5-pro"])
+
 export function isOAuthModel(value: string) {
   if (capabilityModelID(value)) return true
-  const match = modelID(value).match(/^gpt-(\d+\.\d+)$/)
-  return match ? parseFloat(match[1]) > 5.4 : false
+  const id = modelID(value)
+  if (DISALLOWED_MODELS.has(id)) return false
+  const match = id.match(/^gpt-(\d+)(?:\.(\d+))?/)
+  if (!match) return false
+  const major = Number(match[1])
+  const minor = Number(match[2] ?? 0)
+  return major > 5 || (major === 5 && minor > 4)
 }
 
 export function limit(value: string) {
