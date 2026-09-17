@@ -529,3 +529,76 @@ describe("Bedrock Mantle", () => {
     }
   })
 })
+
+// Port of upstream ac1758c0e6 test coverage: bare non-r1 DeepSeek ids must not
+// get a cross-region prefix, r1 ids keep the us. prefixing, and arn: model
+// references pass through untouched.
+describe("Bedrock DeepSeek model id preservation", () => {
+  const bedrockModelConfig = {
+    limit: { context: 128_000, output: 64_000 },
+    modalities: {
+      input: ["text"] as Array<"text">,
+      output: ["text"] as Array<"text">,
+    },
+  }
+
+  const run = <A, E>(fn: (provider: Provider.Interface) => Effect.Effect<A, E, never>) =>
+    AppRuntime.runPromise(
+      Effect.gen(function* () {
+        const provider = yield* Provider.Service
+        return yield* fn(provider)
+      }),
+    )
+
+  const languageModelID = async (id: string) => {
+    const model = await run((provider) => provider.getModel(ProviderID.amazonBedrock, ModelID.make(id)))
+    const language = await run((provider) => provider.getLanguage(model))
+    return (language as { modelId: string }).modelId
+  }
+
+  test("Bedrock: preserves explicit DeepSeek model identifiers", async () => {
+    const originalBearer = process.env.AWS_BEARER_TOKEN_BEDROCK
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Filesystem.write(
+          path.join(dir, "chimera.json"),
+          JSON.stringify({
+            $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+            provider: {
+              "amazon-bedrock": {
+                options: { region: "us-east-1" },
+                models: {
+                  "deepseek.v3.2": { ...bedrockModelConfig, name: "DeepSeek V3.2" },
+                  "deepseek.r1-v1:0": { ...bedrockModelConfig, name: "DeepSeek R1" },
+                  "us.deepseek.r1-v1:0": { ...bedrockModelConfig, name: "DeepSeek R1 US" },
+                  "deepseek-v3-2-arn": {
+                    ...bedrockModelConfig,
+                    id: "arn:aws:bedrock:us-east-1::foundation-model/deepseek.v3.2",
+                    name: "DeepSeek V3.2 ARN",
+                  },
+                },
+              },
+            },
+          }),
+        )
+      },
+    })
+    try {
+      process.env.AWS_BEARER_TOKEN_BEDROCK = "test-bearer-token"
+      await WithInstance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          expect(await languageModelID("deepseek.v3.2")).toBe("deepseek.v3.2")
+          expect(await languageModelID("deepseek.r1-v1:0")).toBe("us.deepseek.r1-v1:0")
+          expect(await languageModelID("us.deepseek.r1-v1:0")).toBe("us.deepseek.r1-v1:0")
+          expect(await languageModelID("deepseek-v3-2-arn")).toBe(
+            "arn:aws:bedrock:us-east-1::foundation-model/deepseek.v3.2",
+          )
+        },
+      })
+    } finally {
+      if (originalBearer === undefined) delete process.env.AWS_BEARER_TOKEN_BEDROCK
+      else process.env.AWS_BEARER_TOKEN_BEDROCK = originalBearer
+    }
+  })
+})
