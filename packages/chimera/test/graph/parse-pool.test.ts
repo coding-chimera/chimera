@@ -116,12 +116,18 @@ describe('resolveParsePoolSize', () => {
     expect(resolveParsePoolSize('4', 8)).toBe(4);
     expect(resolveParsePoolSize('999', 8)).toBe(16);
   });
-  it('defaults to clamp(cores-1, 1, 8) when unset/blank/non-numeric', () => {
+  it('defaults to clamp(cores-1, 2, 8) when unset/blank/non-numeric', () => {
     expect(resolveParsePoolSize(undefined, 8)).toBe(7);
     expect(resolveParsePoolSize('', 8)).toBe(7);
     expect(resolveParsePoolSize('abc', 8)).toBe(7);
-    expect(resolveParsePoolSize(undefined, 1)).toBe(1);   // never zero
-    expect(resolveParsePoolSize(undefined, 2)).toBe(1);   // leave a core
+    // Floor of 2 (upstream ca88d3b#4): ONE parse worker on a 2-CPU cpuset
+    // measured 34% slower than two — the main thread's store work doesn't
+    // fill the second core. The explicit CODEGRAPH_PARSE_WORKERS=1 rollback
+    // above still yields a single worker.
+    expect(resolveParsePoolSize(undefined, 1)).toBe(2);
+    expect(resolveParsePoolSize(undefined, 2)).toBe(2);
+    expect(resolveParsePoolSize(undefined, 3)).toBe(2);
+    expect(resolveParsePoolSize(undefined, 4)).toBe(3);
     expect(resolveParsePoolSize(undefined, 64)).toBe(8);  // never above the default cap
   });
 });
