@@ -21,6 +21,10 @@ use tree_sitter::{Node, Parser};
 
 const MAX_VALUE_REF_NODES: usize = 20_000;
 
+/// RETURN_TYPE_MAX_LENGTH (tree-sitter.ts) — stored RAW return-type text cap
+/// (the fork returnTypeText budget; same value as the tsjs/scala modules').
+const RETURN_TYPE_MAX_LENGTH: usize = 200;
+
 struct Scope {
     row: u32,
     kind: &'static str,
@@ -33,6 +37,7 @@ struct Extra {
     signature: Option<String>,
     is_async: Option<bool>,
     is_static: Option<bool>,
+    return_type: Option<String>,
 }
 
 struct ValueScope<'t> {
@@ -217,6 +222,7 @@ impl<'t> Walker<'t> {
         let id_ref = self.arena.put(&id);
         let doc_ref = opt_str(&mut self.arena, extra.docstring.as_deref());
         let sig_ref = opt_str(&mut self.arena, extra.signature.as_deref());
+        let ret_ref = opt_str(&mut self.arena, extra.return_type.as_deref());
         let row = self.tables.push_node(&NodeRow {
             kind: node_kind_index(kind).unwrap(),
             visibility: 0,
@@ -232,7 +238,7 @@ impl<'t> Walker<'t> {
             signature: sig_ref,
             decorators: NONE_STR,
             type_parameters: NONE_STR,
-            return_type: NONE_STR,
+            return_type: ret_ref,
             extra_json: NONE_STR,
         });
         self.node_ids.push(id);
@@ -392,6 +398,27 @@ impl<'t> Walker<'t> {
 
     // --- extractors --------------------------------------------------------------
 
+    /// Fork RAW returnType wire field (tree-sitter.ts returnTypeNode +
+    /// returnTypeText — K-v2 P5-2 realignment, same class as the P4 scala
+    /// fix). Upstream N emitted NO python return_type on the wire (upstream
+    /// wasm feeds Node.returnType from a getReturnType hook python.ts does
+    /// not declare); the fork's Node.returnType IS the RAW annotation text
+    /// (returnField 'return_type', no language gate — `-> Tuple[int, ...]`
+    /// reaches the wire verbatim). Parity canonical = the fork wasm arm:
+    /// trimmed raw field text, leading colon stripped (a no-op for the
+    /// python grammar — the field excludes `->`), RETURN_TYPE_MAX_LENGTH
+    /// UTF-16 cap, empty → None. Fork deviation from the N kernel —
+    /// upstream-feedback candidate.
+    fn return_type_of(&self, node: Node<'t>) -> Option<String> {
+        let rt = node.child_by_field_name("return_type")?;
+        let raw = self.text(rt).trim();
+        let stripped = raw.strip_prefix(':').map(|s| s.trim_start()).unwrap_or(raw);
+        if stripped.is_empty() {
+            return None;
+        }
+        Some(util::slice_utf16(stripped, RETURN_TYPE_MAX_LENGTH).0)
+    }
+
     fn extract_function(&mut self, node: Node<'t>) {
         stack_guard!();
         let name = self.extract_name(node);
@@ -406,6 +433,7 @@ impl<'t> Walker<'t> {
             signature: self.signature_of(node),
             is_async: Some(self.is_async(node)),
             is_static: Some(self.is_static(node)),
+            return_type: self.return_type_of(node),
         };
         let Some(row) = self.create_node("function", &name, node, extra) else { return };
         // (python is not a TYPE_ANNOTATION language — no type refs)
@@ -425,6 +453,7 @@ impl<'t> Walker<'t> {
             signature: self.signature_of(node),
             is_async: Some(self.is_async(node)),
             is_static: Some(self.is_static(node)),
+            return_type: self.return_type_of(node),
         };
         let Some(row) = self.create_node("method", &name, node, extra) else { return };
         self.extract_decorators_for(node, row);

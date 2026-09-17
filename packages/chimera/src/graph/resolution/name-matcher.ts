@@ -881,10 +881,42 @@ function cppLastSegment(name: string): string {
 }
 
 /**
+ * Reduce a RAW returnType wire value (the fork's returnTypeText — K-v2 P5-2
+ * realignment moved the upstream N bare-shape reduction from the extraction
+ * wire to here) to the simple class name a chained-call receiver can be
+ * validated on, or null when the shape names no bindable class:
+ * - self markers: rust `Self`, php `self`/`static` → 'self' (the scoped-chain
+ *   matcher resolves the marker to the factory's own class, N semantics);
+ * - rust lifetimes (`'a`), pointer/reference sigils, `const`/`mut` qualifiers
+ *   and go's leading `*` are stripped (`*Target` → Target, `&'a mut Foo` → Foo);
+ * - non-nested generic args are stripped (the N bare-shape quirk class:
+ *   `Vec<u8>` → Vec, `Task<List<Foo>>` → unbindable), swift optional `?` and
+ *   csharp trailing nullables drop;
+ * - the last `::`/`.`-qualified segment wins (`ns.Foo` → Foo);
+ * - anything that is not a plain identifier afterwards (go multi-result
+ *   `(string, error)`, tuples, fn types) yields null — the chain simply does
+ *   not bind, and resolveMethodOnType stays the final safety net.
+ */
+function chainReceiverTypeName(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  let t = raw.trim();
+  if (!t) return null;
+  if (t === 'Self' || t === 'self' || t === 'static') return 'self';
+  t = t.replace(/'\w+\s*/g, ''); // rust lifetimes
+  t = t.replace(/^(?:const\s+)?(?:mut\s+)?[*&\s]+/, '');
+  t = t.replace(/<[^<>]*>/g, '').replace(/\?+\s*$/, '').trim();
+  const seg = t.split(/::|\./).filter(Boolean).pop();
+  if (!seg || !/^[A-Za-z_]\w*$/.test(seg)) return null;
+  return seg;
+}
+
+/**
  * Return type captured at extraction for `Class::method` (or a free function),
  * read off the indexed node's `returnType` — used by the C++ (#645) and PHP
  * (#608) chained-call resolvers. Language-filtered. Null when not indexed or
- * no return type was recorded (a `void`/primitive return).
+ * no return type was recorded (a `void`/primitive return). The fork wire
+ * carries the RAW annotation text, so the value passes through
+ * chainReceiverTypeName before the chain matchers validate on it.
  */
 function lookupCalleeReturnType(
   callee: string,
@@ -916,9 +948,9 @@ function lookupCalleeReturnType(
         n.qualifiedName.endsWith(`::${want}`) ||
         want.endsWith(`::${n.qualifiedName}`),
     );
-    return m?.returnType ?? null;
+    return chainReceiverTypeName(m?.returnType);
   }
-  return candidates.find((n) => n.kind === 'function')?.returnType ?? null;
+  return chainReceiverTypeName(candidates.find((n) => n.kind === 'function')?.returnType);
 }
 
 /** Does the graph contain an aggregate type named `name`'s last segment? */

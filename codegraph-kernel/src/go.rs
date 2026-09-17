@@ -26,25 +26,17 @@ use tree_sitter::{Node, Parser};
 
 const MAX_VALUE_REF_NODES: usize = 20_000;
 
+/// RETURN_TYPE_MAX_LENGTH (tree-sitter.ts) — stored RAW return-type text cap
+/// (the fork returnTypeText budget; same value as the tsjs/scala modules').
+const RETURN_TYPE_MAX_LENGTH: usize = 200;
+
 fn receiver_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"\(\s*(?:[A-Za-z_]\w*\s+)?\*?\s*([A-Za-z_]\w*)").unwrap())
 }
-fn simple_ident_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[A-Za-z_]\w*$").unwrap())
-}
 fn go_two_hop_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"^[A-Za-z_]\w*\.[A-Za-z_]\w*$").unwrap())
-}
-fn generic_angle_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"<[^>]*>").unwrap())
-}
-fn bracket_args_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"\[[^\]]*\]").unwrap())
 }
 
 struct Scope {
@@ -344,30 +336,28 @@ impl<'t> Walker<'t> {
         false
     }
 
-    /// extractGoReturnType (languages/go.ts).
+    /// Fork RAW returnType wire field (tree-sitter.ts returnTypeNode +
+    /// returnTypeText — K-v2 P5-2 realignment, same class as the P4 scala
+    /// fix). Upstream N put the extractGoReturnType BARE shape on the wire
+    /// (first result parameter, pointer unwrap, generics/bracket strip,
+    /// last dotted segment) because upstream wasm feeds Node.returnType from
+    /// the getReturnType hook; the fork's Node.returnType IS the RAW result
+    /// text (returnField 'result', no language gate) — a multi-result
+    /// signature keeps its full `(string, error)` list. Parity canonical =
+    /// the fork wasm arm, so the wire mirrors returnTypeText: trimmed raw
+    /// text, leading colon stripped (a no-op for the go grammar),
+    /// RETURN_TYPE_MAX_LENGTH UTF-16 cap, empty → None. The bare-shape
+    /// reduction moved to the resolution layer's chain-receiver
+    /// normalization (lookupCalleeReturnType). Fork deviation from the N
+    /// kernel — upstream-feedback candidate.
     fn return_type_of(&self, node: Node) -> Option<String> {
-        let mut result = node.child_by_field_name("result")?;
-        if result.kind() == "parameter_list" {
-            let first = (0..result.named_child_count())
-                .filter_map(|i| result.named_child(i))
-                .find(|c| c.kind() == "parameter_declaration")?;
-            result = first.child_by_field_name("type").unwrap_or(first);
-        }
-        if result.kind() == "pointer_type" {
-            result = (0..result.named_child_count())
-                .filter_map(|i| result.named_child(i))
-                .find(|c| matches!(c.kind(), "type_identifier" | "qualified_type" | "generic_type"))
-                .unwrap_or(result);
-        }
-        let text = self.text(result).trim();
-        let text = text.strip_prefix('*').unwrap_or(text);
-        let text = generic_angle_re().replace_all(text, "");
-        let text = bracket_args_re().replace_all(&text, "");
-        let last = text.rsplit('.').next().unwrap_or("").trim().to_string();
-        if last.is_empty() || !simple_ident_re().is_match(&last) {
+        let result = node.child_by_field_name("result")?;
+        let raw = self.text(result).trim();
+        let stripped = raw.strip_prefix(':').map(|s| s.trim_start()).unwrap_or(raw);
+        if stripped.is_empty() {
             return None;
         }
-        Some(last)
+        Some(util::slice_utf16(stripped, RETURN_TYPE_MAX_LENGTH).0)
     }
 
     /// goExtractor.getReceiverType: the regex over the receiver's text.

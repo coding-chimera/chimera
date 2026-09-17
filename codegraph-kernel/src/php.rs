@@ -32,22 +32,16 @@ use tree_sitter::{Node, Parser};
 
 const MAX_VALUE_REF_NODES: usize = 20_000;
 
+/// RETURN_TYPE_MAX_LENGTH (tree-sitter.ts) — stored RAW return-type text cap
+/// (the fork returnTypeText budget; same value as the tsjs/scala modules').
+const RETURN_TYPE_MAX_LENGTH: usize = 200;
+
 /// NAME_STOPLIST (function-ref.ts).
 fn is_stoplisted(name: &str) -> bool {
     matches!(
         name,
         "this" | "self" | "super" | "null" | "nil" | "true" | "false" | "undefined" | "new"
             | "NULL" | "nullptr" | "None"
-    )
-}
-
-/// PHP_NON_CLASS_RETURN (languages/php.ts:37).
-fn is_php_non_class_return(lc: &str) -> bool {
-    matches!(
-        lc,
-        "array" | "string" | "int" | "integer" | "float" | "double" | "bool" | "boolean"
-            | "void" | "mixed" | "never" | "null" | "false" | "true" | "object" | "callable"
-            | "iterable" | "resource"
     )
 }
 
@@ -86,11 +80,6 @@ fn is_php_callable_hof(name: &str) -> bool {
     )
 }
 
-/// `/^[A-Za-z_]\w*$/` with JS's ASCII `\w`.
-fn ascii_ident_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[A-Za-z_][0-9A-Za-z_]*$").unwrap())
-}
 /// String-callable simple-name shape (`/^[A-Za-z_][A-Za-z0-9_]*$/`).
 fn simple_callable_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -443,34 +432,30 @@ impl<'t> Walker<'t> {
             .any(|c| c.kind() == "static_modifier")
     }
 
-    /// extractPhpReturnType — `self`/`static` collapse to the `'self'` marker
-    /// (#608 chained-call fuel); primitives/unions → None.
+    /// Fork RAW returnType wire field (tree-sitter.ts returnTypeNode +
+    /// returnTypeText — K-v2 P5-2 realignment, same class as the P4 scala
+    /// fix). Upstream N put the extractPhpReturnType BARE shape on the wire
+    /// (`self`/`static` → 'self' marker, primitives/unions → None,
+    /// backslash-qualified last segment) because upstream wasm feeds
+    /// Node.returnType from the getReturnType hook; the fork's
+    /// Node.returnType IS the RAW `return_type` field text (returnField
+    /// 'return_type', no language gate — `string`, `?User`, `static` reach
+    /// the wire verbatim; fixture-verified 3/3 drift → 0). Parity canonical
+    /// = the fork wasm arm: trimmed raw text, leading colon stripped (a
+    /// no-op for the php grammar), RETURN_TYPE_MAX_LENGTH UTF-16 cap,
+    /// empty → None. The bare-shape quirks (incl. the #608 self-marker
+    /// collapse) moved to the resolution layer's chain-receiver
+    /// normalization (lookupCalleeReturnType maps raw 'self'/'static' to
+    /// the 'self' marker). Fork deviation from the N kernel —
+    /// upstream-feedback candidate.
     fn return_type_of(&self, node: Node) -> Option<String> {
-        let mut rt = node.child_by_field_name("return_type")?;
-        if rt.kind() == "optional_type" {
-            rt = rt.named_child(0).unwrap_or(rt);
-        }
-        if rt.kind() == "primitive_type" {
+        let rt = node.child_by_field_name("return_type")?;
+        let raw = self.text(rt).trim();
+        let stripped = raw.strip_prefix(':').map(|s| s.trim_start()).unwrap_or(raw);
+        if stripped.is_empty() {
             return None;
         }
-        let name_node = if rt.kind() == "named_type" { rt.named_child(0).unwrap_or(rt) } else { rt };
-        let text = self.text(name_node).trim();
-        let text = text.strip_prefix('\\').unwrap_or(text);
-        if text.is_empty() {
-            return None;
-        }
-        let last = text.rsplit('\\').next().unwrap_or(text);
-        let lc = last.to_lowercase();
-        if matches!(lc.as_str(), "self" | "static" | "this" | "$this") {
-            return Some("self".to_string());
-        }
-        if is_php_non_class_return(&lc) {
-            return None;
-        }
-        if !ascii_ident_re().is_match(last) {
-            return None; // unions/intersections/complex
-        }
-        Some(last.to_string())
+        Some(util::slice_utf16(stripped, RETURN_TYPE_MAX_LENGTH).0)
     }
 
     // --- the visitNode hook (php.ts:108) ------------------------------------------

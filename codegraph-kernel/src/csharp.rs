@@ -57,23 +57,10 @@ fn is_stoplisted(name: &str) -> bool {
     )
 }
 
-/// extractCsharpReturnType's trailing-nullable strip (`/\?+$/`).
-fn trailing_nullable_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"\?+$").unwrap())
-}
-/// extractCsharpReturnType's generics strip (`/<[^>]*>/g`) — deliberately
-/// non-nesting: `Task<List<Foo>>` → `Task>` → the ident test fails →
-/// returnType undefined (same class of quirk as rust; PRESERVE).
-fn generic_args_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"<[^>]*>").unwrap())
-}
-/// `/^[A-Za-z_]\w*$/` with JS's ASCII `\w` (Rust's default `\w` is Unicode).
-fn ascii_ident_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[A-Za-z_][0-9A-Za-z_]*$").unwrap())
-}
+/// RETURN_TYPE_MAX_LENGTH (tree-sitter.ts) — stored RAW return-type text cap
+/// (the fork returnTypeText budget; same value as the tsjs/scala modules').
+const RETURN_TYPE_MAX_LENGTH: usize = 200;
+
 /// extractStaticMemberRef's capitalized-receiver test.
 fn capitalized_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -463,21 +450,28 @@ impl<'t> Walker<'t> {
         has_static && has_readonly
     }
 
-    /// extractCsharpReturnType — reads the `returns` field; feeds the
-    /// #645/#608 chained-call resolution. Constructors have no `returns`.
+    /// Fork RAW returnType wire field (tree-sitter.ts returnTypeNode +
+    /// returnTypeText — K-v2 P5-2 realignment, same class as the P4 scala
+    /// fix). Upstream N put the extractCsharpReturnType BARE shape on the
+    /// wire (predefined/array → None, nullable/generics strip, last dotted
+    /// segment) because upstream wasm feeds Node.returnType from the
+    /// getReturnType hook; the fork's Node.returnType IS the RAW `returns`
+    /// text (returnField 'returns' — the D6 tree-sitter-c-sharp 0.23.x field
+    /// rename, no language gate), so `void` and `Task<List<Foo>>` reach the
+    /// wire verbatim. Parity canonical = the fork wasm arm: trimmed raw
+    /// text, leading colon stripped (a no-op for the csharp grammar),
+    /// RETURN_TYPE_MAX_LENGTH UTF-16 cap, empty → None. Constructors have no
+    /// `returns` field. The bare-shape reduction moved to the resolution
+    /// layer's chain-receiver normalization (lookupCalleeReturnType). Fork
+    /// deviation from the N kernel — upstream-feedback candidate.
     fn return_type_of(&self, node: Node) -> Option<String> {
         let t = node.child_by_field_name("returns")?;
-        if matches!(t.kind(), "predefined_type" | "array_type") {
+        let raw = self.text(t).trim();
+        let stripped = raw.strip_prefix(':').map(|s| s.trim_start()).unwrap_or(raw);
+        if stripped.is_empty() {
             return None;
         }
-        let mut s = self.text(t).trim().to_string();
-        s = trailing_nullable_re().replace(&s, "").into_owned();
-        s = generic_args_re().replace_all(&s, "").into_owned();
-        let last = s.rsplit('.').next().unwrap_or("").trim().to_string();
-        if last.is_empty() || !ascii_ident_re().is_match(&last) {
-            return None;
-        }
-        Some(last)
+        Some(util::slice_utf16(stripped, RETURN_TYPE_MAX_LENGTH).0)
     }
 
     /// extractName (tree-sitter.ts:90) — the C#-reachable paths: the `name`

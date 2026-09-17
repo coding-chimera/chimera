@@ -22,6 +22,10 @@ use tree_sitter::{Node, Parser};
 
 const MAX_VALUE_REF_NODES: usize = 20_000;
 
+/// RETURN_TYPE_MAX_LENGTH (tree-sitter.ts) — stored RAW return-type text cap
+/// (the fork returnTypeText budget; same value as the tsjs/scala modules').
+const RETURN_TYPE_MAX_LENGTH: usize = 200;
+
 fn is_method_type(kind: &str) -> bool {
     matches!(kind, "method_declaration" | "constructor_declaration")
 }
@@ -454,7 +458,30 @@ impl<'t> Walker<'t> {
         }
     }
 
-    /// normalizeJavaType (languages/java.ts).
+    /// Fork RAW returnType wire field (tree-sitter.ts returnTypeNode +
+    /// returnTypeText — K-v2 P5-2 realignment, same class as the P4 scala
+    /// fix). Upstream N put the normalizeJavaType BARE shape on the wire
+    /// (non-class/array → None, generics strip, last dotted segment) because
+    /// upstream wasm feeds Node.returnType from the getReturnType hook; the
+    /// fork's Node.returnType IS the RAW `type` field text (returnField
+    /// 'type', no language gate — `void`, `int`, `List<String>` reach the
+    /// wire verbatim; fixture-verified 7/7 drift → 0). Parity canonical =
+    /// the fork wasm arm. Constructors have no `type` field → None.
+    fn raw_return_type_of(&self, node: Node) -> Option<String> {
+        let t = node.child_by_field_name("type")?;
+        let raw = self.text(t).trim();
+        let stripped = raw.strip_prefix(':').map(|s| s.trim_start()).unwrap_or(raw);
+        if stripped.is_empty() {
+            return None;
+        }
+        Some(util::slice_utf16(stripped, RETURN_TYPE_MAX_LENGTH).0)
+    }
+
+    /// normalizeJavaType (languages/java.ts). RETAINED for the Lombok
+    /// synthesis path only — the wasm Lombok generator (#912, java.ts) sets
+    /// its synthesized members' returnType through normalizeJavaType, so the
+    /// kernel mirror must keep the bare shape THERE while regular
+    /// declarations ride the RAW wire above.
     fn normalize_java_type(&self, type_node: Option<Node>) -> Option<String> {
         let t = type_node?;
         if is_non_class_return(t.kind()) || t.kind() == "array_type" {
@@ -617,7 +644,7 @@ impl<'t> Walker<'t> {
             signature: self.signature_of(node),
             visibility: self.visibility_of(node),
             is_static: Some(self.is_static(node)),
-            return_type: self.normalize_java_type(node.child_by_field_name("type")),
+            return_type: self.raw_return_type_of(node),
             ..Extra::default()
         };
         let Some(row) = self.create_node("method", &name, node, extra) else { return };
@@ -645,7 +672,7 @@ impl<'t> Walker<'t> {
             signature: self.signature_of(node),
             visibility: self.visibility_of(node),
             is_static: Some(self.is_static(node)),
-            return_type: self.normalize_java_type(node.child_by_field_name("type")),
+            return_type: self.raw_return_type_of(node),
             ..Extra::default()
         };
         let Some(row) = self.create_node("function", &name, node, extra) else { return };
