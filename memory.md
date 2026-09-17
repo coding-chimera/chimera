@@ -224,3 +224,10 @@ loop 挂起修复前的对比基线（本机 macOS, bun 1.4.0, `bun test --timeo
 - **循环队列**：①任一 builder 完成→亲验→ali-internal-audit→push ②F2 阶段 A 落地→dependabot 插批（OSV 清单需重拉，memory 旧记录在 09-14 前条目）③F2+claims 都收口→派 G1 扩容批（吸收上游 5 修复：9b8bb4aba/58c07e874/72c1ff13c/1e4612375/7440d2c47）④K-v2 盘点回→起草战役计划入 UPSTREAM_RUST_KERNEL_PLAN.md K-v2 章→按取舍原则自裁比对判定→分批执行（semantics v5+bench 重验收尾）⑤文档三件套回写（TRIAGE §8 补 #12-15 索引含 #12 否决态/790fb5b86f 标注/f965db9e13 加注）随下一个 docs commit 合并。
 - **上游快照**：/Volumes/workspace/codegraph-snapshot/codegraph-ba3c21e50d…（codeload 下载，镜像未动仍禁 fetch）；opencode 漂移档案 /var/folders/…/upstream-drift/（tmp 有被清理风险，关键结论已入库 TRIAGE §11）。
 - **推送链**：origin/main=e622b41da。installed 二进制=wave3 全验证（v4 语义+9 语言路由）。
+
+### 用户战略指令：Chimera Rust 化改造（2026-09-17 记录，暂不开工）
+
+- 指令原话要义：TS 一堆运行时引发内存泄漏，根本不适合超长时间运行；**在上游同步工作和 WebUI 吞吐战役完成后**，规划 Rust 化改造。不一定全 Rust——可 Rust/TS 混合；主要目标=减少内存占用+尽可能快+高吞吐。
+- 触发条件：F 线/L 线+K-v2+WebUI 战役（W1-W5）收口后启动规划（先出 RUST_MIGRATION_PLAN 调研文档，不直接动手）。
+- 已知有利地形：graph 提取核心已 Rust（codegraph-kernel napi）；server/会话运行时/存储/工具层仍是 TS（bun/node）——长时泄漏面主要在 session/server 常驻进程。
+- 关联：WebUI W1 内存预算拍板（默认 1024/上限 2048，瘦身优先）与 Rust 化动机同源=内存克制。
