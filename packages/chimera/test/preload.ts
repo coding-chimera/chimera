@@ -36,6 +36,14 @@ process.env["XDG_STATE_HOME"] = path.join(dir, "state")
 process.env["OPENCODE_MODELS_PATH"] = path.join(import.meta.dir, "tool", "fixtures", "models-api.json")
 process.env["OPENCODE_EXPERIMENTAL_EVENT_SYSTEM"] = "true"
 
+// W1 memory-pressure eviction reads real process RSS against the instance memory
+// budget (default 1024MB). A full `bun test` process can legitimately exceed that,
+// which would make every instance-store-backed test flaky on pressure evictions it
+// does not care about. Default the budget to 0 (disabled) for the suite; instance
+// lifecycle tests that exercise pressure set CHIMERA_INSTANCE_MEMORY_BUDGET_MB
+// explicitly (and inject the RSS probe) per test.
+process.env["CHIMERA_INSTANCE_MEMORY_BUDGET_MB"] ??= "0"
+
 // Set test home directory to isolate tests from user's actual home directory
 // This prevents tests from picking up real user configs/skills from ~/.claude/skills
 const testHome = path.join(dir, "home")

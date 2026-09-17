@@ -49,6 +49,24 @@ export const layer = Layer.effect(
       }),
     )
 
+    // Pin reconciliation authority (W1): sweeps call this with the target instance's
+    // InstanceRef provided as fiber context. Busy runners are the ground truth for live
+    // pin holders (onBusy pins, onIdle releases); the session status storage count rides
+    // along as diagnostic context for dangling-pin warnings. `undefined` = state unknown
+    // (instance never ran a session or is being torn down) and skips correction.
+    if (Option.isSome(store))
+      yield* store.value.registerPinReconciler(() =>
+        Effect.gen(function* () {
+          if (!(yield* InstanceState.has(state))) return undefined
+          const data = yield* InstanceState.get(state)
+          const statuses = yield* status.list()
+          return {
+            expectedPins: [...data.runners.values()].filter((runner) => runner.busy).length,
+            busyStatuses: statuses.size,
+          }
+        }),
+      )
+
     const runner = Effect.fn("SessionRunState.runner")(function* (
       sessionID: SessionID,
       onInterrupt: Effect.Effect<MessageV2.WithParts>,

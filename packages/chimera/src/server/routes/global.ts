@@ -16,6 +16,7 @@ import { Config } from "@/config/config"
 import { errors } from "../error"
 import { disposeAllInstancesAndEmitGlobalDisposed } from "../global-lifecycle"
 import { WebUIPreferences } from "@/server/webui-preferences"
+import { InstanceStore } from "@/project/instance-store"
 import "@/server/event"
 
 const log = Log.create({ service: "server" })
@@ -228,6 +229,33 @@ export const GlobalRoutes = lazy(() =>
       async (c) => {
         await AppRuntime.runPromise(disposeAllInstancesAndEmitGlobalDisposed())
         return c.json(true)
+      },
+    )
+    .post(
+      "/presence",
+      describeRoute({
+        summary: "Report WebUI presence",
+        description:
+          "Presence heartbeat for the WebUI: refreshes the instance presence pin (TTL 90s by default) for every reported directory that currently has a loaded instance, protecting it from idle-TTL and memory-pressure eviction while the UI is open. Directories without a loaded instance are ignored; presence never boots an instance. The WebUI reports its active directories every 30s. Payloads above 512 directories are truncated.",
+        operationId: "global.presence",
+        responses: {
+          200: {
+            description: "Presence recorded",
+            content: {
+              "application/json": {
+                schema: resolver(z.object({ ok: z.literal(true) })),
+              },
+            },
+          },
+          ...errors(400),
+        },
+      }),
+      validator("json", z.object({ directories: z.array(z.string()) })),
+      async (c) => {
+        await AppRuntime.runPromise(
+          InstanceStore.Service.use((store) => store.presence(c.req.valid("json").directories)),
+        )
+        return c.json({ ok: true as const })
       },
     )
     .post(
