@@ -11,6 +11,7 @@ import { packNpmTarballs } from "./pack-local"
 import {
   assertNoEmbeddedBuildPaths,
   createPlatformPackageManifest,
+  kernelPrebuildPlatformDir,
   npmPlatformTargets,
   type NpmPlatformTarget,
   packageLicenseFiles,
@@ -103,25 +104,23 @@ async function copyWebTreeSitterRuntime(targetDir: string) {
  * slower). Platforms whose prebuild hasn't been built yet therefore ship
  * without the kernel and automatically take the wasm fallback.
  *
- * musl targets are skipped: a glibc-linked .node will not dlopen on musl and
- * the prebuild layout (<os>-<arch>) cannot express the libc split yet —
- * musl/windows prebuild legs plus the CI build matrix are release-side
- * follow-ups (UPSTREAM_RUST_KERNEL_PLAN.md §2.3 / §3 P0.5).
+ * Matrix-aware (release-side campaign, UPSTREAM_RUST_KERNEL_PLAN.md §2.3/
+ * §3 P0.5): the source dir is kernelPrebuildPlatformDir(target) — the
+ * (os, arch, libc) axis. musl packages read their own -musl prebuild (a
+ * glibc-linked .node will not dlopen on musl); baseline (avx2: false)
+ * packages share the non-baseline artifact (the crate compiles with no
+ * target-cpu flags). Windows prebuilds are the cargo .dll renamed to
+ * .node — the napi/node-gyp convention; Node/Bun dlopen it unchanged.
+ * CI stages the legs through the publish.yml kernel-prebuild job into
+ * codegraph-kernel/prebuilds/ before this build runs (locally:
+ * packages/chimera/script/build-kernel.sh --target …).
  */
 async function copyKernelPrebuild(targetBinDir: string, target: NpmPlatformTarget) {
-  if (target.abi !== undefined) return
-  const source = path.join(
-    dir,
-    "..",
-    "..",
-    "codegraph-kernel",
-    "prebuilds",
-    `${target.os}-${target.arch}`,
-    "codegraph-kernel.node",
-  )
+  const platformDir = kernelPrebuildPlatformDir(target)
+  const source = path.join(dir, "..", "..", "codegraph-kernel", "prebuilds", platformDir, "codegraph-kernel.node")
   if (!fs.existsSync(source)) {
     console.warn(
-      `kernel: no prebuild for ${target.os}-${target.arch} (${path.relative(dir, source)}) — shipping without the native kernel; wasm fallback applies`,
+      `kernel: no prebuild for ${platformDir} (${path.relative(dir, source)}) — shipping without the native kernel; wasm fallback applies`,
     )
     return
   }

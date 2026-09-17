@@ -27,7 +27,9 @@
 #   distros. A versioned target implies --zig (only zigbuild parses it), and a
 #   plain gnu target under --zig is auto-pinned to the release floor
 #   (KERNEL_GLIBC_FLOOR, default 2.28 = the Node 18+ / manylinux_2_28
-#   generation floor). musl legs are fully static — no floor concern.
+#   generation floor). musl legs opt out of musl's default +crt-static (rustc
+#   refuses cdylib under a static CRT) and link dynamically against musl
+#   libc — the napi/alpine convention; no glibc-style floor concern.
 # - Windows: cargo emits codegraph_kernel.dll; the staged name is always
 #   codegraph-kernel.node (Node/Bun dlopen on Windows loads the renamed DLL —
 #   the napi/node-gyp convention). Release legs build *-pc-windows-msvc; the
@@ -133,10 +135,28 @@ build_leg() {
       echo "[kernel] building codegraph-kernel for ${platform} (target ${target})"
     fi
     rustup target add "$base" >/dev/null 2>&1 || true
+    # musl targets default to +crt-static and rustc refuses cdylib output
+    # under a static CRT (crt_static_allows_dylibs) — the napi/alpine
+    # convention is to opt out, yielding a .node dynamically linked against
+    # musl libc (NEEDED libc.musl-<arch>.so.1, resolved by alpine's loader),
+    # the analogue of the glibc legs' libc.so.6. The flag goes through
+    # CARGO_ENCODED_RUSTFLAGS, not RUSTFLAGS: cargo-zigbuild composes its own
+    # encoded flags and cargo's precedence order would let those mask a plain
+    # RUSTFLAGS env; the encoded form survives both cargo build and cargo
+    # zigbuild. Scoped to this leg so multi-target runs do not leak it.
+    local saved_encoded_rustflags="${CARGO_ENCODED_RUSTFLAGS-}"
+    case "$target" in
+      *-musl*) export CARGO_ENCODED_RUSTFLAGS="${saved_encoded_rustflags:+$saved_encoded_rustflags$(printf '\037')}-C$(printf '\037')target-feature=-crt-static" ;;
+    esac
     if [ "$zig" = "1" ]; then
       cargo zigbuild --release --target "$target"
     else
       cargo build --release --target "$target"
+    fi
+    if [ -n "$saved_encoded_rustflags" ]; then
+      export CARGO_ENCODED_RUSTFLAGS="$saved_encoded_rustflags"
+    else
+      unset CARGO_ENCODED_RUSTFLAGS
     fi
     outdir="$CRATE/target/$base/release"
   else

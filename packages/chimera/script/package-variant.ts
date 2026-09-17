@@ -112,6 +112,20 @@ export function platformPackageNames(
   return targets.map((target) => platformPackageName(packageName, target))
 }
 
+/**
+ * codegraph-kernel/prebuilds/<dir> naming for a platform target — the kernel
+ * artifact axis is (os, arch, libc): baseline (avx2: false) packages share the
+ * non-baseline prebuild (the kernel crate compiles with no target-cpu flags,
+ * so one artifact per triple), and the dir keeps the loader's
+ * `${process.platform}-${process.arch}` win32 spelling rather than the npm
+ * package name's "windows" (platformPackageName). Must stay in sync with the
+ * platform_for mapping in packages/chimera/script/build-kernel.sh — the
+ * package-variant test is the drift guard.
+ */
+export function kernelPrebuildPlatformDir(target: NpmPlatformTarget) {
+  return `${target.os}-${target.arch}${target.abi ? `-${target.abi}` : ""}`
+}
+
 export function createPlatformPackageManifest(input: {
   name: string
   version: string
