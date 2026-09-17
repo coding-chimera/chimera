@@ -341,3 +341,17 @@ L5 seam 条款：P1 把后台语义隔离在"引擎服务 + task 工具分支"�
 29 条 fix 对账：修复 26 / 已等价 1 / 不适用 2（总和=29 ✓，逐条表见 builder 报告）。验证：typecheck clean×6、MCP lane 43/0、聚焦 385/0、新增 8 测试全绿；收口全量 24~31 fail 逐条归因全部落基线家族/flaky/他 lane（双跑自相差+隔离复跑证据），零新增归因本批。锁文件：anpm=0；语义化 diff=版本变更恰 1 条+21 条空 URL 归一化（sha512 不变）；**本机 bun install 必须显式 --registry=https://registry.npmmirror.com**（已固化 env.md）。
 
 **Parent 裁决**：①三个 MCP 资源工具不进 explore allowlist（维持 MCP 面对受限 agent 全隐的一致性；resource 读取可能有 server 定义副作用；上游亦未加）②code-mode 接线=拍板池 #6 继续等用户③token 掩码=已修④死导入=已删⑤lifecycle.test 迁真 server harness=独立测试基建项入队。刻意保留 fork 形态（Bus/defaultLayer/open 直调/内联 OAuth 页/Chimera 品牌）未引入上游后期架构。
+
+---
+
+## claims（edit-intent）P1/P2/L2 完成记录（2026-09-17，builder 执行+parent 亲验裁决）
+
+6 commits：`feac452dd`（存储：chimera_edit_intent_claim/waiter 两表，extension migration **v5 additive**，已应用迁移零触碰+全套 CRUD：惰性 TTL 过期/waiter upsert 去重/事务性 take）→`d3fffb00b`（门禁：claims 检查内嵌 requirePredesignForMutation——**edit/write/apply_patch 三工具零改动全覆盖**（重核新发现 apply_patch.ts:204 同调该门禁）；FCFS 队列公平：晚到 claim 永不锁死早持有者，同毫秒按 id 定序；degrade-open：claims 故障永不阻断变更）→`5739ed24a`（predesign 登记 stage+回执 CONFLICT 行限 3 条+教学面：predesign.txt/chimera.txt 协调节）→`eac6f211a`（take 幂等：条件 UPDATE changes 计数为原子点，3 路并发竞争实测恰一次）→`c55f5a8e2`（**L2 落地**：每实例 watcher（InstanceState+forkScoped，prompt() 首跑 arm）；session.idle→release+drain→injectSynthetic 唤醒；session.remove→release+自建 tree-world 事件广播（sync 的 session.deleted 在测试 harness 分裂世界不可靠，实测选型））→`9db0f8aa2`（L1 pull：prompt-context「Edit Intent Claims」块，零 claims 零字节）
+
+五锚点重核：store.ts:222（v5 落点）/provenance.ts:801→**:908**/prompt-context renderContext:357/edit.ts:262→**:296**/write.ts:55→**:58**；新发现 apply_patch.ts:204。
+
+验证：claims 家族 12 文件 **213/213**（含真实双 fiber 同抢+3 路 take 竞争，零 mock）；E2E 三场景全过（idle 释放唤醒自动续跑/busy-at-release 走自身 idle drain/remove 释放唤醒）；全量 **5267 pass/25 fail** 逐条对账全落已知基线，零新增归因；typecheck 全树 0 错；parent 抽测 32/32。
+
+**Parent 裁决（八项拍板清单）**：①释放语义确认现状（会话 idle=run 完成即批次收口释放+remove=dispose 释放，符合 memory L83'closeout 挂钩'语义）②TTL 2h+60s 钳制确认，不加 config 旋钮（degrade-open+TTL+idle 释放三重兜底；出现真实误伤案例再小件加 kill-switch）③门禁全 agent 覆盖确认（协调与仪式正交，不依赖 predesign 可用性）④子代理唤醒不限会话类型（与 F4 通知语义一致，自动续跑是设计目标；token 成本=预期内，保持观察）⑤队列位次与 park 交互接受现状（advisory 公平；备选'pending waiter 保活 claim'会引入 park 期死锁风险，违背'晚到永不锁死早持有'原则）⑥广播式唤醒确认（符合计划书原文'先完成方释放广播唤醒另一等待 thread'，先编辑者赢其余重排）⑦**跨进程 poll→inject 桥批准立项**（按 builder 提案：waiter 行增 host_pid+host_boot_id 防抢醒、仅存在 pending waiter 时轮询 2-5s、惰性 stale-boot 清理；**migration v6**；~1-1.5 人日；排期=G1 之后、K-v2 主力前；真跨进程 E2E 留 CI——本机 EDR 红线）⑧F4-P1.5 配额陷阱与本批无交集，无动作。
+
+遗留：跨进程桥（⑦已批待排）；文档回写本节即 claims 计划面收口（计划书 L246-252 的解冻条款全部兑现）。
