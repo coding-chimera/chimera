@@ -1,4 +1,11 @@
 import { test, expect, mock, beforeEach } from "bun:test"
+import path from "node:path"
+import { pathToFileURL } from "node:url"
+import {
+  ListRootsRequestSchema,
+  LoggingMessageNotificationSchema,
+  ToolListChangedNotificationSchema,
+} from "@modelcontextprotocol/sdk/types.js"
 import { InstanceRuntime } from "../../src/project/instance-runtime"
 import { Effect } from "effect"
 import type { MCP as MCPNS } from "../../src/mcp/index"
@@ -15,7 +22,12 @@ interface MockClientState {
   listResourcesShouldFail: boolean
   prompts: Array<{ name: string; description?: string }>
   resources: Array<{ name: string; uri: string; description?: string }>
+  resourceTemplates: Array<{ name: string; uriTemplate: string; description?: string }>
+  instructions?: string
+  capabilities: { tools?: object; prompts?: object; resources?: object }
+  clientOptions?: { capabilities?: { roots?: { listChanged?: boolean } } }
   closed: boolean
+  requestHandlers: Map<unknown, (...args: any[]) => Promise<any>>
   notificationHandlers: Map<unknown, (...args: any[]) => any>
 }
 
@@ -42,7 +54,10 @@ function getOrCreateClientState(name?: string): MockClientState {
       listResourcesShouldFail: false,
       prompts: [],
       resources: [],
+      resourceTemplates: [],
+      capabilities: { tools: {}, prompts: {}, resources: {} },
       closed: false,
+      requestHandlers: new Map(),
       notificationHandlers: new Map(),
     }
     clientStates.set(key, state)
@@ -50,12 +65,16 @@ function getOrCreateClientState(name?: string): MockClientState {
   return state
 }
 
+// Options handed to the most recently constructed stdio transport.
+let lastStdioOpts: any
+
 // Mock transport that succeeds or fails based on connectShouldFail / connectShouldHang
 class MockStdioTransport {
   stderr: null = null
   pid = 12345
-  // oxlint-disable-next-line no-useless-constructor
-  constructor(_opts: any) {}
+  constructor(opts: any) {
+    lastStdioOpts = opts
+  }
   async start() {
     if (connectShouldHang) return new Promise<void>(() => {}) // never resolves
     if (connectShouldFail) throw new Error(connectError)
@@ -116,8 +135,10 @@ void mock.module("@modelcontextprotocol/sdk/client/index.js", () => ({
     _state!: MockClientState
     transport: any
 
-    constructor(_opts: any) {
+    constructor(_info: any, options?: MockClientState["clientOptions"]) {
       clientCreateCount++
+      this._state = getOrCreateClientState(lastCreatedClientName)
+      this._state.clientOptions = options
     }
 
     async connect(transport: { start: () => Promise<void> }) {
@@ -125,6 +146,18 @@ void mock.module("@modelcontextprotocol/sdk/client/index.js", () => ({
       await transport.start()
       // After successful connect, bind to the last-created client name
       this._state = getOrCreateClientState(lastCreatedClientName)
+    }
+
+    setRequestHandler(schema: unknown, handler: (...args: any[]) => Promise<any>) {
+      this._state.requestHandlers.set(schema, handler)
+    }
+
+    getServerCapabilities() {
+      return this._state?.capabilities
+    }
+
+    getInstructions() {
+      return this._state?.instructions
     }
 
     setNotificationHandler(schema: unknown, handler: (...args: any[]) => any) {
@@ -151,6 +184,10 @@ void mock.module("@modelcontextprotocol/sdk/client/index.js", () => ({
         throw new Error("listResources failed")
       }
       return { resources: this._state?.resources ?? [] }
+    }
+
+    async listResourceTemplates() {
+      return { resourceTemplates: this._state?.resourceTemplates ?? [] }
     }
 
     async close() {
@@ -259,7 +296,7 @@ test(
 
       serverState.tools = [{ name: "next_tool", description: "next", inputSchema: { type: "object", properties: {} } }]
 
-      const handler = Array.from(serverState.notificationHandlers.values())[0]
+      const handler = serverState.notificationHandlers.get(ToolListChangedNotificationSchema)
       expect(handler).toBeDefined()
       yield* Effect.promise(() => handler?.())
 
@@ -522,8 +559,8 @@ test(
         const resources = yield* mcp.resources()
         expect(Object.keys(resources).length).toBe(1)
         const key = Object.keys(resources)[0]
-        expect(key).toContain("resource-server")
-        expect(key).toContain("my-resource")
+        // Resources are keyed by URI so a reader can resolve one back to its server.
+        expect(key).toBe("resource-server:file:///test.txt")
       }),
   ),
 )
@@ -783,6 +820,137 @@ test(
       expect(serverStatus.status).toBe("failed")
       // Both StreamableHTTP and SSE transports should be closed
       expect(transportCloseCount).toBeGreaterThanOrEqual(2)
+    }),
+  ),
+)
+
+// ========================================================================
+// Test: client roots (upstream f55a931f59)
+// ========================================================================
+
+test(
+  "advertises the roots capability and answers roots/list with the instance directory",
+  withInstance({}, (mcp) =>
+    Effect.gen(function* () {
+      lastCreatedClientName = "roots"
+      yield* mcp.add("roots", { type: "local", command: ["echo", "test"] })
+
+      const state = getOrCreateClientState("roots")
+      expect(state.clientOptions?.capabilities?.roots).toEqual({})
+      expect(state.clientOptions?.capabilities?.roots?.listChanged).toBeUndefined()
+
+      const handler = state.requestHandlers.get(ListRootsRequestSchema)
+      expect(handler).toBeDefined()
+      const result = yield* Effect.promise(() => handler?.() ?? Promise.reject(new Error("roots handler missing")))
+      // The advertised root is the same workspace directory the server process was spawned in.
+      expect(result).toEqual({ roots: [{ uri: pathToFileURL(lastStdioOpts.cwd).href }] })
+    }),
+  ),
+)
+
+// ========================================================================
+// Test: server instructions (upstream e8e83afbce)
+// ========================================================================
+
+test(
+  "instructions() exposes connected server instructions with their tool names",
+  withInstance({}, (mcp) =>
+    Effect.gen(function* () {
+      lastCreatedClientName = "instructed"
+      getOrCreateClientState("instructed").instructions = "  Use the widget tool carefully.  "
+      yield* mcp.add("instructed", { type: "local", command: ["echo", "test"] })
+
+      expect(yield* mcp.instructions()).toEqual([
+        { name: "instructed", instructions: "Use the widget tool carefully.", tools: ["instructed_test_tool"] },
+      ])
+    }),
+  ),
+)
+
+test(
+  "instructions() omits servers that sent none",
+  withInstance({}, (mcp) =>
+    Effect.gen(function* () {
+      lastCreatedClientName = "plain"
+      yield* mcp.add("plain", { type: "local", command: ["echo", "test"] })
+
+      expect(yield* mcp.instructions()).toEqual([])
+    }),
+  ),
+)
+
+// ========================================================================
+// Test: resource templates (upstream c6cc13e183)
+// ========================================================================
+
+test(
+  "resourceTemplates() keys templates by server and uriTemplate",
+  withInstance({}, (mcp) =>
+    Effect.gen(function* () {
+      lastCreatedClientName = "tpl-server"
+      getOrCreateClientState("tpl-server").resourceTemplates = [{ name: "files", uriTemplate: "file:///{path}" }]
+      yield* mcp.add("tpl-server", { type: "local", command: ["echo", "test"] })
+
+      const templates = yield* mcp.resourceTemplates()
+      expect(Object.keys(templates)).toEqual(["tpl-server:file:///{path}"])
+      expect(templates["tpl-server:file:///{path}"]?.client).toBe("tpl-server")
+    }),
+  ),
+)
+
+test(
+  "resources() can be scoped to a single server",
+  withInstance({}, (mcp) =>
+    Effect.gen(function* () {
+      lastCreatedClientName = "scoped"
+      getOrCreateClientState("scoped").resources = [{ name: "a", uri: "test://a" }]
+      yield* mcp.add("scoped", { type: "local", command: ["echo", "test"] })
+
+      expect(Object.keys(yield* mcp.resources("scoped"))).toEqual(["scoped:test://a"])
+      expect(Object.keys(yield* mcp.resources("absent"))).toEqual([])
+    }),
+  ),
+)
+
+// ========================================================================
+// Test: server log notifications (upstream 07b983e82f)
+// ========================================================================
+
+test(
+  "routes server log notifications for every spec level",
+  withInstance({}, (mcp) =>
+    Effect.gen(function* () {
+      lastCreatedClientName = "logger"
+      yield* mcp.add("logger", { type: "local", command: ["echo", "test"] })
+
+      const handler = getOrCreateClientState("logger").notificationHandlers.get(LoggingMessageNotificationSchema)
+      expect(handler).toBeDefined()
+      for (const level of ["debug", "info", "notice", "warning", "error", "critical", "alert", "emergency"]) {
+        yield* Effect.promise(() => handler?.({ params: { level, data: "hello", logger: "server" } }))
+      }
+    }),
+  ),
+)
+
+// ========================================================================
+// Test: local server cwd (upstream 7e7ad37736)
+// ========================================================================
+
+test(
+  "local mcp cwd resolves relative paths against the instance directory",
+  withInstance({}, (mcp) =>
+    Effect.gen(function* () {
+      lastCreatedClientName = "cwd-default"
+      yield* mcp.add("cwd-default", { type: "local", command: ["echo", "test"] })
+      const base = lastStdioOpts.cwd
+
+      lastCreatedClientName = "cwd-relative"
+      yield* mcp.add("cwd-relative", { type: "local", command: ["echo", "test"], cwd: "nested" })
+      expect(lastStdioOpts.cwd).toBe(path.join(base, "nested"))
+
+      lastCreatedClientName = "cwd-absolute"
+      yield* mcp.add("cwd-absolute", { type: "local", command: ["echo", "test"], cwd: path.sep + "tmp" })
+      expect(lastStdioOpts.cwd).toBe(path.sep + "tmp")
     }),
   ),
 )

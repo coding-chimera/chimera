@@ -84,6 +84,16 @@ void mock.module("@modelcontextprotocol/sdk/client/sse.js", () => ({
 // Mock the MCP SDK Client
 void mock.module("@modelcontextprotocol/sdk/client/index.js", () => ({
   Client: class MockClient {
+    setRequestHandler() {}
+
+    getServerCapabilities() {
+      return { tools: {} }
+    }
+
+    getInstructions() {
+      return undefined
+    }
+
     async connect(transport: { start: () => Promise<void> }) {
       await transport.start()
     }

@@ -7,6 +7,9 @@ export const Local = Schema.Struct({
   command: Schema.mutable(Schema.Array(Schema.String)).annotate({
     description: "Command and arguments to run the MCP server",
   }),
+  cwd: Schema.optional(Schema.String).annotate({
+    description: "Working directory for the MCP server process. Relative paths resolve from the workspace directory.",
+  }),
   environment: Schema.optional(Schema.Record(Schema.String, Schema.String)).annotate({
     description: "Environment variables to set when running the MCP server",
   }),
@@ -29,6 +32,9 @@ export const OAuth = Schema.Struct({
     description: "OAuth client secret (if required by the authorization server)",
   }),
   scope: Schema.optional(Schema.String).annotate({ description: "OAuth scopes to request during authorization" }),
+  callbackPort: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }))).annotate({
+    description: "Port for the local OAuth callback server (default: 19876). Ignored when redirectUri is set.",
+  }),
   redirectUri: Schema.optional(Schema.String).annotate({
     description: "OAuth redirect URI (default: http://127.0.0.1:19876/mcp/oauth/callback).",
   }),
