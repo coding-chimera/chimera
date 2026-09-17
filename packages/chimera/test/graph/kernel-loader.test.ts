@@ -137,18 +137,19 @@ describe('verified wire tables drive production decode (fake subset kernel)', ()
     // names through the FORK tables, so the node row carries fork index 23
     // ('statement', the tail) and the edge/ref rows fork indexes 0 ('contains')
     // / 6 ('references'). A production decode must re-resolve those through
-    // the kernel's own tables: the fake's REVERSED node table maps 23 →
-    // 'file', and the reversed edge table maps 0 → 'decorates', 6 →
-    // 'implements'.
+    // the kernel's own tables: the fake's REVERSED edge table maps fork index
+    // 0 → reversed[0] and 6 → reversed[6] — derived here so contract-table
+    // growth (e.g. the navigates append) can't stale the expectations.
     const fake = makeFakeSubsetKernel();
     expect(verifyKernelContract(fake.mod.contractInfo())).toBe(true); // the P1 pass case
     setKernelForTests(fake.mod);
     process.env.CODEGRAPH_KERNEL_LANGS = 'typescript';
+    const reversedEdgeKinds = [...EDGE_KINDS].reverse();
     const result = tryKernelExtract('x.ts', 'source', 'typescript');
     expect(result).not.toBeNull();
     expect(result!.nodes[0].kind).toBe('file');
-    expect(result!.edges[0].kind).toBe('decorates');
-    expect(result!.unresolvedReferences[0].referenceKind).toBe('implements');
+    expect(result!.edges[0].kind).toBe(reversedEdgeKinds[0]);
+    expect(result!.unresolvedReferences[0].referenceKind).toBe(reversedEdgeKinds[6]);
     // Same bytes decoded with the fork defaults map differently — proves the
     // kernel tables actually rode through the production call site.
     expect(decodeExtractBuffers(fake.buffers, 'x.ts', 'typescript').nodes[0].kind).toBe('statement');

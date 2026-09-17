@@ -140,6 +140,11 @@ export const EDGE_KINDS = [
   'instantiates',
   'overrides',
   'decorates',
+  // Append-only, matches upstream codegraph-kernel buffers.rs EDGE_KINDS[12].
+  // Emitter lives in upstream's resolution router synthesizer family (skipped
+  // by the fork), so fork corpora produce zero navigates edges; reserved here
+  // so a re-vendored kernel passes the kernel⊆fork subset gate (K-v2 P1).
+  'navigates',
 ] as const satisfies readonly EdgeKind[];
 
 type Assert<T extends true> = T;

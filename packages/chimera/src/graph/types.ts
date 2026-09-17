@@ -65,7 +65,8 @@ export type EdgeKind =
   | 'returns'         // Function returns type
   | 'instantiates'    // Creates instance of class
   | 'overrides'       // Method overrides parent method
-  | 'decorates';      // Decorator applied to symbol
+  | 'decorates'       // Decorator applied to symbol
+  | 'navigates';      // Screen/route navigates to target (upstream expo-router; contract reservation — fork corpus emits none yet)
 
 export const NODE_SEMANTIC_ROLES = [
   'container',
