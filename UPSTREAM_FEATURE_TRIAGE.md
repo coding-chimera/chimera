@@ -259,7 +259,7 @@ L5 seam 条款：P1 把后台语义隔离在"引擎服务 + task 工具分支"�
 - **两个一等用例改写 P1 需求**：① first-wins 并行探查（N 路后台探查、任一路提早带回结论即取消其余）→ P1 新增**面向模型的 cancel 表面**（按 task_id 取消；形态 task 参数 vs 独立小工具实现时定）；② 跨 thread 编辑同步（predesign 定 edit-intent claims，先完成方释放广播唤醒等待方）→ P1 的 **inject 原语必须会话可寻址**（按 sessionID 注入，不写死父会话）。
 - **⑧=claims 解冻**：claims P1/P2（纯 fork 文件）与 F4-P1 并行，claims L2 等 inject 就绪；重启前重核五个漂移锚点。
 - **④锁死自动续跑**（first-wins 需即时唤醒）；**⑤ background_concurrent 上限随 P1 落地**（打满=拒绝不排队）、级联取消=是；**②③⑥⑦⑨按建议执行**。
-- **开放问题**：跨进程唤醒——inject 限同进程会话，独立 CLI 进程的 parked thread 唤不醒（WebUI 多 thread 同进程不受影响）；claims L2 需 poll→inject 桥（各进程轻量轮询项目 DB claims 释放记录、唤醒本进程 parked 会话）。
+- **开放问题**：跨进程唤醒——inject 限同进程会话，独立 CLI 进程的 parked thread 唤不醒（WebUI 多 thread 同进程不受影响）；claims L2 需 poll→inject 桥（各进程轻量轮询项目 DB claims 释放记录、唤醒本进程 parked 会话）。**（已落地：2026-09-17 claims 批⑦——migration v6 host 身份+归属过滤 take+3s 条件轮询+stale-boot 惰性清理，4 commits+parent flake 根因修复 34f745b1d，完成记录=计划书「claims 批⑦完成记录」节；真跨进程 agent 级 E2E 留 CI）**
 - 日期勘误：本文档与简报实际制定于 2026-09-07（此前误标 09-04，已修正）。
 - **P1 落地完成（2026-09-07，未 commit）**：四阶段串行（引擎→task 接线+可寻址 inject→task_cancel+BFS 级联→backgroundTasks section+验收矩阵），F4 测试家族 113 全绿+typecheck 绿；矩阵 A（注入×compaction）完整 E2E、矩阵 B（ultra×后台）测试锁定。实现级偏差一处（root 认可）：后台 run 不经 DelegationLimiter，由 background_concurrent(16) 独辖——优于拍板默认的"终生占 permit"，意图不变。打磨两项（容量预检前移防孤儿会话、injectSynthetic typed NotFound+notify 吞全因）已随阶段4落地。完成记录=计划书 F4-P1 节。
 

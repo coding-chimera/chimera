@@ -249,7 +249,7 @@ L5 seam 条款：P1 把后台语义隔离在"引擎服务 + task 工具分支"�
 - **⑤升级**：默认开 → `background_concurrent` 独立上限**随 P1 落地**（防预算蚕食从保险变为必须，值可配，打满=拒绝并报错不排队）；级联取消=是（用户停止=停整棵树，孤儿 job 不烧 token/permit）。
 - **②③⑥⑦⑨按建议执行**：task 加 background 参数（关时 jsonSchema 换窄）／不复活 task_status、可见性走 prompt-context "Background tasks" section／P2 并入 L5 或排后／内存引擎+崩溃降级重建／L5 seam 换引擎条款接受。
 - **默认开的验收强化**：P1 测试矩阵必含——注入轮×compaction 相撞、ultra/多代理策略×后台派发、上限打满拒绝行为、级联取消 BFS、cancel 表面、跨会话 inject 寻址、kill-switch 关闭时字节不变。WebUI 兼容注意：默认开即 background part metadata 立刻到 newweb，P1 采用兼容渲染或接受 raw 展示至 P3。
-- **新增开放问题（不阻塞 P1）**：跨进程唤醒——inject 限同进程会话；独立 CLI 进程里的 parked thread 无法被 inject 唤醒（WebUI 多 thread 同进程不受影响）。claims L2 需 poll→inject 桥（各进程轻量轮询项目 DB 的 claims 释放记录、唤醒本进程 parked 会话），列为 claims L2 设计点。
+- **新增开放问题（不阻塞 P1）**：跨进程唤醒——inject 限同进程会话；独立 CLI 进程里的 parked thread 无法被 inject 唤醒（WebUI 多 thread 同进程不受影响）。claims L2 需 poll→inject 桥（各进程轻量轮询项目 DB 的 claims 释放记录、唤醒本进程 parked 会话），列为 claims L2 设计点。**（已解决：2026-09-17 claims 批⑦桥落地，见文末「claims 批⑦完成记录」节）**
 
 #### F4-P1 完成记录（2026-09-07，已提交 a143b3c23 并推送）
 
@@ -354,4 +354,20 @@ L5 seam 条款：P1 把后台语义隔离在"引擎服务 + task 工具分支"�
 
 **Parent 裁决（八项拍板清单）**：①释放语义确认现状（会话 idle=run 完成即批次收口释放+remove=dispose 释放，符合 memory L83'closeout 挂钩'语义）②TTL 2h+60s 钳制确认，不加 config 旋钮（degrade-open+TTL+idle 释放三重兜底；出现真实误伤案例再小件加 kill-switch）③门禁全 agent 覆盖确认（协调与仪式正交，不依赖 predesign 可用性）④子代理唤醒不限会话类型（与 F4 通知语义一致，自动续跑是设计目标；token 成本=预期内，保持观察）⑤队列位次与 park 交互接受现状（advisory 公平；备选'pending waiter 保活 claim'会引入 park 期死锁风险，违背'晚到永不锁死早持有'原则）⑥广播式唤醒确认（符合计划书原文'先完成方释放广播唤醒另一等待 thread'，先编辑者赢其余重排）⑦**跨进程 poll→inject 桥批准立项**（按 builder 提案：waiter 行增 host_pid+host_boot_id 防抢醒、仅存在 pending waiter 时轮询 2-5s、惰性 stale-boot 清理；**migration v6**；~1-1.5 人日；排期=G1 之后、K-v2 主力前；真跨进程 E2E 留 CI——本机 EDR 红线）⑧F4-P1.5 配额陷阱与本批无交集，无动作。
 
-遗留：跨进程桥（⑦已批待排）；文档回写本节即 claims 计划面收口（计划书 L246-252 的解冻条款全部兑现）。
+遗留：~~跨进程桥（⑦已批待排）~~ → **⑦已落地（2026-09-17 批⑦，4 commits，见下节完成记录）**；文档回写本节即 claims 计划面收口（计划书 L246-252 的解冻条款全部兑现）。
+
+---
+
+## claims 批⑦ 跨进程 poll→inject 桥 完成记录（2026-09-17，builder 执行+parent 亲验）
+
+4 commits：`e27a6b611`（存储：migration **v6 additive**——waiter 行增 host_pid+host_boot_id（`boot_<进程启动ms>_<pid>`，`Date.now()-performance.now()` 取真实进程起点）；登记默认盖本进程戳（被阻会话在自己进程内登记，天然准确），upsert 重登记即重盖章=重启修复路径；v5 零触碰走 extension 版本守卫；`CHIMERA_STORAGE_EXTENSION` 导出供测试构造 v5 世系；pin 5→6+升级幂等专测：旧行完整保留/新行盖戳/再开不重跑）→`265c920f4`（归属过滤 take：takeWoken/readWaiters 增可选 hostBootID 过滤，**releaseForSession/drainForSession/poll 三处调用全带 self 过滤**——他进程释放只翻 claim 行、绝不 flip 外来 waiter（丢醒修复核心）；NULL 行（pre-v6）不匹配任何过滤，仅 legacy 无过滤 take 或孤儿清扫可消费；条件轮询 3s：`pendingPollRoots` 内存 hint，零 waiter 零 DB 开销）→`be701d90b`（poll 纤维挂既有 editIntentWatch（InstanceState+forkScoped），poll/inject 故障 log 不杀纤维；fiber 级双 host E2E 测试）→`b125041c5`（真双进程集成：`Bun.spawn(process.execPath, worker.ts)` TS 源码允许道（abort-leak.test 先例姿势，零新鲜可执行物）——归属 take 偷不动+跨进程释放自 poll 唤醒（exit 0+WOKEN+行保留子进程 boot id）+**真死进程** boot-id 清扫，4/4 稳定）。
+
+stale-boot 惰性清理：`sweepStaleHosts` 骑活跃 poll tick（与 claim TTL 同哲学）；判死=signal 0（ESRCH/EINVAL→死，EPERM→活，own-pid 永活），死判永久缓存（boot-id 含启动 ms，pid 复用不复活）；NULL-host pre-v6 行仅超 2h 宽限（=claim TTL）才清——混版老进程自醒路径保护。
+
+exactly-once 论证：waiter 行按 host_boot_id 分区，每行只可能被宿主进程 flip（三处 take 全 self 过滤），跨进程双翻由构造排除；同进程并发沿用条件 UPDATE changes 守卫+SQLite 写锁串行化。丢醒闭环：他进程释放→本进程行保持 waiting→本进程 poll（≤3s）见 remaining=0→flip+本地 injectSynthetic。
+
+验证：builder 聚焦 14 文件 **386/0**+typecheck×3 绿；parent 亲验复跑 4 文件批 34/34×2+依赖面（tool-metadata/edit/write gate）47/47+store 8/8。真跨进程 agent 级 E2E（双 server+真 parked 会话）=**CI-only**（端点红线，测试文件头已注明）。claims prompt-context flake（家族第一例）9 次探针未复现、与本批正交，仍记待修。
+
+遗留（非阻塞）：pid namespace 局限（容器隔离 ns 共享项目卷可能互判误死——判死仅在 kill(0) 明确 ESRCH/EINVAL 时发生，注释在案）；混版窗口老进程 NULL waiter 2h 宽限后被清（宽限期内自醒完好）；poll limit 200/tick 病态多 tick 自愈；7 腿 prebuild 重 stage=K-v2 波次收口 parent 统一做。
+
+**附带根因修复（parent，`34f745b1d`）——claims flake 家族第二例结案**：gate 测试「queues a later predesign…」负载下 ~30% 失败（blockedBy=predesign）。行级证据：DB inode/mtime 未变、无 jsonl fallback、raw sqlite 见 `chimera_predesign_run` 恰 1 行且属 ses_b——`recordPredesignRun` 的 id=sha256(createdAt:payload) **不含 sessionID**，两会话同毫秒+同 payload（测试均 `{}`）→同 id→`INSERT OR REPLACE` 静默顶掉 ses_a 证据行。归因=**origin/main 既有**（批⑤门禁批引入，非桥引入）。修复：predesign id 哈希入 sessionID；同类 `recordAuditRun` 哈希入 source+provenanceID（auto 审计 payload `{auto,status,changeFacts}` 无会话区分，swarm 并发同毫秒会顶掉 audit 证据行）；oracle id 哈希全量富载荷不动（碰撞即语义重复）。幂等保留（同会话/同突变同毫秒重录仍 REPLACE）。修后单文件 ×15 全绿（修前 ~1/3 失败）。

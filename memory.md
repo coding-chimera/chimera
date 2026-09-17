@@ -245,3 +245,11 @@ loop 挂起修复前的对比基线（本机 macOS, bun 1.4.0, `bun test --timeo
 - **新全量基线=26 fail**：httpapi-config×8+HttpApi SDK×2+环境 15（MCP daemon×7/roots×3/initialize×2/Node26×2/node:sqlite×1，F2 行为修复不清环境性失败）+claims prompt-context flake×1（A/B 实证既有，负载敏感 ~30%，claims lane 待修时序）。
 - 残留 42 pair 清单=/var/folders/…/chimera/dependabot-batch/hits-final（后续专项批：seroval/solid-js patch、ai@6 家族、astro 5→7、wrangler、@hey-api+SDK 重生成、electron、newweb 面三小件移交 newweb 仓；valibot 被 bun update sdk/js 解析 bug 阻塞）。
 - provider-utils 4.0.33 否决回滚先例：升后 copilot 面 65 类型错=API 变动信号（零风险标准实证）。
+
+### K-v2 主力波进展 + claims 批⑦收口（2026-09-17 晚，覆盖上方交接节的在途/lane/推送链条目）
+
+- **三对象状态**：桥收口（`e27a6b611`/`265c920f4`/`be701d90b`/`b125041c5`，parent 亲验 34/34×2+47/47+store 8/8）；P3 kernel re-vendor 收口（`1fbe50624` 快速道/`5c02e09d1` 慢道 tsjs/`f859f27d0` buffers 双 append 终态/`f45c22598` 记账；fork 五机制保全对账全过：statementMissingInKernel=0、params 11 drift 全为 kernel 富化多出、order 44=D3 设计内窗口态、value-ref 三族+shadow-prune 实证；darwin-arm64 .node sha=`6e32fc67…` 双落点一致，**7 腿未重编=发布闸 CI-only**；parity 窗口快照=cbench/kernel-parity/ksd-parity-p3-window-20260917.json）；**P2 在途**（`b1e732dd5` 1/4+`861ddbac0` 2/4 已落，3/4 tree-sitter.ts WIP 未提交；types.ts 获 parent append-only 裁决；P3 四项协同已中途转达：VALUE_REF_LANGS 收窄/shadow-prune 同式 compute_shadowed_value_names/params+returnType 对齐 kernel Extra 线字段/import-binding 双发风险仅记录）。
+- **claims flake 家族第二例结案（parent，`34f745b1d`）**：gate 测试「queues a later predesign…」负载下 ~30% 失败。根因=recordPredesignRun id=sha256(createdAt:payload) 不含 sessionID，同毫秒+同 payload（测试均 {}）→同 id→INSERT OR REPLACE 静默顶掉 ses_a 证据行（行级证据：pdRows 仅 ses_b）。**origin/main 既有**（批⑤引入）。修=predesign id 入 sessionID+recordAuditRun 入 source+provenanceID（auto 审计 payload 无会话区分，swarm 并发同风险）；oracle 富载荷不动。修后 ×15 全绿。第一例 prompt-context flake 仍待修（基线 26 仍含）。
+- **看护**：ses_f4fe7f9faffe… 第 6+ 轮起 P2 单对象（12-15min/轮，终止=P2 收口/红线/12 轮满）。
+- **推送链**：origin/main=`08f8bc347`；本地未推 **11 笔**（桥 4+P3 4+P2 2+flake 修 1）——**P2/P3 同波推送纪律**：P2 收口→安静树全量（基线 26 对账，预期 flake 修后变 25+新桥面未知项逐条归因）→ali-internal-audit 全范围→同波 push→7 腿重 stage（CI）→P4 派单。
+- **警示**：P2 收口前 extraction/kernel-selector 测试结果不可信（tree-sitter.ts WIP 有 takeDeferredPreParse ReferenceError 窗口态）；文档回写已完成（计划书批⑦节+L252 闭环、TRIAGE L262 闭环）。
