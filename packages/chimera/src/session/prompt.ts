@@ -2225,10 +2225,11 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
 
             yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
 
-            const [skills, env, instructions] = yield* Effect.all([
+            const [skills, env, instructions, mcpInstructions] = yield* Effect.all([
               sys.skills(agent),
               sys.environment(model),
               instruction.system().pipe(Effect.orDie),
+              sys.mcp(agent, session.permission),
             ])
             const currentUserIndex = msgs.findIndex((m) => m.info.id === lastUser.id)
             const splitModelMsgs = yield* Effect.gen(function* () {
@@ -2255,6 +2256,7 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
               ...env,
               ...instructions,
               ...(memoryContext ? [memoryContext.guidance] : []),
+              ...(mcpInstructions ? [mcpInstructions] : []),
               ...(skills ? [skills] : []),
             ]
             if (cutoffPending) {

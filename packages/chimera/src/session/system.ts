@@ -25,6 +25,7 @@ import type { Provider } from "@/provider/provider"
 import type { Agent } from "@/agent/agent"
 import { Permission } from "@/permission"
 import { Skill } from "@/skill"
+import { MCP } from "@/mcp"
 
 function ids(model: Provider.Model) {
   const apiID = model.api.id.toLowerCase()
@@ -165,6 +166,7 @@ export function ultraVariant(model: Provider.Model, variant: string | undefined)
 export interface Interface {
   readonly environment: (model: Provider.Model) => Effect.Effect<string[]>
   readonly skills: (agent: Agent.Info) => Effect.Effect<string | undefined>
+  readonly mcp: (agent: Agent.Info, permission?: Permission.Ruleset) => Effect.Effect<string | undefined>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SystemPrompt") {}
@@ -173,6 +175,7 @@ export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const skill = yield* Skill.Service
+    const mcp = yield* MCP.Service
 
     return Service.of({
       environment: Effect.fn("SystemPrompt.environment")(function* (model: Provider.Model) {
@@ -203,10 +206,30 @@ export const layer = Layer.effect(
           Skill.fmt(list),
         ].join("\n")
       }),
+
+      // Instructions a server sent at initialize time, gated on whether the agent can
+      // still see at least one of the tools they describe.
+      mcp: Effect.fn("SystemPrompt.mcp")(function* (agent: Agent.Info, permission?: Permission.Ruleset) {
+        const ruleset = Permission.merge(agent.permission, permission ?? [])
+        const instructions = (yield* mcp.instructions()).filter(
+          (item) => item.tools.length === 0 || Permission.disabled(item.tools, ruleset).size < item.tools.length,
+        )
+        if (instructions.length === 0) return
+
+        return [
+          "<mcp_instructions>",
+          ...instructions.flatMap((item) => [
+            `  <server name="${item.name}">`,
+            ...item.instructions.split("\n").map((line) => `    ${line}`),
+            "  </server>",
+          ]),
+          "</mcp_instructions>",
+        ].join("\n")
+      }),
     })
   }),
 )
 
-export const defaultLayer = layer.pipe(Layer.provide(Skill.defaultLayer))
+export const defaultLayer = layer.pipe(Layer.provide(Skill.defaultLayer), Layer.provide(MCP.defaultLayer))
 
 export * as SystemPrompt from "./system"
