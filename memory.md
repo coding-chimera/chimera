@@ -12,6 +12,13 @@ Guidelines:
 
 ## Notes
 
+### K-v2 P3：vendored kernel re-vendor 到上游 N 终态（2026-09-17，builder，4 commits 未 push）
+
+- **交付**（commit 1fbe50624 快速道 / 5c02e09d1 慢道 tsjs+docstring / f859f27d0 buffers+适配层 / 本记账批）：9 文件整体采 N（kotlin/scala/dart/lua/python/ccpp/java/rustlang/fnref，剥除回滚+N 17 机制随入）；textutil=N+push_json_string 保全；tsjs 两件 = N 基底重放 fork 五件套（statement 全套/value-ref D1 合并含 shadow-prune 吸收 compute_shadowed_value_names/params_json/RAW returnType 200/D5 大写块仅 tsjs），D3 interface 按 N 源码序（PendingInterface 移除，保序归 P2 wasm 重排），D4 docstring 采 N；buffers 双 append 终态 NODE_KINDS 24+EDGE_KINDS 13；kernel-decode.test 领先集归零 []+#808 断言改 property；langs/lib/Cargo.toml/grammars 零动作确认。**wave3 条目里的 quirk 对齐件已全部被本批推翻（路线 a）**
+- **.node**：darwin-arm64 重建 sha256=6e32fc67e48e0b84cc4d97365cbc71c7ef076dd6721b64ac65b82bf390607eac（staged+全局覆盖 5e00fd19）；**其余 7 腿仍旧 kernel，8 腿 sha 不一致——parent 波次收口 CI 统一重编后才能发布**。cargo release 干净（3 条 N 自带警告）；kernel 测试族 58/58；typecheck 绿
+- **窗口期 parity**（P2 在途，wasm 臂旧 oracle；快照 cbench/kernel-parity/ksd-parity-p3-window-20260917.json）：243 files/30 identical/0 defer/0 kernelErrors；fork 四资产保全：statementMissingInKernel=0（6555 全发射）、params drift 11=全为 #1638 interface 成员 kernel 富化方向、order 44=D3 窗口态、value-ref 冒烟+shadow-prune 实证过；白名单差=kotlin/scala/dart N 语义、ts #693 归属/chain 重编码/import-binding refs、lua 赋值式——P2 收口后收敛，P4 重对账
+- **P2 协同四项**（已在 PLAN K-v2 章节入库）：VALUE_REF_LANGS 收窄 wasm 侧；shadow-prune 两臂同式（kernel 参考实现 tsjs/mod.rs）；wasm params/returnType 重放点对齐 kernel Extra；import-binding refs 回归后与 resolution 层双发核对（P5）
+
 ### Rust kernel wave3：kotlin/scala/dart 字节级对齐 + 开闸（9 语言路由，2026-09-17）
 
 - **交付**（commit 311bcd9cb、322208fe8、f384dbca1、a60e9f24d，未 push）：上游排查实锤——fork wasm oracle = 上游 pre-feature 版（kotlin.ts@34240eb、scala.ts@8506936、dart.ts@a2ed181，均早于 #708/#750系/#897），vendored kernel = 上游 HEAD R7b+stack-guard，**上游无任何对应旧 wasm 的 kernel 版本可移植**（上游 parity 测试断言的是新 wasm）→ 对账 = 剥离 post-fork 上游特性 + 复原 wasm 臂 quirk：returnType/type-refs/static-member-refs/valueRef 边/property+constant 节点/chain 重编码/literal-receiver skip/paren 转换/modifiers-descent decorates 全剪，scala val/var 改 nodeStack-kind 判定（object val = field）、scala returnType 改 RAW 文本、extends 只取首 named child 原文（dart 得到 `extends "with MixA"` quirk）、dart ctor 走通用 extractName unwrap（named ctor/factory = 以类名命名的 method，bodiless declaration-ctor 不可见）、docstring 换 fork 简化清洗器（`///` 保留第三斜杠）；fn-ref(200) 行保留但 decode 层本就丢弃
