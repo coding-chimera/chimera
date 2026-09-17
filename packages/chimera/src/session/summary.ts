@@ -71,11 +71,19 @@ function estimatedDiffBytes(diffs: Snapshot.FileDiff[]) {
   return diffs.reduce((sum, item) => sum + item.file.length + item.patch.length + 80, 2)
 }
 
-function messageSummaryDiffs(diffs: Snapshot.FileDiff[]) {
+/**
+ * Size gate for the diffs stored inside a message row. The estimate above can
+ * undercount the serialized form (JSON escaping of paths and patch bodies), and
+ * an oversized blob is exactly what `MessageV2` used to repair on every read,
+ * so the size that actually lands in SQLite is verified here too. Returns
+ * undefined when the diffs must be dropped, matching the legacy repair, which
+ * stored `[]`.
+ */
+export function messageSummaryDiffs(diffs: Snapshot.FileDiff[]) {
   if (diffs.length > MAX_MESSAGE_SUMMARY_DIFFS) return undefined
   if (estimatedDiffBytes(diffs) > MAX_MESSAGE_SUMMARY_DIFF_BYTES) return undefined
+  if (Buffer.byteLength(JSON.stringify(diffs)) > MessageV2.MAX_STORED_MESSAGE_SUMMARY_BYTES) return undefined
   return diffs
-
 }
 export interface Interface {
   readonly summarize: (input: { sessionID: SessionID; messageID: MessageID }) => Effect.Effect<void>

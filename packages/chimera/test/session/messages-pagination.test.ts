@@ -8,6 +8,10 @@ import { MessageV2 } from "../../src/session/message-v2"
 import { MessageID, PartID, type SessionID } from "../../src/session/schema"
 import { ModelID, ProviderID } from "../../src/provider/schema"
 import * as Log from "@opencode-ai/core/util/log"
+import { and, eq, sql } from "drizzle-orm"
+import { Database } from "../../src/storage/db"
+import { MessageTable } from "../../src/session/session.sql"
+import { StorageMaintenanceTable } from "../../src/storage/maintenance.sql"
 
 const root = path.join(__dirname, "../..")
 void Log.init({ print: false })
@@ -1365,6 +1369,108 @@ describe("MessageV2 consistency", () => {
         const all = Array.from(MessageV2.stream(session.id)).reverse()
 
         expect(filtered.map((m) => m.info.id)).toEqual(all.map((m) => m.info.id))
+
+        await svc.remove(session.id)
+      },
+    })
+  })
+})
+
+describe("MessageV2 stored summary repair", () => {
+  const storedSummaryDiffs = (sessionID: SessionID, messageID: MessageID) => {
+    const row = Database.use((db) =>
+      db
+        .select({ data: MessageTable.data })
+        .from(MessageTable)
+        .where(and(eq(MessageTable.id, messageID), eq(MessageTable.session_id, sessionID)))
+        .get(),
+    )
+    return (row?.data as { summary?: { diffs?: unknown } } | undefined)?.summary?.diffs
+  }
+
+  const totalChanges = () => Database.use((db) => db.get(sql`select total_changes() as n`)) as { n: number }
+
+  const marker = (sessionID: SessionID) =>
+    Database.use((db) =>
+      db
+        .select()
+        .from(StorageMaintenanceTable)
+        .where(eq(StorageMaintenanceTable.key, `message-summary-trim:${sessionID}`))
+        .get(),
+    )
+
+  // A diff blob whose serialized JSON is larger than the stored budget, which
+  // is what the legacy read-path repair existed for.
+  const oversizedDiffs = () => [
+    {
+      file: "big.txt",
+      patch: "x".repeat(MessageV2.MAX_STORED_MESSAGE_SUMMARY_BYTES + 64),
+      additions: 1,
+      deletions: 0,
+    },
+  ]
+
+  async function addWithSummary(sessionID: SessionID, diffs: unknown) {
+    const id = MessageID.ascending()
+    await svc.updateMessage({
+      id,
+      sessionID,
+      role: "user",
+      time: { created: Date.now() },
+      agent: "test",
+      model: { providerID: "test", modelID: "test" },
+      tools: {},
+      mode: "",
+      summary: { diffs },
+    } as unknown as MessageV2.Info)
+    return id
+  }
+
+  test("repairs an oversized legacy summary once and marks the session", async () => {
+    await WithInstance.provide({
+      directory: root,
+      fn: async () => {
+        const session = await svc.create({})
+        const legacy = await addWithSummary(session.id, oversizedDiffs())
+        expect(marker(session.id)).toBeUndefined()
+        expect(storedSummaryDiffs(session.id, legacy)).not.toEqual([])
+
+        MessageV2.page({ sessionID: session.id, limit: 10 })
+
+        expect(storedSummaryDiffs(session.id, legacy)).toEqual([])
+        expect(marker(session.id)).toBeDefined()
+
+        await svc.remove(session.id)
+      },
+    })
+  })
+
+  test("paging a migrated long session performs no writes", async () => {
+    await WithInstance.provide({
+      directory: root,
+      fn: async () => {
+        const session = await svc.create({})
+        await addWithSummary(session.id, oversizedDiffs())
+        // First read migrates the session and records the completion marker.
+        MessageV2.page({ sessionID: session.id, limit: 50 })
+        expect(marker(session.id)).toBeDefined()
+
+        // 120 messages => MessageV2.stream pages 50 at a time, so this is the
+        // long-session paging pattern that used to re-run the UPDATE per page.
+        await fill(session.id, 120)
+        const late = await addWithSummary(session.id, oversizedDiffs())
+
+        const before = totalChanges().n
+        for (let i = 0; i < 3; i++) MessageV2.page({ sessionID: session.id, limit: 50 })
+        const paged = MessageV2.page({ sessionID: session.id, limit: 50 })
+        MessageV2.page({ sessionID: session.id, limit: 50, before: paged.cursor! })
+        MessageV2.get({ sessionID: session.id, messageID: late })
+        expect(Array.from(MessageV2.stream(session.id)).length).toBe(122)
+        expect(totalChanges().n - before).toBe(0)
+
+        // Proof the trim really did not run again: a row written after the
+        // migration keeps its oversized blob instead of being repaired.
+        expect(storedSummaryDiffs(session.id, late)).not.toEqual([])
 
         await svc.remove(session.id)
       },
