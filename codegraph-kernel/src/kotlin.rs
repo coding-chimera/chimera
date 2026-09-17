@@ -1,24 +1,33 @@
-//! Kotlin extraction — a faithful Rust port of `TreeSitterExtractor`'s Kotlin
-//! paths (src/extraction/tree-sitter.ts) plus languages/kotlin.ts.
+//! Kotlin extraction — a faithful Rust port of the FORK's Kotlin paths
+//! (packages/chimera/src/graph/extraction/tree-sitter.ts machinery +
+//! languages/kotlin.ts). The fork's wasm oracle predates upstream #708
+//! (returnType + the extractModifiers expect/actual decorators), #750/#752
+//! (chained-call re-encode, the literal-receiver skip) and #897 (property
+//! value nodes + value-reference edges), so NONE of those behaviors belong
+//! here — the byte-parity gate is the fork's wasm arm
+//! (script/kernel-parity.ts --lang kotlin). fn-ref (wire code 200) rows are
+//! still emitted but the fork's decode boundary DROPS them (decode.ts).
 //!
 //! Same porting contract as the other walkers: behavior parity, bug-for-bug.
-//! The authoritative quirk list is docs/design/kotlin-kernel-port-checklist.md.
-//! Two surfaces are FIRSTS for the kernel: extension-function receivers
-//! (getReceiverType → `Type::method` qualified-name OVERRIDE with no package
-//! prefix + the owner-contains fallback that excludes `interface` kinds and
-//! is source-order dependent) and extractModifiers (expect/actual platform
-//! modifiers → the node DECORATORS wire field, on every created node — the
-//! KMP synthesizer's input). Preserved on purpose: the FIELD_COUNT-0 dead
-//! cluster (no signatures, ZERO type-annotation refs), hook-consumed property
-//! initializers emitting nothing, the bodiless-class header re-walk asymmetry,
-//! enum-entry bodies being invisible, KDoc (`multiline_comment`) never being
-//! a docstring AND chain-breaking, comment-gluing into import/package extents,
-//! `@Anno(args)` emitting nothing while `@Anno` emits decorates, zero
-//! instantiates refs (constructors are capitalized `calls`), the qualified-
-//! receiver `com::qext` bug, the paren-then-lambda `trailing()` garbage
-//! callee, and the packaged-file value-ref target drop (namespace parents are
-//! not accepted). The fun-interface misparse-recovery hook branches are
-//! DEFER-SHIELDED (every such file has_error → wasm) and are not ported.
+//! Extension-function receivers are a kernel FIRST (getReceiverType →
+//! `Type::method` qualified-name OVERRIDE with no package prefix + the
+//! owner-contains fallback that excludes `interface` kinds and is
+//! source-order dependent). Preserved on purpose: the FIELD_COUNT-0 dead
+//! cluster (no signatures, ZERO type-annotation refs), property
+//! declarations minting NOTHING (the fork's fieldTypes/variableTypes paths
+//! cannot read the nested variable_declaration name — initializers stay
+//! invisible), the bodiless-class header re-walk asymmetry, enum-entry
+//! bodies being invisible, KDoc (`multiline_comment`) never being a
+//! docstring AND chain-breaking, comment-gluing into import/package
+//! extents, annotations inside `modifiers` emitting NO decorates (the fork
+//! never descends into modifiers), zero instantiates refs (constructors are
+//! capitalized `calls`), the qualified-receiver `com::qext` bug, the
+//! paren-then-lambda `trailing()` garbage callee, RAW callee text with no
+//! paren-conversion, and chained calls yielding the BARE method name per
+//! call_expression (a string-literal receiver `.trimIndent()` INCLUDED —
+//! the fork has no literal-receiver skip). The fun-interface
+//! misparse-recovery hook branches are DEFER-SHIELDED (every such file
+//! has_error → wasm) and are not ported.
 //! Positions in UTF-16 code units. Expected deferral 4.7–8.5% (both-arm,
 //! grammar-inherent — incl. phantom errors: trust the has_error FLAG).
 
@@ -27,15 +36,12 @@ use crate::buffers::{
     RefRow, StrRef, Tables, FLAG_IS_ASYNC, FLAG_IS_EXPORTED, FLAG_IS_STATIC, FUNCTION_REF_CODE,
     NONE, NONE_STR,
 };
-use crate::docstring::preceding_docstring;
+use crate::docstring::preceding_docstring_tsjs;
 use crate::ids;
 use crate::textutil as util;
-use regex::Regex;
-use std::collections::{HashMap, HashSet};
-use std::sync::OnceLock;
+use std::collections::HashSet;
 use tree_sitter::{Node, Parser};
 
-const MAX_VALUE_REF_NODES: usize = 20_000;
 
 /// NAME_STOPLIST (function-ref.ts).
 fn is_stoplisted(name: &str) -> bool {
@@ -46,46 +52,7 @@ fn is_stoplisted(name: &str) -> bool {
     )
 }
 
-/// LITERAL_RECEIVER_TYPES (tree-sitter.ts:373) — full shared set.
-fn is_literal_receiver(kind: &str) -> bool {
-    matches!(
-        kind,
-        "string" | "string_literal" | "interpreted_string_literal" | "raw_string_literal"
-            | "template_string" | "concatenated_string" | "formatted_string" | "f_string"
-            | "line_string_literal" | "string_content" | "heredoc_body"
-            | "number" | "number_literal" | "integer" | "integer_literal" | "float"
-            | "float_literal" | "int_literal" | "decimal_integer_literal" | "real_literal"
-            | "char_literal" | "character_literal" | "rune_literal" | "regex" | "regex_literal"
-            | "true" | "false" | "boolean_literal" | "bool_literal" | "none" | "null" | "nil"
-            | "null_literal" | "undefined"
-            | "list" | "list_literal" | "array" | "array_literal" | "array_creation_expression"
-            | "dictionary" | "dict_literal" | "object" | "tuple" | "set"
-    )
-}
 
-/// `/^[A-Za-z_]\w*$/` with JS's ASCII `\w` (getReturnType's ident test).
-fn ascii_ident_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[A-Za-z_][0-9A-Za-z_]*$").unwrap())
-}
-/// extractStaticMemberRef's capitalized-receiver test.
-fn capitalized_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[A-Z][A-Za-z0-9_]*$").unwrap())
-}
-
-/// JS `\s` for the #750 inner-callee strip.
-fn is_js_space(c: char) -> bool {
-    matches!(
-        c,
-        '\t' | '\n' | '\x0B' | '\x0C' | '\r' | ' ' | '\u{00A0}' | '\u{1680}'
-            | '\u{2000}'..='\u{200A}' | '\u{2028}' | '\u{2029}' | '\u{202F}' | '\u{205F}'
-            | '\u{3000}' | '\u{FEFF}'
-    )
-}
-fn strip_js_ws(s: &str) -> String {
-    s.chars().filter(|c| !is_js_space(*c)).collect()
-}
 
 struct Scope {
     row: u32,
@@ -106,17 +73,11 @@ struct Extra {
     visibility: Option<u8>,
     is_static: Option<bool>,
     is_async: Option<bool>,
-    return_type: Option<String>,
     /// composeReceiverQualifiedName override (extension methods) — the id
     /// still hashes the bare NAME; only the qualifiedName column changes.
     qualified_override: Option<String>,
 }
 
-struct ValueScope<'t> {
-    row: u32,
-    node: Node<'t>,
-    name: String,
-}
 
 struct Cand {
     from: u32,
@@ -138,9 +99,6 @@ pub struct Walker<'t> {
     defined_fn_names: HashSet<String>,
     imported_names: HashSet<String>,
     fn_ref_cands: Vec<Cand>,
-    fs_values: HashMap<String, u32>,
-    fs_value_counts: HashMap<String, u32>,
-    value_scopes: Vec<ValueScope<'t>>,
 }
 
 pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
@@ -171,9 +129,6 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
         defined_fn_names: HashSet::new(),
         imported_names: HashSet::new(),
         fn_ref_cands: Vec::new(),
-        fs_values: HashMap::new(),
-        fs_value_counts: HashMap::new(),
-        value_scopes: Vec::new(),
     };
 
     let line_count = source.bytes().filter(|b| *b == b'\n').count() as u32 + 1;
@@ -232,7 +187,6 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
 
     w.visit_node(root);
     w.flush_fn_ref_candidates();
-    w.flush_value_refs(root);
     if pkg_pushed {
         w.stack.pop();
     }
@@ -362,19 +316,11 @@ impl<'t> Walker<'t> {
         if let Some(v) = extra.is_static {
             flags.set(FLAG_IS_STATIC, v);
         }
-        // extractModifiers merge (tree-sitter.ts:1355) — runs for EVERY
-        // created node: expect/actual platform modifiers → decorators.
-        let mods = self.extract_modifiers(node);
-        let dec_ref: StrRef = match &mods {
-            Some(list) if !list.is_empty() => self.arena.put_list(list),
-            _ => NONE_STR,
-        };
         let name_ref = self.arena.put(name);
         let qn_ref = self.arena.put(&qualified);
         let id_ref = self.arena.put(&id);
         let doc_ref = opt_str(&mut self.arena, extra.docstring.as_deref());
         let sig_ref = opt_str(&mut self.arena, extra.signature.as_deref());
-        let ret_ref = opt_str(&mut self.arena, extra.return_type.as_deref());
         let row = self.tables.push_node(&NodeRow {
             kind: node_kind_index(kind).unwrap(),
             visibility: extra.visibility.unwrap_or(0),
@@ -388,9 +334,9 @@ impl<'t> Walker<'t> {
             id: id_ref,
             docstring: doc_ref,
             signature: sig_ref,
-            decorators: dec_ref,
+            decorators: NONE_STR,
             type_parameters: NONE_STR,
-            return_type: ret_ref,
+            return_type: NONE_STR,
             extra_json: NONE_STR,
         });
         self.node_ids.push(id);
@@ -411,26 +357,6 @@ impl<'t> Walker<'t> {
 
         if kind == "function" || kind == "method" {
             self.defined_fn_names.insert(name.to_string());
-        }
-        // captureValueRefScope — namespace parents are NOT accepted, so
-        // packaged files' top-level constants are never targets (quirk).
-        let target_kind_ok = kind == "constant" || kind == "variable";
-        if target_kind_ok
-            && util::utf16_len(name) >= 3
-            && util::has_upper_or_underscore().is_match(name)
-        {
-            let parent_ok = self
-                .stack
-                .last()
-                .map(|s| matches!(s.kind, "file" | "class" | "module" | "struct" | "enum"))
-                .unwrap_or(false);
-            if parent_ok {
-                self.fs_values.insert(name.to_string(), row);
-                *self.fs_value_counts.entry(name.to_string()).or_insert(0) += 1;
-            }
-        }
-        if matches!(kind, "function" | "method" | "constant" | "variable") {
-            self.value_scopes.push(ValueScope { row, node, name: name.to_string() });
         }
         Some(row)
     }
@@ -489,48 +415,6 @@ impl<'t> Walker<'t> {
             .any(|c| c.kind() == "modifiers" && self.text(c).contains("suspend"))
     }
 
-    /// extractKotlinReturnType — positional: the first user_type/nullable_type
-    /// AFTER function_value_parameters; function_body/type_constraints first →
-    /// None; Unit/Nothing → None; `: T` generic params leak (preserve).
-    fn return_type_of(&self, node: Node) -> Option<String> {
-        let mut seen_params = false;
-        for i in 0..node.named_child_count() {
-            let Some(child) = node.named_child(i) else { continue };
-            if child.kind() == "function_value_parameters" {
-                seen_params = true;
-                continue;
-            }
-            if !seen_params {
-                continue;
-            }
-            if matches!(child.kind(), "function_body" | "type_constraints") {
-                return None;
-            }
-            if matches!(child.kind(), "user_type" | "nullable_type") {
-                let ut = if child.kind() == "nullable_type" {
-                    (0..child.named_child_count())
-                        .filter_map(|j| child.named_child(j))
-                        .find(|c| c.kind() == "user_type")
-                        .unwrap_or(child)
-                } else {
-                    child
-                };
-                let type_id = (0..ut.named_child_count())
-                    .filter_map(|j| ut.named_child(j))
-                    .find(|c| c.kind() == "type_identifier");
-                let name = self.text(type_id.unwrap_or(ut)).trim();
-                if name.is_empty() || !ascii_ident_re().is_match(name) {
-                    return None;
-                }
-                if matches!(name, "Unit" | "Nothing") {
-                    return None;
-                }
-                return Some(name.to_string());
-            }
-        }
-        None
-    }
-
     /// getReceiverType — extension functions: the last user_type BEFORE a `.`
     /// child; its FIRST type_identifier's text (qualified receivers take the
     /// FIRST segment — the `com::qext` bug, preserve).
@@ -555,105 +439,10 @@ impl<'t> Walker<'t> {
         None
     }
 
-    /// extractModifiers — expect/actual platform modifiers, matched by NODE
-    /// TYPE (never text), in order. Runs inside create_node for every node.
-    fn extract_modifiers(&self, node: Node) -> Option<Vec<String>> {
-        let mut mods: Vec<String> = Vec::new();
-        for i in 0..node.child_count() {
-            let Some(child) = node.child(i) else { continue };
-            if child.kind() != "modifiers" {
-                continue;
-            }
-            for j in 0..child.child_count() {
-                let Some(pm) = child.child(j) else { continue };
-                if pm.kind() != "platform_modifier" {
-                    continue;
-                }
-                for k in 0..pm.child_count() {
-                    let Some(kw) = pm.child(k) else { continue };
-                    if matches!(kw.kind(), "expect" | "actual") {
-                        mods.push(kw.kind().to_string());
-                    }
-                }
-            }
-        }
-        if mods.is_empty() { None } else { Some(mods) }
-    }
-
-    // --- the visitNode hook (property branch ONLY — fun-interface recovery is
-    // defer-shielded and not ported) ------------------------------------------------
-
-    fn try_visit_hook(&mut self, node: Node<'t>) -> bool {
-        if node.kind() != "property_declaration" {
-            return false;
-        }
-        let var_decl = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
-            .find(|c| c.kind() == "variable_declaration");
-        let name_node = var_decl.and_then(|vd| {
-            (0..vd.named_child_count())
-                .filter_map(|i| vd.named_child(i))
-                .find(|c| c.kind() == "simple_identifier")
-        });
-        let Some(name_node) = name_node else { return false }; // destructuring → decline
-        let name = self.text(name_node).to_string();
-        if name.is_empty() {
-            return false;
-        }
-
-        // Scope walk up the parent chain — first match wins.
-        let mut scope: &str = "const";
-        let mut p = node.parent();
-        while let Some(pn) = p {
-            match pn.kind() {
-                "function_body" | "function_declaration" | "lambda_literal"
-                | "anonymous_initializer" | "control_structure_body" | "getter" | "setter" => {
-                    scope = "local";
-                    break;
-                }
-                "companion_object" | "object_declaration" => {
-                    scope = "const";
-                    break;
-                }
-                "class_declaration" => {
-                    scope = "instance";
-                    break;
-                }
-                _ => {}
-            }
-            p = pn.parent();
-        }
-        if scope == "local" {
-            return true; // a local — extract nothing, subtree still scanned
-        }
-
-        let binding = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
-            .find(|c| c.kind() == "binding_pattern_kind");
-        let is_val = binding.map(|b| self.text(b) == "val").unwrap_or(false);
-        let kind: &'static str = if scope == "instance" {
-            "field"
-        } else if is_val {
-            "constant"
-        } else {
-            "variable"
-        };
-        // The `type`-field signature read is dead (zero fields) → signature
-        // undefined; NO docstring/visibility/isStatic — the modifiers merge in
-        // create_node still decorates expect/actual properties.
-        self.create_node(kind, &name, node, Extra::default());
-        true
-    }
-
     // --- the dispatcher (visitNode, Kotlin-relevant branches) -----------------------
 
     fn visit_node(&mut self, node: Node<'t>) {
         stack_guard!();
-        if self.try_visit_hook(node) {
-            self.scan_fn_ref_subtree(node, 0);
-            return;
-        }
-
         let kind = node.kind();
         let mut skip_children = false;
 
@@ -694,9 +483,11 @@ impl<'t> Walker<'t> {
         } else if kind == "type_alias" {
             skip_children = self.extract_type_alias(node);
         } else if kind == "property_declaration" {
-            // Hook-declined destructuring: extractField/extractVariable both
-            // find no matching children for kotlin — NOTHING minted, RHS
-            // invisible; candidates-only scan.
+            // The fork's extractField/extractVariable paths find no matching
+            // children for kotlin (the name nests one level deeper inside
+            // variable_declaration) — NOTHING is minted for ANY property,
+            // the RHS stays invisible, and BOTH fork dispatch branches set
+            // skipChildren; candidates-only scan here.
             self.scan_fn_ref_subtree(node, 0);
             skip_children = true;
         } else if kind == "import_header" {
@@ -733,8 +524,6 @@ impl<'t> Walker<'t> {
             self.extract_call(node);
         }
         // (INSTANTIATION_KINDS has no kotlin members; extractBareCall absent.)
-
-        self.extract_static_member_ref(node);
 
         if kind == "function_declaration" {
             let name = self.extract_name(node);
@@ -794,12 +583,11 @@ impl<'t> Walker<'t> {
             return;
         }
         let extra = Extra {
-            docstring: preceding_docstring(node, self.src),
+            docstring: preceding_docstring_tsjs(node, self.src),
             signature: None, // dead hook (zero fields)
             visibility: Some(self.visibility_of(node)),
             is_async: Some(self.is_async(node)),
             is_static: Some(false), // kotlin isStatic is always false
-            return_type: self.return_type_of(node),
             ..Extra::default()
         };
         let Some(row) = self.create_node("function", &name, node, extra) else { return };
@@ -819,12 +607,11 @@ impl<'t> Walker<'t> {
         let name = self.extract_name(node);
         let qualified_override = receiver.as_ref().map(|r| format!("{r}::{name}"));
         let extra = Extra {
-            docstring: preceding_docstring(node, self.src),
+            docstring: preceding_docstring_tsjs(node, self.src),
             signature: None,
             visibility: Some(self.visibility_of(node)),
             is_async: Some(self.is_async(node)),
             is_static: Some(false),
-            return_type: self.return_type_of(node),
             qualified_override,
         };
         let Some(row) = self.create_node("method", &name, node, extra) else { return };
@@ -870,7 +657,7 @@ impl<'t> Walker<'t> {
         let resolved_body = self.resolve_body(node);
         let name = self.extract_name(node);
         let extra = Extra {
-            docstring: preceding_docstring(node, self.src),
+            docstring: preceding_docstring_tsjs(node, self.src),
             visibility: Some(self.visibility_of(node)),
             ..Extra::default()
         };
@@ -896,7 +683,7 @@ impl<'t> Walker<'t> {
         stack_guard!();
         let name = self.extract_name(node);
         let extra = Extra {
-            docstring: preceding_docstring(node, self.src),
+            docstring: preceding_docstring_tsjs(node, self.src),
             ..Extra::default() // NO visibility
         };
         let Some(row) = self.create_node("interface", &name, node, extra) else { return };
@@ -916,7 +703,7 @@ impl<'t> Walker<'t> {
         let Some(body) = self.resolve_body(node) else { return };
         let name = self.extract_name(node);
         let extra = Extra {
-            docstring: preceding_docstring(node, self.src),
+            docstring: preceding_docstring_tsjs(node, self.src),
             visibility: Some(self.visibility_of(node)),
             ..Extra::default()
         };
@@ -957,7 +744,7 @@ impl<'t> Walker<'t> {
             return false;
         }
         let extra = Extra {
-            docstring: preceding_docstring(node, self.src),
+            docstring: preceding_docstring_tsjs(node, self.src),
             ..Extra::default()
         };
         self.create_node("type_alias", &name, node, extra);
@@ -987,9 +774,10 @@ impl<'t> Walker<'t> {
         self.push_ref_at(parent, &module_name.clone(), edge_kind_index("imports").unwrap(), node);
     }
 
-    /// extractCall — the kotlin paths: navigation member branch (+ the #750
-    /// re-encode) and the raw-text else (paren-then-lambda / glued-invoke
-    /// garbage preserved).
+    /// extractCall — the kotlin paths: the navigation member branch (BARE
+    /// method names for every non-identifier receiver — the fork has no
+    /// literal-receiver skip and no chain re-encode) and the raw-text else
+    /// (paren-then-lambda / glued-invoke garbage preserved).
     fn extract_call(&mut self, node: Node<'t>) {
         if self.stack.is_empty() {
             return;
@@ -1022,11 +810,6 @@ impl<'t> Walker<'t> {
                     .or_else(|| func.child_by_field_name("operand"))
                     .or_else(|| func.child_by_field_name("argument"))
                     .or_else(|| func.named_child(0));
-                if let Some(r) = receiver {
-                    if is_literal_receiver(r.kind()) {
-                        return; // `"literal".uppercase()` / `5.toString()`
-                    }
-                }
                 let recv_ident = receiver.filter(|r| {
                     matches!(r.kind(), "identifier" | "simple_identifier" | "field_identifier")
                 });
@@ -1037,25 +820,13 @@ impl<'t> Walker<'t> {
                     } else {
                         callee_name = format!("{receiver_name}.{method_name}");
                     }
-                } else if receiver.map(|r| r.kind() == "call_expression").unwrap_or(false) {
-                    // #750 kotlin re-encode: innerNav = receiver.namedChild(0)
-                    // (NOT a function field), ws-stripped, /^[A-Z]/ gate.
-                    let inner = receiver.unwrap().named_child(0);
-                    let inner_callee =
-                        inner.map(|n| strip_js_ws(self.text(n))).unwrap_or_default();
-                    let reencode = inner_callee
-                        .as_bytes()
-                        .first()
-                        .map(|b| b.is_ascii_uppercase())
-                        .unwrap_or(false);
-                    callee_name = if reencode {
-                        format!("{inner_callee}().{method_name}")
-                    } else {
-                        method_name.to_string()
-                    };
                 } else {
-                    // this_expression / super_expression / 2-hop nav /
-                    // postfix `!!` / parenthesized → bare method name.
+                    // The fork has NEITHER the literal-receiver skip (#1230)
+                    // NOR the #750/#752 chain re-encode: every non-identifier
+                    // receiver (call_expression chains, string literals like
+                    // `"""…""".trimIndent()`, this_expression /
+                    // super_expression, 2-hop nav, postfix `!!`,
+                    // parenthesized) yields the BARE method name.
                     callee_name = method_name.to_string();
                 }
             }
@@ -1068,51 +839,9 @@ impl<'t> Walker<'t> {
         }
 
         if !callee_name.is_empty() {
-            if let Some(c) = util::paren_conversion().captures(&callee_name) {
-                callee_name = c[1].to_string();
-            }
-            self.push_ref_at(caller, &callee_name.clone(), edge_kind_index("calls").unwrap(), node);
-        }
-    }
-
-    /// extractStaticMemberRef — navigation_expression value reads, body
-    /// walker only (assignment WRITES parse as directly_assignable_expression
-    /// — not a member-access kind — and emit nothing).
-    fn extract_static_member_ref(&mut self, node: Node<'t>) {
-        if node.kind() != "navigation_expression" {
-            return;
-        }
-        if self.stack.is_empty() {
-            return;
-        }
-        let owner = self.top_row();
-        if let Some(parent) = node.parent() {
-            if parent.kind() == "call_expression" {
-                let callee = parent
-                    .child_by_field_name("function")
-                    .or_else(|| parent.child_by_field_name("method"))
-                    .or_else(|| parent.named_child(0));
-                if let Some(callee) = callee {
-                    if callee.start_byte() == node.start_byte() {
-                        return;
-                    }
-                }
-            }
-        }
-        let recv = node
-            .child_by_field_name("object")
-            .or_else(|| node.child_by_field_name("expression"))
-            .or_else(|| node.child_by_field_name("scope"))
-            .or_else(|| node.named_child(0));
-        let Some(recv) = recv else { return };
-        if matches!(
-            recv.kind(),
-            "identifier" | "type_identifier" | "simple_identifier" | "name" | "scoped_type_identifier"
-        ) {
-            let text = self.text(recv);
-            if capitalized_re().is_match(text) {
-                self.push_ref_at(owner, &text.to_string(), edge_kind_index("references").unwrap(), recv);
-            }
+            // NO parenthesized-conversion — the fork machinery emits the raw
+            // callee text.
+            self.push_ref_at(caller, &callee_name, edge_kind_index("calls").unwrap(), node);
         }
     }
 
@@ -1159,21 +888,14 @@ impl<'t> Walker<'t> {
         }
     }
 
-    /// extractDecoratorsFor — kotlin annotations inside `modifiers`:
-    /// `@Marker` (user_type child) → decorates ref; `@Anno(args)`
-    /// (constructor_invocation) → NOTHING. Runs for functions/methods/classes
-    /// only (hook properties never call it).
+    /// extractDecoratorsFor — the fork's two scans (direct children,
+    /// preceding annotation siblings) with NO modifiers descent: kotlin
+    /// annotations live inside `modifiers`, so kotlin emits ZERO decorates
+    /// refs (@Marker and @Anno(args) alike).
     fn extract_decorators_for(&mut self, decl: Node<'t>, decorated_row: u32) {
         for i in 0..decl.named_child_count() {
             let Some(child) = decl.named_child(i) else { continue };
             self.consider_decorator(child, decorated_row);
-            if child.kind() == "modifiers" {
-                for j in 0..child.named_child_count() {
-                    if let Some(m) = child.named_child(j) {
-                        self.consider_decorator(m, decorated_row);
-                    }
-                }
-            }
         }
         let Some(parent) = decl.parent() else { return };
         let decl_start = decl.start_byte();
@@ -1203,7 +925,7 @@ impl<'t> Walker<'t> {
     }
 
     fn consider_decorator(&mut self, n: Node<'t>, decorated_row: u32) {
-        if !matches!(n.kind(), "decorator" | "annotation" | "marker_annotation" | "attribute") {
+        if !matches!(n.kind(), "decorator" | "annotation" | "marker_annotation") {
             return;
         }
         let mut target: Option<Node> = None;
@@ -1215,17 +937,30 @@ impl<'t> Walker<'t> {
                     break;
                 }
             }
+            // Fork target list — NO user_type/type_identifier (kotlin
+            // annotations never reach consider() anyway — they ride inside
+            // `modifiers`, which the fork does not descend into).
             if matches!(
                 child.kind(),
                 "identifier" | "member_expression" | "scoped_identifier" | "navigation_expression"
-                    | "user_type" | "type_identifier"
             ) {
                 target = Some(child);
                 break;
             }
         }
         let Some(target) = target else { return };
-        let name = strip_generic_and_qualifier(self.text(target));
+        // Fork name shape: NO generic-arg truncation; after the last dot/`::`,
+        // exactly ONE leading ':' or '.' char stripped, no trim.
+        let mut name = self.text(target).to_string();
+        let last_dot = name.rfind('.').map(|i| i as i64).unwrap_or(-1);
+        let last_colons = name.rfind("::").map(|i| i as i64).unwrap_or(-1);
+        let last = last_dot.max(last_colons);
+        if last >= 0 {
+            name = name[(last as usize + 1)..].to_string();
+            if name.starts_with(':') || name.starts_with('.') {
+                name.remove(0);
+            }
+        }
         if name.is_empty() {
             return;
         }
@@ -1425,159 +1160,6 @@ impl<'t> Walker<'t> {
             });
         }
     }
-
-    // --- value references --------------------------------------------------------------
-
-    fn flush_value_refs(&mut self, root: Node<'t>) {
-        let scopes = std::mem::take(&mut self.value_scopes);
-        let mut targets = std::mem::take(&mut self.fs_values);
-        let counts = std::mem::take(&mut self.fs_value_counts);
-        if std::env::var("CODEGRAPH_VALUE_REFS").as_deref() == Ok("0") {
-            return;
-        }
-        if targets.is_empty() || scopes.is_empty() || util::is_generated_file(self.file_path) {
-            return;
-        }
-
-        // Shadow prune — kotlin cases: property_declaration (its
-        // variable_declaration's first simple_identifier; destructuring bumps
-        // nothing) AND the shared `assignment` case (the swift-sweep lesson —
-        // directly_assignable_expression children bump).
-        let mut decl_counts: HashMap<&str, u32> = HashMap::new();
-        let mut dstack: Vec<Node> = vec![root];
-        let mut dvisited = 0usize;
-        while let Some(n) = dstack.pop() {
-            if dvisited >= MAX_VALUE_REF_NODES {
-                break;
-            }
-            dvisited += 1;
-            if n.kind() == "assignment" {
-                let left = n
-                    .child_by_field_name("left")
-                    .or_else(|| n.child_by_field_name("pattern"))
-                    .or_else(|| n.named_child(0));
-                if let Some(left) = left {
-                    if left.kind() == "identifier" {
-                        let nm = self.text(left);
-                        if targets.contains_key(nm) {
-                            *decl_counts.entry(nm).or_insert(0) += 1;
-                        }
-                    } else {
-                        for i in 0..left.named_child_count() {
-                            let Some(c) = left.named_child(i) else { continue };
-                            if matches!(c.kind(), "identifier" | "simple_identifier") {
-                                let nm = self.text(c);
-                                if targets.contains_key(nm) {
-                                    *decl_counts.entry(nm).or_insert(0) += 1;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            if n.kind() == "property_declaration" {
-                let vd = (0..n.named_child_count())
-                    .filter_map(|i| n.named_child(i))
-                    .find(|c| c.kind() == "variable_declaration");
-                if let Some(vd) = vd {
-                    let id = (0..vd.named_child_count())
-                        .filter_map(|i| vd.named_child(i))
-                        .find(|c| c.kind() == "simple_identifier");
-                    if let Some(id) = id {
-                        let nm = self.text(id);
-                        if targets.contains_key(nm) {
-                            *decl_counts.entry(nm).or_insert(0) += 1;
-                        }
-                    }
-                }
-                // (the Swift name-field half of the shared case is a null
-                // path for kotlin — variable_declaration always present)
-            }
-            for i in 0..n.named_child_count() {
-                if let Some(c) = n.named_child(i) {
-                    dstack.push(c);
-                }
-            }
-        }
-        let shadowed: Vec<String> = decl_counts
-            .iter()
-            .filter(|(nm, c)| **c > counts.get(**nm).copied().unwrap_or(1))
-            .map(|(nm, _)| nm.to_string())
-            .collect();
-        for nm in shadowed {
-            targets.remove(&nm);
-        }
-        if targets.is_empty() {
-            return;
-        }
-
-        let refs_kind = edge_kind_index("references").unwrap();
-        for scope in &scopes {
-            let mut seen: HashSet<&str> = HashSet::new();
-            let mut stack: Vec<Node> = vec![scope.node];
-            let mut visited = 0usize;
-            while let Some(n) = stack.pop() {
-                if visited >= MAX_VALUE_REF_NODES {
-                    break;
-                }
-                visited += 1;
-                // simple_identifier is kotlin's live reader kind —
-                // `${TARGET}` interpolations read, `$TARGET`
-                // (interpolated_identifier) doesn't.
-                if matches!(n.kind(), "identifier" | "constant" | "name" | "simple_identifier") {
-                    let ref_name = self.text(n);
-                    if let Some(&target_row) = targets.get(ref_name) {
-                        let target_id = self.node_ids[target_row as usize].as_str();
-                        if target_id != self.node_ids[scope.row as usize]
-                            && ref_name != scope.name
-                            && !seen.contains(&target_id)
-                        {
-                            seen.insert(target_id);
-                            let meta = self.arena.put(r#"{"valueRef":true}"#);
-                            self.tables.push_edge(&EdgeRow {
-                                source_idx: scope.row,
-                                target_idx: target_row,
-                                kind: refs_kind,
-                                provenance: 0,
-                                line: NONE,
-                                column: NONE,
-                                metadata_json: meta,
-                                source_id_str: NONE_STR,
-                                target_id_str: NONE_STR,
-                            });
-                        }
-                    }
-                }
-                for i in 0..n.named_child_count() {
-                    if let Some(c) = n.named_child(i) {
-                        stack.push(c);
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// The shared decorator-name normalization.
-fn strip_generic_and_qualifier(raw: &str) -> String {
-    let mut name = raw.to_string();
-    if let Some(lt) = name.find('<') {
-        if lt > 0 {
-            name.truncate(lt);
-        }
-    }
-    let last_dot = name
-        .rfind('.')
-        .map(|i| i as isize)
-        .unwrap_or(-1)
-        .max(name.rfind("::").map(|i| i as isize).unwrap_or(-1));
-    if last_dot >= 0 {
-        name = name[(last_dot as usize + 1)..].to_string();
-        if name.starts_with(':') || name.starts_with('.') {
-            name.remove(0);
-        }
-    }
-    name.trim().to_string()
 }
 
 fn opt_str(arena: &mut Arena, s: Option<&str>) -> StrRef {
