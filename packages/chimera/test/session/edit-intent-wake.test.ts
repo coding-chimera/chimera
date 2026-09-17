@@ -2,7 +2,7 @@ import { afterEach, describe, expect } from "bun:test"
 import { Effect } from "effect"
 import { Chimera } from "@/chimera"
 import { EditIntentClaims } from "@/chimera/edit-intent"
-import { readActiveEditIntentClaims, readEditIntentWaiters, releaseEditIntentClaims } from "@/chimera/store"
+import { readActiveEditIntentClaims, readEditIntentWaiters, registerEditIntentWaiter, releaseEditIntentClaims } from "@/chimera/store"
 import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
 import { SessionStatus } from "@/session/status"
@@ -244,6 +244,66 @@ describe("edit-intent claims L2 wake (release → inject)", () => {
         expect(wake).toContain("the holder's session was removed")
         const holderActive = yield* Effect.promise(() => readActiveEditIntentClaims(root, { sessionID: holder.id }))
         expect(holderActive).toHaveLength(0)
+      }),
+      { git: true, config: (url) => testProviderConfig(url) },
+    ),
+  )
+
+  it.live("a release from another process wakes the parked session through the watcher's poll fiber without stealing foreign-hosted waiters", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ dir, llm }) {
+        void dir
+        yield* initGraph()
+        const root = yield* projectRoot()
+        const sessions = yield* Session.Service
+
+        // The blocker "lives" in another process: it exists only as claim rows.
+        const waiter = yield* seedWaiter(sessions, "Waiter", "polled-echo", llm)
+        yield* EditIntentClaims.registerFromPredesign({
+          projectRoot: root,
+          sessionID: "ses_remote_holder",
+          agent: "build",
+          predesignID: "predesign_remote",
+          intent: "remote holder refactor",
+          files: ["shared.ts"],
+        })
+        // The local session queues behind the remote holder through the gate
+        // (host-stamped with this process, pending-poll hint set).
+        const conflicts = yield* EditIntentClaims.checkMutation({
+          projectRoot: root,
+          sessionID: waiter.id,
+          toolID: "edit",
+          files: [{ absolutePath: `${root}/shared.ts`, graphPath: "shared.ts" }],
+        })
+        expect(conflicts).toHaveLength(1)
+        // A live foreign host's waiter on the same file (pid 1 = launchd/init):
+        // the poll must wake only the locally hosted row.
+        yield* Effect.promise(() =>
+          registerEditIntentWaiter(root, {
+            sessionID: "ses_foreign_parked",
+            filePath: "shared.ts",
+            blockerSessionID: "ses_remote_holder",
+            host: { pid: 1, bootID: "boot_1_1" },
+          }),
+        )
+
+        // The remote process releases (raw store write: no local bus event,
+        // no local take — exactly what a release in another process looks
+        // like from here).
+        yield* Effect.promise(() => releaseEditIntentClaims(root, "ses_remote_holder", "session_idle"))
+
+        // The watcher's poll fiber (armed by seedWaiter's prompt() run) picks
+        // the freed waiter up within its interval and injects the wake.
+        const { wake } = yield* pollWake(sessions, waiter.id, "polled-echo")
+        expect(wake).toContain("<edit_intent_release>")
+        expect(wake).toContain("shared.ts")
+        // The poll path has no release reason attached.
+        expect(wake).toContain("the holder finished")
+
+        // The foreign-hosted row was NOT stolen: it stays waiting for its
+        // own process's poll.
+        const foreign = yield* Effect.promise(() => readEditIntentWaiters(root, { sessionID: "ses_foreign_parked", status: "waiting" }))
+        expect(foreign).toHaveLength(1)
       }),
       { git: true, config: (url) => testProviderConfig(url) },
     ),
