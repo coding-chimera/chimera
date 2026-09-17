@@ -19,7 +19,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { DatabaseConnection, WAL_HEAL_THRESHOLD_BYTES, resolveWalHealBytes } from '../../src/graph/db';
-import { WalCheckpointValve, resolveWalValveMb } from '../../src/graph/db/wal-valve';
+import { WalCheckpointValve, WalValveAbortError, resolveWalValveMb } from '../../src/graph/db/wal-valve';
 import CodeGraph from '../../src/graph';
 import type { IndexResult } from '../../src/graph/extraction';
 
@@ -261,7 +261,12 @@ describe('WalCheckpointValve pinned-WAL backoff (index-stall regression)', () =>
     const { db, callCount } = fakeValveDb({ walBytes: 10 * MB, checkpoint: { busy: 1, log: 5000, checkpointed: 0 } });
     const sleeps: number[] = [];
     const valve = new WalCheckpointValve(db, 1, 2000, () => {}, async (ms) => { sleeps.push(ms); });
-    await valve.backpressure();
+    // The pinned 10MB WAL is past the 4MB file cap, so the round ends
+    // fail-closed (upstream 9b8bb4aba) instead of releasing the writer —
+    // the pass budget and backoff schedule are what this test pins.
+    const bp = valve.backpressure();
+    expect(bp).toBeInstanceOf(Promise);
+    await expect(bp!).rejects.toBeInstanceOf(WalValveAbortError);
     expect(callCount()).toBe(20); // the bounded attempt budget is unchanged
     expect(sleeps).toEqual([10, 20, 40, 80, 160, ...Array.from({ length: 14 }, () => 200)]);
   });
@@ -288,15 +293,18 @@ describe('WalCheckpointValve pinned-WAL backoff (index-stall regression)', () =>
     const logs: string[] = [];
     const { db, callCount } = fakeValveDb({ walBytes: 10 * MB, checkpoint: { busy: 1, log: 5000, checkpointed: 0 } });
     const valve = new WalCheckpointValve(db, 1, 2000, (m) => { logs.push(m); }, async () => {});
-    await valve.backpressure(); // round 1: full 20-pass attempt, gives up
+    // Over-cap pinned WAL: every round now ends fail-closed (9b8bb4aba); the
+    // cooldown still bounds each round's COST (single probe), and the give-up
+    // LOG stays rate-limited.
+    await expect(valve.backpressure()!).rejects.toBeInstanceOf(WalValveAbortError); // round 1: full 20-pass attempt
     expect(callCount()).toBe(20);
     expect(logs.filter((l) => l.includes('gave up'))).toHaveLength(1);
-    await valve.backpressure(); // round 2 (inside BACKFILL_COOLDOWN_MS): one cheap probe
+    await expect(valve.backpressure()!).rejects.toBeInstanceOf(WalValveAbortError); // round 2 (inside BACKFILL_COOLDOWN_MS): one cheap probe
     expect(callCount()).toBe(21);
     expect(logs.filter((l) => l.includes('gave up'))).toHaveLength(1); // log rate-limited
     // Cooldown expiry restores the full attempt budget.
     (valve as unknown as { lastBackfillEndedAt: number }).lastBackfillEndedAt = 0;
-    await valve.backpressure();
+    await expect(valve.backpressure()!).rejects.toBeInstanceOf(WalValveAbortError);
     expect(callCount()).toBe(41);
   });
 });
@@ -539,6 +547,63 @@ describe('valve file-size trigger + barrier truncate (upstream 8c1e821/ca88d3b#1
     await valve.foldNow();
     // TRUNCATE at the parked barrier reclaims the high-water size.
     expect(db.getWalSizeBytes()).toBe(0);
+    db.close();
+  });
+});
+
+describe('WAL valve fail-closed (upstream 9b8bb4aba, #1539)', () => {
+  it('aborts with WalValveAbortError when parked backfills cannot progress past the file cap', async () => {
+    const db = openDb();
+    db.setWalAutocheckpoint(0);
+    writeRows(db, 800); // well past a 0.5MB soft / 2MB file cap
+    expect(db.getWalSizeBytes()).toBeGreaterThan(2 * 1024 * 1024);
+
+    const valve = new WalCheckpointValve(db, 0.5, 2000, () => {}, async () => {});
+    // Simulate a reader pinning every PASSIVE/TRUNCATE attempt.
+    db.checkpointWalPassive = async () => ({ busy: 1, log: 100, checkpointed: 0 });
+    db.checkpointWalTruncate = async () => ({ busy: 1, log: 100, checkpointed: 0 });
+
+    const bp = valve.backpressure();
+    expect(bp).not.toBeNull();
+    let err: WalValveAbortError | undefined;
+    try { await bp; } catch (e) { err = e as WalValveAbortError; }
+    expect(err).toBeInstanceOf(WalValveAbortError);
+    expect(err!.name).toBe('WalValveAbortError');
+    expect(err!.code).toBe('WAL_VALVE_ABORT');
+    expect(err!.message).toMatch(/Aborting to avoid unbounded disk growth/);
+    expect(err!.walBytes).toBeGreaterThan(err!.fileCapBytes);
+    // Caps remain enforceable: a subsequent backpressure call still parks (no
+    // futility latch / cooldown path that returns null and lets the writer
+    // race past the cap). Inside the cooldown this is a single cheap probe
+    // that fails closed again.
+    const again = valve.backpressure();
+    expect(again).not.toBeNull();
+    await expect(again!).rejects.toBeInstanceOf(WalValveAbortError);
+    db.close();
+  });
+
+  it('aborts when checkpoint machinery is unavailable while over the file cap', async () => {
+    const { db } = fakeValveDb({ walBytes: 10 * MB, checkpoint: { busy: 0, log: 0, checkpointed: 0 } });
+    (db as unknown as { checkpointWalPassive: () => Promise<null> }).checkpointWalPassive = async () => null;
+    const valve = new WalCheckpointValve(db, 1, 2000, () => {}, async () => {});
+    const bp = valve.backpressure();
+    expect(bp).not.toBeNull();
+    let err: WalValveAbortError | undefined;
+    try { await bp; } catch (e) { err = e as WalValveAbortError; }
+    expect(err).toBeInstanceOf(WalValveAbortError);
+    expect(err!.message).toMatch(/machinery unavailable/);
+  });
+
+  it('does not abort a soft foldNow give-up that stays under both caps', async () => {
+    const db = openDb();
+    db.setWalAutocheckpoint(0);
+    writeRows(db, 50); // small WAL (~0.5MB)
+    const valve = new WalCheckpointValve(db, 1024, 2000, () => {}, async () => {}); // 1GB soft — hard 2GB, fileCap 4GB
+    db.checkpointWalPassive = async () => ({ busy: 1, log: 10, checkpointed: 0 });
+    // foldNow calls backfillFully even with modest growth; under the caps the
+    // give-up stays soft — a healthy run must not abort.
+    await valve.foldNow();
+    expect(valve.backpressure()).toBeNull();
     db.close();
   });
 });
