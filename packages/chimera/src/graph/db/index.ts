@@ -66,6 +66,31 @@ const sqliteMmapBytes = () => sqlitePragmaMB('CHIMERA_SQLITE_MMAP_MB', 256) * 10
 // CHIMERA_SQLITE_TEMP_STORE=MEMORY to mirror upstream codegraph's default.
 const sqliteTempStore = () => process.env.CHIMERA_SQLITE_TEMP_STORE?.toUpperCase() === 'MEMORY' ? 'MEMORY' : 'FILE';
 
+/**
+ * WAL size past which `healOversizedWal` (run at every writable `open`)
+ * checkpoints and truncates the file, and to which `journal_size_limit` clips
+ * the WAL after any resetting checkpoint. A SIGKILL'd process (OOM, a crash,
+ * a watchdog) can leave an arbitrarily large WAL behind — a whole
+ * deferred-sync run's worth — and nothing in a later session ever shrank it:
+ * PASSIVE checkpoints fold frames but keep the file at its high-water mark,
+ * and the one shrinking path (a clean last-connection close) is exactly what
+ * a killed-process world never takes. The file just grew, killed session
+ * after killed session, until the disk filled (25.6 GB observed upstream,
+ * 02c0e2c #1431/#1490). 64 MB is far above anything a healthy open ever sees
+ * (a clean close deletes the WAL) yet small enough to cap the leak.
+ * Override with `CODEGRAPH_WAL_HEAL_MB` (also feeds `journal_size_limit`).
+ */
+export const WAL_HEAL_THRESHOLD_BYTES = resolveWalHealBytes(process.env.CODEGRAPH_WAL_HEAL_MB);
+
+/** Resolve the heal threshold from the env override (MB); invalid ⇒ 64 MB. */
+export function resolveWalHealBytes(envVal: string | undefined): number {
+  if (envVal !== undefined && envVal !== '') {
+    const n = Number(envVal);
+    if (Number.isFinite(n) && n > 0) return Math.floor(n * 1024 * 1024);
+  }
+  return 64 * 1024 * 1024;
+}
+
 function configureConnection(db: SqliteDatabase, options: DatabaseOpenOptions = {}): void {
   db.pragma('busy_timeout = 5000');
   db.pragma('foreign_keys = ON');
@@ -78,6 +103,13 @@ function configureConnection(db: SqliteDatabase, options: DatabaseOpenOptions = 
   db.pragma('journal_mode = WAL');
   db.pragma('synchronous = NORMAL');
   db.pragma(`temp_store = ${sqliteTempStore()}`);
+  // Without a journal_size_limit the -wal file never shrinks below its
+  // high-water mark while a connection lives: checkpoints fold frames back
+  // but leave the file at full size, so one giant deferred-index WAL stays
+  // giant forever. With the limit set, any checkpoint that resets the WAL
+  // truncates the file back down. Killed-process leftovers are handled
+  // separately by healOversizedWal() at open (upstream 02c0e2c, #1431).
+  db.pragma(`journal_size_limit = ${WAL_HEAL_THRESHOLD_BYTES}`);
 }
 
 function loadInitialSchema(): string {
@@ -173,6 +205,12 @@ export class DatabaseConnection {
       for (const extension of options.storageExtensions ?? []) {
         conn.applyStorageExtension(extension);
       }
+
+      // Self-heal a killed session's leftover oversized WAL (upstream
+      // 02c0e2c, #1431) — one statSync when healthy, sidecar-connection
+      // checkpoint+truncate when not. Read-only opens must never mutate the
+      // database, so they skip the heal.
+      if (!options.readOnly) void conn.healOversizedWal();
 
       return conn;
     } catch (error) {
@@ -405,6 +443,53 @@ export class DatabaseConnection {
    */
   async checkpointWalTruncate(): Promise<{ busy: number; log: number; checkpointed: number } | null> {
     return this.checkpointWal('TRUNCATE');
+  }
+
+  /**
+   * Shrink a leftover oversized WAL (upstream 02c0e2c, #1431). A SIGKILL'd
+   * session — OOM, a crash, a watchdog — leaves its WAL on disk, the next
+   * session appends to the same file, and nothing ever truncates it: PASSIVE
+   * checkpoints fold frames but keep the file at its high-water mark, and the
+   * one shrinking path (a clean last-connection close) is exactly what the
+   * killed world never takes. Unbounded growth until the disk fills.
+   *
+   * Called fire-and-forget from every writable `open()`: cost is one statSync
+   * when the WAL is small (the overwhelmingly common case). Past the threshold
+   * it runs PASSIVE fold then TRUNCATE on the sidecar checkpoint connection,
+   * whose busy_timeout degrades a racing writer/reader to a no-op that the
+   * next open retries rather than a stall. `thresholdBytes` is injectable for
+   * tests; production always uses WAL_HEAL_THRESHOLD_BYTES.
+   */
+  async healOversizedWal(thresholdBytes: number = WAL_HEAL_THRESHOLD_BYTES): Promise<{ healed: boolean; beforeBytes: number; afterBytes: number }> {
+    const beforeBytes = this.getWalSizeBytes();
+    if (beforeBytes <= thresholdBytes) {
+      return { healed: false, beforeBytes, afterBytes: beforeBytes };
+    }
+    // Single-flight: open() fires this fire-and-forget and callers may also
+    // invoke it explicitly. Two concurrent passes DEFEAT each other — each
+    // checkpoint sees the other as a busy reader and no-ops — so share one
+    // in-flight pass instead of racing.
+    this.walHeal ??= this.runWalHeal(beforeBytes, thresholdBytes).finally(() => { this.walHeal = null; });
+    return this.walHeal;
+  }
+
+  private walHeal: Promise<{ healed: boolean; beforeBytes: number; afterBytes: number }> | null = null;
+
+  private async runWalHeal(beforeBytes: number, thresholdBytes: number): Promise<{ healed: boolean; beforeBytes: number; afterBytes: number }> {
+    // A racing reader/writer (another session healing the same file, a query
+    // warming up) degrades a checkpoint pass to a busy no-op — retry a few
+    // times before leaving the rest to the next open.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, 300));
+      await this.checkpointWalPassive();
+      await this.checkpointWalTruncate();
+      if (this.getWalSizeBytes() <= thresholdBytes) break;
+    }
+    const afterBytes = this.getWalSizeBytes();
+    if (process.env.CODEGRAPH_WAL_VALVE_DEBUG) {
+      console.error(`[wal-heal] oversized WAL at open: ${Math.round(beforeBytes / (1024 * 1024))}MB -> ${Math.round(afterBytes / (1024 * 1024))}MB`);
+    }
+    return { healed: afterBytes < beforeBytes, beforeBytes, afterBytes };
   }
 
   private async checkpointWal(mode: 'PASSIVE' | 'TRUNCATE'): Promise<{ busy: number; log: number; checkpointed: number } | null> {
