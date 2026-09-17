@@ -32,8 +32,12 @@
 #   libc — the napi/alpine convention; no glibc-style floor concern.
 # - Windows: cargo emits codegraph_kernel.dll; the staged name is always
 #   codegraph-kernel.node (Node/Bun dlopen on Windows loads the renamed DLL —
-#   the napi/node-gyp convention). Release legs build *-pc-windows-msvc; the
-#   *-pc-windows-gnu triples map too (local format probes via zigbuild).
+#   the napi/node-gyp convention). Release legs are *-pc-windows-msvc,
+#   CI-native on windows runners (napi-build links MSVC legs with no extra
+#   inputs; there is no supported local cross route — cargo-xwin was rejected
+#   on endpoint-security grounds). windows-gnu triples map too, but
+#   napi-build's gnu setup additionally requires a libnode.dll import
+#   library on LIBNODE_PATH/LIBPATH/PATH, so they are not buildable here.
 # - macOS legs pin MACOSX_DEPLOYMENT_TARGET (default 11.0) so artifacts do
 #   not inherit the BUILD machine's macOS version as their load floor.
 #
@@ -137,9 +141,8 @@ build_leg() {
     rustup target add "$base" >/dev/null 2>&1 || true
     # musl targets default to +crt-static and rustc refuses cdylib output
     # under a static CRT (crt_static_allows_dylibs) — the napi/alpine
-    # convention is to opt out, yielding a .node dynamically linked against
-    # musl libc (NEEDED libc.musl-<arch>.so.1, resolved by alpine's loader),
-    # the analogue of the glibc legs' libc.so.6. The flag goes through
+    # musl libc (NEEDED libc.so — musl's libc doubles as its dynamic loader,
+    # resolved on alpine), the analogue of the glibc legs' libc.so.6. The flag goes through
     # CARGO_ENCODED_RUSTFLAGS, not RUSTFLAGS: cargo-zigbuild composes its own
     # encoded flags and cargo's precedence order would let those mask a plain
     # RUSTFLAGS env; the encoded form survives both cargo build and cargo

@@ -15,6 +15,10 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from './vitest';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { pathToFileURL } from 'url';
 import { NODE_KINDS } from '../../src/graph/types';
 import {
   getKernel,
@@ -225,6 +229,58 @@ describe('getKernel degradation', () => {
     const info = hasPrebuild() ? requirePrebuild().contractInfo() : null;
     const expectedLoaded = info !== null && verifyKernelContract(info);
     expect(getKernel() !== null).toBe(expectedLoaded);
+  });
+
+  it('an existing-but-unloadable CODEGRAPH_KERNEL_PATH is caught and falls through (wrong-format prebuild shape)', () => {
+    // The existsSync-then-require path: a file that IS there but is not a
+    // loadable addon for this host — the exact shape of a wrong-libc or
+    // wrong-arch prebuild (glibc .node on musl, ELF on macOS). The dlopen
+    // failure must be caught by the loader, never crash the search, and the
+    // garbage file must never surface as the loaded module.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-unloadable-'));
+    try {
+      const garbage = path.join(dir, 'codegraph-kernel.node');
+      fs.writeFileSync(garbage, Buffer.from('\x7fELF not really an addon for this host\n'));
+      process.env.CODEGRAPH_KERNEL_PATH = garbage;
+      resetKernelForTests();
+      const info = hasPrebuild() ? requirePrebuild().contractInfo() : null;
+      const expectedLoaded = info !== null && verifyKernelContract(info);
+      expect(getKernel() !== null).toBe(expectedLoaded);
+      expect(kernelSupports('typescript')).toBe(expectedLoaded && !!info?.languages.includes('typescript'));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a foreign-platform prebuild tree degrades to null (fake process.platform/arch child probe)', () => {
+    // The loader's repo candidate is prebuilds/<process.platform>-<process.arch>/
+    // and candidatePaths() reads the pair at call time, so a child process
+    // that overrides both before importing the loader exercises the
+    // foreign-triple route end to end: the directory is then either absent
+    // or holds a binary this host cannot dlopen (the release-side silent-
+    // degradation promise npm installs rely on: no kernel => wasm arm, never
+    // a crash). Deterministic on every host because the fake triple is
+    // chosen to differ from the real one.
+    const [fakePlatform, fakeArch] =
+      process.platform === 'linux' && process.arch === 'x64' ? ['linux', 'arm64'] : ['linux', 'x64'];
+    const loaderUrl = pathToFileURL(
+      path.resolve(import.meta.dirname, '../../src/graph/extraction/kernel/loader.ts'),
+    ).href;
+    const probe = [
+      `Object.defineProperty(process, 'platform', { value: ${JSON.stringify(fakePlatform)}, configurable: true });`,
+      `Object.defineProperty(process, 'arch', { value: ${JSON.stringify(fakeArch)}, configurable: true });`,
+      `const { getKernel, kernelSupports } = await import(${JSON.stringify(loaderUrl)});`,
+      `if (getKernel() !== null) { console.error('foreign-triple probe: getKernel() loaded a module'); process.exit(2); }`,
+      `if (kernelSupports('typescript')) { console.error('foreign-triple probe: kernelSupports() true'); process.exit(3); }`,
+    ].join('\n');
+    const env = { ...process.env };
+    delete env.CODEGRAPH_KERNEL_PATH;
+    delete env.CODEGRAPH_KERNEL;
+    const result = Bun.spawnSync([process.execPath, '-e', probe], { env, stderr: 'pipe' });
+    if (result.exitCode !== 0) {
+      throw new Error(`foreign-triple probe failed (exit ${result.exitCode}): ${result.stderr.toString()}`);
+    }
+    expect(result.exitCode).toBe(0);
   });
 
   it('kill switch CODEGRAPH_KERNEL=0 disables support per call', () => {
