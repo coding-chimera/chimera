@@ -26,15 +26,39 @@
  *   budget-guarded via --max-deferral (upstream posture: a broken kernel
  *   hiding behind its fallback must fail loudly).
  *
- * Known expected diffs for the P1 reconciliation checklist (reported, NOT
- * fixed — this harness is a pure consumer; see the report's knownExpectations):
- *   - tsjs `returnType` not emitted kernel-side (P0-2a smoke, confirmed)
- *   - `params` currently absent on BOTH arms (no kernel extraJson patch yet)
- *   - interface-member flush ORDER (kernel emits in source order)
- *   - value-reference exclusion-set details (ref missing/extra pairs)
- *   - `statement` nodes: kernel never emits them, fork wasm does — the
- *     largest expected item in the tsjs languages; per-language magnitude
- *     is single-column counted (statementNodesWasm).
+ * Known-expectations cross-check (K-v2 P4 TERMINAL STATE — the v4-era
+ * stripped-family budgets are retired with route-a; every counter is now a
+ * ZERO-EXPECTED GUARD except statementNodesWasm, which is corpus volume):
+ *   - statementMissingInKernel_total: fork statement-suite guard (D2) — the
+ *     kernel must emit every stmt node the wasm arm emits (the pre-P1-tsjs
+ *     "kernel never emits them" expectation is history).
+ *   - paramsFieldDrift_total_expect0: params extraJson both-arm guard. The
+ *     #1638 interface-member enrichment class (window-era 11 drifts) went to
+ *     ZERO when the P3-followup promotion made both arms mint function-typed
+ *     contract members through the method path identically — the dispatch-era
+ *     "11 as terminal" assumption is superseded by measurement.
+ *   - nodeOrderMismatch_total: was the D3 window item (wasm post-walk reorder
+ *     vs kernel source order; window-era 44). ZERO since the P3-followup
+ *     decode-side reorder (kernel POST_PASSES reorderInterfaceMembersToTail
+ *     mirrors the wasm extract() stable partition). The "P4 keeps this known
+ *     item" plan is superseded by the better result; it stays as the order-
+ *     sensitive guard the fork's first-match-by-name consumers depend on.
+ *   - returnTypeFieldDrift_total/_tsjs: RAW returnTypeText both-arm guard
+ *     (the P0-2a "kernel doesn't emit" era AND the N bare-form scala wire
+ *     divergence are both reconciled — kernel mirrors returnTypeText).
+ *   - refMissing_total/refExtra_total: value-ref retrack (D1 incl. shadow-
+ *     prune), import-binding and chain-form ref guards. The stripped-family
+ *     budgets these once carried (kotlin/scala/dart valueRef/type-refs, ts
+ *     #693 attribution, object-literal double emission) are gone with route-a
+ *     N adoption on both arms + the P3-followup single-emission fix.
+ *   - qnShape/idShape/edgeMetadataShape_total: wire-shape guards (qn form,
+ *     node-id formula, valueRef edge metadata).
+ *   - statementNodesWasm_total: corpus stmt volume (monitor, not a budget).
+ * Residual accepted diffs at P4 close: NONE for routed languages (baseline
+ * ksd-parity-p4-baseline-*.json, /Volumes/workspace/cbench/kernel-parity/).
+ * Chain-form refs (#1683/#1496) stay unresolved BY DESIGN until the P5
+ * resolver companion port — that is a resolution-layer concern and does not
+ * affect extraction-level parity.
  *
  * Usage:
  *   bun script/kernel-parity.ts [--lang <l[,l...]|all>] [--limit N]
@@ -750,7 +774,9 @@ function printAndFinish(options: Options, kernel: KernelModule, states: Map<Lang
     if (entry.short) shortLanguages.push(`${l.lang}(${l.files})`)
   }
 
-  // Known expected diffs (plan §3 P0.3 inputs) — machine-checkable cross-summary.
+  // Known-expectations cross-summary — K-v2 P4 terminal state: every counter
+  // is a ZERO-EXPECTED GUARD (regression tripwires) except statementNodesWasm
+  // (corpus volume monitor). Semantics + history: see the header block.
   const sumWhere = (pred: (p: { pattern: string; count: number }) => boolean): number =>
     langs.reduce((acc, l) => acc + l.patterns.filter(pred).reduce((a, p) => a + p.count, 0), 0)
   const tsjsLangs = new Set<Language>(['typescript', 'tsx', 'javascript', 'jsx'])
