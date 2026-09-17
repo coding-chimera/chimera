@@ -325,3 +325,19 @@ L5 seam 条款：P1 把后台语义隔离在"引擎服务 + task 工具分支"�
 - ACP 是否恢复（默认否）。
 - 上游跟踪分支 `upstream-sync` 的建立与周期性同步节奏（建议每层开始时 re-fetch 一次）。
 - F 线（特性同步）已于 2026-09-04 完成全量分诊并纳入本计划（见「上游特性同步（F 线）」章节 + `UPSTREAM_FEATURE_TRIAGE.md`）；周期同步节奏建议以 F 批次为锚：每批开工前 re-fetch 上游做增量关键词筛。
+
+---
+
+## F2 完成记录（2026-09-17，builder 执行+parent 亲验裁决）
+
+7 commits：`44bafa40c`(SDK 1.29.0+629 行 patch，逐字节对账)→`20d162b51`(catalog.ts 新建=15 条 fix 收敛点+roots/logs/cwd/callbackPort)→`408ccbd64`(instructions 注入 system prompt)→`ccd6ee63b`(debug CLI 三件)→`5a805bb70`(resource templates+读工具×3+READ_TOOLS)→`988015435`(SDK 重生成，携带 F1/L4 provider 字段滞后产物——生成物原子性)→`0d6964d2d`(session-recovery 可执行测试)。另 parent 小修：mcp debug token 打印掩码（前 20 字符→slice(0,4)***slice(-4)，对齐上游收敛）+删 src/mcp/index.ts 的 Installation 死导入（基线遗留）。
+
+**对分诊/规格的两处修正（镜像 git show 实锤，防后续批次重拾）**：
+1. `921b1c6a34`“SDK v2 升级”已被上游 `982a9044c5` 于 13h 后**整体回滚**——真实终态=`@modelcontextprotocol/sdk@1.29.0`+629 行 patch（非 client@2.x）；本批按终态移植。
+2. `a131811cdc`“mcp__ 命名约定”已被上游 `947e0017f5` 于 11h 后**回滚**——上游 HEAD 与 fork 现状逐字相同（`<server>_<tool>`）。**该条从待办删除**；若强行落地会静默破坏用户既有 permission 规则（实测影响面 6 处）。
+
+方法论沉淀：MCP 面移植以**上游 HEAD 终态**为基准（catalog.ts 收敛点），不重放 8 feat+29 fix 中间态。
+
+29 条 fix 对账：修复 26 / 已等价 1 / 不适用 2（总和=29 ✓，逐条表见 builder 报告）。验证：typecheck clean×6、MCP lane 43/0、聚焦 385/0、新增 8 测试全绿；收口全量 24~31 fail 逐条归因全部落基线家族/flaky/他 lane（双跑自相差+隔离复跑证据），零新增归因本批。锁文件：anpm=0；语义化 diff=版本变更恰 1 条+21 条空 URL 归一化（sha512 不变）；**本机 bun install 必须显式 --registry=https://registry.npmmirror.com**（已固化 env.md）。
+
+**Parent 裁决**：①三个 MCP 资源工具不进 explore allowlist（维持 MCP 面对受限 agent 全隐的一致性；resource 读取可能有 server 定义副作用；上游亦未加）②code-mode 接线=拍板池 #6 继续等用户③token 掩码=已修④死导入=已删⑤lifecycle.test 迁真 server harness=独立测试基建项入队。刻意保留 fork 形态（Bus/defaultLayer/open 直调/内联 OAuth 页/Chimera 品牌）未引入上游后期架构。
