@@ -151,3 +151,14 @@
 P0 深查（5 项，在途）→ P1 契约 append（navigates 五处+子集门测试，新旧 kernel 均兼容可先行合入）→ P2 wasm 升级（L）∥ P3 kernel re-vendor（L，含 8 腿 prebuild 重建 CI-only 纪律）→ P4 parity 重对账（N 自带 13 套件先跑绿+fork harness 期望重写，v4 的 21/21 基线作废重建）→ P5 semantics **v5**+resolution 合并（D7/D8/D9+新 callee 形态消费端配套）+重索引+bench 重验（G 臂 12 格+tb5-v2/tb6-b 重放+主仓冒烟 delta 归因）。KERNEL_ABI_VERSION 不动（append-only，N 未 bump）。
 
 主力窗口：P2/P3 待当前并行 builder（F2/claims/L4 小件/WebUI P1P2/workbrief 改造）收口后排上；P0/P1 小件可插队先行。
+
+### P0 深查落锤（2026-09-17，证据归档 UPSTREAM_KERNEL_V2_P0_FINDINGS.md，162 行三方 file:line 交叉证据）
+
+- **D3 落锤**：采 N interface 实节点（#1638）+**保留 fork 保序为增强**（extract() 末尾对 interface 成员稳定重排）。保序动机实证仍成立：fork resolver first-match 顺序依赖链（db/queries.ts:866 无 ORDER BY → name-matcher.ts:388 matches[0]，出处 a84c65722 修 426 条 failed refs）。P4 保留 node:order-mismatch 已知项；P5 resolver 侧加固后再评估移除重排。
+- **D5 落锤**：fork 大写块修复**保留但改写为 tsjs 作用域**——N 的 TYPE_ANNOTATION_LANGUAGES 含 scala/php（N tree-sitter.ts:6240-6242），整块删会误伤 Scala；N 无补偿路径。P2 wasm 重放为语言作用域（大写块仅 ts/tsx/js/jsx 失效）；P3 kernel 只在 tsjs/mod.rs 重放；P4 复测 ServerConnection.Any 场景+Scala 抽验。
+- **D6 落锤**：**撤销'上游休眠 bug'说**——N 已双路补偿（extractCsharpReturnType 读 'returns' + extractCsharpTypeRefs 'type'??'returns'）；fork 的 returnField delta 保留但重新定性=服务 fork 独有 RAW returnTypeText。P2 采 N csharp.ts 整体+重放 1 行 returnField:'returns'（对 N 特性零影响）。
+- **⑥ 修正（重要）**：残留=**9 个非 tsjs 文件**（报告原计 11 多算了 tsjs 两件有意重 track），全部未路由、无活雷；lua/luau 三查干净。**但 P2 会对已路由 kotlin/scala/dart 新开 valueRef 差**（N wasm 发、F kernel P3 前不发）——**P2/P3 必须原子落地或 P3 紧随，窗口期 parity 白名单 valueRef 差**；P4 前 9 残留语言维持禁开（现状合规）。
+- **③ watcher 缺口坐实**：F buildDefaultIgnore 缺 .git/info/exclude+core.excludesFile+嵌套 .gitignore 目录剪枝（N #1728）——P2 批 cherry-pick N 两个自包含函数进 buildDefaultIgnore（watcher 自动受益）；preloadLanguagesForFiles 为性能项 P2 尾部可选。
+- **P1 范围修正**：①②⑤执行；③④（FILE_PROJECTION_EDGE_KINDS/may-impact 消费）**推迟**——N 提取层 navigates 零发射（发射方全在 fork 已判跳过的 resolution router synthesizer 族），fork 语料 navigates 边恒 0，纯契约预留。
+- **口径修正三条入库**：残留 11→9 文件；'P2 自动闭合'→P2+P3 联合闭合；fork harness '改三处'→两处代码（knownExpectations 剥除族 :757-777、statement/params 断言 :763-769）+一处基线重生成（docstring 期望无独立代码位）。
+- **P1 已落地（parent 直做，小件）**：types.ts EdgeKind ∪ layout.ts EDGE_KINDS append 'navigates'（append-only 12→13，KERNEL_ABI_VERSION 不动，新旧 kernel 均过子集门）；kernel-loader.test 反转表断言改推导式（防未来表增长破防）；typecheck 绿+聚焦测试全绿。
