@@ -1,47 +1,54 @@
-//! Dart extraction — a faithful Rust port of the dart paths of
-//! `TreeSitterExtractor` (src/extraction/tree-sitter.ts) plus
-//! languages/dart.ts.
+//! Dart extraction — a faithful Rust port of the FORK's dart paths
+//! (packages/chimera/src/graph/extraction/tree-sitter.ts machinery +
+//! languages/dart.ts). The fork's wasm oracle predates upstream #708
+//! (returnType + type-annotation refs), #750/#762 (chained static-factory
+//! re-encode, ctor naming/skip via dartCtorInfo) and #897 (value-reference
+//! edges, the static_final_declaration constants hook), so NONE of those
+//! behaviors belong here — the byte-parity gate is the fork's wasm arm
+//! (script/kernel-parity.ts --lang dart). fn-ref (wire code 200) rows are
+//! still emitted but the fork's decode boundary DROPS them (decode.ts).
 //!
 //! Same porting contract as the other walkers: behavior parity, bug-for-bug.
-//! The authoritative quirk list is docs/design/dart-kernel-port-checklist.md.
 //! The center of gravity is THE SIBLING-BODY DOUBLE-WALK: dart attaches every
 //! function/method body as a NEXT SIBLING of its signature node, and the TS
 //! walkers consume the body TWICE — once via resolveBody (attributed to the
 //! function/method) and once via the enclosing generic walk (attributed to
 //! the file/class). The deterministic result — duplicate local-function
 //! nodes with the SAME id under different parents, duplicated
-//! calls/instantiates refs, file/class-attributed fn-ref twins — must be
-//! reproduced byte-for-byte in the observed interleave; a "helpful" dedupe
-//! breaks parity. Other load-bearing oddities preserved on purpose:
-//! callTypes is EMPTY (all call refs ride extractBareCall's selector
-//! walking in the body walker — cascades are invisible, `?.` encodes like
-//! `.`); `ConfigT.load()` double-emits (calls + a static-member references
-//! ref — no callee-of-call skip in the dart branch); operator methods mint
-//! `method "<anonymous>"`; the unnamed constructor is skipped
-//! (isMisparsedFunction) while named ctors/factories are named by the CTOR
-//! name with the class as returnType; instance fields mint NO nodes (only
-//! static_final_declaration → constant, via the hook); prefixed return
-//! types keep the PREFIX (`other.OtherClass f()` → returnType `other` —
-//! bug, preserved); enum `with` mixins emit nothing while enum `implements`
-//! works; deferred imports are invisible; named-argument callbacks are NOT
-//! fn-ref-captured; `async*`/`sync*` are NOT async. Positions in UTF-16
-//! code units. Files with parse errors defer to wasm (3.4–20.7% both-arm
-//! incidence — empty object patterns and unnamed `library;` dominate).
+//! calls/instantiates refs — must be reproduced byte-for-byte in the
+//! observed interleave; a "helpful" dedupe breaks parity. Other
+//! load-bearing oddities preserved on purpose: callTypes is EMPTY (all
+//! call refs ride extractBareCall's selector walking in the body walker —
+//! cascades are invisible, `?.` encodes like `.`, and a chained
+//! `Foo.create().run()` yields the BARE `run` because the accessor's
+//! previous sibling is a selector, not an identifier); operator methods
+//! mint `method "<anonymous>"`; constructors are named by the generic
+//! extractName unwrap (method_signature → the inner ctor signature's FIRST
+//! identifier = the CLASS name), while bodiless ctors sit in `declaration`
+//! wrappers (constructor_signature is NOT a methodType) and stay invisible;
+//! instance fields and top-level finals mint NO nodes (the fork config has
+//! no fieldTypes/variableTypes/visitNode hook); NO returnType field ever
+//! (returnField 'type' never resolves on this grammar) and ZERO
+//! type-annotation refs (the machinery's field lookups all miss);
+//! superclass emits ONE extends ref for its FIRST named child — raw text,
+//! so a mixins-only header yields `extends "with MixA"` and mixins never
+//! yield implements; enum `with` mixins emit nothing while enum
+//! `implements` works; deferred imports are invisible; `async*`/`sync*`
+//! are NOT async; docstrings use the fork's simpler cleaner (a `///` line
+//! keeps its third slash: "/ text"). Positions in UTF-16 code units.
+//! Files with parse errors defer to wasm.
 
 use crate::buffers::{
     build_meta, edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
     RefRow, StrRef, Tables, FLAG_IS_ASYNC, FLAG_IS_EXPORTED, FLAG_IS_STATIC, FUNCTION_REF_CODE,
     NONE, NONE_STR,
 };
-use crate::docstring::preceding_docstring;
+use crate::docstring::preceding_docstring_tsjs;
 use crate::ids;
 use crate::textutil as util;
-use regex::Regex;
-use std::collections::{HashMap, HashSet};
-use std::sync::OnceLock;
+use std::collections::HashSet;
 use tree_sitter::{Node, Parser};
 
-const MAX_VALUE_REF_NODES: usize = 20_000;
 
 /// NAME_STOPLIST (function-ref.ts).
 fn is_stoplisted(name: &str) -> bool {
@@ -52,41 +59,7 @@ fn is_stoplisted(name: &str) -> bool {
     )
 }
 
-/// BUILTIN_TYPES (tree-sitter.ts:5768-5782).
-fn is_builtin_type(name: &str) -> bool {
-    matches!(
-        name,
-        "string" | "number" | "boolean" | "void" | "null" | "undefined" | "never" | "any"
-            | "unknown" | "object" | "symbol" | "bigint" | "true" | "false"
-            | "str" | "bool" | "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
-            | "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "f32" | "f64" | "char"
-            | "int" | "long" | "short" | "byte" | "float" | "double"
-            | "int8" | "int16" | "int32" | "int64" | "uint8" | "uint16" | "uint32" | "uint64"
-            | "float32" | "float64" | "complex64" | "complex128" | "rune" | "error"
-            | "Int" | "Long" | "Short" | "Byte" | "Float" | "Double" | "Boolean" | "Char"
-            | "Unit" | "String" | "Any" | "AnyRef" | "AnyVal" | "Nothing" | "Null"
-    )
-}
 
-/// extractDartReturnType's simple-name gate + the static-member receiver gate.
-fn simple_type_name_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[A-Za-z_]\w*$").unwrap())
-}
-fn cap_ident_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[A-Z][A-Za-z0-9_]*$").unwrap())
-}
-/// The chained-call re-encode gate (`/^[A-Z]/`).
-fn starts_upper_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[A-Z]").unwrap())
-}
-/// extractDartReturnType's `<...>` strip (`/<[^>]*>/g`).
-fn angle_args_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"<[^>]*>").unwrap())
-}
 
 struct Scope {
     row: u32,
@@ -102,12 +75,6 @@ struct Cand {
     row: usize,
 }
 
-struct ValueScope<'t> {
-    row: u32,
-    node: Node<'t>,
-    name: String,
-}
-
 #[derive(Default)]
 struct Extra {
     docstring: Option<String>,
@@ -116,7 +83,6 @@ struct Extra {
     visibility: u8,
     is_async: Option<bool>,
     is_static: Option<bool>,
-    return_type: Option<String>,
     /// resolveBody-driven endLine extension (LIVE for dart sibling bodies).
     end_line_override: Option<u32>,
 }
@@ -132,9 +98,6 @@ pub struct Walker<'t> {
     defined_fn_names: HashSet<String>,
     imported_names: HashSet<String>,
     fn_ref_cands: Vec<Cand>,
-    fs_values: HashMap<String, u32>,
-    fs_value_counts: HashMap<String, u32>,
-    value_scopes: Vec<ValueScope<'t>>,
 }
 
 pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
@@ -162,9 +125,6 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
         defined_fn_names: HashSet::new(),
         imported_names: HashSet::new(),
         fn_ref_cands: Vec::new(),
-        fs_values: HashMap::new(),
-        fs_value_counts: HashMap::new(),
-        value_scopes: Vec::new(),
     };
 
     // File node (tree-sitter.ts:508-521).
@@ -198,7 +158,6 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
 
     w.visit(tree.root_node());
     w.flush_fn_ref_candidates();
-    w.flush_value_refs(tree.root_node());
     w.stack.pop();
 
     let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
@@ -296,7 +255,6 @@ impl<'t> Walker<'t> {
         let id_ref = self.arena.put(&id);
         let doc_ref = opt_str(&mut self.arena, extra.docstring.as_deref());
         let sig_ref = opt_str(&mut self.arena, extra.signature.as_deref());
-        let ret_ref = opt_str(&mut self.arena, extra.return_type.as_deref());
         let mut flags = BoolFlags::default();
         if let Some(v) = extra.is_async {
             flags.set(FLAG_IS_ASYNC, v);
@@ -319,7 +277,7 @@ impl<'t> Walker<'t> {
             signature: sig_ref,
             decorators: NONE_STR,
             type_parameters: NONE_STR,
-            return_type: ret_ref,
+            return_type: NONE_STR,
             extra_json: NONE_STR,
         });
         self.node_ids.push(id.clone());
@@ -340,24 +298,6 @@ impl<'t> Walker<'t> {
             target_id_str: NONE_STR,
         });
 
-        // captureValueRefScope (:735-767). Dart mints only `constant` targets.
-        if (kind == "constant" || kind == "variable")
-            && util::utf16_len(name) >= 3
-            && util::has_upper_or_underscore().is_match(name)
-        {
-            let parent_ok = self
-                .stack
-                .last()
-                .map(|s| matches!(s.kind, "file" | "class" | "module" | "struct" | "enum"))
-                .unwrap_or(false);
-            if parent_ok {
-                self.fs_values.insert(name.to_string(), row);
-                *self.fs_value_counts.entry(name.to_string()).or_insert(0) += 1;
-            }
-        }
-        if matches!(kind, "function" | "method" | "constant" | "variable") {
-            self.value_scopes.push(ValueScope { row, node, name: name.to_string() });
-        }
 
         Some(row)
     }
@@ -376,79 +316,6 @@ impl<'t> Walker<'t> {
             }
         }
         node
-    }
-
-    /// dartConstructorSignature (dart.ts:25-35).
-    fn constructor_signature(&self, node: Node<'t>) -> Option<Node<'t>> {
-        if matches!(node.kind(), "factory_constructor_signature" | "constructor_signature") {
-            return Some(node);
-        }
-        if node.kind() == "method_signature" {
-            let mut cursor = node.walk();
-            return node.named_children(&mut cursor).find(|c| {
-                matches!(c.kind(), "factory_constructor_signature" | "constructor_signature")
-            });
-        }
-        None
-    }
-
-    /// dartEnclosingTypeName (dart.ts:38-50).
-    fn enclosing_type_name(&self, node: Node<'t>) -> Option<&'t str> {
-        let mut p = node.parent();
-        while let Some(parent) = p {
-            if matches!(
-                parent.kind(),
-                "class_definition" | "mixin_declaration" | "extension_declaration" | "enum_declaration"
-            ) {
-                return parent.child_by_field_name("name").map(|n| self.text(n));
-            }
-            p = parent.parent();
-        }
-        None
-    }
-
-    /// dartCtorInfo (dart.ts:61-70).
-    fn ctor_info(&self, node: Node<'t>) -> Option<(String, String)> {
-        let ctor = self.constructor_signature(node)?;
-        let mut cursor = ctor.walk();
-        let ids: Vec<Node<'t>> = ctor
-            .named_children(&mut cursor)
-            .filter(|c| c.kind() == "identifier")
-            .collect();
-        let class_name = self.enclosing_type_name(node)?;
-        let first = ids.first()?;
-        if self.text(*first) != class_name {
-            return None; // misparsed method, not a ctor
-        }
-        let ctor_name = ids.get(1).map(|n| self.text(*n)).unwrap_or(class_name);
-        Some((class_name.to_string(), ctor_name.to_string()))
-    }
-
-    /// extractDartReturnType (dart.ts:80-92).
-    fn return_type_of(&self, node: Node<'t>) -> Option<String> {
-        if let Some((class_name, _)) = self.ctor_info(node) {
-            return Some(class_name);
-        }
-        let sig = self.inner_signature(node);
-        let mut cursor = sig.walk();
-        let ret = sig
-            .named_children(&mut cursor)
-            .find(|c| c.kind() == "type_identifier")?;
-        let text = angle_args_re().replace_all(self.text(ret), "");
-        let text = text.trim();
-        let last = text.split('.').next_back()?;
-        if last.is_empty() || !simple_type_name_re().is_match(last) {
-            return None;
-        }
-        Some(last.to_string())
-    }
-
-    /// isMisparsedFunction (dart.ts:177-188) — skip the UNNAMED constructor.
-    fn is_unnamed_ctor(&self, node: Node<'t>) -> bool {
-        match self.ctor_info(node) {
-            Some((class_name, ctor_name)) => ctor_name == class_name,
-            None => false,
-        }
     }
 
     /// getSignature (dart.ts:189-208).
@@ -554,16 +421,12 @@ impl<'t> Walker<'t> {
         found
     }
 
-    /// extractName (tree-sitter.ts:90-192) — resolveName (ctor names) →
-    /// name field → the method_signature inner unwrap → identifier-ish
-    /// child → `<anonymous>` (operators land here).
+    /// extractName (fork tree-sitter.ts:90-192) — name field → the
+    /// method_signature inner unwrap (function/getter/setter/ctor/factory
+    /// signatures — the FIRST identifier child wins, so constructors are
+    /// named by the CLASS identifier) → identifier-ish child →
+    /// `<anonymous>` (operators land here).
     fn extract_name(&self, node: Node<'t>) -> String {
-        // resolveName hook (dart.ts:244-260): named ctor/factory → ctor name.
-        if let Some((class_name, ctor_name)) = self.ctor_info(node) {
-            if ctor_name != class_name {
-                return ctor_name;
-            }
-        }
         if let Some(name_node) = node.child_by_field_name("name") {
             return self.text(name_node).to_string();
         }
@@ -597,28 +460,6 @@ impl<'t> Walker<'t> {
 
     fn visit(&mut self, node: Node<'t>) {
         stack_guard!();
-        // The visitNode hook (dart.ts:144-157) — the constants branch.
-        if node.kind() == "static_final_declaration" {
-            let mut cursor = node.walk();
-            let name_node = node.named_children(&mut cursor).find(|c| c.kind() == "identifier");
-            if let Some(name_node) = name_node {
-                // signature = first value sibling's text, sliced to 100
-                // UTF-16 units (a flattened chain captures just its head).
-                let signature = name_node.next_named_sibling().map(|v| {
-                    let (sliced, _) = util::slice_utf16(self.text(v), 100);
-                    if util::utf16_len(&sliced) >= 100 {
-                        format!("= {sliced}...")
-                    } else {
-                        format!("= {sliced}")
-                    }
-                });
-                let name = self.text(name_node).to_string();
-                self.create_node("constant", &name, node, Extra { signature, ..Default::default() });
-            }
-            self.scan_fn_ref_subtree(node, 0);
-            return;
-        }
-
         // maybeCaptureFnRefs (:990) — the double-walk fn-ref twin source.
         self.maybe_capture_fn_refs(node);
 
@@ -634,7 +475,7 @@ impl<'t> Walker<'t> {
                 self.extract_class(node);
                 return;
             }
-            "method_signature" | "constructor_signature" => {
+            "method_signature" => {
                 self.extract_method(node);
                 return;
             }
@@ -671,7 +512,9 @@ impl<'t> Walker<'t> {
 
     fn extract_function(&mut self, node: Node<'t>) {
         stack_guard!();
-        // No receiver hook. Name first (resolveName inside extract_name).
+        // No receiver hook; no isMisparsedFunction in the fork config —
+        // bodiless ctors never reach here (declaration wrappers are not
+        // methodTypes), wrapped ones are named by the class identifier.
         let name = self.extract_name(node);
         if name == "<anonymous>" {
             // :1549 — body-only walk (nothing pushed). Dart signatures always
@@ -681,20 +524,11 @@ impl<'t> Walker<'t> {
             }
             return;
         }
-        // isMisparsedFunction: the unnamed constructor is skipped — node
-        // suppressed, body still walked (attributed to the current stack top).
-        if self.is_unnamed_ctor(node) {
-            if let Some(body) = self.resolve_body(node) {
-                self.visit_body(body);
-            }
-            return;
-        }
-        let docstring = preceding_docstring(node, self.src);
+        let docstring = preceding_docstring_tsjs(node, self.src);
         let signature = self.signature_of(node);
         let visibility = self.visibility_of(node);
         let is_async = self.is_async_of(node);
         let is_static = self.is_static_of(node);
-        let return_type = self.return_type_of(node);
         let body = self.resolve_body(node);
         let end_line_override = body.map(|b| b.end_position().row as u32 + 1);
         let row = self.create_node(
@@ -707,12 +541,10 @@ impl<'t> Walker<'t> {
                 visibility,
                 is_async: Some(is_async),
                 is_static: Some(is_static),
-                return_type,
                 end_line_override,
             },
         );
         let Some(row) = row else { return };
-        self.extract_type_annotations(node, row);
         self.extract_decorators_for(node, row);
         self.stack.push(Scope { row, kind: "function", name });
         if let Some(body) = body {
@@ -729,19 +561,11 @@ impl<'t> Walker<'t> {
             return;
         }
         let name = self.extract_name(node);
-        // isMisparsedFunction — the unnamed ctor: body-only walk.
-        if self.is_unnamed_ctor(node) {
-            if let Some(body) = self.resolve_body(node) {
-                self.visit_body(body);
-            }
-            return;
-        }
-        let docstring = preceding_docstring(node, self.src);
+        let docstring = preceding_docstring_tsjs(node, self.src);
         let signature = self.signature_of(node);
         let visibility = self.visibility_of(node);
         let is_async = self.is_async_of(node);
         let is_static = self.is_static_of(node);
-        let return_type = self.return_type_of(node);
         let body = self.resolve_body(node);
         let end_line_override = body.map(|b| b.end_position().row as u32 + 1);
         // Operators mint method "<anonymous>" — extractMethod has NO skip.
@@ -755,12 +579,10 @@ impl<'t> Walker<'t> {
                 visibility,
                 is_async: Some(is_async),
                 is_static: Some(is_static),
-                return_type,
                 end_line_override,
             },
         );
         let Some(row) = row else { return };
-        self.extract_type_annotations(node, row);
         self.extract_decorators_for(node, row);
         self.stack.push(Scope { row, kind: "method", name });
         if let Some(body) = body {
@@ -778,7 +600,7 @@ impl<'t> Walker<'t> {
         // fallback finds the ON type's type_identifier — a class named after
         // the extended type (preserved).
         let name = self.extract_name(node);
-        let docstring = preceding_docstring(node, self.src);
+        let docstring = preceding_docstring_tsjs(node, self.src);
         let visibility = self.visibility_of(node);
         let row = self.create_node(
             "class",
@@ -809,7 +631,7 @@ impl<'t> Walker<'t> {
             None => return,
         };
         let name = self.extract_name(node);
-        let docstring = preceding_docstring(node, self.src);
+        let docstring = preceding_docstring_tsjs(node, self.src);
         let visibility = self.visibility_of(node);
         let row = self.create_node(
             "enum",
@@ -851,7 +673,7 @@ impl<'t> Walker<'t> {
         if name == "<anonymous>" {
             return false;
         }
-        let docstring = preceding_docstring(node, self.src);
+        let docstring = preceding_docstring_tsjs(node, self.src);
         // `value` field is null (type_alias has no fields) → no refs from
         // the aliased type; returns false → children re-visited.
         self.create_node("type_alias", &name, node, Extra { docstring, ..Default::default() });
@@ -965,19 +787,6 @@ impl<'t> Walker<'t> {
                             if ap.kind() == "identifier" {
                                 return Some(format!("{}.{}", self.text(ap), self.text(method_id)));
                             }
-                            // Chained static-factory: the receiver is itself
-                            // a call — re-encode `<inner>().<method>` when
-                            // the chain starts capitalized (#750).
-                            if ap.kind() == "selector" {
-                                let mut apc = ap.walk();
-                                if ap.named_children(&mut apc).any(|c| c.kind() == "argument_part") {
-                                    if let Some(inner) = self.callee_of_arg_part(ap) {
-                                        if starts_upper_re().is_match(&inner) {
-                                            return Some(format!("{}().{}", inner, self.text(method_id)));
-                                        }
-                                    }
-                                }
-                            }
                         }
                         return Some(self.text(method_id).to_string());
                     }
@@ -1024,77 +833,15 @@ impl<'t> Walker<'t> {
         None
     }
 
-    /// dartCalleeOfArgPart (dart.ts:100-116).
-    fn callee_of_arg_part(&self, arg_part: Node<'t>) -> Option<String> {
-        let prev = arg_part.prev_named_sibling()?;
-        if prev.kind() == "identifier" {
-            return Some(self.text(prev).to_string());
-        }
-        if prev.kind() == "selector" {
-            let mut pc = prev.walk();
-            let accessor = prev.named_children(&mut pc).find(|c| {
-                matches!(
-                    c.kind(),
-                    "unconditional_assignable_selector" | "conditional_assignable_selector"
-                )
-            });
-            let method_id = accessor.and_then(|a| {
-                let mut ac = a.walk();
-                let found = a.named_children(&mut ac).find(|c| c.kind() == "identifier");
-                found
-            });
-            if let Some(method_id) = method_id {
-                let accessor_prev = prev.prev_named_sibling();
-                if let Some(ap) = accessor_prev {
-                    if ap.kind() == "identifier" {
-                        return Some(format!("{}.{}", self.text(ap), self.text(method_id)));
-                    }
-                }
-                return Some(self.text(method_id).to_string());
-            }
-        }
-        None
-    }
-
-    // --- extractStaticMemberRef — the dart branch (:4759-4767) ------------
-
-    fn extract_static_member_ref(&mut self, node: Node<'t>) {
-        if self.stack.is_empty() {
-            return;
-        }
-        let owner_row = self.top_row();
-        if node.kind() != "selector" {
-            return;
-        }
-        let mut cursor = node.walk();
-        if node.named_children(&mut cursor).any(|c| c.kind() == "argument_part") {
-            return;
-        }
-        let Some(prev) = node.prev_named_sibling() else { return };
-        if prev.kind() == "identifier" && cap_ident_re().is_match(self.text(prev)) {
-            let name = self.text(prev).to_string();
-            // NO callee-of-call skip — `ConfigT.load()` double-emits
-            // (references + calls). Position = the IDENTIFIER (receiver).
-            self.push_ref_at(owner_row, &name, "references", prev);
-        }
-    }
-
     // --- extractDecoratorsFor (:4897-5024) — the sibling scan -------------
 
     fn extract_decorators_for(&mut self, decl: Node<'t>, decorated_row: u32) {
-        // Scan 1: direct children (+ modifiers descent) — inert for dart
-        // (annotations are preceding siblings), ported for fidelity.
+        // Scan 1: direct children — the fork does NOT descend into
+        // `modifiers` nodes (dart has none anyway).
         let mut cursor = decl.walk();
         let kids: Vec<Node<'t>> = decl.named_children(&mut cursor).collect();
         for child in kids {
             self.consider_decorator(child, decorated_row);
-            if child.kind() == "modifiers" {
-                let mut mc = child.walk();
-                let inner: Vec<Node<'t>> = child.named_children(&mut mc).collect();
-                for m in inner {
-                    self.consider_decorator(m, decorated_row);
-                }
-            }
         }
         // Scan 2: preceding siblings, backward, stop at the first
         // non-annotation — stacked annotations emit in REVERSE source order.
@@ -1122,7 +869,7 @@ impl<'t> Walker<'t> {
     }
 
     fn consider_decorator(&mut self, n: Node<'t>, decorated_row: u32) {
-        if !matches!(n.kind(), "decorator" | "annotation" | "marker_annotation" | "attribute") {
+        if !matches!(n.kind(), "decorator" | "annotation" | "marker_annotation") {
             return;
         }
         let mut target: Option<Node<'t>> = None;
@@ -1138,30 +885,28 @@ impl<'t> Walker<'t> {
                     break;
                 }
             }
+            // Fork target list — NO user_type/type_identifier.
             if matches!(
                 child.kind(),
                 "identifier" | "member_expression" | "scoped_identifier" | "navigation_expression"
-                    | "user_type" | "type_identifier"
             ) {
                 target = Some(child);
                 break;
             }
         }
         let Some(target) = target else { return };
+        // Fork name shape: NO generic-arg truncation; after the last dot/`::`,
+        // exactly ONE leading ':' or '.' char stripped, no trim.
         let mut name = self.text(target).to_string();
-        if let Some(lt) = name.find('<') {
-            if lt > 0 {
-                name.truncate(lt);
-            }
-        }
         let last_dot = name.rfind('.').map(|i| i as i64).unwrap_or(-1);
-        let last_colons = name.rfind("::").map(|i| (i + 1) as i64).unwrap_or(-1);
+        let last_colons = name.rfind("::").map(|i| i as i64).unwrap_or(-1);
         let last = last_dot.max(last_colons);
         if last >= 0 {
             name = name[(last as usize + 1)..].to_string();
-            name = name.trim_start_matches([':', '.']).to_string();
+            if name.starts_with(':') || name.starts_with('.') {
+                name.remove(0);
+            }
         }
-        let name = name.trim().to_string();
         if name.is_empty() {
             return;
         }
@@ -1175,23 +920,27 @@ impl<'t> Walker<'t> {
         let kids: Vec<Node<'t>> = node.named_children(&mut cursor).collect();
         for child in kids {
             if child.kind() == "superclass" {
-                // extends type + `with` mixins (implements) — dart branch.
+                // Fork machinery: ONE extends ref — the `type_list` children
+                // when present, else the FIRST named child, RAW text. Dart
+                // superclasses never carry a type_list, so this is
+                // namedChild(0): the extends type — or, for a mixins-only
+                // header (`class X with MixA`), the `mixins` node itself,
+                // yielding the `extends "with MixA"` quirk. Mixins NEVER
+                // yield implements refs on this arm.
                 let mut cc = child.walk();
-                let targets: Vec<Node<'t>> = child.named_children(&mut cc).collect();
-                for t in targets {
-                    if t.kind() == "mixins" {
-                        let mut mc = t.walk();
-                        let mixins: Vec<Node<'t>> = t.named_children(&mut mc).collect();
-                        for m in mixins {
-                            if m.kind() == "type_identifier" {
-                                let name = self.text(m).to_string();
-                                self.push_ref_at(class_row, &name, "implements", m);
-                            }
-                        }
-                    } else if t.kind() == "type_identifier" {
-                        let name = self.text(t).to_string();
-                        self.push_ref_at(class_row, &name, "extends", t);
+                let type_list = child
+                    .named_children(&mut cc)
+                    .find(|c| c.kind() == "type_list");
+                let targets: Vec<Node<'t>> = match type_list {
+                    Some(tl) => {
+                        let mut tc = tl.walk();
+                        tl.named_children(&mut tc).collect()
                     }
+                    None => child.named_child(0).into_iter().collect(),
+                };
+                for t in targets {
+                    let name = self.text(t).to_string();
+                    self.push_ref_at(class_row, &name, "extends", t);
                 }
             } else if child.kind() == "interfaces" {
                 // implements — one per named child, FULL child text.
@@ -1205,43 +954,10 @@ impl<'t> Walker<'t> {
         }
     }
 
-    // --- extractTypeAnnotations — the dart path (:5819-5833) --------------
-
-    fn extract_type_annotations(&mut self, node: Node<'t>, row: u32) {
-        let sig = if node.kind() == "method_signature" {
-            let mut cursor = node.walk();
-            let found = node.named_children(&mut cursor).find(|c| {
-                matches!(
-                    c.kind(),
-                    "function_signature" | "getter_signature" | "setter_signature"
-                        | "constructor_signature" | "factory_constructor_signature"
-                )
-            });
-            found.unwrap_or(node) // operators fall back to the wrapper itself
-        } else {
-            node
-        };
-        self.type_refs_from_subtree(sig, row);
-    }
-
-    fn type_refs_from_subtree(&mut self, node: Node<'t>, from_row: u32) {
-        stack_guard!();
-        if node.kind() == "type_identifier" {
-            let name = self.text(node);
-            if !name.is_empty() && !is_builtin_type(name) {
-                let name = name.to_string();
-                self.push_ref_at(from_row, &name, "references", node);
-            }
-            return;
-        }
-        let mut cursor = node.walk();
-        let kids: Vec<Node<'t>> = node.named_children(&mut cursor).collect();
-        for c in kids {
-            self.type_refs_from_subtree(c, from_row);
-        }
-    }
-
-    // --- visitFunctionBody (:5129-5286) — dart rows -----------------------
+    // --- visitFunctionBody (:5129-5286) — dart rows. NO extractTypeAnnotations
+    // pass: the fork machinery's field lookups (paramsField/returnField as
+    // FIELD names) all miss on this grammar, and there is no static-member-ref
+    // pass either, so dart emits ZERO type/value `references` refs.
 
     fn visit_body(&mut self, node: Node<'t>) {
         stack_guard!();
@@ -1259,8 +975,6 @@ impl<'t> Walker<'t> {
                 self.push_ref_at(caller_row, &callee, "calls", node);
             }
         }
-
-        self.extract_static_member_ref(node);
 
         if kind == "function_signature" {
             // Nested named functions (:5245) — extractFunction walks the
@@ -1384,31 +1098,6 @@ impl<'t> Walker<'t> {
         }
     }
 
-    fn scan_fn_ref_subtree(&mut self, node: Node<'t>, depth: u32) {
-        stack_guard!();
-        if depth > 12 {
-            return;
-        }
-        // Halt list: functionTypes (function_signature) + the lambda kinds —
-        // function_expression IS dart's lambda, so constant-initializer
-        // lambdas don't leak candidates.
-        if depth > 0
-            && matches!(
-                node.kind(),
-                "function_signature" | "arrow_function" | "function_expression"
-                    | "lambda_literal" | "lambda_expression"
-            )
-        {
-            return;
-        }
-        self.maybe_capture_fn_refs(node);
-        let mut cursor = node.walk();
-        let children: Vec<Node<'t>> = node.named_children(&mut cursor).collect();
-        for c in children {
-            self.scan_fn_ref_subtree(c, depth + 1);
-        }
-    }
-
     fn flush_fn_ref_candidates(&mut self) {
         let cands = std::mem::take(&mut self.fn_ref_cands);
         if cands.is_empty() || util::is_generated_file(self.file_path) {
@@ -1437,112 +1126,6 @@ impl<'t> Walker<'t> {
                 candidates: NONE_STR,
                 from_id_str: NONE_STR,
             });
-        }
-    }
-
-    // --- value-reference edges (:398-931) ---------------------------------
-
-    fn flush_value_refs(&mut self, root: Node<'t>) {
-        let scopes = std::mem::take(&mut self.value_scopes);
-        let mut targets = std::mem::take(&mut self.fs_values);
-        let counts = std::mem::take(&mut self.fs_value_counts);
-        if std::env::var("CODEGRAPH_VALUE_REFS").as_deref() == Ok("0") {
-            return;
-        }
-        if targets.is_empty() || scopes.is_empty() || util::is_generated_file(self.file_path) {
-            return;
-        }
-
-        // Shadow prune — the dart declarator shapes (:844-850): each bumps
-        // its first identifier-typed named child. Uninitialized locals bump;
-        // assignment_expression is NOT a prune case.
-        let mut decl_counts: HashMap<&str, u32> = HashMap::new();
-        let mut dstack: Vec<Node> = vec![root];
-        let mut dvisited = 0usize;
-        while let Some(n) = dstack.pop() {
-            if dvisited >= MAX_VALUE_REF_NODES {
-                break;
-            }
-            dvisited += 1;
-            if matches!(
-                n.kind(),
-                "static_final_declaration" | "initialized_identifier" | "initialized_variable_definition"
-            ) {
-                let mut cursor = n.walk();
-                let id = n.named_children(&mut cursor).find(|c| c.kind() == "identifier");
-                if let Some(id) = id {
-                    let nm = self.text(id);
-                    if targets.contains_key(nm) {
-                        *decl_counts.entry(nm).or_insert(0) += 1;
-                    }
-                }
-            }
-            for i in 0..n.named_child_count() {
-                if let Some(c) = n.named_child(i) {
-                    dstack.push(c);
-                }
-            }
-        }
-        let shadowed: Vec<String> = decl_counts
-            .iter()
-            .filter(|(nm, c)| **c > counts.get(**nm).copied().unwrap_or(1))
-            .map(|(nm, _)| nm.to_string())
-            .collect();
-        for nm in shadowed {
-            targets.remove(&nm);
-        }
-        if targets.is_empty() {
-            return;
-        }
-
-        let refs_kind = edge_kind_index("references").unwrap();
-        for scope in &scopes {
-            let mut seen: HashSet<&str> = HashSet::new();
-            let mut stack: Vec<Node> = vec![scope.node];
-            // The Dart sibling-body pull (:883-892) is LIVE and load-bearing:
-            // reader scopes are SIGNATURE nodes; their reads live in the
-            // sibling function_body.
-            if let Some(sib) = scope.node.next_named_sibling() {
-                if matches!(sib.kind(), "function_body" | "block") {
-                    stack.push(sib);
-                }
-            }
-            let mut visited = 0usize;
-            while let Some(n) = stack.pop() {
-                if visited >= MAX_VALUE_REF_NODES {
-                    break;
-                }
-                visited += 1;
-                if matches!(n.kind(), "identifier" | "constant" | "name" | "simple_identifier") {
-                    let ref_name = self.text(n);
-                    if let Some(&target_row) = targets.get(ref_name) {
-                        let target_id = self.node_ids[target_row as usize].as_str();
-                        if target_id != self.node_ids[scope.row as usize]
-                            && ref_name != scope.name
-                            && !seen.contains(&target_id)
-                        {
-                            seen.insert(target_id);
-                            let meta = self.arena.put(r#"{"valueRef":true}"#);
-                            self.tables.push_edge(&EdgeRow {
-                                source_idx: scope.row,
-                                target_idx: target_row,
-                                kind: refs_kind,
-                                provenance: 0,
-                                line: NONE,
-                                column: NONE,
-                                metadata_json: meta,
-                                source_id_str: NONE_STR,
-                                target_id_str: NONE_STR,
-                            });
-                        }
-                    }
-                }
-                for i in 0..n.named_child_count() {
-                    if let Some(c) = n.named_child(i) {
-                        stack.push(c);
-                    }
-                }
-            }
         }
     }
 }
