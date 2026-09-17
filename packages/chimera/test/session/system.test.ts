@@ -5,6 +5,7 @@ import { NamedError } from "@opencode-ai/core/util/error"
 import { Skill } from "../../src/skill"
 import { Permission } from "../../src/permission"
 import { SystemPrompt } from "../../src/session/system"
+import { MCP } from "../../src/mcp"
 import { LLM } from "../../src/session/llm"
 import { testEffect } from "../lib/effect"
 
@@ -48,6 +49,19 @@ const it = testEffect(
           available: () => Effect.succeed(skills),
         }),
       ),
+    ),
+    Layer.provide(
+      Layer.mock(MCP.Service, {
+        instructions: () =>
+          Effect.succeed([
+            { name: "guide-server", instructions: "Use lookup before mutate.", tools: [] },
+            {
+              name: "tool-server",
+              instructions: "Prefer search before update.",
+              tools: ["tool-server_search", "tool-server_update"],
+            },
+          ]),
+      }),
     ),
   ),
 )
@@ -510,4 +524,26 @@ describe("session.system capability segments", () => {
     // segments included, even when the tools are present.
     expect(keysFor(capabilityTools, "You are a custom agent.")).toEqual(["agent/system"])
   })
+
+  it.effect("mcp instructions render per server and drop servers whose tools are all denied", () =>
+    Effect.gen(function* () {
+      const prompt = yield* SystemPrompt.Service
+      const output = yield* prompt.mcp(build)
+
+      expect(output).toContain("<mcp_instructions>")
+      expect(output).toContain("</mcp_instructions>")
+      expect(output).toContain('  <server name="guide-server">')
+      expect(output).toContain("    Use lookup before mutate.")
+      expect(output).toContain('  <server name="tool-server">')
+      expect(output).toContain("    Prefer search before update.")
+
+      // A server whose tools the agent cannot see is not worth describing to it.
+      const denied = yield* prompt.mcp(
+        build,
+        Permission.fromConfig({ "tool-server_search": "deny", "tool-server_update": "deny" }),
+      )
+      expect(denied).toContain("guide-server")
+      expect(denied).not.toContain("tool-server")
+    }),
+  )
 })
