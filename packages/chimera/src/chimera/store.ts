@@ -1297,7 +1297,10 @@ export async function readChangeFacts(projectRoot: string, eventIDs?: string[]) 
 export async function recordAuditRun(projectRoot: string, input: AuditRunInput) {
   const createdAt = new Date().toISOString()
   const payload = safeJson(input.payload)
-  const id = `audit_${createHash("sha256").update(`${createdAt}:${payload}`).digest("hex").slice(0, 16)}`
+  // Identity fields are part of the hash input: same-millisecond records with a
+  // colliding id would silently REPLACE each other (audit rows lost under
+  // concurrent multi-session waves).
+  const id = `audit_${createHash("sha256").update(`${createdAt}:${input.source}:${input.provenanceID ?? ""}:${payload}`).digest("hex").slice(0, 16)}`
   await withDb(projectRoot, (db) => {
     db.prepare(`
       INSERT OR REPLACE INTO chimera_audit_run (
@@ -1365,7 +1368,10 @@ export async function recordPredesignRun(projectRoot: string, artifact: string, 
   const inputPayload = safeJson(input.payload)
   const record: PredesignRunRecord = {
     schemaVersion: 1,
-    id: `predesign_${createHash("sha256").update(`${createdAt}:${inputPayload}`).digest("hex").slice(0, 16)}`,
+    // sessionID is part of the hash input: two sessions recording in the same
+    // millisecond with equal payloads must not collide into one id, or INSERT OR
+    // REPLACE silently drops the earlier session's predesign evidence.
+    id: `predesign_${createHash("sha256").update(`${createdAt}:${input.sessionID}:${inputPayload}`).digest("hex").slice(0, 16)}`,
     ...input,
     createdAt,
   }
