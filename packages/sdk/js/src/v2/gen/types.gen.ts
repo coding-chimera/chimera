@@ -13,6 +13,7 @@ export type Event =
   | EventServerInstanceDisposed
   | EventFileEdited
   | EventFileWatcherUpdated
+  | EventChimeraEditIntentReleased
   | EventLspClientDiagnostics
   | EventLspUpdated
   | EventMessagePartDelta
@@ -860,6 +861,7 @@ export type GlobalEvent = {
     | EventServerInstanceDisposed
     | EventFileEdited
     | EventFileWatcherUpdated
+    | EventChimeraEditIntentReleased
     | EventLspClientDiagnostics
     | EventLspUpdated
     | EventMessagePartDelta
@@ -1011,6 +1013,7 @@ export type ServerConfig = {
   mdnsDomain?: string
   cors?: Array<string>
   maxActiveInstances?: number
+  instanceMemoryBudgetMb?: number
 }
 
 export type PermissionActionConfig = "ask" | "allow" | "deny"
@@ -3174,6 +3177,22 @@ export type EventFileWatcherUpdated = {
   }
 }
 
+export type EventChimeraEditIntentReleased = {
+  id: string
+  type: "chimera.edit_intent.released"
+  properties: {
+    projectRoot: string
+    reason: "session_removed"
+    targets: Array<{
+      sessionID: string
+      files: Array<{
+        filePath: string
+        blockerSessionID: string
+      }>
+    }>
+  }
+}
+
 export type EventLspClientDiagnostics = {
   id: string
   type: "lsp.client.diagnostics"
@@ -4634,6 +4653,35 @@ export type GlobalDisposeResponses = {
 }
 
 export type GlobalDisposeResponse = GlobalDisposeResponses[keyof GlobalDisposeResponses]
+
+export type GlobalPresenceData = {
+  body?: {
+    directories: Array<string>
+  }
+  path?: never
+  query?: never
+  url: "/global/presence"
+}
+
+export type GlobalPresenceErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type GlobalPresenceError = GlobalPresenceErrors[keyof GlobalPresenceErrors]
+
+export type GlobalPresenceResponses = {
+  /**
+   * Presence recorded
+   */
+  200: {
+    ok: true
+  }
+}
+
+export type GlobalPresenceResponse = GlobalPresenceResponses[keyof GlobalPresenceResponses]
 
 export type GlobalUpgradeData = {
   body?: {
