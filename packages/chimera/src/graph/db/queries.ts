@@ -2021,10 +2021,23 @@ export class QueryBuilder {
   getUnresolvedReferencesByFiles(filePaths: string[]): UnresolvedReference[] {
     if (filePaths.length === 0) return [];
 
-    const placeholders = filePaths.map(() => '?').join(',');
-    const rows = this.db
-      .prepare(`SELECT * FROM unresolved_refs WHERE status = 'pending' AND file_path IN (${placeholders})`)
-      .all(...filePaths) as UnresolvedRefRow[];
+    // Chunk the INPUT under the SQLite parameter limit (#540 — a dense
+    // recovery sync can pass thousands of changed file paths) and append
+    // each chunk's RESULT rows with a loop, never a spread: the result rows
+    // per chunk are unbounded, and `rows.push(...chunkRows)` dies with
+    // "Maximum call stack size exceeded" once a dense sync returns more rows
+    // than the engine accepts as arguments — aborting resolution mid-sync
+    // and leaving the graph short hundreds of thousands of edges (upstream
+    // d8f2eea, #1558: a 919-file self-heal produced 234,440 rows).
+    const rows: UnresolvedRefRow[] = [];
+    for (let i = 0; i < filePaths.length; i += SQLITE_PARAM_CHUNK_SIZE) {
+      const chunk = filePaths.slice(i, i + SQLITE_PARAM_CHUNK_SIZE);
+      const placeholders = chunk.map(() => '?').join(',');
+      const chunkRows = this.db
+        .prepare(`SELECT * FROM unresolved_refs WHERE status = 'pending' AND file_path IN (${placeholders})`)
+        .all(...chunk) as UnresolvedRefRow[];
+      for (const row of chunkRows) rows.push(row);
+    }
 
     return rows.map(rowToUnresolvedReference);
   }
@@ -2143,7 +2156,12 @@ export class QueryBuilder {
       const chunkRows = this.db
         .prepare(`SELECT * FROM unresolved_refs WHERE status = 'failed' AND name_tail IN (${placeholders})`)
         .all(...chunk) as UnresolvedRefRow[];
-      rows.push(...chunkRows);
+      // Loop, not spread — same argument-limit hazard as
+      // getUnresolvedReferencesByFiles (upstream d8f2eea, #1558): a large
+      // definition delta can select an unbounded number of failed rows per
+      // input chunk, and the spread form dies mid-sync with "Maximum call
+      // stack size exceeded".
+      for (const row of chunkRows) rows.push(row);
     }
 
     return rows.map(rowToUnresolvedReference);
