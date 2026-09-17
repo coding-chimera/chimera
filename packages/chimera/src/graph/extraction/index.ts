@@ -288,17 +288,144 @@ function readGitignorePatterns(giPath: string): string {
 }
 
 /**
+ * Resolve the repository GIT_DIR for `repoRoot` (a `.git` directory, or the
+ * target of a `.git` file pointer). Null when this isn't a git checkout.
+ * (N #1728 cherry-pick — K-v2 P2.)
+ */
+function resolveGitDir(repoRoot: string): string | null {
+  const gitPath = path.join(repoRoot, '.git');
+  let st: fs.Stats;
+  try {
+    st = fs.statSync(gitPath);
+  } catch {
+    return null;
+  }
+  if (st.isDirectory()) return gitPath;
+  if (!st.isFile()) return null;
+  try {
+    const raw = fs.readFileSync(gitPath, 'utf8').match(/^gitdir:\s*(.+)$/m)?.[1]?.trim();
+    if (!raw) return null;
+    return path.isAbsolute(raw) ? path.normalize(raw) : path.resolve(repoRoot, raw);
+  } catch {
+    return null;
+  }
+}
+
+/** Expand a leading `~/` the way git does for `core.excludesFile`. */
+function expandUserPath(p: string): string {
+  if (p === '~') return os.homedir();
+  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
+  return p;
+}
+
+/**
+ * Root-relative exclude patterns from git sources that are NOT the root
+ * `.gitignore`: `.git/info/exclude` and `core.excludesFile`. Same semantics as
+ * the root `.gitignore`, so they merge into {@link buildDefaultIgnore}. Without
+ * these, the watcher / FS-walk scope silently diverged from
+ * `git ls-files --exclude-standard` (#1728).
+ */
+function readGitExcludeExtraPatterns(rootDir: string): string {
+  const chunks: string[] = [];
+  const gitDir = resolveGitDir(rootDir);
+  if (gitDir) {
+    const excludePath = path.join(gitDir, 'info', 'exclude');
+    if (fs.existsSync(excludePath)) {
+      const patterns = readGitignorePatterns(excludePath);
+      if (patterns) chunks.push(patterns);
+    }
+  }
+  try {
+    const configured = execFileSync(
+      'git',
+      ['-C', rootDir, 'config', '--get', 'core.excludesFile'],
+      { encoding: 'utf8', timeout: 5_000, stdio: ['ignore', 'pipe', 'ignore'] },
+    ).trim();
+    if (configured) {
+      const abs = expandUserPath(configured);
+      if (fs.existsSync(abs)) {
+        const patterns = readGitignorePatterns(abs);
+        if (patterns) chunks.push(patterns);
+      }
+    }
+  } catch {
+    // No git, unset, or timeout — leave extras empty.
+  }
+  return chunks.join('\n');
+}
+
+/**
+ * Directories `git ls-files -o -i --exclude-standard --directory` reports as
+ * ignored-untracked. Seeded into the shared matcher so nested `.gitignore`
+ * effects (and any exclude-standard rule the flat matcher might miss) prune
+ * the watcher the same way the indexer skips them (#1728).
+ */
+function listGitIgnoredDirectories(rootDir: string): string[] {
+  try {
+    const out = execFileSync(
+      'git',
+      ['-C', rootDir, 'ls-files', '-z', '-o', '-i', '--exclude-standard', '--directory'],
+      {
+        encoding: 'utf8',
+        timeout: 60_000,
+        maxBuffer: 50 * 1024 * 1024,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      },
+    );
+    const dirs: string[] = [];
+    for (const entry of out.split('\0')) {
+      if (!entry) continue;
+      dirs.push(entry.endsWith('/') ? entry : `${entry}/`);
+    }
+    return dirs;
+  } catch {
+    return [];
+  }
+}
+
+/**
  * An `ignore` matcher seeded with the built-in defaults, merged with the project's
- * root .gitignore so a negation there (e.g. `!vendor/`) overrides a default. Shared
- * by both enumeration paths so behavior is identical with or without git — and so
- * the defaults apply to tracked files too (committing a dependency dir doesn't make
- * it project code; the explicit `.gitignore` negation is the only opt-in).
+ * root .gitignore so a negation there (e.g. `!vendor/`) overrides a default,
+ * plus git's other root-relative exclude files (`.git/info/exclude`,
+ * `core.excludesFile`) and the nested-.gitignore-pruned directories so the
+ * watcher / FS-walk scope matches `git ls-files --exclude-standard` (#1728,
+ * K-v2 P2 cherry-pick). Shared by both enumeration paths so behavior is
+ * identical with or without git — and so the defaults apply to tracked files
+ * too (committing a dependency dir doesn't make it project code; the explicit
+ * `.gitignore` negation is the only opt-in).
  */
 export function buildDefaultIgnore(rootDir: string): Ignore {
   const ig = ignore().add(DEFAULT_IGNORE_PATTERNS);
   const rootGitignore = path.join(rootDir, '.gitignore');
   if (fs.existsSync(rootGitignore)) ig.add(readGitignorePatterns(rootGitignore));
+  const extra = readGitExcludeExtraPatterns(rootDir);
+  if (extra) ig.add(extra);
+  const ignoredDirs = listGitIgnoredDirectories(rootDir);
+  if (ignoredDirs.length > 0) ig.add(ignoredDirs);
   return ig;
+}
+
+/**
+ * The grammars to preload for a file set (N #1628 cherry-pick — K-v2 P2).
+ *
+ * Path-only detection calls every `.h` file C, but parse-time detection reads
+ * the source and can reclassify it as C++ or Objective-C (`detectLanguage`
+ * with a `source` argument). Workers only ever get the grammars named here, so
+ * a header that turns out to be Objective-C in a project with no `.m` file
+ * found no parser and failed with `Failed to get parser for language: objc`
+ * (#1628). C++ was already covered; Objective-C was not.
+ */
+export function preloadLanguagesForFiles(
+  files: string[],
+  overrides?: Record<string, Language>
+): Language[] {
+  const languages = [...new Set(files.map((f) => detectLanguage(f, undefined, overrides)))];
+  if (languages.includes('c')) {
+    for (const ambiguous of ['cpp', 'objc'] as const) {
+      if (!languages.includes(ambiguous)) languages.push(ambiguous);
+    }
+  }
+  return languages;
 }
 
 /**
@@ -958,11 +1085,9 @@ export class ExtractionOrchestrator {
     await new Promise(resolve => setImmediate(resolve));
 
     // Detect needed languages and load grammars in the parse worker
-    const neededLanguages = [...new Set(files.map((f) => detectLanguage(f)))];
-    // .h files default to 'c' but may be C++ — ensure cpp grammar is loaded when c is needed
-    if (neededLanguages.includes('c') && !neededLanguages.includes('cpp')) {
-      neededLanguages.push('cpp');
-    }
+    // (#1628: an ambiguous `.h` may parse as C++ OR Objective-C, so both
+    // grammars preload alongside c).
+    const neededLanguages = preloadLanguagesForFiles(files);
 
     // Try to use a pool of worker threads for parsing (keeps main thread
     // unblocked and uses every core). Falls back to in-process parsing when
@@ -1509,10 +1634,7 @@ export class ExtractionOrchestrator {
     }
 
     if (filesToIndex.length > 0) {
-      const neededLanguages = [...new Set(filesToIndex.map((f) => detectLanguage(f)))];
-      if (neededLanguages.includes('c') && !neededLanguages.includes('cpp')) {
-        neededLanguages.push('cpp');
-      }
+      const neededLanguages = preloadLanguagesForFiles(filesToIndex);
       await loadGrammarsForLanguages(neededLanguages);
     }
 
@@ -1939,11 +2061,7 @@ export class ExtractionOrchestrator {
 
     // Load only grammars needed for changed files
     if (filesToIndex.length > 0) {
-      const neededLanguages = [...new Set(filesToIndex.map((f) => detectLanguage(f)))];
-      // .h files default to 'c' but may be C++ — ensure cpp grammar is loaded
-      if (neededLanguages.includes('c') && !neededLanguages.includes('cpp')) {
-        neededLanguages.push('cpp');
-      }
+      const neededLanguages = preloadLanguagesForFiles(filesToIndex);
       await loadGrammarsForLanguages(neededLanguages);
     }
 
