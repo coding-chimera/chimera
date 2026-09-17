@@ -10,6 +10,7 @@ import { Database } from "@/storage/db"
 import { NotFoundError } from "@/storage/storage"
 import { and, desc, eq, inArray, lt, or, sql } from "drizzle-orm"
 import { MessageTable, PartTable, SessionTable } from "./session.sql"
+import { StorageMaintenanceTable } from "@/storage/maintenance.sql"
 import * as ProviderError from "@/provider/error"
 import { iife } from "@/util/iife"
 import { errorMessage } from "@/util/error"
@@ -36,18 +37,48 @@ export { isMedia }
 
 export const OutputLengthError = namedSchemaError("MessageOutputLengthError", {})
 
-const MAX_STORED_MESSAGE_SUMMARY_BYTES = 1024 * 1024
+export const MAX_STORED_MESSAGE_SUMMARY_BYTES = 1024 * 1024
 
-function trimOversizedStoredSummaries(sessionID: SessionID) {
-  Database.use((db) =>
+/** Marker prefix in `storage_maintenance` for the one-off summary repair. */
+const SUMMARY_TRIM_MARKER = "message-summary-trim"
+
+// Sessions already repaired in this process; the durable marker keeps the
+// repair from running again after a restart.
+const trimmedSessions = new Set<string>()
+
+/**
+ * Legacy rows can carry a message `summary.diffs` blob larger than the write
+ * side allows today. This repair used to run on every `page()` and `get()`
+ * call, which turned paging a long session into O(N^2/50) synchronous UPDATE
+ * scans hidden inside a read path. It now runs at most once per session,
+ * guarded by a durable completion marker, and `SessionSummary` caps new writes
+ * at the same serialized size so nothing oversized is created anymore.
+ */
+function ensureStoredSummariesTrimmed(sessionID: SessionID) {
+  if (trimmedSessions.has(sessionID)) return
+  const key = `${SUMMARY_TRIM_MARKER}:${sessionID}`
+  const marked = Database.use((db) =>
+    db
+      .select({ key: StorageMaintenanceTable.key })
+      .from(StorageMaintenanceTable)
+      .where(eq(StorageMaintenanceTable.key, key))
+      .get(),
+  )
+  if (marked) {
+    trimmedSessions.add(sessionID)
+    return
+  }
+  Database.use((db) => {
     db.run(sql`
       UPDATE message
       SET data = json_set(data, '$.summary.diffs', json('[]'))
       WHERE session_id = ${sessionID}
         AND json_type(data, '$.summary.diffs') IS NOT NULL
         AND length(json_extract(data, '$.summary.diffs')) > ${MAX_STORED_MESSAGE_SUMMARY_BYTES}
-    `),
-  )
+    `)
+    db.insert(StorageMaintenanceTable).values({ key }).onConflictDoNothing().run()
+  })
+  trimmedSessions.add(sessionID)
 }
 export const AbortedError = namedSchemaError("MessageAbortedError", { message: Schema.String })
 export const StructuredOutputError = namedSchemaError("StructuredOutputError", {
@@ -1117,7 +1148,7 @@ export function toModelMessages(
 }
 
 export function page(input: { sessionID: SessionID; limit: number; before?: string }) {
-  trimOversizedStoredSummaries(input.sessionID)
+  ensureStoredSummariesTrimmed(input.sessionID)
   const before = input.before ? cursor.decode(input.before) : undefined
   const where = before
     ? and(eq(MessageTable.session_id, input.sessionID), older(before))
@@ -1184,7 +1215,7 @@ export function parts(message_id: MessageID) {
 }
 
 export function get(input: { sessionID: SessionID; messageID: MessageID }): WithParts {
-  trimOversizedStoredSummaries(input.sessionID)
+  ensureStoredSummariesTrimmed(input.sessionID)
   const row = Database.use((db) =>
     db
       .select()
