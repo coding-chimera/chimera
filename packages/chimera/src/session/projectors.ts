@@ -65,6 +65,25 @@ export function toPartialRow(info: DeepPartial<Session.Info>) {
   return Object.fromEntries(Object.entries(obj).filter(([_, val]) => val !== undefined))
 }
 
+export type ProjectedSessionRow = typeof SessionTable.$inferSelect
+
+/**
+ * Session rows captured by the projectors below, keyed by sync event payload
+ * identity.
+ *
+ * `SyncEvent.process` projects an event inside an immediate write transaction
+ * and then runs the `convertEvent` hook for the very same payload object in the
+ * post-commit callback — synchronously, on this process's single database
+ * connection — so nothing in-process can change the row in between. Publishing
+ * the `UPDATE ... RETURNING` row is therefore not a cache: it is exactly the
+ * state this event committed. Unlike a post-commit read it also cannot pick up
+ * a concurrent foreign writer's change that this process never announced an
+ * event for, which would let a later event look like a revert.
+ *
+ * Consumed by `src/server/projectors.ts`; a miss falls back to a fresh read.
+ */
+export const projectedSessionRows = new WeakMap<object, ProjectedSessionRow>()
+
 export default [
   SyncEvent.project(Session.Event.Created, (db, data) => {
     db.insert(SessionTable)
@@ -81,8 +100,8 @@ export default [
       .returning()
       .get()
     if (!row) throw new NotFoundError({ message: `Session not found: ${data.sessionID}` })
+    projectedSessionRows.set(data, row)
   }),
-
   SyncEvent.project(Session.Event.Deleted, (db, data) => {
     db.delete(SessionTable).where(eq(SessionTable.id, data.sessionID)).run()
   }),
@@ -150,10 +169,13 @@ export default [
       ...current.filter((rule) => !data.rules.some((r) => r.permission === rule.permission && r.pattern === rule.pattern)),
       ...data.rules,
     ]
-    db.update(SessionTable)
+    const updated = db
+      .update(SessionTable)
       .set({ permission: next, time_updated: data.timestamp })
       .where(eq(SessionTable.id, data.sessionID))
-      .run()
+      .returning()
+      .get()
+    if (updated) projectedSessionRows.set(data, updated)
   }),
 
   ...nextProjectors,
