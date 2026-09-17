@@ -117,6 +117,57 @@ export type PredesignRunInput = {
   payload: unknown
 }
 
+export type EditIntentClaimStatus = "active" | "released" | "expired"
+export type EditIntentClaimReleaseReason = "session_idle" | "session_removed" | "ttl" | "explicit"
+
+export type EditIntentClaimInput = {
+  /** Claim identity; the predesign run id that declared the intent. */
+  id: string
+  sessionID: string
+  messageID?: string
+  callID?: string
+  agent: string
+  /** Normalized project-relative paths (graphPath form). One claim row per file. */
+  files: string[]
+  intent: string
+  snapshotRevision?: string
+  /** Crash-fallback lifetime; claims are normally released by explicit signals. */
+  ttlMs?: number
+}
+
+export type EditIntentClaimRecord = {
+  schemaVersion: 1
+  id: string
+  sessionID: string
+  messageID?: string
+  callID?: string
+  agent: string
+  filePath: string
+  intent: string
+  snapshotRevision?: string
+  status: EditIntentClaimStatus
+  releaseReason?: EditIntentClaimReleaseReason
+  createdAt: string
+  releasedAt?: string
+  expiresAt: string
+}
+
+export type EditIntentWaiterStatus = "waiting" | "woken" | "cancelled"
+
+export type EditIntentWaiterRecord = {
+  schemaVersion: 1
+  sessionID: string
+  filePath: string
+  blockerSessionID: string
+  status: EditIntentWaiterStatus
+  reason?: string
+  createdAt: string
+  updatedAt: string
+}
+
+/** Matches PREDESIGN_FRESH_WINDOW_MS in provenance.ts: a claim never outlives the predesign evidence it came from. */
+export const EDIT_INTENT_CLAIM_DEFAULT_TTL_MS = 2 * 60 * 60 * 1000
+
 export type PredesignRunRecord = PredesignRunInput & {
   schemaVersion: 1
   id: string
@@ -450,6 +501,46 @@ CREATE TABLE IF NOT EXISTS chimera_commit_change_summary (
 
 CREATE INDEX IF NOT EXISTS chimera_commit_change_summary_commit_idx ON chimera_commit_change_summary(commit_hash);
 CREATE INDEX IF NOT EXISTS chimera_commit_change_summary_compacted_idx ON chimera_commit_change_summary(compacted_at);
+`,
+    },
+    {
+      version: 5,
+      description: "Create edit-intent claim and waiter tables for cross-session edit coordination",
+      sql: `
+CREATE TABLE IF NOT EXISTS chimera_edit_intent_claim (
+  id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  message_id TEXT,
+  call_id TEXT,
+  agent TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  intent TEXT NOT NULL,
+  snapshot_revision TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  release_reason TEXT,
+  created_at TEXT NOT NULL,
+  released_at TEXT,
+  expires_at TEXT NOT NULL,
+  PRIMARY KEY (id, file_path)
+);
+
+CREATE INDEX IF NOT EXISTS chimera_edit_intent_claim_file_status_idx ON chimera_edit_intent_claim(file_path, status);
+CREATE INDEX IF NOT EXISTS chimera_edit_intent_claim_session_status_idx ON chimera_edit_intent_claim(session_id, status);
+CREATE INDEX IF NOT EXISTS chimera_edit_intent_claim_expires_idx ON chimera_edit_intent_claim(status, expires_at);
+
+CREATE TABLE IF NOT EXISTS chimera_edit_intent_waiter (
+  session_id TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  blocker_session_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'waiting',
+  reason TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (session_id, file_path)
+);
+
+CREATE INDEX IF NOT EXISTS chimera_edit_intent_waiter_file_status_idx ON chimera_edit_intent_waiter(file_path, status);
+CREATE INDEX IF NOT EXISTS chimera_edit_intent_waiter_session_status_idx ON chimera_edit_intent_waiter(session_id, status);
 `,
     },
   ],
@@ -1351,6 +1442,275 @@ export async function readPredesignRunReadonly(projectRoot: string, artifact: st
   if (record) return record
   return (await readJsonl<PredesignRunRecord>(artifact)).find((item) => item.id === predesignID)
 }
+
+type EditIntentClaimRow = {
+  id: string
+  session_id: string
+  message_id: string | null
+  call_id: string | null
+  agent: string
+  file_path: string
+  intent: string
+  snapshot_revision: string | null
+  status: string
+  release_reason: string | null
+  created_at: string
+  released_at: string | null
+  expires_at: string
+}
+
+type EditIntentWaiterRow = {
+  session_id: string
+  file_path: string
+  blocker_session_id: string
+  status: string
+  reason: string | null
+  created_at: string
+  updated_at: string
+}
+
+function claimFilePath(file: string) {
+  return file.replaceAll("\\", "/")
+}
+
+function editIntentClaimStatus(status: string): EditIntentClaimStatus {
+  if (status === "released" || status === "expired") return status
+  return "active"
+}
+
+function editIntentWaiterStatus(status: string): EditIntentWaiterStatus {
+  if (status === "woken" || status === "cancelled") return status
+  return "waiting"
+}
+
+function editIntentClaimRecord(row: EditIntentClaimRow): EditIntentClaimRecord {
+  return {
+    schemaVersion: 1,
+    id: row.id,
+    sessionID: row.session_id,
+    ...(row.message_id ? { messageID: row.message_id } : {}),
+    ...(row.call_id ? { callID: row.call_id } : {}),
+    agent: row.agent,
+    filePath: row.file_path,
+    intent: row.intent,
+    ...(row.snapshot_revision ? { snapshotRevision: row.snapshot_revision } : {}),
+    status: editIntentClaimStatus(row.status),
+    ...(row.release_reason ? { releaseReason: row.release_reason as EditIntentClaimReleaseReason } : {}),
+    createdAt: row.created_at,
+    ...(row.released_at ? { releasedAt: row.released_at } : {}),
+    expiresAt: row.expires_at,
+  }
+}
+
+function editIntentWaiterRecord(row: EditIntentWaiterRow): EditIntentWaiterRecord {
+  return {
+    schemaVersion: 1,
+    sessionID: row.session_id,
+    filePath: row.file_path,
+    blockerSessionID: row.blocker_session_id,
+    status: editIntentWaiterStatus(row.status),
+    ...(row.reason ? { reason: row.reason } : {}),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
+}
+
+// Lazy TTL enforcement: claims past their crash-fallback lifetime flip to
+// expired on any writable read so stale holders (crashed sessions/processes)
+// stop blocking edits without a background sweeper.
+function expireStaleEditIntentClaims(db: ChimeraDb, now: string) {
+  db.prepare("UPDATE chimera_edit_intent_claim SET status = 'expired', release_reason = 'ttl', released_at = ? WHERE status = 'active' AND expires_at <= ?").run(now, now)
+}
+
+export async function registerEditIntentClaims(projectRoot: string, input: EditIntentClaimInput): Promise<EditIntentClaimRecord[]> {
+  const files = unique(input.files.map(claimFilePath).filter(Boolean))
+  if (files.length === 0) return []
+  const createdAt = new Date().toISOString()
+  const ttlMs = Math.max(60_000, Math.floor(input.ttlMs ?? EDIT_INTENT_CLAIM_DEFAULT_TTL_MS))
+  const expiresAt = new Date(Date.now() + ttlMs).toISOString()
+  const records = await withDb(projectRoot, (db) => {
+    expireStaleEditIntentClaims(db, createdAt)
+    const insert = db.prepare(`
+      INSERT OR REPLACE INTO chimera_edit_intent_claim (
+        id, session_id, message_id, call_id, agent, file_path, intent, snapshot_revision,
+        status, release_reason, created_at, released_at, expires_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', NULL, ?, NULL, ?)
+    `)
+    return files.map((filePath) => {
+      insert.run(
+        input.id,
+        input.sessionID,
+        input.messageID ?? null,
+        input.callID ?? null,
+        input.agent,
+        filePath,
+        input.intent,
+        input.snapshotRevision ?? null,
+        createdAt,
+        expiresAt,
+      )
+      return {
+        schemaVersion: 1 as const,
+        id: input.id,
+        sessionID: input.sessionID,
+        ...(input.messageID ? { messageID: input.messageID } : {}),
+        ...(input.callID ? { callID: input.callID } : {}),
+        agent: input.agent,
+        filePath,
+        intent: input.intent,
+        ...(input.snapshotRevision ? { snapshotRevision: input.snapshotRevision } : {}),
+        status: "active" as const,
+        createdAt,
+        expiresAt,
+      }
+    })
+  })
+  return records ?? []
+}
+
+export async function readActiveEditIntentClaims(
+  projectRoot: string,
+  options: { files?: string[]; sessionID?: string; excludeSessionID?: string; now?: string; limit?: number } = {},
+): Promise<EditIntentClaimRecord[]> {
+  const now = options.now ?? new Date().toISOString()
+  const limit = Math.max(1, Math.min(500, Math.floor(options.limit ?? 200)))
+  const files = options.files ? unique(options.files.map(claimFilePath).filter(Boolean)) : undefined
+  const records = await withDb(projectRoot, (db) => {
+    expireStaleEditIntentClaims(db, now)
+    const where = ["status = 'active'", "expires_at > ?"]
+    const params: unknown[] = [now]
+    if (files && files.length > 0) {
+      where.push(`file_path IN (${files.map(() => "?").join(", ")})`)
+      params.push(...files)
+    }
+    if (options.sessionID) {
+      where.push("session_id = ?")
+      params.push(options.sessionID)
+    }
+    if (options.excludeSessionID) {
+      where.push("session_id != ?")
+      params.push(options.excludeSessionID)
+    }
+    params.push(limit)
+    const rows = db
+      .prepare(`SELECT * FROM chimera_edit_intent_claim WHERE ${where.join(" AND ")} ORDER BY created_at ASC, id ASC, file_path ASC LIMIT ?`)
+      .all(...params) as EditIntentClaimRow[]
+    return rows.map(editIntentClaimRecord)
+  })
+  return records ?? []
+}
+
+export async function releaseEditIntentClaims(
+  projectRoot: string,
+  sessionID: string,
+  reason: EditIntentClaimReleaseReason,
+  options: { now?: string } = {},
+): Promise<EditIntentClaimRecord[]> {
+  const now = options.now ?? new Date().toISOString()
+  const released = await withDb(projectRoot, (db) => {
+    expireStaleEditIntentClaims(db, now)
+    const rows = db.prepare("SELECT * FROM chimera_edit_intent_claim WHERE session_id = ? AND status = 'active'").all(sessionID) as EditIntentClaimRow[]
+    if (rows.length === 0) return []
+    db.prepare("UPDATE chimera_edit_intent_claim SET status = 'released', release_reason = ?, released_at = ? WHERE session_id = ? AND status = 'active'").run(reason, now, sessionID)
+    return rows.map((row) => ({
+      ...editIntentClaimRecord(row),
+      status: "released" as const,
+      releaseReason: reason,
+      releasedAt: now,
+    }))
+  })
+  return released ?? []
+}
+
+export async function registerEditIntentWaiter(
+  projectRoot: string,
+  input: { sessionID: string; filePath: string; blockerSessionID: string; reason?: string; now?: string },
+): Promise<boolean> {
+  const filePath = claimFilePath(input.filePath)
+  if (!filePath) return false
+  const now = input.now ?? new Date().toISOString()
+  const wrote = await withDb(projectRoot, (db) => {
+    db.prepare(`
+      INSERT INTO chimera_edit_intent_waiter (session_id, file_path, blocker_session_id, status, reason, created_at, updated_at)
+      VALUES (?, ?, ?, 'waiting', ?, ?, ?)
+      ON CONFLICT(session_id, file_path) DO UPDATE SET
+        blocker_session_id = excluded.blocker_session_id,
+        status = 'waiting',
+        reason = excluded.reason,
+        updated_at = excluded.updated_at
+    `).run(input.sessionID, filePath, input.blockerSessionID, input.reason ?? null, now, now)
+    return true
+  })
+  return wrote ?? false
+}
+
+/**
+ * Atomically flip waiting waiters on the given files to woken and return them.
+ * A waiter is only woken when no other session still holds an active,
+ * unexpired claim on its file, so a release cascade with multiple holders
+ * wakes the waiter exactly once, after the last holder lets go.
+ */
+export async function takeWokenEditIntentWaiters(
+  projectRoot: string,
+  files: string[],
+  options: { now?: string } = {},
+): Promise<EditIntentWaiterRecord[]> {
+  const now = options.now ?? new Date().toISOString()
+  const targets = unique(files.map(claimFilePath).filter(Boolean))
+  if (targets.length === 0) return []
+  const woken = await withDb(projectRoot, (db) => {
+    expireStaleEditIntentClaims(db, now)
+    const result: EditIntentWaiterRecord[] = []
+    db.transaction(() => {
+      const remaining = db.prepare("SELECT COUNT(*) as count FROM chimera_edit_intent_claim WHERE file_path = ? AND status = 'active' AND expires_at > ? AND session_id != ?")
+      const wake = db.prepare("UPDATE chimera_edit_intent_waiter SET status = 'woken', updated_at = ? WHERE session_id = ? AND file_path = ? AND status = 'waiting'")
+      for (const filePath of targets) {
+        const waiters = db.prepare("SELECT * FROM chimera_edit_intent_waiter WHERE file_path = ? AND status = 'waiting' ORDER BY created_at ASC, session_id ASC").all(filePath) as EditIntentWaiterRow[]
+        for (const waiter of waiters) {
+          const held = remaining.get(filePath, now, waiter.session_id) as CountRow | undefined
+          if ((held?.count ?? 0) > 0) continue
+          wake.run(now, waiter.session_id, waiter.file_path)
+          result.push({ ...editIntentWaiterRecord(waiter), status: "woken", updatedAt: now })
+        }
+      }
+    })()
+    return result
+  })
+  return woken ?? []
+}
+
+export async function readEditIntentWaiters(
+  projectRoot: string,
+  options: { sessionID?: string; status?: EditIntentWaiterStatus; limit?: number } = {},
+): Promise<EditIntentWaiterRecord[]> {
+  const limit = Math.max(1, Math.min(200, Math.floor(options.limit ?? 50)))
+  const where: string[] = []
+  const params: unknown[] = []
+  if (options.sessionID) {
+    where.push("session_id = ?")
+    params.push(options.sessionID)
+  }
+  if (options.status) {
+    where.push("status = ?")
+    params.push(options.status)
+  }
+  params.push(limit)
+  const clause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""
+  const rows = await withReadOnlyDb(projectRoot, (db) =>
+    db.prepare(`SELECT * FROM chimera_edit_intent_waiter ${clause} ORDER BY created_at ASC, session_id ASC, file_path ASC LIMIT ?`).all(...params) as EditIntentWaiterRow[],
+  )
+  return (rows ?? []).map(editIntentWaiterRecord)
+}
+
+export async function cancelEditIntentWaiters(projectRoot: string, sessionID: string, options: { now?: string } = {}): Promise<number> {
+  const now = options.now ?? new Date().toISOString()
+  const cancelled = await withDb(projectRoot, (db) => {
+    const result = db.prepare("UPDATE chimera_edit_intent_waiter SET status = 'cancelled', updated_at = ? WHERE session_id = ? AND status = 'waiting'").run(now, sessionID)
+    return Number(result.changes ?? 0)
+  })
+  return cancelled ?? 0
+}
+
 
 function oracleID(createdAt: string, payload: string) {
   return `oracle_${createHash("sha256").update(`${createdAt}:${payload}`).digest("hex").slice(0, 16)}`
