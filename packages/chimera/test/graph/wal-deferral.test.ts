@@ -144,7 +144,11 @@ describe('WalCheckpointValve', () => {
     const db = openDb();
     db.setWalAutocheckpoint(0);
     writeRows(db, 500);
-    const valve = new WalCheckpointValve(db, 0.00001);
+    // soft 2MB ⇒ hard 4MB (the ~5-6MB WAL — 4KB blobs spill into overflow
+    // pages — trips the GROWTH trigger) and file cap 8MB (the same WAL stays
+    // under the file-size trigger, so the baseline semantics below are what's
+    // being tested).
+    const valve = new WalCheckpointValve(db, 2);
     valve.check();
     await valve.drain(); // full backfill on an idle DB → baseline = current file size
     // The WAL file keeps its high-water size, but growth is now 0: neither
@@ -225,8 +229,14 @@ const MB = 1024 * 1024;
  * (checkpoints permanently busy) that a live SQLite file cannot reproduce
  * on demand.
  */
-function fakeValveDb(opts: { walBytes: number; checkpoint: FakeCheckpointRow; pageSizeBytes?: number }) {
+function fakeValveDb(opts: {
+  walBytes: number;
+  checkpoint: FakeCheckpointRow;
+  pageSizeBytes?: number;
+  truncate?: FakeCheckpointRow | null;
+}) {
   let calls = 0;
+  let truncateCalls = 0;
   const db = {
     getWalSizeBytes: () => opts.walBytes,
     getPageSizeBytes: () => opts.pageSizeBytes ?? 4096,
@@ -234,8 +244,13 @@ function fakeValveDb(opts: { walBytes: number; checkpoint: FakeCheckpointRow; pa
       calls++;
       return { ...opts.checkpoint };
     },
+    checkpointWalTruncate: async () => {
+      truncateCalls++;
+      if (opts.truncate === undefined) return { busy: 0, log: 0, checkpointed: 0 };
+      return opts.truncate ? { ...opts.truncate } : null;
+    },
   } as unknown as DatabaseConnection;
-  return { db, callCount: () => calls };
+  return { db, callCount: () => calls, truncateCount: () => truncateCalls };
 }
 
 describe('WalCheckpointValve pinned-WAL backoff (index-stall regression)', () => {
@@ -256,12 +271,16 @@ describe('WalCheckpointValve pinned-WAL backoff (index-stall regression)', () =>
     // baseline stayed at 0 → every subsequent file's backpressure re-ran the
     // full 20-pass storm for the same unfolded remainder.
     const { db, callCount } = fakeValveDb({ walBytes: 10 * MB, checkpoint: { busy: 1, log: 5000, checkpointed: 2500 } });
-    const valve = new WalCheckpointValve(db, 1, 2000, () => {}, async () => {});
+    // soft 4MB ⇒ hard 8MB (10MB growth parks the writer) and file cap 16MB
+    // (the 10MB file stays under it — the partial-credit semantics, not the
+    // file trigger, are what this test pins).
+    const valve = new WalCheckpointValve(db, 4, 2000, () => {}, async () => {});
     await valve.backpressure();
     expect(callCount()).toBe(20); // one round still exhausts its budget (WAL never lands fully)
     const baseline = (valve as unknown as { sizeAtLastFullBackfill: number }).sizeAtLastFullBackfill;
     expect(baseline).toBe(2500 * 4096); // folded pages credited once, not 20×
-    // growth = 10MB − 2500×4096 ≈ 24KB < hard cap (2MB) → next file never waits.
+    // growth = 10MB − 2500×4096 ≈ 240KB < hard cap (8MB), file < cap (16MB)
+    // → next file never waits.
     expect(valve.backpressure()).toBeNull();
   });
 
@@ -306,7 +325,10 @@ describe('indexAll WAL deferral end-to-end', () => {
         const result = await cg1.indexAll();
         expect(result.success).toBe(true);
         expect(conn1.getWalAutocheckpoint()).toBe(37);
-        expect(checkpoint).toHaveBeenCalledTimes(1);
+        // The final quiescent-DB truncate always runs; barrier folds
+        // (foldNow/backpressure) may also TRUNCATE at parked barriers
+        // (upstream 8c1e821), so the exact count is wiring-dependent.
+        expect(checkpoint).toHaveBeenCalled();
         return { nodes: result.nodesCreated, edges: result.edgesCreated };
       } finally {
         checkpoint.mockRestore();
@@ -379,7 +401,10 @@ describe('indexAll WAL deferral end-to-end', () => {
     try {
       const result = await cg.indexAll();
       expect(result.success).toBe(false);
-      expect(checkpoint).toHaveBeenCalledTimes(1);
+      // The final quiescent-DB truncate always runs; the post-orchestrator
+      // foldNow barrier may also TRUNCATE leftover schema-phase WAL frames
+      // (upstream 8c1e821), so the exact count is wiring-dependent.
+      expect(checkpoint).toHaveBeenCalled();
       expect(internals.db.getWalAutocheckpoint()).toBe(37);
     } finally {
       indexAll.mockRestore();
@@ -468,5 +493,52 @@ describe('WAL heal at open (upstream 02c0e2c, #1431)', () => {
     } finally {
       heal.mockRestore();
     }
+  });
+});
+
+describe('valve file-size trigger + barrier truncate (upstream 8c1e821/ca88d3b#1/2adc7f6)', () => {
+  it('parks on raw file size past the cap even when the backlog is fully folded, and truncates at the barrier', async () => {
+    // The §7a.1 pathology: a WAL that is completely backfilled yet keeps its
+    // (or grows its) file because commits never find zero reader marks.
+    // baseline == file size ⇒ growth 0; file 10MB > fileCap (4×1MB).
+    const { db, callCount, truncateCount } = fakeValveDb({
+      walBytes: 10 * MB,
+      checkpoint: { busy: 0, log: 100, checkpointed: 100 },
+    });
+    const valve = new WalCheckpointValve(db, 1, 2000, () => {}, async () => {});
+    (valve as unknown as { sizeAtLastFullBackfill: number }).sizeAtLastFullBackfill = 10 * MB;
+    const bp = valve.backpressure();
+    expect(bp).toBeInstanceOf(Promise); // file-size trigger, not growth
+    await bp;
+    expect(callCount()).toBe(1); // backlog already folded: one pass proves it
+    expect(truncateCount()).toBe(1); // the parked barrier chops the FILE
+  });
+
+  it('never truncates from the timer path (2adc7f6: an active-writer race)', async () => {
+    const db = openDb();
+    db.setWalAutocheckpoint(0);
+    writeRows(db, 500);
+    const truncate = spyOn(db, 'checkpointWalTruncate');
+    const dbFile = path.join(tmpDir, 'test.db');
+    const mainSizeBefore = fs.statSync(dbFile).size;
+    const valve = new WalCheckpointValve(db, 0.00001);
+    valve.check();
+    await valve.drain();
+    expect(fs.statSync(dbFile).size).toBeGreaterThan(mainSizeBefore); // passive fold ran
+    expect(truncate).not.toHaveBeenCalled();
+    truncate.mockRestore();
+    db.close();
+  });
+
+  it('foldNow truncates the file at the phase barrier', async () => {
+    const db = openDb();
+    db.setWalAutocheckpoint(0);
+    writeRows(db, 500);
+    expect(db.getWalSizeBytes()).toBeGreaterThan(0);
+    const valve = new WalCheckpointValve(db, 1024); // thresholds never trip on their own
+    await valve.foldNow();
+    // TRUNCATE at the parked barrier reclaims the high-water size.
+    expect(db.getWalSizeBytes()).toBe(0);
+    db.close();
   });
 });
