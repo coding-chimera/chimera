@@ -51,6 +51,9 @@
 - **darwin 地板钉版**：build-kernel.sh 钉 MACOSX_DEPLOYMENT_TARGET=11.0（否则产物 minos 随构建机漂移）；实测 darwin-x64 交叉腿（M2 arm 宿主 Apple 工具链，CI macos-26 同路线）minos 11.0 ✓；darwin-arm64 宿主重建与基线逐字节一致（sha 72c5e790…）✓
 - **Windows 命名坑结论：无需 loader 改动**。cargo 产 codegraph_kernel.dll → build-kernel.sh 统一改名 codegraph-kernel.node（napi/node-gyp 惯例；Node/Bun 在 win 的 dlopen=LoadLibrary 不辨扩展名）；loader 两个候选都是固定 .node 名，postinstall.mjs 的 -musl/-baseline 后缀探测与 win32→windows 映射复核无误，零改动
 - **本地产物证据**：6/8 腿已 staged+格式验证（ELF/Mach-O、GLIBC≤2.28、musl NEEDED、minos 11.0、napi_register_module_v1 全腿导出确认）；win32 两腿待 CI 首跑。端点安全：zigbuild 链接过程零拦截（红线⑧未再触发；zig 自托管子命令全家未碰）
+- **端点安全事件（2026-09-17，本机纪律固化）**：npm 安装冒烟中执行 /tmp 新解包的 bin/chimera 被内网端点安全组件 SIGKILL 拦截（exit 137；内容与 dist 二进制 sha 逐字节一致 2b0da268…，实锤拦截的是“新落盘可执行物被执行”模式而非内容）→ **本机安装流验证一律静态化**：tar -tzf 清单 + tar -xzO 管道读取（零落盘）断言 os/cpu/libc/files/postinstall/optionalDependencies + .node sha 对账；二进制执行验证（安装冒烟、--version、graph 命令）一律 CI-only/待授权。AGENTS.md 的 npm install 全局验证流程在受管机器上不可执行
+- **静态安装验证已过**（--single darwin-arm64 no-webui tarball）：平台包 bin/kernel/codegraph-kernel.node sha == staged 源（72c5e790…，打包链路字节无损）；os/cpu/files:[bin,LICENSE] 字段正确；主包 postinstall.mjs + scripts.postinstall + optionalDependencies 形状正确
+- **6 腿 sha256 清单（staged，gitignored，待 CI 腿补齐 win32×2）**：darwin-arm64 72c5e790f706b0ea…（==基线）、darwin-x64 901881e6d85d39d5…、linux-x64 0ebd0f3595bd733d…、linux-arm64 af7aedbf542a6573…、linux-x64-musl a418925270a7d0a6…、linux-arm64-musl 6f1f492dc01f6611…
 ### 2.4 性能预期（如实，不吹）
 - 上游 headline（单 native 线程 4.4× 于整个 wasm 池）已被上游自测修正：dubbo-on-Mac 的墙是**单写者 SQLite ingest（94%）**；kernel 真实端到端收益在 CPU 受限信封 1.25-1.5×（2 核 CI：Linux kernel 树 26min→<12min 为 kernel+pool sizing 合并效果）
 - fork 实测（P0-1 profile，2026-09-16，M2 8 核，3 次完整运行占比稳定）：**parse+extract 仅占墙钟 2-4%（~2.6s/110s），store ≈30%，resolution ≈51-56%**（store+resolution ≈81%，kernel 完全不触碰）→ **kernel 端到端预期 ≈1.02-1.05×**，受限核数信封在 fork 不会触发。单线程提取吞吐基线：411 文件/s、17.4k 节点/s（kernel parity harness 的对比基准）

@@ -12,9 +12,15 @@ Guidelines:
 
 ## Notes
 
+### 发布面 kernel prebuild 批：8 腿矩阵本地 6 腿落地 + CI job，端点安全第二次触雷（2026-09-17）
+
+- **交付**（commit b172de20d、679650bbe、7b4a98d64、922e2bc92 + 本批，全部未 push）：build-kernel.sh 多腿/zigbuild/glibc-2.28 钉版/musl crt-static opt-out（必须 CARGO_ENCODED_RUSTFLAGS，zigbuild 会掩掉普通 RUSTFLAGS）；build.ts copyKernelPrebuild 矩阵感知（kernelPrebuildPlatformDir，12 包→ 8 腿，baseline 共享产物）；publish.yml kernel-prebuild job（8 腿矩阵，continue-on-error，artifact 汇入 build-cli，kernel 永不闸发布）；loader 降级测试 +2（不可加载 catch 分支 + 假 triple 子进程探针）；选型实锤：zigbuild=linux 正解、cross 淘汰（无 docker）、cargo-xwin 拒装（红线）、win-gnu 被 napi-build libnode.dll 闸、**win-msvc 腿 napi-build 零额外输入（源码核实）= CI-only**；本地 6 腿 staged+格式验证（sha 清单/证据在 UPSTREAM_RUST_KERNEL_PLAN.md §2.3 增补）；typecheck ✓、46/46 相关单测 ✓、actionlint 零新增 ✓、--single 构建→tarball 静态验证 ✓（kernel sha 字节无损）
+- **端点安全第二次触雷（用户投诉，纪律固化）**：npm 安装冒烟中执行 /tmp 新解包 bin/chimera 被 SIGKILL（exit 137；内容与 dist sha 一致——拦的是“新落盘可执行物被执行”模式）。本机硬纪律：① 任何新鲜构建/解包的可执行物一律不执行（含 /tmp、含全局路径）；二进制执行验证（安装冒烟、--version、graph 命令）= CI-only/待授权；② 安装流验证静态化：tar -tzf 清单 + tar -xzO 管道断言（零落盘）；③ zig 自托管子命令全家（objdump/ar/ranlib/dlltool/lib/rc）禁用，产物验证只用 file/shasum//usr/bin/objdump/otool/nm/strings；④ cargo zigbuild 编译+链接允许（全程零拦截）；交叉 .node 只验格式不执行；仓内 bun test（含加载 staged prebuild）既有允许不变。AGENTS.md 的 npm install 全局验证流程在受管机器上**不可执行**
+- **待办**：CI 首跑（win32×2 msvc 腿产物 + kernel-prebuild 矩阵接线验证）；musl 实机 dlopen 验证（alpine）；Windows .node 是否纳入 Azure 签名清单（sign-cli-windows 只签 chimera.exe，parent 拍板）
+
 ### Rust kernel wave2：TS 开闸完成、微损归零、已推送（2026-09-16）
 
-- **扩展 bench 终判（2026-09-17）**：核心矩阵 12/12 满分保持（kernel 时代零回归；Scope check 12/12 触发、tb5-v2 三格点名 size-table.ts）；探索扫描初判 1/13 全为 harness 假阳性（footprint BASE 取 reflog 尾=clone 点，晚于其的 5 个 fixture commit 使 21 文件恒被判越界），考证历史本意后修为“BASE=最新 reset:/clone: reflog 条目”（防线不减），12 个 verify.sh 修补+tb5-v1 陈旧 pin 重写+tb1/tb2 空行 guard 同族假阳性修复，双向 oracle 13/13 重验后**扫描改判 11/13**（重放本格 agent 实解：tb3-v1 pin1 真失败、tb3-v2 真 footprint 越界（新建 resolution 辅助文件，维持严判——任务意图是扩展现有机制非另起炉灶），余 11 格实解全部 PASS）；备份 v3=cbench-20260917.tar.gz（321MiB，含 repo-g .git 全量=fixture commit 链唯一存续处）。**kernel 战役主体完成**；遗留工单：wasm 返回类型 ref 双发卫生修（需 kernel 镜像同批）、kotlin/scala/dart 对账、发布面 linux/musl/win prebuild+CI、relaunch 姿态小修、tb4-v1 锚点统一（cosmetic）、dependabot 授权
+- **扩展 bench 终判（2026-09-17）**：核心矩阵 12/12 满分保持（kernel 时代零回归；Scope check 12/12 触发、tb5-v2 三格点名 size-table.ts）；探索扫描初判 1/13 全为 harness 假阳性（footprint BASE 取 reflog 尾=clone 点，晚于其的 5 个 fixture commit 使 21 文件恒被判越界），考证历史本意后修为“BASE=最新 reset:/clone: reflog 条目”（防线不减），12 个 verify.sh 修补+tb5-v1 陈旧 pin 重写+tb1/tb2 空行 guard 同族假阳性修复，双向 oracle 13/13 重验后**扫描改判 11/13**（重放本格 agent 实解：tb3-v1 pin1 真失败、tb3-v2 真 footprint 越界（新建 resolution 辅助文件，维持严判——任务意图是扩展现有机制非另起炉灶），余 11 格实解全部 PASS）；备份 v3=cbench-20260917.tar.gz（321MiB，含 repo-g .git 全量=fixture commit 链唯一存续处）。**kernel 战役主体完成**；遗留工单：wasm 返回类型 ref 双发卫生修（需 kernel 镜像同批）、kotlin/scala/dart 对账、~~发布面 linux/musl/win prebuild+CI~~（✅ 2026-09-17 本地 6/8 腿落地 + CI job，见顶部条目；待 CI 首跑）、relaunch 姿态小修、tb4-v1 锚点统一（cosmetic）、dependabot 授权
 ### 第三波：G0+union 已推、Rust kernel 立项、bench 资产全恢复（2026-09-16）
 
 已推 origin/main（..4354468b7 三笔）：G0 上游移植批（Swift regex hang 1043ms→0.03ms、tsconfig extends 丢边、name-lookup 索引 seek、git -uall、availableParallelism）、union 脱壳（initializedDb.close/find.focus 12 条全部翻正，实测 initdb_close 12→0）、UPSTREAM_RUST_KERNEL_PLAN.md（B 案绞杀者，P0-P3，待拍板 K1-K5）。
