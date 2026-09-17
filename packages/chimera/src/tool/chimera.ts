@@ -52,6 +52,7 @@ import {
   type OracleRecord,
 } from "@/chimera/store"
 import { DiscoveryNudge } from "@/chimera/discovery-nudge"
+import { EditIntentClaims } from "@/chimera/edit-intent"
 import * as Tool from "./tool"
 import INIT_GRAPH_DESCRIPTION from "./chimera_init_graph.txt"
 import STATUS_DESCRIPTION from "./chimera_status.txt"
@@ -3111,6 +3112,26 @@ export const ChimeraPredesignTool = Tool.define<typeof PredesignParameters, Pred
           ).pipe(Effect.orDie),
         )
 
+        // Edit-intent claims (cross-session coordination): declared files
+        // become advisory claims for this session; earlier foreign holders
+        // queue this session as a waiter for the release wake. Degrades
+        // open — claim storage trouble never fails the predesign run.
+        const claims = yield* predesignStage(
+          ctx,
+          "register claims",
+          EditIntentClaims.registerFromPredesign({
+            projectRoot: state.projectRoot,
+            sessionID: ctx.sessionID,
+            messageID: ctx.messageID,
+            callID: ctx.callID,
+            agent: ctx.agent,
+            predesignID: record.id,
+            intent,
+            files: normalizedFiles,
+            snapshotRevision: snapshot.revision,
+          }),
+        )
+
         return yield* predesignStage(
           ctx,
           "return result",
@@ -3135,6 +3156,20 @@ export const ChimeraPredesignTool = Tool.define<typeof PredesignParameters, Pred
               ...(impact.fileDependents.length ? [`- top dependents: ${impact.fileDependents.slice(0, 3).join(", ")}`] : []),
               ...(impact.impactedNodes.length
                 ? [`- top impacted: ${impact.impactedNodes.slice(0, 3).map((node) => `${node.qualifiedName || node.name} (${node.kind})`).join("; ")}`]
+                : []),
+              ...(claims.registered.length > 0 || claims.conflicts.length > 0
+                ? [
+                    "",
+                    "Edit-intent claims:",
+                    ...(claims.registered.length > 0
+                      ? [`- Registered on ${claims.registered.length} declared file(s): other sessions' mutations of them are blocked until this session's run completes (advisory coordination; the TTL is only a crash fallback).`]
+                      : []),
+                    ...claims.conflicts.slice(0, 3).map(
+                      (conflict) =>
+                        `- CONFLICT: ${conflict.filePath} is already claimed by session ${conflict.holder.sessionID} (agent ${conflict.holder.agent}); your claim is queued behind it, so your mutations of that file stay blocked until the holder releases — a release notice is then injected into this session automatically. Work on non-conflicting files first.`,
+                    ),
+                    ...(claims.conflicts.length > 3 ? [`- (+${claims.conflicts.length - 3} more claim conflict(s))`] : []),
+                  ]
                 : []),
               "- Full evidence is stored in this run; mutations covered by this pre-design are audited automatically at edit time.",
               "- Drill down only when a dependent needs inspection: chimera_impact with the refs above, or chimera_predesign rerun with narrower files.",

@@ -4,7 +4,10 @@ Use this tool before `edit`, `write`, or `apply_patch` when the change is broad 
 
 It performs bounded CodeGraph-backed impact discovery and records a run that mutation gates accept as fresh pre-edit evidence. A recorded run also declares to the project which files you intend to change, so prefer it for broad or multi-file work. State what and why in `intent`; add `files` to declare the exact mutation targets, or `symbols`/`refs` (prefer refs copied from `Ref: node:<id>`) when the risk is a graph seed.
 
+Declared `files` also register advisory edit-intent claims for cross-session coordination: while your run is active, other sessions' mutation tools are blocked on those files, and your own mutations are blocked on files another session claimed earlier (first-come-first-served). Claims release automatically when your run completes or your session is removed — the TTL is only a crash fallback — and queued sessions then receive an injected release notice. When the receipt reports a claim CONFLICT, do not fight the gate: work on non-conflicting files first and let the release notice resume the blocked part, or report the blockage to the user (or your parent agent) when nothing else remains.
+
 This is not post-change verification: after a successful mutation run `chimera_audit_recent`, plus build/typecheck/lint/tests when correctness matters.
 
 After this tool:
 - Review the impact evidence, then retry the mutation if it was gate-blocked. A recorded run is pre-edit evidence, not proof the mutation is correct.
+- On claim conflicts: proceed with non-conflicting work; the release notice arrives automatically — no polling or retry loops.

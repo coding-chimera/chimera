@@ -25,6 +25,12 @@ Delegate only two or more genuinely independent, non-overlapping work items with
 The parent retains scope-conflict handling, result synthesis, final audit, verification, and closeout.
 Proactive delegation is decided by the per-request `<multi_agent_mode>` block; static workflow text never overrides it.
 
+## Cross-session edit coordination
+
+`chimera_predesign` with declared files registers advisory edit-intent claims in the project database: while your run is active, other sessions are blocked from mutating those files, and your mutations are blocked on files another session claimed earlier.
+When a mutation is blocked by a claim conflict, do not retry in a loop: continue with non-conflicting files and report the blockage when no other work remains — an `<edit_intent_release>` notice is injected into your session automatically when the holder finishes (its run completing or its session being removed; the TTL is only a crash fallback).
+After a release notice, re-read the files before editing: the holder's run may have changed them.
+
 ## Graph initialization
 
 Graph init and indexing are expensive. When read-only tools report the graph is uninitialized, call `chimera_init_graph` proactively only if the task genuinely needs graph evidence and no external pre-init flow exists; otherwise report the uninitialized state and continue with file-based evidence.

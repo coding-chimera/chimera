@@ -6,7 +6,7 @@ import { Bus } from "@/bus"
 import { Chimera } from "@/chimera"
 import { ChimeraPromptContext } from "@/chimera/prompt-context"
 import type { ProjectGraphState } from "@/chimera"
-import { readAuditRuns, readPredesignRuns } from "@/chimera/store"
+import { readActiveEditIntentClaims, readAuditRuns, readEditIntentWaiters, readPredesignRuns } from "@/chimera/store"
 import { SessionToolMetadata } from "@/chimera/session-tool-metadata"
 import { DatabaseConnection, getDatabasePath } from "@/graph"
 import type { Node as CodeGraphNode } from "@/graph"
@@ -488,10 +488,45 @@ describe("tool.chimera", () => {
       expect(runs[0]?.id).toBe(result.metadata.runID)
       expect(runs[0]?.intent).toBe("change source behavior")
       expect(runs[0]?.files).toContain("source.ts")
-      expect(stages).toEqual(["permission", "open graph", "sync files", "build impact", "record run", "return result"])
+      // Declared files register advisory edit-intent claims for this session.
+      expect(result.output).toContain("Edit-intent claims:")
+      expect(result.output).toContain("Registered on 1 declared file(s)")
+      const claims = yield* Effect.promise(() => readActiveEditIntentClaims(test.directory, { files: ["source.ts"] }))
+      expect(claims).toHaveLength(1)
+      expect(claims[0]!.sessionID).toBe(ctx.sessionID)
+      expect(claims[0]!.id).toBe(result.metadata.runID)
+      expect(stages).toEqual(["permission", "open graph", "sync files", "build impact", "record run", "register claims", "return result"])
       expect(SessionToolMetadata.isPersisted(persisted)).toBe(true)
       expect(JSON.stringify(persisted).length).toBeLessThan(JSON.stringify(result.metadata).length)
       expect(recovered).toMatchObject({ status: "recovered", metadata: JSON.parse(JSON.stringify(result.metadata)) })
+    }),
+  )
+
+  it.instance("reports claim conflicts in the pre-design receipt and queues the later session", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "source.ts"), "export function source() { return 1 }\n"))
+      yield* initGraph()
+
+      const first = yield* runPredesign({ intent: "first work", files: ["source.ts"] })
+      expect(first.output).toContain("Registered on 1 declared file(s)")
+      expect(first.output).not.toContain("CONFLICT")
+
+      const second = yield* runPredesign(
+        { intent: "second work", files: ["source.ts"] },
+        { ...ctx, sessionID: SessionID.make("ses_second"), messageID: MessageID.make("msg_second"), callID: "call_second" },
+      )
+      const secondClaims = yield* Effect.promise(() => readActiveEditIntentClaims(test.directory, { files: ["source.ts"], sessionID: "ses_second" }))
+      expect(secondClaims).toHaveLength(1)
+      expect(secondClaims[0]!.id).toBe(second.metadata.runID)
+      expect(second.output).toContain("CONFLICT: source.ts is already claimed by session ses_test-chimera-session")
+      expect(second.output).toContain("your claim is queued behind it")
+      // The later session queued as a waiter for the release wake.
+      const waiters = yield* Effect.promise(() =>
+        readEditIntentWaiters(test.directory, { sessionID: "ses_second", status: "waiting" }),
+      )
+      expect(waiters.map((waiter) => waiter.filePath)).toEqual(["source.ts"])
+      expect(waiters[0]!.blockerSessionID).toBe(ctx.sessionID)
     }),
   )
 
