@@ -15,6 +15,7 @@ import { GlobalBus, type GlobalEvent } from "@/bus/global"
 import { WorkspaceContext } from "../../src/control-plane/workspace-context"
 import { WorkspaceID } from "../../src/control-plane/schema"
 import { Session } from "@/session/session"
+import { projectedSessionRows } from "../../src/session/projectors"
 import { eq } from "drizzle-orm"
 
 const original = Flag.OPENCODE_EXPERIMENTAL_WORKSPACES
@@ -459,6 +460,52 @@ describe("SyncEvent derived events", () => {
             permission: slotRules,
           })
           expect(updated?.properties.info.time.created).toBe(info.time.created)
+        } finally {
+          captured.dispose()
+        }
+      }).pipe(Effect.provide(sessionLayers)),
+    ),
+  )
+
+  // The session projector captures its own UPDATE ... RETURNING row for the
+  // event payload, so convertEvent publishes the state that event committed
+  // without a second SELECT (transactional argument in src/session/projectors.ts).
+  it.live("projector hands the committed row to the converter by payload identity", () =>
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const svc = yield* Session.Service
+        const sync = yield* SyncEvent.Service
+        const info = yield* svc.create({})
+        const captured = capture()
+        try {
+          const patched: SyncEvent.Event<typeof Session.Event.Updated>["data"] = {
+            sessionID: info.id,
+            info: { title: "handoff-title" },
+          }
+          yield* sync.run(Session.Event.Updated, patched)
+          yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 0)))
+
+          const projected = projectedSessionRows.get(patched)
+          expect(projected?.id).toBe(info.id)
+          expect(projected?.title).toBe("handoff-title")
+
+          const published = captured.busEvents.find((event) => event.type === "session.updated") as
+            | { properties: { info: Session.Info } }
+            | undefined
+          expect(published?.properties.info.title).toBe("handoff-title")
+          expect(published?.properties.info.directory).toBe(info.directory)
+          expect(published?.properties.info.time.created).toBe(info.time.created)
+
+          const slot: SyncEvent.Event<typeof Session.Event.PermissionSlot>["data"] = {
+            sessionID: info.id,
+            rules: slotRules,
+            timestamp: 4321,
+          }
+          yield* sync.run(Session.Event.PermissionSlot, slot)
+          // The permission-slot handoff is the post-update row: merged rules and
+          // the timestamp this event wrote, which is what deriveEvent publishes.
+          expect(projectedSessionRows.get(slot)?.permission).toEqual(slotRules)
+          expect(projectedSessionRows.get(slot)?.time_updated).toBe(4321)
         } finally {
           captured.dispose()
         }
