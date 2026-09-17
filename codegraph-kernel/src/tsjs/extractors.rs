@@ -350,9 +350,22 @@ impl<'t> Walker<'t> {
             Some(t) => format!("{t} {name}"),
             None => name.clone(),
         };
-
+        // K-v2 P3 followup (exact mirror of the P2 wasm replay): fork
+        // contract-member promotion over N's #1638 interface path — a
+        // function-typed property_signature (`cb: () => void`) is
+        // method-shaped on the contract. N's extract_ts_type_alias_members
+        // keeps this promotion for type aliases (the member_kind rule), and
+        // the fork resolver depends on it for interfaces too:
+        // resolveMethodOnType binds `obj.cb()` ONLY to kind == "method"
+        // nodes under the container (Strategy 0.5/0.5b), so demoting it to
+        // "property" would silently drop the call binding for every
+        // function-typed interface member. TS contract languages only; the
+        // signature keeps the N shape.
+        let promoted_to_method = self.variant.is_ts()
+            && node.kind() == "property_signature"
+            && self.is_ts_function_typed_property(node);
         let row = self.create_node(
-            "property",
+            if promoted_to_method { "method" } else { "property" },
             &name,
             node,
             Extra { docstring, signature: Some(signature), visibility, is_static, ..Extra::default() },
@@ -507,15 +520,19 @@ impl<'t> Walker<'t> {
                 || rtk_endpoints.is_some()
                 || pinia_setup.is_some()
                 || !store_collections.is_empty();
+            // Object-literal value-position refs are emitted by the #693
+            // walk's generic value-ref hook ONLY (K-v2 P3 followup, double-
+            // emission fix): a separate collectObjectValueReferences pass at
+            // this site attributed every shorthand / pair-value identifier
+            // to the FILE from this scope, and the walk then re-emitted it
+            // attributed to the constant — different from-ids, so the
+            // per-file dedupe could not collapse the pair (the `{ fn }` pin
+            // got two cross-file references edges). The P2 wasm oracle
+            // dropped the same call for the same reason; the
+            // extractObjectLiteralFunctions value-ref arms stay — they
+            // cover the members_extracted_separately shapes the walk never
+            // enters.
             if let Some(v) = value {
-                if matches!(v.kind(), "object" | "object_expression") {
-                    // fork collectObjectValueReferences: surface shorthand /
-                    // pair-value identifiers (value-position refs) BEFORE the
-                    // #693 walk below; the walk's generic value-ref hook
-                    // covers a superset and the per-file dedupe
-                    // (value_ref_keys) keeps the union duplicate-free.
-                    self.collect_object_value_references(v);
-                }
                 if !members_extracted_separately {
                     match var_row {
                         Some(row) => {
@@ -602,33 +619,13 @@ impl<'t> Walker<'t> {
         }
     }
 
-    /// collectObjectValueReferences (tree-sitter.ts): surface the identifier
-    /// values in a top-level object literal — shorthand members and pair
-    /// values — so function-as-value dependencies stay visible even for the
-    /// shapes the member extractors don't reach. Runs ahead of the #693
-    /// initializer walk (see extract_variable); the per-file value_ref_keys
-    /// dedupe keeps the union with the walk's generic hook duplicate-free.
-    fn collect_object_value_references(&mut self, obj: Node<'t>) {
-        stack_guard!();
-        for i in 0..obj.named_child_count() {
-            let Some(member) = obj.named_child(i) else { continue };
-            if member.kind() == "shorthand_property_identifier" {
-                self.extract_value_reference(member);
-                continue;
-            }
-            if member.kind() != "pair" {
-                continue;
-            }
-            if let Some(value) = member.child_by_field_name("value") {
-                if value.kind() == "identifier" {
-                    self.extract_value_reference(value);
-                } else if matches!(value.kind(), "object" | "object_expression") {
-                    self.collect_object_value_references(value);
-                }
-            }
-        }
-    }
-
+    // (K-v2 P3 followup) collectObjectValueReferences retired here: with
+    // the #693 walk covering object literals, the only shapes left were
+    // the members-extracted-separately ones, whose value refs the
+    // extractObjectLiteralFunctions arms above already emit. The P2 wasm
+    // oracle carries the same helper as a call-site-less vestige; the
+    // kernel drops it (dead-code hygiene) — behavior is identical because
+    // neither arm calls it.
     fn find_initializer_returned_object(&self, call: Node<'t>, depth: u32) -> Option<Node<'t>> {
         stack_guard!();
         if depth > 4 {

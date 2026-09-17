@@ -186,8 +186,47 @@ const DEFAULT_ROUTED: ReadonlySet<Language> = new Set<Language>([
  * anything heavy belongs in the Rust emitter.
  */
 export type KernelPostPass = (result: ExtractionResult, source: string) => void;
+/**
+ * K-v2 P3 followup (D3): decode-side mirror of the wasm extract() stable
+ * reorder. #1638 mints TS interface member nodes INLINE (source order) on
+ * both arms; the fork's contract-member ordering guarantee — first-match-
+ * by-name consumers (db/queries getNodesByName has no ORDER BY → rowid =
+ * nodes-array order; name-matcher resolveMethodOnType takes matches[0])
+ * must keep seeing executable declarations before same-name contract
+ * members (a84c65722) — is carried by a post-walk stable partition. The
+ * wasm side partitions inside extract() (interfaceMemberNodeIds); the
+ * kernel side partitions HERE, at the decode consumer, so the raw wire
+ * rows stay in N's source order (what the parity harness compares; its
+ * node:order-mismatch known item shrinks by the interface family once
+ * both arms reorder). Membership mirrors the wasm capture scope: nodes
+ * contained by an `interface` node — under #1638 the interface-body walk
+ * mints exactly the members — TS contract languages only (type-alias
+ * members were and stay inline).
+ */
+function reorderInterfaceMembersToTail(result: ExtractionResult): void {
+  const interfaceIds = new Set<string>();
+  for (const n of result.nodes) {
+    if (n.kind === 'interface') interfaceIds.add(n.id);
+  }
+  if (interfaceIds.size === 0) return;
+  const memberIds = new Set<string>();
+  for (const e of result.edges) {
+    if (e.kind === 'contains' && interfaceIds.has(e.source)) memberIds.add(e.target);
+  }
+  if (memberIds.size === 0) return;
+  const members: typeof result.nodes = [];
+  const rest: typeof result.nodes = [];
+  for (const n of result.nodes) {
+    if (memberIds.has(n.id)) members.push(n);
+    else rest.push(n);
+  }
+  result.nodes = rest.concat(members);
+}
+
 const POST_PASSES: Partial<Record<Language, KernelPostPass>> = {
-  // (none yet — fork wave2+)
+  // D3 contract-member ordering — wasm gate is language ∈ {typescript, tsx}.
+  typescript: (result) => reorderInterfaceMembersToTail(result),
+  tsx: (result) => reorderInterfaceMembersToTail(result),
 };
 
 function isRouted(language: Language): boolean {
