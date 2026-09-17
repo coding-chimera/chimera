@@ -62,7 +62,7 @@ import { Truncate } from "@/tool/truncate"
 import { Image } from "@/image/image"
 import { decodeDataUrl } from "@/util/data-url"
 import { isRecord } from "@/util/record"
-import { Cause, Effect, Exit, Latch, Layer, Option, Scope, Context, Schema, Types } from "effect"
+import { Cause, Effect, Exit, Latch, Layer, Option, Scope, Context, Schema, Schedule, Types } from "effect"
 import { zod } from "@/util/effect-zod"
 import { withStatics } from "@/util/schema"
 import * as EffectLogger from "@opencode-ai/core/effect/logger"
@@ -2805,9 +2805,10 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
     // drained on its own idle transition; a busy wake target consumes the
     // notice in its running loop's next iteration. Session removal releases
     // inside Session.remove and broadcasts EditIntentClaims.Released; this
-    // watcher injects for those targets too. Same-process only by design:
-    // parked threads in other CLI processes are the open cross-process
-    // poll→inject bridge design point.
+    // watcher injects for those targets too. Cross-process wakes ride a light
+    // poll fiber (below): waiter rows are host-stamped, so a release in
+    // another process leaves foreign-hosted rows waiting for their own
+    // process's poll to take them and inject locally.
     //
     // Bus is instance-scoped, so the subscriptions live in per-instance state
     // (fibers forked in the instance scope, torn down on dispose); prompt()
@@ -2848,6 +2849,19 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
               Effect.catchCause((cause) => Effect.sync(() => log.error("edit-intent removal wake failed", { cause }))),
             ),
           ),
+          Effect.forkScoped,
+        )
+        // Cross-process poll→inject bridge: a release in another process
+        // flips claim rows but cannot inject into sessions parked here, so
+        // this fiber re-checks this host's own waiting waiters on a light
+        // cadence (spec band 2-5s) and injects freed ones locally. The
+        // pending-waiter hint inside pollCrossProcessWakes makes ticks with
+        // zero own waiters cost zero DB access; Schedule.spaced runs the
+        // first tick immediately, then waits between completions.
+        yield* EditIntentClaims.pollCrossProcessWakes({ projectRoot: root }).pipe(
+          Effect.flatMap(wakeEditIntentTargets),
+          Effect.catchCause((cause) => Effect.sync(() => log.error("edit-intent cross-process poll failed", { cause }))),
+          Effect.repeat(Schedule.spaced("3 seconds")),
           Effect.forkScoped,
         )
       }),
