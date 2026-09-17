@@ -87,12 +87,22 @@ export function decodeLockInfo(raw: string): DaemonLockInfo | null {
     ) {
       return parsed as DaemonLockInfo;
     }
-    return null;
+    // NOT returning null here (upstream 1e4612375): a bare-number pidfile
+    // ('12345') is VALID JSON, so an early return would make the legacy
+    // plain-PID fallback below unreachable — exactly the format it exists
+    // for. A shape-mismatched record falls through to the strict legacy
+    // check, which rejects anything that is not a plain decimal pid.
   } catch {
     // Fall through to legacy plain-pid handling.
   }
+  // Legacy plain-PID locks (pre-JSON pidfiles) must be STRICT decimal
+  // integers: Number() also swallows '0x10', '1e5', ' 12' and friends, and a
+  // garbage "pid" that happens to look alive wedges the takeover loop while
+  // a dead-looking one gets its lock cleared — both wrong (upstream
+  // 1e4612375: preserve live legacy locks).
+  if (!/^[1-9]\d*$/.test(trimmed)) return null;
   const pid = Number(trimmed);
-  if (Number.isFinite(pid) && pid > 0) {
+  if (Number.isSafeInteger(pid)) {
     return { pid, version: 'unknown', socketPath: '', startedAt: 0 };
   }
   return null;

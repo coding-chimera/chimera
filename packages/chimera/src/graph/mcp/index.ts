@@ -369,9 +369,12 @@ export class MCPServer {
         process.exit(0);
       }
 
-      // Holder is dead (or the record is unreadable) — clear it (pid-verified,
-      // so we never delete a live daemon's lock) and retry the acquire.
-      clearStaleDaemonLock(lock.pidPath, existing?.pid);
+      // Holder is dead (or the record is unreadable) — clear it (pid-verified
+      // AND snapshot-verified, so a record REPLACED between our inspect and
+      // the clear is never deleted; upstream 1e4612375) and retry the acquire.
+      clearStaleDaemonLock(lock.pidPath, existing?.pid, {
+        expectedLockContents: lock.lockContents ?? undefined,
+      });
       await sleep(TAKEOVER_RETRY_DELAY_MS);
     }
 
