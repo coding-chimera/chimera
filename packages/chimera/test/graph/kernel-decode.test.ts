@@ -305,10 +305,11 @@ describe('decodeExtractBuffers — real vendored kernel buffers', () => {
     expect(stmt?.signature).toBe('return String(x);');
     // `return a;` in top() has no call/new dependency — not eligible.
     expect(result.nodes.filter((n) => n.kind === 'statement').length).toBe(1);
-    // P2 tsjs parity batch: the fork has NO #808 member classification —
-    // every methodTypes node (incl. a non-callable `private n = 0` field)
-    // goes through extractMethod and becomes a `method`.
-    expect(byName.get('n')?.kind).toBe('method');
+    // K-v2 P3: N's #808 member classification returned with the re-vendor —
+    // a non-callable `private n = 0` field extracts as a 'property'
+    // (classify_ts_class_member → extract_property), no longer forced
+    // through extractMethod by the excised-classification fork shape.
+    expect(byName.get('n')?.kind).toBe('property');
     expect(byName.get('top')?.kind).toBe('function');
     expect(result.nodes.every((n) => n.id && n.kind && n.filePath === 'real.ts')).toBe(true);
     expect(result.edges.some((e) => e.kind === 'contains')).toBe(true);
@@ -320,14 +321,14 @@ describe('decodeExtractBuffers — real vendored kernel buffers', () => {
       throw new Error('CODEGRAPH_KERNEL_EXPECT=1 but no prebuild staged — run packages/chimera/script/build-kernel.sh');
     }
     const info = requirePrebuild().contractInfo();
-    // EDGE_KINDS: the fork table may lead the vendored kernel by RESERVED
-    // kinds only — K-v2 P1 appended 'navigates' (upstream buffers.rs parity;
-    // the kernel emitter lands with the P3 re-vendor). Every kernel kind must
-    // exist in the fork table (subset gate); the lead set is pinned so the
-    // reservation can't silently grow — after the P3 re-vendor it empties.
+    // EDGE_KINDS: the K-v2 P3 re-vendor landed 'navigates' in the kernel
+    // table (upstream N tail append) — the P1 reservation is consumed and
+    // the fork's lead set is EMPTY. Every kernel kind must exist in the
+    // fork table (subset gate); the lead pin stays so a future kernel-only
+    // kind can never silently slip through.
     expect(info.edgeKinds.every((k) => (EDGE_KINDS as readonly string[]).includes(k))).toBe(true);
     const forkEdgeLead = (EDGE_KINDS as readonly string[]).filter((k) => !info.edgeKinds.includes(k));
-    expect(forkEdgeLead).toEqual(['navigates']);
+    expect(forkEdgeLead).toEqual([]);
     // NODE_KINDS: the P1 tsjs batch appended 'statement' at the kernel table
     // tail and moved the fork's 'statement' from index 18 to the tail in the
     // same change — the subset gate now passes as FULL index-by-index
