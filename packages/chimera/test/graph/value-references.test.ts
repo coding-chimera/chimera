@@ -79,8 +79,16 @@ describe('Value-position identifier references', () => {
     await index();
 
     const edges = referencesTo('src/app.ts', 'src/dep.ts', 'handlerValue');
-    expect(edges).toHaveLength(1);
-    expect(edges[0]!.metadata?.refName).toBe('handlerValue');
+    // K-v2 P5-1 FN_REF flip: an object-literal value position is captured by
+    // BOTH mechanisms — the fork's value-ref (attributed to constant:cfg) and
+    // upstream #756 fn-ref (attributed to the file node, metadata.fnRef). The
+    // value-ref pin keeps asserting its own single edge; the fnRef companion
+    // is asserted explicitly so the co-emission is a documented fact, not
+    // drift. Both arms emit the fn-ref identically (parity-verified).
+    const valueRefEdges = edges.filter((e) => !e.metadata?.fnRef);
+    expect(valueRefEdges).toHaveLength(1);
+    expect(valueRefEdges[0]!.metadata?.refName).toBe('handlerValue');
+    expect(edges.filter((e) => e.metadata?.fnRef)).toHaveLength(1);
   });
 
   it('collects a bare call argument `register(fn)` inside a function body', async () => {
@@ -166,7 +174,16 @@ describe('Value-position identifier references', () => {
 
     await index();
 
-    expect(referencesTo('src/app.ts', 'src/dep.ts', 'ab')).toHaveLength(0);
+    const edges = referencesTo('src/app.ts', 'src/dep.ts', 'ab');
+    // The value-ref length gate (≤2 chars) still skips — but the #756 fn-ref
+    // capture has NO length gate by upstream design (its precision comes from
+    // the definedHere∪imported emission gate + unique-or-drop resolution), so
+    // the shorthand yields fnRef edges (file + constant attribution; the
+    // constant-source one collides with nothing here since value-ref skipped).
+    // Asserting the value-ref absence and pinning the fnRef facts keeps the
+    // original pin intent while recording the P5-1 flip's co-emission.
+    expect(edges.filter((e) => !e.metadata?.fnRef)).toHaveLength(0);
+    expect(edges.filter((e) => e.metadata?.fnRef)).toHaveLength(2);
   });
 
   it("materializes a file-level imports edge for `export { x } from './a'`", async () => {

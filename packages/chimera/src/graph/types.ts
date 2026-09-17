@@ -68,6 +68,16 @@ export type EdgeKind =
   | 'decorates'       // Decorator applied to symbol
   | 'navigates';      // Screen/route navigates to target (upstream expo-router; contract reservation — fork corpus emits none yet)
 
+/**
+ * Kinds an unresolved reference can carry (K-v2 P5-1, mirrors upstream N).
+ * `function_ref` is internal-only — a function name used as a VALUE
+ * (callback registration, #756). It never becomes an edge kind and never
+ * touches the NODE_KINDS/EDGE_KINDS wire contract (kernel wire code 200,
+ * FUNCTION_REF_CODE): resolution maps it to a `references` edge targeting
+ * function/method nodes only (see matchFunctionRef).
+ */
+export type ReferenceKind = EdgeKind | 'function_ref';
+
 export const NODE_SEMANTIC_ROLES = [
   'container',
   'callable',
@@ -740,8 +750,8 @@ export interface UnresolvedReference {
   /** Name being referenced */
   referenceName: string;
 
-  /** Type of reference (call, type, import, etc.) */
-  referenceKind: EdgeKind;
+  /** Type of reference (call, type, import, or the internal-only function_ref) */
+  referenceKind: ReferenceKind;
 
   /** Location of the reference */
   line: number;

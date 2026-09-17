@@ -170,15 +170,16 @@ describe('object-literal method resolution (end-to-end)', () => {
     const fetchUserCallers = cg.getCallers(fetchUser!.id).map((c) => c.node.name);
     expect(fetchUserCallers).toContain('loginFlow');
 
-    // K-v2 P2 window: BOTH reset callers reach it through chained calls
+    // K-v2 P5-1: the chain-form consumer port (#1683 store-accessor fallback)
+    // landed — BOTH reset callers now reach it through the chained calls
     // (`useStore.getState().reset()` here, in-store `get().reset()`), which
-    // N #1683 emits as verbatim chain-form refs (`useStore.getState().reset`,
-    // `get().reset`). The fork resolver consumes bare and receiver-dot forms
-    // only today — the chain-form consumer is the P5 companion port
-    // (UPSTREAM_KERNEL_V2_INVENTORY §4). Pinned at the window state; the P5
-    // port flips these back to toContain('hardReset')/toContain('fetchUser').
+    // the N emitter layer records as verbatim chain-form refs
+    // (`useStore.getState().reset`, `get().reset`). This is the flip the P2
+    // window pin documented ("the P5 port flips these back to
+    // toContain('hardReset')/toContain('fetchUser')").
     const resetCallers = cg.getCallers(reset!.id).map((c) => c.node.name);
-    expect(resetCallers).toEqual([]);
+    expect(resetCallers).toContain('hardReset');
+    expect(resetCallers).toContain('fetchUser');
 
     cg.close();
   });
