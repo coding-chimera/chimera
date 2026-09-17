@@ -279,7 +279,11 @@ export interface ResolutionContext {
       startLine: 3,
       endLine: 3,
     });
-    expect(method?.signature).toContain('getNodesInFile(file: string): Node[]');
+    // N #1638 mints interface members through extractMethod/extractProperty,
+    // so member signatures carry the N shapes (method: params + return via
+    // getSignature; property: `<type> <name>`) instead of the old fork
+    // contract-walker's full member text.
+    expect(method?.signature).toContain('(file: string): Node[]');
 
     // Function-typed property is method-shaped on the contract.
     const cb = result.nodes.find((n) => n.name === 'cb');
@@ -290,12 +294,13 @@ export interface ResolutionContext {
     expect(label).toMatchObject({ kind: 'property', qualifiedName: 'ResolutionContext::label' });
     const tag = result.nodes.find((n) => n.name === 'tag');
     expect(tag).toMatchObject({ kind: 'property', qualifiedName: 'ResolutionContext::tag' });
-    expect(tag?.signature).toContain('tag?: string');
+    expect(tag?.signature).toContain('string tag');
 
-    // Optionality keeps the node a `method`; the `?` lives in the signature.
+    // Optionality keeps the node a `method` (N: method_signature dispatch);
+    // the N getSignature shape drops the name/`?` (params + return only).
     const optional = result.nodes.find((n) => n.name === 'optional');
     expect(optional).toMatchObject({ kind: 'method', qualifiedName: 'ResolutionContext::optional' });
-    expect(optional?.signature).toContain('optional?(');
+    expect(optional?.signature).toContain('(value: number): boolean');
 
     // Containment chain: file -> interface -> member.
     for (const name of ['getNodesInFile', 'cb', 'label', 'tag', 'optional']) {
