@@ -88,7 +88,9 @@ export const layer = Layer.effect(
       return Effect.gen(function* () {
         const s = yield* InstanceState.get(state)
         const payload: Payload = { id: options?.id ?? createID(), type: def.type, properties }
-        log.info("publishing", { type: def.type })
+        // No per-event logging here: publish is the hottest path in the runtime
+        // (every streamed token publishes), and a log line per event dominated
+        // server CPU and log volume during multi-session streaming.
 
         const ps = s.typed.get(def.type)
         if (ps) yield* PubSub.publish(ps, payload)
