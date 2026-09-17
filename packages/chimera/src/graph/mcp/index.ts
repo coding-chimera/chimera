@@ -48,7 +48,14 @@ import {
   tryAcquireDaemonLock,
 } from './daemon';
 import { connectWithHello, runLocalHandshakeProxy } from './proxy';
-import { getDaemonSocketPath } from './daemon-paths';
+import {
+  getWriterPidPath,
+  readWriterLock,
+  releaseWriterLock,
+  tryAcquireWriterLock,
+  writerLockHeldMessage,
+} from './writer-lock';
+import { getDaemonPidPath, getDaemonSocketPath, decodeLockInfo, type DaemonLockInfo } from './daemon-paths';
 import { HOST_PPID_ENV } from '../extraction/wasm-runtime-flags';
 
 /**
@@ -199,6 +206,39 @@ function spawnDetachedDaemon(root: string): void {
 }
 
 /**
+ * Create the proxy's in-process fallback engine only when it cannot conflict
+ * with a live writer (fork adaptation of upstream 1e4612375's
+ * makeFallbackEngine; the fork has no socket-hello identity probe, so PID
+ * liveness is the whole test — and it fails CLOSED, preserving the live
+ * holder instead of risking two watchers/writers on one project).
+ */
+function makeFallbackEngine(root: string): MCPEngine {
+  let existing: DaemonLockInfo | null = null;
+  try {
+    existing = decodeLockInfo(fs.readFileSync(getDaemonPidPath(root), 'utf8'));
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT') {
+      throw new Error(`The daemon lock could not be read (${code ?? 'unknown error'}); refusing an in-process fallback.`);
+    }
+  }
+  if (existing && existing.pid > 0 && isProcessAlive(existing.pid)) {
+    // Alive and holding the project lock: either serving or mid-bind (the
+    // daemon claims daemon.pid, then writer.pid, then binds). A fallback
+    // engine here would open a second watcher the instant the daemon is
+    // merely slow — refuse and let the tool-call error carry guidance.
+    throw new Error(
+      `Cannot start an in-process fallback while live daemon pid ${existing.pid} holds the project lock.`
+    );
+  }
+  const writer = readWriterLock(root);
+  if (writer && writer.pid > 0 && writer.pid !== process.pid && isProcessAlive(writer.pid)) {
+    throw new Error(writerLockHeldMessage(writer, getWriterPidPath(root)));
+  }
+  return new MCPEngine({ writerLockRoot: root });
+}
+
+/**
  * MCP Server for CodeGraph
  *
  * Implements the Model Context Protocol to expose CodeGraph
@@ -224,6 +264,8 @@ export class MCPServer {
   // Idempotency guard for stop().
   private stopped = false;
   private mode: 'unstarted' | 'direct' | 'proxy' | 'daemon' = 'unstarted';
+  /** Project root whose writer.pid we hold in direct mode (#1740); released on stop. */
+  private writerLockRoot: string | null = null;
 
   constructor(projectPath?: string) {
     this.projectPath = projectPath || null;
@@ -288,6 +330,10 @@ export class MCPServer {
   stop(): void {
     if (this.stopped) return;
     this.stopped = true;
+    if (this.writerLockRoot) {
+      releaseWriterLock(this.writerLockRoot);
+      this.writerLockRoot = null;
+    }
     if (this.ppidWatchdog) {
       clearInterval(this.ppidWatchdog);
       this.ppidWatchdog = null;
@@ -313,6 +359,21 @@ export class MCPServer {
     if (reason && process.env.CODEGRAPH_MCP_DEBUG) {
       process.stderr.write(`[CodeGraph MCP] Direct mode: ${reason}.\n`);
     }
+
+    // #1740: refuse a second direct writer on an initialized project. Daemon
+    // mode multiplexes clients onto one writer; direct mode is strictly
+    // single-writer-per-project — two direct servers each start a FileWatcher
+    // and contend on codegraph.lock until auto-sync degrades.
+    const writerRoot = resolveDaemonRoot(this.projectPath);
+    if (writerRoot) {
+      const writer = tryAcquireWriterLock(writerRoot, 'direct');
+      if (writer.kind === 'taken') {
+        process.stderr.write(`[CodeGraph MCP] ${writerLockHeldMessage(writer.existing, writer.pidPath)}\n`);
+        process.exit(1);
+      }
+      this.writerLockRoot = writerRoot;
+    }
+
     this.engine = new MCPEngine();
     const transport = new StdioTransport();
     this.session = new MCPSession(transport, this.engine, {
@@ -407,7 +468,7 @@ export class MCPServer {
       }
       return null; // never bound — the proxy serves this session in-process
     };
-    await runLocalHandshakeProxy({ getDaemonSocket, makeEngine: () => new MCPEngine(), root });
+    await runLocalHandshakeProxy({ getDaemonSocket, makeEngine: () => makeFallbackEngine(root), root });
   }
 
   /** Standard SIGINT/SIGTERM handlers that route to our `stop()` (direct mode). */
