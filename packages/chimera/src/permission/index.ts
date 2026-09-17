@@ -308,10 +308,13 @@ export function merge(...rulesets: Ruleset[]): Ruleset {
 
 const EDIT_TOOLS = ["edit", "write", "apply_patch"]
 
+// The MCP resource tools ask for the `read` permission, so a read deny-all must hide them too.
+const READ_TOOLS = ["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"]
+
 export function disabled(tools: string[], ruleset: Ruleset): Set<string> {
   const result = new Set<string>()
   for (const tool of tools) {
-    const permission = EDIT_TOOLS.includes(tool) ? "edit" : tool
+    const permission = EDIT_TOOLS.includes(tool) ? "edit" : READ_TOOLS.includes(tool) ? "read" : tool
     const rule = ruleset.findLast((rule) => Wildcard.match(permission, rule.permission))
     if (!rule) continue
     if (rule.pattern === "*" && rule.action === "deny") result.add(tool)
