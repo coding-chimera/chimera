@@ -122,3 +122,32 @@
 | K3 | P3 删 wasm 路径是否承诺排期 | 不承诺（观察期后独立拍板；objc/pascal/模板系使"全删"不成立） |
 | K4 | `--no-kernel` 发布变体 | 不需要（回退是运行时机制非构建变体；平台包缺 .node 即自动 wasm） |
 | K5 | kernel 战役期间 G1（WAL P1×4）是否先行 | 先行（P1 级 hang/corrupt 保护现网，与 kernel 零文件冲突） |
+
+---
+
+## K-v2：路线 a 对齐战役（2026-09-17 立项，用户拍板）
+
+**决策**：路线 a=跟进上游 N（codegraph@ba3c21e50d，codeload 快照 /Volumes/workspace/codegraph-snapshot/）+取舍原则：**双实现比对实现水平取强者**（用户原话），纯 fork 增量（上游无对应物）保全。
+
+**盘点权威**：`UPSTREAM_KERNEL_V2_INVENTORY.md`（入库版：blob 级基底考证/hunk 交叠实测/12 条比对判定表 D1-D12/五阶段切分）；38 份 patch 归档在 `/Volumes/workspace/codegraph-snapshot/inventory/`（不入仓，可由快照再生）。
+
+### P0 判定会（parent，2026-09-17）
+
+| 项 | 裁定 |
+|---|---|
+| D1 value-ref | **合并**：fork 实现为主干（覆盖面+17.7% references 实证更强）+吸收 N shadow-prune+收窄 VALUE_REF_LANGS 防 tsjs 双发 |
+| D2 statement | 取 fork（上游无对应物） |
+| D3 interface 成员 | 默认取 N #1638 实节点；fork 保序机制去留待 P0 深查结论（若动机仍成立=作为 N 节点上的增强保留） |
+| D4 docstring | 取 N（fork 清洗器=对旧 oracle 的对齐件，随路线 a 作废） |
+| D5 builtin 大写块 / D6 csharp returnField | 待 P0 深查；D6 默认保 fork 直至证实 N 有补偿路径 |
+| D7 builtins / D8 伪边防御 / D9 接收者证据 | 合并（骨架/前后置互补，按盘点方案） |
+| D10/D11 store 族+kotlin/scala/dart 语义 | 取 N（剥除回滚快速道） |
+| D12 name-matcher | 保 fork 骨架（RESOLVER_RANK/veto 独有）+移植 N 20 hunk 机制（无文本合并路径，清单制） |
+
+追加裁定：②navigates **纳入** FILE_PROJECTION_EDGE_KINDS+may-impact（保守纳入，成本≈0）；③N index.ts #1728/preload=P2 批内与 fork watcher 层比对等价后 cherry-pick，等价则记证据跳过；④tb3/tb4-v2v3 bench 格=P5 后 re-baseline 立项（不退役）；⑤10 语言 wasm blob 扩容=**暂不**（采 N 代码不采 blob，hasTreeSitterGrammar 运行期降级；发布体积可选项报用户，不阻塞）；⑥铁律：P4 完成前，非 tsjs 臂残留 flush_value_refs 的语言禁开 kernel 路由（lua/luau 由 P0 深查重点确认）。
+
+### 批次序与状态
+
+P0 深查（5 项，在途）→ P1 契约 append（navigates 五处+子集门测试，新旧 kernel 均兼容可先行合入）→ P2 wasm 升级（L）∥ P3 kernel re-vendor（L，含 8 腿 prebuild 重建 CI-only 纪律）→ P4 parity 重对账（N 自带 13 套件先跑绿+fork harness 期望重写，v4 的 21/21 基线作废重建）→ P5 semantics **v5**+resolution 合并（D7/D8/D9+新 callee 形态消费端配套）+重索引+bench 重验（G 臂 12 格+tb5-v2/tb6-b 重放+主仓冒烟 delta 归因）。KERNEL_ABI_VERSION 不动（append-only，N 未 bump）。
+
+主力窗口：P2/P3 待当前并行 builder（F2/claims/L4 小件/WebUI P1P2/workbrief 改造）收口后排上；P0/P1 小件可插队先行。
