@@ -32,12 +32,7 @@ import { DfmExtractor } from './dfm-extractor';
 import { VueExtractor } from './vue-extractor';
 import { MyBatisExtractor } from './mybatis-extractor';
 import { CfmlExtractor } from './cfml-extractor';
-// K-v2 P2: the fork's kernel adapter has no takeDeferredPreParse export yet
-// (the N defer memo hoists the preParse bytes for the wasm fallback of a
-// kernel-deferred file). The wasm arm below re-applies preParse itself, which
-// is behavior-identical, just not reuse-optimized. P3 re-vendors the kernel
-// adapter and can re-enable the N import + call site (extractFromSource).
-import { tryKernelExtract } from './kernel';
+import { tryKernelExtract, takeDeferredPreParse } from './kernel';
 import {
   getAllFrameworkResolvers,
   getApplicableFrameworks,
@@ -6026,26 +6021,6 @@ export class TreeSitterExtractor {
   }
 
   /**
-   * Surface the identifier values of an object literal that the call walker
-   * does NOT descend into (members extracted one-by-one: store/handler-map
-   * objects) — shorthand members and pair values — as value references.
-   */
-  private collectObjectValueReferences(obj: SyntaxNode): void {
-    for (let i = 0; i < obj.namedChildCount; i++) {
-      const member = obj.namedChild(i);
-      if (!member) continue;
-      if (member.type === 'shorthand_property_identifier') {
-        this.extractValueReference(member);
-        continue;
-      }
-      if (member.type !== 'pair') continue;
-      const value = getChildByField(member, 'value');
-      if (value?.type === 'identifier') this.extractValueReference(value);
-      else if (value?.type === 'object' || value?.type === 'object_expression') this.collectObjectValueReferences(value);
-    }
-  }
-
-  /**
    * D1 merge — the upstream shadow-prune (flushValueRefs) absorbed into the
    * fork value-position trunk. BOTH-ARMS-SAME-FORMULA: this is a line-by-line
    * TS mirror of `compute_shadowed_value_names` (codegraph-kernel/src/tsjs/
@@ -7807,17 +7782,22 @@ export function extractFromSource(
     // `defer:` signal (parse-tree ERROR, deep-nesting stack guard) — the
     // wasm TreeSitterExtractor below stays the fallback in every case (wasm
     // error recovery is canonical).
-    // K-v2 P2: N's takeDeferredPreParse reuse (kernel-deferred files skip the
-    // second preParse) is NOT wired — the fork kernel adapter doesn't export
-    // it yet (P3 re-vendors extraction/kernel/**); the wasm arm re-applies
-    // preParse itself, behavior-identical.
+    // K-v2 P4: N's takeDeferredPreParse reuse wired — a kernel-deferred
+    // file already paid the (offset-preserving) preParse at the route
+    // point; the fallback reuses those bytes instead of blanking again.
     const kernelResult = frameworkResolvers.some((fw) => fw.extract)
       ? null
       : tryKernelExtract(filePath, source, detectedLanguage);
     if (kernelResult) {
       result = kernelResult;
     } else {
-      const extractor = new TreeSitterExtractor(filePath, source, detectedLanguage);
+      const deferredPre = takeDeferredPreParse(filePath, source, detectedLanguage);
+      const extractor = new TreeSitterExtractor(
+        filePath,
+        deferredPre ?? source,
+        detectedLanguage,
+        { sourceIsPreParsed: deferredPre != null }
+      );
       result = extractor.extract();
     }
   }

@@ -23,10 +23,13 @@
  *   CODEGRAPH_KERNEL=0                  (kill switch, everything → wasm).
  *
  * Fork adaptations vs upstream src/extraction/kernel/index.ts:
- * - No preParse hoist: the fork's LanguageExtractor has no `preParse` hook
- *   (c/cpp blanking is a P2 precondition per plan §2.2), so the kernel
- *   receives the raw source and the defer slot only short-circuits repeat
- *   attempts — there is no pre-blanked string to hand the wasm fallback.
+ * - preParse hoist WIRED (K-v2 P4, the P2 accounting item): the route
+ *   point applies the language's `preParse` hook (identity for every
+ *   currently-routed language — hooks exist only on c-cpp/cobol/csharp/
+ *   vbnet), hoists those bytes into the defer slot, and the exported
+ *   takeDeferredPreParse lets the wasm fallback skip the second blanking
+ *   pass — N's adapter shape, forward-looking for the P5 routing
+ *   expansions (c/cpp blanking is their route precondition).
  * - No ExtractionResult.kernelBuffers seam (fork types.ts is out of scope):
  *   tryKernelExtractRaw returns owned KernelBuffers and
  *   materializeKernelResult takes that raw result directly. The parse-worker
@@ -36,6 +39,7 @@
 
 import type { ExtractionResult, Language } from '../../types';
 import { defaultLogger } from '../../errors';
+import { EXTRACTORS } from '../languages';
 import {
   getKernel,
   kernelSupports,
@@ -248,22 +252,39 @@ export function kernelRoutes(language: Language): boolean {
 const warned = new Set<string>();
 
 /**
- * One-slot defer memo (upstream mechanism, minus the preParse reuse the fork
- * can't have). A file the kernel defers (parse errors / stack guard → wasm)
- * would otherwise pay a full native parse again at every seam; the slot
- * remembers the LAST deferred (file, source, language) so a repeat kernel
- * attempt for the same file short-circuits to null. Source is matched by
+ * One-slot defer memo (upstream mechanism, full N shape since K-v2 P4).
+ * A file the kernel defers (parse errors / stack guard → wasm) would
+ * otherwise pay a full native parse again at every seam; the slot remembers
+ * the LAST deferred (file, source, language) plus the preParse bytes already
+ * paid at the route point, so (a) a repeat kernel attempt for the same file
+ * short-circuits to null and (b) the wasm fallback reuses the already-
+ * blanked source instead of re-running preParse. Source is matched by
  * string identity — the worker passes the same string through every seam.
  */
-let deferSlot: { filePath: string; source: string; language: Language } | null = null;
+let deferSlot: { filePath: string; source: string; language: Language; pre: string } | null = null;
 
-function wasDeferred(filePath: string, source: string, language: Language): boolean {
-  return (
-    deferSlot !== null &&
+/** The hoisted preParse output for a just-deferred file, if it matches. */
+export function takeDeferredPreParse(
+  filePath: string,
+  source: string,
+  language: Language
+): string | null {
+  if (
+    deferSlot &&
     deferSlot.filePath === filePath &&
     deferSlot.source === source &&
     deferSlot.language === language
-  );
+  ) {
+    return deferSlot.pre;
+  }
+  return null;
+}
+
+/** The language's preParse transform (offset-preserving); identity when it
+ *  has no hook. Mirrors the N adapter helper of the same name. */
+function preParsedSource(filePath: string, source: string, language: Language): string {
+  const pre = EXTRACTORS[language]?.preParse;
+  return pre ? pre(source, filePath) : source;
 }
 
 /** The raw table buffers + the cheap facts the orchestrator needs pre-decode. */
@@ -311,13 +332,14 @@ export function tryKernelExtractRaw(
   if (!kernelRoutes(language) || POST_PASSES[language]) return null;
   const kernel = getKernel();
   if (!kernel) return null;
-  if (wasDeferred(filePath, source, language)) return null; // already deferred
+  if (takeDeferredPreParse(filePath, source, language) !== null) return null; // already deferred
+  const pre = preParsedSource(filePath, source, language);
   try {
-    const buffers = kernel.extractFile(filePath, source, language);
+    const buffers = kernel.extractFile(filePath, pre, language);
     const { counts, errors } = readRawMeta(buffers);
     return { buffers, counts, errors };
   } catch (err) {
-    return handleKernelFailure(err, filePath, source, language, null);
+    return handleKernelFailure(err, filePath, source, language, pre);
   }
 }
 
@@ -353,7 +375,7 @@ function handleKernelFailure(
   filePath: string,
   source: string,
   language: Language,
-  _result: null
+  pre: string
 ): null {
   const message = err instanceof Error ? err.message : String(err);
   // `defer:` is the kernel's expected-routing signal (files with parse
@@ -361,7 +383,7 @@ function handleKernelFailure(
   // is the canonical one; recovery differs between UTF-8 and UTF-16
   // parsing). Silent by design.
   if (message.includes('defer:')) {
-    deferSlot = { filePath, source, language };
+    deferSlot = { filePath, source, language, pre };
     return null;
   }
   if (!warned.has(language)) {
@@ -388,10 +410,11 @@ export function tryKernelExtract(
   if (!kernelRoutes(language)) return null;
   const kernel = getKernel();
   if (!kernel) return null;
-  if (wasDeferred(filePath, source, language)) return null; // already deferred
+  if (takeDeferredPreParse(filePath, source, language) !== null) return null; // already deferred
   const t0 = Date.now();
+  const pre = preParsedSource(filePath, source, language);
   try {
-    const buffers = kernel.extractFile(filePath, source, language);
+    const buffers = kernel.extractFile(filePath, pre, language);
     // Kernel-own wire tables for decode — see materializeKernelResult.
     const tables = kernelWireTables();
     const result = decodeExtractBuffers(buffers, filePath, language, tables.nodeKinds, tables.edgeKinds);
@@ -399,7 +422,7 @@ export function tryKernelExtract(
     result.durationMs = Date.now() - t0;
     return result;
   } catch (err) {
-    return handleKernelFailure(err, filePath, source, language, null);
+    return handleKernelFailure(err, filePath, source, language, pre);
   }
 }
 
