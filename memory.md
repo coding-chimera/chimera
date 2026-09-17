@@ -208,3 +208,10 @@ loop 挂起修复前的对比基线（本机 macOS, bun 1.4.0, `bun test --timeo
 - 验证：bun test message-v2+retry 78 pass/0 fail（父级独立复跑）；bun typecheck 干净。
 - 文件：packages/chimera/src/provider/error.ts、src/session/message-v2.ts、test/session/message-v2.test.ts、test/session/retry.test.ts；predesign_e6de1b931263ed92；audit_1cbc14d080b66a7b。
 - 待办：relay 侧错误包归一化由用户另会话处理；提交前内网审计（ali-internal-audit）已通过。
+
+### subagent 存活判定与看护误归属教训（2026-09-17，wave3 协调事件）
+
+- 事故：③对账批二派在长调研期（读码/规划，无进程无文件足迹）被看护+parent 的 footprint 探针误判死透；parent 未先 task_cancel 原对象就三派 → 双编辑者同文件。三派教科书规避（零 mutation 转独立审计）救场，反成三方交叉验证。
+- 铁律：**存活判定权威 = task_cancel 返回的终态快照**（运行中会被打断=活着，已结束返回 "already completed"）；进程/mtime/commit 足迹探针只作辅证，长调研期可 20+ 分钟零足迹。重派前必先 cancel 原对象。
+- 次生误报：parent 自己跑收口重编（build-kernel.sh --zig 五腿）被看护当 builder 越权红线上报——看护看不到 parent 侧命令归属。parent 在看护窗口内跑重型构建前应预期误报（或错峰）；zig 缓存 .o 对象文件≠可执行物，不触 EDR 模式。
+- 附带坑：build-kernel.sh 全局 --zig 会把 darwin 腿也推上 zig 路线并编译失败——darwin-x64 必须走 Apple 工具链（无 --zig），linux 四腿才用 --zig。
