@@ -9,6 +9,19 @@ import { Identifier } from "@/id/id"
 
 const log = Log.create({ service: "bus" })
 
+// (R1) A2: bound the per-instance PubSub buffers. `PubSub.unbounded` grows without limit
+// when any subscriber stalls (a slow SSE fan-out fiber, a suspended callback bridge); on a
+// 20h server run that is pure JSC heap growth. `sliding` keeps the newest events and drops
+// the oldest on overflow, matching the drop-oldest semantics the SSE AsyncQueue downstream
+// already applies at 1024. 8192 is far above any healthy subscriber lag, so only a
+// pathological consumer ever sees drops.
+const PUBSUB_CAPACITY = 8_192
+
+// (R1) A2: hard cap on the typed PubSub map. Keys are BusEvent schema types (finite, ~65),
+// so the cap is never reached in practice; exceeding it means dynamically-generated event
+// types are leaking one PubSub each, and failing loudly beats unbounded resident growth.
+const MAX_TYPED_PUBSUBS = 256
+
 type BusProperties<D extends BusEvent.Definition<string, Schema.Top>> = Schema.Schema.Type<D["properties"]>
 
 export const InstanceDisposed = BusEvent.define(
@@ -51,7 +64,7 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const state = yield* InstanceState.make<State>(
       Effect.fn("Bus.state")(function* (ctx) {
-        const wildcard = yield* PubSub.unbounded<Payload>()
+        const wildcard = yield* PubSub.sliding<Payload>(PUBSUB_CAPACITY)
         const typed = new Map<string, PubSub.PubSub<Payload>>()
 
         yield* Effect.addFinalizer(() =>
@@ -77,7 +90,13 @@ export const layer = Layer.effect(
       return Effect.gen(function* () {
         let ps = state.typed.get(def.type)
         if (!ps) {
-          ps = yield* PubSub.unbounded<Payload>()
+          if (state.typed.size >= MAX_TYPED_PUBSUBS) {
+            log.error("typed pubsub capacity exceeded", { type: def.type, capacity: MAX_TYPED_PUBSUBS })
+            return yield* Effect.die(
+              new Error(`Bus typed PubSub capacity exceeded (${MAX_TYPED_PUBSUBS}) subscribing to ${def.type}`),
+            )
+          }
+          ps = yield* PubSub.sliding<Payload>(PUBSUB_CAPACITY)
           state.typed.set(def.type, ps)
         }
         return ps as unknown as PubSub.PubSub<Payload<D>>

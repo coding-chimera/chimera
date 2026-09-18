@@ -159,6 +159,35 @@ describe("Bus", () => {
     })
   })
 
+  describe("bounded buffers (R1 A2)", () => {
+    test("stalled subscriber gets drop-oldest instead of unbounded buffering", async () => {
+      await using tmp = await tmpdir()
+      const received: number[] = []
+      let release: (() => void) | undefined
+      const gate = new Promise<void>((resolve) => (release = resolve))
+
+      await withInstance(tmp.path, async () => {
+        Bus.subscribe(TestEvent.Ping, (evt) => {
+          received.push(evt.properties.value)
+          // Stall the consumer fiber after the first event: the runForEach loop
+          // adopts the returned pending promise, so the PubSub buffer fills up.
+          return received.length === 1 ? gate : undefined
+        })
+        await Bun.sleep(10)
+        const total = 8_192 + 100
+        for (let i = 1; i <= total; i++) await Bus.publish(TestEvent.Ping, { value: i })
+        release!()
+        await Bun.sleep(500)
+      })
+
+      // Drop-oldest: the first (in-flight) event plus the newest tail survive,
+      // the middle is dropped — total received is strictly less than published.
+      expect(received[0]).toBe(1)
+      expect(received).toContain(8_292)
+      expect(received.length).toBeLessThan(8_292)
+    })
+  })
+
   describe("instance isolation", () => {
     test("events in one directory do not reach subscribers in another", async () => {
       await using tmpA = await tmpdir()
