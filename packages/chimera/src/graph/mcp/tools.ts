@@ -585,6 +585,14 @@ export function getStaticTools(): ToolDefinition[] {
  * Other projects are opened on-demand and cached for performance.
  */
 export class ToolHandler {
+  // (R1 A5) Cross-project queries used to cache every opened CodeGraph for the
+  // server's lifetime with no per-entry eviction — one SQLite connection plus
+  // resolver state per distinct project root ever touched. Distinct cached
+  // instances are now LRU-capped; the coldest instance is closed and all of its
+  // alias keys removed. The default instance (this.cg) is owned by the server
+  // and is never evicted here.
+  private static readonly PROJECT_CACHE_MAX_INSTANCES = 8;
+  private static readonly WORKTREE_MISMATCH_CACHE_MAX = 256;
   // Cache of opened CodeGraph instances for cross-project queries
   private projectCache: Map<string, CodeGraph> = new Map();
   // The directory the server last searched for a default project. Surfaced in
@@ -756,7 +764,11 @@ export class ToolHandler {
 
     // Check cache first (using original path as key)
     if (this.projectCache.has(projectPath)) {
-      return this.projectCache.get(projectPath)!;
+      const cached = this.projectCache.get(projectPath)!;
+      // (R1 A5) Refresh LRU recency for the alias key.
+      this.projectCache.delete(projectPath);
+      this.projectCache.set(projectPath, cached);
+      return cached;
     }
 
     // Reject sensitive system directories before opening. Only validate a
@@ -795,7 +807,10 @@ export class ToolHandler {
     // Check if we already have this resolved root cached (different path, same project)
     if (this.projectCache.has(resolvedRoot)) {
       const cg = this.projectCache.get(resolvedRoot)!;
-      // Cache under original path too for faster future lookups
+      // (R1 A5) Refresh LRU recency, then cache under original path too for
+      // faster future lookups
+      this.projectCache.delete(resolvedRoot);
+      this.projectCache.set(resolvedRoot, cg);
       this.projectCache.set(projectPath, cg);
       return cg;
     }
@@ -806,7 +821,35 @@ export class ToolHandler {
     if (projectPath !== resolvedRoot) {
       this.projectCache.set(projectPath, cg);
     }
+    this.evictProjectCacheOverflow();
     return cg;
+  }
+
+  /**
+   * (R1 A5) Keep at most PROJECT_CACHE_MAX_INSTANCES distinct cached instances.
+   * Map iteration order is insertion order and hits re-insert their keys, so
+   * first-appearance order approximates LRU. The coldest instances are closed
+   * and every alias key pointing at them is removed. The server-owned default
+   * instance is never a victim.
+   */
+  private evictProjectCacheOverflow(): void {
+    const lru: CodeGraph[] = [];
+    for (const cg of this.projectCache.values()) {
+      if (cg === this.cg) continue;
+      if (!lru.includes(cg)) lru.push(cg);
+    }
+    while (lru.length > ToolHandler.PROJECT_CACHE_MAX_INSTANCES) {
+      const victim = lru.shift()!;
+      for (const [key, cg] of this.projectCache) {
+        if (cg === victim) this.projectCache.delete(key);
+      }
+      try {
+        victim.close();
+      } catch {
+        // Best effort: an already-closed or broken connection must not wedge
+        // the cache bookkeeping.
+      }
+    }
   }
 
   /**
@@ -887,6 +930,12 @@ export class ToolHandler {
       mismatch = null;
     }
     this.worktreeMismatchCache.set(startPath, mismatch);
+    // (R1 A5) Bound the memo: one entry per distinct start path, oldest first out.
+    while (this.worktreeMismatchCache.size > ToolHandler.WORKTREE_MISMATCH_CACHE_MAX) {
+      const oldest = this.worktreeMismatchCache.keys().next().value;
+      if (oldest === undefined) break;
+      this.worktreeMismatchCache.delete(oldest);
+    }
     return mismatch;
   }
 
