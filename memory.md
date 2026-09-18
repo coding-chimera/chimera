@@ -321,3 +321,10 @@ loop 挂起修复前的对比基线（本机 macOS, bun 1.4.0, `bun test --timeo
 - **cbench harness 维护已办（parent）**：matrix-f/tb5/tb5v2 三脚本 `deepseek-v4-flash-0731 high`→`deepseek-v4.1-flash high`（tag dsv4f→dsv41f，继任约定入库）。
 - **风险登记（活跃）**：43877 旧宿主（wave3 码）仍 watch 主仓——R1 编辑窗口可能第三次混码污染（仅污染本地 .chimera，恢复=全量重索引；R1 收口后 parent 统一重索引）；**用户择机重启 43877 换新二进制**（新装已在盘；重启会终止本会话，会话持久可恢复）。授权例外已随 P5-3 收口失效，**打包冒烟为剩余授权面**（env.md 条款：随打包冒烟批次收口失效）。
 - **R1 泄漏修批+打包冒烟已派**（并行，lane 分离：R1=仓库源码 TS 修，冒烟=全局安装面零仓库改动）；R1 性能敏感验证段需安静机（冒烟短跑先行，R1 计时段在后）。
+
+### 宿主重启交接（2026-09-18，用户主动重启 43877 换新二进制）
+
+- **重启前状态**：origin/main=`e1d392af9` 零未推；**R1 泄漏修批在途**（ses_f4c7d23eeffevDxuk7qwT3NN66，qwen3.8-max-0902 low，派单范围=RUST_MIGRATION_PLAN §1.4 A/B 类逐项+热点四项+A3 注册表 SQLite 持久化+soak harness，每修复项独立小 commit 标 (R1)）+**看护在途**（ses_f4fe7f9faffeOMbb8wpfHpTnGm，双对象 charter 已转 R1 单对象）——宿主重启=两者全灭，工作树可能残留 R1 未提交 WIP。
+- **重启后 playbook（恢复会话首件事）**：①DB 权威判死 R1/看护（chimera.db message 表 mtime 停更=死；勿盲 resume）②盘点 git status/log origin/main..HEAD：R1 已落地 (R1) commit 清单+未提交 WIP 面③决策：R1 会话可 resume 则续派收尾（带 WIP 盘点结果）；不可则新派 builder 从 WIP+已落地 commit 接续（防重复修：先比对 §1.4 清单已修项）④R1 收口后统一全量重索引（混码污染恢复+新宿主新码图谱）⑤队列不变：R1 亲验五关→推送→24h soak→R2 立项材料。
+- **重启后环境**：全局二进制=with-webui `a1397cdf`（含 K-v2 全量+claims 双修+wave-4 路由+v5）；旧宿主混码污染源消失；workbrief 工具增量语义（d8c0582e8）生效；授权例外已失效（后续二进制构建需重新授权）。
+- **用户拍板快照**：①R1 批准（执行中）②P5-3 批准（已完成结案）④进程处置（18926 已清；43877=本次重启）⑤WebUI 三项（已完成）；③CI 批明令后延；⑥code-mode/拍板池挂起。
