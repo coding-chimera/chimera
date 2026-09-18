@@ -16,6 +16,13 @@ export interface SqliteStatement {
   get(...params: any[]): any;
   all(...params: any[]): any[];
   iterate(...params: any[]): IterableIterator<any>;
+  /**
+   * (R1 A10) Optional deterministic release of the native statement handle.
+   * bun:sqlite exposes Statement.finalize(); node:sqlite's StatementSync has
+   * no public finalizer (handles are reclaimed by GC / db close), so the node
+   * adapter leaves this undefined.
+   */
+  finalize?(): void;
 }
 
 export interface SqliteDatabase {
@@ -228,6 +235,10 @@ private _db: any;
         // bun:sqlite Statement.iterate returns a live cursor — O(1) memory
         // streaming for whole-kind scans.
         return stmt.iterate(...normalizeStatementParams(params));
+      },
+      finalize() {
+        // (R1 A10) Deterministic native handle release for QueryBuilder.dispose().
+        stmt.finalize?.();
       },
     };
   }
