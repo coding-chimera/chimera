@@ -51,6 +51,12 @@ export const EventRoutes = () =>
       const releaseLease = () => {
         void AppRuntime.runPromise(lease.release).catch(() => {})
       }
+      // (R1 B2) Backstop for the window between lease acquisition and the streamSSE
+      // callback wiring stream.onAbort: if the client disconnects before the callback
+      // ever runs, nothing else would release the lease. releaseLease is idempotent
+      // (acquireEntry guards double-release), so stop() calling it again is safe.
+      if (c.req.raw.signal.aborted) releaseLease()
+      else c.req.raw.signal.addEventListener("abort", releaseLease, { once: true })
       return streamSSE(c, async (stream) => {
         const q = new AsyncQueue<string | null>({ capacity: EVENT_QUEUE_CAPACITY, overflow: "drop-oldest" })
         let done = false

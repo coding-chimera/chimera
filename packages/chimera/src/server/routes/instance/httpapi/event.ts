@@ -39,22 +39,39 @@ function eventData(data: unknown): Sse.Event {
   }
 }
 
-function eventResponse(bus: Bus.Interface, release: Effect.Effect<void>) {
+function eventStream(bus: Bus.Interface) {
   const events = bus.subscribeAll().pipe(Stream.takeUntil((event) => event.type === Bus.InstanceDisposed.type))
   const heartbeat = Stream.tick("10 seconds").pipe(
     Stream.drop(1),
     Stream.map(() => ({ id: Bus.createID(), type: "server.heartbeat", properties: {} })),
   )
 
-  log.info("event connected")
+  return Stream.make({ id: Bus.createID(), type: "server.connected", properties: {} }).pipe(
+    Stream.concat(events.pipe(Stream.merge(heartbeat, { haltStrategy: "left" }))),
+    Stream.map(eventData),
+    Stream.pipeThroughChannel(Sse.encode()),
+    Stream.encodeText,
+    Stream.ensuring(Effect.sync(() => log.info("event disconnected"))),
+  )
+}
+
+// (R1 B2) The lease used to be acquired in the handler and released via
+// Stream.ensuring on the response body: a response whose stream never ran
+// (client gone between handler return and body pull) leaked both the lease and
+// the Bus subscription. Acquisition now lives inside Stream.unwrap + scoped, so
+// nothing is held unless the stream actually executes, and the scope finalizer
+// releases the lease on completion or interruption.
+function eventResponse(bus: Bus.Interface, acquireLease: Effect.Effect<Effect.Effect<void>>) {
   return HttpServerResponse.stream(
-    Stream.make({ id: Bus.createID(), type: "server.connected", properties: {} }).pipe(
-      Stream.concat(events.pipe(Stream.merge(heartbeat, { haltStrategy: "left" }))),
-      Stream.map(eventData),
-      Stream.pipeThroughChannel(Sse.encode()),
-      Stream.encodeText,
-      Stream.ensuring(release),
-      Stream.ensuring(Effect.sync(() => log.info("event disconnected"))),
+    Stream.scoped(
+      Stream.unwrap(
+        Effect.gen(function* () {
+          const release = yield* acquireLease
+          yield* Effect.addFinalizer(() => release)
+          log.info("event connected")
+          return eventStream(bus)
+        }),
+      ),
     ),
     {
       contentType: "text/event-stream",
@@ -77,8 +94,12 @@ export const eventHandlers = HttpApiBuilder.group(EventApi, "event", (handlers) 
         // Hold an instance lease for the stream lifetime so the LRU sweeper treats
         // this subscriber as active usage instead of evicting a watched project.
         const ref = yield* InstanceRef
-        const lease = ref ? yield* store.lease({ directory: ref.directory }) : undefined
-        return eventResponse(bus, lease?.release ?? Effect.void)
+        return eventResponse(
+          bus,
+          ref
+            ? store.lease({ directory: ref.directory }).pipe(Effect.map((lease) => lease.release))
+            : Effect.succeed(Effect.void),
+        )
       }),
     )
   }),
