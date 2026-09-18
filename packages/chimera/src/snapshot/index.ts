@@ -70,13 +70,32 @@ export const layer: Layer.Layer<
     const fs = yield* AppFileSystem.Service
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
     const config = yield* Config.Service
-    const locks = new Map<string, Semaphore.Semaphore>()
+    // (R1 A8) Gitdir-keyed snapshot locks used to accumulate for the lifetime of
+    // the layer with no eviction — one Semaphore per worktree ever touched. Entries
+    // are now LRU-capped; an entry is only evicted when no operation is in flight
+    // or queued on it (inUse === 0), so mutual exclusion for live work is never
+    // broken. A re-created lock after eviction guards a cold gitdir nobody is
+    // operating on, which is exactly the case where a fresh Semaphore is safe.
+    const MAX_TRACKED_LOCKS = 256
+    type LockEntry = { sem: Semaphore.Semaphore; inUse: number }
+    const locks = new Map<string, LockEntry>()
 
-    const lock = (key: string) => {
+    const lockEntry = (key: string) => {
       const hit = locks.get(key)
-      if (hit) return hit
-
-      const next = Semaphore.makeUnsafe(1)
+      if (hit) {
+        // Refresh LRU position.
+        locks.delete(key)
+        locks.set(key, hit)
+        return hit
+      }
+      if (locks.size >= MAX_TRACKED_LOCKS) {
+        for (const [oldKey, old] of locks) {
+          if (locks.size < MAX_TRACKED_LOCKS) break
+          if (old.inUse > 0) continue
+          locks.delete(oldKey)
+        }
+      }
+      const next: LockEntry = { sem: Semaphore.makeUnsafe(1), inUse: 0 }
       locks.set(key, next)
       return next
     }
@@ -180,7 +199,18 @@ export const layer: Layer.Layer<
         const exists = (file: string) => fs.exists(file).pipe(Effect.orDie)
         const read = (file: string) => fs.readFileString(file).pipe(Effect.catch(() => Effect.succeed("")))
         const remove = (file: string) => fs.remove(file).pipe(Effect.catch(() => Effect.void))
-        const locked = <A, E, R>(fx: Effect.Effect<A, E, R>) => lock(state.gitdir).withPermits(1)(fx)
+        const locked = <A, E, R>(fx: Effect.Effect<A, E, R>) =>
+          Effect.suspend(() => {
+            const entry = lockEntry(state.gitdir)
+            entry.inUse++
+            return entry.sem.withPermits(1)(fx).pipe(
+              Effect.onExit(() =>
+                Effect.sync(() => {
+                  entry.inUse--
+                }),
+              ),
+            )
+          })
 
         const enabled = Effect.fnUntraced(function* () {
           if (state.vcs !== "git") return false
