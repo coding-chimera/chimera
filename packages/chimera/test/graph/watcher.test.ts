@@ -111,6 +111,24 @@ describe('FileWatcher', () => {
 
       expect(watcher.isActive()).toBe(false);
     });
+
+    it('stop() releases pending waitUntilReady callers without waiting for the timeout (R1 B5)', async () => {
+      const syncFn = vi.fn().mockResolvedValue({ filesChanged: 0, durationMs: 0 });
+      const watcher = new FileWatcher(testDir, syncFn);
+
+      watcher.start();
+      // Registered synchronously before the mock's microtask `ready` fires.
+      let resolved = false;
+      const pending = watcher.waitUntilReady(30_000).then(() => {
+        resolved = true;
+      });
+      await watcher.stop();
+      await pending;
+
+      expect(resolved).toBe(true);
+      // The waiter list must be drained by stop(), not left to leak closures.
+      expect((watcher as unknown as { readyWaiters: unknown[] }).readyWaiters.length).toBe(0);
+    });
   });
 
   describe('debounced sync', () => {
