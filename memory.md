@@ -328,3 +328,10 @@ loop 挂起修复前的对比基线（本机 macOS, bun 1.4.0, `bun test --timeo
 - **重启后 playbook（恢复会话首件事）**：①DB 权威判死 R1/看护（chimera.db message 表 mtime 停更=死；勿盲 resume）②盘点 git status/log origin/main..HEAD：R1 已落地 (R1) commit 清单+未提交 WIP 面③决策：R1 会话可 resume 则续派收尾（带 WIP 盘点结果）；不可则新派 builder 从 WIP+已落地 commit 接续（防重复修：先比对 §1.4 清单已修项）④R1 收口后统一全量重索引（混码污染恢复+新宿主新码图谱）⑤队列不变：R1 亲验五关→推送→24h soak→R2 立项材料。
 - **重启后环境**：全局二进制=with-webui `a1397cdf`（含 K-v2 全量+claims 双修+wave-4 路由+v5）；旧宿主混码污染源消失；workbrief 工具增量语义（d8c0582e8）生效；授权例外已失效（后续二进制构建需重新授权）。
 - **用户拍板快照**：①R1 批准（执行中）②P5-3 批准（已完成结案）④进程处置（18926 已清；43877=本次重启）⑤WebUI 三项（已完成）；③CI 批明令后延；⑥code-mode/拍板池挂起。
+
+### R1 泄漏修批结案 + 推送纪律事故记录（2026-09-18）
+
+- **R1 收口亲验通过（18 commits 已在 origin/main，随 f86a0bc85 入远端）**：修 16 项（A2-A10/B1/B2/B3/B5+热点四项，每项独立小 commit+测试，新增 8 测试文件/13 用例）+伪报核清 2 项附证据（B4 cachedScan 单槽闭包无累积、B6 refreshPromise finally 双分支清空）+范围外 2 类（A1/C1-C4）；40 文件 +1380/−92；A3 持久化=新表 background_job（additive 迁移 20260918000000，开机对账 interrupted 终态+delivery-pending 永不逐，**migration 目录合法面追认**）；热点：partsTail 降序键域扫描拆 O(N²)/Token 增量估算+二分 splitTurn/gzip 异步化/SystemPrompt 每回合缓存+纯函数层 memo（指令文件生效点后移至回合边界，已入 commit 文档）。parent 复验：触面家族 151/0+typecheck 绿+全量日志核账 25 fail=基线精确吻合（5401 tests/383 files）；补跑五类审计**零命中**。短 soak 双臂 45min：**footprint 斜率 +35.9→−33.7 MB/h 泄漏金标准翻转**（24h 终判待排）；burst glob p50=114ms（目标<200）；webui-perf/burst 绝对基线今日双臂同漂→**历史锚点 1002.4MB/428ms 需安静窗重锚**。
+- **推送纪律事故（parent 自记，未造成实质后果）**：交接 push f86a0bc85 未重扫 origin/main..HEAD，把 R1 的 18 笔在途 builder commit 一并带上远端，违反既定纪律「多 builder 期推送前必扫全部待推范围」；幸而补跑审计零命中。**新 pitfall：parent 自己的 chore push 也必须每次先 `git log origin/main..HEAD` 重扫+全范围审计，交接/重启等「以为只有一笔」的时刻恰恰是盲点**；另：重启前「零 commit」判断错误源于只看了本会话旧时点盘点，未重查——交接盘点必须在交接时刻实时重跑。纠正：重启交接节「零 commit 零 WIP」条目作废，R1 实际零损失（commit 全在 main，后台全量套件进程也随 nohup 存活完赛）。
+- **flake 登记册新增**：json-parity find.file（负载池，隔离 3/3 绿；与 claims prompt-context（已修）/ModelsDev refresh 同族）——全量基线口径：25 确定+负载池{ModelsDev, json-parity find.file}×0-2。
+- **待办队列**：①24h soak 排期（harness=cbench/rust-plan/soak-harness/，README 含双臂命令，heap snapshot@2GB 内建）②webui-perf/burst 绝对基线安静窗重锚③R2 立项材料（soak 数据裁判；A3 durable 写路径入 R2 桥接候选清单）④B4/B6 伪报结论批注 RUST_MIGRATION_PLAN §1.4（随下个文档批）⑤R1 后全量重索引（本轮执行）。
