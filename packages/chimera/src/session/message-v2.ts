@@ -43,8 +43,19 @@ export const MAX_STORED_MESSAGE_SUMMARY_BYTES = 1024 * 1024
 const SUMMARY_TRIM_MARKER = "message-summary-trim"
 
 // Sessions already repaired in this process; the durable marker keeps the
-// repair from running again after a restart.
+// repair from running again after a restart. (R1 A6) The set is capped with FIFO
+// eviction: the durable storage_maintenance marker is the source of truth, so an
+// evicted id only costs one indexed SELECT the next time the session is touched.
+const TRIMMED_SESSIONS_MAX = 10_000
 const trimmedSessions = new Set<string>()
+
+function rememberTrimmedSession(sessionID: SessionID) {
+  trimmedSessions.add(sessionID)
+  for (const key of trimmedSessions) {
+    if (trimmedSessions.size <= TRIMMED_SESSIONS_MAX) break
+    trimmedSessions.delete(key)
+  }
+}
 
 /**
  * Legacy rows can carry a message `summary.diffs` blob larger than the write
@@ -65,7 +76,7 @@ function ensureStoredSummariesTrimmed(sessionID: SessionID) {
       .get(),
   )
   if (marked) {
-    trimmedSessions.add(sessionID)
+    rememberTrimmedSession(sessionID)
     return
   }
   Database.use((db) => {
@@ -78,7 +89,7 @@ function ensureStoredSummariesTrimmed(sessionID: SessionID) {
     `)
     db.insert(StorageMaintenanceTable).values({ key }).onConflictDoNothing().run()
   })
-  trimmedSessions.add(sessionID)
+  rememberTrimmedSession(sessionID)
 }
 export const AbortedError = namedSchemaError("MessageAbortedError", { message: Schema.String })
 export const StructuredOutputError = namedSchemaError("StructuredOutputError", {
