@@ -102,7 +102,22 @@ type ProviderHealth = {
   degraded: boolean
 }
 
+// (R1 A9) Provider count is finite in practice, but the map had no eviction at
+// all; cap it so a pathological providerID stream cannot grow it unbounded.
+// Eviction is safe: dropping an entry just forgets failure counts (the provider
+// gets one more chance before being marked degraded again).
+const PROVIDER_HEALTH_MAX = 256
+
 const providerHealth = new Map<string, ProviderHealth>()
+
+function rememberProviderHealth(key: string, health: ProviderHealth) {
+  providerHealth.set(key, health)
+  for (const existing of providerHealth.keys()) {
+    if (providerHealth.size <= PROVIDER_HEALTH_MAX) break
+    if (existing === key) continue
+    providerHealth.delete(existing)
+  }
+}
 
 function healthKey(providerID: string): string {
   return providerID
@@ -122,7 +137,7 @@ export function recordRemoteCompactionFailure(providerID: string, isOAuth: boole
   if (health.failures >= REMOTE_COMPACTION_FAILURE_THRESHOLD) {
     health.degraded = true
   }
-  providerHealth.set(key, health)
+  rememberProviderHealth(key, health)
 }
 
 /** Reset failure counter on success or model/policy switch. */
