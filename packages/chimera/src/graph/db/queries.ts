@@ -693,6 +693,30 @@ export class QueryBuilder {
   }
 
   /**
+   * (R1 A10) Deterministically release every prepared statement and drop all
+   * caches. The stmts cache is keyed by a fixed set of query names (bounded),
+   * but on bun:sqlite each entry holds a native statement handle that used to
+   * survive until the whole database connection closed — and CodeGraph
+   * instances created outside the close path (query-builder-only consumers,
+   * failed opens) never released them at all. Called from CodeGraph.close()
+   * before the db close; safe to call more than once.
+   */
+  dispose(): void {
+    for (const key of Object.keys(this.stmts) as Array<keyof typeof this.stmts>) {
+      const stmt = this.stmts[key];
+      if (!stmt) continue;
+      try {
+        stmt.finalize?.();
+      } catch {
+        // Best effort: a statement already released by the backend must not
+        // wedge the dispose loop.
+      }
+      delete this.stmts[key];
+    }
+    this.nodeCache.clear();
+  }
+
+  /**
    * Get all nodes in a file
    */
   getNodesByFile(filePath: string): Node[] {

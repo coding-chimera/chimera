@@ -1279,6 +1279,9 @@ export class CodeGraph {
     } finally {
       // Release file lock if held
       this.fileLock.release();
+      // (R1 A10) Finalize prepared statements deterministically before the
+      // connection close instead of relying on db-close/GC cleanup.
+      this.queries.dispose();
       this.db.close();
     }
   }
