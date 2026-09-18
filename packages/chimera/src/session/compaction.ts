@@ -177,18 +177,28 @@ function splitTurn(input: {
   return Effect.gen(function* () {
     if (input.budget <= 0) return undefined
     if (input.turn.end - input.turn.start <= 1) return undefined
-    for (let start = input.turn.start + 1; start < input.turn.end; start++) {
-      const size = yield* input.estimate({
-        messages: input.messages.slice(start, input.turn.end),
-        model: input.model,
-      })
-      if (size > input.budget) continue
-      return {
-        start,
-        id: input.messages[start]!.info.id,
-      } satisfies Tail
+    // (R1 hotspot-2) The serialized size of messages.slice(start, turn.end) is
+    // monotonically non-increasing as `start` advances (strict suffixes), so the
+    // first fitting split point is found with a binary search instead of
+    // converting + serializing every suffix once (O(n) full estimates, each
+    // O(suffix) — quadratic on long turns). Same result: the smallest start
+    // whose suffix fits the budget, or undefined when none does.
+    const fits = (start: number) =>
+      input.estimate({ messages: input.messages.slice(start, input.turn.end), model: input.model }).pipe(
+        Effect.map((size) => size <= input.budget),
+      )
+    let lo = input.turn.start + 1
+    let hi = input.turn.end - 1
+    if (!(yield* fits(hi))) return undefined
+    while (lo < hi) {
+      const mid = Math.floor((lo + hi) / 2)
+      if (yield* fits(mid)) hi = mid
+      else lo = mid + 1
     }
-    return undefined
+    return {
+      start: lo,
+      id: input.messages[lo]!.info.id,
+    } satisfies Tail
   })
 }
 
@@ -253,7 +263,16 @@ export const layer: Layer.Layer<
       model: Provider.Model
     }) {
       const msgs = yield* MessageV2.toModelMessagesEffect(input.messages, input.model)
-      return Token.estimate(JSON.stringify(msgs))
+      // (R1 hotspot-2) Same number as Token.estimate(JSON.stringify(msgs)) without
+      // materializing the giant concatenated payload: an array serializes as
+      // "[" + elements joined by "," + "]", so the length is exactly
+      // 2 + Σ element lengths + (n-1). Model messages are always objects, so no
+      // element can serialize to the bare `undefined` form.
+      return Token.estimateLength(
+        msgs.length === 0
+          ? 2
+          : 2 + (msgs.length - 1) + msgs.reduce((total, msg) => total + JSON.stringify(msg).length, 0),
+      )
     })
 
     const select = Effect.fn("SessionCompaction.select")(function* (input: {
