@@ -426,6 +426,14 @@ export class FileWatcher {
       this.debounceTimer = null;
     }
 
+    // (R1 B5) Release pending waitUntilReady() callers. `ready` can never fire
+    // after stop, so leaving the callbacks registered both leaks the closures
+    // for the watcher's lifetime and strands callers until their timeout
+    // rejects. Resolving mirrors the ready-flush behavior: the deterministic
+    // boundary the waiter asked for (initial scan settled) has passed.
+    const waiters = this.readyWaiters.splice(0, this.readyWaiters.length);
+    for (const cb of waiters) cb();
+
     const watcher = this.watcher;
     this.watcher = null;
 
