@@ -32,9 +32,45 @@ const MAX_INTENT_CHARS = 140
 // so a process without pending waiters does zero DB work per tick.
 const pendingPollRoots = new Set<string>()
 
-// Dead-host verdicts are cached permanently: a boot id embeds the process
-// start time, so even pid reuse produces a different id — dead never revives.
-const deadHostBootIDs = new Set<string>()
+// Dead-host verdicts are cached with a TTL: a boot id embeds the process start
+// time, so even pid reuse produces a different id — a dead host never revives
+// while its verdict is cached. (R1 A7) The cache used to be a permanent
+// process-level Set with no removal path; it is now a verdict-time Map with a
+// 24h TTL and a size cap. Expiry is safe in the conservative direction: a
+// re-check after TTL either re-confirms death (pid still gone) or sees a reused
+// pid as alive and simply skips sweeping that host's inert waiter rows — it can
+// never cancel rows belonging to a live host.
+const DEAD_HOST_VERDICT_TTL_MS = 24 * 60 * 60 * 1000
+const DEAD_HOST_VERDICT_MAX = 1_024
+const deadHostBootIDs = new Map<string, number>()
+
+/** Test seam (R1 A7): record a dead-host verdict; exported for bound/TTL assertions. */
+export function rememberDeadHost(hostBootID: string) {
+  deadHostBootIDs.set(hostBootID, Date.now())
+  // FIFO eviction of the oldest verdicts; the just-added entry sorts last, so
+  // the skip guard only matters when the cap is 0-sized (never in practice).
+  for (const key of deadHostBootIDs.keys()) {
+    if (deadHostBootIDs.size <= DEAD_HOST_VERDICT_MAX) break
+    if (key === hostBootID) continue
+    deadHostBootIDs.delete(key)
+  }
+}
+
+/** Test seam (R1 A7): whether a dead-host verdict is cached and unexpired. */
+export function isKnownDeadHost(hostBootID: string) {
+  const at = deadHostBootIDs.get(hostBootID)
+  if (at === undefined) return false
+  if (Date.now() - at > DEAD_HOST_VERDICT_TTL_MS) {
+    deadHostBootIDs.delete(hostBootID)
+    return false
+  }
+  return true
+}
+
+/** Test seam (R1 A7): current dead-host verdict cache size. */
+export function deadHostVerdictCount() {
+  return deadHostBootIDs.size
+}
 
 /** Pre-v6 NULL-host waiter rows are swept only past this grace window so a mixed-version old binary can still wake its own un-stamped waiters. */
 const ORPHAN_SWEEP_GRACE_MS = EDIT_INTENT_CLAIM_DEFAULT_TTL_MS
@@ -426,10 +462,10 @@ function hostBootPID(hostBootID: string) {
  */
 function isHostBootAlive(hostBootID: string) {
   if (hostBootID === currentHostBootID()) return true
-  if (deadHostBootIDs.has(hostBootID)) return false
+  if (isKnownDeadHost(hostBootID)) return false
   const pid = hostBootPID(hostBootID)
   if (pid === undefined) {
-    deadHostBootIDs.add(hostBootID)
+    rememberDeadHost(hostBootID)
     return false
   }
   // While this process runs, no other process can hold its pid, so any id
@@ -440,7 +476,7 @@ function isHostBootAlive(hostBootID: string) {
     return true
   } catch (error) {
     const alive = (error as { code?: string }).code === "EPERM"
-    if (!alive) deadHostBootIDs.add(hostBootID)
+    if (!alive) rememberDeadHost(hostBootID)
     return alive
   }
 }

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, spyOn, test } from "bun:test"
 import { Effect } from "effect"
 import path from "path"
 import { CodeGraph, getCodeGraphDir, DatabaseConnection, getDatabasePath } from "@/graph"
@@ -594,5 +594,34 @@ describe("edit-intent cross-process poll bridge", () => {
     expect(waiting.map((waiter) => waiter.sessionID).sort()).toEqual(["ses_live", "ses_orphan_fresh", "ses_self"])
     const cancelledRows = await readEditIntentWaiters(tmp.path, { status: "cancelled" })
     expect(cancelledRows.map((waiter) => waiter.sessionID).sort()).toEqual(["ses_dead", "ses_malformed", "ses_orphan_old"])
+  })
+})
+
+describe("dead-host verdict cache bounds (R1 A7)", () => {
+  test("verdicts expire after the TTL and re-check conservatively", () => {
+    const realNow = Date.now
+    let clock = realNow.call(Date)
+    const nowSpy = spyOn(Date, "now").mockImplementation(() => clock)
+    try {
+      const id = "boot_ttl_probe_1"
+      expect(EditIntentClaims.isKnownDeadHost(id)).toBe(false)
+      EditIntentClaims.rememberDeadHost(id)
+      expect(EditIntentClaims.isKnownDeadHost(id)).toBe(true)
+      clock += 24 * 60 * 60 * 1000 + 1
+      expect(EditIntentClaims.isKnownDeadHost(id)).toBe(false)
+    } finally {
+      nowSpy.mockRestore()
+    }
+  })
+
+  test("cache size stays capped with FIFO eviction of oldest verdicts", () => {
+    const cap = 1_024
+    for (let i = 0; i < cap + 100; i++) {
+      EditIntentClaims.rememberDeadHost(`boot_cap_probe_${i}`)
+    }
+    expect(EditIntentClaims.deadHostVerdictCount()).toBeLessThanOrEqual(cap)
+    // Newest verdicts survive; oldest were evicted.
+    expect(EditIntentClaims.isKnownDeadHost(`boot_cap_probe_${cap + 99}`)).toBe(true)
+    expect(EditIntentClaims.isKnownDeadHost("boot_cap_probe_0")).toBe(false)
   })
 })
