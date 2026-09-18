@@ -1477,3 +1477,35 @@ describe("MessageV2 stored summary repair", () => {
     })
   })
 })
+
+describe("MessageV2.partsTail (R1 hotspot-1)", () => {
+  test("returns the exact tail of parts() in the same order", async () => {
+    await WithInstance.provide({
+      directory: root,
+      fn: async () => {
+        const session = await svc.create({})
+        const parent = await addUser(session.id, "go")
+        const messageID = await addAssistant(session.id, parent)
+        for (let i = 0; i < 10; i++) {
+          await svc.updatePart({
+            id: PartID.ascending(),
+            sessionID: session.id,
+            messageID,
+            type: "text",
+            text: `p${i}`,
+          })
+        }
+
+        const all = MessageV2.parts(messageID)
+        expect(all.length).toBe(10)
+        expect(MessageV2.partsTail(messageID, 3)).toEqual(all.slice(-3))
+        expect(MessageV2.partsTail(messageID, 1)).toEqual(all.slice(-1))
+        // limit >= total returns everything, still in ascending id order
+        expect(MessageV2.partsTail(messageID, 50)).toEqual(all)
+        expect(MessageV2.partsTail(messageID, 0)).toEqual([])
+
+        await svc.remove(session.id)
+      },
+    })
+  })
+})

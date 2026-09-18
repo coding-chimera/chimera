@@ -473,8 +473,9 @@ export const layer: Layer.Layer<
                 : value.providerMetadata,
             }))
 
-            const parts = MessageV2.parts(ctx.assistantMessage.id)
-            const recentParts = parts.slice(-DOOM_LOOP_THRESHOLD)
+            // (R1 hotspot-1) Tail query instead of a full-history SELECT per tool call:
+            // the doom-loop check only ever looks at the last DOOM_LOOP_THRESHOLD parts.
+            const recentParts = MessageV2.partsTail(ctx.assistantMessage.id, DOOM_LOOP_THRESHOLD)
 
             if (
               recentParts.length !== DOOM_LOOP_THRESHOLD ||

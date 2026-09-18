@@ -1225,6 +1225,37 @@ export function parts(message_id: MessageID) {
   )
 }
 
+/**
+ * (R1 hotspot-1) The last `limit` parts of a message, in the same ascending id
+ * order `parts()` returns. The processor's doom-loop check used to call parts()
+ * on every tool-call event and re-SELECT the message's entire history — O(N²)
+ * over one assistant message during tool bursts (burst bench: glob p50 69ms →
+ * 428ms @ n=50). part ids sort ascending by creation, so a descending
+ * key-range scan plus reverse is the exact tail of parts().
+ */
+export function partsTail(message_id: MessageID, limit: number) {
+  const rows = Database.use((db) =>
+    db
+      .select()
+      .from(PartTable)
+      .where(eq(PartTable.message_id, message_id))
+      .orderBy(desc(PartTable.id))
+      .limit(limit)
+      .all(),
+  )
+  return rows
+    .map(
+      (row) =>
+        ({
+          ...row.data,
+          id: row.id,
+          sessionID: row.session_id,
+          messageID: row.message_id,
+        }) as Part,
+    )
+    .reverse()
+}
+
 export function get(input: { sessionID: SessionID; messageID: MessageID }): WithParts {
   ensureStoredSummariesTrimmed(input.sessionID)
   const row = Database.use((db) =>
