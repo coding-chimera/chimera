@@ -279,7 +279,7 @@ loop 挂起修复前的对比基线（本机 macOS, bun 1.4.0, `bun test --timeo
 
 - 41 漏洞 pair 清除（hono 39 GHSAs/vite 8/tar CRITICAL/fast-xml-parser CRITICAL/axios/undici/ws/nanoid/js-yaml/OTel 家族/mysql2 等）；OSV querybatch 批端点**有漏报**（4 pair 实锤），终验必须 chunk-250 重扫∪新 pair 逐个 direct query 双通道。
 - **新全量基线=26 fail**：httpapi-config×8+HttpApi SDK×2+环境 15（MCP daemon×7/roots×3/initialize×2/Node26×2/node:sqlite×1，F2 行为修复不清环境性失败）+claims prompt-context flake×1（A/B 实证既有，负载敏感 ~30%，claims lane 待修时序）。
-- 残留 42 pair 清单=/var/folders/…/chimera/dependabot-batch/hits-final（后续专项批：seroval/solid-js patch、ai@6 家族、astro 5→7、wrangler、@hey-api+SDK 重生成、electron、newweb 面三小件移交 newweb 仓；valibot 被 bun update sdk/js 解析 bug 阻塞）。
+- 残留 42 pair 清单=**/Volumes/workspace/cbench/tmp-rescue-20260918/dependabot-batch/hits-final.json**（2026-09-18 从 $TMPDIR/chimera/dependabot-batch 抢救至持久区，tmp 清理无碍；后续专项批：seroval/solid-js patch、ai@6 家族、astro 5→7、wrangler、@hey-api+SDK 重生成、electron、newweb 面三小件移交 newweb 仓；valibot 被 bun update sdk/js 解析 bug 阻塞）。
 - provider-utils 4.0.33 否决回滚先例：升后 copilot 面 65 类型错=API 变动信号（零风险标准实证）。
 
 ### K-v2 主力波进展 + claims 批⑦收口（2026-09-17 晚，覆盖上方交接节的在途/lane/推送链条目）
