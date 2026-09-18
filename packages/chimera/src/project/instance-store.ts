@@ -236,7 +236,18 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
         yield* Deferred.await(entry.disposed).pipe(Effect.ignore)
         return false
       }
-      if (!options.force && entry.active > 0) return false
+      if (!options.force && entry.active > 0) {
+        // (R1 B1) This return used to be completely silent: a directory that can never
+        // be evicted (leaked lease/pin) was invisible until RSS tripped the budget.
+        // Log it so sweeps leave a trace; return-value semantics are unchanged.
+        yield* Effect.logWarning("instance dispose skipped: entry still has active consumers", {
+          directory,
+          reason,
+          active: entry.active,
+          pins: entry.pins,
+        })
+        return false
+      }
       entry.disposing = true
       yield* Effect.gen(function* () {
         yield* disposeContext(entry.ctx, reason)
