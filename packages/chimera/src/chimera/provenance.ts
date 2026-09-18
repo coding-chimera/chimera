@@ -210,6 +210,61 @@ export interface ProjectGraphState {
 }
 
 const graphStates = new Map<string, Promise<ProjectGraphState>>()
+// (R1 A4) graphStates had no capacity bound: one live connection+watcher per
+// project root opened in non-readOnly mode, released only when every directory
+// mapped to the root was disposed. Long-lived servers that cycle through many
+// projects accumulated handles. The cache is now LRU-capped; only roots idle
+// beyond GRAPH_STATE_IDLE_EVICT_MS are eviction candidates, so an actively used
+// root is never closed underneath its callers. The non-readOnly release path
+// keeps its shrink() semantics — this bounds the resident count, not the
+// per-use lifecycle.
+const GRAPH_STATE_CACHE_MAX = 32
+const GRAPH_STATE_IDLE_EVICT_MS = 30 * 60 * 1000
+const graphStateLastUsed = new Map<string, number>()
+
+function touchGraphState(root: string) {
+  graphStateLastUsed.set(root, Date.now())
+}
+
+function evictGraphStates(): Promise<number> {
+  if (graphStates.size <= GRAPH_STATE_CACHE_MAX) return Promise.resolve(0)
+  const now = Date.now()
+  const candidates = [...graphStateLastUsed.entries()]
+    .filter(([root, at]) => graphStates.has(root) && now - at > GRAPH_STATE_IDLE_EVICT_MS)
+    .sort((a, b) => a[1] - b[1])
+  if (candidates.length === 0) {
+    graphLog.warn("graph state cache over capacity with no idle eviction candidates", {
+      cacheSize: graphStates.size,
+      capacity: GRAPH_STATE_CACHE_MAX,
+    })
+    return Promise.resolve(0)
+  }
+  const evictions: Promise<void>[] = []
+  for (const [root] of candidates) {
+    // closeGraphRoot removes the entry from graphStates synchronously, so the
+    // live size already reflects every eviction pushed so far.
+    if (graphStates.size <= GRAPH_STATE_CACHE_MAX) break
+    graphLog.warn("evicting idle graph state (cache cap)", { root, cacheSize: graphStates.size })
+    evictions.push(closeGraphRoot(root))
+  }
+  return Promise.all(evictions).then(() => evictions.length)
+}
+
+/** Test seam (R1 A4): current graph-state cache size. */
+export function graphStateCount() {
+  return graphStates.size
+}
+
+/** Test seam (R1 A4): inject a fake state with a backdated last-used time. */
+export function injectGraphStateForTest(root: string, state: ProjectGraphState, lastUsedAt: number) {
+  graphStates.set(root, Promise.resolve(state))
+  graphStateLastUsed.set(root, lastUsedAt)
+}
+
+/** Test seam (R1 A4): run one eviction pass and report how many roots were evicted. */
+export function evictGraphStatesForTest() {
+  return evictGraphStates()
+}
 const graphRootsByDirectory = new Map<string, string>()
 const directoriesByGraphRoot = new Map<string, Set<string>>()
 const recentToolFiles = new Map<string, number>()
@@ -399,6 +454,7 @@ function rememberGraphRoot(directory: string, root: string) {
 async function closeGraphRoot(root: string) {
   const promise = graphStates.get(root)
   graphStates.delete(root)
+  graphStateLastUsed.delete(root)
   for (const key of recentToolFiles.keys()) {
     if (key.startsWith(`${root}\0`)) recentToolFiles.delete(key)
   }
@@ -656,12 +712,14 @@ function openGraphState(
     // eviction and rebuild through the normal open path.
     if (!fs.existsSync(getDatabasePath(root))) {
       graphStates.delete(root)
+      graphStateLastUsed.delete(root)
       graphLog.error("evicting cached graph state: graph database is missing", {
         root,
         databasePath: getDatabasePath(root),
       })
     } else {
       if (options.watch) cached.then(startFilesystemWatcher).catch(() => undefined)
+      touchGraphState(root)
       return cached
     }
   }
@@ -686,6 +744,7 @@ function openGraphState(
   if (options.readOnly) return promise
   const tracked = promise.catch((error) => {
     graphStates.delete(root)
+    graphStateLastUsed.delete(root)
     if (isGraphDataGoneError(error)) {
       graphLog.error("graph open failed: graph database is missing or unreadable", {
         root,
@@ -699,6 +758,8 @@ function openGraphState(
     throw error
   })
   graphStates.set(root, tracked)
+  touchGraphState(root)
+  void evictGraphStates().catch(() => undefined)
   return tracked
 }
 
