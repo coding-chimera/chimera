@@ -23,7 +23,17 @@ export interface GlobalEventStreamOptions {
   heartbeatIntervalMs?: number
   /** 0 disables coalescing: every delta is forwarded as it arrives. */
   deltaMergeWindowMs?: number
+  /**
+   * (R1 B2) Abandoned-stream guard: if the consumer never starts iterating the
+   * returned generator within this window, the stream closes itself so the
+   * GlobalBus listener and heartbeat interval cannot leak. A healthy server
+   * begins pulling the response body immediately after the handler returns;
+   * 0 disables the guard.
+   */
+  startTimeoutMs?: number
 }
+
+const START_TIMEOUT_MS = 60_000
 
 type PendingDelta = {
   event: GlobalEvent
@@ -73,9 +83,12 @@ export function createGlobalEventStream(options: GlobalEventStreamOptions = {}) 
     overflow: "drop-oldest",
   })
   const mergeWindowMs = options.deltaMergeWindowMs ?? DELTA_MERGE_WINDOW_MS
-  const pending = new Map<string, PendingDelta>()
+  const startTimeoutMs = options.startTimeoutMs ?? START_TIMEOUT_MS
+const pending = new Map<string, PendingDelta>()
   let flushTimer: Timer | undefined
-  let closed = false
+  let startWatchdog: Timer | undefined
+  let started = false
+let closed = false
 
   const flush = () => {
     if (flushTimer) clearTimeout(flushTimer)
@@ -126,13 +139,23 @@ export function createGlobalEventStream(options: GlobalEventStreamOptions = {}) 
   const close = () => {
     if (closed) return
     closed = true
+    if (startWatchdog) clearTimeout(startWatchdog)
+    startWatchdog = undefined
     if (heartbeat) clearInterval(heartbeat)
     GlobalBus.off("event", handler)
     flush()
     queue.push(null, { force: true })
   }
 
+  if (startTimeoutMs > 0) {
+    startWatchdog = setTimeout(() => {
+      if (!started) close()
+    }, startTimeoutMs)
+    startWatchdog.unref?.()
+  }
+
   const events = (async function* () {
+    started = true
     let reportedDropped = 0
 
     try {

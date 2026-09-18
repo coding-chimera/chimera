@@ -235,4 +235,31 @@ describe("global event stream", () => {
       stream.close()
     }
   })
+
+  test("closes itself and releases the GlobalBus listener when never iterated (R1 B2)", async () => {
+    const before = GlobalBus.listenerCount("event")
+    const stream = createGlobalEventStream({ heartbeatIntervalMs: 0, startTimeoutMs: 20 })
+    expect(GlobalBus.listenerCount("event")).toBe(before + 1)
+
+    // Consumer never starts iterating: the start watchdog must close the stream.
+    await Bun.sleep(80)
+    expect(GlobalBus.listenerCount("event")).toBe(before)
+
+    // A late consumer sees the buffered connected event and then termination.
+    expect((await stream.events.next()).value?.payload?.type).toBe("server.connected")
+    expect(await stream.events.next()).toMatchObject({ done: true })
+  })
+
+  test("the start watchdog does not fire once iteration began", async () => {
+    const before = GlobalBus.listenerCount("event")
+    const stream = createGlobalEventStream({ heartbeatIntervalMs: 0, startTimeoutMs: 20 })
+    try {
+      await stream.events.next()
+      await Bun.sleep(80)
+      expect(GlobalBus.listenerCount("event")).toBe(before + 1)
+    } finally {
+      stream.close()
+    }
+    expect(GlobalBus.listenerCount("event")).toBe(before)
+  })
 })
