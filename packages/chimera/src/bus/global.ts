@@ -20,3 +20,9 @@ class GlobalBusEmitter extends EventEmitter<{
 }
 
 export const GlobalBus = new GlobalBusEmitter()
+// (R1) One "event" listener is added per SSE connection (global-event-stream.ts) plus a
+// handful of fixed process-level consumers (tui worker, sync bridges). The default
+// max-listeners warning threshold (10) fires spuriously with a few open WebUI tabs and
+// trains operators to ignore the warning, so raise it to a level that only trips on a
+// genuine listener leak (connections are still bounded by client behavior).
+GlobalBus.setMaxListeners(1_000)
