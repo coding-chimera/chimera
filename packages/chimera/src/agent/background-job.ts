@@ -1,8 +1,14 @@
 export * as BackgroundJob from "./background-job"
 import { Cause, Clock, Context, Deferred, Effect, Exit, Fiber, Layer, Scope, Schema, SynchronizedRef } from "effect"
+import { and, desc, eq } from "drizzle-orm"
+import * as Log from "@opencode-ai/core/util/log"
 import { Config } from "@/config/config"
 import { ConfigDelegation } from "@/config/delegation"
+import { Database } from "@/storage/db"
 import { InstanceState } from "@/effect/instance-state"
+import { BackgroundJobTable } from "./background-job.sql"
+
+const log = Log.create({ service: "background-job" })
 
 export type Status = "running" | "completed" | "error" | "cancelled"
 
@@ -140,18 +146,149 @@ function errorText(error: unknown) {
   return String(error)
 }
 
+/** (R1 A3) Cap on settled+delivered live entries; older ones are evicted and served from the durable registry. */
+const DEFAULT_SETTLED_LIVE_MAX = 200
+/** (R1 A3) Durable row cap per instance directory, pruned oldest-first when a registry opens. */
+const DURABLE_ROWS_MAX = 500
+
+function parseDurableInfo(data: string): Info | undefined {
+  try {
+    const parsed = JSON.parse(data) as Info
+    if (typeof parsed?.id !== "string" || typeof parsed?.status !== "string") return undefined
+    return parsed
+  } catch {
+    return undefined
+  }
+}
+
 /**
- * Makes one scoped, process-local registry. Entries are intentionally not
- * durable: process restart or owner-scope closure loses status and interrupts
- * live work. Fork phase 1 keeps this trade-off on purpose — no Bus events, no
- * TTL. After a crash, phase 2 rebuilds degraded jobs from the persisted child
- * sessions (job id = child session id) instead of pretending this registry has
- * durable ownership semantics.
+ * (R1 A3) Write-through snapshot of a job's latest Info. Best effort: the
+ * in-memory registry stays the authority for live semantics (limits,
+ * quiescence, delivery), and a persistence failure degrades to the pre-R1
+ * behavior instead of failing the job.
  */
-export const make = (config: Config.Interface) =>
+function persistJobInfo(directory: string, info: Info) {
+  try {
+    const now = Date.now()
+    Database.use((db) => {
+      db.insert(BackgroundJobTable)
+        .values({
+          id: info.id,
+          instance_directory: directory,
+          generation: info.generation,
+          status: info.status,
+          data: JSON.stringify(info),
+          updated_at: now,
+        })
+        .onConflictDoUpdate({
+          target: [BackgroundJobTable.instance_directory, BackgroundJobTable.id],
+          set: { generation: info.generation, status: info.status, data: JSON.stringify(info), updated_at: now },
+        })
+        .run()
+    })
+  } catch (error) {
+    log.warn("background job persist failed", { id: info.id, error })
+  }
+}
+
+function readDurableJob(directory: string, id: string): Info | undefined {
+  try {
+    const row = Database.use((db) =>
+      db
+        .select()
+        .from(BackgroundJobTable)
+        .where(and(eq(BackgroundJobTable.instance_directory, directory), eq(BackgroundJobTable.id, id)))
+        .get(),
+    )
+    return row ? parseDurableInfo(row.data) : undefined
+  } catch (error) {
+    log.warn("background job durable read failed", { id, error })
+    return undefined
+  }
+}
+
+function readDurableJobs(directory: string): Info[] {
+  try {
+    return Database.use((db) =>
+      db.select().from(BackgroundJobTable).where(eq(BackgroundJobTable.instance_directory, directory)).all(),
+    ).flatMap((row) => {
+      const info = parseDurableInfo(row.data)
+      return info ? [info] : []
+    })
+  } catch (error) {
+    log.warn("background job durable list failed", { error })
+    return []
+  }
+}
+
+function pruneDurableJobs(directory: string) {
+  try {
+    Database.use((db) => {
+      const stale = db
+        .select({ id: BackgroundJobTable.id })
+        .from(BackgroundJobTable)
+        .where(eq(BackgroundJobTable.instance_directory, directory))
+        .orderBy(desc(BackgroundJobTable.updated_at))
+        .all()
+        .slice(DURABLE_ROWS_MAX)
+      for (const row of stale) {
+        db.delete(BackgroundJobTable)
+          .where(and(eq(BackgroundJobTable.instance_directory, directory), eq(BackgroundJobTable.id, row.id)))
+          .run()
+      }
+    })
+  } catch (error) {
+    log.warn("background job durable prune failed", { error })
+  }
+}
+
+/**
+ * Makes one scoped registry for a single instance directory. The in-memory map
+ * stays the authority for live work — fibers, Deferreds, and delivery state
+ * cannot survive a restart by construction — but every transition is written
+ * through to the durable `background_job` table (R1 A3):
+ *
+ * - `get`/`list`/`wait` fall back to durable rows the live map does not hold,
+ *   so job status survives process restart and owner-scope closure (the
+ *   registry-loss incident class); after a restart, phase 2 still rebuilds
+ *   degraded jobs from the persisted child sessions (job id = child session
+ *   id) — persistence coordinates with that by never claiming a durable row
+ *   is still running (open-time reconciliation rewrites `running` rows to an
+ *   interrupted terminal state, because their fibers are provably gone);
+ * - settled+delivered entries are evicted from the live map past
+ *   `settledLiveMax` (oldest completed first) and served from the durable
+ *   table afterwards. Delivery-pending entries are never evicted: an early
+ *   eviction would collapse waitOwnerQuiescent before the notify fiber's
+ *   injection completed and re-orphan the result.
+ *
+ * When `directory` is omitted the registry is purely in-memory (pre-R1
+ * behavior), which keeps engine-level tests and non-instance callers durable-
+ * free.
+ */
+export const make = (config: Config.Interface, directory?: string, options?: { settledLiveMax?: number }) =>
   Effect.gen(function* () {
     const cfg = yield* config.get()
     const limit = cfg.delegation?.background_concurrent ?? ConfigDelegation.DEFAULT_BACKGROUND_CONCURRENT
+    const settledLiveMax = Math.max(1, Math.floor(options?.settledLiveMax ?? DEFAULT_SETTLED_LIVE_MAX))
+
+  if (directory !== undefined) {
+    // Open-time reconciliation: `running` rows were persisted by a process
+    // whose fibers are gone; rewrite them to an interrupted terminal state so
+    // durable readers never see a phantom running job. Rows for jobs this
+    // process will (re)start get overwritten by start()'s write-through.
+    const reconciledAt = yield* Clock.currentTimeMillis
+    for (const info of readDurableJobs(directory)) {
+      if (info.status !== "running") continue
+      persistJobInfo(directory, {
+        ...info,
+        status: "error",
+        error: "host process restarted; background job interrupted",
+        delivery: "delivered",
+        completed_at: info.completed_at ?? reconciledAt,
+      })
+    }
+    pruneDurableJobs(directory)
+  }
   const state: State = {
     jobs: yield* SynchronizedRef.make(new Map<string, Active>()),
     scope: yield* Scope.Scope,
@@ -206,7 +343,10 @@ export const make = (config: Config.Interface) =>
         new Map(jobs).set(id, next),
       ]
     })
-    if (result.info && result.done) yield* Deferred.succeed(result.done, result.info).pipe(Effect.ignore)
+    if (result.info && result.done) {
+      yield* Deferred.succeed(result.done, result.info).pipe(Effect.ignore)
+      if (directory !== undefined) yield* Effect.sync(() => persistJobInfo(directory, result.info!))
+    }
     if (result.onInterrupt) yield* result.onInterrupt.pipe(Effect.ignore)
     if (result.scope) {
       yield* Scope.close(result.scope, Exit.void).pipe(Effect.forkIn(state.scope, { startImmediately: true }))
@@ -240,15 +380,20 @@ export const make = (config: Config.Interface) =>
   })
 
   const list: Interface["list"] = Effect.fn("BackgroundJob.list")(function* () {
-    return Array.from((yield* SynchronizedRef.get(state.jobs)).values())
-      .map(snapshot)
-      .toSorted((a, b) => a.started_at - b.started_at)
+    const live = Array.from((yield* SynchronizedRef.get(state.jobs)).values()).map(snapshot)
+    if (directory === undefined) return live.toSorted((a, b) => a.started_at - b.started_at)
+    // (R1 A3) Merge durable rows the live map no longer holds (pre-restart or
+    // settled-evicted); live entries win over their own durable snapshot.
+    const liveIDs = new Set(live.map((info) => info.id))
+    const durable = readDurableJobs(directory).filter((info) => !liveIDs.has(info.id))
+    return [...live, ...durable].toSorted((a, b) => a.started_at - b.started_at)
   })
 
   const get: Interface["get"] = Effect.fn("BackgroundJob.get")(function* (id: string) {
     const job = (yield* SynchronizedRef.get(state.jobs)).get(id)
-    if (!job) return
-    return snapshot(job)
+    if (job) return snapshot(job)
+    if (directory === undefined) return
+    return readDurableJob(directory, id)
   })
 
   const start: Interface["start"] = Effect.fn("BackgroundJob.start")(function* (input: StartInput) {
@@ -256,6 +401,9 @@ export const make = (config: Config.Interface) =>
     return yield* Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
         const started_at = yield* Clock.currentTimeMillis
+        // (R1 A3) Continue the durable generation sequence across restarts so
+        // ids reused after a crash never rewind their generation counter.
+        const durableGeneration = directory !== undefined ? readDurableJob(directory, input.id)?.generation ?? 0 : 0
         const done = yield* Deferred.make<Info>()
         const deliveryDone = yield* Deferred.make<void>()
         const tail = yield* Deferred.make<void>()
@@ -279,7 +427,7 @@ export const make = (config: Config.Interface) =>
                 title: input.title,
                 ownerSessionId: input.ownerSessionId,
                 delivery: "pending" as const,
-                generation: (existing?.info.generation ?? 0) + 1,
+                generation: Math.max(existing?.info.generation ?? 0, durableGeneration) + 1,
                 status: "running" as const,
                 started_at,
                 metadata: {
@@ -312,12 +460,32 @@ export const make = (config: Config.Interface) =>
             restore(input.run).pipe(Effect.ensuring(Deferred.succeed(tail, undefined))),
           )
           yield* attachFiber(input.id, result.token, fiber)
-        }
+          if (directory !== undefined) yield* Effect.sync(() => persistJobInfo(directory, result.info))
+}
         return result.info
       }),
     )
   })
 
+  /**
+   * (R1 A3) Bounds the live map's settled+delivered entries. Runs only after
+   * markDelivered; the durable row (when persistence is on) still serves the
+   * Info through get/list/wait, so nothing is lost by eviction. Delivery-
+   * pending entries are never evicted — waitOwnerQuiescent relies on them to
+   * keep a park alive until the notify injection completed.
+   */
+  const evictSettled = Effect.fnUntraced(function* () {
+    yield* SynchronizedRef.update(state.jobs, (jobs) => {
+      const settled = [...jobs.entries()].filter(
+        ([, job]) => job.info.status !== "running" && job.info.delivery === "delivered",
+      )
+      if (settled.length <= settledLiveMax) return jobs
+      settled.sort((a, b) => (a[1].info.completed_at ?? 0) - (b[1].info.completed_at ?? 0))
+      const next = new Map(jobs)
+      for (const [id] of settled.slice(0, settled.length - settledLiveMax)) next.delete(id)
+      return next
+    })
+  })
   /**
    * Marks the delivery of a job's background result as complete (idempotent: unknown
    * ids and repeated calls are safe no-ops). The delivery state machine guards the
@@ -334,14 +502,19 @@ export const make = (config: Config.Interface) =>
   ) {
     const result = yield* SynchronizedRef.modify(
       state.jobs,
-      (jobs): readonly [Deferred.Deferred<void> | undefined, Map<string, Active>] => {
+      (jobs): readonly [{ deferred?: Deferred.Deferred<void>; info?: Info }, Map<string, Active>] => {
         const job = jobs.get(id)
-        if (!job || job.info.delivery === "delivered") return [undefined, jobs]
-        if (generation !== undefined && job.info.generation !== generation) return [undefined, jobs]
-        return [job.deliveryDone, new Map(jobs).set(id, { ...job, info: { ...job.info, delivery: "delivered" } })]
+        if (!job || job.info.delivery === "delivered") return [{}, jobs]
+        if (generation !== undefined && job.info.generation !== generation) return [{}, jobs]
+        const next = { ...job, info: { ...job.info, delivery: "delivered" as const } }
+        return [{ deferred: job.deliveryDone, info: snapshot(next) }, new Map(jobs).set(id, next)]
       },
     )
-    if (result) yield* Deferred.succeed(result, undefined).pipe(Effect.ignore)
+    if (result.deferred) yield* Deferred.succeed(result.deferred, undefined).pipe(Effect.ignore)
+    if (result.info) {
+      if (directory !== undefined) yield* Effect.sync(() => persistJobInfo(directory, result.info!))
+      yield* evictSettled()
+    }
   })
 
   /**
@@ -410,7 +583,13 @@ export const make = (config: Config.Interface) =>
 
   const wait: Interface["wait"] = Effect.fn("BackgroundJob.wait")(function* (input: WaitInput) {
     const job = (yield* SynchronizedRef.get(state.jobs)).get(input.id)
-    if (!job) return { timedOut: false }
+    if (!job) {
+      // (R1 A3) Durable fallback: a settled job from before a restart (or one
+      // evicted from the live map) answers from the durable registry instead of
+      // pretending it never existed.
+      const durable = directory !== undefined ? readDurableJob(directory, input.id) : undefined
+      return durable ? { info: durable, timedOut: false } : { timedOut: false }
+    }
     if (job.info.status !== "running") return { info: snapshot(job), timedOut: false }
     if (input.timeout === undefined) return { info: yield* Deferred.await(job.done), timedOut: false }
     if (input.timeout <= 0) return { info: snapshot(job), timedOut: true }
@@ -441,7 +620,10 @@ export const make = (config: Config.Interface) =>
         new Map(jobs).set(id, next),
       ]
     })
-    if (result.info && result.done) yield* Deferred.succeed(result.done, result.info).pipe(Effect.ignore)
+    if (result.info && result.done) {
+      yield* Deferred.succeed(result.done, result.info).pipe(Effect.ignore)
+      if (directory !== undefined) yield* Effect.sync(() => persistJobInfo(directory, result.info!))
+    }
     if (result.onInterrupt) yield* result.onInterrupt.pipe(Effect.ignore)
     if (result.scope) yield* Scope.close(result.scope, Exit.void)
     return result.info
@@ -454,7 +636,11 @@ export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const config = yield* Config.Service
-    const state = yield* InstanceState.make(() => make(config))
+    const state = yield* InstanceState.make(
+      Effect.fn("BackgroundJob.state")(function* (ctx) {
+        return yield* make(config, ctx.directory)
+      }),
+    )
     return Service.of({
       list: () => InstanceState.useEffect(state, (jobs) => jobs.list()),
       get: (id) => InstanceState.useEffect(state, (jobs) => jobs.get(id)),
