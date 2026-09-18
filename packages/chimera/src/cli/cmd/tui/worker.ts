@@ -6,7 +6,7 @@ import { WithInstance } from "@/project/with-instance"
 import { Rpc } from "@/util/rpc"
 import { upgrade } from "@/cli/upgrade"
 import { Config } from "@/config/config"
-import { GlobalBus } from "@/bus/global"
+import { attachGlobalBusForwarder } from "./worker-global-bus"
 import { ServerAuth } from "@/server/auth"
 import { writeHeapSnapshot } from "node:v8"
 import { Heap } from "@/cli/heap"
@@ -40,8 +40,9 @@ process.on("uncaughtException", (e) => {
   })
 })
 
-// Subscribe to global events and forward them via RPC
-GlobalBus.on("event", (event) => {
+// Subscribe to global events and forward them via RPC. (R1 B3) The subscription
+// is paired: rpc.shutdown detaches it so a shut-down worker stops forwarding.
+const detachGlobalBusForwarder = attachGlobalBusForwarder((event) => {
   Rpc.emit("global.event", event)
 })
 
@@ -112,6 +113,7 @@ export const rpc = {
   async shutdown() {
     const started = Date.now()
     Log.Default.info("worker shutting down")
+    detachGlobalBusForwarder()
 
     await shutdownPhase("dispose instances", () => InstanceRuntime.disposeAllInstances())
     if (server) await shutdownPhase("stop server", () => server!.stop(true))
