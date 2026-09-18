@@ -2286,6 +2286,17 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
         let cutoffRetries = 0
         let cutoffPending = false
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
+        // (R1 hotspot-4) The instruction set (AGENTS.md/CLAUDE.md/CONTEXT.md findUp
+        // scans + file reads + optional remote URL fetches with a 5s timeout each)
+        // is the I/O-heaviest component of the per-step system assembly, and it
+        // re-ran on every step of the same turn. Cache it per turn (key = last
+        // user message id): an instruction-file edit takes effect at the next
+        // turn boundary instead of the next step. Skills/env/MCP instructions
+        // stay per-step — they are cheap in-memory reads, and the MCP set is
+        // permission-gated. The runtime-context hash-diff mechanism is untouched:
+        // it rides a synthetic user message assembled by ensureRuntimeContext
+        // above, not this system-prompt tuple.
+        let instructionsCache: { turnKey: string; value: string[] } | undefined
 
         while (true) {
           yield* status.set(sessionID, { type: "busy" })
@@ -2469,10 +2480,21 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
 
             yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
 
+            const turnKey = lastUser.id
+            const cachedInstructions = instructionsCache?.turnKey === turnKey ? instructionsCache.value : undefined
             const [skills, env, instructions, mcpInstructions] = yield* Effect.all([
               sys.skills(agent),
               sys.environment(model),
-              instruction.system().pipe(Effect.orDie),
+              cachedInstructions !== undefined
+                ? Effect.succeed(cachedInstructions)
+                : instruction.system().pipe(
+                    Effect.orDie,
+                    Effect.tap((value) =>
+                      Effect.sync(() => {
+                        instructionsCache = { turnKey, value }
+                      }),
+                    ),
+                  ),
               sys.mcp(agent, session.permission),
             ])
             const currentUserIndex = msgs.findIndex((m) => m.info.id === lastUser.id)
