@@ -547,3 +547,25 @@ describe("session.system capability segments", () => {
     }),
   )
 })
+
+describe("session.system pure-layer memo (R1 hotspot-4)", () => {
+  const model = {
+    providerID: "dahetao",
+    api: { id: "deepseek-v4-pro-max" },
+  } as unknown as Parameters<typeof SystemPrompt.providerSegments>[0]
+
+  test("providerSegments returns identical content for equal model ids", () => {
+    const a = SystemPrompt.providerSegments(model)
+    const b = SystemPrompt.providerSegments({ ...model, api: { id: "deepseek-v4-pro-max" } } as typeof model)
+    expect(a).toEqual(b)
+    expect(a.map((segment) => segment.key)).toEqual(["core/default", "core/workflow", "model/deepseek"])
+  })
+
+  test("overlaySegments and ultraVariantSegments stay deterministic", () => {
+    expect(SystemPrompt.overlaySegments(model)).toEqual(SystemPrompt.overlaySegments(model))
+    expect(SystemPrompt.ultraVariantSegments(model, undefined)).toEqual([])
+    const ultra = SystemPrompt.ultraVariantSegments(model, "ultra")
+    expect(ultra.map((segment) => segment.key)).toEqual(["variant/ultra", "variant/ultra-deepseek"])
+    expect(SystemPrompt.ultraVariantSegments(model, "ultra")).toEqual(ultra)
+  })
+})

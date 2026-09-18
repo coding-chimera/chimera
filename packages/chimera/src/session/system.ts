@@ -114,13 +114,40 @@ export interface Segment {
   readonly content: string
 }
 
+// (R1 hotspot-4) Memo for the pure segment assembly. Layer contents are
+// module-level constants and matching is a deterministic function of the model
+// ids (and variant), so re-assembling per step only allocated the same arrays
+// again. Caches are bounded with FIFO eviction. Memoized arrays are shared:
+// consumers must treat them as read-only (all current consumers spread or map).
+const SEGMENT_MEMO_MAX = 64
+
+function memoSegments(cache: Map<string, Segment[]>, key: string, build: () => Segment[]): Segment[] {
+  const hit = cache.get(key)
+  if (hit) return hit
+  const built = build()
+  cache.set(key, built)
+  for (const stale of cache.keys()) {
+    if (cache.size <= SEGMENT_MEMO_MAX) break
+    cache.delete(stale)
+  }
+  return built
+}
+
+function modelKey(model: Provider.Model) {
+  return `${model.providerID}\u0000${model.api.id}`
+}
+
+const providerSegmentsMemo = new Map<string, Segment[]>()
+
 export function providerSegments(model: Provider.Model): Segment[] {
-  const tuned = matchLayer(SPECIALIZATIONS, model)
-  return [
-    { key: "core/default", content: PROMPT_DEFAULT },
-    { key: "core/workflow", content: PROMPT_WORKFLOW },
-    ...(tuned ? [{ key: tuned.key, content: tuned.content }] : []),
-  ]
+  return memoSegments(providerSegmentsMemo, modelKey(model), () => {
+    const tuned = matchLayer(SPECIALIZATIONS, model)
+    return [
+      { key: "core/default", content: PROMPT_DEFAULT },
+      { key: "core/workflow", content: PROMPT_WORKFLOW },
+      ...(tuned ? [{ key: tuned.key, content: tuned.content }] : []),
+    ]
+  })
 }
 
 // Capability layers are injected conditionally based on the tools present in
@@ -139,9 +166,13 @@ export function provider(model: Provider.Model) {
   return providerSegments(model).map((segment) => segment.content)
 }
 
+const overlaySegmentsMemo = new Map<string, Segment[]>()
+
 export function overlaySegments(model: Provider.Model): Segment[] {
-  const found = matchLayer(OVERLAYS, model)
-  return found ? [{ key: found.key, content: found.content }] : []
+  return memoSegments(overlaySegmentsMemo, modelKey(model), () => {
+    const found = matchLayer(OVERLAYS, model)
+    return found ? [{ key: found.key, content: found.content }] : []
+  })
 }
 
 export function overlay(model: Provider.Model) {
@@ -150,13 +181,17 @@ export function overlay(model: Provider.Model) {
 
 // Ultra root sessions always receive the generic ultra layer, plus a
 // model-specific ultra layer when one is registered for the model.
+const ultraVariantSegmentsMemo = new Map<string, Segment[]>()
+
 export function ultraVariantSegments(model: Provider.Model, variant: string | undefined): Segment[] {
   if (variant !== "ultra") return []
-  const specific = matchLayer(ULTRA_LAYERS, model)
-  return [
-    { key: "variant/ultra", content: PROMPT_ULTRA },
-    ...(specific ? [{ key: specific.key, content: specific.content }] : []),
-  ]
+  return memoSegments(ultraVariantSegmentsMemo, `${modelKey(model)}\u0000ultra`, () => {
+    const specific = matchLayer(ULTRA_LAYERS, model)
+    return [
+      { key: "variant/ultra", content: PROMPT_ULTRA },
+      ...(specific ? [{ key: specific.key, content: specific.content }] : []),
+    ]
+  })
 }
 
 export function ultraVariant(model: Provider.Model, variant: string | undefined) {
