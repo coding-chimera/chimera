@@ -371,3 +371,77 @@ exactly-once 论证：waiter 行按 host_boot_id 分区，每行只可能被宿�
 遗留（非阻塞）：pid namespace 局限（容器隔离 ns 共享项目卷可能互判误死——判死仅在 kill(0) 明确 ESRCH/EINVAL 时发生，注释在案）；混版窗口老进程 NULL waiter 2h 宽限后被清（宽限期内自醒完好）；poll limit 200/tick 病态多 tick 自愈；7 腿 prebuild 重 stage=K-v2 波次收口 parent 统一做。
 
 **附带根因修复（parent，`34f745b1d`）——claims flake 家族第二例结案**：gate 测试「queues a later predesign…」负载下 ~30% 失败（blockedBy=predesign）。行级证据：DB inode/mtime 未变、无 jsonl fallback、raw sqlite 见 `chimera_predesign_run` 恰 1 行且属 ses_b——`recordPredesignRun` 的 id=sha256(createdAt:payload) **不含 sessionID**，两会话同毫秒+同 payload（测试均 `{}`）→同 id→`INSERT OR REPLACE` 静默顶掉 ses_a 证据行。归因=**origin/main 既有**（批⑤门禁批引入，非桥引入）。修复：predesign id 哈希入 sessionID；同类 `recordAuditRun` 哈希入 source+provenanceID（auto 审计 payload `{auto,status,changeFacts}` 无会话区分，swarm 并发同毫秒会顶掉 audit 证据行）；oracle id 哈希全量富载荷不动（碰撞即语义重复）。幂等保留（同会话/同突变同毫秒重录仍 REPLACE）。修后单文件 ×15 全绿（修前 ~1/3 失败）。
+
+---
+
+## L4 细分计划（草案 2026-09-20，待 parent 审定）
+
+侦察基线：上游只读镜像 HEAD `9f69463f1d`（禁 fetch，分诊口径 v1.14.40 基线不变）；fork HEAD `b202b4e23`。所有锚点已按当前 fork HEAD 重取（09-08 后 F1/F2/claims/K-v2/R1 约 200 commits，旧锚点全部作废）。前置事实：fork 无 packages/llm、无 packages/client/httpapi-codegen/http-recorder、packages/core 无 integration/credential runtime、无 native-runtime；双方 effect catalog 同为 4.0.0-beta.83（llm 包版本兼容）；fork 根 workspaces glob `packages/*`（新包免改根清单）。§11 增量项中 timeout 默认（c548422ed/33ba2d52c）、bedrock deepseek id（afcfef7dc）、codex 版本过滤（599b94684）、SSE cancel（d7dc3080b）已在 09-17 批落地，L4 剩余 §11 项=SDK bump 六条+bedrock patch+gitlab variants+dev conditions（55c54d14b8 顺手件）；~~blockBinding 三连~~=拍板#12 否决（2026-09-20，不移植）。
+
+关键词筛结论（§7 方法学要求的 L4 开工前独立筛）：`crash|hang|loss|corrupt|race|leak` × `llm|provider|model|sdk` 全窗命中 5 条——`0ee7cfa1fe` models 缓存损坏恢复：**fork 已等价**（fork `src/provider/models.ts:264-267` loadFromDisk catch→undefined→snapshot/fetch 兜底且 fetchAndWrite 覆写坏文件，殊途同归）；`a3825286cf` 为其 test-only 跟进（无关）；`87e9e700cd` google sdk tool-call-id 回滚（净零，L4.4 取 HEAD 终态自然满足）；`1f707f1b52` opencode-go provider URL（上游专属服务，无关）；`c9e2a38bf4` CI 模型名（无关）。**无 P1 级漏网**，变体组合（fix-scope 前缀/llm|provider scope 扩展词 deadlock|stuck|retry|timeout）复核零新增命中。
+
+20 条并入项复评（llm 族 15 + sdk/client 5，对照 fork 当前 HEAD）：**仍适用 13 / 已消解 1 / 需重判 6**。
+- 仍适用（随对应子批吸收）：llm 包 8 条（`77e6c0d329`/`942630eb4a`/`d5980b47e9`/`5f61d21487`(拍板#9，fork `src/session/codex-responses.ts:1150` strict:false 确认仍在)/`48fc9e3cc3`/`1fd8bf526d`(与 L4.3 交叉，以配置化为准)/`08c5a2a5e8`/`18466b8020`→L4.2 整包）；`dac0dd5309` connector auth、`cf80b5c470`+`c556bddda3` integration（拍板#7）、`4898263dec` 映射→L4.4（schema 层 integration/credential/connection 已 vendor 于 packages/schema，runtime 树缺）；`03afae5b95` v2-compat→L4.0。
+- 已消解 1：`42bb793574` generate model variants——fork 数据驱动实现已覆盖且更强（`transform.ts:655-661` reasoning_efforts 直生 variants + `variants():1064` ultra 普适档 + `config/provider.ts:37/91` reasoning_efforts/variants 可配），上游硬编码 glm-5.2 形态无需移植；L4.2 vendor 时反向以 fork 数据表接 llm catalog transform。
+- 需重判 6：`6618e2bce2` native-llm（落点 `session/llm/native-runtime.ts` fork 不存在，且**不在 packages/llm 包内**——原判"随 L4 整包吸收"不成立，是否引入 native runtime 归 L4.4/L5 重判）；sdk/client 5 条（`42e6b7db32`/`ef5c9f4931`/`f44423609b`/`cdd67cf30f`/`65210f2d97`——落点全在上游 packages/client+httpapi-codegen+core v2 session 树，fork 三表面皆无；L4 范围不含 client/codegen vendor，升级条款不触发，**顺延 L5 开工时复评**）。
+
+`03afae5b95` 打头阵就绪核查：**切口成立**。证据：①`v2-compat.ts`(449 行)自诞生零漂移（`03afae5b95..HEAD` 无后续提交）；②其 4 个 import 在 fork 全有等价物——`core/schema` 的 PositiveInt/NonNegativeInt→fork `src/util/schema.ts:7,12`、ConfigAttachmentV1→`src/config/attachment.ts`、ConfigLSPV1→`src/config/lsp.ts`、InvalidError→`src/config/error.ts:14`（**修正分诊原注**："schema 依赖已 vendor"不准确——fork `packages/schema/src/v1/` 只有 legacy-event/permission/question/session，上游 `core/src/v1/config/*` 17 文件未 vendor；适配=import 重指 fork 自有 config 模块，语义同源）；③fork `config/config.ts`(1009 行) 插入点全在：`normalizeLoadedConfig:67`、decode 路径 `:507`、`updateGlobal:391`、`patchJsonc:415`、`loadGlobal:526`，上游 diff +32 行形态可直接适配；④66 文件中 60 个为测试 fixture，可原样搬。
+
+共享文件串行矩阵（子批边界按文件交集≈零切分）：`config/config.ts`→仅 L4.0；根/chimera `package.json`+`bun.lock`→L4.1 与 L4.2 **强制串行**（L4.1 先）；`provider/transform.ts`→L4.1(gitlab +4 行)/L4.3/L4.5 **强制串行**；`provider/provider.ts`+`config/provider.ts`→L4.3/L4.4 串行。可并行对：仅 L4.0 ∥ L4.1。
+
+### L4.0 — v2-compat 打头阵（`03afae5b95`，防用户 v2 配置在 chimera 下丢失）
+
+- [ ] 搬 `v2-compat.ts` → `packages/chimera/src/config/v2-compat.ts`，import 重指 fork 等价物（见上）；品牌字段核对（v2 config 文件名 opencode.json→chimera 双读策略实现时定）
+- [ ] `config/config.ts` 四处适配：decodeConfig 包装（normalizeLoadedConfig→ConfigV2Compat.lower→diagnostics warn→ConfigParse.schema）、loadFile 解码点 `:507`、updateGlobal 保留 v2 键合并语义（original-record merge）、patchJsonc 路径
+- [ ] 搬测试：`test/config/v2-compat.test.ts`(400 行) + 60 fixture 文件 + `config.test.ts` 增量 + snapshot.ts
+- [ ] 验收：typecheck 绿；v2-compat 测试全过；**纯 v1 配置读取字节不变**（diagnostics 零输出断言）；updateGlobal 回写不吞 v2 键
+- [ ] 回退：单 commit revert（纯新增+config.ts 局部）
+
+### L4.1 — SDK bump 批次（拍板#15，L4 provider 面开工前置，锁文件独占批）
+
+- [ ] 六 bump 一次做完：openai 3.0.53→3.0.88（`23ec4f55c8`）、azure 3.0.49→3.0.93（`bec9ee41af`）、bedrock 4.0.112→4.0.166（`4502ee568e`）、gitlab 6.6.0→6.15.0（`0b082b065d`+`8d1f8916d3` 合并）、gateway 3.0.104→3.0.191（`199a4cdbea`，连带 provider 3.0.8→3.0.16/provider-utils 4.0.23→4.0.51，**批内最后统一回归**）
+- [ ] bump 后两件：`1542195217` bedrock none-effort patch（patches/ + 根 patchedDependencies）；`7c2199d84a` gitlab reasoning variants（transform.ts +4 行）
+- [ ] 重点回归：fork 自有 `src/provider/sdk/copilot/*` vendor 与 `codex-responses.ts` 路径（gateway/provider-utils 公共底座兼容性=分诊 §11.6 待深查项）
+- [ ] 验收：typecheck 绿；test/provider+test/session 聚焦全绿；bun.lock 语义化 diff 审查（内网镜像 URL 脱敏协议，pitfalls #33）
+- [ ] 回退：单 commit revert（lock+package.json 原子）
+
+### L4.2 — packages/llm 整包 vendor（零接线，codemode L0.3 先例；吸收 llm 族 8 条）
+
+- [ ] 整包搬入 152 文件（src 56 + test 86 + 配置/文档 10）→ `packages/llm`，包名 `@coding-chimera/llm` private；deps：@opencode-ai/schema workspace ✓、aws4fetch/@smithy 两件新增（触 bun.lock，故排 L4.1 后）、effect catalog: ✓ 同 beta.83
+- [ ] http-recorder 决策（分诊 §3④ 升级条款）：recorded 测试族（~30 fixture）依赖 `@opencode-ai/http-recorder`（fork 无）——二选一：连带 vendor http-recorder（小工具包）或 recorded 测试降级 skip；**建议连带 vendor**（llm/core fix backlog 18+ 条的回归安全网价值高）
+- [ ] 适配点最小化：包名/import 前缀替换；`@opencode-ai/schema` 指向 fork packages/schema（导出面差异实现时核对）；不做任何 v1 runtime 接线
+- [ ] 验收：包内 typecheck 绿 + 非 recorded 测试全过；根全树 typecheck 绿；`chimera run` 行为字节不变（零消费者）
+- [ ] 回退：删目录 + revert lock
+
+### L4.3 — 模型能力配置化（三层合并：models.dev < provider 配置 < 全局 model_capabilities）
+
+- [ ] Model schema 扩展（`config/provider.ts`，基于既有 reasoning_efforts:37/variants:91）：`sampling.{temperature,top_p,top_k}`、`reasoning_protocol`、`default_variant`、`default_effort`
+- [ ] 硬编码提取为内置默认数据表（行为不变、可被配置覆盖）：`transform.ts` 温度/topP/topK/族检测（`:647-680` id 匹配链）/baseVariants+variants（`:1064`）；`models.ts:176` inferReasoningProtocol；`codex-model.ts` profiles
+- [ ] 合并落点：`provider.ts:1437` fromModelsDevProvider + `:1229`/`:1664` reasoning_efforts 透传链——三层优先级在此收敛；`1fd8bf526d` model defaults/compatibility data 以配置化数据表形态吸收（勿照搬 llm 包内 precedence 实现）
+- [ ] 验收：typecheck 绿；**默认路径行为不变断言测试**（提取前后 variants/transform 输出逐字节等价）；配置覆盖 E2E（chimera.jsonc 自定义 model 的 sampling/variants 生效）；test/provider 全绿
+- [ ] 回退：单 commit revert
+
+### L4.4 — provider 逐个迁移试点（DeepSeek 先，绞杀 flag 门控）+ 并入项吸收
+
+- [ ] 迁移 seam：fork v1 `session/llm.ts:491` streamText 调用点为唯一收口——按 provider 逐个把 transport 切到 llm 包 route/executor（flag `experimental.llm_runtime` 默认关，关时字节不变，照抄 F4 门控手法）；DeepSeek（openai-compatible-chat 协议）首个试点，核对 models.dev 快照 npm 字段
+- [ ] 并入项吸收：`5f61d21487` strict 透传按拍板#9 执行（fork `codex-responses.ts:1150` strict:false 现状为对照基线）；`dac0dd5309` connector auth + `cf80b5c470`/`c556bddda3`/`4898263dec` integration 三件按拍板#7 决定保留与否（保留则需 vendor core integration/credential runtime 树，schema 层已在）
+- [ ] `6618e2bce2` native-llm 重判：试点期回答"fork 是否要 native runtime 表面"（不要则该条正式关闭）
+- [ ] 验收：flag 关全量测试字节不变；flag 开 DeepSeek 试点 E2E（真实额度冒烟）+ recorded 测试族绿；两路径成本/usage 统计一致性对账
+- [ ] 回退：flag 关闭即回退；代码单 commit revert
+
+### ~~L4.5 — blockBinding 三连整包~~ **已取消（拍板#12 否决，2026-09-20 用户裁决）**
+
+不移植理由：Anthropic 远端自带 system prompt，前缀含客户端不可见/不可控内容，客户端侧 thinking 签名绑定没有正确且优雅的适配落点。涉及条目 3f39a329c3/68abdce1a0/9a71624d2d 全部改判 ④（决策性排除，见 UPSTREAM_FEATURE_TRIAGE.md §13.5）。风险姿态：fork 不启用 Claude 5.x + adaptive thinking 的前缀绑定组合，风险面不激活；Anthropic 若未来开放前缀可控面需重新拍板。
+
+### L4 完成验收
+
+1. 全部相关包 `bun typecheck` 绿 + `bun test --timeout 30000` 聚焦族全绿（预存失败按既有对账表归因）
+2. flag 全关时 `chimera run` 真实任务行为与 L4 前一致（字节不变断言 + 真机冒烟）
+3. `model_capabilities`/provider 配置三层覆盖在真实 chimera.jsonc 生效（用户可验证变化=总体大纲 L4 行承诺）
+4. llm 包测试族（含 recorded，若 L4.2 决策 vendor http-recorder）作为常驻回归网入 CI
+5. 分诊文档 20 条并入项状态回写勾销；拍板#7/#9/#12/#15 决议记录归档
+
+执行顺序：**L4.0 ∥ L4.1 → L4.2 → L4.3 → L4.4**（L4.5 已随拍板#12 否决取消；唯一并行对=L4.0∥L4.1；其余因 bun.lock/transform.ts/provider.ts 共享面强制串行）。`55c54d14b8` dev conditions 任意批次顺手件。工期估算：L4.0 ~1 天、L4.1 ~1-2 天、L4.2 ~1-2 天、L4.3 ~3-4 天、L4.4 ~3-5 天（试点），合计 ~9-13 天。
+
+L4 风险 top5（含 F1/F2/K-v2 新交互面）：①**gateway/provider-utils 公共底座 bump × fork copilot/codex-responses vendor**（F1 计费改造后 fork 自有面加深，§11.6 待深查，L4.1 最大回归面）；②**配置化提取 × K-v2 后的 transform 热路径**（R1 hotspot 批已动指令装配缓存，L4.3 数据表化不得破坏 memo/缓存假设）；③**llm 包迁移 × F4 后台子代理/F2 MCP 引擎新表面**（注入续跑轮与 remote-compaction 走 llm 新 transport 时上游零验证，L4.4 flag 矩阵必须覆盖）；④~~blockBinding patch 体系 × bun.lock 脱敏~~（已随拍板#12 否决消解）；⑤**integration/connector auth 品牌拍板悬置**（拍板#7 不决则 L4.4 范围不定，建议开工前先决）。
+

@@ -348,3 +348,78 @@ GitHub API 实耗 **9/12** 次（`23ec4f55c8` `bec9ee41af` `199a4cdbea` `0b082b0
 - §4②及计划书 F2 行中的 `921b1c6a34`“MCP SDK v2 升级”：已被上游 `982a9044c5`（13h 后）整体回滚——终态=`sdk@1.29.0`+629 行 patch，**不是** `client@2.x`；F2 已按终态移植（commit `44bafa40c`）。
 - `a131811cdc`“mcp__ 命名约定（契约变更）”：已被上游 `947e0017f5`（11h 后）回滚；上游 HEAD `catalog.toolName` 与 fork 现状逐字相同（`<server>_<tool>`）。**此条从一切待办清单删除**，其“permission 通配/prompt 引用/TUI 显示须同批”告警随之失效；强行落地会静默破坏用户既有 permission 规则（实测影响面 6 处）。
 - F2 完成详情与 29 条 fix 对账表见计划书「F2 完成记录」节。
+
+## 13. 新增漂移分诊（2026-09-20 窗口全量：`9f69463f1d..ebb7b76e`，155 commits）
+
+方法：量化批（REST compare+commits，155/155 对账精确）→ scope 聚类 → fork 相关面 28 条由 4 组 reviewer 深判（每组对账=7 ✓）→ parent 逐组亲验抽核（file:line 实锤复核）。产物归档 `/Volumes/workspace/opencode-snapshot/drift-20260920/`（commits.jsonl/SUMMARY.md/triage/group-{1..4}.md/78M tarball）。REST 预算耗 2 次（分诊全走 commit/*.patch web 端点）。
+
+### 13.1 窗口总览
+
+- 上游 HEAD：`ebb7b76eca`（2026-09-20）。类型分布：fix 54 / chore 40 / docs 20 / feat 18 / test 4 / refactor 2 / zen 1 / 未解析 16；bot 作者 50 条。
+- **安全横切 0 命中 + 行为横切 0 命中**（CVE|security|bypass|vulnerab|leak|inject|permission 与 crash|hang|loss|corrupt|race 双关键词面，scout 与 parent 两轮独立复核）。
+- scope 大头：console 24 / 无 scope 42 / 非约定 16 / opencode 14 / stats 12 / go 12 / web 11 / tui 5 / provider 5 / app 4 / core 3。**127 条为 fork 不消费面（console/stats/go/web/docs/家务），整批跳过**；fork 相关面 28 条进入深判。
+
+### 13.2 五分类对账（总和 = 28 ✓）
+
+| 组 | 主题 | ① | ② | ③ | ④ | ⑤ |
+|---|---|---|---|---|---|---|
+| G1 | provider/SDK | 0 | 4 | 0 | 2 | 1 |
+| G2 | thinking/reasoning/codex | 0 | 3 | 2 | 1 | 1 |
+| G3 | runtime 杂项 | 1 | 1 | 0 | 2 | 3 |
+| G4 | app/ui/tui | 1 | 3 | 1 | 2 | 0 |
+| **合计** | | **2** | **11** | **3** | **7** | **5** |
+
+### 13.3 逐条明细（28 条）
+
+| sha | subject | 分类 | fork 证据（file:line） | 批次 |
+|---|---|---|---|---|
+| 4502ee568e | bump bedrock 4.0.166 | ② | fork 钉 4.0.112（package.json:106） | L4 SDK bump（拍板#15） |
+| 1542195217 | bedrock none reasoning effort | ④ | fork 无 bedrock patch 链（patches/ 无对应物） | L4 捆绑前置（迁移时成对取用） |
+| 69c172e8a7 | SSE reader cancel rejections | ⑤ | fork provider.ts:71 已是 `.catch(() => {})` | — |
+| 9a71624d2d | thinking binding scope Claude 5.1+ | ④ | fork transform.ts 无 blockBinding 面 | **不移植**（随拍板#12 否决，blockBinding 特性面整体放弃） |
+| 23ec4f55c8 | bump OpenAI SDK 3.0.88 | ② | fork 钉 3.0.53（package.json:117） | L4 SDK bump（拍板#15） |
+| bec9ee41af | bump Azure SDK 3.0.93 | ② | fork 钉 3.0.49（package.json:108） | L4 SDK bump（拍板#15） |
+| ea2d59d7ca | preserve explicit service tiers | ② | fork vendored openai-responses-language-model.ts:350-369 有逐字剥离逻辑 | 独立小批（源编辑即可） |
+| 3f39a329c3 | tolerate Anthropic thinking block binding | ~~②~~ **④（拍板#12 否决）** | fork 无 blockBinding/anthropic patch；processor.ts:655 无丢弃告警 | ~~L4.5~~ **不移植**（拍板#12，见 13.5） |
+| 68abdce1a0 | config opt out blockBinding | ~~②~~ **④（拍板#12 否决）** | fork 无 anthropicBlockBinding 宿主函数 | ~~L4.5~~ **不移植**（拍板#12，见 13.5） |
+| a9a6fad0fa | summarized adaptive thinking | ⑤ | fork plugin/github-copilot/models.ts:179 已无条件 summarized | — |
+| 95daf90670 | acp session options | ④ | fork 无 ACP 面（无 src/acp/、无依赖） | — |
+| 7c2199d84a | GitLab reasoning variants | ② | fork 消费 gitlab 面但 transform 无 case；family 硬编码空（provider.ts:814） | L4 批 |
+| 500c46ec79 | integer GPT versions Codex filter | ③ | fork codex-model.ts:102-111 isOAuthModel 小数分组可选 | — |
+| 02a167e048 | Codex GPT major.minor 比较 | ③ | fork codex-model.ts:107-110 逐字同语义 | — |
+| f7da00f35e | omit empty apply patch move path | ④ | fork 编码面不经过 Schema.Json（routes/global.ts:31），缺陷不可达 | —（卫生移植可选） |
+| 216ba8f05f | Azure discovery stdout 日志 | ④ | fork azure 插件是 26 行 stub，无模型发现面 | — |
+| 765ae641d7 | tool call time.start 重置 | ① | fork prompt.ts:761 与上游修复前逐字同构 | 独立小批（一行+重写测试）🚩低危 |
+| 4eb29a64f0 | chunk timeout 默认 5min | ⑤ | fork c548422ed 移植；provider.ts:2082 `?? 300_000` | — |
+| b04697366f | header timeout 默认 5min | ⑤ | fork 33ba2d52c 移植；provider.ts:2083 | — |
+| 5cd8e68fdd | Astra system prompt | ⑤ | fork 5c64c989a 已移植（gpt-astra.txt 46 行+注册层）——**更正 §11「随#13 可后置」过期注记：已执行** | — |
+| 8100c68b50 | happy-dom 20.12.0 bump | ② | fork packages/app 钉 20.0.11（package.json:28） | 独立小批（版本+bun install regen lock+app 测试） |
+| b578b7261f | open-in icon size | ④ | fork 无 open-in-app-v2 组件 | — |
+| f12e14cf16 | desktop Console device auth client_id | ② | fork 有 opencode provider 分支（dialog-connect-provider.tsx:425）但 dispatch 结构分叉 | **拍板#16**（见 13.5） |
+| 228e9095ba | Merge Gateway logo 三件套 | ① | fork types.ts:54-55/sprite.svg:604 插入点上下文逐行一致（parent 注：sprite 路径落地时复核） | 独立小批 |
+| 26ff3ed3d3 | home shortcuts 右对齐 | ③ | fork prompt/index.tsx:1641 已恒渲染占位 | — |
+| 5c5c709fee | pin diff highlights query | ④ | fork 无 diff parser 条目 | — |
+| 7561b4a050 | unicode ellipses | ② | fork TUI 14+ 处 ASCII `...`，文件集分叉需重扫 | F3 TUI 随批 |
+| a97622c801 | remote auth 启动错误可见性 | ② | fork thread.ts:269 无条件 exit(0) 与上游修复前同款 | F3 TUI 随批 🚩 |
+
+### 13.4 红旗清单
+
+1. 🚩 **3f39a329c3**（请求拒绝/可用性）：Fable 5.1 thinking 签名绑定前缀，前缀任一变化整请求拒绝；fork 未含该面=未来接 Claude 5.x+adaptive thinking 时 compaction/回合重渲染触发会话硬失败。**决议（2026-09-20 用户拍板#12 否决）**：不移植——Anthropic 远端自带 system prompt 使前缀含客户端不可控内容，客户端侧 binding 逻辑无优雅适配点；fork 不启用该特性组合，风险面不激活（接受不修复）。
+2. 🚩 **a97622c801**（退出码语义）：fork `thread.ts:269` 无条件 `process.exit(0)`，远程配置被 SSO 拦截时以 0 伪装成功，脚本/CI 判定失效（fork config.ts:645-663 确有远程拉取面）。F3 随批等价重写。
+3. 🚩（低危数据正确性）**765ae641d7**：工具中途 metadata 更新重置已持久化 time.start，耗时统计系统性低估。独立小批优先。
+4. （条件性）**1542195217**：L4 引入 bedrock 4.0.166+GPT-5.6-on-Bedrock 时必须连带，否则 zod 拒绝 none effort 请求。
+
+### 13.5 与 §11 的重叠对账与新拍板
+
+- §11（as-of `88c6c7abc7`，2026-09-17）已深判本窗口 8 条（23ec4f55c8/bec9ee41af/4502ee568e/7c2199d84a/a9a6fad0fa/500c46ec79/02a167e048/5cd8e68fdd），本次裁决与 §11 结论一致；§11 细节（SDK bump 批次编排、深查项）保持权威。
+- **拍板#12（2026-09-20 用户裁决：否决）**：Anthropic blockBinding 适配（3f39a329c3/68abdce1a0/9a71624d2d 三连）**不移植**。理由：Anthropic 远端自带 system prompt，前缀含客户端不可见/不可控内容，客户端侧签名绑定逻辑没有正确且优雅的落点。处置：L4.5 子批取消，三条改判 ④（决策性排除）；fork 不启用 Claude 5.x + adaptive thinking 的前缀绑定组合即风险面不激活；未来若 Anthropic 开放前缀可控面需重新拍板。
+- **拍板#16（新增）**：`f12e14cf16` desktop 设备授权 URL 加 `client_id=opencode-desktop`——风险=需确认 Console 端识别该 client_id 否则 fork desktop 授权回归；建议先核实 Console 侧再落地，或放弃（fork desktop 面活跃度低）。
+- 既有拍板沿用：#15 覆盖三条 SDK bump；~~#12 门控 blockBinding 三连~~（已否决，见上）；其余 ② 项为 fix 级移植，按 fix backlog 口径随批消化，不设新编号。
+
+### 13.6 批次归并结论
+
+- **L4 批捆绑**：三条 SDK bump + 7c2199d84a + 捆绑前置 1542195217（bedrock none-effort，随 bump 连带）。~~L4.5 blockBinding 三连~~=拍板#12 否决取消。
+- **独立小批（drift-20260920，4 件）**：765ae641d7、ea2d59d7ca、8100c68b50、228e9095ba——已派 builder 执行。
+- **F3 随批**：7561b4a050、a97622c801。
+- **无动作**：③④⑤ 共 13 条（已等价/已同步/fork 不消费）。
+- **L4 开工待用户批复**：细分计划草案已入计划书（## L4 细分计划（草案 2026-09-20）节），含 http-recorder 连带 vendor 决策点与拍板#7 前置建议。

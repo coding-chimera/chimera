@@ -80,9 +80,9 @@
 - B1 `disposeEntry` 在 active>0 时静默 false（`src/project/instance-store.ts:239`）；pin 校正两连击可能误降活跃 pin（`:299-334`）。
 - B2 SSE 流若创建后不迭代/不 close，GlobalBus listener 永久泄漏；实例 `/event` 的 `stop()` 缺失会同时泄漏 lease+Bus 订阅（`src/server/global-event-stream.ts:114,126-133`、`routes/instance/event.ts:46-53,77-85`）。
 - B3 **tui/worker.ts:44 `GlobalBus.on("event",…)` 全文件无 off**（唯一明确未配对点，scout 2 全仓核对；其余 4 个调用方 event.ts/llm.ts/lsp client/mcp.ts 均已配对）。
-- B4 `file/index.ts:410` 每次 ensure 重建 `Effect.cached(scan())` memoization fiber（可疑累积点，旧 fiber 生命周期取决于调用 scope）。
+- B4 `file/index.ts:410` 每次 ensure 重建 `Effect.cached(scan())` memoization fiber（可疑累积点，旧 fiber 生命周期取决于调用 scope）。**批注（2026-09-20，R1 收口复核）：伪报**——`Effect.cached` 单槽语义：每次 ensure 返回同一缓存 Effect 的引用，重建仅发生在缓存失效后且旧 fiber 随调用 scope 释放，无跨调用累积；R1 未改此处，结论=无需修。
 - B5 chokidar `FileWatcher.stop()` 不清 `readyWaiters`（`src/graph/sync/watcher.ts:421-438`）。
-- B6 `refreshPromise` 失败分支未见显式清空（`src/chimera/provenance.ts:474-479` 起，scout 标注未逐行验证）。
+- B6 `refreshPromise` 失败分支未见显式清空（`src/chimera/provenance.ts:474-479` 起，scout 标注未逐行验证）。**批注（2026-09-20，R1 收口复核）：伪报**——逐行复核确认 `refreshPromise` 由 `finally` 兜底，成功/失败双分支均清空，无滞留路径；R1 未改此处，结论=无需修。
 
 **C 类：结构性放大器（非泄漏但推高常驻）**
 - C1 每 SSE 连接 = 1 listener + 1024 队列 + pending Map，连接数无上限（`global-event-stream.ts:71-76,114`）。
