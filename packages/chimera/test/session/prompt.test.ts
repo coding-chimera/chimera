@@ -2433,6 +2433,70 @@ unix(
   30_000,
 )
 
+// Regression for upstream 765ae641d7: a mid-execution tool metadata update must
+// not reset the already-persisted running `state.time.start`. The fork's
+// SessionTools architecture does not exist, so this drives the real
+// resolveTools metadata callback through a live prompt loop with the bash tool,
+// which emits one metadata update per output chunk.
+unix(
+  "preserves running tool start time across metadata updates",
+  () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const session = yield* sessions.create({
+          title: "Tool time start",
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+        yield* prompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "run the probe command" }],
+        })
+        yield* llm.tool("bash", { command: "printf first && sleep 0.4 && printf second", description: "probe" })
+        yield* llm.text("done")
+
+        const loop = yield* prompt.loop({ sessionID: session.id }).pipe(Effect.forkChild)
+
+        const observedStart = yield* Effect.promise(async () => {
+          const deadline = Date.now() + 8000
+          while (Date.now() < deadline) {
+            const msgs = await MessageV2.filterCompacted(MessageV2.stream(session.id))
+            const part = msgs
+              .flatMap((msg) => msg.parts)
+              .find(
+                (candidate): candidate is MessageV2.ToolPart =>
+                  candidate.type === "tool" && candidate.tool === "bash",
+              )
+            if (part?.state.status === "running") {
+              const output = String(part.state.metadata?.output ?? "")
+              if (output.includes("first") && !output.includes("second")) return part.state.time.start
+            }
+            await new Promise((done) => setTimeout(done, 10))
+          }
+          throw new Error("timed out waiting for running bash metadata")
+        })
+
+        const exit = yield* Fiber.await(loop)
+        expect(Exit.isSuccess(exit)).toBe(true)
+
+        const msgs = yield* MessageV2.filterCompactedEffect(session.id)
+        const completed = msgs
+          .flatMap((msg) => msg.parts)
+          .find(
+            (candidate): candidate is CompletedToolPart =>
+              candidate.type === "tool" && candidate.tool === "bash" && candidate.state.status === "completed",
+          )
+        if (!completed) return
+        expect(completed.state.time.start).toBe(observedStart)
+      }),
+      { git: true, config: providerCfgNoSnapshot },
+    ),
+  20_000,
+)
+
 it.live(
   "loop waits while shell runs and starts after shell exits",
   () =>
