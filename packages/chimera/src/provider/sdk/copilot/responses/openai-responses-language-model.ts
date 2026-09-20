@@ -346,29 +346,6 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV3 {
       }
     }
 
-    // Validate flex processing support
-    if (openaiOptions?.serviceTier === "flex" && !modelConfig.supportsFlexProcessing) {
-      warnings.push({
-        type: "unsupported",
-        feature: "serviceTier",
-        details: "flex processing is only available for o3, o4-mini, and gpt-5 models",
-      })
-      // Remove from args if not supported
-      baseArgs.service_tier = undefined
-    }
-
-    // Validate priority processing support
-    if (openaiOptions?.serviceTier === "priority" && !modelConfig.supportsPriorityProcessing) {
-      warnings.push({
-        type: "unsupported",
-        feature: "serviceTier",
-        details:
-          "priority processing is only available for supported models (gpt-4, gpt-5, gpt-5-mini, o3, o4-mini) and requires Enterprise access. gpt-5-nano is not supported",
-      })
-      // Remove from args if not supported
-      baseArgs.service_tier = undefined
-    }
-
     const {
       tools: openaiTools,
       toolChoice: openaiToolChoice,
