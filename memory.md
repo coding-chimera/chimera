@@ -351,3 +351,4 @@ loop 挂起修复前的对比基线（本机 macOS, bun 1.4.0, `bun test --timeo
 - **L4 草案已入计划书**（L377 起，待审定+用户批复开工；http-recorder 连带 vendor 与拍板#7 前置是决策点）。拍板#16 新增=f12e14cf16 desktop client_id（缓）。
 - **pitfall 自记**：chimera_swarm 连续五次参数空发（序列化丢失），改用并行 task 派发成功——swarm 大 payload 不稳时降级 task 逐个派。
 - **拍板#12 否决（2026-09-20 用户裁决）**：Anthropic blockBinding 适配不移植——远端自带 system prompt 致前缀客户端不可控，无优雅适配落点。L4.5 子批取消；3f39a329c3/68abdce1a0/9a71624d2d 改判④；已入库 TRIAGE §13.5 + 计划书 L432/L379/L444/L446。Anthropic 若开放前缀可控面需重新拍板。
+- **drift-20260920 批收口已推送**（origin/main=d4a5034a2，7 commits：builder 4 件+docs 2 件+titlebar 修复 1 件）。全量套件 27 fail=基线 25+ModelsDev 负载池+lsp.request（lsp.request 经 b202b4e23 干净 worktree 复现实锤=预存环境失败，非本批引入；建议基线重述为 26 确定+负载池，待下轮安静树确认）。**pre-push 插曲**：happy-dom bump 使 turbo cache 失效暴露 titlebar.tsx 潜在 strict-null 错误（env.d.ts 可选声明，cache 掩盖已久），最小修复 ?? "" 后直推——已沉淀 pitfalls #40。builder 待决项裁决：happy-dom 20.14.5 接受（^20.12.0 超集）；ghostty-web 钉 83c0a07 不随漂（刻意 bump 决策留待）。
