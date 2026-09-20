@@ -27,8 +27,8 @@ const id = "task"
 
 const BACKGROUND_DESCRIPTION = [
   "Background mode: background=true launches the subagent asynchronously and returns immediately while the task keeps working.",
-  "Foreground is the default; use it when you need the result before continuing.",
-  "Use background only for independent work that can run while you continue elsewhere.",
+  "Background mode is the default for delegation: pass background=true whenever the subagent's result is not needed inline immediately, then continue your own work.",
+  "Foreground (blocking) dispatch is the exception: omit background only when you must wait for this result inline, and pass block_reason stating the concrete dependency that forces you to wait.",
   "Resuming an already-finished task with background=true starts a new background run on the same subagent session and returns immediately with the same task_id — it never blocks the current turn, and you are notified as usual when the new run finishes.",
   "You will be notified automatically when it finishes — do not sleep, poll for progress, or duplicate its work while it runs.",
   "When a dispatched subagent itself launches background tasks, its dispatch call is held open until every background result is delivered and the subagent's final response is ready; the parent receives periodic parked progress metadata (parked, waitingBackgroundTasks, parkElapsedMs) while waiting.",
@@ -92,6 +92,10 @@ export const Parameters = Schema.Struct({
   background: Schema.optional(Schema.Boolean).annotate({
     description:
       "Run the agent in the background and return immediately. You will be notified automatically when it completes. DO NOT sleep, poll, or proactively check on its progress",
+  }),
+  block_reason: Schema.optional(Schema.String).annotate({
+    description:
+      "Required when dispatching without background=true (a blocking/foreground dispatch): state the concrete dependency that forces the parent to wait for this result inline. Omit for background dispatches.",
   }),
 })
 

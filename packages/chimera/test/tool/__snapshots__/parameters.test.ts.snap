@@ -1127,6 +1127,10 @@ exports[`tool parameters JSON Schema (wire shape) task 1`] = `
       "description": "Run the agent in the background and return immediately. You will be notified automatically when it completes. DO NOT sleep, poll, or proactively check on its progress",
       "type": "boolean",
     },
+    "block_reason": {
+      "description": "Required when dispatching without background=true (a blocking/foreground dispatch): state the concrete dependency that forces the parent to wait for this result inline. Omit for background dispatches.",
+      "type": "string",
+    },
     "command": {
       "description": "The command that triggered this task",
       "type": "string",

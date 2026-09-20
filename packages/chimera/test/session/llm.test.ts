@@ -605,6 +605,7 @@ describe("session.llm.stream", () => {
         expect(ultraPrompt).toContain("perform a delegation checkpoint")
         expect(ultraPrompt).toContain("state the concrete blocker")
         expect(ultraPrompt).toContain("Do not fan out by item count alone.")
+        expect(ultraPrompt).toContain("block_reason")
         expect((ultra.messages as Array<{ role?: string }>).some((message) => message.role === "developer")).toBe(false)
 
         const max = await capture("max", "max")
