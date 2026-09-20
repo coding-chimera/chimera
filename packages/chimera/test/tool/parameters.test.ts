@@ -346,6 +346,12 @@ describe("tool parameters", () => {
         "flash",
       )
     })
+    test("accepts block_reason for a blocking foreground dispatch", () => {
+      expect(parse(Task, { description: "d", prompt: "p", subagent_type: "general", block_reason: "needed inline" }).block_reason).toBe(
+        "needed inline",
+      )
+      expect(parse(Task, { description: "d", prompt: "p", subagent_type: "general" }).block_reason).toBeUndefined()
+    })
     test("rejects missing prompt", () => {
       expect(accepts(Task, { description: "d", subagent_type: "general" })).toBe(false)
     })

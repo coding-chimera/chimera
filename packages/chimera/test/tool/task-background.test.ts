@@ -689,6 +689,7 @@ describe("tool.task background", () => {
         expect(def.description).toBe(DESCRIPTION)
         const narrow = toJsonSchema(def.parameters as never)
         expect(narrow.properties).not.toHaveProperty("background")
+        expect(narrow.properties).not.toHaveProperty("block_reason")
 
         const dialog = yield* def
           .execute(
@@ -715,6 +716,32 @@ describe("tool.task background", () => {
         expect(def.description).toContain("Background mode")
         const wide = toJsonSchema(def.parameters as never)
         expect(wide.properties).toHaveProperty("background")
+        expect(wide.properties).toHaveProperty("block_reason")
+      }),
+    { config: { delegation: { background_subagents: true }, provider: { test: providerFixture } } },
+  )
+
+  it.instance(
+    "foreground dispatch accepts block_reason and it is advertised only with the background field",
+    () =>
+      Effect.gen(function* () {
+        const { chat, assistant } = yield* seed()
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+        const wide = toJsonSchema(def.parameters as never)
+        expect(wide.properties).toHaveProperty("background")
+        expect(wide.properties).toHaveProperty("block_reason")
+
+        const result = yield* def.execute(
+          {
+            description: "blocking probe",
+            prompt: "work",
+            subagent_type: "general",
+            block_reason: "parent must wait for this result before editing the shared module",
+          },
+          toolCtx({ chat, assistant, promptOps: makeStub({ text: "sync-done" }) }),
+        )
+        expect(result.output).toContain("sync-done")
       }),
     { config: { delegation: { background_subagents: true }, provider: { test: providerFixture } } },
   )
