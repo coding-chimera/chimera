@@ -335,3 +335,19 @@ loop 挂起修复前的对比基线（本机 macOS, bun 1.4.0, `bun test --timeo
 - **推送纪律事故（parent 自记，未造成实质后果）**：交接 push f86a0bc85 未重扫 origin/main..HEAD，把 R1 的 18 笔在途 builder commit 一并带上远端，违反既定纪律「多 builder 期推送前必扫全部待推范围」；幸而补跑审计零命中。**新 pitfall：parent 自己的 chore push 也必须每次先 `git log origin/main..HEAD` 重扫+全范围审计，交接/重启等「以为只有一笔」的时刻恰恰是盲点**；另：重启前「零 commit」判断错误源于只看了本会话旧时点盘点，未重查——交接盘点必须在交接时刻实时重跑。纠正：重启交接节「零 commit 零 WIP」条目作废，R1 实际零损失（commit 全在 main，后台全量套件进程也随 nohup 存活完赛）。
 - **flake 登记册新增**：json-parity find.file（负载池，隔离 3/3 绿；与 claims prompt-context（已修）/ModelsDev refresh 同族）——全量基线口径：25 确定+负载池{ModelsDev, json-parity find.file}×0-2。
 - **待办队列**：①24h soak 排期（harness=cbench/rust-plan/soak-harness/，README 含双臂命令，heap snapshot@2GB 内建）②webui-perf/burst 绝对基线安静窗重锚③R2 立项材料（soak 数据裁判；A3 durable 写路径入 R2 桥接候选清单）④B4/B6 伪报结论批注 RUST_MIGRATION_PLAN §1.4（随下个文档批）⑤R1 后全量重索引（本轮执行）。
+
+### 24h soak 在跑（2026-09-20 10:20 启动，跨会话条目）
+
+- **进程**：PID 95506（caffeinate -is 包装防休眠）`bun /Volumes/workspace/cbench/rust-plan/soak-harness/soak.ts --tag r1-after-24h --minutes 1440`；after-only 臂（对照=短 soak control +35.9 MB/h + 现网 3.29GB@20h）。预计结束 **2026-09-21 ~10:20**。运行目录 `/Volumes/workspace/cbench/rust-plan/soak-r1-after-24h/`（samples.jsonl 60s/行、server.out、result.json 完跑后出现、heap snapshot@2GB 自动落 xdg/share/）。端口 48177，隔离 XDG，不碰宿主 60091/60089。
+- **看护**：异步子代理 ses_f435fb553ffeSw6xlEErx2ejQ0（background，30min 巡检，monitor.log 落 run 目录，红线只上报不处置）。红线=进程死无 result.json/采样停滞>10min/footprint 连续3轮>3GB/磁盘<10Gi/assertions false。
+- **启动插曲（pitfall 自记）**：parent 四次忘传 workdir 导致 nohup `bun soak.ts` 相对路径连续失败（还把一个 nohup.log 落进仓根已删）——**长进程启动命令必须显式 workdir 或全绝对路径**，启动后必须 100s 级存活验证再放手。
+- **soak 期间纪律**：安静机（不跑重型 bench/冒烟/全量套件）；机器保持通电勿合盖休眠（caffeinate 只挡 idle/system sleep，挡不了断电/合盖无电源场景）。
+- **完成后动作**：读 result.json 终判（assertions 四项+slopeMBPerHour+footprint 24h 曲线）→ 安静窗基线重锚（webui-perf 8 路+burst）→ R2 立项材料呈用户（含 A3 durable 写路径入 R2 桥接候选）。
+
+### opencode 新漂移批（2026-09-20，跨会话条目）
+
+- **量化+分诊+入库完成**：窗口 9f69463f1d..ebb7b76e（155 commits）；28 条 fork 相关面五分类 ①2/②11/③3/④7/⑤5；§13 增刊已入 UPSTREAM_FEATURE_TRIAGE.md；产物 opencode-snapshot/drift-20260920/。安全/行为双筛 0 命中。
+- **在途**：移植 builder ses_f425fe820ffe5Ko5D2gjM3uPud（4 件：time.start/service tiers/happy-dom/logo，commit 标 drift-20260920）+看护 ses_f425f6affffeT6VEsJuoD7O6Kh（log=cbench/watch-drift-20260920.log）。builder 回报后：亲验→全量对账→push（必重扫 origin/main..HEAD+五类审计）→沉淀四连。
+- **L4 草案已入计划书**（L377 起，待审定+用户批复开工；http-recorder 连带 vendor 与拍板#7 前置是决策点）。拍板#16 新增=f12e14cf16 desktop client_id（缓）。
+- **pitfall 自记**：chimera_swarm 连续五次参数空发（序列化丢失），改用并行 task 派发成功——swarm 大 payload 不稳时降级 task 逐个派。
+- **拍板#12 否决（2026-09-20 用户裁决）**：Anthropic blockBinding 适配不移植——远端自带 system prompt 致前缀客户端不可控，无优雅适配落点。L4.5 子批取消；3f39a329c3/68abdce1a0/9a71624d2d 改判④；已入库 TRIAGE §13.5 + 计划书 L432/L379/L444/L446。Anthropic 若开放前缀可控面需重新拍板。
