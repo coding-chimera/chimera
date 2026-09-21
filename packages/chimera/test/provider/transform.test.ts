@@ -120,6 +120,81 @@ describe("ProviderTransform.options - setCacheKey", () => {
   })
 })
 
+describe("ProviderTransform.options - store passthrough (responses-wire)", () => {
+  const sessionID = "test-session-store"
+
+  // Neutral relay fixture: @ai-sdk/openai package on the responses wire behind a
+  // non-openai provider id (internal transit relays are generalized as test/*).
+  const relayModel = {
+    id: "test/relay-model",
+    providerID: "test-relay",
+    wire_api: "responses",
+    api: {
+      id: "relay-model",
+      url: "https://relay.test",
+      npm: "@ai-sdk/openai",
+    },
+    name: "Relay model",
+    capabilities: {
+      temperature: true,
+      reasoning: true,
+      attachment: false,
+      toolcall: true,
+      input: { text: true, audio: false, image: false, video: false, pdf: false },
+      output: { text: true, audio: false, image: false, video: false, pdf: false },
+      interleaved: false,
+    },
+    cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+    limit: { context: 128000, output: 4096 },
+    status: "active",
+    options: {},
+    headers: {},
+  } as any
+
+  test("provider-level options.store=true overrides the store=false default", () => {
+    const result = ProviderTransform.options({
+      model: relayModel,
+      sessionID,
+      providerOptions: { store: true },
+    })
+    expect(result.store).toBe(true)
+  })
+
+  test("provider-level options.store=false keeps the default false", () => {
+    const result = ProviderTransform.options({
+      model: relayModel,
+      sessionID,
+      providerOptions: { store: false },
+    })
+    expect(result.store).toBe(false)
+  })
+
+  test("without provider-level store the default stays false for @ai-sdk/openai", () => {
+    const result = ProviderTransform.options({
+      model: relayModel,
+      sessionID,
+      providerOptions: {},
+    })
+    expect(result.store).toBe(false)
+  })
+
+  test("non-boolean provider-level store values are ignored", () => {
+    const result = ProviderTransform.options({
+      model: relayModel,
+      sessionID,
+      providerOptions: { store: "true" },
+    })
+    expect(result.store).toBe(false)
+  })
+
+  test("store reaches providerOptions.openai.store for @ai-sdk/openai models", () => {
+    // SDK evidence (@ai-sdk/openai 3.0.88 dist/index.js:5311): the responses
+    // model reads store from providerOptions.openai via `openaiOptions.store ?? true`.
+    const wire = ProviderTransform.providerOptions(relayModel, { store: true })
+    expect(wire.openai.store).toBe(true)
+  })
+})
+
 describe("ProviderTransform.options - zai/zhipuai thinking", () => {
   const sessionID = "test-session-123"
 
