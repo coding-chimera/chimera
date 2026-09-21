@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { APICallError, tool, type ModelMessage } from "ai"
+import { APICallError, tool, type ModelMessage, type Tool } from "ai"
 import { openai } from "@ai-sdk/openai"
 import z from "zod"
 import { CodexResponses, type CodexResponsesInput, type RequestBody, type ResponsesInputItem } from "../../src/session/codex-responses"
@@ -238,7 +238,12 @@ describe("session.codex-responses", () => {
     const body = CodexResponses.buildRequestBody(
       baseInput({
         tools: {
-          web_search: openai.tools.webSearch({ externalWebAccess: true, searchContextSize: "medium" }),
+          // Provider 3.0.14 (bundled with @ai-sdk/openai 3.0.88) vs top-level
+          // 3.0.16 unique-symbol brand mismatch; runtime-identical Symbol.for keys.
+          web_search: openai.tools.webSearch({
+            externalWebAccess: true,
+            searchContextSize: "medium",
+          }) as unknown as Tool,
         },
       }),
     ) as any
