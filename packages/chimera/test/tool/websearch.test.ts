@@ -4,7 +4,7 @@ import { Effect, Layer } from "effect"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import { Agent } from "../../src/agent/agent"
 import { SessionID, MessageID } from "../../src/session/schema"
-import { WebSearchTool } from "../../src/tool/websearch"
+import { WebSearchTool, usesProviderHostedWebSearch } from "../../src/tool/websearch"
 import { Truncate } from "../../src/tool/truncate"
 import type { Tool } from "../../src/tool/tool"
 import { WithInstance } from "../../src/project/with-instance"
@@ -318,6 +318,17 @@ describe("tool.websearch", () => {
 
     expect(result.output).toContain("hosted web_search")
     expect(result.metadata.provider).toBeUndefined()
+  })
+
+  // W2 (responses-wire): the unified websearch tool coexists with the hosted
+  // web_search injection — the yield gate stays limited to openai/codex, so
+  // alibailian relays that now receive a hosted web_search tool still keep the
+  // unified single-round backend available.
+  test("yield gate stays openai/codex-only so unified search coexists with hosted injection", () => {
+    expect(usesProviderHostedWebSearch("openai")).toBe(true)
+    expect(usesProviderHostedWebSearch("codex")).toBe(true)
+    expect(usesProviderHostedWebSearch("test-bailian-relay")).toBe(false)
+    expect(usesProviderHostedWebSearch("my-relay")).toBe(false)
   })
 
   test("prefers Ali Bailian web search when a provider declares the alibailian backend shape", async () => {

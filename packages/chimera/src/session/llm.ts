@@ -39,8 +39,23 @@ const OPENAI_HOSTED_WEB_SEARCH_TOOL = "web_search"
 const mergeOptions = (target: Record<string, any>, source: Record<string, any> | undefined): Record<string, any> =>
   mergeDeep(target, source ?? {}) as Record<string, any>
 
-function supportsOpenAIHostedWebSearch(input: StreamRequest) {
-  return !input.small && input.toolChoice !== "required" && input.model.providerID === "openai" && input.model.capabilities.toolcall
+// W2 (responses-wire): hosted web_search injection as capability resolution.
+// The openai provider keeps its tuned args; alibailian-semantics providers on
+// the responses wire get the bare tool — a bare openai.tools.webSearch()
+// serializes to exactly {"type":"web_search"} (@ai-sdk/openai 3.0.88
+// dist/index.js:4980-4992). hosted_web_search switches per provider or per
+// model (model wins): false disables injection, true forces the bare tool on
+// any non-openai responses-wire model.
+function hostedWebSearchArgs(input: StreamRequest, provider: Provider.Info) {
+  if (input.small || input.toolChoice === "required" || !input.model.capabilities.toolcall) return
+  const flag = input.model.hosted_web_search ?? provider.hosted_web_search
+  if (flag === false) return
+  if (input.model.providerID === "openai") {
+    return { externalWebAccess: true, searchContextSize: "medium" as const }
+  }
+  if ((input.model.wire_api ?? provider.wire_api) !== "responses") return
+  if (input.model.backend_semantics === "alibailian" || flag === true) return {}
+  return
 }
 
 type VariantProfile = {
@@ -309,15 +324,15 @@ const live: Layer.Layer<
         },
       )
 
-      if (supportsOpenAIHostedWebSearch(input) && tools[OPENAI_HOSTED_WEB_SEARCH_TOOL] === undefined) {
+      const hostedWebSearch = hostedWebSearchArgs(input, item)
+      if (hostedWebSearch && tools[OPENAI_HOSTED_WEB_SEARCH_TOOL] === undefined) {
         // @ai-sdk/openai 3.0.88 bundles @ai-sdk/provider 3.0.14 whose `unique
         // symbol` schema brand is type-incompatible with the top-level provider
         // 3.0.16 backing ai's Tool type. Runtime is safe: both copies register
         // the same global symbols (Symbol.for("vercel.ai.*")) (L4.1 SDK bump).
-        tools[OPENAI_HOSTED_WEB_SEARCH_TOOL] = openai.tools.webSearch({
-          externalWebAccess: true,
-          searchContextSize: "medium",
-        }) as unknown as Tool
+        tools[OPENAI_HOSTED_WEB_SEARCH_TOOL] = (
+          Object.keys(hostedWebSearch).length > 0 ? openai.tools.webSearch(hostedWebSearch) : openai.tools.webSearch()
+        ) as unknown as Tool
       }
 
       if (isOpenaiOauth) {

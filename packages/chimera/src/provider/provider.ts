@@ -1118,6 +1118,7 @@ export const Model = Schema.Struct({
   wire_api: optionalOmitUndefined(WireAPI),
   remote_compaction: optionalOmitUndefined(Schema.Boolean),
   backend_semantics: optionalOmitUndefined(BackendSemantics),
+  hosted_web_search: optionalOmitUndefined(Schema.Boolean),
   capability_model_id: optionalOmitUndefined(Schema.String),
   reasoning_efforts: optionalOmitUndefined(Schema.Array(Schema.Literals(CodexModel.REASONING_EFFORTS))),
   sampling: optionalOmitUndefined(
@@ -1150,6 +1151,7 @@ export const Info = Schema.Struct({
   remote_compaction: optionalOmitUndefined(RemoteCompactionCapability),
   backend_semantics: optionalOmitUndefined(BackendSemantics),
   search_model: optionalOmitUndefined(Schema.String),
+  hosted_web_search: optionalOmitUndefined(Schema.Boolean),
   env: Schema.Array(Schema.String),
   key: optionalOmitUndefined(Schema.String),
   options: Schema.Record(Schema.String, Schema.Any),
@@ -1619,6 +1621,7 @@ const layer: Layer.Layer<
             remote_compaction: provider.remote_compaction ?? existing?.remote_compaction,
             backend_semantics: provider.backend_semantics ?? existing?.backend_semantics,
             search_model: provider.search_model ?? existing?.search_model,
+            hosted_web_search: provider.hosted_web_search ?? existing?.hosted_web_search,
             models: existing?.models ?? {},
           }
           const configuredModels = { ...(provider.models ?? {}) }
@@ -1684,6 +1687,7 @@ const layer: Layer.Layer<
                 provider.backend_semantics ??
                 metadataModel?.backend_semantics ??
                 knownMetadata?.backend_semantics,
+              hosted_web_search: model.hosted_web_search ?? provider.hosted_web_search,
               capability_model_id:
                 capabilityModelID ?? metadataModel?.capability_model_id ?? knownMetadata?.capability_model_id,
               reasoning_efforts:
@@ -1939,6 +1943,7 @@ const layer: Layer.Layer<
           if (provider.wire_api) partial.wire_api = provider.wire_api
           if (provider.backend_semantics) partial.backend_semantics = provider.backend_semantics
           if (provider.search_model) partial.search_model = provider.search_model
+          if (provider.hosted_web_search !== undefined) partial.hosted_web_search = provider.hosted_web_search
           if (provider.options || discoveredBaseURLs[id])
             partial.options = mergeDeep(provider.options ?? {}, discoveredBaseURLs[id] ? { baseURL: discoveredBaseURLs[id] } : {})
           mergeProvider(providerID, partial)
@@ -1987,6 +1992,9 @@ const layer: Layer.Layer<
             const configModel = configProvider?.models?.[modelID]
             const configuredBackendSemantics = configModel?.backend_semantics ?? configProvider?.backend_semantics
             if (configuredBackendSemantics) model.backend_semantics = configuredBackendSemantics
+
+            const configuredHostedWebSearch = configModel?.hosted_web_search ?? configProvider?.hosted_web_search
+            if (configuredHostedWebSearch !== undefined) model.hosted_web_search = configuredHostedWebSearch
 
             // Global model_capabilities — highest layer of the three-layer merge
             // (models.dev < provider config < model_capabilities). Matched entries

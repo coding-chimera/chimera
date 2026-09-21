@@ -2257,6 +2257,271 @@ describe("session.llm.stream", () => {
     expect(items.some((item) => item.type === "web_search_call" || item.type === "function_call")).toBe(false)
   })
 
+  // W2 (responses-wire): hosted web_search injection as capability resolution.
+  // A bare openai.tools.webSearch() serializes to exactly {"type":"web_search"}
+  // (@ai-sdk/openai 3.0.88 dist/index.js:4980-4992); the openai provider keeps
+  // its tuned args (pinned by the OpenAI responses payload tests above).
+  async function captureRelayWireTools(config: {
+    wireApi?: "chat" | "responses"
+    backendSemantics?: string
+    providerFlag?: boolean
+    modelFlag?: boolean
+  }) {
+    const server = state.server
+    if (!server) throw new Error("Server not initialized")
+    const providerID = "test-hosted-relay"
+    const modelID = "relay-model"
+    const wireApi = config.wireApi ?? "responses"
+    const request =
+      wireApi === "responses"
+        ? waitRequest(
+            "/responses",
+            createEventResponse(
+              [
+                {
+                  type: "response.created",
+                  response: {
+                    id: "resp-hosted",
+                    created_at: Math.floor(Date.now() / 1000),
+                    model: modelID,
+                    service_tier: null,
+                  },
+                },
+                {
+                  type: "response.output_text.delta",
+                  item_id: "item-hosted",
+                  delta: "Hello hosted",
+                  logprobs: null,
+                },
+                {
+                  type: "response.completed",
+                  response: {
+                    incomplete_details: null,
+                    usage: {
+                      input_tokens: 1,
+                      input_tokens_details: null,
+                      output_tokens: 2,
+                      output_tokens_details: null,
+                    },
+                    service_tier: null,
+                  },
+                },
+              ],
+              true,
+            ),
+          )
+        : waitRequest(
+            "/chat/completions",
+            new Response(createChatStream("Hello"), {
+              status: 200,
+              headers: { "Content-Type": "text/event-stream" },
+            }),
+          )
+
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(
+          path.join(dir, "chimera.json"),
+          JSON.stringify({
+            $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+            enabled_providers: [providerID],
+            provider: {
+              [providerID]: {
+                name: "Test Hosted Relay",
+                wire_api: wireApi,
+                ...(config.backendSemantics ? { backend_semantics: config.backendSemantics } : {}),
+                ...(config.providerFlag !== undefined ? { hosted_web_search: config.providerFlag } : {}),
+                env: [],
+                models: {
+                  [modelID]: {
+                    ...(config.modelFlag !== undefined ? { hosted_web_search: config.modelFlag } : {}),
+                  },
+                },
+                options: {
+                  apiKey: "test-hosted-key",
+                  baseURL: `${server.url.origin}/v1`,
+                },
+              },
+            },
+          }),
+        )
+      },
+    })
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const resolved = await getModel(ProviderID.make(providerID), ModelID.make(modelID))
+        const sessionID = SessionID.make("session-test-hosted")
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        } satisfies Agent.Info
+        const user = {
+          id: MessageID.make("user-hosted"),
+          sessionID,
+          role: "user",
+          time: { created: Date.now() },
+          agent: agent.name,
+          model: { providerID: ProviderID.make(providerID), modelID: resolved.id },
+        } satisfies MessageV2.User
+
+        await drain({
+          user,
+          sessionID,
+          model: resolved,
+          agent,
+          system: ["You are a helpful assistant."],
+          messages: [{ role: "user", content: "Hello" }],
+          tools: {},
+        })
+      },
+    })
+
+    const capture = await request
+    return (capture.body.tools ?? []) as Array<Record<string, unknown>>
+  }
+
+  test("injects the bare hosted web_search tool for alibailian responses relays", async () => {
+    const tools = await captureRelayWireTools({ backendSemantics: "alibailian" })
+    // Bare call: every optional arg is dropped by JSON serialization, so the
+    // wire shape is exactly {"type":"web_search"} (3.0.88 dist 4980-4992).
+    expect(tools).toContainEqual({ type: "web_search" })
+  })
+
+  test("does not inject hosted web_search on the chat wire", async () => {
+    const tools = await captureRelayWireTools({ wireApi: "chat", backendSemantics: "alibailian" })
+    expect(tools.some((item) => item.type === "web_search")).toBe(false)
+  })
+
+  test("hosted_web_search=false disables injection on alibailian relays", async () => {
+    const tools = await captureRelayWireTools({ backendSemantics: "alibailian", providerFlag: false })
+    expect(tools.some((item) => item.type === "web_search")).toBe(false)
+  })
+
+  test("model-level hosted_web_search overrides the provider switch", async () => {
+    const tools = await captureRelayWireTools({
+      backendSemantics: "alibailian",
+      providerFlag: false,
+      modelFlag: true,
+    })
+    expect(tools).toContainEqual({ type: "web_search" })
+  })
+
+  test("hosted_web_search=true forces injection on non-alibailian responses relays", async () => {
+    const tools = await captureRelayWireTools({ providerFlag: true })
+    expect(tools).toContainEqual({ type: "web_search" })
+  })
+
+  test("hosted_web_search=false disables the openai hosted web_search injection", async () => {
+    const server = state.server
+    if (!server) throw new Error("Server not initialized")
+    const source = await loadFixture("openai", "gpt-5.2")
+    const model = source.model
+    const request = waitRequest(
+      "/responses",
+      createEventResponse(
+        [
+          {
+            type: "response.created",
+            response: {
+              id: "resp-hosted-off",
+              created_at: Math.floor(Date.now() / 1000),
+              model: model.id,
+              service_tier: null,
+            },
+          },
+          {
+            type: "response.output_text.delta",
+            item_id: "item-hosted-off",
+            delta: "Hello",
+            logprobs: null,
+          },
+          {
+            type: "response.completed",
+            response: {
+              incomplete_details: null,
+              usage: {
+                input_tokens: 1,
+                input_tokens_details: null,
+                output_tokens: 1,
+                output_tokens_details: null,
+              },
+              service_tier: null,
+            },
+          },
+        ],
+        true,
+      ),
+    )
+
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(
+          path.join(dir, "chimera.json"),
+          JSON.stringify({
+            $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+            enabled_providers: ["openai"],
+            provider: {
+              openai: {
+                name: "OpenAI",
+                env: ["OPENAI_API_KEY"],
+                npm: "@ai-sdk/openai",
+                api: "https://api.openai.com/v1",
+                hosted_web_search: false,
+                models: {
+                  [model.id]: model,
+                },
+                options: {
+                  apiKey: "test-openai-key",
+                  baseURL: `${server.url.origin}/v1`,
+                },
+              },
+            },
+          }),
+        )
+      },
+    })
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const resolved = await getModel(ProviderID.openai, ModelID.make(model.id))
+        const sessionID = SessionID.make("session-test-hosted-off")
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        } satisfies Agent.Info
+        const user = {
+          id: MessageID.make("user-hosted-off"),
+          sessionID,
+          role: "user",
+          time: { created: Date.now() },
+          agent: agent.name,
+          model: { providerID: ProviderID.make("openai"), modelID: resolved.id },
+        } satisfies MessageV2.User
+
+        await drain({
+          user,
+          sessionID,
+          model: resolved,
+          agent,
+          system: ["You are a helpful assistant."],
+          messages: [{ role: "user", content: "Hello" }],
+          tools: {},
+        })
+      },
+    })
+
+    const capture = await request
+    const tools = (capture.body.tools ?? []) as Array<Record<string, unknown>>
+    expect(tools.some((item) => item.type === "web_search")).toBe(false)
+  })
+
 
 
   test("accepts user image attachments as data URLs for OpenAI models", async () => {

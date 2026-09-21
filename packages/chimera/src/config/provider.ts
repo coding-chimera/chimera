@@ -80,6 +80,10 @@ export const Model = Schema.Struct({
   backend_semantics: Schema.optional(BackendSemantics).annotate({
     description: "Capability semantics to apply independently of the configured transport",
   }),
+  hosted_web_search: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Inject the provider-hosted web_search tool for this model; overrides the provider-level switch. Only applies to OpenAI responses-wire capable backends",
+  }),
   capability_model_id: Schema.optional(Schema.String).annotate({
     description: "Canonical model ID used for capability lookup without changing the request model ID",
   }),
@@ -186,6 +190,10 @@ export const Info = Schema.Struct({
   search_model: Schema.optional(Schema.String).annotate({
     description:
       'Model ID used for unified websearch aggregation when backend_semantics is "alibailian"; defaults to qwen3.8-flash',
+  }),
+  hosted_web_search: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Inject the provider-hosted web_search tool for models of this provider (default: enabled for openai and for alibailian-semantics models on the responses wire; models can override)",
   }),
   userAgent: Schema.optional(Schema.String),
   whitelist: Schema.optional(Schema.mutable(Schema.Array(Schema.String))),
