@@ -445,3 +445,11 @@ exactly-once 论证：waiter 行按 host_boot_id 分区，每行只可能被宿�
 
 L4 风险 top5（含 F1/F2/K-v2 新交互面）：①**gateway/provider-utils 公共底座 bump × fork copilot/codex-responses vendor**（F1 计费改造后 fork 自有面加深，§11.6 待深查，L4.1 最大回归面）；②**配置化提取 × K-v2 后的 transform 热路径**（R1 hotspot 批已动指令装配缓存，L4.3 数据表化不得破坏 memo/缓存假设）；③**llm 包迁移 × F4 后台子代理/F2 MCP 引擎新表面**（注入续跑轮与 remote-compaction 走 llm 新 transport 时上游零验证，L4.4 flag 矩阵必须覆盖）；④~~blockBinding patch 体系 × bun.lock 脱敏~~（已随拍板#12 否决消解）；⑤**integration/connector auth 品牌拍板悬置**（拍板#7 不决则 L4.4 范围不定，建议开工前先决）。
 
+
+## L4.0/L4.1 完成记录（2026-09-21，builder 执行+parent 联合验收裁决）
+
+- **L4.0** `a7f28e473`：v2-compat 移植（68 文件 +1843/−15）。品牌双读=chimera.json[c] 优先+opencode.json[c] 回退（全局目录与项目 walk-up 同规）。裁决两个 follow-up：`subagent_depth` 接受-only 暂不映射（L4.3 再议）；`experimental.policies` 静默丢弃=安全相关，排小修=存在却被丢弃时 diagnostics warn（勿静默，随 L4.3 批）。
+- **L4.1** `e17343242`+`45e114039`+`81175a2ff`：SDK bump 六条（openai 3.0.88/azure 3.0.93/bedrock 4.0.166+patch/gitlab 6.15.0/gateway 3.0.191+provider 3.0.16+provider-utils 4.0.51）+bedrock none-effort patch（**仅取 none 枚举，blockBinding hunks 已按拍板#12 剥离**）+gitlab reasoning variants（fork 适配超上游：发现层 family 派生使动态 workflow 模型也拿 variants）。commit 原子性=三笔各自可 frozen-install。
+- **§11.6 风险实锤并已处置**：openai 3.0.88 嵌套 provider 3.0.14 的 `unique symbol` 品牌与顶层 3.0.16 名义分裂→fork 自有 hosted-web-search 两处带注释 scoped cast（`Symbol.for` 全局注册实证 runtime 安全）。
+- **联合验收**：typecheck 绿；config+provider 族 713/0；session 族 542/0；全量套件 5452 tests/**26 fail=重述基线精确命中**（环境16+httpapi-config8+SDK2，零负载池零新增）；bun.lock anpm=0；推前五类审计零命中；同波推送（K-v2 原子先例）=origin `81175a2ff`。
+- pitfall 沉淀：#41 pgrep -f 模式自匹配（bench 守卫改可执行名/PID 文件）。
