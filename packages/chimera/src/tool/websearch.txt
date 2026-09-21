@@ -8,6 +8,7 @@
 - Use this tool for accessing information beyond knowledge cutoff.
 - If no supported search provider is configured or available, this tool will not automatically search with an unrelated fallback.
 - OpenAI/Codex hosted web_search is provider-native and is not used as a cross-provider aggregate search backend.
+- Division of labor with provider-hosted web_search: this tool is a controllable single-round search against the unified backends; a provider-hosted web_search tool (injected for OpenAI and for alibailian-semantics responses-wire relays unless disabled via hosted_web_search config) runs agent-style multi-round search inside the provider with observable sources. When both are available, prefer this tool for one-shot factual lookups and the hosted tool for iterative research.
 
 Usage notes:
   - Search types, live crawling modes, and context length are accepted for compatibility, but the selected provider may ignore them.
