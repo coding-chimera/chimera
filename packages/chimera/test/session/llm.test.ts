@@ -2119,6 +2119,144 @@ describe("session.llm.stream", () => {
     ).toBe(true)
   })
 
+  // W3 (responses-wire): relay providers serving the responses wire through
+  // @ai-sdk/openai have no server-side item store, so prior-turn hosted
+  // web_search items must be materialized as text for follow-up requests.
+  test("materializes prior-turn hosted web_search history for alibailian responses relays", async () => {
+    const server = state.server
+    if (!server) throw new Error("Server not initialized")
+    const providerID = "test-bailian-relay"
+    const modelID = "relay-model"
+    const request = waitRequest(
+      "/responses",
+      createEventResponse(
+        [
+          {
+            type: "response.created",
+            response: {
+              id: "resp-replay",
+              created_at: Math.floor(Date.now() / 1000),
+              model: modelID,
+              service_tier: null,
+            },
+          },
+          {
+            type: "response.output_text.delta",
+            item_id: "item-replay",
+            delta: "Tomorrow is rainy.",
+            logprobs: null,
+          },
+          {
+            type: "response.completed",
+            response: {
+              incomplete_details: null,
+              usage: {
+                input_tokens: 1,
+                input_tokens_details: null,
+                output_tokens: 2,
+                output_tokens_details: null,
+              },
+              service_tier: null,
+            },
+          },
+        ],
+        true,
+      ),
+    )
+
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(
+          path.join(dir, "chimera.json"),
+          JSON.stringify({
+            $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+            enabled_providers: [providerID],
+            provider: {
+              [providerID]: {
+                name: "Test Bailian Relay",
+                wire_api: "responses",
+                backend_semantics: "alibailian",
+                env: [],
+                models: {
+                  [modelID]: {},
+                },
+                options: {
+                  apiKey: "test-relay-key",
+                  baseURL: `${server.url.origin}/v1`,
+                },
+              },
+            },
+          }),
+        )
+      },
+    })
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const resolved = await getModel(ProviderID.make(providerID), ModelID.make(modelID))
+        const sessionID = SessionID.make("session-test-replay")
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        } satisfies Agent.Info
+        const user = {
+          id: MessageID.make("user-replay"),
+          sessionID,
+          role: "user",
+          time: { created: Date.now() },
+          agent: agent.name,
+          model: { providerID: ProviderID.make(providerID), modelID: resolved.id },
+        } satisfies MessageV2.User
+
+        await drain({
+          user,
+          sessionID,
+          model: resolved,
+          agent,
+          system: ["You are a helpful assistant."],
+          // Prior-turn hosted web_search history shaped the way @ai-sdk/openai
+          // 3.0.88 decodes web_search_call items (dist/index.js:5780-5798).
+          messages: [
+            { role: "user", content: [{ type: "text", text: "search the weather" }] },
+            {
+              role: "assistant",
+              content: [
+                { type: "tool-call", toolCallId: "ws_abc123", toolName: "web_search", input: "{}", providerExecuted: true },
+                {
+                  type: "tool-result",
+                  toolCallId: "ws_abc123",
+                  toolName: "web_search",
+                  output: {
+                    type: "json",
+                    value: {
+                      action: { type: "search", query: "weather today" },
+                      sources: [{ type: "url_citation", title: "Weather Example", url: "https://example.com/weather" }],
+                    },
+                  },
+                },
+                { type: "text", text: "It is sunny." },
+              ],
+            },
+            { role: "user", content: [{ type: "text", text: "and tomorrow?" }] },
+          ] as ModelMessage[],
+          tools: {},
+        })
+      },
+    })
+
+    const capture = await request
+    const input = JSON.stringify(capture.body.input)
+    expect(input).toContain("https://example.com/weather")
+    expect(input).toContain("Weather Example")
+    expect(input).toContain("status: completed")
+    expect(input).not.toContain("ws_abc123")
+    const items = capture.body.input as Array<{ type?: string }>
+    expect(items.some((item) => item.type === "web_search_call" || item.type === "function_call")).toBe(false)
+  })
+
 
 
   test("accepts user image attachments as data URLs for OpenAI models", async () => {

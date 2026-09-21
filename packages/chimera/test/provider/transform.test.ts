@@ -195,6 +195,126 @@ describe("ProviderTransform.options - store passthrough (responses-wire)", () =>
   })
 })
 
+describe("ProviderTransform.message - replayCompensation (responses-wire)", () => {
+  // Activation rule (auto): @ai-sdk/openai npm + wire_api responses + non-openai
+  // provider. store value is deliberately NOT consulted (F4): under the fork's
+  // store=false default the SDK's item_reference replay path never activates, and
+  // since @ai-sdk/openai 3.0.65 it is additionally gated by previousResponseId —
+  // with previousResponseId set, provider-executed/reasoning items are skipped
+  // entirely instead of replaying as item_reference (3.0.88 dist/index.js:3189-3191,
+  // 3339). Relays therefore need history materialization regardless of store.
+  const base = {
+    name: "Relay model",
+    capabilities: {
+      temperature: true,
+      reasoning: true,
+      attachment: false,
+      toolcall: true,
+      input: { text: true, audio: false, image: false, video: false, pdf: false },
+      output: { text: true, audio: false, image: false, video: false, pdf: false },
+      interleaved: false,
+    },
+    cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+    limit: { context: 128000, output: 4096 },
+    status: "active",
+    options: {},
+    headers: {},
+  }
+  const relayModel = {
+    ...base,
+    id: "test/relay-model",
+    providerID: "test-relay",
+    wire_api: "responses",
+    api: { id: "relay-model", url: "https://relay.test", npm: "@ai-sdk/openai" },
+  } as any
+  const relayChatModel = { ...relayModel, wire_api: "chat" } as any
+  const openaiModel = {
+    ...base,
+    id: "openai/gpt-5.2",
+    providerID: "openai",
+    wire_api: "responses",
+    api: { id: "gpt-5.2", url: "https://api.openai.com", npm: "@ai-sdk/openai" },
+  } as any
+
+  // Prior-turn hosted web_search history as the SDK decodes it (3.0.88
+  // dist/index.js:5780-5798): a providerExecuted tool-call plus a tool-result
+  // whose output carries the mapped action and (behind the include flag) sources.
+  const hostedHistory = () =>
+    [
+      { role: "user", content: [{ type: "text", text: "search the weather" }] },
+      {
+        role: "assistant",
+        content: [
+          { type: "tool-call", toolCallId: "ws_abc123", toolName: "web_search", input: "{}", providerExecuted: true },
+          {
+            type: "tool-result",
+            toolCallId: "ws_abc123",
+            toolName: "web_search",
+            output: {
+              type: "json",
+              value: {
+                action: { type: "search", query: "weather today" },
+                sources: [{ type: "url_citation", title: "Weather Example", url: "https://example.com/weather" }],
+              },
+            },
+          },
+          { type: "text", text: "It is sunny." },
+        ],
+      },
+    ] as any[]
+
+  test("auto: materializes hosted web_search history as text for relay responses wire", () => {
+    const result = ProviderTransform.message(hostedHistory(), relayModel, {}) as any[]
+    const assistant = result[1]
+    expect(assistant.content.some((part: any) => part.type === "tool-call")).toBe(false)
+    expect(assistant.content.some((part: any) => part.type === "tool-result")).toBe(false)
+    const materialized = assistant.content[0]
+    expect(materialized.type).toBe("text")
+    expect(materialized.text).toContain("status: completed")
+    expect(materialized.text).toContain("query: weather today")
+    expect(materialized.text).toContain("Weather Example")
+    expect(materialized.text).toContain("https://example.com/weather")
+    expect(assistant.content[assistant.content.length - 1].text).toBe("It is sunny.")
+  })
+
+  test("auto: leaves the openai provider path unchanged", () => {
+    const msgs = hostedHistory()
+    const result = ProviderTransform.message(msgs, openaiModel, {}) as any[]
+    expect(result[1].content.map((part: any) => part.type)).toEqual(["tool-call", "tool-result", "text"])
+  })
+
+  test("auto: leaves chat-wire relays unchanged", () => {
+    const result = ProviderTransform.message(hostedHistory(), relayChatModel, {}) as any[]
+    expect(result[1].content.map((part: any) => part.type)).toEqual(["tool-call", "tool-result", "text"])
+  })
+
+  test("always: forces materialization even on the openai provider", () => {
+    const result = ProviderTransform.message(hostedHistory(), openaiModel, { replay_compensation: "always" }) as any[]
+    expect(result[1].content.some((part: any) => part.type === "tool-result")).toBe(false)
+    expect(result[1].content[0].text).toContain("https://example.com/weather")
+  })
+
+  test("never: opts out on relay responses wire", () => {
+    const result = ProviderTransform.message(hostedHistory(), relayModel, { replay_compensation: "never" }) as any[]
+    expect(result[1].content.map((part: any) => part.type)).toEqual(["tool-call", "tool-result", "text"])
+  })
+
+  test("options() passes replay_compensation through from provider options", () => {
+    const result = ProviderTransform.options({
+      model: relayModel,
+      sessionID: "test-session-replay",
+      providerOptions: { replay_compensation: "never" },
+    })
+    expect(result.replay_compensation).toBe("never")
+  })
+
+  test("providerOptions() strips replay_compensation from the wire namespace", () => {
+    const wire = ProviderTransform.providerOptions(relayModel, { replay_compensation: "always", store: false })
+    expect(wire.openai.store).toBe(false)
+    expect("replay_compensation" in wire.openai).toBe(false)
+  })
+})
+
 describe("ProviderTransform.options - zai/zhipuai thinking", () => {
   const sessionID = "test-session-123"
 

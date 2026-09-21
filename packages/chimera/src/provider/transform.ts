@@ -418,9 +418,100 @@ function unsupportedParts(msgs: ModelMessage[], model: Provider.Model): ModelMes
   })
 }
 
+
+// W3 (responses-wire): relays serving the OpenAI responses wire through
+// @ai-sdk/openai typically implement no server-side item store, so hosted
+// tool items from earlier turns (web_search) cannot replay as item_reference.
+// Instead of dropping them (the codex-responses replay path filters), the
+// hosted results are materialized as text parts carrying sources and status
+// so follow-up requests still see what was searched and found. Reasoning
+// parts are deliberately not materialized: the SDK already skips reasoning
+// items without encrypted_content when store=false (@ai-sdk/openai 3.0.88
+// dist/index.js:3676-3685).
+const HOSTED_REPLAY_TOOLS = new Set(["web_search"])
+
+function replayCompensationActive(model: Provider.Model, options: Record<string, unknown>) {
+  // Policy: "auto" (identity rule), "always", or "never" (opt-out for relays
+  // that implement real item_reference replay).
+  const policy = options["replay_compensation"]
+  if (policy === "never") return false
+  if (policy === "always") return true
+  return model.api.npm === "@ai-sdk/openai" && model.wire_api === "responses" && model.providerID !== "openai"
+}
+
+function hostedPartItemID(part: { providerOptions?: Record<string, any> }) {
+  return Object.values(part.providerOptions ?? {})
+    .filter((ns): ns is Record<string, any> => typeof ns === "object" && ns !== null)
+    .map((ns) => ns["itemId"])
+    .find((id): id is string => typeof id === "string")
+}
+
+function isHostedReplayToolCall(part: any) {
+  if (part.type !== "tool-call" || !HOSTED_REPLAY_TOOLS.has(part.toolName)) return false
+  return (
+    part.providerExecuted === true ||
+    String(part.toolCallId ?? "").startsWith("ws_") ||
+    hostedPartItemID(part)?.startsWith("ws_") === true
+  )
+}
+
+function isHostedReplayToolResult(part: any, hostedCallIDs: Set<string>) {
+  if (part.type !== "tool-result" || !HOSTED_REPLAY_TOOLS.has(part.toolName)) return false
+  return (
+    hostedCallIDs.has(part.toolCallId) ||
+    String(part.toolCallId ?? "").startsWith("ws_") ||
+    hostedPartItemID(part)?.startsWith("ws_") === true
+  )
+}
+
+function hostedOutputValue(output: unknown) {
+  if (typeof output !== "object" || output === null) return undefined
+  const record = output as Record<string, any>
+  return "value" in record ? record.value : record
+}
+
+function materializeHostedToolResult(part: any) {
+  const output = part.output
+  const status = typeof output === "object" && output !== null && (output as any).type === "error" ? "error" : "completed"
+  const value = hostedOutputValue(output)
+  const query = typeof value?.action?.query === "string"
+    ? value.action.query
+    : Array.isArray(value?.action?.queries)
+      ? value.action.queries.filter((q: unknown) => typeof q === "string").join(", ")
+      : undefined
+  const rawSources = Array.isArray(value?.sources) ? value.sources : Array.isArray(value?.annotations) ? value.annotations : []
+  const lines = [`[hosted ${part.toolName}] status: ${status}`]
+  if (query) lines.push(`query: ${query}`)
+  for (const source of rawSources) {
+    if (typeof source?.url !== "string") continue
+    lines.push(`- ${typeof source.title === "string" && source.title ? source.title : source.url} (${source.url})`)
+  }
+  return { type: "text" as const, text: lines.join("\n") }
+}
+
+export function replayCompensation(msgs: ModelMessage[], model: Provider.Model, options: Record<string, unknown>) {
+  if (!replayCompensationActive(model, options)) return msgs
+  return msgs.flatMap((msg) => {
+    if (!Array.isArray(msg.content)) return [msg]
+    const content = msg.content as any[]
+    const hostedCallIDs = new Set(content.filter(isHostedReplayToolCall).map((part) => part.toolCallId))
+    if (!content.some((part) => isHostedReplayToolCall(part) || isHostedReplayToolResult(part, hostedCallIDs))) {
+      return [msg]
+    }
+    const rewritten = content.flatMap((part) => {
+      if (isHostedReplayToolCall(part)) return []
+      if (isHostedReplayToolResult(part, hostedCallIDs)) return [materializeHostedToolResult(part)]
+      return [part]
+    })
+    if (rewritten.length === 0) return []
+    return [{ ...msg, content: rewritten } as typeof msg]
+  })
+}
+
 export function message(msgs: ModelMessage[], model: Provider.Model, options: Record<string, unknown>) {
   msgs = unsupportedParts(msgs, model)
   msgs = normalizeMessages(msgs, model, options)
+  msgs = replayCompensation(msgs, model, options)
   if (
     (model.providerID === "anthropic" ||
       model.providerID === "google-vertex-anthropic" ||
@@ -1055,6 +1146,11 @@ export function options(input: {
   if (typeof input.providerOptions?.store === "boolean") {
     result["store"] = input.providerOptions.store
   }
+  // W3 (responses-wire): replay_compensation is an internal policy key routed
+  // through the same merge chain as store; it never reaches the wire.
+  if (typeof input.providerOptions?.replay_compensation === "string") {
+    result["replay_compensation"] = input.providerOptions.replay_compensation
+  }
 
   if (input.model.api.npm === "@openrouter/ai-sdk-provider" || input.model.api.npm === "@llmgateway/ai-sdk-provider") {
     result["usage"] = {
@@ -1228,7 +1324,9 @@ function lowerUltraEffort(model: Provider.Model, options: { [x: string]: any }) 
 }
 
 export function providerOptions(model: Provider.Model, options: { [x: string]: any }) {
-  const wireOptions = lowerUltraEffort(model, options)
+  // replay_compensation is the internal W3 policy key routed through the merge
+  // chain; strip it here so it never reaches any wire namespace.
+  const { replay_compensation: _replayCompensation, ...wireOptions } = lowerUltraEffort(model, options)
   if (model.api.npm === "@ai-sdk/gateway") {
     // Gateway providerOptions are split across two namespaces:
     // - `gateway`: gateway-native routing/caching controls (order, only, byok, etc.)
