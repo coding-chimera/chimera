@@ -105,6 +105,69 @@ function wrapSSE(res: Response, ms: number, ctl: AbortController) {
   })
 }
 
+// W6 (responses-wire): relays may emit the non-standard reasoning event names
+// "response.reasoning_text.delta"/".done". @ai-sdk/openai has no mapping for
+// them — they hit the unknown_chunk schema fallback and are silently dropped
+// (3.0.88 dist/index.js:4283-4287). The SDK does decode
+// "response.reasoning_summary_text.delta" (3.0.88 dist/index.js:4258-4263,
+// 6734-6744), so the delta rename surfaces relay reasoning text as reasoning
+// parts; the ".done" rename keeps the frame inside the known event family and
+// it is then safely ignored like any unknown chunk. Rewriting is strictly
+// string-level per complete SSE frame — frames are never JSON-parsed, so
+// malformed relay frames pass through untouched (F11).
+const RELAY_REASONING_EVENT_REWRITES: ReadonlyArray<readonly [string, string]> = [
+  ["response.reasoning_text.delta", "response.reasoning_summary_text.delta"],
+  ["response.reasoning_text.done", "response.reasoning_summary_text.done"],
+]
+
+function rewriteRelayReasoningFrame(frame: string) {
+  if (!frame.includes("response.reasoning_text.")) return frame
+  let rewritten = frame
+  for (const [from, to] of RELAY_REASONING_EVENT_REWRITES) {
+    rewritten = rewritten.replaceAll(from, to)
+  }
+  return rewritten
+}
+
+export function rewriteRelayReasoningEvents(res: Response): Response {
+  if (!res.body) return res
+  if (!res.headers.get("content-type")?.includes("text/event-stream")) return res
+
+  const decoder = new TextDecoder()
+  const encoder = new TextEncoder()
+  let buffer = ""
+  const body = res.body.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        buffer += decoder.decode(chunk, { stream: true })
+        // Only rewrite complete SSE frames so an event name split across
+        // chunk boundaries can never escape the rename.
+        let index = buffer.indexOf("\n\n")
+        while (index >= 0) {
+          const frame = buffer.slice(0, index + 2)
+          buffer = buffer.slice(index + 2)
+          controller.enqueue(encoder.encode(rewriteRelayReasoningFrame(frame)))
+          index = buffer.indexOf("\n\n")
+        }
+      },
+      flush(controller) {
+        buffer += decoder.decode()
+        if (buffer) controller.enqueue(encoder.encode(rewriteRelayReasoningFrame(buffer)))
+      },
+    }),
+  )
+
+  return new Response(body, {
+    headers: new Headers(res.headers),
+    status: res.status,
+    statusText: res.statusText,
+  })
+}
+
+function shouldRewriteRelayReasoningEvents(model: Model, wireAPI: string | undefined) {
+  return wireAPI === "responses" && model.providerID !== "openai"
+}
+
 function timeoutController(ms: number) {
   const ctl = new AbortController()
   const id = setTimeout(() => ctl.abort(new ProviderError.HeaderTimeoutError(ms)), ms)
@@ -2236,8 +2299,12 @@ const layer: Layer.Layer<
             timeout: false,
           }).finally(() => headerTimeoutCtl?.clear())
 
-          if (!chunkAbortCtl) return res
-          return wrapSSE(res, chunkTimeout, chunkAbortCtl)
+          const rewrittenRes = shouldRewriteRelayReasoningEvents(model, model.wire_api ?? provider.wire_api)
+            ? rewriteRelayReasoningEvents(res)
+            : res
+
+          if (!chunkAbortCtl) return rewrittenRes
+          return wrapSSE(rewrittenRes, chunkTimeout, chunkAbortCtl)
         }
 
         const bundledLoader = BUNDLED_PROVIDERS[model.api.npm]
