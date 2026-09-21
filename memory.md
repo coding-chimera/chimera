@@ -353,3 +353,11 @@ loop 挂起修复前的对比基线（本机 macOS, bun 1.4.0, `bun test --timeo
 - **拍板#12 否决（2026-09-20 用户裁决）**：Anthropic blockBinding 适配不移植——远端自带 system prompt 致前缀客户端不可控，无优雅适配落点。L4.5 子批取消；3f39a329c3/68abdce1a0/9a71624d2d 改判④；已入库 TRIAGE §13.5 + 计划书 L432/L379/L444/L446。Anthropic 若开放前缀可控面需重新拍板。
 - **drift-20260920 批收口已推送**（origin/main=d4a5034a2，7 commits：builder 4 件+docs 2 件+titlebar 修复 1 件）。全量套件 27 fail=基线 25+ModelsDev 负载池+lsp.request（lsp.request 经 b202b4e23 干净 worktree 复现实锤=预存环境失败，非本批引入；建议基线重述为 26 确定+负载池，待下轮安静树确认）。**pre-push 插曲**：happy-dom bump 使 turbo cache 失效暴露 titlebar.tsx 潜在 strict-null 错误（env.d.ts 可选声明，cache 掩盖已久），最小修复 ?? "" 后直推——已沉淀 pitfalls #40。builder 待决项裁决：happy-dom 20.14.5 接受（^20.12.0 超集）；ghostty-web 钉 83c0a07 不随漂（刻意 bump 决策留待）。
 - **block_reason 批已推送**（620132aff）：task 工具加 block_reason 可选字段（仅 background 广告面内，窄集无孤儿字段）+BACKGROUND_DESCRIPTION 叙事翻转（task.ts 内，task.txt 未动=builder 合理纠偏）+ultra.txt 规则 7+multiAgentPolicy ultra 段同步句+锚点测试。**v1 软强制无运行时闸**（字段入会话记录即留痕；硬闸=v2 可选）。builder 对 task.txt 的偏离判定正确（永广告面 vs kill-switch 门控面）。验证：224 聚焦+846 家族+typecheck 全绿。
+
+### 24h soak 完赛终判（2026-09-21 ~10:21，跨会话条目）
+
+- **result.json**：assertions 四项全 true；1441 样本 24.0h；21,008 llm 请求/152 会话/2.47M SSE 事件零 gap 零解析错；RSS slope +49.2 MB/h；footprint 三段斜率 +17.2/+5.9/+10.5（减速后温和）；fp 谷线 ~750-760MB、锯齿峰 max 1205MB（dispose churn 节拍，从未触 2GB snapshot）；RSS max 1495/end 1237。
+- **裁决**：对照现网修复前 3.29GB@20h=**2.7× 改善**，灾难性泄漏类已消除；残余温和增长大部分=harness 结构性（152 会话只增不减，非泄漏）；R1 出口判据"终值≤1.5×底座(615-690MB)"严格未达（谷线 750）——记录为部分达成。
+- **R2 立项含义**：内存论据减弱（但未归零），R2（storage Rust 桥）改由吞吐论据驱动（store 30% 墙钟/tx 膨胀 6×）；heap snapshot 未触发=无对象级归因（此水位不需要）。
+- **基线重锚在途**：builder ses_f3e2f1893ffeQMJB4u11ApFFI7（webui-perf 8 路+burst 新锚点→cbench/baseline-20260921.md）。
+- 产物：cbench/rust-plan/soak-r1-after-24h/（result.json/samples.jsonl/monitor.log 49 巡检行）。看护 ses_f435fb553ffeSw6xlEErx2ejQ0 已正常关闭。
