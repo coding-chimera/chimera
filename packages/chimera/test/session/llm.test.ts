@@ -2522,6 +2522,149 @@ describe("session.llm.stream", () => {
     expect(tools.some((item) => item.type === "web_search")).toBe(false)
   })
 
+  // W6 (responses-wire): relays emit the non-standard reasoning event names
+  // "response.reasoning_text.delta"/".done"; the fetch wrapper renames them to
+  // the SDK-known "response.reasoning_summary_text.*" family (3.0.88
+  // dist/index.js:4258-4263/6734-6744) so reasoning parts carry text.
+  test("surfaces relay reasoning_text events as reasoning deltas on responses wire", async () => {
+    const server = state.server
+    if (!server) throw new Error("Server not initialized")
+    const providerID = "test-bailian-relay"
+    const modelID = "relay-model"
+    const request = waitRequest(
+      "/responses",
+      createEventResponse(
+        [
+          {
+            type: "response.created",
+            response: {
+              id: "resp-reasoning",
+              created_at: Math.floor(Date.now() / 1000),
+              model: modelID,
+              service_tier: null,
+            },
+          },
+          {
+            type: "response.output_item.added",
+            output_index: 0,
+            item: { id: "rs_relay", type: "reasoning", summary: [] },
+          },
+          { type: "response.reasoning_text.delta", item_id: "rs_relay", summary_index: 0, delta: "Because " },
+          { type: "response.reasoning_text.delta", item_id: "rs_relay", summary_index: 0, delta: "42" },
+          { type: "response.reasoning_text.done", item_id: "rs_relay", summary_index: 0 },
+          {
+            type: "response.output_item.done",
+            output_index: 0,
+            item: { id: "rs_relay", type: "reasoning", summary: [{ type: "summary_text", text: "Because 42" }] },
+          },
+          {
+            type: "response.output_item.added",
+            output_index: 1,
+            item: { id: "msg_relay", type: "message" },
+          },
+          {
+            type: "response.output_text.delta",
+            item_id: "msg_relay",
+            delta: "The answer is 42",
+            logprobs: null,
+          },
+          {
+            type: "response.output_item.done",
+            output_index: 1,
+            item: { id: "msg_relay", type: "message" },
+          },
+          {
+            type: "response.completed",
+            response: {
+              incomplete_details: null,
+              usage: {
+                input_tokens: 1,
+                input_tokens_details: null,
+                output_tokens: 2,
+                output_tokens_details: null,
+              },
+              service_tier: null,
+            },
+          },
+        ],
+        true,
+      ),
+    )
+
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(
+          path.join(dir, "chimera.json"),
+          JSON.stringify({
+            $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+            enabled_providers: [providerID],
+            provider: {
+              [providerID]: {
+                name: "Test Bailian Relay",
+                wire_api: "responses",
+                backend_semantics: "alibailian",
+                env: [],
+                models: {
+                  [modelID]: { reasoning: true },
+                },
+                options: {
+                  apiKey: "test-relay-key",
+                  baseURL: `${server.url.origin}/v1`,
+                },
+              },
+            },
+          }),
+        )
+      },
+    })
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const resolved = await getModel(ProviderID.make(providerID), ModelID.make(modelID))
+        const sessionID = SessionID.make("session-test-reasoning")
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        } satisfies Agent.Info
+        const user = {
+          id: MessageID.make("user-reasoning"),
+          sessionID,
+          role: "user",
+          time: { created: Date.now() },
+          agent: agent.name,
+          model: { providerID: ProviderID.make(providerID), modelID: resolved.id },
+        } satisfies MessageV2.User
+
+        const events = await llm.runPromise((svc) =>
+          svc
+            .stream({
+              user,
+              sessionID,
+              model: resolved,
+              agent,
+              system: ["You are a helpful assistant."],
+              messages: [{ role: "user", content: "Why?" }],
+              tools: {},
+            })
+            .pipe(
+              Stream.runCollect,
+              Effect.map((items) => [...items]),
+            ),
+        )
+
+        await request
+        const reasoningDeltas = events.filter((event) => event.type === "reasoning-delta")
+        expect(reasoningDeltas.length).toBeGreaterThan(0)
+        // streamText fullStream reasoning-delta parts carry `text`.
+        expect(reasoningDeltas.map((event) => (event as { text?: string }).text).join("")).toBe("Because 42")
+        expect(events.some((event) => event.type === "text-delta" && event.text === "The answer is 42")).toBe(true)
+      },
+    })
+  })
+
 
 
   test("accepts user image attachments as data URLs for OpenAI models", async () => {
