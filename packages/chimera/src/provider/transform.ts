@@ -1057,6 +1057,22 @@ function baseVariants(model: Provider.Model): Record<string, Record<string, any>
         return Object.fromEntries(WIDELY_SUPPORTED_EFFORTS.map((effort) => [effort, { reasoningEffort: effort }]))
       }
       return {}
+
+    case "gitlab-ai-provider": {
+      // GitLab Duo routes GPT models through reasoningEffort and Claude models
+      // through adaptive thinking (upstream 7c2199d84a). family comes from
+      // models.dev for static entries and is derived from the workflow ref at
+      // discovery for dynamic entries; efforts come from models.dev
+      // reasoning_options (normalized to reasoning_efforts) when present.
+      const gitlabEfforts = model.reasoning_efforts?.length ? model.reasoning_efforts : WIDELY_SUPPORTED_EFFORTS
+      if (model.family?.startsWith("gpt"))
+        return Object.fromEntries(gitlabEfforts.map((effort) => [effort, { reasoningEffort: effort }]))
+      if (model.family?.startsWith("claude"))
+        return Object.fromEntries(
+          gitlabEfforts.map((effort) => [effort, { thinking: { type: "adaptive", effort } }]),
+        )
+      return {}
+    }
   }
   return {}
 }
