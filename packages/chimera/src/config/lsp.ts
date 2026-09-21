@@ -21,6 +21,12 @@ export const Entry = Schema.Union([
 ]).pipe(withStatics((s) => ({ zod: zod(s) })))
 
 /**
+ * Keep this list aligned with the builtin servers in the LSP runtime.
+ * Custom servers must declare extensions because the runtime cannot infer them.
+ */
+export const builtinServerIds = Object.values(LSPServer).map((server) => server.id)
+
+/**
  * For custom (non-builtin) LSP server entries, `extensions` is required so the
  * client knows which files the server should attach to. Builtin server IDs and
  * explicitly disabled entries are exempt.
@@ -29,7 +35,7 @@ export const requiresExtensionsForCustomServers = Schema.makeFilter<
   boolean | Record<string, Schema.Schema.Type<typeof Entry>>
 >((data) => {
   if (typeof data === "boolean") return undefined
-  const serverIds = new Set(Object.values(LSPServer).map((server) => server.id))
+  const serverIds = new Set(builtinServerIds)
   const ok = Object.entries(data).every(([id, config]) => {
     if ("disabled" in config && config.disabled) return true
     if (serverIds.has(id)) return true

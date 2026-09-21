@@ -42,6 +42,7 @@ import { ConfigPlugin } from "./plugin"
 import { ConfigProvider } from "./provider"
 import { ConfigServer } from "./server"
 import { ConfigSkills } from "./skills"
+import { ConfigV2Compat } from "./v2-compat"
 import { ConfigVariable } from "./variable"
 import { Npm } from "@opencode-ai/core/npm"
 
@@ -75,6 +76,25 @@ function normalizeLoadedConfig(data: unknown, source: string) {
   log.warn("tui keys in opencode config are deprecated; move them to tui.json", { path: source })
   return copy
 }
+
+const lowerConfig = (input: unknown, source: string) =>
+  ConfigV2Compat.lower(normalizeLoadedConfig(input, source), source)
+
+const parseConfig = (input: unknown, source: string) =>
+  ConfigParse.effectSchema(Info, lowerConfig(input, source).value, source)
+
+const decodeConfig = Effect.fnUntraced(function* (input: unknown, source: string) {
+  const result = lowerConfig(input, source)
+  yield* Effect.forEach(result.diagnostics, (diagnostic) =>
+    Effect.logWarning("configuration compatibility diagnostic", {
+      source,
+      path: diagnostic.path,
+      kind: diagnostic.kind,
+      action: diagnostic.message,
+    }),
+  )
+  return ConfigParse.effectSchema(Info, result.value, source)
+})
 
 async function substituteWellKnownRemoteConfig(input: { value: unknown; dir: string; source: string }) {
   if (!isRecord(input.value) || typeof input.value.url !== "string") return
@@ -197,6 +217,10 @@ export const Info = Schema.Struct({
   default_agent: Schema.optional(Schema.String).annotate({
     description:
       "Default agent to use when none is specified. Must be a primary agent. Falls back to 'build' if not set or if the specified agent is invalid.",
+  }),
+  subagent_depth: Schema.optional(NonNegativeInt).annotate({
+    description:
+      "Accepted for compatibility with OpenCode V2 configuration. Chimera controls delegation depth through `delegation.max_depth`; this field is parsed but has no runtime effect.",
   }),
   username: Schema.optional(Schema.String).annotate({
     description: "Custom username to display in conversations instead of system username",
@@ -397,9 +421,13 @@ export interface Interface {
 export class Service extends Context.Service<Service, Interface>()("@opencode/Config") {}
 
 function globalConfigFile() {
-  const candidates = [`${ConfigPaths.APP_CONFIG_NAME}.jsonc`, `${ConfigPaths.APP_CONFIG_NAME}.json`, "config.json"].map((file) =>
-    path.join(Global.Path.config, file),
-  )
+  const candidates = [
+    `${ConfigPaths.APP_CONFIG_NAME}.jsonc`,
+    `${ConfigPaths.APP_CONFIG_NAME}.json`,
+    "opencode.jsonc",
+    "opencode.json",
+    "config.json",
+  ].map((file) => path.join(Global.Path.config, file))
   for (const file of candidates) {
     if (existsSync(file)) return file
   }
@@ -504,7 +532,7 @@ export const layer = Layer.effect(
         ),
       )
       const parsed = ConfigParse.jsonc(expanded, source)
-      const data = ConfigParse.effectSchema(Info, normalizeLoadedConfig(parsed, source), source)
+      const data = yield* decodeConfig(parsed, source)
       if (!("path" in options)) return data
 
       yield* Effect.promise(() => resolveLoadedPlugins(data, options.path))
@@ -536,6 +564,8 @@ export const layer = Layer.effect(
         }
       }
       result = mergeConfig(result, yield* loadFile(path.join(Global.Path.config, "config.json")))
+      result = mergeConfig(result, yield* loadFile(path.join(Global.Path.config, "opencode.json")))
+      result = mergeConfig(result, yield* loadFile(path.join(Global.Path.config, "opencode.jsonc")))
       result = mergeConfig(result, yield* loadFile(path.join(Global.Path.config, `${ConfigPaths.APP_CONFIG_NAME}.json`)))
       result = mergeConfig(result, yield* loadFile(path.join(Global.Path.config, `${ConfigPaths.APP_CONFIG_NAME}.jsonc`)))
 
@@ -689,8 +719,10 @@ export const layer = Layer.effect(
         }
 
         if (!Flag.OPENCODE_DISABLE_PROJECT_CONFIG) {
-          for (const file of yield* ConfigPaths.files(ConfigPaths.APP_CONFIG_NAME, ctx.directory, ctx.worktree).pipe(Effect.orDie)) {
-            yield* merge(file, yield* loadFile(file), "project", "local")
+          for (const name of ["opencode", ConfigPaths.APP_CONFIG_NAME]) {
+            for (const file of yield* ConfigPaths.files(name, ctx.directory, ctx.worktree).pipe(Effect.orDie)) {
+              yield* merge(file, yield* loadFile(file), "project", "local")
+            }
           }
         }
 
@@ -929,15 +961,15 @@ export const layer = Layer.effect(
       const before = (yield* readConfigFile(file)) || "{}"
       const patch = writable(config)
       if (!file.endsWith(".jsonc")) {
-        const existing = ConfigParse.effectSchema(Info, ConfigParse.jsonc(before, file), file)
+        const original = ConfigParse.jsonc(before, file)
         yield* fs
-          .writeFileString(file, JSON.stringify(mergeDeep(writable(existing), patch), null, 2))
+          .writeFileString(file, JSON.stringify(mergeDeep(isRecord(original) ? original : {}, patch), null, 2))
           .pipe(Effect.orDie)
         yield* InstanceState.invalidate(state)
         return
       }
       const updated = patchJsonc(before, patch)
-      ConfigParse.effectSchema(Info, ConfigParse.jsonc(updated, file), file)
+      parseConfig(ConfigParse.jsonc(updated, file), file)
       yield* fs.writeFileString(file, updated).pipe(Effect.orDie)
       yield* InstanceState.invalidate(state)
     })
@@ -948,7 +980,7 @@ export const layer = Layer.effect(
       const before = (yield* readConfigFile(file)) || "{}"
       const updated = removeJsonc(before, paths, file)
       if (updated === before) return
-      ConfigParse.effectSchema(Info, ConfigParse.jsonc(updated, file), file)
+      parseConfig(ConfigParse.jsonc(updated, file), file)
       yield* fs.writeFileString(file, updated).pipe(Effect.orDie)
       yield* InstanceState.invalidate(state)
     })
@@ -965,15 +997,16 @@ export const layer = Layer.effect(
       let next: Info
       let changed: boolean
       if (!file.endsWith(".jsonc")) {
-        const existing = ConfigParse.effectSchema(Info, ConfigParse.jsonc(before, file), file)
-        const merged = mergeDeep(writable(existing), patch)
+        const existing = ConfigParse.jsonc(before, file)
+        parseConfig(existing, file)
+        const merged = mergeDeep(isRecord(existing) ? existing : {}, patch)
         const serialized = JSON.stringify(merged, null, 2)
         changed = serialized !== before
         if (changed) yield* fs.writeFileString(file, serialized).pipe(Effect.orDie)
-        next = merged
+        next = yield* decodeConfig(merged, file)
       } else {
         const updated = patchJsonc(before, patch)
-        next = ConfigParse.effectSchema(Info, ConfigParse.jsonc(updated, file), file)
+        next = yield* decodeConfig(ConfigParse.jsonc(updated, file), file)
         changed = updated !== before
         if (changed) yield* fs.writeFileString(file, updated).pipe(Effect.orDie)
       }

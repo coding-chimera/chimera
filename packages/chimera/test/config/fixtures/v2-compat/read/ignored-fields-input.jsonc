@@ -1,0 +1,8 @@
+{
+  "plugins": [{ "package": "@example/native-plugin" }],
+  "providers": { "native": { "models": { "example": { "name": "Native model" } } } },
+  "websearch": "native-only",
+  "websearch": "native-only",
+  "warming": true,
+  "experimental": { "portable_shell_scanner": true },
+}

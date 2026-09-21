@@ -5,6 +5,8 @@ import { Config } from "@/config/config"
 import { ConfigMemory } from "@/config/memory"
 import { ConfigManaged } from "@/config/managed"
 import { ConfigParse } from "../../src/config/parse"
+import { ConfigV2Compat } from "../../src/config/v2-compat"
+import { snapshot } from "./snapshot"
 import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
 
 import { Instance } from "../../src/project/instance"
@@ -3164,3 +3166,71 @@ describe("OPENCODE_PERMISSION env var", () => {
     }
   })
 })
+
+// V2 configuration compatibility update fixtures (ported from upstream 03afae5b95).
+const updateFixtures = path.join(import.meta.dir, "fixtures/v2-compat")
+const globalUpdateInputs = [...new Bun.Glob("update-global/*-input.{json,jsonc}").scanSync({ cwd: updateFixtures })].sort()
+const projectUpdateInputs = [...new Bun.Glob("update-project/*-input.json").scanSync({ cwd: updateFixtures })].sort()
+if (!globalUpdateInputs.length || !projectUpdateInputs.length) throw new Error("Missing config update fixtures")
+
+async function withTempGlobalDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
+  await using tmp = await tmpdir()
+  const prev = Global.Path.config
+  ;(Global.Path as { config: string }).config = tmp.path
+  await clear(true)
+  try {
+    return await fn(tmp.path)
+  } finally {
+    ;(Global.Path as { config: string }).config = prev
+    await clear(true)
+  }
+}
+
+for (const input of globalUpdateInputs) {
+  const extension = path.extname(input)
+  const name = input.slice(0, -`-input${extension}`.length)
+  const prefix = path.join(updateFixtures, name)
+  test(`v2 compatibility update-global fixture ${name}`, async () => {
+    await withTempGlobalDir(async (dir) => {
+      const file = path.join(dir, `opencode${extension}`)
+      await fs.writeFile(file, await fs.readFile(path.join(updateFixtures, input), "utf8"))
+      const patch = ConfigParse.effectSchema(
+        Config.Info,
+        JSON.parse(await fs.readFile(`${prefix}-patch.json`, "utf8")),
+        input,
+      )
+      const info = await saveGlobal(patch)
+      const written = await fs.readFile(file, "utf8")
+      await snapshot(`${prefix}-output${extension}`, written)
+      await snapshot(`${prefix}-normalized.json`, JSON.stringify(info, null, 2) + "\n")
+    })
+  })
+}
+
+for (const input of projectUpdateInputs) {
+  const name = input.slice(0, -"-input.json".length)
+  const prefix = path.join(updateFixtures, name)
+  test(`v2 compatibility update-project fixture ${name}`, async () => {
+    await using tmp = await tmpdir()
+    const file = path.join(tmp.path, "chimera.json")
+    await fs.writeFile(file, await fs.readFile(path.join(updateFixtures, input), "utf8"))
+    const patch = ConfigParse.effectSchema(
+      Config.Info,
+      JSON.parse(await fs.readFile(`${prefix}-patch.json`, "utf8")),
+      input,
+    )
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: () =>
+        Effect.runPromise(Config.Service.use((svc) => svc.update(patch)).pipe(Effect.scoped, Effect.provide(layer))),
+    })
+    const written = await fs.readFile(file, "utf8")
+    const normalized = ConfigParse.effectSchema(
+      Config.Info,
+      ConfigV2Compat.lower(ConfigParse.jsonc(written, file)).value,
+      file,
+    )
+    await snapshot(`${prefix}-output.json`, written)
+    await snapshot(`${prefix}-normalized.json`, JSON.stringify(normalized, null, 2) + "\n")
+  })
+}
