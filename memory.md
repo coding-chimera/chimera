@@ -367,3 +367,4 @@ loop 挂起修复前的对比基线（本机 macOS, bun 1.4.0, `bun test --timeo
 - **在途**：L4.0 builder ses_f3e23ad47ffeN2BKfxP4HUUpY0（v2-compat 移植，config 车道，dsv41f low）∥ L4.1 builder ses_f3e237357ffe7MOecqBxdlAqA1（SDK bump 六条+bedrock patch+gitlab variants，锁文件车道，qwen3.8-max low）∥ 双对象看护 ses_f3e221b7affe2vatIgkvBgwE5M（cbench/watch-l4-20260921.log）∥ 基线重锚 builder ses_f3e2f1893ffeQMJB4u11ApFFI7（bench 在跑，L4 双 builder 被令验证前 pgrep 等清空）
 - 车道：L4.0=config/ 独占；L4.1=package.json/bun.lock/patches/transform.ts/provider.ts 独占；交集零。收口=parent 亲验+重扫+五类审计+push。
 - 待呈用户：http-recorder 连带 vendor（L4.2 前）+拍板#7（L4.4 前）；拍板#16/CI 批/code-mode #6 挂起维持。
+- **基线重锚完成（2026-09-21 安静窗，已亲验）**：新锚点 webui-perf 8 路峰值 RSS=**994.0MB**（旧 1002.4，−0.84%）；burst glob p50=**223ms**（环境地板值，负载 4.8-6.9；R1 安静窗曾测 114ms——同日 A/B 口径判据，禁跨日直比）；burst write=155.3/s（−3.5% 噪声内）；**新增 footprint 锚点=679MB/620MB JSC dirty**（采纳为常设追踪指标）。产物 cbench/baseline-20260921.md+.runs/anchor-20260921-*。全量测试基线口径重述为 **26 确定（lsp.request 入列）+负载池×0-2**。
