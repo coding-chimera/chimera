@@ -5,6 +5,58 @@ import { CodexModel } from "@/provider/codex-model"
 
 const BackendSemantics = Schema.Literals(["openai", "codex", "alibailian"])
 const WireAPI = Schema.Literals(["chat", "responses"])
+const ReasoningProtocol = Schema.Literals([
+  "zhipuai_thinking",
+  "dashscope_enable_thinking",
+  "vllm_chat_template",
+  "anthropic_thinking",
+  "google_thinking_config",
+])
+// Effort vocabulary for default_effort: the codex effort tiers plus the
+// Chimera product-level "ultra" tier advertised on every model.
+const DefaultEffort = Schema.Literals([...CodexModel.REASONING_EFFORTS, "ultra"] as const)
+export const ModelSampling = Schema.Struct({
+  temperature: Schema.optional(Schema.Finite),
+  top_p: Schema.optional(Schema.Finite),
+  top_k: Schema.optional(Schema.Finite),
+})
+export const ModelCapabilityOverrides = Schema.Struct({
+  sampling: Schema.optional(ModelSampling).annotate({
+    description: "Default sampling parameters; overrides the built-in model defaults table",
+  }),
+  reasoning_protocol: Schema.optional(ReasoningProtocol).annotate({
+    description: "Explicit reasoning protocol; overrides protocol inference from the built-in defaults table",
+  }),
+  default_variant: Schema.optional(Schema.String).annotate({
+    description:
+      "Advertised variant key to use when no variant is explicitly selected; overrides the lowest-effort fallback",
+  }),
+  default_effort: Schema.optional(DefaultEffort).annotate({
+    description:
+      "Default reasoning effort variant key applied when no variant is explicitly selected and default_variant is unset",
+  }),
+  reasoning_efforts: Schema.optional(
+    Schema.mutable(Schema.Array(Schema.Literals(CodexModel.REASONING_EFFORTS))),
+  ).annotate({
+    description: "Reasoning effort values supported by this model; overrides inferred and models.dev efforts",
+  }),
+  backend_semantics: Schema.optional(BackendSemantics).annotate({
+    description: "Capability semantics override for this model",
+  }),
+  variants: Schema.optional(
+    Schema.Record(
+      Schema.String,
+      Schema.StructWithRest(
+        Schema.Struct({
+          disabled: Schema.optional(Schema.Boolean).annotate({ description: "Disable this variant for the model" }),
+        }),
+        [Schema.Record(Schema.String, Schema.Any)],
+      ),
+    ).annotate({ description: "Variant-specific configuration overrides" }),
+  ),
+})
+export type ModelCapabilityOverrides = Schema.Schema.Type<typeof ModelCapabilityOverrides>
+
 const RemoteCompaction = Schema.Struct({
   profile: Schema.Literal("codex-responses"),
   protocols: Schema.Union([
@@ -38,6 +90,20 @@ export const Model = Schema.Struct({
     Schema.mutable(Schema.Array(Schema.Literals(CodexModel.REASONING_EFFORTS))),
   ).annotate({
     description: "Reasoning effort values supported by this provider model",
+  }),
+  sampling: Schema.optional(ModelSampling).annotate({
+    description: "Default sampling parameters; overrides the built-in model defaults table",
+  }),
+  reasoning_protocol: Schema.optional(ReasoningProtocol).annotate({
+    description: "Explicit reasoning protocol; overrides protocol inference from the built-in defaults table",
+  }),
+  default_variant: Schema.optional(Schema.String).annotate({
+    description:
+      "Advertised variant key to use when no variant is explicitly selected; overrides the lowest-effort fallback",
+  }),
+  default_effort: Schema.optional(DefaultEffort).annotate({
+    description:
+      "Default reasoning effort variant key applied when no variant is explicitly selected and default_variant is unset",
   }),
   release_date: Schema.optional(Schema.String),
   attachment: Schema.optional(Schema.Boolean),

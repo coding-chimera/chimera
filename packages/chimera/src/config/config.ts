@@ -208,6 +208,10 @@ export const Info = Schema.Struct({
     description:
       "Model names eligible for remote compaction (OpenAI Responses API compaction). Matched against the model api id exactly or as a versioned prefix (\"<entry>-...\"), case-insensitively; extends the built-in trusted defaults.",
   }),
+  model_capabilities: Schema.optional(Schema.Record(Schema.String, ConfigProvider.ModelCapabilityOverrides)).annotate({
+    description:
+      "Global model capability overrides — the highest priority layer of the three-layer merge (models.dev < provider config < model_capabilities). Keys match case-insensitively as substrings against `<providerID>/<modelID>`, `<modelID>`, and the model api id; the longest matching key wins. Overrides sampling, reasoning_protocol, reasoning_efforts, backend_semantics, variants, default_variant, and default_effort.",
+  }),
   model: Schema.optional(ConfigModelID).annotate({
     description: "Model to use in the format of provider/model, eg anthropic/claude-2",
   }),

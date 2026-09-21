@@ -1066,6 +1066,105 @@ describe("session.llm.stream", () => {
     })
   })
 
+  test("default_variant/default_effort pick the advertised variant and sampling reaches the wire", async () => {
+    const server = state.server
+    if (!server) throw new Error("Server not initialized")
+
+    const providerID = "custom-effort-defaults"
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(
+          path.join(dir, "chimera.json"),
+          JSON.stringify({
+            $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+            enabled_providers: [providerID],
+            provider: {
+              [providerID]: {
+                name: "Custom Effort Defaults",
+                npm: "@ai-sdk/openai-compatible",
+                wire_api: "chat",
+                env: [],
+                models: {
+                  "effort-default-variant": {
+                    reasoning: true,
+                    temperature: true,
+                    sampling: { temperature: 0.42, top_p: 0.77 },
+                    default_variant: "high",
+                    variants: {
+                      low: { reasoningEffort: "low" },
+                      high: { reasoningEffort: "high" },
+                    },
+                  },
+                  "effort-default-effort": {
+                    reasoning: true,
+                    default_effort: "high",
+                    variants: {
+                      low: { reasoningEffort: "low" },
+                      high: { reasoningEffort: "high" },
+                    },
+                  },
+                },
+                options: {
+                  apiKey: "test-effort-key",
+                  baseURL: `${server.url.origin}/v1`,
+                },
+              },
+            },
+          }),
+        )
+      },
+    })
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        } satisfies Agent.Info
+        const capture = async (modelID: string, label: string) => {
+          const resolved = await getModel(ProviderID.make(providerID), ModelID.make(modelID))
+          const request = waitRequest(
+            "/chat/completions",
+            new Response(createChatStream(label), {
+              status: 200,
+              headers: { "Content-Type": "text/event-stream" },
+            }),
+          )
+          const sessionID = SessionID.make(`session-effort-defaults-${label}`)
+          const user = {
+            id: MessageID.make(`user-effort-defaults-${label}`),
+            sessionID,
+            role: "user",
+            time: { created: Date.now() },
+            agent: agent.name,
+            model: { providerID: ProviderID.make(providerID), modelID: resolved.id },
+          } satisfies MessageV2.User
+          await drain({
+            user,
+            sessionID,
+            model: resolved,
+            agent,
+            system: ["runtime-system"],
+            messages: [{ role: "user", content: "Hello" }],
+            tools: {},
+          })
+          return (await request).body
+        }
+
+        const withDefaultVariant = await capture("effort-default-variant", "default-variant")
+        expect(withDefaultVariant.reasoning_effort).toBe("high")
+        expect(withDefaultVariant.temperature).toBe(0.42)
+        expect(withDefaultVariant.top_p).toBe(0.77)
+
+        const withDefaultEffort = await capture("effort-default-effort", "default-effort")
+        expect(withDefaultEffort.reasoning_effort).toBe("high")
+      },
+    })
+  })
+
   test("lowers options-only Ultra for Kimi k3 and rejects unadvertised Ultra", async () => {
     const server = state.server
     if (!server) throw new Error("Server not initialized")

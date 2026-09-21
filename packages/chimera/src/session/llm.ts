@@ -52,10 +52,19 @@ type VariantProfile = {
 // Resolves the selected variant once so provider options and the multi-agent policy
 // consume the same canonical profile. Exact advertised keys win; otherwise the
 // selected name is matched case-insensitively against advertised variants.
+// With nothing explicitly selected, the model's configured default_variant /
+// default_effort (L4.3 capability layers) pick the advertised variant before
+// the lowest-non-ultra fallback.
 function resolveVariantProfile(model: Provider.Model, selected: string | undefined, hasConfiguredOptions: boolean): VariantProfile {
   const advertised = model.variants ?? {}
   if (!selected) {
     if (hasConfiguredOptions) return { options: {} }
+    const preferred = model.default_variant ?? model.default_effort
+    if (preferred) {
+      if (advertised[preferred]) return { key: preferred, options: advertised[preferred] }
+      const preferredCanonical = Object.keys(advertised).find((key) => key.toLowerCase() === preferred.toLowerCase())
+      if (preferredCanonical) return { key: preferredCanonical, options: advertised[preferredCanonical] }
+    }
     const fallback = lowestNonUltraVariant(Object.keys(advertised))
     if (fallback === undefined) return { options: {} }
     return { key: fallback, options: advertised[fallback] }

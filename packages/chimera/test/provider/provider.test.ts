@@ -11,6 +11,7 @@ import { ModelsDev } from "@/provider/models"
 import { Auth } from "@/auth"
 import { snapshot } from "../../src/provider/models-snapshot.js"
 import { Provider } from "@/provider/provider"
+import { ProviderTransform } from "@/provider/transform"
 import { ProviderID, ModelID } from "../../src/provider/schema"
 import { Filesystem } from "@/util/filesystem"
 import { Env } from "../../src/env"
@@ -4311,4 +4312,92 @@ test("Provider freshness keeps two directory states isolated", async () => {
     if (previous === undefined) delete process.env.OPENCODE_AUTH_CONTENT
     if (previous !== undefined) process.env.OPENCODE_AUTH_CONTENT = previous
   }
+})
+
+test("model capability layers merge: built-in table < provider config < global model_capabilities", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "chimera.json"),
+        JSON.stringify({
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+          provider: {
+            "l43-test": {
+              name: "L43 Test",
+              npm: "@ai-sdk/openai-compatible",
+              env: [],
+              models: {
+                "qwen3.8-max": {
+                  reasoning: true,
+                  sampling: { temperature: 0.7, top_p: 0.9, top_k: 10 },
+                  default_variant: "high",
+                  variants: {
+                    high: { reasoningEffort: "high" },
+                    low: { reasoningEffort: "low" },
+                  },
+                },
+                "glm-5.2": {
+                  reasoning: true,
+                  reasoning_protocol: "zhipuai_thinking",
+                  reasoning_efforts: ["high", "max"],
+                },
+                "deepseek-v4-flash": {
+                  reasoning: true,
+                  sampling: { temperature: 0.4 },
+                },
+              },
+              options: {
+                apiKey: "test-key",
+                baseURL: "https://api.l43.test/v1",
+              },
+            },
+          },
+          model_capabilities: {
+            "qwen3.8": { sampling: { temperature: 0.2 }, default_effort: "low" },
+            "l43-test/qwen3.8-max": { sampling: { top_k: 99 }, default_variant: "low" },
+            "glm-5.2": {
+              reasoning_efforts: ["low", "high", "max"],
+              variants: { ultra: { disabled: true } },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const providers = await list()
+      const provider = providers[ProviderID.make("l43-test")]
+      expect(provider).toBeDefined()
+
+      // qwen3.8-max: provider sampling overridden field-wise by the global layer
+      // (longest key last), built-in qwen3.8 table defaults fully displaced.
+      const qwen = provider.models["qwen3.8-max"]
+      expect(qwen.sampling).toEqual({ temperature: 0.2, top_p: 0.9, top_k: 99 })
+      expect(ProviderTransform.temperature(qwen)).toBe(0.2)
+      expect(ProviderTransform.topP(qwen)).toBe(0.9)
+      expect(ProviderTransform.topK(qwen)).toBe(99)
+      // global default_variant (long key) beats provider-level default_variant
+      expect(qwen.default_variant).toBe("low")
+      expect(qwen.default_effort).toBe("low")
+      // explicit provider variants survive the global pass
+      expect(qwen.variants?.high).toEqual({ reasoningEffort: "high" })
+      expect(qwen.variants?.low).toEqual({ reasoningEffort: "low" })
+
+      // glm-5.2: provider-level reasoning_protocol config wins over inference;
+      // global reasoning_efforts regenerate variants and global disabled drops ultra.
+      const glm = provider.models["glm-5.2"]
+      expect(glm.capabilities.reasoning_protocol).toBe("zhipuai_thinking")
+      expect(glm.reasoning_efforts).toEqual(["low", "high", "max"])
+      expect(Object.keys(glm.variants ?? {}).sort()).toEqual(["high", "low", "max"])
+      expect(glm.variants?.ultra).toBeUndefined()
+
+      // deepseek-v4-flash: provider-only layer over the built-in table
+      // (built-in temperature 1.0 displaced; built-in top_p 0.95 retained).
+      const deepseek = provider.models["deepseek-v4-flash"]
+      expect(ProviderTransform.temperature(deepseek)).toBe(0.4)
+      expect(ProviderTransform.topP(deepseek)).toBe(0.95)
+    },
+  })
 })

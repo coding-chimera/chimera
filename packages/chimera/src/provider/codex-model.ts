@@ -1,47 +1,14 @@
+import { CODEX_MODEL_PROFILES, type CodexProfile } from "./model-defaults"
+
 export const REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const
 
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number]
 
-type Profile = {
-  aliases?: readonly string[]
-  catalogSemantics?: boolean
-  codexEfforts?: readonly ReasoningEffort[]
-  requiresConfiguredEfforts?: boolean
-  codexInputLimit?: number
-}
-
-const profiles: Record<string, Profile> = {
-  "gpt-5.2": {},
-  "gpt-5.3-codex": {},
-  "gpt-5.3-codex-spark": {},
-  "gpt-5.4": {},
-  "gpt-5.4-mini": {},
-  "gpt-5.5": { codexEfforts: ["low", "medium", "high", "xhigh"], codexInputLimit: 272_000 },
-  "gpt-5.6": {
-    aliases: ["fast", "pro"],
-    catalogSemantics: true,
-    codexEfforts: ["low", "medium", "high", "xhigh", "max"],
-    requiresConfiguredEfforts: true,
-  },
-  "gpt-5.6-sol": {
-    aliases: ["fast", "pro"],
-    catalogSemantics: true,
-    codexEfforts: ["low", "medium", "high", "xhigh", "max"],
-    codexInputLimit: 372_000,
-  },
-  "gpt-5.6-terra": {
-    aliases: ["fast", "pro"],
-    catalogSemantics: true,
-    codexEfforts: ["low", "medium", "high", "xhigh", "max"],
-    codexInputLimit: 372_000,
-  },
-  "gpt-5.6-luna": {
-    aliases: ["fast", "pro"],
-    catalogSemantics: true,
-    codexEfforts: ["low", "medium", "high", "xhigh", "max"],
-    codexInputLimit: 372_000,
-  },
-}
+// The codex profile table lives in model-defaults.ts (L4.3 built-in default
+// data table); config layers override efforts through the `configured`
+// argument of reasoningEfforts() below.
+const profiles = CODEX_MODEL_PROFILES
+type Profile = CodexProfile
 
 function modelID(value: string) {
   return (value.toLowerCase().split("/").at(-1) ?? value.toLowerCase()).replace(/^openai[._:-]+/, "")
