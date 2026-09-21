@@ -136,6 +136,23 @@ describe("ConfigV2Compat.lower", () => {
     expect(JSON.stringify(result.diagnostics)).not.toContain(secret)
   })
 
+  test("warns when experimental.policies is present but dropped", () => {
+    const result = ConfigV2Compat.lower({
+      experimental: { policies: { edit: "ask" }, batch_tool: true },
+    })
+    expect(result.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "unsupported", path: ["experimental", "policies"] }),
+      ]),
+    )
+    // the lowered projection keeps the other experimental keys and drops only policies,
+    // so the V1 config decode succeeds without silently swallowing the V2 setting
+    expect((result.value as any).experimental).toEqual({ batch_tool: true })
+    expect(lower({ experimental: { policies: { edit: "ask" }, batch_tool: true } }).experimental).toEqual({
+      batch_tool: true,
+    })
+  })
+
   test("reports conflicting forms while retaining the V1 value", () => {
     const result = ConfigV2Compat.lower({
       snapshot: false,
