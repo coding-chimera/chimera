@@ -202,7 +202,18 @@ function normalizeExperimental(
   if (Option.isNone(experimental)) return
   if (Object.hasOwn(experimental.value, "portable_shell_scanner"))
     unsupported(["experimental", "portable_shell_scanner"], diagnostics)
+  if (Object.hasOwn(experimental.value, "policies")) {
+    // Security-relevant: V2 experimental.policies has no V1 representation and
+    // the V1 decoder would silently drop it. Surface the drop as a diagnostic
+    // instead (L4.0 follow-up ruling).
+    unsupported(["experimental", "policies"], diagnostics)
+    const rest = { ...experimental.value }
+    delete rest.policies
+    setOwn(result, "experimental", rest)
+  }
   if (!Object.hasOwn(experimental.value, "subagent_depth")) return
+  // TODO(L4.x): subagent_depth stays accept-only; map it to `delegation.max_depth`
+  // (src/config/delegation.ts) when V2 depth semantics land.
   const depth = decodeValue(
     NonNegativeInt,
     experimental.value.subagent_depth,
