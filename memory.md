@@ -361,3 +361,9 @@ loop 挂起修复前的对比基线（本机 macOS, bun 1.4.0, `bun test --timeo
 - **R2 立项含义**：内存论据减弱（但未归零），R2（storage Rust 桥）改由吞吐论据驱动（store 30% 墙钟/tx 膨胀 6×）；heap snapshot 未触发=无对象级归因（此水位不需要）。
 - **基线重锚在途**：builder ses_f3e2f1893ffeQMJB4u11ApFFI7（webui-perf 8 路+burst 新锚点→cbench/baseline-20260921.md）。
 - 产物：cbench/rust-plan/soak-r1-after-24h/（result.json/samples.jsonl/monitor.log 49 巡检行）。看护 ses_f435fb553ffeSw6xlEErx2ejQ0 已正常关闭。
+
+### L4 开工（2026-09-21 用户批复"那你开工啊 ci延到最后去"，跨会话条目）
+
+- **在途**：L4.0 builder ses_f3e23ad47ffeN2BKfxP4HUUpY0（v2-compat 移植，config 车道，dsv41f low）∥ L4.1 builder ses_f3e237357ffe7MOecqBxdlAqA1（SDK bump 六条+bedrock patch+gitlab variants，锁文件车道，qwen3.8-max low）∥ 双对象看护 ses_f3e221b7affe2vatIgkvBgwE5M（cbench/watch-l4-20260921.log）∥ 基线重锚 builder ses_f3e2f1893ffeQMJB4u11ApFFI7（bench 在跑，L4 双 builder 被令验证前 pgrep 等清空）
+- 车道：L4.0=config/ 独占；L4.1=package.json/bun.lock/patches/transform.ts/provider.ts 独占；交集零。收口=parent 亲验+重扫+五类审计+push。
+- 待呈用户：http-recorder 连带 vendor（L4.2 前）+拍板#7（L4.4 前）；拍板#16/CI 批/code-mode #6 挂起维持。
