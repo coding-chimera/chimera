@@ -370,3 +370,13 @@ loop 挂起修复前的对比基线（本机 macOS, bun 1.4.0, `bun test --timeo
 - **基线重锚完成（2026-09-21 安静窗，已亲验）**：新锚点 webui-perf 8 路峰值 RSS=**994.0MB**（旧 1002.4，−0.84%）；burst glob p50=**223ms**（环境地板值，负载 4.8-6.9；R1 安静窗曾测 114ms——同日 A/B 口径判据，禁跨日直比）；burst write=155.3/s（−3.5% 噪声内）；**新增 footprint 锚点=679MB/620MB JSC dirty**（采纳为常设追踪指标）。产物 cbench/baseline-20260921.md+.runs/anchor-20260921-*。全量测试基线口径重述为 **26 确定（lsp.request 入列）+负载池×0-2**。
 - **L4.0+L4.1 联合收口已推送**（origin=81175a2ff，4 commits）：v2-compat 双读+SDK bump 六条+bedrock none patch（拍板#12 剥离 blockBinding hunks）+gitlab variants（fork 适配超上游）。全量 26 fail=基线精确。§11.6 品牌分裂已 scoped cast 处置（Symbol.for 实证）。下一批=L4.2 llm 整包 vendor（先呈用户 http-recorder 决策）。看护 ses_f3e221b7affe2vatIgkvBgwE5M 随双 builder 完成自行关闭。
 - **L4.2 收口已推送**（cff1f3051）：llm 整包 152 文件+http-recorder 24 文件 vendor（@coding-chimera/llm、@coding-chimera/http-recorder 双 private 包），零接线零消费者，schema/llm 与上游字节一致。验收：llm 328 测试/http-recorder 33/双 typecheck/全量 27 fail=26 基线+compaction 已知 flake。审计命中=recorded fixture 假凭据（占位值豁免）。下一批=L4.3 配置化三层合并（含 policies warn+subagent_depth 再议小修）。
+
+### 宿主重启交接（2026-09-21，build-install 后用户重启宿主）
+
+- **重启动因**：宿主 60091 二进制 a1397cdf 装于 09-18 16:05，比 R1 首个修复 commit（16:16）早 11 分钟——**不含 R1 任何泄漏修复**，3 天跑到 JSC 3.3GB（修复前剖面继续）。重启换含 R1 全量+drift 批+block_reason+L4.0-L4.2 的新二进制（worktree 隔离构建，源码=3daaf141b）。
+- **新宿主启动命令（取证武装）**：`OPENCODE_AUTO_HEAP_SNAPSHOT=true OPENCODE_AUTO_HEAP_SNAPSHOT_MB=1500 chimera web`——过 1.5GB 自动落 heap snapshot 到 ~/.local/share/chimera/log/，供对象级归因（R2 立项最后一块实证）。
+- **重启杀死的在途对象（恢复后盘点）**：L4.3 builder ses_f3d57d8baffe3EBxzXuCOWHmwA（配置化三层合并，config/provider/session 面 WIP 在盘上）+其看护 ses_f3d5798d9ffewHluxX14Quj8yf。**恢复 playbook**：①`git status`/`git diff` 盘点 L4.3 实际落地②`sqlite3 chimera.db` 判死③同 task_id 续派（pitfall #8），带上 WIP 盘点结果④看护重派。
+- **排队批**：Responses Wire 保真层（W1→W3→W2→W6 串行+W4 并行+W5 收尾）——L4.3 收口后立即派；证据重钉件=cbench/responses-wire/evidence-recheck-3.0.88.md（3.0.88 全成立；红旗=3.0.65 previousResponseId 跳门，store:false 下不激活）；计划全文在用户 2026-09-21 消息/本文件上文。
+- **等用户拍板**：拍板#7（L4.4 前置）/拍板#16/CI 批（最后）/code-mode #6/存量拍板池。
+- **新锚点**：webui-perf 994.0MB / burst glob p50 223ms（环境地板）/ footprint 679MB 新追踪 / 全量基线 26 确定+负载池×0-2。
+- **杂项**：用户取样文件 “chimera”的取样.txt 在仓根未跟踪（建议删或归档 cbench，勿提交）；build-l4 worktree 与 cbench/build-l4.log 为本次构建产物，装完可清。
