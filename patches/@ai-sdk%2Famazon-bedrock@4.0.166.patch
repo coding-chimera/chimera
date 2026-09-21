@@ -1,0 +1,46 @@
+diff --git a/dist/index.d.mts b/dist/index.d.mts
+--- a/dist/index.d.mts
++++ b/dist/index.d.mts
+@@ -51,6 +51,7 @@ declare const amazonBedrockLanguageModelOptions: z.ZodObject<{
+         type: z.ZodOptional<z.ZodUnion<readonly [z.ZodLiteral<"enabled">, z.ZodLiteral<"disabled">, z.ZodLiteral<"adaptive">]>>;
+         budgetTokens: z.ZodOptional<z.ZodNumber>;
+         maxReasoningEffort: z.ZodOptional<z.ZodEnum<{
++            none: "none";
+             low: "low";
+             medium: "medium";
+             high: "high";
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -51,6 +51,7 @@ declare const amazonBedrockLanguageModelOptions: z.ZodObject<{
+         type: z.ZodOptional<z.ZodUnion<readonly [z.ZodLiteral<"enabled">, z.ZodLiteral<"disabled">, z.ZodLiteral<"adaptive">]>>;
+         budgetTokens: z.ZodOptional<z.ZodNumber>;
+         maxReasoningEffort: z.ZodOptional<z.ZodEnum<{
++            none: "none";
+             low: "low";
+             medium: "medium";
+             high: "high";
+diff --git a/dist/index.js b/dist/index.js
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -94,7 +94,7 @@ var amazonBedrockLanguageModelOptions = import_v4.z.object({
+       import_v4.z.literal("adaptive")
+     ]).optional(),
+     budgetTokens: import_v4.z.number().optional(),
+-    maxReasoningEffort: import_v4.z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
++    maxReasoningEffort: import_v4.z.enum(["none", "low", "medium", "high", "xhigh", "max"]).optional(),
+     display: import_v4.z.enum(["omitted", "summarized"]).optional()
+   }).optional(),
+   /**
+diff --git a/dist/index.mjs b/dist/index.mjs
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -83,7 +83,7 @@ var amazonBedrockLanguageModelOptions = z.object({
+       z.literal("adaptive")
+     ]).optional(),
+     budgetTokens: z.number().optional(),
+-    maxReasoningEffort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
++    maxReasoningEffort: z.enum(["none", "low", "medium", "high", "xhigh", "max"]).optional(),
+     display: z.enum(["omitted", "summarized"]).optional()
+   }).optional(),
+   /**
