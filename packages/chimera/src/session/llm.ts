@@ -301,10 +301,14 @@ const live: Layer.Layer<
       )
 
       if (supportsOpenAIHostedWebSearch(input) && tools[OPENAI_HOSTED_WEB_SEARCH_TOOL] === undefined) {
+        // @ai-sdk/openai 3.0.88 bundles @ai-sdk/provider 3.0.14 whose `unique
+        // symbol` schema brand is type-incompatible with the top-level provider
+        // 3.0.16 backing ai's Tool type. Runtime is safe: both copies register
+        // the same global symbols (Symbol.for("vercel.ai.*")) (L4.1 SDK bump).
         tools[OPENAI_HOSTED_WEB_SEARCH_TOOL] = openai.tools.webSearch({
           externalWebAccess: true,
           searchContextSize: "medium",
-        })
+        }) as unknown as Tool
       }
 
       if (isOpenaiOauth) {
