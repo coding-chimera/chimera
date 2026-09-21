@@ -29,6 +29,7 @@ import { optionalOmitUndefined, withStatics } from "@/util/schema"
 import * as ProviderTransform from "./transform"
 import { ModelID, ProviderID } from "./schema"
 import { CodexModel } from "./codex-model"
+import { ModelDefaults } from "./model-defaults"
 import { ResponsesTransport } from "./responses-transport"
 import {
   bindingFromTransportIdentity,
@@ -1119,6 +1120,15 @@ export const Model = Schema.Struct({
   backend_semantics: optionalOmitUndefined(BackendSemantics),
   capability_model_id: optionalOmitUndefined(Schema.String),
   reasoning_efforts: optionalOmitUndefined(Schema.Array(Schema.Literals(CodexModel.REASONING_EFFORTS))),
+  sampling: optionalOmitUndefined(
+    Schema.Struct({
+      temperature: optionalOmitUndefined(Schema.Finite),
+      top_p: optionalOmitUndefined(Schema.Finite),
+      top_k: optionalOmitUndefined(Schema.Finite),
+    }),
+  ),
+  default_variant: optionalOmitUndefined(Schema.String),
+  default_effort: optionalOmitUndefined(Schema.String),
   capabilities: ProviderCapabilities,
   cost: ProviderCost,
   limit: ProviderLimit,
@@ -1678,6 +1688,9 @@ const layer: Layer.Layer<
                 capabilityModelID ?? metadataModel?.capability_model_id ?? knownMetadata?.capability_model_id,
               reasoning_efforts:
                 model.reasoning_efforts ?? metadataModel?.reasoning_efforts ?? knownMetadata?.reasoning_efforts,
+              sampling: model.sampling,
+              default_variant: model.default_variant,
+              default_effort: model.default_effort,
               capabilities: {
                 temperature: model.temperature ?? metadataModel?.capabilities.temperature ?? false,
                 reasoning: model.reasoning ?? metadataModel?.capabilities.reasoning ?? false,
@@ -1707,6 +1720,7 @@ const layer: Layer.Layer<
                     ? { field: "reasoning_content" }
                     : metadataModel?.capabilities.interleaved ?? false),
                 reasoning_protocol:
+                  model.reasoning_protocol ??
                   existingModel?.capabilities.reasoning_protocol ??
                   // Do not inherit reasoning_protocol from knownMetadata or
                   // metadataModel for custom providers: the protocol describes
@@ -1972,8 +1986,38 @@ const layer: Layer.Layer<
 
             const configModel = configProvider?.models?.[modelID]
             const configuredBackendSemantics = configModel?.backend_semantics ?? configProvider?.backend_semantics
-            if (configuredBackendSemantics) {
-              model.backend_semantics = configuredBackendSemantics
+            if (configuredBackendSemantics) model.backend_semantics = configuredBackendSemantics
+
+            // Global model_capabilities — highest layer of the three-layer merge
+            // (models.dev < provider config < model_capabilities). Matched entries
+            // arrive least-specific first; apply in order so the longest key wins.
+            const capabilityEntries = ModelDefaults.matchModelCapabilityEntries(cfg.model_capabilities, {
+              providerID,
+              modelID,
+              apiID: model.api.id ?? model.id ?? modelID,
+            })
+            let capabilityVariants: Record<string, any> | undefined
+            let capabilitiesOverrideVariants = false
+            for (const entry of capabilityEntries) {
+              if (entry.backend_semantics) {
+                model.backend_semantics = entry.backend_semantics
+                capabilitiesOverrideVariants = true
+              }
+              if (entry.reasoning_efforts) {
+                model.reasoning_efforts = [...entry.reasoning_efforts]
+                capabilitiesOverrideVariants = true
+              }
+              if (entry.reasoning_protocol) model.capabilities.reasoning_protocol = entry.reasoning_protocol
+              if (entry.sampling) model.sampling = { ...model.sampling, ...entry.sampling }
+              if (entry.default_variant) model.default_variant = entry.default_variant
+              if (entry.default_effort) model.default_effort = entry.default_effort
+              if (entry.variants) {
+                capabilityVariants = mergeDeep(capabilityVariants ?? {}, entry.variants)
+                capabilitiesOverrideVariants = true
+              }
+            }
+
+            if (configuredBackendSemantics || capabilitiesOverrideVariants) {
               model.variants = mapValues(ProviderTransform.variants(model), (v) => v)
             } else if (!model.variants || Object.keys(model.variants).length === 0) {
               model.variants = mapValues(ProviderTransform.variants(model), (v) => v)
@@ -1985,8 +2029,9 @@ const layer: Layer.Layer<
                 : undefined
             if (codexLimit) model.limit = codexLimit
 
-            if (configModel?.variants && model.variants) {
-              const merged = mergeDeep(model.variants, configModel.variants)
+            const variantOverrides = mergeDeep(configModel?.variants ?? {}, capabilityVariants ?? {})
+            if (Object.keys(variantOverrides).length > 0 && model.variants) {
+              const merged = mergeDeep(model.variants, variantOverrides)
               model.variants = mapValues(
                 pickBy(merged, (v) => !v.disabled),
                 (v) => omit(v, ["disabled"]),

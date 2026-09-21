@@ -7,6 +7,7 @@ import type * as ModelsDev from "./models"
 import { iife } from "@/util/iife"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { CodexModel } from "./codex-model"
+import { ModelDefaults } from "./model-defaults"
 
 type Modality = NonNullable<ModelsDev.Model["modalities"]>["input"][number]
 
@@ -464,49 +465,17 @@ export function message(msgs: ModelMessage[], model: Provider.Model, options: Re
   return msgs
 }
 
+// Sampling defaults come from the built-in data table in model-defaults.ts;
 export function temperature(model: Provider.Model) {
-  const id = model.id.toLowerCase()
-  if (id.includes("north-mini-code")) return 1.0
-  // Qwen3.8 official recommendation: temperature=1.0, top_p=0.95, top_k=20
-  if (id.includes("qwen3.8")) return 1.0
-  if (id.includes("qwen")) return 0.55
-  if (id.includes("claude")) return undefined
-  if (id.includes("gemini")) return 1.0
-  if (id.includes("glm-4.6")) return 1.0
-  if (id.includes("glm-4.7")) return 1.0
-  if (id.includes("minimax-m2")) return 1.0
-  if (id.includes("kimi-k2")) {
-    // kimi-k2-thinking & kimi-k2.5 && kimi-k2p5 && kimi-k2-5
-    if (["thinking", "k2.", "k2p", "k2-5"].some((s) => id.includes(s))) {
-      return 1.0
-    }
-    return 0.6
-  }
-  // DSv4 family: harness standard mode (DeepSWE reference conditions)
-  if (id.includes("deepseek-v4")) return 1.0
-  return undefined
+  return model.sampling?.temperature ?? ModelDefaults.samplingDefault(model.id, "temperature")
 }
 
 export function topP(model: Provider.Model) {
-  const id = model.id.toLowerCase()
-  if (id.includes("qwen3.8")) return 0.95
-  if (id.includes("qwen")) return 1
-  if (["minimax-m2", "gemini", "kimi-k2.5", "kimi-k2p5", "kimi-k2-5"].some((s) => id.includes(s))) {
-    return 0.95
-  }
-  if (id.includes("deepseek-v4")) return 0.95
-  return undefined
+  return model.sampling?.top_p ?? ModelDefaults.samplingDefault(model.id, "top_p")
 }
 
 export function topK(model: Provider.Model) {
-  const id = model.id.toLowerCase()
-  if (id.includes("qwen3.8")) return 20
-  if (id.includes("minimax-m2")) {
-    if (["m2.", "m25", "m21"].some((s) => id.includes(s))) return 40
-    return 20
-  }
-  if (id.includes("gemini")) return 64
-  return undefined
+  return model.sampling?.top_k ?? ModelDefaults.samplingDefault(model.id, "top_k")
 }
 
 // Only @ai-sdk/openai-compatible spreads unknown providerOptions keys verbatim onto the wire; strict SDKs drop or reject them.
@@ -522,22 +491,13 @@ export function samplingOptions(
   }
 }
 
-const WIDELY_SUPPORTED_EFFORTS = ["low", "medium", "high"]
-const OPENAI_EFFORTS = ["none", "minimal", ...WIDELY_SUPPORTED_EFFORTS, "xhigh"]
-const NVIDIA_KIMI_K26_EFFORTS = ["none", "minimal", ...WIDELY_SUPPORTED_EFFORTS, "xhigh", "max"]
+const WIDELY_SUPPORTED_EFFORTS = ModelDefaults.WIDELY_SUPPORTED_EFFORTS
+const OPENAI_EFFORTS = ModelDefaults.OPENAI_EFFORTS
+const NVIDIA_KIMI_K26_EFFORTS = ModelDefaults.NVIDIA_KIMI_K26_EFFORTS
 
-// OpenAI rolled out the `none` reasoning_effort tier on this date (Responses API).
-// Models released before it 400 on `reasoning_effort: "none"`, so we only expose
-// it as a variant for models new enough to accept it.
-const OPENAI_NONE_EFFORT_RELEASE_DATE = "2025-11-13"
-
-// OpenAI rolled out the `xhigh` reasoning_effort tier on this date. Same reasoning.
-const OPENAI_XHIGH_EFFORT_RELEASE_DATE = "2025-12-04"
-
-// Matches members of the gpt-5 family across the id formats we encounter:
-//   "gpt-5", "gpt-5-nano", "gpt-5.4", "openai/gpt-5.4-codex".
-// Anchored to start-of-string or "/" so it doesn't false-match "gpt-50" or "gpt-5o".
-const GPT5_FAMILY_RE = /(?:^|\/)gpt-5(?:[.-]|$)/
+const OPENAI_NONE_EFFORT_RELEASE_DATE = ModelDefaults.OPENAI_NONE_EFFORT_RELEASE_DATE
+const OPENAI_XHIGH_EFFORT_RELEASE_DATE = ModelDefaults.OPENAI_XHIGH_EFFORT_RELEASE_DATE
+const GPT5_FAMILY_RE = ModelDefaults.GPT5_FAMILY_RE
 
 // Computes the reasoning_effort tiers an OpenAI (or OpenAI-compatible upstream
 // routed through it, e.g. cf-ai-gateway) model exposes. Returns null for models
@@ -556,15 +516,7 @@ function openaiReasoningEfforts(apiId: string, releaseDate: string): string[] | 
   return efforts
 }
 
-function anthropicAdaptiveEfforts(apiId: string): string[] | null {
-  if (["opus-4-7", "opus-4.7"].some((v) => apiId.includes(v))) {
-    return ["low", "medium", "high", "xhigh", "max"]
-  }
-  if (["opus-4-6", "opus-4.6", "sonnet-4-6", "sonnet-4.6"].some((v) => apiId.includes(v))) {
-    return ["low", "medium", "high", "max"]
-  }
-  return null
-}
+const anthropicAdaptiveEfforts = ModelDefaults.anthropicAdaptiveEfforts
 
 export function codexLimit(apiId: string) {
   return CodexModel.limit(apiId)
@@ -585,30 +537,15 @@ function isNvidiaKimiK26(model: Provider.Model) {
   )
 }
 
-// xAI reasoning effort knobs differ by Grok generation:
-// - grok-3-mini: low/high
-// - grok-4.5 / grok-4.20-multi-agent: low/medium/high (default high; cannot disable)
-// - other grok: no tunable effort in Chimera today
-// see: https://docs.x.ai/docs/guides/reasoning#control-how-hard-the-model-thinks
+// xAI grok effort generations are data-table driven (ModelDefaults.GROK_EFFORT_RULES).
 function grokModelKey(model: Provider.Model) {
   return `${model.id} ${model.api.id}`.toLowerCase()
 }
 
-function isGrok45Family(key: string) {
-  return (
-    key.includes("grok-4.5") ||
-    key.includes("grok-4-5") ||
-    key.includes("grok-4.20-multi-agent") ||
-    key.includes("grok-4-20-multi-agent")
-  )
-}
+const isGrok45Family = ModelDefaults.isGrok45Family
 
 function grokReasoningEfforts(model: Provider.Model): string[] | null {
-  const key = grokModelKey(model)
-  if (!key.includes("grok")) return null
-  if (key.includes("grok-3-mini")) return ["low", "high"]
-  if (isGrok45Family(key)) return [...WIDELY_SUPPORTED_EFFORTS]
-  return null
+  return ModelDefaults.grokReasoningEfforts(grokModelKey(model))
 }
 
 function grokEffortOptions(model: Provider.Model, effort: string) {
@@ -660,23 +597,20 @@ function baseVariants(model: Provider.Model): Record<string, Record<string, any>
     return Object.fromEntries(model.reasoning_efforts.map((effort) => [effort, { reasoningEffort: effort }]))
   }
   if (
-    (id.includes("glm") && !model.reasoning_efforts?.length) ||
-    id.includes("deepseek-chat") ||
-    id.includes("deepseek-reasoner") ||
-    id.includes("deepseek-r1") ||
-    id.includes("deepseek-v3") ||
-    id.includes("minimax") ||
-    id.includes("kimi") ||
-    id.includes("k2p") ||
-    id.includes("qwen") ||
-    id.includes("big-pickle")
+    ModelDefaults.matchesVariantSuppression(
+      ModelDefaults.VARIANT_SUPPRESSION_RULES,
+      id,
+      apiID,
+      Boolean(model.reasoning_efforts?.length),
+    )
   )
     return {}
 
   if (grokEfforts) {
     return Object.fromEntries(grokEfforts.map((effort) => [effort, grokEffortOptions(model, effort)]))
   }
-  if (id.includes("grok") || model.api.id.toLowerCase().includes("grok")) return {}
+  if (ModelDefaults.matchesVariantSuppression(ModelDefaults.GROK_VARIANT_SUPPRESSION_RULES, id, apiID, false))
+    return {}
 
   switch (model.api.npm) {
     case "@openrouter/ai-sdk-provider":
@@ -974,15 +908,9 @@ function baseVariants(model: Provider.Model): Record<string, Record<string, any>
       // https://v5.ai-sdk.dev/providers/ai-sdk-providers/mistral
       // https://docs.mistral.ai/capabilities/reasoning/adjustable
       if (!model.capabilities.reasoning) return {}
-      // Only Mistral Small 4 and Medium 3.5 support reasoning
-      const MISTRAL_REASONING_IDS = [
-        "mistral-small-2603",
-        "mistral-small-latest",
-        "mistral-medium-3.5",
-        "mistral-medium-2604",
-      ]
+      // Only models in the built-in reasoning id table support adjustable reasoning
       const mistralId = model.api.id.toLowerCase()
-      if (!MISTRAL_REASONING_IDS.some((id) => mistralId.includes(id))) return {}
+      if (!ModelDefaults.MISTRAL_REASONING_IDS.some((id) => mistralId.includes(id))) return {}
       return {
         high: { reasoningEffort: "high" },
       }

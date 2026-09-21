@@ -9,6 +9,7 @@ import { Hash } from "@opencode-ai/core/util/hash"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { withTransientReadRetry } from "@/util/effect-http-client"
 import { CodexModel } from "./codex-model"
+import { ModelDefaults } from "./model-defaults"
 
 const CostTier = Schema.Struct({
   input: Schema.Finite,
@@ -162,59 +163,22 @@ export function normalizeCatalog(catalog: Record<string, Provider>) {
 }
 
 // Infers the reasoning protocol that controls how thinking is enabled in the
-// request body. Mirrors the providerID/SDK matching previously hardcoded in
-// transform.ts options(), but runs at catalog normalization time so custom
-// providers inherit the protocol via findKnownModelMetadata cross-provider
-// model ID matching.
-type ReasoningProtocol =
-  | "zhipuai_thinking"
-  | "dashscope_enable_thinking"
-  | "vllm_chat_template"
-  | "anthropic_thinking"
-  | "google_thinking_config"
+// request body. The matching chain lives in the built-in default data table
+// (ModelDefaults.REASONING_PROTOCOL_RULES); this runs at catalog normalization
+// time so custom providers inherit the protocol via findKnownModelMetadata
+// cross-provider model ID matching. Config layers (provider config, global
+// model_capabilities) override via an explicit reasoning_protocol field.
+type ReasoningProtocol = ModelDefaults.ReasoningProtocolName
 
 function inferReasoningProtocol(providerID: string, model: Model, npm: string): ReasoningProtocol | undefined {
   if (model.reasoning_protocol) return model.reasoning_protocol
-  const id = model.id.toLowerCase()
-  const family = model.family?.toLowerCase() ?? ""
-  // zhipuai / zai / tencent GLM models use the OpenAI-compatible `thinking`
-  // field with clear_thinking to enable reasoning_content output.
-  if (
-    (family === "glm" || id.includes("glm")) &&
-    ["zhipuai", "zai", "tencent"].some((p) => providerID.includes(p)) &&
-    npm === "@ai-sdk/openai-compatible"
-  ) {
-    return "zhipuai_thinking"
-  }
-  // DashScope (alibaba-cn) requires enable_thinking in the body for reasoning
-  // models; kimi-k2-thinking returns reasoning_content by default and is excluded.
-  if (
-    providerID === "alibaba-cn" &&
-    model.reasoning &&
-    npm === "@ai-sdk/openai-compatible" &&
-    !id.includes("kimi-k2-thinking")
-  ) {
-    return "dashscope_enable_thinking"
-  }
-  // vLLM-style chat template arg for providers that deploy GLM/Kimi via
-  // baseten or the opencode hosted proxy.
-  if (
-    providerID === "baseten" ||
-    (providerID === "opencode" && ["kimi-k2-thinking", "glm-4.6"].includes(id))
-  ) {
-    return "vllm_chat_template"
-  }
-  // Google AI SDK exposes thinkingConfig for reasoning models.
-  if (npm === "@ai-sdk/google" || npm === "@ai-sdk/google-vertex") {
-    if (model.reasoning) return "google_thinking_config"
-  }
-  // Anthropic SDK with Kimi K2 models uses budget-token thinking.
-  if (
-    (npm === "@ai-sdk/anthropic" || npm === "@ai-sdk/google-vertex/anthropic") &&
-    (id.includes("k2p") || id.includes("kimi-k2.") || id.includes("kimi-k2p"))
-  ) {
-    return "anthropic_thinking"
-  }
+  return ModelDefaults.matchReasoningProtocol({
+    providerID,
+    id: model.id.toLowerCase(),
+    family: model.family?.toLowerCase() ?? "",
+    npm,
+    reasoning: model.reasoning,
+  })
 }
 
 export interface Interface {
