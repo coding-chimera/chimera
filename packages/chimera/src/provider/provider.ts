@@ -807,11 +807,26 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
             const models: Record<string, Model> = {}
             for (const m of result.models) {
               if (!input.models[m.id]) {
+                // GitLab workflow discovery does not surface a models.dev-style
+                // family; derive the prefix the transform.ts gitlab reasoning-
+                // variants case keys on (gpt* -> reasoningEffort, claude* ->
+                // adaptive thinking, upstream 7c2199d84a). Refs look like
+                // "claude_sonnet_4_6" / "gpt_5_6_sol"; ids like
+                // "duo-workflow-sonnet-4-6".
+                const familyKey = `${m.ref} ${m.id} ${m.name}`.toLowerCase()
+                const family = familyKey.includes("gpt")
+                  ? "gpt"
+                  : familyKey.includes("claude") ||
+                      familyKey.includes("sonnet") ||
+                      familyKey.includes("opus") ||
+                      familyKey.includes("haiku")
+                    ? "claude"
+                    : ""
                 models[m.id] = {
                   id: ModelID.make(m.id),
                   providerID: ProviderID.make("gitlab"),
                   name: `Agent Platform (${m.name})`,
-                  family: "",
+                  family,
                   api: {
                     id: m.id,
                     url: instanceUrl,

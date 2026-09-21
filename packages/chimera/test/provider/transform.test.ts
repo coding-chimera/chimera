@@ -3632,6 +3632,73 @@ describe("ProviderTransform.variants", () => {
     })
   })
 
+  describe("gitlab-ai-provider", () => {
+    test("gpt family maps reasoning_efforts to reasoningEffort", () => {
+      const model = createMockModel({
+        id: "gitlab/duo-chat-gpt-5-6-luna",
+        providerID: "gitlab",
+        family: "gpt-luna",
+        reasoning_efforts: ["low", "medium", "high"],
+        api: {
+          id: "duo-chat-gpt-5-6-luna",
+          url: "https://gitlab.com",
+          npm: "gitlab-ai-provider",
+        },
+      })
+      const result = ProviderTransform.variants(model)
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "ultra"])
+      expect(result.low).toEqual({ reasoningEffort: "low" })
+      expect(result.ultra).toEqual({ reasoningEffort: "high" })
+    })
+
+    test("claude family maps efforts to adaptive thinking", () => {
+      const model = createMockModel({
+        id: "gitlab/duo-chat-opus-4-8",
+        providerID: "gitlab",
+        family: "claude-opus",
+        reasoning_efforts: ["low", "medium", "high", "xhigh", "max"],
+        api: {
+          id: "duo-chat-opus-4-8",
+          url: "https://gitlab.com",
+          npm: "gitlab-ai-provider",
+        },
+      })
+      const result = ProviderTransform.variants(model)
+      expect(result.max).toEqual({ thinking: { type: "adaptive", effort: "max" } })
+      expect(result.ultra).toEqual({ thinking: { type: "adaptive", effort: "max" } })
+    })
+
+    test("discovered workflow model without reasoning_efforts falls back to widely supported efforts", () => {
+      const model = createMockModel({
+        id: "gitlab/duo-workflow-sonnet-4-6",
+        providerID: "gitlab",
+        family: "claude",
+        api: {
+          id: "duo-workflow-sonnet-4-6",
+          url: "https://gitlab.com",
+          npm: "gitlab-ai-provider",
+        },
+      })
+      const result = ProviderTransform.variants(model)
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "ultra"])
+      expect(result.high).toEqual({ thinking: { type: "adaptive", effort: "high" } })
+    })
+
+    test("unknown family advertises ultra only", () => {
+      const model = createMockModel({
+        id: "gitlab/duo-workflow-mystery",
+        providerID: "gitlab",
+        family: "",
+        api: {
+          id: "duo-workflow-mystery",
+          url: "https://gitlab.com",
+          npm: "gitlab-ai-provider",
+        },
+      })
+      expect(ProviderTransform.variants(model)).toEqual({ ultra: {} })
+    })
+  })
+
   describe("@ai-sdk/xai", () => {
     test("grok-3 returns empty object", () => {
       const model = createMockModel({
