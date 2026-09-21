@@ -1972,6 +1972,154 @@ describe("session.llm.stream", () => {
     })
   })
 
+  // W1 (responses-wire): pins the three-layer store override order
+  // base (provider.<id>.options.store) < model.options < variant profile.options
+  // through the merge chain in session/llm.ts. Neutral relay fixture: a
+  // responses-wire provider on @ai-sdk/openai behind a non-openai id.
+  async function captureRelayStoreOnWire(config: {
+    providerOptions?: Record<string, unknown>
+    modelOptions?: Record<string, unknown>
+    variants?: Record<string, Record<string, unknown>>
+    variant?: string
+  }) {
+    const server = state.server
+    if (!server) throw new Error("Server not initialized")
+    const providerID = "test-store-relay"
+    const modelID = "relay-model"
+    const request = waitRequest(
+      "/responses",
+      createEventResponse(
+        [
+          {
+            type: "response.created",
+            response: {
+              id: "resp-store",
+              created_at: Math.floor(Date.now() / 1000),
+              model: modelID,
+              service_tier: null,
+            },
+          },
+          {
+            type: "response.output_text.delta",
+            item_id: "item-store",
+            delta: "Hello store",
+            logprobs: null,
+          },
+          {
+            type: "response.completed",
+            response: {
+              incomplete_details: null,
+              usage: {
+                input_tokens: 1,
+                input_tokens_details: null,
+                output_tokens: 2,
+                output_tokens_details: null,
+              },
+              service_tier: null,
+            },
+          },
+        ],
+        true,
+      ),
+    )
+
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(
+          path.join(dir, "chimera.json"),
+          JSON.stringify({
+            $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+            enabled_providers: [providerID],
+            provider: {
+              [providerID]: {
+                name: "Test Store Relay",
+                wire_api: "responses",
+                env: [],
+                models: {
+                  [modelID]: {
+                    ...(config.modelOptions ? { options: config.modelOptions } : {}),
+                    ...(config.variants ? { variants: config.variants } : {}),
+                  },
+                },
+                options: {
+                  apiKey: "test-store-key",
+                  baseURL: `${server.url.origin}/v1`,
+                  ...(config.providerOptions ?? {}),
+                },
+              },
+            },
+          }),
+        )
+      },
+    })
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const resolved = await getModel(ProviderID.make(providerID), ModelID.make(modelID))
+        const sessionID = SessionID.make("session-test-store")
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        } satisfies Agent.Info
+        const user = {
+          id: MessageID.make("user-store"),
+          sessionID,
+          role: "user",
+          time: { created: Date.now() },
+          agent: agent.name,
+          model: {
+            providerID: ProviderID.make(providerID),
+            modelID: resolved.id,
+            ...(config.variant ? { variant: config.variant } : {}),
+          },
+        } satisfies MessageV2.User
+
+        await drain({
+          user,
+          sessionID,
+          model: resolved,
+          agent,
+          system: ["You are a helpful assistant."],
+          messages: [{ role: "user", content: "Hello" }],
+          tools: {},
+        })
+      },
+    })
+
+    const capture = await request
+    return capture.body.store
+  }
+
+  test("provider-level options.store reaches the responses wire", async () => {
+    // SDK evidence (@ai-sdk/openai 3.0.88 dist/index.js:5311): store defaults to
+    // true in the SDK; the fork injects false and provider config can override.
+    expect(await captureRelayStoreOnWire({ providerOptions: { store: true } })).toBe(true)
+  })
+
+  test("model options.store overrides provider-level options.store", async () => {
+    expect(
+      await captureRelayStoreOnWire({
+        providerOptions: { store: true },
+        modelOptions: { store: false },
+      }),
+    ).toBe(false)
+  })
+
+  test("variant profile options.store overrides model options.store", async () => {
+    expect(
+      await captureRelayStoreOnWire({
+        providerOptions: { store: true },
+        modelOptions: { store: false },
+        variants: { low: { store: true } },
+        variant: "low",
+      }),
+    ).toBe(true)
+  })
+
+
 
   test("accepts user image attachments as data URLs for OpenAI models", async () => {
     const server = state.server

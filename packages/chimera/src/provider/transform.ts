@@ -1048,6 +1048,14 @@ export function options(input: {
     result["promptCacheKey"] = input.sessionID
   }
 
+  // provider.<id>.options.store passthrough (responses wire): the defaults above
+  // keep store=false; an explicit provider-level boolean overrides them, and the
+  // session/llm.ts merge chain layers model.options and the variant profile on
+  // top (later merges win). Only meaningful for the OpenAI responses wire.
+  if (typeof input.providerOptions?.store === "boolean") {
+    result["store"] = input.providerOptions.store
+  }
+
   if (input.model.api.npm === "@openrouter/ai-sdk-provider" || input.model.api.npm === "@llmgateway/ai-sdk-provider") {
     result["usage"] = {
       include: true,
