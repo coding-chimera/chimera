@@ -380,3 +380,6 @@ loop 挂起修复前的对比基线（本机 macOS, bun 1.4.0, `bun test --timeo
 - **等用户拍板**：拍板#7（L4.4 前置）/拍板#16/CI 批（最后）/code-mode #6/存量拍板池。
 - **新锚点**：webui-perf 994.0MB / burst glob p50 223ms（环境地板）/ footprint 679MB 新追踪 / 全量基线 26 确定+负载池×0-2。
 - **杂项**：用户取样文件 “chimera”的取样.txt 在仓根未跟踪（建议删或归档 cbench，勿提交）；build-l4 worktree 与 cbench/build-l4.log 为本次构建产物，装完可清。
+- **重启完成（2026-09-21，新宿主 PID 23637）**：新二进制（含 R1 全量+block_reason+L4.0-4.2，worktree 隔离构建）+取证武装 OPENCODE_AUTO_HEAP_SNAPSHOT=true/MB=1500 已确认在 env。残留验证服务 23036 已清。build-l4 worktree（cbench/build-l4）构建完可留作下次构建参照（包级 node_modules 需全量克隆的教训：newweb 嵌套 cp 陷阱+sweep 漏嵌套目录）。
+- **L4.3 收口已推送**（28495e563+122a095d7）：配置化三层合并+policies warn 小修。验收=golden 逐字节等价+三族 1263+723+548 绿+全量 27 fail=26 基线+compaction flake。**L4 主线只剩 L4.4**（拍板#7 前置）。SDK gen 待办：config schema 变更需 `./packages/sdk/js/script/build.ts` 重生成（L4 收口时统一跑）。
+- **Responses Wire 主线已派**：主线 ses_f3cdd6640ffeZuRki2WcEBBR4P（W1→W3→W2→W6）∥ 文档线 ses_f3cdd281bffeEkEw1v4XgWM8N6（W4）+看护 ses_f3cdcc1cbffe3Ds4ECagChGiGz。证据=cbench/responses-wire/evidence-recheck-3.0.88.md（3.0.88 全成立；红旗=previousResponseId 跳门）。
