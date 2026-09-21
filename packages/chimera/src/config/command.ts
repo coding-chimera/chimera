@@ -20,6 +20,7 @@ export const Info = Schema.Struct({
   description: Schema.optional(Schema.String),
   agent: Schema.optional(Schema.String),
   model: Schema.optional(ConfigModelID),
+  variant: Schema.optional(Schema.String),
   subtask: Schema.optional(Schema.Boolean),
 }).pipe(withStatics((s) => ({ zod: zod(s) })))
 
