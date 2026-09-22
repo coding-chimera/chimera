@@ -398,3 +398,7 @@ loop 挂起修复前的对比基线（本机 macOS, bun 1.4.0, `bun test --timeo
 - **检查点推送完成（origin=528eadda9）**：B 因 provider 侧错误中断时落地 5 笔（红旗双修+startupFailed 修复+C/B/G 族）+parent 簿记 3 笔，全量 5527 tests/25 fail（基线下沿，lsp.request 本轮转绿）+typecheck 绿+审计零命中后推送。B 已同 task_id 二次续派（剩余=claims L2→feat②15→fix 余族）。插曲正名：pre-push 钩拦截 B 的 startupFailed 破窗一次=钩子立功非事故；"栈只有 8 笔"乌龙=origin 已被 parent 早前推送前移（对账纪律=盘点前先 fetch）。
 - **F3+F4-P3 批全收口推送（origin=d9f65efec）**：B 三续跑完成（F4-P3 六件全落地+claims L2 查明预存已落地 c55f5a8e2/F3 feat② 移植4降级12/fix 八族消化 D/J/K/O/R 留待）+parent 的 nix 判例⑤单项翻案（vendor blob 4acffa1c+MANIFEST 登记+冒烟测试 test/graph/nix.test.ts+静默名单移除 nix）。验收：全量 5540/30 fail=基线 25+compaction 负载池+snapshot/vcs 4 条超时（隔离复跑 64/0 绿=负载性，入负载池登记）+typecheck 绿+审计零命中。计划书已回写 F3+F4-P3 完成记录。newweb 853ba1d6 在嵌套仓待用户 gitlink 决策。
 - **flake 登记册新增**：snapshot.test.ts/vcs.test.ts 4 条为负载敏感超时族（30s 阈值，高负载批次复现、隔离必绿）——基线口径=26 确定+负载池{ModelsDev, json-parity, compaction, snapshot/vcs 超时族}×0-5。
+- **快照清理完成（用户指令）**：79 份删除，留 4 份首尾锚点（heap-23637 0858/055559、heap-90852 062111/105054）；磁盘 97→117Gi。注意：快照仍在以 ~2.2GB/h 续增，根治靠 R2 或调高阈值。
+- **新二进制构建+安装完成（2026-09-22 晚）**：OPENCODE_CHANNEL=latest build --single（with-webui，53.7MB，冒烟过）→ npm 全局安装 → 四项验证全过（含 port 14096 WebUI 资产 200）。**版本号仍为 0.0.7-beta2-patch1**（version.ts 未被要求 bump，同串不同 sha——以后本地构建考虑显式 --version 区分）。**等用户重启宿主 90852 生效**（含 L4.4/F3/F4-P3/nix 全部今日成果）。
+- **DeepSeek 实时 E2E 用户明示暂缓**。
+- **WebUI 模型列表修复批已派**（ses 新 builder，五项修复，newweb 仓内提交）。
