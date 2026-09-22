@@ -17,6 +17,7 @@ import { useDirectory } from "@tui/context/directory"
 import { useEvent } from "@tui/context/event"
 import { editorSelectionKey, useEditorContext, type EditorSelection } from "@tui/context/editor"
 import { MessageID, PartID } from "@/session/schema"
+import { errorMessage } from "@/util/error"
 import { createStore, produce, unwrap } from "solid-js/store"
 import { useKeybind } from "@tui/context/keybind"
 import { usePromptHistory, type PromptInfo } from "./history"
@@ -580,6 +581,7 @@ export function Prompt(props: PromptProps) {
       {
         title: "Skills",
         value: "prompt.skills",
+        keybind: "prompt_skills",
         category: "Prompt",
         slash: {
           name: "skills",
@@ -1043,7 +1045,16 @@ export function Prompt(props: PromptProps) {
             ...nonTextParts.map(assign),
           ],
         })
-        .catch(() => {})
+        .catch((error) => {
+          // Prompt submission failures must be visible (upstream ca8db315a9):
+          // a swallowed rejection looks like a successful send to the user.
+          toast.show({
+            title: "Failed to send prompt",
+            message: errorMessage(error),
+            variant: "error",
+            duration: 5000,
+          })
+        })
       if (editorParts.length > 0) editor.markSelectionSent()
     }
     history.append({
