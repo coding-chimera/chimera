@@ -91,11 +91,11 @@ export function DialogPrompt(props: DialogPromptProps) {
           cursorColor={props.busy ? theme.backgroundElement : theme.text}
         />
         <Show when={props.busy}>
-          <Spinner color={theme.textMuted}>{props.busyText ?? "Working..."}</Spinner>
+          <Spinner color={theme.textMuted}>{props.busyText ?? "Working…"}</Spinner>
         </Show>
       </box>
       <box paddingBottom={1} gap={1} flexDirection="row">
-        <Show when={!props.busy} fallback={<text fg={theme.textMuted}>processing...</text>}>
+        <Show when={!props.busy} fallback={<text fg={theme.textMuted}>processing…</text>}>
           <text fg={theme.text}>
             enter <span style={{ fg: theme.textMuted }}>submit</span>
           </text>

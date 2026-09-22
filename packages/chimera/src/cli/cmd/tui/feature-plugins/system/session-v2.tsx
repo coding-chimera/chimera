@@ -482,7 +482,7 @@ function GenericTool(props: ToolProps) {
     <Show
       when={output()}
       fallback={
-        <InlineTool icon="⚙" pending="Writing command..." complete={toolComplete(props.part)} part={props.part}>
+        <InlineTool icon="⚙" pending="Writing command…" complete={toolComplete(props.part)} part={props.part}>
           {props.part.name} {input(props.input)}
         </InlineTool>
       }
@@ -682,7 +682,7 @@ function Bash(props: ToolProps) {
         </BlockTool>
       </Match>
       <Match when={true}>
-        <InlineTool icon="$" pending="Writing command..." complete={command()} part={props.part}>
+        <InlineTool icon="$" pending="Writing command…" complete={command()} part={props.part}>
           {command()}
         </InlineTool>
       </Match>
@@ -692,7 +692,7 @@ function Bash(props: ToolProps) {
 
 function Glob(props: ToolProps) {
   return (
-    <InlineTool icon="✱" pending="Finding files..." complete={toolComplete(props.part)} part={props.part}>
+    <InlineTool icon="✱" pending="Finding files…" complete={toolComplete(props.part)} part={props.part}>
       Glob "{stringValue(props.input.pattern) ?? pendingInput(props.part)}"{" "}
       <Show when={stringValue(props.input.path)}>in {normalizePath(stringValue(props.input.path))} </Show>
       <Show when={numberValue(props.metadata.count)}>
@@ -715,7 +715,7 @@ function Read(props: ToolProps) {
     <>
       <InlineTool
         icon="→"
-        pending="Reading file..."
+        pending="Reading file…"
         complete={stringValue(props.input.filePath) ?? pendingInput(props.part)}
         spinner={props.part.state.status === "running"}
         part={props.part}
@@ -738,7 +738,7 @@ function Read(props: ToolProps) {
 
 function Grep(props: ToolProps) {
   return (
-    <InlineTool icon="✱" pending="Searching content..." complete={toolComplete(props.part)} part={props.part}>
+    <InlineTool icon="✱" pending="Searching content…" complete={toolComplete(props.part)} part={props.part}>
       Grep "{stringValue(props.input.pattern) ?? pendingInput(props.part)}"{" "}
       <Show when={stringValue(props.input.path)}>in {normalizePath(stringValue(props.input.path))} </Show>
       <Show when={numberValue(props.metadata.matches)}>
@@ -754,7 +754,7 @@ function Grep(props: ToolProps) {
 
 function WebFetch(props: ToolProps) {
   return (
-    <InlineTool icon="%" pending="Fetching from the web..." complete={toolComplete(props.part)} part={props.part}>
+    <InlineTool icon="%" pending="Fetching from the web…" complete={toolComplete(props.part)} part={props.part}>
       WebFetch {stringValue(props.input.url) ?? pendingInput(props.part)}
     </InlineTool>
   )
@@ -762,7 +762,7 @@ function WebFetch(props: ToolProps) {
 
 function CodeSearch(props: ToolProps) {
   return (
-    <InlineTool icon="◇" pending="Searching code..." complete={toolComplete(props.part)} part={props.part}>
+    <InlineTool icon="◇" pending="Searching code…" complete={toolComplete(props.part)} part={props.part}>
       Exa Code Search "{stringValue(props.input.query) ?? pendingInput(props.part)}"{" "}
       <Show when={numberValue(props.metadata.results)}>{(results) => <>({results()} results)</>}</Show>
     </InlineTool>
@@ -771,7 +771,7 @@ function CodeSearch(props: ToolProps) {
 
 function WebSearch(props: ToolProps) {
   return (
-    <InlineTool icon="◈" pending="Searching web..." complete={toolComplete(props.part)} part={props.part}>
+    <InlineTool icon="◈" pending="Searching web…" complete={toolComplete(props.part)} part={props.part}>
       Exa Web Search "{stringValue(props.input.query) ?? pendingInput(props.part)}"{" "}
       <Show when={numberValue(props.metadata.numResults)}>{(results) => <>({results()} results)</>}</Show>
     </InlineTool>
@@ -799,7 +799,7 @@ function Write(props: ToolProps) {
         </BlockTool>
       </Match>
       <Match when={true}>
-        <InlineTool icon="←" pending="Preparing write..." complete={filePath()} part={props.part}>
+        <InlineTool icon="←" pending="Preparing write…" complete={filePath()} part={props.part}>
           Write {normalizePath(filePath())}
         </InlineTool>
       </Match>
@@ -843,7 +843,7 @@ function Edit(props: ToolProps) {
         )}
       </Match>
       <Match when={true}>
-        <InlineTool icon="←" pending="Preparing edit..." complete={filePath()} part={props.part}>
+        <InlineTool icon="←" pending="Preparing edit…" complete={filePath()} part={props.part}>
           Edit {normalizePath(filePath())} {input({ replaceAll: props.input.replaceAll })}
         </InlineTool>
       </Match>
@@ -906,7 +906,7 @@ function ApplyPatch(props: ToolProps) {
         </For>
       </Match>
       <Match when={true}>
-        <InlineTool icon="%" pending="Preparing patch..." complete={false} part={props.part}>
+        <InlineTool icon="%" pending="Preparing patch…" complete={false} part={props.part}>
           Patch
         </InlineTool>
       </Match>
@@ -933,8 +933,8 @@ function TodoWrite(props: ToolProps) {
         </BlockTool>
       </Match>
       <Match when={true}>
-        <InlineTool icon="⚙" pending="Updating todos..." complete={false} part={props.part}>
-          Updating todos...
+        <InlineTool icon="⚙" pending="Updating todos…" complete={false} part={props.part}>
+          Updating todos…
         </InlineTool>
       </Match>
     </Switch>
@@ -964,7 +964,7 @@ function Question(props: ToolProps) {
         </BlockTool>
       </Match>
       <Match when={true}>
-        <InlineTool icon="→" pending="Asking questions..." complete={questions().length} part={props.part}>
+        <InlineTool icon="→" pending="Asking questions…" complete={questions().length} part={props.part}>
           Asked {questions().length} question{questions().length === 1 ? "" : "s"}
         </InlineTool>
       </Match>
@@ -974,7 +974,7 @@ function Question(props: ToolProps) {
 
 function Skill(props: ToolProps) {
   return (
-    <InlineTool icon="→" pending="Loading skill..." complete={toolComplete(props.part)} part={props.part}>
+    <InlineTool icon="→" pending="Loading skill…" complete={toolComplete(props.part)} part={props.part}>
       Skill "{stringValue(props.input.name) ?? pendingInput(props.part)}"
     </InlineTool>
   )
@@ -991,7 +991,7 @@ function Task(props: ToolProps) {
       icon="│"
       spinner={props.part.state.status === "running"}
       complete={toolComplete(props.part)}
-      pending="Delegating..."
+      pending="Delegating…"
       part={props.part}
     >
       {content()}

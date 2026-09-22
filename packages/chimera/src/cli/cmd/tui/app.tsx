@@ -370,7 +370,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         return
       }
 
-      const title = session.title.length > 40 ? session.title.slice(0, 37) + "..." : session.title
+      const title = session.title.length > 40 ? session.title.slice(0, 37) + "…" : session.title
       renderer.setTerminalTitle(`Chimera | ${title}`)
       return
     }
@@ -1174,7 +1174,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
 
     toast.show({
       variant: "info",
-      message: `Updating to v${version}...`,
+      message: `Updating to v${version}…`,
       duration: 30000,
     })
 

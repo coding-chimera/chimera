@@ -207,7 +207,7 @@ export function createDialogProviderOptions() {
     selected: string
   } | undefined> {
     dialog.replace(() => (
-      <DialogPrompt title="Discover models" busy busyText="Fetching /models..." value={baseURL} />
+      <DialogPrompt title="Discover models" busy busyText="Fetching /models…" value={baseURL} />
     ))
     try {
       const discovered = await discoverOpenAICompatibleModels({ baseURL, token: token || undefined })
@@ -451,7 +451,7 @@ function AutoMethod(props: AutoMethodProps) {
         <Link href={props.authorization.url} fg={theme.primary} />
         <text fg={theme.textMuted}>{props.authorization.instructions}</text>
       </box>
-      <text fg={theme.textMuted}>Waiting for authorization...</text>
+      <text fg={theme.textMuted}>Waiting for authorization…</text>
       <text fg={theme.text}>
         c <span style={{ fg: theme.textMuted }}>copy</span>
       </text>

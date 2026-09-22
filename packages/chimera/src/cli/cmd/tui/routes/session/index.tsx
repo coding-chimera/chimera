@@ -1555,7 +1555,7 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
   const preview = createMemo(() => {
     const text = lines()[0] ?? content()
     if (text.length <= 100) return text
-    return text.slice(0, 97) + "..."
+    return text.slice(0, 97) + "…"
   })
   const label = createMemo(() => {
     const lineCount = lines().length
@@ -1756,7 +1756,7 @@ function GenericTool(props: ToolProps<any>) {
     <Show
       when={props.output && ctx.showGenericToolOutput()}
       fallback={
-        <InlineTool icon="⚙" pending="Writing command..." complete={true} part={props.part}>
+        <InlineTool icon="⚙" pending="Writing command…" complete={true} part={props.part}>
           {props.tool} {input(props.input)}
         </InlineTool>
       }
@@ -1975,7 +1975,7 @@ function Shell(props: ToolProps<typeof ShellTool>) {
         </BlockTool>
       </Match>
       <Match when={true}>
-        <InlineTool icon="$" pending="Writing command..." complete={props.input.command} part={props.part}>
+        <InlineTool icon="$" pending="Writing command…" complete={props.input.command} part={props.part}>
           {props.input.command}
         </InlineTool>
       </Match>
@@ -2007,7 +2007,7 @@ function Write(props: ToolProps<typeof WriteTool>) {
         </BlockTool>
       </Match>
       <Match when={true}>
-        <InlineTool icon="←" pending="Preparing write..." complete={props.input.filePath} part={props.part}>
+        <InlineTool icon="←" pending="Preparing write…" complete={props.input.filePath} part={props.part}>
           Write {normalizePath(props.input.filePath!)}
         </InlineTool>
       </Match>
@@ -2017,7 +2017,7 @@ function Write(props: ToolProps<typeof WriteTool>) {
 
 function Glob(props: ToolProps<typeof GlobTool>) {
   return (
-    <InlineTool icon="✱" pending="Finding files..." complete={props.input.pattern} part={props.part}>
+    <InlineTool icon="✱" pending="Finding files…" complete={props.input.pattern} part={props.part}>
       Glob "{props.input.pattern}" <Show when={props.input.path}>in {normalizePath(props.input.path)} </Show>
       <Show when={props.metadata.count}>
         ({props.metadata.count} {props.metadata.count === 1 ? "match" : "matches"})
@@ -2040,7 +2040,7 @@ function Read(props: ToolProps<typeof ReadTool>) {
     <>
       <InlineTool
         icon="→"
-        pending="Reading file..."
+        pending="Reading file…"
         complete={props.input.filePath}
         spinner={isRunning()}
         part={props.part}
@@ -2062,7 +2062,7 @@ function Read(props: ToolProps<typeof ReadTool>) {
 
 function Grep(props: ToolProps<typeof GrepTool>) {
   return (
-    <InlineTool icon="✱" pending="Searching content..." complete={props.input.pattern} part={props.part}>
+    <InlineTool icon="✱" pending="Searching content…" complete={props.input.pattern} part={props.part}>
       Grep "{props.input.pattern}" <Show when={props.input.path}>in {normalizePath(props.input.path)} </Show>
       <Show when={props.metadata.matches}>
         ({props.metadata.matches} {props.metadata.matches === 1 ? "match" : "matches"})
@@ -2073,7 +2073,7 @@ function Grep(props: ToolProps<typeof GrepTool>) {
 
 function WebFetch(props: ToolProps<typeof WebFetchTool>) {
   return (
-    <InlineTool icon="%" pending="Fetching from the web..." complete={props.input.url} part={props.part}>
+    <InlineTool icon="%" pending="Fetching from the web…" complete={props.input.url} part={props.part}>
       WebFetch {props.input.url}
     </InlineTool>
   )
@@ -2082,7 +2082,7 @@ function WebFetch(props: ToolProps<typeof WebFetchTool>) {
 function WebSearch(props: ToolProps<typeof WebSearchTool>) {
   const metadata = props.metadata as { numResults?: number; provider?: string }
   return (
-    <InlineTool icon="◈" pending="Searching web..." complete={props.input.query} part={props.part}>
+    <InlineTool icon="◈" pending="Searching web…" complete={props.input.query} part={props.part}>
       Web Search "{props.input.query}" <Show when={metadata.provider}>via {metadata.provider}</Show>{" "}
       <Show when={metadata.numResults}>({metadata.numResults} results)</Show>
     </InlineTool>
@@ -2092,7 +2092,7 @@ function WebSearch(props: ToolProps<typeof WebSearchTool>) {
 function HostedWebSearch(props: ToolProps<typeof WebSearchTool>) {
   const display = createMemo(() => formatHostedWebSearch(props))
   return (
-    <InlineTool icon="◈" pending="Searching web..." complete={display().title} part={props.part}>
+    <InlineTool icon="◈" pending="Searching web…" complete={display().title} part={props.part}>
       {display().title} <Show when={display().description}>{display().description}</Show>
     </InlineTool>
   )
@@ -2188,7 +2188,7 @@ function Task(props: ToolProps<typeof TaskTool>) {
       icon="│"
       spinner={isRunning()}
       complete={props.input.description}
-      pending="Delegating..."
+      pending="Delegating…"
       part={props.part}
       onClick={() => {
         if (props.metadata.sessionId) {
@@ -2300,7 +2300,7 @@ function Swarm(props: ToolProps<any>) {
         </For>
         <Show when={runs().length === 0}>
           <text paddingLeft={3} fg={theme.textMuted}>
-            Waiting for subagents...
+            Waiting for subagents…
           </text>
         </Show>
       </box>
@@ -2352,7 +2352,7 @@ function Edit(props: ToolProps<typeof EditTool>) {
         </BlockTool>
       </Match>
       <Match when={true}>
-        <InlineTool icon="←" pending="Preparing edit..." complete={props.input.filePath} part={props.part}>
+        <InlineTool icon="←" pending="Preparing edit…" complete={props.input.filePath} part={props.part}>
           Edit {normalizePath(props.input.filePath!)} {input({ edits: props.input.edits?.length, delete: props.input.delete, rename: props.input.rename })}
         </InlineTool>
       </Match>
@@ -2427,7 +2427,7 @@ function ApplyPatch(props: ToolProps<typeof ApplyPatchTool>) {
         </For>
       </Match>
       <Match when={true}>
-        <InlineTool icon="%" pending="Preparing patch..." complete={false} part={props.part}>
+        <InlineTool icon="%" pending="Preparing patch…" complete={false} part={props.part}>
           Patch
         </InlineTool>
       </Match>
@@ -2448,8 +2448,8 @@ function TodoWrite(props: ToolProps<typeof TodoWriteTool>) {
         </BlockTool>
       </Match>
       <Match when={true}>
-        <InlineTool icon="⚙" pending="Updating todos..." complete={false} part={props.part}>
-          Updating todos...
+        <InlineTool icon="⚙" pending="Updating todos…" complete={false} part={props.part}>
+          Updating todos…
         </InlineTool>
       </Match>
     </Switch>
@@ -2482,7 +2482,7 @@ function Question(props: ToolProps<typeof QuestionTool>) {
         </BlockTool>
       </Match>
       <Match when={true}>
-        <InlineTool icon="→" pending="Asking questions..." complete={count()} part={props.part}>
+        <InlineTool icon="→" pending="Asking questions…" complete={count()} part={props.part}>
           Asked {count()} question{count() !== 1 ? "s" : ""}
         </InlineTool>
       </Match>
@@ -2492,7 +2492,7 @@ function Question(props: ToolProps<typeof QuestionTool>) {
 
 function Skill(props: ToolProps<typeof SkillTool>) {
   return (
-    <InlineTool icon="→" pending="Loading skill..." complete={props.input.name} part={props.part}>
+    <InlineTool icon="→" pending="Loading skill…" complete={props.input.name} part={props.part}>
       Skill "{props.input.name}"
     </InlineTool>
   )
