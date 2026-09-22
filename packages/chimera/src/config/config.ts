@@ -357,6 +357,10 @@ export const Info = Schema.Struct({
         description:
           "Enable SystemContext source tracking and context epoch persistence for the system prompt: the first turn stores the assembled baseline and later turns reuse it, injecting source changes as an extra system message instead of rebuilding the baseline. When off, assembly is byte-identical to the default path and no epoch DB access happens.",
       }),
+      llm_runtime: Schema.optional(Schema.Boolean).annotate({
+        description:
+          "Route eligible providers through the native @coding-chimera/llm route runtime instead of the AI SDK HTTP transport. Currently piloted for DeepSeek on the openai-compatible chat wire with API-key auth only; every other provider keeps the AI SDK path. When off, the default path is byte-identical and the llm package runtime is never constructed.",
+      }),
     }),
   ),
 })
