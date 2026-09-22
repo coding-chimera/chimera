@@ -402,3 +402,4 @@ loop 挂起修复前的对比基线（本机 macOS, bun 1.4.0, `bun test --timeo
 - **新二进制构建+安装完成（2026-09-22 晚）**：OPENCODE_CHANNEL=latest build --single（with-webui，53.7MB，冒烟过）→ npm 全局安装 → 四项验证全过（含 port 14096 WebUI 资产 200）。**版本号仍为 0.0.7-beta2-patch1**（version.ts 未被要求 bump，同串不同 sha——以后本地构建考虑显式 --version 区分）。**等用户重启宿主 90852 生效**（含 L4.4/F3/F4-P3/nix 全部今日成果）。
 - **DeepSeek 实时 E2E 用户明示暂缓**。
 - **WebUI 模型列表修复批已派**（ses 新 builder，五项修复，newweb 仓内提交）。
+- **WebUI 模型列表修复批收口推送（父仓 3c9f07047）**：五项全落地——newweb 仓 4 笔（82e91d78 status 宽松化/35a43330 有界重试/51ff944b loading 不锁/5471761f error 渲染+Retry+i18n）+父仓 provider.ts:1243 空守卫。验证：newweb 757/757+新增 5 用例、父仓 provider 族 511/0、双 typecheck 绿、审计零命中。**注意：今天 19:01 装的新二进制不含本批（构建先于本批）——用户侧修复要等下一次 build+安装+重启**。newweb 5 commit 未推其 remote、gitlink 未动（均待用户决策）。
