@@ -22,6 +22,14 @@ import { SplitBorder } from "@tui/component/border"
 import { Spinner } from "@tui/component/spinner"
 import { selectedForeground, useTheme } from "@tui/context/theme"
 import { BoxRenderable, ScrollBoxRenderable, addDefaultParsers, TextAttributes, RGBA } from "@opentui/core"
+import { alwaysSeparate, setPreLayoutSiblingMargin } from "@tui/util/layout"
+import {
+  formatCompletedSubagentDetail,
+  formatSubagentRetry,
+  formatSubagentTitle,
+  formatSubagentToolcalls,
+} from "@tui/util/subagent-format"
+import { DialogAlert } from "../../ui/dialog-alert"
 import { Prompt, type PromptRef } from "@tui/component/prompt"
 import type {
   AssistantMessage,
@@ -374,15 +382,21 @@ export function Session() {
 
   const local = useLocal()
 
+  function enterChild(sessionID: string) {
+    navigate({
+      type: "session",
+      sessionID,
+    })
+    // Surface the child's retry state on entry (upstream 9814dc6526): a subagent
+    // stuck retrying is otherwise invisible behind the parent's spinner row.
+    const status = sync.data.session_status[sessionID]
+    if (status?.type === "retry") void DialogAlert.show(dialog, "Retry Error", status.message)
+  }
+
   function moveFirstChild() {
     if (children().length === 1) return
     const next = children().find((x) => !!x.parentID)
-    if (next) {
-      navigate({
-        type: "session",
-        sessionID: next.id,
-      })
-    }
+    if (next) enterChild(next.id)
   }
 
   function moveChild(direction: number) {
@@ -393,12 +407,7 @@ export function Session() {
 
     if (next >= sessions.length) next = 0
     if (next < 0) next = sessions.length - 1
-    if (sessions[next]) {
-      navigate({
-        type: "session",
-        sessionID: sessions[next].id,
-      })
-    }
+    if (sessions[next]) enterChild(sessions[next].id)
   }
 
   function childSessionHandler(func: (dialog: DialogContext) => void) {
@@ -1780,14 +1789,15 @@ function GenericTool(props: ToolProps<any>) {
 function InlineTool(props: {
   icon: string
   iconColor?: RGBA
+  color?: RGBA
   complete: any
   pending: string
   spinner?: boolean
+  separate?: boolean
   children: JSX.Element
   part: ToolPart
   onClick?: () => void
 }) {
-  const [margin, setMargin] = createSignal(0)
   const { theme } = useTheme()
   const ctx = use()
   const sync = useSync()
@@ -1801,6 +1811,7 @@ function InlineTool(props: {
   })
 
   const fg = createMemo(() => {
+    if (props.color) return props.color
     if (permission()) return theme.warning
     if (hover() && props.onClick) return theme.text
     if (props.complete) return theme.textMuted
@@ -1819,35 +1830,21 @@ function InlineTool(props: {
 
   return (
     <box
-      marginTop={margin()}
+      ref={(el: BoxRenderable) => {
+        if (props.separate) alwaysSeparate.add(el)
+        setPreLayoutSiblingMargin(el, (previous) =>
+          props.separate ||
+          (previous instanceof BoxRenderable && (previous.height > 1 || alwaysSeparate.has(previous)))
+            ? 1
+            : 0,
+        )
+      }}
       paddingLeft={3}
       onMouseOver={() => props.onClick && setHover(true)}
       onMouseOut={() => setHover(false)}
       onMouseUp={() => {
         if (renderer.getSelection()?.getSelectedText()) return
         props.onClick?.()
-      }}
-      renderBefore={function () {
-        const el = this as BoxRenderable
-        const parent = el.parent
-        if (!parent) {
-          return
-        }
-        if (el.height > 1) {
-          setMargin(1)
-          return
-        }
-        const children = parent.getChildren()
-        const index = children.indexOf(el)
-        const previous = children[index - 1]
-        if (!previous) {
-          setMargin(0)
-          return
-        }
-        if (previous.height > 1 || previous.id.startsWith("text-")) {
-          setMargin(1)
-          return
-        }
       }}
     >
       <Switch>
@@ -1882,6 +1879,7 @@ function BlockTool(props: {
   const error = createMemo(() => (props.part?.state.status === "error" ? props.part.state.error : undefined))
   return (
     <box
+      ref={(el: BoxRenderable) => alwaysSeparate.add(el)}
       border={["left"]}
       paddingTop={1}
       paddingBottom={1}
@@ -2130,6 +2128,7 @@ function hasSubagentSessions(parts: Part[]) {
 }
 
 function Task(props: ToolProps<typeof TaskTool>) {
+  const { theme } = useTheme()
   const { navigate } = useRoute()
   const sync = useSync()
   const synced = new Set<string>()
@@ -2155,7 +2154,22 @@ function Task(props: ToolProps<typeof TaskTool>) {
     tools().findLast((x) => (x.state.status === "running" || x.state.status === "completed") && x.state.title),
   )
 
-  const isRunning = createMemo(() => props.part.state.status === "running")
+  const status = createMemo(() => sync.data.session_status[props.metadata.sessionId ?? ""])
+  // A background (or promoted) dispatch keeps running after the tool part has
+  // settled the foreground wait; the child's session status decides the spinner
+  // so an idle background task never keeps spinning (upstream 0543fd29c8).
+  const isRunning = createMemo(() => {
+    const value = status()
+    return (
+      props.part.state.status === "running" ||
+      (props.metadata.background === true && value !== undefined && value.type !== "idle")
+    )
+  })
+  const retry = createMemo(() => {
+    const value = status()
+    if (value?.type !== "retry") return
+    return value
+  })
 
   const duration = createMemo(() => {
     const first = messages().find((x) => x.role === "user")?.time.created
@@ -2166,18 +2180,27 @@ function Task(props: ToolProps<typeof TaskTool>) {
 
   const content = createMemo(() => {
     if (!props.input.description) return ""
-    const content = [`${Locale.titlecase(props.input.subagent_type ?? "General")} Task — ${props.input.description}`]
+    const content = [
+      formatSubagentTitle(
+        Locale.titlecase(props.input.subagent_type ?? "General"),
+        props.input.description,
+        props.metadata.background === true,
+      ),
+    ]
 
-    if (isRunning() && tools().length > 0) {
+    const retrying = retry()
+    if (isRunning() && retrying) {
+      content.push(`↳ ${formatSubagentRetry(retrying.attempt, Locale.truncate(retrying.message, 80))}`)
+    } else if (isRunning() && tools().length > 0) {
       if (current()) {
         const state = current()!.state
         const title = state.status === "running" || state.status === "completed" ? state.title : undefined
         content.push(`↳ ${Locale.titlecase(current()!.tool)} ${title}`)
-      } else content.push(`↳ ${tools().length} toolcalls`)
+      } else content.push(`↳ ${formatSubagentToolcalls(tools().length)}`)
     }
 
-    if (props.part.state.status === "completed") {
-      content.push(`└ ${tools().length} toolcalls · ${Locale.duration(duration())}`)
+    if (!isRunning() && props.part.state.status === "completed") {
+      content.push(`└ ${formatCompletedSubagentDetail(tools().length, Locale.duration(duration()))}`)
     }
 
     return content.join("\n")
@@ -2185,7 +2208,9 @@ function Task(props: ToolProps<typeof TaskTool>) {
 
   return (
     <InlineTool
-      icon="│"
+      icon={props.part.state.status === "completed" ? "✓" : "│"}
+      separate={true}
+      color={retry() ? theme.error : undefined}
       spinner={isRunning()}
       complete={props.input.description}
       pending="Delegating…"
