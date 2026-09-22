@@ -1240,7 +1240,14 @@ export const ConfigProvidersResult = Schema.Struct({
 export type ConfigProvidersResult = Types.DeepMutable<Schema.Schema.Type<typeof ConfigProvidersResult>>
 
 export function defaultModelIDs<T extends { models: Record<string, { id: string }> }>(providers: Record<string, T>) {
-  return mapValues(providers, (item) => sort(Object.values(item.models))[0].id)
+  // A provider with zero models (e.g. catalog still warming up after a host
+  // restart) is skipped instead of throwing, so /config/providers stays 200.
+  return Object.fromEntries(
+    Object.entries(providers).flatMap(([providerID, item]) => {
+      const [model] = sort(Object.values(item.models))
+      return model ? [[providerID, model.id] as const] : []
+    }),
+  )
 }
 
 export interface Interface {
