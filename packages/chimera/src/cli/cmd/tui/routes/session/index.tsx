@@ -136,6 +136,19 @@ export function Session() {
       .toSorted((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
   })
   const messages = createMemo(() => sync.data.message[route.sessionID] ?? [])
+  // Foreground (synchronous) task tool calls currently running in this session.
+  // These are promotable to background via the session_background keybind (ctrl+b).
+  const foregroundTasks = createMemo(() =>
+    messages().flatMap((message) =>
+      (sync.data.part[message.id] ?? []).filter(
+        (part): part is ToolPart =>
+          part.type === "tool" &&
+          part.tool === "task" &&
+          part.state.status === "running" &&
+          part.state.metadata?.background !== true,
+      ),
+    ),
+  )
   const permissions = createMemo(() => {
     if (session()?.parentID) return []
     return children().flatMap((x) => sync.data.permission[x.id] ?? [])
@@ -968,6 +981,25 @@ export function Session() {
       },
     },
     {
+      title: "Background subagents",
+      value: "session.background",
+      keybind: "session_background",
+      category: "Session",
+      hidden: true,
+      enabled: foregroundTasks().length > 0,
+      onSelect: (dialog) => {
+        // Promote every running foreground task dispatch of this session to the
+        // background (server-side engine promote; fibers keep running).
+        void sdk.client.experimental.session
+          .background({
+            sessionID: route.sessionID,
+            workspace: project.workspace.current(),
+          })
+          .catch(() => {})
+        dialog.clear()
+      },
+    },
+    {
       title: "Go to child session",
       value: "session.child.first",
       keybind: "session_child_first",
@@ -1435,6 +1467,19 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
           <text fg={theme.text}>
             {keybind.print("session_child_first")}
             <span style={{ fg: theme.textMuted }}> view subagents</span>
+            <Show
+              when={props.parts.some(
+                (x) =>
+                  x.type === "tool" &&
+                  x.tool === "task" &&
+                  x.state.status === "running" &&
+                  x.state.metadata?.background !== true,
+              )}
+            >
+              <span style={{ fg: theme.textMuted }}> · </span>
+              {keybind.print("session_background")}
+              <span style={{ fg: theme.textMuted }}> background</span>
+            </Show>
           </text>
         </box>
       </Show>
