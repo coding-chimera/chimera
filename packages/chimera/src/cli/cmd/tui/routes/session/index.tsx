@@ -2094,11 +2094,11 @@ function WebFetch(props: ToolProps<typeof WebFetchTool>) {
 }
 
 function WebSearch(props: ToolProps<typeof WebSearchTool>) {
-  const metadata = props.metadata as { numResults?: number; provider?: string }
+  const metadata = () => props.metadata as { numResults?: number; provider?: string }
   return (
     <InlineTool icon="◈" pending="Searching web…" complete={props.input.query} part={props.part}>
-      Web Search "{props.input.query}" <Show when={metadata.provider}>via {metadata.provider}</Show>{" "}
-      <Show when={metadata.numResults}>({metadata.numResults} results)</Show>
+      Web Search "{props.input.query}" <Show when={metadata().provider}>via {metadata().provider}</Show>{" "}
+      <Show when={metadata().numResults}>({metadata().numResults} results)</Show>
     </InlineTool>
   )
 }
