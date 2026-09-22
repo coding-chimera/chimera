@@ -5,7 +5,9 @@ import { Spinner } from "@tui/component/spinner"
 import { useTheme } from "@tui/context/theme"
 import { useLocal } from "@tui/context/local"
 import { useKeyboard, useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
-import { TextAttributes, type BoxRenderable, type SyntaxStyle } from "@opentui/core"
+import { TextAttributes, BoxRenderable, type SyntaxStyle } from "@opentui/core"
+import { alwaysSeparate, setPreLayoutSiblingMargin } from "@tui/util/layout"
+import { formatSubagentTitle } from "@tui/util/subagent-format"
 import { Locale } from "@/util/locale"
 import { LANGUAGE_EXTENSIONS } from "@/lsp/language"
 import path from "path"
@@ -508,12 +510,12 @@ function InlineTool(props: {
   complete: unknown
   pending: string
   spinner?: boolean
+  separate?: boolean
   children: JSX.Element
   part: SessionMessageAssistantTool
-}) {
+  }) {
   const { theme } = useTheme()
   const renderer = useRenderer()
-  const [margin, setMargin] = createSignal(0)
   const [hover, setHover] = createSignal(false)
   const [showError, setShowError] = createSignal(false)
   const error = createMemo(() => (props.part.state.status === "error" ? props.part.state.error.message : undefined))
@@ -536,7 +538,16 @@ function InlineTool(props: {
   const attributes = createMemo(() => (denied() ? TextAttributes.STRIKETHROUGH : undefined))
   return (
     <box
-      marginTop={margin()}
+      ref={(el: BoxRenderable) => {
+        if (props.separate) alwaysSeparate.add(el)
+        setPreLayoutSiblingMargin(el, (previous) =>
+          props.separate ||
+          (previous instanceof BoxRenderable && (previous.height > 1 || alwaysSeparate.has(previous))) ||
+          (previous?.id.startsWith("text") ?? false)
+            ? 1
+            : 0,
+        )
+      }}
       paddingLeft={3}
       flexShrink={0}
       flexDirection="row"
@@ -548,17 +559,6 @@ function InlineTool(props: {
         if (!error()) return
         if (renderer.getSelection()?.getSelectedText()) return
         setShowError((prev) => !prev)
-      }}
-      renderBefore={function () {
-        const el = this as BoxRenderable
-        const parent = el.parent
-        if (!parent) return
-        const previous = parent.getChildren()[parent.getChildren().indexOf(el) - 1]
-        if (!previous) {
-          setMargin(0)
-          return
-        }
-        if (previous.id.startsWith("text")) setMargin(1)
       }}
     >
       <box flexShrink={0}>
@@ -616,6 +616,7 @@ function BlockTool(props: {
   const error = createMemo(() => (props.part?.state.status === "error" ? props.part.state.error.message : undefined))
   return (
     <box
+      ref={(el: BoxRenderable) => alwaysSeparate.add(el)}
       border={["left"]}
       paddingTop={1}
       paddingBottom={1}
@@ -984,11 +985,16 @@ function Task(props: ToolProps) {
   const content = createMemo(() => {
     const description = stringValue(props.input.description)
     if (!description) return pendingInput(props.part)
-    return `${Locale.titlecase(stringValue(props.input.subagent_type) ?? "General")} Task — ${description}`
+    return formatSubagentTitle(
+      Locale.titlecase(stringValue(props.input.subagent_type) ?? "General"),
+      description,
+      props.metadata.background === true,
+    )
   })
   return (
     <InlineTool
-      icon="│"
+      icon={props.part.state.status === "completed" ? "✓" : "│"}
+      separate={true}
       spinner={props.part.state.status === "running"}
       complete={toolComplete(props.part)}
       pending="Delegating…"
