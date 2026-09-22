@@ -4401,3 +4401,16 @@ test("model capability layers merge: built-in table < provider config < global m
     },
   })
 })
+
+test("defaultModelIDs skips providers with empty models instead of throwing", () => {
+  const result = Provider.defaultModelIDs({
+    openai: { models: { "gpt-4.1": { id: "gpt-4.1" }, "gpt-4o": { id: "gpt-4o" } } },
+    warming: { models: {} },
+  })
+  expect(result).toEqual({ openai: expect.any(String) })
+  expect(Object.keys(result)).toEqual(["openai"])
+})
+
+test("defaultModelIDs returns an empty record when every provider is empty", () => {
+  expect(Provider.defaultModelIDs({ a: { models: {} }, b: { models: {} } })).toEqual({})
+})
