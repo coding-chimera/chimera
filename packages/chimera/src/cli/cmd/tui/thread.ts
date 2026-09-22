@@ -132,6 +132,11 @@ export const TuiThreadCommand = cmd({
     // Keep ENABLE_PROCESSED_INPUT cleared even if other code flips it.
     // (Important when running under `bun run` wrappers on Windows.)
     const unguard = win32InstallCtrlCGuard()
+    // Exit-code semantics (upstream a97622c801 equivalent): startup errors that
+    // surface through the process error handlers — e.g. a remote-config fetch
+    // intercepted by SSO — must not be masked by the final exit(0), or scripts
+    // and CI treat a failed startup as success.
+    let startupFailed = false
     try {
       // Must be the very first thing — disables CTRL_C_EVENT before any Worker
       // spawn or async work so the OS cannot kill the process group.
@@ -162,11 +167,6 @@ export const TuiThreadCommand = cmd({
       const worker = new Worker(file, {
         env,
       })
-      // Exit-code semantics (upstream a97622c801 equivalent): startup errors that
-      // surface through the process error handlers — e.g. a remote-config fetch
-      // intercepted by SSO — must not be masked by the final exit(0), or scripts
-      // and CI treat a failed startup as success.
-      let startupFailed = false
       worker.onerror = (e) => {
         startupFailed = true
         Log.Default.error("thread error", {
