@@ -632,7 +632,30 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   }
 
   const connected = useConnected()
+  // Current worktree workspace, when the active workspace is a git worktree
+  // (upstream 51da3483a9: palette command to copy its path).
+  const currentWorktreeWorkspace = createMemo(() => {
+    const workspaceID = project.workspace.current()
+    if (!workspaceID) return
+    const workspace = project.workspace.get(workspaceID)
+    if (workspace?.type !== "worktree" || !workspace.directory) return
+    return workspace
+  })
   command.register(() => [
+    {
+      title: "Copy worktree path",
+      value: "workspace.copy_path",
+      category: "Workspace",
+      enabled: currentWorktreeWorkspace() !== undefined,
+      onSelect: () => {
+        const workspace = currentWorktreeWorkspace()
+        if (!workspace?.directory) return
+        void Clipboard.copy(workspace.directory)
+          .then(() => toast.show({ message: "Copied worktree path", variant: "info" }))
+          .catch(toast.error)
+        dialog.clear()
+      },
+    },
     {
       title: "Switch session",
       value: "session.list",

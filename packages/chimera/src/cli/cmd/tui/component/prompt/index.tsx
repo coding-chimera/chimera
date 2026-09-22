@@ -12,6 +12,8 @@ import { useSDK } from "@tui/context/sdk"
 import { useRoute } from "@tui/context/route"
 import { useProject } from "@tui/context/project"
 import { useSync } from "@tui/context/sync"
+import { useTuiConfig } from "@tui/context/tui-config"
+import { useDirectory } from "@tui/context/directory"
 import { useEvent } from "@tui/context/event"
 import { editorSelectionKey, useEditorContext, type EditorSelection } from "@tui/context/editor"
 import { MessageID, PartID } from "@/session/schema"
@@ -144,7 +146,15 @@ export function Prompt(props: PromptProps) {
   const command = useCommandDialog()
   const renderer = useRenderer()
   const dimensions = useTerminalDimensions()
+  const tuiConfig = useTuiConfig()
+  // Responsive/configurable textarea height (upstream 0de5f1ff36): config cap,
+  // otherwise a third of the terminal with the historical 6-row floor.
+  const promptMaxHeight = createMemo(
+    () => tuiConfig.prompt?.max_height ?? Math.max(6, Math.floor(dimensions().height / 3)),
+  )
   const { theme, syntax } = useTheme()
+  // Idle footer falls back to the session directory (upstream 34e5809059).
+  const directory = useDirectory()
   const kv = useKV()
   const animationsEnabled = createMemo(() => kv.get("animations_enabled", true))
   const list = createMemo(() => props.placeholders?.normal ?? [])
@@ -1255,7 +1265,7 @@ export function Prompt(props: PromptProps) {
               textColor={keybind.leader ? theme.textMuted : theme.text}
               focusedTextColor={keybind.leader ? theme.textMuted : theme.text}
               minHeight={1}
-              maxHeight={6}
+              maxHeight={promptMaxHeight()}
               onContentChange={() => {
                 const value = input.plainText
                 setStore("prompt", "input", value)
@@ -1638,7 +1648,15 @@ export function Prompt(props: PromptProps) {
                 </box>
               )}
             </Match>
-            <Match when={true}>{props.hint ?? <text />}</Match>
+            <Match when={true}>
+              {props.hint ?? (
+                <Show when={props.sessionID}>
+                  <box marginLeft={1}>
+                    <text fg={theme.textMuted}>{directory()}</text>
+                  </box>
+                </Show>
+              )}
+            </Match>
           </Switch>
           <Show when={status().type !== "retry"}>
             <box gap={2} flexDirection="row">
