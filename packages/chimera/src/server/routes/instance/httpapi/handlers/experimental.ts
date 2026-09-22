@@ -159,6 +159,14 @@ export const experimentalHandlers = HttpApiBuilder.group(InstanceHttpApi, "exper
       return promoted.some((job) => job !== undefined)
     })
 
+    const capabilities = Effect.fn("ExperimentalHttpApi.capabilities")(function* () {
+      const cfg = yield* config.get()
+      return {
+        backgroundSubagents:
+          cfg.delegation?.background_subagents ?? ConfigDelegation.DEFAULT_BACKGROUND_SUBAGENTS,
+      }
+    })
+
     const resource = Effect.fn("ExperimentalHttpApi.resource")(function* () {
       return yield* mcp.resources()
     })
@@ -175,6 +183,7 @@ export const experimentalHandlers = HttpApiBuilder.group(InstanceHttpApi, "exper
       .handle("worktreeReset", worktreeReset)
       .handle("session", session)
       .handle("sessionBackground", sessionBackground)
+      .handle("capabilities", capabilities)
       .handle("resource", resource)
   }),
 )
