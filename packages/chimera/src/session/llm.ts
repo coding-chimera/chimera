@@ -7,6 +7,8 @@ import { openai } from "@ai-sdk/openai"
 import { mergeDeep } from "remeda"
 import { GitLabWorkflowLanguageModel } from "gitlab-ai-provider"
 import { ProviderTransform } from "@/provider/transform"
+import { NativeLLMGating } from "@/provider/sdk/native-llm/gating"
+import { NativeLLMLanguageModel } from "@/provider/sdk/native-llm/language-model"
 import { Config } from "@/config/config"
 import { InstanceState } from "@/effect/instance-state"
 import type { Agent } from "@/agent/agent"
@@ -363,8 +365,36 @@ const live: Layer.Layer<
         } as Result
       }
 
-      const language = yield* provider.getLanguage(input.model)
-      const isWorkflow = language instanceof GitLabWorkflowLanguageModel
+      const resolvedLanguage = yield* provider.getLanguage(input.model)
+      const isWorkflow = resolvedLanguage instanceof GitLabWorkflowLanguageModel
+      // experimental.llm_runtime (L4.4 pilot): switch the transport for eligible
+      // providers from the AI SDK provider package to the @coding-chimera/llm
+      // route runtime. With the flag off (default) `language` is the exact AI
+      // SDK model instance getLanguage returned and nothing from the llm
+      // package is constructed, so the downstream path stays byte-identical.
+      const nativeRequestOptions =
+        !isWorkflow &&
+        NativeLLMGating.eligible({
+          llmRuntime: cfg.experimental?.llm_runtime,
+          model: input.model,
+          provider: item,
+          auth: info,
+        })
+          ? yield* provider.getRequestOptions(input.model)
+          : undefined
+      const language = nativeRequestOptions
+        ? NativeLLMLanguageModel.languageModel({
+            providerID: input.model.providerID,
+            wireModelID: input.model.api.id,
+            interleavedField:
+              typeof input.model.capabilities.interleaved === "object" && input.model.capabilities.interleaved
+                ? input.model.capabilities.interleaved.field
+                : undefined,
+            baseURL: nativeRequestOptions.baseURL,
+            apiKey: nativeRequestOptions.apiKey ?? (info?.type === "api" ? info.key : undefined),
+            headers: nativeRequestOptions.headers,
+          })
+        : resolvedLanguage
       const messages = isWorkflow
         ? input.messages
         : [
