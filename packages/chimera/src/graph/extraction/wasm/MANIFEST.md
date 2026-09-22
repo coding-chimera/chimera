@@ -36,6 +36,7 @@ package (the kernel has no objc arm; no parity constraint).
 | tree-sitter-luau.wasm | luau | tree-sitter-grammars luau v1.2.0 (parser.c 8f25bc17… / scanner.c a157bb52…); ABI 14 | f1647052518f2bdfae8e8c0b033ffdeca1193d69d11c78ba20f84c8374fd0fe3 |
 | tree-sitter-pascal.wasm | pascal | (no kernel arm in the fork's parity gate; historical vendor) | be3634fca99c19f5e1035a1a9c7d93d6ee82b35e6d5024f02be4883b71329c3e |
 | tree-sitter-scala.wasm | scala | scala vendored C (kernel build.rs grammars/scala) | 7945b13e6f9b15b578c5e5e4e60253c049fec07c531518163f3415a76c0621aa |
+| tree-sitter-nix.wasm | nix | nix-community/tree-sitter-nix @ 3d0173d (MIT), upstream prebuilt artifact byte-copied 2026-09-22 — no kernel arm, outside the parity gate (same category as pascal/objc); exits K-v2 ruling ⑤ | 4acffa1c013df751193a21ce429777ca214c7d3a7e3665085b6df00dad8869f0 |
 
 Note: kotlin and dart were vendored as the hardening follow-up (2026-09-16) —
 both now load from this directory like every other kernel-routable language.
