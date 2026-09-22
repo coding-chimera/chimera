@@ -176,7 +176,7 @@ diff-viewer 族 7（`17d66ee4fe`/`ee008923f3`/`05f335ce62`/`7a4d18390a`/`6eec983
 | 5 | 后台异步子代理是否按 fork 调度架构重设计引入（task_status 轮询已被上游删除，终态=注入驱动自动续跑） | **已拍板 2026-09-07：做、默认打开、claims 同步解冻**——九点拍板详情见 §10.8 与计划书 F4 拍板记录；`22de34c4de`+`8feb4a31c7`+`3003867c25` 及全链 12 提交进 F4 |
 | 6 | codemode v1 接线是否启用（vendor 意图澄清） | `ed6dc879be`+`abaab29cb3` |
 | 7 | opencode 品牌 integration/zen provider 是否保留 | **已拍板 2026-09-22：三层全保留**——①zen 服务/opencode provider 保留（不追求与上游彻底切割，定位声明=基于 opencode 基座）②UI 总体显 Chimera，但 opencode provider 自身保持显示 opencode（无自有托管服务）③第三方 integration 标识头（`X-Cerebras-3rd-Party-Integration`、`User-Agent: opencode/...` 等）继续用 "opencode" 值（coding plan 门户只认 opencode，改 chimera 对端不识）；`cf80b5c470`/`c556bddda3` 随 L4.4 吸收（L4 内） |
-| 8 | NVIDIA X-BILLING-INVOKE-ORIGIN 值：OpenCode vs Chimera | `d34a0194ec` |
+| 8 | NVIDIA X-BILLING-INVOKE-ORIGIN 值：OpenCode vs Chimera | **已决 2026-09-22（parent 按拍板#7 同族逻辑归档）**：保留 "opencode" 值——用户对 #7 的裁决理由（coding plan 门户只认 opencode、对端不识 chimera）直接覆盖本项；零代码变更，仅决议记录。用户终报时可覆议 | `d34a0194ec` |
 | 9 | Codex strict 策略：fork `strict:false` vs 上游 strict 透传 | `5f61d21487`（L4 内） |
 | 10 | TUI yolo permission mode 是否要 | `0a5bed2bc2` |
 | 11 | newweb 多服务器权限状态串台复核（独立立项，非上游移植） | §2 newweb 复核项 |
