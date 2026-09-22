@@ -1125,6 +1125,7 @@ export type ProviderConfig = {
   }
   backend_semantics?: "openai" | "codex" | "alibailian"
   search_model?: string
+  hosted_web_search?: boolean
   userAgent?: string
   whitelist?: Array<string>
   blacklist?: Array<string>
@@ -1155,9 +1156,23 @@ export type ProviderConfig = {
       wire_api?: "chat" | "responses"
       remote_compaction?: boolean
       backend_semantics?: "openai" | "codex" | "alibailian"
+      hosted_web_search?: boolean
       capability_model_id?: string
       size_class?: "S" | "M" | "L" | "XL"
       reasoning_efforts?: Array<"none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max">
+      sampling?: {
+        temperature?: number
+        top_p?: number
+        top_k?: number
+      }
+      reasoning_protocol?:
+        | "zhipuai_thinking"
+        | "dashscope_enable_thinking"
+        | "vllm_chat_template"
+        | "anthropic_thinking"
+        | "google_thinking_config"
+      default_variant?: string
+      default_effort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
       release_date?: string
       attachment?: boolean
       reasoning?: boolean
@@ -1347,6 +1362,7 @@ export type Config = {
       description?: string
       agent?: string
       model?: string
+      variant?: string
       subtask?: boolean
     }
   }
@@ -1378,9 +1394,37 @@ export type Config = {
   free_models?: boolean
   ultra_models?: Array<string>
   remote_compaction_models?: Array<string>
+  model_capabilities?: {
+    [key: string]: {
+      sampling?: {
+        temperature?: number
+        top_p?: number
+        top_k?: number
+      }
+      reasoning_protocol?:
+        | "zhipuai_thinking"
+        | "dashscope_enable_thinking"
+        | "vllm_chat_template"
+        | "anthropic_thinking"
+        | "google_thinking_config"
+      default_variant?: string
+      default_effort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
+      reasoning_efforts?: Array<"none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max">
+      backend_semantics?: "openai" | "codex" | "alibailian"
+      /**
+       * Variant-specific configuration overrides
+       */
+      variants?: {
+        [key: string]: {
+          disabled?: boolean
+        }
+      }
+    }
+  }
   model?: string
   small_model?: string
   default_agent?: string
+  subagent_depth?: number
   username?: string
   mode?: {
     build?: AgentConfig
@@ -1485,6 +1529,7 @@ export type Config = {
     continue_loop_on_deny?: boolean
     mcp_timeout?: number
     system_context?: boolean
+    llm_runtime?: boolean
   }
 }
 
@@ -1666,8 +1711,16 @@ export type Model = {
   wire_api?: "chat" | "responses"
   remote_compaction?: boolean
   backend_semantics?: "openai" | "codex" | "alibailian"
+  hosted_web_search?: boolean
   capability_model_id?: string
   reasoning_efforts?: Array<"none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max">
+  sampling?: {
+    temperature?: number
+    top_p?: number
+    top_k?: number
+  }
+  default_variant?: string
+  default_effort?: string
   capabilities: {
     temperature: boolean
     reasoning: boolean
@@ -1759,6 +1812,7 @@ export type Provider = {
   }
   backend_semantics?: "openai" | "codex" | "alibailian"
   search_model?: string
+  hosted_web_search?: boolean
   env: Array<string>
   key?: string
   options: {
@@ -5245,6 +5299,38 @@ export type ExperimentalSessionListResponses = {
 }
 
 export type ExperimentalSessionListResponse = ExperimentalSessionListResponses[keyof ExperimentalSessionListResponses]
+
+export type ExperimentalSessionBackgroundData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/session/{sessionID}/background"
+}
+
+export type ExperimentalSessionBackgroundErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ExperimentalSessionBackgroundError =
+  ExperimentalSessionBackgroundErrors[keyof ExperimentalSessionBackgroundErrors]
+
+export type ExperimentalSessionBackgroundResponses = {
+  /**
+   * Backgrounded subagents
+   */
+  200: boolean
+}
+
+export type ExperimentalSessionBackgroundResponse =
+  ExperimentalSessionBackgroundResponses[keyof ExperimentalSessionBackgroundResponses]
 
 export type ExperimentalResourceListData = {
   body?: never
