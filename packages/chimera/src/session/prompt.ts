@@ -360,7 +360,13 @@ export const layer = Layer.effect(
           bgCfg.delegation?.background_subagents ?? ConfigDelegation.DEFAULT_BACKGROUND_SUBAGENTS
         if (!backgroundEnabled) return undefined
         const running = (yield* jobs.list()).filter(
-          (job) => job.status === "running" && job.ownerSessionId === input.sessionID,
+          (job) =>
+            job.status === "running" &&
+            job.ownerSessionId === input.sessionID &&
+            // Foreground sync dispatches are registered in the engine (F4-P3 promotion
+            // support) with metadata.background === false; they are not background tasks
+            // until promote() flips the flag.
+            job.metadata?.background !== false,
         )
         if (running.length === 0) return undefined
         const now = Date.now()

@@ -43,6 +43,9 @@ type Active = {
   /** Completes when markDelivered runs; the settle-to-delivered in-flight window.
    * Created at start and succeeded at most once (idempotent markDelivered). */
   deliveryDone: Deferred.Deferred<void>
+  /** Succeeded by promote() with the post-promotion snapshot; wakes waitForPromotion
+   * waiters (the task tool's sync-dispatch raceFirst racer). */
+  promoted: Deferred.Deferred<Info>
   scope: Scope.Closeable
   token: object
   pending: number
@@ -51,6 +54,9 @@ type Active = {
   output?: { sequence: number; text: string }
   tail: Deferred.Deferred<void>
   onInterrupt?: Effect.Effect<void>
+  /** Fires once when promote() flips the job to background; the task tool uses it
+   * to publish the backgrounded tool-part metadata and fork the result-notify fiber. */
+  onPromote?: Effect.Effect<void>
 }
 
 type State = {
@@ -63,6 +69,12 @@ type FinishResult = {
   done?: Deferred.Deferred<Info>
   scope?: Scope.Closeable
   onInterrupt?: Effect.Effect<void>
+}
+
+type PromoteResult = {
+  info?: Info
+  promoted?: Deferred.Deferred<Info>
+  onPromote?: Effect.Effect<void>
 }
 
 type StartResult = { info: Info } | { info: Info; scope: Scope.Closeable; token: object }
@@ -101,6 +113,8 @@ export type StartInput = {
    */
   ownerSessionId?: string
   metadata?: Record<string, unknown>
+  /** Fires once when the job is promoted from foreground to background (see promote). */
+  onPromote?: Effect.Effect<void>
   /** Interruption hook: fires when the job ends cancelled, for phase 2 to cancel the bound child session. */
   onInterrupt?: Effect.Effect<void>
   run: Effect.Effect<string, unknown>
@@ -127,6 +141,10 @@ export interface Interface {
   readonly start: (input: StartInput) => Effect.Effect<Info, BackgroundJobLimitError>
   readonly extend: (input: ExtendInput) => Effect.Effect<boolean>
   readonly wait: (input: WaitInput) => Effect.Effect<WaitResult>
+  /** Resolves when the job is promoted to background; Effect.never for unknown or settled jobs. */
+  readonly waitForPromotion: (id: string) => Effect.Effect<Info>
+  /** Flip a running foreground job to background without interrupting or restarting its fiber. */
+  readonly promote: (id: string) => Effect.Effect<Info | undefined>
   readonly cancel: (id: string) => Effect.Effect<Info | undefined>
   readonly markDelivered: (id: string, generation?: number) => Effect.Effect<void>
   readonly waitOwnerQuiescent: (ownerSessionId: string) => Effect.Effect<void>
@@ -322,6 +340,7 @@ export const make = (config: Config.Interface, directory?: string, options?: { s
       const next = {
         ...job,
         onInterrupt: undefined,
+        onPromote: undefined,
         fiber: undefined,
         pending: 0,
         output,
@@ -407,6 +426,7 @@ export const make = (config: Config.Interface, directory?: string, options?: { s
         const done = yield* Deferred.make<Info>()
         const deliveryDone = yield* Deferred.make<void>()
         const tail = yield* Deferred.make<void>()
+        const promoted = yield* Deferred.make<Info>()
         const result = yield* SynchronizedRef.modifyEffect(
           state.jobs,
           Effect.fnUntraced(function* (jobs) {
@@ -414,9 +434,17 @@ export const make = (config: Config.Interface, directory?: string, options?: { s
             if (existing?.info.status === "running") {
               return [{ info: snapshot(existing) }, jobs] as readonly [StartResult, Map<string, Active>]
             }
-            const running = Array.from(jobs.values()).filter((job) => job.info.status === "running").length
-            if (running >= limit) {
-              return yield* new BackgroundJobLimitError({ id: input.id, running, limit })
+            // Foreground (sync) dispatches register with metadata.background === false:
+            // they are exempt from the background_concurrent cap (the cap governs
+            // background work only) and do not consume a slot while running. promote()
+            // flips the flag, so a promoted job counts toward the cap from then on.
+            if (input.metadata?.background !== false) {
+              const running = Array.from(jobs.values()).filter(
+                (job) => job.info.status === "running" && job.info.metadata?.background !== false,
+              ).length
+              if (running >= limit) {
+                return yield* new BackgroundJobLimitError({ id: input.id, running, limit })
+              }
             }
             const scope = yield* Scope.fork(state.scope, "parallel")
             const token = {}
@@ -443,7 +471,9 @@ export const make = (config: Config.Interface, directory?: string, options?: { s
               pending: 1,
               next: 1,
               tail,
+              promoted,
               onInterrupt: input.onInterrupt,
+              onPromote: input.onPromote,
             }
             return [
               { info: snapshot(job), scope, token },
@@ -607,6 +637,7 @@ export const make = (config: Config.Interface, directory?: string, options?: { s
       const next = {
         ...job,
         onInterrupt: undefined,
+        onPromote: undefined,
         fiber: undefined,
         pending: 0,
         info: {
@@ -629,7 +660,70 @@ export const make = (config: Config.Interface, directory?: string, options?: { s
     return result.info
   })
 
-  return Service.of({ list, get, start, extend, wait, cancel, markDelivered, waitOwnerQuiescent })
+  /**
+   * Waits until the job is promoted to background (upstream waitForPromotion semantics):
+   * resolves immediately for a job that is already background, and never resolves for an
+   * unknown or settled job so the task tool's raceFirst(wait, waitForPromotion) racer
+   * always terminates through the done side instead.
+   */
+  const waitForPromotion: Interface["waitForPromotion"] = Effect.fn("BackgroundJob.waitForPromotion")(function* (
+    id: string,
+  ) {
+    const job = (yield* SynchronizedRef.get(state.jobs)).get(id)
+    if (!job || job.info.status !== "running") return yield* Effect.never
+    if (job.info.metadata?.background === true) return snapshot(job)
+    return yield* Deferred.await(job.promoted)
+  })
+
+  /**
+   * Promotes a running foreground job to background WITHOUT interrupting or restarting
+   * its fiber: flips metadata.background to true, wakes waitForPromotion racers through
+   * the promoted Deferred, and fires the one-shot onPromote hook (the task tool publishes
+   * the backgrounded tool-part metadata and forks its result-notify fiber there).
+   * Idempotent: an already-background running job returns its snapshot unchanged;
+   * a settled or unknown job returns undefined (upstream parity).
+   */
+  const promote: Interface["promote"] = Effect.fn("BackgroundJob.promote")(function* (id: string) {
+    const result = yield* SynchronizedRef.modifyEffect(
+      state.jobs,
+      Effect.fnUntraced(function* (jobs) {
+        const job = jobs.get(id)
+        if (!job || job.info.status !== "running")
+          return [{}, jobs] as readonly [PromoteResult, Map<string, Active>]
+        if (job.info.metadata?.background === true)
+          return [{ info: snapshot(job) }, jobs] as readonly [PromoteResult, Map<string, Active>]
+        const next = {
+          ...job,
+          onPromote: undefined,
+          info: {
+            ...job.info,
+            metadata: { ...job.info.metadata, background: true },
+          },
+        }
+        return [
+          { info: snapshot(next), onPromote: job.onPromote, promoted: job.promoted },
+          new Map(jobs).set(id, next),
+        ] as readonly [PromoteResult, Map<string, Active>]
+      }),
+    )
+    if (result.info && result.promoted) yield* Deferred.succeed(result.promoted, result.info).pipe(Effect.ignore)
+    if (result.info && directory !== undefined) yield* Effect.sync(() => persistJobInfo(directory, result.info!))
+    if (result.onPromote) yield* result.onPromote.pipe(Effect.ignore)
+    return result.info
+  })
+
+  return Service.of({
+    list,
+    get,
+    start,
+    extend,
+    wait,
+    waitForPromotion,
+    promote,
+    cancel,
+    markDelivered,
+    waitOwnerQuiescent,
+  })
 })
 
 export const layer = Layer.effect(
@@ -647,6 +741,8 @@ export const layer = Layer.effect(
       start: (input) => InstanceState.useEffect(state, (jobs) => jobs.start(input)),
       extend: (input) => InstanceState.useEffect(state, (jobs) => jobs.extend(input)),
       wait: (input) => InstanceState.useEffect(state, (jobs) => jobs.wait(input)),
+      waitForPromotion: (id) => InstanceState.useEffect(state, (jobs) => jobs.waitForPromotion(id)),
+      promote: (id) => InstanceState.useEffect(state, (jobs) => jobs.promote(id)),
       cancel: (id) => InstanceState.useEffect(state, (jobs) => jobs.cancel(id)),
       markDelivered: (id, generation) => InstanceState.useEffect(state, (jobs) => jobs.markDelivered(id, generation)),
       waitOwnerQuiescent: (ownerSessionId) => InstanceState.useEffect(state, (jobs) => jobs.waitOwnerQuiescent(ownerSessionId)),

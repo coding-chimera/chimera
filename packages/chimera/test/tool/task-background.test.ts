@@ -1309,4 +1309,141 @@ describe("tool.task dispatch park (phase 2)", () => {
       }),
     { config: baseConfig },
   )
+
+  it.instance(
+    "promoting a foreground dispatch wakes the tool call with a moved-to-background result and delivers via injectSynthetic",
+    () =>
+      Effect.gen(function* () {
+        const jobs = yield* BackgroundJob.Service
+        const { chat, assistant } = yield* seed()
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+        const gate = yield* Deferred.make<void>()
+        const promptRan = yield* Deferred.make<void>()
+        let childSession: SessionID | undefined
+        const injected: string[] = []
+        const progress: Array<Record<string, unknown>> = []
+        const promptOps = makeStub({
+          prompt: (input) =>
+            Effect.gen(function* () {
+              childSession = input.sessionID
+              yield* Deferred.succeed(promptRan, undefined)
+              yield* Deferred.await(gate)
+              return reply(input, "promo-result")
+            }),
+          onInject: (input) => {
+            injected.push(input.text)
+          },
+        })
+
+        const fiber = yield* Effect.forkScoped(
+          def.execute(
+            { description: "promo probe", prompt: "work", subagent_type: "general" },
+            {
+              ...toolCtx({ chat, assistant, promptOps }),
+              metadata: (input) =>
+                Effect.sync(() => {
+                  if (input.metadata) progress.push(input.metadata)
+                }),
+            },
+          ),
+        )
+        yield* waitForPromptRan(promptRan)()
+        // The foreground dispatch is registered in the engine as a non-background job
+        // owned by the dispatching session.
+        const before = yield* jobs.get(childSession!)
+        expect(before?.status).toBe("running")
+        expect(before?.metadata?.background).toBe(false)
+        expect(before?.ownerSessionId).toBe(chat.id)
+
+        const promoted = yield* jobs.promote(childSession!)
+        expect(promoted?.metadata?.background).toBe(true)
+
+        const settled = yield* Fiber.await(fiber).pipe(Effect.timeoutOption("5000 millis"))
+        expect(settled._tag).toBe("Some")
+        if (settled._tag === "Some") {
+          const exit = settled.value
+          expect(Exit.isSuccess(exit)).toBe(true)
+          if (Exit.isSuccess(exit)) {
+            expect(exit.value.output).toContain("moved to background")
+            expect(exit.value.output).toContain(childSession!)
+            expect(exit.value.metadata.background).toBe(true)
+            expect(exit.value.metadata.jobId).toBe(childSession!)
+          }
+        }
+        // The onPromote hook published the backgrounded tool-part metadata.
+        expect(progress.some((item) => item.background === true && item.jobId === childSession)).toBe(true)
+
+        // The run fiber was never interrupted: releasing the gate completes it and
+        // the notify fiber delivers the result to the dispatching session.
+        yield* Deferred.succeed(gate, undefined)
+        const waitForDelivery = Effect.fnUntraced(function* () {
+          for (let i = 0; i < 500; i++) {
+            if (injected.length > 0 && (yield* jobs.get(childSession!))?.delivery === "delivered") return
+            yield* Effect.sleep(10)
+          }
+          return yield* Effect.fail(new Error("promoted job never delivered"))
+        })
+        yield* waitForDelivery()
+        expect(injected[0]).toContain("promo-result")
+        expect(injected[0]).toContain("<task_result>")
+        const after = yield* jobs.get(childSession!)
+        expect(after?.status).toBe("completed")
+        expect(after?.output).toContain("promo-result")
+      }),
+    { config: baseConfig },
+  )
+
+  it.instance(
+    "foreground resume against a live background job appends via extend instead of failing busy",
+    () =>
+      Effect.gen(function* () {
+        const jobs = yield* BackgroundJob.Service
+        const { chat, assistant } = yield* seed()
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+        const gate = yield* Deferred.make<void>()
+        const promptRan = yield* Deferred.make<void>()
+        const prompts: string[] = []
+        let childSession: SessionID | undefined
+        const promptOps = makeStub({
+          prompt: (input) =>
+            Effect.gen(function* () {
+              childSession = input.sessionID
+              const text = input.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("|")
+              prompts.push(text)
+              yield* Deferred.succeed(promptRan, undefined)
+              yield* Deferred.await(gate)
+              return reply(input, `ran:${text}`)
+            }),
+        })
+
+        const first = yield* Effect.forkScoped(
+          def.execute(
+            { description: "bg first", prompt: "one", subagent_type: "general", background: true },
+            toolCtx({ chat, assistant, promptOps }),
+          ),
+        )
+        yield* waitForPromptRan(promptRan)()
+        // Foreground (no background flag) resume with the same task_id appends.
+        const second = yield* def.execute(
+          {
+            description: "fg resume",
+            prompt: "two",
+            subagent_type: "general",
+            task_id: childSession!,
+          },
+          toolCtx({ chat, assistant, promptOps }),
+        )
+        expect(second.output).toContain("additional context appended")
+        expect(second.metadata.background).toBe(true)
+        yield* Deferred.succeed(gate, undefined)
+        const settled = yield* Fiber.await(first)
+        expect(Exit.isSuccess(settled)).toBe(true)
+        const done = yield* jobs.wait({ id: childSession! })
+        expect(done.info?.status).toBe("completed")
+        expect(prompts).toEqual(["one", "two"])
+      }),
+    { config: baseConfig },
+  )
 })
