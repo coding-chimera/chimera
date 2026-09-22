@@ -1559,6 +1559,10 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
     return props.part.text.replace("[REDACTED]", "").trim()
   })
   const running = createMemo(() => props.part.time?.end === undefined)
+  // Encrypted/redacted reasoning carries no renderable text; upstream final
+  // state (e0e9bd7d5f + f4a89683da) keeps the part visible as a plain
+  // completed header line instead of dropping it from the transcript.
+  const opaque = createMemo(() => !content() && Boolean(props.part.metadata))
   const open = createMemo(() => running() || expanded())
   const lines = createMemo(() => content().split("\n").filter((line) => line.trim().length > 0))
   const preview = createMemo(() => {
@@ -1567,13 +1571,14 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
     return text.slice(0, 97) + "…"
   })
   const label = createMemo(() => {
+    if (opaque()) return "Thinking"
     const lineCount = lines().length
     const suffix = lineCount === 1 ? "1 line" : `${lineCount} lines`
     if (running()) return `Thinking · streaming · ${suffix}`
     return `Thinking · ${suffix}`
   })
   return (
-    <Show when={content() && ctx.showThinking()}>
+    <Show when={(content() || opaque()) && ctx.showThinking()}>
       <box
         id={"text-" + props.part.id}
         paddingLeft={2}
@@ -1583,31 +1588,42 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
         customBorderChars={SplitBorder.customBorderChars}
         borderColor={theme.backgroundElement}
         onMouseUp={() => {
-          if (!running()) setExpanded((prev) => !prev)
+          if (!running() && !opaque()) setExpanded((prev) => !prev)
         }}
       >
-        <text fg={theme.textMuted}>
-          {open() ? "[-]" : "[+]"} {label()}
-        </text>
         <Show
-          when={open()}
+          when={running()}
           fallback={
-            <box paddingTop={1}>
-              <text fg={theme.textMuted}>{preview()}</text>
-            </box>
+            <text fg={theme.textMuted}>
+              {open() ? "[-]" : "[+]"} {label()}
+            </text>
           }
         >
-          <box paddingTop={1}>
-            <code
-              filetype="markdown"
-              drawUnstyledText={false}
-              streaming={running()}
-              syntaxStyle={subtleSyntax()}
-              content={content()}
-              conceal={ctx.conceal()}
-              fg={theme.textMuted}
-            />
+          <box flexDirection="row">
+            <Spinner color={theme.textMuted}>{label()}</Spinner>
           </box>
+        </Show>
+        <Show when={!opaque()}>
+          <Show
+            when={open()}
+            fallback={
+              <box paddingTop={1}>
+                <text fg={theme.textMuted}>{preview()}</text>
+              </box>
+            }
+          >
+            <box paddingTop={1}>
+              <code
+                filetype="markdown"
+                drawUnstyledText={false}
+                streaming={running()}
+                syntaxStyle={subtleSyntax()}
+                content={content()}
+                conceal={ctx.conceal()}
+                fg={theme.textMuted}
+              />
+            </box>
+          </Show>
         </Show>
       </box>
     </Show>
