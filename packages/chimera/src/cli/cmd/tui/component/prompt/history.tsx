@@ -83,6 +83,11 @@ export const { use: usePromptHistory, provider: PromptHistoryProvider } = create
       },
       append(item: PromptInfo) {
         const entry = structuredClone(unwrap(item))
+        // Consecutive duplicates pollute history navigation (upstream f3b0d3d7ac).
+        if (isDuplicateEntry(store.history.at(-1), entry)) {
+          setStore("index", 0)
+          return
+        }
         let trimmed = false
         setStore(
           produce((draft) => {
@@ -106,3 +111,8 @@ export const { use: usePromptHistory, provider: PromptHistoryProvider } = create
     }
   },
 })
+
+export function isDuplicateEntry(previous: PromptInfo | undefined, next: PromptInfo): boolean {
+  if (!previous) return false
+  return JSON.stringify(previous) === JSON.stringify(next)
+}

@@ -26,9 +26,12 @@ function writeOsc52(text: string): void {
   if (!process.stdout.isTTY) return
   const base64 = Buffer.from(text).toString("base64")
   const osc52 = `\x1b]52;c;${base64}\x07`
-  const passthrough = process.env["TMUX"] || process.env["STY"]
-  const sequence = passthrough ? `\x1bPtmux;\x1b${osc52}\x1b\\` : osc52
-  process.stdout.write(sequence)
+  // tmux with `set-clipboard on` needs BOTH the raw sequence (tmux consumes it
+  // for its own clipboard sync) and the passthrough-wrapped copy (forwarded to
+  // the outer terminal, e.g. over ssh); GNU screen only takes the wrapped form
+  // (upstream def7220bfc).
+  const passthrough = `\x1bPtmux;\x1b${osc52}\x1b\\`
+  process.stdout.write(process.env["TMUX"] ? osc52 + passthrough : process.env["STY"] ? passthrough : osc52)
 }
 
 export interface Content {
