@@ -9,6 +9,9 @@ import * as InstanceState from "@/effect/instance-state"
 import { Project } from "@/project/project"
 import { MCP } from "@/mcp"
 import { Session } from "@/session/session"
+import { SessionID } from "@/session/schema"
+import { BackgroundJob } from "@/agent/background-job"
+import { ConfigDelegation } from "@/config/delegation"
 import { Config } from "@/config/config"
 import { ConsoleState } from "@/config/console-state"
 import { Account } from "@/account/account"
@@ -394,6 +397,53 @@ export const ExperimentalRoutes = lazy(() =>
         }
         return c.json(list)
       },
+    )
+    .post(
+      "/session/:sessionID/background",
+      describeRoute({
+        summary: "Background subagents",
+        description:
+          "Detach any synchronous subagents currently blocking the session and continue them in the background.",
+        operationId: "experimental.session.background",
+        responses: {
+          200: {
+            description: "Backgrounded subagents",
+            content: {
+              "application/json": {
+                schema: resolver(z.boolean()),
+              },
+            },
+          },
+          ...errors(400),
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          sessionID: SessionID.zod,
+        }),
+      ),
+      async (c) =>
+        jsonRequest("ExperimentalRoutes.session.background", c, function* () {
+          const sessionID = c.req.valid("param").sessionID
+          const config = yield* Config.Service
+          const cfg = yield* config.get()
+          const backgroundEnabled =
+            cfg.delegation?.background_subagents ?? ConfigDelegation.DEFAULT_BACKGROUND_SUBAGENTS
+          if (!backgroundEnabled) return false
+          const jobs = yield* BackgroundJob.Service
+          const candidates = (yield* jobs.list()).filter(
+            (job) =>
+              job.type === "task" &&
+              job.status === "running" &&
+              job.ownerSessionId === sessionID &&
+              job.metadata?.background !== true,
+          )
+          const promoted = yield* Effect.forEach(candidates, (job) => jobs.promote(job.id), {
+            concurrency: "unbounded",
+          })
+          return promoted.some((job) => job !== undefined)
+        }),
     )
     .get(
       "/resource",
