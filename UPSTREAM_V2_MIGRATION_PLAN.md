@@ -424,7 +424,7 @@ exactly-once 论证：waiter 行按 host_boot_id 分区，每行只可能被宿�
 ### L4.4 — provider 逐个迁移试点（DeepSeek 先，绞杀 flag 门控）+ 并入项吸收
 
 - [ ] 迁移 seam：fork v1 `session/llm.ts:491` streamText 调用点为唯一收口——按 provider 逐个把 transport 切到 llm 包 route/executor（flag `experimental.llm_runtime` 默认关，关时字节不变，照抄 F4 门控手法）；DeepSeek（openai-compatible-chat 协议）首个试点，核对 models.dev 快照 npm 字段
-- [ ] 并入项吸收：`5f61d21487` strict 透传按拍板#9 执行（fork `codex-responses.ts:1150` strict:false 现状为对照基线）；`dac0dd5309` connector auth + `cf80b5c470`/`c556bddda3`/`4898263dec` integration 三件按拍板#7 决定保留与否（保留则需 vendor core integration/credential runtime 树，schema 层已在）
+- [ ] 并入项吸收：`5f61d21487` strict 透传按拍板#9 执行（fork `codex-responses.ts:1150` strict:false 现状为对照基线）；`dac0dd5309` connector auth + `cf80b5c470`/`c556bddda3`/`4898263dec` integration 三件**保留**（拍板#7 已决 2026-09-22：zen/opencode provider 保留、opencode provider 自身显 opencode 品牌、第三方 integration 标识头继续用 "opencode" 值）——需 vendor core integration/credential runtime 树，schema 层已在
 - [ ] `6618e2bce2` native-llm 重判：试点期回答"fork 是否要 native runtime 表面"（不要则该条正式关闭）
 - [ ] 验收：flag 关全量测试字节不变；flag 开 DeepSeek 试点 E2E（真实额度冒烟）+ recorded 测试族绿；两路径成本/usage 统计一致性对账
 - [ ] 回退：flag 关闭即回退；代码单 commit revert
@@ -443,7 +443,7 @@ exactly-once 论证：waiter 行按 host_boot_id 分区，每行只可能被宿�
 
 执行顺序：**L4.0 ∥ L4.1 → L4.2 → L4.3 → L4.4**（L4.5 已随拍板#12 否决取消；唯一并行对=L4.0∥L4.1；其余因 bun.lock/transform.ts/provider.ts 共享面强制串行）。`55c54d14b8` dev conditions 任意批次顺手件。工期估算：L4.0 ~1 天、L4.1 ~1-2 天、L4.2 ~1-2 天、L4.3 ~3-4 天、L4.4 ~3-5 天（试点），合计 ~9-13 天。
 
-L4 风险 top5（含 F1/F2/K-v2 新交互面）：①**gateway/provider-utils 公共底座 bump × fork copilot/codex-responses vendor**（F1 计费改造后 fork 自有面加深，§11.6 待深查，L4.1 最大回归面）；②**配置化提取 × K-v2 后的 transform 热路径**（R1 hotspot 批已动指令装配缓存，L4.3 数据表化不得破坏 memo/缓存假设）；③**llm 包迁移 × F4 后台子代理/F2 MCP 引擎新表面**（注入续跑轮与 remote-compaction 走 llm 新 transport 时上游零验证，L4.4 flag 矩阵必须覆盖）；④~~blockBinding patch 体系 × bun.lock 脱敏~~（已随拍板#12 否决消解）；⑤**integration/connector auth 品牌拍板悬置**（拍板#7 不决则 L4.4 范围不定，建议开工前先决）。
+L4 风险 top5（含 F1/F2/K-v2 新交互面）：①**gateway/provider-utils 公共底座 bump × fork copilot/codex-responses vendor**（F1 计费改造后 fork 自有面加深，§11.6 待深查，L4.1 最大回归面）；②**配置化提取 × K-v2 后的 transform 热路径**（R1 hotspot 批已动指令装配缓存，L4.3 数据表化不得破坏 memo/缓存假设）；③**llm 包迁移 × F4 后台子代理/F2 MCP 引擎新表面**（注入续跑轮与 remote-compaction 走 llm 新 transport 时上游零验证，L4.4 flag 矩阵必须覆盖）；④~~blockBinding patch 体系 × bun.lock 脱敏~~（已随拍板#12 否决消解）；⑤~~integration/connector auth 品牌拍板悬置~~（已随拍板#7 三层全保留消解，L4.4 范围确定）。
 
 
 ## L4.0/L4.1 完成记录（2026-09-21，builder 执行+parent 联合验收裁决）
