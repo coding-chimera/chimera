@@ -60,6 +60,16 @@ function providerAccountSupported(providerID: string) {
   return providerID === "deepseek" || providerID === "openai"
 }
 
+// Message ordering (upstream 23cc677108): the store array is kept sorted by
+// creation time with the id as tiebreaker, so binary search must key on the
+// same composite — message ids alone no longer imply creation order once
+// injected/synthetic messages are in play.
+function compareMessage(a: Message, b: Message) {
+  return a.time.created - b.time.created || a.id.localeCompare(b.id)
+}
+
+const messageKey = (message: Message) => message.time.created + message.id
+
 export const { use: useSync, provider: SyncProvider } = createSimpleContext({
   name: "Sync",
   init: () => {
@@ -376,7 +386,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             setStore("message", event.properties.info.sessionID, [event.properties.info])
             break
           }
-          const result = Binary.search(messages, event.properties.info.id, (m) => m.id)
+          const result = Binary.search(messages, messageKey(event.properties.info), messageKey)
           if (result.found) {
             setStore("message", event.properties.info.sessionID, result.index, reconcile(event.properties.info))
             break
@@ -411,13 +421,13 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         }
         case "message.removed": {
           const messages = store.message[event.properties.sessionID]
-          const result = Binary.search(messages, event.properties.messageID, (m) => m.id)
-          if (result.found) {
+          const index = messages.findIndex((message) => message.id === event.properties.messageID)
+          if (index !== -1) {
             setStore(
               "message",
               event.properties.sessionID,
               produce((draft) => {
-                draft.splice(result.index, 1)
+                draft.splice(index, 1)
               }),
             )
           }
@@ -656,8 +666,10 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
               if (!match.found) draft.session.splice(match.index, 0, session.data!)
               draft.todo[sessionID] = todo.data ?? []
               draft.work_brief[sessionID] = workBrief.data!
-              draft.message[sessionID] = messages.data!.map((x) => x.info)
-              for (const message of messages.data!) {
+              const infos = (messages.data ?? []).map((x) => x.info)
+              infos.sort(compareMessage)
+              draft.message[sessionID] = infos
+              for (const message of messages.data ?? []) {
                 draft.part[message.info.id] = message.parts
               }
               draft.session_diff[sessionID] = diff.data ?? []

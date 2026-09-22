@@ -1231,7 +1231,11 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
             <Home />
           </Match>
           <Match when={route.data.type === "session"}>
-            <Session />
+            {/* Keyed remount on session switch (upstream abaabdcb73): reusing the
+                component instance across sessions leaks per-session state. */}
+            <Show when={route.data.type === "session" ? route.data.sessionID : undefined} keyed>
+              {(_) => <Session />}
+            </Show>
           </Match>
         </Switch>
       </Show>
