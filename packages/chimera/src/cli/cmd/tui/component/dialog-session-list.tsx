@@ -122,11 +122,9 @@ export function DialogSessionList() {
     const today = new Date().toDateString()
     return sessions()
       .filter((x) => x.parentID === undefined)
-      .toSorted((a, b) => {
-        const updatedDay = new Date(b.time.updated).setHours(0, 0, 0, 0) - new Date(a.time.updated).setHours(0, 0, 0, 0)
-        if (updatedDay !== 0) return updatedDay
-        return b.time.created - a.time.created
-      })
+      // Full updated-timestamp recency (upstream f0cb17a812): day bucketing with
+      // a created tiebreaker ordered same-day sessions by creation, not activity.
+      .toSorted((a, b) => b.time.updated - a.time.updated)
       .map((x) => {
         const workspace = x.workspaceID ? project.workspace.get(x.workspaceID) : undefined
 

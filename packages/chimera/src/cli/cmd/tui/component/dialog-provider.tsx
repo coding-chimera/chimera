@@ -54,7 +54,13 @@ export function providerOptions(list: { id: string; name: string }[]): ProviderO
   return [
     ...pipe(
       list,
-      sortBy((x) => PROVIDER_PRIORITY[x.id] ?? 99),
+      sortBy(
+        (x) => PROVIDER_PRIORITY[x.id] ?? 99,
+        // Alphabetical within priority tiers, id as final tiebreaker
+        // (upstream f20655bef4).
+        (x) => x.name.toLowerCase(),
+        (x) => x.id,
+      ),
       map((provider) => ({
         type: "provider" as const,
         title: provider.name,
