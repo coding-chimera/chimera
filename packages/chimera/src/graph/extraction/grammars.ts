@@ -495,6 +495,13 @@ export async function loadGrammarsForLanguages(languages: Language[], wasmBytes?
       !unavailableGrammarErrors.has(lang)
   );
 
+  // K-v2 ruling ⑤ languages ship code without blobs on purpose (see the
+  // resolution-order note above); their load failure is expected, so degrade
+  // silently instead of warning once per process/worker.
+  const UNSHIPPED_WASM_LANGS: ReadonlySet<string> = new Set([
+    'arkts', 'cfml', 'cfquery', 'cfscript', 'cobol', 'erlang', 'nix', 'r', 'terraform', 'vbnet',
+  ]);
+
   // Load grammars sequentially to avoid web-tree-sitter WASM race condition on Node 20+
   // See: https://github.com/tree-sitter/tree-sitter/issues/2338
   for (const lang of toLoad) {
@@ -504,7 +511,9 @@ export async function loadGrammarsForLanguages(languages: Language[], wasmBytes?
       languageCache.set(lang, language);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[CodeGraph] Failed to load ${lang} grammar — parsing will be unavailable: ${message}`);
+      if (!UNSHIPPED_WASM_LANGS.has(lang)) {
+        console.warn(`[CodeGraph] Failed to load ${lang} grammar — parsing will be unavailable: ${message}`);
+      }
       unavailableGrammarErrors.set(lang, message);
     }
   }
