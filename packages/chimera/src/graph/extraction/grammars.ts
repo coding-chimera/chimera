@@ -396,10 +396,12 @@ const VENDORED_WASM_LANGS: ReadonlySet<GrammarLanguage> = new Set([
  * tree-sitter-wasms/out copy for compiled single-binary layouts.
  *
  * A vendored language whose wasm is NOT shipped by this distribution (K-v2
- * ruling ⑤: arkts/cfml/cfquery/cfscript/cobol/erlang/nix/r/terraform/vbnet
- * adopt the N code without the N blobs) falls through to a non-existent path
- * and loadGrammarsForLanguages degrades it into unavailableGrammarErrors —
- * parsing for that language is skipped with a warning instead of crashing.
+ * ruling ⑤: arkts/cfml/cfquery/cfscript/cobol/erlang/r/terraform/vbnet
+ * adopt the N code without the N blobs — nix exited the ruling on
+ * 2026-09-22 when its blob was vendored) falls through to a non-existent
+ * path and loadGrammarsForLanguages degrades it into unavailableGrammarErrors
+ * — parsing for that language is skipped (silently, see UNSHIPPED_WASM_LANGS
+ * in loadGrammarsForLanguages) instead of crashing.
  */
 function binaryAdjacentGrammarPath(wasmFile: string): string | undefined {
   const candidate = path.join(path.dirname(process.execPath), 'tree-sitter-wasms', 'out', wasmFile);
@@ -499,7 +501,7 @@ export async function loadGrammarsForLanguages(languages: Language[], wasmBytes?
   // resolution-order note above); their load failure is expected, so degrade
   // silently instead of warning once per process/worker.
   const UNSHIPPED_WASM_LANGS: ReadonlySet<string> = new Set([
-    'arkts', 'cfml', 'cfquery', 'cfscript', 'cobol', 'erlang', 'nix', 'r', 'terraform', 'vbnet',
+    'arkts', 'cfml', 'cfquery', 'cfscript', 'cobol', 'erlang', 'r', 'terraform', 'vbnet',
   ]);
 
   // Load grammars sequentially to avoid web-tree-sitter WASM race condition on Node 20+
