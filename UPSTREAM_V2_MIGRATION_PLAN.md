@@ -424,8 +424,8 @@ exactly-once 论证：waiter 行按 host_boot_id 分区，每行只可能被宿�
 ### L4.4 — provider 逐个迁移试点（DeepSeek 先，绞杀 flag 门控）+ 并入项吸收
 
 - [ ] 迁移 seam：fork v1 `session/llm.ts:491` streamText 调用点为唯一收口——按 provider 逐个把 transport 切到 llm 包 route/executor（flag `experimental.llm_runtime` 默认关，关时字节不变，照抄 F4 门控手法）；DeepSeek（openai-compatible-chat 协议）首个试点，核对 models.dev 快照 npm 字段
-- [ ] 并入项吸收：`5f61d21487` strict 透传按拍板#9 执行（fork `codex-responses.ts:1150` strict:false 现状为对照基线）；`dac0dd5309` connector auth + `cf80b5c470`/`c556bddda3`/`4898263dec` integration 三件**保留**（拍板#7 已决 2026-09-22：zen/opencode provider 保留、opencode provider 自身显 opencode 品牌、第三方 integration 标识头继续用 "opencode" 值）——需 vendor core integration/credential runtime 树，schema 层已在
-- [ ] `6618e2bce2` native-llm 重判：试点期回答"fork 是否要 native runtime 表面"（不要则该条正式关闭）
+- [x] ~~并入项吸收~~：`5f61d21487` strict 透传按拍板#9 未决保持 fork `strict:false` 现状（**关键新事实 2026-09-22**：上游 `5f61d21487` 已自行收敛为 strict:false 硬编码——分歧由上游消解，拍板#9 可按'已吸收'勾销）；`dac0dd5309` connector auth + `cf80b5c470`/`c556bddda3`/`4898263dec` integration 三件**保留（拍板#7）但移出 L4.4**——builder 取证：runtime 树缺口=core 的 State/EventV2/Database 整个 trunk（integration.ts 520 行 import 闭包依赖），vendor 它=L5 规模；**重规划为 L5 先导批**（core trunk vendor + integration/credential runtime + zen provider integration 化，server/sdk/tui 消费面随 L5 v2 表面推进）。schema 层已在 packages/schema 与上游字节一致
+- [x] `6618e2bce2` native-llm 重判：**已答=要**（2026-09-22 builder 结论）——L4.4 落地的 NativeLLMGating 与上游该提交结构同构，表面已存在；Anthropic API-key 转 pilot #2 backlog（Anthropic 路径有 cache_control/interleaved-thinking 深度定制，需独立 parity 对账批，绞杀纪律=一个试点验证后再扩）
 - [ ] 验收：flag 关全量测试字节不变；flag 开 DeepSeek 试点 E2E（真实额度冒烟）+ recorded 测试族绿；两路径成本/usage 统计一致性对账
 - [ ] 回退：flag 关闭即回退；代码单 commit revert
 
