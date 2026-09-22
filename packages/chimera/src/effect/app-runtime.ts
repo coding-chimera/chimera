@@ -22,6 +22,7 @@ import { Provider } from "@/provider/provider"
 import { ProviderAuth } from "@/provider/auth"
 import { ProviderBalance } from "@/provider/balance"
 import { Agent } from "@/agent/agent"
+import { BackgroundJob } from "@/agent/background-job"
 import { Skill } from "@/skill"
 import { Discovery } from "@/skill/discovery"
 import { Question } from "@/question"
@@ -83,6 +84,9 @@ export const AppLayer = Layer.mergeAll(
   ProviderAuth.defaultLayer,
   ProviderBalance.defaultLayer,
   Agent.defaultLayer,
+  // Shares the memoized registry with SessionRunState's internal provide (same
+  // module layer + shared memoMap), so legacy Hono routes reach the live engine.
+  BackgroundJob.defaultLayer,
   Skill.defaultLayer,
   Discovery.defaultLayer,
   Question.defaultLayer,

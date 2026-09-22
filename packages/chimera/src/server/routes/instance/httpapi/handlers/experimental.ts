@@ -1,10 +1,13 @@
 import { Account } from "@/account/account"
 import { Agent } from "@/agent/agent"
+import { BackgroundJob } from "@/agent/background-job"
 import { Config } from "@/config/config"
+import { ConfigDelegation } from "@/config/delegation"
 import { InstanceState } from "@/effect/instance-state"
 import { MCP } from "@/mcp"
 import { Project } from "@/project/project"
 import { Session } from "@/session/session"
+import type { SessionID } from "@/session/schema"
 import { ToolRegistry } from "@/tool/registry"
 import * as EffectZod from "@/util/effect-zod"
 import { Worktree } from "@/worktree"
@@ -23,6 +26,7 @@ export const experimentalHandlers = HttpApiBuilder.group(InstanceHttpApi, "exper
     const project = yield* Project.Service
     const registry = yield* ToolRegistry.Service
     const worktreeSvc = yield* Worktree.Service
+    const background = yield* BackgroundJob.Service
 
     const getConsole = Effect.fn("ExperimentalHttpApi.console")(function* () {
       const [state, groups] = yield* Effect.all(
@@ -135,6 +139,26 @@ export const experimentalHandlers = HttpApiBuilder.group(InstanceHttpApi, "exper
       })
     })
 
+    const sessionBackground = Effect.fn("ExperimentalHttpApi.sessionBackground")(function* (ctx: {
+      params: { sessionID: SessionID }
+    }) {
+      const cfg = yield* config.get()
+      const backgroundEnabled =
+        cfg.delegation?.background_subagents ?? ConfigDelegation.DEFAULT_BACKGROUND_SUBAGENTS
+      if (!backgroundEnabled) return false
+      const candidates = (yield* background.list()).filter(
+        (job) =>
+          job.type === "task" &&
+          job.status === "running" &&
+          job.ownerSessionId === ctx.params.sessionID &&
+          job.metadata?.background !== true,
+      )
+      const promoted = yield* Effect.forEach(candidates, (job) => background.promote(job.id), {
+        concurrency: "unbounded",
+      })
+      return promoted.some((job) => job !== undefined)
+    })
+
     const resource = Effect.fn("ExperimentalHttpApi.resource")(function* () {
       return yield* mcp.resources()
     })
@@ -150,6 +174,7 @@ export const experimentalHandlers = HttpApiBuilder.group(InstanceHttpApi, "exper
       .handle("worktreeRemove", worktreeRemove)
       .handle("worktreeReset", worktreeReset)
       .handle("session", session)
+      .handle("sessionBackground", sessionBackground)
       .handle("resource", resource)
   }),
 )
