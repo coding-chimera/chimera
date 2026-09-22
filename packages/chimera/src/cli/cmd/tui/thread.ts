@@ -86,6 +86,12 @@ export function resolveThreadDirectory(project?: string, envPWD = process.env.PW
   return Filesystem.resolve(cwd)
 }
 
+/** Final TUI exit code: nonzero when a startup error was recorded, so a failed
+ * startup is never disguised as success (upstream a97622c801 equivalent). */
+export function tuiExitCode(startupFailed: boolean): number {
+  return startupFailed ? 1 : 0
+}
+
 export const TuiThreadCommand = cmd({
   command: "$0 [project]",
   describe: "start chimera tui",
@@ -156,7 +162,13 @@ export const TuiThreadCommand = cmd({
       const worker = new Worker(file, {
         env,
       })
+      // Exit-code semantics (upstream a97622c801 equivalent): startup errors that
+      // surface through the process error handlers — e.g. a remote-config fetch
+      // intercepted by SSO — must not be masked by the final exit(0), or scripts
+      // and CI treat a failed startup as success.
+      let startupFailed = false
       worker.onerror = (e) => {
+        startupFailed = true
         Log.Default.error("thread error", {
           message: e.message,
           filename: e.filename,
@@ -168,6 +180,7 @@ export const TuiThreadCommand = cmd({
 
       const client = Rpc.client<typeof rpc>(worker)
       const error = (e: unknown) => {
+        startupFailed = true
         Log.Default.error("process error", { error: errorMessage(e) })
       }
       const reload = () => {
@@ -232,6 +245,7 @@ export const TuiThreadCommand = cmd({
       } catch (error) {
         UI.error(errorMessage(error))
         process.exitCode = 1
+        await stop()
         return
       }
 
@@ -266,7 +280,7 @@ export const TuiThreadCommand = cmd({
     } finally {
       unguard?.()
     }
-    process.exit(0)
+    process.exit(tuiExitCode(startupFailed))
   },
 })
 // scratch

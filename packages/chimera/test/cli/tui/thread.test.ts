@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import fs from "fs/promises"
 import path from "path"
 import { tmpdir } from "../../fixture/fixture"
-import { resolveThreadDirectory } from "../../../src/cli/cmd/tui/thread"
+import { resolveThreadDirectory, tuiExitCode } from "../../../src/cli/cmd/tui/thread"
 
 describe("tui thread", () => {
   async function check(project?: string) {
@@ -24,5 +24,10 @@ describe("tui thread", () => {
 
   test("uses the real cwd after resolving a relative project from PWD", async () => {
     await check(".")
+  })
+
+  test("exits nonzero when a startup error was recorded (a97622c801 equivalent)", () => {
+    expect(tuiExitCode(false)).toBe(0)
+    expect(tuiExitCode(true)).toBe(1)
   })
 })
