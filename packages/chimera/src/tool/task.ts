@@ -31,7 +31,8 @@ const BACKGROUND_DESCRIPTION = [
   "Foreground (blocking) dispatch is the exception: omit background only when you must wait for this result inline, and pass block_reason stating the concrete dependency that forces you to wait.",
   "Resuming an already-finished task with background=true starts a new background run on the same subagent session and returns immediately with the same task_id — it never blocks the current turn, and you are notified as usual when the new run finishes.",
   "You will be notified automatically when it finishes — do not sleep, poll for progress, or duplicate its work while it runs.",
-  "When a dispatched subagent itself launches background tasks, its dispatch call is held open until every background result is delivered and the subagent's final response is ready; the parent receives periodic parked progress metadata (parked, waitingBackgroundTasks, parkElapsedMs) while waiting.",
+  "When a dispatched subagent itself launches background tasks, its dispatch call is held open until every background result is delivered and the subagent's final response is ready; the parent receives periodic parked progress metadata (parked/waitingBackgroundTasks/parkElapsedMs) while waiting.",
+  "A foreground task you are waiting on can be moved to the background by the user (for example TUI ctrl+b): the task call then returns immediately with a moved-to-background notice, the subagent keeps running, and you are notified automatically when it finishes — treat it exactly like a task you launched with background=true.",
 ].join(" ")
 
 const BACKGROUND_STARTED = [
@@ -47,6 +48,14 @@ const BACKGROUND_UPDATED = [
   "",
   "The task is still working in the background. You will be notified automatically when it finishes.",
   "DO NOT sleep, poll for progress, ask the task for status, or duplicate this task's work.",
+].join("\n")
+
+const BACKGROUND_PROMOTED = [
+  `task_id: %s (moved to background by the user, running) — the foreground wait was detached; the subagent keeps working and you will be notified automatically when it finishes.`,
+  "",
+  "DO NOT sleep, poll for progress, ask the task for status, or duplicate this task's work.",
+  "Work on non-overlapping tasks, or briefly tell the user what is still running and end your response.",
+  "If it becomes unnecessary or the user asks you to stop it, cancel it with the task_cancel tool using this task_id.",
 ].join("\n")
 
 const BaseParameterFields = {
@@ -316,9 +325,54 @@ export const TaskTool = Tool.define(
               parkElapsedMs: info.elapsedMs,
             },
           })
-      // ── Background branch ──────────────────────────────────────────────────
+
+      const jobs = Option.getOrUndefined(background)
+      // Shared background-result delivery: waits for the job to settle, injects the
+      // synthetic result into the dispatching session, then marks delivery complete.
+      // Used by both the background branch and the onPromote hook of a foreground
+      // dispatch that the user moved to the background (F4-P3 promotion).
+      const notify = Effect.fn("TaskTool.notifyBackgroundResult")(function* (
+        childSessionID: SessionID,
+        generation: () => number,
+      ) {
+        if (!jobs) return
+        yield* jobs
+          .wait({ id: childSessionID })
+          .pipe(
+            Effect.flatMap((result) => {
+              if (result.info?.status === "completed") {
+                return promptOps.injectSynthetic?.({
+                  sessionID: ctx.sessionID,
+                  text: backgroundResultText({
+                    sessionID: childSessionID,
+                    state: "completed",
+                    text: result.info.output ?? "",
+                  }),
+                }).pipe(Effect.ignoreCause({ log: true })) ?? Effect.void
+              }
+              if (result.info?.status === "error") {
+                return promptOps.injectSynthetic?.({
+                  sessionID: ctx.sessionID,
+                  text: backgroundResultText({
+                    sessionID: childSessionID,
+                    state: "error",
+                    text: result.info.error ?? "",
+                  }),
+                }).pipe(Effect.ignoreCause({ log: true })) ?? Effect.void
+              }
+              return Effect.void
+            }),
+            // Delivery is final once the notify fiber finishes, no matter how
+            // the job settled, whether the injection succeeded, or whether the
+            // owner session still exists — quiescence keys off delivery. The
+            // generation binds the mark to this run: a same-id restart mid-
+            // injection must not be marked delivered by this stale fiber.
+            Effect.ensuring(jobs.markDelivered(childSessionID, generation()).pipe(Effect.ignore)),
+            Effect.ignoreCause({ log: true }),
+            Effect.forkIn(scope, { startImmediately: true }),
+          )
+      })
       if (runInBackground) {
-        const jobs = Option.getOrUndefined(background)
         if (!jobs) {
           return yield* Effect.fail(new Error("Background job service is not available in this runtime"))
         }
@@ -335,8 +389,9 @@ export const TaskTool = Tool.define(
         if (willStartJob) {
           const limit =
             cfg.delegation?.background_concurrent ?? ConfigDelegation.DEFAULT_BACKGROUND_CONCURRENT
-          const runningCount =
-            (yield* jobs.list()).filter((job: { status: string }) => job.status === "running").length
+          const runningCount = (yield* jobs.list()).filter(
+            (job) => job.status === "running" && job.metadata?.background !== false,
+          ).length
           if (runningCount >= limit) {
             return yield* Effect.fail(
               new Error(
@@ -347,35 +402,6 @@ export const TaskTool = Tool.define(
         }
         const materialized = yield* dispatch.materialize(prepared, params.description)
         const sessionID = materialized.nextSession.id
-        const notify = Effect.fn("TaskTool.notifyBackgroundResult")(function* (jobID: string, generation: number) {
-          yield* jobs
-            .wait({ id: jobID })
-            .pipe(
-              Effect.flatMap((result) => {
-                if (result.info?.status === "completed") {
-                  return promptOps.injectSynthetic?.({
-                    sessionID: ctx.sessionID,
-                    text: backgroundResultText({ sessionID, state: "completed", text: result.info.output ?? "" }),
-                  }).pipe(Effect.ignoreCause({ log: true })) ?? Effect.void
-                }
-                if (result.info?.status === "error") {
-                  return promptOps.injectSynthetic?.({
-                    sessionID: ctx.sessionID,
-                    text: backgroundResultText({ sessionID, state: "error", text: result.info.error ?? "" }),
-                  }).pipe(Effect.ignoreCause({ log: true })) ?? Effect.void
-                }
-                return Effect.void
-              }),
-              // Delivery is final once the notify fiber finishes, no matter how
-              // the job settled, whether the injection succeeded, or whether the
-              // owner session still exists — quiescence keys off delivery. The
-              // generation binds the mark to this run: a same-id restart mid-
-              // injection must not be marked delivered by this stale fiber.
-              Effect.ensuring(jobs.markDelivered(jobID, generation).pipe(Effect.ignore)),
-              Effect.ignoreCause({ log: true }),
-              Effect.forkIn(scope, { startImmediately: true }),
-            )
-        })
 
         const freshStart = Effect.fn("TaskTool.backgroundFreshStart")(function* () {
           // The capacity precheck already ran before materialize for every path
@@ -431,7 +457,7 @@ export const TaskTool = Tool.define(
                 ),
               )
             if (info.generation !== before) {
-              yield* notify(info.id, info.generation)
+              yield* notify(sessionID, () => info.generation)
               return {
                 title: params.description,
                 metadata,
@@ -475,26 +501,155 @@ export const TaskTool = Tool.define(
         return yield* freshStart()
       }
 
-      // ── Synchronous path (unchanged) ───────────────────────────────────────
+      // ── Synchronous path ───────────────────────────────────────────
       // Materialize up front so the parked-progress metadata can address the child
       // session by id; runPrepared would create the same session right after anyway.
       const materialized = yield* dispatch.materialize(prepared, params.description)
-      const result = yield* dispatch.runPrepared({
-        prepared,
-        description: params.description,
-        prompt: params.prompt,
-        promptOps,
-        abort: ctx.abort,
-        onStarted,
-        telemetry,
-        materialized,
-        onParkProgress: onParkProgress(materialized),
-      })
-
+      if (!jobs || !backgroundEnabled) {
+        // Kill-switch off or no engine in this runtime: legacy direct dispatch,
+        // byte-identical to the pre-promotion synchronous path.
+        const result = yield* dispatch.runPrepared({
+          prepared,
+          description: params.description,
+          prompt: params.prompt,
+          promptOps,
+          abort: ctx.abort,
+          onStarted,
+          telemetry,
+          materialized,
+          onParkProgress: onParkProgress(materialized),
+        })
+        return {
+          title: result.title,
+          metadata: result.metadata,
+          output: result.output,
+        }
+      }
+      // Engine-backed synchronous dispatch (F4-P3): the run executes inside the
+      // background-job engine as a foreground job (metadata.background === false,
+      // exempt from background_concurrent) so a promote() — TUI ctrl+b or
+      // POST /experimental/session/:id/background — can detach it WITHOUT
+      // interrupting or restarting the fiber: raceFirst wakes this tool call,
+      // which returns a moved-to-background result while the engine job keeps
+      // running and the onPromote-forked notify fiber delivers the result to the
+      // dispatching session via injectSynthetic.
+      const sessionID = materialized.nextSession.id
+      const existingJob = yield* jobs.get(sessionID)
+      if (existingJob?.status === "running") {
+        if (existingJob.metadata?.background !== true) {
+          return yield* Effect.fail(
+            new Error(
+              `Cannot dispatch task ${params.description}: task_id ${sessionID} is currently running a foreground dispatch. Wait for it to finish, or resume it with background=true to append context.`,
+            ),
+          )
+        }
+        // Upstream extend-first semantics: a foreground resume against a live
+        // background job appends the prompt and returns immediately; that job's
+        // notify fiber owns result delivery, so this path never forks a second one.
+        const extended = yield* jobs.extend({
+          id: sessionID,
+          run: runBackgroundPrepared(prepared, materialized, promptOps, telemetry, params.prompt, params.description),
+        })
+        if (extended) {
+          const metadata = {
+            sessionId: sessionID,
+            model: prepared.resolved.model,
+            execution: materialized.execution,
+            background: true,
+            jobId: sessionID,
+          }
+          yield* ctx.metadata({ title: params.description, metadata })
+          return {
+            title: params.description,
+            metadata,
+            output: BACKGROUND_UPDATED.replace("%s", sessionID),
+          }
+        }
+      }
+      const backgroundedMetadata = {
+        sessionId: sessionID,
+        model: prepared.resolved.model,
+        execution: materialized.execution,
+        background: true,
+        jobId: sessionID,
+      }
+      let generation = 0
+      let syncReturn: Tool.ExecuteResult | undefined
+      const info = yield* jobs
+        .start({
+          id: sessionID,
+          type: "task",
+          title: params.description,
+          ownerSessionId: ctx.sessionID,
+          metadata: {
+            model: prepared.resolved.model,
+            background: false,
+          },
+          onInterrupt: promptOps.cancel(sessionID).pipe(Effect.ignore),
+          onPromote: Effect.all([
+            ctx.metadata({ title: params.description, metadata: backgroundedMetadata }),
+            notify(sessionID, () => generation),
+          ]),
+          run: dispatch
+            .runPrepared({
+              prepared,
+              description: params.description,
+              prompt: params.prompt,
+              promptOps,
+              abort: ctx.abort,
+              onStarted,
+              telemetry,
+              materialized,
+              onParkProgress: onParkProgress(materialized),
+            })
+            .pipe(
+              Effect.map((result) => {
+                syncReturn = { title: result.title, metadata: result.metadata, output: result.output }
+                return result.output
+              }),
+            ),
+        })
+        .pipe(
+          Effect.catchTag("BackgroundJobLimitError", (error) => Effect.fail(new Error(error.message))),
+        )
+      generation = info.generation
+      const raced = yield* Effect.raceFirst(
+        jobs.wait({ id: sessionID }).pipe(Effect.map((waited) => waited.info)),
+        jobs.waitForPromotion(sessionID),
+      ).pipe(
+        // The tool fiber was interrupted (parent turn aborted): the engine job
+        // keeps running in its own scope, so cancel it explicitly — its
+        // onInterrupt hook cancels the bound child session.
+        Effect.onInterrupt(() => jobs.cancel(sessionID).pipe(Effect.ignore)),
+      )
+      if (raced?.metadata?.background === true) {
+        // Promoted (or settled right after promotion): the notify fiber forked by
+        // onPromote owns result injection and delivery marking.
+        return {
+          title: params.description,
+          metadata: backgroundedMetadata,
+          output: BACKGROUND_PROMOTED.replace("%s", sessionID),
+        }
+      }
+      // Foreground completion: this racer consumed the result inline, so delivery
+      // is complete (markDelivered is idempotent; a promoted job is handled above).
+      yield* jobs.markDelivered(sessionID, generation).pipe(Effect.ignore)
+      if (raced?.status === "error") return yield* Effect.fail(new Error(raced.error ?? "Task failed"))
+      if (raced?.status === "cancelled") {
+        // Abort-driven cancellation preserves the pre-engine interrupt contract:
+        // the dispatch exits interrupted, not failed, when the parent turn aborted.
+        if (ctx.abort.aborted) return yield* Effect.interrupt
+        return yield* Effect.fail(new Error("Task cancelled"))
+      }
+      if (syncReturn) return syncReturn
       return {
-        title: result.title,
-        metadata: result.metadata,
-        output: result.output,
+        title: params.description,
+        metadata: {
+          sessionId: sessionID,
+          model: prepared.resolved.model,
+          execution: materialized.execution,
+        },
+        output: raced?.output ?? "",
       }
     })
 

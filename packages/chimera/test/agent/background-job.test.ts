@@ -517,4 +517,108 @@ describe("agent.background-job", () => {
         expect("parentSessionId" in (plain?.metadata ?? {})).toBe(false)
       }),
   )
+
+  it.instance(
+    "promote flips metadata.background without interrupting the fiber, fires onPromote once, and wakes waitForPromotion",
+    () =>
+      Effect.gen(function* () {
+        const jobs = yield* BackgroundJob.Service
+        const gate = yield* Deferred.make<void>()
+        let promoteHooks = 0
+        yield* jobs.start({
+          id: "ses_promo",
+          type: "task",
+          ownerSessionId: "ses_owner",
+          metadata: { background: false },
+          onPromote: Effect.sync(() => {
+            promoteHooks += 1
+          }),
+          run: blocked(gate, "promoted-output"),
+        })
+        const racer = yield* jobs.waitForPromotion("ses_promo").pipe(Effect.forkScoped)
+        yield* Effect.sleep(20)
+        const promoted = yield* jobs.promote("ses_promo")
+        expect(promoted?.metadata?.background).toBe(true)
+        expect(promoted?.status).toBe("running")
+        const raced = yield* Fiber.join(racer)
+        expect(raced.id).toBe("ses_promo")
+        expect(raced.metadata?.background).toBe(true)
+        expect(promoteHooks).toBe(1)
+        // Idempotent: a second promote returns the snapshot and never re-fires the hook.
+        const again = yield* jobs.promote("ses_promo")
+        expect(again?.metadata?.background).toBe(true)
+        expect(promoteHooks).toBe(1)
+        // waitForPromotion on an already-background job resolves immediately.
+        const immediate = yield* jobs.waitForPromotion("ses_promo").pipe(Effect.timeoutOption("100 millis"))
+        expect(immediate._tag).toBe("Some")
+        // The run fiber was never interrupted or restarted: it still completes.
+        yield* Deferred.succeed(gate, undefined)
+        const waited = yield* jobs.wait({ id: "ses_promo" })
+        expect(waited.info?.status).toBe("completed")
+        expect(waited.info?.output).toBe("promoted-output")
+        expect(waited.info?.metadata?.background).toBe(true)
+      }),
+  )
+
+  it.instance(
+    "promote of an unknown job returns undefined and of a settled job returns its snapshot without firing onPromote",
+    () =>
+      Effect.gen(function* () {
+        const jobs = yield* BackgroundJob.Service
+        expect(yield* jobs.promote("ses_missing")).toBeUndefined()
+        // waitForPromotion never resolves for unknown or settled jobs.
+        const missing = yield* jobs.waitForPromotion("ses_missing").pipe(Effect.as("x"), Effect.timeoutOption("50 millis"))
+        expect(missing._tag).toBe("None")
+        let promoteHooks = 0
+        yield* jobs.start({
+          id: "ses_settled",
+          onPromote: Effect.sync(() => {
+            promoteHooks += 1
+          }),
+          run: Effect.succeed("fast"),
+        })
+        const settled = yield* jobs.wait({ id: "ses_settled" })
+        expect(settled.info?.status).toBe("completed")
+        const after = yield* jobs.promote("ses_settled")
+        // Upstream parity: promote only acts on running jobs; settled ones return undefined.
+        expect(after).toBeUndefined()
+        expect(promoteHooks).toBe(0)
+        const never = yield* jobs.waitForPromotion("ses_settled").pipe(Effect.as("x"), Effect.timeoutOption("50 millis"))
+        expect(never._tag).toBe("None")
+      }),
+  )
+
+  it.instance(
+    "foreground jobs (metadata.background === false) are exempt from background_concurrent and count after promotion",
+    () =>
+      Effect.gen(function* () {
+        const jobs = yield* BackgroundJob.Service
+        const gate = yield* Deferred.make<void>()
+        const bg = yield* jobs.start({
+          id: "ses_cap_bg",
+          metadata: { background: true },
+          run: blocked(gate),
+        })
+        expect(bg.status).toBe("running")
+        // Foreground job does not consume the single background slot.
+        const fg = yield* jobs.start({
+          id: "ses_cap_fg",
+          metadata: { background: false },
+          run: blocked(gate),
+        })
+        expect(fg.status).toBe("running")
+        // A second background job is still rejected while the first holds the slot.
+        const rejected = yield* jobs
+          .start({ id: "ses_cap_bg2", metadata: { background: true }, run: blocked(gate) })
+          .pipe(Effect.flip)
+        expect(rejected._tag).toBe("BackgroundJobLimitError")
+        // Promoting the foreground job flips it into the counted set (no re-check, like upstream).
+        const promoted = yield* jobs.promote("ses_cap_fg")
+        expect(promoted?.metadata?.background).toBe(true)
+        yield* Deferred.succeed(gate, undefined)
+        yield* jobs.wait({ id: "ses_cap_bg" })
+        yield* jobs.wait({ id: "ses_cap_fg" })
+      }),
+    { config: { delegation: { background_concurrent: 1 } } },
+  )
 })
