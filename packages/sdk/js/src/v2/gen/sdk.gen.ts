@@ -35,6 +35,7 @@ import type {
   EventTuiPromptAppend2,
   EventTuiSessionSelect2,
   EventTuiToastShow2,
+  ExperimentalCapabilitiesGetResponses,
   ExperimentalConsoleGetResponses,
   ExperimentalConsoleListOrgsResponses,
   ExperimentalConsoleSwitchOrgResponses,
@@ -1241,6 +1242,38 @@ export class Session extends HeyApiClient {
   }
 }
 
+export class Capabilities extends HeyApiClient {
+  /**
+   * Get experimental capabilities
+   *
+   * Get experimental features enabled on the server.
+   */
+  public get<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<ExperimentalCapabilitiesGetResponses, unknown, ThrowOnError>({
+      url: "/experimental/capabilities",
+      ...options,
+      ...params,
+    })
+  }
+}
+
 export class Resource extends HeyApiClient {
   /**
    * Get MCP resources
@@ -1509,6 +1542,11 @@ export class Experimental extends HeyApiClient {
   private _session?: Session
   get session(): Session {
     return (this._session ??= new Session({ client: this.client }))
+  }
+
+  private _capabilities?: Capabilities
+  get capabilities(): Capabilities {
+    return (this._capabilities ??= new Capabilities({ client: this.client }))
   }
 
   private _resource?: Resource

@@ -58,6 +58,7 @@ describe("experimental session background HttpApi", () => {
       promote: (id: string) => Effect.Effect<unknown>
       startPlainJob: (id: string, ownerSessionId: string, gate: Deferred.Deferred<void>) => Effect.Effect<unknown>
       post: (sessionID: string) => Promise<Response>
+      get: (path: string) => Promise<Response>
     }) => Effect.Effect<void, unknown, Scope.Scope>,
     config?: Record<string, unknown>,
   ) {
@@ -111,7 +112,8 @@ describe("experimental session background HttpApi", () => {
                 method: "POST",
                 headers,
               })
-            return yield* body({ directory: tmp.path, run, startJob, promote, startPlainJob, post })
+            const get = (path: string) => server.request(path, { headers })
+            return yield* body({ directory: tmp.path, run, startJob, promote, startPlainJob, post, get })
           }),
         ),
       )
@@ -203,6 +205,29 @@ describe("experimental session background HttpApi", () => {
         expect(job?.metadata?.background).toBe(false)
 
         yield* Deferred.succeed(gate, undefined)
+      }),
+    { delegation: { background_subagents: false } },
+  )
+
+  scenario("capabilities reports backgroundSubagents from the kill-switch", ({ get }) =>
+    Effect.gen(function* () {
+      const response = yield* Effect.tryPromise(() => get(ExperimentalPaths.capabilities))
+      expect(response.status).toBe(200)
+      yield* Effect.tryPromise(async () => {
+        expect(await response.json()).toEqual({ backgroundSubagents: true })
+      })
+    }),
+  )
+
+  scenario(
+    "capabilities reports backgroundSubagents false when the kill-switch is off",
+    ({ get }) =>
+      Effect.gen(function* () {
+        const response = yield* Effect.tryPromise(() => get(ExperimentalPaths.capabilities))
+        expect(response.status).toBe(200)
+        yield* Effect.tryPromise(async () => {
+          expect(await response.json()).toEqual({ backgroundSubagents: false })
+        })
       }),
     { delegation: { background_subagents: false } },
   )

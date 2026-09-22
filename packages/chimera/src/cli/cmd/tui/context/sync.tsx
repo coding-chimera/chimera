@@ -69,6 +69,9 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       provider_default: Record<string, string>
       provider_next: ProviderListResponse
       console_state: ConsoleState
+      capabilities: {
+        experimentalBackgroundSubagents: boolean
+      }
       provider_auth: Record<string, ProviderAuthMethod[]>
       provider_balance: Record<string, ProviderBalanceResult>
       agent: Agent[]
@@ -129,6 +132,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         connected: [],
       },
       console_state: emptyConsoleState,
+      capabilities: { experimentalBackgroundSubagents: false },
       provider_auth: {},
       provider_balance: {},
       config: {},
@@ -506,6 +510,10 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         .get({ workspace }, { throwOnError: true })
         .then((x) => x.data)
         .catch(() => emptyConsoleState)
+      const capabilitiesPromise = sdk.client.experimental.capabilities
+        .get({ workspace })
+        .then((x) => x.data)
+        .catch(() => undefined)
       const agentsPromise = sdk.client.app.agents({ workspace }, { throwOnError: true })
       const configPromise = sdk.client.config.get({ workspace }, { throwOnError: true })
       const blockingRequests: Promise<unknown>[] = [
@@ -558,6 +566,9 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           void Promise.all([
             ...(args.continue ? [] : [sessionListPromise.then((sessions) => setStore("session", reconcile(sessions)))]),
             consoleStatePromise.then((consoleState) => setStore("console_state", reconcile(consoleState))),
+            capabilitiesPromise.then((capabilities) =>
+              setStore("capabilities", "experimentalBackgroundSubagents", capabilities?.backgroundSubagents === true),
+            ),
             sdk.client.command.list({ workspace }).then((x) => setStore("command", reconcile(x.data ?? []))),
             sdk.client.lsp.status({ workspace }).then((x) => setStore("lsp", reconcile(x.data ?? []))),
             sdk.client.mcp.status({ workspace }).then((x) => setStore("mcp", reconcile(x.data ?? {}))),

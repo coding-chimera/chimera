@@ -64,6 +64,10 @@ export const SessionListQuery = Schema.Struct({
   archived: Schema.optional(QueryBoolean),
 })
 
+const CapabilitiesResponse = Schema.Struct({
+  backgroundSubagents: Schema.Boolean,
+}).annotate({ identifier: "ExperimentalCapabilities" })
+
 export const ExperimentalPaths = {
   console: "/experimental/console",
   consoleOrgs: "/experimental/console/orgs",
@@ -75,6 +79,7 @@ export const ExperimentalPaths = {
   session: "/experimental/session",
   sessionBackground: "/experimental/session/:sessionID/background",
   resource: "/experimental/resource",
+  capabilities: "/experimental/capabilities",
 } as const
 
 export const ExperimentalApi = HttpApi.make("experimental")
@@ -196,6 +201,15 @@ export const ExperimentalApi = HttpApi.make("experimental")
             summary: "Background subagents",
             description:
               "Detach any synchronous subagents currently blocking the session and continue them in the background.",
+          }),
+        ),
+        HttpApiEndpoint.get("capabilities", ExperimentalPaths.capabilities, {
+          success: described(CapabilitiesResponse, "Experimental capabilities"),
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "experimental.capabilities.get",
+            summary: "Get experimental capabilities",
+            description: "Get experimental features enabled on the server.",
           }),
         ),
         HttpApiEndpoint.get("resource", ExperimentalPaths.resource, {

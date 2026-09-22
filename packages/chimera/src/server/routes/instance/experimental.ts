@@ -446,6 +446,37 @@ export const ExperimentalRoutes = lazy(() =>
         }),
     )
     .get(
+      "/capabilities",
+      describeRoute({
+        summary: "Get experimental capabilities",
+        description: "Get experimental features enabled on the server.",
+        operationId: "experimental.capabilities.get",
+        responses: {
+          200: {
+            description: "Experimental capabilities",
+            content: {
+              "application/json": {
+                schema: resolver(
+                  z.object({
+                    backgroundSubagents: z.boolean(),
+                  }),
+                ),
+              },
+            },
+          },
+        },
+      }),
+      async (c) =>
+        jsonRequest("ExperimentalRoutes.capabilities.get", c, function* () {
+          const config = yield* Config.Service
+          const cfg = yield* config.get()
+          return {
+            backgroundSubagents:
+              cfg.delegation?.background_subagents ?? ConfigDelegation.DEFAULT_BACKGROUND_SUBAGENTS,
+          }
+        }),
+    )
+    .get(
       "/resource",
       describeRoute({
         summary: "Get MCP resources",
