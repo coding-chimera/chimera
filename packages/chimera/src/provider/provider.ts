@@ -1249,6 +1249,19 @@ export interface Interface {
   readonly getProvider: (providerID: ProviderID) => Effect.Effect<Info>
   readonly getModel: (providerID: ProviderID, modelID: ModelID) => Effect.Effect<Model>
   readonly getLanguage: (model: Model) => Effect.Effect<LanguageModelV3>
+  /**
+   * Resolve the same provider request options the AI SDK path consumes
+   * (baseURL/apiKey/headers after config+env merge) without instantiating an
+   * SDK model. Used by the native llm runtime pilot (experimental.llm_runtime)
+   * so both transports address the same endpoint with the same credentials.
+   */
+  readonly getRequestOptions: (
+    model: Model,
+  ) => Effect.Effect<{
+    baseURL: string | undefined
+    apiKey: string | undefined
+    headers: Record<string, string> | undefined
+  }>
   readonly getResponsesTransport: (
     providerID: ProviderID,
     modelID: ModelID,
@@ -2372,6 +2385,17 @@ const layer: Layer.Layer<
       return info
     })
 
+    const getRequestOptions = Effect.fn("Provider.getRequestOptions")(function* (model: Model) {
+      const s = yield* freshState()
+      const envs = yield* env.all()
+      const { options } = resolveProviderRequestOptions(model, s, envs)
+      return {
+        baseURL: typeof options["baseURL"] === "string" ? options["baseURL"] : undefined,
+        apiKey: typeof options["apiKey"] === "string" ? options["apiKey"] : undefined,
+        headers: options["headers"] as Record<string, string> | undefined,
+      }
+    })
+
     const getResponsesTransport = Effect.fn("Provider.getResponsesTransport")(function* (
       providerID: ProviderID,
       modelID: ModelID,
@@ -2571,6 +2595,7 @@ const layer: Layer.Layer<
       getProvider,
       getModel,
       getLanguage,
+      getRequestOptions,
       getResponsesTransport,
       closest,
       getSmallModel,
