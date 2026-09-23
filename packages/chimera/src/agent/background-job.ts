@@ -283,6 +283,45 @@ function pruneDurableJobs(directory: string) {
  * behavior), which keeps engine-level tests and non-instance callers durable-
  * free.
  */
+/**
+ * Closeout protocol (F4-P2, per the migration plan's "closeout 协议成文" item).
+ *
+ * Responsibility split when a dispatch chain involves background jobs:
+ *
+ * 1. Child self-closeout: a subagent finishes its own session-level closeout
+ *    (audit / oracle / obligation handling) inside its own turn, before its run
+ *    effect settles. The engine never defers or reopens a child's closeout.
+ * 2. Delivery state machine: a job's result is delivered either inline by the
+ *    waiting consumer (the task tool's synchronous race, or a chimera_swarm
+ *    worker wait — both mark delivery right after consuming the result) or by
+ *    the notify fiber of a background dispatch, which marks delivery only after
+ *    injectSynthetic has fully returned, i.e. the woken parent turn that
+ *    aggregates the result has completed. markDelivered is generation-bound, so
+ *    a stale notify fiber from an earlier run on the same id can never falsely
+ *    complete delivery for the newer run.
+ * 3. Parent park: a dispatch whose child owns running or delivery-pending jobs
+ *    parks on waitOwnerQuiescent inside runPreparedCore and re-reads the child's
+ *    newest assistant message afterwards, so aggregation turns are never
+ *    orphaned. The park has no abandonment timeout; onParkProgress publishes
+ *    periodic metadata on the foreground path and the cancel cascade is the
+ *    escape hatch. On a background dispatch the tool call has already returned,
+ *    so the park surfaces differently: the job stays `running` until the child's
+ *    subtree is quiescent, keeping it visible in the owner's Background Tasks
+ *    runtime-context section.
+ * 4. Run-mode drain: `chimera run` polls GET /session/:id/background/quiescence
+ *    after the prompt returns so injected aggregation turns flow out through
+ *    the event stream before the process exits.
+ * 5. Parent aggregation: the injection-triggered turn is where the parent
+ *    performs cross-child closeout (conflict resolution, chimera_audit_recent,
+ *    focused verification) — see the task/chimera_swarm tool guidance.
+ *
+ * Because waitOwnerQuiescent treats delivery-pending jobs as active, EVERY
+ * inline consumer of a job result must mark delivery: a missed mark would park
+ * the owner (or the run-mode drain) forever on a result that was already
+ * consumed. Cancellation is the exception: a cancelled job's notify fiber (if
+ * any) still runs its ensuring-markDelivered, and interrupt paths tear down the
+ * owner's turn alongside the job, so no park survives to observe the gap.
+ */
 export const make = (config: Config.Interface, directory?: string, options?: { settledLiveMax?: number }) =>
   Effect.gen(function* () {
     const cfg = yield* config.get()
@@ -659,6 +698,58 @@ export const make = (config: Config.Interface, directory?: string, options?: { s
     if (result.scope) yield* Scope.close(result.scope, Exit.void)
     return result.info
   })
+
+  // (F4-P2 dispose matrix) Instance teardown must not leave running jobs behind:
+  // closing the registry scope alone does not interrupt the run fibers forked into
+  // the job scopes, so the registry finalizer explicitly settles every running job
+  // — the same "finalizer cancels live work" shape as the SessionRunState instance
+  // finalizer (run-state.ts). It deliberately does NOT call cancel(): the finalizer
+  // runs while the registry scope is already closing, where re-entering Scope.close
+  // on a child job scope is unsafe and ambient services may already be unavailable.
+  // Instead it performs the same
+  // terminal transition with finalizer-safe primitives only: status cancelled,
+  // done Deferred succeeded, onInterrupt hook fired (phase 2 binds it to the bound
+  // child session's cancel), so no orphaned subagent run keeps burning tokens or
+  // permits after the owning instance is disposed.
+  yield* Effect.addFinalizer(
+    Effect.fnUntraced(function* () {
+      const now = Date.now()
+      const running = Array.from((yield* SynchronizedRef.get(state.jobs)).values()).filter(
+        (job) => job.info.status === "running",
+      )
+      yield* Effect.forEach(
+        running,
+        (job) =>
+          Effect.gen(function* () {
+            const result = yield* SynchronizedRef.modify(
+              state.jobs,
+              (jobs): readonly [FinishResult, Map<string, Active>] => {
+                const current = jobs.get(job.info.id)
+                if (!current || current.info.status !== "running") return [{}, jobs]
+                const next = {
+                  ...current,
+                  onInterrupt: undefined,
+                  onPromote: undefined,
+                  fiber: undefined,
+                  pending: 0,
+                  info: { ...current.info, status: "cancelled" as const, completed_at: now },
+                }
+                return [
+                  { info: snapshot(next), done: current.done, onInterrupt: current.onInterrupt },
+                  new Map(jobs).set(current.info.id, next),
+                ]
+              },
+            )
+            if (result.info && result.done) {
+              yield* Deferred.succeed(result.done, result.info).pipe(Effect.ignore)
+              if (directory !== undefined) yield* Effect.sync(() => persistJobInfo(directory, result.info!))
+            }
+            if (result.onInterrupt) yield* result.onInterrupt.pipe(Effect.ignoreCause({ log: true }))
+          }),
+        { discard: true },
+      )
+    }),
+  )
 
   /**
    * Waits until the job is promoted to background (upstream waitForPromotion semantics):
