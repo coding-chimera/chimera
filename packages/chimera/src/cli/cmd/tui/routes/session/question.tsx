@@ -1,6 +1,6 @@
 import { createStore } from "solid-js/store"
 import { createMemo, createSignal, For, Show } from "solid-js"
-import { useKeyboard } from "@opentui/solid"
+import { useKeyboard, useRenderer } from "@opentui/solid"
 import type { TextareaRenderable } from "@opentui/core"
 import { useKeybind } from "../../context/keybind"
 import { selectedForeground, tint, useTheme } from "../../context/theme"
@@ -13,8 +13,14 @@ import { useDialog } from "../../ui/dialog"
 export function QuestionPrompt(props: { request: QuestionRequest; directory?: string }) {
   const sdk = useSDK()
   const { theme } = useTheme()
+  const renderer = useRenderer()
   const keybind = useKeybind()
   const bindings = useTextareaKeybindings()
+
+  // Mouse-up fires at the end of a drag-select too; ignore clicks that are
+  // really text selections so copying an option label doesn't pick it
+  // (upstream 2a7af6acd8).
+  const selecting = () => Boolean(renderer.getSelection()?.getSelectedText())
 
   const questions = createMemo(() => props.request.questions)
   const single = createMemo(() => questions().length === 1 && questions()[0]?.multiple !== true)
@@ -282,7 +288,10 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
                     }
                     onMouseOver={() => setTabHover(index())}
                     onMouseOut={() => setTabHover(null)}
-                    onMouseUp={() => selectTab(index())}
+                    onMouseUp={() => {
+                      if (selecting()) return
+                      selectTab(index())
+                    }}
                   >
                     <text
                       fg={
@@ -307,7 +316,10 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
               }
               onMouseOver={() => setTabHover("confirm")}
               onMouseOut={() => setTabHover(null)}
-              onMouseUp={() => selectTab(questions().length)}
+              onMouseUp={() => {
+                if (selecting()) return
+                selectTab(questions().length)
+              }}
             >
               <text fg={confirm() ? selectedForeground(theme, theme.accent) : theme.textMuted}>Confirm</text>
             </box>
@@ -331,7 +343,10 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
                     <box
                       onMouseOver={() => moveTo(i())}
                       onMouseDown={() => moveTo(i())}
-                      onMouseUp={() => selectOption()}
+                      onMouseUp={() => {
+                        if (selecting()) return
+                        selectOption()
+                      }}
                     >
                       <box flexDirection="row">
                         <box backgroundColor={active() ? theme.backgroundElement : undefined} paddingRight={1}>
@@ -345,7 +360,7 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
                           </text>
                         </box>
                         <Show when={!multi()}>
-                          <text fg={theme.success}>{picked() ? "✓" : ""}</text>
+                          <text fg={theme.success}>{picked() ? " ✓" : ""}</text>
                         </Show>
                       </box>
 
@@ -360,7 +375,10 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
                 <box
                   onMouseOver={() => moveTo(options().length)}
                   onMouseDown={() => moveTo(options().length)}
-                  onMouseUp={() => selectOption()}
+                  onMouseUp={() => {
+                    if (selecting()) return
+                    selectOption()
+                  }}
                 >
                   <box flexDirection="row">
                     <box backgroundColor={other() ? theme.backgroundElement : undefined} paddingRight={1}>
@@ -375,7 +393,7 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
                     </box>
 
                     <Show when={!multi()}>
-                      <text fg={theme.success}>{customPicked() ? "✓" : ""}</text>
+                      <text fg={theme.success}>{customPicked() ? " ✓" : ""}</text>
                     </Show>
                   </box>
                   <Show when={store.editing}>
