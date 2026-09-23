@@ -40,6 +40,13 @@ export function layerFromPath(filename: string) {
   return layer.pipe(Layer.provide(sqliteLayer({ filename })))
 }
 
+// (L5.1, L5.0 decision ②) DB isolation: the vendored upstream trunk owns a
+// dedicated chimera-v2.db under Global.Path.data (~/.local/share/chimera).
+// The upstream TS migrations in ./migration must NEVER be applied to the
+// production fork chimera.db — its lineage has diverged (fork lacks
+// 20260611_credential, carries proprietary session_context_epoch /
+// background_job migrations). Only an explicit absolute OPENCODE_DB (or
+// CHIMERA_DB alias) can point this layer elsewhere; that is operator opt-in.
 export function path() {
   if (Flag.OPENCODE_DB) {
     if (Flag.OPENCODE_DB === ":memory:" || isAbsolute(Flag.OPENCODE_DB)) return Flag.OPENCODE_DB
@@ -50,8 +57,8 @@ export function path() {
     process.env.OPENCODE_DISABLE_CHANNEL_DB === "1" ||
     process.env.OPENCODE_DISABLE_CHANNEL_DB === "true"
   )
-    return join(Global.Path.data, "opencode.db")
-  return join(Global.Path.data, `opencode-${InstallationChannel.replace(/[^a-zA-Z0-9._-]/g, "-")}.db`)
+    return join(Global.Path.data, "chimera-v2.db")
+  return join(Global.Path.data, `chimera-v2-${InstallationChannel.replace(/[^a-zA-Z0-9._-]/g, "-")}.db`)
 }
 
 export const node = makeGlobalNode({ service: Service, layer: layerFromPath(path()), deps: [] })
