@@ -225,7 +225,7 @@ export function Autocomplete(props: {
   }
 
   function createFilePart(item: string, lineRange?: { startLine: number; endLine?: number }) {
-    const baseDir = (sync.path.directory || process.cwd()).replace(/\/+$/, "")
+    const baseDir = (sessionDirectory() || sync.path.directory || process.cwd()).replace(/\/+$/, "")
     const fullPath = path.isAbsolute(item) ? item : path.join(baseDir, item)
     const urlObj = pathToFileURL(fullPath)
     const filename =
@@ -245,7 +245,9 @@ export function Autocomplete(props: {
       url: urlObj.href,
       part: {
         type: "file" as const,
-        mime: "text/plain",
+        // Directories (trailing-slash entries) get the directory mime so the
+        // transcript badge renders 'dir' (upstream 53076999c5 normalization).
+        mime: item.endsWith("/") ? "application/x-directory" : "text/plain",
         filename,
         url: urlObj.href,
         source: {
@@ -262,7 +264,7 @@ export function Autocomplete(props: {
   }
 
   function normalizeMentionPath(filePath: string) {
-    const baseDir = sync.path.directory || process.cwd()
+    const baseDir = sessionDirectory() || sync.path.directory || process.cwd()
     const absolute = path.resolve(filePath)
     const relative = path.relative(baseDir, absolute)
 
@@ -288,16 +290,23 @@ export function Autocomplete(props: {
     insertPart(filename, part)
   }
 
+  // Scope file search and mention resolution to the active session's directory
+  // instead of the app-level project path (upstream ef2357915e).
+  const sessionDirectory = createMemo(() =>
+    props.sessionID ? sync.session.get(props.sessionID)?.directory : undefined,
+  )
+
   const [files] = createResource(
-    () => search(),
-    async (query) => {
+    () => ({ query: search(), directory: sessionDirectory() }),
+    async (input) => {
       if (!store.visible || store.visible === "/") return []
 
-      const { lineRange, baseQuery } = extractLineRange(query ?? "")
+      const { lineRange, baseQuery } = extractLineRange(input.query ?? "")
 
       // Get files from SDK
       const result = await sdk.client.find.files({
         query: baseQuery,
+        directory: input.directory,
       })
 
       const options: AutocompleteOption[] = []
@@ -347,10 +356,11 @@ export function Autocomplete(props: {
     const width = props.anchor().width - 4
 
     for (const res of Object.values(sync.data.mcp_resource)) {
-      const text = `${res.name} (${res.uri})`
+      // Match and display the resource name only; matching the URI caused
+      // unrelated fuzzy hits (upstream 3e523d506c + f12ac6f234).
       options.push({
-        display: Locale.truncateMiddle(text, width),
-        value: text,
+        display: Locale.truncateMiddle(res.name, width),
+        value: res.name,
         description: res.description,
         onSelect: () => {
           insertPart(res.name, {
@@ -448,9 +458,13 @@ export function Autocomplete(props: {
     const result = fuzzysort.go(removeLineRange(searchValue), mixed, {
       keys: [
         (obj) => removeLineRange((obj.value ?? obj.display).trimEnd()),
-        "description",
+        // Match description for slash commands only; for "@" it surfaced
+        // unrelated items (upstream 3e523d506c).
+        ...(store.visible === "/" ? (["description"] as const) : []),
         (obj) => obj.aliases?.join(" ") ?? "",
       ],
+      // Require a meaningful match for "@" to cut noisy MCP hits (upstream f12ac6f234).
+      threshold: store.visible === "@" ? 0.5 : 0,
       limit: 10,
       scoreFn: (objResults) => {
         const displayResult = objResults[0]

@@ -695,6 +695,8 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       category: "Agent",
       slash: {
         name: "models",
+        // Bias /mo toward /models without changing global fuzzy scoring (upstream b375890745).
+        aliases: ["mo"],
       },
       onSelect: () => {
         if (local.model.warnRemoteCompactionLock()) return
