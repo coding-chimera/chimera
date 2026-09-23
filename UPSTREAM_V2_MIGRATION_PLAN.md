@@ -218,6 +218,18 @@ Model schema 扩展字段：`sampling.{temperature,top_p,top_k}`、`reasoning_pr
 - **F3 feat② 17 条终局**：移植 4（`0de5f1ff36`/`51da3483a9`/`34e5809059` 于 `948302198` + `2892e97c57`）；`3003867c25` 由 F4-P3 吸收；降级/顺延 12（ffcb45d7c9/f591bf5f93 缺 project-copy 后端、39c6dd1c32 待拍板#6、888c4cb504 待拍板#3、6d4f3b4ab2+8f8b161cae 无插件表面、28a06e52fc/b8cfd69acf/pinned 族 f33b4455a1+12583b18f0 需独立批、cb65926c82 fork 已等价、e7c59b17a8/f99339e525/f6e5e2533e/f620b39484 fork 无此表面、c416ede20d/7b56a1cea3 release-date 顺延）。
 - **fix(tui) 消化**：红旗双修 `4b6e57560`+`721e2df2c`；C `8bc0102dd` / B `d8d103914` / G `41dd47c6b` / I+N `717f2f83e` / misc `84b4c8fbd` / M+H `dfcb70f65` / L+M `20c4ad713`；安全邻接 4 条核实已吸收；**D/J/K/O/R 五族留待后续批**。
 - 车道外一笔：`src/effect/app-runtime.ts` BackgroundJob.defaultLayer 一行（已注记）；上游 `43c24d8d0f` 的 config-service 无关重构刻意不搬。
+
+#### F3 遗留批完成记录（2026-09-23，builder ses_f33e4a763）
+
+- **D 补全 5 条全移植**（`3bb107139`：目录作用域文件补全/MCP 资源 name 匹配/斜杠 description key/@阈值/models mo 别名）
+- **E keybind**：1 先前已移植（prompt.skills 于 84b4c8fbd）/1 已等价（cb65926c82 空 variant_list 在 fork 不可达）/2 降级（3cdd431794 move 命令无表面；ecdfcd91ca tab-cycle 架构不同）
+- **F 内联错误**：2 移植（`c3acb9234` org/skill 错误内联）；3 已等价（上游自己删了 aggregate-failures 机制，fork 已与 HEAD 形态一致）
+- **J 对话框**：2 移植（`af1e5e17f` onMouseUp 拖选守卫+间距）；1 已等价
+- **K move/working-copy 6 条全降级**（依赖 project-copy 后端，同决策#2 条款）
+- **O worker**：1 移植（`7e46f1d31` 拒收处理器摘除）；2 已等价；1 降级（split-footer 架构）
+- **R 杂项**：5 移植（`962daf241` footer 沉底/gutter 标记/宽字符折叠+5 测试/Vue 高亮/tips 缩短）；3 已等价
+- **pinned 会话切换族全量移植**（`3b4d6a414`，按上游 HEAD 终态：pin/slots 1-9/leader 快捷/Prune on delete；刻意不移植上游已删的 Recent 组；fork 适配 CommandOption.value 路径）
+- 安全邻接、D/E/F/J/K/O/R 全族就此清零；遗留仅 K 族（绑决策#2）与 split-footer 架构件（决策#3）
 | **F4 后台异步子代理（已拍板 2026-09-07：做，默认打开）** | 按上游 HEAD 终态做——`task(background=true)` + Deferred 驱动合成消息注入自动续跑父循环（**task_status 轮询已被上游 dabf2dc013 删除，不作引入目标**）；全链 12 提交。P1 最小闭环（background-job 引擎子集 + task background 参数 + **cancel 表面（first-wins 用例）** + **会话可寻址 inject（跨 thread claims 用例）** + `delegation.background_subagents` 默认 true + background_concurrent 上限 + 级联取消）；P2 swarm/预算/dispose 整合；P3 TUI ctrl+b promotion + server 端点 + SDK 重生成 + claims L2 接线。拍板详情见下方「F4 拍板记录」与分诊文档 §10 | P1 ~3-5 人日（+cancel 表面/可寻址 inject ~1）；P2 ~2-4；P3 ~3-5 | P1 可立即开工、与 F2 并行；P2 并入 L5 或排 L5 后；P3 与 F3 合并（吸收 `3003867c25`）；claims P1/P2 与 F4-P1 并行、claims L2 依赖 F4-P1 inject |
 | **L4/L5 并入项** | llm 包 8 条 + native-llm + connector auth + opencode integration×2 + provider↔integration 映射 + variant.ts 配置化落点（`42bb793574`，计划书已点名）随 L4 整包 vendor 自然吸收，勿单独 cherry-pick；`03afae5b95` v1 加载 v2 config 为 L4/L5 启动第一批（防用户 v2 配置在 chimera 下丢失）；sdk/client v2 表面 5 条 L4/L5 启动时复评升② | 随 L4/L5 | — |
 
