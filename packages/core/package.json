@@ -46,7 +46,7 @@
     "@opentelemetry/sdk-trace-base": "2.8.0",
     "effect": "catalog:",
     "cross-spawn": "catalog:",
-    "drizzle-orm": "catalog:",
+    "drizzle-orm": "1.0.0-rc.2",
     "glob": "13.0.5",
     "mime-types": "3.0.2",
     "minimatch": "10.2.5",
