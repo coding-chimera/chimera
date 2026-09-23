@@ -1,10 +1,13 @@
 import * as Tool from "./tool"
 import DESCRIPTION from "./swarm.txt"
-import { SubagentDispatch, type SubagentPromptOps } from "../agent/subagent-dispatch"
+import { SubagentDispatch, type SubagentDispatchStarted, type SubagentPromptOps } from "../agent/subagent-dispatch"
+import { BackgroundJob } from "../agent/background-job"
 import * as ModelTelemetry from "../agent/model-telemetry"
 import { validateSubagentModelSelection } from "../agent/subagent-execution"
 import { SubagentModelSchedulingRuntime } from "../agent/subagent-model-scheduling-runtime"
 import { Agent } from "../agent/agent"
+import { Config } from "@/config/config"
+import { ConfigDelegation } from "@/config/delegation"
 import { ConfigSubagentRouting } from "@/config/subagent-routing"
 import { Permission } from "@/permission"
 import { InstanceState } from "@/effect/instance-state"
@@ -13,7 +16,7 @@ import { readOracleResults, readPersistentObligationStore, type OracleRecord, ty
 import { Session } from "@/session/session"
 import { SessionID } from "@/session/schema"
 import path from "path"
-import { Cause, Effect, Schema } from "effect"
+import { Cause, Effect, Option, Schema } from "effect"
 import * as Truncate from "./truncate"
 
 const id = "chimera_swarm"
@@ -420,6 +423,8 @@ export const ChimeraSwarmTool = Tool.define(
     const dispatch = yield* SubagentDispatch
     const routing = yield* ConfigSubagentRouting.Service
     const sessions = yield* Session.Service
+    const config = yield* Config.Service
+    const background = Option.getOrUndefined(yield* Effect.serviceOption(BackgroundJob.Service))
     const scheduling = yield* SubagentModelSchedulingRuntime.make
 
     const run = Effect.fn("ChimeraSwarmTool.execute")(function* (params: Params, ctx: Tool.Context) {
@@ -627,9 +632,17 @@ export const ChimeraSwarmTool = Tool.define(
           metadataChanged = true
         })
         if (metadataChanged) yield* publishMetadata()
+        // (F4-P2) Engine-backed workers are cancelled through their durable job handles:
+        // jobs.cancel fires the job's onInterrupt hook (which cancels the bound child
+        // session exactly once) and interrupts the run fiber. Calling promptOps.cancel
+        // here as well would double-cancel the same child. The legacy no-engine path
+        // keeps the direct promptOps.cancel fan-out.
         yield* Effect.forEach(
           childSessionList(),
-          (child) => promptOps.cancel(SessionID.make(child.sessionId)).pipe(Effect.ignore),
+          (child) =>
+            engine
+              ? engine.cancel(child.sessionId).pipe(Effect.ignore)
+              : promptOps.cancel(SessionID.make(child.sessionId)).pipe(Effect.ignore),
           { concurrency: "unbounded", discard: true },
         )
       })
@@ -637,38 +650,118 @@ export const ChimeraSwarmTool = Tool.define(
       yield* publishMetadata()
       let activityRecorded = false
 
-      const results: SwarmResult[] = yield* Effect.forEach(
-        workItems,
-        (item) =>
-          Effect.gen(function* () {
-            if (ctx.abort.aborted) return yield* Effect.interrupt
-            const result = yield* dispatch.runPrepared({
+      // (F4-P2) Swarm workers ride the background-job engine as foreground jobs so their
+      // lifecycle is unified with task dispatches: the run-state cancel cascade and
+      // session.remove cleanup reach them through the typed ownerSessionId, cancelChildren
+      // binds to durable job handles, and a worker that dispatches its own background
+      // tasks parks inside runPreparedCore like any nested dispatch. Foreground jobs
+      // (metadata.background === false) are exempt from background_concurrent, and each
+      // worker still acquires its DelegationLimiter permit through runPrepared, so the
+      // swarm's concurrency cap and both budget pools keep their pre-integration
+      // semantics. Kill-switch off or no engine in this runtime: legacy direct dispatch,
+      // byte-identical to the pre-integration path.
+      const engine = yield* Effect.gen(function* () {
+        if (!background) return undefined
+        const cfg = yield* config.get()
+        const enabled = cfg.delegation?.background_subagents ?? ConfigDelegation.DEFAULT_BACKGROUND_SUBAGENTS
+        return enabled ? background : undefined
+      })
+
+      type RunPreparedResult = Effect.Success<ReturnType<typeof dispatch.runPrepared>>
+      const runWorkerJob = Effect.fn("ChimeraSwarmTool.runWorkerJob")(function* (
+        item: (typeof workItems)[number],
+        onStarted: (started: SubagentDispatchStarted) => Effect.Effect<void>,
+      ) {
+        const materialized = yield* dispatch.materialize(prepared, item.title)
+        const workerSessionID = materialized.nextSession.id
+        let workerResult: RunPreparedResult | undefined
+        const started = yield* engine!.start({
+          id: workerSessionID,
+          type: "swarm",
+          title: item.title,
+          ownerSessionId: ctx.sessionID,
+          metadata: {
+            model: prepared.resolved.model,
+            background: false,
+          },
+          onInterrupt: promptOps.cancel(workerSessionID).pipe(Effect.ignore),
+          run: dispatch
+            .runPrepared({
               prepared,
+              materialized,
               description: item.title,
               prompt: item.prompt,
               promptOps,
               abort: ctx.abort,
               telemetry: item.telemetry,
-              onStarted: (started) =>
-                Effect.gen(function* () {
-                  const recordActivity = !activityRecorded && !parent.parentID
-                  activityRecorded = true
-                  if (recordActivity) {
-                    yield* routing.recordDelegation(parent.projectID).pipe(
-                      Effect.catchTag("SubagentRoutingStateFileError", (error) =>
-                        Effect.logWarning("failed to record subagent routing activity", { operation: error.operation }),
-                      ),
-                    )
-                  }
-                  yield* updateChildRun(item.index, {
-                    status: "running",
-                    sessionId: started.sessionId,
-                    model: started.model,
-                    model_profile: started.execution?.modelProfile,
-                    execution: started.execution,
-                  })
-                }),
-            })
+              onStarted,
+          }).pipe(
+              Effect.map((result) => {
+                workerResult = result
+                return result.output
+              }),
+            ),
+        })
+        const generation = started.generation
+        const settled = yield* engine!.wait({ id: workerSessionID }).pipe(
+          Effect.map((waited) => waited.info),
+          // The tool fiber was interrupted (parent turn aborted): the engine job keeps
+          // running in its own scope, so cancel it explicitly — its onInterrupt hook
+          // cancels the bound child session (task tool sync-path parity).
+          Effect.onInterrupt(() => engine!.cancel(workerSessionID).pipe(Effect.ignore)),
+        )
+        // The swarm consumes each worker result inline in the tool output, so delivery is
+        // complete once the wait resolves — generation-bound so a concurrent same-id
+        // restart is never falsely marked delivered. Without this mark the owner's
+        // park/quiescence (runPreparedCore, run-mode drain) would wait forever on a job
+        // whose result was already consumed here.
+        yield* engine!.markDelivered(workerSessionID, generation).pipe(Effect.ignore)
+        if (settled?.status === "error") return yield* Effect.fail(new Error(settled.error ?? "Swarm worker failed"))
+        if (settled?.status === "cancelled") {
+          // Abort-driven cancellation preserves the pre-integration interrupt contract:
+          // the worker exits interrupted, not failed, when the parent turn aborted.
+          if (ctx.abort.aborted) return yield* Effect.interrupt
+          return yield* Effect.fail(new Error(`Swarm worker ${workerSessionID} was cancelled`))
+        }
+        if (workerResult) return workerResult
+        return yield* Effect.fail(new Error(`Swarm worker ${workerSessionID} settled without a result`))
+      })
+
+      const results: SwarmResult[] = yield* Effect.forEach(
+        workItems,
+        (item) =>
+          Effect.gen(function* () {
+            if (ctx.abort.aborted) return yield* Effect.interrupt
+            const onStarted = (started: SubagentDispatchStarted) =>
+              Effect.gen(function* () {
+                const recordActivity = !activityRecorded && !parent.parentID
+                activityRecorded = true
+                if (recordActivity) {
+                  yield* routing.recordDelegation(parent.projectID).pipe(
+                    Effect.catchTag("SubagentRoutingStateFileError", (error) =>
+                      Effect.logWarning("failed to record subagent routing activity", { operation: error.operation }),
+                    ),
+                  )
+                }
+                yield* updateChildRun(item.index, {
+                  status: "running",
+                  sessionId: started.sessionId,
+                  model: started.model,
+                  model_profile: started.execution?.modelProfile,
+                  execution: started.execution,
+                })
+              })
+            const result: RunPreparedResult = engine
+              ? yield* runWorkerJob(item, onStarted)
+              : yield* dispatch.runPrepared({
+                  prepared,
+                  description: item.title,
+                  prompt: item.prompt,
+                  promptOps,
+                  abort: ctx.abort,
+                  telemetry: item.telemetry,
+                  onStarted,
+                })
             const outputPath = yield* writeChildOutput(result, truncate)
             const summary = extractSummary(result.output)
             yield* updateChildRun(item.index, {

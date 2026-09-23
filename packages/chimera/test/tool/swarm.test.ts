@@ -13,6 +13,8 @@ import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { ModelID, ProviderID } from "../../src/provider/schema"
 import { ChimeraSwarmTool } from "../../src/tool/swarm"
 import { SubagentDispatch } from "../../src/agent/subagent-dispatch"
+import { BackgroundJob } from "../../src/agent/background-job"
+import { SessionRunState } from "../../src/session/run-state"
 import { DelegationLimiter } from "../../src/agent/delegation-limiter"
 import * as ModelTelemetry from "../../src/agent/model-telemetry"
 import type { TaskPromptOps } from "../../src/tool/task"
@@ -109,6 +111,25 @@ const identityIt = testEffect(
     ToolRegistry.defaultLayer,
     DelegationLimiter.defaultLayer,
     identityProvider.layer,
+  ),
+)
+// (F4-P2) Engine-backed swarm: BackgroundJob + SessionRunState merged alongside the
+// tool layers so the swarm tool, the cancel cascade, and the test body share one
+// engine instance through layer memoization.
+const engineIt = testEffect(
+  Layer.mergeAll(
+    Agent.defaultLayer,
+    Config.defaultLayer,
+    routingLayer,
+    authLayer,
+    CrossSpawnSpawner.defaultLayer,
+    Session.defaultLayer,
+    Truncate.defaultLayer,
+    ToolRegistry.defaultLayer,
+    DelegationLimiter.defaultLayer,
+    BackgroundJob.defaultLayer,
+    SessionRunState.defaultLayer,
+    testProvider.layer,
   ),
 )
 
@@ -2010,5 +2031,230 @@ describe("tool.chimera_swarm", () => {
       expect(asks).toHaveLength(0)
       expect(yield* sessions.children(parent.chat.id)).toHaveLength(0)
     }),
+  )
+})
+
+describe("tool.chimera_swarm background-job engine integration (F4-P2)", () => {
+  const gatedOps = (gate: Deferred.Deferred<void>, onCancel?: (sessionID: SessionID) => void): TaskPromptOps => ({
+    cancel: (sessionID) => Effect.sync(() => onCancel?.(sessionID)),
+    resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+    prompt: (input) =>
+      Effect.gen(function* () {
+        yield* Deferred.await(gate)
+        return reply(input, "done")
+      }),
+  })
+
+  const waitRunningSwarmJobs = (jobs: BackgroundJob.Interface, count: number) =>
+    Effect.gen(function* () {
+      for (let attempt = 0; attempt < 500; attempt++) {
+        const running = (yield* jobs.list()).filter((job) => job.type === "swarm" && job.status === "running")
+        if (running.length >= count) return
+        yield* Effect.sleep(10)
+      }
+      return yield* Effect.die(new Error(`timed out waiting for ${count} running swarm jobs`))
+    })
+
+  engineIt.instance("registers workers as parent-owned foreground engine jobs and marks them delivered after inline consumption", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const parent = yield* seed()
+      const tool = yield* ChimeraSwarmTool
+      const def = yield* tool.init()
+      const result = yield* def.execute(
+        {
+          prompt_template: "Review {{item}}",
+          items: ["alpha", "beta"],
+          subagent_type: "general",
+          concurrency: 2,
+        },
+        ctx(parent, stubOps()),
+      )
+      expect(result.metadata.successCount).toBe(2)
+      const childSessions = result.metadata.childSessions as Array<{ sessionId: string }>
+      expect(childSessions).toHaveLength(2)
+      for (const child of childSessions) {
+        const info = yield* jobs.get(child.sessionId)
+        expect(info?.type).toBe("swarm")
+        expect(info?.status).toBe("completed")
+        // Inline consumption by the swarm tool completes the delivery state machine,
+        // so the owner's park/quiescence never waits on an already-consumed worker.
+        expect(info?.delivery).toBe("delivered")
+        expect(info?.ownerSessionId).toBe(parent.chat.id)
+        expect(info?.metadata?.background).toBe(false)
+        expect(info?.metadata?.parentSessionId).toBe(parent.chat.id)
+      }
+    }),
+  )
+
+  engineIt.instance(
+    "workers do not consume background_concurrent and run while the background pool is saturated",
+    () =>
+      Effect.gen(function* () {
+        const jobs = yield* BackgroundJob.Service
+        const parent = yield* seed()
+        const gate = yield* Deferred.make<void>()
+        // Saturate the background pool (limit 2) with two real background jobs.
+        yield* jobs.start({ id: "ses_bg_1", run: Deferred.await(gate).pipe(Effect.as("bg")) })
+        yield* jobs.start({ id: "ses_bg_2", run: Deferred.await(gate).pipe(Effect.as("bg")) })
+        const rejected = yield* jobs.start({ id: "ses_bg_3", run: Effect.succeed("bg") }).pipe(
+          Effect.map(() => false),
+          Effect.catchTag("BackgroundJobLimitError", () => Effect.succeed(true)),
+        )
+        expect(rejected).toBe(true)
+
+        const tool = yield* ChimeraSwarmTool
+        const def = yield* tool.init()
+        const result = yield* def.execute(
+          {
+            prompt_template: "Review {{item}}",
+            items: ["alpha", "beta"],
+            subagent_type: "general",
+            concurrency: 2,
+          },
+          ctx(parent, stubOps()),
+        )
+        // Foreground swarm jobs are exempt from the cap: the saturated pool does not
+        // block the fan-out, and the swarm does not displace the background jobs.
+        expect(result.metadata.successCount).toBe(2)
+        expect((yield* jobs.get("ses_bg_1"))?.status).toBe("running")
+        expect((yield* jobs.get("ses_bg_2"))?.status).toBe("running")
+        yield* Deferred.succeed(gate, undefined)
+      }),
+    { config: { delegation: { background_concurrent: 2 } } },
+  )
+
+  engineIt.instance("session-level cancel cascades to running swarm workers through the engine", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const state = yield* SessionRunState.Service
+      const sessions = yield* Session.Service
+      const parent = yield* seed()
+      const tool = yield* ChimeraSwarmTool
+      const def = yield* tool.init()
+      const gate = yield* Deferred.make<void>()
+      const cancelled: string[] = []
+      const workerOps = gatedOps(gate, (sessionID) => cancelled.push(sessionID))
+
+      const fiber = yield* def
+        .execute(
+          {
+            prompt_template: "Review {{item}}",
+            items: ["alpha", "beta"],
+            subagent_type: "general",
+            concurrency: 2,
+          },
+          ctx(parent, workerOps),
+        )
+        .pipe(Effect.forkChild)
+      yield* waitRunningSwarmJobs(jobs, 2)
+
+      yield* state.cancel(parent.chat.id)
+      yield* Fiber.interrupt(fiber)
+      yield* Effect.sleep(50)
+      const swarmJobs = (yield* jobs.list()).filter((job) => job.type === "swarm")
+      expect(swarmJobs).toHaveLength(2)
+      expect(swarmJobs.every((job) => job.status === "cancelled")).toBe(true)
+      // The BFS cascade cancels the jobs; each cancel cancels the bound child session
+      // (engine onInterrupt hook plus the interrupted run fiber's release path).
+      const childIDs = (yield* sessions.children(parent.chat.id)).map((child) => child.id).sort()
+      expect([...new Set(cancelled)].sort()).toEqual(childIDs)
+      yield* Deferred.succeed(gate, undefined)
+    }),
+  )
+
+  engineIt.instance("removing the parent session cancels running swarm workers", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const sessions = yield* Session.Service
+      const parent = yield* seed()
+      const tool = yield* ChimeraSwarmTool
+      const def = yield* tool.init()
+      const gate = yield* Deferred.make<void>()
+      const cancelled: string[] = []
+      const workerOps = gatedOps(gate, (sessionID) => cancelled.push(sessionID))
+
+      const fiber = yield* def
+        .execute(
+          {
+            prompt_template: "Review {{item}}",
+            items: ["alpha", "beta"],
+            subagent_type: "general",
+            concurrency: 2,
+          },
+          ctx(parent, workerOps),
+        )
+        .pipe(Effect.forkChild)
+      yield* waitRunningSwarmJobs(jobs, 2)
+
+      yield* sessions.remove(parent.chat.id)
+      yield* Fiber.interrupt(fiber)
+      yield* Effect.sleep(50)
+      const swarmJobs = (yield* jobs.list()).filter((job) => job.type === "swarm")
+      expect(swarmJobs).toHaveLength(2)
+      expect(swarmJobs.every((job) => job.status === "cancelled")).toBe(true)
+      // Child session rows are gone with the parent; the swarm job ids ARE the child
+      // session ids, so they are the cancel-target ground truth here.
+      expect([...new Set(cancelled)].sort()).toEqual(swarmJobs.map((job) => job.id).sort())
+      yield* Deferred.succeed(gate, undefined)
+    }),
+  )
+
+  engineIt.instance("interrupting the swarm tool cancels engine jobs and their child sessions", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const sessions = yield* Session.Service
+      const parent = yield* seed()
+      const tool = yield* ChimeraSwarmTool
+      const def = yield* tool.init()
+      const gate = yield* Deferred.make<void>()
+      const cancelled: string[] = []
+      const workerOps = gatedOps(gate, (sessionID) => cancelled.push(sessionID))
+
+      const fiber = yield* def
+        .execute(
+          {
+            prompt_template: "Review {{item}}",
+            items: ["alpha", "beta"],
+            subagent_type: "general",
+            concurrency: 2,
+          },
+          ctx(parent, workerOps),
+        )
+        .pipe(Effect.forkChild)
+      yield* waitRunningSwarmJobs(jobs, 2)
+
+      yield* Fiber.interrupt(fiber)
+      yield* Effect.sleep(50)
+      const childIDs = (yield* sessions.children(parent.chat.id)).map((child) => child.id).sort()
+      const swarmJobs = (yield* jobs.list()).filter((job) => job.type === "swarm")
+      expect(swarmJobs).toHaveLength(2)
+      expect(swarmJobs.every((job) => job.status === "cancelled")).toBe(true)
+      expect([...new Set(cancelled)].sort()).toEqual(childIDs)
+      yield* Deferred.succeed(gate, undefined)
+    }),
+  )
+
+  engineIt.instance(
+    "kill-switch off keeps swarm on the legacy direct dispatch with no engine registration",
+    () =>
+      Effect.gen(function* () {
+        const jobs = yield* BackgroundJob.Service
+        const parent = yield* seed()
+        const tool = yield* ChimeraSwarmTool
+        const def = yield* tool.init()
+        const result = yield* def.execute(
+          {
+            prompt_template: "Review {{item}}",
+            items: ["alpha"],
+            subagent_type: "general",
+            concurrency: 1,
+          },
+          ctx(parent, stubOps()),
+        )
+        expect(result.metadata.successCount).toBe(1)
+        expect(yield* jobs.list()).toHaveLength(0)
+      }),
+    { config: { delegation: { background_subagents: false } } },
   )
 })
