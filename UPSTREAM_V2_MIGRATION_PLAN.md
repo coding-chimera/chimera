@@ -478,6 +478,16 @@ L4 风险 top5（含 F1/F2/K-v2 新交互面）：①**gateway/provider-utils �
 
 **L5.5 双轨成文**：上游 core/database 只服务 integration/credential/event v2 服务；统一到 core/database 的「替换」属 L6 级独立迁移批（fork 全部自有迁移 lineage 收敛），不在 L5。
 
+**L5 完成记录（2026-09-23，全部推送）**：
+
+- **L5.1**（6 笔）：trunk vendor（state/event/database 38 迁移）+Location 17 行 shim+#sqlite 映射+chimera-v2.db 隔离+drizzle rc.2 字面 pin（追认）；trunk 12/12；P0 三重实证（迁移无路径触 chimera.db）。
+- **L5.2**（4 笔）：credential/integration/connection/integration.ts 字节一致；shim 零扩展；trunk 4/4（迁移落隔离库）。
+- **L5.3 F4-P2**（3 笔）：swarm worker 注册为引擎前台 job（双层豁免 background_concurrent，AGENTS.md 已回写）；预算一致性纯测试锁定；**真实缺口修复：引擎 teardown finalizer**（实例 dispose 杀 running job，矩阵三腿测试）+closeout 五条协议成文。862/0。
+- **L5.4a**（7 笔）：wildcard/policy/provider/model/catalog/session-schema/runner-model 字节一致（唯一 seam=5 行 llm import 说明符）；**4898263dec 映射随 vendor 自然到位**；trunk 21/21 含 Bearer roundtrip。
+- **L5.4b**（5 笔）：plugin provider opencode.ts 及其 v1/config 闭包 17 文件字节一致+Plain<T> seam+plugin host seam（catalog+integration adapter，其余 hook=响亮 die 桩）；connector auth 后端=上游 30aec297d8 已并入 integration/credential 树（L5.2 已 vendor）故新增=fork server 消费面：**httpapi v2 integration/credential 9 端点双 parity**+**首个接线层 src/server/v2-integration.ts**（AppNodeBuilder 编译 core trunk，DB 恒替换 chimera-v2.db，Location 绑 server cwd pilot 限制）；SDK regen；品牌测试钉死拍板#7（opencode integration ID/client_id/console 标签原样）；test/server 288+新 4/4+bridge 36/36。
+- **L5.4 正式关闭**（sdk/client 5 条维持④，v2 服务面属 L6）。
+- **L5 遗留入 L6 清单**：Location 多点绑定/PluginHost 全树 vendor/ui-server Screens 决策/v2 server+client+codegen 整包/connector auth oauth page 消费面/cross-spawn 环境失败归因。
+
 
 ## L4.0/L4.1 完成记录（2026-09-21，builder 执行+parent 联合验收裁决）
 
