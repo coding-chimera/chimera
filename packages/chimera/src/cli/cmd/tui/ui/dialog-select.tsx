@@ -24,6 +24,11 @@ export interface DialogSelectProps<T> {
   onSelect?: (option: DialogSelectOption<T>) => void
   skipFilter?: boolean
   renderFilter?: boolean
+  // When locked, navigation/selection is disabled and emptyView replaces the
+  // 'No results found' fallback — used to render load errors inline without
+  // tearing the dialog down (upstream e6cdc543f3 / 9dadc2455f).
+  locked?: boolean
+  emptyView?: JSX.Element
   keybind?: {
     keybind?: Keybind.Info
     title: string
@@ -195,7 +200,8 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
 
   const keybind = useKeybind()
   useKeyboard((evt) => {
-    setStore("input", "keyboard")
+    if (props.locked) return
+setStore("input", "keyboard")
 
     if (evt.name === "up" || (evt.ctrl && evt.name === "p")) move(-1)
     if (evt.name === "down" || (evt.ctrl && evt.name === "n")) move(1)
@@ -282,10 +288,12 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
       <Show
         when={grouped().length > 0}
         fallback={
-          <box paddingLeft={4} paddingRight={4} paddingTop={1}>
-            <text fg={theme.textMuted}>No results found</text>
+          props.emptyView ?? (
+<box paddingLeft={4} paddingRight={4} paddingTop={1}>
+<text fg={theme.textMuted}>No results found</text>
           </box>
-        }
+          )
+}
       >
         <scrollbox
           paddingLeft={1}
@@ -325,16 +333,19 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
                           setStore("input", "mouse")
                         }}
                         onMouseUp={() => {
+                          if (props.locked) return
                           option.onSelect?.(dialog)
                           props.onSelect?.(option)
                         }}
                         onMouseOver={() => {
+                          if (props.locked) return
                           if (store.input !== "mouse") return
                           const index = flat().findIndex((x) => isDeepEqual(x.value, option.value))
                           if (index === -1) return
                           moveTo(index)
                         }}
                         onMouseDown={() => {
+                          if (props.locked) return
                           const index = flat().findIndex((x) => isDeepEqual(x.value, option.value))
                           if (index === -1) return
                           moveTo(index)

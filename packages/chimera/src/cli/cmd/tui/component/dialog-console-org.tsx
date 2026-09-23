@@ -1,9 +1,11 @@
-import { createResource, createMemo } from "solid-js"
+import { createResource, createMemo, createSignal } from "solid-js"
+import { TextAttributes } from "@opentui/core"
 import { DialogSelect } from "@tui/ui/dialog-select"
 import { useSDK } from "@tui/context/sdk"
 import { useDialog } from "@tui/ui/dialog"
 import { useToast } from "@tui/ui/toast"
 import { useTheme } from "@tui/context/theme"
+import { errorMessage } from "@/util/error"
 import type { ExperimentalConsoleListOrgsResponse } from "@opencode-ai/sdk/v2"
 
 type OrgOption = ExperimentalConsoleListOrgsResponse["orgs"][number]
@@ -25,15 +27,28 @@ export function DialogConsoleOrg() {
   const toast = useToast()
   const { theme } = useTheme()
 
-  const [orgs] = createResource(async () => {
-    const result = await sdk.client.experimental.console.listOrgs({}, { throwOnError: true })
-    return result.data?.orgs ?? []
-  })
+  const [loadError, setLoadError] = createSignal<unknown>()
+
+  const [orgs] = createResource(() =>
+    sdk.client.experimental.console
+      .listOrgs({}, { throwOnError: true })
+      .then((result) => result.data?.orgs ?? [])
+      // Catch so the rejected resource never reaches the memos below: reading
+      // orgs() in an errored state re-throws and tears down the dialog
+      // (upstream e6cdc543f3).
+      .catch((error) => {
+        setLoadError(error)
+        return undefined
+      }),
+  )
+
+  const showError = createMemo(() => Boolean(loadError()))
 
   const current = createMemo(() => orgs()?.find((item) => item.active))
 
   const options = createMemo(() => {
-    const listed = orgs()
+    if (showError()) return []
+const listed = orgs()
     if (listed === undefined) {
       return [
         {
@@ -99,5 +114,23 @@ export function DialogConsoleOrg() {
       }))
   })
 
-  return <DialogSelect<string | OrgOption> title="Switch org" options={options()} current={current()} />
+  return (
+    <DialogSelect<string | OrgOption>
+      title="Switch org"
+      options={options()}
+      current={current()}
+      renderFilter={!showError()}
+      locked={showError()}
+      emptyView={
+        showError() ? (
+          <box paddingLeft={4} paddingRight={4}>
+            <text fg={theme.error} attributes={TextAttributes.BOLD}>
+              Could not load orgs
+            </text>
+            <text fg={theme.textMuted}>{errorMessage(loadError())}</text>
+          </box>
+        ) : undefined
+      }
+    />
+  )
 }
