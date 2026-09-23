@@ -278,10 +278,19 @@ describe("HttpApi server", () => {
 
     expect(honoRoutes.filter((route) => !effectRoutes.includes(route))).toEqual([])
     expect(effectRoutes.filter((route) => !honoRoutes.includes(route))).toEqual([
+      "DELETE /api/credential/{credentialID}",
+      "DELETE /api/integration/attempt/{attemptID}",
+      "GET /api/integration",
+      "GET /api/integration/attempt/{attemptID}",
+      "GET /api/integration/{integrationID}",
       "GET /api/session",
       "GET /api/session/{sessionID}/context",
       "GET /api/session/{sessionID}/message",
       "GET /session/{sessionID}/background/quiescence",
+      "PATCH /api/credential/{credentialID}",
+      "POST /api/integration/attempt/{attemptID}/complete",
+      "POST /api/integration/{integrationID}/connect/key",
+      "POST /api/integration/{integrationID}/connect/oauth",
       "POST /api/session/{sessionID}/compact",
       "POST /api/session/{sessionID}/prompt",
       "POST /api/session/{sessionID}/wait",

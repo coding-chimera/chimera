@@ -55,6 +55,7 @@ import { serveUIEffect } from "@/server/shared/ui"
 import { serveNewWebUIEffect } from "@/server/shared/newweb-ui"
 import { ServerAuth } from "@/server/auth"
 import { WebUIPreferences } from "@/server/webui-preferences"
+import { V2Integration } from "@/server/v2-integration"
 import { InstanceHttpApi, RootHttpApi } from "./api"
 import { authorizationRouterMiddleware } from "./middleware/authorization"
 import { EventApi, eventHandlers } from "./event"
@@ -208,6 +209,7 @@ export function createRoutes(corsOptions?: CorsOptions) {
       WorkBrief.defaultLayer,
       ToolRegistry.defaultLayer,
       Vcs.defaultLayer,
+      V2Integration.defaultLayer,
       Workspace.defaultLayer,
       Worktree.appLayer,
       Bus.layer,
