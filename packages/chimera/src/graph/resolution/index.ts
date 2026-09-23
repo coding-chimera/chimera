@@ -830,13 +830,14 @@ export class ReferenceResolver {
    * Create edges from resolved references
    */
   createEdges(resolved: ResolvedRef[]): Edge[] {
-    const edges = resolved.map((ref) => {
+    const edges = resolved.flatMap((ref) => {
       // `function_ref` (#756) is internal-only: it persists as a `references`
       // edge (the registration site depends on the callback), distinguishable
       // by metadata.fnRef. callers/impact already traverse `references`, so
       // registration sites surface with no graph-layer changes.
       let kind: Edge['kind'] =
-        ref.original.referenceKind === 'function_ref' ? 'references' : ref.original.referenceKind;
+        ref.edgeKind ??
+        (ref.original.referenceKind === 'function_ref' ? 'references' : ref.original.referenceKind);
 
       // Promote "extends" to "implements" when a class/struct targets an interface
       if (kind === 'extends') {
@@ -864,13 +865,21 @@ export class ReferenceResolver {
         }
       }
 
-      return {
+      // One reference can name several targets — a navigation whose
+      // destination is a conditional reaches every arm. Each becomes its own
+      // edge, sharing this resolution's kind.
+      const targets = [
+        { targetNodeId: ref.targetNodeId, metadata: ref.metadata },
+        ...(ref.alsoTargets ?? []),
+      ];
+      return targets.map((t) => ({
         source: ref.original.fromNodeId,
-        target: ref.targetNodeId,
+        target: t.targetNodeId,
         kind,
         line: ref.original.line,
         column: ref.original.column,
         metadata: {
+          ...(t.metadata ?? {}),
           resolvedBy: ref.resolvedBy,
           // The ORIGINAL reference text (and kind, when kind promotion above
           // rewrote it — calls→instantiates, extends→implements,
@@ -888,7 +897,7 @@ export class ReferenceResolver {
           // exactly the edges this feature added.
           ...(ref.original.referenceKind === 'function_ref' ? { fnRef: true } : {}),
         },
-      };
+      }));
     });
     // Import-binding/re-export double-emission hygiene (K-v2 P5-1) — see
     // dedupeSymbolImportEdges for the adjudication and keep-rule.
