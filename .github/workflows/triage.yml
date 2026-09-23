@@ -20,7 +20,7 @@ jobs:
         uses: ./.github/actions/setup-bun
 
       - name: Install Chimera
-        run: bun i -g chimera
+        run: bun i -g @coding-chimera/chimera
 
       - name: Triage issue
         env:

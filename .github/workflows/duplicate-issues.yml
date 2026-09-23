@@ -20,7 +20,7 @@ jobs:
       - uses: ./.github/actions/setup-bun
 
       - name: Install Chimera
-        run: bun i -g chimera
+        run: bun i -g @coding-chimera/chimera
 
       - name: Check duplicates and compliance
         env:
@@ -97,7 +97,7 @@ jobs:
 
           [If not compliant:]
           <!-- issue-compliance -->
-          This issue doesn't fully meet our [contributing guidelines](../blob/dev/CONTRIBUTING.md).
+          This issue doesn't fully meet our [contributing guidelines](../blob/main/CONTRIBUTING.md).
 
           **What needs to be fixed:**
           - [specific reasons]
@@ -132,7 +132,7 @@ jobs:
       - uses: ./.github/actions/setup-bun
 
       - name: Install Chimera
-        run: bun i -g chimera
+        run: bun i -g @coding-chimera/chimera
 
       - name: Recheck compliance
         env:
