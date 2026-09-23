@@ -452,6 +452,20 @@ exactly-once 论证：waiter 行按 host_boot_id 分区，每行只可能被宿�
 
 L4 风险 top5（含 F1/F2/K-v2 新交互面）：①**gateway/provider-utils 公共底座 bump × fork copilot/codex-responses vendor**（F1 计费改造后 fork 自有面加深，§11.6 待深查，L4.1 最大回归面）；②**配置化提取 × K-v2 后的 transform 热路径**（R1 hotspot 批已动指令装配缓存，L4.3 数据表化不得破坏 memo/缓存假设）；③**llm 包迁移 × F4 后台子代理/F2 MCP 引擎新表面**（注入续跑轮与 remote-compaction 走 llm 新 transport 时上游零验证，L4.4 flag 矩阵必须覆盖）；④~~blockBinding patch 体系 × bun.lock 脱敏~~（已随拍板#12 否决消解）；⑤~~integration/connector auth 品牌拍板悬置~~（已随拍板#7 三层全保留消解，L4.4 范围确定）。
 
+## L5 细分计划（2026-09-23 定稿，parent 依 scout ses_f33e40b59 侦察裁决）
+
+**L5.0 决策闸（parent 已裁，终报可覆议）**：①seam 选型=**最小 seam**（event.ts 的 Location 依赖降为 ~10 行本地 shim，不 import location.ts/project.ts，省 ~2k 行闭包）②DB 隔离=**独立 `chimera-v2.db`**（上游 TS 迁移绝不应用于生产 chimera.db——lineage 已分叉：fork 缺 20260611_credential、有专有 20260903_session_context_epoch/20260918_background_job；integration 凭证与 fork 会话分库是 pilot 期显式代价）③**L5.4 正式关闭**：sdk/client 5 条全堵在 v2 server/client/codegen/core-session 树（fork 皆无），维持 ④，schema 部分已随 fork schema 同步自动吸收、core/event 部分随 L5.1；v2 服务面立专项批属 L6 级另议。
+
+**关键前提修正（scout 实锤）**：a) fork 非白纸——自有 `@/sync` 事件轨（SyncEvent+event/event_sequence 表+projector）+`@/v2/event.ts` shim+SQL-dir 迁移 lineage 与上游分叉；b) **上游 core/background-job 不接 State**（纯进程内 SynchronizedRef，注释明写 not durable）——fork 引擎（752 行，durable 表+delivery 状态机）是其超集，"调度适配"与 State 零耦合，L5.3 可全程并行；c) `76ee87ead8`=215 文件 v2 session runtime 整包，不是 background-job 单件；d) schema/protocol/effect-drizzle-sqlite/app-node/layer-node 与上游**逐字节一致**。
+
+**L5.1 core trunk vendor（Lane A 关键路径，~4-5 人日）**：vendor 清单=state.ts(128)/event.ts(638,Location shim 化)/event/sql.ts/database/{database.ts,schema.sql.ts,path.ts(+core/schema.ts),migration.ts,migration.gen.ts,schema.gen.ts,migration/×38,sqlite.ts,sqlite.bun.ts,sqlite.node.ts}；packages/core package.json 补 `#sqlite` 条件映射（bun/node/default）；database.ts path() 硬编码 opencode.db→改 chimera-v2.db；drizzle-orm 版本面复验（fork catalog beta.19 vs effect-drizzle-sqlite 声明 rc.2）；bun 变体全验、node 变体仅编译通过；**迁移只落 chimera-v2.db**。
+
+**L5.2 integration/credential runtime（Lane A 串行后段，~3-4 人日）**：credential.ts(138)+credential/sql.ts→integration/connection.ts→integration.ts(520，用 makeLocationNode 不需 project 树)；补迁移 20260611035744_credential（落 chimera-v2.db）；拍板#7 品牌纪律沿用（opencode 标识不动）。**connector auth+provider↔integration 映射后段（~5-8 人日）依赖 catalog/provider/session-runner v2 树，拆为独立后续批，不在 L5.2**。
+
+**L5.3 F4-P2（Lane B 并行，~2-4 人日，与 Lane A 文件零交集）**：fork 引擎上的纯整合——swarm 后台化/预算策略/dispose 矩阵/closeout 协议；若将来引入 core/background-job 原语=双轨并行非替换，fork 引擎保持权威。
+
+**L5.5 双轨成文**：上游 core/database 只服务 integration/credential/event v2 服务；统一到 core/database 的「替换」属 L6 级独立迁移批（fork 全部自有迁移 lineage 收敛），不在 L5。
+
 
 ## L4.0/L4.1 完成记录（2026-09-21，builder 执行+parent 联合验收裁决）
 
