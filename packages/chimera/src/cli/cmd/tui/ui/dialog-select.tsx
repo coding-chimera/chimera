@@ -248,7 +248,7 @@ setStore("input", "keyboard")
   const right = createMemo(() => keybinds().filter((item) => item.side === "right"))
 
   return (
-    <box gap={1} paddingBottom={1}>
+    <box gap={1} paddingBottom={1} flexGrow={1}>
       <box paddingLeft={4} paddingRight={4}>
         <box flexDirection="row" justifyContent="space-between">
           <text fg={theme.text} attributes={TextAttributes.BOLD}>
@@ -285,99 +285,101 @@ setStore("input", "keyboard")
           </box>
         </Show>
       </box>
-      <Show
-        when={grouped().length > 0}
-        fallback={
-          props.emptyView ?? (
-<box paddingLeft={4} paddingRight={4} paddingTop={1}>
-<text fg={theme.textMuted}>No results found</text>
-          </box>
-          )
-}
-      >
-        <scrollbox
-          paddingLeft={1}
-          paddingRight={1}
-          scrollbarOptions={{ visible: false }}
-          scrollAcceleration={scrollAcceleration()}
-          ref={(r: ScrollBoxRenderable) => (scroll = r)}
-          maxHeight={height()}
+      <box flexGrow={1} flexShrink={1}>
+        <Show
+          when={grouped().length > 0}
+          fallback={
+            props.emptyView ?? (
+              <box paddingLeft={4} paddingRight={4} paddingTop={1}>
+                <text fg={theme.textMuted}>No results found</text>
+              </box>
+            )
+          }
         >
-          <For each={grouped()}>
-            {([category, options], index) => (
-              <>
-                <Show when={category}>
-                  <box paddingTop={index() > 0 ? 1 : 0} paddingLeft={3}>
-                    <Show
-                      when={options[0]?.categoryView}
-                      fallback={
-                        <text fg={theme.accent} attributes={TextAttributes.BOLD}>
-                          {category}
-                        </text>
-                      }
-                    >
-                      {options[0]?.categoryView}
-                    </Show>
-                  </box>
-                </Show>
-                <For each={options}>
-                  {(option) => {
-                    const active = createMemo(() => isDeepEqual(option.value, selected()?.value))
-                    const current = createMemo(() => isDeepEqual(option.value, props.current))
-                    return (
-                      <box
-                        id={JSON.stringify(option.value)}
-                        flexDirection="row"
-                        position="relative"
-                        onMouseMove={() => {
-                          setStore("input", "mouse")
-                        }}
-                        onMouseUp={() => {
-                          if (props.locked) return
-                          option.onSelect?.(dialog)
-                          props.onSelect?.(option)
-                        }}
-                        onMouseOver={() => {
-                          if (props.locked) return
-                          if (store.input !== "mouse") return
-                          const index = flat().findIndex((x) => isDeepEqual(x.value, option.value))
-                          if (index === -1) return
-                          moveTo(index)
-                        }}
-                        onMouseDown={() => {
-                          if (props.locked) return
-                          const index = flat().findIndex((x) => isDeepEqual(x.value, option.value))
-                          if (index === -1) return
-                          moveTo(index)
-                        }}
-                        backgroundColor={active() ? (option.bg ?? theme.primary) : RGBA.fromInts(0, 0, 0, 0)}
-                        paddingLeft={current() || option.gutter ? 1 : 3}
-                        paddingRight={3}
-                        gap={1}
+          <scrollbox
+            paddingLeft={1}
+            paddingRight={1}
+            scrollbarOptions={{ visible: false }}
+            scrollAcceleration={scrollAcceleration()}
+            ref={(r: ScrollBoxRenderable) => (scroll = r)}
+            maxHeight={height()}
+          >
+            <For each={grouped()}>
+              {([category, options], index) => (
+                <>
+                  <Show when={category}>
+                    <box paddingTop={index() > 0 ? 1 : 0} paddingLeft={3}>
+                      <Show
+                        when={options[0]?.categoryView}
+                        fallback={
+                          <text fg={theme.accent} attributes={TextAttributes.BOLD}>
+                            {category}
+                          </text>
+                        }
                       >
-                        <Show when={!current() && option.margin}>
-                          <box position="absolute" left={1} flexShrink={0}>
-                            {option.margin}
-                          </box>
-                        </Show>
-                        <Option
-                          title={option.title}
-                          footer={flatten() ? (option.category ?? option.footer) : option.footer}
-                          description={option.description !== category ? option.description : undefined}
-                          active={active()}
-                          current={current()}
-                          gutter={option.gutter}
-                          fg={option.fg}
-                        />
-                      </box>
-                    )
-                  }}
-                </For>
-              </>
-            )}
-          </For>
-        </scrollbox>
-      </Show>
+                        {options[0]?.categoryView}
+                      </Show>
+                    </box>
+                  </Show>
+                  <For each={options}>
+                    {(option) => {
+                      const active = createMemo(() => isDeepEqual(option.value, selected()?.value))
+                      const current = createMemo(() => isDeepEqual(option.value, props.current))
+                      return (
+                        <box
+                          id={JSON.stringify(option.value)}
+                          flexDirection="row"
+                          position="relative"
+                          onMouseMove={() => {
+                            setStore("input", "mouse")
+                          }}
+                          onMouseUp={() => {
+                            if (props.locked) return
+                            option.onSelect?.(dialog)
+                            props.onSelect?.(option)
+                          }}
+                          onMouseOver={() => {
+                            if (props.locked) return
+                            if (store.input !== "mouse") return
+                            const index = flat().findIndex((x) => isDeepEqual(x.value, option.value))
+                            if (index === -1) return
+                            moveTo(index)
+                          }}
+                          onMouseDown={() => {
+                            if (props.locked) return
+                            const index = flat().findIndex((x) => isDeepEqual(x.value, option.value))
+                            if (index === -1) return
+                            moveTo(index)
+                          }}
+                          backgroundColor={active() ? (option.bg ?? theme.primary) : RGBA.fromInts(0, 0, 0, 0)}
+                          paddingLeft={current() || option.gutter ? 1 : 3}
+                          paddingRight={3}
+                          gap={1}
+                        >
+                          <Show when={!current() && option.margin}>
+                            <box position="absolute" left={1} flexShrink={0}>
+                              {option.margin}
+                            </box>
+                          </Show>
+                          <Option
+                            title={option.title}
+                            footer={flatten() ? (option.category ?? option.footer) : option.footer}
+                            description={option.description !== category ? option.description : undefined}
+                            active={active()}
+                            current={current()}
+                            gutter={option.gutter}
+                            fg={option.fg}
+                          />
+                        </box>
+                      )
+                    }}
+                  </For>
+                </>
+              )}
+            </For>
+          </scrollbox>
+        </Show>
+      </box>
       <Show when={keybinds().length} fallback={<box flexShrink={0} />}>
         <box
           paddingRight={2}
@@ -432,12 +434,12 @@ function Option(props: {
 
   return (
     <>
-      <Show when={props.current}>
+      <Show when={props.current && !props.gutter}>
         <text flexShrink={0} fg={props.active ? fg : props.current ? theme.primary : theme.text} marginRight={0}>
           ●
         </text>
       </Show>
-      <Show when={!props.current && props.gutter}>
+      <Show when={props.gutter}>
         <box flexShrink={0} marginRight={0}>
           {props.gutter?.()}
         </box>
