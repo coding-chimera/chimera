@@ -4,9 +4,15 @@
 // `Location.Service` for publish-time enrichment (`Effect.serviceOption` ->
 // undefined when unbound). The upstream service tag and schema re-exports are
 // preserved so a full vendor of location.ts is a drop-in replacement in L5.2+.
+// (L5.4a) The shim additionally carries upstream's unbound `node` export so
+// Policy/Catalog makeLocationNode graphs compile against the seam without the
+// project tree; binding Location.Service is the embedder's job (test layers or
+// a future full location vendor).
 // See UPSTREAM_V2_MIGRATION_PLAN.md "L5 细分计划" decision ①.
 import { Context } from "effect"
 import { Info, Ref, response } from "@opencode-ai/schema/location"
+import { LayerNode } from "./effect/layer-node"
+import { tags } from "./effect/app-node"
 
 export * as Location from "./location"
 
@@ -15,3 +21,5 @@ export { Info, Ref, response }
 export interface Interface extends Info {}
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Location") {}
+
+export const node = LayerNode.unbound(Service, tags.values.location)
