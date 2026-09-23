@@ -687,6 +687,18 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         dialog.clear()
       },
     },
+    // Pinned-session quick switch slots (upstream f33b4455a1 HEAD state: always
+    // registered, bound via session_quick_switch_1..9, hidden from the palette).
+    ...Array.from({ length: 9 }, (_, i) => ({
+      title: `Switch to session in quick slot ${i + 1}`,
+      value: `session.quick_switch.${i + 1}`,
+      keybind: `session_quick_switch_${i + 1}`,
+      category: "Session",
+      hidden: true,
+      onSelect: () => {
+        local.session.quickSwitch(i + 1)
+      },
+    })),
     {
       title: "Switch model",
       value: "model.list",
