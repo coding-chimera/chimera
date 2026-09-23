@@ -247,6 +247,18 @@ import type {
   TuiSelectSessionResponses,
   TuiShowToastResponses,
   TuiSubmitPromptResponses,
+  V2CredentialRemoveResponses,
+  V2CredentialUpdateResponses,
+  V2IntegrationAttemptCancelResponses,
+  V2IntegrationAttemptCompleteErrors,
+  V2IntegrationAttemptCompleteResponses,
+  V2IntegrationAttemptStatusResponses,
+  V2IntegrationConnectKeyErrors,
+  V2IntegrationConnectKeyResponses,
+  V2IntegrationConnectOauthErrors,
+  V2IntegrationConnectOauthResponses,
+  V2IntegrationGetResponses,
+  V2IntegrationListResponses,
   V2SessionCompactResponses,
   V2SessionContextResponses,
   V2SessionListErrors,
@@ -5393,10 +5405,372 @@ export class Session3 extends HeyApiClient {
   }
 }
 
+export class Connect extends HeyApiClient {
+  /**
+   * Connect with key
+   *
+   * Run a key authentication method and store the resulting credential.
+   */
+  public key<ThrowOnError extends boolean = false>(
+    parameters: {
+      integrationID: string
+      directory?: string
+      workspace?: string
+      key?: string
+      label?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "integrationID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "key" },
+            { in: "body", key: "label" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      V2IntegrationConnectKeyResponses,
+      V2IntegrationConnectKeyErrors,
+      ThrowOnError
+    >({
+      url: "/api/integration/{integrationID}/connect/key",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Begin OAuth connection
+   *
+   * Start an OAuth attempt and return the authorization details.
+   */
+  public oauth<ThrowOnError extends boolean = false>(
+    parameters: {
+      integrationID: string
+      directory?: string
+      workspace?: string
+      methodID?: string
+      inputs?: {
+        [key: string]: string
+      }
+      label?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "integrationID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "methodID" },
+            { in: "body", key: "inputs" },
+            { in: "body", key: "label" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      V2IntegrationConnectOauthResponses,
+      V2IntegrationConnectOauthErrors,
+      ThrowOnError
+    >({
+      url: "/api/integration/{integrationID}/connect/oauth",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
+export class Attempt extends HeyApiClient {
+  /**
+   * Cancel OAuth connection
+   *
+   * Cancel an OAuth attempt and release its resources.
+   */
+  public cancel<ThrowOnError extends boolean = false>(
+    parameters: {
+      attemptID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "attemptID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).delete<V2IntegrationAttemptCancelResponses, unknown, ThrowOnError>({
+      url: "/api/integration/attempt/{attemptID}",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get OAuth attempt status
+   *
+   * Poll the current status of an OAuth attempt.
+   */
+  public status<ThrowOnError extends boolean = false>(
+    parameters: {
+      attemptID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "attemptID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<V2IntegrationAttemptStatusResponses, unknown, ThrowOnError>({
+      url: "/api/integration/attempt/{attemptID}",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Complete OAuth connection
+   *
+   * Complete a code-based OAuth attempt and store the resulting credential.
+   */
+  public complete<ThrowOnError extends boolean = false>(
+    parameters: {
+      attemptID: string
+      directory?: string
+      workspace?: string
+      code?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "attemptID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "code" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      V2IntegrationAttemptCompleteResponses,
+      V2IntegrationAttemptCompleteErrors,
+      ThrowOnError
+    >({
+      url: "/api/integration/attempt/{attemptID}/complete",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
+export class Integration extends HeyApiClient {
+  /**
+   * List integrations
+   *
+   * Retrieve available integrations and their authentication methods.
+   */
+  public list<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<V2IntegrationListResponses, unknown, ThrowOnError>({
+      url: "/api/integration",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get integration
+   *
+   * Retrieve one integration and its authentication methods.
+   */
+  public get<ThrowOnError extends boolean = false>(
+    parameters: {
+      integrationID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "integrationID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<V2IntegrationGetResponses, unknown, ThrowOnError>({
+      url: "/api/integration/{integrationID}",
+      ...options,
+      ...params,
+    })
+  }
+
+  private _connect?: Connect
+  get connect(): Connect {
+    return (this._connect ??= new Connect({ client: this.client }))
+  }
+
+  private _attempt?: Attempt
+  get attempt(): Attempt {
+    return (this._attempt ??= new Attempt({ client: this.client }))
+  }
+}
+
+export class Credential extends HeyApiClient {
+  /**
+   * Remove credential
+   *
+   * Remove a stored integration credential.
+   */
+  public remove<ThrowOnError extends boolean = false>(
+    parameters: {
+      credentialID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "credentialID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).delete<V2CredentialRemoveResponses, unknown, ThrowOnError>({
+      url: "/api/credential/{credentialID}",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Update credential
+   *
+   * Update a stored credential label.
+   */
+  public update<ThrowOnError extends boolean = false>(
+    parameters: {
+      credentialID: string
+      directory?: string
+      workspace?: string
+      label?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "credentialID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "label" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).patch<V2CredentialUpdateResponses, unknown, ThrowOnError>({
+      url: "/api/credential/{credentialID}",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
 export class V2 extends HeyApiClient {
   private _session?: Session3
   get session(): Session3 {
     return (this._session ??= new Session3({ client: this.client }))
+  }
+
+  private _integration?: Integration
+  get integration(): Integration {
+    return (this._integration ??= new Integration({ client: this.client }))
+  }
+
+  private _credential?: Credential
+  get credential(): Credential {
+    return (this._credential ??= new Credential({ client: this.client }))
   }
 }
 

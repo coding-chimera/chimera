@@ -55,27 +55,26 @@ type Exact<T, U> = [T] extends [U] ? ([U] extends [T] ? true : false) : false
 
 export type Plain<T> = Exact<T, JsonShape> extends true ? unknown : PlainInner<T>
 
-type PlainInner<T> =
-  T extends string
-    ? // Branded strings (`string & Brand<...>`) intersect with object; literals do not.
-      T extends object
-      ? string
+type PlainInner<T> = T extends string
+  ? // Branded strings (`string & Brand<...>`) intersect with object; literals do not.
+    T extends object
+    ? string
+    : T
+  : T extends number
+    ? T extends object
+      ? number
       : T
-    : T extends number
-      ? T extends object
-        ? number
-        : T
-        : T extends boolean | bigint | symbol | Function
-          ? T
-          : T extends null | undefined
-            ? T
-            : T extends readonly [unknown, ...unknown[]]
+    : T extends boolean | bigint | symbol | Function
+      ? T
+      : T extends null | undefined
+        ? T
+        : T extends readonly [unknown, ...unknown[]]
+          ? { -readonly [K in keyof T]: Plain<T[K]> }
+          : T extends readonly (infer U)[]
+            ? Plain<U>[]
+            : T extends object
               ? { -readonly [K in keyof T]: Plain<T[K]> }
-              : T extends readonly (infer U)[]
-                ? Plain<U>[]
-                : T extends object
-                  ? { -readonly [K in keyof T]: Plain<T[K]> }
-                  : T
+              : T
 
 export type AgentV2Info = Agent.Info
 export type ModelV2Info = Plain<Model.Info>
