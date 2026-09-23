@@ -12,7 +12,9 @@ import { expressResolver } from './express';
 import { nestjsResolver } from './nestjs';
 import { reactResolver } from './react';
 import { svelteResolver } from './svelte';
+import { svelteKitRouterResolver } from './sveltekit-router';
 import { vueResolver } from './vue';
+import { vueRouterResolver } from './vue-router';
 import { djangoResolver, flaskResolver, fastapiResolver } from './python';
 import { railsResolver } from './ruby';
 import { springResolver } from './java';
@@ -38,7 +40,11 @@ const FRAMEWORK_RESOLVERS: FrameworkResolver[] = [
   nestjsResolver,
   reactResolver,
   svelteResolver,
+  // SvelteKit — `src/routes/**/+page.svelte` routes are `svelteResolver`'s; `goto('/x')` / `redirect(303, '/x')` → navigates edges
+  svelteKitRouterResolver,
   vueResolver,
+  // Vue Router — `createRouter({ routes })` → route nodes; `router.push({ name })` / `router.push('/x')` → navigates edges
+  vueRouterResolver,
   // Python
   djangoResolver,
   flaskResolver,
@@ -127,7 +133,9 @@ export { expressResolver } from './express';
 export { nestjsResolver } from './nestjs';
 export { reactResolver } from './react';
 export { svelteResolver } from './svelte';
+export { svelteKitRouterResolver } from './sveltekit-router';
 export { vueResolver } from './vue';
+export { vueRouterResolver } from './vue-router';
 export { djangoResolver, flaskResolver, fastapiResolver } from './python';
 export { railsResolver } from './ruby';
 export { springResolver } from './java';
