@@ -502,7 +502,7 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV3 {
               type: "reasoning" as const,
               text: summary.text,
               providerMetadata: {
-                openai: {
+                copilot: {
                   itemId: part.id,
                   reasoningEncryptedContent: part.encrypted_content ?? null,
                 },
@@ -540,7 +540,7 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV3 {
             toolName: "local_shell",
             input: JSON.stringify({ action: part.action } satisfies z.infer<typeof localShellInputSchema>),
             providerMetadata: {
-              openai: {
+              copilot: {
                 itemId: part.id,
               },
             },
@@ -551,7 +551,7 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV3 {
 
         case "message": {
           for (const contentPart of part.content) {
-            if (options.providerOptions?.openai?.logprobs && contentPart.logprobs) {
+            if (options.providerOptions?.copilot?.logprobs && contentPart.logprobs) {
               logprobs.push(contentPart.logprobs)
             }
 
@@ -559,7 +559,7 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV3 {
               type: "text",
               text: contentPart.text,
               providerMetadata: {
-                openai: {
+                copilot: {
                   itemId: part.id,
                 },
               },
@@ -599,7 +599,7 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV3 {
             toolName: part.name,
             input: part.arguments,
             providerMetadata: {
-              openai: {
+              copilot: {
                 itemId: part.id,
               },
             },
@@ -701,15 +701,15 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV3 {
     }
 
     const providerMetadata: SharedV3ProviderMetadata = {
-      openai: { responseId: response.id },
+      copilot: { responseId: response.id },
     }
 
     if (logprobs.length > 0) {
-      providerMetadata.openai.logprobs = logprobs
+      providerMetadata.copilot.logprobs = logprobs
     }
 
     if (typeof response.service_tier === "string") {
-      providerMetadata.openai.serviceTier = response.service_tier
+      providerMetadata.copilot.serviceTier = response.service_tier
     }
 
     return {
@@ -931,7 +931,7 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV3 {
                   type: "text-start",
                   id: value.item.id,
                   providerMetadata: {
-                    openai: {
+                    copilot: {
                       itemId: value.item.id,
                     },
                   },
@@ -948,7 +948,7 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV3 {
                   type: "reasoning-start",
                   id: `${value.item.id}:0`,
                   providerMetadata: {
-                    openai: {
+                    copilot: {
                       itemId: value.item.id,
                       reasoningEncryptedContent: value.item.encrypted_content ?? null,
                     },
@@ -971,7 +971,7 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV3 {
                   toolName: value.item.name,
                   input: value.item.arguments,
                   providerMetadata: {
-                    openai: {
+                    copilot: {
                       itemId: value.item.id,
                     },
                   },
@@ -1080,7 +1080,7 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV3 {
                     },
                   } satisfies z.infer<typeof localShellInputSchema>),
                   providerMetadata: {
-                    openai: { itemId: value.item.id },
+                    copilot: { itemId: value.item.id },
                   },
                 })
               } else if (value.item.type === "message") {
@@ -1099,7 +1099,7 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV3 {
                       type: "reasoning-end",
                       id: `${activeReasoningPart.canonicalId}:${summaryIndex}`,
                       providerMetadata: {
-                        openai: {
+                        copilot: {
                           itemId: activeReasoningPart.canonicalId,
                           reasoningEncryptedContent: value.item.encrypted_content ?? null,
                         },
@@ -1186,7 +1186,7 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV3 {
                   type: "text-start",
                   id: currentTextId,
                   providerMetadata: {
-                    openai: { itemId: value.item_id },
+                    copilot: { itemId: value.item_id },
                   },
                 })
               }
@@ -1197,7 +1197,7 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV3 {
                 delta: value.delta,
               })
 
-              if (options.providerOptions?.openai?.logprobs && value.logprobs) {
+              if (options.providerOptions?.copilot?.logprobs && value.logprobs) {
                 logprobs.push(value.logprobs)
               }
             } else if (isResponseReasoningSummaryPartAddedChunk(value)) {
@@ -1212,7 +1212,7 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV3 {
                   type: "reasoning-start",
                   id: `${activeItem.canonicalId}:${value.summary_index}`,
                   providerMetadata: {
-                    openai: {
+                    copilot: {
                       itemId: activeItem.canonicalId,
                       reasoningEncryptedContent: activeItem.encryptedContent ?? null,
                     },
@@ -1229,7 +1229,7 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV3 {
                   id: `${activeItem.canonicalId}:${value.summary_index}`,
                   delta: value.delta,
                   providerMetadata: {
-                    openai: {
+                    copilot: {
                       itemId: activeItem.canonicalId,
                     },
                   },
@@ -1283,17 +1283,17 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV3 {
             }
 
             const providerMetadata: SharedV3ProviderMetadata = {
-              openai: {
+              copilot: {
                 responseId,
               },
             }
 
             if (logprobs.length > 0) {
-              providerMetadata.openai.logprobs = logprobs
+              providerMetadata.copilot.logprobs = logprobs
             }
 
             if (serviceTier !== undefined) {
-              providerMetadata.openai.serviceTier = serviceTier
+              providerMetadata.copilot.serviceTier = serviceTier
             }
 
             controller.enqueue({

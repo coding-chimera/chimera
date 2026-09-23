@@ -2293,7 +2293,8 @@ const layer: Layer.Layer<
           if (
             (model.api.npm === "@ai-sdk/openai" ||
               model.api.npm === "@ai-sdk/azure" ||
-              model.api.npm === "@ai-sdk/amazon-bedrock/mantle") &&
+              model.api.npm === "@ai-sdk/amazon-bedrock/mantle" ||
+              model.api.npm === "@ai-sdk/github-copilot") &&
             opts.body &&
             opts.method === "POST"
           ) {
