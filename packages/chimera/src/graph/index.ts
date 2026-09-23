@@ -1591,6 +1591,25 @@ export class CodeGraph {
           }
         }
 
+        // Re-open resolution edges this sync may have invalidated ELSEWHERE
+        // in the repo (CG-33). Everything above re-resolves references in the
+        // changed files; this covers the opposite direction — references in
+        // files the sync never touched whose answer depended on a definition
+        // that just appeared or disappeared. Without it a synced index never
+        // converges to a full rebuild: measured upstream at 4.3% of distinct
+        // edges wrong on codegraph's own long-lived index, in both directions,
+        // mostly `calls`. The resurrected refs are pending rows, so the orphan
+        // sweep immediately below is what resolves them — exactly as a full
+        // index resolves.
+        //
+        // `definitionDelta` is empty for a body-only edit, so the overwhelmingly
+        // common sync pays one branch. CODEGRAPH_NO_REBIND=1 disables it.
+        if (result.definitionDelta && process.env.CODEGRAPH_NO_REBIND !== '1') {
+          this.orchestrator.resurrectStaleResolutionEdges(
+            result.definitionDelta,
+            result.changedFilePaths ?? []
+          );
+        }
         // Orphan sweep (#1187). A resolution pass that dies mid-run leaves
         // the refs it never reached in unresolved_refs, and the scoped path
         // above never revisits them (it reads only the changed files' rows).
@@ -1734,6 +1753,31 @@ export class CodeGraph {
         }
 
 
+        // Stale-resolution-edge rebind (CG-33) — same fix as the full-sync
+        // path, adapted: syncFiles has no orphan sweep of its own, so the
+        // resurrected pending refs (which live in files OUTSIDE this sync's
+        // resolution scope) are consumed right here.
+        if (result.definitionDelta && process.env.CODEGRAPH_NO_REBIND !== '1') {
+          const rebound = this.orchestrator.resurrectStaleResolutionEdges(
+            result.definitionDelta,
+            result.changedFilePaths ?? []
+          );
+          if (rebound > 0) {
+            if (result.filesAdded === 0 && result.filesModified === 0) {
+              // runPostExtract (which clears the resolver's name caches)
+              // didn't run for a removal-only sync; the rebind's refs must
+              // resolve against the post-removal graph, not a stale cache.
+              this.resolver.clearCaches();
+            }
+            const rebindPending = this.queries.getUnresolvedReferencesCount();
+            if (rebindPending > 0) {
+              onProgress({ phase: 'resolving', current: 0, total: rebindPending });
+              await this.resolveReferencesBatched((current, total) => {
+                onProgress({ phase: 'resolving', current, total });
+              });
+            }
+          }
+        }
         if (result.filesAdded > 0 || result.filesModified > 0 || result.filesRemoved > 0) {
           this.refreshFileSemantics([...(result.changedFilePaths ?? []), ...(changed ? dependentFilePaths : [])]);
           this.db.runMaintenance();
