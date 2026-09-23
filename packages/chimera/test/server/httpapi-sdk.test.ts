@@ -139,7 +139,11 @@ function remoteCompactionProviderConfig() {
         },
         models: {
           "logical-model": {
-            id: "wire-model",
+            // Capability-registry spec: eligibility `configurable` checks the model api id
+            // against the built-in DEFAULT_REMOTE_COMPACTION_MODELS registry only, so the
+            // wire id must match a trusted entry ("gpt-5.6" versioned prefix) for the
+            // eligibility reset PATCH below to be accepted instead of 400 not_configurable.
+            id: "gpt-5.6-wire-model",
             name: "Test Model",
             attachment: false,
             reasoning: false,
@@ -635,7 +639,7 @@ describe("HttpApi SDK", () => {
         expect(status.data).toMatchObject({
           configured: { mode: "auto", protocol: "auto" },
           requested: { providerID: "test", modelID: "logical-model" },
-          effective: { providerID: "test", modelID: "logical-model", wireModelID: "wire-model" },
+          effective: { providerID: "test", modelID: "logical-model", wireModelID: "gpt-5.6-wire-model" },
           lock: { status: "none" },
           replay: { mode: "none", reason: "no_lock" },
         })

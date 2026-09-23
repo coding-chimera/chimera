@@ -36,6 +36,11 @@ function providerConfig() {
     formatter: false,
     lsp: false,
     username: "preserved-user",
+    // Capability-registry spec (remote-compaction-registry.ts): relay/mock models that are
+    // not in DEFAULT_REMOTE_COMPACTION_MODELS become capable through the documented
+    // `remote_compaction_models` config extension, so resolve() treats "wire-model" as
+    // eligible instead of returning model_unsupported.
+    remote_compaction_models: ["wire-model"],
     provider: {
       test: {
         name: "Test",
@@ -88,7 +93,19 @@ function providerConfig() {
         name: "AIJWS",
         id: "aijws",
         env: [],
-        npm: "@ai-sdk/openai-compatible",
+        // No provider-level npm pin: api npm is derived from the effective wire_api
+        // (chat -> @ai-sdk/openai-compatible, responses -> @ai-sdk/openai). The
+        // eligibility endpoint no longer writes a model-level npm swap, so a pinned
+        // openai-compatible npm would break getLanguage after enabling responses.
+        //
+        // Provider capability must be pre-declared: `configurable` requires
+        // provider.remote_compaction !== undefined and the eligibility PATCH no longer
+        // self-writes the capability block (eliminates the self-satisfying gate loop).
+        remote_compaction: {
+          profile: "codex-responses" as const,
+          protocols: ["v2", "legacy"] as ["v2", "legacy"],
+          auth: "provider-bearer" as const,
+        },
         models: {
           "gpt-5.6-sol": {
             id: "gpt-5.6-sol",
@@ -482,7 +499,9 @@ describe("config HttpApi", () => {
 
       const before = await app(backend).request("/config/remote-compaction/status?providerID=aijws&modelID=gpt-5.6-sol", { headers })
       expect(before.status).toBe(200)
-      expect(await before.json()).toMatchObject({ mode: "local", target: "local", reason: "provider_capability_missing" })
+      // Capability is pre-declared in the fixture now, so the pre-enable gate that
+      // trips first is the model-level `remote_compaction !== true` check.
+      expect(await before.json()).toMatchObject({ mode: "local", target: "local", reason: "model_disabled" })
 
       const listed = await app(backend).request("/config/remote-compaction/eligibility", { headers })
       expect(listed.status).toBe(200)
@@ -496,7 +515,7 @@ describe("config HttpApi", () => {
             modelName: "GPT 5.6 Sol",
             apiNpm: "@ai-sdk/openai-compatible",
             wire_api: "chat",
-            providerCapability: { present: false, protocols: [] },
+            providerCapability: { present: true, protocols: ["v2", "legacy"] },
             modelRemoteCompaction: "unset",
             configurable: true,
           }),
@@ -593,7 +612,6 @@ describe("config HttpApi", () => {
             },
             models: {
               "gpt-5.6-sol": {
-                provider: { npm: "@ai-sdk/openai" },
                 wire_api: "responses",
                 remote_compaction: true,
               },
@@ -631,7 +649,6 @@ describe("config HttpApi", () => {
             options: { apiKey: "aijws-secret-key" },
             models: {
               "gpt-5.6-sol": {
-                provider: { npm: "@ai-sdk/openai" },
                 wire_api: "responses",
                 remote_compaction: false,
               },
@@ -660,7 +677,6 @@ describe("config HttpApi", () => {
       const resetConfig = await Bun.file(path.join(tmp.path, "chimera.json")).json()
       expect(resetConfig.provider.aijws.models["gpt-5.6-sol"]).not.toHaveProperty("remote_compaction")
       expect(resetConfig.provider.aijws.models["gpt-5.6-sol"]).toMatchObject({
-        provider: { npm: "@ai-sdk/openai" },
         wire_api: "responses",
       })
     })
