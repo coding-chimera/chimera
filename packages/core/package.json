@@ -34,6 +34,7 @@
     "@types/semver": "catalog:"
   },
   "dependencies": {
+    "@coding-chimera/llm": "workspace:*",
     "@effect/opentelemetry": "catalog:",
     "@effect/platform-node": "catalog:",
     "@npmcli/arborist": "9.4.0",
@@ -48,6 +49,7 @@
     "cross-spawn": "catalog:",
     "drizzle-orm": "1.0.0-rc.2",
     "glob": "13.0.5",
+    "immer": "11.1.4",
     "mime-types": "3.0.2",
     "minimatch": "10.2.5",
     "npm-package-arg": "13.0.2",
