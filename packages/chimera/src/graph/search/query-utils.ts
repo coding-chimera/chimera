@@ -246,6 +246,54 @@ export function scorePathRelevance(filePath: string, query: string): number {
 }
 
 /**
+ * Test-path gate for the dynamic-edge synthesizers (upstream N verbatim).
+ * NARROWER than {@link isTestFile}: test locations only, no non-production
+ * dirs (examples/fixtures stay synthesizable, matching upstream semantics).
+ */
+export function isTestPath(filePath: string): boolean {
+  const lower = filePath.toLowerCase();
+  const fileName = path.basename(filePath);   // original case — needed for camelCase boundaries
+  const lowerName = fileName.toLowerCase();
+
+  // --- Filename patterns ---
+  if (
+    lowerName.startsWith('test_') ||                              // python: test_foo.py
+    lowerName.startsWith('test.') ||
+    // separator-delimited: foo_test.go, foo.test.ts, foo-spec.rb, bar_spec.py
+    /[._-](test|tests|spec|specs)\.[a-z0-9]+$/.test(lowerName) ||
+    // CamelCase suffix (Java/Kotlin/Swift/C#/Scala): FooTest.kt, BarTests.swift,
+    // BazSpec.scala, QuxTestCase.java. Capital-led so "latest.kt"/"manifest.kt"
+    // (lowercase "test") are NOT matched.
+    /(?:Test|Tests|TestCase|Tester|Spec|Specs)\.[A-Za-z0-9]+$/.test(fileName)
+  ) {
+    return true;
+  }
+
+  // --- Directory patterns ---
+  if (
+    lower.includes('/tests/') || lower.includes('/test/') ||
+    lower.includes('/__tests__/') || lower.includes('/spec/') ||
+    lower.includes('/specs/') || lower.includes('/testlib/') ||
+    lower.includes('/testing/') || lower.includes('/e2e/') ||
+    lower.startsWith('test/') || lower.startsWith('tests/') ||
+    lower.startsWith('spec/') || lower.startsWith('specs/') ||
+    lower.startsWith('e2e/') ||
+    // CamelCase test source-set dirs (Kotlin Multiplatform / Gradle / Xcode):
+    // jvmTest/, commonTest/, androidTest/, iosTest/, integrationTest/. Capital-led
+    // so "latest/" / "manifest/" are not matched.
+    /(?:^|\/)[A-Za-z0-9]*(?:Test|Tests|Spec)\//.test(filePath) ||
+    // Test-support modules and doubles by directory name: Gradle's
+    // `core/data-test/`, `core/datastore-test/`, `:testing`; Go's `testdata/`;
+    // `testutil(s)/`, `test-utils/`, `fakes/`, `mocks/`, `__mocks__/`.
+    /(?:^|\/)(?:[\w.]+[-_]test(?:s|ing)?|testdata|testutils?|test[-_]utils?|fakes?|mocks?|__mocks__|stubs)\//.test(lower)
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
  * Check if a file path looks like a test file
  */
 export function isTestFile(filePath: string): boolean {
