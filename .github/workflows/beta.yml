@@ -28,7 +28,7 @@ jobs:
           opencode-app-secret: ${{ secrets.OPENCODE_APP_SECRET }}
 
       - name: Install Chimera
-        run: bun i -g chimera
+        run: bun i -g @coding-chimera/chimera
 
       - name: Sync beta branch
         env:

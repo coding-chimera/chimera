@@ -32,7 +32,9 @@ jobs:
       - uses: ./.github/actions/setup-bun
 
       - name: Install Chimera
-        run: bun i -g chimera
+        # Fork fix (CI rebuild batch 2026-09-23): the published package is scoped;
+        # the unscoped `chimera` npm package is an unrelated project.
+        run: bun i -g @coding-chimera/chimera
 
       - name: Get PR details
         id: pr-details

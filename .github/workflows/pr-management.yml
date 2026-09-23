@@ -37,7 +37,7 @@ jobs:
 
       - name: Install Chimera
         if: steps.team-check.outputs.is_team != 'true'
-        run: bun i -g chimera
+        run: bun i -g @coding-chimera/chimera
 
       - name: Build prompt
         if: steps.team-check.outputs.is_team != 'true'

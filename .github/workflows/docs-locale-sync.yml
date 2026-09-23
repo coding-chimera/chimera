@@ -50,7 +50,7 @@ jobs:
 
       - name: Install Chimera
         if: steps.changes.outputs.has_changes == 'true'
-        run: bun i -g chimera
+        run: bun i -g @coding-chimera/chimera
 
       - name: Sync locale docs with Chimera
         if: steps.changes.outputs.has_changes == 'true'
