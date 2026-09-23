@@ -641,6 +641,66 @@ describe("tool.task background", () => {
   )
 
   it.instance(
+    "foreground engine dispatches are exempt from the cap consistently in the task precheck and the engine (F4-P2 budget)",
+    () =>
+      Effect.gen(function* () {
+        const jobs = yield* BackgroundJob.Service
+        const { chat, assistant } = yield* seed()
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+        const gate = defer<void>()
+        const blocking = makeStub({
+          prompt: (input) =>
+            Effect.gen(function* () {
+              yield* Effect.promise(() => gate.promise)
+              return reply(input, "blocked")
+            }),
+        })
+        // A gated synchronous (foreground) dispatch occupies its engine entry with
+        // metadata.background === false while it runs.
+        const syncFiber = yield* def
+          .execute(
+            { description: "sync a", prompt: "work a", subagent_type: "general" },
+            toolCtx({ chat, assistant, promptOps: blocking }),
+          )
+          .pipe(Effect.forkChild)
+        for (let attempt = 0; attempt < 500; attempt++) {
+          const foreground = (yield* jobs.list()).filter(
+            (job) => job.status === "running" && job.metadata?.background === false,
+          )
+          if (foreground.length === 1) break
+          yield* Effect.sleep(10)
+        }
+        // Budget consistency: with background_concurrent = 1 a background dispatch still
+        // passes — both the task tool's pre-materialize precheck and the engine's atomic
+        // start() cap count only background jobs, so the running foreground job consumes
+        // no pool slot in either layer (the two filters cannot drift apart).
+        const backgroundResult = yield* def.execute(
+          { description: "bg b", prompt: "work b", subagent_type: "general", background: true },
+          toolCtx({ chat, assistant, promptOps: blocking }),
+        )
+        expect(backgroundResult.output).toContain("(background, running)")
+        // The single-slot pool is now saturated by the background job; the next
+        // background dispatch is rejected by the precheck with the same counting rule.
+        const exit = yield* def
+          .execute(
+            { description: "bg c", prompt: "work c", subagent_type: "general", background: true },
+            toolCtx({ chat, assistant, promptOps: makeStub() }),
+          )
+          .pipe(Effect.exit)
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit)) {
+          const message = Cause.prettyErrors(exit.cause).join("\n")
+          expect(message).toContain("concurrency limit reached")
+          expect(message).toContain("background_concurrent")
+        }
+        gate.resolve()
+        yield* Fiber.join(syncFiber)
+      }),
+    { config: { delegation: { background_concurrent: 1 }, provider: { test: providerFixture } } },
+  )
+
+  it.instance(
     "cancelling a running background job fires the child session cancel hook once",
     () =>
       Effect.gen(function* () {
