@@ -29,6 +29,13 @@ export interface DialogSelectProps<T> {
   // tearing the dialog down (upstream e6cdc543f3 / 9dadc2455f).
   locked?: boolean
   emptyView?: JSX.Element
+  // Static, non-triggerable footer labels (e.g. the quick-switch range hint in
+  // the session list); rendered after the keybind actions (upstream f33b4455a1).
+  footerHints?: {
+    title: string
+    label: string
+    side?: "left" | "right"
+  }[]
   keybind?: {
     keybind?: Keybind.Info
     title: string
@@ -244,8 +251,16 @@ setStore("input", "keyboard")
   props.ref?.(ref)
 
   const keybinds = createMemo(() => props.keybind?.filter((x) => !x.disabled && x.keybind) ?? [])
-  const left = createMemo(() => keybinds().filter((item) => item.side !== "right"))
-  const right = createMemo(() => keybinds().filter((item) => item.side === "right"))
+  const footerEntries = createMemo(() => [
+    ...keybinds().map((item) => ({
+      title: item.title,
+      label: Keybind.toString(item.keybind!),
+      side: item.side,
+    })),
+    ...(props.footerHints ?? []),
+  ])
+  const left = createMemo(() => footerEntries().filter((item) => item.side !== "right"))
+  const right = createMemo(() => footerEntries().filter((item) => item.side === "right"))
 
   return (
     <box gap={1} paddingBottom={1} flexGrow={1}>
@@ -380,7 +395,7 @@ setStore("input", "keyboard")
           </scrollbox>
         </Show>
       </box>
-      <Show when={keybinds().length} fallback={<box flexShrink={0} />}>
+      <Show when={footerEntries().length} fallback={<box flexShrink={0} />}>
         <box
           paddingRight={2}
           paddingLeft={4}
@@ -396,7 +411,7 @@ setStore("input", "keyboard")
                   <span style={{ fg: theme.text }}>
                     <b>{item.title}</b>{" "}
                   </span>
-                  <span style={{ fg: theme.textMuted }}>{Keybind.toString(item.keybind)}</span>
+                  <span style={{ fg: theme.textMuted }}>{item.label}</span>
                 </text>
               )}
             </For>
@@ -408,7 +423,7 @@ setStore("input", "keyboard")
                   <span style={{ fg: theme.text }}>
                     <b>{item.title}</b>{" "}
                   </span>
-                  <span style={{ fg: theme.textMuted }}>{Keybind.toString(item.keybind)}</span>
+                  <span style={{ fg: theme.textMuted }}>{item.label}</span>
                 </text>
               )}
             </For>

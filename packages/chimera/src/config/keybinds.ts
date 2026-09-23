@@ -109,6 +109,16 @@ const KeybindsSchema = Schema.Struct({
   session_child_cycle: keybind("right", "Go to next child session"),
   session_child_cycle_reverse: keybind("left", "Go to previous child session"),
   session_parent: keybind("up", "Go to parent session"),
+  session_pin_toggle: keybind("ctrl+f", "Pin or unpin session in the session list"),
+  session_quick_switch_1: keybind("<leader>1", "Switch to session in quick slot 1"),
+  session_quick_switch_2: keybind("<leader>2", "Switch to session in quick slot 2"),
+  session_quick_switch_3: keybind("<leader>3", "Switch to session in quick slot 3"),
+  session_quick_switch_4: keybind("<leader>4", "Switch to session in quick slot 4"),
+  session_quick_switch_5: keybind("<leader>5", "Switch to session in quick slot 5"),
+  session_quick_switch_6: keybind("<leader>6", "Switch to session in quick slot 6"),
+  session_quick_switch_7: keybind("<leader>7", "Switch to session in quick slot 7"),
+  session_quick_switch_8: keybind("<leader>8", "Switch to session in quick slot 8"),
+  session_quick_switch_9: keybind("<leader>9", "Switch to session in quick slot 9"),
   // `terminal_suspend` was formerly `.default("ctrl+z").transform((v) => win32 ? "none" : v)`,
   // but `tui.ts` already forces the binding to "none" on win32 before calling
   // `Keybinds.parse(...)`, so the schema-level transform was redundant.

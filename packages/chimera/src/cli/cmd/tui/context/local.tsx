@@ -14,6 +14,9 @@ import { useRoute } from "./route"
 import { remoteCompactionModelChangeBlocked, remoteCompactionModelLockMessage } from "../util/remote-compaction"
 import { useEvent } from "./event"
 import { useProject } from "./project"
+import path from "path"
+import { Global } from "@opencode-ai/core/global"
+import { Filesystem } from "@/util/filesystem"
 
 export function parseModel(model: string) {
   const [providerID, ...rest] = model.split("/")
@@ -466,10 +469,108 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       })
     })
 
+    // Pinned session switching (upstream 12583b18f0 + f33b4455a1 + f99339e525
+    // HEAD final state, pinned-only): pins persist across restarts in
+    // state/session.json and occupy quick-switch slots 1-9.
+    function createSession() {
+      const [sessionStore, setSessionStore] = createStore<{
+        ready: boolean
+        pinned: string[]
+      }>({
+        ready: false,
+        pinned: [],
+      })
+
+      const filePath = path.join(Global.Path.state, "session.json")
+      const state = {
+        pending: false,
+      }
+
+      function save() {
+        if (!sessionStore.ready) {
+          state.pending = true
+          return
+        }
+        state.pending = false
+        void Filesystem.writeJson(filePath, {
+          pinned: sessionStore.pinned,
+        })
+      }
+
+      Filesystem.readJson<unknown>(filePath)
+        .then((x) => {
+          if (!x || typeof x !== "object") return
+          const pinned = (x as Record<string, unknown>).pinned
+          if (Array.isArray(pinned))
+            setSessionStore(
+              "pinned",
+              pinned.filter((item): item is string => typeof item === "string"),
+            )
+        })
+        .catch(() => {})
+        .finally(() => {
+          setSessionStore("ready", true)
+          if (state.pending) save()
+        })
+
+      const slots = createMemo(() => {
+        const existing = new Set(sync.data.session.filter((x) => x.parentID === undefined).map((x) => x.id))
+        return sessionStore.pinned.filter((id) => existing.has(id)).slice(0, 9)
+      })
+
+      function prune(sessionID: string) {
+        batch(() => {
+          if (sessionStore.pinned.includes(sessionID)) {
+            setSessionStore(
+              "pinned",
+              sessionStore.pinned.filter((x) => x !== sessionID),
+            )
+          }
+          save()
+        })
+      }
+
+      event.on("session.deleted", (evt) => {
+        prune(evt.properties.info.id)
+      })
+
+      return {
+        get ready() {
+          return sessionStore.ready
+        },
+        pinned() {
+          return sessionStore.pinned
+        },
+        slots,
+        isPinned(sessionID: string) {
+          return sessionStore.pinned.includes(sessionID)
+        },
+        togglePin(sessionID: string) {
+          batch(() => {
+            const exists = sessionStore.pinned.includes(sessionID)
+            const next = exists
+              ? sessionStore.pinned.filter((x) => x !== sessionID)
+              : [...sessionStore.pinned, sessionID]
+            setSessionStore("pinned", next)
+            save()
+          })
+        },
+        quickSwitch(slot: number) {
+          const target = slots()[slot - 1]
+          if (!target) return
+          if (route.data.type === "session" && route.data.sessionID === target) return
+          route.navigate({ type: "session", sessionID: target })
+        },
+      }
+    }
+
+    const session = createSession()
+
     const result = {
       model,
       agent,
       mcp,
+      session,
     }
     return result
   },
