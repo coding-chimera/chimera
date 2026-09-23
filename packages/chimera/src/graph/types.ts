@@ -66,7 +66,7 @@ export type EdgeKind =
   | 'instantiates'    // Creates instance of class
   | 'overrides'       // Method overrides parent method
   | 'decorates'       // Decorator applied to symbol
-  | 'navigates';      // Screen/route navigates to target (upstream expo-router; contract reservation — fork corpus emits none yet)
+  | 'navigates';      // Screen/route navigates to target (vue-router / sveltekit-router navigation calls + link synthesizers)
 
 /**
  * Kinds an unresolved reference can carry (K-v2 P5-1, mirrors upstream N).
