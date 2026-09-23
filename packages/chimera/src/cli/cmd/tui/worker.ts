@@ -28,17 +28,23 @@ await Log.init({
 
 Heap.start()
 
-process.on("unhandledRejection", (e) => {
+// Swallow-and-log while the worker runs so a stray async failure cannot kill
+// the TUI server thread; detached again in rpc.shutdown so rejections during
+// teardown get default handling (upstream fbf889db83).
+const onUnhandledRejection = (e: unknown) => {
   Log.Default.error("rejection", {
     e: e instanceof Error ? e.message : e,
   })
-})
+}
 
-process.on("uncaughtException", (e) => {
+const onUncaughtException = (e: Error) => {
   Log.Default.error("exception", {
     e: e instanceof Error ? e.message : e,
   })
-})
+}
+
+process.on("unhandledRejection", onUnhandledRejection)
+process.on("uncaughtException", onUncaughtException)
 
 // Subscribe to global events and forward them via RPC. (R1 B3) The subscription
 // is paired: rpc.shutdown detaches it so a shut-down worker stops forwarding.
@@ -114,6 +120,8 @@ export const rpc = {
     const started = Date.now()
     Log.Default.info("worker shutting down")
     detachGlobalBusForwarder()
+    process.off("unhandledRejection", onUnhandledRejection)
+    process.off("uncaughtException", onUncaughtException)
 
     await shutdownPhase("dispose instances", () => InstanceRuntime.disposeAllInstances())
     if (server) await shutdownPhase("stop server", () => server!.stop(true))
