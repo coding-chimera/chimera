@@ -897,11 +897,28 @@ export class QueryBuilder {
   }
 
   /**
-   * Get nodes by exact name match (uses idx_nodes_name index)
+   * Get nodes by exact name match (uses idx_nodes_name index).
+   *
+   * This is resolution's candidate list, and the ORDER BY is load-bearing for
+   * index correctness, not cosmetic (CG-33). When a reference names a symbol
+   * that several files define and nothing disambiguates them, resolution binds
+   * to the first candidate — so without an ORDER BY the winner was decided by
+   * rowid, i.e. by the order files happened to be WRITTEN. A full index writes
+   * them in scan order; an incremental sync appends each file as it changes, so
+   * the same tree resolved to different edges depending on how the index was
+   * built, and a long-lived synced index drifted away from a rebuild of itself
+   * (measured upstream at 4.3% of distinct edges, mostly `calls`).
+   *
+   * `(file_path, start_line)` is a property of the CODE, so both paths now pick
+   * the same candidate. The sort is paid once per distinct name per resolution
+   * run — ReferenceResolver memoizes this in its nameCache — and the population
+   * is capped by AMBIGUOUS_NAME_CEILING (#999).
    */
   getNodesByName(name: string): Node[] {
     if (!this.stmts.getNodesByName) {
-      this.stmts.getNodesByName = this.db.prepare('SELECT * FROM nodes WHERE name = ?');
+      this.stmts.getNodesByName = this.db.prepare(
+        'SELECT * FROM nodes WHERE name = ? ORDER BY file_path, start_line'
+      );
     }
     const rows = this.stmts.getNodesByName.all(name) as NodeRow[];
     return rows.map(rowToNode);
