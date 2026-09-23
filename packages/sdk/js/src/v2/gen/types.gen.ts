@@ -4400,6 +4400,113 @@ export type SessionMessage =
   | SessionMessageAssistant
   | SessionMessageCompaction
 
+export type IntegrationWhen = {
+  key: string
+  op: "eq" | "neq"
+  value: string
+}
+
+export type IntegrationTextPrompt = {
+  type: "text"
+  key: string
+  message: string
+  placeholder?: string
+  when?: IntegrationWhen
+}
+
+export type IntegrationSelectPrompt = {
+  type: "select"
+  key: string
+  message: string
+  options: Array<{
+    label: string
+    value: string
+    hint?: string
+  }>
+  when?: IntegrationWhen
+}
+
+export type IntegrationOAuthMethod = {
+  id: string
+  type: "oauth"
+  label: string
+  prompts?: Array<IntegrationTextPrompt | IntegrationSelectPrompt>
+}
+
+export type IntegrationKeyMethod = {
+  type: "key"
+  label?: string
+}
+
+export type IntegrationEnvMethod = {
+  type: "env"
+  names: Array<string>
+}
+
+export type IntegrationMethod = IntegrationOAuthMethod | IntegrationKeyMethod | IntegrationEnvMethod
+
+export type ConnectionCredentialInfo = {
+  type: "credential"
+  id: string
+  label: string
+}
+
+export type ConnectionEnvInfo = {
+  type: "env"
+  name: string
+}
+
+export type ConnectionInfo = ConnectionCredentialInfo | ConnectionEnvInfo
+
+export type IntegrationInfo = {
+  id: string
+  name: string
+  methods: Array<IntegrationMethod>
+  connections: Array<ConnectionInfo>
+}
+
+export type IntegrationAttempt = {
+  attemptID: string
+  url: string
+  instructions: string
+  mode: "auto" | "code"
+  time: {
+    created: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    expires: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  }
+}
+
+export type IntegrationAttemptStatus =
+  | {
+      status: "pending"
+      time: {
+        created: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        expires: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      }
+    }
+  | {
+      status: "complete"
+      time: {
+        created: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        expires: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      }
+    }
+  | {
+      status: "failed"
+      message: string
+      time: {
+        created: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        expires: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      }
+    }
+  | {
+      status: "expired"
+      time: {
+        created: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        expires: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      }
+    }
+
 export type EventSessionPromptStats1 = {
   id: string
   type: "session.prompt.stats"
@@ -8358,6 +8465,238 @@ export type V2SessionMessagesResponses = {
 }
 
 export type V2SessionMessagesResponse2 = V2SessionMessagesResponses[keyof V2SessionMessagesResponses]
+
+export type V2IntegrationListData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/api/integration"
+}
+
+export type V2IntegrationListResponses = {
+  /**
+   * Success
+   */
+  200: Array<IntegrationInfo>
+}
+
+export type V2IntegrationListResponse = V2IntegrationListResponses[keyof V2IntegrationListResponses]
+
+export type V2IntegrationGetData = {
+  body?: never
+  path: {
+    integrationID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/api/integration/{integrationID}"
+}
+
+export type V2IntegrationGetResponses = {
+  /**
+   * Success
+   */
+  200: IntegrationInfo
+}
+
+export type V2IntegrationGetResponse = V2IntegrationGetResponses[keyof V2IntegrationGetResponses]
+
+export type V2IntegrationConnectKeyData = {
+  body?: {
+    key: string
+    label?: string
+  }
+  path: {
+    integrationID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/api/integration/{integrationID}/connect/key"
+}
+
+export type V2IntegrationConnectKeyErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type V2IntegrationConnectKeyError = V2IntegrationConnectKeyErrors[keyof V2IntegrationConnectKeyErrors]
+
+export type V2IntegrationConnectKeyResponses = {
+  /**
+   * <No Content>
+   */
+  204: void
+}
+
+export type V2IntegrationConnectKeyResponse = V2IntegrationConnectKeyResponses[keyof V2IntegrationConnectKeyResponses]
+
+export type V2IntegrationConnectOauthData = {
+  body?: {
+    methodID: string
+    inputs: {
+      [key: string]: string
+    }
+    label?: string
+  }
+  path: {
+    integrationID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/api/integration/{integrationID}/connect/oauth"
+}
+
+export type V2IntegrationConnectOauthErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type V2IntegrationConnectOauthError = V2IntegrationConnectOauthErrors[keyof V2IntegrationConnectOauthErrors]
+
+export type V2IntegrationConnectOauthResponses = {
+  /**
+   * Integration.Attempt
+   */
+  200: IntegrationAttempt
+}
+
+export type V2IntegrationConnectOauthResponse =
+  V2IntegrationConnectOauthResponses[keyof V2IntegrationConnectOauthResponses]
+
+export type V2IntegrationAttemptCancelData = {
+  body?: never
+  path: {
+    attemptID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/api/integration/attempt/{attemptID}"
+}
+
+export type V2IntegrationAttemptCancelResponses = {
+  /**
+   * <No Content>
+   */
+  204: void
+}
+
+export type V2IntegrationAttemptCancelResponse =
+  V2IntegrationAttemptCancelResponses[keyof V2IntegrationAttemptCancelResponses]
+
+export type V2IntegrationAttemptStatusData = {
+  body?: never
+  path: {
+    attemptID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/api/integration/attempt/{attemptID}"
+}
+
+export type V2IntegrationAttemptStatusResponses = {
+  /**
+   * Integration.AttemptStatus
+   */
+  200: IntegrationAttemptStatus
+}
+
+export type V2IntegrationAttemptStatusResponse =
+  V2IntegrationAttemptStatusResponses[keyof V2IntegrationAttemptStatusResponses]
+
+export type V2IntegrationAttemptCompleteData = {
+  body?: {
+    code?: string
+  }
+  path: {
+    attemptID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/api/integration/attempt/{attemptID}/complete"
+}
+
+export type V2IntegrationAttemptCompleteErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type V2IntegrationAttemptCompleteError =
+  V2IntegrationAttemptCompleteErrors[keyof V2IntegrationAttemptCompleteErrors]
+
+export type V2IntegrationAttemptCompleteResponses = {
+  /**
+   * <No Content>
+   */
+  204: void
+}
+
+export type V2IntegrationAttemptCompleteResponse =
+  V2IntegrationAttemptCompleteResponses[keyof V2IntegrationAttemptCompleteResponses]
+
+export type V2CredentialRemoveData = {
+  body?: never
+  path: {
+    credentialID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/api/credential/{credentialID}"
+}
+
+export type V2CredentialRemoveResponses = {
+  /**
+   * <No Content>
+   */
+  204: void
+}
+
+export type V2CredentialRemoveResponse = V2CredentialRemoveResponses[keyof V2CredentialRemoveResponses]
+
+export type V2CredentialUpdateData = {
+  body?: {
+    label: string
+  }
+  path: {
+    credentialID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/api/credential/{credentialID}"
+}
+
+export type V2CredentialUpdateResponses = {
+  /**
+   * <No Content>
+   */
+  204: void
+}
+
+export type V2CredentialUpdateResponse = V2CredentialUpdateResponses[keyof V2CredentialUpdateResponses]
 
 export type TuiAppendPromptData = {
   body?: {
