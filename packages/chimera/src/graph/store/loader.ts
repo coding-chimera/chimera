@@ -76,6 +76,12 @@ export interface StoreModule {
   storeInsertRefs(handle: StoreHandle, batch: StoreBuffers): number;
   storeDeleteFile(handle: StoreHandle, path: string): void;
   storeCommitBatch(handle: StoreHandle, ops: StoreBuffers): StoreWriteStats;
+  /** OPTIONAL (R3a-3): deterministic handle/connection release. Absent on
+   *  older binaries — StoreBridge.close() then degrades to the GC finalizer. */
+  storeClose?(handle: StoreHandle): void;
+  /** OPTIONAL (R3a-3): mirror the WAL-deferral valve's per-connection
+   *  wal_autocheckpoint pragma onto the Rust connection (performance knob). */
+  storeSetWalAutocheckpoint?(handle: StoreHandle, pages: number): void;
 }
 
 const debugEnabled = () => process.env.CODEGRAPH_STORE_DEBUG === '1';
