@@ -718,6 +718,7 @@ export class QueryBuilder {
           return_type = @returnType,
           params_json = @paramsJson,
           search_text = @searchText,
+          updated_at = @updatedAt
         WHERE id = @id
       `);
     }
