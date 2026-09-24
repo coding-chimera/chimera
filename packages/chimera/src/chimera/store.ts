@@ -1075,7 +1075,7 @@ function enrichFactsWithSemanticSnapshots(db: ChimeraDb, facts: ChangeFact[]) {
 
 function readSemanticRelations(db: ChimeraDb, hashes: string[] | undefined) {
   return unique(hashes ?? []).flatMap((hash) => {
-    const row = db.prepare("SELECT payload_json FROM chimera_semantic_object WHERE hash = ? AND kind = 'relation'").get(hash) as SemanticObjectRow | undefined
+    const row = cachedPrepare(db, "SELECT payload_json FROM chimera_semantic_object WHERE hash = ? AND kind = 'relation'").get(hash) as SemanticObjectRow | undefined
     return row ? parseJson<FrozenRelation>(row.payload_json) : []
   })
 }
@@ -1169,7 +1169,7 @@ function changedStatus(record: ToolMutationRecord, graphPath: string | undefined
 function writeProvenanceRecordToDb(db: ChimeraDb, input: ToolMutationRecord, migratedFrom?: string) {
   const record = normalizeProvenanceRecord(input)
   db.transaction(() => {
-    db.prepare(`
+    cachedPrepare(db, `
       INSERT OR REPLACE INTO chimera_change_event (
         id,
         origin,
@@ -1220,9 +1220,9 @@ function writeProvenanceRecordToDb(db: ChimeraDb, input: ToolMutationRecord, mig
       migratedFrom ?? null,
       Date.now(),
     )
-    db.prepare("DELETE FROM chimera_change_file WHERE event_id = ?").run(record.id)
+    cachedPrepare(db, "DELETE FROM chimera_change_file WHERE event_id = ?").run(record.id)
     record.files.forEach((file, index) => {
-      db.prepare(`
+      cachedPrepare(db, `
         INSERT INTO chimera_change_file (
           event_id,
           file_index,
