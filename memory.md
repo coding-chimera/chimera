@@ -434,3 +434,8 @@ loop 挂起修复前的对比基线（本机 macOS, bun 1.4.0, `bun test --timeo
 - **翻案**：server 面 Rust 化论据全失效（gzip 已异步/双 backend 非运行时/SSE 有界零缺陷）移出名单；排除区 session/bus/tool/pty/provider 维持；新热点=snapshot per-step git spawn（先 TS 合并）。
 - **形态决策树**：有常驻状态/泄漏风险/需独立重启→sidecar；无状态 CPU 密集 >1ms→napi（worker 线程内）；<1ms→留 TS。
 - **待用户拍板**：T0 批是否开工（建议先行，零 Rust 决策）。
+
+### T0 批收口（2026-09-24，9 commits 单波推送）
+- 5 件 T0+2 docs+2 收口修复：SSE 测试双计数=测试隔离问题（`59a2fc589` serialize 缝）；httpapi-sdk memory flake=**预存竞态**（stage2 跨 LLM consolidate 持 scope 锁，`b49499a38` 锁收窄到 commit 阶段+有界等待，属 memory 车道真 bug 修复）。全量 5634 pass/14 fail=环境基线精确吻合零新增。
+- **WebUI "故障"徽章排雷**（用户报告）：server 侧全面干净（消息/part/job/内存态/遥测零异常），结论=前端陈旧状态（retry 瞬时态卡在侧边栏），与已修未发布的 newweb 本地状态 bug 同族； workaround=刷新/清 localStorage。
+- pitfall：explore 角色无 write 工具——固化报告的续派要派 general；lsof 多条件默认 OR 需 -a；bash 管道尾接 echo $? 取的是最后一段的退出码。
