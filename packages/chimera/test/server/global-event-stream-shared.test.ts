@@ -1,4 +1,4 @@
-import { describe, expect, spyOn, test } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { GlobalBus } from "@/bus/global"
 import { createSharedGlobalEventStream, type SharedFrameSubscription } from "@/server/global-event-stream"
 
@@ -94,30 +94,35 @@ describe("shared global event stream", () => {
   })
 
   test("serializes and encodes each event once for all connections", async () => {
-    const hub = createSharedGlobalEventStream({ heartbeatIntervalMs: 0 })
+    // The serialize seam counts only THIS hub's serialization. A process-wide
+    // JSON.stringify spy is not usable here: in a shared test process other
+    // live consumers (the default hub holding a draining SSE connection from
+    // a prior file, legacy Hono connections) legitimately serialize the same
+    // GlobalBus events.
+    let serialized = 0
+    const hub = createSharedGlobalEventStream({
+      heartbeatIntervalMs: 0,
+      serialize: (event) => {
+        serialized += 1
+        return JSON.stringify(event)
+      },
+    })
     const a = subscribe(hub)
     const b = subscribe(hub)
     try {
       decodeFrame(await nextFrame(a)) // connected
       decodeFrame(await nextFrame(b)) // connected
+      serialized = 0
 
-      const stringify = spyOn(JSON, "stringify")
-      try {
-        emit("test.encode-once")
-        const frameA = await nextFrame(a)
-        const frameB = await nextFrame(b)
+      emit("test.encode-once")
+      const frameA = await nextFrame(a)
+      const frameB = await nextFrame(b)
 
-        // Both queues receive the identical pre-encoded frame instance.
-        expect(frameA).toBe(frameB)
-        expect(decodeFrame(frameA).payload.type).toBe("test.encode-once")
-
-        const eventCalls = stringify.mock.calls.filter(
-          (call) => (call[0] as { payload?: { type?: string } } | undefined)?.payload?.type === "test.encode-once",
-        )
-        expect(eventCalls.length).toBe(1)
-      } finally {
-        stringify.mockRestore()
-      }
+      // Both queues receive the identical pre-encoded frame instance, and the
+      // hub serialized the event exactly once for both connections.
+      expect(frameA).toBe(frameB)
+      expect(decodeFrame(frameA).payload.type).toBe("test.encode-once")
+      expect(serialized).toBe(1)
     } finally {
       a.close()
       b.close()
