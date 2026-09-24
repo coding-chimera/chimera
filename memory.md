@@ -426,3 +426,11 @@ loop 挂起修复前的对比基线（本机 macOS, bun 1.4.0, `bun test --timeo
 - **基线口径重大修正（2026-09-23，CI builder 实锤）**：全量 26 确定失败中约 10 条**非环境性**：httpapi-config×8+HttpApi SDK×2=remote-compaction 测试未跟上产品演进（模型级能力注册表+多闸门解析，2026-09 上旬落地）；schema event-manifest×2=slice 索引断言（不在 chimera 套件）。修复后**新基线预期=15-16 确定（MCP 三族 12/node:sqlite 1/unsafe index 2——MCP 与 unsafe 在 CI bun1.3.14+Node24 下预期转绿）+lsp.request 时序+负载池**。另：turbo.json `opencode#test:ci` 选择器自包更名起静默失效，chimera/core 一直未在 CI 跑（已修）。
 - **remote-compaction 测试修复批已派**（ses_f32919a32，判型修复：negative case 断言新语义/happy path fixture 升级）。CI 四 commit 压栈等它，修复落地后同波推送触发首跑。
 - **CI 批挂起（用户 2026-09-23 裁决"先再说"）**：已落地不亏的修复=dev→main 触发×4/turbo test:ci 选择器修复（10 包真纳入，此前 chimera/core 从未在 CI 跑）/unscoped chimera 安装×7/test.yml 两 bug（case() 表达式+git-identity 步骤漏 run: 键=数月秒败根因）/runner 换 GitHub 托管/nix-eval+storybook 已绿/remote-compaction 测试漂移修复 298/0。**挂起项**：typecheck/generate/nix-hashes 红的原因需 CI 日志（本机无 gh，匿名 API 拿不到 job 日志）——待用户贴日志或 gh auth 后续；generate.yml 依赖 OPENCODE_APP_ID/SECRET（用户未确认配置）；nix-hashes 建议禁用（上游 legacy）；publish.yml 四审计问题（blacksmith×13/unscoped/checkout v3/孤儿 sign-windows.ps1）随发布批。**新发现待拍板**：remote-compaction eligibility 的 configurable 门不传 config 扩展列表而 resolve 传（config 扩展模型能用不能管）——产品级不一致。
+
+### Rust 化全面重估交付（2026-09-24，报告=cbench/rust-plan/RUST_EVAL_20260923.md）
+- 6 路只读侦察+parent 合成。**头条：两个最大内存收益项都不需 Rust**——①96.4MB WASM 高水位根因实锤=extraction/index.ts:1172-1201 worker 池不感知 kernelRoutes，19 语言全路由仍全量加载 WASM grammar（4×WebAssembly.Memory 来源），纯 TS 修复（kernel 感知过滤+惰性兜底）即可归零；②"~1GB 堆外=SQLite 页缓存"被部分证伪（实测页缓存仅 44MB reclaimable，主体=JSC VM 堆 tag1 1779MB）→R2 论据只剩吞吐。
+- **口径修正**：7 tx/调用=bench 强制 EVENT_SYSTEM 口径，生产默认 ≈3；6×=延迟膨胀非内存；"store 30% 墙钟"=graph 索引口径非 session 写路径。
+- **排序**：T0 纯 TS 批（WASM kernel 感知化[①第一刀]/storage 调优 journal_size_limit+withDb 池化/SSE 序列化上移[每连接 N× stringify]/snapshot git 6-9 spawn 合并）→T0-5 native profile（R2 硬前置）→R3 graph-engine crate（resolution 51-56%+store 30% 墙钟+knownNames JS 投影+LRU 85MB 饱和=唯一双命中大面，并入既有 cdylib 单 .node，硬约束=napi 调用必须在 worker 线程）→R5' sidecar 上修（MCP daemon 先例=detached+idle 退出+崩溃重连，命中"不重启宿主"）→R6 维持冻结。
+- **翻案**：server 面 Rust 化论据全失效（gzip 已异步/双 backend 非运行时/SSE 有界零缺陷）移出名单；排除区 session/bus/tool/pty/provider 维持；新热点=snapshot per-step git spawn（先 TS 合并）。
+- **形态决策树**：有常驻状态/泄漏风险/需独立重启→sidecar；无状态 CPU 密集 >1ms→napi（worker 线程内）；<1ms→留 TS。
+- **待用户拍板**：T0 批是否开工（建议先行，零 Rust 决策）。
