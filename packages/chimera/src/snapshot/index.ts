@@ -111,6 +111,18 @@ export const layer: Layer.Layer<
 
         const args = (cmd: string[]) => ["--git-dir", state.gitdir, "--work-tree", state.worktree, ...cmd]
 
+        // (T0-4) Cheap dirty-check baseline: the hash returned by the last successful
+        // track(). Valid only while nothing mutated the snapshot index or worktree
+        // since. All mutators run under the gitdir lock, and the index mutators
+        // (stage/drop) plus the worktree/index rewriters (restore/revert) invalidate
+        // it, so a stale hash can never be reused — including when a track/patch is
+        // interrupted mid-flight after the index already moved.
+        let last: string | undefined
+        // (T0-4) The source repo's absolute info/exclude path is stable for the
+        // lifetime of this state; resolve it once instead of one `git rev-parse`
+        // spawn per sync() (sync ran up to twice per add()).
+        let excludeFile: string | undefined
+
         const enc = new TextEncoder()
         const feed = (list: string[]) => Stream.make(enc.encode(list.join("\0") + "\0"))
 
@@ -178,6 +190,8 @@ export const layer: Layer.Layer<
               stdin: feed(files),
             },
           )
+          // The index moved; the cached baseline no longer reflects it.
+          last = undefined
         })
 
         const stage = Effect.fnUntraced(function* (files: string[]) {
@@ -189,6 +203,8 @@ export const layer: Layer.Layer<
               stdin: feed(files),
             },
           )
+          // The index moved (or a partial add may have); drop the baseline.
+          last = undefined
           if (result.code === 0) return
           log.warn("failed to add snapshot files", {
             exitCode: result.code,
@@ -218,12 +234,13 @@ export const layer: Layer.Layer<
         })
 
         const excludes = Effect.fnUntraced(function* () {
+          if (excludeFile) return excludeFile
           const result = yield* git(["rev-parse", "--path-format=absolute", "--git-path", "info/exclude"], {
             cwd: state.worktree,
           })
           const file = result.text.trim()
           if (!file) return
-          if (!(yield* exists(file))) return
+          excludeFile = file
           return file
         })
 
@@ -300,7 +317,9 @@ export const layer: Layer.Layer<
             )).filter((item): item is string => Boolean(item)),
           )
           const block = new Set(untracked.filter((item) => large.has(item)))
-          yield* sync(Array.from(block))
+          // (T0-4) The leading sync() above already wrote the source-only exclude;
+          // rewriting it is only needed when there are large files to block.
+          if (block.size > 0) yield* sync(Array.from(block))
           // Stage only the allowed candidate paths so snapshot updates stay scoped.
           yield* stage(allow.filter((item) => !block.has(item)))
         })
@@ -348,15 +367,59 @@ export const layer: Layer.Layer<
           log.info("initialized")
         })
 
+        // (T0-4) Single-spawn dirty probe against the last track() baseline.
+        // `git status --porcelain -z` lists every path whose worktree state differs
+        // from the snapshot index or is missing from it; empty output means add()
+        // would be a no-op and `last` is exactly the tree the current index writes.
+        // Any uncertainty (no baseline, spawn failure, unparseable record) falls
+        // through to the full add() + write-tree path, so this can only ever
+        // cost one extra spawn on states it refuses to classify.
+        const clean = Effect.fnUntraced(function* () {
+          if (!last) return false
+          const result = yield* git(
+            [
+              ...quote,
+              ...args([
+                "--no-optional-locks",
+                "status",
+                "--porcelain",
+                "-z",
+                "--untracked-files=all",
+                "--no-renames",
+                "--ignore-submodules=none",
+                "--",
+                ".",
+              ]),
+            ],
+            { cwd: state.directory },
+          )
+          if (result.code !== 0) return false
+          return !result.text
+            .split("\0")
+            .filter(Boolean)
+            .some((record) => {
+              // Untracked entries are always dirty; ignored entries never are.
+              if (record.startsWith("?")) return true
+              if (record.startsWith("!")) return false
+              // XY status: only the worktree column (Y) signals index/worktree drift.
+              const worktree = record.charAt(1)
+              return worktree !== "." && worktree !== " "
+            })
+        })
+
         const track = Effect.fnUntraced(function* () {
           return yield* locked(
             Effect.gen(function* () {
               if (!(yield* enabled())) return
               yield* initRepo()
+              // (T0-4) Reuse the baseline hash when nothing changed since the last
+              // track — skips the whole add() + write-tree sequence (5+ spawns → 1).
+              if (yield* clean()) return last
               yield* add()
               const result = yield* git(args(["write-tree"]), { cwd: state.directory })
               const hash = result.text.trim()
               log.info("tracking", { hash, cwd: state.directory, git: state.gitdir })
+              if (hash) last = hash
               return hash
             }),
           )
@@ -365,7 +428,9 @@ export const layer: Layer.Layer<
         const patch = Effect.fnUntraced(function* (hash: string) {
           return yield* locked(
             Effect.gen(function* () {
-              yield* add()
+              // (T0-4) A clean worktree means the index already matches it, so the
+              // re-add would stage nothing; skip straight to the cached diff.
+              if (!(yield* clean())) yield* add()
               const result = yield* git(
                 [...quote, ...args(["diff", "--cached", "--no-ext-diff", "--name-only", hash, "--", "."])],
                 {
@@ -398,6 +463,8 @@ export const layer: Layer.Layer<
         const restore = Effect.fnUntraced(function* (snapshot: string) {
           return yield* locked(
             Effect.gen(function* () {
+              // read-tree + checkout-index rewrite both the index and the worktree.
+              last = undefined
               log.info("restore", { commit: snapshot })
               const result = yield* git([...core, ...args(["read-tree", snapshot])], { cwd: state.worktree })
               if (result.code === 0) {
@@ -424,6 +491,8 @@ export const layer: Layer.Layer<
         const revert = Effect.fnUntraced(function* (patches: Patch[]) {
           return yield* locked(
             Effect.gen(function* () {
+              // Batched/single checkouts and removals rewrite the index and/or worktree.
+              last = undefined
               const ops: { hash: string; file: string; rel: string }[] = []
               const seen = new Set<string>()
               for (const item of patches) {
