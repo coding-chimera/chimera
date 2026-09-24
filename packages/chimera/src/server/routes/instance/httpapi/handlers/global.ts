@@ -2,7 +2,7 @@ import { Config } from "@/config/config"
 import { GlobalBus } from "@/bus/global"
 import { EffectBridge } from "@/effect/bridge"
 import { Installation } from "@/installation"
-import { createGlobalEventStream } from "@/server/global-event-stream"
+import { sharedGlobalEventStream } from "@/server/global-event-stream"
 import { disposeAllInstancesAndEmitGlobalDisposed } from "@/server/global-lifecycle"
 import { WebUIPreferences } from "@/server/webui-preferences"
 import { InstanceStore } from "@/project/instance-store"
@@ -12,20 +12,10 @@ import { Effect, Schema } from "effect"
 import * as Stream from "effect/Stream"
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
-import * as Sse from "effect/unstable/encoding/Sse"
 import { RootHttpApi } from "../api"
 import { GlobalPresenceInput, GlobalUpgradeInput } from "../groups/global"
 
 const log = Log.create({ service: "server" })
-
-function eventData(data: unknown): Sse.Event {
-  return {
-    _tag: "Event",
-    event: "message",
-    id: undefined,
-    data: JSON.stringify(data),
-  }
-}
 
 function parseBody(body: string) {
   try {
@@ -36,16 +26,20 @@ function parseBody(body: string) {
 }
 
 function eventResponse() {
+  const subscription = sharedGlobalEventStream().subscribe()
+  if (!subscription) {
+    log.warn("global event connection rejected: connection limit reached")
+    return HttpServerResponse.jsonUnsafe(
+      { ok: false, error: "Too many global event connections" },
+      { status: 429 },
+    )
+  }
   log.info("global event connected")
-  const subscription = createGlobalEventStream()
 
   return HttpServerResponse.stream(
-    Stream.fromAsyncIterable(subscription.events, (error) =>
+    Stream.fromAsyncIterable(subscription.frames, (error) =>
       error instanceof Error ? error : new Error(String(error)),
     ).pipe(
-      Stream.map(eventData),
-      Stream.pipeThroughChannel(Sse.encode()),
-      Stream.encodeText,
       Stream.ensuring(
         Effect.sync(() => {
           subscription.close()

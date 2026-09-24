@@ -7,6 +7,7 @@ import { GlobalPaths } from "../../src/server/routes/instance/httpapi/groups/glo
 import { PublicApi } from "../../src/server/routes/instance/httpapi/public"
 import { ExperimentalHttpApiServer } from "../../src/server/routes/instance/httpapi/server"
 import { Server } from "../../src/server/server"
+import { sharedGlobalEventStream } from "../../src/server/global-event-stream"
 import * as Log from "@opencode-ai/core/util/log"
 import { ConfigProvider, Layer } from "effect"
 import { HttpRouter } from "effect/unstable/http"
@@ -607,6 +608,29 @@ describe("HttpApi server", () => {
     expect(response.headers.get("content-type")).toContain("text/event-stream")
     expect(new TextDecoder().decode(chunk.value)).toContain('"directory":"global"')
     expect(new TextDecoder().decode(chunk.value)).toContain("server.connected")
+  })
+
+  test("rejects global event connections beyond the configured limit with 429", async () => {
+    const previous = process.env["OPENCODE_GLOBAL_SSE_MAX_CONNECTIONS"]
+    // Cap = current live connections + 1 so the test is robust against
+    // connections other suites left open on the process-wide default hub.
+    process.env["OPENCODE_GLOBAL_SSE_MAX_CONNECTIONS"] = String(sharedGlobalEventStream().connections + 1)
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+    try {
+      const allowed = await app().request(GlobalPaths.event)
+      if (!allowed.body) throw new Error("missing event stream body")
+      reader = allowed.body.getReader()
+      await reader.read()
+      expect(allowed.status).toBe(200)
+
+      const rejected = await app().request(GlobalPaths.event)
+      expect(rejected.status).toBe(429)
+      expect(await rejected.json()).toMatchObject({ ok: false })
+    } finally {
+      await reader?.cancel()
+      if (previous === undefined) delete process.env["OPENCODE_GLOBAL_SSE_MAX_CONNECTIONS"]
+      else process.env["OPENCODE_GLOBAL_SSE_MAX_CONNECTIONS"] = previous
+    }
   })
 
   test("serves control log from Effect HttpApi", async () => {
