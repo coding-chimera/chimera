@@ -248,6 +248,16 @@
 5. 无任何新 microbench：Rust 方案性能数字全部为既有 bench 外推（端点安全禁执行新鲜可执行物），R2/R3 立项时需 CI 侧补实测。
 6. g1-wal 吞吐数字未逐场景提取（s*.out 部分为空，数据在 .sql.json/.err 面）。
 
+## 附：2026-09-24 重估与 T0 批执行（增补）
+
+重估总报告=`cbench/rust-plan/RUST_EVAL_20260923.md`（6 路侦察+合成），本文档口径以其 §9 为准。要点：
+
+- **T0 纯 TS 批已落地**（5 commits）：WASM grammar kernel 感知化（消 96.4MB 高水位）/主库 WAL 治理+withDb 池化+prepare 缓存/SSE 全局流序列化一次化+连接上限 64/snapshot 每 step spawn ~10-14→4。tool-call tx 合并经评估**否决**（WAL 单写者+崩溃重放语义）。
+- **T0-5 native profile 翻案**：~1GB 堆外真身=**JSC arena 棘轮**（vmmap tag 240 占 footprint 84-90%，索引爆发冲 1477MB 峰值后滞留 +246MB）；SQLite 页缓存 dirty ≈0.016MB 排除、系统 malloc 滞留排除。**R2 内存论据删除**，只剩吞吐；§1.4 相应失效。
+- **R3 确认唯一内存杠杆**（WASM+棘轮+LRU 85MB 全在 JSC，预期削生产 RSS −0.5~−0.9GB）；立项书=`cbench/rust-plan/R3_PROPOSAL.md`（三刀 R3a/b/c，契约盘点已补齐盲区 #7）；R5' 设计上修=`cbench/rust-plan/R5_SIDECAR_DESIGN.md`（MCP daemon 骨架泛化，watcher 统一第一住户；graph 常驻缓存归 R3 napi）。
+- server 面（原候选 3）论据失效移出名单：gzipSync 已异步、双 backend 非运行时、SSE 自有结构有界。
+- R2' 新优先项：db.bun.ts 侧 prepare 缓存 shim（免补丁，量化后再定 napi 桥范围）。
+
 ## 附：证据档案索引
 
 - 实测 RSS 归档：`/Volumes/workspace/cbench/rust-plan/rss-aggregate-20260918.md`、`rss-snapshot-20260918.txt`
