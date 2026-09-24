@@ -439,3 +439,17 @@ loop 挂起修复前的对比基线（本机 macOS, bun 1.4.0, `bun test --timeo
 - 5 件 T0+2 docs+2 收口修复：SSE 测试双计数=测试隔离问题（`59a2fc589` serialize 缝）；httpapi-sdk memory flake=**预存竞态**（stage2 跨 LLM consolidate 持 scope 锁，`b49499a38` 锁收窄到 commit 阶段+有界等待，属 memory 车道真 bug 修复）。全量 5634 pass/14 fail=环境基线精确吻合零新增。
 - **WebUI "故障"徽章排雷**（用户报告）：server 侧全面干净（消息/part/job/内存态/遥测零异常），结论=前端陈旧状态（retry 瞬时态卡在侧边栏），与已修未发布的 newweb 本地状态 bug 同族； workaround=刷新/清 localStorage。
 - pitfall：explore 角色无 write 工具——固化报告的续派要派 general；lsof 多条件默认 OR 需 -a；bash 管道尾接 echo $? 取的是最后一段的退出码。
+
+### R3a 收口+R2' shim 落地（2026-09-24，origin/main=7269b3708）
+- **R2' shim**（`00bf59740`）：db.bun.ts per-instance LRU prepare 缓存（Proxy 拦截，cap 256），实测 2101→4 prepare；node variant 不动（StatementSync API 不同需单独立项）。
+- **R3a 三棒落地**：R3a-1（`088163000` kernel store.rs ~2240 行，rusqlite bundled，36/36 cargo 测试含 resurrect 专项，+5.3% 二进制）→ R3a-2（`8aa8ef79c` TS loader/encoder/bridge/op 融合，parity harness 三场景四表零 diff）→ R3a-3（`7269b3708` 生产默认接线：四个 QueryBuilder 构造点 attach、readOnly 不 attach、dispose 配对、WAL 阀镜像、store_close 增补 ABI v1 不变）。全量 5674 pass/14 fail=环境基线零新增。**关键证据：默认开启后本机全部 CodeGraph 测试实跑 native 臂全绿**。
+- 口径修正：prebuilds/ 是 gitignored 本地产物（K-v2 先例），8 腿矩阵=CI-only；R3a v1 主线程调用=现状同级（worker 迁移列后续项）；store_close/storeSetWalAutocheckpoint 旧 7 腿缺失时 TS 可选调用兜底。
+- **R5' 阶段 0 防重复**：其内容=R1 A4/A5 已落地（graphStates LRU32、MCP projectCache cap8），勿再派工。
+- R3a 遗留：worker 线程迁移/性能验收 ≥1.3×（CI-only）/status 面展示桥挂载态（产品决策）/14 条 Node26 门禁环境失败单独立项。
+
+### R3b 收口+预存 bug 修复（2026-09-24，origin/main=7e3bccc83）
+- **R3b-1**（`6f0ab465c`）：resolver_ctx.rs ~2530 行（14 getter 批量面+9 LRU 移植+knownNames/knownFiles 代次失效索引），54/54 cargo 测试；4 getter 刻意 absent 留 TS 臂。**R3b-2**（`5fdac3c6c`）：TS 接线+kill switch（CODEGRAPH_CTX=0）+ctx-parity 40/40 探针零 diff+四表端到端字节一致；197/197 resolution oracles 绿。
+- **预存 bug 修复**（`7e3bccc83`）：updateNode SQL 丢 updated_at 列+尾逗号→prepare 必抛被静默吞→**框架 postExtract 更新从未持久化**（自 cfd471130）。语义评估：边群不变+自愈收敛+恢复文档化行为→**不 bump v5、不需 reindex**。
+- **flake 登记**：session/prompt.test.ts 的 'command ! expansion' 入负载池（隔离 80/80 绿，全量撞 30s 超时；该文件单跑 72.7s）。全量收口 5689 pass/15 fail=14 环境基线+1 负载池。
+- **诚实记账**：R3b 内存收益本刀不达成（JS Set 投影待 R3c 内化 hasAnyPossibleMatch）；getter FFI 穿越开销验收=CI-only；R3c 前置=hasNames/fileExistsBatch 批量口已就绪。
+- pitfall：git push 管道接 head/tail 会 SIGPIPE 杀钩子进程——输出必须完整跑完；GitHub 推送 500 是瞬时故障，等 ~3min 重试即恢复。
