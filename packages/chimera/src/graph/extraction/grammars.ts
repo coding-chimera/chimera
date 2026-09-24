@@ -741,6 +741,18 @@ export function clearParserCache(): void {
 }
 
 /**
+ * Test hook (T0-1): evict ONE language's compiled grammar and cached parser
+ * so the lazy defer-seam load (deferred-grammar.ts) can be exercised even in
+ * the shared bun-test process, where other suites' loadAllGrammars has
+ * already populated languageCache. Production never unloads grammars; a
+ * later loadGrammarsForLanguages([lang]) restores the entry.
+ */
+export function unloadGrammarForTests(language: Language): void {
+  resetParser(language);
+  languageCache.delete(language);
+}
+
+/**
  * Report grammars that failed to load.
  */
 export function getUnavailableGrammarErrors(): Partial<Record<Language, string>> {

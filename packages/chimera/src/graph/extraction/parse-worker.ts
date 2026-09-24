@@ -6,7 +6,7 @@
  */
 
 import { parentPort } from 'worker_threads';
-import { extractFromSource } from './tree-sitter';
+import { extractWithDeferredGrammarLoad } from './deferred-grammar';
 import { detectLanguage, loadGrammarsForLanguages, resetParser } from './grammars';
 import type { Language, ExtractionResult } from '../types';
 
@@ -63,7 +63,14 @@ parentPort!.on('message', async (msg: { type: string; id?: number; filePath?: st
     const { id, filePath, content, frameworkNames } = msg;
     try {
       const language = detectLanguage(filePath!, content);
-      const result: ExtractionResult = extractFromSource(filePath!, content!, language, frameworkNames);
+      // T0-1: kernel-routed languages are filtered out of the pool's
+      // load-grammars set, so a file the kernel DEFERS (parse-error /
+      // stack-guard valve) finds no wasm parser on the first attempt —
+      // extractWithDeferredGrammarLoad loads that grammar lazily (once per
+      // worker per language) and replays, so deferred files keep producing
+      // wasm-arm output. The pool dispatches one job per worker, so the
+      // await never interleaves parses inside a worker.
+      const result: ExtractionResult = await extractWithDeferredGrammarLoad(filePath!, content!, language, frameworkNames);
 
       // Periodic parser reset to reclaim WASM heap memory
       const count = (parseCounts.get(language) ?? 0) + 1;

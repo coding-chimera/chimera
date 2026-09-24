@@ -278,6 +278,46 @@ export function kernelRoutes(language: Language): boolean {
   return isRouted(language) && kernelSupports(language);
 }
 
+/**
+ * Kernel-routed languages with a documented per-file defer policy band
+ * (T0-1): macro-heavy C/C++ corpora defer 10–40% of files to the wasm arm
+ * (wave-4 note above; 13.4% measured on the node_modules corpus). Their wasm
+ * grammars are filtered out of the preload set like every other routed
+ * language — the defer seam loads them lazily — but a project containing
+ * them keeps its parse worker pool, because that defer volume is real wasm
+ * parse work that must not run on the main thread.
+ */
+export const DEFER_ELIGIBLE_LANGUAGES: ReadonlySet<Language> = new Set<Language>(['c', 'cpp']);
+
+/**
+ * The wasm-grammar preload set for a file set's languages (T0-1): every
+ * language the kernel routes right now is removed. A routed language parses
+ * natively; its wasm grammar is only needed when the kernel actually DEFERS
+ * a file (the `defer:` parse-error / stack-guard valve above), and every
+ * async extraction seam loads it lazily at that point (see
+ * deferred-grammar.ts). Non-routed languages pass through untouched: objc
+ * from the `.h` ambiguity expansion (#1628), r/solidity/pascal/nix wasm,
+ * ruling-⑤ names (silent unavailableGrammarErrors degradation), and
+ * svelte/vue/astro — whose delegated typescript/javascript grammars are
+ * added downstream by expandGrammarLanguages, so the SFC languages must
+ * stay in the set for that expansion to fire.
+ */
+export function filterKernelRoutedLanguages(languages: Language[]): Language[] {
+  return languages.filter((lang) => !kernelRoutes(lang));
+}
+
+/**
+ * True when every language of a file set routes to the kernel and none
+ * carries a defer policy band — no wasm grammar is expected at all, so the
+ * orchestrator skips the worker pool and parses on the main thread through
+ * the kernel arm (T0-1). The empty set qualifies (nothing to parse). A
+ * defer-eligible language (c/cpp) keeps the pool: its 10–40% defer band is
+ * real wasm work, lazily loaded inside the workers.
+ */
+export function isKernelOnlyLanguageSet(languages: Language[]): boolean {
+  return languages.every((lang) => kernelRoutes(lang) && !DEFER_ELIGIBLE_LANGUAGES.has(lang));
+}
+
 /** Warned-once registry so a broken language logs a single line, not one per file. */
 const warned = new Set<string>();
 
