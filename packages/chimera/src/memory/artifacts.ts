@@ -260,10 +260,30 @@ async function pruneUnlisted(directory: string, generation: Generation) {
   await walk(directory)
 }
 
-export async function cleanup(scope: Scope, dataRoot = Global.Path.data) {
+/**
+ * Bounded wait budget for acquiring a *fresh* scope lock held by a live
+ * contender (e.g. a stage2 commit queued moments earlier). Waiting preserves
+ * mutual exclusion — the waiter never bypasses the lock, it retries the
+ * same exclusive `wx` open — and turns a transient contention into a
+ * success instead of an instant "memory scope is locked" failure that the
+ * management layer folds into a 400 (observed as the httpapi-sdk parity
+ * flake: rebuild-queued stage2 commit racing the scenario's reset).
+ * `attempts: 0` restores the legacy fail-fast behavior and is what
+ * contention-semantics tests inject; stale-lock stealing (mtime ≥ 10 min)
+ * is unaffected and never counts against the budget.
+ */
+export type ScopeLockWait = {
+  attempts?: number
+  backoffMs?: number
+}
+
+const DEFAULT_SCOPE_LOCK_ATTEMPTS = 25
+const DEFAULT_SCOPE_LOCK_BACKOFF_MS = 200
+
+export async function cleanup(scope: Scope, dataRoot = Global.Path.data, wait: ScopeLockWait = {}) {
   const directory = await existingRoot(scope, dataRoot)
   if (!directory) return
-  const release = await acquireScopeLock(scope, dataRoot).catch((error) => {
+  const release = await acquireScopeLock(scope, dataRoot, wait).catch((error) => {
     if (error instanceof Error && error.message === "memory scope is locked") return undefined
     throw error
   })
@@ -293,25 +313,29 @@ export async function clearLocked(scope: Scope, dataRoot = Global.Path.data) {
   )
 }
 
-export async function clear(scope: Scope, dataRoot = Global.Path.data) {
-  return withScopeLock(scope, () => clearLocked(scope, dataRoot), dataRoot)
+export async function clear(scope: Scope, dataRoot = Global.Path.data, wait: ScopeLockWait = {}) {
+  return withScopeLock(scope, () => clearLocked(scope, dataRoot), dataRoot, wait)
 }
 
-export async function acquireScopeLock(scope: Scope, dataRoot = Global.Path.data) {
+export async function acquireScopeLock(scope: Scope, dataRoot = Global.Path.data, wait: ScopeLockWait = {}) {
   const directory = await ensureRoot(scope, dataRoot)
   const lock = await safeFile(directory, "scope.lock")
   const token = randomUUID()
-  const acquire = async (): Promise<fs.FileHandle> =>
+  const attempts = wait.attempts ?? DEFAULT_SCOPE_LOCK_ATTEMPTS
+  const backoffMs = wait.backoffMs ?? DEFAULT_SCOPE_LOCK_BACKOFF_MS
+  const acquire = async (attempt: number): Promise<fs.FileHandle> =>
     fs.open(lock, "wx", 0o600).catch(async (error: NodeJS.ErrnoException) => {
       if (error.code !== "EEXIST") throw error
       const stat = await fs.stat(lock).catch(() => undefined)
       if (!stat || Date.now() - stat.mtimeMs > 10 * 60_000) {
         await fs.rm(lock, { force: true })
-        return acquire()
+        return acquire(attempt)
       }
-      throw new Error("memory scope is locked")
+      if (attempt >= attempts) throw new Error("memory scope is locked")
+      await new Promise((resolve) => setTimeout(resolve, backoffMs))
+      return acquire(attempt + 1)
     })
-  const handle = await acquire()
+  const handle = await acquire(0)
   await handle.writeFile(`${token}\n`, "utf8")
   const refresh = setInterval(() => {
     const now = new Date()
@@ -326,8 +350,8 @@ export async function acquireScopeLock(scope: Scope, dataRoot = Global.Path.data
   }
 }
 
-export async function withScopeLock<A>(scope: Scope, work: () => Promise<A>, dataRoot = Global.Path.data) {
-  const release = await acquireScopeLock(scope, dataRoot)
+export async function withScopeLock<A>(scope: Scope, work: () => Promise<A>, dataRoot = Global.Path.data, wait: ScopeLockWait = {}) {
+  const release = await acquireScopeLock(scope, dataRoot, wait)
   try {
     return await work()
   } finally {
@@ -385,8 +409,8 @@ export async function commitLocked(scope: Scope, input: CommitInput, dataRoot = 
   }
 }
 
-export async function commit(scope: Scope, input: CommitInput, dataRoot = Global.Path.data) {
-  return withScopeLock(scope, () => commitLocked(scope, input, dataRoot), dataRoot)
+export async function commit(scope: Scope, input: CommitInput, dataRoot = Global.Path.data, wait: ScopeLockWait = {}) {
+  return withScopeLock(scope, () => commitLocked(scope, input, dataRoot), dataRoot, wait)
 }
 
 export * as MemoryArtifacts from "./artifacts"

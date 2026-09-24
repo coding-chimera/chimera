@@ -306,28 +306,39 @@ export const layer = Layer.effect(
       }
       const stop = heartbeat("stage2", claim.job_key, claim.ownership_token)
       try {
+        // (T0 flake fix) Do NOT hold the scope lock across model.consolidate:
+        // the LLM call can take seconds (unbounded under load), and holding a
+        // file lock across it starves same-scope management operations —
+        // MemoryManagement.reset folds lock contention into a 400, which is
+        // how the httpapi-sdk parity scenario intermittently diverged
+        // (rebuild queues this stage2 job moments before reset races it).
+        // Mutual exclusion is only needed for the artifact commit, and the
+        // commit stays safe: the in-lock ownership recheck aborts when a
+        // concurrent resetScope deleted the job row, and commitLocked's
+        // expectedGeneration check aborts when another commit interleaved
+        // during consolidation.
+        if (!isJobOwned({ kind: "stage2", jobKey: claim.job_key, ownershipToken: claim.ownership_token })) {
+          throw new Error("Stage 2 ownership was lost")
+        }
+        const generation = yield* Effect.promise(() => MemoryArtifacts.readGeneration(scope))
+        const outputs = selectStage1Outputs(scope)
+        const notes = selectNotes(scope)
+        const raw = rawInputs(outputs)
+        const consolidated = yield* model.consolidate({
+          currentMemory: (yield* Effect.promise(() => MemoryArtifacts.readArtifact(scope, MemoryArtifacts.MEMORY_FILE))) ?? "",
+          currentSummary: (yield* Effect.promise(() => MemoryArtifacts.readArtifact(scope, MemoryArtifacts.SUMMARY_FILE))) ?? "",
+          rawMemories: raw,
+          notes: noteInputs(notes),
+          signal: current.abort.signal,
+        })
+        if (!MemoryArtifacts.hasHeader(consolidated.summary.trim())) throw new Error("memory summary is missing v1 header")
+        if (MemorySecurity.containsSecret(consolidated.memory) || MemorySecurity.containsSecret(consolidated.summary)) {
+          throw new Error("consolidated memory contains a secret")
+        }
         return yield* Effect.acquireUseRelease(
           Effect.promise(() => MemoryArtifacts.acquireScopeLock(scope)),
           () =>
             Effect.gen(function* () {
-              if (!isJobOwned({ kind: "stage2", jobKey: claim.job_key, ownershipToken: claim.ownership_token })) {
-                throw new Error("Stage 2 ownership was lost")
-              }
-              const generation = yield* Effect.promise(() => MemoryArtifacts.readGeneration(scope))
-              const outputs = selectStage1Outputs(scope)
-              const notes = selectNotes(scope)
-              const raw = rawInputs(outputs)
-              const consolidated = yield* model.consolidate({
-                currentMemory: (yield* Effect.promise(() => MemoryArtifacts.readArtifact(scope, MemoryArtifacts.MEMORY_FILE))) ?? "",
-                currentSummary: (yield* Effect.promise(() => MemoryArtifacts.readArtifact(scope, MemoryArtifacts.SUMMARY_FILE))) ?? "",
-                rawMemories: raw,
-                notes: noteInputs(notes),
-                signal: current.abort.signal,
-              })
-              if (!MemoryArtifacts.hasHeader(consolidated.summary.trim())) throw new Error("memory summary is missing v1 header")
-              if (MemorySecurity.containsSecret(consolidated.memory) || MemorySecurity.containsSecret(consolidated.summary)) {
-                throw new Error("consolidated memory contains a secret")
-              }
               if (!isJobOwned({ kind: "stage2", jobKey: claim.job_key, ownershipToken: claim.ownership_token })) {
                 throw new Error("Stage 2 ownership was lost")
               }
