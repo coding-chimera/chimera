@@ -45,6 +45,7 @@ mod lua;
 mod php;
 mod rlang;
 mod ruby;
+mod resolver_ctx;
 mod rustlang;
 mod scala;
 mod stack;
