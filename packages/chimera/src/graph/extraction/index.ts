@@ -24,6 +24,8 @@ import { extractFromSource } from './tree-sitter';
 import { detectLanguage, isSourceFile, isLanguageSupported, isFileLevelOnlyLanguage, initGrammars, loadGrammarsForLanguages } from './grammars';
 import { loadIncludeIgnoredPatterns } from '../config';
 import { ParseWorkerPool, resolveParsePoolSize, resolveParseTimeoutMs } from './parse-pool';
+import { filterKernelRoutedLanguages, isKernelOnlyLanguageSet } from './kernel';
+import { extractWithDeferredGrammarLoad } from './deferred-grammar';
 import { logDebug, logWarn } from '../errors';
 import { validatePathWithinRoot, normalizePath } from '../utils';
 import ignore, { Ignore } from 'ignore';
@@ -419,6 +421,12 @@ export function buildDefaultIgnore(rootDir: string): Ignore {
  * a header that turns out to be Objective-C in a project with no `.m` file
  * found no parser and failed with `Failed to get parser for language: objc`
  * (#1628). C++ was already covered; Objective-C was not.
+ *
+ * T0-1: this is the RAW file-language set — callers filter it through
+ * `filterKernelRoutedLanguages` (kernel/index.ts) before preloading, so a
+ * kernel-routed language's wasm grammar is only ever loaded lazily at the
+ * defer seam (deferred-grammar.ts). objc above is NOT routed, so the #1628
+ * expansion survives the filter untouched.
  */
 export function preloadLanguagesForFiles(
   files: string[],
@@ -1169,13 +1177,28 @@ export class ExtractionOrchestrator {
     // Detect needed languages and load grammars in the parse worker
     // (#1628: an ambiguous `.h` may parse as C++ OR Objective-C, so both
     // grammars preload alongside c).
-    const neededLanguages = preloadLanguagesForFiles(files);
+    // T0-1: kernel-routed languages are filtered out of the preload set —
+    // the native arm parses them without wasm, and the per-file `defer:`
+    // valve lazily loads the grammar at the extraction seam
+    // (extractWithDeferredGrammarLoad / parse-worker). Preloading every
+    // language in every worker regardless of routing was the resident-WASM
+    // high-water source (poolSize × per-grammar WebAssembly.Memory, which
+    // grows but never shrinks), whether or not wasm ever parsed a file.
+    const fileLanguages = preloadLanguagesForFiles(files);
+    const neededLanguages = filterKernelRoutedLanguages(fileLanguages);
 
     // Try to use a pool of worker threads for parsing (keeps main thread
     // unblocked and uses every core). Falls back to in-process parsing when
-    // the compiled worker is unavailable (e.g. running from source in tests).
+    // the compiled worker is unavailable (e.g. running from source in tests),
+    // or when every language in the set routes to the kernel and none carries
+    // a defer policy band (T0-1: no wasm grammar is expected at all, so the
+    // pool's workers would hold resident heaps for nothing — the in-process
+    // branch below runs the kernel arm on the main thread, and a rare
+    // parse-error defer lazily loads its grammar there). Defer-eligible c/cpp
+    // KEEP the pool: their 10–40% defer band is real wasm work.
+    const kernelOnly = isKernelOnlyLanguageSet(fileLanguages);
     const parseWorkerPath = resolveParseWorkerPath()
-    const useWorker = parseWorkerPath !== undefined
+    const useWorker = parseWorkerPath !== undefined && !kernelOnly
 
     let pool: ParseWorkerPool | null = null;
     if (useWorker) {
@@ -1198,6 +1221,7 @@ export class ExtractionOrchestrator {
       log(`Parse worker pool: ${poolSize} worker(s)`);
     } else {
       // In-process fallback: load grammars locally and parse on the main thread.
+      if (kernelOnly) log('Kernel-only language set — parse worker pool skipped; kernel arm runs on the main thread');
       await loadGrammarsForLanguages(neededLanguages);
     }
 
@@ -1207,7 +1231,7 @@ export class ExtractionOrchestrator {
      * re-attempts), or in-process synchronously as the no-worker fallback.
      */
     const parseFile = (filePath: string, content: string): Promise<ExtractionResult> => {
-      if (!pool) return Promise.resolve(extractFromSource(filePath, content, detectLanguage(filePath, content), frameworkNames));
+      if (!pool) return extractWithDeferredGrammarLoad(filePath, content, detectLanguage(filePath, content), frameworkNames);
       return pool.requestParse({ filePath, content, frameworkNames });
     };
 
@@ -1733,7 +1757,7 @@ export class ExtractionOrchestrator {
       for (const pair of this.queries.getNodeNamePairsByFiles(filesToIndex)) pairsBefore.add(pair);
     }
     if (filesToIndex.length > 0) {
-      const neededLanguages = preloadLanguagesForFiles(filesToIndex);
+      const neededLanguages = filterKernelRoutedLanguages(preloadLanguagesForFiles(filesToIndex));
       await loadGrammarsForLanguages(neededLanguages);
     }
 
@@ -1865,8 +1889,10 @@ export class ExtractionOrchestrator {
     // Extract from source. Use cached framework names if indexAll has run,
     // otherwise detect on the spot so single-file re-index paths still emit
     // route nodes / middleware / etc.
+    // T0-1 defer seam: a kernel-routed language whose grammar was filtered
+    // out of the preload set lazily loads it here when the kernel defers.
     const frameworkNames = this.ensureDetectedFrameworks();
-    const result = extractFromSource(relativePath, content, language, frameworkNames);
+    const result = await extractWithDeferredGrammarLoad(relativePath, content, language, frameworkNames);
 
     // Store in database
     if (result.nodes.length > 0 || result.errors.length === 0) {
@@ -2180,7 +2206,7 @@ export class ExtractionOrchestrator {
 
     // Load only grammars needed for changed files
     if (filesToIndex.length > 0) {
-      const neededLanguages = preloadLanguagesForFiles(filesToIndex);
+      const neededLanguages = filterKernelRoutedLanguages(preloadLanguagesForFiles(filesToIndex));
       await loadGrammarsForLanguages(neededLanguages);
     }
 
@@ -2332,4 +2358,6 @@ export class ExtractionOrchestrator {
 
 // Re-export useful types and functions
 export { extractFromSource } from './tree-sitter';
+export { extractWithDeferredGrammarLoad, missingKernelDeferredGrammar } from './deferred-grammar';
+export { filterKernelRoutedLanguages, isKernelOnlyLanguageSet, DEFER_ELIGIBLE_LANGUAGES } from './kernel';
 export { detectLanguage, isSourceFile, isLanguageSupported, isGrammarLoaded, getSupportedLanguages, initGrammars, loadGrammarsForLanguages, loadAllGrammars } from './grammars';
