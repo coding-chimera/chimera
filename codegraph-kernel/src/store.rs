@@ -199,8 +199,8 @@
 #![allow(clippy::too_many_arguments)]
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use napi::bindgen_prelude::*;
@@ -540,7 +540,7 @@ impl<'a> Wire<'a> {
 // ---------------------------------------------------------------------------
 
 #[derive(Default, Clone, Copy)]
-struct Stats {
+pub(crate) struct Stats {
     nodes_inserted: u32,
     nodes_skipped_invalid: u32,
     edges_inserted: u32,
@@ -1115,7 +1115,7 @@ fn exec_op(conn: &Connection, wire: &Wire, op: &OpView, stats: &mut Stats) -> Re
 // ---------------------------------------------------------------------------
 
 
-struct StoreConn {
+pub(crate) struct StoreConn {
     /// `None` after `store_close` — the connection is released
     /// DETERMINISTICALLY at the TS dispose seam (R1 no-unpaired-resources
     /// discipline); the JS GC finalizer (Drop) is only the crash fallback.
@@ -1125,15 +1125,35 @@ struct StoreConn {
     /// Adapter-parity transaction depth: nested units JOIN the outer one
     /// (plain BEGIN/COMMIT, no savepoints — sqlite-adapter.ts semantics).
     txn_depth: u32,
+    /// R3b commit generation: bumped once per COMMITTED outer transaction
+    /// unit. Shared with any resolver_ctx handle opened on this store so its
+    /// caches (8 LRUs + knownNames/knownFiles) invalidate lazily instead of
+    /// rebuilding on every resolveAll. WRITE-VIA-THIS-HANDLE only: writes
+    /// through the TS QueryBuilder arm (e.g. runPostExtract's updateNode)
+    /// never bump it — the TS bridge must call ctx_invalidate for those
+    /// (the clearCaches seam).
+    gen: Arc<AtomicU64>,
 }
 
+impl StoreConn {
+    /// R3b resolver_ctx symbiosis: where the ctx handle opens its own
+    /// read connection.
+    pub(crate) fn db_path(&self) -> &str {
+        &self.db_path
+    }
+
+    /// The commit-generation counter shared with resolver_ctx handles.
+    pub(crate) fn generation(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.gen)
+    }
+}
 fn closed_err() -> Error {
     Error::from_reason("store handle is closed")
 }
 
 impl StoreConn {
     /// The live connection, or a hard error after store_close.
-    fn conn(&self) -> Result<&Connection> {
+    pub(crate) fn conn(&self) -> Result<&Connection> {
         self.conn.as_ref().ok_or_else(closed_err)
     }
 
@@ -1158,7 +1178,7 @@ impl StoreConn {
                 "store_open: {db_path} is missing the graph schema (found {tables}/4 core tables) — initialize it TS-side first"
             )));
         }
-        Ok(StoreConn { conn: Some(conn), db_path: db_path.to_string(), txn_depth: 0 })
+        Ok(StoreConn { conn: Some(conn), db_path: db_path.to_string(), txn_depth: 0, gen: Arc::new(AtomicU64::new(0)) })
     }
 
     /// One atomic unit; nested calls JOIN (depth counter, TS adapter parity).
@@ -1180,6 +1200,9 @@ impl StoreConn {
         match out {
             Ok(v) => {
                 self.conn()?.execute_batch("COMMIT").map_err(err)?;
+                // R3b: the committed unit changed DB state — invalidate any
+                // resolver_ctx caches keyed to this store (see `gen` docs).
+                self.gen.fetch_add(1, Ordering::Relaxed);
                 Ok(v)
             }
             Err(e) => {
@@ -1311,7 +1334,7 @@ pub struct StoreHandle {
 }
 
 impl StoreHandle {
-    fn with_conn<T>(&self, f: impl FnOnce(&mut StoreConn) -> Result<T>) -> Result<T> {
+    pub(crate) fn with_conn<T>(&self, f: impl FnOnce(&mut StoreConn) -> Result<T>) -> Result<T> {
         if self.poisoned.load(Ordering::Relaxed) {
             return Err(Error::from_reason("store handle is poisoned by an earlier panic; reopen it"));
         }
@@ -1376,7 +1399,7 @@ pub struct RawBufs<'a> {
 /// insertNodes (whole node table) as one transaction unit. Returns the rows
 /// INSERT OR REPLACE'd (invalid rows are skipped and NOT counted —
 /// QueryBuilder.insertNode validation parity).
-fn insert_nodes_core(c: &mut StoreConn, b: RawBufs) -> Result<u32> {
+pub(crate) fn insert_nodes_core(c: &mut StoreConn, b: RawBufs) -> Result<u32> {
     let wire = Wire::decode(b.meta, b.nodes, b.edges, b.refs, b.arena)?;
     let mut stats = Stats::default();
     let range = 0..wire.node_count;
@@ -1387,7 +1410,7 @@ fn insert_nodes_core(c: &mut StoreConn, b: RawBufs) -> Result<u32> {
 /// insertEdges (whole edge table, dangling-endpoint filtered) as one
 /// transaction unit. Returns rows actually inserted (INSERT OR IGNORE
 /// changes — identity-deduped rows are not counted).
-fn insert_edges_core(c: &mut StoreConn, b: RawBufs) -> Result<u32> {
+pub(crate) fn insert_edges_core(c: &mut StoreConn, b: RawBufs) -> Result<u32> {
     let wire = Wire::decode(b.meta, b.nodes, b.edges, b.refs, b.arena)?;
     let mut stats = Stats::default();
     let range = 0..wire.edge_count;
@@ -1397,7 +1420,7 @@ fn insert_edges_core(c: &mut StoreConn, b: RawBufs) -> Result<u32> {
 
 /// insertUnresolvedRefsBatch (whole ref table) as one transaction unit.
 /// Returns rows inserted (status defaults to 'pending').
-fn insert_refs_core(c: &mut StoreConn, b: RawBufs) -> Result<u32> {
+pub(crate) fn insert_refs_core(c: &mut StoreConn, b: RawBufs) -> Result<u32> {
     let wire = Wire::decode(b.meta, b.nodes, b.edges, b.refs, b.arena)?;
     let mut stats = Stats::default();
     let range = 0..wire.ref_count;
@@ -1410,7 +1433,7 @@ fn insert_refs_core(c: &mut StoreConn, b: RawBufs) -> Result<u32> {
 /// delete — the resurrect-first removal path (removeFileResurrectingRefs,
 /// #1240) is OP_DELETE_FILE with DELETE_FILE_FLAG_RESURRECT inside
 /// commit_batch; TS callers must pick the matching semantics.
-fn delete_file_core(c: &mut StoreConn, path: &str) -> Result<()> {
+pub(crate) fn delete_file_core(c: &mut StoreConn, path: &str) -> Result<()> {
     c.transaction(|conn| {
         let mut stats = Stats::default();
         sql_delete_file(conn, path, &mut stats).map_err(err)
@@ -1423,7 +1446,7 @@ fn delete_file_core(c: &mut StoreConn, path: &str) -> Result<()> {
 /// Includes the full OP_STORE_FILE_RESULT resurrect orchestration. Any op
 /// failure rolls the WHOLE batch back. Returns the counters plus the WAL
 /// watermark so the TS layer keeps backpressure authority (R3 §5 risk 3).
-fn commit_batch_core(c: &mut StoreConn, b: RawBufs) -> Result<(Stats, u32)> {
+pub(crate) fn commit_batch_core(c: &mut StoreConn, b: RawBufs) -> Result<(Stats, u32)> {
     let wire = Wire::decode(b.meta, b.nodes, b.edges, b.refs, b.arena)?;
     let views: Vec<OpView> = (0..wire.op_count).map(|i| wire.op(i)).collect::<Result<_>>()?;
     let mut stats = Stats::default();
@@ -1504,7 +1527,7 @@ pub fn store_set_wal_autocheckpoint(handle: &StoreHandle, pages: u32) -> Result<
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod wire_build {
+pub(crate) mod wire_build {
     use super::*;
 
     pub struct Builder {
