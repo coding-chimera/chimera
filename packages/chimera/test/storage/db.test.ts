@@ -40,3 +40,17 @@ describe("Database migrations", () => {
     expect(columns.some((column) => column.name === "share_url")).toBe(true)
   })
 })
+
+describe("Database WAL governance", () => {
+  test("journal_size_limit is applied on the main connection", () => {
+    const row = Database.Client().$client.prepare("PRAGMA journal_size_limit").get() as {
+      journal_size_limit: number
+    }
+    expect(row.journal_size_limit).toBe(64 * 1024 * 1024)
+  })
+
+  test("periodic WAL checkpoint timer is armed with the client", () => {
+    Database.Client()
+    expect(Database.walCheckpointTimerRunning()).toBe(true)
+  })
+})
