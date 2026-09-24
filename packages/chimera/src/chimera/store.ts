@@ -732,18 +732,97 @@ function factFromStorageRow(db: ChimeraDb, row: Pick<ChangeFactRow, "payload_jso
   return hydrateFactFromSemanticSnapshots(db, evidence ? { ...payload, evidence } : payload)
 }
 
+// (T0-2) Bounded pooled connections for the chimera store surface. Every
+// withDb/withReadOnlyDb call used to open and close a fresh
+// DatabaseConnection (29 call sites — one per audit record, oracle result,
+// edit-intent poll, ...): each open re-runs pragma setup, the extension
+// migration check, and the oversized-WAL heal stat; each close churns an
+// fd. The pool keys by mode+dbPath — dbPath derives from the project root,
+// so distinct project roots get distinct entries and readOnly
+// cross-project reads never share an entry with a writable one. Entries
+// are reused while open and LRU-evicted past the cap: same shape as the
+// graph-state LRU in provenance.ts (R1 A4), but eviction happens on
+// insert only — no idle timer, no unbounded timers. fn callbacks are
+// synchronous (bun:sqlite), so a single connection per key can never be
+// interleaved by concurrent callers.
+const STORE_CONNECTION_POOL_MAX = 16
+const storeConnections = new Map<string, DatabaseConnection>()
+
+function storeConnectionKey(dbPath: string, readOnly: boolean) {
+  return `${readOnly ? "ro" : "rw"}\u0000${dbPath}`
+}
+
+function acquireStoreConnection(dbPath: string, readOnly: boolean) {
+  const key = storeConnectionKey(dbPath, readOnly)
+  const existing = storeConnections.get(key)
+  if (existing) {
+    if (existing.isOpen()) {
+      // Re-insert to refresh LRU position (Map iterates in insertion order).
+      storeConnections.delete(key)
+      storeConnections.set(key, existing)
+      return existing
+    }
+    storeConnections.delete(key)
+  }
+  const connection = DatabaseConnection.open(dbPath, { readOnly, storageExtensions: [CHIMERA_STORAGE_EXTENSION] })
+  while (storeConnections.size >= STORE_CONNECTION_POOL_MAX) {
+    const oldest = storeConnections.keys().next()
+    if (oldest.done) break
+    const evicted = storeConnections.get(oldest.value)
+    storeConnections.delete(oldest.value)
+    try {
+      evicted?.close()
+    } catch {
+      // already gone — dropping the map entry is what matters
+    }
+  }
+  storeConnections.set(key, connection)
+  return connection
+}
+
+function releaseStoreConnection(dbPath: string, readOnly: boolean) {
+  const key = storeConnectionKey(dbPath, readOnly)
+  const connection = storeConnections.get(key)
+  if (!connection) return
+  storeConnections.delete(key)
+  try {
+    connection.close()
+  } catch {
+    // already gone — dropping the map entry is what matters
+  }
+}
+
+/** Test seam (T0-2): live pooled store connection count. */
+export function storeConnectionCount() {
+  return storeConnections.size
+}
+
+/** Close every pooled store connection (test cleanup / host teardown). */
+export function closeStoreConnections() {
+  const connections = [...storeConnections.values()]
+  storeConnections.clear()
+  for (const connection of connections) {
+    try {
+      connection.close()
+    } catch {
+      // already gone — the pool is cleared regardless
+    }
+  }
+}
+
 async function withDb<T>(projectRoot: string, fn: (db: ChimeraDb, dbPath: string) => T) {
   const dbPath = databaseStorePath(projectRoot)
   if (!(await Bun.file(dbPath).exists())) return undefined
   try {
-    const connection = DatabaseConnection.open(dbPath, { storageExtensions: [CHIMERA_STORAGE_EXTENSION] })
-    try {
-      const db = connection.getDb()
-      return fn(db, dbPath)
-    } finally {
-      connection.close()
-    }
+    const connection = acquireStoreConnection(dbPath, false)
+    return fn(connection.getDb(), dbPath)
   } catch {
+    // Evict on any error so a poisoned connection (corrupt image, external
+    // close, broken file handle) never sticks and silently degrades every
+    // later call to undefined; the next call reopens fresh. fn-level
+    // business errors land here too — rare on this surface, and one reopen
+    // is cheaper than a stuck entry.
+    releaseStoreConnection(dbPath, false)
     return undefined
   }
 }
@@ -752,13 +831,10 @@ async function withReadOnlyDb<T>(projectRoot: string, fn: (db: ChimeraDb, dbPath
   const dbPath = databaseStorePath(projectRoot)
   if (!(await Bun.file(dbPath).exists())) return undefined
   try {
-    const connection = DatabaseConnection.open(dbPath, { readOnly: true, storageExtensions: [CHIMERA_STORAGE_EXTENSION] })
-    try {
-      return fn(connection.getDb(), dbPath)
-    } finally {
-      connection.close()
-    }
+    const connection = acquireStoreConnection(dbPath, true)
+    return fn(connection.getDb(), dbPath)
   } catch {
+    releaseStoreConnection(dbPath, true)
     return undefined
   }
 }
@@ -816,8 +892,28 @@ function unique(items: string[]) {
   return [...new Set(items)]
 }
 
+// (T0-2) Per-connection prepared-statement cache for the semantic-snapshot
+// write loops, which used to prepare the same INSERT once per object/per
+// ref row. Keys are code-literal SQL (a bounded set), never user data, so
+// the cache cannot grow unboundedly; the WeakMap ties cache lifetime to
+// the connection object, and pooled connections reuse their statements
+// across calls.
+const preparedStatements = new WeakMap<ChimeraDb, Map<string, ReturnType<typeof prepareOn>>>()
+
+function prepareOn(db: ChimeraDb, sql: string) {
+  return db.prepare(sql)
+}
+
+function cachedPrepare(db: ChimeraDb, sql: string) {
+  const cache = preparedStatements.get(db) ?? new Map<string, ReturnType<typeof prepareOn>>()
+  preparedStatements.set(db, cache)
+  const statement = cache.get(sql) ?? prepareOn(db, sql)
+  cache.set(sql, statement)
+  return statement
+}
+
 function writeSemanticObject(db: ChimeraDb, object: SemanticObjectRecord, createdAt: string) {
-  db.prepare(`
+  cachedPrepare(db, `
     INSERT OR IGNORE INTO chimera_semantic_object (
       hash,
       kind,
@@ -850,7 +946,7 @@ function writeSemanticSnapshot(input: {
   if (refs.length === 0) return undefined
   const rootHash = semanticSnapshotRootHash(refs)
   const id = semanticSnapshotID(input.eventID, input.side, rootHash)
-  input.db.prepare(`
+  cachedPrepare(input.db, `
     INSERT OR REPLACE INTO chimera_semantic_snapshot (
       id,
       event_id,
@@ -875,9 +971,9 @@ function writeSemanticSnapshot(input: {
     null,
     input.createdAt,
   )
-  input.db.prepare("DELETE FROM chimera_semantic_snapshot_ref WHERE snapshot_id = ?").run(id)
+  cachedPrepare(input.db, "DELETE FROM chimera_semantic_snapshot_ref WHERE snapshot_id = ?").run(id)
   for (const ref of refs) {
-    input.db.prepare(`
+    cachedPrepare(input.db, `
       INSERT INTO chimera_semantic_snapshot_ref (
         snapshot_id,
         object_hash,

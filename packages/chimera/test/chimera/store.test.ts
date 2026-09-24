@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import fs from "fs/promises"
 import path from "path"
 import { DatabaseConnection, getDatabasePath, type FrozenRelation, type FrozenSemanticObject } from "@/graph"
-import { appendProvenanceRecord, CHIMERA_STORAGE_EXTENSION, compactCommittedChangeEvidence, currentHostBootID, readChangeFacts, readCommitChangeSummaries, readEditIntentWaiters, readPersistentObligationStore, recordOracleResult, registerEditIntentWaiter, writeChangeFacts } from "../../src/chimera/store"
+import { appendProvenanceRecord, CHIMERA_STORAGE_EXTENSION, closeStoreConnections, compactCommittedChangeEvidence, currentHostBootID, readChangeFacts, readCommitChangeSummaries, readEditIntentWaiters, readPersistentObligationStore, readPersistentObligationStoreReadOnly, recordOracleResult, registerEditIntentWaiter, storeConnectionCount, writeChangeFacts } from "../../src/chimera/store"
 import type { ChangeFact } from "../../src/chimera/change-classifier"
 import type { ToolMutationRecord } from "../../src/chimera/provenance"
 import { tmpdir } from "../fixture/fixture"
@@ -526,6 +526,59 @@ describe("Chimera store", () => {
       expect(row.count).toBe(1)
     } finally {
       db.close()
+    }
+  })
+})
+
+describe("Chimera store connection pool (T0-2)", () => {
+  test("withDb/withReadOnlyDb reuse pooled connections instead of open/close per call", async () => {
+    await using tmp = await tmpdir()
+    DatabaseConnection.initialize(getDatabasePath(tmp.path)).close()
+    closeStoreConnections()
+    try {
+      // Writable path: repeated calls must not grow the pool.
+      await readCommitChangeSummaries(tmp.path)
+      expect(storeConnectionCount()).toBe(1)
+      await readCommitChangeSummaries(tmp.path)
+      await appendProvenanceRecord(
+        tmp.path,
+        path.join(tmp.path, ".codegraph", "chimera", "tool-provenance.jsonl"),
+        record(tmp.path),
+      )
+      await readCommitChangeSummaries(tmp.path)
+      expect(storeConnectionCount()).toBe(1)
+
+      // Read-only cross-project path keeps its own entry and never shares
+      // the writable one.
+      await readPersistentObligationStoreReadOnly(tmp.path, path.join(tmp.path, "obligations.json"), {
+        schemaVersion: 1,
+        obligations: [],
+      })
+      expect(storeConnectionCount()).toBe(2)
+      await readPersistentObligationStoreReadOnly(tmp.path, path.join(tmp.path, "obligations.json"), {
+        schemaVersion: 1,
+        obligations: [],
+      })
+      expect(storeConnectionCount()).toBe(2)
+
+      // The pooled writable connection still reads data written through it.
+      const summaries = await readCommitChangeSummaries(tmp.path)
+      expect(Array.isArray(summaries)).toBe(true)
+    } finally {
+      closeStoreConnections()
+    }
+    expect(storeConnectionCount()).toBe(0)
+  })
+
+  test("missing database file keeps returning undefined without pooling a connection", async () => {
+    await using tmp = await tmpdir()
+    closeStoreConnections()
+    try {
+      const summaries = await readCommitChangeSummaries(tmp.path)
+      expect(summaries).toEqual([])
+      expect(storeConnectionCount()).toBe(0)
+    } finally {
+      closeStoreConnections()
     }
   })
 })

@@ -106,6 +106,44 @@ function needsColumn(db: ReturnType<typeof init>, table: string, column: string)
   return db.$client.prepare("SELECT name FROM pragma_table_info(?) WHERE name = ?").all(table, column).length === 0
 }
 
+// (T0-2) Main-db WAL governance, aligned with the graph db precedent
+// (src/graph/db/index.ts journal_size_limit + healOversizedWal): without
+// journal_size_limit the -wal file never shrinks below its high-water mark
+// while the singleton connection lives — PASSIVE checkpoints fold frames
+// but keep the file at full size, and a long-lived server never takes the
+// clean-last-connection-close path that would delete it. With the limit
+// set, any checkpoint that resets the WAL truncates the file back down.
+const WAL_JOURNAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024
+// Periodic PASSIVE checkpoint safety net: SQLite's own wal_autocheckpoint
+// can repeatedly no-op while readers pin the WAL, so a long-lived process
+// needs a gentle tick of its own to fold frames back. The timer is unref'd
+// (it must never hold a short-lived CLI process open) and strictly paired
+// with the Client lifecycle — armed once per Client init, cleared in
+// close() — so no unbounded timer outlives the database (R1 pairing
+// discipline).
+const WAL_CHECKPOINT_INTERVAL_MS = 5 * 60 * 1000
+let walCheckpointTimer: ReturnType<typeof setInterval> | undefined
+
+function startWalCheckpointTimer() {
+  if (walCheckpointTimer) return
+  walCheckpointTimer = setInterval(() => {
+    if (!Client.loaded()) return
+    try {
+      Client().run("PRAGMA wal_checkpoint(PASSIVE)")
+    } catch (error) {
+      log.warn("periodic wal_checkpoint(PASSIVE) failed", {
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }, WAL_CHECKPOINT_INTERVAL_MS)
+  walCheckpointTimer.unref()
+}
+
+/** Test seam (T0-2): whether the periodic WAL checkpoint timer is armed. */
+export function walCheckpointTimerRunning() {
+  return walCheckpointTimer !== undefined
+}
+
 export const Client = lazy(() => {
   log.info("opening database", { path: Path })
 
@@ -116,7 +154,9 @@ export const Client = lazy(() => {
   db.run("PRAGMA busy_timeout = 5000")
   db.run("PRAGMA cache_size = -64000")
   db.run("PRAGMA foreign_keys = ON")
+  db.run(`PRAGMA journal_size_limit = ${WAL_JOURNAL_SIZE_LIMIT_BYTES}`)
   db.run("PRAGMA wal_checkpoint(PASSIVE)")
+  startWalCheckpointTimer()
 
   // Apply schema migrations
   const entries =
@@ -140,6 +180,10 @@ export const Client = lazy(() => {
 })
 
 export function close() {
+  if (walCheckpointTimer) {
+    clearInterval(walCheckpointTimer)
+    walCheckpointTimer = undefined
+  }
   if (!Client.loaded()) return
   Client().$client.close()
   Client.reset()
