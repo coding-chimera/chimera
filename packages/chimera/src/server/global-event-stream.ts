@@ -190,16 +190,18 @@ const frameEncoder = new TextEncoder()
  * encoding here once per event batch and fanning the same bytes out to every
  * connection keeps the wire contract byte-for-byte.
  */
-function encodeFrame(event: GlobalEvent): Uint8Array {
+function encodeFrame(event: GlobalEvent, serialize: (event: GlobalEvent) => string): Uint8Array {
   return frameEncoder.encode(
     Sse.encoder.write({
       _tag: "Event",
       event: "message",
       id: undefined,
-      data: JSON.stringify(event),
+      data: serialize(event),
     }),
   )
 }
+
+const defaultSerialize = (event: GlobalEvent) => JSON.stringify(event)
 
 export interface SharedGlobalEventStreamOptions {
   capacity?: number
@@ -214,6 +216,13 @@ export interface SharedGlobalEventStreamOptions {
    * can reject the connection (429).
    */
   maxConnections?: number
+  /**
+   * Test seam: replaces the JSON serializer used by the hub's single encode
+   * step so tests can count per-hub serializations without spying on the
+   * process-wide `JSON.stringify` (other live consumers — legacy Hono SSE
+   * connections, other hubs — legitimately serialize the same events).
+   */
+  serialize?: (event: GlobalEvent) => string
 }
 
 export interface SharedFrameSubscription {
@@ -239,6 +248,8 @@ export function createSharedGlobalEventStream(options: SharedGlobalEventStreamOp
   const mergeWindowMs = options.deltaMergeWindowMs ?? DELTA_MERGE_WINDOW_MS
   const heartbeatIntervalMs = options.heartbeatIntervalMs ?? HEARTBEAT_INTERVAL_MS
   const startTimeoutMs = options.startTimeoutMs ?? START_TIMEOUT_MS
+  const serialize = options.serialize ?? defaultSerialize
+  const encode = (event: GlobalEvent) => encodeFrame(event, serialize)
 
   const connections = new Set<{ queue: AsyncQueue<Uint8Array | null> }>()
   const pending = new Map<string, PendingDelta>()
@@ -255,7 +266,7 @@ export function createSharedGlobalEventStream(options: SharedGlobalEventStreamOp
     if (pending.size === 0) return
     const batch = [...pending.values()]
     pending.clear()
-    for (const item of batch) broadcast(encodeFrame(item.merged > 1 ? mergedDeltaEvent(item) : item.event))
+    for (const item of batch) broadcast(encode(item.merged > 1 ? mergedDeltaEvent(item) : item.event))
   }
 
   const handler = (event: GlobalEvent) => {
@@ -263,12 +274,12 @@ export function createSharedGlobalEventStream(options: SharedGlobalEventStreamOp
     // a delta must be ordered after the deltas already buffered for that part.
     if (event.payload?.type !== DELTA_EVENT_TYPE) {
       flush()
-      broadcast(encodeFrame(event))
+      broadcast(encode(event))
       return
     }
     const key = mergeWindowMs > 0 ? deltaKey(event) : undefined
     if (!key) {
-      broadcast(encodeFrame(event))
+      broadcast(encode(event))
       return
     }
     const existing = pending.get(key)
@@ -329,11 +340,11 @@ export function createSharedGlobalEventStream(options: SharedGlobalEventStreamOp
     if (heartbeatIntervalMs > 0) {
       heartbeat = setInterval(() => {
         flush()
-        queue.push(encodeFrame(controlEvent(Event.Heartbeat.type, {})))
+        queue.push(encode(controlEvent(Event.Heartbeat.type, {})))
       }, heartbeatIntervalMs)
     }
 
-    queue.push(encodeFrame(controlEvent(Event.Connected.type, {})))
+    queue.push(encode(controlEvent(Event.Connected.type, {})))
 
     if (startTimeoutMs > 0) {
       startWatchdog = setTimeout(() => {
@@ -353,7 +364,7 @@ export function createSharedGlobalEventStream(options: SharedGlobalEventStreamOp
           const dropped = queue.dropped - reportedDropped
           if (dropped > 0) {
             reportedDropped = queue.dropped
-            yield encodeFrame(controlEvent(Event.Gap.type, { dropped }))
+            yield encode(controlEvent(Event.Gap.type, { dropped }))
           }
 
           yield frame
