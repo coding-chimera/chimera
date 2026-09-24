@@ -23,6 +23,8 @@ import { safeJsonParse } from '../utils';
 import { buildSearchText, kindBonus, nameMatchBonus, scorePathRelevance, splitIdentifierWords } from '../search/query-utils';
 import { parseQuery, boundedEditDistance } from '../search/query-parser';
 import { isGeneratedFile } from '../extraction/generated-detection';
+import { isStoreWireError, StoreDowngradeSignal, type RecordedOp, type StoreBridge } from '../store/bridge';
+import { storeDebug } from '../store/loader';
 
 /**
  * Path-only heuristic for files that should not be candidates for
@@ -336,6 +338,29 @@ function applyFinalWindowQuota(
  */
 export class QueryBuilder {
   private db: SqliteDatabase;
+  /**
+   * R3a native store bridge (OPTIONAL attachment — the TS write path below is
+   * the permanent fallback arm and the only arm when this is null). When
+   * attached and live (module loaded, contract verified, CODEGRAPH_STORE kill
+   * switch off), covered writes route through store_commit_batch:
+   *   - inside transaction(): recorded into a deferred op log and flushed as
+   *     ONE native transaction at the outermost commit (fusion upgrades the
+   *     two canonical shapes to OP_STORE_FILE_RESULT / OP_DELETE_FILE+
+   *     RESURRECT — see store/bridge.ts);
+   *   - standalone: one single-op native commit.
+   * ANY native failure falls back to the TS implementations transparently.
+   * Thread discipline (v1): the synchronous napi calls run on the caller's
+   * thread — the main thread, same as today's bun:sqlite/node:sqlite writes
+   * (parent's formal amendment to R3_PROPOSAL §2 acceptance #4; worker-thread
+   * migration is a recorded follow-up).
+   */
+  private store: StoreBridge | null;
+  /** Active native recording transaction (null = not recording). */
+  private rec: { depth: number; ops: RecordedOp[] } | null = null;
+  /** Depth of TS-arm transactions opened by transaction() — covered writes
+   *  must never route natively while one is open (dual-connection discipline:
+   *  no Rust commit against an open TS write lock). */
+  private tsTxnDepth = 0;
 
   // Node cache for frequently accessed nodes (LRU-style, max 1000 entries)
   private nodeCache: Map<string, Node> = new Map();
@@ -380,8 +405,25 @@ export class QueryBuilder {
     getRoutingManifest?: SqliteStatement;
   } = {};
 
-  constructor(db: SqliteDatabase) {
+  constructor(db: SqliteDatabase, store?: StoreBridge | null) {
     this.db = db;
+    this.store = store ?? null;
+  }
+
+  /**
+   * Attach (or detach, with null) the R3a native store bridge. The bridge
+   * must be opened against the SAME database file this QueryBuilder's
+   * connection uses (StoreBridge.open(dbPath) — dbPath from
+   * DatabaseConnection.getPath()). Attachment is opt-in: production callers
+   * wire it explicitly; a null bridge leaves every write on the TS arm.
+   */
+  attachStore(bridge: StoreBridge | null): void {
+    this.store = bridge;
+  }
+
+  /** The attached bridge (test/harness introspection). */
+  getStoreBridge(): StoreBridge | null {
+    return this.store;
   }
 
   /**
@@ -391,9 +433,134 @@ export class QueryBuilder {
    * insertUnresolvedRefsBatch …) stay atomic together — the fork adaptation
    * of upstream 58c07e874's replace-in-one-transaction rule: a failure
    * anywhere in the unit rolls ALL of it back.
+   *
+   * R3a: when the native store bridge is live, the unit is RECORDED instead
+   * of executed — covered writes append to a deferred op log, and the
+   * outermost commit flushes the log as one store_commit_batch (one native
+   * BEGIN/COMMIT; fusion maps the canonical extraction/removal shapes to
+   * OP_STORE_FILE_RESULT / OP_DELETE_FILE+RESURRECT). Reads inside the unit
+   * still run on the TS connection against committed state — the canonical
+   * producers read only BEFORE their first write, which is the contract
+   * this mode relies on. Escape hatches, all TS-arm preserving:
+   *   - an uncovered write throws StoreDowngradeSignal → the deferred log is
+   *     discarded (nothing was written) and the WHOLE unit re-runs on TS;
+   *   - a native flush failure replays the log through the TS
+   *     implementations inside a TS transaction (SQL errors surface from
+   *     that replay exactly as the pure-TS arm would — the BUSY-retry
+   *     contract of commitExtractionResult is preserved);
+   *   - kill switch off / no bridge / detached → the original TS path.
    */
   transaction<T>(fn: () => T): T {
-    return this.db.transaction(fn)();
+    if (this.rec) {
+      // Nested unit JOINs the outer recording (adapter parity).
+      this.rec.depth++;
+      try {
+        return fn();
+      } finally {
+        this.rec.depth--;
+      }
+    }
+    if (!this.store?.live()) {
+      this.tsTxnDepth++;
+      try {
+        return this.db.transaction(fn)();
+      } finally {
+        this.tsTxnDepth--;
+      }
+    }
+    const rec = { depth: 1, ops: [] as RecordedOp[] };
+    this.rec = rec;
+    let out: T;
+    try {
+      out = fn();
+    } catch (error) {
+      this.rec = null;
+      if (error instanceof StoreDowngradeSignal) {
+        storeDebug(error.message);
+        this.tsTxnDepth++;
+        try {
+          return this.db.transaction(fn)();
+        } finally {
+          this.tsTxnDepth--;
+        }
+      }
+      // Native mode deferred every write — nothing to roll back.
+      throw error;
+    }
+    this.rec = null;
+    if (rec.ops.length === 0) return out;
+    try {
+      this.store.commit(rec.ops);
+      return out;
+    } catch (err) {
+      this.handleStoreFailure(err);
+      // Replay the deferred log on the TS arm (one transaction). A SQL-level
+      // failure rethrows from here — the caller's error contract (e.g. the
+      // BUSY retry in commitExtractionResult) sees exactly what the pure-TS
+      // arm would have thrown.
+      this.tsTxnDepth++;
+      try {
+        return this.db.transaction(() => {
+          for (const op of rec.ops) this.replayOpTs(op);
+          return out;
+        })();
+      } finally {
+        this.tsTxnDepth--;
+      }
+    }
+  }
+
+  /** True when a standalone covered write may route through the bridge. */
+  private storeRouteActive(): boolean {
+    return !this.rec && this.tsTxnDepth === 0 && this.store?.live() === true;
+  }
+
+  /** Log a native failure; wire-shaped errors already disabled the bridge. */
+  private handleStoreFailure(err: unknown): void {
+    const msg = err instanceof Error ? err.message : String(err);
+    storeDebug(`native store write failed${isStoreWireError(err) ? ' (bridge disabled)' : ''} — falling back to the TS arm: ${msg}`);
+  }
+
+  /** nodeCache eviction mirroring deleteNodesByFile (bridge write paths). */
+  private evictFileNodeCache(filePath: string): void {
+    for (const [id, node] of this.nodeCache) {
+      if (node.filePath === filePath) this.nodeCache.delete(id);
+    }
+  }
+
+  /** Uncovered-write guard: abort native recording, re-run the unit on TS. */
+  private uncoveredWrite(name: string): void {
+    if (this.rec) throw new StoreDowngradeSignal(`${name} is not covered by the store bridge`);
+  }
+
+  /** Replay one recorded op through the ORIGINAL TS implementations. */
+  private replayOpTs(op: RecordedOp): void {
+    switch (op.kind) {
+      case 'insertNodes':
+        this.insertNodesTs(op.nodes);
+        break;
+      case 'insertEdges':
+        this.insertEdgesTs(op.edges);
+        break;
+      case 'insertRefs':
+        this.insertUnresolvedRefsBatchTs(op.refs);
+        break;
+      case 'upsertFile':
+        this.upsertFileTs(op.file);
+        break;
+      case 'deleteFile':
+        this.deleteFileTs(op.path);
+        break;
+      case 'deleteUnresolvedByIds':
+        this.deleteUnresolvedReferencesByIdsTs(op.ids);
+        break;
+      case 'deleteResolvedTriples':
+        this.deleteSpecificResolvedReferencesTs(op.refs);
+        break;
+      case 'markRefsFailed':
+        this.markReferencesFailedTs(op.refs);
+        break;
+    }
   }
 
   // ===========================================================================
@@ -401,9 +568,30 @@ export class QueryBuilder {
   // ===========================================================================
 
   /**
-   * Insert a new node
+   * Insert a new node. R3a: routes through the store bridge when live
+   * (the Rust validity guard skips rows missing required fields exactly
+   * like the TS validation below — without the console.error noise).
    */
   insertNode(node: Node): void {
+    if (this.rec) {
+      this.nodeCache.delete(node.id);
+      this.rec.ops.push({ kind: 'insertNodes', nodes: [node] });
+      return;
+    }
+    if (this.storeRouteActive()) {
+      this.nodeCache.delete(node.id);
+      try {
+        this.store!.commit([{ kind: 'insertNodes', nodes: [node] }], false);
+        return;
+      } catch (err) {
+        this.handleStoreFailure(err);
+      }
+    }
+    this.insertNodeTs(node);
+  }
+
+  /** TS implementation of insertNode (permanent fallback arm). */
+  private insertNodeTs(node: Node): void {
     if (!this.stmts.insertNode) {
       this.stmts.insertNode = this.db.prepare(`
         INSERT OR REPLACE INTO nodes (
@@ -471,9 +659,28 @@ export class QueryBuilder {
    * Insert multiple nodes in a transaction
    */
   insertNodes(nodes: Node[]): void {
+    if (this.rec) {
+      for (const node of nodes) this.nodeCache.delete(node.id);
+      this.rec.ops.push({ kind: 'insertNodes', nodes });
+      return;
+    }
+    if (this.storeRouteActive() && nodes.length > 0) {
+      for (const node of nodes) this.nodeCache.delete(node.id);
+      try {
+        this.store!.commit([{ kind: 'insertNodes', nodes }], false);
+        return;
+      } catch (err) {
+        this.handleStoreFailure(err);
+      }
+    }
+    this.insertNodesTs(nodes);
+  }
+
+  /** TS implementation of insertNodes (permanent fallback arm). */
+  private insertNodesTs(nodes: Node[]): void {
     this.db.transaction(() => {
       for (const node of nodes) {
-        this.insertNode(node);
+        this.insertNodeTs(node);
       }
     })();
   }
@@ -482,6 +689,7 @@ export class QueryBuilder {
    * Update an existing node
    */
   updateNode(node: Node): void {
+    this.uncoveredWrite('updateNode');
     if (!this.stmts.updateNode) {
       this.stmts.updateNode = this.db.prepare(`
         UPDATE nodes SET
@@ -550,6 +758,7 @@ export class QueryBuilder {
    * Delete a node by ID
    */
   deleteNode(id: string): void {
+    this.uncoveredWrite('deleteNode');
     if (!this.stmts.deleteNode) {
       this.stmts.deleteNode = this.db.prepare('DELETE FROM nodes WHERE id = ?');
     }
@@ -562,6 +771,7 @@ export class QueryBuilder {
    * Delete all nodes for a file
    */
   deleteNodesByFile(filePath: string): void {
+    this.uncoveredWrite('deleteNodesByFile');
     if (!this.stmts.deleteNodesByFile) {
       this.stmts.deleteNodesByFile = this.db.prepare('DELETE FROM nodes WHERE file_path = ?');
     }
@@ -1609,6 +1819,11 @@ export class QueryBuilder {
    * Insert a new edge
    */
   insertEdge(edge: Edge): void {
+    // Uncovered by the store bridge: the raw single-row INSERT OR IGNORE has
+    // NO dangling-endpoint filter, while the native OP_INSERT_EDGES always
+    // applies getExistingNodeIds semantics — routing a bare insertEdge would
+    // silently drop edges the TS arm keeps.
+    this.uncoveredWrite('insertEdge');
     if (!this.stmts.insertEdge) {
       this.stmts.insertEdge = this.db.prepare(`
         INSERT OR IGNORE INTO edges (source, target, kind, metadata, line, col, provenance)
@@ -1628,9 +1843,29 @@ export class QueryBuilder {
   }
 
   /**
-   * Insert multiple edges in a transaction
+   * Insert multiple edges in a transaction. R3a: routes through the store
+   * bridge when live — the native OP_INSERT_EDGES applies the same
+   * dangling-endpoint filter (getExistingNodeIds, chunk 500) server-side.
    */
   insertEdges(edges: Edge[]): void {
+    if (edges.length === 0) return;
+    if (this.rec) {
+      this.rec.ops.push({ kind: 'insertEdges', edges });
+      return;
+    }
+    if (this.storeRouteActive()) {
+      try {
+        this.store!.commit([{ kind: 'insertEdges', edges }], false);
+        return;
+      } catch (err) {
+        this.handleStoreFailure(err);
+      }
+    }
+    this.insertEdgesTs(edges);
+  }
+
+  /** TS implementation of insertEdges (permanent fallback arm). */
+  private insertEdgesTs(edges: Edge[]): void {
     if (edges.length === 0) return;
 
     this.db.transaction(() => {
@@ -1654,6 +1889,7 @@ export class QueryBuilder {
    * Delete all edges from a source node
    */
   deleteEdgesBySource(sourceId: string): void {
+    this.uncoveredWrite('deleteEdgesBySource');
     if (!this.stmts.deleteEdgesBySource) {
       this.stmts.deleteEdgesBySource = this.db.prepare('DELETE FROM edges WHERE source = ?');
     }
@@ -1667,6 +1903,7 @@ export class QueryBuilder {
    * and must survive — hence the target-kind filter.
    */
   deleteFileLevelImportEdgesBySource(sourceId: string): void {
+    this.uncoveredWrite('deleteFileLevelImportEdgesBySource');
     if (!this.stmts.deleteFileLevelImportEdgesBySource) {
       this.stmts.deleteFileLevelImportEdgesBySource = this.db.prepare(
         "DELETE FROM edges WHERE source = ? AND kind = 'imports'"
@@ -1762,6 +1999,23 @@ export class QueryBuilder {
    * Insert or update a file record
    */
   upsertFile(file: FileRecord): void {
+    if (this.rec) {
+      this.rec.ops.push({ kind: 'upsertFile', file });
+      return;
+    }
+    if (this.storeRouteActive()) {
+      try {
+        this.store!.commit([{ kind: 'upsertFile', file }], false);
+        return;
+      } catch (err) {
+        this.handleStoreFailure(err);
+      }
+    }
+    this.upsertFileTs(file);
+  }
+
+  /** TS implementation of upsertFile (permanent fallback arm). */
+  private upsertFileTs(file: FileRecord): void {
     if (!this.stmts.upsertFile) {
       this.stmts.upsertFile = this.db.prepare(`
         INSERT INTO files (path, content_hash, language, size, modified_at, indexed_at, node_count, errors)
@@ -1793,6 +2047,28 @@ export class QueryBuilder {
    * Delete a file record and its nodes
    */
   deleteFile(filePath: string): void {
+    if (this.rec) {
+      this.evictFileNodeCache(filePath);
+      this.rec.ops.push({ kind: 'deleteFile', path: filePath });
+      return;
+    }
+    if (this.storeRouteActive()) {
+      this.evictFileNodeCache(filePath);
+      try {
+        this.store!.commit([{ kind: 'deleteFile', path: filePath }], false);
+        return;
+      } catch (err) {
+        this.handleStoreFailure(err);
+      }
+    }
+    this.deleteFileTs(filePath);
+  }
+
+  /** TS implementation of deleteFile (permanent fallback arm). NOTE: the
+   *  plain cascade — the resurrect-first removal semantics live in the
+   *  orchestrator's removeFileResurrectingRefs transaction, which fusion
+   *  upgrades to OP_DELETE_FILE + DELETE_FILE_FLAG_RESURRECT. */
+  private deleteFileTs(filePath: string): void {
     this.db.transaction(() => {
       this.deleteNodesByFile(filePath);
       if (!this.stmts.deleteFile) {
@@ -1855,6 +2131,7 @@ export class QueryBuilder {
    * Insert or update CodeGraph-owned file semantic metadata.
    */
   upsertFileSemantic(record: FileSemanticRecord): void {
+    this.uncoveredWrite('upsertFileSemantic');
     if (!this.stmts.upsertFileSemantic) {
       this.stmts.upsertFileSemantic = this.db.prepare(`
         INSERT INTO file_semantics (
@@ -1911,6 +2188,7 @@ export class QueryBuilder {
    * Insert or update file semantic metadata in bounded transactions.
    */
   upsertFileSemantics(records: readonly FileSemanticRecord[], chunkSize = SQLITE_PARAM_CHUNK_SIZE): void {
+    this.uncoveredWrite('upsertFileSemantics');
     const size = Number.isFinite(chunkSize) ? Math.max(1, Math.floor(chunkSize)) : SQLITE_PARAM_CHUNK_SIZE;
     for (let i = 0; i < records.length; i += size) {
       const chunk = records.slice(i, i + size);
@@ -1950,6 +2228,23 @@ export class QueryBuilder {
    * Insert an unresolved reference
    */
   insertUnresolvedRef(ref: UnresolvedReference): void {
+    if (this.rec) {
+      this.rec.ops.push({ kind: 'insertRefs', refs: [ref] });
+      return;
+    }
+    if (this.storeRouteActive()) {
+      try {
+        this.store!.commit([{ kind: 'insertRefs', refs: [ref] }], false);
+        return;
+      } catch (err) {
+        this.handleStoreFailure(err);
+      }
+    }
+    this.insertUnresolvedRefTs(ref);
+  }
+
+  /** TS implementation of insertUnresolvedRef (permanent fallback arm). */
+  private insertUnresolvedRefTs(ref: UnresolvedReference): void {
     if (!this.stmts.insertUnresolved) {
       this.stmts.insertUnresolved = this.db.prepare(`
         INSERT INTO unresolved_refs (from_node_id, reference_name, reference_kind, line, col, candidates, file_path, language)
@@ -1974,9 +2269,27 @@ export class QueryBuilder {
    */
   insertUnresolvedRefsBatch(refs: UnresolvedReference[]): void {
     if (refs.length === 0) return;
+    if (this.rec) {
+      this.rec.ops.push({ kind: 'insertRefs', refs });
+      return;
+    }
+    if (this.storeRouteActive()) {
+      try {
+        this.store!.commit([{ kind: 'insertRefs', refs }], false);
+        return;
+      } catch (err) {
+        this.handleStoreFailure(err);
+      }
+    }
+    this.insertUnresolvedRefsBatchTs(refs);
+  }
+
+  /** TS implementation of insertUnresolvedRefsBatch (permanent fallback arm). */
+  private insertUnresolvedRefsBatchTs(refs: UnresolvedReference[]): void {
+    if (refs.length === 0) return;
     const insert = this.db.transaction(() => {
       for (const ref of refs) {
-        this.insertUnresolvedRef(ref);
+        this.insertUnresolvedRefTs(ref);
       }
     });
     insert();
@@ -1986,6 +2299,7 @@ export class QueryBuilder {
    * Delete unresolved references from a node
    */
   deleteUnresolvedByNode(nodeId: string): void {
+    this.uncoveredWrite('deleteUnresolvedByNode');
     if (!this.stmts.deleteUnresolvedByNode) {
       this.stmts.deleteUnresolvedByNode = this.db.prepare(
         'DELETE FROM unresolved_refs WHERE from_node_id = ?'
@@ -2099,6 +2413,7 @@ export class QueryBuilder {
    * Delete all unresolved references (after resolution)
    */
   clearUnresolvedReferences(): void {
+    this.uncoveredWrite('clearUnresolvedReferences');
     this.db.exec('DELETE FROM unresolved_refs');
   }
 
@@ -2106,6 +2421,7 @@ export class QueryBuilder {
    * Delete resolved references by their IDs
    */
   deleteResolvedReferences(fromNodeIds: string[]): void {
+    this.uncoveredWrite('deleteResolvedReferences');
     if (fromNodeIds.length === 0) return;
     const placeholders = fromNodeIds.map(() => '?').join(',');
     this.db.prepare(`DELETE FROM unresolved_refs WHERE from_node_id IN (${placeholders})`).run(...fromNodeIds);
@@ -2116,6 +2432,22 @@ export class QueryBuilder {
    * More precise than deleteResolvedReferences — only removes refs that were actually resolved.
    */
   deleteSpecificResolvedReferences(refs: Array<{ fromNodeId: string; referenceName: string; referenceKind: string }>): number {
+    if (refs.length === 0) return 0;
+    // Value-returning write: inside a native recorded transaction the change
+    // count cannot be resolved before the flush — downgrade the whole unit.
+    if (this.rec) throw new StoreDowngradeSignal('deleteSpecificResolvedReferences returns a change count');
+    if (this.storeRouteActive()) {
+      try {
+        return this.store!.commitCount1({ kind: 'deleteResolvedTriples', refs }, 'refsDeleted');
+      } catch (err) {
+        this.handleStoreFailure(err);
+      }
+    }
+    return this.deleteSpecificResolvedReferencesTs(refs);
+  }
+
+  /** TS implementation of deleteSpecificResolvedReferences (fallback arm). */
+  private deleteSpecificResolvedReferencesTs(refs: Array<{ fromNodeId: string; referenceName: string; referenceKind: string }>): number {
     if (refs.length === 0) return 0;
     const stmt = this.db.prepare(
       'DELETE FROM unresolved_refs WHERE from_node_id = ? AND reference_name = ? AND reference_kind = ?'
@@ -2136,6 +2468,21 @@ export class QueryBuilder {
    * persistence chunk still has one commit boundary.
    */
   deleteUnresolvedReferencesByIds(ids: number[]): number {
+    if (this.rec) throw new StoreDowngradeSignal('deleteUnresolvedReferencesByIds returns a change count');
+    if (this.storeRouteActive()) {
+      const uniqueIds = [...new Set(ids)];
+      if (uniqueIds.length === 0) return 0;
+      try {
+        return this.store!.commitCount1({ kind: 'deleteUnresolvedByIds', ids: uniqueIds }, 'refsDeleted');
+      } catch (err) {
+        this.handleStoreFailure(err);
+      }
+    }
+    return this.deleteUnresolvedReferencesByIdsTs(ids);
+  }
+
+  /** TS implementation of deleteUnresolvedReferencesByIds (fallback arm). */
+  private deleteUnresolvedReferencesByIdsTs(ids: number[]): number {
     const uniqueIds = [...new Set(ids)];
     if (uniqueIds.length === 0) return 0;
     const deleteMany = this.db.transaction((items: number[]) => {
@@ -2162,6 +2509,24 @@ export class QueryBuilder {
    * tail the first time they're attempted.
    */
   markReferencesFailed(refs: Array<{ fromNodeId: string; referenceName: string; referenceKind: string }>): void {
+    if (refs.length === 0) return;
+    if (this.rec) {
+      this.rec.ops.push({ kind: 'markRefsFailed', refs });
+      return;
+    }
+    if (this.storeRouteActive()) {
+      try {
+        this.store!.commit([{ kind: 'markRefsFailed', refs }], false);
+        return;
+      } catch (err) {
+        this.handleStoreFailure(err);
+      }
+    }
+    this.markReferencesFailedTs(refs);
+  }
+
+  /** TS implementation of markReferencesFailed (permanent fallback arm). */
+  private markReferencesFailedTs(refs: Array<{ fromNodeId: string; referenceName: string; referenceKind: string }>): void {
     if (refs.length === 0) return;
     const stmt = this.db.prepare(
       "UPDATE unresolved_refs SET status = 'failed', name_tail = ? WHERE from_node_id = ? AND reference_name = ? AND reference_kind = ?"
@@ -2319,6 +2684,7 @@ export class QueryBuilder {
 
   /** Delete edges by primary key — the rebind pass's half of a re-resolution. */
   deleteEdgesByIds(edgeIds: number[]): number {
+    this.uncoveredWrite('deleteEdgesByIds');
     if (edgeIds.length === 0) return 0;
     let changed = 0;
     this.db.transaction(() => {
@@ -2339,6 +2705,7 @@ export class QueryBuilder {
     edgeIds: number[],
     refs: UnresolvedReference[]
   ): number {
+    this.uncoveredWrite('replaceResolutionEdgesWithUnresolvedRefs');
     return this.db.transaction(() => {
       const changed = this.deleteEdgesByIds(edgeIds);
       this.insertUnresolvedRefsBatch(refs);
@@ -2494,6 +2861,7 @@ export class QueryBuilder {
    * Set a metadata key-value pair (upsert)
    */
   setMetadata(key: string, value: string): void {
+    this.uncoveredWrite('setMetadata');
     this.db.prepare(
       'INSERT INTO project_metadata (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
     ).run(key, value, Date.now());
@@ -2515,6 +2883,7 @@ export class QueryBuilder {
    * Clear all data from the database
    */
   clear(): void {
+    this.uncoveredWrite('clear');
     this.nodeCache.clear();
     this.db.transaction(() => {
       this.db.exec('DELETE FROM unresolved_refs');
