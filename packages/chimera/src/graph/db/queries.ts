@@ -910,8 +910,16 @@ export class QueryBuilder {
    * instances created outside the close path (query-builder-only consumers,
    * failed opens) never released them at all. Called from CodeGraph.close()
    * before the db close; safe to call more than once.
+   *
+   * (R3a-3) Also the deterministic release point for the attached native
+   * store handle: the rusqlite connection is closed IN PAIR with this
+   * dispose (R1 no-unpaired-resources discipline — the napi GC finalizer is
+   * only the crash fallback). After dispose the bridge is detached, so any
+   * later write silently takes the TS arm.
    */
   dispose(): void {
+    this.store?.close();
+    this.store = null;
     for (const key of Object.keys(this.stmts) as Array<keyof typeof this.stmts>) {
       const stmt = this.stmts[key];
       if (!stmt) continue;

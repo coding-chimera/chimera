@@ -256,11 +256,15 @@ export class StoreDowngradeSignal extends Error {
 export class StoreBridge {
   private disabled = false;
   private disabledReason = '';
+  /** Deterministically closed (paired with QueryBuilder.dispose — R3a-3). */
+  private closed = false;
   /** Stats of the most recent successful commit (test/telemetry surface). */
   lastStats: StoreWriteStats | null = null;
   /** Count of native commits (fusion visibility for tests/harnesses). */
   commitCount = 0;
   lastFusion: FusedKind = 'raw';
+  /** Per-kind native commit tally (fusion visibility for tests/harnesses). */
+  fusionCounts: Record<FusedKind, number> = { storeFileResult: 0, deleteFileResurrect: 0, raw: 0 };
 
   private constructor(
     readonly dbPath: string,
@@ -286,9 +290,42 @@ export class StoreBridge {
     }
   }
 
-  /** Per-call routing gate: attached, not sticky-disabled, kill switch off. */
+  /** Per-call routing gate: attached, not disabled, not closed, kill switch off. */
   live(): boolean {
-    return !this.disabled && storeEnabled();
+    return !this.disabled && !this.closed && storeEnabled();
+  }
+
+  /**
+   * Deterministic handle/connection release (R3a-3), paired with
+   * QueryBuilder.dispose() / CodeGraph.close() — the R1 no-unpaired-
+   * resources discipline; the napi GC finalizer is only the crash fallback.
+   * Idempotent. Pre-R3a-3 binaries without storeClose degrade to the GC
+   * finalizer (the handle simply becomes unreachable after close()).
+   */
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    try {
+      this.mod.storeClose?.(this.handle);
+    } catch (err) {
+      storeDebug(`storeClose failed for ${this.dbPath}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Mirror the TS WAL-deferral valve (upstream #1231) onto the Rust
+   * connection: wal_autocheckpoint is PER-CONNECTION, so the bulk-index
+   * deferral on the TS connection must be applied here too or the native
+   * writes keep folding the WAL underneath the valve. Best-effort performance
+   * knob — a failure neither throws nor disables the bridge.
+   */
+  setWalAutocheckpoint(pages: number): void {
+    if (!this.live()) return;
+    try {
+      this.mod.storeSetWalAutocheckpoint?.(this.handle, pages);
+    } catch (err) {
+      storeDebug(`storeSetWalAutocheckpoint failed for ${this.dbPath}: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   /** Sticky-disable after a wire-shaped failure (degrade once, not per call). */
@@ -302,6 +339,9 @@ export class StoreBridge {
 
   get isDisabled(): boolean {
     return this.disabled;
+  }
+  get isClosed(): boolean {
+    return this.closed;
   }
   get disableReason(): string {
     return this.disabledReason;
@@ -326,6 +366,7 @@ export class StoreBridge {
       this.lastStats = stats;
       this.commitCount++;
       this.lastFusion = plan.kind;
+      this.fusionCounts[plan.kind]++;
       return stats;
     } catch (err) {
       if (isStoreWireError(err)) this.disable(err instanceof Error ? err.message : String(err));

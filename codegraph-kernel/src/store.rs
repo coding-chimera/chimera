@@ -1116,14 +1116,27 @@ fn exec_op(conn: &Connection, wire: &Wire, op: &OpView, stats: &mut Stats) -> Re
 
 
 struct StoreConn {
-    conn: Connection,
+    /// `None` after `store_close` — the connection is released
+    /// DETERMINISTICALLY at the TS dispose seam (R1 no-unpaired-resources
+    /// discipline); the JS GC finalizer (Drop) is only the crash fallback.
+    /// Every entry point rejects a closed handle via `conn()`.
+    conn: Option<Connection>,
     db_path: String,
     /// Adapter-parity transaction depth: nested units JOIN the outer one
     /// (plain BEGIN/COMMIT, no savepoints — sqlite-adapter.ts semantics).
     txn_depth: u32,
 }
 
+fn closed_err() -> Error {
+    Error::from_reason("store handle is closed")
+}
+
 impl StoreConn {
+    /// The live connection, or a hard error after store_close.
+    fn conn(&self) -> Result<&Connection> {
+        self.conn.as_ref().ok_or_else(closed_err)
+    }
+
     fn open(db_path: &str) -> Result<Self> {
         let conn = Connection::open(db_path).map_err(err)?;
         // Core of db/index.ts configureConnection — the correctness-relevant
@@ -1145,7 +1158,7 @@ impl StoreConn {
                 "store_open: {db_path} is missing the graph schema (found {tables}/4 core tables) — initialize it TS-side first"
             )));
         }
-        Ok(StoreConn { conn, db_path: db_path.to_string(), txn_depth: 0 })
+        Ok(StoreConn { conn: Some(conn), db_path: db_path.to_string(), txn_depth: 0 })
     }
 
     /// One atomic unit; nested calls JOIN (depth counter, TS adapter parity).
@@ -1156,21 +1169,23 @@ impl StoreConn {
     fn transaction<T>(&mut self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
         if self.txn_depth > 0 {
             self.txn_depth += 1;
-            let out = f(&self.conn);
+            let out = f(self.conn()?);
             self.txn_depth -= 1;
             return out;
         }
-        self.conn.execute_batch("BEGIN").map_err(err)?;
+        self.conn()?.execute_batch("BEGIN").map_err(err)?;
         self.txn_depth = 1;
-        let out = f(&self.conn);
+        let out = f(self.conn()?);
         self.txn_depth = 0;
         match out {
             Ok(v) => {
-                self.conn.execute_batch("COMMIT").map_err(err)?;
+                self.conn()?.execute_batch("COMMIT").map_err(err)?;
                 Ok(v)
             }
             Err(e) => {
-                let _ = self.conn.execute_batch("ROLLBACK");
+                if let Ok(conn) = self.conn() {
+                    let _ = conn.execute_batch("ROLLBACK");
+                }
                 Err(e)
             }
         }
@@ -1180,8 +1195,8 @@ impl StoreConn {
     /// backpressure DECISION; the Rust side only reports the level at batch
     /// boundaries). Approximation: -wal file size / page_size.
     fn wal_pages(&self) -> u32 {
-        let page_size: i64 = self
-            .conn
+        let Some(conn) = self.conn.as_ref() else { return 0 };
+        let page_size: i64 = conn
             .prepare_cached("PRAGMA page_size")
             .and_then(|mut s| s.query_row([], |r| r.get(0)))
             .unwrap_or(4096);
@@ -1274,11 +1289,12 @@ fn stats_out(s: Stats, wal_pages: u32, started: Instant) -> StoreWriteStats {
 /// One open graph-store connection (one graph root). Handle-based, NOT
 /// global: a process may hold up to one handle per root (×32 roots).
 ///
-/// Lifecycle: created by `store_open`, closed by JS GC finalizer (Drop →
+/// Lifecycle: created by `store_open`, released DETERMINISTICALLY by
+/// `store_close` (R3a-3: the TS StoreBridge.close pairs it with
+/// QueryBuilder.dispose / CodeGraph.close — the R1 no-unpaired-resources
+/// discipline), with the JS GC finalizer as the crash fallback (Drop →
 /// SQLite close, which also releases the handle's prepared-statement cache —
-/// the rusqlite analogue of QueryBuilder.dispose()). There is deliberately no
-/// explicit close export in ABI v1; R3a-2 may add `store_close` if the TS
-/// side needs deterministic release (CodeGraph.close parity).
+/// the rusqlite analogue of QueryBuilder.dispose()).
 ///
 /// Thread safety: the Connection is `!Sync`, so it lives behind a Mutex —
 /// concurrent JS calls into the SAME handle serialize (correct but no
@@ -1451,6 +1467,35 @@ pub fn store_commit_batch(handle: &StoreHandle, ops: StoreBuffers) -> Result<Sto
         let (stats, wal_pages) = commit_batch_core(c, b)?;
         Ok(stats_out(stats, wal_pages, started))
     })
+}
+
+/// Deterministically close the handle and release its SQLite connection
+/// (R3a-3, the store_close the ABI-v1 docs reserved): the connection —
+/// including its prepared-statement cache — is dropped IN PLACE, rolling
+/// back any open transaction, and the handle rejects every later call with
+/// "store handle is closed". The TS StoreBridge marks itself closed first
+/// (live() false → callers stay on the TS arm); the JS GC finalizer remains
+/// only the crash fallback. Idempotence: a second close is an error the TS
+/// side treats as benign.
+#[napi]
+pub fn store_close(handle: &StoreHandle) -> Result<()> {
+    handle.with_conn(|c| {
+        let conn = c.conn.take().ok_or_else(closed_err)?;
+        drop(conn);
+        Ok(())
+    })
+}
+
+/// Mirror of DatabaseConnection.setWalAutocheckpoint (db/index.ts) for the
+/// store handle's own connection. The WAL-deferral valve (upstream #1231)
+/// sets wal_autocheckpoint=0 on the TS connection during bulk indexAll;
+/// wal_autocheckpoint is PER-CONNECTION, so without this mirror the Rust
+/// connection's default (1000 pages) keeps folding the WAL underneath the
+/// valve and the deferred-checkpoint shape is silently lost when the store
+/// bridge is attached. Performance knob only — no effect on stored rows.
+#[napi]
+pub fn store_set_wal_autocheckpoint(handle: &StoreHandle, pages: u32) -> Result<()> {
+    handle.with_conn(|c| c.conn()?.pragma_update(None, "wal_autocheckpoint", pages).map_err(err))
 }
 
 // ---------------------------------------------------------------------------
@@ -2090,7 +2135,7 @@ mod tests {
         // adapter does (BEGIN + depth=1), then run a nested unit: it must
         // JOIN — a nested BEGIN would fail with "cannot start a transaction
         // within a transaction", so reaching the row count proves JOIN.
-        c.conn.execute_batch("BEGIN").unwrap();
+        c.conn.as_mut().unwrap().execute_batch("BEGIN").unwrap();
         c.txn_depth = 1;
         let n = c
             .transaction(|conn| {
@@ -2103,7 +2148,7 @@ mod tests {
         assert_eq!(n, 1);
         assert_eq!(c.txn_depth, 1, "nested unit restores the outer depth");
         c.txn_depth = 0;
-        c.conn.execute_batch("COMMIT").unwrap();
+        c.conn.as_mut().unwrap().execute_batch("COMMIT").unwrap();
         assert_eq!(db.count("SELECT COUNT(*) FROM nodes"), 1);
 
         // A standalone unit opens and commits its own transaction.
@@ -2238,5 +2283,38 @@ mod tests {
         assert!(e.to_string().contains("abi"), "{e}");
         let e2 = err_of(Wire::decode(&buf.meta[..10], &[], &[], &[], &[]));
         assert!(e2.to_string().contains("header"), "{e2}");
+    }
+
+    #[test]
+    fn store_close_releases_handle_and_autocheckpoint_mirror() {
+        let db = TempDb::new();
+        let h = store_open(db.path.clone()).unwrap();
+        let mut b = Builder::default();
+        b.node("function:c1", "function", "c1", "c.ts", "typescript", 1, None, None, 1, 0);
+        let bufs = b.finish();
+        h.with_conn(|c| insert_nodes_core(c, bufs.borrows())).unwrap();
+        // WAL-valve mirror: wal_autocheckpoint is per-connection; the store
+        // handle must accept the same override the TS valve applies.
+        store_set_wal_autocheckpoint(&h, 0).unwrap();
+        let pages = h
+            .with_conn(|c| c.conn()?.pragma_query_value(None, "wal_autocheckpoint", |row| row.get::<_, i64>(0)).map_err(err))
+            .unwrap();
+        assert_eq!(pages, 0);
+        store_close(&h).unwrap();
+        // Deterministic release: committed data persisted and no lingering
+        // lock — a fresh external connection AND a reopened handle both work.
+        assert_eq!(db.count("SELECT COUNT(*) FROM nodes"), 1);
+        // The closed handle rejects later calls ("store handle is closed") —
+        // the TS bridge never sees a use-after-close because it flips live()
+        // false first, but the Rust side is defensive independently.
+        let mut b2 = Builder::default();
+        b2.node("function:c2", "function", "c2", "c.ts", "typescript", 2, None, None, 1, 0);
+        let bufs2 = b2.finish();
+        let e = err_of(h.with_conn(|c| insert_nodes_core(c, bufs2.borrows())));
+        assert!(e.to_string().contains("closed"), "{e}");
+        // Double close is an error the TS side treats as benign.
+        assert!(store_close(&h).is_err());
+        let h2 = store_open(db.path.clone()).unwrap();
+        store_close(&h2).unwrap();
     }
 }

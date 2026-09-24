@@ -88,6 +88,7 @@ import { GraphTraverser, GraphQueryManager } from './graph';
 import { ContextBuilder, createContextBuilder } from './context';
 import { Mutex, FileLock } from './utils';
 import { FileWatcher, LockUnavailableError, type WatchOptions, type PendingFile, type WatchBatch } from './sync';
+import { StoreBridge } from './store/bridge';
 import {
   diffNodeLanguageSignals as diffLanguageAwareSignals,
   projectLanguageAwareSignals,
@@ -942,6 +943,28 @@ export interface IndexOptions {
 }
 
 /**
+ * (R3a-3) Open the native store bridge for a freshly constructed
+ * QueryBuilder, or null when the write path must stay on the TS arm.
+ *
+ * Read-only opens NEVER attach: store_open opens the SQLite file READ-WRITE
+ * (rusqlite default), a capability escalation on a connection the caller
+ * opened readOnly — and cross-project graph states are read-only by contract
+ * (provenance.ts:1070 folds crossProject into readOnly). For read-write roots
+ * the bridge is the production DEFAULT write arm (same posture as the
+ * extraction kernel: default-on, kill-switchable); StoreBridge.open itself
+ * returns null on kill switch (CODEGRAPH_STORE=0), missing binary, contract
+ * mismatch, or an uninitialized schema, so a missing/stale kernel silently
+ * keeps the TS QueryBuilder — indexing never fails because of the bridge.
+ *
+ * Handle lifecycle is paired with the connection: CodeGraph.close() →
+ * QueryBuilder.dispose() → StoreBridge.close() (deterministic release, R1).
+ */
+function openStoreBridge(dbPath: string, readOnly: boolean | undefined): StoreBridge | null {
+  if (readOnly) return null;
+  return StoreBridge.open(dbPath);
+}
+
+/**
  * Main CodeGraph class
  *
  * Provides the primary interface for interacting with the code knowledge graph.
@@ -1022,7 +1045,7 @@ export class CodeGraph {
         createDirectory(resolvedRoot);
         const dbPath = getDatabasePath(resolvedRoot);
         initializedDb = DatabaseConnection.initialize(dbPath);
-        const queries = new QueryBuilder(initializedDb.getDb());
+        const queries = new QueryBuilder(initializedDb.getDb(), openStoreBridge(dbPath, false));
         instance = new CodeGraph(initializedDb, queries, resolvedRoot);
         finishIndexJob(resolvedRoot, job, 'succeeded', { phase: 'bootstrap', message: 'Chimera graph data root initialized' });
         initializedDb = undefined;
@@ -1074,7 +1097,7 @@ export class CodeGraph {
         createDirectory(resolvedRoot);
         const dbPath = getDatabasePath(resolvedRoot);
         initializedDb = DatabaseConnection.initialize(dbPath);
-        const queries = new QueryBuilder(initializedDb.getDb());
+        const queries = new QueryBuilder(initializedDb.getDb(), openStoreBridge(dbPath, false));
         const instance = new CodeGraph(initializedDb, queries, resolvedRoot);
         finishIndexJob(resolvedRoot, job, 'succeeded', { phase: 'bootstrap', message: 'Chimera graph data root initialized' });
         initializedDb = undefined;
@@ -1117,7 +1140,7 @@ export class CodeGraph {
 
     const dbPath = getDatabasePath(resolvedRoot);
     const db = DatabaseConnection.open(dbPath, { readOnly: options.readOnly });
-    const queries = new QueryBuilder(db.getDb());
+    const queries = new QueryBuilder(db.getDb(), openStoreBridge(dbPath, options.readOnly));
 
     const instance = new CodeGraph(db, queries, resolvedRoot);
 
@@ -1148,7 +1171,7 @@ export class CodeGraph {
 
     const dbPath = getDatabasePath(resolvedRoot);
     const db = DatabaseConnection.open(dbPath);
-    const queries = new QueryBuilder(db.getDb());
+    const queries = new QueryBuilder(db.getDb(), openStoreBridge(dbPath, false));
 
     return new CodeGraph(db, queries, resolvedRoot);
   }
@@ -1350,6 +1373,10 @@ export class CodeGraph {
         if (walValve) {
           walAutocheckpoint = this.db.getWalAutocheckpoint();
           this.db.setWalAutocheckpoint(0);
+          // Mirror the deferral onto the native store connection (R3a-3):
+          // wal_autocheckpoint is per-connection, so the Rust handle would
+          // otherwise keep folding the WAL underneath the valve. Best-effort.
+          this.queries.getStoreBridge()?.setWalAutocheckpoint(0);
           walValve.start();
         }
         const before = this.queries.getNodeAndEdgeCount();
@@ -1442,6 +1469,7 @@ export class CodeGraph {
             try { await this.db.checkpointWalTruncate(); } catch { }
           }
           try { this.db.setWalAutocheckpoint(walAutocheckpoint); } catch { }
+          this.queries.getStoreBridge()?.setWalAutocheckpoint(walAutocheckpoint);
         }
         this.fileLock.release();
       }
@@ -2150,6 +2178,16 @@ export class CodeGraph {
    */
   getBackend(): import('./db').SqliteBackend {
     return this.db.getBackend();
+  }
+
+  /**
+   * (R3a-3) The native store bridge attached to this instance's QueryBuilder,
+   * or null when the write path is the TS arm (readOnly/crossProject open,
+   * CODEGRAPH_STORE=0 kill switch, missing/unverified module). Introspection
+   * for wiring tests and status surfaces.
+   */
+  getStoreBridge(): StoreBridge | null {
+    return this.queries.getStoreBridge();
   }
 
   /**
