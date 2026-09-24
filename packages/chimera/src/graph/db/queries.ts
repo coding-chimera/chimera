@@ -592,6 +592,9 @@ export class QueryBuilder {
 
   /** TS implementation of insertNode (permanent fallback arm). */
   private insertNodeTs(node: Node): void {
+    // (R3b) TS-arm nodes write — invisible to the store commit generation;
+    // notify ctx listeners so the native read-context caches invalidate.
+    this.store?.noteTsWrite();
     if (!this.stmts.insertNode) {
       this.stmts.insertNode = this.db.prepare(`
         INSERT OR REPLACE INTO nodes (
@@ -690,6 +693,7 @@ export class QueryBuilder {
    */
   updateNode(node: Node): void {
     this.uncoveredWrite('updateNode');
+    this.store?.noteTsWrite(); // (R3b) TS-arm nodes write seam
     if (!this.stmts.updateNode) {
       this.stmts.updateNode = this.db.prepare(`
         UPDATE nodes SET
@@ -759,6 +763,7 @@ export class QueryBuilder {
    */
   deleteNode(id: string): void {
     this.uncoveredWrite('deleteNode');
+    this.store?.noteTsWrite(); // (R3b) TS-arm nodes write seam
     if (!this.stmts.deleteNode) {
       this.stmts.deleteNode = this.db.prepare('DELETE FROM nodes WHERE id = ?');
     }
@@ -772,6 +777,7 @@ export class QueryBuilder {
    */
   deleteNodesByFile(filePath: string): void {
     this.uncoveredWrite('deleteNodesByFile');
+    this.store?.noteTsWrite(); // (R3b) TS-arm nodes write seam
     if (!this.stmts.deleteNodesByFile) {
       this.stmts.deleteNodesByFile = this.db.prepare('DELETE FROM nodes WHERE file_path = ?');
     }
@@ -2024,6 +2030,7 @@ export class QueryBuilder {
 
   /** TS implementation of upsertFile (permanent fallback arm). */
   private upsertFileTs(file: FileRecord): void {
+    this.store?.noteTsWrite(); // (R3b) TS-arm files write seam
     if (!this.stmts.upsertFile) {
       this.stmts.upsertFile = this.db.prepare(`
         INSERT INTO files (path, content_hash, language, size, modified_at, indexed_at, node_count, errors)
@@ -2892,6 +2899,7 @@ export class QueryBuilder {
    */
   clear(): void {
     this.uncoveredWrite('clear');
+    this.store?.noteTsWrite(); // (R3b) TS-arm nodes+files write seam
     this.nodeCache.clear();
     this.db.transaction(() => {
       this.db.exec('DELETE FROM unresolved_refs');

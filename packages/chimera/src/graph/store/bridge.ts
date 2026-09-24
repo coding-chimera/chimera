@@ -265,6 +265,15 @@ export class StoreBridge {
   lastFusion: FusedKind = 'raw';
   /** Per-kind native commit tally (fusion visibility for tests/harnesses). */
   fusionCounts: Record<FusedKind, number> = { storeFileResult: 0, deleteFileResurrect: 0, raw: 0 };
+  /**
+   * (R3b) Listeners notified when a write goes through the TS arm while the
+   * bridge is attached. Native commits bump the store handle's Rust-side
+   * commit generation (which the ctx handle shares for lazy invalidation),
+   * but TS-arm writes — the *Ts fallbacks and the uncovered node/file writers
+   * (updateNode/deleteNode/deleteNodesByFile/clear) — BYPASS that counter, so
+   * the CtxBridge subscribes here to call ctx_invalidate at those seams.
+   */
+  private tsWriteListeners = new Set<() => void>();
 
   private constructor(
     readonly dbPath: string,
@@ -325,6 +334,43 @@ export class StoreBridge {
       this.mod.storeSetWalAutocheckpoint?.(this.handle, pages);
     } catch (err) {
       storeDebug(`storeSetWalAutocheckpoint failed for ${this.dbPath}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * (R3b) The raw napi StoreHandle for symbiotic handles — ctx_open borrows
+   * this handle's db path + commit-generation counter. null once closed.
+   * Internal to the graph package; not a public capability.
+   */
+  rawHandle(): StoreHandle | null {
+    return this.closed ? null : this.handle;
+  }
+
+  /**
+   * (R3b) Subscribe to TS-arm write notifications. Returns an unsubscribe
+   * closure. The CtxBridge registers ctx_invalidate here so writes the store
+   * generation counter cannot see still drop the ctx caches.
+   */
+  onTsWrite(listener: () => void): () => void {
+    this.tsWriteListeners.add(listener);
+    return () => {
+      this.tsWriteListeners.delete(listener);
+    };
+  }
+
+  /**
+   * (R3b) Fire the TS-arm write listeners. Called by QueryBuilder after any
+   * write that hit the TS arm (fallback replay or an uncovered node/file
+   * writer) while a bridge is attached. Best-effort: a listener throw must
+   * not wedge the write path.
+   */
+  noteTsWrite(): void {
+    for (const listener of this.tsWriteListeners) {
+      try {
+        listener();
+      } catch (err) {
+        storeDebug(`TS-write listener failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
   }
 
