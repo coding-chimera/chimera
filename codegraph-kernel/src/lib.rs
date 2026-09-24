@@ -48,6 +48,7 @@ mod ruby;
 mod rustlang;
 mod scala;
 mod stack;
+mod store;
 mod swift;
 mod textutil;
 mod python;

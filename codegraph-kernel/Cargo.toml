@@ -16,6 +16,14 @@ tree-sitter = "0.25"
 sha2 = "0.10"
 regex = "1"
 
+# R3a store module — rusqlite with the amalgamation compiled in (bundled), so
+# every one of the 8 prebuild legs carries its own SQLite and no leg depends
+# on a system sqlite whose version/pragmas diverge (glibc-2.28-floor gnu legs,
+# musl crt-static legs and zigbuild all compile the vendored C uniformly).
+rusqlite = { version = "0.40", features = ["bundled"] }
+# Edge-metadata refName/refKind stamps (resurrect path, #899/#1240) — the
+# metadata column is JSON text; no schema types needed, so plain serde_json.
+serde_json = "1"
 # Grammars — MUST stay revision-matched with the wasm grammars the fallback
 # path loads (tree-sitter-wasms npm package / src/extraction/wasm/). The
 # kernel-grammar-parity test asserts node-kind-table equality at test time;
@@ -67,6 +75,14 @@ tree-sitter-language = "0.1"
 # transitively; Windows uses a hand-declared kernel32 extern instead.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# cargo test links the harness as an EXECUTABLE, which cannot defer the
+# libnode napi_* symbols the way the shipped cdylib does. napi's `noop`
+# feature stubs the JS-registration/custom-GC paths for exactly this; as a
+# dev-dependency it applies to test/bench profiles only (resolver v2), so
+# every release cdylib leg builds without it.
+[dev-dependencies]
+napi = { version = "3", default-features = false, features = ["napi8", "noop"] }
 
 [build-dependencies]
 napi-build = "2"
