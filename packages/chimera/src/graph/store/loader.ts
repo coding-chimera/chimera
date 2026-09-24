@@ -35,7 +35,7 @@ import * as path from 'path';
 import { createRequire } from 'module';
 import { NODE_KINDS } from '../types';
 import { EDGE_KINDS } from '../extraction/kernel/layout';
-import { STORE_ABI_VERSION, type StoreBuffers } from './layout';
+import { STORE_ABI_VERSION, STORE_NODE_ROW_SIZE, type StoreBuffers } from './layout';
 
 /** Opaque napi StoreHandle (one handle = one graph root = one SQLite connection). */
 export type StoreHandle = object;
@@ -192,6 +192,7 @@ export function storeEnabled(): boolean {
 /** Test hook: forget the loaded module so a changed env is re-evaluated. */
 export function resetStoreForTests(): void {
   cached = undefined;
+  ctxCached = undefined;
 }
 
 /**
@@ -201,4 +202,175 @@ export function resetStoreForTests(): void {
  */
 export function setStoreModuleForTests(mod: StoreModule | null): void {
   cached = mod;
+  ctxCached = undefined;
+}
+
+// ---------------------------------------------------------------------------
+// R3b resolution read-context surface (resolver_ctx.rs) — the ctx exports
+// live in the SAME codegraph-kernel.node, so the search/dlopen/cache above is
+// reused verbatim; only the contract gate and kill switch are ctx-specific.
+// ---------------------------------------------------------------------------
+
+/** Must equal resolver_ctx.rs CTX_ABI_VERSION. */
+export const CTX_ABI_VERSION = 1;
+
+export type CtxHandle = object;
+
+export interface CtxContractInfo {
+  ctxAbi: number;
+  ctxVersion: string;
+  /** Node-row layout identity — must equal STORE_NODE_ROW_SIZE (140). */
+  nodeRowSize: number;
+  gettersPresent: string[];
+  gettersAbsent: string[];
+  semantics: string[];
+}
+
+export interface CtxNodesOut {
+  header: Buffer;
+  groups: Buffer;
+  nodes: Buffer;
+  arena: Buffer;
+}
+export interface CtxStringsOut {
+  header: Buffer;
+  groups: Buffer;
+  strs: Buffer;
+  arena: Buffer;
+}
+export interface CtxImportMappingsOut {
+  header: Buffer;
+  groups: Buffer;
+  mappings: Buffer;
+  arena: Buffer;
+}
+export interface CtxReExportsOut {
+  header: Buffer;
+  groups: Buffer;
+  reexports: Buffer;
+  arena: Buffer;
+}
+
+/** The ctx export surface of codegraph-kernel.node (napi camelCase). */
+export interface CtxModule {
+  ctxContractInfo(): CtxContractInfo;
+  ctxOpen(store: StoreHandle, projectRoot: string): CtxHandle;
+  ctxWarm(handle: CtxHandle): void;
+  ctxInvalidate(handle: CtxHandle): void;
+  ctxClose(handle: CtxHandle): void;
+  ctxGetProjectRoot(handle: CtxHandle): string;
+  ctxGetNodesByNames(handle: CtxHandle, names: string[]): CtxNodesOut;
+  ctxGetNodesByQualifiedNames(handle: CtxHandle, qualifiedNames: string[]): CtxNodesOut;
+  ctxGetNodesByLowerNames(handle: CtxHandle, names: string[]): CtxNodesOut;
+  ctxGetNodesInFiles(handle: CtxHandle, filePaths: string[]): CtxNodesOut;
+  ctxGetNodesByKind(handle: CtxHandle, kind: string): CtxNodesOut;
+  ctxGetNodeById(handle: CtxHandle, id: string): CtxNodesOut;
+  ctxHasNames(handle: CtxHandle, names: string[]): boolean[];
+  ctxGetAllFiles(handle: CtxHandle): CtxStringsOut;
+  ctxGetAllNodeNames(handle: CtxHandle): CtxStringsOut;
+  ctxReadFiles(handle: CtxHandle, filePaths: string[]): CtxStringsOut;
+  ctxGetFileLines(handle: CtxHandle, filePaths: string[]): CtxStringsOut;
+  ctxFileExists(handle: CtxHandle, filePaths: string[]): boolean[];
+  ctxListDirectories(handle: CtxHandle, relativePaths: string[]): CtxStringsOut;
+  ctxGetImportMappings(handle: CtxHandle, paths: string[], languages: string[]): CtxImportMappingsOut;
+  ctxGetReExports(handle: CtxHandle, paths: string[], languages: string[]): CtxReExportsOut;
+}
+
+/**
+ * Getters the TS bridge routes through the native arm — the contract gate
+ * requires gettersPresent ⊇ THIS set (R3b acceptance: the capability table
+ * decides routing; a binary missing any routed getter degrades the whole
+ * ctx arm to TS). getProjectRoot is deliberately NOT routed (the TS value is
+ * the identical string ctx_open was given). The four getters_absent entries
+ * (getProjectAliases / getGoModule / getCppIncludeDirs / resolveImport) keep
+ * their TS arm by design (R3b-1 declared them unimplemented).
+ */
+export const CTX_ROUTED_GETTERS: readonly string[] = [
+  'getNodesInFile',
+  'getNodesByName',
+  'getNodesByQualifiedName',
+  'getNodesByKind',
+  'fileExists',
+  'readFile',
+  'getAllFiles',
+  'getAllNodeNames',
+  'getNodesByLowerName',
+  'getImportMappings',
+  'getReExports',
+  'listDirectories',
+  'getFileLines',
+  'getNodeById',
+  'hasNames',
+];
+
+const ctxDebugEnabled = () => process.env.CODEGRAPH_CTX_DEBUG === '1';
+export function ctxDebug(msg: string): void {
+  if (ctxDebugEnabled()) process.stderr.write(`[CodeGraph] ctx: ${msg}\n`);
+}
+
+/**
+ * Verify the ctx contract: ctx_abi EQUALITY, node-row layout identity with
+ * the store wire (the R3a-2 decoder is reused), and the routed-getter
+ * capability subset. Any mismatch → the whole ctx arm stays TS (silent).
+ */
+export function verifyCtxContract(info: CtxContractInfo): boolean {
+  if (info.ctxAbi !== CTX_ABI_VERSION) {
+    ctxDebug(`ctx ABI ${info.ctxAbi} != expected ${CTX_ABI_VERSION} — ignoring ctx module`);
+    return false;
+  }
+  if (info.nodeRowSize !== STORE_NODE_ROW_SIZE) {
+    ctxDebug(`ctx nodeRowSize ${info.nodeRowSize} != store node row ${STORE_NODE_ROW_SIZE} — ignoring ctx module`);
+    return false;
+  }
+  const missing = CTX_ROUTED_GETTERS.filter((g) => !info.gettersPresent.includes(g));
+  if (missing.length > 0) {
+    ctxDebug(`ctx gettersPresent missing routed getters: '${missing.join("', '")}' — ignoring ctx module`);
+    return false;
+  }
+  return true;
+}
+
+let ctxCached: CtxModule | null | undefined;
+
+/**
+ * The verified ctx projection of the loaded addon (same require cache as
+ * getStoreModule). Null when the binary predates R3b, the contract
+ * mismatches, or the store module itself is unavailable — every case keeps
+ * the TS createContext arm silently.
+ */
+export function getCtxModule(): CtxModule | null {
+  if (ctxCached !== undefined) return ctxCached;
+  ctxCached = null;
+  const base = getStoreModule() as unknown as Partial<CtxModule> | null;
+  if (!base) return null;
+  if (typeof base.ctxContractInfo !== 'function' || typeof base.ctxOpen !== 'function') {
+    ctxDebug('kernel binary has no ctx exports (pre-R3b) — ctx arm stays TS');
+    return null;
+  }
+  try {
+    const info = base.ctxContractInfo();
+    if (!verifyCtxContract(info)) {
+      ctxDebug(`ctx ${info.ctxVersion}: contract mismatch — ctx arm stays TS`);
+      return null;
+    }
+    ctxDebug(`ctx module verified (ctx ${info.ctxVersion}, abi ${info.ctxAbi}; absent: ${info.gettersAbsent.join(', ')})`);
+    ctxCached = base as CtxModule;
+  } catch (err) {
+    ctxDebug(`ctxContractInfo failed — ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return ctxCached;
+}
+
+/**
+ * Per-call routing gate: CODEGRAPH_CTX=0 kill switch (checked per call so
+ * tests/embedders can flip it at runtime) AND a contract-verified module.
+ */
+export function ctxEnabled(): boolean {
+  if (process.env.CODEGRAPH_CTX === '0') return false;
+  return getCtxModule() !== null;
+}
+
+/** Test hook: install a fake CtxModule projection (null clears). */
+export function setCtxModuleForTests(mod: CtxModule | null): void {
+  ctxCached = mod;
 }

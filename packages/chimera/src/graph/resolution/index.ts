@@ -39,6 +39,7 @@ import { logDebug } from '../errors';
 import type { ReExport } from './types';
 import { LRUCache } from './lru-cache';
 import { createYielder, type MaybeYield } from './cooperative-yield';
+import { CtxBridge, isCtxWireError } from './ctx-bridge';
 
 /**
  * Cache size limits. Each per-resolver cache is bounded so memory
@@ -167,6 +168,16 @@ export class ReferenceResolver {
   private knownNames: Set<string> | null = null; // all known symbol names for fast pre-filtering
   private knownFiles: Set<string> | null = null;
   private cachesWarmed = false;
+  /**
+   * (R3b) Native resolution read context, or null when the TS arm is the
+   * only arm (no live store bridge on the QueryBuilder — which covers
+   * readOnly/crossProject opens and CODEGRAPH_STORE=0 —, CODEGRAPH_CTX=0,
+   * missing/pre-R3b binary, contract mismatch, or ctx_open failure). Every
+   * routed getter falls back to its TS implementation per call on any
+   * native failure; the four declared-absent getters (getProjectAliases,
+   * getGoModule, getCppIncludeDirs, resolveImport) ALWAYS keep the TS arm.
+   */
+  private ctx: CtxBridge | null = null;
   // tsconfig/jsconfig path-alias map. `undefined` = not yet computed,
   // `null` = computed and absent. Treated as immutable for the
   // resolver's lifetime; callers re-create the resolver if config changes.
@@ -191,7 +202,51 @@ export class ReferenceResolver {
     this.lowerNameCache = new LRUCache(limit);
     this.qualifiedNameCache = new LRUCache(limit);
 
+    // (R3b) Open the native read context BEFORE createContext so the getter
+    // closures see it. Symbiotic with the QueryBuilder's store bridge: null
+    // store bridge (readOnly/crossProject/kill-switched) ⇒ null ctx.
+    this.ctx = CtxBridge.open(queries.getStoreBridge(), projectRoot);
+
     this.context = this.createContext();
+  }
+
+  /**
+   * (R3b) Deterministically release the native read-context handle.
+   * CodeGraph.close() calls this BEFORE QueryBuilder.dispose() closes the
+   * store handle whose commit-generation counter the ctx borrows (R1
+   * pairing). Idempotent; the resolver stays usable on the TS arm after.
+   */
+  dispose(): void {
+    this.ctx?.close();
+    this.ctx = null;
+  }
+
+  /** The native read-context bridge (null = TS arm) — tests/status introspection. */
+  getCtxBridge(): CtxBridge | null {
+    return this.ctx;
+  }
+
+  /**
+   * Run a native ctx read. Null when the ctx arm is unavailable (not
+   * attached, kill-switched, disabled) or the call threw — the caller falls
+   * back to its TS implementation for that call. Wire/handle-shaped failures
+   * sticky-disable the bridge (a systematic decoder bug degrades once).
+   */
+  private ctxRead<T>(fn: (ctx: CtxBridge) => T): T | null {
+    const ctx = this.ctx;
+    if (!ctx?.live()) return null;
+    try {
+      return fn(ctx);
+    } catch (err) {
+      this.handleCtxFailure(err);
+      return null;
+    }
+  }
+
+  private handleCtxFailure(err: unknown): void {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (isCtxWireError(err)) this.ctx?.disable(msg);
+    logDebug('native ctx read failed — falling back to the TS arm', { error: msg });
   }
 
   /**
@@ -240,11 +295,26 @@ export class ReferenceResolver {
   warmCaches(): void {
     if (this.cachesWarmed) return;
 
-    // Only cache the set of known file paths (lightweight string set)
-    this.knownFiles = new Set(this.queries.getAllFilePaths());
+    // (R3b) Native arm: warm the Rust-side knownFiles/knownNames indexes
+    // (ctx_warm) and build the membership Sets from the Rust batch getters —
+    // one reader of truth. NOTE: the JS Set projections REMAIN until R3c
+    // internalizes hasAnyPossibleMatch/isBuiltInOrExternal (recorded
+    // limitation — the ~85MB heap win lands with R3c, not here).
+    if (this.ctx?.live()) {
+      try {
+        this.ctx.warm();
+      } catch (err) {
+        this.handleCtxFailure(err);
+      }
+    }
+    const files = this.ctxRead((ctx) => ctx.getAllFiles());
+    const names = this.ctxRead((ctx) => ctx.getAllNodeNames());
+
+    // Cache the set of known file paths (lightweight string set)
+    this.knownFiles = new Set(files ?? this.queries.getAllFilePaths());
 
     // Cache all distinct symbol names for fast pre-filtering (just strings, not full nodes)
-    this.knownNames = new Set(this.queries.getAllNodeNames());
+    this.knownNames = new Set(names ?? this.queries.getAllNodeNames());
 
     this.cachesWarmed = true;
   }
@@ -253,6 +323,17 @@ export class ReferenceResolver {
    * Clear internal caches
    */
   clearCaches(): void {
+    // (R3b) Invalidation seam: drop the native read-context caches with the
+    // TS ones. Covers TS-arm direct writes (runPostExtract's updateNode,
+    // fallback replays) the store commit-generation counter cannot see; the
+    // QueryBuilder TS-write listener covers the remaining seams.
+    if (this.ctx?.live()) {
+      try {
+        this.ctx.invalidate();
+      } catch (err) {
+        this.handleCtxFailure(err);
+      }
+    }
     this.nodeCache.clear();
     this.fileCache.clear();
     this.importMappingCache.clear();
@@ -277,6 +358,8 @@ export class ReferenceResolver {
   private createContext(): ResolutionContext {
     return {
       getNodesInFile: (filePath: string) => {
+        const native = this.ctxRead((ctx) => ctx.getNodesInFile(filePath));
+        if (native) return native;
         if (!this.nodeCache.has(filePath)) {
           this.nodeCache.set(filePath, this.queries.getNodesByFile(filePath));
         }
@@ -284,6 +367,8 @@ export class ReferenceResolver {
       },
 
       getNodesByName: (name: string) => {
+        const native = this.ctxRead((ctx) => ctx.getNodesByName(name));
+        if (native) return native;
         const cached = this.nameCache.get(name);
         if (cached !== undefined) return cached;
         const result = this.queries.getNodesByName(name);
@@ -292,6 +377,8 @@ export class ReferenceResolver {
       },
 
       getNodesByQualifiedName: (qualifiedName: string) => {
+        const native = this.ctxRead((ctx) => ctx.getNodesByQualifiedName(qualifiedName));
+        if (native) return native;
         const cached = this.qualifiedNameCache.get(qualifiedName);
         if (cached !== undefined) return cached;
         const result = this.queries.getNodesByQualifiedNameExact(qualifiedName);
@@ -300,10 +387,14 @@ export class ReferenceResolver {
       },
 
       getNodesByKind: (kind: Node['kind']) => {
+        const native = this.ctxRead((ctx) => ctx.getNodesByKind(kind));
+        if (native) return native;
         return this.queries.getNodesByKind(kind);
       },
 
       fileExists: (filePath: string) => {
+        const native = this.ctxRead((ctx) => ctx.fileExists(filePath));
+        if (native !== null) return native;
         // Check pre-built known files set first (O(1))
         if (this.knownFiles) {
           const normalized = filePath.replace(/\\/g, '/');
@@ -322,6 +413,10 @@ export class ReferenceResolver {
       },
 
       readFile: (filePath: string) => {
+        // Boxed: a native `null` (read miss) is a RESULT, distinct from the
+        // ctxRead `null` that means "native arm unavailable".
+        const native = this.ctxRead((ctx) => ({ content: ctx.readFile(filePath) }));
+        if (native) return native.content;
         if (this.fileCache.has(filePath)) {
           return this.fileCache.get(filePath)!;
         }
@@ -341,10 +436,14 @@ export class ReferenceResolver {
       getProjectRoot: () => this.projectRoot,
 
       getAllFiles: () => {
+        const native = this.ctxRead((ctx) => ctx.getAllFiles());
+        if (native) return native;
         return this.queries.getAllFilePaths();
       },
 
       listDirectories: (relativePath: string) => {
+        const native = this.ctxRead((ctx) => ctx.listDirectories(relativePath));
+        if (native) return native;
         const target = relativePath === '.' || relativePath === ''
           ? this.projectRoot
           : path.join(this.projectRoot, relativePath);
@@ -363,6 +462,8 @@ export class ReferenceResolver {
       },
 
       getNodesByLowerName: (lowerName: string) => {
+        const native = this.ctxRead((ctx) => ctx.getNodesByLowerName(lowerName));
+        if (native) return native;
         const cached = this.lowerNameCache.get(lowerName);
         if (cached !== undefined) return cached;
         const result = this.queries.getNodesByLowerName(lowerName);
@@ -371,6 +472,8 @@ export class ReferenceResolver {
       },
 
       getImportMappings: (filePath: string, language) => {
+        const native = this.ctxRead((ctx) => ctx.getImportMappings(filePath, language));
+        if (native) return native;
         const cacheKey = filePath;
         const cached = this.importMappingCache.get(cacheKey);
         if (cached) return cached;
@@ -401,6 +504,8 @@ export class ReferenceResolver {
       },
 
       getReExports: (filePath: string, language) => {
+        const native = this.ctxRead((ctx) => ctx.getReExports(filePath, language));
+        if (native) return native;
         const cached = this.reExportCache.get(filePath);
         if (cached) return cached;
         const content = this.context.readFile(filePath);
@@ -418,6 +523,8 @@ export class ReferenceResolver {
       },
 
       getFileLines: (filePath: string) => {
+        const native = this.ctxRead((ctx) => ctx.getFileLines(filePath));
+        if (native) return native;
         const cached = this.linesCache.get(filePath);
         if (cached !== undefined) return cached;
         // Shares the LRU file-content cache via readFile; the split result is
@@ -433,6 +540,10 @@ export class ReferenceResolver {
       },
 
       getNodeById: (id: string) => {
+        // Boxed: a native `undefined` (id miss) is a RESULT, distinct from
+        // the ctxRead `null` that means "native arm unavailable".
+        const native = this.ctxRead((ctx) => ({ node: ctx.getNodeById(id) }));
+        if (native) return native.node;
         return this.queries.getNodeById(id) ?? undefined;
       },
 
