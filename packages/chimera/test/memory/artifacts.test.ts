@@ -90,7 +90,7 @@ describe("memory artifacts", () => {
     await fs.mkdir(staging)
     const release = await MemoryArtifacts.acquireScopeLock(project, tmp.path)
     try {
-      await MemoryArtifacts.cleanup(project, tmp.path)
+      await MemoryArtifacts.cleanup(project, tmp.path, { attempts: 0 })
       expect(await fs.stat(staging).then((value) => value.isDirectory()).catch(() => false)).toBe(true)
     } finally {
       await release()
@@ -156,7 +156,7 @@ describe("memory artifacts", () => {
         memory: "blocked",
         summary: `${MemoryArtifacts.HEADER}\nblocked`,
         raw: "blocked",
-      }, tmp.path)).rejects.toThrow("memory scope is locked")
+      }, tmp.path, { attempts: 0 })).rejects.toThrow("memory scope is locked")
     } finally {
       await release()
     }
@@ -175,10 +175,39 @@ describe("memory artifacts", () => {
     await fs.utimes(lock, new Date(0), new Date(0))
     const second = await MemoryArtifacts.acquireScopeLock(project, tmp.path)
     await first()
-    await expect(MemoryArtifacts.acquireScopeLock(project, tmp.path)).rejects.toThrow("memory scope is locked")
+    await expect(MemoryArtifacts.acquireScopeLock(project, tmp.path, { attempts: 0 })).rejects.toThrow("memory scope is locked")
     await second()
     const third = await MemoryArtifacts.acquireScopeLock(project, tmp.path)
     await third()
+  })
+
+  test("waits out a fresh lock holder instead of failing immediately (reset-vs-stage2 race)", async () => {
+    await using tmp = await tmpdir()
+    const holder = await MemoryArtifacts.acquireScopeLock(project, tmp.path)
+    // Simulate the parity flake: a background stage2 commit holds the scope
+    // lock while reset arrives. The bounded wait must ride out the release
+    // instead of surfacing "memory scope is locked".
+    const releaseSoon = setTimeout(() => {
+      void holder()
+    }, 120)
+    try {
+      const waiter = await MemoryArtifacts.acquireScopeLock(project, tmp.path, { attempts: 20, backoffMs: 25 })
+      await waiter()
+    } finally {
+      clearTimeout(releaseSoon)
+    }
+  })
+
+  test("still rejects once the bounded wait budget is exhausted", async () => {
+    await using tmp = await tmpdir()
+    const release = await MemoryArtifacts.acquireScopeLock(project, tmp.path)
+    try {
+      const started = Date.now()
+      await expect(MemoryArtifacts.acquireScopeLock(project, tmp.path, { attempts: 3, backoffMs: 20 })).rejects.toThrow("memory scope is locked")
+      expect(Date.now() - started).toBeGreaterThanOrEqual(40)
+    } finally {
+      await release()
+    }
   })
 
 })

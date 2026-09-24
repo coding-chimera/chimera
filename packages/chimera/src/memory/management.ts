@@ -1,5 +1,6 @@
 import z from "zod"
 import { Context, Effect, Layer, Schema } from "effect"
+import * as Log from "@opencode-ai/core/util/log"
 import { InstanceState } from "@/effect/instance-state"
 import { MessageID, SessionID } from "@/session/schema"
 import { zod } from "@/util/effect-zod"
@@ -11,6 +12,7 @@ import { MemoryStore, type Scope as StoreScope } from "./store"
 
 const MAX_TEXT_CHARS = 4_000
 
+const log = Log.create({ service: "memory" })
 export const Scope = Schema.Union([Schema.Literal("global"), Schema.Literal("project")])
 export type Scope = Schema.Schema.Type<typeof Scope>
 
@@ -315,7 +317,16 @@ export const layer = Layer.effect(
             await MemoryArtifacts.clearLocked(scope)
             return reset
           }),
-        catch: () => badRequest("Memory scope could not be reset safely"),
+        catch: (error) => {
+          // Surface the real cause before folding to 400: the blanket
+          // badRequest used to swallow lock contention vs store failures vs
+          // artifact IO errors into one indistinguishable response.
+          log.warn("memory reset failed", {
+            scope: input.scope,
+            error: error instanceof Error ? error.message : String(error),
+          })
+          return badRequest("Memory scope could not be reset safely")
+        },
       })
       return new ResetResult({ scope: input.scope, ...result })
     })
