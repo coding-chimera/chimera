@@ -26,6 +26,7 @@ const CHIMERA_OPENCODE_ENV_ALIASES = [
   "FAKE_VCS",
   "SERVER_PASSWORD",
   "SERVER_USERNAME",
+  "GLOBAL_SSE_MAX_CONNECTIONS",
   "SERVER_HONO",
   "ENABLE_QUESTION_TOOL",
   "EXPERIMENTAL",
@@ -176,6 +177,12 @@ export const Flag = {
   },
   get OPENCODE_DISABLE_PROJECT_CONFIG() {
     return truthy("OPENCODE_DISABLE_PROJECT_CONFIG")
+  },
+  // Hard cap on concurrent global SSE event connections (server/global-event-stream.ts).
+  // Evaluated at access time so operators and tests can change it without a rebuild;
+  // unset or invalid values fall back to the server-side default.
+  get OPENCODE_GLOBAL_SSE_MAX_CONNECTIONS() {
+    return number("OPENCODE_GLOBAL_SSE_MAX_CONNECTIONS")
   },
   get OPENCODE_TUI_CONFIG() {
     return process.env["OPENCODE_TUI_CONFIG"]
