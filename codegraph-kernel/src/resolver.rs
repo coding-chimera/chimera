@@ -61,21 +61,92 @@
 //!   index (lazily built); TS's null-index permissive arms correspond to
 //!   pre-warmCaches states production never resolves in.
 //!
-//! # Not in this baton (R3c-2 / main-loop batons)
+//! # Wire formats (RESOLVE_ABI_VERSION = 1) — R3c-2
 //!
-//! createEdges + dedupeSymbolImportEdges, materializeFileLevelImportEdges,
-//! resolveAll/resolveBatchYielding loops, callback-synthesizer, and the full
-//! resolveViaImport port (this baton consumes its precomputed results;
-//! whether Rust internalizes resolveImportPath/applyAliases is an R3c-2
-//! decision).
+//! All little-endian. Strings are `(offset u32, len u32)` pairs into ONE
+//! shared UTF-8 arena; `offset == NONE (0xFFFF_FFFF)` means "field absent".
+//! One `resolve_batch` call is ONE boundary crossing per ref batch (5000 in
+//! production — resolveAndPersistBatched's batch granularity).
+//!
+//! ## Input ResolveBuffers { meta, refs, external, arena }
+//!
+//! meta (16 bytes): abi u8, [3] pad, ref_count u32, flags u32, arena_len u32.
+//!   flags bit0 = sweep the batch's own files for file-level import
+//!   edges (materializeFileLevelImportEdges' per-batch arm; the loop-tail
+//!   residual sweep stays TS in v1).
+//! ref row (64 bytes): id i64 (-1 = absent), from_node_id str, reference_name
+//!   str, reference_kind str, file_path str, language str, line i64, column
+//!   i64. filePath/language are DENORMALIZED TS-side before encoding (the
+//!   getFilePathFromNodeId/getLanguageFromNodeId fallbacks run pre-wire).
+//! external header (32 bytes): abi u8, [3] pad, import_count u32, jvm_count
+//!   u32, fw_group_count u32, fw_cand_count u32, also_count u32, claimed_count
+//!   u32, path_count u32. Then row tables IN THIS ORDER: import key rows
+//!   (32B: file str, name str, kind str, target_node_id str), jvm key rows
+//!   (same 32B), fw group rows (48B: file str, name str, kind str, line i64,
+//!   col i64, cand_start u32, cand_end u32 — POSITION-keyed: framework
+//!   resolvers parse the call site, so same-name refs at different lines
+//!   resolve differently), fw candidate rows (40B: target str, resolved_by u8
+//!   (1=import … 8=fuzzy), authoritative u8, [2] pad, edge_kind str,
+//!   metadata str (JSON), also_start u32, also_end u32), also rows (16B:
+//!   target str, metadata str), claimed-name rows (8B: str), import-path rows
+//!   (24B: file str, source str, resolved str — NONE = unresolvable/external).
+//!   The import/jvm tables are resolveViaImport/resolveJvmImport results
+//!   PRECOMPUTED per ref key plus the synthetic store-holder keys
+//!   (file, holderName, "references") — the R3c-1 report's named pit; the
+//!   framework tables replay detection order and MUST stop at the first
+//!   authoritative/import/qualified-name candidate (resolveOne's
+//!   short-circuit keeps the framework.resolve call set identical). The
+//!   import-path table is the resolveImportPath Plan-A seam: TS resolves each
+//!   (file, specifier) once per batch through its own import-resolver arm
+//!   (aliases/go-module/cpp-include-dirs stay TS); the file-level sweep
+//!   consumes it.
+//!
+//! ## Output ResolveBuffersOut { header, edges, refs, files, stats, arena }
+//!
+//! header (40 bytes): abi u8, [3] pad, batch_edge_count u32, resolved_count
+//!   u32, failed_count u32, sweep_count u32, stat_count u32, arena_len u32,
+//!   total u32, resolved_total u32, unresolved_total u32.
+//! edge row (80 bytes): source str, target str, kind str, line i64, column
+//!   i64, target_metadata str (JSON passthrough | NONE), resolved_by str,
+//!   ref_name str, ref_kind str (NONE unless a kind promotion rewrote kind),
+//!   fn_ref u8, [7] pad. The first batch_edge_count rows are the createEdges
+//!   output (dedupeSymbolImportEdges applied); later rows belong to the sweep
+//!   ranges in the files table. The TS decoder REBUILDS each edge's metadata
+//!   object in JS spread order ({...t.metadata, resolvedBy, refName, refKind?,
+//!   fnRef?}) from the stamp fields — serde_json without preserve_order
+//!   cannot keep insertion order, so assembly stays TS-side (byte-identical
+//!   to the TS arm's JSON.stringify).
+//! refs row (40 bytes): flag u8 (1 = resolved → delete, 2 = unresolved →
+//!   mark failed), [7] pad, id i64 (-1 absent; only meaningful on resolved
+//!   rows), from_node_id str, reference_name str, reference_kind str.
+//! files row (24 bytes): source_node_id str, edge_start u32, edge_end u32
+//!   (indexes into the edge table AFTER the batch edges; an EMPTY range is a
+//!   delete-only sweep — TS materializeFileLevelImportEdges deletes before
+//!   the mappings-empty check), pad u32.
+//! stats row (16 bytes): byMethod key str, count u32, pad u32.
+//!
+//! # Not ported (stay TS arms)
+//!
+//! callback-synthesizer (batch-loop tail, called as a TS batch),
+//! resolveViaImport/resolveJvmImport/resolveImportPath (precomputed per
+//! batch — 案 A), frameworks (precomputed per ref key), the loop-tail
+//! residual file-level sweep, and the WAL-backpressure/yield orchestration
+//! (the TS batch loop keeps its cadence around the native call).
 #![allow(clippy::too_many_arguments)]
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 
+use napi::bindgen_prelude::*;
+use napi_derive::napi;
 use regex::Regex;
 
-use crate::resolver_ctx::{js_trim, CtxConn, CtxNode, ImportMapping, Lru, S};
+use crate::buffers::NONE;
+use crate::resolver_ctx::{
+    js_trim, put_opt_str, put_str, push_str_ref, push_u32, CtxConn, CtxHandle, CtxNode,
+    ImportMapping, Lru, ReExport, S,
+};
 
 type Result<T> = napi::bindgen_prelude::Result<T>;
 
@@ -420,11 +491,46 @@ impl ResolvedBy {
     }
 }
 
+impl ResolvedBy {
+    /// Wire code (RESOLVE_ABI 1) — the frozen numeric identity for external
+    /// framework-candidate rows: 1=import, 2=qualified-name, 3=exact-match,
+    /// 4=function-ref, 5=instance-method, 6=file-path, 7=framework, 8=fuzzy.
+    fn code(&self) -> u8 {
+        match self {
+            ResolvedBy::Import => 1,
+            ResolvedBy::QualifiedName => 2,
+            ResolvedBy::ExactMatch => 3,
+            ResolvedBy::FunctionRef => 4,
+            ResolvedBy::InstanceMethod => 5,
+            ResolvedBy::FilePath => 6,
+            ResolvedBy::Framework => 7,
+            ResolvedBy::Fuzzy => 8,
+        }
+    }
+
+    fn from_code(c: u8) -> Option<ResolvedBy> {
+        Some(match c {
+            1 => ResolvedBy::Import,
+            2 => ResolvedBy::QualifiedName,
+            3 => ResolvedBy::ExactMatch,
+            4 => ResolvedBy::FunctionRef,
+            5 => ResolvedBy::InstanceMethod,
+            6 => ResolvedBy::FilePath,
+            7 => ResolvedBy::Framework,
+            8 => ResolvedBy::Fuzzy,
+            _ => return None,
+        })
+    }
+}
+
 /// ResolvedRef.alsoTargets entry (types.ts:69).
 #[derive(Clone, Debug)]
 pub(crate) struct AlsoTarget {
     pub target_node_id: String,
-    pub metadata: Option<serde_json::Value>,
+    /// Raw JSON text (framework-provided) — order-preserving passthrough;
+    /// Rust NEVER parses it (serde_json without preserve_order would reorder
+    /// keys and break stored-metadata byte parity with the TS arm).
+    pub metadata: Option<String>,
 }
 
 /// ResolvedRef minus `original` (the batch loop re-attaches the ref, like
@@ -437,7 +543,8 @@ pub(crate) struct Resolved {
     pub resolved_by: ResolvedBy,
     pub authoritative: bool,
     pub edge_kind: Option<String>,
-    pub metadata: Option<serde_json::Value>,
+    /// Raw JSON text passthrough (see AlsoTarget).
+    pub metadata: Option<String>,
     pub also_targets: Vec<AlsoTarget>,
 }
 
@@ -465,7 +572,7 @@ pub(crate) struct ImportKey {
 }
 
 impl ImportKey {
-    fn of(r: &RefIn) -> ImportKey {
+    pub(crate) fn of(r: &RefIn) -> ImportKey {
         ImportKey {
             file_path: r.file_path.clone(),
             reference_name: r.reference_name.clone(),
@@ -473,11 +580,54 @@ impl ImportKey {
         }
     }
 
-    fn synthetic(file_path: &str, reference_name: &str, reference_kind: &str) -> ImportKey {
+    pub(crate) fn synthetic(file_path: &str, reference_name: &str, reference_kind: &str) -> ImportKey {
         ImportKey {
             file_path: file_path.to_string(),
             reference_name: reference_name.to_string(),
             reference_kind: reference_kind.to_string(),
+        }
+    }
+}
+
+/// Position-aware framework-table key: framework `resolve(ref)` parses the
+/// call site (router.push argument literals, Spring annotations, sveltekit
+/// goto URLs), so the precomputed table is keyed by the FULL ref position —
+/// two same-name refs at different lines of one file resolve differently
+/// (the vue-router/sveltekit regression adjudicated during R3c-2 bring-up).
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub(crate) struct FwKey {
+    pub file_path: String,
+    pub reference_name: String,
+    pub reference_kind: String,
+    pub line: i64,
+    pub col: i64,
+}
+
+impl FwKey {
+    pub(crate) fn of(r: &RefIn) -> FwKey {
+        FwKey {
+            file_path: r.file_path.clone(),
+            reference_name: r.reference_name.clone(),
+            reference_kind: r.reference_kind.clone(),
+            line: r.line,
+            col: r.column,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn at(
+        file_path: &str,
+        reference_name: &str,
+        reference_kind: &str,
+        line: i64,
+        col: i64,
+    ) -> FwKey {
+        FwKey {
+            file_path: file_path.to_string(),
+            reference_name: reference_name.to_string(),
+            reference_kind: reference_kind.to_string(),
+            line,
+            col,
         }
     }
 }
@@ -490,7 +640,8 @@ pub(crate) struct FrameworkCandidate {
     pub resolved_by: ResolvedBy,
     pub authoritative: bool,
     pub edge_kind: Option<String>,
-    pub metadata: Option<serde_json::Value>,
+    /// Raw JSON text (never parsed by Rust — order-preserving passthrough).
+    pub metadata: Option<String>,
     pub also_targets: Vec<AlsoTarget>,
 }
 
@@ -517,7 +668,7 @@ impl FrameworkCandidate {
 pub(crate) struct ExternalStrategies {
     pub import_results: HashMap<ImportKey, String>,
     pub jvm_import_results: HashMap<ImportKey, String>,
-    pub framework_results: HashMap<ImportKey, Vec<FrameworkCandidate>>,
+    pub framework_results: HashMap<FwKey, Vec<FrameworkCandidate>>,
     /// Union of every detected framework's claimsReference(name) answers.
     pub claimed_names: HashSet<String>,
 }
@@ -4553,7 +4704,7 @@ impl Resolver {
         }
         let mut candidates: Vec<Resolved> = Vec::new();
         // Strategy 1: framework-specific resolution (detection order).
-        if let Some(fws) = ext.framework_results.get(&ImportKey::of(r)) {
+        if let Some(fws) = ext.framework_results.get(&FwKey::of(r)) {
             for fw in fws {
                 // Authoritative evidence resolves immediately.
                 if fw.authoritative
@@ -4867,6 +5018,821 @@ fn class_scope_kinds() -> &'static HashSet<&'static str> {
     })
 }
 
+// ---------------------------------------------------------------------------
+// R3c-2 — createEdges + dedupe + file-level import sweep (resolution/index.ts)
+// ---------------------------------------------------------------------------
+
+/// One createEdges output edge (index.ts:943-1016). The edge's final
+/// `metadata` OBJECT is assembled by the TS decoder from the stamp fields in
+/// exact JS spread order ({...t.metadata, resolvedBy, refName, refKind?,
+/// fnRef?}) — Rust never builds the object, so stored JSON key order matches
+/// the TS arm byte-for-byte.
+pub(crate) struct EdgeRow {
+    pub source: String,
+    pub target: String,
+    pub kind: String,
+    pub line: i64,
+    pub column: i64,
+    /// Strategy/framework-provided t.metadata as raw JSON text (never
+    /// parsed here — order-preserving passthrough).
+    pub target_metadata: Option<String>,
+    pub resolved_by: String,
+    pub ref_name: String,
+    /// Set only when a kind promotion rewrote the edge kind.
+    pub ref_kind: Option<String>,
+    pub fn_ref: bool,
+}
+
+/// createEdges for ONE resolved ref (index.ts:943-1016), minus the final
+/// dedupe (applied over the whole batch output).
+fn create_edges(ctx: &mut CtxConn, r: &RefIn, res: &Resolved) -> Result<Vec<EdgeRow>> {
+    let mut kind = match &res.edge_kind {
+        Some(k) => k.clone(),
+        None => {
+            if r.reference_kind == "function_ref" {
+                "references".to_string()
+            } else {
+                r.reference_kind.clone()
+            }
+        }
+    };
+    // Promote "extends" to "implements" when a class/struct targets an interface.
+    if kind == "extends" {
+        if let Some(target) = ctx.get_node_by_id(&res.target_node_id)? {
+            if target.kind == "interface" || target.kind == "protocol" {
+                if let Some(source) = ctx.get_node_by_id(&r.from_node_id)? {
+                    if source.kind != "interface" && source.kind != "protocol" {
+                        kind = "implements".to_string();
+                    }
+                }
+            }
+        }
+    }
+    // Promote "calls" to "instantiates" when the resolved target is a
+    // class/struct/union (Python/Ruby express instantiation as `Foo()`).
+    if kind == "calls" {
+        if let Some(target) = ctx.get_node_by_id(&res.target_node_id)? {
+            if target.kind == "class" || target.kind == "struct" || target.kind == "union" {
+                kind = "instantiates".to_string();
+            }
+        }
+    }
+    // One reference can name several targets — each becomes its own edge.
+    let mut targets: Vec<(&str, Option<&str>)> = vec![(res.target_node_id.as_str(), res.metadata.as_deref())];
+    for a in &res.also_targets {
+        targets.push((a.target_node_id.as_str(), a.metadata.as_deref()));
+    }
+    let ref_kind = if r.reference_kind != kind { Some(r.reference_kind.clone()) } else { None };
+    Ok(targets
+        .into_iter()
+        .map(|(target, target_metadata)| EdgeRow {
+            source: r.from_node_id.clone(),
+            target: target.to_string(),
+            kind: kind.clone(),
+            line: r.line,
+            column: r.column,
+            target_metadata: target_metadata.map(|s| s.to_string()),
+            resolved_by: res.resolved_by.as_str().to_string(),
+            ref_name: r.reference_name.clone(),
+            ref_kind: ref_kind.clone(),
+            fn_ref: r.reference_kind == "function_ref",
+        })
+        .collect())
+}
+
+/// dedupeSymbolImportEdges (index.ts:126-145) — an `imports` edge is a
+/// file→symbol dependency FACT; multiplicity carries no graph information.
+/// Deterministic keep-rule: lowest (line, column) wins.
+fn dedupe_symbol_import_edges(edges: Vec<EdgeRow>) -> Vec<EdgeRow> {
+    let mut kept_index: HashMap<(String, String), usize> = HashMap::new();
+    let mut out: Vec<EdgeRow> = Vec::new();
+    let rank = |e: &EdgeRow| e.line * 0x1000000 + e.column;
+    for edge in edges {
+        if edge.kind != "imports" {
+            out.push(edge);
+            continue;
+        }
+        let key = (edge.source.clone(), edge.target.clone());
+        match kept_index.get(&key) {
+            None => {
+                kept_index.insert(key, out.len());
+                out.push(edge);
+            }
+            Some(&at) => {
+                if rank(&edge) < rank(&out[at]) {
+                    out[at] = edge;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// One file-level import sweep row (materializeFileLevelImportEdges output).
+/// The TS side runs deleteFileLevelImportEdgesBySource(source_node_id) then
+/// bulk-inserts `edges` — EVERY row means delete-then-insert (the TS delete
+/// runs before the mappings-empty check, so a zero-edge row is meaningful).
+pub(crate) struct SweepRow {
+    pub source_node_id: String,
+    pub edges: Vec<EdgeRow>,
+}
+
+fn re_source(re: &ReExport) -> &str {
+    match re {
+        ReExport::Named { source, .. } => source,
+        ReExport::Wildcard { source } => source,
+    }
+}
+
+/// materializeFileLevelImportEdges (index.ts:1036-1090) for the given files.
+/// resolveImportPath decisions arrive as the TS-precomputed (file,
+/// specifier) → resolved-path table (Plan A seam: aliases/go-module/
+/// cpp-include-dirs stay TS). The delete stays TS-side — the store wire's op
+/// vocabulary is frozen (STORE_ABI untouched).
+fn file_level_import_sweep(
+    ctx: &mut CtxConn,
+    files: &[String],
+    paths: &HashMap<(String, String), Option<String>>,
+) -> Result<Vec<SweepRow>> {
+    let mut out: Vec<SweepRow> = Vec::new();
+    let mut seen_sources: HashSet<String> = HashSet::new();
+    for file_path in files {
+        // getFileByPath — record existence + language (no record → skip).
+        let Some(language) = ctx.file_record_language(file_path)? else { continue };
+        let source_node_id = {
+            let nodes = ctx.nodes_in_file(file_path)?;
+            match nodes.iter().find(|n| n.kind == "file") {
+                Some(n) => n.id.clone(),
+                None => continue,
+            }
+        };
+        // delete-then-insert idempotence: ONE sweep row per source node.
+        if !seen_sources.insert(source_node_id.clone()) {
+            continue;
+        }
+        let mut row = SweepRow { source_node_id: source_node_id.clone(), edges: Vec::new() };
+        let mappings = ctx.import_mappings(file_path, &language)?;
+        let re_exports = ctx.re_exports(file_path, &language)?;
+        if !mappings.is_empty() || !re_exports.is_empty() {
+            // Import and re-export sources share ONE dedupe set.
+            let mut seen: HashSet<String> = HashSet::new();
+            let mut sources: Vec<String> = Vec::new();
+            for m in &mappings {
+                if seen.insert(m.source.clone()) {
+                    sources.push(m.source.clone());
+                }
+            }
+            for re in &re_exports {
+                let s = re_source(re).to_string();
+                if seen.insert(s.clone()) {
+                    sources.push(s);
+                }
+            }
+            for source in &sources {
+                // resolveImportPath: precomputed; absent key or NONE → null.
+                let resolved = paths
+                    .get(&(file_path.clone(), source.clone()))
+                    .cloned()
+                    .unwrap_or(None);
+                let Some(resolved) = resolved else { continue };
+                if resolved == *file_path {
+                    continue;
+                }
+                let target_node_id = {
+                    let nodes = ctx.nodes_in_file(&resolved)?;
+                    match nodes.iter().find(|n| n.kind == "file") {
+                        Some(n) => n.id.clone(),
+                        None => continue,
+                    }
+                };
+                row.edges.push(EdgeRow {
+                    source: source_node_id.clone(),
+                    target: target_node_id,
+                    kind: "imports".to_string(),
+                    line: 0,
+                    column: 0,
+                    target_metadata: None,
+                    resolved_by: "import".to_string(),
+                    // Deliberately NO refName stamp — synthesized file-level
+                    // edges must never resurrect (index.ts:1026-1028).
+                    ref_name: String::new(),
+                    ref_kind: None,
+                    fn_ref: false,
+                });
+            }
+        }
+        out.push(row);
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Batch main loop — resolveBatchYielding's per-batch body (index.ts:631-676)
+// ---------------------------------------------------------------------------
+
+pub(crate) struct BatchInput {
+    pub refs: Vec<RefIn>,
+    pub ext: ExternalStrategies,
+    /// (file, import specifier) → resolveImportPath result (None = null).
+    pub import_paths: HashMap<(String, String), Option<String>>,
+    pub flags: u32,
+}
+
+pub(crate) struct BatchOutput {
+    /// createEdges output (dedupeSymbolImportEdges applied).
+    pub edges: Vec<EdgeRow>,
+    pub sweeps: Vec<SweepRow>,
+    /// (row id | -1, from_node_id, reference_name, reference_kind) — resolved
+    /// rows drive deleteUnresolvedReferences, failed rows markReferencesFailed.
+    pub resolved: Vec<(i64, String, String, String)>,
+    pub failed: Vec<(i64, String, String, String)>,
+    pub total: u32,
+    pub resolved_count: u32,
+    pub unresolved_count: u32,
+    /// byMethod — first-appearance key order (JS Record insertion parity).
+    pub by_method: Vec<(String, u32)>,
+}
+
+/// The full per-batch pipeline: per-ref resolveOne → createEdges → dedupe →
+/// (optional) file-level import sweep. Persistence stays TS-side through the
+/// existing QueryBuilder/StoreBridge arms (R3a op vocabulary unchanged).
+pub(crate) fn resolve_batch_core(ctx: &mut CtxConn, res: &mut Resolver, input: BatchInput) -> Result<BatchOutput> {
+    let total = input.refs.len();
+    let mut raw_edges: Vec<EdgeRow> = Vec::new();
+    let mut resolved: Vec<(i64, String, String, String)> = Vec::new();
+    let mut failed: Vec<(i64, String, String, String)> = Vec::new();
+    let mut by_method: Vec<(String, u32)> = Vec::new();
+    // [...new Set(batch.map(ref => ref.filePath))] — first-appearance order.
+    let mut batch_files: Vec<String> = Vec::new();
+    let mut seen_files: HashSet<String> = HashSet::new();
+    for r in &input.refs {
+        if seen_files.insert(r.file_path.clone()) {
+            batch_files.push(r.file_path.clone());
+        }
+        match res.resolve_one(ctx, r, &input.ext)? {
+            Some(hit) => {
+                let key = hit.resolved_by.as_str();
+                match by_method.iter_mut().find(|(k, _)| k == key) {
+                    Some(entry) => entry.1 += 1,
+                    None => by_method.push((key.to_string(), 1)),
+                }
+                raw_edges.extend(create_edges(ctx, r, &hit)?);
+                resolved.push((r.id.unwrap_or(-1), r.from_node_id.clone(), r.reference_name.clone(), r.reference_kind.clone()));
+            }
+            None => {
+                failed.push((-1, r.from_node_id.clone(), r.reference_name.clone(), r.reference_kind.clone()));
+            }
+        }
+    }
+    let edges = dedupe_symbol_import_edges(raw_edges);
+    let sweeps = if input.flags & RESOLVE_FLAG_SWEEP_BATCH_FILES != 0 {
+        file_level_import_sweep(ctx, &batch_files, &input.import_paths)?
+    } else {
+        Vec::new()
+    };
+    let resolved_count = resolved.len() as u32;
+    let unresolved_count = failed.len() as u32;
+    Ok(BatchOutput {
+        edges,
+        sweeps,
+        resolved,
+        failed,
+        total: total as u32,
+        resolved_count,
+        unresolved_count,
+        by_method,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// RESOLVE wire (RESOLVE_ABI_VERSION = 1) — layouts in the module docs
+// ---------------------------------------------------------------------------
+
+/// RESOLVE wire ABI — independent numbering from KERNEL/STORE/CTX ABIs; the
+/// TS loader verifies equality before routing any batch.
+pub const RESOLVE_ABI_VERSION: u8 = 1;
+/// Semantic version reported alongside the ABI number.
+pub const RESOLVE_VERSION: &str = "1.0.0";
+
+pub const RESOLVE_META_SIZE: usize = 16;
+pub const RESOLVE_REF_ROW_SIZE: usize = 64;
+pub const RESOLVE_EXT_HEADER_SIZE: usize = 32;
+pub const RESOLVE_KEY_ROW_SIZE: usize = 32;
+pub const RESOLVE_FW_GROUP_ROW_SIZE: usize = 48;
+pub const RESOLVE_FW_CAND_ROW_SIZE: usize = 40;
+pub const RESOLVE_ALSO_ROW_SIZE: usize = 16;
+pub const RESOLVE_CLAIMED_ROW_SIZE: usize = 8;
+pub const RESOLVE_PATH_ROW_SIZE: usize = 24;
+pub const RESOLVE_OUT_HEADER_SIZE: usize = 40;
+pub const RESOLVE_EDGE_ROW_SIZE: usize = 80;
+pub const RESOLVE_OUT_REF_ROW_SIZE: usize = 40;
+pub const RESOLVE_SWEEP_ROW_SIZE: usize = 24;
+pub const RESOLVE_STAT_ROW_SIZE: usize = 16;
+
+/// flags bit0: sweep the batch's own files for file-level import edges.
+pub const RESOLVE_FLAG_SWEEP_BATCH_FILES: u32 = 1;
+
+/// Strategy manifest for the contract gate — the TS loader checks every name
+/// against the fork's strategy table (kernel ⊆ fork subset direction, the
+/// loader.ts:150-167 kind-table discipline).
+pub const RESOLVE_STRATEGY_TABLE: &[&str] = &[
+    "file-path",
+    "qualified-name",
+    "cpp-call-chain",
+    "scoped-call-chain",
+    "dotted-call-chain",
+    "store-accessor-chain",
+    "method-call",
+    "method-call-by-declaration",
+    "method-call-by-param-type",
+    "object-literal-member",
+    "rust-self-call",
+    "rust-self-field-call",
+    "ts-this-field-call",
+    "java-field-receiver",
+    "exact-match",
+    "fuzzy",
+    "function-ref",
+    "js-store-binding",
+    "this-member-fn-ref",
+    "import-precomputed",
+    "jvm-import-precomputed",
+    "framework-precomputed",
+    "visible-across-files",
+    "cross-file-reachable",
+    "import-veto",
+    "builtin-external-prefilter",
+    "known-names-prefilter",
+    "create-edges",
+    "dedupe-symbol-import-edges",
+    "materialize-file-level-import-edges",
+    "pick-best-candidate",
+];
+
+/// Content version of the builtin name tables (js-builtins.ts port) — a
+/// stable hash over the union of every table's entries.
+fn builtins_version() -> String {
+    static V: OnceLock<String> = OnceLock::new();
+    V.get_or_init(|| {
+        use std::collections::BTreeSet;
+        use std::hash::{Hash, Hasher};
+        let mut names: BTreeSet<&str> = BTreeSet::new();
+        for t in [
+            js_built_ins(),
+            ts_primitive_types(),
+            react_hooks(),
+            python_built_ins(),
+            python_builtin_types(),
+            python_builtin_methods(),
+            go_stdlib_packages(),
+            go_built_ins(),
+            pascal_built_ins(),
+            c_built_ins(),
+            cpp_built_ins(),
+        ] {
+            names.extend(t.iter().copied());
+        }
+        names.extend(PASCAL_UNIT_PREFIXES.iter().copied());
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for n in &names {
+            n.hash(&mut h);
+        }
+        format!("builtin-tables-v1-{:016x}", h.finish())
+    })
+    .clone()
+}
+
+fn rd_u8(b: &[u8], at: usize) -> Result<u8> {
+    b.get(at).copied().ok_or_else(|| rerr("resolve wire: truncated u8".into()))
+}
+
+fn rd_u32(b: &[u8], at: usize) -> Result<u32> {
+    let s = b.get(at..at + 4).ok_or_else(|| rerr("resolve wire: truncated u32".into()))?;
+    Ok(u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+}
+
+fn rd_i64(b: &[u8], at: usize) -> Result<i64> {
+    let s = b.get(at..at + 8).ok_or_else(|| rerr("resolve wire: truncated i64".into()))?;
+    Ok(i64::from_le_bytes(s.try_into().unwrap()))
+}
+
+/// String slot → arena slice. A NONE offset reads as "" (required slots are
+/// never NONE from the encoder); use rd_opt_str for optional slots.
+fn rd_str<'a>(arena: &'a [u8], b: &[u8], at: usize) -> Result<&'a str> {
+    let off = rd_u32(b, at)?;
+    let len = rd_u32(b, at + 4)?;
+    if off == NONE {
+        return Ok("");
+    }
+    let end = (off as usize)
+        .checked_add(len as usize)
+        .ok_or_else(|| rerr("resolve wire: str overflow".into()))?;
+    let bytes = arena
+        .get(off as usize..end)
+        .ok_or_else(|| rerr("resolve wire: str outside arena".into()))?;
+    std::str::from_utf8(bytes).map_err(|e| rerr(format!("resolve wire: invalid utf8 ({e})")))
+}
+
+fn rd_opt_str<'a>(arena: &'a [u8], b: &[u8], at: usize) -> Result<Option<&'a str>> {
+    if rd_u32(b, at)? == NONE {
+        return Ok(None);
+    }
+    Some(rd_str(arena, b, at)).transpose()
+}
+
+fn decode_external(b: &[u8], arena: &[u8]) -> Result<(ExternalStrategies, HashMap<(String, String), Option<String>>)> {
+    if b.len() < RESOLVE_EXT_HEADER_SIZE {
+        return Err(rerr("resolve wire: external header truncated".into()));
+    }
+    if b[0] != RESOLVE_ABI_VERSION {
+        return Err(rerr(format!("resolve wire: external abi {} != {}", b[0], RESOLVE_ABI_VERSION)));
+    }
+    let import_count = rd_u32(b, 4)? as usize;
+    let jvm_count = rd_u32(b, 8)? as usize;
+    let fwg_count = rd_u32(b, 12)? as usize;
+    let fwc_count = rd_u32(b, 16)? as usize;
+    let also_count = rd_u32(b, 20)? as usize;
+    let claimed_count = rd_u32(b, 24)? as usize;
+    let path_count = rd_u32(b, 28)? as usize;
+    let need = RESOLVE_EXT_HEADER_SIZE
+        + (import_count + jvm_count + fwg_count) * RESOLVE_KEY_ROW_SIZE
+        + fwc_count * RESOLVE_FW_CAND_ROW_SIZE
+        + also_count * RESOLVE_ALSO_ROW_SIZE
+        + claimed_count * RESOLVE_CLAIMED_ROW_SIZE
+        + path_count * RESOLVE_PATH_ROW_SIZE;
+    if b.len() < need {
+        return Err(rerr("resolve wire: external tables truncated".into()));
+    }
+    let mut ext = ExternalStrategies::default();
+    let mut at = RESOLVE_EXT_HEADER_SIZE;
+    for _ in 0..import_count {
+        let key = ImportKey {
+            file_path: rd_str(arena, b, at)?.to_string(),
+            reference_name: rd_str(arena, b, at + 8)?.to_string(),
+            reference_kind: rd_str(arena, b, at + 16)?.to_string(),
+        };
+        let target = rd_str(arena, b, at + 24)?.to_string();
+        ext.import_results.insert(key, target);
+        at += RESOLVE_KEY_ROW_SIZE;
+    }
+    for _ in 0..jvm_count {
+        let key = ImportKey {
+            file_path: rd_str(arena, b, at)?.to_string(),
+            reference_name: rd_str(arena, b, at + 8)?.to_string(),
+            reference_kind: rd_str(arena, b, at + 16)?.to_string(),
+        };
+        let target = rd_str(arena, b, at + 24)?.to_string();
+        ext.jvm_import_results.insert(key, target);
+        at += RESOLVE_KEY_ROW_SIZE;
+    }
+    let fw_table_start = at + fwg_count * RESOLVE_FW_GROUP_ROW_SIZE;
+    let also_table_start = fw_table_start + fwc_count * RESOLVE_FW_CAND_ROW_SIZE;
+    let mut groups: Vec<(FwKey, usize, usize)> = Vec::with_capacity(fwg_count);
+    for g in 0..fwg_count {
+        let g_at = at + g * RESOLVE_FW_GROUP_ROW_SIZE;
+        let key = FwKey {
+            file_path: rd_str(arena, b, g_at)?.to_string(),
+            reference_name: rd_str(arena, b, g_at + 8)?.to_string(),
+            reference_kind: rd_str(arena, b, g_at + 16)?.to_string(),
+            line: rd_i64(b, g_at + 24)?,
+            col: rd_i64(b, g_at + 32)?,
+        };
+        let cand_start = rd_u32(b, g_at + 40)? as usize;
+        let cand_end = rd_u32(b, g_at + 44)? as usize;
+        if cand_start > cand_end || cand_end > fwc_count {
+            return Err(rerr("resolve wire: fw candidate range out of bounds".into()));
+        }
+        groups.push((key, cand_start, cand_end));
+    }
+    for (key, cand_start, cand_end) in groups {
+        let mut cands: Vec<FrameworkCandidate> = Vec::with_capacity(cand_end - cand_start);
+        for ci in cand_start..cand_end {
+            let c_at = fw_table_start + ci * RESOLVE_FW_CAND_ROW_SIZE;
+            let resolved_by = ResolvedBy::from_code(rd_u8(b, c_at + 8)?)
+                .ok_or_else(|| rerr("resolve wire: bad resolvedBy code".into()))?;
+            let authoritative = rd_u8(b, c_at + 9)? != 0;
+            let edge_kind = rd_opt_str(arena, b, c_at + 12)?.map(|s| s.to_string());
+            let metadata = rd_opt_str(arena, b, c_at + 20)?.map(|s| s.to_string());
+            let also_start = rd_u32(b, c_at + 28)? as usize;
+            let also_end = rd_u32(b, c_at + 32)? as usize;
+            if also_start > also_end || also_end > also_count {
+                return Err(rerr("resolve wire: also-target range out of bounds".into()));
+            }
+            let mut also_targets: Vec<AlsoTarget> = Vec::with_capacity(also_end - also_start);
+            for ai in also_start..also_end {
+                let a_at = also_table_start + ai * RESOLVE_ALSO_ROW_SIZE;
+                also_targets.push(AlsoTarget {
+                    target_node_id: rd_str(arena, b, a_at)?.to_string(),
+                    metadata: rd_opt_str(arena, b, a_at + 8)?.map(|s| s.to_string()),
+                });
+            }
+            cands.push(FrameworkCandidate {
+                target_node_id: rd_str(arena, b, c_at)?.to_string(),
+                resolved_by,
+                authoritative,
+                edge_kind,
+                metadata,
+                also_targets,
+            });
+        }
+        ext.framework_results.insert(key, cands);
+    }
+    at = also_table_start + also_count * RESOLVE_ALSO_ROW_SIZE;
+    for _ in 0..claimed_count {
+        ext.claimed_names.insert(rd_str(arena, b, at)?.to_string());
+        at += RESOLVE_CLAIMED_ROW_SIZE;
+    }
+    let mut import_paths: HashMap<(String, String), Option<String>> = HashMap::with_capacity(path_count);
+    for _ in 0..path_count {
+        let file = rd_str(arena, b, at)?.to_string();
+        let source = rd_str(arena, b, at + 8)?.to_string();
+        let resolved = rd_opt_str(arena, b, at + 16)?.map(|s| s.to_string());
+        import_paths.insert((file, source), resolved);
+        at += RESOLVE_PATH_ROW_SIZE;
+    }
+    Ok((ext, import_paths))
+}
+
+fn decode_batch_input(meta: &[u8], refs: &[u8], external: &[u8], arena: &[u8]) -> Result<BatchInput> {
+    if meta.len() < RESOLVE_META_SIZE {
+        return Err(rerr("resolve wire: meta truncated".into()));
+    }
+    if meta[0] != RESOLVE_ABI_VERSION {
+        return Err(rerr(format!("resolve wire: abi {} != {}", meta[0], RESOLVE_ABI_VERSION)));
+    }
+    let ref_count = rd_u32(meta, 4)? as usize;
+    let flags = rd_u32(meta, 8)?;
+    let arena_len = rd_u32(meta, 12)? as usize;
+    if arena.len() < arena_len {
+        return Err(rerr("resolve wire: arena truncated".into()));
+    }
+    if refs.len() < ref_count * RESOLVE_REF_ROW_SIZE {
+        return Err(rerr("resolve wire: refs truncated".into()));
+    }
+    let mut rs: Vec<RefIn> = Vec::with_capacity(ref_count);
+    for i in 0..ref_count {
+        let at = i * RESOLVE_REF_ROW_SIZE;
+        let id_raw = rd_i64(refs, at)?;
+        rs.push(RefIn {
+            id: if id_raw < 0 { None } else { Some(id_raw) },
+            from_node_id: rd_str(arena, refs, at + 8)?.to_string(),
+            reference_name: rd_str(arena, refs, at + 16)?.to_string(),
+            reference_kind: rd_str(arena, refs, at + 24)?.to_string(),
+            file_path: rd_str(arena, refs, at + 32)?.to_string(),
+            language: rd_str(arena, refs, at + 40)?.to_string(),
+            line: rd_i64(refs, at + 48)?,
+            column: rd_i64(refs, at + 56)?,
+        });
+    }
+    let (ext, import_paths) = decode_external(external, arena)?;
+    Ok(BatchInput { refs: rs, ext, import_paths, flags })
+}
+
+/// The encoded batch output as PLAIN byte vectors — the napi wrapper below
+/// is the ONLY place that touches napi Buffer types (store.rs/resolver_ctx.rs
+/// test-harness discipline: Buffer Drop paths reference libnode symbols a
+/// test executable cannot resolve, so cargo tests exercise this struct).
+pub(crate) struct EncodedBatch {
+    pub header: Vec<u8>,
+    pub edges: Vec<u8>,
+    pub refs: Vec<u8>,
+    pub files: Vec<u8>,
+    pub stats: Vec<u8>,
+    pub arena: Vec<u8>,
+}
+
+fn encode_batch_output(out: &BatchOutput) -> Result<EncodedBatch> {
+    let mut arena: Vec<u8> = Vec::new();
+    let mut edges: Vec<u8> = Vec::new();
+    let mut refs_out: Vec<u8> = Vec::new();
+    let mut files_out: Vec<u8> = Vec::new();
+    let mut stats_out: Vec<u8> = Vec::new();
+    let batch_edge_count = out.edges.len() as u32;
+    for e in &out.edges {
+        encode_edge_row(&mut edges, &mut arena, e);
+    }
+    // Sweep rows' edges append AFTER the batch edges in the shared table —
+    // a running cursor gives each row its [start, end) range.
+    let mut edge_cursor = out.edges.len();
+    for s in &out.sweeps {
+        let start = edge_cursor as u32;
+        for e in &s.edges {
+            encode_edge_row(&mut edges, &mut arena, e);
+        }
+        edge_cursor += s.edges.len();
+        push_str_ref(&mut files_out, put_str(&mut arena, &s.source_node_id));
+        push_u32(&mut files_out, start);
+        push_u32(&mut files_out, edge_cursor as u32);
+        push_u32(&mut files_out, 0);
+        push_u32(&mut files_out, 0);
+    }
+    for (flag, row) in std::iter::chain(out.resolved.iter().map(|r| (1u8, r)), out.failed.iter().map(|r| (2u8, r))) {
+        refs_out.push(flag);
+        refs_out.extend_from_slice(&[0u8; 7]);
+        refs_out.extend_from_slice(&row.0.to_le_bytes());
+        push_str_ref(&mut refs_out, put_str(&mut arena, &row.1));
+        push_str_ref(&mut refs_out, put_str(&mut arena, &row.2));
+        push_str_ref(&mut refs_out, put_str(&mut arena, &row.3));
+    }
+    for (key, count) in &out.by_method {
+        push_str_ref(&mut stats_out, put_str(&mut arena, key));
+        push_u32(&mut stats_out, *count);
+        push_u32(&mut stats_out, 0);
+    }
+    let mut header: Vec<u8> = Vec::with_capacity(RESOLVE_OUT_HEADER_SIZE);
+    header.push(RESOLVE_ABI_VERSION);
+    header.extend_from_slice(&[0u8; 3]);
+    push_u32(&mut header, batch_edge_count);
+    push_u32(&mut header, out.resolved.len() as u32);
+    push_u32(&mut header, out.failed.len() as u32);
+    push_u32(&mut header, out.sweeps.len() as u32);
+    push_u32(&mut header, out.by_method.len() as u32);
+    push_u32(&mut header, arena.len() as u32);
+    push_u32(&mut header, out.total);
+    push_u32(&mut header, out.resolved_count);
+    push_u32(&mut header, out.unresolved_count);
+    Ok(EncodedBatch {
+        header,
+        edges,
+        refs: refs_out,
+        files: files_out,
+        stats: stats_out,
+        arena,
+    })
+}
+
+fn encode_edge_row(edges: &mut Vec<u8>, arena: &mut Vec<u8>, e: &EdgeRow) {
+    push_str_ref(edges, put_str(arena, &e.source));
+    push_str_ref(edges, put_str(arena, &e.target));
+    push_str_ref(edges, put_str(arena, &e.kind));
+    edges.extend_from_slice(&e.line.to_le_bytes());
+    edges.extend_from_slice(&e.column.to_le_bytes());
+    push_str_ref(edges, put_opt_str(arena, e.target_metadata.as_deref()));
+    push_str_ref(edges, put_str(arena, &e.resolved_by));
+    push_str_ref(edges, put_str(arena, &e.ref_name));
+    push_str_ref(edges, put_opt_str(arena, e.ref_kind.as_deref()));
+    edges.push(e.fn_ref as u8);
+    edges.extend_from_slice(&[0u8; 7]);
+}
+
+
+// ---------------------------------------------------------------------------
+// napi surface — THIN wrappers over the cores (cargo tests exercise the
+// identical cores without touching napi Buffer types)
+// ---------------------------------------------------------------------------
+
+/// Wire contract + strategy manifest for the TS contract gate.
+#[napi(object)]
+pub struct ResolveContractInfo {
+    /// RESOLVE_ABI_VERSION — independent numbering from the other ABIs.
+    pub resolve_abi: u32,
+    pub resolve_version: String,
+    /// Strategy manifest — the TS loader verifies it against the fork's
+    /// strategy table (kernel ⊆ fork subset direction).
+    pub strategies: Vec<String>,
+    /// RESOLVER_RANK as "resolvedBy:rank" strings (frozen evidence order).
+    pub resolver_rank: Vec<String>,
+    /// Builtin name-table content version (js-builtins.ts port).
+    pub builtins_version: String,
+    /// Effective fuzzy ceiling (CODEGRAPH_AMBIGUOUS_NAME_CEILING applied).
+    pub ambiguous_name_ceiling: u32,
+    /// Row sizes the TS decoder sanity-checks.
+    pub ref_row_size: u32,
+    pub edge_row_size: u32,
+}
+
+#[napi]
+pub fn resolve_contract_info() -> ResolveContractInfo {
+    let rank = [
+        ResolvedBy::Import,
+        ResolvedBy::QualifiedName,
+        ResolvedBy::ExactMatch,
+        ResolvedBy::FunctionRef,
+        ResolvedBy::InstanceMethod,
+        ResolvedBy::FilePath,
+        ResolvedBy::Framework,
+        ResolvedBy::Fuzzy,
+    ];
+    ResolveContractInfo {
+        resolve_abi: RESOLVE_ABI_VERSION as u32,
+        resolve_version: RESOLVE_VERSION.to_string(),
+        strategies: RESOLVE_STRATEGY_TABLE.iter().map(|s| s.to_string()).collect(),
+        resolver_rank: rank.iter().map(|r| format!("{}:{}", r.as_str(), r.rank())).collect(),
+        builtins_version: builtins_version(),
+        ambiguous_name_ceiling: resolve_ambiguous_name_ceiling().max(0) as u32,
+        ref_row_size: RESOLVE_REF_ROW_SIZE as u32,
+        edge_row_size: RESOLVE_EDGE_ROW_SIZE as u32,
+    }
+}
+
+/// One open resolution batch session (one per graph root, symbiotic with
+/// that root's CtxHandle — resolve_batch borrows the ctx's CtxConn per
+/// call). Holds the Resolver strategy memos; deterministic resolve_close,
+/// GC finalizer only as the crash fallback. Lock order is ALWAYS
+/// ResolveHandle → CtxHandle (no path locks the reverse).
+#[napi]
+pub struct ResolveHandle {
+    inner: Mutex<Resolver>,
+    poisoned: AtomicBool,
+    /// Set by resolve_close — every entry point rejects afterwards (the
+    /// ctx_close/store_close contract).
+    closed: AtomicBool,
+}
+
+impl ResolveHandle {
+    fn with<T>(&self, f: impl FnOnce(&mut Resolver) -> Result<T>) -> Result<T> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(Error::from_reason("resolve handle is closed"));
+        }
+        if self.poisoned.load(Ordering::Relaxed) {
+            return Err(Error::from_reason("resolve handle is poisoned by an earlier panic; reopen it"));
+        }
+        let mut guard = match self.inner.lock() {
+            Ok(g) => g,
+            Err(_) => {
+                self.poisoned.store(true, Ordering::Relaxed);
+                return Err(Error::from_reason("resolve handle mutex poisoned"));
+            }
+        };
+        struct PoisonOnDrop<'a>(&'a AtomicBool);
+        impl Drop for PoisonOnDrop<'_> {
+            fn drop(&mut self) {
+                if std::thread::panicking() {
+                    self.0.store(true, Ordering::Relaxed);
+                }
+            }
+        }
+        let _latch = PoisonOnDrop(&self.poisoned);
+        f(&mut guard)
+    }
+}
+
+/// Open a batch session against a live ctx handle (Resolver::new snapshots
+/// the ctx invalidation key; memos auto-drop when it moves).
+#[napi]
+pub fn resolve_open(ctx: &CtxHandle) -> Result<ResolveHandle> {
+    ctx.with(|c| {
+        Ok(ResolveHandle {
+            inner: Mutex::new(Resolver::new(c)),
+            poisoned: AtomicBool::new(false),
+            closed: AtomicBool::new(false),
+        })
+    })
+}
+
+/// Deterministic release — the TS ResolveBridge closes this BEFORE
+/// CtxBridge.close() (the R1 pairing discipline). Idempotent; the handle
+/// rejects every call afterwards.
+#[napi]
+pub fn resolve_close(handle: &ResolveHandle) -> Result<()> {
+    handle.closed.store(true, Ordering::Relaxed);
+    Ok(())
+}
+
+/// Batch input: refs wire + external strategy wire + shared arena.
+#[napi(object)]
+pub struct ResolveBuffers {
+    pub meta: Buffer,
+    pub refs: Buffer,
+    pub external: Buffer,
+    pub arena: Buffer,
+}
+
+/// Batch output: persist plan (see the module-doc wire layout).
+#[napi(object)]
+pub struct ResolveBuffersOut {
+    pub header: Buffer,
+    pub edges: Buffer,
+    pub refs: Buffer,
+    pub files: Buffer,
+    pub stats: Buffer,
+    pub arena: Buffer,
+}
+
+/// ONE boundary crossing per ref batch: the full resolveOne + createEdges +
+/// file-level import sweep, returning the persist PLAN. Persistence itself
+/// runs through the existing TS QueryBuilder/StoreBridge arms (R3a op
+/// vocabulary unchanged). Thread discipline v1: synchronous on the caller's
+/// thread (the recorded R3 §2 amendment — same posture as the store/ctx
+/// bridges); worker-thread migration is the shared follow-up.
+#[napi]
+pub fn resolve_batch(
+    ctx: &CtxHandle,
+    handle: &ResolveHandle,
+    batch: ResolveBuffers,
+) -> Result<ResolveBuffersOut> {
+    let input = decode_batch_input(&batch.meta, &batch.refs, &batch.external, &batch.arena)?;
+    let out = handle.with(|res| ctx.with(|c| resolve_batch_core(c, res, input)))?;
+    let enc = encode_batch_output(&out)?;
+    Ok(ResolveBuffersOut {
+        header: enc.header.into(),
+        edges: enc.edges.into(),
+        refs: enc.refs.into(),
+        files: enc.files.into(),
+        stats: enc.stats.into(),
+        arena: enc.arena.into(),
+    })
+}
 // ===========================================================================
 // Golden-fixture tests (R3c-1). In-crate: drive the strategy tree against a
 // real schema'd SQLite db + fs source files through CtxConn, mirroring the
@@ -5345,7 +6311,7 @@ mod tests {
         let mut res = Resolver::new(&ctx.c);
         let r = mkref("route", "references", "typescript", "x.ts", 5, 0, "caller");
         let mut e = ext();
-        let key = ImportKey::of(&r);
+        let key = FwKey::of(&r);
         e.framework_results.insert(
             key,
             vec![FrameworkCandidate {
@@ -5446,6 +6412,280 @@ mod tests {
         );
         let out = res.match_js_store_binding_call(&mut ctx.c, &r, &e).unwrap();
         assert_eq!(out.unwrap().target_node_id, "doThing");
+    }
+
+    // -- R3c-2: createEdges / dedupe / batch core / sweep / wire ------------
+
+    fn mkedge(source: &str, target: &str, kind: &str, line: i64, col: i64) -> EdgeRow {
+        EdgeRow {
+            source: source.into(),
+            target: target.into(),
+            kind: kind.into(),
+            line,
+            column: col,
+            target_metadata: None,
+            resolved_by: "import".into(),
+            ref_name: String::new(),
+            ref_kind: None,
+            fn_ref: false,
+        }
+    }
+
+    #[test]
+    fn dedupe_imports_lowest_linecol_wins() {
+        let edges = vec![
+            mkedge("f", "t", "imports", 5, 2),
+            mkedge("f", "t", "imports", 3, 9),
+            mkedge("f", "t", "calls", 9, 9),
+            mkedge("f", "t", "imports", 4, 0),
+        ];
+        let out = dedupe_symbol_import_edges(edges);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].kind, "imports");
+        // lowest (line, column) kept IN PLACE; non-imports pass through.
+        assert_eq!((out[0].line, out[0].column), (3, 9));
+        assert_eq!(out[1].kind, "calls");
+    }
+
+    #[test]
+    fn create_edges_promotions_and_stamps() {
+        let env = Env::new();
+        {
+            let c = env.conn();
+            seed(&c, &Nd::new("iface", "interface", "I", "I", "a.ts", "typescript", 1, 2));
+            seed(&c, &Nd::new("cls", "class", "C", "C", "a.ts", "typescript", 3, 4));
+            seed(&c, &Nd::new("src", "class", "S", "S", "a.ts", "typescript", 5, 6));
+        }
+        let mut ctx = open_ctx(&env);
+        // extends → implements (class source targeting an interface) + alsoTargets fanout.
+        let r = mkref("I", "extends", "typescript", "a.ts", 9, 0, "src");
+        let res = Resolved {
+            target_node_id: "iface".into(),
+            resolved_by: ResolvedBy::ExactMatch,
+            authoritative: false,
+            edge_kind: None,
+            metadata: Some("{\"href\":\"/x\"}".into()),
+            also_targets: vec![AlsoTarget { target_node_id: "cls".into(), metadata: None }],
+        };
+        let edges = create_edges(&mut ctx.c, &r, &res).unwrap();
+        assert_eq!(edges.len(), 2);
+        assert_eq!(edges[0].kind, "implements");
+        assert_eq!(edges[0].ref_kind.as_deref(), Some("extends"));
+        assert_eq!(edges[0].target_metadata.as_deref(), Some("{\"href\":\"/x\"}"));
+        assert_eq!(edges[0].ref_name, "I");
+        assert!(!edges[0].fn_ref);
+        assert_eq!(edges[1].target, "cls");
+        assert_eq!(edges[1].target_metadata, None);
+        // calls → instantiates (target is a class).
+        let r2 = mkref("C", "calls", "typescript", "a.ts", 9, 0, "src");
+        let e2 = create_edges(&mut ctx.c, &r2, &Resolved::new("cls".into(), ResolvedBy::ExactMatch)).unwrap();
+        assert_eq!(e2[0].kind, "instantiates");
+        assert_eq!(e2[0].ref_kind.as_deref(), Some("calls"));
+        // function_ref → references + the fnRef stamp.
+        let r3 = mkref("f", "function_ref", "typescript", "a.ts", 9, 0, "src");
+        let e3 = create_edges(&mut ctx.c, &r3, &Resolved::new("iface".into(), ResolvedBy::FunctionRef)).unwrap();
+        assert_eq!(e3[0].kind, "references");
+        assert!(e3[0].fn_ref);
+        assert_eq!(e3[0].ref_kind.as_deref(), Some("function_ref"));
+    }
+
+    #[test]
+    fn batch_core_resolve_stats_and_rows() {
+        let env = Env::new();
+        {
+            let c = env.conn();
+            seed(&c, &Nd::new("fn1", "function", "myFunc", "myFunc", "a.ts", "typescript", 1, 5));
+        }
+        let mut ctx = open_ctx(&env);
+        let mut res = Resolver::new(&ctx.c);
+        let mut r1 = mkref("myFunc", "references", "typescript", "a.ts", 3, 0, "caller");
+        r1.id = Some(42);
+        let r2 = mkref("__nope__", "references", "typescript", "a.ts", 4, 0, "caller");
+        let input = BatchInput {
+            refs: vec![r1, r2],
+            ext: ExternalStrategies::default(),
+            import_paths: HashMap::new(),
+            flags: 0,
+        };
+        let out = resolve_batch_core(&mut ctx.c, &mut res, input).unwrap();
+        assert_eq!(out.total, 2);
+        assert_eq!(out.resolved_count, 1);
+        assert_eq!(out.unresolved_count, 1);
+        assert_eq!(out.resolved[0].0, 42); // row id rides for the delete
+        assert_eq!(out.resolved[0].2, "myFunc");
+        assert_eq!(out.failed[0].0, -1);
+        assert_eq!(out.failed[0].2, "__nope__");
+        assert_eq!(out.edges.len(), 1);
+        assert_eq!(out.edges[0].target, "fn1");
+        assert_eq!(out.edges[0].kind, "references");
+        assert_eq!(out.by_method, vec![("exact-match".to_string(), 1)]);
+    }
+
+    #[test]
+    fn file_sweep_rows_and_edges() {
+        let env = Env::new();
+        env.write_file("a.ts", "import { x } from './b';\n");
+        env.write_file("b.ts", "export const x = 1;\n");
+        env.write_file("lonely.ts", "export const y = 1;\n");
+        {
+            let c = env.conn();
+            for p in ["a.ts", "b.ts", "lonely.ts", "ghost.ts"] {
+                c.execute(
+                    "INSERT OR REPLACE INTO files (path, content_hash, language, size, modified_at, indexed_at, node_count, generated) VALUES (?1,'h','typescript',1,1,1,0,0)",
+                    rusqlite::params![p],
+                )
+                .unwrap();
+            }
+            seed(&c, &Nd::new("fa", "file", "a.ts", "a.ts", "a.ts", "typescript", 1, 1));
+            seed(&c, &Nd::new("fb", "file", "b.ts", "b.ts", "b.ts", "typescript", 1, 1));
+            seed(&c, &Nd::new("fl", "file", "lonely.ts", "lonely.ts", "lonely.ts", "typescript", 1, 1));
+        }
+        let mut ctx = open_ctx(&env);
+        let mut paths: HashMap<(String, String), Option<String>> = HashMap::new();
+        paths.insert(("a.ts".into(), "./b".into()), Some("b.ts".into()));
+        let files = vec!["a.ts".to_string(), "lonely.ts".to_string(), "ghost.ts".to_string()];
+        let out = file_level_import_sweep(&mut ctx.c, &files, &paths).unwrap();
+        // ghost.ts has a files record but NO file node → skipped entirely.
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].source_node_id, "fa");
+        assert_eq!(out[0].edges.len(), 1);
+        assert_eq!(out[0].edges[0].target, "fb");
+        assert_eq!(out[0].edges[0].kind, "imports");
+        assert_eq!(out[0].edges[0].line, 0);
+        // no refName stamp — synthesized file-level edges never resurrect.
+        assert_eq!(out[0].edges[0].ref_name, "");
+        assert_eq!(out[0].edges[0].ref_kind, None);
+        // lonely.ts: record + node but no imports → delete-only row.
+        assert_eq!(out[1].source_node_id, "fl");
+        assert!(out[1].edges.is_empty());
+    }
+
+    #[test]
+    fn wire_roundtrip_input_and_output() {
+        // -- encode the input exactly the way resolve-encode.ts does --
+        let mut arena: Vec<u8> = Vec::new();
+        let mut refs: Vec<u8> = Vec::new();
+        refs.extend_from_slice(&42i64.to_le_bytes());
+        for s in ["caller", "myFunc", "calls", "a.ts", "typescript"] {
+            push_str_ref(&mut refs, put_str(&mut arena, s));
+        }
+        refs.extend_from_slice(&3i64.to_le_bytes());
+        refs.extend_from_slice(&0i64.to_le_bytes());
+        let mut extb: Vec<u8> = Vec::new();
+        extb.push(RESOLVE_ABI_VERSION);
+        extb.extend_from_slice(&[0u8; 3]);
+        push_u32(&mut extb, 1); // import
+        push_u32(&mut extb, 0); // jvm
+        push_u32(&mut extb, 1); // fw groups
+        push_u32(&mut extb, 1); // fw cands
+        push_u32(&mut extb, 0); // also
+        push_u32(&mut extb, 1); // claimed
+        push_u32(&mut extb, 1); // paths
+        for s in ["a.ts", "other", "calls", "t1"] {
+            push_str_ref(&mut extb, put_str(&mut arena, s));
+        }
+        for s in ["a.ts", "route", "references"] {
+            push_str_ref(&mut extb, put_str(&mut arena, s));
+        }
+        extb.extend_from_slice(&3i64.to_le_bytes());
+        extb.extend_from_slice(&0i64.to_le_bytes());
+        push_u32(&mut extb, 0);
+        push_u32(&mut extb, 1);
+        push_str_ref(&mut extb, put_str(&mut arena, "fw1"));
+        extb.push(7); // framework
+        extb.push(1); // authoritative
+        extb.extend_from_slice(&[0u8; 2]);
+        push_str_ref(&mut extb, (NONE, 0)); // edge_kind absent
+        push_str_ref(&mut extb, put_str(&mut arena, "{\"href\":\"/x\"}"));
+        push_u32(&mut extb, 0);
+        push_u32(&mut extb, 0);
+        push_u32(&mut extb, 0); // cand-row trailing pad (40B row)
+        push_str_ref(&mut extb, put_str(&mut arena, "claimedName"));
+        for s in ["a.ts", "./b", "b.ts"] {
+            push_str_ref(&mut extb, put_str(&mut arena, s));
+        }
+        let mut meta: Vec<u8> = Vec::new();
+        meta.push(RESOLVE_ABI_VERSION);
+        meta.extend_from_slice(&[0u8; 3]);
+        push_u32(&mut meta, 1);
+        push_u32(&mut meta, RESOLVE_FLAG_SWEEP_BATCH_FILES);
+        push_u32(&mut meta, arena.len() as u32);
+
+        let input = decode_batch_input(&meta, &refs, &extb, &arena).unwrap();
+        assert_eq!(input.refs.len(), 1);
+        assert_eq!(input.refs[0].id, Some(42));
+        assert_eq!(input.refs[0].reference_name, "myFunc");
+        assert_eq!(input.refs[0].reference_kind, "calls");
+        assert_eq!(input.refs[0].line, 3);
+        assert_eq!(input.refs[0].column, 0);
+        assert_eq!(
+            input.ext.import_results.get(&ImportKey::synthetic("a.ts", "other", "calls")).map(|s| s.as_str()),
+            Some("t1")
+        );
+        assert!(input.ext.claimed_names.contains("claimedName"));
+        let fw = input
+            .ext
+            .framework_results
+            .get(&FwKey::at("a.ts", "route", "references", 3, 0))
+            .unwrap();
+        assert_eq!(fw.len(), 1);
+        assert_eq!(fw[0].target_node_id, "fw1");
+        assert_eq!(fw[0].resolved_by, ResolvedBy::Framework);
+        assert!(fw[0].authoritative);
+        assert_eq!(fw[0].edge_kind, None);
+        assert_eq!(fw[0].metadata.as_deref(), Some("{\"href\":\"/x\"}"));
+        assert_eq!(
+            input.import_paths.get(&("a.ts".to_string(), "./b".to_string())),
+            Some(&Some("b.ts".to_string()))
+        );
+        assert_eq!(input.flags, RESOLVE_FLAG_SWEEP_BATCH_FILES);
+
+        // -- output encoding roundtrip (header + row geometry) --
+        let out = BatchOutput {
+            edges: vec![mkedge("s1", "t1", "calls", 2, 3)],
+            sweeps: vec![
+                SweepRow { source_node_id: "f1".into(), edges: vec![mkedge("f1", "f2", "imports", 0, 0)] },
+                SweepRow { source_node_id: "f3".into(), edges: vec![] },
+            ],
+            resolved: vec![(7, "s1".into(), "n".into(), "calls".into())],
+            failed: vec![(-1, "s2".into(), "m".into(), "references".into())],
+            total: 2,
+            resolved_count: 1,
+            unresolved_count: 1,
+            by_method: vec![("exact-match".into(), 1)],
+        };
+        let enc = encode_batch_output(&out).unwrap();
+        let rd32 = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+        assert_eq!(enc.header[0], RESOLVE_ABI_VERSION);
+        assert_eq!(rd32(&enc.header, 4), 1); // batch edges
+        assert_eq!(rd32(&enc.header, 8), 1); // resolved rows
+        assert_eq!(rd32(&enc.header, 12), 1); // failed rows
+        assert_eq!(rd32(&enc.header, 16), 2); // sweeps
+        assert_eq!(rd32(&enc.header, 20), 1); // stats
+        assert_eq!(enc.edges.len(), 2 * RESOLVE_EDGE_ROW_SIZE);
+        assert_eq!(enc.refs.len(), 2 * RESOLVE_OUT_REF_ROW_SIZE);
+        assert_eq!(enc.files.len(), 2 * RESOLVE_SWEEP_ROW_SIZE);
+        assert_eq!(enc.stats.len(), RESOLVE_STAT_ROW_SIZE);
+        // sweep ranges index past the batch edges.
+        assert_eq!(rd32(&enc.files, 8), 1);
+        assert_eq!(rd32(&enc.files, 12), 2);
+        assert_eq!(rd32(&enc.files, 24 + 8), 2);
+        assert_eq!(rd32(&enc.files, 24 + 12), 2);
+        // resolved flag 1 / failed flag 2 lead their rows.
+        assert_eq!(enc.refs[0], 1);
+        assert_eq!(enc.refs[RESOLVE_OUT_REF_ROW_SIZE], 2);
+    }
+
+    #[test]
+    fn contract_info_shape() {
+        let info = resolve_contract_info();
+        assert_eq!(info.resolve_abi, 1);
+        assert!(info.strategies.iter().any(|s| s == "pick-best-candidate"));
+        assert!(info.resolver_rank.contains(&"import:6".to_string()));
+        assert!(info.resolver_rank.contains(&"fuzzy:0".to_string()));
+        assert!(info.builtins_version.starts_with("builtin-tables-v1-"));
+        assert_eq!(info.ref_row_size, RESOLVE_REF_ROW_SIZE as u32);
+        assert_eq!(info.edge_row_size, RESOLVE_EDGE_ROW_SIZE as u32);
     }
 }
 

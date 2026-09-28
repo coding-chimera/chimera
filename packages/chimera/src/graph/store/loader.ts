@@ -36,6 +36,12 @@ import { createRequire } from 'module';
 import { NODE_KINDS } from '../types';
 import { EDGE_KINDS } from '../extraction/kernel/layout';
 import { STORE_ABI_VERSION, STORE_NODE_ROW_SIZE, type StoreBuffers } from './layout';
+import {
+  RESOLVE_EDGE_ROW_SIZE,
+  RESOLVE_REF_ROW_SIZE,
+  type ResolveBuffersIn,
+  type ResolveBuffersOut,
+} from '../resolution/resolve-encode';
 
 /** Opaque napi StoreHandle (one handle = one graph root = one SQLite connection). */
 export type StoreHandle = object;
@@ -193,6 +199,7 @@ export function storeEnabled(): boolean {
 export function resetStoreForTests(): void {
   cached = undefined;
   ctxCached = undefined;
+  resolveCached = undefined;
 }
 
 /**
@@ -203,6 +210,7 @@ export function resetStoreForTests(): void {
 export function setStoreModuleForTests(mod: StoreModule | null): void {
   cached = mod;
   ctxCached = undefined;
+  resolveCached = undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -373,4 +381,185 @@ export function ctxEnabled(): boolean {
 /** Test hook: install a fake CtxModule projection (null clears). */
 export function setCtxModuleForTests(mod: CtxModule | null): void {
   ctxCached = mod;
+}
+
+// ---------------------------------------------------------------------------
+// R3c resolution-batch surface (resolver.rs) — the resolve exports live in
+// the SAME codegraph-kernel.node, so the search/dlopen/cache above is
+// reused; only the contract gate and kill switch are resolve-specific.
+// ---------------------------------------------------------------------------
+
+/** Must equal resolver.rs RESOLVE_ABI_VERSION. */
+export const RESOLVE_ABI_VERSION = 1;
+
+export type ResolveHandle = object;
+
+export interface ResolveContractInfo {
+  resolveAbi: number;
+  resolveVersion: string;
+  strategies: string[];
+  resolverRank: string[];
+  builtinsVersion: string;
+  ambiguousNameCeiling: number;
+  refRowSize: number;
+  edgeRowSize: number;
+}
+
+/** The resolve export surface of codegraph-kernel.node (napi camelCase). */
+export interface ResolveModule {
+  resolveContractInfo(): ResolveContractInfo;
+  resolveOpen(ctx: CtxHandle): ResolveHandle;
+  resolveBatch(ctx: CtxHandle, handle: ResolveHandle, batch: ResolveBuffersIn): ResolveBuffersOut;
+  resolveClose?(handle: ResolveHandle): void;
+}
+
+/**
+ * The fork-side strategy manifest (R3c contract gate, the loader.ts:150-167
+ * kind-table discipline): kernel ⊆ fork refuses unknown strategies, fork ⊆
+ * kernel guarantees the routing never silently drops a TS strategy. v1
+ * freezes the two sets equal; a future fork-only strategy trims the
+ * required direction deliberately (with the parity harness re-run).
+ */
+export const RESOLVE_TS_STRATEGY_TABLE: readonly string[] = [
+  'file-path',
+  'qualified-name',
+  'cpp-call-chain',
+  'scoped-call-chain',
+  'dotted-call-chain',
+  'store-accessor-chain',
+  'method-call',
+  'method-call-by-declaration',
+  'method-call-by-param-type',
+  'object-literal-member',
+  'rust-self-call',
+  'rust-self-field-call',
+  'ts-this-field-call',
+  'java-field-receiver',
+  'exact-match',
+  'fuzzy',
+  'function-ref',
+  'js-store-binding',
+  'this-member-fn-ref',
+  'import-precomputed',
+  'jvm-import-precomputed',
+  'framework-precomputed',
+  'visible-across-files',
+  'cross-file-reachable',
+  'import-veto',
+  'builtin-external-prefilter',
+  'known-names-prefilter',
+  'create-edges',
+  'dedupe-symbol-import-edges',
+  'materialize-file-level-import-edges',
+  'pick-best-candidate',
+];
+
+/** The fork's RESOLVER_RANK (resolution/index.ts) — the kernel must report
+ *  the identical evidence-class ordering (arbitration is load-bearing). */
+export const RESOLVE_EXPECTED_RANK: Readonly<Record<string, number>> = {
+  import: 6,
+  'qualified-name': 5,
+  'exact-match': 4,
+  'function-ref': 4,
+  'instance-method': 3,
+  'file-path': 2,
+  framework: 1,
+  fuzzy: 0,
+};
+
+const resolveDebugEnabled = () => process.env.CODEGRAPH_RESOLVE_DEBUG === '1';
+export function resolveDebug(msg: string): void {
+  if (resolveDebugEnabled()) process.stderr.write(`[CodeGraph] resolve: ${msg}\n`);
+}
+
+/**
+ * Verify the resolve contract: ABI equality, wire row-size identity with the
+ * TS encoder constants, strategy-manifest reconciliation (both directions),
+ * and RESOLVER_RANK equality. Any mismatch → the resolve arm stays TS.
+ */
+export function verifyResolveContract(info: ResolveContractInfo): boolean {
+  if (info.resolveAbi !== RESOLVE_ABI_VERSION) {
+    resolveDebug(`resolve ABI ${info.resolveAbi} != expected ${RESOLVE_ABI_VERSION} — ignoring resolve module`);
+    return false;
+  }
+  if (info.refRowSize !== RESOLVE_REF_ROW_SIZE || info.edgeRowSize !== RESOLVE_EDGE_ROW_SIZE) {
+    resolveDebug(
+      `resolve row sizes ${info.refRowSize}/${info.edgeRowSize} != TS encoder ${RESOLVE_REF_ROW_SIZE}/${RESOLVE_EDGE_ROW_SIZE} — ignoring resolve module`
+    );
+    return false;
+  }
+  const kernelOnly = info.strategies.filter((s) => !RESOLVE_TS_STRATEGY_TABLE.includes(s));
+  const missing = RESOLVE_TS_STRATEGY_TABLE.filter((s) => !info.strategies.includes(s));
+  if (kernelOnly.length > 0 || missing.length > 0) {
+    resolveDebug(
+      `resolve strategy manifest mismatch (kernel-only: '${kernelOnly.join("', '")}'; missing: '${missing.join("', '")}') — ignoring resolve module`
+    );
+    return false;
+  }
+  const expectedKeys = Object.keys(RESOLVE_EXPECTED_RANK);
+  if (info.resolverRank.length !== expectedKeys.length) {
+    resolveDebug(`resolve RESOLVER_RANK has ${info.resolverRank.length} entries, expected ${expectedKeys.length}`);
+    return false;
+  }
+  for (const entry of info.resolverRank) {
+    const sep = entry.lastIndexOf(':');
+    const key = entry.slice(0, sep);
+    const rank = Number(entry.slice(sep + 1));
+    if (RESOLVE_EXPECTED_RANK[key] !== rank) {
+      resolveDebug(`resolve RESOLVER_RANK mismatch on '${entry}'`);
+      return false;
+    }
+  }
+  return true;
+}
+
+let resolveCached: ResolveModule | null | undefined;
+
+/**
+ * The verified resolve projection of the loaded addon (same require cache as
+ * getStoreModule). Null when the binary predates R3c, the contract
+ * mismatches, or the store module itself is unavailable — every case keeps
+ * the TS resolveAndPersistBatched arm silently.
+ */
+export function getResolveModule(): ResolveModule | null {
+  if (resolveCached !== undefined) return resolveCached;
+  resolveCached = null;
+  const base = getStoreModule() as unknown as Partial<ResolveModule> | null;
+  if (!base) return null;
+  if (
+    typeof base.resolveContractInfo !== 'function' ||
+    typeof base.resolveOpen !== 'function' ||
+    typeof base.resolveBatch !== 'function'
+  ) {
+    resolveDebug('kernel binary has no resolve exports (pre-R3c) — resolve arm stays TS');
+    return null;
+  }
+  try {
+    const info = base.resolveContractInfo();
+    if (!verifyResolveContract(info)) {
+      resolveDebug(`resolve ${info.resolveVersion}: contract mismatch — resolve arm stays TS`);
+      return null;
+    }
+    resolveDebug(
+      `resolve module verified (resolve ${info.resolveVersion}, abi ${info.resolveAbi}, ${info.strategies.length} strategies, ${info.builtinsVersion}, ceiling ${info.ambiguousNameCeiling})`
+    );
+    resolveCached = base as ResolveModule;
+  } catch (err) {
+    resolveDebug(`resolveContractInfo failed — ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return resolveCached;
+}
+
+/**
+ * Per-call routing gate: CODEGRAPH_RESOLVE=0 kill switch (checked per call
+ * so tests/embedders can flip it at runtime) AND a contract-verified module.
+ */
+export function resolveEnabled(): boolean {
+  if (process.env.CODEGRAPH_RESOLVE === '0') return false;
+  return getResolveModule() !== null;
+}
+
+/** Test hook: install a fake ResolveModule projection (null clears). */
+export function setResolveModuleForTests(mod: ResolveModule | null): void {
+  resolveCached = mod;
 }
