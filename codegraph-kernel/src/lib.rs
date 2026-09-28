@@ -46,6 +46,13 @@ mod php;
 mod rlang;
 mod ruby;
 mod resolver_ctx;
+// R3c-1: internal resolution strategy tree (name-matcher + resolveOne). No
+// napi export yet — unreachable from any exported entry point until R3c-2
+// wires the resolve_batch face, so the whole module is dead code at build
+// time (exercised by cargo tests only). Allow rather than leave a wall of
+// dead_code warnings.
+#[allow(dead_code)]
+mod resolver;
 mod rustlang;
 mod scala;
 mod stack;
