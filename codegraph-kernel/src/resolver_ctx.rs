@@ -429,7 +429,7 @@ pub(crate) struct ImportMapping {
 
 /// ReExport (resolution/types.ts:249-263).
 #[derive(Clone, PartialEq, Debug)]
-enum ReExport {
+pub(crate) enum ReExport {
     Named { exported_name: String, original_name: String, source: String },
     Wildcard { source: String },
 }
@@ -970,7 +970,7 @@ impl CtxConn {
     }
 
     /// getReExports (resolution/index.ts:403-414).
-    fn re_exports(&mut self, file_path: &str, language: &str) -> Result<Vec<ReExport>> {
+    pub(crate) fn re_exports(&mut self, file_path: &str, language: &str) -> Result<Vec<ReExport>> {
         self.refresh()?;
         let key = file_path.to_string();
         if let Some(hit) = self.re_export_cache.get(&key) {
@@ -1067,30 +1067,46 @@ impl CtxConn {
     pub(crate) fn nodes_in_file(&mut self, file_path: &str) -> Result<Vec<CtxNode>> {
         self.nodes_single(file_path, NodeQuery::InFile)
     }
+
+    /// files-table record language (materializeFileLevelImportEdges reads
+    /// getFileByPath only for its language + record-existence). None = no
+    /// record — the sweep skips the file exactly like the TS `continue`.
+    pub(crate) fn file_record_language(&mut self, file_path: &str) -> Result<Option<String>> {
+        self.refresh()?;
+        let mut stmt = self
+            .conn()?
+            .prepare_cached("SELECT language FROM files WHERE path = ?1")
+            .map_err(err)?;
+        let mut rows = stmt
+            .query(rusqlite::params![file_path])
+            .map_err(err)?
+            .mapped(|r| r.get::<_, String>(0));
+        rows.next().transpose().map_err(err)
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Wire encoders
 // ---------------------------------------------------------------------------
 
-fn push_u32(b: &mut Vec<u8>, v: u32) {
+pub(crate) fn push_u32(b: &mut Vec<u8>, v: u32) {
     b.extend_from_slice(&v.to_le_bytes());
 }
 
-fn put_str(arena: &mut Vec<u8>, s: &str) -> (u32, u32) {
+pub(crate) fn put_str(arena: &mut Vec<u8>, s: &str) -> (u32, u32) {
     let off = arena.len() as u32;
     arena.extend_from_slice(s.as_bytes());
     (off, s.len() as u32)
 }
 
-fn put_opt_str(arena: &mut Vec<u8>, s: Option<&str>) -> (u32, u32) {
+pub(crate) fn put_opt_str(arena: &mut Vec<u8>, s: Option<&str>) -> (u32, u32) {
     match s {
         Some(s) => put_str(arena, s),
         None => (NONE, 0),
     }
 }
 
-fn push_str_ref(b: &mut Vec<u8>, r: (u32, u32)) {
+pub(crate) fn push_str_ref(b: &mut Vec<u8>, r: (u32, u32)) {
     push_u32(b, r.0);
     push_u32(b, r.1);
 }
@@ -1346,7 +1362,7 @@ pub struct CtxHandle {
 }
 
 impl CtxHandle {
-    fn with<T>(&self, f: impl FnOnce(&mut CtxConn) -> Result<T>) -> Result<T> {
+    pub(crate) fn with<T>(&self, f: impl FnOnce(&mut CtxConn) -> Result<T>) -> Result<T> {
         if self.poisoned.load(Ordering::Relaxed) {
             return Err(Error::from_reason("ctx handle is poisoned by an earlier panic; reopen it"));
         }

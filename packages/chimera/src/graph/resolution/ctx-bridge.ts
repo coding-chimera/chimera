@@ -247,4 +247,14 @@ export class CtxBridge {
     this.callCount++;
     return this.mod.ctxGetProjectRoot(this.handle);
   }
+
+  /**
+   * (R3c) The raw napi CtxHandle for the symbiotic resolve handle —
+   * resolve_open borrows this handle's CtxConn per batch call (the Rust
+   * ResolveHandle holds strategy memos only). Null once closed. Internal
+   * to the graph package; not a public capability.
+   */
+  rawCtxHandle(): CtxHandle | null {
+    return this.closed ? null : this.handle;
+  }
 }

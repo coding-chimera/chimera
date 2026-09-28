@@ -40,6 +40,8 @@ import type { ReExport } from './types';
 import { LRUCache } from './lru-cache';
 import { createYielder, type MaybeYield } from './cooperative-yield';
 import { CtxBridge, isCtxWireError } from './ctx-bridge';
+import { ResolveBridge, isResolveWireError } from './resolve-bridge';
+import type { DecodedBatch } from './resolve-encode';
 
 /**
  * Cache size limits. Each per-resolver cache is bounded so memory
@@ -178,6 +180,15 @@ export class ReferenceResolver {
    * getGoModule, getCppIncludeDirs, resolveImport) ALWAYS keep the TS arm.
    */
   private ctx: CtxBridge | null = null;
+  /**
+   * (R3c) Native resolve-batch arm. Null when the ctx bridge is unavailable
+   * (the resolve handle borrows the ctx read connection), CODEGRAPH_RESOLVE=0,
+   * missing/pre-R3c binary, contract mismatch, or resolve_open failure. When
+   * live(), resolveAndPersistBatched routes each batch through resolve_batch
+   * (per-batch TS fallback on failure) and resolveOne REFUSES direct TS calls
+   * — the batch already consumed the ref's strategy budget natively.
+   */
+  private resolve: ResolveBridge | null = null;
   // tsconfig/jsconfig path-alias map. `undefined` = not yet computed,
   // `null` = computed and absent. Treated as immutable for the
   // resolver's lifetime; callers re-create the resolver if config changes.
@@ -206,6 +217,9 @@ export class ReferenceResolver {
     // closures see it. Symbiotic with the QueryBuilder's store bridge: null
     // store bridge (readOnly/crossProject/kill-switched) ⇒ null ctx.
     this.ctx = CtxBridge.open(queries.getStoreBridge(), projectRoot);
+    // (R3c) Native batch arm — symbiotic with the ctx bridge (resolve_open
+    // borrows its handle); null ctx ⇒ null resolve arm.
+    this.resolve = ResolveBridge.open(this.ctx);
 
     this.context = this.createContext();
   }
@@ -217,6 +231,10 @@ export class ReferenceResolver {
    * pairing). Idempotent; the resolver stays usable on the TS arm after.
    */
   dispose(): void {
+    // (R3c) The resolve handle borrows the ctx read connection — close it
+    // FIRST (R1 pairing), then the ctx, then (via QueryBuilder) the store.
+    this.resolve?.close();
+    this.resolve = null;
     this.ctx?.close();
     this.ctx = null;
   }
@@ -224,6 +242,11 @@ export class ReferenceResolver {
   /** The native read-context bridge (null = TS arm) — tests/status introspection. */
   getCtxBridge(): CtxBridge | null {
     return this.ctx;
+  }
+
+  /** (R3c) The native batch bridge (null = TS arm) — tests/status introspection. */
+  getResolveBridge(): ResolveBridge | null {
+    return this.resolve;
   }
 
   /**
@@ -584,7 +607,7 @@ export class ReferenceResolver {
 
     for (let i = 0; i < refs.length; i++) {
       const ref = refs[i]!; // Array index is guaranteed to be in bounds
-      const result = this.resolveOne(ref);
+      const result = this.resolveOneCore(ref);
 
       if (result) {
         resolved.push(result);
@@ -651,7 +674,7 @@ export class ReferenceResolver {
 
     for (let i = 0; i < refs.length; i++) {
       const ref = refs[i]!; // Array index is guaranteed to be in bounds
-      const result = this.resolveOne(ref);
+      const result = this.resolveOneCore(ref);
 
       if (result) {
         resolved.push(result);
@@ -673,6 +696,64 @@ export class ReferenceResolver {
         byMethod,
       },
     };
+  }
+
+  /**
+   * (R3c) Attempt the native batch arm: Plan A precompute (TS reads through
+   * the SAME ResolutionContext) → ONE resolve_batch crossing → decoded
+   * persist plan + the ResolutionResult view the shared aggregation needs.
+   * Null when the arm is not live or the crossing failed — the caller falls
+   * back to the TS batch for THIS batch (wire-shaped failures sticky-disable
+   * the bridge: a systematic bug degrades once, not per call).
+   */
+  private async tryNativeBatch(
+    batch: UnresolvedReference[],
+    maybeYield: MaybeYield
+  ): Promise<{ result: ResolutionResult; decoded: DecodedBatch } | null> {
+    if (!this.resolve?.live()) return null;
+    try {
+      // Same denormalization as resolveBatchYielding — the wire carries the
+      // final per-ref values the TS arm would resolveOne with.
+      const refs: UnresolvedRef[] = batch.map((ref) => ({
+        id: ref.id,
+        fromNodeId: ref.fromNodeId,
+        referenceName: ref.referenceName,
+        referenceKind: ref.referenceKind,
+        line: ref.line,
+        column: ref.column,
+        filePath: ref.filePath || this.getFilePathFromNodeId(ref.fromNodeId),
+        language: ref.language || this.getLanguageFromNodeId(ref.fromNodeId),
+      }));
+      const decoded = this.resolve.resolveBatch(refs, {
+        context: this.context,
+        frameworks: this.frameworks,
+        gateKeep: (ref, claims) => this.resolveOneKeepGate(ref, claims),
+      });
+      await maybeYield();
+      return {
+        result: {
+          // The batched path persists from the decoded plan, not from these
+          // arrays (resolveAndPersistBatched already returns empty arrays).
+          resolved: [],
+          unresolved: [],
+          stats: {
+            total: decoded.stats.total,
+            resolved: decoded.stats.resolved,
+            unresolved: decoded.stats.unresolved,
+            byMethod: { ...decoded.stats.byMethod },
+          },
+        },
+        decoded,
+      };
+    } catch (err) {
+      if (isResolveWireError(err)) {
+        this.resolve?.disable(err instanceof Error ? err.message : String(err));
+      }
+      logDebug('native resolve batch failed — falling back to the TS arm for this batch', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
   }
 
   /**
@@ -741,12 +822,49 @@ export class ReferenceResolver {
   }
 
   /**
+   * (R3c) resolveOne's drop gates as a pure predicate — used by resolveOne
+   * itself AND by the native batch precompute (the Plan A tables must only
+   * pay strategy costs for refs that survive the gates, keeping the TS-side
+   * strategy call set identical to the TS arm). `claims` collects the names
+   * claimsReference opted into (the prefilter escape must cross the wire).
+   */
+  private resolveOneKeepGate(ref: UnresolvedRef, claims?: Set<string>): boolean {
+    if (this.isBuiltInOrExternal(ref)) return false;
+    if (this.hasAnyPossibleMatch(ref.referenceName)) return true;
+    if (this.matchesAnyImport(ref)) return true;
+    for (const f of this.frameworks) {
+      if (f.claimsReference?.(ref.referenceName)) {
+        claims?.add(ref.referenceName);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
    * Resolve a single reference. Strategies produce candidates tagged with an
    * evidence category (`resolvedBy`); the strongest evidence class wins (see
    * {@link RESOLVER_RANK}), with ties broken by file/language proximity to the
    * reference rather than any numeric scoring.
    */
   resolveOne(ref: UnresolvedRef): ResolvedRef | null {
+    // (R3c) With the native batch arm live this ref's strategies were
+    // consumed inside resolve_batch (the batch loop persisted the results) —
+    // resolving again here would double-write edges. The batch loop only
+    // routes while live(); a dead bridge keeps the full TS behavior. The
+    // internal TS arms (resolveAll, resolveBatchYielding) are the FALLBACK
+    // path, not a double writer — they call resolveOneCore directly.
+    if (this.resolve?.live()) return null;
+    return this.resolveOneCore(ref);
+  }
+
+  /**
+   * The single-ref TS strategy tree without the native-arm guard — shared
+   * body of the public resolveOne and the two internal TS batch arms (the
+   * per-batch fallback after a native failure must never be vetoed by the
+   * double-write guard: those refs were NOT consumed natively).
+   */
+  private resolveOneCore(ref: UnresolvedRef): ResolvedRef | null {
     // Skip built-in/external references
     if (this.isBuiltInOrExternal(ref)) {
       return null;
@@ -1237,7 +1355,25 @@ export class ReferenceResolver {
     // regular window between references and between persistence chunks.
     const maybeYield = createYielder();
 
-    this.warmCaches();
+    if (this.resolve?.live()) {
+      // (R3c) Native arm: warm ONLY the Rust-side knownFiles/knownNames
+      // indexes. The JS Set projections are skipped — the ~85MB-heap win the
+      // R3b note (warmCaches) deferred to this baton. A batch that falls
+      // back to TS builds them lazily via warmCaches() below.
+      if (this.ctx?.live()) {
+        try {
+          this.ctx.warm();
+          this.cachesWarmed = false;
+        } catch (err) {
+          this.handleCtxFailure(err);
+          this.warmCaches();
+        }
+      } else {
+        this.warmCaches();
+      }
+    } else {
+      this.warmCaches();
+    }
 
     const total = this.queries.getUnresolvedReferencesCount();
     let remaining = total;
@@ -1260,11 +1396,16 @@ export class ReferenceResolver {
       const batch = this.queries.getUnresolvedReferencesBatch(0, batchSize);
       if (batch.length === 0) break;
 
-      const result = await this.resolveBatchYielding(batch, maybeYield);
+      // (R3c) Native batch arm: ONE crossing resolves the whole batch
+      // (createEdges + the per-batch file-level import sweep included) and
+      // returns the persist plan; persistence below runs through the
+      // existing arms. Any failure falls back to the TS batch for THIS batch.
+      const native = await this.tryNativeBatch(batch, maybeYield);
+      const result = native ? native.result : await this.resolveBatchYielding(batch, maybeYield);
 
       // Persist edges immediately in bounded sub-transactions with yields
       // between chunks so a large batch never monopolizes the event loop.
-      const edges = this.createEdges(result.resolved);
+      const edges = native ? native.decoded.batchEdges : this.createEdges(result.resolved);
       for (let i = 0; i < edges.length; i += persistenceChunkSize) {
         this.queries.insertEdges(edges.slice(i, i + persistenceChunkSize));
         await maybeYield();
@@ -1272,7 +1413,20 @@ export class ReferenceResolver {
       // Materialize file-level import edges scoped to this batch's files;
       // delete-then-insert keeps it idempotent across repeated batches.
       const batchFilePaths = [...new Set(batch.map((ref) => ref.filePath || this.getFilePathFromNodeId(ref.fromNodeId)))];
-      this.materializeFileLevelImportEdges(batchFilePaths);
+      if (native) {
+        // The Rust sweep already computed the delete-then-insert rows for
+        // these files — apply them through the existing arms (the TS
+        // materialize would recompute the identical edge set).
+        const sweepEdges: Edge[] = [];
+        for (const sweep of native.decoded.sweeps) {
+          this.queries.deleteFileLevelImportEdgesBySource(sweep.sourceNodeId);
+          sweepEdges.push(...sweep.edges);
+        }
+        if (sweepEdges.length > 0) this.queries.insertEdges(sweepEdges);
+        await maybeYield();
+      } else {
+        this.materializeFileLevelImportEdges(batchFilePaths);
+      }
       for (const batchPath of batchFilePaths) importEdgeSweptFiles.add(batchPath);
 
       // Resolved rows are deleted; unresolvable ones are parked as
@@ -1282,16 +1436,23 @@ export class ReferenceResolver {
       // loaded from the database carry stable IDs; tuple delete remains the
       // compatibility path.
       let consumed = 0;
-      const resolvedRefs = result.resolved.map((ref) => ref.original);
+      const resolvedRefs = native
+        ? // Wire rows carry exactly the fields deleteUnresolvedReferences
+          // reads (id? + the tuple); the full UnresolvedRef fields were
+          // consumed inside the native batch.
+          (native.decoded.resolved as unknown as UnresolvedRef[])
+        : result.resolved.map((ref) => ref.original);
       for (let i = 0; i < resolvedRefs.length; i += persistenceChunkSize) {
         consumed += this.deleteUnresolvedReferences(resolvedRefs.slice(i, i + persistenceChunkSize));
         await maybeYield();
       }
-      const unresolvedKeys = result.unresolved.map((ref) => ({
-        fromNodeId: ref.fromNodeId,
-        referenceName: ref.referenceName,
-        referenceKind: ref.referenceKind,
-      }));
+      const unresolvedKeys = native
+        ? native.decoded.failed
+        : result.unresolved.map((ref) => ({
+            fromNodeId: ref.fromNodeId,
+            referenceName: ref.referenceName,
+            referenceKind: ref.referenceKind,
+          }));
       for (let i = 0; i < unresolvedKeys.length; i += persistenceChunkSize) {
         const chunk = unresolvedKeys.slice(i, i + persistenceChunkSize);
         this.queries.markReferencesFailed(chunk);
