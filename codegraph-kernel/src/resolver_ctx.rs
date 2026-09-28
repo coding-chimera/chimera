@@ -193,7 +193,7 @@ fn err(e: rusqlite::Error) -> Error {
 /// Insertion-ordered LRU: `get` refreshes recency, `set` on an existing key
 /// refreshes, eviction (oldest first) happens only when a NEW key lands in a
 /// full cache — exactly lru-cache.ts:29-57.
-struct Lru<K, V> {
+pub(crate) struct Lru<K, V> {
     map: HashMap<K, (u64, V)>,
     order: BTreeMap<u64, K>,
     next_seq: u64,
@@ -201,7 +201,7 @@ struct Lru<K, V> {
 }
 
 impl<K: Clone + Ord + Eq + std::hash::Hash, V> Lru<K, V> {
-    fn new(max: usize) -> Self {
+    pub(crate) fn new(max: usize) -> Self {
         Lru { map: HashMap::new(), order: BTreeMap::new(), next_seq: 0, max: max.max(1) }
     }
 
@@ -211,7 +211,7 @@ impl<K: Clone + Ord + Eq + std::hash::Hash, V> Lru<K, V> {
         self.map.len()
     }
 
-    fn get(&mut self, key: &K) -> Option<&V> {
+    pub(crate) fn get(&mut self, key: &K) -> Option<&V> {
         let old_seq = self.map.get(key)?.0;
         let seq = self.next_seq;
         self.next_seq += 1;
@@ -221,11 +221,11 @@ impl<K: Clone + Ord + Eq + std::hash::Hash, V> Lru<K, V> {
         Some(&self.map.get(key)?.1)
     }
 
-    fn has(&self, key: &K) -> bool {
+    pub(crate) fn has(&self, key: &K) -> bool {
         self.map.contains_key(key)
     }
 
-    fn set(&mut self, key: K, value: V) {
+    pub(crate) fn set(&mut self, key: K, value: V) {
         if let Some((old_seq, _)) = self.map.get(&key) {
             self.order.remove(old_seq);
         } else if self.map.len() >= self.max {
@@ -249,7 +249,7 @@ impl<K: Clone + Ord + Eq + std::hash::Hash, V> Lru<K, V> {
         self.order.values().next()
     }
 
-    fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.map.clear();
         self.order.clear();
     }
@@ -278,14 +278,14 @@ fn js_parse_int(raw: &str) -> Option<i64> {
 
 /// The JS whitespace set (`\s` + LineTerminators + ZWNBSP) — used by the
 /// parseInt port, the `.trim()` port and the regex class below.
-fn is_js_space(c: char) -> bool {
+pub(crate) fn is_js_space(c: char) -> bool {
     matches!(c,
         '\t' | '\n' | '\u{b}' | '\u{c}' | '\r' | ' ' | '\u{a0}' | '\u{1680}'
         | '\u{2000}'..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}'
         | '\u{205f}' | '\u{3000}' | '\u{feff}')
 }
 
-fn js_trim(s: &str) -> &str {
+pub(crate) fn js_trim(s: &str) -> &str {
     s.trim_matches(is_js_space)
 }
 
@@ -362,9 +362,9 @@ fn drive_prefix(p: &str) -> (&str, &str) {
 // ---------------------------------------------------------------------------
 
 /// JS `\s` as a regex class (Unicode set, matching String.prototype space).
-const S: &str = "[\t\n\u{b}\u{c}\r \u{a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}\u{feff}]";
+pub(crate) const S: &str = "[\t\n\u{b}\u{c}\r \u{a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}\u{feff}]";
 /// JS `\w` as a regex class (ASCII-only, unlike Rust's Unicode default).
-const W: &str = "[0-9A-Za-z_]";
+pub(crate) const W: &str = "[0-9A-Za-z_]";
 
 struct Pats {
     js_import: Regex,
@@ -419,12 +419,12 @@ fn pats() -> &'static Pats {
 /// ImportMapping (resolution/types.ts:229-242). resolved_path is never set by
 /// extractImportMappings — resolution fills it later, TS-side.
 #[derive(Clone, PartialEq, Debug)]
-struct ImportMapping {
-    local_name: String,
-    exported_name: String,
-    source: String,
-    is_default: bool,
-    is_namespace: bool,
+pub(crate) struct ImportMapping {
+    pub(crate) local_name: String,
+    pub(crate) exported_name: String,
+    pub(crate) source: String,
+    pub(crate) is_default: bool,
+    pub(crate) is_namespace: bool,
 }
 
 /// ReExport (resolution/types.ts:249-263).
@@ -666,29 +666,29 @@ fn extract_re_exports(content: &str, language: &str) -> Vec<ReExport> {
 /// One decoded `nodes` row (owned). rowToNode's source shape — the wire
 /// encoder maps Option None → NULL/absent; TS decoding does `?? undefined`.
 #[derive(Clone, PartialEq, Debug)]
-struct CtxNode {
-    id: String,
-    kind: String,
-    name: String,
-    qualified_name: String,
-    file_path: String,
-    language: String,
-    start_line: i64,
-    end_line: i64,
-    start_column: i64,
-    end_column: i64,
-    docstring: Option<String>,
-    signature: Option<String>,
-    visibility: Option<String>,
-    is_exported: i64,
-    is_async: i64,
-    is_static: i64,
-    is_abstract: i64,
-    decorators: Option<String>,
-    type_parameters: Option<String>,
-    return_type: Option<String>,
-    params_json: Option<String>,
-    updated_at: i64,
+pub(crate) struct CtxNode {
+    pub(crate) id: String,
+    pub(crate) kind: String,
+    pub(crate) name: String,
+    pub(crate) qualified_name: String,
+    pub(crate) file_path: String,
+    pub(crate) language: String,
+    pub(crate) start_line: i64,
+    pub(crate) end_line: i64,
+    pub(crate) start_column: i64,
+    pub(crate) end_column: i64,
+    pub(crate) docstring: Option<String>,
+    pub(crate) signature: Option<String>,
+    pub(crate) visibility: Option<String>,
+    pub(crate) is_exported: i64,
+    pub(crate) is_async: i64,
+    pub(crate) is_static: i64,
+    pub(crate) is_abstract: i64,
+    pub(crate) decorators: Option<String>,
+    pub(crate) type_parameters: Option<String>,
+    pub(crate) return_type: Option<String>,
+    pub(crate) params_json: Option<String>,
+    pub(crate) updated_at: i64,
 }
 
 /// Explicit column list in wire-row order (search_text excluded — rowToNode
@@ -774,7 +774,7 @@ fn query_strings(conn: &Connection, sql: &str) -> Result<Vec<String>> {
 // CtxConn — connection + caches
 // ---------------------------------------------------------------------------
 
-struct CtxConn {
+pub(crate) struct CtxConn {
     /// `None` after ctx_close; every entry point rejects via `conn()`.
     conn: Option<Connection>,
     project_root: String,
@@ -809,7 +809,7 @@ impl CtxConn {
         self.conn.as_ref().ok_or_else(closed_err)
     }
 
-    fn open(store: &StoreHandle, project_root: String) -> Result<Self> {
+    pub(crate) fn open(store: &StoreHandle, project_root: String) -> Result<Self> {
         // A closed store rejects ctx_open (StoreHandle.closed_err parity).
         let (db_path, store_gen) = store.with_conn(|c| {
             c.conn()?;
@@ -888,7 +888,7 @@ impl CtxConn {
     }
 
     /// fileExists (resolution/index.ts:306-322).
-    fn file_exists(&mut self, file_path: &str) -> Result<bool> {
+    pub(crate) fn file_exists(&mut self, file_path: &str) -> Result<bool> {
         self.refresh()?;
         if self.known_files.is_none() {
             self.known_files = Some(query_strings(self.conn()?, SQL_ALL_FILE_PATHS)?.into_iter().collect());
@@ -904,7 +904,7 @@ impl CtxConn {
     }
 
     /// readFile (resolution/index.ts:324-339) — failures cache None.
-    fn read_file(&mut self, file_path: &str) -> Result<Option<String>> {
+    pub(crate) fn read_file(&mut self, file_path: &str) -> Result<Option<String>> {
         self.refresh()?;
         if self.file_cache.has(&file_path.to_string()) {
             let key = file_path.to_string();
@@ -921,7 +921,7 @@ impl CtxConn {
 
     /// getFileLines (resolution/index.ts:420-433). Null content → [] WITHOUT
     /// a linesCache entry (TS early-returns before the set).
-    fn file_lines(&mut self, file_path: &str) -> Result<Vec<String>> {
+    pub(crate) fn file_lines(&mut self, file_path: &str) -> Result<Vec<String>> {
         self.refresh()?;
         let key = file_path.to_string();
         if let Some(lines) = self.lines_cache.get(&key) {
@@ -954,7 +954,7 @@ impl CtxConn {
 
     /// getImportMappings (resolution/index.ts:373-387) — key is filePath ONLY
     /// (TS quirk: the language argument never enters the cache key).
-    fn import_mappings(&mut self, file_path: &str, language: &str) -> Result<Vec<ImportMapping>> {
+    pub(crate) fn import_mappings(&mut self, file_path: &str, language: &str) -> Result<Vec<ImportMapping>> {
         self.refresh()?;
         let key = file_path.to_string();
         if let Some(hit) = self.import_mapping_cache.get(&key) {
@@ -985,7 +985,7 @@ impl CtxConn {
         Ok(re)
     }
 
-    fn get_node_by_id(&mut self, id: &str) -> Result<Option<CtxNode>> {
+    pub(crate) fn get_node_by_id(&mut self, id: &str) -> Result<Option<CtxNode>> {
         self.refresh()?;
         if let Some(hit) = self.by_id_cache.get(&id.to_string()) {
             return Ok(Some(hit.clone()));
@@ -1006,12 +1006,66 @@ impl CtxConn {
     }
 
     /// The knownNames index (getAllNodeNames projection), built on demand.
-    fn known_names(&mut self) -> Result<&HashSet<String>> {
+    pub(crate) fn known_names(&mut self) -> Result<&HashSet<String>> {
         self.refresh()?;
         if self.known_names.is_none() {
             self.known_names = Some(query_strings(self.conn()?, SQL_ALL_NODE_NAMES)?.into_iter().collect());
         }
         Ok(self.known_names.as_ref().expect("just built"))
+    }
+
+    // -------------------------------------------------------------------
+    // R3c resolver.rs in-crate read face — single-key getters over the SAME
+    // LRUs/SQL the batch cores use (nodes_batch_core caching discipline).
+    // Not napi-exported; internal to the crate.
+    // -------------------------------------------------------------------
+
+    /// (store generation, local epoch) — the resolver's memo-staleness key.
+    /// Mirrors the clearCaches/clearNameMatcherMemos pairing: when this key
+    /// changes, strategy memos derived from files/nodes must die too.
+    pub(crate) fn invalidation_key(&self) -> (u64, u64) {
+        (self.store_gen.load(Ordering::Relaxed), self.epoch)
+    }
+
+    fn nodes_single(&mut self, key: &str, q: NodeQuery) -> Result<Vec<CtxNode>> {
+        self.refresh()?;
+        let hit = match q {
+            NodeQuery::ByName => self.name_cache.get(&key.to_string()).cloned(),
+            NodeQuery::ByQualifiedName => self.qualified_name_cache.get(&key.to_string()).cloned(),
+            NodeQuery::ByLowerName => self.lower_name_cache.get(&key.to_string()).cloned(),
+            NodeQuery::InFile => self.node_cache.get(&key.to_string()).cloned(),
+        };
+        if let Some(rows) = hit {
+            return Ok(rows);
+        }
+        let rows = query_nodes(self.conn()?, q.sql(), key)?;
+        match q {
+            NodeQuery::ByName => self.name_cache.set(key.to_string(), rows.clone()),
+            NodeQuery::ByQualifiedName => self.qualified_name_cache.set(key.to_string(), rows.clone()),
+            NodeQuery::ByLowerName => self.lower_name_cache.set(key.to_string(), rows.clone()),
+            NodeQuery::InFile => self.node_cache.set(key.to_string(), rows.clone()),
+        }
+        Ok(rows)
+    }
+
+    /// getNodesByName single key — `ORDER BY file_path, start_line` (CG-33).
+    pub(crate) fn nodes_by_name(&mut self, name: &str) -> Result<Vec<CtxNode>> {
+        self.nodes_single(name, NodeQuery::ByName)
+    }
+
+    /// getNodesByQualifiedNameExact single key (NO ORDER BY).
+    pub(crate) fn nodes_by_qualified_name(&mut self, qn: &str) -> Result<Vec<CtxNode>> {
+        self.nodes_single(qn, NodeQuery::ByQualifiedName)
+    }
+
+    /// getNodesByLowerName single key (SQLite ASCII lower() both sides).
+    pub(crate) fn nodes_by_lower_name(&mut self, name: &str) -> Result<Vec<CtxNode>> {
+        self.nodes_single(name, NodeQuery::ByLowerName)
+    }
+
+    /// getNodesByFile single key — `ORDER BY start_line`.
+    pub(crate) fn nodes_in_file(&mut self, file_path: &str) -> Result<Vec<CtxNode>> {
+        self.nodes_single(file_path, NodeQuery::InFile)
     }
 }
 
