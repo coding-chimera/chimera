@@ -453,3 +453,11 @@ loop 挂起修复前的对比基线（本机 macOS, bun 1.4.0, `bun test --timeo
 - **flake 登记**：session/prompt.test.ts 的 'command ! expansion' 入负载池（隔离 80/80 绿，全量撞 30s 超时；该文件单跑 72.7s）。全量收口 5689 pass/15 fail=14 环境基线+1 负载池。
 - **诚实记账**：R3b 内存收益本刀不达成（JS Set 投影待 R3c 内化 hasAnyPossibleMatch）；getter FFI 穿越开销验收=CI-only；R3c 前置=hasNames/fileExistsBatch 批量口已就绪。
 - pitfall：git push 管道接 head/tail 会 SIGPIPE 杀钩子进程——输出必须完整跑完；GitHub 推送 500 是瞬时故障，等 ~3min 重试即恢复。
+
+### R3c 收口——graph-engine Rust 化主战场完成（2026-09-24/28，origin/main=501d839b5）
+- **R3c-1**（`6c41ded9e`）：resolver.rs 5,451 行，30 入口全移植（18 match*+resolveOne 仲裁+RESOLVER_RANK+内建表），81/81 cargo；未接线模块经 LTO+strip 贡献 0 字节。**R3c-2**（`501d839b5`）：resolve_batch napi 面+主循环+TS 接线+resolution-parity harness——**8 面零 diff（边四元组/严格 metadata/unresolved 终态/stats），语义版本不 bump**；87/87 cargo、22/22 新测试、全 test/graph 零新增。bring-up 抓到三真 bug 已钉回归（resolveOne 双写守卫误杀回退臂/框架表位置键化/claimedNames 分支无关收集）。
+- **knownNames/knownFiles ~85MB JS 投影按构造消除**（native warm 路径不建 JS Set）——R3 目标①的内存主收益兑现点在此。
+- **终验**：源码全量重索引（全 native 臂）3,210 文件 56.9s vs 基线 84s=**1.48×**（节点 129k→140k 是当日语料增长）；全量 5711 pass/15 fail=14 环境+1 负载池（workspace-auth-refresh 新登记）。
+- **已重建+重安装全局二进制**（strings 验证 resolve_batch 在包内）——用户再重启一次宿主即全部生效。
+- 遗留：R3d（worker 线程迁移/残余 sweep 移植/非批量路径）/CI 8 腿重建+性能验收门（随 CI 批）/callback-synthesizer 移植决策（最后再议）/R5' 阶段 1+（CI-parked）/R6 冻结。
+- pitfall：macOS 无 timeout 命令；napi 导出名在 strings（注册串）不在 nm 符号表。
