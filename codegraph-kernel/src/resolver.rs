@@ -392,6 +392,30 @@ fn js_family(lang: &str) -> bool {
     matches!(lang, "typescript" | "tsx" | "javascript" | "jsx")
 }
 
+/// resolution/types.ts SUPERTYPE_TARGET_KINDS — node kinds an
+/// extends/implements edge may legally target (#1536/#2029).
+fn supertype_target_kinds() -> &'static HashSet<&'static str> {
+    static T: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    T.get_or_init(|| {
+        set(&[
+            "class", "struct", "interface", "trait", "protocol", "enum", "union",
+            "type_alias", "component", "module", "namespace",
+        ])
+    })
+}
+
+/// resolution/types.ts isSupertypeTarget — Scala singleton objects are
+/// values, unlike inheritable Ruby modules (#2029).
+fn is_supertype_target(node: &CtxNode) -> bool {
+    supertype_target_kinds().contains(node.kind.as_str())
+        && !(node.language == "scala" && node.kind == "module")
+}
+
+/// resolution/types.ts isInheritanceRef.
+fn is_inheritance_ref(r: &RefIn) -> bool {
+    matches!(r.reference_kind.as_str(), "extends" | "implements")
+}
+
 /// name-matcher.ts:136 — PRIVATE_IS_FILE_LOCAL.
 fn private_is_file_local(lang: &str) -> bool {
     matches!(lang, "kotlin" | "java" | "csharp" | "swift" | "scala" | "dart" | "php")
@@ -2177,6 +2201,13 @@ impl Resolver {
         let mut candidates: Vec<CtxNode> = Vec::new();
         for n in all {
             if n.kind == "import" {
+                continue;
+            }
+            // Restrict the pool BEFORE ranking for inheritance refs
+            // (#1536/#2029) — mirrors name-matcher.ts's isSupertypeTarget
+            // filter: a same-named non-type (Scala companion object, Rust
+            // enum variant) must never win an extends/implements ref.
+            if is_inheritance_ref(r) && !is_supertype_target(&n) {
                 continue;
             }
             if r.reference_kind == "imports"
@@ -4327,7 +4358,9 @@ impl Resolver {
             if matches!(
                 class_node.kind.as_str(),
                 "class" | "struct" | "union" | "interface"
-            ) {
+            )
+                || (class_node.language == "scala" && class_node.kind == "module")
+            {
                 if class_node.language != r.language {
                     continue;
                 }
@@ -4363,7 +4396,9 @@ impl Resolver {
                 if matches!(
                     class_node.kind.as_str(),
                     "class" | "struct" | "union" | "interface"
-                ) {
+                )
+                    || (class_node.language == "scala" && class_node.kind == "module")
+                {
                     if class_node.language != r.language {
                         continue;
                     }
@@ -4832,7 +4867,20 @@ impl Resolver {
         }
         // Strongest evidence class wins; ties fall to same-file, then
         // same-language, then a deterministic id order.
-        self.pick_best_candidate(ctx, r, candidates)
+        let picked = self.pick_best_candidate(ctx, r, candidates)?;
+        // Inheritance refs may only land on real type definitions
+        // (#1536/#2029) — FINAL rejection, never a promoted runner-up.
+        // Mirrors resolution/index.ts resolveOneCore's post-validation.
+        if let Some(p) = &picked {
+            if is_inheritance_ref(r) {
+                if let Some(target) = ctx.get_node_by_id(&p.target_node_id)? {
+                    if !is_supertype_target(&target) {
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+        Ok(picked)
     }
 
     /// pickBestCandidate (index.ts:878-892).

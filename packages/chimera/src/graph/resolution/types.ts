@@ -261,3 +261,42 @@ export type ReExport =
       /** Module specifier of the upstream module. */
       source: string;
     };
+
+/**
+ * Node kinds an `extends`/`implements` edge may legally TARGET — the things a
+ * type can actually inherit from or conform to.
+ *
+ * Kept deliberately wide: `type_alias` because TS `class X implements
+ * SomeAliasedObjectType` is valid, `component` because a framework component
+ * node stands in for a class, and `module`/`namespace` because whole
+ * languages inherit from one — Ruby `include Trackable` targets a `module`,
+ * Erlang `-behaviour(gen_server)` targets the behaviour module, which Erlang
+ * extraction indexes as a `namespace`.
+ *
+ * Everything omitted (`enum_member`, `method`, `field`, `property`,
+ * `variable`, `constant`, `function`, `parameter`, `import`, `export`,
+ * `file`, `route`) can never be a supertype in any supported language, so an
+ * inheritance edge pointing at one is false data.
+ *
+ * Why this is needed: the name-matcher scores node kind as a BONUS,
+ * never a filter, and awards no bonus at all for inheritance refs — so a
+ * same-named non-type outranked (or, as the sole candidate, was adopted
+ * outright as) the real supertype. (Upstream #1536-era machinery; vendored
+ * here as the dependency of the #2029 Scala companion fix, which adds the
+ * isSupertypeTarget Scala-module carve-out below.)
+ */
+export const SUPERTYPE_TARGET_KINDS = new Set<Node['kind']>([
+  'class', 'struct', 'interface', 'trait', 'protocol', 'enum', 'union',
+  'type_alias', 'component', 'module', 'namespace',
+]);
+
+/** Scala singleton objects are values, unlike inheritable Ruby modules. */
+export function isSupertypeTarget(node: Node): boolean {
+  return SUPERTYPE_TARGET_KINDS.has(node.kind) &&
+    !(node.language === 'scala' && node.kind === 'module');
+}
+
+/** True for the reference kinds that assert an inheritance/conformance relation. */
+export function isInheritanceRef(ref: UnresolvedRef): boolean {
+  return ref.referenceKind === 'extends' || ref.referenceKind === 'implements';
+}
