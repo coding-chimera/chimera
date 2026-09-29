@@ -28,6 +28,15 @@ import { filterKernelRoutedLanguages, isKernelOnlyLanguageSet } from './kernel';
 import { extractWithDeferredGrammarLoad } from './deferred-grammar';
 import { logDebug, logWarn } from '../errors';
 import { validatePathWithinRoot, normalizePath } from '../utils';
+import {
+  MAX_SOURCE_FILE_SIZE_BYTES,
+  MPEG_TS_SNIFF_BYTES,
+  hasMpegTsExtension,
+  isMpegTransportStream,
+  oversizeStamp,
+  readBoundedSource,
+  readBoundedSourceSync,
+} from '../file-limits';
 import ignore, { Ignore } from 'ignore';
 import { detectFrameworks } from '../resolution/frameworks';
 import type { ResolutionContext } from '../resolution/types';
@@ -122,9 +131,31 @@ export function hashContent(content: string): string {
 /**
  * Skip files larger than this (bytes). Generated bundles, minified JS, and
  * vendored blobs blow the WASM heap and the worker-recycle budget for no useful
- * symbols. 1 MB covers essentially all hand-written source.
+ * symbols. 1 MB covers essentially all hand-written source. The limit and the
+ * bounded readers live in ../file-limits so every read site shares one number
+ * and an oversize file is never decoded (upstream #1910/#2082).
  */
-const MAX_FILE_SIZE = 1024 * 1024;
+const MAX_FILE_SIZE = MAX_SOURCE_FILE_SIZE_BYTES;
+
+/**
+ * What change detection hashes for a file: its text when it is under the size
+ * limit, the size stamp when it is over — an oversize file is never decoded.
+ * `null` when the bytes show a `.ts` file is an MPEG transport stream, not
+ * TypeScript (#1910): decided from the bytes already read, so it costs no
+ * extra I/O and runs only for a file that is new or changed.
+ */
+function readSourceOrStamp(fullPath: string): string | null {
+  const { stats, bytes } = readBoundedSourceSync(fullPath);
+  if (bytes === null) return oversizeStamp(stats.size);
+  return isMpegTsBytes(fullPath, bytes) ? null : bytes.toString('utf8');
+}
+
+/** Whether these bytes, read from `filePath`, are a `.ts` MPEG transport stream (#1910). */
+function isMpegTsBytes(filePath: string, bytes: Buffer): boolean {
+  if (!hasMpegTsExtension(filePath) || !isMpegTransportStream(bytes.subarray(0, MPEG_TS_SNIFF_BYTES))) return false;
+  logDebug('Skipping MPEG transport stream named .ts — not TypeScript', { filePath });
+  return true;
+}
 
 /**
  * Transient-error whitelist for the ordered-commit store call (P1 reliability
@@ -1062,7 +1093,10 @@ export class ExtractionOrchestrator {
         const full = validatePathWithinRoot(rootDir, relativePath);
         if (!full) return null;
         try {
-          return fs.readFileSync(full, 'utf-8');
+          // Framework detectors scan source by name; a file over the size
+          // limit was never indexed and must not be decoded here either
+          // (upstream #1910/#2082).
+          return readBoundedSourceSync(full).bytes?.toString('utf8') ?? null;
         } catch {
           return null;
         }
@@ -1401,27 +1435,44 @@ export class ExtractionOrchestrator {
             const fullPath = validatePathWithinRoot(this.rootDir, fp);
             if (!fullPath) {
               logWarn('Path traversal blocked in batch reader', { filePath: fp });
-              return { filePath: fp, content: null as string | null, stats: null as fs.Stats | null, error: new Error('Path traversal blocked') };
+              return { filePath: fp, content: null as string | null, stats: null as fs.Stats | null, error: new Error('Path traversal blocked'), skipped: false };
             }
-            const stats = await fsp.stat(fullPath);
-            if (stats.size > MAX_FILE_SIZE) {
-              return { filePath: fp, content: '', stats, error: null as Error | null };
+            // Bounded read: an oversize file is never decoded (#1910) — the
+            // descriptor is re-checked after open and the read stops one byte
+            // past the limit, so a file that grows mid-read is still gated.
+            const { stats, bytes } = await readBoundedSource(fullPath);
+            if (bytes === null) {
+              return { filePath: fp, content: '', stats, error: null as Error | null, skipped: false };
             }
-            const content = await fsp.readFile(fullPath, 'utf-8');
-            return { filePath: fp, content, stats, error: null as Error | null };
+            // A `.ts` that is really an MPEG transport stream (#1910) is
+            // recognised from the bytes already read — no extra I/O — and is
+            // never decoded, parsed, or counted as an unsupported language.
+            if (isMpegTsBytes(fp, bytes)) {
+              return { filePath: fp, content: null as string | null, stats: null as fs.Stats | null, error: null as Error | null, skipped: true };
+            }
+            const content = bytes.toString('utf-8');
+            return { filePath: fp, content, stats, error: null as Error | null, skipped: false };
           } catch (err) {
-            return { filePath: fp, content: null as string | null, stats: null as fs.Stats | null, error: err as Error };
+            return { filePath: fp, content: null as string | null, stats: null as fs.Stats | null, error: err as Error, skipped: false };
           }
         })
       );
 
       // Dispatch each readable file into the bounded parse window; the window
       // stores results on the main thread as they arrive.
-      for (const { filePath, content, stats, error } of fileContents) {
+      for (const { filePath, content, stats, error, skipped } of fileContents) {
         if (flushError) break;
         if (signal?.aborted) {
           aborted = true;
           break;
+        }
+
+        if (skipped) {
+          // Not a source file after all (#1910) — counted as done, stored as
+          // nothing, not tallied as an unsupported language.
+          processed++;
+          onProgress?.({ phase: 'parsing', current: processed, total });
+          continue;
         }
 
         // Report progress before parsing (show current file being worked on)
@@ -1472,6 +1523,9 @@ export class ExtractionOrchestrator {
     while (inFlight.size > 0) await Promise.race(inFlight);
     await flushOrdered();
     if (flushError) {
+      // Destroy the parse pool on the failure path too (upstream #2079):
+      // its worker threads would otherwise outlive the failed index.
+      if (pool) await pool.destroy();
       throw flushError instanceof Error ? flushError : new Error(String(flushError));
     }
 
@@ -1511,7 +1565,10 @@ export class ExtractionOrchestrator {
         try {
           const fullPath = validatePathWithinRoot(this.rootDir, filePath);
           if (!fullPath) continue;
-          content = await fsp.readFile(fullPath, 'utf-8');
+          // Bounded like the first read: the file may have grown since (#1910).
+          const bytes = (await readBoundedSource(fullPath)).bytes;
+          if (bytes === null) continue;
+          content = bytes.toString('utf8');
         } catch {
           continue;
         }
@@ -1556,7 +1613,10 @@ export class ExtractionOrchestrator {
           try {
             const fullPath = validatePathWithinRoot(this.rootDir, filePath);
             if (!fullPath) continue;
-            fullContent = await fsp.readFile(fullPath, 'utf-8');
+            // Bounded like the first read: the file may have grown since (#1910).
+            const bytes = (await readBoundedSource(fullPath)).bytes;
+            if (bytes === null) continue;
+            fullContent = bytes.toString('utf8');
           } catch {
             continue;
           }
@@ -1727,11 +1787,25 @@ export class ExtractionOrchestrator {
         continue;
       }
 
-      let content: string;
+      // Bounded + stamp-hashed read (#1910/#2082): an oversize file hashes as
+      // its size stamp, unread; `null` means a `.ts` that is really an MPEG
+      // transport stream — a new clip is ignored, a tracked file that became
+      // one is removed through the same path as a deletion.
+      let content: string | null;
       try {
-        content = fs.readFileSync(fullPath, 'utf-8');
+        content = readSourceOrStamp(fullPath);
       } catch (error) {
         logDebug('Skipping unreadable file during scoped sync', { filePath, error: String(error) });
+        continue;
+      }
+      if (content === null) {
+        if (tracked) {
+          for (const pair of this.queries.getNodeNamePairsByFiles([filePath])) pairsBefore.add(pair);
+          this.removeFileResurrectingRefs(filePath);
+          changedFilePaths.push(filePath);
+          changedFiles.push({ path: filePath, status: 'removed' });
+          filesRemoved++;
+        }
         continue;
       }
 
@@ -1808,12 +1882,18 @@ export class ExtractionOrchestrator {
       };
     }
 
-    // Read file content and stats
+    // Read file content and stats. An oversize file is stored as skipped
+    // without ever being decoded; a `.ts` MPEG transport stream is not
+    // TypeScript and bails before any parse (upstream #1910/#2082).
     let content: string;
     let stats: fs.Stats;
     try {
-      stats = await fsp.stat(fullPath);
-      content = await fsp.readFile(fullPath, 'utf-8');
+      const read = await readBoundedSource(fullPath);
+      stats = read.stats;
+      if (read.bytes !== null && isMpegTsBytes(relativePath, read.bytes)) {
+        return { nodes: [], edges: [], unresolvedReferences: [], errors: [], durationMs: 0 };
+      }
+      content = read.bytes === null ? oversizeStamp(stats.size) : read.bytes.toString('utf-8');
     } catch (error) {
       return {
         nodes: [],
@@ -2173,12 +2253,27 @@ export class ExtractionOrchestrator {
         }
       }
 
-      // New, or size/mtime changed — read + hash to confirm a real content change.
-      let content: string;
+      // New, or size/mtime changed — read + hash to confirm a real content
+      // change. Bounded + stamp-hashed (#1910/#2082): an oversize file hashes
+      // as its size stamp, unread.
+      let content: string | null;
       try {
-        content = fs.readFileSync(fullPath, 'utf-8');
+        content = readSourceOrStamp(fullPath);
       } catch (error) {
         logDebug('Skipping unreadable file during sync', { filePath, error: String(error) });
+        continue;
+      }
+      // Not source after all — an MPEG transport stream named `.ts` (#1910):
+      // a new one is ignored, a tracked file that became one is removed
+      // through the same path as a deletion.
+      if (content === null) {
+        if (tracked) {
+          for (const pair of this.queries.getNodeNamePairsByFiles([tracked.path])) pairsBefore.add(pair);
+          this.removeFileResurrectingRefs(tracked.path);
+          changedFilePaths.push(tracked.path);
+          changedFiles.push({ path: tracked.path, status: 'removed' });
+          filesRemoved++;
+        }
         continue;
       }
       const contentHash = hashContent(content);
@@ -2269,11 +2364,17 @@ export class ExtractionOrchestrator {
       // otherwise status reports them as pending forever. (See issue #206.)
       for (const filePath of [...gitChanges.modified, ...gitChanges.added]) {
         const fullPath = path.join(this.rootDir, filePath);
-        let content: string;
+        // Bounded + stamp-hashed (#1910/#2082); `null` = a `.ts` that is an
+        // MPEG transport stream — never pending, and gone when tracked.
+        let content: string | null;
         try {
-          content = fs.readFileSync(fullPath, 'utf-8');
+          content = readSourceOrStamp(fullPath);
         } catch (error) {
           logDebug('Skipping unreadable file while detecting changes', { filePath, error: String(error) });
+          continue;
+        }
+        if (content === null) {
+          if (this.queries.getFileByPath(filePath)) removed.push(filePath);
           continue;
         }
 
@@ -2314,11 +2415,17 @@ export class ExtractionOrchestrator {
     // Find added and modified files
     for (const filePath of currentFiles) {
       const fullPath = path.join(this.rootDir, filePath);
-      let content: string;
+      // Bounded + stamp-hashed (#1910/#2082); `null` = a `.ts` that is an
+      // MPEG transport stream — never pending, and gone when tracked.
+      let content: string | null;
       try {
-        content = fs.readFileSync(fullPath, 'utf-8');
+        content = readSourceOrStamp(fullPath);
       } catch (error) {
         logDebug('Skipping unreadable file while detecting changes', { filePath, error: String(error) });
+        continue;
+      }
+      if (content === null) {
+        if (trackedMap.get(filePath)) removed.push(filePath);
         continue;
       }
 
