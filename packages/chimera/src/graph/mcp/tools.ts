@@ -2622,10 +2622,36 @@ export class ToolHandler {
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
     // Default to false to minimize context usage
     const includeCode = args.includeCode === true;
-    const fileHint = typeof args.file === 'string' && args.file.trim() ? args.file.trim() : undefined;
-    const lineHint = typeof args.line === 'number' && args.line > 0 ? args.line : undefined;
+    let fileHint = typeof args.file === 'string' && args.file.trim() ? args.file.trim() : undefined;
+    let lineHint = typeof args.line === 'number' && args.line > 0 ? args.line : undefined;
 
     let matches = this.findSymbolMatches(cg, symbol);
+    if (matches.length === 0) {
+      // Accept a line-numbered file reference — `a.ts:12`, `a.ts:12-40`,
+      // `a.ts#L88`, `a.ts#L12-L40` (upstream #1831/#1836). Agents and humans
+      // paste these shapes constantly; the literal spelling is resolved
+      // FIRST, so a symbol genuinely named `foo:12` still wins. The stripped
+      // path becomes a file hint and the start line a line hint (explicit
+      // caller hints always win), feeding the same narrowing below.
+      const suffix = /(?::(\d+)(?:-(\d+))?|#L(\d+)(?:-L?(\d+))?)$/.exec(symbol);
+      const stripped = suffix ? symbol.slice(0, symbol.length - suffix[0].length) : '';
+      if (stripped) {
+        let retry = this.findSymbolMatches(cg, stripped);
+        if (retry.length === 0) {
+          // A whole-path reference (`src/app.ts`) matches no SYMBOL name —
+          // resolve it as the tracked file it is and offer its own symbols
+          // to the line-hint narrowing below.
+          const asFile = stripped.replace(/\\/g, '/').replace(/^(?:\.?\/)+/, '');
+          retry = cg.getNodesInFile(asFile);
+        }
+        if (retry.length > 0) {
+          const startLine = Number(suffix![1] ?? suffix![3]);
+          matches = retry;
+          fileHint = fileHint ?? stripped;
+          if (lineHint === undefined && Number.isFinite(startLine) && startLine > 0) lineHint = startLine;
+        }
+      }
+    }
     if (matches.length === 0) {
       return this.textResult(`Symbol "${symbol}" not found in the codebase`);
     }
