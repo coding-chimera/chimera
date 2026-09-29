@@ -266,7 +266,25 @@ describe('Resolution Module', () => {
       expect(matchMethodCall(methodCallRef('app.ts', 'x.t'), context)).toBeNull();
     });
 
-    it('binds a unique method when the receiver is imported (queue.push with import { queue })', () => {
+    it('binds a unique method when the receiver is imported (queue.enqueue with import { queue })', () => {
+      // #1987 note: the method name must not be a JS builtin method name —
+      // those are vetoed below Strategy 1 even for an imported receiver
+      // (upstream posture: an import binding of the RECEIVER is not evidence
+      // of its TYPE, and `queue.push` is Array-shaped enough to stay dark).
+      const enqueue = makeMethodNode('queue.ts', 'enqueue', 'Queue.enqueue');
+      const context: ResolutionContext = {
+        ...baseContext,
+        getNodesByName: (name) => (name === 'enqueue' ? [enqueue] : []),
+        getImportMappings: () => [
+          { localName: 'queue', exportedName: 'queue', source: './queue', isDefault: false, isNamespace: false },
+        ],
+      };
+      const result = matchMethodCall(methodCallRef('app.ts', 'queue.enqueue'), context);
+      expect(result?.targetNodeId).toBe('method:queue.ts:enqueue:1');
+      expect(result?.resolvedBy).toBe('instance-method');
+    });
+
+    it('vetoes a built-in method name even when the receiver is imported (#1987)', () => {
       const push = makeMethodNode('queue.ts', 'push', 'Queue.push');
       const context: ResolutionContext = {
         ...baseContext,
@@ -275,9 +293,7 @@ describe('Resolution Module', () => {
           { localName: 'queue', exportedName: 'queue', source: './queue', isDefault: false, isNamespace: false },
         ],
       };
-      const result = matchMethodCall(methodCallRef('app.ts', 'queue.push'), context);
-      expect(result?.targetNodeId).toBe('method:queue.ts:push:1');
-      expect(result?.resolvedBy).toBe('instance-method');
+      expect(matchMethodCall(methodCallRef('app.ts', 'queue.push'), context)).toBeNull();
     });
 
     it('binds a unique method when the candidate file is reachable through an import (store.fetchUser)', () => {
@@ -669,19 +685,21 @@ describe('Resolution Module', () => {
     });
 
     it('falls through a non-awaited Promise annotation without vetoing later strategies', () => {
-      // q holds the Promise, so Queue.push must not bind — and the type is
-      // NOT authoritative either (fall-through, not veto): Stack.push is the
-      // only method candidate and still gets its Strategy 3 chance.
+      // q holds the Promise, so Queue.enqueue must not bind — and the type is
+      // NOT authoritative either (fall-through, not veto): Stack.enqueue is
+      // the only method candidate and still gets its Strategy 3 chance.
+      // (#1987: the method name must be a non-builtin for Strategy 3 to see
+      // it at all — builtin names are vetoed after Strategy 1.)
       const context = declContext({
         'app.ts': [
           declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const q: Promise<Queue> = make()' }),
           declNode('class:app.ts:Queue', 'class', 'Queue', 'app.ts', 30),
           declNode('class:app.ts:Stack', 'class', 'Stack', 'app.ts', 40),
-          declNode('method:app.ts:push:41', 'method', 'push', 'app.ts', 41, { qualifiedName: 'Stack.push' }),
+          declNode('method:app.ts:enqueue:41', 'method', 'enqueue', 'app.ts', 41, { qualifiedName: 'Stack.enqueue' }),
         ],
       });
-      const result = matchMethodCall(declRef('app.ts', 'q.push', 5), context);
-      expect(result?.targetNodeId).toBe('method:app.ts:push:41');
+      const result = matchMethodCall(declRef('app.ts', 'q.enqueue', 5), context);
+      expect(result?.targetNodeId).toBe('method:app.ts:enqueue:41');
       expect(result?.resolvedBy).toBe('instance-method');
     });
 
@@ -806,18 +824,18 @@ describe('Resolution Module', () => {
 
     it('falls through an unpeelable union without vetoing later strategies', () => {
       // Red line: a multi-class union stays non-authoritative — with Queue
-      // declaring no push, the single Stack.push candidate must still get
-      // its Strategy 3 chance.
+      // declaring no enqueue, the single Stack.enqueue candidate must still
+      // get its Strategy 3 chance. (#1987: non-builtin method name required.)
       const context = declContext({
         'app.ts': [
           declNode('stmt:app.ts:3', 'statement', 'stmt@3:10', 'app.ts', 3, { signature: 'const x: Queue | Stack = pick()' }),
           declNode('class:app.ts:Queue', 'class', 'Queue', 'app.ts', 30),
           declNode('class:app.ts:Stack', 'class', 'Stack', 'app.ts', 40),
-          declNode('method:app.ts:push:41', 'method', 'push', 'app.ts', 41, { qualifiedName: 'Stack.push' }),
+          declNode('method:app.ts:enqueue:41', 'method', 'enqueue', 'app.ts', 41, { qualifiedName: 'Stack.enqueue' }),
         ],
       });
-      const result = matchMethodCall(declRef('app.ts', 'x.push', 5), context);
-      expect(result?.targetNodeId).toBe('method:app.ts:push:41');
+      const result = matchMethodCall(declRef('app.ts', 'x.enqueue', 5), context);
+      expect(result?.targetNodeId).toBe('method:app.ts:enqueue:41');
       expect(result?.resolvedBy).toBe('instance-method');
     });
 
