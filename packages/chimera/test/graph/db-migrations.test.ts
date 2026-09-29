@@ -69,6 +69,17 @@ function expectV12Objects(db: { prepare: (sql: string) => { all: () => unknown }
   expect(tableColumns(db, 'nodes')).toContain('params_json');
 }
 
+/** The v13 objects (upstream v10, #1988/#2033): synthesis refresh support. */
+function expectV13Objects(db: { prepare: (sql: string) => { all: () => unknown; get: () => unknown } }, sqlOf: (name: string) => string): void {
+  expect(objectNames(db, 'table')).toContain('synthesis_inputs');
+  expect(objectNames(db, 'index')).toContain('idx_edges_synthesis_site');
+  // The rebuilt composite carries the canonical synthesis traversal order.
+  expect(sqlOf('idx_nodes_kind')).toContain('file_path, start_line, id');
+  // The partial index expression and predicate ride the registeredAt site.
+  expect(sqlOf('idx_edges_synthesis_site')).toContain("json_extract(metadata, '$.registeredAt')");
+  expect(sqlOf('idx_edges_synthesis_site')).toContain("json_extract(metadata, '$.synthesizedBy') IS NOT NULL");
+}
+
 /** The chimera v6 shape: pre-v7 columns only (search_text/file_semantics present). */
 const OLD_V6_SHAPE = `
   CREATE TABLE schema_versions (
@@ -223,8 +234,11 @@ describe('schema v12', () => {
     const conn = DatabaseConnection.initialize(dbPath());
     try {
       expect(getCurrentVersion(conn.getDb())).toBe(CURRENT_SCHEMA_VERSION);
-      expect(CURRENT_SCHEMA_VERSION).toBe(12);
+      expect(CURRENT_SCHEMA_VERSION).toBe(13);
       expectV12Objects(conn.getDb());
+      const sqlOf = (name: string) =>
+        (conn.getDb().prepare('SELECT sql FROM sqlite_master WHERE name = ?').get(name) as { sql: string }).sql;
+      expectV13Objects({ prepare: (sql: string) => conn.getDb().prepare(sql) }, sqlOf);
     } finally {
       conn.close();
     }
@@ -274,8 +288,13 @@ describe('migration from chimera v6', () => {
     const conn = DatabaseConnection.open(dbPath());
     try {
       const db = conn.getDb();
-      expect(getCurrentVersion(db)).toBe(12);
+      expect(getCurrentVersion(db)).toBe(13);
       expectV12Objects(db);
+      // v13 arms the synthesis refresh so the FIRST sync after the upgrade
+      // rebuilds the owned-edge set without any file edit.
+      expect(
+        (db.prepare("SELECT value FROM project_metadata WHERE key = 'synthesis_pending'").get() as { value: string }).value
+      ).toBe('1');
 
       // Duplicate edge collapsed by the v8 dedup, and the UNIQUE index now
       // makes INSERT OR IGNORE a real dedup.
@@ -319,8 +338,32 @@ describe('migration from chimera v6', () => {
       runMigrations(raw.db, 6);
       raw.db.exec('DELETE FROM schema_versions WHERE version > 6');
       runMigrations(raw.db, 6);
-      expect(getCurrentVersion(raw.db)).toBe(12);
+      expect(getCurrentVersion(raw.db)).toBe(13);
       expectV12Objects(raw.db);
+    } finally {
+      raw.db.close();
+    }
+  });
+});
+
+describe('migration v13: synthesis inputs + canonical traversal order (#2033)', () => {
+  it('rebuilds idx_nodes_kind in place and arms synthesis_pending exactly once', () => {
+    const raw = createDatabase(dbPath());
+    try {
+      raw.db.exec(OLD_V6_SHAPE);
+      runMigrations(raw.db, 6);
+      const sql = (name: string) =>
+        (raw.db.prepare('SELECT sql FROM sqlite_master WHERE name = ?').get(name) as { sql: string }).sql;
+      expect(sql('idx_nodes_kind')).toContain('file_path, start_line, id');
+      expect(sql('idx_nodes_kind')).not.toContain('ON nodes(kind) ');
+      expect(
+        (raw.db.prepare("SELECT value FROM project_metadata WHERE key = 'synthesis_pending'").get() as { value: string }).value
+      ).toBe('1');
+      // Replaying from the recorded v12 boundary is a no-op-shaped rerun.
+      raw.db.exec('DELETE FROM schema_versions WHERE version > 12');
+      runMigrations(raw.db, 12);
+      expect(getCurrentVersion(raw.db)).toBe(13);
+      expect(sql('idx_nodes_kind')).toContain('file_path, start_line, id');
     } finally {
       raw.db.close();
     }

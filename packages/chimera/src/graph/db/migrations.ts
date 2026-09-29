@@ -10,7 +10,7 @@ import { buildSearchText } from '../search/query-utils';
 /**
  * Current schema version
  */
-export const CURRENT_SCHEMA_VERSION = 12;
+export const CURRENT_SCHEMA_VERSION = 13;
 
 /**
  * Migration definition
@@ -279,6 +279,35 @@ const migrations: Migration[] = [
       if (!cols.some((c) => c.name === 'params_json')) {
         db.exec('ALTER TABLE nodes ADD COLUMN params_json TEXT');
       }
+    },
+  },
+  {
+    // Upstream codegraph v10 (2a2f71e, #1988/#2033), renumbered. The fork has
+    // no go-method-contains pass, so upstream's legacy Go containment backfill
+    // UPDATE is omitted — there are no unowned structural edges to claim.
+    version: 13,
+    description:
+      'Track synthesis inputs and stabilize synthesis traversal for incremental refresh (upstream v10, #2033)',
+    up: (db) => {
+      // idx_nodes_kind is rebuilt in place as a composite so the canonical
+      // synthesis traversal order (file_path, start_line, id) streams out of
+      // the index. SQLite has no ALTER INDEX RENAME, so the safe rebuild is
+      // DROP+CREATE inside this migration's transaction (runMigrations wraps
+      // each migration in db.transaction): WAL readers keep seeing the old
+      // snapshot until the commit lands, so no reader ever observes a missing
+      // index, and a failed build rolls the old index back untouched. The
+      // build cost itself is unavoidable on any rebuild scheme.
+      db.exec(`
+        DROP INDEX IF EXISTS idx_nodes_kind;
+        CREATE INDEX idx_nodes_kind ON nodes(kind, file_path, start_line, id);
+        CREATE TABLE IF NOT EXISTS synthesis_inputs (
+          file_path TEXT PRIMARY KEY REFERENCES files(path) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_edges_synthesis_site ON edges(json_extract(metadata, '$.registeredAt'))
+          WHERE json_extract(metadata, '$.synthesizedBy') IS NOT NULL;
+        INSERT OR REPLACE INTO project_metadata(key, value, updated_at)
+          VALUES ('synthesis_pending', '1', 0);
+      `);
     },
   },
 ];

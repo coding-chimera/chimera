@@ -189,9 +189,11 @@ describe('language-gated synthesis passes', () => {
     expect(r.byKind.get('function')).toBe(2);
     expect(r.byKind.get('class')).toBe(2); // reactRender + interface class loop
     expect(r.byKind.get('struct')).toBe(1); // interface struct loop
-    // Only the gate's own language query runs besides the non-gated pass queries.
-    expect([...r.other.keys()]).toEqual(['getDistinctFileLanguages']);
+    // Only the gate's own language query and the synthesis-input recording
+    // (#2033: replaceSynthesisInputs tail) run besides the non-gated passes.
+    expect([...r.other.keys()]).toEqual(['getDistinctFileLanguages', 'replaceSynthesisInputs']);
     expect(r.other.get('getDistinctFileLanguages')).toBe(1);
+    expect(r.other.get('replaceSynthesisInputs')).toBe(1);
     expect(r.allFiles).toBeGreaterThan(0); // non-gated ctx passes still scan files
     expect(r.edges).toBe(0); // synthesized edge count on an empty graph
   });

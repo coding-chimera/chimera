@@ -126,7 +126,11 @@ CREATE TABLE IF NOT EXISTS name_segment_vocab (
 -- =============================================================================
 
 -- Node indexes
-CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind);
+-- Composite (upstream v10, chimera v13, #1988/#2033): synthesis uses
+-- first/last-match precedence and caps over a kind's nodes, so the canonical
+-- traversal order (file_path, start_line, id) streams straight out of the
+-- index instead of materializing/sorting a large project's methods.
+CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind, file_path, start_line, id);
 CREATE INDEX IF NOT EXISTS idx_nodes_name ON nodes(name);
 CREATE INDEX IF NOT EXISTS idx_nodes_qualified_name ON nodes(qualified_name);
 CREATE INDEX IF NOT EXISTS idx_nodes_file_path ON nodes(file_path);
@@ -200,6 +204,16 @@ CREATE INDEX IF NOT EXISTS idx_unresolved_from_name ON unresolved_refs(from_node
 CREATE INDEX IF NOT EXISTS idx_unresolved_status ON unresolved_refs(status);
 CREATE INDEX IF NOT EXISTS idx_unresolved_failed_tail ON unresolved_refs(name_tail) WHERE status = 'failed';
 CREATE INDEX IF NOT EXISTS idx_edges_provenance ON edges(provenance);
+-- Sync's third-file wiring lookup must not scan every synthesized edge
+-- (upstream v10, chimera v13, #1988/#2033).
+CREATE INDEX IF NOT EXISTS idx_edges_synthesis_site ON edges(json_extract(metadata, '$.registeredAt'))
+    WHERE json_extract(metadata, '$.synthesizedBy') IS NOT NULL;
+
+-- Retain the cheap source-gate verdict when a later sync deletes the source
+-- (upstream v10, chimera v13, #1988/#2033).
+CREATE TABLE IF NOT EXISTS synthesis_inputs (
+    file_path TEXT PRIMARY KEY REFERENCES files(path) ON DELETE CASCADE
+);
 
 -- Project metadata for version/provenance tracking
 CREATE TABLE IF NOT EXISTS project_metadata (
