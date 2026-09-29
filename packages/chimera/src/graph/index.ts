@@ -1253,7 +1253,14 @@ export class CodeGraph {
 
     // Sync if requested
     if (options.sync && !options.readOnly) {
-      await instance.sync();
+      try {
+        await instance.sync();
+      } catch (err) {
+        // A sync that rejects (e.g. lock contention, upstream #1361/#2014)
+        // must not leak the opened instance.
+        try { await instance.close(); } catch { /* best-effort */ }
+        throw err;
+      }
     }
 
     return instance;
@@ -1647,8 +1654,14 @@ export class CodeGraph {
   private async syncLocked(options: IndexOptions = {}): Promise<SyncResult> {
       try {
         this.fileLock.acquire();
-      } catch {
-        return { filesChecked: 0, filesAdded: 0, filesModified: 0, filesRemoved: 0, nodesUpdated: 0, durationMs: 0 };
+      } catch (err) {
+        // Lock contention is reported, not swallowed as a clean no-op sync
+        // (upstream #1361/#2014): the all-zero shape was indistinguishable
+        // from success, so callers (CLI, watcher, hosts) could not tell a
+        // contended sync from an up-to-date index.
+        throw new LockUnavailableError(
+          `Sync could not acquire the file lock; retry when the index is available. ${err instanceof Error ? err.message : String(err)}`
+        );
       }
 
       // A full rebuild in another process unlinks the database and creates a
@@ -1789,12 +1802,20 @@ export class CodeGraph {
         // batched resolver; this also makes a bare `sync` the recovery
         // command for a wedged index. On a healthy index this is one COUNT
         // query.
+        // Carry the sweep's outcome into SyncResult so the CLI can report a
+        // recovery even when no file changed (upstream #1360/#2024).
+        result.pendingRefsProcessed = 0;
+        result.pendingRefsResolved = 0;
+        result.pendingRefsUnresolved = 0;
         const orphanCount = this.queries.getUnresolvedReferencesCount();
         if (orphanCount > 0) {
           onProgress({ phase: 'resolving', current: 0, total: orphanCount });
-          await this.resolveReferencesBatched((current, total) => {
+          const recovery = await this.resolveReferencesBatched((current, total) => {
             onProgress({ phase: 'resolving', current, total });
           });
+          result.pendingRefsProcessed = recovery.stats.total;
+          result.pendingRefsResolved = recovery.stats.resolved;
+          result.pendingRefsUnresolved = recovery.stats.unresolved;
         }
 
         if (result.filesAdded > 0 || result.filesModified > 0 || result.filesRemoved > 0) {
@@ -1843,8 +1864,11 @@ export class CodeGraph {
     return this.indexMutex.withLock(async () => {
       try {
         this.fileLock.acquire();
-      } catch {
-        return { filesChecked: 0, filesAdded: 0, filesModified: 0, filesRemoved: 0, nodesUpdated: 0, durationMs: 0 };
+      } catch (err) {
+        // Reported, not swallowed (upstream #1361/#2014) — see sync().
+        throw new LockUnavailableError(
+          `Sync could not acquire the file lock; retry when the index is available. ${err instanceof Error ? err.message : String(err)}`
+        );
       }
 
       // Follow a database replaced on disk before writing (upstream #1902).
@@ -2048,9 +2072,9 @@ export class CodeGraph {
         const result = !batch.needsFullScan && batch.source === 'filesystem' && batch.files.length > 0 && batch.files.length <= WATCH_INCREMENTAL_SYNC_FILE_LIMIT
           ? await this.syncFiles(batch.files)
           : await this.sync();
-        if (result.filesChecked === 0 && result.durationMs === 0) {
-          throw new LockUnavailableError();
-        }
+        // sync()/syncFiles() throw LockUnavailableError on contention since
+        // the #2014 port — the watcher recognizes the typed error directly,
+        // so no all-zero result inspection is needed here anymore.
         const filesChanged = result.filesAdded + result.filesModified + result.filesRemoved;
         return { filesChanged, durationMs: result.durationMs };
       },

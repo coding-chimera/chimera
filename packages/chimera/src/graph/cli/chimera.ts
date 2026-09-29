@@ -790,39 +790,49 @@ program
       }
       const cg = await CodeGraph.open(projectPath);
 
-      if (options.quiet) {
-        await cg.sync();
+      try {
+        if (options.quiet) {
+          await cg.sync();
+          return;
+        }
+
+        const clack = await importESM('@clack/prompts');
+        clack.intro('Syncing Chimera');
+
+        process.stdout.write(`${colors.dim}${getGlyphs().rail}${colors.reset}\n`);
+        const progress = createShimmerProgress();
+
+        const result = await cg.sync({
+          onProgress: progress.onProgress,
+        }).finally(() => progress.stop());
+
+        const totalChanges = result.filesAdded + result.filesModified + result.filesRemoved;
+
+        // A pending-reference recovery with no file changes is still work
+        // worth reporting (upstream #1360/#2024) — don't call it a no-op.
+        if (totalChanges === 0 && !result.pendingRefsProcessed) {
+          clack.log.info('Already up to date');
+        } else if (totalChanges > 0) {
+          clack.log.success(`Synced ${formatNumber(totalChanges)} changed files`);
+          const details: string[] = [];
+          if (result.filesAdded > 0) details.push(`Added: ${result.filesAdded}`);
+          if (result.filesModified > 0) details.push(`Modified: ${result.filesModified}`);
+          if (result.filesRemoved > 0) details.push(`Removed: ${result.filesRemoved}`);
+          clack.log.info(`${details.join(', ')} ${getGlyphs().dash} ${formatNumber(result.nodesUpdated)} nodes in ${formatDuration(result.durationMs)}`);
+        }
+
+        if (result.pendingRefsProcessed) {
+          const unresolved = result.pendingRefsUnresolved
+            ? ` (${formatNumber(result.pendingRefsUnresolved)} unresolved)` : '';
+          clack.log.info(`Resolved ${formatNumber(result.pendingRefsResolved ?? 0)} pending references${unresolved}`);
+        }
+
+        clack.outro('Done');
+      } finally {
+        // A sync that rejects (lock contention, upstream #1361/#2014) must
+        // still release the instance.
         cg.destroy();
-        return;
       }
-
-      const clack = await importESM('@clack/prompts');
-      clack.intro('Syncing Chimera');
-
-      process.stdout.write(`${colors.dim}${getGlyphs().rail}${colors.reset}\n`);
-      const progress = createShimmerProgress();
-
-      const result = await cg.sync({
-        onProgress: progress.onProgress,
-      });
-
-      await progress.stop();
-
-      const totalChanges = result.filesAdded + result.filesModified + result.filesRemoved;
-
-      if (totalChanges === 0) {
-        clack.log.info('Already up to date');
-      } else {
-        clack.log.success(`Synced ${formatNumber(totalChanges)} changed files`);
-        const details: string[] = [];
-        if (result.filesAdded > 0) details.push(`Added: ${result.filesAdded}`);
-        if (result.filesModified > 0) details.push(`Modified: ${result.filesModified}`);
-        if (result.filesRemoved > 0) details.push(`Removed: ${result.filesRemoved}`);
-        clack.log.info(`${details.join(', ')} ${getGlyphs().dash} ${formatNumber(result.nodesUpdated)} nodes in ${formatDuration(result.durationMs)}`);
-      }
-
-      clack.outro('Done');
-      cg.destroy();
     } catch (err) {
       if (!options.quiet) {
         error(`Failed to sync: ${err instanceof Error ? err.message : String(err)}`);
