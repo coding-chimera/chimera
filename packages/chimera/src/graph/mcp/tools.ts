@@ -20,6 +20,8 @@ import {
   type WorktreeIndexMismatch,
 } from '../sync/worktree';
 import type { PendingFile } from '../sync';
+import { LockUnavailableError } from '../sync';
+import { tryAcquireWriterLock, releaseWriterLock, writerLockHeldMessage } from './writer-lock';
 import type { Node, Edge, SearchResult, Subgraph, NodeKind } from '../types';
 import { isTestFile } from '../search/query-utils';
 import {
@@ -619,6 +621,10 @@ export class ToolHandler {
   private static readonly WORKTREE_MISMATCH_CACHE_MAX = 256;
   // Cache of opened CodeGraph instances for cross-project queries
   private projectCache: Map<string, CodeGraph> = new Map();
+  // Freshness ownership of explicitly-opened projects (upstream #1835/#2036):
+  // instance -> the writer-lock root it holds, or null when another live
+  // process owns updates and this connection only reads.
+  private projectLeases = new Map<CodeGraph, string | null>();
   // The directory the server last searched for a default project. Surfaced in
   // the "not initialized" error so users can see why detection missed.
   private defaultProjectHint: string | null = null;
@@ -875,6 +881,7 @@ export class ToolHandler {
       ownerRoot = realpathSync.native(resolvedRoot);
     } catch { /* keep the resolved spelling */ }
     const cg = loadCodeGraph().openSync(ownerRoot);
+    this.adoptExplicitProject(cg, ownerRoot);
     this.projectCache.set(ownerRoot, cg);
     if (resolvedRoot !== ownerRoot) {
       this.projectCache.set(resolvedRoot, cg);
@@ -884,6 +891,54 @@ export class ToolHandler {
     }
     this.evictProjectCacheOverflow();
     return cg;
+  }
+
+  /**
+   * Own the freshness of an explicitly-opened project (upstream #1835/#2036):
+   * claim the writer slot when it is free, run a background catch-up sync, and
+   * watch the project for as long as it stays cached. When another live
+   * process holds the slot, that process keeps syncing and this connection
+   * only reads — said on stderr so a non-syncing project is visible in logs.
+   * Fork adaptation: kept inline (no project-lifecycle module), and the first
+   * call against the project is NOT gated on the catch-up (the engine's gate
+   * belongs to the default project only).
+   */
+  private adoptExplicitProject(cg: CodeGraph, root: string): void {
+    let lockRoot: string | null = null;
+    try {
+      const writer = tryAcquireWriterLock(root, 'fallback');
+      if (writer.kind === 'taken') {
+        process.stderr.write(`[CodeGraph MCP] Explicit project ${root} opened without auto-sync — ${writerLockHeldMessage(writer.existing, writer.pidPath)}\n`);
+      } else {
+        lockRoot = root;
+        void cg.sync().catch((err) => {
+          // Lock contention is a quiet no-op (another writer is active; the
+          // watcher retries) — upstream #2036 review: no alarming log.
+          if (err instanceof LockUnavailableError) return;
+          process.stderr.write(`[CodeGraph MCP] Explicit project catch-up sync failed (${root}): ${err instanceof Error ? err.message : String(err)}\n`);
+        });
+        cg.watch({
+          onSyncError: (err) => {
+            process.stderr.write(`[CodeGraph MCP] Explicit project auto-sync error (${root}): ${err.message}\n`);
+          },
+        });
+      }
+    } catch (err) {
+      // Freshness ownership is best-effort; reads must keep working.
+      process.stderr.write(`[CodeGraph MCP] Explicit project freshness setup failed (${root}): ${err instanceof Error ? err.message : String(err)}\n`);
+    }
+    this.projectLeases.set(cg, lockRoot);
+  }
+
+  /** Release an explicit project's watcher and writer slot (eviction/shutdown). */
+  private releaseProjectLease(cg: CodeGraph): void {
+    if (!this.projectLeases.has(cg)) return;
+    const lockRoot = this.projectLeases.get(cg)!;
+    this.projectLeases.delete(cg);
+    try { void cg.unwatch(); } catch { /* best-effort */ }
+    if (lockRoot) {
+      try { releaseWriterLock(lockRoot); } catch { /* best-effort */ }
+    }
   }
 
   /**
@@ -910,6 +965,9 @@ export class ToolHandler {
         // Best effort: an already-closed or broken connection must not wedge
         // the cache bookkeeping.
       }
+      // Watcher stopped (close() unwatches) — drop the writer slot so the
+      // next opener can own freshness again (upstream #1835/#2036).
+      this.releaseProjectLease(victim);
     }
   }
 
@@ -924,8 +982,10 @@ export class ToolHandler {
       try {
         cg.close();
       } catch { /* best-effort */ }
+      this.releaseProjectLease(cg);
     }
     this.projectCache.clear();
+    this.projectLeases.clear();
     this.worktreeMismatchCache.clear();
   }
 
