@@ -480,6 +480,14 @@ describe('Database Connection', () => {
         file_path TEXT NOT NULL DEFAULT '',
         language TEXT NOT NULL DEFAULT 'unknown'
       );
+      -- A faithful v5 database also carries project_metadata (created by
+      -- migration v2, before v5 was ever recorded); migration v13 arms the
+      -- synthesis_pending marker in it (#2033).
+      CREATE TABLE project_metadata (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
     `);
     raw.prepare(`
       INSERT INTO nodes (
