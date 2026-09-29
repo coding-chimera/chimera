@@ -575,6 +575,12 @@ export interface Interface {
   readonly get: (id: SessionID) => Effect.Effect<Info, NotFound>
   readonly setTitle: (input: { sessionID: SessionID; title: string }) => Effect.Effect<void>
   readonly setArchived: (input: { sessionID: SessionID; time?: number | null }) => Effect.Effect<void>
+  /**
+   * Marks or clears the compaction window (time_compacting). Optional on the
+   * interface only because partial Session.Service mocks exist outside this
+   * module; the real layer always provides it.
+   */
+  readonly setCompacting?: (input: { sessionID: SessionID; time?: number | null }) => Effect.Effect<void>
   readonly setPermission: (input: { sessionID: SessionID; permission: Permission.Ruleset }) => Effect.Effect<void>
   readonly updatePermissionSlots: (input: { sessionID: SessionID; rules: Permission.Ruleset }) => Effect.Effect<void, NotFound>
   readonly setRevert: (input: {
@@ -892,6 +898,13 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
       yield* patch(input.sessionID, { time: { archived: input.time ?? null } })
     })
 
+    const setCompacting = Effect.fn("Session.setCompacting")(function* (input: {
+      sessionID: SessionID
+      time?: number | null
+    }) {
+      yield* patch(input.sessionID, { time: { compacting: input.time ?? null } })
+    })
+
     const setPermission = Effect.fn("Session.setPermission")(function* (input: {
       sessionID: SessionID
       permission: Permission.Ruleset
@@ -1026,6 +1039,7 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
       get,
       setTitle,
       setArchived,
+      setCompacting,
       setPermission,
       updatePermissionSlots,
       setRevert,
