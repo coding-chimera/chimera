@@ -1466,8 +1466,8 @@ fn rpats() -> &'static RPats {
             rust_top_item: r(format!("^(pub(?:\\([^)]*\\))?{S}+)?(fn|struct|enum|mod|trait|const|static|type)\\b")),
             // /[.\w$\]\)]\s*$/
             bare_call_preceder: r(format!("[.[0-9A-Za-z_]$\\])]{S}*$")),
-            // /\b(?:return|await|yield|typeof|void|new|else|case|throw|in|of|instanceof)\s*$/
-            bare_call_keyword: r(format!("\\b(?:return|await|yield|typeof|void|new|else|case|throw|in|of|instanceof){S}*$")),
+            // /\b(?:return|await|yield|typeof|void|new|else|case|throw|in|of|instanceof|go|defer)\s*$/
+            bare_call_keyword: r(format!("\\b(?:return|await|yield|typeof|void|new|else|case|throw|in|of|instanceof|go|defer){S}*$")),
             // /^\s*(?:await\s+)?(?:require|import)\s*\(/
             local_import_init: r(format!("^{S}*(?:await{S}+)?(?:require|import){S}*\\(")),
             // /^index\.[A-Za-z0-9]+(\.[A-Za-z0-9]+)?$/
@@ -1850,10 +1850,23 @@ impl Resolver {
         self.is_cross_file_reachable(ctx, c, r)
     }
 
-    /// isBareJsCall (name-matcher.ts:282-293). `column` is a UTF-16 code-unit
-    /// offset — the line slices use the js_slice helpers.
+    /// isBareJsCall (name-matcher.ts:282-284).
     fn is_bare_js_call(&mut self, ctx: &mut CtxConn, r: &RefIn) -> Result<bool> {
-        if r.reference_kind != "calls" || !js_family(&r.language) {
+        Ok(js_family(&r.language) && self.is_receiver_less_call(ctx, r)?)
+    }
+
+    /// isBareGoCall (name-matcher.ts:286-298) — a Go method is only reachable
+    /// through a value or a method expression, so a receiver-less `calls` ref
+    /// (func parameter, local func value, package-level function) is never a
+    /// method, in its own package or an unimported one (#1857).
+    fn is_bare_go_call(&mut self, ctx: &mut CtxConn, r: &RefIn) -> Result<bool> {
+        Ok(r.language == "go" && self.is_receiver_less_call(ctx, r)?)
+    }
+
+    /// isReceiverLessCall (name-matcher.ts:300-310). `column` is a UTF-16
+    /// code-unit offset — the line slices use the js_slice helpers.
+    fn is_receiver_less_call(&mut self, ctx: &mut CtxConn, r: &RefIn) -> Result<bool> {
+        if r.reference_kind != "calls" {
             return Ok(false);
         }
         if r.reference_name.contains('.') {
@@ -2124,6 +2137,7 @@ impl Resolver {
         ext: &ExternalStrategies,
     ) -> Result<Option<Resolved>> {
         let bare_js = self.is_bare_js_call(ctx, r)?;
+        let bare_go = self.is_bare_go_call(ctx, r)?;
         if bare_js {
             if let Some(hit) = self.match_js_store_binding_call(ctx, r, ext)? {
                 return Ok(Some(hit));
@@ -2142,7 +2156,8 @@ impl Resolver {
             {
                 continue;
             }
-            if bare_js && n.kind == "method" {
+            // A receiver-less JS/TS or Go call cannot reach a method (#1714, #1857).
+            if (bare_js || bare_go) && n.kind == "method" {
                 continue;
             }
             if bare_js
@@ -4387,6 +4402,7 @@ impl Resolver {
                     && (survivor.kind == "method"
                         || (survivor.file_path != r.file_path
                             && self.is_locally_bound_js_name(ctx, &r.reference_name, &r.file_path)?)))
+                && !(survivor.kind == "method" && self.is_bare_go_call(ctx, r)?)
             {
                 return Ok(Some(Resolved::new(survivor.id.clone(), ResolvedBy::Fuzzy)));
             }
