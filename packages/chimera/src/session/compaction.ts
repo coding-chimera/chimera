@@ -251,6 +251,12 @@ export const layer: Layer.Layer<
     const remote = yield* RemoteCompaction.Service
     const sync = yield* SyncEvent.Service
 
+    // Optional-chained because Session.Interface declares setCompacting as
+    // optional (partial mocks outside the session module); the real layer
+    // always provides it.
+    const markCompacting = (sessionID: SessionID, time: number | null) =>
+      session.setCompacting?.({ sessionID, time }) ?? Effect.void
+
     const isOverflow = Effect.fn("SessionCompaction.isOverflow")(function* (input: {
       tokens: MessageV2.Assistant["tokens"]
       model: Provider.Model
@@ -327,7 +333,10 @@ export const layer: Layer.Layer<
     })
 
     // goes backwards through parts until there are PRUNE_PROTECT tokens worth of tool
-    // calls, then erases output of older tool calls to free context space
+    // calls, then erases output of older tool calls to free context space.
+    // Note: prune intentionally does NOT mark time_compacting — the prompt
+    // loop forks it fire-and-forget, so it can overlap a summarize window and
+    // a clear-on-exit here would race the process() window's flag.
     const prune = Effect.fn("SessionCompaction.prune")(function* (input: { sessionID: SessionID }) {
       const cfg = yield* config.get()
       if (!cfg.compaction?.prune) return
@@ -460,7 +469,7 @@ export const layer: Layer.Layer<
       })
     })
 
-    const processCompaction = Effect.fn("SessionCompaction.process")(function* (input: {
+    const runCompaction = Effect.fnUntraced(function* (input: {
       parentID: MessageID
       messages: MessageV2.WithParts[]
       sessionID: SessionID
@@ -722,6 +731,27 @@ export const layer: Layer.Layer<
       return result
     })
 
+    const processCompaction = Effect.fn("SessionCompaction.process")(function* (input: {
+      parentID: MessageID
+      messages: MessageV2.WithParts[]
+      sessionID: SessionID
+      auto: boolean
+      overflow?: boolean
+    }) {
+      // Mark the compaction window so memory stage1 skips this session while
+      // its messages are in flux (listStage1Candidates filters on
+      // isNull(time_compacting)). Re-stamping on entry also self-heals a
+      // stale flag left behind by a host crash during an earlier compaction.
+      // Residual risk: if the host crashes mid-compaction the flag stays set
+      // and memory stage1 keeps skipping the session until it compacts again.
+      yield* markCompacting(input.sessionID, Date.now())
+      return yield* runCompaction(input).pipe(
+        // Clear on success, failure, AND interruption so the exclusion window
+        // can never outlive the compaction itself.
+        Effect.ensuring(markCompacting(input.sessionID, null).pipe(Effect.ignoreCause({ log: true }))),
+      )
+    })
+
     const create = Effect.fn("SessionCompaction.create")(function* (input: {
       sessionID: SessionID
       agent: string
@@ -751,6 +781,12 @@ export const layer: Layer.Layer<
         timestamp: DateTime.makeUnsafe(Date.now()),
         reason: input.auto ? "auto" : "manual",
       })
+      // Open the compaction window here; process() re-stamps on entry and
+      // clears on exit, so this only covers the gap until the prompt loop
+      // picks the compaction task up. If the loop never reaches process()
+      // (host crash), the flag is stale until the next compaction re-stamps
+      // and clears it — accepted residual risk, see processCompaction.
+      yield* markCompacting(input.sessionID, Date.now())
     })
 
     return Service.of({
