@@ -132,6 +132,7 @@ export function precomputeExternal(refs: UnresolvedRef[], deps: NativeBatchDeps)
   const fileLanguage = new Map<string, UnresolvedRef['language']>();
   const seenPathKeys = new Set<string>();
   const getStateFiles = new Set<string>();
+  const memberValueNames = new Map<string, Set<string>>();
 
   for (const ref of refs) {
     if (!seenFiles.has(ref.filePath)) {
@@ -196,6 +197,44 @@ export function precomputeExternal(refs: UnresolvedRef[], deps: NativeBatchDeps)
               targetNodeId: imp.targetNodeId,
             });
           }
+        }
+      }
+    }
+    // #1820/#2034 Python/Go member-value fn-refs: the native arm's
+    // match_member_function_ref resolves receiver CLASS names through the
+    // precomputed import table with synthetic (filePath, name, 'references')
+    // keys (python_ref_class). The reachable query set is bounded: the
+    // receiver path itself, the file's import local names, and any dotted
+    // source token whose root segment is imported — inferred annotation /
+    // constructor type names always occur lexically in the ref's file, so
+    // the token scan covers every name pythonRefClass can hand resolveImport.
+    if ((ref.language === 'python' || ref.language === 'go') &&
+        ref.referenceKind === 'function_ref' && ref.referenceName.includes('.')) {
+      if (!memberValueNames.has(ref.filePath)) {
+        const localNames = new Set(context.getImportMappings(ref.filePath, ref.language).map((i) => i.localName));
+        const names = new Set<string>(localNames);
+        const source = context.readFile(ref.filePath);
+        if (source) {
+          for (const m of source.matchAll(/[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+/g)) {
+            if (localNames.has(m[0].split('.')[0]!)) names.add(m[0]);
+          }
+        }
+        memberValueNames.set(ref.filePath, names);
+      }
+      const receiver = ref.referenceName.slice(0, ref.referenceName.lastIndexOf('.'));
+      for (const name of [...memberValueNames.get(ref.filePath)!, receiver]) {
+        const key = `${ref.filePath}\u0000${name}\u0000references`;
+        if (seenKeys.has(key)) continue;
+        seenKeys.add(key);
+        const synthetic: UnresolvedRef = { ...ref, referenceName: name, referenceKind: 'references' };
+        const imp = resolveViaImport(synthetic, context);
+        if (imp) {
+          out.importResults.push({
+            filePath: ref.filePath,
+            referenceName: name,
+            referenceKind: 'references',
+            targetNodeId: imp.targetNodeId,
+          });
         }
       }
     }

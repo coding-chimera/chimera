@@ -1039,12 +1039,18 @@ export function resolveViaImport(
   for (const imp of imports) {
     if (imp.localName === ref.referenceName || ref.referenceName.startsWith(imp.localName + '.')) {
       // Resolve the import path
-      const resolvedPath = resolveImportPath(
+      let resolvedPath = resolveImportPath(
         imp.source,
         ref.filePath,
         ref.language,
         context
       );
+
+      // Named Python imports need the same absolute-module lookup as namespace
+      // imports, including aliases used as receiver types (#1820).
+      if (!resolvedPath && ref.language === 'python') {
+        resolvedPath = findPythonModuleFile(imp.source, context, ref.filePath)?.filePath ?? null;
+      }
 
       if (resolvedPath) {
         const exportedName = imp.isDefault ? 'default' : imp.exportedName;
@@ -1058,7 +1064,11 @@ export function resolveViaImport(
           ref.language,
           context,
           new Set()
-        );
+        ) ?? (ref.language === 'python'
+          ? context.getNodesInFile(resolvedPath).find(n =>
+              n.name === (memberName ?? exportedName) && !n.qualifiedName.includes('::') &&
+              (n.kind === 'class' || n.kind === 'function' || n.kind === 'variable' || n.kind === 'constant'))
+          : undefined);
 
         if (targetNode) {
           return {
@@ -1072,6 +1082,33 @@ export function resolveViaImport(
   }
 
   return null;
+}
+
+/**
+ * Find the file node for a Python dotted module path `a.b.c` — a module file
+ * ending in `a/b/c.py`, or a package `a/b/c/__init__.py` (suffix-matched, so a
+ * package rooted under `src/` etc. still resolves). Returns null for
+ * stdlib/external modules (no matching repo file node). Enablement subset of
+ * the upstream pre-window Python module family, vendored with #2034: the
+ * resolveViaImport named-import fallback above is its only fork caller.
+ */
+function findPythonModuleFile(
+  mod: string,
+  context: ResolutionContext,
+  excludeFilePath: string
+): Node | null {
+  if (!mod || mod.startsWith('.')) return null; // relative imports handled elsewhere
+  const rel = mod.replace(/\./g, '/');
+  const lastSeg = mod.split('.').pop()!;
+  const endsWith = (p: string, want: string): boolean => p === want || p.endsWith('/' + want);
+  const moduleFile = context
+    .getNodesByName(`${lastSeg}.py`)
+    .find((n) => n.kind === 'file' && n.filePath !== excludeFilePath && endsWith(n.filePath, `${rel}.py`));
+  if (moduleFile) return moduleFile;
+  const pkgFile = context
+    .getNodesByName('__init__.py')
+    .find((n) => n.kind === 'file' && n.filePath !== excludeFilePath && endsWith(n.filePath, `${rel}/__init__.py`));
+  return pkgFile ?? null;
 }
 
 /**

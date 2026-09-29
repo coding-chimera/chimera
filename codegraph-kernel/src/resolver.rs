@@ -2380,6 +2380,13 @@ impl Resolver {
                 }
             }
         }
+        // #2034: a function_ref (method value) resolves unique-or-drop —
+        // several same-named methods on candidate types are ambiguity, never
+        // first-wins. Placed AFTER the preferred_fqn early-return so
+        // import-pinned Java/Kotlin disambiguation is unaffected.
+        if r.reference_kind == "function_ref" && matches.len() != 1 {
+            return Ok(None);
+        }
         Ok(Some(Resolved::new(matches[0].id.clone(), resolved_by)))
     }
 
@@ -3867,10 +3874,19 @@ impl Resolver {
     }
 
     /// matchFunctionRef (:1856-1979).
-    pub(crate) fn match_function_ref(&mut self, ctx: &mut CtxConn, r: &RefIn) -> Result<Option<Resolved>> {
+    pub(crate) fn match_function_ref(
+        &mut self,
+        ctx: &mut CtxConn,
+        r: &RefIn,
+        ext: &ExternalStrategies,
+    ) -> Result<Option<Resolved>> {
         // `this.<member>` refs resolve ONLY via resolveThisMemberFnRef.
         if r.reference_name.starts_with("this.") {
             return Ok(None);
+        }
+        // Python/Go member values keep their receiver (#1820/#2034).
+        if (r.language == "python" || r.language == "go") && r.reference_name.contains('.') {
+            return self.match_member_function_ref(ctx, r, ext);
         }
         // In JS/TS/Python a bare identifier can never be a method value; PHP
         // string callables name global FUNCTIONS. Others keep method targets.
@@ -4925,6 +4941,445 @@ impl Resolver {
         Ok(Some(res))
     }
 
+    // -- #1820/#2034 member-value fn-refs -------------------------------------
+    // name-matcher.ts matchMemberFunctionRef + the python* helper family.
+    // Fork D9 adaptation mirrored: #1276 Go 2-hop field chains and #1108
+    // local receiver-type inference are NOT ported — those shapes decline
+    // exclusively (same outcome as upstream inference failure).
+
+    /// pythonMemberLines — comment-stripped file lines. TS memoizes per
+    /// context; native relies on the CtxConn read_file cache and re-strips
+    /// (identical output).
+    fn python_member_lines(&mut self, ctx: &mut CtxConn, file_path: &str) -> Result<Vec<String>> {
+        let content = ctx.read_file(file_path)?.unwrap_or_default();
+        Ok(strip_comments_for_regex(&content, "python").split('\n').map(String::from).collect())
+    }
+
+    /// pythonRefClass — the imported (precompute-table) or unique same-file
+    /// class a receiver/type name denotes.
+    fn python_ref_class(
+        &mut self,
+        ctx: &mut CtxConn,
+        name: &str,
+        r: &RefIn,
+        ext: &ExternalStrategies,
+    ) -> Result<Option<CtxNode>> {
+        let imports = ctx.import_mappings(&r.file_path, "python")?;
+        let root = name.split('.').next().unwrap_or(name);
+        if imports.iter().any(|i| i.local_name == root) {
+            let Some(target) = ext.import_results.get(&ImportKey::synthetic(&r.file_path, name, "references")) else {
+                return Ok(None);
+            };
+            let Some(node) = ctx.get_node_by_id(target)? else { return Ok(None) };
+            if node.kind != "class" {
+                return Ok(None);
+            }
+            let count = ctx
+                .nodes_by_qualified_name(&node.qualified_name)?
+                .iter()
+                .filter(|n| n.kind == "class" && n.file_path == node.file_path)
+                .count();
+            return Ok(if count == 1 { Some(node) } else { None });
+        }
+        let classes: Vec<CtxNode> = ctx
+            .nodes_by_name(name)?
+            .into_iter()
+            .filter(|n| n.kind == "class" && n.file_path == r.file_path)
+            .collect();
+        Ok(if classes.len() == 1 { classes.into_iter().next() } else { None })
+    }
+
+    /// pythonBases — parse the class header line for base names, each
+    /// resolved through pythonRefClass scoped to the class's own file.
+    fn python_bases(
+        &mut self,
+        ctx: &mut CtxConn,
+        cls: &CtxNode,
+        r: &RefIn,
+        ext: &ExternalStrategies,
+    ) -> Result<Vec<CtxNode>> {
+        let idx = (cls.start_line - 1).max(0) as usize;
+        let lines = ctx.file_lines(&cls.file_path)?;
+        let header = match lines.get(idx) {
+            Some(h) => h.clone(),
+            None => {
+                let content = ctx.read_file(&cls.file_path)?.unwrap_or_default();
+                content.split('\n').nth(idx).unwrap_or("").to_string()
+            }
+        };
+        let Some(caps) = dyn_re(r"^\s*class\s+\w+\s*\(([^)]*)\)").captures(&header) else {
+            return Ok(Vec::new());
+        };
+        let cls_ref = RefIn { file_path: cls.file_path.clone(), ..r.clone() };
+        let mut bases = Vec::new();
+        for name in caps[1].split(',') {
+            let trimmed = name.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Some(base) = self.python_ref_class(ctx, trimmed, &cls_ref, ext)? {
+                bases.push(base);
+            }
+        }
+        Ok(bases)
+    }
+
+    /// pythonDerivesFrom — transitive base walk (cycle/depth cap 16).
+    fn python_derives_from(
+        &mut self,
+        ctx: &mut CtxConn,
+        cls: &CtxNode,
+        base: &CtxNode,
+        r: &RefIn,
+        ext: &ExternalStrategies,
+        seen: &mut HashSet<String>,
+    ) -> Result<bool> {
+        if seen.contains(&cls.id) || seen.len() >= 16 {
+            return Ok(false);
+        }
+        seen.insert(cls.id.clone());
+        for p in self.python_bases(ctx, cls, r, ext)? {
+            if p.id == base.id {
+                return Ok(true);
+            }
+            if self.python_derives_from(ctx, &p, base, r, ext, seen)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// pythonMembers — instance assignments shadow methods; own qualified
+    /// members win; otherwise inherited members, deduped by id.
+    fn python_members(
+        &mut self,
+        ctx: &mut CtxConn,
+        cls: &CtxNode,
+        member: &str,
+        r: &RefIn,
+        ext: &ExternalStrategies,
+        seen: &mut HashSet<String>,
+    ) -> Result<Vec<CtxNode>> {
+        if seen.contains(&cls.id) || seen.len() >= 16 {
+            return Ok(Vec::new());
+        }
+        seen.insert(cls.id.clone());
+        let all = self.python_member_lines(ctx, &cls.file_path)?;
+        let start = (cls.start_line - 1).max(0) as usize;
+        let end = (cls.end_line.max(0) as usize).min(all.len());
+        let body = if start < end { all[start..end].join("\n") } else { String::new() };
+        let member_esc = regex::escape(member);
+        let shadow = dyn_re(&format!("(?m)^\\s*(?:(?:self|cls)\\.)?{member_esc}\\s*(?:=|:)"));
+        if shadow.is_match(&body) {
+            return Ok(vec![cls.clone()]);
+        }
+        let own: Vec<CtxNode> = ctx
+            .nodes_by_qualified_name(&format!("{}::{member}", cls.qualified_name))?
+            .into_iter()
+            .filter(|n| n.file_path == cls.file_path)
+            .collect();
+        if !own.is_empty() {
+            return Ok(own);
+        }
+        let mut out: Vec<CtxNode> = Vec::new();
+        let mut ids: HashSet<String> = HashSet::new();
+        for p in self.python_bases(ctx, cls, r, ext)? {
+            for n in self.python_members(ctx, &p, member, r, ext, seen)? {
+                if ids.insert(n.id.clone()) {
+                    out.push(n);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// isPythonProperty — @property / @cached_property on the decorator run
+    /// directly above the method.
+    fn is_python_property(&mut self, ctx: &mut CtxConn, node: &CtxNode) -> Result<bool> {
+        if node.language != "python" || node.kind != "method" {
+            return Ok(false);
+        }
+        let from_file = ctx.file_lines(&node.file_path)?;
+        let lines = if !from_file.is_empty() {
+            from_file
+        } else {
+            ctx.read_file(&node.file_path)?
+                .map(|s| s.split('\n').map(String::from).collect::<Vec<_>>())
+                .unwrap_or_default()
+        };
+        let prop = dyn_re(r"^\s*@(?:property|(?:functools\.)?cached_property)\s*$");
+        let mut i = node.start_line - 2;
+        while i >= 0 {
+            let Some(l) = lines.get(i as usize) else { break };
+            if !l.trim_start().starts_with('@') {
+                break;
+            }
+            if prop.is_match(l) {
+                return Ok(true);
+            }
+            i -= 1;
+        }
+        Ok(false)
+    }
+
+    /// pythonLocalType — nearest assignment/annotation above the ref, inside
+    /// the caller; falls back to the caller signature's parameter annotation.
+    fn python_local_type(&mut self, ctx: &mut CtxConn, receiver: &str, r: &RefIn) -> Result<Option<String>> {
+        if !dyn_re(r"^\w+$").is_match(receiver) {
+            return Ok(None);
+        }
+        let caller = ctx.get_node_by_id(&r.from_node_id)?;
+        let lines = self.python_member_lines(ctx, &r.file_path)?;
+        let recv_esc = regex::escape(receiver);
+        let declaration = dyn_re(&format!("^\\s*{recv_esc}\\s*(?::\\s*[\"']?([\\w.]+)[\"']?)?\\s*=\\s*(.*)$"));
+        let annotation = dyn_re(&format!("^\\s*{recv_esc}\\s*:\\s*[\"']?([\\w.]+)"));
+        let lower = caller.as_ref().map(|c| c.start_line - 1).unwrap_or(0).max(0);
+        let mut i = r.line - 1;
+        while i >= lower {
+            let line = lines.get(i as usize).cloned().unwrap_or_default();
+            if let Some(caps) = declaration.captures(&line) {
+                if let Some(a) = caps.get(1) {
+                    return Ok(Some(a.as_str().to_string()));
+                }
+                let value = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+                if let Some(c) = dyn_re(r"^([A-Z][\w.]*)\s*\(").captures(value) {
+                    return Ok(Some(c[1].to_string()));
+                }
+                return Ok(Some("<unknown>".to_string()));
+            }
+            if let Some(caps) = annotation.captures(&line) {
+                return Ok(Some(caps[1].to_string()));
+            }
+            i -= 1;
+        }
+        if let Some(sig) = caller.as_ref().and_then(|c| c.signature.clone()) {
+            if let Some(caps) = dyn_re(&format!("\\b{recv_esc}\\s*:\\s*[\"']?([\\w.]+)")).captures(&sig) {
+                return Ok(Some(caps[1].to_string()));
+            }
+        }
+        Ok(None)
+    }
+
+    /// pythonFieldType — the field's own annotation/initializer, or a
+    /// constructor parameter assigned to it; conflicting types are
+    /// `<ambiguous>`, never a name-only fallback.
+    fn python_field_type(
+        &mut self,
+        ctx: &mut CtxConn,
+        receiver: &str,
+        owner: &CtxNode,
+        r: &RefIn,
+    ) -> Result<Option<String>> {
+        let lines = self.python_member_lines(ctx, &r.file_path)?;
+        let Some(field) = receiver.split('.').nth(1) else { return Ok(None) };
+        let field_esc = regex::escape(field);
+        let assignment = dyn_re(&format!("^\\s*(?:self|cls)\\.{field_esc}\\s*(?::\\s*[\"']?([\\w.]+)[\"']?)?\\s*=\\s*(.*)$"));
+        let annotation = dyn_re(&format!("^\\s*(?:(?:self|cls)\\.)?{field_esc}\\s*:\\s*[\"']?([\\w.]+)"));
+        let methods: Vec<CtxNode> = ctx
+            .nodes_in_file(&r.file_path)?
+            .into_iter()
+            .filter(|n| n.kind == "method" && n.qualified_name.starts_with(&format!("{}::", owner.qualified_name)))
+            .collect();
+        let mut types: HashSet<String> = HashSet::new();
+        let self_cls_prefix = dyn_re(r"^\s*(?:self|cls)\.");
+        let ctor_re = dyn_re(r"^([A-Z][\w.]*)\s*\(");
+        let mut i = owner.start_line;
+        while i < owner.end_line {
+            let method = methods.iter().find(|n| n.start_line <= i + 1 && n.end_line >= i + 1);
+            if let Some(m) = method {
+                if m.name != "__init__" && m.id != r.from_node_id {
+                    i += 1;
+                    continue;
+                }
+                if m.id == r.from_node_id && i + 1 > r.line {
+                    i += 1;
+                    continue;
+                }
+            }
+            let line = lines.get(i as usize).cloned().unwrap_or_default();
+            let declared = if method.is_none() || self_cls_prefix.is_match(&line) {
+                annotation.captures(&line).map(|c| c[1].to_string())
+            } else {
+                None
+            };
+            if let Some(d) = declared {
+                types.insert(d);
+            }
+            if let Some(caps) = assignment.captures(&line) {
+                if let Some(a) = caps.get(1) {
+                    types.insert(a.as_str().to_string());
+                    i += 1;
+                    continue;
+                }
+                let value = caps.get(2).map(|m| m.as_str()).unwrap_or("").to_string();
+                if let Some(c) = ctor_re.captures(&value) {
+                    types.insert(c[1].to_string());
+                    i += 1;
+                    continue;
+                }
+                let param = value.trim().to_string();
+                if let Some(m) = method {
+                    if dyn_re(r"^\w+$").is_match(&param) {
+                        let signature = m.signature.clone().unwrap_or_default();
+                        let pre = dyn_re(&format!("\\b{}\\s*:\\s*[\"']?([\\w.]+)", regex::escape(&param)));
+                        if let Some(caps) = pre.captures(&signature) {
+                            types.insert(caps[1].to_string());
+                            i += 1;
+                            continue;
+                        }
+                    }
+                }
+                types.insert("<unknown>".to_string());
+            }
+            i += 1;
+        }
+        Ok(match types.len() {
+            1 => types.into_iter().next(),
+            0 => None,
+            _ => Some("<ambiguous>".to_string()),
+        })
+    }
+
+    /// matchMemberFunctionRef — unique same-family function/method, never
+    /// self, never a @property. Fork: no numeric confidence (RESOLVER_RANK).
+    fn member_fn_result(&mut self, ctx: &mut CtxConn, nodes: Vec<CtxNode>, r: &RefIn) -> Result<Option<Resolved>> {
+        let pool: Vec<CtxNode> = nodes
+            .into_iter()
+            .filter(|n| same_language_family(&n.language, &r.language))
+            .collect();
+        if pool.len() != 1 {
+            return Ok(None);
+        }
+        let target = &pool[0];
+        if (target.kind == "function" || target.kind == "method")
+            && target.id != r.from_node_id
+            && !self.is_python_property(ctx, target)?
+        {
+            return Ok(Some(Resolved::new(target.id.clone(), ResolvedBy::FunctionRef)));
+        }
+        Ok(None)
+    }
+
+    /// matchMemberFunctionRef (name-matcher.ts, #1820/#2034).
+    fn match_member_function_ref(
+        &mut self,
+        ctx: &mut CtxConn,
+        r: &RefIn,
+        ext: &ExternalStrategies,
+    ) -> Result<Option<Resolved>> {
+        let Some(dot) = r.reference_name.rfind('.') else { return Ok(None) };
+        let receiver = &r.reference_name[..dot];
+        let member = &r.reference_name[dot + 1..];
+        let imports = ctx.import_mappings(&r.file_path, &r.language)?;
+        // An import is authoritative even when it points outside the project.
+        let receiver_root = receiver.split('.').next().unwrap_or(receiver);
+        if imports.iter().any(|i| i.local_name == receiver_root) {
+            if r.language == "python" {
+                if let Some(cls) = self.python_ref_class(ctx, receiver, r, ext)? {
+                    let members = self.python_members(ctx, &cls, member, r, ext, &mut HashSet::new())?;
+                    return self.member_fn_result(ctx, members, r);
+                }
+            }
+            let imported = ext.import_results.get(&ImportKey::of(r));
+            if let Some(target) = imported {
+                if let Some(node) = ctx.get_node_by_id(target)? {
+                    let nodes: Vec<CtxNode> = ctx
+                        .nodes_by_qualified_name(&node.qualified_name)?
+                        .into_iter()
+                        .filter(|n| n.file_path == node.file_path)
+                        .collect();
+                    return self.member_fn_result(ctx, nodes, r);
+                }
+            }
+            return Ok(None);
+        }
+        if r.language == "go" {
+            // Fork D9: dotted receivers (#1276 chains) decline exclusively;
+            // local receiver-type inference (#1108) is not ported. A receiver
+            // that IS a type name keeps the unique struct/interface lookup.
+            if receiver.contains('.') {
+                return Ok(None);
+            }
+            let types: Vec<CtxNode> = ctx
+                .nodes_by_name(receiver)?
+                .into_iter()
+                .filter(|n| n.language == "go" && (n.kind == "struct" || n.kind == "interface"))
+                .collect();
+            if !types.is_empty() {
+                return if types.len() == 1 {
+                    self.resolve_method_on_type(ctx, receiver, member, r, ResolvedBy::FunctionRef, None)
+                } else {
+                    Ok(None)
+                };
+            }
+        } else {
+            let mut classes: Vec<CtxNode> = ctx
+                .nodes_in_file(&r.file_path)?
+                .into_iter()
+                .filter(|n| n.kind == "class" && n.start_line <= r.line && n.end_line >= r.line)
+                .collect();
+            classes.sort_by(|a, b| b.start_line.cmp(&a.start_line));
+            let owner = classes.into_iter().next();
+            if receiver == "self" || receiver == "cls" {
+                return match owner {
+                    Some(o) => {
+                        let members = self.python_members(ctx, &o, member, r, ext, &mut HashSet::new())?;
+                        self.member_fn_result(ctx, members, r)
+                    }
+                    None => Ok(None),
+                };
+            }
+            let type_name: Option<String> = if dyn_re(r"^(self|cls)\.\w+$").is_match(receiver) {
+                match owner.as_ref() {
+                    Some(o) => self.python_field_type(ctx, receiver, o, r)?,
+                    None => return Ok(None),
+                }
+            } else {
+                self.python_local_type(ctx, receiver, r)?
+            };
+            // A type name used directly (`Store.fetch`) is scoped just like
+            // an annotation.
+            let type_name = match type_name {
+                Some(t) => Some(t),
+                None if dyn_re(r"^[A-Z]\w*$").is_match(receiver) => Some(receiver.to_string()),
+                None => None,
+            };
+            if let Some(t) = type_name {
+                if t != "object" && t != "Any" {
+                    let Some(cls) = self.python_ref_class(ctx, &t, r, ext)? else { return Ok(None) };
+                    let members = self.python_members(ctx, &cls, member, r, ext, &mut HashSet::new())?;
+                    if !members.is_empty() {
+                        return self.member_fn_result(ctx, members, r);
+                    }
+                    // A base-typed field can hold a subclass-only method: keep
+                    // only descendants of THAT base.
+                    let candidates: Vec<CtxNode> = ctx
+                        .nodes_by_name(member)?
+                        .into_iter()
+                        .filter(|n| n.kind == "method" && n.language == "python")
+                        .collect();
+                    let mut descendants: Vec<CtxNode> = Vec::new();
+                    for n in &candidates {
+                        let parent = ctx
+                            .nodes_in_file(&n.file_path)?
+                            .into_iter()
+                            .find(|c| c.kind == "class" && n.qualified_name == format!("{}::{member}", c.qualified_name));
+                        if let Some(p) = parent {
+                            if self.python_derives_from(ctx, &p, &cls, r, ext, &mut HashSet::new())? {
+                                descendants.push(n.clone());
+                            }
+                        }
+                    }
+                    return self.member_fn_result(ctx, descendants, r);
+                }
+            }
+        }
+        // Unknown receivers retain the unique-or-drop discipline, across ALL
+        // files. Tests and abstract-looking bodies are candidates too.
+        let by_name = ctx.nodes_by_name(member)?;
+        self.member_fn_result(ctx, by_name, r)
+    }
+
     /// matchReference (name-matcher.ts) — gated wrapper (upstream #2032).
     pub(crate) fn match_reference(
         &mut self,
@@ -4946,7 +5401,7 @@ impl Resolver {
         self.sync_memos(ctx);
         // Function-as-value refs resolve ONLY through the dedicated matcher.
         if r.reference_kind == "function_ref" {
-            return self.match_function_ref(ctx, r);
+            return self.match_function_ref(ctx, r, ext);
         }
         // A retained untyped qualified chain (`a.b.c`, 3+ segments): nothing
         // below may guess for it.
@@ -5241,6 +5696,12 @@ impl Resolver {
             if r.reference_name.starts_with("this.") {
                 return self.resolve_this_member_fn_ref(ctx, r);
             }
+            // Python/Go member values (`obj.fetch`, `c.store.Fetch`, #1820/
+            // #2034) resolve ONLY through the member-value matcher — never
+            // through the bare-name import fallthrough below.
+            if (r.language == "python" || r.language == "go") && r.reference_name.contains('.') {
+                return self.match_function_ref(ctx, r, ext);
+            }
             let key = ImportKey::of(r);
             if let Some(target) = ext.import_results.get(&key) {
                 if let Some(t) = ctx.get_node_by_id(target)? {
@@ -5253,7 +5714,7 @@ impl Resolver {
                     }
                 }
             }
-            return self.match_function_ref(ctx, r);
+            return self.match_function_ref(ctx, r, ext);
         }
         // JVM FQN imports skip framework/name-matcher (resolveJvmImport gate
         // lives in the TS precompute; presence = a result).
@@ -6713,7 +7174,7 @@ mod tests {
         let mut ctx = open_ctx(&env);
         let mut res = Resolver::new(&ctx.c);
         let r = mkref("handler", "function_ref", "typescript", "a.ts", 9, 0, "caller");
-        let out = res.match_function_ref(&mut ctx.c, &r).unwrap();
+        let out = res.match_function_ref(&mut ctx.c, &r, &ext()).unwrap();
         let got = out.unwrap();
         assert_eq!(got.target_node_id, "h1");
         assert_eq!(got.resolved_by, ResolvedBy::FunctionRef);
@@ -6730,7 +7191,7 @@ mod tests {
         let mut ctx = open_ctx(&env);
         let mut res = Resolver::new(&ctx.c);
         let r = mkref("handler", "function_ref", "typescript", "c.ts", 9, 0, "caller");
-        assert!(res.match_function_ref(&mut ctx.c, &r).unwrap().is_none());
+        assert!(res.match_function_ref(&mut ctx.c, &r, &ext()).unwrap().is_none());
     }
 
     // -- cpp chain ----------------------------------------------------------

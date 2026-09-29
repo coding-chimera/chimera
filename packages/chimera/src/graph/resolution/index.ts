@@ -930,6 +930,12 @@ export class ReferenceResolver {
       if (ref.referenceName.startsWith('this.')) {
         return this.resolveThisMemberFnRef(ref);
       }
+      // A Python/Go member value (`obj.fetch`, `c.store.Fetch`, #1820/#2034)
+      // resolves ONLY through matchFunctionRef's receiver/type/import scope —
+      // never through the bare-name import fallthrough below.
+      if ((ref.language === 'python' || ref.language === 'go') && ref.referenceName.includes('.')) {
+        return matchFunctionRef(ref, this.context);
+      }
       const fnRefViaImport = resolveViaImport(ref, this.context);
       if (fnRefViaImport) {
         const target = this.queries.getNodeById(fnRefViaImport.targetNodeId);
