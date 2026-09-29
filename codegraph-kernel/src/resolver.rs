@@ -1807,16 +1807,19 @@ impl Resolver {
             return Ok(*hit);
         }
         let source = ctx.read_file(file_path)?;
-        let code = match &source {
-            Some(s) => blank_string_contents(&strip_comments_for_regex(s, "typescript")),
-            None => String::new(),
-        };
         let p = rpats();
         let mut sealed = false;
         if let Some(src) = &source {
-            if p.has_import_statement.is_match(&code) {
-                let exported = ctx.nodes_in_file(file_path)?.iter().any(|n| n.is_exported == 1);
-                sealed = !exported && !p.has_esm_export.is_match(&code) && !p.has_cjs_export.is_match(src);
+            // Cheapest disqualifiers first (upstream #2072, isSealedModule
+            // parity): the masker only blanks text, so no `import` in the
+            // source means none in the masked code either. Comment-strip and
+            // string-mask run only for files that pass every cheap check.
+            if src.contains("import")
+                && !ctx.nodes_in_file(file_path)?.iter().any(|n| n.is_exported == 1)
+                && !p.has_cjs_export.is_match(src)
+            {
+                let code = blank_string_contents(&strip_comments_for_regex(src, "typescript"));
+                sealed = p.has_import_statement.is_match(&code) && !p.has_esm_export.is_match(&code);
             }
         }
         self.memos.sealed_modules.insert(file_path.to_string(), sealed);
@@ -2026,7 +2029,14 @@ impl Resolver {
         if !bound {
             bound = dyn_re(&format!("\\b(?:function|class){S}+{n}\\b")).is_match(&source)
                 || dyn_re(&format!(
-                    "\\({S}*(?:(?:\\.\\.\\.)?[0-9A-Za-z_$]+(?:{S}*\\??{S}*:{S}*[^,()]+)?(?:{S}*={S}*[^,()]+)?{S}*,{S}*)*{n}\\b(?:{S}*\\??{S}*:[^,()]*)?(?:{S}*=[^,()]*)?(?:{S}*,{S}*[^()]*)?\\){S}*(?::[^=;{{]*)?(?:=>|\\{{)"
+                    // Per-parameter single parse (upstream #2072): the first
+                    // non-space character after an earlier parameter's
+                    // identifier picks the type (`?`/`:`), default (`=`) or
+                    // bare alternative. Same accepted language as the old
+                    // optional-group form (verified upstream on 4M generated
+                    // cases); the regex crate never backtracked, but the
+                    // mirror keeps both arms on ONE pattern definition.
+                    "\\({S}*(?:(?:\\.\\.\\.)?[0-9A-Za-z_$]+(?:{S}*(?:\\?{S}*)?:[^,()]+|{S}*=[^,()]+|{S}*),{S}*)*{n}\\b(?:{S}*\\??{S}*:[^,()]*)?(?:{S}*=[^,()]*)?(?:{S}*,{S}*[^()]*)?\\){S}*(?::[^=;{{]*)?(?:=>|\\{{)"
                 )).is_match(&source)
                 || dyn_re(&format!("(?:^|[^0-9A-Za-z_$.]){n}{S}*=>")).is_match(&source);
         }
