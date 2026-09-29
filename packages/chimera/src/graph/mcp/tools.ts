@@ -5,7 +5,7 @@
  */
 
 import type CodeGraph from '../index';
-import { findNearestCodeGraphRoot } from '../directory';
+import { findNearestCodeGraphRoot, isSameIndexRoot } from '../directory';
 // Lazy-load the heavy CodeGraph chain off the MCP startup path — see the same
 // helper in engine.ts. ToolHandler must load to answer tools/list (static
 // schemas), but it must NOT drag in sqlite/query layers before the daemon binds;
@@ -25,6 +25,7 @@ import { isTestFile } from '../search/query-utils';
 import {
   existsSync,
   readFileSync,
+  realpathSync,
 } from 'fs';
 import { clamp, validatePathWithinRoot, validateProjectPath } from '../utils';
 import { isGeneratedFile } from '../extraction/generated-detection';
@@ -579,6 +580,29 @@ export function getStaticTools(): ToolDefinition[] {
 }
 
 /**
+ * Whether `relPath` occurs in `text` as a WHOLE path (upstream #1968/#1997).
+ * Matches response delimiters rather than ASCII "path characters": filenames
+ * can contain Unicode, @, +, and other punctuation. Keeps line references
+ * (`a.ts:12`, `a.ts:12:3`, `a.ts:12-40`), a file-list label colon, a
+ * sentence-ending period and list separators, but rejects prefixes/suffixes
+ * of longer paths.
+ */
+function mentionsPath(text: string, relPath: string): boolean {
+  const delimiter = /[\s`"'()[\]{}*]/;
+  for (let at = text.indexOf(relPath); at !== -1; at = text.indexOf(relPath, at + 1)) {
+    if (at > 0 && !delimiter.test(text[at - 1] ?? '')) continue;
+    const end = at + relPath.length;
+    if (end === text.length || delimiter.test(text[end] ?? '')) return true;
+    const suffix = text.slice(end);
+    if (/^:\d+(?::\d+|[-–]\d+)?(?=$|[\s`"'()[\]{}*])/.test(suffix)) return true;
+    if (/^:(?=$|\s)/.test(suffix)) return true; // file-list label
+    if (/^\.(?=$|\s)/.test(suffix)) return true; // prose punctuation
+    if (/^[,;](?=$|\s)/.test(suffix)) return true; // list separator
+  }
+  return false;
+}
+
+/**
  * Tool handler that executes tools against a CodeGraph instance
  *
  * Supports cross-project queries via the projectPath parameter.
@@ -811,10 +835,11 @@ export class ToolHandler {
     // default instance rather than opening a SECOND connection to the same DB.
     // A duplicate connection serializes reads against the watcher's auto-sync
     // writes; on the wasm backend (no WAL) that surfaces as intermittent
-    // "database is locked" on concurrent tool calls. See issue #238. Deliberately
+    // "database is locked" on concurrent tool calls. See issue #238. Another
+    // spelling of the same root counts too (#1057, upstream #2020). Deliberately
     // not cached under projectPath — the server owns and closes the default
     // instance, so routing it through projectCache.closeAll() would double-close it.
-    if (this.cg && this.cg.getProjectRoot() === resolvedRoot) {
+    if (this.cg && isSameIndexRoot(this.cg.getProjectRoot(), resolvedRoot)) {
       return this.cg;
     }
 
@@ -829,10 +854,32 @@ export class ToolHandler {
       return cg;
     }
 
-    // Open and cache under both paths
-    const cg = loadCodeGraph().openSync(resolvedRoot);
-    this.projectCache.set(resolvedRoot, cg);
-    if (projectPath !== resolvedRoot) {
+    // Compare current identities on every cache miss: a symlinked checkout or
+    // a case-variant spelling of an OPEN root must share one connection
+    // (#1057, upstream #2020). Aliases may have been retargeted or recreated
+    // since the last call, so this runs per miss, not from a memo.
+    for (const [root, open] of this.projectCache) {
+      if (isSameIndexRoot(root, resolvedRoot)) {
+        this.projectCache.delete(root);
+        this.projectCache.set(root, open);
+        this.projectCache.set(projectPath, open);
+        return open;
+      }
+    }
+
+    // Pin the owner key to the symlink target, so retargeting the first
+    // spelling cannot move an existing connection onto another cached
+    // project (#1057).
+    let ownerRoot = resolvedRoot;
+    try {
+      ownerRoot = realpathSync.native(resolvedRoot);
+    } catch { /* keep the resolved spelling */ }
+    const cg = loadCodeGraph().openSync(ownerRoot);
+    this.projectCache.set(ownerRoot, cg);
+    if (resolvedRoot !== ownerRoot) {
+      this.projectCache.set(resolvedRoot, cg);
+    }
+    if (projectPath !== resolvedRoot && projectPath !== ownerRoot) {
       this.projectCache.set(projectPath, cg);
     }
     this.evictProjectCacheOverflow();
@@ -870,8 +917,13 @@ export class ToolHandler {
    * Close all cached project connections
    */
   closeAll(): void {
-    for (const cg of this.projectCache.values()) {
-      cg.close();
+    // One key per instance by design; closing through a Set keeps a second
+    // close (which throws on some backends) from ever stopping the loop
+    // (upstream #2020).
+    for (const cg of new Set(this.projectCache.values())) {
+      try {
+        cg.close();
+      } catch { /* best-effort */ }
     }
     this.projectCache.clear();
     this.worktreeMismatchCache.clear();
@@ -1031,10 +1083,12 @@ export class ToolHandler {
     const inResponse: PendingFile[] = [];
     const elsewhere: PendingFile[] = [];
     for (const p of pending) {
-      // Substring match against the project-relative POSIX path — that's
-      // exactly the format both the watcher and every codegraph response
-      // emit, so a plain includes() is sufficient and avoids regex pitfalls.
-      if (text.includes(p.path)) inResponse.push(p);
+      // Project-relative POSIX path — the format both the watcher and every
+      // codegraph response emit — matched as a WHOLE path (upstream #1968/
+      // #1997), so a pending `src/app.ts` isn't "referenced" by a response
+      // that only shows `src/app.tsx`, and a pending root `app.tsx` isn't
+      // matched inside `src/app.tsx`.
+      if (mentionsPath(text, p.path)) inResponse.push(p);
       else elsewhere.push(p);
     }
 

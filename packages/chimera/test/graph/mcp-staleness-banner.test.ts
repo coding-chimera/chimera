@@ -180,4 +180,34 @@ describe('MCP staleness banner', () => {
   it('returns zero pending files when no watcher is active', () => {
     expect(cg.getPendingFiles()).toEqual([]);
   });
+
+  it('matches pending paths as WHOLE paths, not substrings (upstream #1968/#1997)', async () => {
+    cg.watch({ debounceMs: 4000 });
+    await cg.waitUntilWatcherReady();
+
+    // Index a .tsx file; the pending event is for the .ts PREFIX spelling.
+    fs.writeFileSync(
+      path.join(testDir, 'src', 'whole-path.tsx'),
+      'export function wholeTsx() { return 7; }\n',
+    );
+    await cg.syncFiles(['src/whole-path.tsx']);
+    triggerFileEvent(testDir, 'change', 'src/whole-path.ts');
+    await waitFor(() => cg.getPendingFiles().some((p) => p.path === 'src/whole-path.ts'));
+
+    // The response mentions only src/whole-path.tsx. Substring matching used
+    // to name the pending src/whole-path.ts in the banner; whole-path
+    // matching relegates it to the elsewhere footer.
+    const res = await handler.execute('codegraph_search', { query: 'wholeTsx' });
+    const text = res.content[0].text;
+    expect(text).toContain('whole-path.tsx');
+    expect(text.startsWith('⚠️')).toBe(false);
+    expect(text).toContain('pending index sync');
+
+    // Vacuity guard: the SAME setup with the exact pending spelling does
+    // raise the banner.
+    triggerFileEvent(testDir, 'change', 'src/whole-path.tsx');
+    await waitFor(() => cg.getPendingFiles().some((p) => p.path === 'src/whole-path.tsx'));
+    const res2 = await handler.execute('codegraph_search', { query: 'wholeTsx' });
+    expect(res2.content[0].text.startsWith('⚠️')).toBe(true);
+  });
 });
