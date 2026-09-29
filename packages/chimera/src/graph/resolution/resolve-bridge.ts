@@ -66,6 +66,18 @@ import {
 } from './resolve-encode';
 import { resolveViaImport, resolveJvmImport, resolveImportPath } from './import-resolver';
 import { objectLiteralMemberBinding } from './name-matcher';
+import { isVisibleCppMacro } from './cpp-macro-visibility';
+import { isCppConstructorRef, matchCppConstructor } from './cpp-constructor';
+
+/**
+ * Sentinel target for a #1838 macro-veto entry in the FRAMEWORK table (whose
+ * key carries the ref POSITION — macro visibility is per call site, so a
+ * name-keyed table would let one veto poison every same-name ref of the file).
+ * The native arm treats presence of the sentinel under the ref's own FwKey as
+ * the veto and never resolves the group as framework candidates (it returns
+ * before Strategy 1).
+ */
+const CPP_MACRO_VETO_SENTINEL = 'cpp-macro-veto';
 
 /** True for errors indicating a systematic bridge/wire/handle fault (sticky disable). */
 export function isResolveWireError(err: unknown): boolean {
@@ -234,6 +246,45 @@ export function precomputeExternal(refs: UnresolvedRef[], deps: NativeBatchDeps)
             referenceName: name,
             referenceKind: 'references',
             targetNodeId: imp.targetNodeId,
+          });
+        }
+      }
+    }
+    // #1838/#1839 C/C++ special answers for the native arm: the macro-
+    // visibility veto and the constructor-ref match are computed HERE in TS
+    // (they walk include timelines / lexical namespaces) and carried on
+    // existing tables — a veto occupies the ref's POSITION-keyed framework
+    // group with a sentinel candidate, a constructor match occupies the
+    // ref's own import-table key. resolver.rs consults both at the top of
+    // resolve_one_ungated, before any prefilter or strategy (mirrors
+    // resolveOneCore's ordering).
+    if ((ref.language === 'c' || ref.language === 'cpp') && ref.referenceKind === 'calls') {
+      if (isVisibleCppMacro(ref, context)) {
+        const fwKey = `${ref.filePath}\u0000${ref.referenceName}\u0000calls\u0000${ref.line}\u0000${ref.column}`;
+        if (!seenFwKeys.has(fwKey)) {
+          seenFwKeys.add(fwKey);
+          out.frameworkResults.push({
+            filePath: ref.filePath,
+            referenceName: ref.referenceName,
+            referenceKind: 'calls',
+            line: ref.line,
+            col: ref.column,
+            candidates: [{ targetNodeId: CPP_MACRO_VETO_SENTINEL, resolvedBy: 'framework', authoritative: false }],
+          });
+        }
+      }
+    }
+    if (isCppConstructorRef(ref)) {
+      const ctor = matchCppConstructor(ref, context);
+      if (ctor) {
+        const key = `${ref.filePath}\u0000${ref.referenceName}\u0000${ref.referenceKind}`;
+        if (!seenKeys.has(key)) {
+          seenKeys.add(key);
+          out.importResults.push({
+            filePath: ref.filePath,
+            referenceName: ref.referenceName,
+            referenceKind: ref.referenceKind,
+            targetNodeId: ctor.targetNodeId,
           });
         }
       }

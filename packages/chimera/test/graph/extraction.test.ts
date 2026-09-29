@@ -4707,6 +4707,13 @@ function go() { return new ns.Foo(); }
     expect(ref?.referenceName).toBe('Foo');
   });
 
+  it('records constructor defaults and array element arities (#1839)', () => {
+    const result = extractFromSource('f.cpp', 'struct Widget { Widget(int x = 1); };\nvoid run() { Widget a[2]; Widget b[3]{{2}, {3}}; }');
+    expect(result.nodes.find((n) => n.kind === 'method')?.signature).toBe('(int x = 1);');
+    expect(result.unresolvedReferences.filter((r) => r.referenceKind === 'calls').map((r) => r.referenceName))
+      .toEqual(['Widget::Widget/0', 'Widget::Widget/1', 'Widget::Widget/1', 'Widget::Widget/0']);
+  });
+
   it('emits a decorates ref for `@Foo class X {}`', () => {
     const code = `
 function Foo(_arg: string) { return (cls: any) => cls; }
