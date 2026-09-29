@@ -280,7 +280,24 @@ const JS_FAMILY = new Set<string>(['typescript', 'tsx', 'javascript', 'jsx']);
  * term used to pick over the module-scope function the call actually means.
  */
 function isBareJsCall(ref: UnresolvedRef, context: ResolutionContext): boolean {
-  if (ref.referenceKind !== 'calls' || !JS_FAMILY.has(ref.language)) return false;
+  return JS_FAMILY.has(ref.language) && isReceiverLessCall(ref, context);
+}
+
+/**
+ * Whether a Go `calls` ref is receiver-less — `relogin(ctx)`, not
+ * `l.relogin(ctx)`. A Go method is only reachable through a value or a method
+ * expression, so a bare call (a func parameter, a local func value, a
+ * package-level function) is never a method, in its own package or in one the
+ * file does not import (#1857). Read from the source line like the JS/TS
+ * check, because `pkg.Factory().Method()` reaches the resolver as a bare
+ * `Method` ref too.
+ */
+function isBareGoCall(ref: UnresolvedRef, context: ResolutionContext): boolean {
+  return ref.language === 'go' && isReceiverLessCall(ref, context);
+}
+
+function isReceiverLessCall(ref: UnresolvedRef, context: ResolutionContext): boolean {
+  if (ref.referenceKind !== 'calls') return false;
   if (ref.referenceName.includes('.')) return false;
   const line = context.getFileLines?.(ref.filePath)?.[ref.line - 1]
     ?? context.readFile?.(ref.filePath)?.split('\n')[ref.line - 1];
@@ -289,7 +306,7 @@ function isBareJsCall(ref: UnresolvedRef, context: ResolutionContext): boolean {
   const nameEsc = ref.referenceName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   if (!new RegExp('^' + nameEsc + '\\s*[(<]').test(at)) return false;
   // Nothing but whitespace, an operator or an opener may precede a bare call.
-  return !/[.\w$\]\)]\s*$/.test(line.slice(0, ref.column)) || /\b(?:return|await|yield|typeof|void|new|else|case|throw|in|of|instanceof)\s*$/.test(line.slice(0, ref.column));
+  return !/[.\w$\]\)]\s*$/.test(line.slice(0, ref.column)) || /\b(?:return|await|yield|typeof|void|new|else|case|throw|in|of|instanceof|go|defer)\s*$/.test(line.slice(0, ref.column));
 }
 
 /** Per-context memo: `file\0name` → "the file binds this name locally". */
@@ -603,9 +620,10 @@ export function matchByExactName(
   // - For `imports` refs, sealed-module candidates drop BEFORE ranking
   //   ("preserve import ranking; calls reject the winner without promoting
   //   another" — the calls rejection happens post-rank below).
-  // - A receiver-less JS/TS call cannot reach a method (#1714), and never
-  //   reaches a cross-file name the calling file binds locally.
+  // - A receiver-less JS/TS or Go call cannot reach a method (#1714, #1857),
+  //   and never reaches a cross-file name the calling file binds locally.
   const bareJs = isBareJsCall(ref, context);
+  const bareGo = isBareGoCall(ref, context);
   if (bareJs) {
     const storeAction = matchJsStoreBindingCall(ref, context);
     if (storeAction) return storeAction;
@@ -614,7 +632,7 @@ export function matchByExactName(
     .filter((n) => n.kind !== 'import')
     .filter((n) => ref.referenceKind !== 'imports' || n.filePath === ref.filePath ||
       !ESM_FAMILY.has(n.language) || !isSealedModule(n.filePath, context))
-    .filter((n) => !(bareJs && n.kind === 'method'))
+    .filter((n) => !((bareJs || bareGo) && n.kind === 'method'))
     .filter((n) => !(bareJs && n.filePath !== ref.filePath && isLocallyBoundJsName(ref.referenceName, ref.filePath, context)));
 
   if (candidates.length === 0) {
@@ -3092,8 +3110,9 @@ export function matchFuzzy(
   // sealed-module / visibility tests reject the survivor and never filter the
   // set that produced it: removing a sealed candidate from a crowd would leave
   // a lone one and manufacture a guess out of an ambiguity fuzzy declines.
-  // Also decline a bare JS/TS call whose only survivor is a method (#1714) or
-  // a cross-file name the file already binds locally. Reachability may reject
+  // Also decline a bare JS/TS call whose only survivor is a method (#1714), a
+  // bare Go call whose only survivor is a method (#1857), or a cross-file JS
+  // name the file already binds locally. Reachability may reject
   // a unique guess; it must never manufacture one.
   if (finalCandidates.length === 1) {
     const survivor = finalCandidates[0]!;
@@ -3102,7 +3121,8 @@ export function matchFuzzy(
       isCrossFileReachable(survivor, ref, context) &&
       !(isBareJsCall(ref, context) &&
         (survivor.kind === 'method' ||
-          (survivor.filePath !== ref.filePath && isLocallyBoundJsName(ref.referenceName, ref.filePath, context))))
+          (survivor.filePath !== ref.filePath && isLocallyBoundJsName(ref.referenceName, ref.filePath, context)))) &&
+      !(survivor.kind === 'method' && isBareGoCall(ref, context))
     ) {
       return {
         original: ref,
