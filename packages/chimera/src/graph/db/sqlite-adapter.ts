@@ -32,6 +32,8 @@ export interface SqliteDatabase {
   transaction<T>(fn: (...args: any[]) => T): (...args: any[]) => T;
   close(): void;
   readonly open: boolean;
+  /** Undefined on a runtime without `isTransaction`; callers must then not memoize. */
+  readonly inTransaction?: boolean;
 }
 
 /**
@@ -103,6 +105,10 @@ class NodeSqliteAdapter implements SqliteDatabase {
 
   get open(): boolean {
     return this._db.isOpen;
+  }
+
+  get inTransaction(): boolean | undefined {
+    return this._db.isTransaction;
   }
 
   prepare(sql: string): SqliteStatement {
@@ -213,6 +219,12 @@ private _db: any;
 
   get open(): boolean {
     return this._open;
+  }
+
+  get inTransaction(): boolean | undefined {
+    // bun:sqlite spells the getter `inTransaction`; node:sqlite uses
+    // `isTransaction` (see NodeSqliteAdapter above).
+    return this._db.inTransaction;
   }
 
   prepare(sql: string): SqliteStatement {
