@@ -2,6 +2,7 @@ import { Hono } from "hono"
 import { describeRoute, validator, resolver } from "hono-openapi"
 import z from "zod"
 import { Permission } from "@/permission"
+import { PermissionPersist } from "@/permission/persist"
 import { PermissionID } from "@/permission/schema"
 import { errors } from "../../error"
 import { lazy } from "@/util/lazy"
@@ -38,8 +39,7 @@ export const PermissionRoutes = lazy(() =>
         jsonRequest("PermissionRoutes.reply", c, function* () {
           const params = c.req.valid("param")
           const json = c.req.valid("json")
-          const svc = yield* Permission.Service
-          yield* svc.reply({
+          yield* PermissionPersist.replyAndPersist({
             requestID: params.requestID,
             reply: json.reply,
             message: json.message,

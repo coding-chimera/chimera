@@ -1,4 +1,5 @@
 import { Permission } from "@/permission"
+import { PermissionPersist } from "@/permission/persist"
 import { PermissionID } from "@/permission/schema"
 import { Effect } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
@@ -16,14 +17,13 @@ export const permissionHandlers = HttpApiBuilder.group(InstanceHttpApi, "permiss
       params: { requestID: PermissionID }
       payload: Permission.ReplyBody
     }) {
-      yield* svc.reply({
+      yield* PermissionPersist.replyAndPersist({
         requestID: ctx.params.requestID,
         reply: ctx.payload.reply,
         message: ctx.payload.message,
       })
       return true
     })
-
     return handlers.handle("list", list).handle("reply", reply)
   }),
 )

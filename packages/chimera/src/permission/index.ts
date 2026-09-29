@@ -129,7 +129,13 @@ export type ReplyInput = Schema.Schema.Type<typeof ReplyInput>
 
 export interface Interface {
   readonly ask: (input: AskInput) => Effect.Effect<void, Error>
-  readonly reply: (input: ReplyInput) => Effect.Effect<void>
+  /**
+   * Resolves a pending request. An "always" reply additionally returns the
+   * approval rules pushed into the in-memory ruleset so callers can persist
+   * them (see PermissionPersist.replyAndPersist); other replies return
+   * undefined.
+   */
+  readonly reply: (input: ReplyInput) => Effect.Effect<{ sessionID: SessionID; rules: Ruleset } | undefined>
   readonly list: () => Effect.Effect<ReadonlyArray<Request>>
 }
 
@@ -247,13 +253,12 @@ export const layer = Layer.effect(
       yield* Deferred.succeed(existing.deferred, undefined)
       if (input.reply === "once") return
 
-      for (const pattern of existing.info.always) {
-        approved.push({
-          permission: existing.info.permission,
-          pattern,
-          action: "allow",
-        })
-      }
+      const rules = existing.info.always.map((pattern) => ({
+        permission: existing.info.permission,
+        pattern,
+        action: "allow" as const,
+      }))
+      for (const rule of rules) approved.push(rule)
 
       for (const [id, item] of pending.entries()) {
         if (item.info.sessionID !== existing.info.sessionID) continue
@@ -269,6 +274,8 @@ export const layer = Layer.effect(
         })
         yield* Deferred.succeed(item.deferred, undefined)
       }
+
+      return { sessionID: existing.info.sessionID, rules }
     })
 
     const list = Effect.fn("Permission.list")(function* () {
