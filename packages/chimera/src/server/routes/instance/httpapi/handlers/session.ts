@@ -5,6 +5,7 @@ import { Agent } from "@/agent/agent"
 import { Bus } from "@/bus"
 import { Command } from "@/command"
 import { Permission } from "@/permission"
+import { PermissionPersist } from "@/permission/persist"
 import { PermissionID } from "@/permission/schema"
 import { SessionShare } from "@/share/session"
 import { Session } from "@/session/session"
@@ -52,7 +53,6 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const compactSvc = yield* SessionCompaction.Service
     const runState = yield* SessionRunState.Service
     const agentSvc = yield* Agent.Service
-    const permissionSvc = yield* Permission.Service
     const statusSvc = yield* SessionStatus.Service
     const todoSvc = yield* Todo.Service
     const workBriefSvc = yield* WorkBrief.Service
@@ -350,7 +350,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       params: { permissionID: PermissionID }
       payload: typeof PermissionResponsePayload.Type
     }) {
-      yield* permissionSvc.reply({ requestID: ctx.params.permissionID, reply: ctx.payload.response })
+      yield* PermissionPersist.replyAndPersist({ requestID: ctx.params.permissionID, reply: ctx.payload.response })
       return true
     })
 

@@ -20,6 +20,7 @@ import { Snapshot } from "@/snapshot"
 import { Command } from "@/command"
 import * as Log from "@opencode-ai/core/util/log"
 import { Permission } from "@/permission"
+import { PermissionPersist } from "@/permission/persist"
 import { PermissionID } from "@/permission/schema"
 import { ModelID, ProviderID } from "@/provider/schema"
 import { errors } from "../../error"
@@ -1180,8 +1181,7 @@ export const SessionRoutes = lazy(() =>
       async (c) =>
         jsonRequest("SessionRoutes.permissionRespond", c, function* () {
           const params = c.req.valid("param")
-          const svc = yield* Permission.Service
-          yield* svc.reply({
+          yield* PermissionPersist.replyAndPersist({
             requestID: params.permissionID,
             reply: c.req.valid("json").response,
           })
