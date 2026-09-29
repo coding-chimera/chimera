@@ -55,6 +55,13 @@ export interface WatchBatch {
   files: string[];
   /** Wall-clock ms at which this batch started flushing. */
   startedAtMs: number;
+  /**
+   * True when the watcher owes a FULL reconcile (e.g. a directory removal,
+   * whose pending-file set alone cannot describe the deletion, upstream
+   * #1964/#1977). Sync callbacks must widen to a full sync for such a
+   * batch; the flag is cleared only after a full sync completes.
+   */
+  needsFullScan?: boolean;
 }
 
 export interface WatchSyncSummary {
@@ -129,6 +136,16 @@ export interface WatchOptions {
    * Callback when a sync errors (for logging/diagnostics).
    */
   onSyncError?: (error: Error, batch?: WatchBatch) => void;
+
+  /**
+   * Optional metadata guard supplied by the CodeGraph facade (upstream #2050,
+   * #1451). Windows' ReadDirectoryChangesW stream includes last-access
+   * updates, so a read can otherwise look exactly like an edit. Returning
+   * true means the file's current size/mtime still match the indexed record
+   * and the change event is noise. Fail-open: a throwing guard keeps the
+   * event so a sync can reconcile it.
+   */
+  isFileStateCurrent?: (relativePath: string) => boolean;
 }
 
 /**
@@ -258,11 +275,20 @@ export class FileWatcher {
   private readonly onSyncComplete?: WatchOptions['onSyncComplete'];
   private readonly onSyncError?: WatchOptions['onSyncError'];
   private readonly onDegraded?: WatchOptions['onDegraded'];
+  private readonly isFileStateCurrent?: WatchOptions['isFileStateCurrent'];
   private degradedReason: string | null = null;
   private syncFailureCount = 0;
   private retryBackoffMs = 0;
   private batchSeq = 0;
   private watchedGitRelPaths = new Set<string>();
+  /**
+   * Set by a directory removal (or scope-topology change): the next sync
+   * owes a FULL reconcile. A removed directory adds no per-file pending
+   * entry the scoped sync could act on, so without this flag the owed
+   * reconcile is dropped and the removed directory's files keep their nodes
+   * (upstream #1964/#1977). Cleared only after a successful full sync.
+   */
+  private needsFullScan = false;
 
   constructor(
     projectRoot: string,
@@ -280,6 +306,7 @@ export class FileWatcher {
     this.onSyncComplete = options.onSyncComplete;
     this.onSyncError = options.onSyncError;
     this.onDegraded = options.onDegraded;
+    this.isFileStateCurrent = options.isFileStateCurrent;
     this.batchApi = batchApi;
   }
 
@@ -340,6 +367,19 @@ export class FileWatcher {
       this.watcher.on('all', (event: string, filePath: string) => {
         if (this.stopped) return;
 
+        // Directory topology events carry no syncable file of their own. A
+        // removal owes a full reconcile — its files' nodes must disappear
+        // even when chokidar delivered no per-file unlink (upstream #1964).
+        if (event === 'unlinkDir' || event === 'addDir') {
+          const relDir = normalizePath(path.relative(this.projectRoot, filePath));
+          if (relDir && relDir !== '.' && !this.isAlwaysIgnored(relDir) &&
+              (!this.ignoreMatcher || !this.ignoreMatcher.ignores(relDir + '/'))) {
+            if (event === 'unlinkDir') this.needsFullScan = true;
+            this.scheduleSync();
+          }
+          return;
+        }
+
         const kind = normalizeWatchEvent(event);
         if (!kind) return;
 
@@ -350,6 +390,25 @@ export class FileWatcher {
         // can still arrive during setup or via symlink traversal.
         if (source !== 'git' && this.isAlwaysIgnored(normalized)) return;
         if (source !== 'git' && !this.includeNonSource && !isSourceFile(normalized)) return;
+
+        // Windows access-only notifications (#1451, upstream #2050): a read
+        // updates NTFS atime and libuv reports it as an ordinary change. If
+        // the indexed size/mtime still match the file on disk, the event is
+        // noise. Only applied to 'change' — unlink/add must always reach
+        // sync. Fail-open: a throwing guard keeps the event.
+        if (kind === 'change' && this.isFileStateCurrent) {
+          try {
+            if (this.isFileStateCurrent(normalized)) {
+              logDebug('Ignoring file event with unchanged indexed metadata', { file: normalized });
+              return;
+            }
+          } catch (error) {
+            logDebug('Could not verify file event metadata; treating it as a change', {
+              file: normalized,
+              error: String(error),
+            });
+          }
+        }
 
         logDebug('File change detected', { file: normalized });
         // Only track events from after chokidar's initial scan as pending
@@ -438,6 +497,7 @@ export class FileWatcher {
     this.watcher = null;
 
     this.pendingEvents.clear();
+    this.needsFullScan = false;
     this.chokidarReady = false;
     this.ignoreMatcher = null;
     this.watchedGitRelPaths.clear();
@@ -549,6 +609,9 @@ export class FileWatcher {
         : batchResult
           ? toSyncResult(batchResult, batch)
           : { filesChecked: batch.files.length, filesAdded: 0, filesModified: 0, filesRemoved: 0, nodesUpdated: 0, durationMs: 0 };
+      // A full reconcile ran clean — the owed full scan is discharged. Only
+      // cleared AFTER success so a failed sync keeps owing it (#1977).
+      if (batch.needsFullScan) this.needsFullScan = false;
       // Remove entries whose most recent event predates this sync — those
       // edits are now in the DB. Entries with lastSeenMs > syncStartedMs
       // arrived mid-sync; whether the in-flight sync captured them depends
@@ -590,9 +653,11 @@ export class FileWatcher {
     } finally {
       this.syncing = false;
 
-      // If pending files remain (mid-sync events, or this sync failed),
-      // schedule another pass — with exponential backoff after a failure.
-      if (this.pendingEvents.size > 0 && !this.stopped && !this.isDegraded()) {
+      // If pending files remain (mid-sync events, or this sync failed), or a
+      // full scan is still owed (a failed directory-removal reconcile adds no
+      // pending file — upstream #1964/#1977), schedule another pass — with
+      // exponential backoff after a failure.
+      if ((this.pendingEvents.size > 0 || this.needsFullScan) && !this.stopped && !this.isDegraded()) {
         if (this.retryBackoffMs > 0) {
           const backoff = this.retryBackoffMs;
           this.retryBackoffMs = 0;
@@ -639,6 +704,7 @@ export class FileWatcher {
       source: sources.size === 1 ? events[0]?.source ?? 'filesystem' : 'mixed',
       files: events.map((event) => event.path),
       startedAtMs,
+      needsFullScan: this.needsFullScan || undefined,
     };
   }
 

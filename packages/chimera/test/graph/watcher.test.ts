@@ -618,4 +618,82 @@ describe('FileWatcher', () => {
       await cg.unwatch();
     });
   });
+
+  describe('owed full scan after directory removal (upstream #1964/#1977)', () => {
+    it('keeps the full scan owed when the sync fails and reschedules', async () => {
+      let call = 0;
+      const syncFn = vi.fn(async () => {
+        call += 1;
+        if (call === 1) throw new Error('transient failure');
+        return { filesChanged: 0, durationMs: 1 };
+      });
+      const watcher = new FileWatcher(testDir, syncFn, { debounceMs: 100 });
+
+      watcher.start();
+      await watcher.waitUntilReady();
+
+      // A directory removal adds no pending file of its own — the owed
+      // reconcile rides on needsFullScan.
+      triggerFileEvent(testDir, 'unlinkDir', 'src/gone');
+
+      await waitFor(() => syncFn.mock.calls.length >= 1);
+      expect(syncFn.mock.calls[0]![0].needsFullScan).toBe(true);
+
+      // The failed sync must NOT drop the owed full scan: the watcher
+      // reschedules (backoff = debounceMs) with needsFullScan still set.
+      await waitFor(() => syncFn.mock.calls.length >= 2, 5000);
+      expect(syncFn.mock.calls[1]![0].needsFullScan).toBe(true);
+
+      // The clean second pass discharges the debt; no further passes run.
+      await waitFor(() => (watcher as unknown as { needsFullScan: boolean }).needsFullScan === false);
+      await new Promise((r) => setTimeout(r, 300));
+      expect(syncFn.mock.calls.length).toBe(2);
+
+      await watcher.stop();
+    });
+  });
+
+  describe('access-only notification guard (upstream #1451/#2050)', () => {
+    it('drops change events whose indexed metadata is still current', async () => {
+      const syncFn = vi.fn().mockResolvedValue({ filesChanged: 0, durationMs: 0 });
+      const watcher = new FileWatcher(testDir, syncFn, {
+        debounceMs: 150,
+        isFileStateCurrent: (p) => p === 'src/index.ts',
+      });
+
+      watcher.start();
+      await watcher.waitUntilReady();
+
+      triggerFileEvent(testDir, 'change', 'src/index.ts');
+      await new Promise((r) => setTimeout(r, 350));
+      expect(syncFn).not.toHaveBeenCalled();
+      expect(watcher.getPendingFiles()).toEqual([]);
+
+      // unlink events are never swallowed by the guard — removals must
+      // always reach sync.
+      triggerFileEvent(testDir, 'unlink', 'src/index.ts');
+      await waitFor(() => syncFn.mock.calls.length > 0);
+
+      await watcher.stop();
+    });
+
+    it('fails open when the guard throws', async () => {
+      const syncFn = vi.fn().mockResolvedValue({ filesChanged: 1, durationMs: 1 });
+      const watcher = new FileWatcher(testDir, syncFn, {
+        debounceMs: 150,
+        isFileStateCurrent: () => {
+          throw new Error('stat failed');
+        },
+      });
+
+      watcher.start();
+      await watcher.waitUntilReady();
+      triggerFileEvent(testDir, 'change', 'src/index.ts');
+
+      await waitFor(() => syncFn.mock.calls.length > 0);
+      expect(syncFn.mock.calls[0]![0].files).toEqual(['src/index.ts']);
+
+      await watcher.stop();
+    });
+  });
 });
