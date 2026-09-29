@@ -760,6 +760,10 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
         deleteSessionMemory({ sessionID })
         yield* sync.run(Event.Deleted, { sessionID, info: session }, { publish: hasInstance })
         yield* sync.remove(sessionID)
+        // Best-effort: drop the session_diff file (written by summary/revert)
+        // so removed sessions do not leave orphan JSON in storage forever.
+        // Cleanup failure must never break removal.
+        yield* storage.remove(["session_diff", sessionID]).pipe(Effect.ignoreCause({ log: true }))
       } catch (e) {
         log.error(e)
       }
