@@ -123,7 +123,7 @@ function fieldChannelEdges(queries: QueryBuilder, ctx: ResolutionContext): Edge[
       (d) => d.node.filePath === reg.node.filePath && d.field === reg.field
     );
     if (chDispatchers.length === 0) continue;
-    const argRe = new RegExp(`${reg.node.name}\\s*\\(\\s*(?:this\\.)?(\\w+)`);
+    const argRe = new RegExp(`${reg.node.name}\\s*\\(\\s*(this\\.\\w+|\\w+)\\s*(?=[,)])`);
     let added = 0;
     for (const e of queries.getIncomingEdges(reg.node.id, ['calls'])) {
       if (added >= MAX_CALLBACKS_PER_CHANNEL) break;
@@ -133,8 +133,23 @@ function fieldChannelEdges(queries: QueryBuilder, ctx: ResolutionContext): Edge[
       const line = ctx.readFile(caller.filePath)?.split('\n')[e.line - 1];
       const am = line?.match(argRe);
       if (!am) continue;
-      const fn = ctx.getNodesByName(am[1]!).find((n) => n.kind === 'method' || n.kind === 'function');
-      if (!fn) continue;
+      // Reuse the resolved value at this registration site: it retains the
+      // receiver's class/inheritance and import binding, unlike a name lookup.
+      // Fork adaptation of upstream #2015: upstream keys on the `fnRef: true`
+      // stamp, but the fork routes a bare-name argument function value through
+      // its D1 value-position `references` edge (resolvedBy import/exact-match,
+      // no fnRef stamp; only the this.member form carries one). Accepting any
+      // same-line references edge whose refName equals the argument keeps the
+      // site-scoped guarantee — the edge is still the CALLER's own resolved
+      // value, never a global name lookup — without losing the bare-name
+      // registrations the fork's extractor emits.
+      const refs = queries.getOutgoingEdges(caller.id, ['references']).filter(
+        (r) => r.line === e.line && r.metadata?.refName === am[1]
+      );
+      if (refs.length !== 1) continue;
+      const fn = queries.getNodeById(refs[0]!.target);
+      if (!fn || (fn.kind !== 'method' && fn.kind !== 'function')) continue;
+      if (!am[1]!.startsWith('this.') && fn.filePath !== caller.filePath && refs[0]!.metadata?.resolvedBy !== 'import') continue;
       for (const disp of chDispatchers) {
         if (disp.node.id === fn.id) continue;
         const key = `${disp.node.id}>${fn.id}`;
