@@ -65,6 +65,7 @@ import {
   type ImportPathWire,
 } from './resolve-encode';
 import { resolveViaImport, resolveJvmImport, resolveImportPath } from './import-resolver';
+import { objectLiteralMemberBinding } from './name-matcher';
 
 /** True for errors indicating a systematic bridge/wire/handle fault (sticky disable). */
 export function isResolveWireError(err: unknown): boolean {
@@ -161,6 +162,37 @@ export function precomputeExternal(refs: UnresolvedRef[], deps: NativeBatchDeps)
               filePath: ref.filePath,
               referenceName: m[1]!,
               referenceKind: 'references',
+              targetNodeId: imp.targetNodeId,
+            });
+          }
+        }
+      }
+    }
+    // #1932 object-literal member bindings: the native arm's
+    // resolve_object_literal_binding consults the precomputed import table for
+    // `const api = { m: importedFn }` members whose binding is an IMPORT of
+    // the holder's file. The synthetic query the native arm issues is
+    // (container.file_path, binding, ref.referenceKind) — and the same-file
+    // holder strategy guarantees container.file_path === ref.filePath.
+    if (ref.language === 'typescript' || ref.language === 'javascript' ||
+        ref.language === 'tsx' || ref.language === 'jsx') {
+      const ol = /^([\w$]+)\.(\w+)$/.exec(ref.referenceName);
+      if (ol) {
+        for (const holder of context.getNodesByName(ol[1]!)) {
+          if ((holder.kind !== 'constant' && holder.kind !== 'variable') ||
+              holder.filePath !== ref.filePath) continue;
+          const binding = objectLiteralMemberBinding(holder, ol[2]!, context);
+          if (!binding) continue;
+          const key = `${ref.filePath}\u0000${binding}\u0000${ref.referenceKind}`;
+          if (seenKeys.has(key)) continue;
+          seenKeys.add(key);
+          const synthetic: UnresolvedRef = { ...ref, referenceName: binding };
+          const imp = resolveViaImport(synthetic, context);
+          if (imp) {
+            out.importResults.push({
+              filePath: ref.filePath,
+              referenceName: binding,
+              referenceKind: ref.referenceKind,
               targetNodeId: imp.targetNodeId,
             });
           }

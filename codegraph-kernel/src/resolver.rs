@@ -2826,6 +2826,18 @@ impl Resolver {
             .iter()
             .filter(|n| n.id != container.id && Self::range_within(n, container))
             .collect();
+        // Own-property evidence (#1932) — mirrors name-matcher.ts's
+        // objectLiteralProperty gate: a member that is one of the literal's own
+        // top-level properties confines containment to that property, and a
+        // property whose value is a bare identifier names an outer binding
+        // (resolve_object_literal_binding follows it instead).
+        let lines = ctx.file_lines(&container.file_path)?;
+        let property = Self::object_literal_property(&lines, container, member);
+        match &property {
+            Some(None) => return Ok(None),
+            Some(Some((Some(_), _, _))) => return Ok(None),
+            _ => {}
+        }
         let mut candidates: Vec<&CtxNode> = inside
             .iter()
             .copied()
@@ -2835,6 +2847,22 @@ impl Resolver {
                         callable(n)
                     } else {
                         value_member(n)
+                    }
+                    && match &property {
+                        Some(Some((_, p_start, p_end))) => {
+                            // offset(node): UTF-16 columns + line lengths, as in TS.
+                            let mut off = n.start_column - container.start_column;
+                            let mut line = container.start_line;
+                            while line < n.start_line {
+                                let idx = (line - 1).max(0) as usize;
+                                if idx < lines.len() {
+                                    off += js_len(&lines[idx]) as i64 + 1;
+                                }
+                                line += 1;
+                            }
+                            off >= *p_start as i64 && off < *p_end as i64
+                        }
+                        _ => true,
                     }
             })
             .collect();
@@ -2861,6 +2889,212 @@ impl Resolver {
                 .then(a.start_column.cmp(&b.start_column))
         });
         Ok(Some(Resolved::new(candidates[0].id.clone(), resolved_by)))
+    }
+
+    /// objectLiteralProperty (name-matcher.ts, #1932) — own-property evidence.
+    /// Tri-state: None = source/extent unavailable (TS undefined), Some(None) =
+    /// member absent (TS null), Some(Some((binding, start, end))) = the last own
+    /// property of that name; start/end are UTF-16 offsets into the
+    /// comment-stripped, string-blanked extent (offset-preserving rewrites).
+    fn object_literal_property(
+        lines: &[String],
+        container: &CtxNode,
+        member: &str,
+    ) -> Option<Option<(Option<String>, usize, usize)>> {
+        if lines.is_empty() {
+            return None;
+        }
+        let start_idx = container.start_line.saturating_sub(1).max(0) as usize;
+        let end_idx = (container.end_line.max(0) as usize).min(lines.len());
+        if start_idx >= end_idx {
+            return None;
+        }
+        let mut extent_lines: Vec<String> = lines[start_idx..end_idx].to_vec();
+        let last = extent_lines.len() - 1;
+        extent_lines[last] =
+            js_slice_to(&extent_lines[last], container.end_column.max(0) as usize).to_string();
+        extent_lines[0] =
+            js_slice_from(&extent_lines[0], container.start_column.max(0) as usize).to_string();
+        let extent = strip_comments_for_regex(&extent_lines.join("\n"), "typescript");
+        let code = blank_string_contents(&extent);
+        // Start at THIS declarator, including its columns, never a sibling on the same line.
+        let open_re = dyn_re(&format!("^[^=]*={S}*(?:(?:Object\\.(?:freeze|seal){S}*)?\\({S}*)*\\{{"));
+        let open_m = open_re.find(&code)?;
+        let open_len = js_len(open_m.as_str());
+
+        let code16: Vec<u16> = code.encode_utf16().collect();
+        let extent16: Vec<u16> = extent.encode_utf16().collect();
+        let mut members: Vec<(usize, usize)> = Vec::new();
+        let mut depth = 0i32;
+        let mut start = open_len;
+        let mut i = open_len;
+        while i < code16.len() {
+            let ch = code16[i];
+            if ch == '{' as u16 || ch == '(' as u16 || ch == '[' as u16 {
+                depth += 1;
+            } else if ch == ')' as u16 || ch == ']' as u16 {
+                depth -= 1;
+            } else if ch == '}' as u16 {
+                if depth == 0 {
+                    members.push((start, i));
+                    break;
+                }
+                depth -= 1;
+            } else if ch == ',' as u16 && depth == 0 {
+                members.push((start, i));
+                start = i + 1;
+            }
+            i += 1;
+        }
+
+        let key_re = dyn_re(&format!(
+            "^(?:(?:async|get|set){S}+)?\\*?{S}*(?:([A-Za-z_$][0-9A-Za-z_$]*)|['\\\"]([^'\\\"\\\\]*)['\\\"])"
+        ));
+        let value_re = dyn_re(&format!("^:{S}*([A-Za-z_$][0-9A-Za-z_$]*)$"));
+        let spread_re = dyn_re("^(?:\\.\\.\\.|\\[)");
+        let mut selected: Option<(usize, usize, Option<String>)> = None;
+        for (ms, me) in members {
+            let text = js_trim(&String::from_utf16_lossy(&extent16[ms..me])).to_string();
+            if spread_re.is_match(&text) {
+                selected = None;
+                continue;
+            }
+            let Some(key_m) = key_re.captures(&text) else { continue };
+            let key_name = key_m
+                .get(1)
+                .or_else(|| key_m.get(2))
+                .map(|x| x.as_str())
+                .unwrap_or("");
+            if key_name != member {
+                continue;
+            }
+            let text16: Vec<u16> = text.encode_utf16().collect();
+            let key_len = js_len(key_m.get(0).map(|x| x.as_str()).unwrap_or(""));
+            let value = js_trim(&String::from_utf16_lossy(&text16[key_len.min(text16.len())..])).to_string();
+            // The TS key regex's `(?=\s*(?:[:(<,=]|$))` lookahead, spelled out:
+            // after the key (whitespace trimmed) comes a value delimiter or EOT.
+            if !(value.is_empty()
+                || value.starts_with(':')
+                || value.starts_with('(')
+                || value.starts_with('<')
+                || value.starts_with(',')
+                || value.starts_with('='))
+            {
+                continue;
+            }
+            let binding = if value.is_empty() {
+                Some(member.to_string())
+            } else {
+                value_re
+                    .captures(&value)
+                    .and_then(|c| c.get(1))
+                    .map(|x| x.as_str().to_string())
+            };
+            selected = Some((ms, me, binding));
+        }
+        let (ms, me, binding) = selected?;
+        Some(Some((binding, ms, me)))
+    }
+
+    /// resolveObjectLiteralBinding (name-matcher.ts, #1932) — follow the bare
+    /// identifier an own member names: a lexically-visible symbol of the
+    /// container's file, else one of its imports (Plan A precomputed key
+    /// (container.file, binding, ref kind) — primed by resolve-bridge.ts).
+    fn resolve_object_literal_binding(
+        &mut self,
+        ctx: &mut CtxConn,
+        container: &CtxNode,
+        member: &str,
+        r: &RefIn,
+        ext: &ExternalStrategies,
+    ) -> Result<Option<Resolved>> {
+        let lines = ctx.file_lines(&container.file_path)?;
+        let binding = match Self::object_literal_property(&lines, container, member) {
+            Some(Some((Some(b), _, _))) => b,
+            _ => return Ok(None),
+        };
+        let in_file = ctx.nodes_in_file(&container.file_path)?;
+        // A parameter of a callable enclosing the literal shadows the name.
+        for n in &in_file {
+            if (n.kind == "function" || n.kind == "method") && Self::range_within(container, n) {
+                if let Some(sig) = &n.signature {
+                    if Self::has_parameter_binding(&format!("{sig} {{"), &regex::escape(&binding)) {
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+        if lines.is_empty() {
+            return Ok(None);
+        }
+        let code = blank_string_contents(&strip_comments_for_regex(&lines.join("\n"), "typescript"));
+        let code16: Vec<u16> = code.encode_utf16().collect();
+        let mut offsets: Vec<usize> = vec![0];
+        for (idx, ch) in code16.iter().enumerate() {
+            if *ch == '\n' as u16 {
+                offsets.push(idx + 1);
+            }
+        }
+        let scope_at = |node: &CtxNode| -> Vec<usize> {
+            let line_idx = (node.start_line - 1).max(0) as usize;
+            let end = offsets.get(line_idx).copied().unwrap_or(code16.len())
+                + node.start_column.max(0) as usize;
+            let mut scope: Vec<usize> = Vec::new();
+            for i in 0..end.min(code16.len()) {
+                if code16[i] == '{' as u16 {
+                    scope.push(i);
+                } else if code16[i] == '}' as u16 {
+                    scope.pop();
+                }
+            }
+            scope
+        };
+        let scope = scope_at(container);
+        let accepts_call = r.reference_kind == "calls";
+        let accepts = |n: &CtxNode| -> bool {
+            n.kind == "function"
+                || n.kind == "method"
+                || n.kind == "class"
+                || (!accepts_call
+                    && (n.kind == "constant" || n.kind == "variable" || n.kind == "component"))
+        };
+        let mut locals: Vec<(&CtxNode, Vec<usize>)> = in_file
+            .iter()
+            .filter(|n| {
+                n.name == binding
+                    && n.id != container.id
+                    && matches!(
+                        n.kind.as_str(),
+                        "function" | "class" | "constant" | "variable" | "component"
+                    )
+            })
+            .map(|n| (n, scope_at(n)))
+            .filter(|(_, s)| {
+                s.iter()
+                    .enumerate()
+                    .all(|(i, pos)| scope.get(i).copied() == Some(*pos))
+            })
+            .collect();
+        // Deepest lexical scope first (stable), as the TS comparator.
+        locals.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+        // Select the lexical binding BEFORE checking callability: a nearer value
+        // shadows an outer function even if that value cannot be called.
+        if let Some((local, _)) = locals.first() {
+            return Ok(if accepts(local) {
+                Some(Resolved::new(local.id.clone(), ResolvedBy::InstanceMethod))
+            } else {
+                None
+            });
+        }
+        let key = ImportKey::synthetic(&container.file_path, &binding, &r.reference_kind);
+        if let Some(target_id) = ext.import_results.get(&key) {
+            if let Some(target) = ctx.get_node_by_id(target_id)? {
+                if accepts(&target) {
+                    return Ok(Some(Resolved::new(target.id.clone(), ResolvedBy::InstanceMethod)));
+                }
+            }
+        }
+        Ok(None)
     }
 
     /// rustFieldTypeName (:1379-1396) — exported (pure) for tests.
@@ -4220,7 +4454,7 @@ impl Resolver {
         &mut self,
         ctx: &mut CtxConn,
         r: &RefIn,
-        _ext: &ExternalStrategies,
+        ext: &ExternalStrategies,
     ) -> Result<Option<Resolved>> {
         // "obj.method" / "Class::method"; the receiver allows dots; the method
         // part allows trailing `:` keywords (Objective-C selectors); C++
@@ -4347,6 +4581,13 @@ impl Resolver {
                     r,
                     ResolvedBy::InstanceMethod,
                 )? {
+                    return Ok(Some(hit));
+                }
+                // #1932: a member that aliases an OUTER function — containment
+                // found nothing, so follow the binding the member names.
+                if let Some(hit) =
+                    self.resolve_object_literal_binding(ctx, holder, method_name, r, ext)?
+                {
                     return Ok(Some(hit));
                 }
             }
