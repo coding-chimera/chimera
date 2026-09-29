@@ -7,6 +7,7 @@ import { Effect, Latch, Layer, Option, Scope, Context } from "effect"
 import * as Session from "./session"
 import { MessageV2 } from "./message-v2"
 import { SessionID } from "./schema"
+import { SessionPartReconcile } from "./part-reconcile"
 import { SessionStatus } from "./status"
 
 export interface Interface {
@@ -79,6 +80,7 @@ export const layer = Layer.effect(
       const leases: Array<InstanceStore.Lease | undefined> = []
       const next = Runner.make<MessageV2.WithParts>(data.scope, {
         onIdle: Effect.gen(function* () {
+          SessionPartReconcile.markIdle(sessionID)
           const lease = leases.shift()
           if (lease) yield* lease.release
           if (leases.length > 0) return
@@ -86,6 +88,7 @@ export const layer = Layer.effect(
           yield* status.set(sessionID, { type: "idle" })
         }),
         onBusy: Effect.gen(function* () {
+          SessionPartReconcile.markBusy(sessionID)
           leases.push(store._tag === "Some" ? yield* store.value.pin(instance) : undefined)
           yield* status.set(sessionID, { type: "busy" })
         }),
