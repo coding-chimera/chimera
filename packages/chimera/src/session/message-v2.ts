@@ -11,6 +11,7 @@ import { NotFoundError } from "@/storage/storage"
 import { and, desc, eq, inArray, lt, or, sql } from "drizzle-orm"
 import { MessageTable, PartTable, SessionTable } from "./session.sql"
 import { StorageMaintenanceTable } from "@/storage/maintenance.sql"
+import { SessionPartReconcile } from "./part-reconcile"
 import * as ProviderError from "@/provider/error"
 import { iife } from "@/util/iife"
 import { errorMessage } from "@/util/error"
@@ -1160,6 +1161,7 @@ export function toModelMessages(
 
 export function page(input: { sessionID: SessionID; limit: number; before?: string }) {
   ensureStoredSummariesTrimmed(input.sessionID)
+  SessionPartReconcile.ensureOrphansReconciled(input.sessionID)
   const before = input.before ? cursor.decode(input.before) : undefined
   const where = before
     ? and(eq(MessageTable.session_id, input.sessionID), older(before))
@@ -1258,6 +1260,7 @@ export function partsTail(message_id: MessageID, limit: number) {
 
 export function get(input: { sessionID: SessionID; messageID: MessageID }): WithParts {
   ensureStoredSummariesTrimmed(input.sessionID)
+  SessionPartReconcile.ensureOrphansReconciled(input.sessionID)
   const row = Database.use((db) =>
     db
       .select()
