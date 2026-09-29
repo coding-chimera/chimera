@@ -29,7 +29,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { execFileSync } from 'child_process';
 import '../env';
-import { getCodeGraphDir, getGraphDataRootInfo, isInitialized, migrateLegacyGraphData, readIndexJob, unsafeIndexRootReason } from '../directory';
+import { getCodeGraphDir, getGraphDataRootInfo, isInitialized, hasSchemalessDb, hasForeignDbFile, migrateLegacyGraphData, readIndexJob, unsafeIndexRootReason } from '../directory';
 import { detectWorktreeIndexMismatch, worktreeMismatchWarning } from '../sync/worktree';
 import { createShimmerProgress } from '../ui/shimmer-progress';
 import { getGlyphs } from '../ui/glyphs';
@@ -536,6 +536,19 @@ program
         } catch { /* non-fatal */ }
         clack.outro('');
         return;
+      }
+
+      // A codegraph.db that is not SQLite cannot be rebuilt in place —
+      // refuse it by name instead of failing mid-init (upstream #1895/#2083).
+      if (hasForeignDbFile(projectPath)) {
+        const dbFile = getGraphDataRootInfo(projectPath).databasePath;
+        clack.log.error(`${dbFile} is not a SQLite database, so it cannot be rebuilt in place.`);
+        clack.log.info('Move or delete that file, then run "chimera graph init" again.');
+        clack.outro('');
+        process.exit(1);
+      }
+      if (hasSchemalessDb(projectPath)) {
+        clack.log.warn(`Found a graph database without the Chimera schema in ${getGraphDataRootInfo(projectPath).dataRoot} (left by an interrupted init?) — rebuilding it.`);
       }
 
       const { default: CodeGraph } = await loadCodeGraph();

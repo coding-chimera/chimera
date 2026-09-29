@@ -212,9 +212,111 @@ export function finishIndexJob(projectRoot: string, job: GraphJobState, status: 
   return next;
 }
 
+/**
+ * Check if a project has been initialized with a Chimera graph.
+ *
+ * Requires the database file to exist AND to carry the graph schema. A file
+ * that merely exists — empty, or a SQLite database with no tables, as an
+ * interrupted `init` or a stray `touch` leaves behind — used to count as
+ * initialized, so one such file in an ANCESTOR directory (worst case: $HOME)
+ * captured the upward resolution of every project beneath it and made their
+ * real indexes unreachable (upstream #1895/#2083).
+ *
+ * The probe is cheap and gated so hot callers (prompt-context loading, MCP
+ * root resolution on every call) pay one `stat`: file size first, then a
+ * read-only SQLite `sqlite_master` lookup, memoized per path + mtime + size
+ * so an unchanged db is never reopened. A database that cannot be inspected
+ * counts as initialized (fail open, see probeSchema) — only a proven-absent
+ * schema, or a file SQLite refuses as not a database, says no.
+ */
 export function isInitialized(projectRoot: string): boolean {
   const info = getGraphDataRootInfo(projectRoot);
-  return hasDatabase(info.dataRoot);
+  if (!hasDatabase(info.dataRoot)) return false;
+  let st: fs.Stats;
+  try {
+    st = fs.statSync(info.databasePath);
+  } catch {
+    return false;
+  }
+  return hasGraphSchema(st, info.databasePath);
+}
+
+/** A SQLite file header is 100 bytes; anything shorter cannot hold a schema. */
+const SQLITE_HEADER_SIZE = 100;
+/** SQLITE_NOTADB: SQLite read the file and it is not a database. */
+const SQLITE_NOTADB = 26;
+const schemaProbeCache = new Map<string, { mtimeMs: number; size: number; ok: boolean }>();
+
+function hasGraphSchema(st: fs.Stats, dbPath: string): boolean {
+  if (!st.isFile() || st.size < SQLITE_HEADER_SIZE) return false;
+  const cached = schemaProbeCache.get(dbPath);
+  if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) return cached.ok;
+  const probe = probeSchema(dbPath);
+  const ok = probe === 'schema' || probe === 'unknown';
+  schemaProbeCache.set(dbPath, { mtimeMs: st.mtimeMs, size: st.size, ok });
+  return ok;
+}
+
+/**
+ * What the database file holds, asked of SQLite itself through a read-only
+ * connection: the graph schema, a database without it, not a database at all
+ * (SQLITE_NOTADB), or `unknown` — locked, busy, a WAL db where `-shm` cannot
+ * be created (read-only checkout, mount, another user's tree), disk I/O.
+ * Callers treat `unknown` as initialized: the pre-existing behaviour for a
+ * database we cannot inspect (upstream #1895 review hardening).
+ *
+ * The file is never read through a descriptor of our own, not even for its
+ * header: closing ANY descriptor on a database file drops every POSIX lock
+ * this process holds on it, including those of a connection it already has
+ * open (sqlite.org/howtocorrupt.html §2.2.1) — and the MCP server resolves
+ * projects through isInitialized on every call while it holds the index as
+ * its writer. SQLite's own connections share one lock table per file, so a
+ * second connection opened and closed here leaves the first one's locks
+ * alone.
+ */
+function probeSchema(dbPath: string): 'schema' | 'no-schema' | 'not-sqlite' | 'unknown' {
+  try {
+    const connection = createDatabase(dbPath, { readOnly: true });
+    try {
+      const row = connection.db.prepare("SELECT 1 AS ok FROM sqlite_master WHERE type = 'table' AND name = 'nodes'").get();
+      return row !== undefined && row !== null ? 'schema' : 'no-schema';
+    } finally {
+      // Never hold the handle: Windows file locking would block the owner.
+      try { connection.db.close(); } catch { /* already closed */ }
+    }
+  } catch (error) {
+    const err = error as { errcode?: number; code?: string | number };
+    return err?.errcode === SQLITE_NOTADB || err?.code === SQLITE_NOTADB || err?.code === 'SQLITE_NOTADB'
+      ? 'not-sqlite'
+      : 'unknown';
+  }
+}
+
+/**
+ * The graph database exists at `projectRoot` but does not carry the schema,
+ * and `init` can add it in place (the schema is idempotent CREATE ... IF NOT
+ * EXISTS): an empty file, or a SQLite database without the graph tables
+ * (upstream #1895/#2083). A file that is not SQLite at all is NOT this case —
+ * see {@link hasForeignDbFile}.
+ */
+export function hasSchemalessDb(projectRoot: string): boolean {
+  const dbPath = getGraphDataRootInfo(projectRoot).databasePath;
+  let st: fs.Stats;
+  try { st = fs.statSync(dbPath); } catch { return false; }
+  if (!st.isFile() || isInitialized(projectRoot)) return false;
+  return st.size === 0 || probeSchema(dbPath) === 'no-schema';
+}
+
+/**
+ * The graph database exists at `projectRoot` and is not a SQLite database:
+ * SQLite refuses to open it, so `init` cannot rebuild it in place. The caller
+ * must say so rather than promise a repair; nothing here deletes the file.
+ */
+export function hasForeignDbFile(projectRoot: string): boolean {
+  const dbPath = getGraphDataRootInfo(projectRoot).databasePath;
+  let st: fs.Stats;
+  try { st = fs.statSync(dbPath); } catch { return false; }
+  return st.isFile() && st.size > 0 && probeSchema(dbPath) === 'not-sqlite';
 }
 
 export function findNearestCodeGraphRoot(startPath: string): string | null {
@@ -623,7 +725,23 @@ export function createDirectory(projectRoot: string): void {
   const dbPath = path.join(dataRoot, DATABASE_FILENAME);
 
   if (fs.existsSync(dbPath)) {
-    throw new Error(`Chimera graph already initialized in ${projectRoot}`);
+    // An existing file only blocks init when it is a live graph database.
+    // A schema-less db (an interrupted init, a stray touch) is repaired in
+    // place — the schema applies with CREATE ... IF NOT EXISTS — and a
+    // non-SQLite file is refused by name; nothing is deleted automatically
+    // (upstream #1895/#2083). A db we cannot inspect fails open as
+    // initialized, matching isInitialized.
+    let st: fs.Stats | null = null;
+    try { st = fs.statSync(dbPath); } catch { /* vanished mid-check */ }
+    if (st) {
+      const probe = st.isFile() && st.size >= SQLITE_HEADER_SIZE ? probeSchema(dbPath) : 'no-schema';
+      if (probe === 'not-sqlite') {
+        throw new Error(`${dbPath} is not a SQLite database; move or delete it before initializing`);
+      }
+      if (probe === 'schema' || probe === 'unknown') {
+        throw new Error(`Chimera graph already initialized in ${projectRoot}`);
+      }
+    }
   }
 
   fs.mkdirSync(dataRoot, { recursive: true });
