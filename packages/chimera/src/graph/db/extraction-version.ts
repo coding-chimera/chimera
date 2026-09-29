@@ -83,7 +83,15 @@ export const EXTRACTION_SEMANTICS_METADATA_KEY = 'extraction_semantics_version';
 //     Databases stamped v4 must fully re-extract AND re-resolve; see
 //     DEFAULT_ROUTED (wave-4 note) in src/graph/extraction/kernel/index.ts
 //     and the K-v2 P5 reports in memory.md.
-export const EXTRACTION_SEMANTICS_VERSION = 5;
+// v6: upstream #2034/#1820 method-value receivers — Python `attribute` and
+//     Go `selector_expression` fn-ref candidates now retain their full
+//     receiver path (`self.store.fetch`, `c.store.Fetch`) instead of being
+//     dropped or reduced to the bare member name, in both the wasm arm
+//     (extraction/function-ref.ts) and the kernel arm (go.rs/python.rs).
+//     Stored unresolved_refs names change shape, so databases stamped v5
+//     must fully re-extract (fork counterpart of upstream EXTRACTION_VERSION
+//     26→27).
+export const EXTRACTION_SEMANTICS_VERSION = 6;
 
 /** Decoded shape of the stamp row. */
 export interface ExtractionSemanticsStamp {
