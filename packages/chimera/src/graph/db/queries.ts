@@ -1835,18 +1835,21 @@ export class QueryBuilder {
    * either through an endpoint node in it or through a registration site
    * recorded in a third file (`registeredAt: '<file>:<line>'`). Must run
    * BEFORE a sync replaces/deletes the file and cascades its endpoint edges
-   * (upstream #2033). The registeredAt range seek rides idx_edges_synthesis_site.
+   * (upstream #2033). CASE short-circuits malformed metadata JSON (upstream
+   * #2038) and the registeredAt range seek rides idx_edges_synthesis_site —
+   * keep these expressions identical to the index definition so SQLite can
+   * use the partial index.
    */
   hasSynthesizedEdgesTouchingFile(filePath: string): boolean {
-    const owned = "json_extract(e.metadata, '$.synthesizedBy') IS NOT NULL";
+    const owned = "CASE WHEN json_valid(e.metadata) THEN json_extract(e.metadata, '$.synthesizedBy') END IS NOT NULL";
     for (const endpoint of ['source', 'target']) {
       if (this.db.prepare(`SELECT 1 FROM nodes n JOIN edges e ON e.${endpoint} = n.id
         WHERE n.file_path = ? AND ${owned} LIMIT 1`).get(filePath)) return true;
     }
     // Wiring often lives in a third file, with neither endpoint in it.
     return !!this.db.prepare(`SELECT 1 FROM edges e WHERE ${owned}
-      AND json_extract(e.metadata, '$.registeredAt') >= ?
-      AND json_extract(e.metadata, '$.registeredAt') < ? LIMIT 1`
+      AND CASE WHEN json_valid(e.metadata) THEN json_extract(e.metadata, '$.registeredAt') END >= ?
+      AND CASE WHEN json_valid(e.metadata) THEN json_extract(e.metadata, '$.registeredAt') END < ? LIMIT 1`
     ).get(`${filePath}:`, `${filePath};`);
   }
 
@@ -1970,6 +1973,8 @@ export class QueryBuilder {
 
   /**
    * Get outgoing edges from a node
+   * Preserve the source/kind index order (calls before imports/references),
+   * then break ties deterministically (upstream #2038).
    */
   getOutgoingEdges(sourceId: string, kinds?: EdgeKind[], provenance?: string): Edge[] {
     if ((kinds && kinds.length > 0) || provenance) {
@@ -1986,20 +1991,24 @@ export class QueryBuilder {
         params.push(provenance);
       }
 
-      sql += ' ORDER BY target, kind, line, col';
+      sql += ' ORDER BY kind, target, line, col';
       const rows = this.db.prepare(sql).all(...params) as EdgeRow[];
       return rows.map(rowToEdge);
     }
 
     if (!this.stmts.getEdgesBySource) {
-      this.stmts.getEdgesBySource = this.db.prepare('SELECT * FROM edges WHERE source = ? ORDER BY target, kind, line, col');
+      this.stmts.getEdgesBySource = this.db.prepare('SELECT * FROM edges WHERE source = ? ORDER BY kind, target, line, col');
     }
     const rows = this.stmts.getEdgesBySource.all(sourceId) as EdgeRow[];
     return rows.map(rowToEdge);
   }
 
   /**
-   * Get incoming edges to a node
+   * Get incoming edges to a node. Kind must precede opaque source IDs
+   * (upstream #2038): file IDs sort before function IDs, so source-first
+   * ordering lets imports displace actual calls in capped caller lists.
+   * Keep deterministic ties without changing the target/kind index's
+   * established kind precedence.
    */
   getIncomingEdges(targetId: string, kinds?: EdgeKind[], provenance?: string): Edge[] {
     if ((kinds && kinds.length > 0) || provenance) {
@@ -2016,13 +2025,13 @@ export class QueryBuilder {
         params.push(provenance);
       }
 
-      sql += ' ORDER BY source, kind, line, col';
+      sql += ' ORDER BY kind, source, line, col';
       const rows = this.db.prepare(sql).all(...params) as EdgeRow[];
       return rows.map(rowToEdge);
     }
 
     if (!this.stmts.getEdgesByTarget) {
-      this.stmts.getEdgesByTarget = this.db.prepare('SELECT * FROM edges WHERE target = ? ORDER BY source, kind, line, col');
+      this.stmts.getEdgesByTarget = this.db.prepare('SELECT * FROM edges WHERE target = ? ORDER BY kind, source, line, col');
     }
     const rows = this.stmts.getEdgesByTarget.all(targetId) as EdgeRow[];
     return rows.map(rowToEdge);
