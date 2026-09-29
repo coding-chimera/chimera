@@ -894,6 +894,21 @@ export class ReferenceResolver {
       const define = this.queries.getNodeById(candidate.targetNodeId);
       if (define?.kind === 'constant' && CPP_DEFINE_SIGNATURE.test(define.signature ?? '')) candidate = null;
     }
+    // Inheritance refs may only land on real type definitions (#1536/#2029),
+    // WHICHEVER strategy or early return produced the result (upstream
+    // gateTargetKind placement — the import short-circuit bypasses the
+    // post-pick path). One exception (#2055): a TypeScript VALUE that shares
+    // its name with a type in the same file — vscode's `export const IFoo =
+    // createDecorator<IFoo>(…)` beside `export interface IFoo` — moves the
+    // edge to the type instead of dropping it. Otherwise the rejection is
+    // FINAL. Mirrored in resolver.rs resolve_one's gate_inheritance_target.
+    if (candidate && isInheritanceRef(ref)) {
+      const target = this.queries.getNodeById(candidate.targetNodeId);
+      if (target && !isSupertypeTarget(target)) {
+        const type = this.sameNamedTypeOfValue(target);
+        candidate = type ? { ...candidate, targetNodeId: type.id } : null;
+      }
+    }
     return candidate?.resolvedBy === 'framework'
       ? this.gateFrameworkLanguage(candidate, ref)
       : gateLanguageMatch(candidate, ref, this.context);
@@ -1045,16 +1060,20 @@ export class ReferenceResolver {
     // Pick the candidate with the strongest evidence class; equal classes
     // fall to same-file, then same-language, then a deterministic id order.
     const picked = this.pickBestCandidate(ref, candidates);
-    // Inheritance refs may only land on real type definitions (#1536/#2029):
-    // a Scala companion `object`, a Rust enum variant or any other non-type
-    // same-name is false supertype data, whichever strategy chose it. The
-    // rejection is FINAL — the reference stays unresolved rather than
-    // promoting another candidate. Mirrored in resolver.rs resolve_one.
-    if (picked && isInheritanceRef(ref)) {
-      const target = this.queries.getNodeById(picked.targetNodeId);
-      if (target && !isSupertypeTarget(target)) return null;
-    }
+    // The inheritance target-kind gate (#1536/#2029/#2055) lives in the
+    // resolveOneCore wrapper so it also covers the early-return strategies
+    // (upstream gateTargetKind placement).
     return picked;
+  }
+
+  /** The one supertype-kind node a TypeScript value shares its name and file with (#2055). */
+  private sameNamedTypeOfValue(value: Node): Node | null {
+    if (value.kind !== 'constant' && value.kind !== 'variable') return null;
+    if (value.language !== 'typescript' && value.language !== 'tsx') return null;
+    const types = this.context
+      .getNodesInFile(value.filePath)
+      .filter((n) => n.name === value.name && isSupertypeTarget(n));
+    return types.length === 1 ? types[0]! : null;
   }
 
   /**

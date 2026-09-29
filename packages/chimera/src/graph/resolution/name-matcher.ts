@@ -629,12 +629,17 @@ export function matchByExactName(
     const storeAction = matchJsStoreBindingCall(ref, context);
     if (storeAction) return storeAction;
   }
-  const candidates = context.getNodesByName(ref.referenceName)
-    // Macro constants are not callees and must not consume the same-name
-    // ceiling (#1839). Keep upstream's language gate on the chosen result.
-    .filter((n) => !(ref.referenceKind === 'calls' &&
-      (ref.language === 'c' || ref.language === 'cpp') &&
-      n.kind === 'constant' && CPP_DEFINE_SIGNATURE.test(n.signature ?? '')))
+  const sameName = context.getNodesByName(ref.referenceName);
+  // `NAME(...)` where NAME is a function-like macro somewhere in the project
+  // is an expansion or a call to a same-named function — never the macro
+  // itself (#1839), and never a type that happens to share the name (#2070:
+  // expat's `PREFIX(scanRef)(…)` bound to an unrelated `struct PREFIX`).
+  // Keep upstream's language gate on the chosen result.
+  const cMacroCall = ref.referenceKind === 'calls' &&
+    (ref.language === 'c' || ref.language === 'cpp') &&
+    sameName.some((n) => n.kind === 'constant' && CPP_DEFINE_SIGNATURE.test(n.signature ?? ''));
+  const candidates = sameName
+    .filter((n) => !(cMacroCall && n.kind !== 'function' && n.kind !== 'method'))
     // Type/value references retain same-family eligibility: a native namesake
     // must not hide the actual web type. Calls still gate only the winner.
     .filter((n) => (ref.referenceKind !== 'references' && ref.referenceKind !== 'function_ref') ||

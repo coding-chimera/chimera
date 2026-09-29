@@ -2252,15 +2252,19 @@ impl Resolver {
             }
         }
         let all = ctx.nodes_by_name(&r.reference_name)?;
+        // #1839/#2070: `NAME(...)` where NAME is a function-like macro
+        // somewhere in the project is an expansion or a call to a same-named
+        // function — never the macro constant, and never a type that shares
+        // the name. Mirrors name-matcher.ts's cMacroCall eligibility filter.
+        let c_macro_call = r.reference_kind == "calls"
+            && (r.language == "c" || r.language == "cpp")
+            && all.iter().any(|n| {
+                n.kind == "constant"
+                    && n.signature.as_deref().map(|s| dyn_re(r"^\s*#\s*define\b").is_match(s)).unwrap_or(false)
+            });
         let mut candidates: Vec<CtxNode> = Vec::new();
         for n in all {
-            // Macro constants are not callees and must not consume the
-            // same-name ceiling (#1838) — mirrors name-matcher.ts's
-            // CPP_DEFINE_SIGNATURE pool filter.
-            if r.reference_kind == "calls"
-                && n.kind == "constant"
-                && n.signature.as_deref().map(|s| dyn_re(r"^\s*#\s*define\b").is_match(s)).unwrap_or(false)
-            {
+            if c_macro_call && n.kind != "function" && n.kind != "method" {
                 continue;
             }
             // Type/value references retain same-family eligibility: a native
@@ -5703,6 +5707,7 @@ impl Resolver {
     ) -> Result<Option<Resolved>> {
         let candidate = self.resolve_one_ungated(ctx, r, ext)?;
         let candidate = self.gate_cpp_define_target(ctx, candidate, r)?;
+        let candidate = self.gate_inheritance_target(ctx, candidate, r)?;
         match candidate {
             Some(c) if c.resolved_by == ResolvedBy::Framework => self.gate_framework_language(ctx, Some(c), r),
             other => self.gate_language_match(ctx, other, r),
@@ -5838,19 +5843,53 @@ impl Resolver {
         // Strongest evidence class wins; ties fall to same-file, then
         // same-language, then a deterministic id order.
         let picked = self.pick_best_candidate(ctx, r, candidates)?;
-        // Inheritance refs may only land on real type definitions
-        // (#1536/#2029) — FINAL rejection, never a promoted runner-up.
-        // Mirrors resolution/index.ts resolveOneCore's post-validation.
-        if let Some(p) = &picked {
-            if is_inheritance_ref(r) {
-                if let Some(target) = ctx.get_node_by_id(&p.target_node_id)? {
-                    if !is_supertype_target(&target) {
-                        return Ok(None);
-                    }
-                }
-            }
-        }
+        // The inheritance target-kind gate (#1536/#2029/#2055) lives in the
+        // resolve_one wrapper so it also covers the early-return strategies
+        // (upstream gateTargetKind placement).
         Ok(picked)
+    }
+
+    /// resolution/index.ts — the inheritance target-kind gate
+    /// (#1536/#2029/#2055), applied to the SELECTED result whichever strategy
+    /// or early return produced it (upstream gateTargetKind placement).
+    fn gate_inheritance_target(
+        &mut self,
+        ctx: &mut CtxConn,
+        res: Option<Resolved>,
+        r: &RefIn,
+    ) -> Result<Option<Resolved>> {
+        if !is_inheritance_ref(r) {
+            return Ok(res);
+        }
+        let Some(hit) = res else { return Ok(None) };
+        let Some(target) = ctx.get_node_by_id(&hit.target_node_id)? else {
+            return Ok(Some(hit));
+        };
+        if is_supertype_target(&target) {
+            return Ok(Some(hit));
+        }
+        // #2055: a TypeScript value+interface pair — move the edge to the one
+        // same-named supertype-kind node in the value's file; drop when none.
+        Ok(match self.same_named_type_of_value(ctx, &target)? {
+            Some(t) => Some(Resolved::new(t.id.clone(), hit.resolved_by)),
+            None => None,
+        })
+    }
+
+    /// resolution/index.ts — sameNamedTypeOfValue (#2055).
+    fn same_named_type_of_value(&mut self, ctx: &mut CtxConn, value: &CtxNode) -> Result<Option<CtxNode>> {
+        if value.kind != "constant" && value.kind != "variable" {
+            return Ok(None);
+        }
+        if value.language != "typescript" && value.language != "tsx" {
+            return Ok(None);
+        }
+        let types: Vec<CtxNode> = ctx
+            .nodes_in_file(&value.file_path)?
+            .into_iter()
+            .filter(|n| n.name == value.name && is_supertype_target(n))
+            .collect();
+        Ok(if types.len() == 1 { types.into_iter().next() } else { None })
     }
 
     /// pickBestCandidate (index.ts:878-892).
