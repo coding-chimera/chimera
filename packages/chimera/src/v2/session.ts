@@ -3,9 +3,9 @@ import { SessionID } from "@/session/schema"
 import { WorkspaceID } from "@/control-plane/schema"
 import { and, asc, desc, eq, gt, gte, isNull, like, lt, or, type SQL } from "@/storage/db"
 import * as Database from "@/storage/db"
-import { Context, DateTime, Effect, Layer, Option, Schema } from "effect"
+import { Context, DateTime, Effect, Layer, Option, Schedule, Schema, Stream } from "effect"
 import { SessionMessage } from "./session-message"
-import type { Prompt } from "./session-prompt"
+import { AgentAttachment, FileAttachment, Source, type Prompt } from "./session-prompt"
 import { EventV2 } from "./event"
 import { ProjectID } from "@/project/schema"
 import { SessionEvent } from "./session-event"
@@ -14,6 +14,89 @@ import { V2Schema } from "./schema"
 import { optionalOmitUndefined } from "@/util/schema"
 import { Modelv2 } from "./model"
 import { SessionMessage as SchemaSessionMessage } from "@opencode-ai/schema/session-message"
+import { Agent } from "@/agent/agent"
+import { MessageV2 } from "@/session/message-v2"
+import { ModelID, ProviderID } from "@/provider/schema"
+import { Session } from "@/session/session"
+import { SessionCompaction } from "@/session/compaction"
+import { SessionPrompt } from "@/session/prompt"
+import { SessionRevert } from "@/session/revert"
+import { SessionStatus } from "@/session/status"
+import * as Log from "@opencode-ai/core/util/log"
+
+const log = Log.create({ service: "v2.session" })
+
+// v2 Prompt -> v1 PromptInput parts. FileAttachment.source is intentionally
+// dropped: v1 file sources are a typed union (file/symbol/resource carrying
+// path/range/clientName) that cannot be reconstructed from the bare
+// { start, end, text } span a v2 attachment provides.
+function toParts(prompt: Prompt): SessionPrompt.PromptInput["parts"] {
+  const files = (prompt.files ?? []).map((file) => ({
+    type: "file" as const,
+    mime: file.mime,
+    url: file.uri,
+    filename: file.name,
+  }))
+  const agents = (prompt.agents ?? []).map((attachment) => ({
+    type: "agent" as const,
+    name: attachment.name,
+    source: attachment.source
+      ? { value: attachment.source.text, start: attachment.source.start, end: attachment.source.end }
+      : undefined,
+  }))
+  const text =
+    prompt.text.length > 0 || (files.length === 0 && agents.length === 0)
+      ? [{ type: "text" as const, text: prompt.text }]
+      : []
+  return [...text, ...files, ...agents]
+}
+
+// v1 user message -> v2 SessionMessage.User projection, mirroring the fold the
+// engine's own Prompted dual-write performs in src/session/prompt.ts
+// (createUserMessage). The returned id is the v1 message id; projector-
+// materialized rows (src/session/projectors-next.ts) carry sync event ids
+// while the TODO(v2) dual-write migration is in flight.
+function toUserMessage(message: MessageV2.WithParts): SessionMessage.User {
+  const prompt = message.parts.reduce(
+    (result, part) => {
+      if (part.type === "text" && !part.synthetic) result.text.push(part.text)
+      if (part.type === "file")
+        result.files.push(
+          new FileAttachment({
+            uri: part.url,
+            mime: part.mime,
+            name: part.filename,
+            source: part.source
+              ? new Source({
+                  start: part.source.text.start,
+                  end: part.source.text.end,
+                  text: part.source.text.value,
+                })
+              : undefined,
+          }),
+        )
+      if (part.type === "agent")
+        result.agents.push(
+          new AgentAttachment({
+            name: part.name,
+            source: part.source
+              ? new Source({ start: part.source.start, end: part.source.end, text: part.source.value })
+              : undefined,
+          }),
+        )
+      return result
+    },
+    { text: [] as string[], files: [] as FileAttachment[], agents: [] as AgentAttachment[] },
+  )
+  return new SessionMessage.User({
+    id: SessionMessage.ID.make(message.info.id),
+    type: "user",
+    text: prompt.text.join("\n"),
+    files: prompt.files,
+    agents: prompt.agents,
+    time: { created: DateTime.makeUnsafe(message.info.time.created) },
+  })
+}
 
 export const Delivery = Schema.Literals(["immediate", "deferred"]).annotate({
   identifier: "Session.Delivery",
@@ -116,6 +199,12 @@ export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const sync = yield* SyncEvent.Service
+    const sessions = yield* Session.Service
+    const sessionPrompt = yield* SessionPrompt.Service
+    const compaction = yield* SessionCompaction.Service
+    const revert = yield* SessionRevert.Service
+    const status = yield* SessionStatus.Service
+    const agents = yield* Agent.Service
     const decodeMessage = Schema.decodeUnknownSync(SessionMessage.Message)
 
     const decode = (row: typeof SessionMessageTable.$inferSelect) =>
@@ -146,8 +235,20 @@ export const layer = Layer.effect(
     }
 
     const result: Interface = {
-      create: Effect.fn("V2Session.create")(function* (_input) {
-        return {} as any
+      create: Effect.fn("V2Session.create")(function* (input) {
+        const session = yield* sessions.create({
+          parentID: input?.parentID,
+          agent: input?.agent,
+          workspaceID: input?.workspaceID,
+          model: input?.model
+            ? {
+                id: ModelID.make(input.model.id),
+                providerID: ProviderID.make(input.model.providerID),
+                variant: input.model.variant,
+              }
+            : undefined,
+        })
+        return yield* result.get(session.id).pipe(Effect.orDie)
       }),
       get: Effect.fn("V2Session.get")(function* (sessionID) {
         const row = Database.use((db) => db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get())
@@ -266,11 +367,47 @@ export const layer = Layer.effect(
         })
         return rows.map((row) => decode(row))
       }),
-      prompt: Effect.fn("V2Session.prompt")(function* (_input) {
-        return {} as any
+      prompt: Effect.fn("V2Session.prompt")(function* (input) {
+        // Fork has no prompt queue: prompts are processed directly
+        // (src/session/prompt.ts), so both deliveries run the same turn —
+        // "immediate" inline before returning, "deferred" detached. There is
+        // no queueing-semantics difference to honor until one exists.
+        const user = yield* sessionPrompt
+          .prompt({ sessionID: input.sessionID, noReply: true, parts: toParts(input.prompt) })
+          .pipe(Effect.orDie)
+        if (input.delivery === "deferred") {
+          yield* sessionPrompt
+            .loop({ sessionID: input.sessionID })
+            .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach)
+          return toUserMessage(user)
+        }
+        yield* sessionPrompt.loop({ sessionID: input.sessionID })
+        return toUserMessage(user)
       }),
-      shell: Effect.fn("V2Session.shell")(function* (_input) {}),
-      skill: Effect.fn("V2Session.skill")(function* (_input) {}),
+      shell: Effect.fn("V2Session.shell")(function* (input) {
+        // Delegates to the fork's real shell engine, which runs the command,
+        // drives the follow-up turn, and dual-writes the v2 Shell.Started/
+        // Ended events itself (src/session/prompt.ts shellImpl) — no event
+        // bridging is needed here. Note: v1 attaches the run to the session's
+        // latest assistant message, so the session must have one.
+        const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+        yield* sessionPrompt.shell({
+          sessionID: input.sessionID,
+          agent: session.agent ?? (yield* agents.defaultAgent()),
+          command: input.command,
+        })
+      }),
+      skill: Effect.fn("V2Session.skill")(function* (input) {
+        // Deliberate typed no-op: @opencode-ai/schema defines no skill
+        // session event, and the fork engine exposes skills to the model as
+        // the skill tool inside a turn, not as an imperative per-session
+        // entrypoint. Logged instead of inventing an event schema or
+        // silently pretending to run.
+        log.warn("skill ignored: no v2 skill event or engine binding", {
+          sessionID: input.sessionID,
+          skill: input.skill,
+        })
+      }),
       switchAgent: Effect.fn("V2Session.switchAgent")(function* (input) {
         yield* EventV2.run(sync, SessionEvent.AgentSwitched.Sync, {
           sessionID: input.sessionID,
@@ -295,27 +432,96 @@ export const layer = Layer.effect(
           parentID: input.parentID,
           workspaceID: parent.workspaceID,
         })
-        yield* result.prompt({
-          prompt: input.prompt,
-          sessionID: session.id,
-        })
         yield* Effect.gen(function* () {
-          yield* result.wait(session.id)
-          const messages = yield* result.messages({ sessionID: session.id, order: "desc" })
-          const assistant = messages.find((msg) => msg.type === "assistant")
-          if (!assistant) return
-          const text = assistant.content.findLast((part) => part.type === "text")
+          // Run the child turn inline in this detached fiber: the v1 prompt
+          // returns the final assistant message, so delivery never depends
+          // on a wait/poll race against the loop marking the session busy.
+          const message = yield* sessionPrompt
+            .prompt({ sessionID: session.id, agent: input.agent, parts: toParts(input.prompt) })
+            .pipe(Effect.orDie)
+          const text = message.parts
+            .filter((part): part is MessageV2.TextPart => part.type === "text" && !part.synthetic)
+            .map((part) => part.text)
+            .join("\n")
           if (!text) return
-        }).pipe(Effect.forkChild())
+          // Deliver the child answer the way the fork's background task
+          // delivery does: a synthetic message that wakes the parent turn.
+          yield* sessionPrompt
+            .injectSynthetic({ sessionID: input.parentID, text })
+            .pipe(Effect.ignoreCause({ log: true }))
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.sync(() => log.error("subagent run failed", { sessionID: session.id, cause })),
+          ),
+          Effect.forkDetach,
+        )
       }),
-      compact: Effect.fn("V2Session.compact")(function* (_sessionID) {}),
-      wait: Effect.fn("V2Session.wait")(function* (_sessionID) {}),
+      compact: Effect.fn("V2Session.compact")(function* (sessionID) {
+        // Mirrors the v1 summarize route: clear any staged revert, stage a
+        // manual compaction against the latest user turn's agent/model, then
+        // drive the loop that performs the summarization turn.
+        const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
+        yield* revert.cleanup(session)
+        const messages = yield* sessions.messages({ sessionID })
+        const lastUser = messages.findLast(
+          (message): message is MessageV2.WithParts & { info: MessageV2.User } => message.info.role === "user",
+        )
+        const model =
+          lastUser?.info.model ??
+          (session.model ? { providerID: session.model.providerID, modelID: session.model.id } : undefined)
+        if (!model) {
+          // A session that never prompted has nothing to compact and no
+          // model to compact with.
+          log.info("compact skipped: session has no prompted turn", { sessionID })
+          return
+        }
+        yield* compaction.create({
+          sessionID,
+          agent: lastUser?.info.agent || (yield* agents.defaultAgent()),
+          model,
+          auto: false,
+        })
+        yield* sessionPrompt.loop({ sessionID })
+      }),
+      wait: Effect.fn("V2Session.wait")(function* (sessionID) {
+        // SessionStatus is the fork's in-flight marker: the prompt loop
+        // marks the session busy while an assistant turn (compaction
+        // included) runs and idle when it settles (src/session/prompt.ts,
+        // src/session/processor.ts). Polls on a short cadence instead of
+        // only subscribing to the status bus: an idle transition landing
+        // between a read and a later subscription would hang the waiter
+        // forever, and wait must always resolve. Semantics: resolves when
+        // the marker reads idle; a detached turn that has not marked the
+        // session busy yet can resolve early.
+        yield* Stream.fromEffectSchedule(status.get(sessionID), Schedule.spaced("50 millis")).pipe(
+          Stream.dropWhile((info) => info.type !== "idle"),
+          Stream.take(1),
+          Stream.runDrain,
+        )
+      }),
     }
 
     return Service.of(result)
   }),
 )
 
-export const defaultLayer = layer.pipe(Layer.provide(SyncEvent.defaultLayer))
+// The v2 write methods are thin aliases over the v1 engine, so the default
+// layer carries the v1 stack. In the server build these are the same layer
+// objects httpapi/server.ts provides for the v1 handlers, so Effect's layer
+// memoization shares one instance across the whole graph — critically, wait
+// and prompt must observe the same SessionStatus the prompt loop mutates.
+export const defaultLayer: Layer.Layer<Service> = layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      SyncEvent.defaultLayer,
+      Session.defaultLayer,
+      SessionPrompt.defaultLayer,
+      SessionCompaction.defaultLayer,
+      SessionRevert.defaultLayer,
+      SessionStatus.defaultLayer,
+      Agent.defaultLayer,
+    ),
+  ),
+)
 
 export * as SessionV2 from "./session"
