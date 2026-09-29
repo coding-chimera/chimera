@@ -18,7 +18,7 @@ import {
   isSupertypeTarget,
   isInheritanceRef,
 } from './types';
-import { matchReference, matchFunctionRef, isVisibleAcrossFiles, isUnresolvedJsMemberCall, clearNameMatcherMemos } from './name-matcher';
+import { matchReference, matchFunctionRef, isVisibleAcrossFiles, isUnresolvedJsMemberCall, crossesCodeBoundary, gateLanguageMatch, clearNameMatcherMemos } from './name-matcher';
 import {
   JS_BUILT_INS,
   REACT_HOOKS,
@@ -878,6 +878,28 @@ export class ReferenceResolver {
    * double-write guard: those refs were NOT consumed natively).
    */
   private resolveOneCore(ref: UnresolvedRef): ResolvedRef | null {
+    const candidate = this.resolveOneCoreUngated(ref);
+    return candidate?.resolvedBy === 'framework'
+      ? this.gateFrameworkLanguage(candidate, ref)
+      : gateLanguageMatch(candidate, ref, this.context);
+  }
+
+  /**
+   * Framework calls carry bridge evidence (RN/Expo JS → native). Other
+   * framework results obey the same code-family boundary as name matches;
+   * markup/config transitions remain open (upstream #2032).
+   */
+  private gateFrameworkLanguage(result: ResolvedRef | null, ref: UnresolvedRef): ResolvedRef | null {
+    if (!result) return result;
+    if (ref.referenceKind === 'calls') return result;
+    const tgt = this.getLanguageFromNodeId(result.targetNodeId);
+    // Package imports cannot target prose found by a framework's name lookup.
+    if (ref.referenceKind === 'imports' && (tgt as string) === 'markdown' && (ref.language as string) !== 'markdown') return null;
+    if (tgt && ref.language && crossesCodeBoundary(tgt, ref.language)) return null;
+    return result;
+  }
+
+  private resolveOneCoreUngated(ref: UnresolvedRef): ResolvedRef | null {
     // Skip built-in/external references
     if (this.isBuiltInOrExternal(ref)) {
       return null;

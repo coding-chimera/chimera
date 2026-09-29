@@ -32,8 +32,21 @@ export const reactResolver: FrameworkResolver = {
   },
 
   resolve(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
-    // Pattern 1: Component references (PascalCase)
-    if (isPascalCase(ref.referenceName) && !isBuiltInType(ref.referenceName)) {
+    // Pattern 1: Component references (PascalCase). Only from JSX-capable
+    // files — a component is USED in markup, which only parses in .tsx/.jsx.
+    // Without this gate, every PascalCase TYPE reference in plain .ts files
+    // went through component resolution: in a monorepo with same-named
+    // classes per package (#764, amplication), a `.ts` GraphQL-types file's
+    // own `Account` type alias lost to an arbitrary `Account` CLASS in
+    // another package. Enablement subset of upstream #764 carried with the
+    // #2032 port: the cross-language gate must not see framework-resolved
+    // PascalCase calls from non-JS languages (a C `UnexportedABI()` onto a
+    // Go function) that upstream never produces.
+    if (
+      (ref.language === 'tsx' || ref.language === 'jsx') &&
+      isPascalCase(ref.referenceName) &&
+      !isBuiltInType(ref.referenceName)
+    ) {
       const result = resolveComponent(ref.referenceName, ref.filePath, context);
       if (result) {
         return {

@@ -26,6 +26,7 @@ import type { QueryBuilder } from '../db/queries';
 import type { ResolutionContext } from './types';
 import { isGeneratedFile } from '../extraction/generated-detection';
 import { stripCommentsForRegex } from './strip-comments';
+import { crossesCodeBoundary } from './name-matcher';
 import { vueRouterLinkEdges } from './vue-router-synthesizer';
 import { svelteKitLinkEdges, svelteKitPageComponentEdges } from './sveltekit-synthesizer';
 
@@ -648,7 +649,7 @@ function reactJsxChildEdges(ctx: ResolutionContext): Edge[] {
         const child = ctx.getNodesByName(name).find(
           (n) => n.kind === 'component' || n.kind === 'function' || n.kind === 'class'
         );
-        if (!child || child.id === parent.id) continue;
+        if (!child || child.id === parent.id || crossesCodeBoundary(parent.language, child.language)) continue;
         const key = `${parent.id}>${child.id}`;
         if (seen.has(key)) continue;
         seen.add(key);
@@ -709,7 +710,8 @@ function vueTemplateEdges(ctx: ResolutionContext): Edge[] {
 
     let added = 0;
     const addEdge = (target: Node | undefined, meta: Record<string, unknown>) => {
-      if (added >= MAX_JSX_CHILDREN || !target || target.id === comp.id) return;
+      if (added >= MAX_JSX_CHILDREN || !target || target.id === comp.id ||
+          crossesCodeBoundary(comp.language, target.language)) return;
       const k = `${comp.id}>${target.id}>${meta.synthesizedBy}`;
       if (seen.has(k)) return;
       seen.add(k);

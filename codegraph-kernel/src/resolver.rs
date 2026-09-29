@@ -445,10 +445,12 @@ fn constructs_via_bare_call(lang: &str) -> bool {
 fn language_family_of(lang: &str) -> Option<&'static str> {
     match lang {
         "java" | "kotlin" | "scala" => Some("jvm"),
-        "swift" | "objc" => Some("apple"),
+        "swift" | "objc" => Some("native"),
         "typescript" | "tsx" | "javascript" | "jsx" | "arkts" => Some("web"),
-        "c" | "cpp" => Some("c"),
-        "csharp" | "razor" => Some("dotnet"),
+        "c" | "cpp" => Some("native"),
+        "csharp" | "razor" | "vbnet" => Some("dotnet"),
+        "svelte" | "vue" | "astro" => Some("web"),
+        "cfml" | "cfscript" => Some("cfml"),
         _ => None,
     }
 }
@@ -462,6 +464,52 @@ pub(crate) fn same_language_family(a: &str, b: &str) -> bool {
         Some(fa) => Some(fa) == language_family_of(b),
         None => false,
     }
+}
+
+/// name-matcher.ts — CODE_FAMILY (upstream #2032): config/markup transitions
+/// stay open; every other code language has a family.
+fn code_family_of(lang: &str) -> Option<&'static str> {
+    match lang {
+        "python" => Some("python"),
+        "go" => Some("go"),
+        "rust" => Some("rust"),
+        "php" => Some("php"),
+        "ruby" => Some("ruby"),
+        "dart" => Some("dart"),
+        "lua" | "luau" => Some("lua"),
+        "r" => Some("r"),
+        "erlang" => Some("erlang"),
+        "pascal" => Some("pascal"),
+        "solidity" => Some("solidity"),
+        "nix" => Some("nix"),
+        "cobol" => Some("cobol"),
+        other => language_family_of(other),
+    }
+}
+
+/// name-matcher.ts — crossesCodeBoundary (upstream #2032).
+pub(crate) fn crosses_code_boundary(a: &str, b: &str) -> bool {
+    match (code_family_of(a), code_family_of(b)) {
+        (Some(fa), Some(fb)) => fa != fb,
+        _ => false,
+    }
+}
+
+/// JS `source.split('\n').slice(start, end).join('\n')` — `start` is a 0-based
+/// line index, `end` exclusive (a 1-based end_line doubles as the exclusive
+/// 0-based end). Clamps like Array#slice.
+fn slice_lines(source: &str, start: i64, end: i64) -> String {
+    let start = start.max(0) as usize;
+    let end = end.max(0) as usize;
+    if start >= end {
+        return String::new();
+    }
+    source
+        .split('\n')
+        .skip(start)
+        .take(end - start)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 // ---------------------------------------------------------------------------
@@ -2200,6 +2248,14 @@ impl Resolver {
         let all = ctx.nodes_by_name(&r.reference_name)?;
         let mut candidates: Vec<CtxNode> = Vec::new();
         for n in all {
+            // Type/value references retain same-family eligibility: a native
+            // namesake must not hide the actual web type. Calls still gate
+            // only the winner (upstream #2032).
+            if (r.reference_kind == "references" || r.reference_kind == "function_ref")
+                && !same_language_family(&n.language, &r.language)
+            {
+                continue;
+            }
             if n.kind == "import" {
                 continue;
             }
@@ -4719,6 +4775,12 @@ impl Resolver {
         let callable_candidates: Vec<&CtxNode> = candidates
             .iter()
             .filter(|n| matches!(n.kind.as_str(), "function" | "method" | "class"))
+            // Type/value references retain same-family eligibility; calls
+            // gate only the winner (upstream #2032).
+            .filter(|n| {
+                !(r.reference_kind == "references" || r.reference_kind == "function_ref")
+                    || same_language_family(&n.language, &r.language)
+            })
             .collect();
         // Same import-aware veto as exact matching.
         let fuzzy_imports = self.ref_import_mappings(ctx, r)?;
@@ -4748,8 +4810,134 @@ impl Resolver {
         Ok(None)
     }
 
-    /// matchReference (:3122-3215) — fixed try order, first hit wins.
+    /// name-matcher.ts — hasBridgeEvidence (upstream #2032). Cross-family
+    /// name matches need a framework export or an actual ABI boundary, not
+    /// merely a native caller. ABI evidence is scoped to the named free
+    /// function.
+    fn has_bridge_evidence(
+        &mut self,
+        ctx: &mut CtxConn,
+        candidate: &CtxNode,
+        r: &RefIn,
+    ) -> Result<bool> {
+        if r.reference_kind != "calls" {
+            return Ok(false);
+        }
+        // Expo's extractor creates explicit JS exports, resolved by the
+        // ordinary name matcher rather than a framework resolve() branch.
+        if code_family_of(&r.language) == Some("web")
+            && candidate.id.starts_with("expo-module:")
+            && candidate.is_exported == 1
+            && matches!(candidate.language.as_str(), "swift" | "kotlin")
+        {
+            return Ok(true);
+        }
+        if candidate.kind != "function" {
+            return Ok(false);
+        }
+        let name = regex::escape(&candidate.name);
+        if code_family_of(&r.language) == Some("native") {
+            let Some(source) = ctx.read_file(&candidate.file_path)? else {
+                return Ok(false);
+            };
+            if candidate.language == "go" {
+                let declaration = slice_lines(&source, candidate.start_line - 2, candidate.end_line);
+                let import_c = Regex::new(r#"\bimport\s+(?:\(\s*)?"C""#).expect("resolver static pattern");
+                let exported =
+                    Regex::new(&format!("(?m)^//export {name}\\r?\\nfunc {name}\\s*\\(")).expect("resolver dynamic pattern");
+                return Ok(import_c.is_match(&strip_comments_for_regex(&source, "go"))
+                    && exported.is_match(&declaration));
+            }
+            if candidate.language == "rust" {
+                let declaration = slice_lines(&source, candidate.start_line - 1, candidate.end_line);
+                let pub_extern = Regex::new(&format!("\\bpub\\s+extern\\s+\"C\"\\s+fn\\s+{name}\\b"))
+                    .expect("resolver dynamic pattern");
+                return Ok(pub_extern.is_match(&strip_comments_for_regex(&declaration, "rust")));
+            }
+        }
+        if candidate.language == "c" || candidate.language == "cpp" {
+            let Some(source) = ctx.read_file(&r.file_path)? else {
+                return Ok(false);
+            };
+            if r.language == "go" {
+                let import_c = Regex::new(r#"\bimport\s+(?:\(\s*)?"C""#).expect("resolver static pattern");
+                return Ok(import_c.is_match(&strip_comments_for_regex(&source, "go"))
+                    && r.reference_name == format!("C.{}", candidate.name));
+            }
+            if r.language == "rust" {
+                let extern_block =
+                    Regex::new(&format!("extern\\s+\"C\"\\s*\\{{[^}}]*\\bfn\\s+{name}\\s*\\(")).expect("resolver dynamic pattern");
+                return Ok(extern_block.is_match(&strip_comments_for_regex(&source, "rust")));
+            }
+        }
+        Ok(false)
+    }
+
+    /// name-matcher.ts — gateLanguageMatch (upstream #2032): reject the
+    /// chosen result without shrinking a pool or trying a replacement.
+    /// TS falls back to getNodesByName().find() only when the optional
+    /// getNodeById is absent; production contexts always define it, so the
+    /// by-id lookup is the parity surface.
+    pub(crate) fn gate_language_match(
+        &mut self,
+        ctx: &mut CtxConn,
+        res: Option<Resolved>,
+        r: &RefIn,
+    ) -> Result<Option<Resolved>> {
+        let Some(res) = res else { return Ok(None) };
+        let Some(target) = ctx.get_node_by_id(&res.target_node_id)? else {
+            return Ok(Some(res));
+        };
+        if crosses_code_boundary(&r.language, &target.language)
+            && !self.has_bridge_evidence(ctx, &target, r)?
+        {
+            return Ok(None);
+        }
+        Ok(Some(res))
+    }
+
+    /// resolution/index.ts — gateFrameworkLanguage (upstream #2032 final):
+    /// framework calls pass untouched; other framework results obey the same
+    /// code-family boundary as name matches; markup/config transitions and
+    /// the markdown-import rule are preserved.
+    fn gate_framework_language(
+        &mut self,
+        ctx: &mut CtxConn,
+        res: Option<Resolved>,
+        r: &RefIn,
+    ) -> Result<Option<Resolved>> {
+        let Some(res) = res else { return Ok(None) };
+        if r.reference_kind == "calls" {
+            return Ok(Some(res));
+        }
+        // getLanguageFromNodeId: node?.language || 'unknown'.
+        let tgt = ctx
+            .get_node_by_id(&res.target_node_id)?
+            .map(|n| n.language)
+            .unwrap_or_else(|| "unknown".to_string());
+        // Package imports cannot target prose found by a framework's name lookup.
+        if r.reference_kind == "imports" && tgt == "markdown" && r.language != "markdown" {
+            return Ok(None);
+        }
+        if !r.language.is_empty() && crosses_code_boundary(&tgt, &r.language) {
+            return Ok(None);
+        }
+        Ok(Some(res))
+    }
+
+    /// matchReference (name-matcher.ts) — gated wrapper (upstream #2032).
     pub(crate) fn match_reference(
+        &mut self,
+        ctx: &mut CtxConn,
+        r: &RefIn,
+        ext: &ExternalStrategies,
+    ) -> Result<Option<Resolved>> {
+        let res = self.match_reference_inner(ctx, r, ext)?;
+        self.gate_language_match(ctx, res, r)
+    }
+
+    /// matchReference (:3122-3215) — fixed try order, first hit wins.
+    fn match_reference_inner(
         &mut self,
         ctx: &mut CtxConn,
         r: &RefIn,
@@ -5011,10 +5199,26 @@ impl Resolver {
         Ok(Some(Resolved::new(target.id.clone(), ResolvedBy::FunctionRef)))
     }
 
+    /// resolveOne (index.ts) — gated wrapper (upstream #2032): framework
+    /// results obey gateFrameworkLanguage, everything else gateLanguageMatch.
+    /// Mirrors resolution/index.ts resolveOneCore's wrapper.
+    pub(crate) fn resolve_one(
+        &mut self,
+        ctx: &mut CtxConn,
+        r: &RefIn,
+        ext: &ExternalStrategies,
+    ) -> Result<Option<Resolved>> {
+        let candidate = self.resolve_one_ungated(ctx, r, ext)?;
+        match candidate {
+            Some(c) if c.resolved_by == ResolvedBy::Framework => self.gate_framework_language(ctx, Some(c), r),
+            other => self.gate_language_match(ctx, other, r),
+        }
+    }
+
     /// resolveOne (index.ts:749-870) — single-ref full-strategy arbitration.
     /// The import/JVM-import/framework arms read the PRECOMPUTED tables
     /// (Plan A); everything else runs in-crate against CtxConn.
-    pub(crate) fn resolve_one(
+    fn resolve_one_ungated(
         &mut self,
         ctx: &mut CtxConn,
         r: &RefIn,
