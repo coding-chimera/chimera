@@ -185,7 +185,7 @@ export class MyBatisExtractor {
       dialect === 'ibatis'
         ? 'select|insert|update|delete|sql|statement|procedure'
         : 'select|insert|update|delete|sql';
-    const stmtRegex = new RegExp(`<(${verbs})\\b([^>]*)>([\\s\\S]*?)</\\1>`, 'g');
+    const stmtRegex = new RegExp(`<(${verbs})\\b([^>]*)>([\\s\\S]*?)</\\1\\s*>`, 'g');
     let m: RegExpExecArray | null;
     while ((m = stmtRegex.exec(body)) !== null) {
       const elemType = m[1]!;
@@ -199,6 +199,11 @@ export class MyBatisExtractor {
       if (!idMatch) continue;
       const id = idMatch[2]!;
       const absoluteIndex = bodyStart + m.index;
+      // Opening-tag length (`<` + verb + attrs + `>`), used for the include
+      // offset below. Deriving it from the tag instead of subtracting the
+      // close tag keeps it correct when the close tag carries trailing
+      // whitespace (`</select >`, legal XML — upstream #1222).
+      const openTagLen = elemType.length + attrs.length + 2;
       const startLine = this.getLineNumber(absoluteIndex);
       const endLine = this.getLineNumber(absoluteIndex + m[0].length);
       const { qualifiedName: qualified, name } = this.qualifyStatement(namespace, id);
@@ -236,12 +241,18 @@ export class MyBatisExtractor {
       let inc: RegExpExecArray | null;
       while ((inc = includeRegex.exec(elemBody)) !== null) {
         const refid = inc[2]!;
-        const refQualified = refid.includes('.')
-          ? refid.replace(/\./g, '::')
-          : namespace
-            ? `${namespace}::${refid}`
-            : refid;
-        const includeOffset = absoluteIndex + (m[0].length - m[3]!.length - `</${elemType}>`.length) + inc.index;
+        // Split a qualified refid on the LAST dot only (`com.example.M.base`
+        // → `com.example.M::base`), matching qualifyStatement's shape —
+        // replacing every dot produced `com::example::M::base`, which never
+        // matched the fragment node (upstream #1222).
+        const dot = refid.lastIndexOf('.');
+        const refQualified =
+          dot >= 0
+            ? `${refid.slice(0, dot)}::${refid.slice(dot + 1)}`
+            : namespace
+              ? `${namespace}::${refid}`
+              : refid;
+        const includeOffset = absoluteIndex + openTagLen + inc.index;
         const line = this.getLineNumber(includeOffset);
         this.unresolvedReferences.push({
           fromNodeId: nodeId,
