@@ -4,7 +4,7 @@ Every `.wasm` in this directory is a byte copy of the prebuilt artifact from
 upstream codegraph `src/extraction/wasm/` (MIT; upstream repo snapshot
 `6a056ec5db35172f9dc348f87b54ea415aa5169e`, vendoring commits c5eebe6 /
 03d54e4 / c2503e2 / f1ca991 / 1909931 / a6c62d7 / 09e301b / 45a53eb /
-d1b75a1 / 44561b6). Each artifact is built from the SAME grammar revision the
+d1b75a1 / 44561b6 / 8c38b80). Each artifact is built from the SAME grammar revision the
 native extraction kernel compiles (`codegraph-kernel/Cargo.toml` pins) —
 parser.c/scanner.c sha-matched against the crates.io tarball unless noted.
 The `kernel-grammar-parity` test asserts ABI + node-kind + field-table
@@ -35,7 +35,7 @@ package (the kernel has no objc arm; no parity constraint).
 | tree-sitter-lua.wasm | lua | lua vendored C (build.rs; v0.4.1 revision, not on crates.io); ABI 15 | 6d95607fc7d78964cfdf065ccb1ba76be5ed217c5ec0d0a3cace13c59fa1ae43 |
 | tree-sitter-luau.wasm | luau | tree-sitter-grammars luau v1.2.0 (parser.c 8f25bc17… / scanner.c a157bb52…); ABI 14 | f1647052518f2bdfae8e8c0b033ffdeca1193d69d11c78ba20f84c8374fd0fe3 |
 | tree-sitter-pascal.wasm | pascal | (no kernel arm in the fork's parity gate; historical vendor) | be3634fca99c19f5e1035a1a9c7d93d6ee82b35e6d5024f02be4883b71329c3e |
-| tree-sitter-scala.wasm | scala | scala vendored C (kernel build.rs grammars/scala) | 7945b13e6f9b15b578c5e5e4e60253c049fec07c531518163f3415a76c0621aa |
+| tree-sitter-scala.wasm | scala | tree-sitter-scala v0.26.2 release asset (tag b931fcc338; upstream #1823/#2003 — the old master@0aca5d0a6f pin truncated multi-arg-list `extends` clauses); kernel vendored C is the same tag (build.rs grammars/scala) | 37d7fe5a91ca98941dc05493b0c05a0df0f36df5035890fa00b02497c68aaac3 |
 | tree-sitter-nix.wasm | nix | nix-community/tree-sitter-nix @ 3d0173d (MIT), upstream prebuilt artifact byte-copied 2026-09-22 — no kernel arm, outside the parity gate (same category as pascal/objc); exits K-v2 ruling ⑤ | 4acffa1c013df751193a21ce429777ca214c7d3a7e3665085b6df00dad8869f0 |
 
 Note: kotlin and dart were vendored as the hardening follow-up (2026-09-16) —
