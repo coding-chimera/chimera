@@ -92,14 +92,21 @@ function isSealedModule(filePath: string, context: ResolutionContext): boolean {
   }
   const hit = memo.get(filePath);
   if (hit !== undefined) return hit;
-  const source = context.readFile?.(filePath) ?? null;
-  const code = source === null ? '' : blankStringContents(stripCommentsForRegex(source, 'typescript'));
   // CommonJS assignments can execute inside template interpolations, which the
   // masker blanks. Keep the conservative raw-source exemption for those forms.
+  // Cheapest disqualifiers first (upstream #2072): the masker only blanks
+  // text, so no `import` in the source means none in the masked code either.
+  // Comment-stripping and string-masking run only for files that pass every
+  // cheap check — in practice the few that can be sealed.
+  const source = context.readFile?.(filePath) ?? null;
   const sealed =
-    source !== null && HAS_IMPORT_STATEMENT.test(code) &&
+    source !== null && source.includes('import') &&
     !context.getNodesInFile(filePath).some((n) => n.isExported) &&
-    !HAS_ESM_EXPORT.test(code) && !HAS_CJS_EXPORT.test(source);
+    !HAS_CJS_EXPORT.test(source) &&
+    (() => {
+      const code = blankStringContents(stripCommentsForRegex(source, 'typescript'));
+      return HAS_IMPORT_STATEMENT.test(code) && !HAS_ESM_EXPORT.test(code);
+    })();
   memo.set(filePath, sealed);
   return sealed;
 }
@@ -313,6 +320,79 @@ function isReceiverLessCall(ref: UnresolvedRef, context: ResolutionContext): boo
 const LOCAL_BINDING_MEMO = new WeakMap<ResolutionContext, Map<string, boolean>>();
 
 /**
+ * Where a file's local bindings can start, for isLocallyBoundJsName: every
+ * `const`/`let`/`var` and `function`/`class` keyword and every `=>`. Each
+ * binding pattern can only match from one of these (or, for a parameter,
+ * from the `(` before an occurrence of the name), so a lookup tries its
+ * patterns at those offsets instead of searching the file once per pattern
+ * per name. Kept for the last few files — calls arrive file by file.
+ * (upstream #2072)
+ */
+interface LocalBindingSites {
+  varDecls: number[];
+  fnDecls: number[];
+  arrows: number[];
+}
+const LOCAL_BINDING_SITES = new WeakMap<ResolutionContext, Map<string, LocalBindingSites>>();
+const LOCAL_BINDING_SITES_KEEP = 16;
+const VAR_DECL_SITE = /\b(?:const|let|var)\s/g;
+const FN_DECL_SITE = /\b(?:function|class)\s/g;
+const WHITESPACE = /\s/;
+
+function localBindingSites(filePath: string, source: string, context: ResolutionContext): LocalBindingSites {
+  let cache = LOCAL_BINDING_SITES.get(context);
+  if (!cache) {
+    cache = new Map();
+    LOCAL_BINDING_SITES.set(context, cache);
+  }
+  let sites = cache.get(filePath);
+  if (!sites) {
+    const offsets = (re: RegExp): number[] => Array.from(source.matchAll(re), (m) => m.index!);
+    const arrows: number[] = [];
+    for (let a = source.indexOf('=>'); a !== -1; a = source.indexOf('=>', a + 2)) arrows.push(a);
+    sites = { varDecls: offsets(VAR_DECL_SITE), fnDecls: offsets(FN_DECL_SITE), arrows };
+    if (cache.size >= LOCAL_BINDING_SITES_KEEP) cache.delete(cache.keys().next().value!);
+    cache.set(filePath, sites);
+  }
+  return sites;
+}
+
+type LocalBindingPatterns = { decl: RegExp; fn: RegExp; param: RegExp };
+/** Sticky binding patterns by name — the same names recur file after file. */
+const LOCAL_BINDING_PATTERNS = new Map<string, LocalBindingPatterns>();
+const LOCAL_BINDING_PATTERNS_CAP = 4096;
+const JS_BINDING_NAME = /^[\w$]+$/;
+const ARROW_HEAD_CHAR = /[\w$.]/;
+const IMPORT_BINDING_VALUE = /^\s*(?:await\s+)?(?:require|import)\s*\(/;
+
+function localBindingPatterns(name: string, flags: string): LocalBindingPatterns {
+  const n = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return {
+    // `const { name } = require('./m')` / `= await import('./m')` binds an IMPORT,
+    // not a shadow: the symbol lives in the other file and the call means it.
+    decl: new RegExp(
+      '\\b(?:const|let|var)\\s+(?:' + n + '\\b|[{\\[][^;=]*?\\b' + n + '\\b[^;=]*?[}\\]])\\s*(?:=\\s*([^;\\n]*))?',
+      flags
+    ),
+    fn: new RegExp('\\b(?:function|class)\\s+' + n + '\\b', flags),
+    // a parameter: every token before the name in the list is itself a
+    // parameter (identifier, optional type, optional default) — so a string
+    // argument containing the word cannot match.
+    // Each earlier parameter has exactly one parse: its first non-space
+    // character after the identifier picks the type (`?`/`:`), default (`=`)
+    // or bare alternative. Written as `(type)?(default)?\s*`, the same
+    // strings split several ways per parameter, and a failing search
+    // backtracked through every combination — 30-40s per name on a vscode
+    // test file whose helper takes nine `name: T = value` parameters.
+    param: new RegExp(
+      '\\(\\s*(?:(?:\\.\\.\\.)?[\\w$]+(?:\\s*(?:\\?\\s*)?:[^,()]+|\\s*=[^,()]+|\\s*),\\s*)*' +
+        n + '\\b(?:\\s*\\??\\s*:[^,()]*)?(?:\\s*=[^,()]*)?(?:\\s*,\\s*[^()]*)?\\)\\s*(?::[^=;{]*)?(?:=>|\\{)',
+      flags
+    ),
+  };
+}
+
+/**
  * Whether a JS/TS file binds `name` itself — as a `const`/`let`/`var`/
  * `function`/`class` declaration (destructuring included) or as a parameter
  * of a function or arrow. Such a binding shadows every same-named symbol in
@@ -335,31 +415,71 @@ function isLocallyBoundJsName(name: string, filePath: string, context: Resolutio
   const hit = memo.get(key);
   if (hit !== undefined) return hit;
   const source = context.readFile?.(filePath) ?? '';
-  const n = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  // `const { name } = require('./m')` / `= await import('./m')` binds an IMPORT,
-  // not a shadow: the symbol lives in the other file and the call means it.
-  const declRe = new RegExp(
-    '\\b(?:const|let|var)\\s+(?:' + n + '\\b|[{\\[][^;=]*?\\b' + n + '\\b[^;=]*?[}\\]])\\s*(?:=\\s*([^;\\n]*))?',
-    'g'
-  );
-  let bound = false;
-  for (const m of source.matchAll(declRe)) {
-    if (!/^\s*(?:await\s+)?(?:require|import)\s*\(/.test(m[1] ?? '')) { bound = true; break; }
-  }
-  if (!bound) {
-    bound =
-      new RegExp('\\b(?:function|class)\\s+' + n + '\\b').test(source) ||
-      // a parameter: every token before the name in the list is itself a
-      // parameter (identifier, optional type, optional default) — so a string
-      // argument containing the word cannot match.
-      new RegExp(
-        '\\(\\s*(?:(?:\\.\\.\\.)?[\\w$]+(?:\\s*\\??\\s*:\\s*[^,()]+)?(?:\\s*=\\s*[^,()]+)?\\s*,\\s*)*' +
-          n + '\\b(?:\\s*\\??\\s*:[^,()]*)?(?:\\s*=[^,()]*)?(?:\\s*,\\s*[^()]*)?\\)\\s*(?::[^=;{]*)?(?:=>|\\{)'
-      ).test(source) ||
-      new RegExp('(?:^|[^\\w$.])' + n + '\\s*=>').test(source);
-  }
+  const bound = JS_BINDING_NAME.test(name)
+    ? bindsAtSites(source, name, localBindingSites(filePath, source, context))
+    : bindsAnywhere(source, name);
   memo.set(key, bound);
   return bound;
+}
+
+/** isLocallyBoundJsName's patterns, searched through the whole source. */
+function bindsAnywhere(source: string, name: string): boolean {
+  const { decl, fn, param } = localBindingPatterns(name, 'g');
+  for (const m of source.matchAll(decl)) {
+    if (!IMPORT_BINDING_VALUE.test(m[1] ?? '')) return true;
+  }
+  const n = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return fn.test(source) || param.test(source) || new RegExp('(?:^|[^\\w$.])' + n + '\\s*=>').test(source);
+}
+
+/**
+ * bindsAnywhere for a plain identifier, tried only where a match can start:
+ * a declaration at its keyword (in order, resuming past each match exactly as
+ * the global search does), a parameter at the `(` its list opens with — the
+ * last `(` before an occurrence of the name, with no `)` between, since no
+ * earlier parameter can hold a parenthesis — and `name =>` at each arrow.
+ */
+function bindsAtSites(source: string, name: string, sites: LocalBindingSites): boolean {
+  let patterns = LOCAL_BINDING_PATTERNS.get(name);
+  if (!patterns) {
+    patterns = localBindingPatterns(name, 'y');
+    if (LOCAL_BINDING_PATTERNS.size >= LOCAL_BINDING_PATTERNS_CAP) {
+      LOCAL_BINDING_PATTERNS.delete(LOCAL_BINDING_PATTERNS.keys().next().value!);
+    }
+    LOCAL_BINDING_PATTERNS.set(name, patterns);
+  }
+  const { decl, fn, param } = patterns;
+  let from = 0;
+  for (const at of sites.varDecls) {
+    if (at < from) continue;
+    decl.lastIndex = at;
+    const m = decl.exec(source);
+    if (!m) continue;
+    from = at + m[0].length;
+    if (!IMPORT_BINDING_VALUE.test(m[1] ?? '')) return true;
+  }
+  for (const at of sites.fnDecls) {
+    fn.lastIndex = at;
+    if (fn.test(source)) return true;
+  }
+  let tried = -1;
+  for (let at = source.indexOf(name); at !== -1; at = source.indexOf(name, at + 1)) {
+    const open = at > 0 ? source.lastIndexOf('(', at - 1) : -1;
+    if (open < 0 || open === tried || source.lastIndexOf(')', at - 1) > open) continue;
+    tried = open;
+    param.lastIndex = open;
+    if (param.test(source)) return true;
+  }
+  // `name =>`: the name ends where the whitespace before the arrow starts.
+  for (const arrow of sites.arrows) {
+    let end = arrow;
+    while (end > 0 && WHITESPACE.test(source[end - 1]!)) end--;
+    const start = end - name.length;
+    if (start >= 0 && source.startsWith(name, start) && (start === 0 || !ARROW_HEAD_CHAR.test(source[start - 1]!))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -374,6 +494,7 @@ export function clearNameMatcherMemos(context: ResolutionContext): void {
   C_STATIC_MEMO.delete(context);
   RUST_TRAIT_IMPL_MEMO.delete(context);
   LOCAL_BINDING_MEMO.delete(context);
+  LOCAL_BINDING_SITES.delete(context);
   IMPORT_SUPPLEMENT_CACHES.delete(context);
   RECEIVER_DECL_CACHES.delete(context);
   TYPED_FN_CACHES.delete(context);

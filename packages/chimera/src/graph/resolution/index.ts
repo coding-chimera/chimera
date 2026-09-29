@@ -35,7 +35,7 @@ import {
   C_BUILT_INS,
   CPP_BUILT_INS,
 } from './js-builtins';
-import { resolveViaImport, resolveJvmImport, extractImportMappings, extractReExports, loadCppIncludeDirs, resolveImportPath } from './import-resolver';
+import { resolveViaImport, resolveJvmImport, extractImportMappings, extractReExports, loadCppIncludeDirs, resolveImportPath, clearPythonModuleFileMemos } from './import-resolver';
 import { detectFrameworks } from './frameworks';
 import { synthesizeCallbackEdges } from './callback-synthesizer';
 import { SynthesisStage } from '../db/synthesis-stage';
@@ -381,6 +381,9 @@ export class ReferenceResolver {
     // derived from (upstream clearNameMatcherMemos discipline).
     clearNameMatcherMemos(this.context);
     clearCppMacroVisibility(this.context);
+    // The Python module-file memo is name-cache-derived: same stable window,
+    // same drop seam (upstream #2072).
+    clearPythonModuleFileMemos(this.context);
   }
 
   /**
