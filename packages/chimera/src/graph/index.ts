@@ -973,11 +973,14 @@ export class CodeGraph {
   private db: DatabaseConnection;
   private queries: QueryBuilder;
   private projectRoot: string;
-  private orchestrator: ExtractionOrchestrator;
-  private resolver: ReferenceResolver;
-  private graphManager: GraphQueryManager;
-  private traverser: GraphTraverser;
-  private contextBuilder: ContextBuilder;
+  // Assigned via wireLayers() from the constructor (and again on a
+  // replaced-database reopen, upstream #1902/#1917), hence the definite
+  // assignment assertions.
+  private orchestrator!: ExtractionOrchestrator;
+  private resolver!: ReferenceResolver;
+  private graphManager!: GraphQueryManager;
+  private traverser!: GraphTraverser;
+  private contextBuilder!: ContextBuilder;
 
   // Mutex for preventing concurrent indexing operations (in-process)
   private indexMutex = new Mutex();
@@ -999,15 +1002,119 @@ export class CodeGraph {
     this.fileLock = new FileLock(
       path.join(getCodeGraphDir(projectRoot), 'codegraph.lock')
     );
-    this.orchestrator = new ExtractionOrchestrator(projectRoot, queries);
-    this.resolver = createResolver(projectRoot, queries);
-    this.graphManager = new GraphQueryManager(queries);
-    this.traverser = new GraphTraverser(queries);
+    this.wireLayers();
+    this.dbIdentity = this.statDbIdentity();
+  }
+
+  /**
+   * (Re)build the layers derived from the current db/queries pair. Extracted
+   * from the constructor so {@link reopenReplacedDatabase} can rewire in
+   * place after swapping the database handle (upstream #1902/#1917).
+   */
+  private wireLayers(): void {
+    this.orchestrator = new ExtractionOrchestrator(this.projectRoot, this.queries);
+    this.resolver = createResolver(this.projectRoot, this.queries);
+    this.graphManager = new GraphQueryManager(this.queries);
+    this.traverser = new GraphTraverser(this.queries);
     this.contextBuilder = createContextBuilder(
-      projectRoot,
-      queries,
+      this.projectRoot,
+      this.queries,
       this.traverser
     );
+  }
+
+  /**
+   * Set when this instance followed a database replaced on disk (upstream
+   * #1902/#1917): the next sync that can run reconciles the whole tree,
+   * because whatever the old handle absorbed since the rebuild never reached
+   * the new file.
+   */
+  private pendingFullReconcile = false;
+
+  /** dev/ino of the database file when the current handle was opened (POSIX only). */
+  private dbIdentity: { dev: number; ino: number } | null = null;
+
+  /** How long a recreated, not-yet-indexed database is treated as a rebuild in progress. */
+  private static readonly RECREATE_GRACE_MS = 120_000;
+
+  private statDbIdentity(): { dev: number; ino: number } | null {
+    // POSIX-only in practice: st_ino is unreliable on Windows, and an open
+    // file can't be unlinked there anyway (upstream #925/#1902 note).
+    if (process.platform === 'win32') return null;
+    try {
+      const st = fs.statSync(this.db.getPath());
+      return { dev: st.dev, ino: st.ino };
+    } catch {
+      return null;
+    }
+  }
+
+  /** Whether the database at the open path is a different file than this handle's. */
+  private isDatabaseReplacedOnDisk(): boolean {
+    if (!this.dbIdentity) return false;
+    try {
+      const st = fs.statSync(this.db.getPath());
+      return st.dev !== this.dbIdentity.dev || st.ino !== this.dbIdentity.ino;
+    } catch {
+      // The file is gone — a rebuild is mid-unlink. Treat as replaced so the
+      // sync path surfaces lock contention and retries.
+      return true;
+    }
+  }
+
+  /** The database file at the path was written within the recreate grace window. */
+  private isFreshlyRecreated(): boolean {
+    try {
+      return Date.now() - fs.statSync(this.db.getPath()).mtimeMs < CodeGraph.RECREATE_GRACE_MS;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Heal a stale database handle in place. A full rebuild in another process
+   * (a removed-and-recreated data root, a git worktree recreated at the same
+   * path) unlinks the database file and creates a new one at the same path;
+   * a long-lived instance (the MCP daemon's watcher) would otherwise keep
+   * writing into the dead inode (upstream #925/#1902).
+   *
+   * Opens the live file FIRST — if that throws (e.g. mid-recreate), the old
+   * handle stays untouched and the caller retries. Sets
+   * {@link pendingFullReconcile} wherever the database is reopened, so the
+   * next sync reconciles the whole tree.
+   */
+  private reopenReplacedDatabase(): boolean {
+    if (this.db.isReadOnly()) return false;
+    if (!this.isDatabaseReplacedOnDisk()) return false;
+    const dbPath = this.db.getPath();
+    const fresh = DatabaseConnection.open(dbPath);
+    const staleDb = this.db;
+    const staleQueries = this.queries;
+    const staleResolver = this.resolver;
+    this.db = fresh;
+    this.queries = new QueryBuilder(fresh.getDb(), openStoreBridge(dbPath, false));
+    this.wireLayers();
+    this.dbIdentity = this.statDbIdentity();
+    this.pendingFullReconcile = true;
+    // Releasing the dead handle also frees the leaked db/-wal/-shm fds that
+    // were pinning the unlinked inode (#925). Reverse construction order:
+    // resolver native context → store bridge/statements → connection (R1).
+    try { staleResolver.dispose(); } catch { /* the old inode is gone */ }
+    try { staleQueries.dispose(); } catch { /* best-effort */ }
+    try { staleDb.close(); } catch { /* best-effort */ }
+    return true;
+  }
+
+  /**
+   * Tool-call self-heal entry point (upstream #1902/#1917). Refuses (returns
+   * false) while an index/sync holds the index mutex: closing the handle that
+   * run is writing through would break it mid-flight. {@link sync} performs
+   * the same check itself once it holds the mutex, so the replaced file is
+   * still picked up — by that sync, or by the caller's retry.
+   */
+  reopenIfReplaced(): boolean {
+    if (this.indexMutex.isLocked()) return false;
+    return this.reopenReplacedDatabase();
   }
 
   // ===========================================================================
@@ -1529,11 +1636,42 @@ export class CodeGraph {
    * Uses a mutex to prevent concurrent indexing operations.
    */
   async sync(options: IndexOptions = {}): Promise<SyncResult> {
-    return this.indexMutex.withLock(async () => {
+    return this.indexMutex.withLock(() => this.syncLocked(options));
+  }
+
+  /**
+   * The body of {@link sync}, serialized by callers on {@link indexMutex}.
+   * {@link syncFiles} delegates here to widen a scoped sync to a full
+   * reconcile after following a replaced database (upstream #1902).
+   */
+  private async syncLocked(options: IndexOptions = {}): Promise<SyncResult> {
       try {
         this.fileLock.acquire();
       } catch {
         return { filesChecked: 0, filesAdded: 0, filesModified: 0, filesRemoved: 0, nodesUpdated: 0, durationMs: 0 };
+      }
+
+      // A full rebuild in another process unlinks the database and creates a
+      // new file at the same path. Follow the path before writing (one stat);
+      // if the reopen fails (the rebuild is mid-way), report lock contention
+      // so the watcher keeps its pending files and retries (upstream #1902).
+      try {
+        this.reopenReplacedDatabase();
+      } catch (err) {
+        this.fileLock.release();
+        throw new LockUnavailableError(
+          `Sync could not open the rebuilt index yet; retry when the rebuild finishes. ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+      if (this.pendingFullReconcile && this.queries.getFileCount() === 0 && this.isFreshlyRecreated()) {
+        // `index` recreates the file, THEN takes the write lock. A sync
+        // landing in that gap would run a full reconcile of the empty file
+        // and hold the lock the rebuild is about to ask for. Step aside
+        // (lock contention — the watcher retries); bounded by the grace
+        // window so a rebuild that died before indexing never parks the
+        // watcher forever.
+        this.fileLock.release();
+        throw new LockUnavailableError('A rebuild of this index is in progress; retry when it finishes.');
       }
 
       let job: ReturnType<typeof startIndexJob>;
@@ -1679,6 +1817,9 @@ export class CodeGraph {
           total: result.filesChecked,
           message: `synced ${result.filesAdded + result.filesModified + result.filesRemoved} changed files`,
         });
+        // Cleared only once a full sync completes: a sync that threw must
+        // leave the catch-up owed for the next one (upstream #1902/#1919).
+        if (result.filesChecked > 0) this.pendingFullReconcile = false;
         return result;
       } catch (error) {
         try {
@@ -1689,7 +1830,6 @@ export class CodeGraph {
       } finally {
         this.fileLock.release();
       }
-    });
   }
 
   /**
@@ -1705,6 +1845,25 @@ export class CodeGraph {
         this.fileLock.acquire();
       } catch {
         return { filesChecked: 0, filesAdded: 0, filesModified: 0, filesRemoved: 0, nodesUpdated: 0, durationMs: 0 };
+      }
+
+      // Follow a database replaced on disk before writing (upstream #1902).
+      // A failed reopen (rebuild mid-way) reports lock contention so the
+      // watcher keeps its pending files and retries.
+      try {
+        this.reopenReplacedDatabase();
+      } catch (err) {
+        this.fileLock.release();
+        throw new LockUnavailableError(
+          `Sync could not open the rebuilt index yet; retry when the rebuild finishes. ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+      if (this.pendingFullReconcile) {
+        // Widen the scoped sync to a full reconcile: whatever the old handle
+        // absorbed since the rebuild never reached the new file. syncLocked
+        // re-acquires the file lock itself (we are inside the index mutex).
+        this.fileLock.release();
+        return this.syncLocked(options);
       }
 
       let job: ReturnType<typeof startIndexJob>;
@@ -1841,6 +2000,32 @@ export class CodeGraph {
     return this.indexMutex.isLocked();
   }
 
+  /**
+   * Whether an OS watcher event points at a file whose index metadata is
+   * still current. Used on Windows to discard NTFS last-access notifications,
+   * which libuv reports through the watcher as ordinary change events
+   * (#1451, upstream #2050).
+   */
+  private isIndexedFileStateCurrent(filePath: string): boolean {
+    const tracked = this.queries.getFileByPath(this.toGraphPath(filePath));
+    if (!tracked) return false;
+
+    try {
+      const stat = fs.statSync(path.join(this.projectRoot, filePath));
+      return (
+        stat.isFile() &&
+        Number.isFinite(stat.mtimeMs) &&
+        Number.isFinite(tracked.modifiedAt) &&
+        stat.size === tracked.size &&
+        Math.floor(stat.mtimeMs) === Math.floor(tracked.modifiedAt)
+      );
+    } catch {
+      // Missing/inaccessible files must still reach sync so removals and
+      // transient filesystem failures are reconciled rather than hidden.
+      return false;
+    }
+  }
+
   // ===========================================================================
   // File Watching
   // ===========================================================================
@@ -1860,7 +2045,7 @@ export class CodeGraph {
     this.watcher = new FileWatcher(
       this.projectRoot,
       async (batch: WatchBatch) => {
-        const result = batch.source === 'filesystem' && batch.files.length > 0 && batch.files.length <= WATCH_INCREMENTAL_SYNC_FILE_LIMIT
+        const result = !batch.needsFullScan && batch.source === 'filesystem' && batch.files.length > 0 && batch.files.length <= WATCH_INCREMENTAL_SYNC_FILE_LIMIT
           ? await this.syncFiles(batch.files)
           : await this.sync();
         if (result.filesChecked === 0 && result.durationMs === 0) {
@@ -1869,7 +2054,12 @@ export class CodeGraph {
         const filesChanged = result.filesAdded + result.filesModified + result.filesRemoved;
         return { filesChanged, durationMs: result.durationMs };
       },
-      options,
+      // Windows' ReadDirectoryChangesW stream includes last-access updates,
+      // so a read can otherwise look exactly like an edit (#1451, upstream
+      // #2050). Guard with indexed size/mtime; no-op on other platforms.
+      process.platform === 'win32'
+        ? { ...options, isFileStateCurrent: (filePath) => this.isIndexedFileStateCurrent(filePath) }
+        : options,
       {
         snapshot: () => this.getSnapshot(),
         sync: () => this.sync(),

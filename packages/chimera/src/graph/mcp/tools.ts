@@ -612,6 +612,11 @@ export class ToolHandler {
   // populated by the watcher, not by catch-up. Cleared on first await so
   // subsequent calls don't pay any cost.
   private catchUpGate: Promise<void> | null = null;
+  // Engine hook fired when a tool call's self-heal reopened a database that
+  // was replaced on disk (upstream #1902/#1917), so the engine can reconcile
+  // the new file with a catch-up sync — but only when the engine is the
+  // project's writer (watching); a read-only engine must never start writing.
+  private onDatabaseReopened: ((cg: CodeGraph) => void) | null = null;
 
   constructor(private cg: CodeGraph | null) {}
 
@@ -631,6 +636,15 @@ export class ToolHandler {
    */
   setCatchUpGate(p: Promise<void> | null): void {
     this.catchUpGate = p;
+  }
+
+  /**
+   * Engine-only: called after a tool call's self-heal reopened the default
+   * project's database because it was replaced on disk (upstream #1902/#1917).
+   * The engine decides whether a catch-up sync is its to run.
+   */
+  setOnDatabaseReopened(fn: ((cg: CodeGraph) => void) | null): void {
+    this.onDatabaseReopened = fn;
   }
 
   /**
@@ -1062,6 +1076,16 @@ export class ToolHandler {
           }
         } catch { /* engine already logged */ }
       }
+      // Self-heal: the default project's database may have been replaced on
+      // disk (a rebuild, a worktree recreated at the same path) since this
+      // process opened its handle. One stat per call; reopen in place and let
+      // the engine run a catch-up sync (upstream #925/#1902/#1917).
+      // Best-effort — a failed reopen must never break the tool call.
+      try {
+        if (this.cg?.reopenIfReplaced?.()) {
+          this.onDatabaseReopened?.(this.cg);
+        }
+      } catch { /* best-effort self-heal */ }
       // Honor the optional tool allowlist (CODEGRAPH_MCP_TOOLS): a trimmed
       // surface rejects ablated tools defensively even if a client cached them.
       if (!this.isToolAllowed(toolName)) {
