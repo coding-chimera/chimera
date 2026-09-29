@@ -15,6 +15,8 @@ import {
   ResolutionContext,
   FrameworkResolver,
   ImportMapping,
+  isSupertypeTarget,
+  isInheritanceRef,
 } from './types';
 import { matchReference, matchFunctionRef, isVisibleAcrossFiles, isUnresolvedJsMemberCall, clearNameMatcherMemos } from './name-matcher';
 import {
@@ -995,7 +997,17 @@ export class ReferenceResolver {
 
     // Pick the candidate with the strongest evidence class; equal classes
     // fall to same-file, then same-language, then a deterministic id order.
-    return this.pickBestCandidate(ref, candidates);
+    const picked = this.pickBestCandidate(ref, candidates);
+    // Inheritance refs may only land on real type definitions (#1536/#2029):
+    // a Scala companion `object`, a Rust enum variant or any other non-type
+    // same-name is false supertype data, whichever strategy chose it. The
+    // rejection is FINAL — the reference stays unresolved rather than
+    // promoting another candidate. Mirrored in resolver.rs resolve_one.
+    if (picked && isInheritanceRef(ref)) {
+      const target = this.queries.getNodeById(picked.targetNodeId);
+      if (target && !isSupertypeTarget(target)) return null;
+    }
+    return picked;
   }
 
   /**

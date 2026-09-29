@@ -6,7 +6,7 @@
 
 import * as path from 'path';
 import { Language, Node } from '../types';
-import { UnresolvedRef, ResolvedRef, ResolutionContext, ImportMapping } from './types';
+import { UnresolvedRef, ResolvedRef, ResolutionContext, ImportMapping, isSupertypeTarget, isInheritanceRef } from './types';
 import { LRUCache } from './lru-cache';
 import { blankStringContents, stripCommentsForRegex } from './strip-comments';
 import { JS_BUILT_INS, JS_BUILTIN_METHODS, TS_PRIMITIVE_TYPES } from './js-builtins';
@@ -630,6 +630,13 @@ export function matchByExactName(
   }
   const candidates = context.getNodesByName(ref.referenceName)
     .filter((n) => n.kind !== 'import')
+    // Restrict the pool BEFORE ranking for inheritance refs: the matcher
+    // scores node kind as a bonus, never a filter, and awards no bonus at
+    // all for extends/implements — so a same-named non-type (a Scala
+    // companion `object`, a Rust enum VARIANT) outranked or, as the sole
+    // candidate, replaced the real supertype. Filtering lets the legitimate
+    // supertype win instead of merely dropping the false edge post-hoc.
+    .filter((n) => !isInheritanceRef(ref) || isSupertypeTarget(n))
     .filter((n) => ref.referenceKind !== 'imports' || n.filePath === ref.filePath ||
       !ESM_FAMILY.has(n.language) || !isSealedModule(n.filePath, context))
     .filter((n) => !((bareJs || bareGo) && n.kind === 'method'))
@@ -2858,7 +2865,7 @@ export function matchMethodCall(
   const classCandidates = context.getNodesByName(objectOrClass!);
 
   for (const classNode of classCandidates) {
-    if (classNode.kind === 'class' || classNode.kind === 'struct' || classNode.kind === 'union' || classNode.kind === 'interface') {
+    if (classNode.kind === 'class' || classNode.kind === 'struct' || classNode.kind === 'union' || classNode.kind === 'interface' || (classNode.language === 'scala' && classNode.kind === 'module')) {
       // Skip cross-language class matches
       if (classNode.language !== ref.language) continue;
 
@@ -2894,7 +2901,7 @@ export function matchMethodCall(
   if (capitalizedReceiver !== objectOrClass) {
     const fuzzyClassCandidates = context.getNodesByName(capitalizedReceiver);
     for (const classNode of fuzzyClassCandidates) {
-      if (classNode.kind === 'class' || classNode.kind === 'struct' || classNode.kind === 'union' || classNode.kind === 'interface') {
+      if (classNode.kind === 'class' || classNode.kind === 'struct' || classNode.kind === 'union' || classNode.kind === 'interface' || (classNode.language === 'scala' && classNode.kind === 'module')) {
         // Skip cross-language class matches
         if (classNode.language !== ref.language) continue;
 
