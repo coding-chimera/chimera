@@ -461,3 +461,23 @@ loop 挂起修复前的对比基线（本机 macOS, bun 1.4.0, `bun test --timeo
 - **已重建+重安装全局二进制**（strings 验证 resolve_batch 在包内）——用户再重启一次宿主即全部生效。
 - 遗留：R3d（worker 线程迁移/残余 sweep 移植/非批量路径）/CI 8 腿重建+性能验收门（随 CI 批）/callback-synthesizer 移植决策（最后再议）/R5' 阶段 1+（CI-parked）/R6 冻结。
 - pitfall：macOS 无 timeout 命令；napi 导出名在 strings（注册串）不在 nm 符号表。
+
+### fork 引擎五缺口战役收口（2026-09-29，本地 7 commits 未推，等上游批同波推送）
+- **③权限 always 落库**（`71edcf95c`）：reply 路径经新 `src/permission/persist.ts`（路由层单点 helper，(a) 方案被 TDZ 环实锤否决——session.ts:42 运行时 import Permission）→ `updatePermissionSlots`；四个 HTTP 面全接（Hono+HttpApi 双对齐）。端到端闭环=ask 侧 `Permission.merge(agent.permission, session.permission)`（prompt.ts:777）每轮从 DB 新取。
+- **④retry 默认上限**（`b6df2cd2e`）：`DEFAULT_RETRY_LIMIT=3`（对齐 VALIDATION_ERROR_RETRY_LIMIT），显式 metadata.retryLimit 仍优先（松紧都尊重）——非 codex 限流/5xx 从无限重试变有界。
+- **⑤time_compacting 激活+session_diff 孤儿清理**（`41c82a25a`+`3359b411e`）：create() 开窗/process() 入口 re-stamp（崩溃残留自愈）+ensuring 清位（成功/失败/中断都清）；prune 故意不置位（fire-and-forget 与 process 窗口防重入）；memory stage1 的 isNull(time_compacting) 排除首次真实生效。remove() 补 `storage.remove(["session_diff", id])`（既有 API missing-tolerant）。
+- **①v2 Session 写面诚实别名**（`e03257401`）：create/prompt/compact/wait/shell 委托 v1 引擎（v2 Prompt→v1 parts 映射，files source 有意丢弃+注释；delivery=无队列直处理）；skill=查证上游无事件 def 的诚实 no-op；subagent=内联 prompt+injectSynthetic 交付（不再丢弃输出）；`as any` 与 stub 清零。层装配：v1 依赖经 Effect memoMap 与 server 共享实例。
+- **②崩溃恢复+跨进程 lease**（`141d5fe32`+`f5ee3a4db`）：读路径懒对账（error+metadata.interrupted 终态+补 time.completed，boot-keyed marker 每 boot 每会话一扫+reconcileOrphansNow 兜长寿进程盲区）+`session_turn_lease` 表（单语句 UPSERT 原子抢占/pid 探针+CAS steal 死主即继承/TTL 30min 兜底/续期 fiber 10min/RemoteBusyError extends BusyError 保 instanceof 映射）；真双 bun 进程跨进程测试。v2 session_message 投影=独立存储（flag 默认关）不治愈——follow-up。
+- **flake 新登记**：prompt.test.ts 'loop sets status to busy then idle'（it.live 3s 预算，全量下间歇超时，隔离 2/2 绿；onBusy 现含同步 lease UPSERT+对账=边际压缩嫌疑但未确证新因果）。全 test/session=594-595 pass+该 1 flake。
+- **亲验台账**：permission 族 92/92、retry 39/39、compaction 族 78/78、新 6+6、v2 9/9、part-reconcile+lease 18/18、typecheck 全包 0 错误（graph 在途错误已被 D-graph builder 自行收敛）
+- **follow-up 池**：doom_loop/workflow_tool_approval 不吃 session.permission（processor.ts:494/llm.ts:508）；memory store 超龄 compacting 豁免（可选）；v2 session_message 投影终态策略；session.remove 清 lease 行（可选）；scala defer-pin parity 套件（随 R 批）；setCompacting 升 required（可选）
+
+### codegraph 上游 v1.6.1 移植战役收口（2026-09-29/30，43→44 commits 已随本波推送）
+- **窗口**：ba3c21e..v1.6.1（91 commits/227 files），镜像只读取证；波次 G→D→R→B 按 hub 文件冲突图串行（tree-sitter.ts/callback-synthesizer/graph index.ts/db queries 为不可并行 hub）。
+- **G**（`2b1a77fe3`）：scala grammar v0.26.2，三方 blob 逐字节零差，semantics 不 bump（镜像上游：窗口唯一版本改动在 #2034）。
+- **D**（10 笔）：watcher 守卫簇（#1917 跟随重建库/#1977 欠账全扫/#2025 符号链接环守卫（探针实证 30+ 幻影路径）/#2050）；file-limits 新模块+7 读点（#2082）；#2083 sqlite_master 探针+fail-open（上游终版）；MCP 片段（#2042 只读回退/#2020 根身份复用/#1997 banner/#2036 显式项目）；#1836 行号引用；lock 显式化（#2014/#2024）。**跳过**：MCP 架构件全套（R5' 议程）、#2049 watchdog、WSL、branch-guards（上游 v1.6.1 实无此文件）。
+- **R**（20 笔，T1 主战场）：resolution 语义族全落地（#2031/#2032/#2028/#2034/#2040/#2055/#1999/#2015/#2005/#2035/#2029/#2081 + 新模块三件 alias-binding/cpp-constructor/cpp-macro-visibility）+ kernel/提取面语言修复（#2030 ID 碰撞 16 walker/#2002/#2004/#2017/#2018/#2019/#1865/#2008/#1827/#2006）。**双臂纪律全程**：name-matcher↔resolver.rs、js-builtins↔builtins_version、queries ORDER BY↔resolver_ctx——resolution-parity 零 diff every face。**EXTRACTION_SEMANTICS_VERSION v5→v6**（唯一 bump，镜像上游 #2034 的 26→27：method-as-value function-ref 发射需 daemon catch-up 自愈）。#2072 整笔缓办→移交 B。
+- **B**（5 笔）：**#2033 synthesis 刷新落地**（fork 真实洞：增量 sync 后合成边陈久）——migration **v13+v14**（synthesis_inputs+部分索引+idx_nodes_kind 复合列事务内重建；v14=guarded 表达式事务重建覆盖已出厂 v13）、synthesis-stage.ts 新模块（TEMP overlay+原子 publish）、syncFiles/syncLocked 尾部接线、ORDER BY 双臂镜像；**synthesis 写入留 TS db 层不经 store bridge**（裁决：writer-lock 窗口内+IMMEDIATE 仲裁）；#2038 metadata JSON 守护；#2086 dominant file 缓存（bun/node adapter inTransaction 拼法差异实锤）；#2072 三件性能尾（byte-identical 前后快照 sha256 四跑一致）。CURRENT_SCHEMA_VERSION 12→14。
+- **终验**：全量 **6055 tests/14 fail=精确环境基线**（12 MCP+2 Node26 banner；负载池本轮全绿）；typecheck 干净；ctx/resolution-parity 零 diff；cargo 88；五类审计零命中（唯一=ask-side 连字符词已知误报）。
+- **follow-up 池**：fileHasExportedNode EXISTS 探针（#2086 强化件，需开 resolution/types 车道）；kernel-scala-parity defer-pin 断言移植（G 批遗留）；getCallees 不含 instantiates（预存分叉）；c/cpp corpus 26.1% deferral 率（预存）；syncLocked 全量对账 pre-scan 成本下沉（需开 extraction 车道）；旧索引需 `chimera graph index` 重跑以吃 v6（设计内）
+
