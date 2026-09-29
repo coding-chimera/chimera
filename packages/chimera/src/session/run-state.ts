@@ -3,11 +3,12 @@ import { InstanceState } from "@/effect/instance-state"
 import { Runner } from "@/effect/runner"
 import { InstanceStore } from "@/project/instance-store"
 import { BackgroundJob } from "@/agent/background-job"
-import { Effect, Latch, Layer, Option, Scope, Context } from "effect"
+import { Effect, Fiber, Latch, Layer, Option, Scope, Context } from "effect"
 import * as Session from "./session"
 import { MessageV2 } from "./message-v2"
 import { SessionID } from "./schema"
 import { SessionPartReconcile } from "./part-reconcile"
+import { SessionTurnLease } from "./turn-lease"
 import { SessionStatus } from "./status"
 
 export interface Interface {
@@ -26,6 +27,35 @@ export interface Interface {
   ) => Effect.Effect<MessageV2.WithParts>
 }
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionRunState") {}
+
+/**
+ * BusyError extension for the cross-process case: another live chimera process
+ * holds this session's turn lease. The HTTP middlewares' `instanceof
+ * Session.BusyError` mapping keeps applying (400 + message); the message names
+ * the holder so it is actionable — the background-job limit error is the
+ * cautionary precedent for a busy message that cannot be acted on.
+ */
+export class RemoteBusyError extends Session.BusyError {
+  constructor(sessionID: SessionID, holder: SessionTurnLease.Holder) {
+    super(sessionID)
+    this.message = `Session ${sessionID} is busy in another chimera process (pid ${holder.ownerPID}, ${holder.ownerBootID}) which holds its turn lease until ${new Date(holder.expiresAt).toISOString()}. Wait for that run to finish, cancel it in that process, or retry after the lease expires.`
+  }
+}
+
+/**
+ * TTL renewal for every lease this process owns. A fiber per busy window
+ * (forked in onBusy, interrupted in onIdle) was chosen over piggybacking on
+ * runner activity because Runner exposes no mid-turn hook, and turns can
+ * legitimately outlive the TTL (long tool calls, nested-background parks with
+ * no abandonment timeout). One renewAll statement covers all sessions of this
+ * process; transient DB failures are logged and swallowed so one bad tick
+ * cannot kill the renewal of a still-live turn. An idle process runs no timer.
+ */
+const renewalLoop = Effect.forever(
+  Effect.sleep(SessionTurnLease.RENEW_INTERVAL_MS).pipe(
+    Effect.andThen(Effect.sync(() => SessionTurnLease.renewAll()).pipe(Effect.ignoreCause({ log: true }))),
+  ),
+)
 
 export const layer = Layer.effect(
   Service,
@@ -78,9 +108,20 @@ export const layer = Layer.effect(
       const instance = yield* InstanceRef
       if (!instance) return yield* Effect.die(new Error("Session runner requires an instance"))
       const leases: Array<InstanceStore.Lease | undefined> = []
+      let renewFiber: Fiber.Fiber<never, never> | undefined
       const next = Runner.make<MessageV2.WithParts>(data.scope, {
         onIdle: Effect.gen(function* () {
           SessionPartReconcile.markIdle(sessionID)
+          if (renewFiber) {
+            const fiber = renewFiber
+            renewFiber = undefined
+            yield* Fiber.interrupt(fiber)
+          }
+          // Owner-guarded release: a lease legitimately taken over after our
+          // TTL lapsed is never deleted. A failure here must not break the
+          // idle transition — a leftover row expires or is inherited through
+          // the liveness probe.
+          yield* Effect.sync(() => SessionTurnLease.release(sessionID)).pipe(Effect.ignoreCause({ log: true }))
           const lease = leases.shift()
           if (lease) yield* lease.release
           if (leases.length > 0) return
@@ -88,7 +129,18 @@ export const layer = Layer.effect(
           yield* status.set(sessionID, { type: "idle" })
         }),
         onBusy: Effect.gen(function* () {
+          // Cross-process turn claim before any turn state is written: the
+          // successful acquire proves no foreign live process holds this
+          // session, and the runner's work (assistant message, tool parts)
+          // only starts after onBusy returns.
+          const claim = yield* Effect.sync(() => SessionTurnLease.acquire(sessionID))
+          if (!claim.acquired) throw new RemoteBusyError(sessionID, claim.holder)
+          // Turn-start orphan heal: forced (guard-free) reconciliation, so a
+          // long-lived process also cleans up after a sibling process crashed
+          // mid-turn — its stale boot marker would skip the lazy read path.
+          yield* Effect.sync(() => SessionPartReconcile.reconcileOrphansNow(sessionID))
           SessionPartReconcile.markBusy(sessionID)
+          renewFiber = yield* renewalLoop.pipe(Effect.forkIn(data.scope))
           leases.push(store._tag === "Some" ? yield* store.value.pin(instance) : undefined)
           yield* status.set(sessionID, { type: "busy" })
         }),
@@ -105,6 +157,10 @@ export const layer = Layer.effect(
       const data = yield* InstanceState.get(state)
       const existing = data.runners.get(sessionID)
       if (existing?.busy) throw new Session.BusyError(sessionID)
+      // Cross-process visibility for the HTTP entry probes: a live foreign
+      // lease means another process is mid-turn on this session.
+      const holder = yield* Effect.sync(() => SessionTurnLease.foreignLiveHolder(sessionID))
+      if (holder) throw new RemoteBusyError(sessionID, holder)
     })
 
     const cancel = Effect.fn("SessionRunState.cancel")(function* (sessionID: SessionID) {
