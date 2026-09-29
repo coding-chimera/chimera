@@ -300,3 +300,12 @@ export function isSupertypeTarget(node: Node): boolean {
 export function isInheritanceRef(ref: UnresolvedRef): boolean {
   return ref.referenceKind === 'extends' || ref.referenceKind === 'implements';
 }
+
+/**
+ * The signature extraction gives a C/C++ `constant` minted from a
+ * function-like `preproc_function_def` (`#define NAME(args) …`, #1838). A
+ * macro is a value: it is never a `calls` target, and its presence in a
+ * translation unit is what makes `NAME(x)` a macro expansion rather than
+ * a call.
+ */
+export const CPP_DEFINE_SIGNATURE = /^\s*#\s*define\b/;

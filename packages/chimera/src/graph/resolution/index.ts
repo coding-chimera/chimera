@@ -17,8 +17,11 @@ import {
   ImportMapping,
   isSupertypeTarget,
   isInheritanceRef,
+  CPP_DEFINE_SIGNATURE,
 } from './types';
 import { matchReference, matchFunctionRef, isVisibleAcrossFiles, isUnresolvedJsMemberCall, crossesCodeBoundary, gateLanguageMatch, clearNameMatcherMemos } from './name-matcher';
+import { isVisibleCppMacro, clearCppMacroVisibility } from './cpp-macro-visibility';
+import { isCppConstructorRef, matchCppConstructor } from './cpp-constructor';
 import {
   JS_BUILT_INS,
   REACT_HOOKS,
@@ -376,6 +379,7 @@ export class ReferenceResolver {
     // declarations, import supplements) die with the file caches they were
     // derived from (upstream clearNameMatcherMemos discipline).
     clearNameMatcherMemos(this.context);
+    clearCppMacroVisibility(this.context);
   }
 
   /**
@@ -878,7 +882,18 @@ export class ReferenceResolver {
    * double-write guard: those refs were NOT consumed natively).
    */
   private resolveOneCore(ref: UnresolvedRef): ResolvedRef | null {
-    const candidate = this.resolveOneCoreUngated(ref);
+    // A C/C++ "call" whose name is a function-like macro visible in this
+    // translation unit is a macro expansion, not a call — it must never bind
+    // to a same-named function in another file (#1838).
+    if (isVisibleCppMacro(ref, this.context)) return null;
+    let candidate = this.resolveOneCoreUngated(ref);
+    // A `#define` is a value, never a callee (#1838): a macro defined only in
+    // an unrelated file is not what `NAME(x)` here expands to either. (Fork
+    // counterpart of upstream's gateTargetKind define rule.)
+    if (candidate && ref.referenceKind === 'calls') {
+      const define = this.queries.getNodeById(candidate.targetNodeId);
+      if (define?.kind === 'constant' && CPP_DEFINE_SIGNATURE.test(define.signature ?? '')) candidate = null;
+    }
     return candidate?.resolvedBy === 'framework'
       ? this.gateFrameworkLanguage(candidate, ref)
       : gateLanguageMatch(candidate, ref, this.context);
@@ -900,6 +915,10 @@ export class ReferenceResolver {
   }
 
   private resolveOneCoreUngated(ref: UnresolvedRef): ResolvedRef | null {
+    // A local C++ object construction (`T obj(args)`, ref `ns::T::T/1`)
+    // resolves ONLY to a constructor of the lexically nearest `T` (#1839).
+    if (isCppConstructorRef(ref)) return matchCppConstructor(ref, this.context);
+
     // Skip built-in/external references
     if (this.isBuiltInOrExternal(ref)) {
       return null;

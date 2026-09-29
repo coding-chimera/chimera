@@ -495,6 +495,12 @@ pub(crate) fn crosses_code_boundary(a: &str, b: &str) -> bool {
     }
 }
 
+/// cpp-constructor.ts — isCppConstructorRef (#1839): a local C++ object
+/// construction carries a dedicated `calls` ref shaped `ns::T::T/<arity>`.
+fn is_cpp_constructor_ref(r: &RefIn) -> bool {
+    r.language == "cpp" && r.reference_kind == "calls" && dyn_re("::[^:]+/\\d+$").is_match(&r.reference_name)
+}
+
 /// JS `source.split('\n').slice(start, end).join('\n')` — `start` is a 0-based
 /// line index, `end` exclusive (a 1-based end_line doubles as the exclusive
 /// 0-based end). Clamps like Array#slice.
@@ -2248,6 +2254,15 @@ impl Resolver {
         let all = ctx.nodes_by_name(&r.reference_name)?;
         let mut candidates: Vec<CtxNode> = Vec::new();
         for n in all {
+            // Macro constants are not callees and must not consume the
+            // same-name ceiling (#1838) — mirrors name-matcher.ts's
+            // CPP_DEFINE_SIGNATURE pool filter.
+            if r.reference_kind == "calls"
+                && n.kind == "constant"
+                && n.signature.as_deref().map(|s| dyn_re(r"^\s*#\s*define\b").is_match(s)).unwrap_or(false)
+            {
+                continue;
+            }
             // Type/value references retain same-family eligibility: a native
             // namesake must not hide the actual web type. Calls still gate
             // only the winner (upstream #2032).
@@ -5654,6 +5669,29 @@ impl Resolver {
         Ok(Some(Resolved::new(target.id.clone(), ResolvedBy::FunctionRef)))
     }
 
+    /// resolution/index.ts resolveOneCore's `#define`-target rule (#1838): a
+    /// `#define` constant is a value, never a callee — whichever strategy
+    /// selected it, the result is dropped (never re-arbitrated).
+    fn gate_cpp_define_target(
+        &mut self,
+        ctx: &mut CtxConn,
+        res: Option<Resolved>,
+        r: &RefIn,
+    ) -> Result<Option<Resolved>> {
+        if r.reference_kind != "calls" {
+            return Ok(res);
+        }
+        let Some(hit) = res else { return Ok(None) };
+        if let Some(target) = ctx.get_node_by_id(&hit.target_node_id)? {
+            if target.kind == "constant"
+                && target.signature.as_deref().map(|s| dyn_re(r"^\s*#\s*define\b").is_match(s)).unwrap_or(false)
+            {
+                return Ok(None);
+            }
+        }
+        Ok(Some(hit))
+    }
+
     /// resolveOne (index.ts) — gated wrapper (upstream #2032): framework
     /// results obey gateFrameworkLanguage, everything else gateLanguageMatch.
     /// Mirrors resolution/index.ts resolveOneCore's wrapper.
@@ -5664,6 +5702,7 @@ impl Resolver {
         ext: &ExternalStrategies,
     ) -> Result<Option<Resolved>> {
         let candidate = self.resolve_one_ungated(ctx, r, ext)?;
+        let candidate = self.gate_cpp_define_target(ctx, candidate, r)?;
         match candidate {
             Some(c) if c.resolved_by == ResolvedBy::Framework => self.gate_framework_language(ctx, Some(c), r),
             other => self.gate_language_match(ctx, other, r),
@@ -5680,6 +5719,31 @@ impl Resolver {
         ext: &ExternalStrategies,
     ) -> Result<Option<Resolved>> {
         self.sync_memos(ctx);
+        // #1838: a C/C++ "call" whose name is a function-like macro visible
+        // in this translation unit is a macro expansion, not a call. The veto
+        // is computed in the TS precompute (cpp-macro-visibility walks the
+        // include timeline PER CALL SITE) and carried as a sentinel candidate
+        // under the ref's POSITION-keyed framework group — presence of the
+        // sentinel is the veto; the group is never resolved as framework
+        // candidates because this check runs before Strategy 1.
+        if (r.language == "c" || r.language == "cpp") && r.reference_kind == "calls" {
+            if let Some(cands) = ext.framework_results.get(&FwKey::of(r)) {
+                if cands.iter().any(|c| c.target_node_id == "cpp-macro-veto") {
+                    return Ok(None);
+                }
+            }
+        }
+        // #1839: a local C++ construction ref (`ns::T::T/<arity>`) resolves
+        // ONLY through the precomputed constructor match (import-table key);
+        // an absent entry is an ambiguous/aggregate construction — unresolved,
+        // never a fallthrough to the generic strategies. Mirrors
+        // resolveOneCoreUngated's ctor short-circuit.
+        if is_cpp_constructor_ref(r) {
+            return Ok(ext
+                .import_results
+                .get(&ImportKey::of(r))
+                .map(|t| Resolved::new(t.clone(), ResolvedBy::QualifiedName)));
+        }
         // Skip built-in/external references
         if self.is_built_in_or_external(ctx, r)? {
             return Ok(None);
