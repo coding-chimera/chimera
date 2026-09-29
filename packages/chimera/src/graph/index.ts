@@ -84,6 +84,7 @@ import {
   createResolver,
 } from './resolution';
 import type { ResolutionResult } from './resolution';
+import { hasSynthesisPattern } from './resolution/callback-synthesizer';
 import { GraphTraverser, GraphQueryManager } from './graph';
 import { ContextBuilder, createContextBuilder } from './context';
 import { Mutex, FileLock } from './utils';
@@ -1709,8 +1710,48 @@ export class CodeGraph {
       // earns the extraction-semantics stamp; a sync over existing content
       // must never stamp.
       const freshDatabase = this.queries.getFileCount() === 0;
+      // Synthesis-refresh trigger (upstream #2033, fork landing). An
+      // interrupted index may have absorbed its changed files before
+      // resolution/synthesis ran; the pending marker (set by migration v13,
+      // re-armed by every failed refresh) plus the orphan ref count catch
+      // that state BEFORE this sync adds refs of its own.
+      let refreshSynthesis = this.queries.getMetadata('synthesis_pending') === '1' ||
+        this.queries.getUnresolvedReferencesCount() > 0;
+      if (!refreshSynthesis) {
+        // A full reconcile learns WHICH files change only inside the
+        // orchestrator's scan, and the staleness predicates (synthesized
+        // edges touching a file, recorded synthesis inputs) must be read
+        // BEFORE re-extraction cascades the endpoint edges and the
+        // synthesis_inputs rows away. Replicate the orchestrator's cheap
+        // (size, mtime) pre-filter over the tracked set — the same candidate
+        // superset its own change detection uses — and check those.
+        for (const tracked of this.queries.getAllFiles()) {
+          let stat: fs.Stats | null = null;
+          try {
+            stat = fs.statSync(path.join(this.projectRoot, tracked.path));
+          } catch {
+            // Missing on disk — a removal candidate; check it pre-cascade.
+          }
+          if (stat && stat.size === tracked.size && Math.floor(stat.mtimeMs) === Math.floor(tracked.modifiedAt)) continue;
+          if (this.synthesisRefreshNeeded([tracked.path])) {
+            refreshSynthesis = true;
+            break;
+          }
+        }
+      }
+      if (refreshSynthesis) this.queries.setMetadata('synthesis_pending', '1');
       try {
         const result = await this.orchestrator.sync(onProgress);
+
+        // Added/modified files survive the sync on disk, so their NEW content
+        // can be pattern-gated after the fact: a wiring file that gained a
+        // registration needs a refresh even though no owned edge touched it
+        // before (upstream's onFileChange(filePath, content) case).
+        if (!refreshSynthesis && result.changedFilePaths &&
+          this.synthesisPatternInChanged(result.changedFilePaths)) {
+          refreshSynthesis = true;
+          this.queries.setMetadata('synthesis_pending', '1');
+        }
 
         if (result.filesAdded > 0 || result.filesModified > 0) {
           this.resolver.runPostExtract();
@@ -1740,7 +1781,7 @@ export class CodeGraph {
                 current,
                 total,
               });
-            });
+            }, !refreshSynthesis);
 
             // Retry previously-failed refs the changed files may now satisfy
             // (#1240). Scoped resolution above only re-resolves refs FROM the
@@ -1771,7 +1812,7 @@ export class CodeGraph {
                 current,
                 total,
               });
-            });
+            }, undefined, !refreshSynthesis);
           }
         }
 
@@ -1813,13 +1854,22 @@ export class CodeGraph {
           onProgress({ phase: 'resolving', current: 0, total: orphanCount });
           const recovery = await this.resolveReferencesBatched((current, total) => {
             onProgress({ phase: 'resolving', current, total });
-          });
+          }, undefined, !refreshSynthesis);
           result.pendingRefsProcessed = recovery.stats.total;
           result.pendingRefsResolved = recovery.stats.resolved;
           result.pendingRefsUnresolved = recovery.stats.unresolved;
         }
 
-        if (result.filesAdded > 0 || result.filesModified > 0 || result.filesRemoved > 0) {
+        // Replace the whole synthesis-owned edge set only after every base
+        // resolution pass above has finished (upstream #2033): the staged
+        // refresh reads the completed ordinary graph. A failure propagates
+        // with `synthesis_pending` still armed, so the next sync retries.
+        if (refreshSynthesis) {
+          this.resolver.refreshSynthesis(this.db.getPath());
+          this.queries.setMetadata('synthesis_pending', '0');
+        }
+
+        if (result.filesAdded > 0 || result.filesModified > 0 || result.filesRemoved > 0 || refreshSynthesis) {
           this.refreshFileSemantics(result.changedFilePaths ?? []);
           this.db.runMaintenance();
         } else if (orphanCount > 0) {
@@ -1852,6 +1902,40 @@ export class CodeGraph {
       } finally {
         this.fileLock.release();
       }
+  }
+
+  /**
+   * Pre-cascade synthesis trigger checks (upstream #2033's onFileChange
+   * predicate, fork landing in the sync driver): does any candidate file own
+   * a synthesized edge endpoint, host a recorded registration site, or hold
+   * a recorded synthesis source gate? Must run BEFORE a sync replaces or
+   * deletes the files — the deletion cascade takes the edges and the
+   * synthesis_inputs rows with it.
+   */
+  private synthesisRefreshNeeded(filePaths: string[]): boolean {
+    return filePaths.some((filePath) =>
+      this.queries.hasSynthesizedEdgesTouchingFile(filePath) ||
+      this.queries.wasSynthesisInput(filePath));
+  }
+
+  /**
+   * Content-pattern half of the trigger for files that survived the sync
+   * (added/modified): their NEW content can open a synthesis channel that
+   * no owned edge or input row announced. Conservative over-approximation —
+   * a false positive costs one extra whole-graph refresh.
+   */
+  private synthesisPatternInChanged(changedFilePaths: string[]): boolean {
+    for (const filePath of changedFilePaths) {
+      let content: string | null = null;
+      try {
+        content = fs.readFileSync(path.join(this.projectRoot, filePath), 'utf-8');
+      } catch {
+        // Not readable post-sync (raced removal) — the pre-cascade checks
+        // already had their turn on this path.
+      }
+      if (content !== null && hasSynthesisPattern(filePath, content)) return true;
+    }
+    return false;
   }
 
   /**
@@ -1927,6 +2011,33 @@ export class CodeGraph {
           ),
         ])]
           .filter((filePath) => !changedSet.has(filePath));
+        // Synthesis-refresh trigger (upstream #2033, fork landing). The
+        // scoped candidate set is known up front, so run the staleness
+        // predicates BEFORE the orchestrator replaces/deletes these files
+        // and cascades their endpoint edges and synthesis_inputs rows; the
+        // new content of an added/modified file is already on disk, so the
+        // pattern gate sees exactly what upstream's onFileChange callback
+        // saw. A deletion has no content arm — its edges/inputs verdicts are
+        // the pre-cascade reads.
+        let refreshSynthesis = this.queries.getMetadata('synthesis_pending') === '1' ||
+          this.queries.getUnresolvedReferencesCount() > 0;
+        if (!refreshSynthesis) {
+          for (const filePath of normalizedFilePaths) {
+            let content: string | undefined;
+            try {
+              content = fs.readFileSync(path.join(this.projectRoot, filePath), 'utf-8');
+            } catch {
+              // Removed — the pre-cascade edge/input checks below still see
+              // the rows the pending deletion cascade is about to take.
+            }
+            if (this.synthesisRefreshNeeded([filePath]) ||
+              (content !== undefined && hasSynthesisPattern(filePath, content))) {
+              refreshSynthesis = true;
+              break;
+            }
+          }
+        }
+        if (refreshSynthesis) this.queries.setMetadata('synthesis_pending', '1');
         const result = await this.orchestrator.syncFiles(filePaths, onProgress);
         const changed = result.filesAdded > 0 || result.filesModified > 0 || result.filesRemoved > 0;
 
@@ -1954,7 +2065,7 @@ export class CodeGraph {
               current,
               total,
             });
-          });
+          }, !refreshSynthesis);
 
           // Retry previously-failed refs the changed files may now satisfy
           // (#1240) — same rationale as the full-sync path.
@@ -1990,11 +2101,17 @@ export class CodeGraph {
               onProgress({ phase: 'resolving', current: 0, total: rebindPending });
               await this.resolveReferencesBatched((current, total) => {
                 onProgress({ phase: 'resolving', current, total });
-              });
+              }, undefined, !refreshSynthesis);
             }
           }
         }
-        if (result.filesAdded > 0 || result.filesModified > 0 || result.filesRemoved > 0) {
+        // Replace the whole synthesis-owned edge set only after every base
+        // resolution pass above has finished (upstream #2033).
+        if (refreshSynthesis) {
+          this.resolver.refreshSynthesis(this.db.getPath());
+          this.queries.setMetadata('synthesis_pending', '0');
+        }
+        if (result.filesAdded > 0 || result.filesModified > 0 || result.filesRemoved > 0 || refreshSynthesis) {
           this.refreshFileSemantics([...(result.changedFilePaths ?? []), ...(changed ? dependentFilePaths : [])]);
           this.db.runMaintenance();
         }
@@ -2202,9 +2319,10 @@ export class CodeGraph {
    */
   async resolveReferencesBatched(
     onProgress?: (current: number, total: number) => void,
-    walBackpressure?: () => Promise<void> | null
+    walBackpressure?: () => Promise<void> | null,
+    synthesize: boolean = true
   ): Promise<ResolutionResult> {
-    return this.resolver.resolveAndPersistBatched(onProgress, 5000, walBackpressure);
+    return this.resolver.resolveAndPersistBatched(onProgress, 5000, walBackpressure, 1000, synthesize);
   }
 
   /**

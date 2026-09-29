@@ -947,7 +947,7 @@ export class QueryBuilder {
   getNodesByFile(filePath: string): Node[] {
     if (!this.stmts.getNodesByFile) {
       this.stmts.getNodesByFile = this.db.prepare(
-        'SELECT * FROM nodes WHERE file_path = ? ORDER BY start_line'
+        'SELECT * FROM nodes WHERE file_path = ? ORDER BY start_line, id'
       );
     }
     const rows = this.stmts.getNodesByFile.all(filePath) as NodeRow[];
@@ -1142,7 +1142,7 @@ export class QueryBuilder {
   getNodesByName(name: string): Node[] {
     if (!this.stmts.getNodesByName) {
       this.stmts.getNodesByName = this.db.prepare(
-        'SELECT * FROM nodes WHERE name = ? ORDER BY file_path, start_line'
+        'SELECT * FROM nodes WHERE name = ? ORDER BY file_path, start_line, id'
       );
     }
     const rows = this.stmts.getNodesByName.all(name) as NodeRow[];
@@ -1155,7 +1155,7 @@ export class QueryBuilder {
   getNodesByQualifiedNameExact(qualifiedName: string): Node[] {
     if (!this.stmts.getNodesByQualifiedNameExact) {
       this.stmts.getNodesByQualifiedNameExact = this.db.prepare(
-        'SELECT * FROM nodes WHERE qualified_name = ?'
+        'SELECT * FROM nodes WHERE qualified_name = ? ORDER BY file_path, start_line, id'
       );
     }
     const rows = this.stmts.getNodesByQualifiedNameExact.all(qualifiedName) as NodeRow[];
@@ -1831,6 +1831,46 @@ export class QueryBuilder {
   // ===========================================================================
 
   /**
+   * Whether any synthesis-owned edge (metadata.synthesizedBy) touches a file,
+   * either through an endpoint node in it or through a registration site
+   * recorded in a third file (`registeredAt: '<file>:<line>'`). Must run
+   * BEFORE a sync replaces/deletes the file and cascades its endpoint edges
+   * (upstream #2033). The registeredAt range seek rides idx_edges_synthesis_site.
+   */
+  hasSynthesizedEdgesTouchingFile(filePath: string): boolean {
+    const owned = "json_extract(e.metadata, '$.synthesizedBy') IS NOT NULL";
+    for (const endpoint of ['source', 'target']) {
+      if (this.db.prepare(`SELECT 1 FROM nodes n JOIN edges e ON e.${endpoint} = n.id
+        WHERE n.file_path = ? AND ${owned} LIMIT 1`).get(filePath)) return true;
+    }
+    // Wiring often lives in a third file, with neither endpoint in it.
+    return !!this.db.prepare(`SELECT 1 FROM edges e WHERE ${owned}
+      AND json_extract(e.metadata, '$.registeredAt') >= ?
+      AND json_extract(e.metadata, '$.registeredAt') < ? LIMIT 1`
+    ).get(`${filePath}:`, `${filePath};`);
+  }
+
+  /** Whether the last synthesis pass recorded this file as a source gate (upstream #2033). */
+  wasSynthesisInput(filePath: string): boolean {
+    return !!this.db.prepare('SELECT 1 FROM synthesis_inputs WHERE file_path = ?').get(filePath);
+  }
+
+  /**
+   * Replace the whole synthesis-input gate set. Written by the synthesis pass
+   * tail (through the staging overlay on a refresh, direct on a full index);
+   * rows cascade away with their file so a deleted source keeps its verdict
+   * only until the sync that deletes it — which consults it BEFORE the cascade.
+   */
+  replaceSynthesisInputs(files: string[]): void {
+    this.uncoveredWrite('replaceSynthesisInputs');
+    this.db.transaction(() => {
+      this.db.exec('DELETE FROM synthesis_inputs');
+      const insert = this.db.prepare('INSERT INTO synthesis_inputs(file_path) VALUES (?)');
+      for (const file of files) insert.run(file);
+    })();
+  }
+
+  /**
    * Insert a new edge
    */
   insertEdge(edge: Edge): void {
@@ -1946,12 +1986,13 @@ export class QueryBuilder {
         params.push(provenance);
       }
 
+      sql += ' ORDER BY target, kind, line, col';
       const rows = this.db.prepare(sql).all(...params) as EdgeRow[];
       return rows.map(rowToEdge);
     }
 
     if (!this.stmts.getEdgesBySource) {
-      this.stmts.getEdgesBySource = this.db.prepare('SELECT * FROM edges WHERE source = ?');
+      this.stmts.getEdgesBySource = this.db.prepare('SELECT * FROM edges WHERE source = ? ORDER BY target, kind, line, col');
     }
     const rows = this.stmts.getEdgesBySource.all(sourceId) as EdgeRow[];
     return rows.map(rowToEdge);
@@ -1975,12 +2016,13 @@ export class QueryBuilder {
         params.push(provenance);
       }
 
+      sql += ' ORDER BY source, kind, line, col';
       const rows = this.db.prepare(sql).all(...params) as EdgeRow[];
       return rows.map(rowToEdge);
     }
 
     if (!this.stmts.getEdgesByTarget) {
-      this.stmts.getEdgesByTarget = this.db.prepare('SELECT * FROM edges WHERE target = ?');
+      this.stmts.getEdgesByTarget = this.db.prepare('SELECT * FROM edges WHERE target = ? ORDER BY source, kind, line, col');
     }
     const rows = this.stmts.getEdgesByTarget.all(targetId) as EdgeRow[];
     return rows.map(rowToEdge);
@@ -2130,10 +2172,15 @@ export class QueryBuilder {
    * Iterate all nodes of a specific kind via a streaming cursor — O(1) memory
    * vs. getNodesByKind's full materialization (upstream #610). Callers must
    * not mutate the same connection mid-iteration.
+   *
+   * Synthesis uses first/last-match precedence and caps: insertion order
+   * changes on sync. idx_nodes_kind (kind, file_path, start_line, id) streams
+   * this canonical order without materializing/sorting all of a large
+   * project's methods in memory (upstream #2033).
    */
   iterateNodesByKind(kind: NodeKind): IterableIterator<Node> {
     if (!this.stmts.iterateNodesByKind) {
-      this.stmts.iterateNodesByKind = this.db.prepare('SELECT * FROM nodes WHERE kind = ?');
+      this.stmts.iterateNodesByKind = this.db.prepare('SELECT * FROM nodes WHERE kind = ? ORDER BY file_path, start_line, id');
     }
     const stmt = this.stmts.iterateNodesByKind;
     return (function* () {

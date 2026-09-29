@@ -38,6 +38,7 @@ import {
 import { resolveViaImport, resolveJvmImport, extractImportMappings, extractReExports, loadCppIncludeDirs, resolveImportPath } from './import-resolver';
 import { detectFrameworks } from './frameworks';
 import { synthesizeCallbackEdges } from './callback-synthesizer';
+import { SynthesisStage } from '../db/synthesis-stage';
 import { loadProjectAliases, type AliasMap } from './path-aliases';
 import { loadGoModule, type GoModule } from './go-module';
 import { logDebug } from '../errors';
@@ -1326,7 +1327,8 @@ export class ReferenceResolver {
    */
   resolveAndPersist(
     unresolvedRefs: UnresolvedReference[],
-    onProgress?: (current: number, total: number) => void
+    onProgress?: (current: number, total: number) => void,
+    synthesize: boolean = true
   ): ResolutionResult {
     const result = this.resolveAll(unresolvedRefs, onProgress);
 
@@ -1344,11 +1346,16 @@ export class ReferenceResolver {
     // Scoped sync resolves only the changed files' refs, but dynamic-dispatch
     // edges can depend on unchanged neighbors (e.g. base method -> new override).
     // Re-run additive synthesis so syncFiles() reaches the same graph shape as
-    // full indexAll(). insertEdges() is idempotent.
-    try {
-      result.stats.byMethod['callback-synthesis'] = synthesizeCallbackEdges(this.queries, this.context);
-    } catch {
-      // synthesis is additive and optional; ignore failures
+    // full indexAll(). insertEdges() is idempotent. A sync that will run
+    // refreshSynthesis afterwards passes synthesize=false: the staged refresh
+    // replaces the whole owned set from a clean base, so the additive pass
+    // here would just compute the same edges twice (upstream #2033).
+    if (synthesize) {
+      try {
+        result.stats.byMethod['callback-synthesis'] = synthesizeCallbackEdges(this.queries, this.context);
+      } catch {
+        // synthesis is additive and optional; ignore failures
+      }
     }
 
     // Clean up resolved refs from unresolved_refs so metrics stay accurate.
@@ -1429,7 +1436,8 @@ export class ReferenceResolver {
     onProgress?: (current: number, total: number) => void,
     batchSize: number = 5000,
     walBackpressure?: () => Promise<void> | null,
-    persistenceChunkSize: number = 1000
+    persistenceChunkSize: number = 1000,
+    synthesize: boolean = true
   ): Promise<ResolutionResult> {
     if (!Number.isInteger(batchSize) || batchSize <= 0) {
       throw new RangeError('batchSize must be a positive integer');
@@ -1600,11 +1608,15 @@ export class ReferenceResolver {
     // Dynamic-edge synthesis: now that all base `calls` edges are persisted,
     // synthesize observer/callback dispatch edges (dispatcher → registered
     // callbacks) that static parsing leaves out. Best-effort — never fail the
-    // index on it. See docs/design/callback-edge-synthesis.md.
-    try {
-      aggregateStats.byMethod['callback-synthesis'] = synthesizeCallbackEdges(this.queries, this.context);
-    } catch {
-      // synthesis is additive and optional; ignore failures
+    // index on it. See docs/design/callback-edge-synthesis.md. A sync that
+    // will run refreshSynthesis afterwards passes synthesize=false (upstream
+    // #2033).
+    if (synthesize) {
+      try {
+        aggregateStats.byMethod['callback-synthesis'] = synthesizeCallbackEdges(this.queries, this.context);
+      } catch {
+        // synthesis is additive and optional; ignore failures
+      }
     }
 
     return {
@@ -1612,6 +1624,35 @@ export class ReferenceResolver {
       unresolved: [],
       stats: aggregateStats,
     };
+  }
+
+  /**
+   * Replace the whole synthesis-owned edge set (upstream #2033
+   * refreshSynthesis). Run ONLY after every base-resolution pass of a sync
+   * has finished: the staged passes recompute every channel from the
+   * ORDINARY base graph inside a private overlay connection, then publish()
+   * atomically swaps the owned set, so an incremental sync converges to the
+   * same synthesized edges a full rebuild produces — obsolete dispatch edges
+   * included, which the additive in-place pass can never remove.
+   *
+   * A fresh resolver over the stage's QueryBuilder gives the passes their own
+   * file/name caches bound to the overlay (no native ctx/resolve bridge: the
+   * stage connection carries no store bridge). Errors propagate: the OLD
+   * owned set survives a failed publish, and the caller leaves
+   * `synthesis_pending` armed so the next sync retries.
+   */
+  refreshSynthesis(dbPath: string): number {
+    this.clearCaches();
+    const stage = new SynthesisStage(dbPath);
+    try {
+      const fresh = new ReferenceResolver(this.projectRoot, stage.queries);
+      const count = synthesizeCallbackEdges(stage.queries, fresh.context);
+      stage.publish();
+      return count;
+    } finally {
+      stage.close();
+      this.clearCaches();
+    }
   }
 
 

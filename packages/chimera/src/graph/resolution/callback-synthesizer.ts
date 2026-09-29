@@ -1285,6 +1285,39 @@ function vuexDispatchEdges(ctx: ResolutionContext): Edge[] {
 }
 
 /**
+ * Conservative input gate over the fork's synthesis pass set; keep these in
+ * sync when adding a pass (upstream #2033). A missed pattern would leave
+ * stale synthesized edges after an incremental sync; a false positive only
+ * costs one extra whole-graph refresh, so the gate deliberately errs broad.
+ */
+export function hasSynthesisPattern(filePath: string, content: string): boolean {
+  // Markup files feed the vue-template, vue-router, sveltekit, jsx-render and
+  // mybatis passes: an edit there can change a channel whose endpoints live
+  // in other files.
+  if (/\.(?:vue|svelte|xml)$/i.test(filePath)) return true;
+  // Nominal-subtyping keywords gate the cpp-override / interface-impl passes.
+  if (/\b(?:class|interface|protocol|trait|impl|extends|implements)\b/.test(content)) return true;
+  // Go: declarations gate go-grpc-stub-impl; func receivers and registration
+  // calls gate gin-middleware-chain and method-channel pairing.
+  if (/\.go$/i.test(filePath) && /\b(?:struct|interface)\b|\bfunc\s*\(|Unimplemented\w*Server/.test(content)) return true;
+  // C-family: the override pass walks class/struct hierarchies.
+  if (/\.(?:c|h|cc|cpp|cxx|hpp|hh|hxx|m|mm)$/i.test(filePath) &&
+    /\b(?:class|struct|virtual|override)\b|#\s*(?:include|define)/.test(content)) return true;
+  // Component/store/render words: react-render, flutter-build, vuex-dispatch,
+  // fabric-native-impl, rn-event-channel, and the markup link passes.
+  if (/\b(?:render|build|setState|defineStore|createStore|Vuex|codegenNativeComponent|sendEventWithName|sendEvent|href)\b|<\/|\/>/.test(content)) return true;
+  // Registration/dispatch call shapes: field channels, closure collections,
+  // event emitters, gin route registration.
+  if (/\.(?:forEach|append|add|push|insert|write|fire|emit|dispatchEvent|addListener|on|once|Use|GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD|Any|Handle)\s*[{(]/.test(content)) return true;
+  if (/\b(?:dispatch|commit)\s*\(/.test(content)) return true;
+  // Field-backed observers pair by METHOD-NAME gates rather than fixed call
+  // shapes, so scan identifiers against the same two name patterns.
+  return (content.match(/[A-Za-z_$][\w$]*/g) ?? []).some(
+    (name) => REGISTRAR_NAME.test(name) || DISPATCHER_NAME.test(name)
+  );
+}
+
+/**
  * Synthesize dispatcher→callback edges (field observers + EventEmitters +
  * React re-render + JSX children + Vue templates + RN event channel +
  * Fabric native-impl + MyBatis Java↔XML + Gin middleware chain + Vuex string
@@ -1345,5 +1378,16 @@ export function synthesizeCallbackEdges(queries: QueryBuilder, ctx: ResolutionCo
     merged.push(e);
   }
   if (merged.length > 0) queries.insertEdges(merged);
+  // Remember source gates, including inputs that currently produce NO edges
+  // (e.g. an over-cap channel): deleting one may make a full pass viable
+  // again, so the sync-time refresh trigger must know about it (upstream
+  // #2033). On a staged refresh this writes the overlay's TEMP table and
+  // lands in main at publish.
+  const inputs: string[] = [];
+  for (const file of ctx.getAllFiles()) {
+    const content = ctx.readFile(file);
+    if (content !== null && hasSynthesisPattern(file, content)) inputs.push(file);
+  }
+  queries.replaceSynthesisInputs(inputs);
   return merged.length;
 }

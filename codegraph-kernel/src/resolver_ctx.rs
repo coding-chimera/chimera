@@ -98,12 +98,16 @@
 //!
 //! # Parity notes (TS source of truth)
 //!
-//! - getNodesByName: `ORDER BY file_path, start_line` — LOAD-BEARING (CG-33,
-//!   queries.ts:1135-1143); same-name candidate arbitration binds to the
-//!   first row. SQL is verbatim so the bundled SQLite sorts identically.
-//! - getNodesByFile: `ORDER BY start_line`; by-qualified-name / lower-name /
-//!   kind have NO ORDER BY (verbatim SQL — tie order is the same SQLite scan
-//!   order the bun:sqlite/node:sqlite arms produce).
+//! - getNodesByName: `ORDER BY file_path, start_line, id` — LOAD-BEARING
+//!   (CG-33, queries.ts); same-name candidate arbitration binds to the first
+//!   row, and the `id` tail makes the order total so an incremental sync
+//!   converges to a rebuild (upstream #2033). SQL is verbatim so the bundled
+//!   SQLite sorts identically.
+//! - getNodesByFile: `ORDER BY start_line, id`; by-qualified-name and kind
+//!   carry `ORDER BY file_path, start_line, id` (canonical synthesis traversal
+//!   order, upstream #2033); lower-name has NO ORDER BY (verbatim SQL — tie
+//!   order is the same SQLite scan order the bun:sqlite/node:sqlite arms
+//!   produce).
 //! - getNodesByLowerName: `lower(name) = lower(?)` — SQLite's ASCII-only
 //!   lower() on BOTH sides (queries.ts:1172-1180 hardening), not Rust-side
 //!   Unicode folding.
@@ -706,16 +710,19 @@ macro_rules! select_nodes {
     };
 }
 
-/// getNodesByName — queries.ts:1135-1143. ORDER BY IS LOAD-BEARING (CG-33).
-const SQL_BY_NAME: &str = select_nodes!("WHERE name = ?1 ORDER BY file_path, start_line");
-/// getNodesByFile — queries.ts:940-948.
-const SQL_BY_FILE: &str = select_nodes!("WHERE file_path = ?1 ORDER BY start_line");
-/// getNodesByQualifiedNameExact — queries.ts:1148-1156 (NO ORDER BY).
-const SQL_BY_QUALIFIED_NAME: &str = select_nodes!("WHERE qualified_name = ?1");
+/// getNodesByName — queries.ts. ORDER BY IS LOAD-BEARING (CG-33); the `id`
+/// tail makes it total (upstream #2033).
+const SQL_BY_NAME: &str = select_nodes!("WHERE name = ?1 ORDER BY file_path, start_line, id");
+/// getNodesByFile — queries.ts (`id` tail: upstream #2033).
+const SQL_BY_FILE: &str = select_nodes!("WHERE file_path = ?1 ORDER BY start_line, id");
+/// getNodesByQualifiedNameExact — queries.ts (canonical order: upstream #2033).
+const SQL_BY_QUALIFIED_NAME: &str =
+    select_nodes!("WHERE qualified_name = ?1 ORDER BY file_path, start_line, id");
 /// getNodesByLowerName — queries.ts:1172-1180 (SQLite ASCII lower() both sides).
 const SQL_BY_LOWER_NAME: &str = select_nodes!("WHERE lower(name) = lower(?1)");
-/// iterateNodesByKind — queries.ts:2126-2130 (NO ORDER BY).
-const SQL_BY_KIND: &str = select_nodes!("WHERE kind = ?1");
+/// iterateNodesByKind — queries.ts (canonical order streamed out of the
+/// composite idx_nodes_kind: upstream #2033).
+const SQL_BY_KIND: &str = select_nodes!("WHERE kind = ?1 ORDER BY file_path, start_line, id");
 /// getNodeById — queries.ts:790-811.
 const SQL_BY_ID: &str = select_nodes!("WHERE id = ?1");
 /// getAllFilePaths — queries.ts:2373-2377.
@@ -1061,12 +1068,12 @@ impl CtxConn {
         Ok(rows)
     }
 
-    /// getNodesByName single key — `ORDER BY file_path, start_line` (CG-33).
+    /// getNodesByName single key — `ORDER BY file_path, start_line, id` (CG-33).
     pub(crate) fn nodes_by_name(&mut self, name: &str) -> Result<Vec<CtxNode>> {
         self.nodes_single(name, NodeQuery::ByName)
     }
 
-    /// getNodesByQualifiedNameExact single key (NO ORDER BY).
+    /// getNodesByQualifiedNameExact single key — canonical order (upstream #2033).
     pub(crate) fn nodes_by_qualified_name(&mut self, qn: &str) -> Result<Vec<CtxNode>> {
         self.nodes_single(qn, NodeQuery::ByQualifiedName)
     }
@@ -1076,7 +1083,7 @@ impl CtxConn {
         self.nodes_single(name, NodeQuery::ByLowerName)
     }
 
-    /// getNodesByFile single key — `ORDER BY start_line`.
+    /// getNodesByFile single key — `ORDER BY start_line, id`.
     pub(crate) fn nodes_in_file(&mut self, file_path: &str) -> Result<Vec<CtxNode>> {
         self.nodes_single(file_path, NodeQuery::InFile)
     }
@@ -1512,8 +1519,8 @@ impl NodeQuery {
 }
 
 /// Shared batch core — ONE encoded group per key, REQUEST ORDER, each group
-/// in its SQL's row order (getNodesByName: ORDER BY file_path, start_line —
-/// CG-33 load-bearing).
+/// in its SQL's row order (getNodesByName: ORDER BY file_path, start_line, id
+/// — CG-33 load-bearing).
 fn nodes_batch_core(c: &mut CtxConn, keys: &[String], q: NodeQuery) -> Result<Vec<u8>> {
     c.refresh()?;
     let mut groups = Vec::with_capacity(keys.len());
@@ -1635,15 +1642,15 @@ fn re_exports_core(c: &mut CtxConn, paths: &[String], languages: &[String]) -> R
 // libnode symbols a test executable cannot resolve).
 
 /// Batch getNodesByName — ONE group per requested name, REQUEST ORDER, each
-/// group `ORDER BY file_path, start_line` (CG-33 load-bearing). Backed by the
-/// nameCache LRU.
+/// group `ORDER BY file_path, start_line, id` (CG-33 load-bearing; `id` tail
+/// per upstream #2033). Backed by the nameCache LRU.
 #[napi]
 pub fn ctx_get_nodes_by_names(handle: &CtxHandle, names: Vec<String>) -> Result<CtxNodesOut> {
     handle.with(|c| split_nodes(nodes_batch_core(c, &names, NodeQuery::ByName)?))
 }
 
-/// Batch getNodesByQualifiedName (qualifiedNameCache LRU; NO ORDER BY —
-/// queries.ts parity).
+/// Batch getNodesByQualifiedName (qualifiedNameCache LRU; canonical order —
+/// queries.ts parity, upstream #2033).
 #[napi]
 pub fn ctx_get_nodes_by_qualified_names(handle: &CtxHandle, qualified_names: Vec<String>) -> Result<CtxNodesOut> {
     handle.with(|c| split_nodes(nodes_batch_core(c, &qualified_names, NodeQuery::ByQualifiedName)?))
@@ -1656,7 +1663,7 @@ pub fn ctx_get_nodes_by_lower_names(handle: &CtxHandle, names: Vec<String>) -> R
     handle.with(|c| split_nodes(nodes_batch_core(c, &names, NodeQuery::ByLowerName)?))
 }
 
-/// Batch getNodesInFile (nodeCache LRU; `ORDER BY start_line`).
+/// Batch getNodesInFile (nodeCache LRU; `ORDER BY start_line, id`).
 #[napi]
 pub fn ctx_get_nodes_in_files(handle: &CtxHandle, file_paths: Vec<String>) -> Result<CtxNodesOut> {
     handle.with(|c| split_nodes(nodes_batch_core(c, &file_paths, NodeQuery::InFile)?))
@@ -2265,13 +2272,13 @@ mod tests {
         drop(conn);
 
         let t = TCtx::open(&env);
-        // getNodesInFile: ORDER BY start_line.
+        // getNodesInFile: ORDER BY start_line, id.
         let wire = nodes_batch_core(&mut t.c(), &["a.ts".to_string()], NodeQuery::InFile).unwrap();
         let decoded = decode_nodes(&wire);
         let ids: Vec<&str> = decoded.iter().map(|n| n.id.as_str()).collect();
         assert_eq!(ids, ["function:l3", "function:l5", "function:l7"]);
 
-        // getNodesByQualifiedName: exact match, no ORDER BY.
+        // getNodesByQualifiedName: exact match, canonical order (upstream #2033).
         let wire = nodes_batch_core(&mut t.c(), &["m.five".to_string(), "m.none".to_string()], NodeQuery::ByQualifiedName).unwrap();
         assert_eq!(groups_of(&wire, CTX_NODES_HEADER_SIZE), vec![(0, 1), (1, 1)]);
         assert_eq!(decode_nodes(&wire)[0].id, "function:l5");
@@ -2283,7 +2290,8 @@ mod tests {
         assert_eq!(nodes.len(), 2);
         assert!(nodes.iter().all(|n| n.id == "class:c1"));
 
-        // getNodesByKind: full scan, uncached (TS parity :302-304).
+        // getNodesByKind: full scan, uncached (TS parity :302-304), canonical
+        // order out of the composite idx_nodes_kind (upstream #2033).
         let wire = nodes_by_kind_core(&mut t.c(), "function").unwrap();
         let mut ids: Vec<String> = decode_nodes(&wire).iter().map(|n| n.id.clone()).collect();
         ids.sort();
