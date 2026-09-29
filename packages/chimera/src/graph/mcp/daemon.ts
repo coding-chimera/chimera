@@ -95,6 +95,10 @@ export interface DaemonStartResult {
  */
 export class Daemon {
   private server: net.Server | null = null;
+  // Includes sockets accepted but not yet registered as sessions.
+  // server.close() waits for these too, so stop() must destroy them or
+  // shutdown hangs on a pending connection (upstream #1963/#2042).
+  private acceptedSockets = new Set<net.Socket>();
   private clients = new Set<MCPSession>();
   private idleTimer: NodeJS.Timeout | null = null;
   private idleTimeoutMs: number;
@@ -202,6 +206,8 @@ export class Daemon {
       try { session.stop(); } catch { /* best-effort */ }
     }
     this.clients.clear();
+    for (const socket of this.acceptedSockets) socket.destroy();
+    this.acceptedSockets.clear();
     if (this.server) {
       await new Promise<void>((resolve) => this.server!.close(() => resolve()));
       this.server = null;
@@ -215,6 +221,11 @@ export class Daemon {
   }
 
   private handleConnection(socket: net.Socket): void {
+    // A connection accepted mid-shutdown would register a phantom session
+    // after stop() cleared the set (upstream #1963/#2042).
+    if (this.stopping) { socket.destroy(); return; }
+    this.acceptedSockets.add(socket);
+    socket.once('close', () => this.acceptedSockets.delete(socket));
     // Hello first so the proxy can verify versions before piping any
     // application bytes. The proxy reads exactly one line, then forwards.
     const hello: DaemonHello = {

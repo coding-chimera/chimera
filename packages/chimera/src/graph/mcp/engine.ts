@@ -27,6 +27,13 @@ const loadCodeGraph = (): typeof import('../index').default =>
 
 export interface MCPEngineOptions {
   /**
+   * Serve existing index contents without syncing, watching, or claiming a
+   * writer slot (upstream #1963/#2042). Used by the in-process fallback when
+   * another live process owns updates: reads still work over the same WAL,
+   * but nothing writes.
+   */
+  readOnly?: boolean;
+  /**
    * Whether to start the file watcher when initializing. Daemon and direct
    * modes both want this true; tests may set it false to keep the engine
    * cheap. Honors {@link watchDisabledReason} regardless.
@@ -64,7 +71,7 @@ export class MCPEngine {
   private closed = false;
 
   constructor(opts: MCPEngineOptions = {}) {
-    this.opts = { watch: opts.watch ?? true };
+    this.opts = { readOnly: opts.readOnly ?? false, watch: opts.watch ?? true };
     this.toolHandler = new ToolHandler(null);
     // A tool call found the default project's database replaced on disk (a
     // rebuild) and reopened it (upstream #1902/#1917). Reconcile the new file
@@ -75,7 +82,7 @@ export class MCPEngine {
     this.toolHandler.setOnDatabaseReopened((cg) => {
       if (cg === this.cg && cg.isWatching()) this.catchUpSync();
     });
-    if (opts.writerLockRoot) {
+    if (opts.writerLockRoot && !this.opts.readOnly) {
       const writer = tryAcquireWriterLock(opts.writerLockRoot, 'fallback');
       if (writer.kind === 'taken') {
         throw new Error(writerLockHeldMessage(writer.existing, writer.pidPath));
@@ -155,7 +162,7 @@ export class MCPEngine {
         try { this.cg.close(); } catch { /* ignore */ }
         this.cg = null;
       }
-      this.cg = loadCodeGraph().openSync(resolvedRoot);
+      this.cg = loadCodeGraph().openSync(resolvedRoot, { readOnly: this.opts.readOnly });
       this.projectPath = resolvedRoot;
       this.toolHandler.setDefaultCodeGraph(this.cg);
       this.startWatching();
@@ -195,7 +202,7 @@ this.toolHandler.closeAll();
 
     this.projectPath = resolvedRoot;
     try {
-      this.cg = await loadCodeGraph().open(resolvedRoot);
+      this.cg = await loadCodeGraph().open(resolvedRoot, { readOnly: this.opts.readOnly });
       this.toolHandler.setDefaultCodeGraph(this.cg);
       this.startWatching();
       this.catchUpSync();
@@ -213,7 +220,7 @@ this.toolHandler.closeAll();
    * keep working.
    */
   private startWatching(): void {
-    if (!this.cg || this.watcherStarted || !this.opts.watch) return;
+    if (this.opts.readOnly || !this.cg || this.watcherStarted || !this.opts.watch) return;
 
     // #1740: only one live watcher/writer per project. Daemon and direct
     // mode usually already hold writer.pid (the acquire is re-entrant for
@@ -289,7 +296,7 @@ this.toolHandler.closeAll();
    */
   private catchUpSync(): void {
     const cg = this.cg;
-    if (!cg) return;
+    if (!cg || this.opts.readOnly) return;
     const p = cg
       .sync()
       .then((result) => {

@@ -49,7 +49,6 @@ import {
 } from './daemon';
 import { connectWithHello, runLocalHandshakeProxy } from './proxy';
 import {
-  getWriterPidPath,
   readWriterLock,
   releaseWriterLock,
   tryAcquireWriterLock,
@@ -206,11 +205,22 @@ function spawnDetachedDaemon(root: string): void {
 }
 
 /**
- * Create the proxy's in-process fallback engine only when it cannot conflict
- * with a live writer (fork adaptation of upstream 1e4612375's
- * makeFallbackEngine; the fork has no socket-hello identity probe, so PID
- * liveness is the whole test — and it fails CLOSED, preserving the live
- * holder instead of risking two watchers/writers on one project).
+ * A fallback that serves reads without a watcher or a writer lock (upstream
+ * #1963/#2042). Say so on stderr: otherwise a session that quietly stopped
+ * syncing looks the same as a healthy one in the logs.
+ */
+function readOnlyFallback(holder: string): MCPEngine {
+  process.stderr.write(`[CodeGraph MCP] Serving reads in-process without auto-sync: ${holder}.\n`);
+  return new MCPEngine({ readOnly: true });
+}
+
+/**
+ * Create the proxy's in-process fallback engine (fork adaptation of upstream
+ * 1e4612375's makeFallbackEngine). When another live process owns the project
+ * lock or the writer slot, the fallback no longer refuses outright: it serves
+ * READ-ONLY queries over the same WAL without claiming a second writer or
+ * starting a watcher (upstream #1963/#2042). Only an unreadable lock file
+ * still fails closed.
  */
 function makeFallbackEngine(root: string): MCPEngine {
   let existing: DaemonLockInfo | null = null;
@@ -223,17 +233,15 @@ function makeFallbackEngine(root: string): MCPEngine {
     }
   }
   if (existing && existing.pid > 0 && isProcessAlive(existing.pid)) {
-    // Alive and holding the project lock: either serving or mid-bind (the
-    // daemon claims daemon.pid, then writer.pid, then binds). A fallback
-    // engine here would open a second watcher the instant the daemon is
-    // merely slow — refuse and let the tool-call error carry guidance.
-    throw new Error(
-      `Cannot start an in-process fallback while live daemon pid ${existing.pid} holds the project lock.`
-    );
+    // Alive and holding the project lock: that process keeps syncing; this
+    // fallback may still serve read-only WAL queries (#1963).
+    return readOnlyFallback(`live daemon PID ${existing.pid} holds the project lock`);
   }
   const writer = readWriterLock(root);
   if (writer && writer.pid > 0 && writer.pid !== process.pid && isProcessAlive(writer.pid)) {
-    throw new Error(writerLockHeldMessage(writer, getWriterPidPath(root)));
+    // Another process owns updates. A fallback may still serve read-only WAL
+    // queries without claiming a second writer or starting a watcher (#1963).
+    return readOnlyFallback(`writer lock held by PID ${writer.pid} (${writer.mode} mode)`);
   }
   return new MCPEngine({ writerLockRoot: root });
 }

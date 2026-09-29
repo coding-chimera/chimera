@@ -1269,7 +1269,7 @@ export class CodeGraph {
   /**
    * Open synchronously (without sync)
    */
-  static openSync(projectRoot: string): CodeGraph {
+  static openSync(projectRoot: string, options: Pick<OpenOptions, 'readOnly'> = {}): CodeGraph {
     const resolvedRoot = path.resolve(projectRoot);
 
     // Check if initialized
@@ -1277,15 +1277,16 @@ export class CodeGraph {
       throw new Error(`Chimera not initialized in ${resolvedRoot}. Run init() first.`);
     }
 
-    // Validate directory structure
-    const validation = validateDirectory(resolvedRoot);
+    // Validate directory structure. A read-only open must not repair
+    // anything (upstream #1963/#2042).
+    const validation = validateDirectory(resolvedRoot, { repair: !options.readOnly });
     if (!validation.valid) {
       throw new Error(`Invalid Chimera graph data directory: ${validation.errors.join(', ')}`);
     }
 
     const dbPath = getDatabasePath(resolvedRoot);
-    const db = DatabaseConnection.open(dbPath);
-    const queries = new QueryBuilder(db.getDb(), openStoreBridge(dbPath, false));
+    const db = DatabaseConnection.open(dbPath, { readOnly: options.readOnly });
+    const queries = new QueryBuilder(db.getDb(), openStoreBridge(dbPath, options.readOnly));
 
     return new CodeGraph(db, queries, resolvedRoot);
   }
