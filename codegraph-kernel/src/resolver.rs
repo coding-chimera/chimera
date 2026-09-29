@@ -175,6 +175,36 @@ fn js_built_ins() -> &'static HashSet<&'static str> {
     })
 }
 
+/// Method names that require receiver evidence before linking to project
+/// code (js-builtins.ts JS_BUILTIN_METHODS, upstream #1987).
+fn js_builtin_methods() -> &'static HashSet<&'static str> {
+    static T: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    T.get_or_init(|| {
+        set(&[
+            // Array / typed arrays and collections.
+            "at", "concat", "copyWithin", "entries", "every", "fill", "filter", "find",
+            "findIndex", "findLast", "findLastIndex", "flat", "flatMap", "forEach",
+            "includes", "indexOf", "join", "keys", "lastIndexOf", "map", "pop", "push",
+            "reduce", "reduceRight", "reverse", "shift", "slice", "some", "sort", "splice",
+            "toReversed", "toSorted", "toSpliced", "unshift", "values", "with", "subarray",
+            "get", "set", "has", "add", "delete", "clear",
+            // String.
+            "charAt", "charCodeAt", "codePointAt", "endsWith", "localeCompare", "match",
+            "matchAll", "normalize", "padEnd", "padStart", "repeat", "replace", "replaceAll",
+            "search", "split", "startsWith", "substring", "substr", "toLowerCase",
+            "toUpperCase", "toLocaleLowerCase", "toLocaleUpperCase", "trim", "trimStart",
+            "trimEnd", "trimLeft", "trimRight", "toString", "toLocaleString", "valueOf",
+            // Promise, Function, EventTarget / EventEmitter and iterators.
+            "then", "catch", "finally", "call", "apply", "bind",
+            "addEventListener", "removeEventListener", "dispatchEvent", "on", "once",
+            "off", "emit", "addListener", "removeListener", "removeAllListeners",
+            "prependListener", "prependOnceListener", "listeners", "rawListeners",
+            "listenerCount", "eventNames", "setMaxListeners", "getMaxListeners",
+            "next", "return", "throw", "drop", "take", "toArray",
+        ])
+    })
+}
+
 fn ts_primitive_types() -> &'static HashSet<&'static str> {
     static T: OnceLock<HashSet<&'static str>> = OnceLock::new();
     T.get_or_init(|| {
@@ -2980,21 +3010,24 @@ impl Resolver {
             .collect();
         let field_esc = regex::escape(field);
         // Tried in order: typeof-value, declared type, `= new` initializer.
+        // The leading `(?:^|[^\w$#])` is the regex-crate spelling of the wasm
+        // arm's `(?<![\w$#])` lookbehind (#1987): a word boundary cannot open a
+        // private name, and a public `items` must not match `#items`.
         let patterns: Vec<(Regex, bool)> = vec![
             (
                 dyn_re(&format!(
-                    "\\b{field_esc}\\b{S}*[?!]?{S}*:{S}*(?:readonly{S}+)?typeof{S}+([A-Za-z_$][0-9A-Za-z_.$]*)"
+                    "(?:^|[^\\w$#]){field_esc}\\b{S}*[?!]?{S}*:{S}*(?:readonly{S}+)?typeof{S}+([A-Za-z_$][0-9A-Za-z_.$]*)"
                 )),
                 true,
             ),
             (
                 dyn_re(&format!(
-                    "\\b{field_esc}\\b{S}*[?!]?{S}*:{S}*(?:readonly{S}+)?([A-Za-z_$][0-9A-Za-z_.$]*)"
+                    "(?:^|[^\\w$#]){field_esc}\\b{S}*[?!]?{S}*:{S}*(?:readonly{S}+)?([A-Za-z_$][0-9A-Za-z_.$]*)"
                 )),
                 false,
             ),
             (
-                dyn_re(&format!("\\b{field_esc}\\b{S}*={S}*new{S}+([A-Za-z_$][0-9A-Za-z_.$]*)")),
+                dyn_re(&format!("(?:^|[^\\w$#]){field_esc}\\b{S}*={S}*new{S}+([A-Za-z_$][0-9A-Za-z_.$]*)")),
                 false,
             ),
         ];
@@ -4173,6 +4206,21 @@ impl Resolver {
         });
         let colon_match = colon_re.captures(&r.reference_name);
         let dot_match_used = dot_match.is_some();
+        // A TS/JS call through an ES private field of the enclosing class —
+        // `this.#items.add()`, emitted as `this.#items.add` (#1987) — resolves
+        // exactly like `this.<field>` (#1496). `#` is outside dot_re's receiver
+        // class, so the shape is matched here.
+        if matches!(r.language.as_str(), "typescript" | "javascript" | "tsx" | "jsx") {
+            let pf_re = dyn_re("^this\\.(#[0-9A-Za-z_$]+)\\.([0-9A-Za-z_]+)$");
+            if let Some(pf) = pf_re.captures(&r.reference_name) {
+                return self.match_ts_this_field_call(
+                    ctx,
+                    pf.get(1).map(|x| x.as_str()).unwrap_or(""),
+                    pf.get(2).map(|x| x.as_str()).unwrap_or(""),
+                    r,
+                );
+            }
+        }
         let Some(m) = dot_match.or(colon_match) else {
             return Ok(None);
         };
@@ -4291,6 +4339,20 @@ impl Resolver {
                     return Ok(Some(Resolved::new(mn.id.clone(), ResolvedBy::QualifiedName)));
                 }
             }
+        }
+
+        // Built-in method names need a validated receiver (#1987). Typed,
+        // imported, object-literal and direct class receivers have had their
+        // chance above; capitalization, word overlap or a unique method name
+        // are not evidence that `list.map()` / `cache.get()` calls a project
+        // class. Mirrors name-matcher.ts's JS_BUILTIN_METHODS veto.
+        if r.reference_kind == "calls"
+            && js_family(&r.language)
+            && object_or_class != "this"
+            && object_or_class != "super"
+            && js_builtin_methods().contains(method_name)
+        {
+            return Ok(None);
         }
 
         // Strategy 2: capitalized receiver ("permissionEngine" → "PermissionEngine").
@@ -5395,6 +5457,7 @@ fn builtins_version() -> String {
         let mut names: BTreeSet<&str> = BTreeSet::new();
         for t in [
             js_built_ins(),
+            js_builtin_methods(),
             ts_primitive_types(),
             react_hooks(),
             python_built_ins(),
