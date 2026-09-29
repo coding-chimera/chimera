@@ -12,6 +12,7 @@ import { CodeGraph } from '../../src/graph';
 import { extractFromSource, scanDirectory } from '../../src/graph/extraction';
 import { detectLanguage, isLanguageSupported, getSupportedLanguages, initGrammars, loadAllGrammars } from '../../src/graph/extraction/grammars';
 import { normalizePath } from '../../src/graph/utils';
+import { generateNodeId } from '../../src/graph/extraction/tree-sitter-helpers';
 import { clearProjectConfigCache } from '../../src/graph/config';
 
 // wasm-arm iron-rule proof: this suite asserts tree-sitter(wasm) extraction
@@ -45,6 +46,81 @@ function cleanupTempDir(dir: string): void {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
+
+describe('same-line node identity (#1349)', () => {
+  let dir: string;
+  let cg: CodeGraph | undefined;
+  let kernel: string | undefined;
+
+  beforeEach(() => {
+    dir = createTempDir();
+    kernel = process.env.CODEGRAPH_KERNEL;
+  });
+
+  afterEach(() => {
+    cg?.destroy();
+    cg = undefined;
+    cleanupTempDir(dir);
+    if (kernel === undefined) delete process.env.CODEGRAPH_KERNEL;
+    else process.env.CODEGRAPH_KERNEL = kernel;
+  });
+
+  it.each(['default', 'wasm'])('persists both accessors and their separate call edges (%s)', async (backend) => {
+    if (backend === 'wasm') process.env.CODEGRAPH_KERNEL = '0';
+    else delete process.env.CODEGRAPH_KERNEL;
+    fs.writeFileSync(path.join(dir, 'point.ts'), [
+      'function read() { return 1; } function write(v: number) {}',
+      'export class Point { /* é😀 */ get x() { return read(); } set x(v: number) { write(v); }',
+      '  get y() { return read(); }',
+      '  set y(v: number) { write(v); }',
+      '}',
+    ].join('\n'));
+    // Fork adaptation: initSync takes no options object; the temp dir holds
+    // only the test file, so no include/exclude config is needed.
+    cg = CodeGraph.initSync(dir);
+    await cg.indexAll();
+    cg.resolveReferences();
+    const nodes = cg.getNodesInFile('point.ts');
+    const x = nodes.filter((n) => n.name === 'x').sort((a, b) => a.startColumn - b.startColumn);
+    expect(x).toHaveLength(2);
+    expect(new Set(nodes.map((n) => n.id)).size).toBe(nodes.length);
+    expect(nodes.filter((n) => n.name === 'y')).toHaveLength(2);
+    expect(x[0]!.id).toBe(generateNodeId('point.ts', 'method', 'x', 2));
+    expect(x[1]!.id).toBe(`${x[0]!.id}:${x[1]!.startColumn}`);
+    const cls = nodes.find((n) => n.name === 'Point')!;
+    for (const accessor of x) {
+      expect(cg!.getIncomingEdges(accessor.id)).toContainEqual(expect.objectContaining({ source: cls.id, kind: 'contains' }));
+    }
+    expect(cg.getCallees(x[0]!.id).map((c) => c.node.name)).toEqual(['read']);
+    expect(cg.getCallees(x[1]!.id).map((c) => c.node.name)).toEqual(['write']);
+    for (const node of nodes.filter((n) => n.name !== 'x' && n.kind !== 'file')) {
+      expect(node.id).toBe(generateNodeId(node.filePath, node.kind, node.name, node.startLine));
+    }
+  });
+
+  // Fork adaptation: the upstream Service.cfc case is dropped — the fork does
+  // not ship tree-sitter-cfml.wasm in src/graph/extraction/wasm/, so CFML
+  // extraction is unavailable in fork tests (cfml-extractor.ts still carries
+  // the identical NodeIdAllocator change for when the grammar is present).
+  it.each([
+    ['template.liquid', 'é😀 {% render "x" %}{% render "x" %}{% assign v = 1 %}{% assign v = 2 %}', 'component'],
+  ] as const)('persists repeated same-line declarations in %s', async (file, source, kind) => {
+    fs.writeFileSync(path.join(dir, file), source);
+    cg = CodeGraph.initSync(dir);
+    await cg.indexAll();
+    const nodes = cg.getNodesInFile(file);
+    const xs = nodes.filter((n) => n.name === 'x' && n.kind === kind);
+    expect(xs).toHaveLength(2);
+    expect(new Set(xs.map((n) => n.id)).size).toBe(2);
+    for (const node of xs) {
+      expect(cg!.getIncomingEdges(node.id).some((e) => e.kind === 'contains')).toBe(true);
+    }
+    if (file.endsWith('.liquid')) {
+      expect(nodes.filter((n) => n.kind === 'import' && n.name === 'x')).toHaveLength(2);
+      expect(nodes.filter((n) => n.name === 'v')).toHaveLength(2);
+    }
+  });
+});
 
 describe('Language Detection', () => {
   it('should detect TypeScript files', () => {
