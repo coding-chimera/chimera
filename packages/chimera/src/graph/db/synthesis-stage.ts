@@ -36,8 +36,10 @@ import { createDatabase, type SqliteDatabase } from './sqlite-adapter';
 import { QueryBuilder } from './queries';
 
 // Ownership is independent of provenance: a structural synthesized edge may
-// carry no provenance stamp.
-export const SYNTHESIZED_EDGE = "json_extract(metadata, '$.synthesizedBy') IS NOT NULL";
+// carry no provenance stamp. CASE short-circuits malformed metadata JSON so a
+// broken row can never throw inside the overlay view/trigger or the publish
+// DELETE (upstream #2038).
+export const SYNTHESIZED_EDGE = "CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.synthesizedBy') END IS NOT NULL";
 
 /** A private edge overlay: passes see base edges plus their own new edges. */
 export class SynthesisStage {

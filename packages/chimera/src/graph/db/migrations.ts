@@ -10,7 +10,7 @@ import { buildSearchText } from '../search/query-utils';
 /**
  * Current schema version
  */
-export const CURRENT_SCHEMA_VERSION = 13;
+export const CURRENT_SCHEMA_VERSION = 14;
 
 /**
  * Migration definition
@@ -303,10 +303,32 @@ const migrations: Migration[] = [
         CREATE TABLE IF NOT EXISTS synthesis_inputs (
           file_path TEXT PRIMARY KEY REFERENCES files(path) ON DELETE CASCADE
         );
-        CREATE INDEX IF NOT EXISTS idx_edges_synthesis_site ON edges(json_extract(metadata, '$.registeredAt'))
-          WHERE json_extract(metadata, '$.synthesizedBy') IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_edges_synthesis_site
+          ON edges(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.registeredAt') END)
+          WHERE CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.synthesizedBy') END IS NOT NULL;
         INSERT OR REPLACE INTO project_metadata(key, value, updated_at)
           VALUES ('synthesis_pending', '1', 0);
+      `);
+    },
+  },
+  {
+    // Upstream codegraph v11 (71985f2, #2038), renumbered. The v13 body above
+    // carries the guarded expression directly (upstream edited its v10 in
+    // place the same way), so only databases that already applied the
+    // SHIPPED-unguarded v13 shape need the rebuild — replaying it over the
+    // guarded index is a no-op-shaped DROP+CREATE.
+    version: 14,
+    description: 'Guard synthesis metadata lookups against malformed JSON (upstream v11, #2038)',
+    up: (db) => {
+      // An edge row whose metadata is not valid JSON made the unguarded
+      // json_extract expression throw while building/scanning the partial
+      // index. CASE short-circuits malformed rows to NULL. Rebuild
+      // transactionally so the old expression cannot survive IF NOT EXISTS.
+      db.exec(`
+        DROP INDEX IF EXISTS idx_edges_synthesis_site;
+        CREATE INDEX idx_edges_synthesis_site
+          ON edges(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.registeredAt') END)
+          WHERE CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.synthesizedBy') END IS NOT NULL;
       `);
     },
   },
