@@ -13,6 +13,11 @@ export const RETRY_INITIAL_DELAY = 2000
 export const RETRY_BACKOFF_FACTOR = 2
 export const RETRY_MAX_DELAY_NO_HEADERS = 30_000 // 30 seconds
 export const RETRY_MAX_DELAY = 2_147_483_647 // max 32-bit signed integer for setTimeout
+// Upper bound on retry attempts when the error carries no explicit
+// metadata.retryLimit. Matches VALIDATION_ERROR_RETRY_LIMIT, the existing
+// generic (non-codex) bound in the repo; tighter explicit limits such as
+// CODEX_RESPONSE_RETRY_LIMIT still take precedence.
+export const DEFAULT_RETRY_LIMIT = 3
 
 function cap(ms: number) {
   return Math.min(ms, RETRY_MAX_DELAY)
@@ -118,8 +123,8 @@ export function policy(opts: {
   return Schedule.fromStepWithMetadata(
     Effect.succeed((meta: Schedule.InputMetadata<unknown>) => {
       const error = opts.parse(meta.input)
-      const limit = retryLimit(error)
-      if (limit !== undefined && meta.attempt > limit) return Cause.done(meta.attempt)
+      const limit = retryLimit(error) ?? DEFAULT_RETRY_LIMIT
+      if (meta.attempt > limit) return Cause.done(meta.attempt)
       const message = retryable(error)
       if (!message) return Cause.done(meta.attempt)
       return Effect.gen(function* () {

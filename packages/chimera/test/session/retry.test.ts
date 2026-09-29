@@ -173,6 +173,79 @@ describe("session.retry.delay", () => {
       }),
     ),
   )
+
+  it.live("policy stops after the default retry limit when metadata carries no retryLimit", () =>
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const attempts: number[] = []
+        const error = apiError({ "retry-after-ms": "0" })
+        const step = yield* Schedule.toStepWithMetadata(
+          SessionRetry.policy({
+            parse: (err) => MessageV2.APIError.Schema.parse(err),
+            set: (info) =>
+              Effect.sync(() => {
+                attempts.push(info.attempt)
+              }),
+          }),
+        )
+        const steps = Array.from({ length: SessionRetry.DEFAULT_RETRY_LIMIT + 2 }, () => step(error).pipe(Effect.ignore))
+        yield* Effect.forEach(steps, (s) => s, { discard: true })
+
+        expect(attempts).toEqual(Array.from({ length: SessionRetry.DEFAULT_RETRY_LIMIT }, (_, i) => i + 1))
+      }),
+    ),
+  )
+
+  it.live("policy honors an explicit retry limit looser than the default", () =>
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const attempts: number[] = []
+        const error = MessageV2.APIError.Schema.parse(
+          new MessageV2.APIError({
+            message: "temporary",
+            isRetryable: true,
+            responseHeaders: { "retry-after-ms": "0" },
+            metadata: { retryLimit: "5", replaySafe: "true" },
+          }).toObject(),
+        )
+        const step = yield* Schedule.toStepWithMetadata(
+          SessionRetry.policy({
+            parse: (err) => MessageV2.APIError.Schema.parse(err),
+            set: (info) =>
+              Effect.sync(() => {
+                attempts.push(info.attempt)
+              }),
+          }),
+        )
+        const steps = Array.from({ length: 7 }, () => step(error).pipe(Effect.ignore))
+        yield* Effect.forEach(steps, (s) => s, { discard: true })
+
+        expect(attempts).toEqual([1, 2, 3, 4, 5])
+      }),
+    ),
+  )
+
+  it.live("policy bounds plain-text rate limit retries by the default limit", () =>
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const attempts: number[] = []
+        const error = wrap("Rate limit exceeded, please try again later")
+        const step = yield* Schedule.toStepWithMetadata(
+          SessionRetry.policy({
+            parse: (err) => err as SessionRetry.Err,
+            set: (info) =>
+              Effect.sync(() => {
+                attempts.push(info.attempt)
+              }),
+          }),
+        )
+        const steps = Array.from({ length: SessionRetry.DEFAULT_RETRY_LIMIT + 2 }, () => step(error).pipe(Effect.ignore))
+        yield* Effect.forEach(steps, (s) => s, { discard: true })
+
+        expect(attempts).toEqual(Array.from({ length: SessionRetry.DEFAULT_RETRY_LIMIT }, (_, i) => i + 1))
+      }),
+    ),
+  )
 })
 
 describe("session.retry.retryable", () => {
