@@ -32,7 +32,7 @@ const posixOnly = it.skipIf(process.platform === 'win32');
 
 describe('CodeGraph follows a replaced database (upstream #1902/#1917)', () => {
   let testDir: string;
-  let daemon: InstanceType<typeof CodeGraph> | null = null;
+  let daemon: import('../../src/graph/index').default | null = null;
 
   afterEach(async () => {
     if (daemon) {

@@ -15,6 +15,7 @@
  */
 
 import * as path from 'path';
+import { realpathSync } from 'fs';
 import type { Stats } from 'fs';
 import { execFileSync } from 'child_process';
 import chokidar, { FSWatcher } from 'chokidar';
@@ -263,6 +264,18 @@ export class FileWatcher {
   // once at start(). Same source of truth the indexer uses, so watcher scope
   // can never diverge from index scope.
   private ignoreMatcher: Ignore | null = null;
+  /**
+   * Realpath → logical path of directories already admitted to the watch set
+   * (upstream #770/#2025 cycle guard). chokidar follows directory symlinks by
+   * default; without realpath dedup a symlink cycle (root/linked → outside,
+   * outside/loop → root) makes it re-walk the same tree until ELOOP and
+   * floods sync batches with phantom logical paths. The map (not a set)
+   * keeps the guard idempotent: chokidar consults `ignored` more than once
+   * for the SAME logical path, and only a DIFFERENT logical path resolving
+   * to an already-claimed real is a cycle hop or duplicate view. Seeded
+   * with the project root at start(), cleared on stop().
+   */
+  private visitedRealDirs = new Map<string, string>();
 
   private readonly projectRoot: string;
   private readonly debounceMs: number;
@@ -332,6 +345,8 @@ export class FileWatcher {
     // chokidar only registers an inotify watch on directories that pass this
     // filter — that's the #276 fix.
     this.ignoreMatcher = buildDefaultIgnore(this.projectRoot);
+    const rootReal = this.safeRealpath(this.projectRoot);
+    this.visitedRealDirs = new Map(rootReal ? [[rootReal, this.projectRoot]] : []);
     const gitWatchPaths = this.watchGitHead ? this.resolveGitWatchPaths() : [];
     this.watchedGitRelPaths = new Set(gitWatchPaths.map((file) => normalizePath(path.relative(this.projectRoot, file))));
 
@@ -466,12 +481,33 @@ export class FileWatcher {
     if (!rel || rel === '.' || rel.startsWith('..')) return false; // root / outside
     if (this.watchedGitRelPaths.has(rel)) return false;
     if (this.isAlwaysIgnored(rel)) return true;
+    // Symlink-cycle guard (upstream #770/#2025): a DIFFERENT logical path
+    // resolving to an already-claimed realpath is a cycle hop or a duplicate
+    // view of a watched tree — never watch it again. The same logical path
+    // re-consulted (chokidar asks more than once per dir) stays allowed.
+    if (stats && (stats.isDirectory() || stats.isSymbolicLink())) {
+      const real = this.safeRealpath(testPath);
+      if (real) {
+        const claimedBy = this.visitedRealDirs.get(real);
+        if (claimedBy !== undefined && claimedBy !== testPath) return true;
+        this.visitedRealDirs.set(real, testPath);
+      }
+    }
     if (!this.ignoreMatcher) return false;
     if (stats) {
       return this.ignoreMatcher.ignores(stats.isDirectory() ? rel + '/' : rel);
     }
     // Stats unknown: test both forms so a directory match isn't missed.
     return this.ignoreMatcher.ignores(rel) || this.ignoreMatcher.ignores(rel + '/');
+  }
+
+  /** realpathSync that degrades to null for broken links / vanished dirs. */
+  private safeRealpath(target: string): string | null {
+    try {
+      return realpathSync(target);
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -498,6 +534,7 @@ export class FileWatcher {
 
     this.pendingEvents.clear();
     this.needsFullScan = false;
+    this.visitedRealDirs.clear();
     this.chokidarReady = false;
     this.ignoreMatcher = null;
     this.watchedGitRelPaths.clear();

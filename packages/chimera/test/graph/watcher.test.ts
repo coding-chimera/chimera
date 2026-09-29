@@ -622,7 +622,7 @@ describe('FileWatcher', () => {
   describe('owed full scan after directory removal (upstream #1964/#1977)', () => {
     it('keeps the full scan owed when the sync fails and reschedules', async () => {
       let call = 0;
-      const syncFn = vi.fn(async () => {
+      const syncFn = vi.fn(async (batch: { needsFullScan?: boolean }) => {
         call += 1;
         if (call === 1) throw new Error('transient failure');
         return { filesChanged: 0, durationMs: 1 };
@@ -642,7 +642,7 @@ describe('FileWatcher', () => {
       // The failed sync must NOT drop the owed full scan: the watcher
       // reschedules (backoff = debounceMs) with needsFullScan still set.
       await waitFor(() => syncFn.mock.calls.length >= 2, 5000);
-      expect(syncFn.mock.calls[1]![0].needsFullScan).toBe(true);
+      expect(syncFn.mock.calls[1]![0]!.needsFullScan).toBe(true);
 
       // The clean second pass discharges the debt; no further passes run.
       await waitFor(() => (watcher as unknown as { needsFullScan: boolean }).needsFullScan === false);
