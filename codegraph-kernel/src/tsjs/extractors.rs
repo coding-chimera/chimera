@@ -598,6 +598,17 @@ impl<'t> Walker<'t> {
                     if matches!(v.kind(), "arrow_function" | "function_expression") {
                         let name = util::object_key_name(self.text(k));
                         self.extract_function(v, Some(name));
+                    } else if v.kind() == "call_expression" {
+                        // `key: Effect.fn("…")(function* () {…})` — see
+                        // curried_wrapper_bound_name.
+                        let fun = v
+                            .child_by_field_name("arguments")
+                            .and_then(|a| a.named_child(0));
+                        if let Some(f) = fun {
+                            if let Some(bound) = self.curried_wrapper_bound_name(f) {
+                                self.extract_function(f, Some(bound));
+                            }
+                        }
                     } else if v.kind() == "identifier" {
                         // `{ key: fn }` — a function passed as a value, not only called.
                         self.extract_value_reference(v);
