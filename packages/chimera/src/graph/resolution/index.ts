@@ -36,6 +36,7 @@ import { synthesizeCallbackEdges } from './callback-synthesizer';
 import { loadProjectAliases, type AliasMap } from './path-aliases';
 import { loadGoModule, type GoModule } from './go-module';
 import { logDebug } from '../errors';
+import { MAX_SOURCE_FILE_SIZE_BYTES } from '../file-limits';
 import type { ReExport } from './types';
 import { LRUCache } from './lru-cache';
 import { createYielder, type MaybeYield } from './cooperative-yield';
@@ -446,6 +447,16 @@ export class ReferenceResolver {
 
         const fullPath = path.join(this.projectRoot, filePath);
         try {
+          // Import resolvers may follow package metadata to an archive (`file:*.har`,
+          // for example). Reject anything extraction would not accept before UTF-8
+          // decoding can multiply a large binary blob into gigabytes of V8 heap.
+          // The native ctx arm carries the same guard in resolver_ctx.rs read_file
+          // (upstream #1553).
+          const stats = fs.statSync(fullPath);
+          if (!stats.isFile() || stats.size > MAX_SOURCE_FILE_SIZE_BYTES) {
+            this.fileCache.set(filePath, null);
+            return null;
+          }
           const content = fs.readFileSync(fullPath, 'utf-8');
           this.fileCache.set(filePath, content);
           return content;

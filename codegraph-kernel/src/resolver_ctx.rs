@@ -904,16 +904,29 @@ impl CtxConn {
     }
 
     /// readFile (resolution/index.ts:324-339) — failures cache None.
+    ///
+    /// Oversize/non-file guard (upstream #1553, resolution/index.ts readFile):
+    /// import resolvers may follow package metadata to an archive (`file:*.har`);
+    /// reject anything extraction would not accept BEFORE decoding can multiply
+    /// a large binary blob into gigabytes of heap. MAX_SOURCE_FILE_SIZE_BYTES
+    /// mirrors src/graph/file-limits.ts (1 MiB); rejections cache None like
+    /// read failures, so the TS and native arms answer identically.
     pub(crate) fn read_file(&mut self, file_path: &str) -> Result<Option<String>> {
+        const MAX_SOURCE_FILE_SIZE_BYTES: u64 = 1024 * 1024;
         self.refresh()?;
         if self.file_cache.has(&file_path.to_string()) {
             let key = file_path.to_string();
             return Ok(self.file_cache.get(&key).cloned().flatten());
         }
         let full = join_normalized(&self.project_root, file_path);
-        let content = match std::fs::read(&full) {
-            Ok(bytes) => Some(String::from_utf8_lossy(&bytes).into_owned()),
-            Err(_) => None,
+        let content = match std::fs::metadata(&full) {
+            Ok(meta) if meta.is_file() && meta.len() <= MAX_SOURCE_FILE_SIZE_BYTES => {
+                match std::fs::read(&full) {
+                    Ok(bytes) => Some(String::from_utf8_lossy(&bytes).into_owned()),
+                    Err(_) => None,
+                }
+            }
+            _ => None,
         };
         self.file_cache.set(file_path.to_string(), content.clone());
         Ok(content)
