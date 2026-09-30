@@ -481,3 +481,11 @@ loop 挂起修复前的对比基线（本机 macOS, bun 1.4.0, `bun test --timeo
 - **终验**：全量 **6055 tests/14 fail=精确环境基线**（12 MCP+2 Node26 banner；负载池本轮全绿）；typecheck 干净；ctx/resolution-parity 零 diff；cargo 88；五类审计零命中（唯一=ask-side 连字符词已知误报）。
 - **follow-up 池**：fileHasExportedNode EXISTS 探针（#2086 强化件，需开 resolution/types 车道）；kernel-scala-parity defer-pin 断言移植（G 批遗留）；getCallees 不含 instantiates（预存分叉）；c/cpp corpus 26.1% deferral 率（预存）；syncLocked 全量对账 pre-scan 成本下沉（需开 extraction 车道）；旧索引需 `chimera graph index` 重跑以吃 v6（设计内）
 
+
+### follow-up 批收口（2026-09-30，5 commits 已随本波推送）
+- **权限端到端闭环**（`3fb9b759f`）：doom_loop（processor.ts，session.get 带 catch 兜底）+ workflow_tool_approval（llm.ts 复用既有 merged ruleset 一行修）两 ask 旁路并入 session.permission——缺口③的 always 落库至此三路全消费，重启存活。反向验证（stash 修复→测试败）+全新 stub 实例排除进程内捷径。
+- **版本不匹配自动重建**（`6d7dd50a5`）：考据实锤——上游 v1.6.1 其实**无落地自动重建代码**（#2034 commit message 只是终态语义声明，isIndexStale 只接 status 展示）；本仓按 F2 终态纪律首次落成代码。挂点 MCPEngine.catchUpSync（三 writer 入口汇聚，readOnly 结构性排除）→ rebuildStaleThenSync（陈旧 stamp→日志→后台 indexAll 盖章→落回 sync，绝不 reject，失败下轮重试）；首查询 3s 门后放行+banner 兜底。只读 open 零触发负例钉死。
+- **图面三小件**：`3174f3dcd` scala defer-pin parity 套件（27 测试，上游 fixture byte-exact，kernel 臂真实执行）；`ca4af1af4` getCallees 补 instantiates/navigates（实锤在 traversal.ts 非 queries.ts，上游 #774 终态五元组）；`bef8d9ae6` fileHasExportedNode EXISTS 探针（上游 fef3776 零 kernel 改动→TS-only；bun:sqlite 空行返 null 的 !=null 适配实测抓到）。
+- **新 follow-up 登记**：getCallers 仍缺 instantiates/navigates（上游 #774 callers 侧对称件）；traversal 预存分叉两笔（#1086 visited-at-depth 去重/#1974 深度内不丢 dependent）；Chimera runtime openProjectGraph 面 stale 仍 report-only（是否扩重建待裁）；CLI needsReindex 提示可补“daemon 会自愈”一句
+- 终验：5 用例+30/30 新测试+resolution-parity 零 diff+typecheck 绿+test/graph 1934/14=基线零新增+五类审计零命中（唯二 URL=测试 fixture）
+
