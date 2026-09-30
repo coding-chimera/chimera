@@ -293,23 +293,68 @@ this.toolHandler.closeAll();
    * races past sync returns rows for files that no longer exist on disk —
    * and the per-file staleness banner can't help because `getPendingFiles()`
    * is populated by the watcher, not by catch-up).
+   *
+   * Writer-open is also the fork's one-shot stale-extraction rebuild point
+   * (port of the upstream v1.6.1 #2034 daemon catch-up semantics: the
+   * catch-up rebuilds a stale index on start so the watcher does not keep
+   * serving the hole after an extractor upgrade). Read-only engines return
+   * before either step — the read side only *reports* needsReindex.
    */
   private catchUpSync(): void {
     const cg = this.cg;
     if (!cg || this.opts.readOnly) return;
-    const p = cg
-      .sync()
-      .then((result) => {
-        const changed = result.filesAdded + result.filesModified + result.filesRemoved;
-        if (changed > 0) {
-          process.stderr.write(`[CodeGraph MCP] Caught up ${changed} file(s) changed since last run\n`);
+    this.toolHandler.setCatchUpGate(this.rebuildStaleThenSync(cg));
+  }
+
+  /**
+   * The catch-up chain: one-shot stale-semantics rebuild, then the regular
+   * filesystem reconcile. Never rejects — every failure logs and degrades to
+   * serving the existing (possibly stale) content; the next writer-open
+   * retries. A successful `indexAll()` re-stamps the database with the
+   * current EXTRACTION_SEMANTICS_VERSION, so the check goes quiet and the
+   * rebuild can never loop. The trailing sync doubles as the removal sweep
+   * `indexAll` does not perform (re-extraction covers on-disk files only).
+   */
+  private async rebuildStaleThenSync(cg: CodeGraph): Promise<void> {
+    try {
+      const semantics = cg.getExtractionSemanticsStatus();
+      if (semantics.needsReindex) {
+        process.stderr.write(
+          `[CodeGraph MCP] Index stamped with extraction semantics v${semantics.storedVersion}, ` +
+          `this binary extracts v${semantics.currentVersion} — rebuilding in the background ` +
+          `(one-shot writer-open catch-up)\n`
+        );
+        const rebuilt = await cg.indexAll();
+        if (rebuilt.success) {
+          process.stderr.write(
+            `[CodeGraph MCP] Rebuilt stale index (${rebuilt.filesIndexed} file(s)) — ` +
+            `extraction semantics now v${semantics.currentVersion}\n`
+          );
+        } else {
+          process.stderr.write(
+            `[CodeGraph MCP] Stale-index rebuild failed: ` +
+            `${rebuilt.errors.find((e) => e.severity === 'error')?.message ?? 'unknown error'} — ` +
+            `serving stale content; will retry on the next writer open\n`
+          );
         }
-      })
-      .catch((err) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`[CodeGraph MCP] Catch-up sync failed: ${msg}\n`);
-      });
-    this.toolHandler.setCatchUpGate(p);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(
+        `[CodeGraph MCP] Stale-index rebuild failed: ${msg} — serving stale content; ` +
+        `will retry on the next writer open\n`
+      );
+    }
+    try {
+      const result = await cg.sync();
+      const changed = result.filesAdded + result.filesModified + result.filesRemoved;
+      if (changed > 0) {
+        process.stderr.write(`[CodeGraph MCP] Caught up ${changed} file(s) changed since last run\n`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[CodeGraph MCP] Catch-up sync failed: ${msg}\n`);
+    }
   }
 }
 
