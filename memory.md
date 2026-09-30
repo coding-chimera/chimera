@@ -489,3 +489,10 @@ loop 挂起修复前的对比基线（本机 macOS, bun 1.4.0, `bun test --timeo
 - **新 follow-up 登记**：getCallers 仍缺 instantiates/navigates（上游 #774 callers 侧对称件）；traversal 预存分叉两笔（#1086 visited-at-depth 去重/#1974 深度内不丢 dependent）；Chimera runtime openProjectGraph 面 stale 仍 report-only（是否扩重建待裁）；CLI needsReindex 提示可补“daemon 会自愈”一句
 - 终验：5 用例+30/30 新测试+resolution-parity 零 diff+typecheck 绿+test/graph 1934/14=基线零新增+五类审计零命中（唯二 URL=测试 fixture）
 
+
+### 2026-09-30 收工收尾（用户关机）
+- **全局二进制已重建+重装+验证**（v0.0.7-beta2-patch1，含全部 50 commits）：双包齐装（元包+平台包——首次只装平台 tarball 致元包 launcher 旧残留，已补装修正）；执行体逐字节一致 + strings 标记全在（session_turn_lease/synthesis_inputs/part-orphan-reconcile）；用户已重启生效。
+- **本仓 v6 重索引完成**：150,082 节点/352,011 边（vs v5 +6,844/+8,721=#2034 method-as-value 温和非爆炸）；stamp v6 落章；synthesis_inputs 2,324 行（B 批全链路实跑验证）；schema v13/v14 自动应用。CLI 图命令在 node26 需双守卫 env（CHIMERA_ALLOW_UNSAFE_NODE=1+CODEGRAPH_WASM_RELAUNCHED=1，banner 照打但继续）；全量需 `-f`（不带=增量）。synthesis_pending 标记待下次增量 sync 自愈（cosmetic）。
+- **上游内存疑虑当前结论**：静态审计已清（所有移植缓存有界）；今日实测 178s/峰值 RSS 2432MB 与旧基线（56.9s/1477MB）**三项口径全不同不可比**（node26-二进制-CLI-psRSS-3,281 文件 vs bun-源码-server-footprint-697 文件；旧 1477 主体是 JSC arena=bun 运行时专属）。**同口径 A/B 已取消未跑完**（用户关机）——待办：明早重跑 native-profile harness（wt/ worktree 已在 5fff4ad63+bun install 完毕，复跑起点就绪；写产物到 v6-run/ 勿覆盖 09-24 原始 samples）。
+- **安装布局 pitfall 入册**：全局 npm 装 tarball 时必须**双 tarball 同命令安装**（元包+平台包），只装平台 tarball 会让元包 launcher 旧残留（版本号未变时 npm 判已满足）；执行体验证要看平台包 bin/chimera（134.9MB 真体）而非元包 launcher（5.8KB）。
+
