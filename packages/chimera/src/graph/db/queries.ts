@@ -381,6 +381,7 @@ export class QueryBuilder {
     deleteNodesByFile?: SqliteStatement;
     getNodeById?: SqliteStatement;
     getNodesByFile?: SqliteStatement;
+    fileHasExportedNode?: SqliteStatement;
     getNodesByKind?: SqliteStatement;
     iterateNodesByKind?: SqliteStatement;
     insertEdge?: SqliteStatement;
@@ -960,6 +961,24 @@ export class QueryBuilder {
     }
     const rows = this.stmts.getNodesByFile.all(filePath) as NodeRow[];
     return rows.map(rowToNode);
+  }
+
+  /**
+   * Whether any node in `filePath` is exported — `getNodesByFile(f).some((n) =>
+   * n.isExported)` as one indexed probe, without decoding the file's nodes
+   * (upstream #2072 isSealedModule short-circuit: nearly every module exports
+   * a node, so the sealed-module check almost never reads source at all).
+   */
+  fileHasExportedNode(filePath: string): boolean {
+    if (!this.stmts.fileHasExportedNode) {
+      this.stmts.fileHasExportedNode = this.db.prepare(
+        'SELECT 1 FROM nodes WHERE file_path = ? AND is_exported = 1 LIMIT 1'
+      );
+    }
+    // `!= null`: the bun:sqlite adapter returns `null` for an empty row (the
+    // node:sqlite arm returns undefined) — upstream's `!== undefined` (better-
+    // sqlite3) would read every file as exporting something on one backend.
+    return this.stmts.fileHasExportedNode.get(filePath) != null;
   }
 
   /**

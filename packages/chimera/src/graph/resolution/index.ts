@@ -400,6 +400,16 @@ export class ReferenceResolver {
         return this.nodeCache.get(filePath)!;
       },
 
+      // (upstream #2072) One indexed EXISTS probe instead of decoding the
+      // file's nodes. TS-only by design: upstream fef3776 adds no kernel
+      // arm, the native ctx bridge has no exported-node probe, and the R3c
+      // Rust is_sealed_module keeps its equivalent nodes_in_file().any(
+      // is_exported) form — same boolean, so dual-arm parity is untouched.
+      fileHasExportedNode: (filePath: string) => {
+        const cached = this.nodeCache.get(filePath);
+        return cached !== undefined ? cached.some((n) => n.isExported) : this.queries.fileHasExportedNode(filePath);
+      },
+
       getNodesByName: (name: string) => {
         const native = this.ctxRead((ctx) => ctx.getNodesByName(name));
         if (native) return native;
