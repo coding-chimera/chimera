@@ -293,7 +293,12 @@ export class GraphTraverser {
     }
     visited.add(nodeId);
 
-    const outgoingEdges = this.queries.getOutgoingEdges(nodeId, ['calls', 'references', 'imports']);
+    // Upstream v1.6.1 final state (#774): a function that constructs a class
+    // (`Foo(...)` / `new Foo()`) has that class as a callee, so `trace` can
+    // cross the instantiation boundary (function → class → its methods);
+    // `navigates` rides along for router-screen hops. Pre-existing fork
+    // divergence — the fork list was frozen at the pre-#774 seed import.
+    const outgoingEdges = this.queries.getOutgoingEdges(nodeId, ['calls', 'references', 'imports', 'instantiates', 'navigates']);
     if (outgoingEdges.length === 0) return;
 
     // Batch-fetch callee nodes (was N+1 — see getCallersRecursive note).
