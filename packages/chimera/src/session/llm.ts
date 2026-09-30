@@ -512,7 +512,10 @@ const live: Layer.Layer<
                 patterns: uniquePatterns,
                 metadata: { tools: approvalTools },
                 always: uniquePatterns,
-                ruleset: [],
+                // Consume the merged agent + session ruleset (input.permission is
+                // session.permission from SessionPrompt) so persisted "always"
+                // approvals survive host restarts.
+                ruleset,
               }),
             )
             for (const name of uniqueNames) approvedToolsForSession.add(name)

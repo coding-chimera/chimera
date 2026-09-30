@@ -28,7 +28,8 @@ import { Snapshot } from "../../src/snapshot"
 import * as Log from "@opencode-ai/core/util/log"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Flag } from "@opencode-ai/core/flag/flag"
-import { provideTmpdirInstance, provideTmpdirServer } from "../fixture/fixture"
+import { provideInstance, provideTmpdirInstance, provideTmpdirServer, reloadTestInstance, tmpdirScoped } from "../fixture/fixture"
+import { PermissionPersist } from "../../src/permission/persist"
 import { testEffect } from "../lib/effect"
 import { raw, reply, TestLLMServer } from "../lib/llm-server"
 
@@ -1753,4 +1754,155 @@ it.live("session.processor falls back to token pricing without Copilot raw usage
       }),
     { git: true, config: (url) => copilotProviderCfg(url) },
   ),
+)
+
+// ---------------------------------------------------------------------------
+// doom_loop permission persistence across a simulated restart
+// ---------------------------------------------------------------------------
+
+const doomLoopInput = { cmd: "pwd" }
+const doomLoopResult = { title: "pwd", output: "/tmp", metadata: {} }
+const doomLoopLLM = Layer.succeed(
+  LLM.Service,
+  LLM.Service.of({
+    stream: () =>
+      Stream.fromIterable([
+        { type: "start" },
+        ...[1, 2, 3, 4].flatMap((index) => {
+          const id = `dl_${index}`
+          return [
+            { type: "tool-input-start", id, toolName: "bash" },
+            { type: "tool-input-end", id },
+            { type: "tool-call", toolCallId: id, toolName: "bash", input: doomLoopInput },
+            // The 4th identical call trips the doom-loop guard before its result.
+            ...(index < 4
+              ? [{ type: "tool-result", toolCallId: id, toolName: "bash", input: doomLoopInput, output: doomLoopResult }]
+              : []),
+          ]
+        }),
+        { type: "tool-result", toolCallId: "dl_4", toolName: "bash", input: doomLoopInput, output: doomLoopResult },
+        { type: "finish" },
+      ] as LLM.Event[]),
+  }),
+)
+const doomLoopDeps = Layer.mergeAll(
+  Session.defaultLayer,
+  Snapshot.defaultLayer,
+  AgentSvc.defaultLayer,
+  Permission.defaultLayer,
+  Plugin.defaultLayer,
+  Config.defaultLayer,
+  doomLoopLLM,
+  Provider.defaultLayer,
+  status,
+  SyncEvent.defaultLayer,
+).pipe(Layer.provideMerge(infra))
+const doomLoopEnv = SessionProcessor.layer.pipe(
+  Layer.provide(summary),
+  Layer.provide(Image.defaultLayer),
+  Layer.provideMerge(doomLoopDeps),
+)
+const doomLoopIt = testEffect(doomLoopEnv)
+
+const waitForPendingDoom = (count: number) =>
+  Effect.gen(function* () {
+    const permission = yield* Permission.Service
+    for (let i = 0; i < 100; i++) {
+      const list = yield* permission.list()
+      if (list.length === count) return list
+      yield* Effect.sleep("10 millis")
+    }
+    return yield* Effect.fail(new Error(`timed out waiting for ${count} pending permission request(s)`))
+  })
+
+doomLoopIt.live("session.processor doom_loop always approval survives a restart via session permission", () =>
+  Effect.gen(function* () {
+    const dir = yield* tmpdirScoped({ git: true, config: providerCfg("http://localhost:1/v1") })
+    const run = <A, E, R>(self: Effect.Effect<A, E, R>) => self.pipe(provideInstance(dir))
+
+    const sessionID = yield* Effect.gen(function* () {
+      const { processors, session, provider } = yield* boot()
+      const chat = yield* session.create({})
+      const parent = yield* user(chat.id, "loop")
+      const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+      const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+      const handle = yield* processors.create({
+        assistantMessage: msg,
+        sessionID: chat.id,
+        model: mdl,
+      })
+      const process = handle
+        .process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies MessageV2.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "loop" }],
+          tools: {},
+        })
+        .pipe(Effect.forkChild)
+      const fiber = yield* process
+      const pending = yield* waitForPendingDoom(1)
+      expect(pending[0].permission).toBe("doom_loop")
+      yield* PermissionPersist.replyAndPersist({ requestID: pending[0].id, reply: "always" })
+      const value = yield* Fiber.join(fiber)
+      expect(value).toBe("continue")
+      expect((yield* session.get(chat.id)).permission).toEqual([
+        { permission: "doom_loop", pattern: "bash", action: "allow" },
+      ])
+      return chat.id
+    }).pipe(run)
+
+    // Simulated restart: drop all per-directory instance state so the
+    // in-memory approved ruleset is rebuilt (empty) from scratch.
+    yield* Effect.promise(() => reloadTestInstance({ directory: dir }))
+
+    yield* Effect.gen(function* () {
+      const { processors, session, provider } = yield* boot()
+      const permission = yield* Permission.Service
+      const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+      const parent = yield* user(sessionID, "loop again")
+      const msg = yield* assistant(sessionID, parent.id, path.resolve(dir))
+      const handle = yield* processors.create({
+        assistantMessage: msg,
+        sessionID,
+        model: mdl,
+      })
+      const fiber = yield* handle
+        .process({
+          user: {
+            id: parent.id,
+            sessionID,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies MessageV2.User,
+          sessionID,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "loop again" }],
+          tools: {},
+        })
+        .pipe(Effect.forkChild)
+      // The persisted session rule must short-circuit the doom_loop ask: give a
+      // regression window to surface a pending request before joining.
+      yield* Effect.sleep("500 millis")
+      expect(yield* permission.list()).toHaveLength(0)
+      const value = yield* Fiber.join(fiber)
+      expect(value).toBe("continue")
+      expect((yield* session.get(sessionID)).permission).toEqual([
+        { permission: "doom_loop", pattern: "bash", action: "allow" },
+      ])
+    }).pipe(run)
+  }),
 )
