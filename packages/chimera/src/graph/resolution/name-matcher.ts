@@ -94,14 +94,19 @@ function isSealedModule(filePath: string, context: ResolutionContext): boolean {
   if (hit !== undefined) return hit;
   // CommonJS assignments can execute inside template interpolations, which the
   // masker blanks. Keep the conservative raw-source exemption for those forms.
-  // Cheapest disqualifiers first (upstream #2072): the masker only blanks
-  // text, so no `import` in the source means none in the masked code either.
-  // Comment-stripping and string-masking run only for files that pass every
-  // cheap check — in practice the few that can be sealed.
-  const source = context.readFile?.(filePath) ?? null;
+  // Cheapest disqualifiers first: nearly every module exports a node (asked
+  // without reading or decoding the file), and masking the source is only
+  // needed to rule out the ones that don't. (The masker only blanks text, so
+  // no `import` in the source means none in code.)
+  // Fork adaptation: partial mock contexts (smoke harnesses, see
+  // resolution.test.ts 'stays permissive') may omit the getters — degrade to
+  // not-sealed instead of crashing, matching the fork's prior readFile?. form.
+  const exportsNode = context.fileHasExportedNode
+    ? context.fileHasExportedNode(filePath)
+    : (context.getNodesInFile?.(filePath) ?? []).some((n) => n.isExported);
+  const source = exportsNode ? null : (context.readFile?.(filePath) ?? null);
   const sealed =
-    source !== null && source.includes('import') &&
-    !context.getNodesInFile(filePath).some((n) => n.isExported) &&
+    !exportsNode && source !== null && source.includes('import') &&
     !HAS_CJS_EXPORT.test(source) &&
     (() => {
       const code = blankStringContents(stripCommentsForRegex(source, 'typescript'));
