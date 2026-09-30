@@ -491,13 +491,16 @@ export const layer: Layer.Layer<
             }
 
             const agent = yield* agents.get(ctx.assistantMessage.agent)
+            // Merge the persisted session permission slots (same assembly as the
+            // main ask path) so "always" approvals survive host restarts.
+            const current = yield* session.get(ctx.sessionID).pipe(Effect.catch(() => Effect.succeed(undefined)))
             yield* permission.ask({
               permission: "doom_loop",
               patterns: [value.toolName],
               sessionID: ctx.assistantMessage.sessionID,
               metadata: { tool: value.toolName, input: value.input },
               always: [value.toolName],
-              ruleset: agent.permission,
+              ruleset: Permission.merge(agent.permission, current?.permission ?? []),
             })
             return
           }
