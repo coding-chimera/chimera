@@ -214,7 +214,7 @@ function sleepMacrotask(ms: number): Promise<void> {
  * recognized source extensions, so they produce no symbols regardless.
  */
 const DEFAULT_IGNORE_DIRS: ReadonlySet<string> = new Set([
-  '.chimera', '.codegraph',
+  '.chimera', '.codegraph', '.chimera-wsl', '.codegraph-wsl',
   // JS / TS — dependency directories
   'node_modules', 'bower_components', 'jspm_packages', 'web_modules',
   '.yarn', '.pnpm-store',
@@ -869,8 +869,10 @@ function scanDirectoryWalk(
     }
 
     for (const entry of entries) {
-      // Never descend into git internals or Chimera graph data directories.
-      if (entry.name === '.git' || entry.name === '.chimera' || entry.name === '.codegraph') continue;
+      // Never descend into git internals or Chimera graph data directories
+      // (including the WSL-private `.chimera-wsl` on Windows drives, upstream #995).
+      if (entry.name === '.git' || entry.name === '.chimera' || entry.name === '.codegraph' ||
+        entry.name === '.chimera-wsl' || entry.name === '.codegraph-wsl') continue;
 
       const fullPath = path.join(dir, entry.name);
       const relativePath = normalizePath(path.relative(rootDir, fullPath));
