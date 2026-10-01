@@ -58,7 +58,7 @@
       "effect": "4.0.0-beta.83",
       "ai": "6.0.168",
       "cross-spawn": "7.0.6",
-      "hono": "4.13.5",
+      "hono": "4.13.12",
       "hono-openapi": "1.1.2",
       "fuzzysort": "3.1.0",
       "luxon": "3.6.1",
@@ -136,7 +136,20 @@
   "overrides": {
     "@effect/platform-node-shared": "catalog:",
     "@types/bun": "catalog:",
-    "@types/node": "catalog:"
+    "@types/node": "catalog:",
+    "@vitest/mocker": "4.1.11",
+    "devalue": "5.9.2",
+    "dompurify@3.4": "3.4.16",
+    "esbuild@^0.27.0": "0.28.2",
+    "fast-uri@3": "3.1.8",
+    "mermaid": "11.16.1",
+    "postcss@8.4.31": "8.5.28",
+    "qs": "6.16.0",
+    "undici@^7": "7.30.0",
+    "valibot": "1.4.2",
+    "vitest": "4.1.11",
+    "ws@8": "8.22.0",
+    "yaml@2.7.1": "2.9.1"
   },
   "patchedDependencies": {
     "@ai-sdk/amazon-bedrock@4.0.166": "patches/@ai-sdk%2Famazon-bedrock@4.0.166.patch",
