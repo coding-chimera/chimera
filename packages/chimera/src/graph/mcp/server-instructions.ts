@@ -66,5 +66,6 @@ typically one to a few calls; a grep/read exploration is dozens.
 - If a tool reports the project isn't initialized, \`.codegraph/\` doesn't exist yet — offer to run \`chimera graph init\` to build the index.
 - Index lags file writes by ~1 second.
 - Cross-file resolution is best-effort name matching; ambiguous calls may return multiple candidates.
+- Explore matches symbol/file names and indexed code words lexically, not by meaning; an empty result reports word matches and may suggest indexed candidate names to retry with \`codegraph_explore\`.
 - No live correctness validation — that's still the TypeScript compiler / test suite / linter's job. Codegraph supplements those with structural context they don't have.
 `;

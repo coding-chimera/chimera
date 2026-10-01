@@ -2607,6 +2607,11 @@ export class CodeGraph {
     return this.queries.searchNodes(query, options);
   }
 
+  /** Lexical evidence for an empty explore result; does not alter retrieval. */
+  getExploreMissDiagnostics(query: string) {
+    return this.queries.getExploreMissDiagnostics(query);
+  }
+
   /**
    * Search nodes by text, additionally returning per-term FTS hit counts
    * and the candidate-pool size before the final limit slice.
