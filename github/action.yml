@@ -45,7 +45,7 @@ runs:
       id: version
       shell: bash
       run: |
-        VERSION=$(npm view chimera version 2>/dev/null || echo latest)
+        VERSION=$(npm view @coding-chimera/chimera version 2>/dev/null || echo latest)
         echo "version=${VERSION:-latest}" >> $GITHUB_OUTPUT
 
     - name: Cache Chimera npm packages
@@ -57,7 +57,7 @@ runs:
 
     - name: Install Chimera
       shell: bash
-      run: npm install -g chimera
+      run: npm install -g @coding-chimera/chimera
 
     - name: Run Chimera
       shell: bash
