@@ -31,7 +31,7 @@ permissions:
 
 jobs:
   version:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     if: github.repository == 'coding-chimera/chimera'
     steps:
       - uses: actions/checkout@v3
@@ -91,19 +91,19 @@ jobs:
           # manylinux_2_28 generation) regardless of the runner's own glibc,
           # musl legs opt out of +crt-static inside build-kernel.sh, and
           # arm64 cross from x64 is zig-native.
-          - host: blacksmith-4vcpu-ubuntu-2404
+          - host: ubuntu-latest
             platform: linux-x64
             target: x86_64-unknown-linux-gnu.2.28
             zig: true
-          - host: blacksmith-4vcpu-ubuntu-2404
+          - host: ubuntu-latest
             platform: linux-arm64
             target: aarch64-unknown-linux-gnu.2.28
             zig: true
-          - host: blacksmith-4vcpu-ubuntu-2404
+          - host: ubuntu-latest
             platform: linux-x64-musl
             target: x86_64-unknown-linux-musl
             zig: true
-          - host: blacksmith-4vcpu-ubuntu-2404
+          - host: ubuntu-latest
             platform: linux-arm64-musl
             target: aarch64-unknown-linux-musl
             zig: true
@@ -118,8 +118,8 @@ jobs:
             platform: darwin-x64
             target: x86_64-apple-darwin
           # Windows: MSVC native + arm64 cross on github-hosted runners
-          # (blacksmith lacks the ARM64 MSVC toolchain — same split as the
-          # build-electron matrix). napi-build links msvc legs with no extra
+          # (standard windows labels cover both x64 native and arm64 cross).
+          # napi-build links msvc legs with no extra
           # inputs; there is no local cross route (windows-gnu needs a
           # libnode.dll import library, cargo-xwin rejected). The cargo .dll
           # is staged as codegraph-kernel.node (napi/node-gyp convention).
@@ -174,7 +174,7 @@ jobs:
     needs:
       - version
       - kernel-prebuild
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     if: github.repository == 'coding-chimera/chimera'
     steps:
       - uses: actions/checkout@v3
@@ -259,7 +259,7 @@ jobs:
     needs:
       - build-cli
       - version
-    runs-on: blacksmith-4vcpu-windows-2025
+    runs-on: windows-latest
     if: github.repository == 'coding-chimera/chimera'
     env:
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -416,17 +416,17 @@ jobs:
             target: aarch64-apple-darwin
             platform_flag: --mac --arm64
             bun_install_flags: --os=darwin --cpu=arm64
-          # github-hosted: blacksmith lacks ARM64 MSVC cross-compilation toolchain
+          # all build-electron legs run on github-hosted standard labels
           - host: "windows-2025"
             target: aarch64-pc-windows-msvc
             platform_flag: --win --arm64
-          - host: "blacksmith-4vcpu-windows-2025"
+          - host: "windows-latest"
             target: x86_64-pc-windows-msvc
             platform_flag: --win
-          - host: "blacksmith-4vcpu-ubuntu-2404"
+          - host: "ubuntu-latest"
             target: x86_64-unknown-linux-gnu
             platform_flag: --linux
-          - host: "blacksmith-4vcpu-ubuntu-2404"
+          - host: "ubuntu-latest"
             target: aarch64-unknown-linux-gnu
             platform_flag: --linux
     runs-on: ${{ matrix.settings.host }}
@@ -588,7 +588,7 @@ jobs:
       - sign-cli-windows
       - build-electron
     if: always() && !failure() && !cancelled()
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
 
