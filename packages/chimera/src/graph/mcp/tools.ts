@@ -6,6 +6,7 @@
 
 import type CodeGraph from '../index';
 import { findNearestCodeGraphRoot, isSameIndexRoot } from '../directory';
+import { WslSharedIndexError } from '../db/wsl-shared-index';
 // Lazy-load the heavy CodeGraph chain off the MCP startup path — see the same
 // helper in engine.ts. ToolHandler must load to answer tools/list (static
 // schemas), but it must NOT drag in sqlite/query layers before the daemon binds;
@@ -34,6 +35,22 @@ import {
 import { clamp, validatePathWithinRoot, validateProjectPath } from '../utils';
 import { isGeneratedFile } from '../extraction/generated-detection';
 import { resolve as resolvePath } from 'path';
+
+/**
+ * The Windows/WSL shared-index failure (upstream #995) phrased for the agent.
+ * It is an expected condition the USER fixes in their environment, so it
+ * answers SUCCESS-shaped — never `isError`, which would teach the agent to
+ * abandon the graph tools for projects that work fine once the user acts.
+ */
+function wslSharedIndexGuidance(err: WslSharedIndexError): string {
+  return (
+    `${err.message}\n\n` +
+    "If you are an AI agent: the Chimera graph tools can't read this project's index from WSL " +
+    'until the user makes that change. Use your built-in tools (Read/Grep/Glob) for this task ' +
+    'and pass the message above on to the user — setting CHIMERA_DATA_DIR and building the ' +
+    "index are the user's decisions, so don't do either yourself."
+  );
+}
 
 /** Maximum output length to prevent context bloat (characters) */
 const MAX_OUTPUT_LENGTH = 15000;
@@ -678,6 +695,11 @@ export class ToolHandler {
   // the new file with a catch-up sync — but only when the engine is the
   // project's writer (watching); a read-only engine must never start writing.
   private onDatabaseReopened: ((cg: CodeGraph) => void) | null = null;
+  // Why the default project failed to open, when that is worth telling the
+  // agent instead of "no project loaded" — today only the Windows/WSL
+  // shared-index error (upstream #995). Engine-maintained; cleared by a
+  // successful open.
+  private defaultOpenFailure: WslSharedIndexError | null = null;
 
   constructor(private cg: CodeGraph | null) {}
 
@@ -686,6 +708,16 @@ export class ToolHandler {
    */
   setDefaultCodeGraph(cg: CodeGraph): void {
     this.cg = cg;
+    this.defaultOpenFailure = null;
+  }
+
+  /**
+   * Engine-only: record why the default project failed to open (upstream
+   * #995), so a call that needs it answers with that fix rather than "no
+   * project loaded". `null` clears it.
+   */
+  setDefaultOpenFailure(err: WslSharedIndexError | null): void {
+    this.defaultOpenFailure = err;
   }
 
   /**
@@ -820,6 +852,7 @@ export class ToolHandler {
   private getCodeGraph(projectPath?: string): CodeGraph {
     if (!projectPath) {
       if (!this.cg) {
+        if (this.defaultOpenFailure) throw this.defaultOpenFailure;
         const searched = this.defaultProjectHint ?? process.cwd();
         throw new Error(
           'No CodeGraph project is loaded for this session.\n' +
@@ -1288,6 +1321,11 @@ export class ToolHandler {
       const withWorktree = this.withWorktreeNotice(result, args.projectPath as string | undefined);
       return this.withStalenessNotice(withWorktree, args.projectPath as string | undefined);
     } catch (err) {
+      // Windows and WSL sharing one index (upstream #995): the user's fix,
+      // not a malfunction — answer success-shaped with the guidance.
+      if (err instanceof WslSharedIndexError) {
+        return this.textResult(wslSharedIndexGuidance(err));
+      }
       return this.errorResult(`Tool execution failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
