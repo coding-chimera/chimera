@@ -11,6 +11,8 @@
  * runtime, where `node:sqlite` is not available but `bun:sqlite` is.
  */
 
+import { toWslSharedIndexError } from './wsl-shared-index';
+
 export interface SqliteStatement {
   run(...params: any[]): { changes: number; lastInsertRowid: number | bigint };
   get(...params: any[]): any;
@@ -84,6 +86,18 @@ function simplePragmaValue(row: unknown): unknown {
 }
 
 /**
+ * What a failed adapter call throws: the error itself, or — for a "disk I/O
+ * error" on a WSL index that Windows Chimera shares — the actionable rewrite
+ * (upstream #995). Every open runs its PRAGMAs and first reads through the
+ * adapter methods, and so does every later query. `iterate()` is left raw: a
+ * row-by-row wrapper would tax the unbounded scans it exists for, and a
+ * session reads through `get`/`all` long before it reaches one.
+ */
+function adapterFailure(dbPath: string, err: unknown): unknown {
+  return toWslSharedIndexError(err, dbPath) ?? err;
+}
+
+/**
  * Wraps Node's built-in `node:sqlite` (`DatabaseSync`) to match the
  * better-sqlite3 interface the rest of the code expects.
  *
@@ -94,12 +108,14 @@ function simplePragmaValue(row: unknown): unknown {
  */
 class NodeSqliteAdapter implements SqliteDatabase {
   private _db: any;
+  private readonly _dbPath: string;
   /** Active transaction depth — nested transaction() calls JOIN the outer unit. */
   private txnDepth = 0;
 
   constructor(dbPath: string, options: CreateDatabaseOptions = {}) {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { DatabaseSync } = require('node:sqlite');
+    this._dbPath = dbPath;
     this._db = options.readOnly ? new DatabaseSync(dbPath, { readOnly: true }) : new DatabaseSync(dbPath);
   }
 
@@ -111,24 +127,47 @@ class NodeSqliteAdapter implements SqliteDatabase {
     return this._db.isTransaction;
   }
 
+  private failure(err: unknown): unknown {
+    return adapterFailure(this._dbPath, err);
+  }
+
   prepare(sql: string): SqliteStatement {
     // node:sqlite matches better-sqlite3's calling convention (variadic
     // positional args, or a single object for @named params), so params forward
     // through unchanged.
-    const stmt = this._db.prepare(sql);
+    let stmt: any;
+    try {
+      stmt = this._db.prepare(sql);
+    } catch (err) {
+      throw this.failure(err);
+    }
+    const failure = (err: unknown): unknown => this.failure(err);
     return {
       run(...params: any[]) {
-        const r = stmt.run(...params);
+        let r: any;
+        try {
+          r = stmt.run(...params);
+        } catch (err) {
+          throw failure(err);
+        }
         return {
           changes: Number(r?.changes ?? 0),
           lastInsertRowid: r?.lastInsertRowid ?? 0,
         };
       },
       get(...params: any[]) {
-        return stmt.get(...params);
+        try {
+          return stmt.get(...params);
+        } catch (err) {
+          throw failure(err);
+        }
       },
       all(...params: any[]) {
-        return stmt.all(...params);
+        try {
+          return stmt.all(...params);
+        } catch (err) {
+          throw failure(err);
+        }
       },
       iterate(...params: any[]) {
         // node:sqlite StatementSync.iterate returns a live cursor — O(1)
@@ -139,7 +178,11 @@ class NodeSqliteAdapter implements SqliteDatabase {
   }
 
   exec(sql: string): void {
-    this._db.exec(sql);
+    try {
+      this._db.exec(sql);
+    } catch (err) {
+      throw this.failure(err);
+    }
   }
 
   pragma(str: string, options?: { simple?: boolean }): any {
@@ -147,12 +190,12 @@ class NodeSqliteAdapter implements SqliteDatabase {
     // Write pragma ("key = value"): node:sqlite is real SQLite, so every pragma
     // (WAL, mmap, synchronous, …) applies as-is.
     if (trimmed.includes('=')) {
-      this._db.exec(`PRAGMA ${trimmed}`);
+      this.exec(`PRAGMA ${trimmed}`);
       return;
     }
     // Read pragma. Default: the row object (e.g. { journal_mode: 'wal' }).
     // `{ simple: true }` returns just the single column value, like better-sqlite3.
-    const row = this._db.prepare(`PRAGMA ${trimmed}`).get();
+    const row = this.prepare(`PRAGMA ${trimmed}`).get();
     if (options?.simple) {
       return simplePragmaValue(row);
     }
@@ -207,6 +250,7 @@ class NodeSqliteAdapter implements SqliteDatabase {
  */
 class BunSqliteAdapter implements SqliteDatabase {
 private _db: any;
+  private readonly _dbPath: string;
   private _open = true;
   /** Active transaction depth — nested transaction() calls JOIN the outer unit. */
   private txnDepth = 0;
@@ -214,6 +258,7 @@ private _db: any;
   constructor(dbPath: string, options: CreateDatabaseOptions = {}) {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { Database } = require('bun:sqlite');
+    this._dbPath = dbPath;
     this._db = new Database(dbPath, options.readOnly ? { readonly: true } : undefined);
   }
 
@@ -227,21 +272,44 @@ private _db: any;
     return this._db.inTransaction;
   }
 
+  private failure(err: unknown): unknown {
+    return adapterFailure(this._dbPath, err);
+  }
+
   prepare(sql: string): SqliteStatement {
-    const stmt = this._db.prepare(sql);
+    let stmt: any;
+    try {
+      stmt = this._db.prepare(sql);
+    } catch (err) {
+      throw this.failure(err);
+    }
+    const failure = (err: unknown): unknown => this.failure(err);
     return {
       run(...params: any[]) {
-        const r = stmt.run(...normalizeStatementParams(params));
+        let r: any;
+        try {
+          r = stmt.run(...normalizeStatementParams(params));
+        } catch (err) {
+          throw failure(err);
+        }
         return {
           changes: Number(r?.changes ?? 0),
           lastInsertRowid: r?.lastInsertRowid ?? 0,
         };
       },
       get(...params: any[]) {
-        return stmt.get(...normalizeStatementParams(params));
+        try {
+          return stmt.get(...normalizeStatementParams(params));
+        } catch (err) {
+          throw failure(err);
+        }
       },
       all(...params: any[]) {
-        return stmt.all(...normalizeStatementParams(params));
+        try {
+          return stmt.all(...normalizeStatementParams(params));
+        } catch (err) {
+          throw failure(err);
+        }
       },
       iterate(...params: any[]) {
         // bun:sqlite Statement.iterate returns a live cursor — O(1) memory
@@ -256,17 +324,21 @@ private _db: any;
   }
 
   exec(sql: string): void {
-    this._db.exec(sql);
+    try {
+      this._db.exec(sql);
+    } catch (err) {
+      throw this.failure(err);
+    }
   }
 
   pragma(str: string, options?: { simple?: boolean }): any {
     const trimmed = str.trim();
     if (trimmed.includes('=')) {
-      this._db.exec(`PRAGMA ${trimmed}`);
+      this.exec(`PRAGMA ${trimmed}`);
       return;
     }
 
-    const row = this._db.prepare(`PRAGMA ${trimmed}`).get();
+    const row = this.prepare(`PRAGMA ${trimmed}`).get();
     if (options?.simple) {
       return simplePragmaValue(row);
     }
@@ -339,6 +411,12 @@ export function createDatabase(
     try {
       return { db: attempt.open(), backend: attempt.backend };
     } catch (error) {
+      // A "disk I/O error" on a WSL index that Windows Chimera shares is an
+      // explained condition, not a missing-backend case — surface the
+      // actionable rewrite instead of falling through to the next backend
+      // (which would fail the same way) and the generic wrap below (#995).
+      const shared = toWslSharedIndexError(error, dbPath);
+      if (shared) throw shared;
       const msg = error instanceof Error ? error.message : String(error);
       errors.push(`${attempt.backend}: ${msg}`);
     }
