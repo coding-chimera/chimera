@@ -13,9 +13,11 @@ import {
   listEditIntentWaiterHosts,
   readActiveEditIntentClaims,
   readEditIntentWaiters,
+  readWokenEditIntentWaiters,
   registerEditIntentClaims,
   registerEditIntentWaiter,
   releaseEditIntentClaims,
+  releaseEditIntentClaimsForFiles,
   takeWokenEditIntentWaiters,
   type EditIntentClaimRecord,
   type EditIntentClaimReleaseReason,
@@ -27,6 +29,18 @@ const log = Log.create({ service: "chimera.edit-intent" })
 
 const MAX_CONTEXT_FILES = 8
 const MAX_INTENT_CHARS = 140
+
+/**
+ * Bounded wake-priority window (G1 fairness handoff). After a release wakes
+ * queued waiters, the woken sessions hold their files as soft holders for
+ * this long so a freshly arriving session cannot win the re-claim race
+ * against a first waiter that has not reacted yet (FIFO wake order alone
+ * only guarantees notification order, not acquisition order). Window expiry
+ * falls back to the free race, so the hold can never deadlock a file — the
+ * worst case is one window of waiting. Promote to config if a tunable is
+ * ever needed.
+ */
+export const WAKE_PRIORITY_WINDOW_MS = 10 * 60 * 1000
 
 // Roots with waiters registered by this process; gates the cross-process poll
 // so a process without pending waiters does zero DB work per tick.
@@ -109,8 +123,20 @@ export type EditIntentConflict = {
     createdAt: string
     expiresAt: string
   }
+  /**
+   * Set when the blocker is a woken waiter's soft hold (G1) rather than a
+   * real claim; `holder` then carries synthesized display values keyed to
+   * the wake, and this field carries the authoritative facts.
+   */
+  wakePriority?: {
+    sessionID: string
+    wokenAt: string
+    windowExpiresAt: string
+  }
   /** True when the checking session already queued its own claim on the file. */
   ownClaimQueued: boolean
+  /** True when the session's earlier queued claim was yielded to the wake-priority holder (G1). */
+  yieldedOwnClaim?: boolean
 }
 
 export type EditIntentWakeFile = {
@@ -143,6 +169,14 @@ function heldAge(createdAt: string) {
   return `${Math.floor(minutes / 60)}h ago`
 }
 
+/** Human remaining time until a wake-priority window closes. */
+function windowRemaining(expiresAt: string) {
+  const ms = Date.parse(expiresAt) - Date.now()
+  if (!Number.isFinite(ms) || ms <= 0) return "any moment"
+  const minutes = Math.ceil(ms / 60_000)
+  return minutes < 60 ? `in ${minutes}m` : `in ${Math.ceil(minutes / 60)}h`
+}
+
 function conflictFrom(claim: EditIntentClaimRecord, ownClaimQueued: boolean): EditIntentConflict {
   return {
     filePath: claim.filePath,
@@ -155,6 +189,31 @@ function conflictFrom(claim: EditIntentClaimRecord, ownClaimQueued: boolean): Ed
       expiresAt: claim.expiresAt,
     },
     ownClaimQueued,
+  }
+}
+
+/**
+ * G1 soft-hold conflict from an in-window woken waiter. The holder shape is
+ * synthesized so consumers that render holder.sessionID/agent (for example
+ * the predesign receipt) degrade to sensible text; `wakePriority` carries
+ * the authoritative soft-hold facts for wake-aware renderers.
+ */
+function wakePriorityConflict(waiter: EditIntentWaiterRecord, ownClaimQueued: boolean, yieldedOwnClaim: boolean): EditIntentConflict {
+  const wokenAt = waiter.wokenAt ?? new Date().toISOString()
+  const windowExpiresAt = new Date(Date.parse(wokenAt) + WAKE_PRIORITY_WINDOW_MS).toISOString()
+  return {
+    filePath: waiter.filePath,
+    holder: {
+      sessionID: waiter.sessionID,
+      agent: "wake-priority",
+      intent: "first-woken waiter holds this file in its bounded wake-priority window",
+      predesignID: "",
+      createdAt: wokenAt,
+      expiresAt: windowExpiresAt,
+    },
+    wakePriority: { sessionID: waiter.sessionID, wokenAt, windowExpiresAt },
+    ownClaimQueued,
+    ...(yieldedOwnClaim ? { yieldedOwnClaim: true } : {}),
   }
 }
 
@@ -193,6 +252,32 @@ function queueConflicts(claims: EditIntentClaimRecord[], sessionID: string) {
   return conflicts.sort((a, b) => a.filePath.localeCompare(b.filePath))
 }
 
+/**
+ * G1 wake-priority soft holds: for each file, the earliest woken waiter
+ * still inside the priority window and owned by another session. Rows
+ * arrive woken_at ASC from the store, so the first row per file is the
+ * priority holder; the wake side already guarantees FIFO notification
+ * order. Degrades open to no holds on storage trouble.
+ */
+const readWakePriorityHolds = Effect.fnUntraced(function* (projectRoot: string, sessionID: string, files: string[]) {
+  if (files.length === 0) return new Map<string, EditIntentWaiterRecord>()
+  const woken = yield* Effect.promise(() =>
+    readWokenEditIntentWaiters(projectRoot, {
+      files,
+      wokenSince: new Date(Date.now() - WAKE_PRIORITY_WINDOW_MS).toISOString(),
+      excludeSessionID: sessionID,
+    }).catch((error) => {
+      log.warn("edit-intent wake-priority read failed", { error })
+      return [] as EditIntentWaiterRecord[]
+    }),
+  )
+  const holds = new Map<string, EditIntentWaiterRecord>()
+  for (const waiter of woken) {
+    if (!holds.has(waiter.filePath)) holds.set(waiter.filePath, waiter)
+  }
+  return holds
+})
+
 const registerWaiters = Effect.fnUntraced(function* (
   projectRoot: string,
   sessionID: string,
@@ -215,6 +300,10 @@ const registerWaiters = Effect.fnUntraced(function* (
   }
 })
 
+function mergeConflicts(conflicts: EditIntentConflict[]) {
+  return conflicts.sort((a, b) => a.filePath.localeCompare(b.filePath))
+}
+
 export const registerFromPredesign = Effect.fn("EditIntentClaims.registerFromPredesign")(function* (input: {
   projectRoot: string
   sessionID: string
@@ -228,7 +317,87 @@ export const registerFromPredesign = Effect.fn("EditIntentClaims.registerFromPre
 }) {
   const files = uniquePaths(input.files)
   if (files.length === 0) return { registered: [] as EditIntentClaimRecord[], conflicts: [] as EditIntentConflict[] }
-  const registered = yield* Effect.promise(() =>
+  // G1: files soft-held by another session's in-window wake get no claim row
+  // here — inserting one would rank ahead of the priority holder's imminent
+  // registration (created_at queue) and invert the handoff.
+  const holds = yield* readWakePriorityHolds(input.projectRoot, input.sessionID, files)
+  const heldActive = holds.size === 0 ? [] : yield* readHeldClaims(input.projectRoot, [...holds.keys()])
+  // A still-active foreign real claim on a held file keeps the claim queue
+  // authoritative (normally such a claim suppresses the wake — this is the
+  // rare re-hold gap): register normally, no soft hold.
+  const softHeld = [...holds.keys()].filter(
+    (file) => !heldActive.some((claim) => claim.filePath === file && claim.sessionID !== input.sessionID),
+  )
+  // A claim this session already queued before the holder's wake keeps its
+  // FIFO rank — the handoff targets fresh arrivals, not the pre-existing
+  // claim queue. Later-queued own claims would block the priority holder's
+  // registration, so they are yielded and the session re-queues as a waiter.
+  const wakePriorityBlocked = (file: string) => {
+    const wokenAt = Date.parse(holds.get(file)?.wokenAt ?? "")
+    return !heldActive.some(
+      (claim) => claim.filePath === file && claim.sessionID === input.sessionID && Date.parse(claim.createdAt) <= wokenAt,
+    )
+  }
+  const blockedFiles = softHeld.filter(wakePriorityBlocked)
+  const yieldFiles = blockedFiles.filter((file) =>
+    heldActive.some((claim) => claim.filePath === file && claim.sessionID === input.sessionID),
+  )
+  const yielded = yieldFiles.length === 0 ? [] : yield* yieldQueuedClaims(input.projectRoot, input.sessionID, yieldFiles)
+  // A failed yield falls back to normal registration for those files:
+  // keeping the queued claim AND soft-blocking this session would stall
+  // both sides until the window expired.
+  const blockedSet = new Set(yielded === null ? blockedFiles.filter((file) => !yieldFiles.includes(file)) : blockedFiles)
+  const yieldedSet = new Set(yielded === null ? [] : yieldFiles)
+  const claimFiles = files.filter((file) => !blockedSet.has(file))
+  const registered = claimFiles.length === 0 ? [] : yield* registerClaims(input, claimFiles)
+  const active = yield* Effect.promise(() =>
+    readActiveEditIntentClaims(input.projectRoot, { files }).catch((error) => {
+      log.warn("edit-intent conflict read failed", { error })
+      return [] as EditIntentClaimRecord[]
+    }),
+  )
+  const conflicts = mergeConflicts([
+    ...queueConflicts(active, input.sessionID),
+    ...[...blockedSet].map((file) => wakePriorityConflict(holds.get(file)!, false, yieldedSet.has(file))),
+  ])
+  // Queue this session behind every holder so the release broadcast (L2 wake)
+  // reaches it even if it parks without ever attempting the edit.
+  yield* registerWaiters(input.projectRoot, input.sessionID, conflicts, `predesign:${input.predesignID}`)
+  return { registered, conflicts }
+})
+
+const readHeldClaims = Effect.fnUntraced(function* (projectRoot: string, files: string[]) {
+  return yield* Effect.promise(() =>
+    readActiveEditIntentClaims(projectRoot, { files }).catch((error) => {
+      log.warn("edit-intent wake-priority claim read failed", { error })
+      return [] as EditIntentClaimRecord[]
+    }),
+  )
+})
+
+const yieldQueuedClaims = Effect.fnUntraced(function* (projectRoot: string, sessionID: string, files: string[]) {
+  return yield* Effect.promise(() =>
+    releaseEditIntentClaimsForFiles(projectRoot, sessionID, files, "yielded").catch((error) => {
+      log.warn("edit-intent wake-priority yield failed", { error })
+      return null
+    }),
+  )
+})
+
+const registerClaims = Effect.fnUntraced(function* (
+  input: {
+    projectRoot: string
+    sessionID: string
+    messageID?: string
+    callID?: string
+    agent: string
+    predesignID: string
+    intent: string
+    snapshotRevision?: string
+  },
+  files: string[],
+) {
+  return yield* Effect.promise(() =>
     registerEditIntentClaims(input.projectRoot, {
       id: input.predesignID,
       sessionID: input.sessionID,
@@ -243,17 +412,6 @@ export const registerFromPredesign = Effect.fn("EditIntentClaims.registerFromPre
       return [] as EditIntentClaimRecord[]
     }),
   )
-  const active = yield* Effect.promise(() =>
-    readActiveEditIntentClaims(input.projectRoot, { files }).catch((error) => {
-      log.warn("edit-intent conflict read failed", { error })
-      return [] as EditIntentClaimRecord[]
-    }),
-  )
-  const conflicts = queueConflicts(active, input.sessionID)
-  // Queue this session behind every holder so the release broadcast (L2 wake)
-  // reaches it even if it parks without ever attempting the edit.
-  yield* registerWaiters(input.projectRoot, input.sessionID, conflicts, `predesign:${input.predesignID}`)
-  return { registered, conflicts }
 })
 
 export const checkMutation = Effect.fn("EditIntentClaims.checkMutation")(function* (input: {
@@ -271,28 +429,52 @@ export const checkMutation = Effect.fn("EditIntentClaims.checkMutation")(functio
     }),
   )
   const conflicts = queueConflicts(claims, input.sessionID)
-  yield* registerWaiters(input.projectRoot, input.sessionID, conflicts, `mutation_gate:${input.toolID}`)
-  return conflicts
+  // G1: files without a real claim conflict can still be soft-held by
+  // another session's in-window wake — the first waiter gets a bounded
+  // head start to re-claim before fresh arrivals race it.
+  const open = paths.filter((filePath) => !conflicts.some((conflict) => conflict.filePath === filePath))
+  const holds = yield* readWakePriorityHolds(input.projectRoot, input.sessionID, open)
+  const softConflicts = [...holds.values()].flatMap((hold) => {
+    const wokenAt = Date.parse(hold.wokenAt ?? "")
+    // A claim this session queued before the holder's wake keeps its FIFO
+    // rank: the handoff targets fresh arrivals, not the pre-existing claim
+    // queue (queued claims are yielded at predesign re-registration).
+    const queuedBeforeWake = claims.some(
+      (claim) => claim.filePath === hold.filePath && claim.sessionID === input.sessionID && Date.parse(claim.createdAt) <= wokenAt,
+    )
+    if (queuedBeforeWake) return []
+    const ownClaimQueued = claims.some((claim) => claim.filePath === hold.filePath && claim.sessionID === input.sessionID)
+    return [wakePriorityConflict(hold, ownClaimQueued, false)]
+  })
+  const all = mergeConflicts([...conflicts, ...softConflicts])
+  yield* registerWaiters(input.projectRoot, input.sessionID, all, `mutation_gate:${input.toolID}`)
+  return all
 })
 
 export function blockedResult(input: { toolID: string; conflicts: EditIntentConflict[] }): Tool.ExecuteResult {
-  const unqueued = input.conflicts.filter((conflict) => !conflict.ownClaimQueued)
+  const unqueued = input.conflicts.filter((conflict) => !conflict.ownClaimQueued && !conflict.wakePriority)
+  const wakePriority = input.conflicts.filter((conflict) => conflict.wakePriority !== undefined)
   return {
     title: "Chimera edit-intent claim conflict",
     output: [
       TOOL_MUTATION_EDIT_INTENT_BLOCKED,
       "",
       "Conflicting claims:",
-      ...input.conflicts.map(
-        (conflict) =>
-          `- ${conflict.filePath}: held by session ${conflict.holder.sessionID} (agent ${conflict.holder.agent}) since ${heldAge(conflict.holder.createdAt)}; intent: ${compactIntent(conflict.holder.intent)}${conflict.ownClaimQueued ? "; your claim is queued behind it" : ""}`,
-      ),
+      ...input.conflicts.map((conflict) => {
+        if (!conflict.wakePriority)
+          return `- ${conflict.filePath}: held by session ${conflict.holder.sessionID} (agent ${conflict.holder.agent}) since ${heldAge(conflict.holder.createdAt)}; intent: ${compactIntent(conflict.holder.intent)}${conflict.ownClaimQueued ? "; your claim is queued behind it" : ""}`
+        const yieldedSuffix = conflict.yieldedOwnClaim ? "; your earlier queued claim was yielded to it — you are re-queued as a waiter and will be woken when it releases" : ""
+        return `- ${conflict.filePath}: held in wake-priority window by session ${conflict.wakePriority.sessionID} (first waiter, woken ${heldAge(conflict.wakePriority.wokenAt)}, window expires ${windowRemaining(conflict.wakePriority.windowExpiresAt)})${yieldedSuffix}`
+      }),
       "",
       "What to do:",
       "- Do not retry this mutation in a loop; the claim stays active until the holder's run completes or its session is removed (a TTL is only a crash fallback).",
       "- Continue with non-conflicting files first; when every conflicting file frees up, a release notice is injected into this session automatically — re-read the files then (they may have changed) and continue the blocked work.",
       ...(unqueued.length > 0
         ? [`- Record chimera_predesign declaring ${unqueued.map((conflict) => conflict.filePath).join(", ")} to queue your own claim behind the holder${unqueued.length > 1 ? "s" : ""}.`]
+        : []),
+      ...(wakePriority.length > 0
+        ? [`- A wake-priority hold is time-bounded: if the woken session${wakePriority.length > 1 ? "s do" : " does"} not claim ${wakePriority.map((conflict) => conflict.filePath).join(", ")}, the window expires (at most ${Math.ceil(WAKE_PRIORITY_WINDOW_MS / 60_000)} minutes after the wake) and a retry then proceeds normally.`]
         : []),
       "- If you believe the holder is stale or you must proceed anyway, report the conflict to the user (or your parent agent) instead of forcing the edit.",
     ].join("\n"),
@@ -307,6 +489,14 @@ export function blockedResult(input: { toolID: string; conflicts: EditIntentConf
         heldSince: conflict.holder.createdAt,
         expiresAt: conflict.holder.expiresAt,
         ownClaimQueued: conflict.ownClaimQueued,
+        ...(conflict.wakePriority
+          ? {
+              wakePrioritySessionID: conflict.wakePriority.sessionID,
+              wakePriorityWokenAt: conflict.wakePriority.wokenAt,
+              wakePriorityWindowExpiresAt: conflict.wakePriority.windowExpiresAt,
+            }
+          : {}),
+        ...(conflict.yieldedOwnClaim ? { yieldedOwnClaim: true } : {}),
       })),
     },
   }
@@ -331,6 +521,7 @@ const REASON_TEXT: Record<EditIntentClaimReleaseReason, string> = {
   session_removed: "the holder's session was removed",
   ttl: "the claim reached its TTL crash fallback",
   explicit: "the holder released it explicitly",
+  yielded: "your earlier queued claim was yielded to the first-woken session (wake-priority handoff)",
 }
 
 export function wakeText(target: EditIntentWakeTarget) {
