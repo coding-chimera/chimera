@@ -14,6 +14,7 @@ import type CodeGraph from '../index';
 import { findNearestCodeGraphRoot } from '../directory';
 import { watchDisabledReason } from '../sync';
 import { ToolHandler } from './tools';
+import { WslSharedIndexError } from '../db/wsl-shared-index';
 import { releaseWriterLock, tryAcquireWriterLock, writerLockHeldMessage } from './writer-lock';
 
 // Lazy-load the heavy CodeGraph chain (sqlite + query/graph/context layers) OFF
@@ -167,8 +168,11 @@ export class MCPEngine {
       this.toolHandler.setDefaultCodeGraph(this.cg);
       this.startWatching();
       this.catchUpSync();
-    } catch {
-      // Still failing — caller will try again on the next tool call.
+    } catch (err) {
+      // Still failing — caller will try again on the next tool call. Record a
+      // Windows/WSL shared-index failure so the agent hears the fix instead of
+      // "no project loaded" (upstream #995).
+      this.toolHandler.setDefaultOpenFailure(err instanceof WslSharedIndexError ? err : null);
     }
   }
 
@@ -209,6 +213,8 @@ this.toolHandler.closeAll();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       process.stderr.write(`[CodeGraph MCP] Failed to open project at ${resolvedRoot}: ${msg}\n`);
+      // The agent otherwise hears only "no project loaded" (upstream #995).
+      this.toolHandler.setDefaultOpenFailure(err instanceof WslSharedIndexError ? err : null);
     }
   }
 
