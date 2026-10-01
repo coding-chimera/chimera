@@ -221,6 +221,24 @@ export class GraphTraverser {
   }
 
   /**
+   * Depth-limited walks record the SHALLOWEST depth each node was expanded at.
+   * A node first reached through a longer path at the depth limit is expanded
+   * again when a shorter path reaches it, so its own dependents within the
+   * limit are not lost to edge order (#1974). Returns false when the node was
+   * already expanded at this depth or nearer.
+   */
+  private enterAtDepth(visited: Map<string, number>, nodeId: string, depth: number): boolean {
+    if (!this.nearerThanBefore(visited, nodeId, depth)) return false;
+    visited.set(nodeId, depth);
+    return true;
+  }
+
+  private nearerThanBefore(visited: Map<string, number>, nodeId: string, depth: number): boolean {
+    const seen = visited.get(nodeId);
+    return seen === undefined || depth < seen;
+  }
+
+  /**
    * Find all callers of a function/method
    *
    * @param nodeId - ID of the function/method node
@@ -229,9 +247,9 @@ export class GraphTraverser {
    */
   getCallers(nodeId: string, maxDepth: number = 1): Array<{ node: Node; edge: Edge }> {
     const result: Array<{ node: Node; edge: Edge }> = [];
-    const visited = new Set<string>();
+    const visited = new Map<string, number>();
 
-    this.getCallersRecursive(nodeId, maxDepth, 0, result, visited);
+    this.getCallersRecursive(nodeId, maxDepth, 0, result, visited, new Set([nodeId]));
 
     return result;
   }
@@ -241,12 +259,20 @@ export class GraphTraverser {
     maxDepth: number,
     currentDepth: number,
     result: Array<{ node: Node; edge: Edge }>,
-    visited: Set<string>
+    visited: Map<string, number>,
+    reported: Set<string>
   ): void {
-    if (currentDepth >= maxDepth || visited.has(nodeId)) {
+    // Mark visited BEFORE the depth check, not after. Folding both into one
+    // guard meant that when `currentDepth >= maxDepth` fired we returned without
+    // marking the node — so a caller reachable from the same parent via two
+    // edges (two call sites, or calls + references) was pushed once per edge,
+    // duplicating it in `result` at the default `maxDepth=1` (#1086). Recording
+    // the shallowest expansion depth lets a nearer path re-expand the node so
+    // its own callers within the limit are not lost to edge order (#1974).
+    if (!this.enterAtDepth(visited, nodeId, currentDepth)) return;
+    if (currentDepth >= maxDepth) {
       return;
     }
-    visited.add(nodeId);
 
     const incomingEdges = this.queries.getIncomingEdges(nodeId, ['calls', 'references', 'imports']);
     if (incomingEdges.length === 0) return;
@@ -258,10 +284,12 @@ export class GraphTraverser {
 
     for (const edge of incomingEdges) {
       const callerNode = callerNodes.get(edge.source);
-      if (callerNode && !visited.has(callerNode.id)) {
+      if (!callerNode || !this.nearerThanBefore(visited, callerNode.id, currentDepth + 1)) continue;
+      if (!reported.has(callerNode.id)) {
+        reported.add(callerNode.id);
         result.push({ node: callerNode, edge });
-        this.getCallersRecursive(callerNode.id, maxDepth, currentDepth + 1, result, visited);
       }
+      this.getCallersRecursive(callerNode.id, maxDepth, currentDepth + 1, result, visited, reported);
     }
   }
 
@@ -274,9 +302,9 @@ export class GraphTraverser {
    */
   getCallees(nodeId: string, maxDepth: number = 1): Array<{ node: Node; edge: Edge }> {
     const result: Array<{ node: Node; edge: Edge }> = [];
-    const visited = new Set<string>();
+    const visited = new Map<string, number>();
 
-    this.getCalleesRecursive(nodeId, maxDepth, 0, result, visited);
+    this.getCalleesRecursive(nodeId, maxDepth, 0, result, visited, new Set([nodeId]));
 
     return result;
   }
@@ -286,12 +314,16 @@ export class GraphTraverser {
     maxDepth: number,
     currentDepth: number,
     result: Array<{ node: Node; edge: Edge }>,
-    visited: Set<string>
+    visited: Map<string, number>,
+    reported: Set<string>
   ): void {
-    if (currentDepth >= maxDepth || visited.has(nodeId)) {
+    // Mark visited before the depth check — see getCallersRecursive: the merged
+    // guard dropped the `visited.add` at the depth boundary, duplicating a
+    // callee reached from the same node via two edges at `maxDepth=1` (#1086).
+    if (!this.enterAtDepth(visited, nodeId, currentDepth)) return;
+    if (currentDepth >= maxDepth) {
       return;
     }
-    visited.add(nodeId);
 
     // Upstream v1.6.1 final state (#774): a function that constructs a class
     // (`Foo(...)` / `new Foo()`) has that class as a callee, so `trace` can
@@ -307,10 +339,12 @@ export class GraphTraverser {
 
     for (const edge of outgoingEdges) {
       const calleeNode = calleeNodes.get(edge.target);
-      if (calleeNode && !visited.has(calleeNode.id)) {
+      if (!calleeNode || !this.nearerThanBefore(visited, calleeNode.id, currentDepth + 1)) continue;
+      if (!reported.has(calleeNode.id)) {
+        reported.add(calleeNode.id);
         result.push({ node: calleeNode, edge });
-        this.getCalleesRecursive(calleeNode.id, maxDepth, currentDepth + 1, result, visited);
       }
+      this.getCalleesRecursive(calleeNode.id, maxDepth, currentDepth + 1, result, visited, reported);
     }
   }
 
@@ -476,7 +510,7 @@ export class GraphTraverser {
 
     const nodes = new Map<string, Node>();
     const edges: Edge[] = [];
-    const visited = new Set<string>();
+    const visited = new Map<string, number>();
 
     // Add focal node
     nodes.set(focalNode.id, focalNode);
@@ -497,12 +531,19 @@ export class GraphTraverser {
     currentDepth: number,
     nodes: Map<string, Node>,
     edges: Edge[],
-    visited: Set<string>
+    visited: Map<string, number>
   ): void {
-    if (currentDepth >= maxDepth || visited.has(nodeId)) {
+    // Mark visited before the depth check so a node collected at the depth
+    // boundary still lands in `visited`, and record the shallowest expansion
+    // depth: a node first reached through a longer path at the depth limit is
+    // expanded again when a nearer path reaches it, so its own dependents
+    // within the limit are not lost to edge order (#1974). Collection below
+    // stays gated on `!nodes.has(...)`, which is stable across re-expansions,
+    // so no node or edge is ever recorded twice.
+    if (!this.enterAtDepth(visited, nodeId, currentDepth)) return;
+    if (currentDepth >= maxDepth) {
       return;
     }
-    visited.add(nodeId);
 
     // For container nodes (classes, interfaces, structs, etc.), also traverse
     // into their children so that callers of contained methods appear in impact
@@ -515,9 +556,11 @@ export class GraphTraverser {
           const children = this.queries.getNodesByIds(containsEdges.map((e) => e.target));
           for (const edge of containsEdges) {
             const childNode = children.get(edge.target);
-            if (childNode && !visited.has(childNode.id)) {
-              nodes.set(childNode.id, childNode);
-              edges.push(edge);
+            if (childNode && this.nearerThanBefore(visited, childNode.id, currentDepth)) {
+              if (!nodes.has(childNode.id)) {
+                nodes.set(childNode.id, childNode);
+                edges.push(edge);
+              }
               // Recurse into children at the same depth (they're part of the same symbol)
               this.getImpactRecursive(childNode.id, maxDepth, currentDepth, nodes, edges, visited);
             }
@@ -533,9 +576,12 @@ export class GraphTraverser {
 
     for (const edge of incomingEdges) {
       const sourceNode = sources.get(edge.source);
-      if (sourceNode && !nodes.has(sourceNode.id)) {
+      if (!sourceNode) continue;
+      if (!nodes.has(sourceNode.id)) {
         nodes.set(sourceNode.id, sourceNode);
         edges.push(edge);
+      }
+      if (this.nearerThanBefore(visited, sourceNode.id, currentDepth + 1)) {
         this.getImpactRecursive(sourceNode.id, maxDepth, currentDepth + 1, nodes, edges, visited);
       }
     }
