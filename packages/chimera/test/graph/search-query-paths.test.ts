@@ -90,7 +90,7 @@ describe('extractQueryPaths — resolution and stripping', () => {
   });
 
   it('resolves an absolute path by walking suffixes to the indexed relative path', () => {
-    const q = 'fix /Users/colby/dev/beads-live-dashboard/src/lib/chat-manager.ts';
+    const q = 'fix /Users/dev-1/beads-live-dashboard/src/lib/chat-manager.ts';
     const out = extractQueryPaths(q, INDEX);
     expect(out.pinnedFiles).toEqual(['src/lib/chat-manager.ts']);
   });
