@@ -2704,6 +2704,10 @@ export class ToolHandler {
       // outranks even the query's entry points: an entry is what the search
       // happened to rank first, an exact target is what the agent pointed at.
       const EXACT_IMPORTANCE = 11;
+      // Members the query ASKED for — named (9), entry point (10), exact (11).
+      // Everything below (glue 6, connected 3, edge lines 2, peripheral 1) is
+      // INCIDENTAL context that happens to sit within `gapThreshold` of them.
+      const PROTECTED_IMPORTANCE = 9;
       const ranges: Array<{ start: number; end: number; name: string; kind: string; importance: number }> = [...rangeNodes.values()]
         // Drop whole-file envelope nodes (containers covering >50% of the file).
         .filter(n => !(ENVELOPE_KINDS.has(n.kind) && (n.endLine - n.startLine + 1) > fileLines.length * 0.5))
@@ -2750,13 +2754,15 @@ export class ToolHandler {
       if (ranges.length === 0) continue;
 
       const gapThreshold = budget.gapThreshold;
-      const clusters: Array<{ start: number; end: number; symbols: string[]; score: number; maxImportance: number }> = [];
+      const clusters: Array<{ start: number; end: number; symbols: string[]; score: number; maxImportance: number; members: typeof ranges; protectedSymbols: string[] }> = [];
       let current = {
         start: ranges[0]!.start,
         end: ranges[0]!.end,
         symbols: [`${ranges[0]!.name}(${ranges[0]!.kind})`],
         score: ranges[0]!.importance,
         maxImportance: ranges[0]!.importance,
+        members: [ranges[0]!],
+        protectedSymbols: ranges[0]!.importance >= PROTECTED_IMPORTANCE ? [`${ranges[0]!.name}(${ranges[0]!.kind})`] : [],
       };
 
       for (let i = 1; i < ranges.length; i++) {
@@ -2766,6 +2772,8 @@ export class ToolHandler {
           current.symbols.push(`${r.name}(${r.kind})`);
           current.score += r.importance;
           current.maxImportance = Math.max(current.maxImportance, r.importance);
+          current.members.push(r);
+          if (r.importance >= PROTECTED_IMPORTANCE) current.protectedSymbols.push(`${r.name}(${r.kind})`);
         } else {
           clusters.push(current);
           current = {
@@ -2774,6 +2782,8 @@ export class ToolHandler {
             symbols: [`${r.name}(${r.kind})`],
             score: r.importance,
             maxImportance: r.importance,
+            members: [r],
+            protectedSymbols: r.importance >= PROTECTED_IMPORTANCE ? [`${r.name}(${r.kind})`] : [],
           };
         }
       }
@@ -2827,22 +2837,83 @@ export class ToolHandler {
       // That source-order slice is what cut Django's `_fetch_all` (L2237, importance
       // 9 — agent-named) when query.py was the last of four big files to be emitted.
       const fileBudget = Math.min(budget.maxCharsPerFile, Math.max(0, budget.maxOutputChars - totalChars - 200));
+      // #2062 (fork adaptation): a cluster's INCIDENTAL members (not named,
+      // not an entry point, not exact) may only use what is left once every
+      // lower-ranked cluster's PROTECTED members are paid. Density counts
+      // every member, so a named function with unrelated helpers merged
+      // around it outranked a cluster holding a named function alone; taken
+      // WHOLE, the higher cluster spent the file's budget on the helpers and
+      // the isolated named function rendered nothing (upstream repro:
+      // lib/response.ts sendBody 0 of 36 lines). A cluster holding protected
+      // members that cannot fit whole inside the held-back budget shrinks to
+      // its protected core instead of dropping — its own protected members
+      // are never held back, so named-vs-named stays rank's call. Upstream's
+      // second rule (incidental members never kept past the render ceiling
+      // INSIDE a whole-rendered cluster) needs its member-level re-render
+      // machinery; the fork's core-shrink covers the same victim shape.
+      const coreSpansOf = (c: (typeof clusters)[number]): Array<{ start: number; end: number }> => {
+        const spans: Array<{ start: number; end: number }> = [];
+        for (const m of c.members.filter((m) => m.importance >= PROTECTED_IMPORTANCE).sort((a, b) => a.start - b.start)) {
+          const last = spans[spans.length - 1];
+          if (last && m.start <= last.end + gapThreshold) last.end = Math.max(last.end, m.end);
+          else spans.push({ start: m.start, end: m.end });
+        }
+        return spans;
+      };
+      const costOf = (spans: Array<{ start: number; end: number }>): number =>
+        spans.reduce((sum, s) => sum + buildSection(s).length, 0) + Math.max(0, spans.length - 1) * GAP_MARKER.length;
+      const cores = rankedClusters.map((rc) => (rc.c.maxImportance >= PROTECTED_IMPORTANCE ? coreSpansOf(rc.c) : []));
+      const coreCosts = cores.map((spans) => (spans.length > 0 ? costOf(spans) : 0));
+      // What the protected members of every cluster ranked BELOW position p
+      // cost to render — the bytes incidental members may not steal.
+      const owedBelow = (p: number): number => {
+        let owed = 0;
+        for (let q = p + 1; q < rankedClusters.length; q++) {
+          if (coreCosts[q]! > 0) owed += coreCosts[q]! + GAP_MARKER.length;
+        }
+        return owed;
+      };
       const chosenIndices = new Set<number>();
+      const chosenSpans = new Map<number, Array<{ start: number; end: number }>>();
       let projectedChars = 0;
-      for (const rc of rankedClusters) {
-        const sectionLen = buildSection(rc.c).length + (chosenIndices.size > 0 ? GAP_MARKER.length : 0);
+      let shrunkAny = false;
+      rankedClusters.forEach((rc, p) => {
+        const gapCost = chosenIndices.size > 0 ? GAP_MARKER.length : 0;
+        const fullLen = buildSection(rc.c).length + gapCost;
+        const core = cores[p]!;
+        const coreLen = core.length > 0 ? coreCosts[p]! + gapCost : 0;
+        const held = fileBudget - owedBelow(p);
         // Always take the top-ranked cluster, even if oversize, so we don't
         // return an empty file section (agent would then re-Read the file,
-        // negating the savings).
+        // negating the savings) — but shrunk to its protected core when the
+        // whole would eat what the protected members ranked below are owed.
         if (chosenIndices.size === 0) {
+          if (core.length > 0 && fullLen > held && coreLen < fullLen) {
+            chosenSpans.set(rc.idx, core);
+            projectedChars += coreLen;
+            shrunkAny = true;
+          } else {
+            chosenSpans.set(rc.idx, [{ start: rc.c.start, end: rc.c.end }]);
+            projectedChars += fullLen;
+          }
           chosenIndices.add(rc.idx);
-          projectedChars += sectionLen;
-          continue;
+          return;
         }
-        if (projectedChars + sectionLen > fileBudget) continue;
-        chosenIndices.add(rc.idx);
-        projectedChars += sectionLen;
-      }
+        if (projectedChars + fullLen <= held) {
+          chosenIndices.add(rc.idx);
+          chosenSpans.set(rc.idx, [{ start: rc.c.start, end: rc.c.end }]);
+          projectedChars += fullLen;
+          return;
+        }
+        // Its own protected members are never held back: when the whole
+        // cluster doesn't fit the held-back budget, the core still does.
+        if (core.length > 0 && projectedChars + coreLen <= fileBudget) {
+          chosenIndices.add(rc.idx);
+          chosenSpans.set(rc.idx, core);
+          projectedChars += coreLen;
+          shrunkAny = true;
+        }
+      });
 
       // Emit chosen clusters in source order so the file reads top-to-bottom.
       let fileSection = '';
@@ -2850,10 +2921,12 @@ export class ToolHandler {
       for (let i = 0; i < clusters.length; i++) {
         if (!chosenIndices.has(i)) continue;
         const cluster = clusters[i]!;
-        const section = buildSection(cluster);
+        const spans = chosenSpans.get(i)!;
+        const whole = spans.length === 1 && spans[0]!.start === cluster.start && spans[0]!.end === cluster.end;
+        const section = spans.map((s) => buildSection(s)).join(GAP_MARKER);
         if (fileSection.length > 0) fileSection += GAP_MARKER;
         fileSection += section;
-        allSymbols.push(...cluster.symbols);
+        allSymbols.push(...(whole ? cluster.symbols : cluster.protectedSymbols));
       }
 
       // A chosen cluster is a COMPLETE method-range — we never cut through a body.
@@ -2861,7 +2934,8 @@ export class ToolHandler {
       // half a method is useless (the agent just Reads the rest for the other half),
       // which is the very fallback explore exists to prevent. A pathological file is
       // bounded by the per-file cluster SELECTION above + the total hard ceiling.
-      if (chosenIndices.size < clusters.length) {
+      // A core-shrunk cluster (#2062) dropped its incidental members — trimmed too.
+      if (chosenIndices.size < clusters.length || shrunkAny) {
         anyFileTrimmed = true;
       }
 
