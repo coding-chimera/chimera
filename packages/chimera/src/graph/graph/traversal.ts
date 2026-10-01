@@ -274,7 +274,12 @@ export class GraphTraverser {
       return;
     }
 
-    const incomingEdges = this.queries.getIncomingEdges(nodeId, ['calls', 'references', 'imports']);
+    // `instantiates` counts as a caller: constructing a class (`Foo(...)` /
+    // `new Foo()`) is calling its constructor, so the instantiation site is a
+    // caller of the class. Without it, `callers <Class>` surfaced only the
+    // importing file (via `imports`) and missed every construction site —
+    // the opposite of "what breaks if I change this class?" (#774).
+    const incomingEdges = this.queries.getIncomingEdges(nodeId, ['calls', 'references', 'imports', 'instantiates', 'navigates']);
     if (incomingEdges.length === 0) return;
 
     // Batch-fetch all caller nodes in one round-trip instead of one
@@ -325,11 +330,10 @@ export class GraphTraverser {
       return;
     }
 
-    // Upstream v1.6.1 final state (#774): a function that constructs a class
-    // (`Foo(...)` / `new Foo()`) has that class as a callee, so `trace` can
-    // cross the instantiation boundary (function → class → its methods);
-    // `navigates` rides along for router-screen hops. Pre-existing fork
-    // divergence — the fork list was frozen at the pre-#774 seed import.
+    // Symmetric with getCallers: a function that constructs a class
+    // (`Foo(...)` / `new Foo()`) has that class as a callee, so callers and
+    // callees stay inverses of each other and `trace` can cross the
+    // instantiation boundary (function → class → its methods) (#774).
     const outgoingEdges = this.queries.getOutgoingEdges(nodeId, ['calls', 'references', 'imports', 'instantiates', 'navigates']);
     if (outgoingEdges.length === 0) return;
 
