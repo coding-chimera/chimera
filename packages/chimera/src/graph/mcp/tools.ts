@@ -24,7 +24,7 @@ import { LockUnavailableError } from '../sync';
 import { tryAcquireWriterLock, releaseWriterLock, writerLockHeldMessage } from './writer-lock';
 import type { Node, Edge, SearchResult, Subgraph, NodeKind } from '../types';
 import { isTestFile } from '../search/query-utils';
-import { extractQueryPaths, queryMightContainPaths, type QuerySetAsideMatch } from '../search/query-paths';
+import { extractQueryPaths, queryMightContainPaths, type QueryLineAnchor, type QuerySetAsideMatch } from '../search/query-paths';
 import {
   existsSync,
   readFileSync,
@@ -62,6 +62,16 @@ const MAX_PATH_LENGTH = 4_096;
  * same as `configurator::stage_apply::run`.
  */
 const RUST_PATH_PREFIXES = new Set(['crate', 'super', 'self']);
+
+/**
+ * Kinds a single-line anchor (`compiler.py:776`) resolves to: the innermost
+ * one containing the line is the symbol the agent is pointing at. A class
+ * enclosing the line is deliberately NOT a target — it spans most of its file,
+ * and "the whole class" is not what a line number asks for.
+ */
+const ANCHOR_CALLABLE_KINDS = new Set<string>(['method', 'function', 'constructor', 'component']);
+/** Lines either side of a single-line anchor that no callable encloses. */
+const ANCHOR_LINE_CONTEXT = 15;
 
 /**
  * Node kinds that contain other symbols. For these, `codegraph_node` with
@@ -1659,7 +1669,17 @@ export class ToolHandler {
    * that have no dependents (nothing to warn about), and returns '' when none
    * qualify so a leaf-only exploration stays clean.
    */
-  private buildBlastRadiusSection(cg: CodeGraph, subgraph: Subgraph): string {
+  private buildBlastRadiusSection(
+    cg: CodeGraph,
+    subgraph: Subgraph,
+    /**
+     * Exact targets (a qualified name, a line anchor) lead the list. The search
+     * roots are whatever FTS ranked first for the bare name, so without this a
+     * query for `SQLCompiler.as_sql` headlined `SQLInsertCompiler.as_sql` — and
+     * the agent took that as the tool having found the wrong method.
+     */
+    leadingIds: Iterable<string> = [],
+  ): string {
     const ROOT_CAP = 5; // only the symbols the query actually targeted
     const FILE_CAP = 4; // caller files listed per symbol before "+N more"
     const MEANINGFUL = new Set<string>([
@@ -1668,7 +1688,7 @@ export class ToolHandler {
     ]);
     const rel = (p: string) => p.replace(/\\/g, '/');
 
-    const roots = subgraph.roots
+    const roots = [...new Set([...leadingIds, ...subgraph.roots])]
       .map((id) => subgraph.nodes.get(id))
       .filter((n): n is Node => !!n && MEANINGFUL.has(n.kind))
       .slice(0, ROOT_CAP);
@@ -1851,6 +1871,7 @@ export class ToolHandler {
     let pinnedFiles: string[] = [];
     let unresolvedPathSpans: string[] = [];
     let setAsideMatches: QuerySetAsideMatch[] = [];
+    let lineAnchors: QueryLineAnchor[] = [];
     let matchQuery = query;
     if (queryMightContainPaths(query)) {
       try {
@@ -1867,6 +1888,7 @@ export class ToolHandler {
           pinnedFiles = extraction.pinnedFiles;
           unresolvedPathSpans = extraction.unresolvedPathSpans;
           setAsideMatches = extraction.setAsideMatches;
+          lineAnchors = extraction.lineAnchors;
           matchQuery = extraction.strippedQuery;
         }
       } catch { /* path pinning must never fail an explore call */ }
@@ -1910,6 +1932,42 @@ export class ToolHandler {
         if (!subgraph.nodes.has(n.id)) subgraph.nodes.set(n.id, n);
         pinnedNodeIds.add(n.id);
       }
+    }
+
+    // EXACT targets: callables the agent pointed at with no ambiguity left — a
+    // qualified name that resolves to at most a handful of defs
+    // (`SQLCompiler.as_sql`, filled in by the named-seed loop below) or the
+    // callable enclosing a line anchor (`compiler.py:776`). Every render path
+    // puts these first and never reduces one to a signature line: the agent
+    // has already said which of the 110 `as_sql`s it means, and an answer that
+    // spends the file on the named method's neighbours instead is the one it
+    // Reads the file to get past (upstream #2063).
+    const exactNodeIds = new Set<string>();
+    // A multi-line anchor (`lines 900-1003`, `foo.ts:12-40`) names a SPAN, not
+    // a symbol — often the tail of a body a previous response windowed — and
+    // is rendered as exactly that span. A single-line anchor with no enclosing
+    // callable (a module-level line) becomes a small span around the line.
+    const anchorSpans = new Map<string, Array<{ start: number; end: number }>>();
+    for (const anchor of lineAnchors) {
+      let anchorFileNodes: Node[] = [];
+      try { anchorFileNodes = cg.getNodesInFile(anchor.file); } catch { continue; }
+      if (anchor.start === anchor.end) {
+        const enclosing = anchorFileNodes
+          .filter((n) => ANCHOR_CALLABLE_KINDS.has(n.kind)
+            && n.startLine <= anchor.start && n.endLine >= anchor.start)
+          .sort((a, b) => (a.endLine - a.startLine) - (b.endLine - b.startLine))[0];
+        if (enclosing) {
+          exactNodeIds.add(enclosing.id);
+          if (!subgraph.nodes.has(enclosing.id)) subgraph.nodes.set(enclosing.id, enclosing);
+          continue;
+        }
+      }
+      const span = anchor.start === anchor.end
+        ? { start: Math.max(1, anchor.start - ANCHOR_LINE_CONTEXT), end: anchor.start + ANCHOR_LINE_CONTEXT }
+        : { start: anchor.start, end: anchor.end };
+      const spans = anchorSpans.get(anchor.file) ?? [];
+      spans.push(span);
+      anchorSpans.set(anchor.file, spans);
     }
 
     if (subgraph.nodes.size === 0) {
@@ -2048,13 +2106,18 @@ export class ToolHandler {
           // named-file sort below. (Previously only NEW injections were marked,
           // so a named symbol FTS already gathered never sorted to the top.)
           namedSeedIds.add(n.id);
+          // A QUALIFIED name that resolved to a handful of defs is the agent
+          // choosing one overload out of a family — `SQLCompiler.as_sql`, not
+          // the 109 other `as_sql`s. The bare name keeps the family rules; the
+          // qualified one is an exact target (see `exactNodeIds`).
+          if (isQual && cands.length <= 3 && CALLABLE.has(n.kind)) exactNodeIds.add(n.id);
         }
       }
     }
 
     // Step 2: Group nodes by file, score by relevance
     const fileGroups = new Map<string, { nodes: Node[]; score: number }>();
-    const entryNodeIds = new Set([...subgraph.roots, ...namedSeedIds, ...pinnedNodeIds]);
+    const entryNodeIds = new Set([...subgraph.roots, ...namedSeedIds, ...pinnedNodeIds, ...exactNodeIds]);
 
     // Build a set of nodes directly connected to entry points (depth 1)
     const connectedToEntry = new Set<string>();
@@ -2289,7 +2352,7 @@ export class ToolHandler {
     // Blast radius (always-on, compact): for the entry symbols, who depends on
     // them + which tests cover them — locations only, no source — so the agent
     // knows what to update/verify before editing without a separate call.
-    const blastRadius = this.buildBlastRadiusSection(cg, subgraph);
+    const blastRadius = this.buildBlastRadiusSection(cg, subgraph, exactNodeIds);
     if (blastRadius) lines.push(blastRadius);
 
     // Relationship map — show how symbols connect
@@ -2402,7 +2465,7 @@ export class ToolHandler {
       // Without this `continue` (was an unconditional `break`), the loop stopped
       // after the build + validators-exec files and never reached the ranked-in
       // validate-logic file (Alamofire's Validation.swift).
-      const fileNecessary = group.nodes.some(n =>
+      const fileNecessary = anchorSpans.has(filePath) || group.nodes.some(n =>
         entryNodeIds.has(n.id) || flow.pathNodeIds.has(n.id) || flow.uniqueNamedNodeIds.has(n.id));
       if (!fileNecessary && totalChars > budget.maxOutputChars * 0.9) continue;
 
@@ -2457,7 +2520,10 @@ export class ToolHandler {
       const onSpineGodFile = hasSpineNode
         && namedBodyChars > budget.maxCharsPerFile
         && group.nodes.some(n => CALLABLE_BODY.has(n.kind) && flow.uniqueNamedNodeIds.has(n.id) && !flow.pathNodeIds.has(n.id));
-      if (adaptiveExploreEnabled() && flow.pathNodeIds.size > 0
+      // A line RANGE the agent asked for (`lines 900-1003`) is not a symbol, so
+      // the per-symbol view has no way to show it — such a file takes the
+      // cluster path, which renders anchor spans first.
+      if (adaptiveExploreEnabled() && flow.pathNodeIds.size > 0 && !anchorSpans.has(filePath)
           && (onSpineGodFile || (!hasSpineNode && isPolymorphicSibling(group.nodes) && !spared))) {
         const syms = group.nodes
           .filter(n => n.kind !== 'import' && n.kind !== 'export' && n.startLine > 0)
@@ -2469,10 +2535,23 @@ export class ToolHandler {
         // co-named method WHEN this file DEFINES the family supertype (so the base
         // `SQLCompiler.as_sql` body shows, but the 110 leaf `as_sql` overrides — and
         // OkHttp's 5 `intercept`s if the agent names `intercept` — stay signatures).
+        // Tiers, most-wanted first (upstream #2063):
+        //   0  EXACT — a qualified name or a line anchor (see `exactNodeIds`),
+        //   1  a spine step the agent NAMED,
+        //   2  a spine step it did not (the one unnamed bridge between two named),
+        //   3  a UNIQUELY named off-spine method,
+        //   4  a co-named method in the family's base file.
+        // Within a tier the spine keeps its CALL order, then source order. Source
+        // order alone let the smaller steps that happen to sit higher in the file
+        // take the cap: Django's `SQLCompiler.as_sql` — named, qualified, step 1 of
+        // the flow, 226 lines — lost to the unnamed bridge `get_qualify_sql` and to
+        // `get_select` and came back as its signature line, every time.
+        const chainPos = new Map([...flow.pathNodeIds].map((id, i) => [id, i]));
         const prio = (n: Node) => !CALLABLE_BODY.has(n.kind) ? 99
-          : flow.pathNodeIds.has(n.id) ? 0
-          : flow.uniqueNamedNodeIds.has(n.id) ? 1
-          : (fileDefinesSuper && flow.namedNodeIds.has(n.id)) ? 2 : 99;
+          : exactNodeIds.has(n.id) ? 0
+          : flow.pathNodeIds.has(n.id) ? (flow.namedNodeIds.has(n.id) ? 1 : 2)
+          : flow.uniqueNamedNodeIds.has(n.id) ? 3
+          : (fileDefinesSuper && flow.namedNodeIds.has(n.id)) ? 4 : 99;
         // One ~250-line WINDOW per file. syms are taken by priority (spine first,
         // then uniquely-named, then family-base), and the cap applies to ALL of
         // them — including the spine — so a big-spine god-file (tokio's worker.rs:
@@ -2483,7 +2562,9 @@ export class ToolHandler {
         const bodyCap = budget.maxCharsPerFile * 1.5;
         const bodyIds = new Set<string>();
         let bodyChars = 0;
-        for (const n of syms.filter(n => prio(n) < 99 && n.endLine >= n.startLine).sort((a, b) => prio(a) - prio(b))) {
+        for (const n of syms.filter(n => prio(n) < 99 && n.endLine >= n.startLine).sort((a, b) => prio(a) - prio(b)
+          || (chainPos.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (chainPos.get(b.id) ?? Number.MAX_SAFE_INTEGER)
+          || a.startLine - b.startLine)) {
           const sz = fileLines.slice(n.startLine - 1, n.endLine).join('\n').length;
           if (bodyChars + sz > bodyCap && bodyIds.size > 0) continue;
           bodyIds.add(n.id);
@@ -2619,12 +2700,17 @@ export class ToolHandler {
         const n = cg.getNode(id);
         if (n && n.filePath === filePath && n.startLine > 0 && n.endLine > 0) rangeNodes.set(id, n);
       }
+      // An EXACT target (qualified name, enclosing callable of a line anchor)
+      // outranks even the query's entry points: an entry is what the search
+      // happened to rank first, an exact target is what the agent pointed at.
+      const EXACT_IMPORTANCE = 11;
       const ranges: Array<{ start: number; end: number; name: string; kind: string; importance: number }> = [...rangeNodes.values()]
         // Drop whole-file envelope nodes (containers covering >50% of the file).
         .filter(n => !(ENVELOPE_KINDS.has(n.kind) && (n.endLine - n.startLine + 1) > fileLines.length * 0.5))
         .map(n => {
           let importance = 1;
-          if (entryNodeIds.has(n.id)) importance = 10;
+          if (exactNodeIds.has(n.id)) importance = EXACT_IMPORTANCE;
+          else if (entryNodeIds.has(n.id)) importance = 10;
           else if (flow.namedNodeIds.has(n.id)) importance = 9; // agent named it → keep its cluster
           else if (glueNodeIds.has(n.id)) importance = 6; // bridging caller/callee of an entry
           else if (connectedToEntry.has(n.id)) importance = 3;
@@ -2648,6 +2734,15 @@ export class ToolHandler {
           const targetName = targetNode?.name ?? edge.kind;
           ranges.push({ start: edge.line, end: edge.line, name: targetName, kind: edge.kind, importance: 2 });
         }
+      }
+
+      // Line spans the agent anchored in this file (`lines 900-1003`) are exact
+      // targets even when no symbol node covers them — render exactly that span,
+      // ranked above everything else.
+      for (const span of anchorSpans.get(filePath) ?? []) {
+        const end = Math.min(span.end, fileLines.length);
+        if (end < span.start) continue;
+        ranges.push({ start: span.start, end, name: `lines ${span.start}-${end}`, kind: 'range', importance: EXACT_IMPORTANCE });
       }
 
       ranges.sort((a, b) => a.start - b.start);
