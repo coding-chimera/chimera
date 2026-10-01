@@ -609,6 +609,10 @@ export class GraphTraverser {
 
     // BFS to find shortest path
     const visited = new Set<string>();
+    // Enqueue-once guard, tracked separately from `visited` (which is only set
+    // on dequeue): a pending target reachable via two edges was queued twice
+    // with a copied path each time (#1359).
+    const enqueued = new Set<string>([fromId]);
     const queue: Array<{ nodeId: string; path: Array<{ node: Node; edge: Edge | null }> }> = [
       { nodeId: fromId, path: [{ node: fromNode, edge: null }] },
     ];
@@ -632,16 +636,17 @@ export class GraphTraverser {
       );
       if (outgoingEdges.length === 0) continue;
 
-      // Batch-fetch only the unvisited targets (was N+1 per BFS frontier).
+      // Batch-fetch only targets not yet visited or queued.
       const wantIds = outgoingEdges
         .map((e) => e.target)
-        .filter((id) => !visited.has(id));
+        .filter((id) => !visited.has(id) && !enqueued.has(id));
       const nextNodes = wantIds.length > 0 ? this.queries.getNodesByIds(wantIds) : new Map();
 
       for (const edge of outgoingEdges) {
-        if (!visited.has(edge.target)) {
+        if (!visited.has(edge.target) && !enqueued.has(edge.target)) {
           const nextNode = nextNodes.get(edge.target);
           if (nextNode) {
+            enqueued.add(edge.target);
             queue.push({
               nodeId: edge.target,
               path: [...path, { node: nextNode, edge }],
