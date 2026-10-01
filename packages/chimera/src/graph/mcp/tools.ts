@@ -24,10 +24,12 @@ import { LockUnavailableError } from '../sync';
 import { tryAcquireWriterLock, releaseWriterLock, writerLockHeldMessage } from './writer-lock';
 import type { Node, Edge, SearchResult, Subgraph, NodeKind } from '../types';
 import { isTestFile } from '../search/query-utils';
+import { extractQueryPaths, queryMightContainPaths } from '../search/query-paths';
 import {
   existsSync,
   readFileSync,
   realpathSync,
+  statSync,
 } from 'fs';
 import { clamp, validatePathWithinRoot, validateProjectPath } from '../utils';
 import { isGeneratedFile } from '../extraction/generated-detection';
@@ -75,6 +77,25 @@ const CONTAINER_NODE_KINDS = new Set<NodeKind>([
 function lastQualifierPart(symbol: string): string {
   const parts = symbol.split(/::|[./]/).filter((p) => p.length > 0);
   return parts[parts.length - 1] ?? symbol;
+}
+
+/**
+ * Does this query-named span point at a real FILE inside the project?
+ *
+ * The `existsOnDisk` predicate `extractQueryPaths` takes (that module is pure —
+ * no DB, no fs — so the fs access lives here, where the project root is known).
+ * Only a REGULAR FILE counts: a directory span (`src/search`) is not a file
+ * reference and must keep flowing to the normal matching pipeline. Containment
+ * is enforced by `validatePathWithinRoot`, so a `../` span in a query cannot
+ * probe outside the project, and every fs error answers `false`.
+ */
+function pathIsProjectFile(projectRoot: string, relPath: string): boolean {
+  try {
+    const abs = validatePathWithinRoot(projectRoot, relPath);
+    return abs !== null && statSync(abs).isFile();
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -1790,19 +1811,70 @@ export class ToolHandler {
     }
     const maxFiles = clamp((args.maxFiles as number) || budget.defaultMaxFiles, 1, 20);
 
+    // File paths named in the query become PINNED files: guaranteed admission,
+    // top of the rank order — and their span is REMOVED from the matching
+    // query, so path fragments (`page`, `runs`, `[runId]`) never seed FTS or
+    // the named-symbol tokenizer. A dotless slashed span (`scripts/deploy`)
+    // that names a real file the index doesn't hold is REPORTED as an
+    // unresolved-path caveat instead of silently feeding its fragments to
+    // matching — existence on disk decides, because shape alone cannot tell it
+    // from `and/or` prose (upstream #1830/#1837). The module also supports
+    // symbolFiles/lineAnchors narrowing; not wired in this fork yet.
+    let pinnedFiles: string[] = [];
+    let unresolvedPathSpans: string[] = [];
+    let matchQuery = query;
+    if (queryMightContainPaths(query)) {
+      try {
+        const extraction = extractQueryPaths(
+          query,
+          cg.getFiles().map((f) => f.path),
+          { maxPins: maxFiles, existsOnDisk: (rel) => pathIsProjectFile(projectRoot, rel) },
+        );
+        if (extraction.pinnedFiles.length > 0 || extraction.unresolvedPathSpans.length > 0) {
+          pinnedFiles = extraction.pinnedFiles;
+          unresolvedPathSpans = extraction.unresolvedPathSpans;
+          matchQuery = extraction.strippedQuery;
+        }
+      } catch { /* path pinning must never fail an explore call */ }
+    }
+    const pinnedSet = new Set(pinnedFiles);
+
     // Step 1: Find relevant context with generous parameters.
     // Use a large maxNodes budget — explore has its own 35k char output limit
     // that prevents context bloat, so more nodes just means better coverage
     // across entry points (especially for large files like Svelte components).
-    const subgraph = await cg.findRelevantContext(query, {
+    const subgraph = await cg.findRelevantContext(matchQuery, {
       searchLimit: 8,
       traversalDepth: 3,
       maxNodes: 200,
       minScore: 0.2,
     });
 
+    // Pinned files' symbols enter the gather unconditionally — the agent named
+    // the file itself, so its contents ARE the answer regardless of what the
+    // stripped query text matched (which, for a pure-path query, is nothing).
+    // Tracked separately (NOT added to subgraph.roots) so the blast-radius
+    // section stays keyed on the real search roots; entryNodeIds below folds
+    // them in for scoring, gate protection, and render necessity.
+    const pinnedNodeIds = new Set<string>();
+    const PINNED_FILE_NODE_CAP = 300;
+    for (const fp of pinnedFiles) {
+      let fileNodes: Node[] = [];
+      try { fileNodes = cg.getNodesInFile(fp); } catch { continue; }
+      for (const n of fileNodes
+        .filter((n) => n.kind !== 'file' && n.kind !== 'import' && n.kind !== 'export')
+        .sort((a, b) => a.startLine - b.startLine)
+        .slice(0, PINNED_FILE_NODE_CAP)) {
+        if (!subgraph.nodes.has(n.id)) subgraph.nodes.set(n.id, n);
+        pinnedNodeIds.add(n.id);
+      }
+    }
+
     if (subgraph.nodes.size === 0) {
-      return this.textResult(`No relevant code found for "${query}"`);
+      const missNote = unresolvedPathSpans.length > 0
+        ? ` (no indexed file uniquely matches ${unresolvedPathSpans.map((s) => `\`${s}\``).join(', ')})`
+        : '';
+      return this.textResult(`No relevant code found for "${query}"${missNote}`);
     }
 
     // Graph-aware glue: findRelevantContext builds the subgraph from name/text
@@ -1853,7 +1925,7 @@ export class ToolHandler {
       const isTestPath = (p: string) => /(^|\/)(tests?|specs?|__tests__|testdata|mocks?|fixtures?)\//i.test(p) || /\.(test|spec)\.[a-z]+$/i.test(p);
       const bodyLines = (n: Node) => Math.max(0, (n.endLine ?? n.startLine) - n.startLine);
       const tokens = [...new Set(
-        query.split(/[\s,()[\]]+/)
+        matchQuery.split(/[\s,()[\]]+/)
           .map((t) => t.replace(FILE_EXT, '').trim())
           .filter((t) => t.length >= 3 && /^[A-Za-z_$][\w$]*(?:(?:::|\.)[\w$]+)*$/.test(t))
       )].slice(0, 16);
@@ -1906,7 +1978,7 @@ export class ToolHandler {
 
     // Step 2: Group nodes by file, score by relevance
     const fileGroups = new Map<string, { nodes: Node[]; score: number }>();
-    const entryNodeIds = new Set([...subgraph.roots, ...namedSeedIds]);
+    const entryNodeIds = new Set([...subgraph.roots, ...namedSeedIds, ...pinnedNodeIds]);
 
     // Build a set of nodes directly connected to entry points (depth 1)
     const connectedToEntry = new Set<string>();
@@ -1943,7 +2015,7 @@ export class ToolHandler {
     let relevantFiles = [...fileGroups.entries()].filter(([, group]) => group.score >= 3);
 
     // Extract query terms for relevance checking
-    const queryTerms = query.toLowerCase().split(/\s+/).filter(t => t.length >= 3);
+    const queryTerms = matchQuery.toLowerCase().split(/\s+/).filter(t => t.length >= 3);
 
     // Test/spec/icon/i18n file detector — used both for the pre-sort hard
     // filter (tiny tier) and the comparator deprioritization (all tiers).
@@ -2081,7 +2153,13 @@ export class ToolHandler {
       const aPath = a[0].toLowerCase();
       const bPath = b[0].toLowerCase();
 
-      // Agent-named files first (it asked for a symbol defined here by name).
+      // Query-PINNED files first — the agent named the file itself by path;
+      // it is the answer regardless of graph connectivity or term overlap.
+      const aPinned = pinnedSet.has(a[0]) ? 1 : 0;
+      const bPinned = pinnedSet.has(b[0]) ? 1 : 0;
+      if (aPinned !== bPinned) return bPinned - aPinned;
+
+      // Agent-named files next (it asked for a symbol defined here by name).
       const aNamed = namedSeedFiles.has(a[0]) ? 1 : 0;
       const bNamed = namedSeedFiles.has(b[0]) ? 1 : 0;
       if (aNamed !== bNamed) return bNamed - aNamed;
@@ -2115,10 +2193,19 @@ export class ToolHandler {
     });
 
     // Step 3: Build relationship map
+    // Path pinning is visible, not silent: say which query-named files were
+    // honored, and which path spans matched nothing so the agent can correct
+    // them instead of trusting a response that quietly ignored the path.
+    const pinnedGathered = pinnedFiles.filter((fp) => fileGroups.has(fp)).length;
+    const pathCaveat =
+      (pinnedGathered > 0 ? ` ${pinnedGathered} file${pinnedGathered === 1 ? '' : 's'} pinned from the query.` : '')
+      + (unresolvedPathSpans.length > 0
+        ? ` No indexed file uniquely matches ${unresolvedPathSpans.map((s) => `\`${s}\``).join(', ')}.`
+        : '');
     const lines: string[] = [
       `## Exploration: ${query}`,
       '',
-      `Found ${subgraph.nodes.size} symbols across ${fileGroups.size} files.`,
+      `Found ${subgraph.nodes.size} symbols across ${fileGroups.size} files.${pathCaveat}`,
       '',
     ];
 
@@ -2167,7 +2254,7 @@ export class ToolHandler {
     // Compute the flow spine once — used both to prepend the Flow section (below)
     // and to gate adaptive source sizing: files on the spine get full source,
     // off-spine peers skeletonize.
-    const flow = this.buildFlowFromNamedSymbols(cg, query);
+    const flow = this.buildFlowFromNamedSymbols(cg, matchQuery);
 
     // Polymorphic-sibling detector for adaptive sizing. A class that implements/
     // extends a supertype shared by >= MIN_SIBLINGS classes is one of many
