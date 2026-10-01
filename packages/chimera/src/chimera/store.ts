@@ -118,7 +118,14 @@ export type PredesignRunInput = {
 }
 
 export type EditIntentClaimStatus = "active" | "released" | "expired"
-export type EditIntentClaimReleaseReason = "session_idle" | "session_removed" | "ttl" | "explicit"
+/**
+ * Release reasons for an edit-intent claim. `yielded` is the G1 wake-priority
+ * handoff: a session whose earlier queued claim would outrank the first-woken
+ * waiter's imminent registration releases that claim so the handoff cannot
+ * invert into a mutual block; the yielding session re-registers after the
+ * priority holder releases and its own wake fires.
+ */
+export type EditIntentClaimReleaseReason = "session_idle" | "session_removed" | "ttl" | "explicit" | "yielded"
 
 export type EditIntentClaimInput = {
   /** Claim identity; the predesign run id that declared the intent. */
@@ -164,6 +171,8 @@ export type EditIntentWaiterRecord = {
   /** Host identity of the process whose session waits (v6+; absent on pre-v6 rows). */
   hostPID?: number
   hostBootID?: string
+  /** When the row flipped to woken (v7+; absent on pre-v7 rows and on rows woken by old binaries). */
+  wokenAt?: string
   createdAt: string
   updatedAt: string
 }
@@ -568,6 +577,13 @@ CREATE INDEX IF NOT EXISTS chimera_edit_intent_waiter_session_status_idx ON chim
       sql: `
 ALTER TABLE chimera_edit_intent_waiter ADD COLUMN host_pid INTEGER;
 ALTER TABLE chimera_edit_intent_waiter ADD COLUMN host_boot_id TEXT;
+`,
+    },
+    {
+      version: 7,
+      description: "Add woken_at to edit-intent waiters for the bounded wake-priority handoff window",
+      sql: `
+ALTER TABLE chimera_edit_intent_waiter ADD COLUMN woken_at TEXT;
 `,
     },
   ],
@@ -1596,6 +1612,7 @@ type EditIntentWaiterRow = {
   reason: string | null
   host_pid: number | null
   host_boot_id: string | null
+  woken_at: string | null
   created_at: string
   updated_at: string
 }
@@ -1643,6 +1660,7 @@ function editIntentWaiterRecord(row: EditIntentWaiterRow): EditIntentWaiterRecor
     ...(row.reason ? { reason: row.reason } : {}),
     ...(row.host_pid ? { hostPID: row.host_pid } : {}),
     ...(row.host_boot_id ? { hostBootID: row.host_boot_id } : {}),
+    ...(row.woken_at ? { wokenAt: row.woken_at } : {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
@@ -1669,7 +1687,7 @@ export async function registerEditIntentClaims(projectRoot: string, input: EditI
         status, release_reason, created_at, released_at, expires_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', NULL, ?, NULL, ?)
     `)
-    return files.map((filePath) => {
+    const registered = files.map((filePath) => {
       insert.run(
         input.id,
         input.sessionID,
@@ -1697,6 +1715,15 @@ export async function registerEditIntentClaims(projectRoot: string, input: EditI
         expiresAt,
       }
     })
+    // G1: a successful real claim registration ends this session's own
+    // wake-priority hold on the registered files — the woken rows must not
+    // keep soft-blocking other sessions once the real claim is the blocker.
+    db.prepare(`UPDATE chimera_edit_intent_waiter SET status = 'cancelled', updated_at = ? WHERE session_id = ? AND status = 'woken' AND file_path IN (${files.map(() => "?").join(", ")})`).run(
+      createdAt,
+      input.sessionID,
+      ...files,
+    )
+    return registered
   })
   return records ?? []
 }
@@ -1755,6 +1782,41 @@ export async function releaseEditIntentClaims(
   return released ?? []
 }
 
+/**
+ * Per-file variant of releaseEditIntentClaims for the G1 wake-priority yield:
+ * releases only the given files' active claims so a session's earlier queued
+ * claim does not outrank the first-woken waiter's imminent registration.
+ * Wakes are NOT taken here — the caller pairs the yield with waiter
+ * registration, and the priority holder's own release re-wokes the yielder.
+ */
+export async function releaseEditIntentClaimsForFiles(
+  projectRoot: string,
+  sessionID: string,
+  files: string[],
+  reason: EditIntentClaimReleaseReason,
+  options: { now?: string } = {},
+): Promise<EditIntentClaimRecord[]> {
+  const now = options.now ?? new Date().toISOString()
+  const targets = unique(files.map(claimFilePath).filter(Boolean))
+  if (targets.length === 0) return []
+  const released = await withDb(projectRoot, (db) => {
+    expireStaleEditIntentClaims(db, now)
+    const inFiles = `file_path IN (${targets.map(() => "?").join(", ")})`
+    const rows = db
+      .prepare(`SELECT * FROM chimera_edit_intent_claim WHERE session_id = ? AND status = 'active' AND ${inFiles}`)
+      .all(sessionID, ...targets) as EditIntentClaimRow[]
+    if (rows.length === 0) return []
+    db.prepare(`UPDATE chimera_edit_intent_claim SET status = 'released', release_reason = ?, released_at = ? WHERE session_id = ? AND status = 'active' AND ${inFiles}`).run(reason, now, sessionID, ...targets)
+    return rows.map((row) => ({
+      ...editIntentClaimRecord(row),
+      status: "released" as const,
+      releaseReason: reason,
+      releasedAt: now,
+    }))
+  })
+  return released ?? []
+}
+
 export async function registerEditIntentWaiter(
   projectRoot: string,
   input: {
@@ -1781,6 +1843,7 @@ export async function registerEditIntentWaiter(
         reason = excluded.reason,
         host_pid = excluded.host_pid,
         host_boot_id = excluded.host_boot_id,
+        woken_at = NULL,
         updated_at = excluded.updated_at
     `).run(input.sessionID, filePath, input.blockerSessionID, input.reason ?? null, host?.pid ?? null, host?.bootID ?? null, now, now)
     return true
@@ -1815,7 +1878,7 @@ export async function takeWokenEditIntentWaiters(
     const result: EditIntentWaiterRecord[] = []
     db.transaction(() => {
       const remaining = db.prepare("SELECT COUNT(*) as count FROM chimera_edit_intent_claim WHERE file_path = ? AND status = 'active' AND expires_at > ? AND session_id != ?")
-      const wake = db.prepare("UPDATE chimera_edit_intent_waiter SET status = 'woken', updated_at = ? WHERE session_id = ? AND file_path = ? AND status = 'waiting'")
+      const wake = db.prepare("UPDATE chimera_edit_intent_waiter SET status = 'woken', woken_at = ?, updated_at = ? WHERE session_id = ? AND file_path = ? AND status = 'waiting'")
       const select = db.prepare(`SELECT * FROM chimera_edit_intent_waiter WHERE file_path = ? AND status = 'waiting'${options.hostBootID ? " AND host_boot_id = ?" : ""} ORDER BY created_at ASC, session_id ASC`)
       for (const filePath of targets) {
         const waiters = (options.hostBootID ? select.all(filePath, options.hostBootID) : select.all(filePath)) as EditIntentWaiterRow[]
@@ -1824,10 +1887,11 @@ export async function takeWokenEditIntentWaiters(
           if ((held?.count ?? 0) > 0) continue
           // The conditional UPDATE is the atomicity point: concurrent takers
           // serialize on the SQLite write lock and only the first sees
-          // changes > 0, so a waiter is woken exactly once.
-          const woke = wake.run(now, waiter.session_id, waiter.file_path)
+          // changes > 0, so a waiter is woken exactly once. woken_at stamps
+          // the G1 wake-priority window start for this row.
+          const woke = wake.run(now, now, waiter.session_id, waiter.file_path)
           if (Number(woke.changes ?? 0) === 0) continue
-          result.push({ ...editIntentWaiterRecord(waiter), status: "woken", updatedAt: now })
+          result.push({ ...editIntentWaiterRecord(waiter), status: "woken", wokenAt: now, updatedAt: now })
         }
       }
     })()
@@ -1863,19 +1927,48 @@ export async function readEditIntentWaiters(
   return (rows ?? []).map(editIntentWaiterRecord)
 }
 
+/**
+ * G1 wake-priority read: woken waiter rows still inside the bounded priority
+ * window (`woken_at > wokenSince`), earliest wake first. Pre-v7 rows and rows
+ * woken by old binaries carry woken_at NULL and never match, so the window
+ * degrades to the pre-G1 free race instead of mis-blocking.
+ */
+export async function readWokenEditIntentWaiters(
+  projectRoot: string,
+  options: { files: string[]; wokenSince: string; excludeSessionID?: string; limit?: number },
+): Promise<EditIntentWaiterRecord[]> {
+  const limit = Math.max(1, Math.min(200, Math.floor(options.limit ?? 50)))
+  const files = unique(options.files.map(claimFilePath).filter(Boolean))
+  if (files.length === 0) return []
+  const where = ["status = 'woken'", "woken_at IS NOT NULL", "woken_at > ?", `file_path IN (${files.map(() => "?").join(", ")})`]
+  const params: unknown[] = [options.wokenSince, ...files]
+  if (options.excludeSessionID) {
+    where.push("session_id != ?")
+    params.push(options.excludeSessionID)
+  }
+  params.push(limit)
+  const rows = await withReadOnlyDb(projectRoot, (db) =>
+    db.prepare(`SELECT * FROM chimera_edit_intent_waiter WHERE ${where.join(" AND ")} ORDER BY woken_at ASC, created_at ASC, session_id ASC LIMIT ?`).all(...params) as EditIntentWaiterRow[],
+  )
+  return (rows ?? []).map(editIntentWaiterRecord)
+}
+
 export async function cancelEditIntentWaiters(projectRoot: string, sessionID: string, options: { now?: string } = {}): Promise<number> {
   const now = options.now ?? new Date().toISOString()
   const cancelled = await withDb(projectRoot, (db) => {
-    const result = db.prepare("UPDATE chimera_edit_intent_waiter SET status = 'cancelled', updated_at = ? WHERE session_id = ? AND status = 'waiting'").run(now, sessionID)
+    // Woken rows are cancelled too: a removed session can never act on its
+    // wake, so leaving the row would keep its G1 wake-priority hold blocking
+    // other sessions until the window expired on its own.
+    const result = db.prepare("UPDATE chimera_edit_intent_waiter SET status = 'cancelled', updated_at = ? WHERE session_id = ? AND status IN ('waiting', 'woken')").run(now, sessionID)
     return Number(result.changes ?? 0)
   })
   return cancelled ?? 0
 }
 
-/** Distinct host identities behind currently-waiting waiters (null boot id = pre-v6 row without a host stamp). */
+/** Distinct host identities behind currently-waiting or woken waiters (null boot id = pre-v6 row without a host stamp). */
 export async function listEditIntentWaiterHosts(projectRoot: string): Promise<Array<{ hostPID: number | null; hostBootID: string | null }>> {
   const rows = await withReadOnlyDb(projectRoot, (db) =>
-    db.prepare("SELECT DISTINCT host_pid, host_boot_id FROM chimera_edit_intent_waiter WHERE status = 'waiting'").all() as Array<{
+    db.prepare("SELECT DISTINCT host_pid, host_boot_id FROM chimera_edit_intent_waiter WHERE status IN ('waiting', 'woken')").all() as Array<{
       host_pid: number | null
       host_boot_id: string | null
     }>,
@@ -1883,11 +1976,16 @@ export async function listEditIntentWaiterHosts(projectRoot: string): Promise<Ar
   return (rows ?? []).map((row) => ({ hostPID: row.host_pid, hostBootID: row.host_boot_id }))
 }
 
-/** Cancel every still-waiting waiter registered by one host process (lazy stale-boot cleanup). */
+/**
+ * Cancel every still-waiting or woken waiter registered by one host process
+ * (lazy stale-boot cleanup). Woken rows are included: a dead host can never
+ * deliver the wake, so its G1 priority holds are inert garbage that would
+ * otherwise soft-block live sessions until window expiry.
+ */
 export async function cancelEditIntentWaitersByHostBootID(projectRoot: string, hostBootID: string, options: { now?: string } = {}): Promise<number> {
   const now = options.now ?? new Date().toISOString()
   const cancelled = await withDb(projectRoot, (db) => {
-    const result = db.prepare("UPDATE chimera_edit_intent_waiter SET status = 'cancelled', updated_at = ? WHERE status = 'waiting' AND host_boot_id = ?").run(now, hostBootID)
+    const result = db.prepare("UPDATE chimera_edit_intent_waiter SET status = 'cancelled', updated_at = ? WHERE status IN ('waiting', 'woken') AND host_boot_id = ?").run(now, hostBootID)
     return Number(result.changes ?? 0)
   })
   return cancelled ?? 0
@@ -1902,7 +2000,7 @@ export async function cancelEditIntentWaitersByHostBootID(projectRoot: string, h
 export async function cancelOrphanedEditIntentWaiters(projectRoot: string, options: { orphanedBefore: string; now?: string }): Promise<number> {
   const now = options.now ?? new Date().toISOString()
   const cancelled = await withDb(projectRoot, (db) => {
-    const result = db.prepare("UPDATE chimera_edit_intent_waiter SET status = 'cancelled', updated_at = ? WHERE status = 'waiting' AND host_boot_id IS NULL AND updated_at <= ?").run(now, options.orphanedBefore)
+    const result = db.prepare("UPDATE chimera_edit_intent_waiter SET status = 'cancelled', updated_at = ? WHERE status IN ('waiting', 'woken') AND host_boot_id IS NULL AND updated_at <= ?").run(now, options.orphanedBefore)
     return Number(result.changes ?? 0)
   })
   return cancelled ?? 0

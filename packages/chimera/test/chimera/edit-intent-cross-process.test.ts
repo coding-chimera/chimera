@@ -88,15 +88,96 @@ describe("edit-intent cross-process bridge (dual bun processes, shared project D
 
       // The child has now genuinely exited: its host identity is provably
       // dead, so a stale-boot sweep by any poller cancels leftovers stamped
-      // with it — real dead-process cleanup, no synthetic pids.
+      // with it — real dead-process cleanup, no synthetic pids. G1: the
+      // child's woken row is swept too — a dead host can never act on its
+      // wake, so its wake-priority hold must not outlive the sweep.
       await registerEditIntentWaiter(tmp.path, {
         sessionID: "ses_ghost",
         filePath: "shared.ts",
         blockerSessionID: "ses_holder",
         host: { pid: childRow!.hostPID!, bootID: childRow!.hostBootID! },
       })
-      expect(await Effect.runPromise(EditIntentClaims.sweepStaleHosts({ projectRoot: tmp.path }))).toBe(1)
+      expect(await Effect.runPromise(EditIntentClaims.sweepStaleHosts({ projectRoot: tmp.path }))).toBe(2)
       expect(await readEditIntentWaiters(tmp.path, { sessionID: "ses_ghost", status: "cancelled" })).toHaveLength(1)
+      expect(await readEditIntentWaiters(tmp.path, { sessionID: childRow!.sessionID, status: "cancelled" })).toHaveLength(1)
+    } finally {
+      child.kill()
+    }
+  }, 60_000)
+
+  test("a wake stamped by a foreign process holds its G1 priority window in this process until the dead host is swept", async () => {
+    await using tmp = await tmpdir()
+    DatabaseConnection.initialize(getDatabasePath(tmp.path)).close()
+    await registerEditIntentClaims(tmp.path, {
+      id: "predesign_parent",
+      sessionID: "ses_holder",
+      agent: "build",
+      files: ["shared.ts"],
+      intent: "holder work in the parent process",
+    })
+
+    const child = Bun.spawn({
+      cmd: [process.execPath, worker, tmp.path, "shared.ts", "ses_holder"],
+      cwd: projectRoot,
+      stdout: "pipe",
+      stderr: "pipe",
+      env: process.env,
+    })
+    try {
+      // Wait for the child's registration to surface in the shared DB.
+      let childRow: EditIntentWaiterRecord | undefined
+      for (let i = 0; i < 300 && !childRow; i++) {
+        const waiting = await readEditIntentWaiters(tmp.path, { status: "waiting" })
+        childRow = waiting.find((waiter) => waiter.hostBootID !== undefined && waiter.hostBootID !== currentHostBootID())
+        if (!childRow) await Bun.sleep(100)
+      }
+      expect(childRow).toBeDefined()
+
+      // Release in the parent; only the child's own host-filtered poll can
+      // wake its waiter, stamping woken_at from the child process.
+      await releaseEditIntentClaims(tmp.path, "ses_holder", "session_idle")
+      const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
+      if (code !== 0) throw new Error(stderr.trim() || stdout.trim() || `child waiter exited with code ${code}`)
+      expect(stdout).toContain("WOKEN")
+
+      // The foreign-stamped woken row is visible in the shared DB with its
+      // window stamp set by the child process, not by this one.
+      const woken = await readEditIntentWaiters(tmp.path, { sessionID: childRow!.sessionID, status: "woken" })
+      expect(woken).toHaveLength(1)
+      expect(woken[0]!.wokenAt).toBeDefined()
+
+      // A fresh session in THIS process is soft-blocked by the child's
+      // in-window wake: the priority window crosses the process boundary
+      // through the shared DB, and no claim row is inserted for the newcomer.
+      const blocked = await Effect.runPromise(
+        EditIntentClaims.registerFromPredesign({
+          projectRoot: tmp.path,
+          sessionID: "ses_newcomer",
+          agent: "build",
+          predesignID: "predesign_newcomer",
+          intent: "fresh arrival racing the woken child",
+          files: ["shared.ts"],
+        }),
+      )
+      expect(blocked.registered).toHaveLength(0)
+      expect(blocked.conflicts).toHaveLength(1)
+      expect(blocked.conflicts[0]!.wakePriority?.sessionID).toBe(childRow!.sessionID)
+
+      // The child has exited: its host is provably dead, so the sweep drops
+      // its inert priority hold and the newcomer registration then proceeds.
+      expect(await Effect.runPromise(EditIntentClaims.sweepStaleHosts({ projectRoot: tmp.path }))).toBe(1)
+      const cleared = await Effect.runPromise(
+        EditIntentClaims.registerFromPredesign({
+          projectRoot: tmp.path,
+          sessionID: "ses_newcomer",
+          agent: "build",
+          predesignID: "predesign_newcomer_2",
+          intent: "fresh arrival after the dead host was swept",
+          files: ["shared.ts"],
+        }),
+      )
+      expect(cleared.conflicts).toHaveLength(0)
+      expect(cleared.registered.map((claim) => claim.filePath)).toEqual(["shared.ts"])
     } finally {
       child.kill()
     }
