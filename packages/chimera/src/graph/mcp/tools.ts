@@ -156,7 +156,7 @@ export interface ExploreOutputBudget {
   includeRelationships: boolean;
   /** Include the "Additional relevant files (not shown)" trailing list. */
   includeAdditionalFiles: boolean;
-  /** Include the "Complete source code is included above…" reminder. */
+  /** Include the closing completeness note ("Complete source…" when every rendered section is complete, "Verbatim source… NOT complete for size" when one was condensed or cut — #2077). */
   includeCompletenessSignal: boolean;
   /** Include the explore-budget reminder at the end. */
   includeBudgetNote: boolean;
@@ -2456,6 +2456,11 @@ export class ToolHandler {
     let totalChars = lines.join('\n').length;
     let filesIncluded = 0;
     let anyFileTrimmed = false;
+    // #2077: files whose rendered section is verbatim but NOT the file's whole
+    // source — a focused/skeleton per-symbol view, or a cluster path that
+    // dropped clusters or core-shrunk one. The completeness note vouches
+    // "complete" only for the sections that actually are.
+    const partialFiles: string[] = [];
 
     for (const [filePath, group] of sortedFiles) {
       if (filesIncluded >= maxFiles) break;
@@ -2613,6 +2618,7 @@ export class ToolHandler {
           lines.push(`#### ${filePath} — ${names} · ${tag}`, '', '```' + lang, skel.join('\n'), '```', '');
           totalChars += skel.join('\n').length + 120;
           filesIncluded++;
+          partialFiles.push(filePath); // per-symbol view: signatures elided bodies
           continue;
         }
       }
@@ -2937,6 +2943,7 @@ export class ToolHandler {
       // A core-shrunk cluster (#2062) dropped its incidental members — trimmed too.
       if (chosenIndices.size < clusters.length || shrunkAny) {
         anyFileTrimmed = true;
+        partialFiles.push(filePath); // clusters dropped or core-shrunk (#2062)
       }
 
       // Dedupe + cap the symbols list shown in the per-file header. Some
@@ -3009,14 +3016,29 @@ export class ToolHandler {
       }
     }
 
-    // Add completeness signal so agents know they don't need to re-read these files.
-    // On small projects the budget gates this off — but if we actually had to
-    // trim or drop clusters, surface a brief note so the agent knows it can
-    // still Read for more detail.
+    // Add completeness signal so agents know they don't need to re-read these
+    // files — claimed only for sections that ARE complete (upstream #2077).
+    // Every response used to end with "Complete source for N files" whatever
+    // the render had cut: a skeletonized file, a dropped or core-shrunk
+    // cluster all went out under that line, and the agent trusted "complete"
+    // past the elided method instead of exploring again. The trimmed wording
+    // keeps the guarantee that is still true (verbatim — treat as already
+    // Read), names the partial files, and steers to another explore. It also
+    // drops the old "Reserve Read for a single specific line range" tail —
+    // explore output must never tell the agent to Read. Upstream measures
+    // completeness per emitted span against the symbols each section set out
+    // to deliver and fits the note to leftover room (CG-26); the fork tracks
+    // it per render path, which is where its cuts happen.
     if (budget.includeCompletenessSignal) {
       lines.push('');
       lines.push('---');
-      lines.push(`> **Complete source for ${filesIncluded} files is included above — do NOT re-read them.** If your question also needs files/symbols listed under "Not shown above" (or any area this call didn't cover), make ANOTHER codegraph_explore targeting those names — it returns the same source with line numbers and is cheaper and more complete than reading. Reserve Read for a single specific line range explore can't surface.`);
+      if (partialFiles.length === 0) {
+        lines.push(`> **Complete source for ${filesIncluded} files is included above — do NOT re-read them.** If your question also needs files/symbols listed under "Not shown above" (or any area this call didn't cover), make ANOTHER codegraph_explore targeting those names — it returns the same source with line numbers and is cheaper and more complete than reading.`);
+      } else {
+        const shown = partialFiles.slice(0, 4).map((f) => `\`${f}\``).join(', ');
+        const more = partialFiles.length > 4 ? ` +${partialFiles.length - 4} more` : '';
+        lines.push(`> **Verbatim source for ${filesIncluded} files is included above — treat it as already Read; do NOT re-read them.** NOT complete for size: ${shown}${more} — parts of those files were condensed to the symbols your query touched, or dropped. For what those sections elided (their headers and gap markers name it), or anything listed under "Not shown above", make ANOTHER codegraph_explore targeting the specific names — it returns the same source with line numbers and is cheaper and more complete than reading.`);
+      }
     } else if (anyFileTrimmed) {
       lines.push('');
       lines.push(`> Some file sections were trimmed for size. For a specific symbol you still need, run another \`codegraph_explore\` (or \`codegraph_node\`) with its exact name — line-numbered source, cheaper and more complete than Read.`);
@@ -3054,7 +3076,7 @@ export class ToolHandler {
       const lastSection = cut.lastIndexOf('\n#### ');
       const boundary = lastSection > hardCeiling * 0.5 ? lastSection : cut.lastIndexOf('\n');
       const safe = boundary > 0 ? cut.slice(0, boundary) : cut;
-      return this.textResult(safe + '\n\n... (output truncated to budget; the source above is complete and verbatim — treat it as already Read. For any area not covered, run another codegraph_explore with the specific names — do NOT Read these files.)');
+      return this.textResult(safe + '\n\n... (output truncated to budget — trailing file sections were DROPPED, so this response is not complete; the sections shown above are verbatim — treat them as already Read. For any area not covered, run another codegraph_explore with the specific names — do NOT Read these files.)');
     }
     return this.textResult(output);
   }
