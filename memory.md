@@ -496,3 +496,15 @@ loop 挂起修复前的对比基线（本机 macOS, bun 1.4.0, `bun test --timeo
 - **上游内存疑虑当前结论**：静态审计已清（所有移植缓存有界）；今日实测 178s/峰值 RSS 2432MB 与旧基线（56.9s/1477MB）**三项口径全不同不可比**（node26-二进制-CLI-psRSS-3,281 文件 vs bun-源码-server-footprint-697 文件；旧 1477 主体是 JSC arena=bun 运行时专属）。**同口径 A/B 已取消未跑完**（用户关机）——待办：明早重跑 native-profile harness（wt/ worktree 已在 5fff4ad63+bun install 完毕，复跑起点就绪；写产物到 v6-run/ 勿覆盖 09-24 原始 samples）。
 - **安装布局 pitfall 入册**：全局 npm 装 tarball 时必须**双 tarball 同命令安装**（元包+平台包），只装平台 tarball 会让元包 launcher 旧残留（版本号未变时 npm 判已满足）；执行体验证要看平台包 bin/chimera（134.9MB 真体）而非元包 launcher（5.8KB）。
 
+
+### native-profile v6 A/B 终答（2026-10-01，上游内存疑虑闭环）
+- **判定：未引入严重内存问题**。同口径对照（同机/同 bun 源码 server/同 harness/同 697 文件语料/同锚点公式，唯一变量=pre-v6→v6）：**突发反而改善**（peak 1477→1385MB −6.2%；t10 821→651MB −20.7%，tag1 −184MB——v6 新 instance-store 内存压力 eviction 实际生效 ×32 次）；**稳态 +56~80MB 与图数据 +11% 相容**（#2034 method-as-value 节点 +724+synthesis +4,911 语句/db +15.9MB→活集同比放大）；**无泄漏形态**（leaks 27→42 节点/3.3→5KB 可忽略；heap 活字节仅 +1.2MB；MALLOC_SMALL +10MB=zone slack）；JSC 棘轮机制仍在（预存，dispose 不归还 arena）——追认：v6 稳态若需收口→后续 JSC heapsnapshot 专项分离 live/slack。
+- 报告=cbench/rust-plan/native-profile-20260924/v6-run/report-v6-vs-20260924.md；亲验抽查 t10/t40 原始 footprint 与报告逐项互洽。**插曲**：task_cancel 只杀了子代理，nohup orchestrator 独立跑完全程（10:03→10:50）——builder 以五点交叉验证采纳完成轮数据避免 47min 重跑（parent 追认：证据链完整）。**pitfall 入册：task_cancel 不杀 nohup 派生进程树，取消长跑型任务后必须 ps/pgrep 实核进程死亡，不能假设随会话死**。
+- **产品行为发现**：v6 predesign 门禁拦了脚本 driver 的良性 write（r2/r3 增量负载缺席，provenance.ts:983 判 gen/round-N.ts highRisk 且无当轮 predesign）——对照口径变严但结论稳健（v6 活更少仍稳态更高）；门禁对低风险生成文件的交互可入 issue 池评估。
+
+### traversal 对齐批收口（2026-10-01，4 commits 随本波推送）
+- **漏网件补齐**：R 批工单漏扫的两笔窗口 traversal 提交落地——`66527dbd2`（#2000 边序：visited Map+enterAtDepth/nearerThanBefore+reported 去重，深度限内不丢 dependent，上游 3 用例移植+旧代码反向验证）；`f373ebde0`（#2016 findPath BFS enqueued 去重，入队计数旧代码败/新过）。
+- **对称件**：`631fbffbf` getCallersRecursive 边类对齐上游终态五元组（#774 callers 侧——callers<Class> 不再漏构造点；与 getCallees 完全对称）；`79d63c1fb` CLI needsReindex 提示补“daemon 会自动重建”句（extraction-version.test 钉正反例）。
+- 亲验：7/7 新测试+四笔车道内；批末 1941/11/14=fail 集合与基线逐条一致零新增；五类审计双零。
+- **同文件剩余分叉记账**（有意不拖带，后续拍板）：#1089 无条件边记录（getImpactRecursive 仍 !nodes.has 门）；#536 contains 排除；#1087/#1088/#1090 traverseBFS/dfsRecursive 的 limit 精确性/平行边保留——同属 v1.6.1 终态与 fork 的其余差异，量级小。
+
