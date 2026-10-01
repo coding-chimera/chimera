@@ -238,6 +238,9 @@ describe('needsReindex on the CLI status surface', () => {
     expect(text.stdout).toContain('does not match');
     expect(text.stdout).toContain('chimera graph index');
     expect(text.stdout).toContain('re-extract');
+    // The hint must mention the daemon auto-rebuild (6d7dd50a5) so manual
+    // indexing reads as the faster path, not the only one.
+    expect(text.stdout).toContain('rebuilds automatically on its next start');
 
     // Read-only surfaces never repair: stamp, schema, and persistent files all unchanged.
     expect(readStampRow(tempDir)).toBe(staleStamp);
@@ -255,6 +258,7 @@ describe('needsReindex on the CLI status surface', () => {
     expect(JSON.parse(matched.stdout).needsReindex).toBe(false);
     const matchedText = await runGraphCli(['status', tempDir], tempDir);
     expect(matchedText.stdout).not.toContain('re-extract');
+    expect(matchedText.stdout).not.toContain('rebuilds automatically');
 
     const legacyDir = fsSync.mkdtempSync(path.join(os.tmpdir(), 'cg-extraction-version-legacy-'));
     try {

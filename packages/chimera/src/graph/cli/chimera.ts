@@ -1016,6 +1016,7 @@ program
       if (semantics.needsReindex) {
         warn(`Extraction semantics version v${semantics.storedVersion} does not match this binary's extractor (v${semantics.currentVersion})`)
         info('Run "chimera graph index" to re-extract the graph')
+        info('The daemon also rebuilds automatically on its next start; indexing manually is just the faster path')
         console.log();
       }
 
