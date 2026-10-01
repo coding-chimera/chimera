@@ -536,6 +536,40 @@ export class ContextBuilder {
       exactMatches = exactMatches.slice(0, Math.ceil(opts.searchLimit * 3));
     }
 
+    // Step 2c: Match an exact Han filename (with or without its extension).
+    // The extractors above are ASCII-only, so a Chinese filename query
+    // (用户资料.lua) reached retrieval as NOTHING — no symbol, no FTS term.
+    // Keep this separate from natural-language terms so partial Chinese words
+    // do not become broad FTS queries (upstream #1372/#2005).
+    const filenameQuery = query.trim();
+    const hasHanInFilename = Array.from(filenameQuery).some(
+      (char) => /\p{Script_Extensions=Han}/u.test(char)
+    );
+    // Caller-provided filter only — the fork's DEFAULT_FIND_OPTIONS always fills
+    // opts.nodeKinds (HIGH_VALUE_NODE_KINDS, no 'file'), so reading the merged
+    // opts here would suppress this step unconditionally.
+    const allowsFileNodes = options.nodeKinds === undefined
+      || options.nodeKinds.length === 0
+      || options.nodeKinds.includes('file');
+    const exactFileMatches: SearchResult[] = [];
+
+    if (hasHanInFilename && allowsFileNodes) {
+      const candidates = [
+        ...this.queries.getNodesByName(filenameQuery)
+          .filter((node) => node.kind === 'file'),
+        ...this.queries.getFileNodesByNamePrefix(`${filenameQuery}.`),
+      ];
+      for (const node of candidates) {
+        const fileName = path.basename(node.filePath);
+        const fileExtension = path.extname(fileName);
+        const fileStem = fileExtension
+          ? fileName.slice(0, -fileExtension.length)
+          : fileName;
+        const isExactMatch = fileName === filenameQuery || fileStem === filenameQuery;
+        if (isExactMatch) exactFileMatches.push({ node, score: 1 });
+      }
+    }
+
     // Step 3: Run text search for natural language term matching
     // This catches file-name and node-name matches that semantic search may miss,
     // which is critical for template-heavy codebases (e.g., Liquid/Shopify themes)
@@ -893,6 +927,16 @@ export class ContextBuilder {
     // If someone searches "terminal" and finds `import { TerminalPanel }`,
     // they want the TerminalPanel class, not the import statement
     filteredResults = this.resolveImportsToDefinitions(filteredResults);
+
+    // An exact filename is the query's requested entry point. Keep it ahead of
+    // broader text matches before applying the entry-point cap.
+    if (exactFileMatches.length > 0) {
+      const exactFileIds = new Set(exactFileMatches.map((result) => result.node.id));
+      filteredResults = [
+        ...exactFileMatches,
+        ...filteredResults.filter((result) => !exactFileIds.has(result.node.id)),
+      ];
+    }
 
     // Cap entry points so traversal budget isn't spread too thin.
     // With 36 entry points and maxNodes=120, each gets only 3 nodes — useless.
