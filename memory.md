@@ -508,3 +508,14 @@ loop 挂起修复前的对比基线（本机 macOS, bun 1.4.0, `bun test --timeo
 - 亲验：7/7 新测试+四笔车道内；批末 1941/11/14=fail 集合与基线逐条一致零新增；五类审计双零。
 - **同文件剩余分叉记账**（有意不拖带，后续拍板）：#1089 无条件边记录（getImpactRecursive 仍 !nodes.has 门）；#536 contains 排除；#1087/#1088/#1090 traverseBFS/dfsRecursive 的 limit 精确性/平行边保留——同属 v1.6.1 终态与 fork 的其余差异，量级小。
 
+
+### 五件并行批+edit-intent G1/G2 收口（2026-10-01，全部已推送）
+- **explore 大族**（10 件=7 移植+3 论证跳过，W1+W2 两波）：query-paths 模块整体移植（540 行）/中文文件名/空结果诊断/symbolFiles 接线/lineAnchors 接线（限定名返方法体）/named 成员跨 cluster hold-back/complete source 真完整段宣称；跳过件全部空 commit 记理由（fork 无对应子系统）。前一次整批派发在研究阶段死亡（静默 138min 零 commit）——重派改两波+逐件立即 commit 纪律后一次过。+90 测试，2031/11/14 零新增。
+- **WSL #2061**（5 笔）：fork 版 WSL 隔离——`.chimera-wsl` 私有目录（三级规则内联进 getGraphDataRootInfo）/wsl-shared-index 错误模块（双 backend 包裹+legacy `.codegraph` 兼容）/MCP success-shaped 指引/init 去向说明/watcher+extraction ignore；28 测试（含真 SQLITE_IOERR FIFO e2e）；**验证边界：真 WSL 路径未覆盖（macOS），Windows 实测建议单已出**。
+- **CI 批**（5 笔）：publish.yml 四审计问题全修（blacksmith×13→托管/checkout v4/unscoped×2）+action.yml（含 npm view 缓存键顺手修）+nix-hashes 转手动；sign-windows.ps1 判非孤儿（desktop 活引用）；blacksmith 残留 11 个非核心 workflow+checkout v3 残留 3 个=记账待拍板。
+- **dependabot**（3 笔）：W1 零风险 18 项+W2 serval CRITICAL 清零（solid-js 1.9.12+patch 移除，seroval 收敛 1.5.6）+W3 sst 树（fast-xml-parser CRITICAL 清零）；全量 6163/14=基线；W4/W5 决策备忘待用户（astro 5→7/hey-api 需 src 适配/若干 dismiss）；分析工单+209 advisory 存 cbench/depbot-20261001/。
+- **数据清理**：6.2GB 释放（heap 2.5G+native-profile 3.6G→26M+soak 473M→188K；报告/脚本/samples 保留）。
+- **edit-intent G1+G2**（2 笔）：唤醒者优先交接（woken_at+10min 软持有窗+yield 防互锁，迁移 v7）+队列位置可见（queued #N of M）；通知通道确认=injectSynthetic 现状。
+- **审计体系战果**：dependabot install 真拦截一次（anpm 内网域名 191 条入 lock 被拦+清洗）；registry 纪律已固化 env.md（本仓 install 必带 --registry npmmirror）；长期方案（项目级 .npmrc）待拍板。
+- 累计推送：772174f1f 前的 61 + explore 11 + dependabot 3 + WSL 5 + pad = 待推送时更新总数
+
