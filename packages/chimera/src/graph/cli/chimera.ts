@@ -29,7 +29,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { execFileSync } from 'child_process';
 import '../env';
-import { getCodeGraphDir, getGraphDataRootInfo, isInitialized, hasSchemalessDb, hasForeignDbFile, migrateLegacyGraphData, readIndexJob, unsafeIndexRootReason } from '../directory';
+import { getCodeGraphDir, getGraphDataRootInfo, isInitialized, hasSchemalessDb, hasForeignDbFile, migrateLegacyGraphData, readIndexJob, unsafeIndexRootReason, CHIMERA_DIR, WSL_CHIMERA_DIR } from '../directory';
 import { detectWorktreeIndexMismatch, worktreeMismatchWarning } from '../sync/worktree';
 import { createShimmerProgress } from '../ui/shimmer-progress';
 import { getGlyphs } from '../ui/glyphs';
@@ -555,6 +555,14 @@ program
       const cg = await CodeGraph.init(projectPath, { index: false });
       const dataRoot = getGraphDataRootInfo(projectPath);
       clack.log.success(`Initialized graph data in ${dataRoot.dataRoot}`);
+      // A fresh index on a Windows drive under WSL gets its own directory
+      // (upstream #995). It isn't the documented name, so say where it went and why.
+      if (dataRoot.wslIsolated) {
+        clack.log.info(
+          `The index is in ${WSL_CHIMERA_DIR}/: this project is on a Windows drive, so WSL keeps its own index ` +
+          `rather than share ${CHIMERA_DIR}/ with Chimera on Windows. Set CHIMERA_DATA_DIR to choose the location yourself.`
+        );
+      }
       clack.log.info('Run "chimera graph index" to build the first index');
 
       try {

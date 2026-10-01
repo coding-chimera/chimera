@@ -468,7 +468,9 @@ export class FileWatcher {
   /** Our own dirs are always ignored, regardless of .gitignore. */
   private isAlwaysIgnored(rel: string): boolean {
     const parts = rel.split('/');
-    return parts.includes('.chimera') || parts.includes('.codegraph') || parts.includes('.git');
+    return parts.includes('.chimera') || parts.includes('.codegraph') || parts.includes('.git') ||
+      // WSL-private index dirs on Windows drives (upstream #995).
+      parts.includes('.chimera-wsl') || parts.includes('.codegraph-wsl');
   }
 
   /**
