@@ -24,7 +24,7 @@ import { LockUnavailableError } from '../sync';
 import { tryAcquireWriterLock, releaseWriterLock, writerLockHeldMessage } from './writer-lock';
 import type { Node, Edge, SearchResult, Subgraph, NodeKind } from '../types';
 import { isTestFile } from '../search/query-utils';
-import { extractQueryPaths, queryMightContainPaths } from '../search/query-paths';
+import { extractQueryPaths, queryMightContainPaths, type QuerySetAsideMatch } from '../search/query-paths';
 import {
   existsSync,
   readFileSync,
@@ -1782,6 +1782,29 @@ export class ToolHandler {
     return out;
   }
 
+  /** Kinds that name a thing without defining it in the file that holds them. */
+  private static readonly NOT_A_DEFINITION = new Set<NodeKind>(['file', 'import', 'export', 'parameter']);
+
+  /**
+   * Which indexed files define a symbol spelled like this query token?
+   *
+   * The `symbolFiles` lookup `extractQueryPaths` takes, split out for the same
+   * reason as `pathIsProjectFile`: that module stays DB-free. Exact names only —
+   * and the shared matcher for a qualified token (`SQLCompiler.as_sql`) — so it
+   * agrees with what explore's named-symbol seeding resolves. Lookup errors
+   * answer "none", which leaves the span's pins as they were.
+   */
+  private filesDefiningSymbol(cg: CodeGraph, symbol: string): string[] {
+    try {
+      const nodes = /[.\/]|::/.test(symbol)
+        ? cg.getNodesByName(lastQualifierPart(symbol)).filter((n) => this.matchesSymbol(n, symbol))
+        : cg.getNodesByName(symbol);
+      return nodes.filter((n) => !ToolHandler.NOT_A_DEFINITION.has(n.kind)).map((n) => n.filePath);
+    } catch {
+      return [];
+    }
+  }
+
   /**
    * Handle codegraph_explore — deep exploration in a single call
    *
@@ -1821,25 +1844,41 @@ export class ToolHandler {
     // that names a real file the index doesn't hold is REPORTED as an
     // unresolved-path caveat instead of silently feeding its fragments to
     // matching — existence on disk decides, because shape alone cannot tell it
-    // from `and/or` prose (upstream #1830/#1837). The module also supports
-    // symbolFiles/lineAnchors narrowing; not wired in this fork yet.
+    // from `and/or` prose (upstream #1830/#1837). A bare basename several
+    // directories share pins only the matches that DEFINE a precise symbol the
+    // query also names; the rest are set aside and named in the summary
+    // (upstream #2071).
     let pinnedFiles: string[] = [];
     let unresolvedPathSpans: string[] = [];
+    let setAsideMatches: QuerySetAsideMatch[] = [];
     let matchQuery = query;
     if (queryMightContainPaths(query)) {
       try {
         const extraction = extractQueryPaths(
           query,
           cg.getFiles().map((f) => f.path),
-          { maxPins: maxFiles, existsOnDisk: (rel) => pathIsProjectFile(projectRoot, rel) },
+          {
+            maxPins: maxFiles,
+            existsOnDisk: (rel) => pathIsProjectFile(projectRoot, rel),
+            symbolFiles: (symbol) => this.filesDefiningSymbol(cg, symbol),
+          },
         );
         if (extraction.pinnedFiles.length > 0 || extraction.unresolvedPathSpans.length > 0) {
           pinnedFiles = extraction.pinnedFiles;
           unresolvedPathSpans = extraction.unresolvedPathSpans;
+          setAsideMatches = extraction.setAsideMatches;
           matchQuery = extraction.strippedQuery;
         }
       } catch { /* path pinning must never fail an explore call */ }
     }
+    // A same-named file the span did not pin is named in the summary line, so
+    // an agent that did mean it sees where it went instead of a silent drop.
+    const setAsideNote = setAsideMatches.map((s) => {
+      const which = s.files.length <= 2
+        ? s.files.map((f) => `\`${f}\``).join(', ')
+        : `${s.files.length} other \`${s.span}\` files`;
+      return ` Not pinned: ${which}, which define${s.files.length === 1 ? 's' : ''} none of the named symbols.`;
+    }).join('');
     const pinnedSet = new Set(pinnedFiles);
 
     // Step 1: Find relevant context with generous parameters.
@@ -2238,7 +2277,8 @@ export class ToolHandler {
       (pinnedGathered > 0 ? ` ${pinnedGathered} file${pinnedGathered === 1 ? '' : 's'} pinned from the query.` : '')
       + (unresolvedPathSpans.length > 0
         ? ` No indexed file uniquely matches ${unresolvedPathSpans.map((s) => `\`${s}\``).join(', ')}.`
-        : '');
+        : '')
+      + setAsideNote;
     const lines: string[] = [
       `## Exploration: ${query}`,
       '',
