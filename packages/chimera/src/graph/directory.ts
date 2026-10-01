@@ -11,10 +11,17 @@ import * as path from 'path';
 import { createDatabase } from './db/sqlite-adapter';
 import { CURRENT_SCHEMA_VERSION, getCurrentVersion, runMigrations } from './db/migrations';
 import { FileLock, isProcessAlive } from './utils';
+import { isWslWindowsDrive } from './sync/watch-policy';
 
 export const CHIMERA_DIR = '.chimera';
 export const LEGACY_CODEGRAPH_DIR = '.codegraph';
 export const CODEGRAPH_DIR = CHIMERA_DIR;
+/**
+ * The data directory name WSL gives a fresh project on a Windows drive, so it
+ * never shares one index with Chimera on Windows (upstream #995). Indexing and
+ * watching skip it on both sides like the other graph data dirs.
+ */
+export const WSL_CHIMERA_DIR = '.chimera-wsl';
 export const DATABASE_FILENAME = 'codegraph.db';
 export const INDEX_JOB_FILENAME = 'index-job.json';
 
@@ -83,6 +90,8 @@ export interface GraphDataRootInfo {
   hasCurrent: boolean;
   hasLegacy: boolean;
   explicit: boolean;
+  /** True when `dataRoot` is the WSL-private root on a Windows drive (upstream #995). */
+  wslIsolated: boolean;
 }
 
 function configuredDataRoot(projectRoot: string): string | undefined {
@@ -114,21 +123,40 @@ export function getLegacyCodeGraphDir(projectRoot: string): string {
 export function getGraphDataRootInfo(projectRoot: string): GraphDataRootInfo {
   const root = path.resolve(projectRoot);
   const explicitRoot = configuredDataRoot(root);
+  // On WSL + a Windows drive (`/mnt/c/...`) with no explicit data dir, the
+  // same tree is reachable from Windows-native Chimera too, and SQLite's
+  // locking doesn't hold across the 9p/DrvFs bridge — the two sharing one
+  // index fails with "disk I/O error" (upstream #995). There:
+  //   1. an existing .chimera-wsl index wins and is kept,
+  //   2. else an existing .chimera (or legacy .codegraph) index is kept as it
+  //      is — no silent re-index somewhere else,
+  //   3. else a fresh index goes in .chimera-wsl, so WSL never shares.
+  // Every other host resolves without touching the disk beyond the existing
+  // db probes: the WSL check is cached per process and short-circuits off WSL.
+  const sharesDriveWithWindows = !explicitRoot && isWslWindowsDrive(root);
+  const wslRoot = path.join(root, WSL_CHIMERA_DIR);
   const currentRoot = getCurrentCodeGraphDir(root);
   const legacyRoot = getLegacyCodeGraphDir(root);
+  const hasWsl = sharesDriveWithWindows && hasDatabase(wslRoot);
   const hasCurrent = hasDatabase(currentRoot);
   const hasLegacy = hasDatabase(legacyRoot);
-  const dataRoot = explicitRoot ?? (hasCurrent ? currentRoot : hasLegacy ? legacyRoot : currentRoot);
+  const dataRoot = explicitRoot
+    ?? (hasWsl ? wslRoot
+      : hasCurrent ? currentRoot
+      : hasLegacy ? legacyRoot
+      : sharesDriveWithWindows ? wslRoot
+      : currentRoot);
   return {
     projectRoot: root,
     dataRoot,
-    dataRootStatus: dataRootStatus({ explicit: Boolean(explicitRoot), hasCurrent, hasLegacy }),
+    dataRootStatus: dataRootStatus({ explicit: Boolean(explicitRoot), hasCurrent: hasCurrent || hasWsl, hasLegacy }),
     currentRoot,
     legacyRoot,
     databasePath: path.join(dataRoot, DATABASE_FILENAME),
     hasCurrent,
     hasLegacy,
     explicit: Boolean(explicitRoot),
+    wslIsolated: dataRoot === wslRoot,
   };
 }
 
@@ -444,7 +472,7 @@ function excludeCodeGraphFromGit(projectRoot: string): void {
 
     const existing = fs.existsSync(excludePath) ? fs.readFileSync(excludePath, 'utf-8') : '';
     const lines = existing.split(/\r?\n/).map((line) => line.trim());
-    const missing = [CHIMERA_DIR, LEGACY_CODEGRAPH_DIR].filter((dir) => !lines.includes(dir) && !lines.includes(`${dir}/`));
+    const missing = [CHIMERA_DIR, LEGACY_CODEGRAPH_DIR, WSL_CHIMERA_DIR, `${LEGACY_CODEGRAPH_DIR}-wsl`].filter((dir) => !lines.includes(dir) && !lines.includes(`${dir}/`));
     if (missing.length === 0) return;
 
     fs.appendFileSync(
@@ -763,7 +791,9 @@ export function migrateLegacyGraphData(projectRoot: string, options: { dryRun?: 
 
 export function createDirectory(projectRoot: string): void {
   const info = getGraphDataRootInfo(projectRoot);
-  const dataRoot = info.explicit ? info.dataRoot : info.currentRoot;
+  // init always targets the current root, except for an explicit data dir or
+  // the WSL-private root on a Windows drive (upstream #995).
+  const dataRoot = info.explicit || info.wslIsolated ? info.dataRoot : info.currentRoot;
   const dbPath = path.join(dataRoot, DATABASE_FILENAME);
 
   if (fs.existsSync(dbPath)) {
