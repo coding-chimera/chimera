@@ -49,7 +49,7 @@ jobs:
 
       - name: Install Chimera
         if: inputs.bump || inputs.version
-        run: bun i -g chimera
+        run: bun i -g @coding-chimera/chimera
 
       - id: version
         run: |
