@@ -135,6 +135,7 @@
   ],
   "overrides": {
     "@effect/platform-node-shared": "catalog:",
+    "@modelcontextprotocol/sdk@1.6.1": "1.25.2",
     "@types/bun": "catalog:",
     "@types/node": "catalog:",
     "@vitest/mocker": "4.1.11",
@@ -142,6 +143,8 @@
     "dompurify@3.4": "3.4.16",
     "esbuild@^0.27.0": "0.28.2",
     "fast-uri@3": "3.1.8",
+    "fast-xml-parser@4.4.1": "4.5.7",
+    "hono@4.7.4": "4.13.12",
     "mermaid": "11.16.1",
     "postcss@8.4.31": "8.5.28",
     "qs": "6.16.0",
