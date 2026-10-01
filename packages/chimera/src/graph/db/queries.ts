@@ -1235,6 +1235,65 @@ export class QueryBuilder {
   }
 
   /**
+   * Bounded miss diagnostics for an EMPTY explore result (upstream #1904/#2026),
+   * independent of relevance filters and ranking. Two bounded queries: an
+   * EXISTS check per query word (FTS prefix postings + live name-segment vocab,
+   * never source scans), and a candidate-name fetch for retry suggestions.
+   * Fork adaptation vs upstream: the FTS column set includes `search_text`
+   * (split identifier words), mirroring this fork's full-column searchNodes
+   * surface, and the FTS→nodes join uses the fork's `id` column convention.
+   */
+  getExploreMissDiagnostics(query: string): {
+    matched: string[]; unmatched: string[]; candidates: string[]; limited: boolean;
+  } {
+    const words = [...new Set((query.match(/[\p{L}\p{N}]+/gu) ?? []).map(w => w.toLowerCase()))];
+    const checked = words.filter(w => w.length <= 64).slice(0, 16);
+    const limited = checked.length !== words.length;
+    if (checked.length === 0) return { matched: [], unmatched: [], candidates: [], limited };
+
+    // EXISTS uses FTS postings and the segment primary key, never source scans.
+    // Vocab rows can outlive deleted definitions, so verify them against nodes.
+    const rows = this.db.prepare(`
+      WITH words(word, pattern) AS (VALUES ${checked.map(() => '(?, ?)').join(', ')})
+      SELECT word, (
+        EXISTS (SELECT 1 FROM nodes_fts WHERE nodes_fts MATCH pattern)
+        OR EXISTS (
+          SELECT 1 FROM name_segment_vocab v WHERE v.segment = word
+          AND EXISTS (SELECT 1 FROM nodes n WHERE n.name = v.name AND n.kind NOT IN ('file', 'import'))
+        )
+      ) AS matched FROM words
+    `).all(...checked.flatMap(w => [w, `{name qualified_name docstring signature search_text} : "${w}"*`])) as
+      Array<{ word: string; matched: number }>;
+
+    // Fork adaptation: the FTS candidate arm searches {name search_text} —
+    // this fork's `search_text` column holds the split identifier words
+    // (explainHowThingsWork → "explain how things work"), covering the sub-word
+    // candidate role upstream's name_segment_vocab plays (the fork creates that
+    // table but never populates it; the vocab arm above stays for parity and
+    // fires if/when a populate flow lands).
+    const names = this.db.prepare(`
+      SELECT name FROM (
+        SELECT v.name FROM name_segment_vocab v
+        WHERE v.segment IN (${checked.map(() => '?').join(', ')})
+        AND EXISTS (SELECT 1 FROM nodes n WHERE n.name = v.name AND n.kind NOT IN ('file', 'import'))
+        LIMIT 12
+      )
+      UNION ALL
+      SELECT name FROM (
+        SELECT n.name FROM nodes_fts JOIN nodes n ON n.id = nodes_fts.id
+        WHERE nodes_fts MATCH ? AND n.kind NOT IN ('file', 'import')
+        LIMIT 12
+      )
+    `).all(...checked, `{name search_text} : (${checked.map(w => `"${w}"*`).join(' OR ')})`) as Array<{ name: string }>;
+    return {
+      matched: rows.filter(r => r.matched).map(r => r.word),
+      unmatched: rows.filter(r => !r.matched).map(r => r.word),
+      candidates: [...new Set(names.map(r => r.name))].slice(0, 12),
+      limited,
+    };
+  }
+
+  /**
    * Get nodes by exact qualified name match (uses idx_nodes_qualified_name index)
    */
   getNodesByQualifiedNameExact(qualifiedName: string): Node[] {

@@ -1804,8 +1804,11 @@ export class ToolHandler {
     // largest-tier defaults if stats aren't available, which preserves
     // pre-#185 behavior for callers that hit the rare stats failure.
     let budget: ExploreOutputBudget;
+    let indexedNodeCount = -1;
     try {
-      budget = getExploreOutputBudget(cg.getStats().fileCount);
+      const stats = cg.getStats();
+      indexedNodeCount = stats.nodeCount;
+      budget = getExploreOutputBudget(stats.fileCount);
     } catch {
       budget = getExploreOutputBudget(Infinity);
     }
@@ -1874,7 +1877,41 @@ export class ToolHandler {
       const missNote = unresolvedPathSpans.length > 0
         ? ` (no indexed file uniquely matches ${unresolvedPathSpans.map((s) => `\`${s}\``).join(', ')})`
         : '';
-      return this.textResult(`No relevant code found for "${query}"${missNote}`);
+      // Bounded lexical diagnostics (upstream #1904/#2026): an empty answer
+      // explains WHY it is empty and what to retry with — two bounded SQL
+      // probes distinguish matched from unmatched query words and suggest
+      // indexed candidate names. Added text is capped well under 1.5K chars.
+      // Diagnostics must never fail the call: on probe errors, fall back to
+      // the bare explanation.
+      let explanation = '\n\nExplore matches symbol/file names and indexed code words lexically, not by meaning.';
+      if (indexedNodeCount === 0) {
+        explanation += '\nThis project has nothing indexed.';
+      } else {
+        try {
+          const miss = cg.getExploreMissDiagnostics(matchQuery);
+          const list = (words: string[]) => words.map(w => `\`${w}\``).join(', ');
+          // Separate caps preserve the retry instruction and complete candidate
+          // names even with long queries or generated identifiers.
+          const cappedList = (words: string[], cap: number) => {
+            const kept: string[] = [];
+            for (const word of words) {
+              if (list([...kept, word]).length > cap) break;
+              kept.push(word);
+            }
+            return list(kept) + (kept.length < words.length ? ' …' : '');
+          };
+          explanation += '\nChecked indexed names, signatures, docstrings (FTS prefixes) and live name segments; not all source text.';
+          if (miss.limited) explanation += '\nWord check limited to 16 words of at most 64 characters.';
+          explanation += `\nNo lexical matches for checked words: ${cappedList(miss.unmatched, 250) || '(none)'}.`;
+          if (miss.matched.length > 0) {
+            explanation += `\nMatched indexed words: ${cappedList(miss.matched, 200)}; these did not yield a relevant result after filtering/scoring.`;
+          }
+          explanation += miss.candidates.length > 0
+            ? `\nCandidates to retry with codegraph_explore (shared words, not confirmed answers): ${cappedList(miss.candidates, 350)}`
+            : '\nNo shared-word symbol candidates found; retry codegraph_explore with literal symbol/file names or code terms.';
+        } catch { /* diagnostics are best-effort; keep the base explanation */ }
+      }
+      return this.textResult(`No relevant code found for "${query}"${missNote}${explanation}`);
     }
 
     // Graph-aware glue: findRelevantContext builds the subgraph from name/text
