@@ -12,6 +12,7 @@ import {
   EDIT_INTENT_CLAIM_DEFAULT_TTL_MS,
   listEditIntentWaiterHosts,
   readActiveEditIntentClaims,
+  readEditIntentQueuePositions,
   readEditIntentWaiters,
   readWokenEditIntentWaiters,
   registerEditIntentClaims,
@@ -21,6 +22,7 @@ import {
   takeWokenEditIntentWaiters,
   type EditIntentClaimRecord,
   type EditIntentClaimReleaseReason,
+  type EditIntentQueuePosition,
   type EditIntentWaiterRecord,
 } from "./store"
 import { TOOL_MUTATION_EDIT_INTENT_BLOCKED } from "./guidance"
@@ -137,6 +139,8 @@ export type EditIntentConflict = {
   ownClaimQueued: boolean
   /** True when the session's earlier queued claim was yielded to the wake-priority holder (G1). */
   yieldedOwnClaim?: boolean
+  /** G2: this session's rank in the file's still-waiting wake queue (#N of M). */
+  queue?: { position: number; depth: number }
 }
 
 export type EditIntentWakeFile = {
@@ -304,6 +308,29 @@ function mergeConflicts(conflicts: EditIntentConflict[]) {
   return conflicts.sort((a, b) => a.filePath.localeCompare(b.filePath))
 }
 
+/**
+ * G2 queue visibility: annotate each conflict with this session's position
+ * in the file's still-waiting queue (#N of M), counted in wake order — the
+ * same order the release take selects, so #1 is woken first. Call after
+ * waiter registration so the session's own fresh rows are included.
+ * Degrades open: storage trouble leaves conflicts unannotated.
+ */
+const attachQueuePositions = Effect.fnUntraced(function* (projectRoot: string, sessionID: string, conflicts: EditIntentConflict[]) {
+  if (conflicts.length === 0) return conflicts
+  const positions = yield* Effect.promise(() =>
+    readEditIntentQueuePositions(projectRoot, { files: conflicts.map((conflict) => conflict.filePath), sessionID }).catch((error) => {
+      log.warn("edit-intent queue position read failed", { error })
+      return [] as EditIntentQueuePosition[]
+    }),
+  )
+  const byFile = new Map(positions.map((position) => [position.filePath, position]))
+  return conflicts.map((conflict) => {
+    const position = byFile.get(conflict.filePath)
+    if (position?.position === undefined) return conflict
+    return { ...conflict, queue: { position: position.position, depth: position.depth } }
+  })
+})
+
 export const registerFromPredesign = Effect.fn("EditIntentClaims.registerFromPredesign")(function* (input: {
   projectRoot: string
   sessionID: string
@@ -448,7 +475,9 @@ export const checkMutation = Effect.fn("EditIntentClaims.checkMutation")(functio
   })
   const all = mergeConflicts([...conflicts, ...softConflicts])
   yield* registerWaiters(input.projectRoot, input.sessionID, all, `mutation_gate:${input.toolID}`)
-  return all
+  // G2: annotate after waiter registration so this session's own fresh
+  // queue rows are counted in its reported position.
+  return yield* attachQueuePositions(input.projectRoot, input.sessionID, all)
 })
 
 export function blockedResult(input: { toolID: string; conflicts: EditIntentConflict[] }): Tool.ExecuteResult {
@@ -461,10 +490,11 @@ export function blockedResult(input: { toolID: string; conflicts: EditIntentConf
       "",
       "Conflicting claims:",
       ...input.conflicts.map((conflict) => {
+        const queueSuffix = conflict.queue ? `; queue: #${conflict.queue.position} of ${conflict.queue.depth} waiting` : ""
         if (!conflict.wakePriority)
-          return `- ${conflict.filePath}: held by session ${conflict.holder.sessionID} (agent ${conflict.holder.agent}) since ${heldAge(conflict.holder.createdAt)}; intent: ${compactIntent(conflict.holder.intent)}${conflict.ownClaimQueued ? "; your claim is queued behind it" : ""}`
+          return `- ${conflict.filePath}: held by session ${conflict.holder.sessionID} (agent ${conflict.holder.agent}) since ${heldAge(conflict.holder.createdAt)}; intent: ${compactIntent(conflict.holder.intent)}${conflict.ownClaimQueued ? "; your claim is queued behind it" : ""}${queueSuffix}`
         const yieldedSuffix = conflict.yieldedOwnClaim ? "; your earlier queued claim was yielded to it — you are re-queued as a waiter and will be woken when it releases" : ""
-        return `- ${conflict.filePath}: held in wake-priority window by session ${conflict.wakePriority.sessionID} (first waiter, woken ${heldAge(conflict.wakePriority.wokenAt)}, window expires ${windowRemaining(conflict.wakePriority.windowExpiresAt)})${yieldedSuffix}`
+        return `- ${conflict.filePath}: held in wake-priority window by session ${conflict.wakePriority.sessionID} (first waiter, woken ${heldAge(conflict.wakePriority.wokenAt)}, window expires ${windowRemaining(conflict.wakePriority.windowExpiresAt)})${yieldedSuffix}${queueSuffix}`
       }),
       "",
       "What to do:",
@@ -497,6 +527,7 @@ export function blockedResult(input: { toolID: string; conflicts: EditIntentConf
             }
           : {}),
         ...(conflict.yieldedOwnClaim ? { yieldedOwnClaim: true } : {}),
+        ...(conflict.queue ? { queuePosition: conflict.queue.position, queueDepth: conflict.queue.depth } : {}),
       })),
     },
   }
@@ -768,6 +799,13 @@ export const contextLines = Effect.fn("EditIntentClaims.contextLines")(function*
   // release inject is in flight) — they render nothing here.
   const blocked = waiters.filter((waiter) => currentHolders.has(waiter.filePath))
   if (own.length === 0 && blocked.length === 0) return [] as string[]
+  // G2: same-source queue positions so the runtime context also shows how
+  // deep this session sits in each blocked file's wake queue.
+  const blockedFiles = uniquePaths(blocked.map((waiter) => waiter.filePath))
+  const queuePositions = blockedFiles.length === 0 ? [] : yield* readBlockedQueuePositions(input.projectRoot, input.sessionID, blockedFiles)
+  const positionByFile = new Map(queuePositions.map((position) => [position.filePath, position]))
+  const queued = queuePositions.filter((position) => position.position !== undefined)
+  const deepest = queued.length === 0 ? undefined : queued.reduce((best, position) => (position.position! > best.position! ? position : best))
   // Display order is alphabetical so the line is stable regardless of claim
   // read order (which follows registration order for queue fairness).
   const ownFiles = uniquePaths(own.map((claim) => claim.filePath)).sort()
@@ -782,9 +820,23 @@ export const contextLines = Effect.fn("EditIntentClaims.contextLines")(function*
       : []),
     ...blocked.map((waiter) => {
       const holder = currentHolders.get(waiter.filePath)!
-      return `- blocked: ${waiter.filePath} is claimed by session ${holder.sessionID} (agent ${holder.agent}, ${heldAge(holder.createdAt)}); your claim is queued — a release notice is injected automatically when the holder finishes; work on non-conflicting files meanwhile.`
+      const position = positionByFile.get(waiter.filePath)
+      const queueSuffix = position?.position !== undefined ? `; you are #${position.position} of ${position.depth} in the wake queue` : ""
+      return `- blocked: ${waiter.filePath} is claimed by session ${holder.sessionID} (agent ${holder.agent}, ${heldAge(holder.createdAt)}); your claim is queued${queueSuffix} — a release notice is injected automatically when the holder finishes; work on non-conflicting files meanwhile.`
     }),
+    ...(deepest
+      ? [`- queued: you are waiting on ${blockedFiles.length} file(s) (deepest position #${deepest.position} of ${deepest.depth} on ${deepest.filePath}).`]
+      : []),
   ]
+})
+
+const readBlockedQueuePositions = Effect.fnUntraced(function* (projectRoot: string, sessionID: string, files: string[]) {
+  return yield* Effect.promise(() =>
+    readEditIntentQueuePositions(projectRoot, { files, sessionID }).catch((error) => {
+      log.warn("edit-intent queue position read failed", { error })
+      return [] as EditIntentQueuePosition[]
+    }),
+  )
 })
 
 export * as EditIntentClaims from "./edit-intent"

@@ -177,6 +177,15 @@ export type EditIntentWaiterRecord = {
   updatedAt: string
 }
 
+/** G2 queue visibility: one file's still-waiting queue depth and the querying session's rank in wake order. */
+export type EditIntentQueuePosition = {
+  filePath: string
+  /** Total still-waiting waiters on the file. */
+  depth: number
+  /** 1-based rank of the querying session in wake order; absent when it has no waiting row on the file. */
+  position?: number
+}
+
 /** Matches PREDESIGN_FRESH_WINDOW_MS in provenance.ts: a claim never outlives the predesign evidence it came from. */
 export const EDIT_INTENT_CLAIM_DEFAULT_TTL_MS = 2 * 60 * 60 * 1000
 
@@ -1951,6 +1960,40 @@ export async function readWokenEditIntentWaiters(
     db.prepare(`SELECT * FROM chimera_edit_intent_waiter WHERE ${where.join(" AND ")} ORDER BY woken_at ASC, created_at ASC, session_id ASC LIMIT ?`).all(...params) as EditIntentWaiterRow[],
   )
   return (rows ?? []).map(editIntentWaiterRecord)
+}
+
+/**
+ * G2 queue visibility: per-file still-waiting queue depth plus the querying
+ * session's 1-based position, counted in wake order (created_at ASC,
+ * session_id ASC — the same order the release take selects, so #1 is woken
+ * first). Files without waiting rows are omitted. Degrades open: storage
+ * trouble yields an empty list and callers render no positions.
+ */
+export async function readEditIntentQueuePositions(
+  projectRoot: string,
+  options: { files: string[]; sessionID: string; limit?: number },
+): Promise<EditIntentQueuePosition[]> {
+  const files = unique(options.files.map(claimFilePath).filter(Boolean))
+  if (files.length === 0) return []
+  const limit = Math.max(1, Math.min(1000, Math.floor(options.limit ?? 500)))
+  const rows = await withReadOnlyDb(projectRoot, (db) =>
+    db
+      .prepare(
+        `SELECT file_path, session_id FROM chimera_edit_intent_waiter WHERE status = 'waiting' AND file_path IN (${files.map(() => "?").join(", ")}) ORDER BY file_path ASC, created_at ASC, session_id ASC LIMIT ?`,
+      )
+      .all(...files, limit) as Array<{ file_path: string; session_id: string }>,
+  )
+  const positions = new Map<string, EditIntentQueuePosition>()
+  for (const row of rows ?? []) {
+    const entry = positions.get(row.file_path) ?? { filePath: row.file_path, depth: 0 }
+    entry.depth += 1
+    if (row.session_id === options.sessionID && entry.position === undefined) entry.position = entry.depth
+    positions.set(row.file_path, entry)
+  }
+  return files.flatMap((file) => {
+    const entry = positions.get(file)
+    return entry ? [entry] : []
+  })
 }
 
 export async function cancelEditIntentWaiters(projectRoot: string, sessionID: string, options: { now?: string } = {}): Promise<number> {
