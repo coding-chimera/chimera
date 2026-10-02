@@ -29,7 +29,7 @@ const original = {
 
 type Backend = "legacy" | "httpapi"
 type Sdk = ReturnType<typeof createOpencodeClient>
-type SdkResult = { response: Response; data?: unknown; error?: unknown }
+type SdkResult = { response?: Response; data?: unknown; error?: unknown }
 type Captured = { status: number; data?: unknown; error?: unknown }
 type ProjectFixture = { sdk: Sdk; directory: string }
 type LlmProjectFixture = ProjectFixture & { llm: TestLLMServer["Service"] }
@@ -171,10 +171,17 @@ function call<T>(request: () => Promise<T>) {
   return Effect.promise(request)
 }
 
+// openapi-ts 0.97 made the generated result envelope's request/response optional;
+// narrow once here so call sites keep asserting real Response values.
+function responseOf(result: { response?: Response }) {
+  if (!result.response) throw new Error("SDK result missing response")
+  return result.response
+}
+
 function capture(request: () => Promise<SdkResult>) {
   return call(request).pipe(
     Effect.map((result) => ({
-      status: result.response.status,
+      status: responseOf(result).status,
       data: result.data,
       error: result.error,
     })),
@@ -191,9 +198,9 @@ function captureThrown(request: () => Promise<unknown>) {
   })
 }
 
-function expectStatus(request: () => Promise<{ response: Response }>, status: number) {
+function expectStatus(request: () => Promise<{ response?: Response }>, status: number) {
   return call(request).pipe(
-    Effect.tap((result) => Effect.sync(() => expect(result.response.status).toBe(status))),
+    Effect.tap((result) => Effect.sync(() => expect(responseOf(result).status).toBe(status))),
     Effect.asVoid,
   )
 }
@@ -335,13 +342,13 @@ describe("HttpApi SDK", () => {
       const health = yield* call(() => sdk.global.health())
       const log = yield* call(() => sdk.app.log({ service: "httpapi-sdk-test", level: "info", message: "hello" }))
 
-      expect(health.response.status).toBe(200)
+      expect(responseOf(health).status).toBe(200)
       expect(health.data).toMatchObject({ healthy: true })
       expect(yield* firstEvent(() => sdk.global.event({ signal: AbortSignal.timeout(1_000) }))).toMatchObject({
         directory: "global",
         payload: { type: "server.connected" },
       })
-      expect(log.response.status).toBe(200)
+      expect(responseOf(log).status).toBe(200)
       expect(log.data).toBe(true)
       yield* expectStatus(() => sdk.auth.set({ providerID: "test" }), 400)
     }),
@@ -355,11 +362,11 @@ describe("HttpApi SDK", () => {
         const session = yield* call(() => sdk.session.create({ title: "sdk" }))
         const listed = yield* call(() => sdk.session.list({ roots: true, limit: 10 }))
 
-        expect(file.response.status).toBe(200)
+        expect(responseOf(file).status).toBe(200)
         expect(file.data).toMatchObject({ content: "hello" })
-        expect(session.response.status).toBe(200)
+        expect(responseOf(session).status).toBe(200)
         expect(session.data).toMatchObject({ title: "sdk" })
-        expect(listed.response.status).toBe(200)
+        expect(responseOf(listed).status).toBe(200)
         expect(listed.data?.map((item) => item.id)).toContain(session.data?.id)
 
         yield* Effect.all([
@@ -783,9 +790,9 @@ describe("HttpApi SDK", () => {
         const roots = yield* capture(() => sdk.session.list({ roots: true, limit: 10 }))
         const all = yield* capture(() => sdk.session.list({ roots: false, limit: 10 }))
         const firstPageResult = yield* call(() => sdk.session.list({ roots: true, limit: 1 }))
-        const sessionCursor = firstPageResult.response.headers.get("x-next-cursor")
+        const sessionCursor = responseOf(firstPageResult).headers.get("x-next-cursor")
         const firstPage = {
-          status: firstPageResult.response.status,
+          status: responseOf(firstPageResult).status,
           data: firstPageResult.data,
           error: firstPageResult.error,
         }
