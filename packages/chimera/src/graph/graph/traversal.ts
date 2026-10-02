@@ -520,7 +520,7 @@ export class GraphTraverser {
     nodes.set(focalNode.id, focalNode);
 
     // Traverse incoming edges to find all dependents
-    this.getImpactRecursive(nodeId, maxDepth, 0, nodes, edges, visited);
+    this.getImpactRecursive(nodeId, maxDepth, 0, nodes, edges, visited, new Set());
 
     return {
       nodes,
@@ -535,19 +535,21 @@ export class GraphTraverser {
     currentDepth: number,
     nodes: Map<string, Node>,
     edges: Edge[],
-    visited: Map<string, number>
+    visited: Map<string, number>,
+    expanded: Set<string>
   ): void {
     // Mark visited before the depth check so a node collected at the depth
-    // boundary still lands in `visited`, and record the shallowest expansion
-    // depth: a node first reached through a longer path at the depth limit is
-    // expanded again when a nearer path reaches it, so its own dependents
-    // within the limit are not lost to edge order (#1974). Collection below
-    // stays gated on `!nodes.has(...)`, which is stable across re-expansions,
-    // so no node or edge is ever recorded twice.
+    // boundary still lands in `visited`. Otherwise it could sit in `nodes` but
+    // not `visited`, and the two loops below — which used different sets to
+    // gate re-processing — would disagree about it (#1089).
     if (!this.enterAtDepth(visited, nodeId, currentDepth)) return;
     if (currentDepth >= maxDepth) {
       return;
     }
+    // A node re-expanded from a nearer depth re-reads the same edges; record
+    // them on its first expansion only.
+    const firstExpansion = !expanded.has(nodeId);
+    expanded.add(nodeId);
 
     // For container nodes (classes, interfaces, structs, etc.), also traverse
     // into their children so that callers of contained methods appear in impact
@@ -566,7 +568,7 @@ export class GraphTraverser {
                 edges.push(edge);
               }
               // Recurse into children at the same depth (they're part of the same symbol)
-              this.getImpactRecursive(childNode.id, maxDepth, currentDepth, nodes, edges, visited);
+              this.getImpactRecursive(childNode.id, maxDepth, currentDepth, nodes, edges, visited, expanded);
             }
           }
         }
@@ -584,12 +586,15 @@ export class GraphTraverser {
     for (const edge of incomingEdges) {
       const sourceNode = sources.get(edge.source);
       if (!sourceNode) continue;
-      if (!nodes.has(sourceNode.id)) {
-        nodes.set(sourceNode.id, sourceNode);
-        edges.push(edge);
-      }
+      // Record the dependency edge unconditionally. The gate used to also gate
+      // edge collection (`!nodes.has(...)`), so a second incoming edge into a
+      // node already collected via another path was silently dropped from
+      // `edges` even though it's a real dependency (#1089). Each node's incoming
+      // edges are recorded on its first expansion only, so no edge repeats.
+      if (firstExpansion) edges.push(edge);
       if (this.nearerThanBefore(visited, sourceNode.id, currentDepth + 1)) {
-        this.getImpactRecursive(sourceNode.id, maxDepth, currentDepth + 1, nodes, edges, visited);
+        nodes.set(sourceNode.id, sourceNode);
+        this.getImpactRecursive(sourceNode.id, maxDepth, currentDepth + 1, nodes, edges, visited, expanded);
       }
     }
   }
