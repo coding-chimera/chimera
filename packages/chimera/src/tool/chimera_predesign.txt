@@ -11,3 +11,5 @@ This is not post-change verification: after a successful mutation run `chimera_a
 After this tool:
 - Review the impact evidence, then retry the mutation if it was gate-blocked. A recorded run is pre-edit evidence, not proof the mutation is correct.
 - On claim conflicts: proceed with non-conflicting work; the release notice arrives automatically — no polling or retry loops.
+
+Automation setups that cannot call this tool (scripted drivers, CI agents) should deny it in the agent config — `tools.chimera_predesign = false` or an agent permission deny — which also auto-releases the mutation gate for that agent (the gate's deadlock guard). Edit-intent claim coordination still applies unchanged.

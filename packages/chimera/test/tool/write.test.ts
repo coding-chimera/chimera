@@ -178,6 +178,22 @@ describe("tool.write", () => {
       }),
     )
 
+    it.instance("releases the pre-design gate when the predesign tool is unavailable", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "released.ts")
+        const graph = yield* Effect.promise(() => CodeGraph.init(test.directory))
+        graph.close()
+        const result = yield* run(
+          { filePath: filepath, content: "export const released = 1\n" },
+          { ...ctx, extra: { chimeraPredesignAvailable: false } },
+        )
+
+        expect(result.title).not.toBe("Chimera pre-design required")
+        expect(yield* Effect.promise(() => Bun.file(filepath).exists())).toBe(true)
+      }),
+    )
+
     it.instance("requires pre-design before writing prompt/runtime guidance files", () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
