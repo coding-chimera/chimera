@@ -56,6 +56,19 @@ export class GraphTraverser {
     const nodes = new Map<string, Node>();
     const edges: Edge[] = [];
     const visited = new Set<string>();
+    // Enqueue-once guard, tracked separately from `visited` (which is only set
+    // on dequeue). Guarding the enqueue on `visited` alone let a target
+    // reachable via two edges get queued twice; the second dequeue then hit
+    // `visited.has → continue` and its edge was never recorded, so parallel
+    // edges (A calls AND references B, or two `calls` on different lines — edges
+    // are unique on source+target+kind+line+col) went missing from the result
+    // (#1090). `enqueued` makes each node queued exactly once.
+    const enqueued = new Set<string>([startNode.id]);
+    // Edge-identity dedup so a `direction:'both'` scan — which encounters A→B
+    // from both endpoints — records each edge once.
+    const seenEdges = new Set<string>();
+    const edgeKey = (e: Edge) =>
+      `${e.source}|${e.target}|${e.kind}|${e.line ?? -1}|${e.column ?? -1}`;
     const queue: TraversalStep[] = [{ node: startNode, edge: null, depth: 0 }];
 
     if (opts.includeStart) {
@@ -64,17 +77,12 @@ export class GraphTraverser {
 
     while (queue.length > 0 && nodes.size < opts.limit) {
       const step = queue.shift()!;
-      const { node, edge, depth } = step;
+      const { node, depth } = step;
 
       if (visited.has(node.id)) {
         continue;
       }
       visited.add(node.id);
-
-      // Add edge to result
-      if (edge) {
-        edges.push(edge);
-      }
 
       // Check depth limit
       if (depth >= opts.maxDepth) {
@@ -90,25 +98,42 @@ export class GraphTraverser {
         return priority(a) - priority(b);
       });
 
-      // Batch-fetch the unvisited neighbors in one query (was N+1 per BFS step).
+      // Batch-fetch neighbors we might newly enqueue in one query (was N+1 per
+      // BFS step). Already-queued/visited neighbors are already in `nodes`, so
+      // they don't need re-fetching to record an edge back to them.
       const wantIds = adjacentEdges
         .map((e) => (e.source === node.id ? e.target : e.source))
-        .filter((id) => !visited.has(id));
+        .filter((id) => !visited.has(id) && !enqueued.has(id));
       const neighborNodes = wantIds.length > 0 ? this.queries.getNodesByIds(wantIds) : new Map();
 
       for (const adjEdge of adjacentEdges) {
         const nextNodeId = adjEdge.source === node.id ? adjEdge.target : adjEdge.source;
-        if (visited.has(nextNodeId)) continue;
-
-        const nextNode = neighborNodes.get(nextNodeId);
+        const nextNode = neighborNodes.get(nextNodeId) ?? nodes.get(nextNodeId);
         if (!nextNode) continue;
 
         if (opts.nodeKinds && opts.nodeKinds.length > 0 && !opts.nodeKinds.includes(nextNode.kind)) {
           continue;
         }
 
-        nodes.set(nextNode.id, nextNode);
-        queue.push({ node: nextNode, edge: adjEdge, depth: depth + 1 });
+        // Enqueue each neighbor exactly once, and only while under the node
+        // budget — the cap is checked per-add here, not just on the outer
+        // `while`, so one high-degree node can't overshoot `opts.limit` (#1087).
+        if (!visited.has(nextNodeId) && !enqueued.has(nextNodeId)) {
+          if (nodes.size >= opts.limit) continue;
+          enqueued.add(nextNodeId);
+          nodes.set(nextNode.id, nextNode);
+          queue.push({ node: nextNode, edge: adjEdge, depth: depth + 1 });
+        }
+
+        // Record every distinct edge among kept nodes. Collecting on the
+        // adjacency scan (rather than once per dequeue) is what preserves
+        // parallel edges to the same target (#1090); `nextNode` is guaranteed
+        // to be in `nodes` at this point (just added, or already in-set).
+        const ek = edgeKey(adjEdge);
+        if (!seenEdges.has(ek)) {
+          seenEdges.add(ek);
+          edges.push(adjEdge);
+        }
       }
     }
 
@@ -178,6 +203,11 @@ export class GraphTraverser {
     const neighborNodes = wantIds.length > 0 ? this.queries.getNodesByIds(wantIds) : new Map();
 
     for (const edge of adjacentEdges) {
+      // Cap per-add, not just at the top of each frame: the top-of-function
+      // guard only stops the next recursion, so without this every sibling of
+      // the first over-budget child still got inserted, overshooting
+      // `opts.limit` by a node's full fan-out (#1088).
+      if (nodes.size >= opts.limit) break;
       const nextNodeId = edge.source === node.id ? edge.target : edge.source;
       if (visited.has(nextNodeId)) continue;
 
