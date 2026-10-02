@@ -40,6 +40,10 @@ const ORACLE_RESULT_FILE = "oracle-results.jsonl"
 const TOOL_DEDUPE_WINDOW_MS = 15_000
 const EMPTY_GRAPH_RETRY_MS = 2_000
 const MISSING_RECONCILE_INTERVAL_MS = 10 * 60 * 1000
+// Retry throttle for a FAILED one-shot stale-index rebuild: writer refreshes run
+// on every syncing tool open, so a persistently failing indexAll (e.g. the MCP
+// daemon holding the cross-process file lock) must not relaunch per tool call.
+const STALE_REBUILD_RETRY_MS = 30_000
 const GRAPH_DB_GONE_PATTERN = /SQLITE_IOERR|disk I\/O error|unable to open database/i
 const graphLog = Log.create({ service: "chimera.provenance" })
 
@@ -207,6 +211,12 @@ export interface ProjectGraphState {
   /** Last time the git-tracked missing-file reconcile ran (throttled by MISSING_RECONCILE_INTERVAL_MS). */
   lastMissingReconcileAt?: number
   refreshPromise?: Promise<void>
+  /** In-flight one-shot background rebuild of a stale-stamped index (writer opens only). */
+  staleRebuildInFlight?: boolean
+  /** When the last stale-rebuild attempt was triggered; throttles retries after a failure. */
+  staleRebuildLastAttemptAt?: number
+  /** Last stale-rebuild attempt; settles (never rejects) once the background indexAll finishes. */
+  staleRebuildPromise?: Promise<void>
 }
 
 const graphStates = new Map<string, Promise<ProjectGraphState>>()
@@ -264,6 +274,16 @@ export function injectGraphStateForTest(root: string, state: ProjectGraphState, 
 /** Test seam (R1 A4): run one eviction pass and report how many roots were evicted. */
 export function evictGraphStatesForTest() {
   return evictGraphStates()
+}
+
+/** Test seam: the cached graph-state promise for a root, if present. */
+export function graphStateForTest(root: string) {
+  return graphStates.get(root)
+}
+
+/** Test seam: close and evict one cached graph root (releases handles/watchers). */
+export function closeGraphRootForTest(root: string) {
+  return closeGraphRoot(root)
 }
 const graphRootsByDirectory = new Map<string, string>()
 const directoriesByGraphRoot = new Map<string, Set<string>>()
@@ -527,8 +547,82 @@ function uniqueAbsolute(root: string, files: string[]) {
   return [...new Set(files.map((file) => path.join(root, file)))]
 }
 
+/**
+ * Writer-open stale-extraction catch-up — the runtime-side counterpart of the
+ * MCP daemon's `rebuildStaleThenSync` (6d7dd50a5, upstream v1.6.1 #2034 port):
+ * when the open database was stamped by an older extractor, trigger a one-shot
+ * background `indexAll()` that re-extracts everything and re-stamps the
+ * database, so later opens go quiet and the rebuild can never loop.
+ *
+ * Never blocks the open itself and never rejects: a failed attempt (exception
+ * or cross-process file-lock contention, e.g. the MCP daemon rebuilding the
+ * same root concurrently) logs, keeps serving the stale content, and a later
+ * writer refresh retries after STALE_REBUILD_RETRY_MS. Read-only and
+ * cross-project opens never reach this function — the read side stays
+ * report-only. Syncing opens queue behind the rebuild through the engine's
+ * index mutex (the same net effect as the daemon's catch-up gate) while
+ * read-only queries keep serving the existing content. No onProgress is
+ * attached, so the background rebuild cannot double-stream progress next to a
+ * caller's own refresh progress; both surfaces log exactly one trigger line
+ * and one outcome line per attempt through their own channels.
+ */
+function maybeRebuildStaleIndex(state: ProjectGraphState) {
+  if (state.staleRebuildInFlight) return
+  const now = Date.now()
+  if (state.staleRebuildLastAttemptAt && now - state.staleRebuildLastAttemptAt < STALE_REBUILD_RETRY_MS) return
+  const semantics = readExtractionSemantics(state)
+  if (!semantics?.needsReindex) return
+  state.staleRebuildInFlight = true
+  state.staleRebuildLastAttemptAt = now
+  graphLog.info("stale extraction stamp on writer open — rebuilding index in the background", {
+    root: state.projectRoot,
+    storedVersion: semantics.storedVersion,
+    currentVersion: semantics.currentVersion,
+  })
+  state.staleRebuildPromise = state.graph
+    .indexAll()
+    .then((result) => {
+      if (result.success) {
+        graphLog.info("rebuilt stale index; extraction semantics stamp is now current", {
+          root: state.projectRoot,
+          filesIndexed: result.filesIndexed,
+          currentVersion: semantics.currentVersion,
+        })
+        return
+      }
+      graphLog.warn("stale-index rebuild failed; serving stale content, will retry on a later writer refresh", {
+        root: state.projectRoot,
+        error: result.errors.find((error) => error.severity === "error")?.message ?? "unknown error",
+      })
+    })
+    .catch((error: unknown) => {
+      graphLog.warn("stale-index rebuild failed; serving stale content, will retry on a later writer refresh", {
+        root: state.projectRoot,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    })
+    .finally(() => {
+      state.staleRebuildInFlight = false
+    })
+}
+
+function readExtractionSemantics(state: ProjectGraphState) {
+  try {
+    return state.graph.extractionSemanticsStatus()
+  } catch (error) {
+    graphLog.warn("extraction-semantics stamp check failed; skipping stale-rebuild trigger", {
+      root: state.projectRoot,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return undefined
+  }
+}
+
 async function refreshProjectGraph(state: ProjectGraphState, onProgress?: (progress: CodeGraphIndexProgress) => void) {
   if (state.refreshPromise) return state.refreshPromise
+  // Writer refresh doubles as the retry point for a failed stale-extraction
+  // rebuild (the trigger is one-shot per state while in flight).
+  maybeRebuildStaleIndex(state)
 
   const now = Date.now()
   const empty = !hasIndexedFiles(state.graph.stats())
@@ -737,6 +831,11 @@ function openGraphState(
       projectRoot: root,
       artifact: toolProvenanceArtifact(root),
       storePath: databaseStorePath(root),
+    }
+    if (!options.readOnly) {
+      // Writer open is the runtime's stale-extraction rebuild point (daemon
+      // counterpart: MCPEngine.catchUpSync). Read-only opens stay report-only.
+      maybeRebuildStaleIndex(state)
     }
     if (options.watch && !options.readOnly) startFilesystemWatcher(state)
     return state

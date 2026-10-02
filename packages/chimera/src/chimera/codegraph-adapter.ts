@@ -139,6 +139,16 @@ export class CodeGraphAdapter {
     return this.graph.sync({ onProgress: options.onProgress })
   }
 
+  /**
+   * Full re-extraction of every indexable file (writer side). On success the
+   * engine re-stamps the database with the current EXTRACTION_SEMANTICS_VERSION,
+   * which is what quiets a needsReindex posture. Used by the runtime's one-shot
+   * background stale-index rebuild (see maybeRebuildStaleIndex in provenance.ts).
+   */
+  indexAll(options: { onProgress?: (progress: IndexProgress) => void } = {}) {
+    return this.graph.indexAll({ onProgress: options.onProgress })
+  }
+
   pendingFiles(): CodeGraphPendingFile[] {
     return this.graph.getPendingFiles()
   }
