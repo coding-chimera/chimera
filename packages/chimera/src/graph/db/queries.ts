@@ -21,6 +21,7 @@ import {
 } from '../types';
 import { safeJsonParse } from '../utils';
 import { buildSearchText, kindBonus, nameMatchBonus, scorePathRelevance, splitIdentifierWords } from '../search/query-utils';
+import { splitIdentifierSegments } from '../search/identifier-segments';
 import { parseQuery, boundedEditDistance } from '../search/query-parser';
 import { isGeneratedFile } from '../extraction/generated-detection';
 import { isStoreWireError, StoreDowngradeSignal, type RecordedOp, type StoreBridge } from '../store/bridge';
@@ -373,6 +374,12 @@ export class QueryBuilder {
     | { stamp: string; value: { filePath: string; edgeCount: number; nextEdgeCount: number } | null }
     | undefined;
 
+  /** Names already segmented into name_segment_vocab in this process —
+   *  write-path dedupe (upstream parity); cleared wholesale at the cap and
+   *  by clearNameSegmentVocab. */
+  private segmentedNames: Set<string> = new Set();
+  private static readonly MAX_SEGMENTED_NAMES = 65536;
+
   // Prepared statements (lazily initialized)
   private stmts: {
     insertNode?: SqliteStatement;
@@ -413,6 +420,7 @@ export class QueryBuilder {
     getChangeStamp?: SqliteStatement;
     getTopRouteFile?: SqliteStatement;
     getRoutingManifest?: SqliteStatement;
+    insertNameSegment?: SqliteStatement;
   } = {};
 
   constructor(db: SqliteDatabase, store?: StoreBridge | null) {
@@ -583,6 +591,10 @@ export class QueryBuilder {
    * like the TS validation below — without the console.error noise).
    */
   insertNode(node: Node): void {
+    // Vocab populate rides the dispatcher, before arm routing: the native
+    // store does not cover name_segment_vocab, so all three arms (recording,
+    // native standalone, TS) segment here (insertNameSegmentsForNodes).
+    this.insertNameSegmentsForNodes([node]);
     if (this.rec) {
       this.nodeCache.delete(node.id);
       this.rec.ops.push({ kind: 'insertNodes', nodes: [node] });
@@ -672,6 +684,7 @@ export class QueryBuilder {
    * Insert multiple nodes in a transaction
    */
   insertNodes(nodes: Node[]): void {
+    this.insertNameSegmentsForNodes(nodes);
     if (this.rec) {
       for (const node of nodes) this.nodeCache.delete(node.id);
       this.rec.ops.push({ kind: 'insertNodes', nodes });
@@ -742,6 +755,9 @@ export class QueryBuilder {
       return;
     }
 
+    // A rename contributes its new name's segments (upstream parity: the
+    // write path never removes stale rows — full indexes clear them).
+    this.insertNameSegmentsForNodes([node]);
     this.stmts.updateNode.run({
       id: node.id,
       kind: node.kind,
@@ -799,6 +815,123 @@ export class QueryBuilder {
       }
     }
     this.stmts.deleteNodesByFile.run(filePath);
+  }
+
+  // ===========================================================================
+  // Name-segment vocabulary (empty-explore diagnostics, upstream v1.6.1 port)
+  // ===========================================================================
+
+  /** Which node kinds contribute their name to the segment vocabulary — the
+   *  single gate shared by the write-path hooks and the rebuild page query
+   *  (getDistinctNodeNames), so the write paths can't drift apart. File nodes
+   *  are excluded: a file's basename duplicates the symbols inside it
+   *  (state-machine.ts / OrderStateMachine). Import nodes are excluded too
+   *  (upstream #1144): they're named after module specifiers, not symbols —
+   *  readers re-verify vocab rows against real definitions, so import-only
+   *  names could never be surfaced. */
+  private isSegmentableKind(kind: string): boolean {
+    return kind !== 'file' && kind !== 'import';
+  }
+
+  /** Collect `name`'s (segment, name) rows, deduped through the per-process
+   *  memo (upstream parity): a name segmented once is never re-split, and
+   *  INSERT OR IGNORE absorbs the rest. */
+  private collectNameSegmentRows(name: string, out: unknown[][]): void {
+    if (this.segmentedNames.has(name)) return;
+    if (this.segmentedNames.size >= QueryBuilder.MAX_SEGMENTED_NAMES) this.segmentedNames.clear();
+    this.segmentedNames.add(name);
+    for (const segment of splitIdentifierSegments(name)) out.push([segment, name]);
+  }
+
+  /** Write (segment, name) rows (INSERT OR IGNORE) in one transaction —
+   *  nested calls JOIN an open TS transaction (adapter depth tracking), so
+   *  the pure-TS arm keeps upstream's same-transaction atomicity. */
+  private insertNameSegmentRows(rows: unknown[][]): void {
+    if (rows.length === 0) return;
+    this.db.transaction(() => {
+      if (!this.stmts.insertNameSegment) {
+        this.stmts.insertNameSegment = this.db.prepare(
+          'INSERT OR IGNORE INTO name_segment_vocab (segment, name) VALUES (?, ?)'
+        );
+      }
+      for (const row of rows) this.stmts.insertNameSegment!.run(row[0], row[1]);
+    })();
+  }
+
+  /** Write-path populate hook, called from the insertNode/insertNodes
+   *  dispatchers BEFORE arm routing and from updateNode: the native store
+   *  bridge does not cover name_segment_vocab, so segmenting here feeds all
+   *  three arms (native recording, native standalone, TS fallback/replay).
+   *  Rows always ride the TS connection: inside a TS transaction they join
+   *  it; during native recording they autocommit immediately, so a unit that
+   *  later rolls back leaves orphan rows — acceptable by design (readers
+   *  re-verify rows against nodes, and a full index clears the table). */
+  private insertNameSegmentsForNodes(nodes: Node[]): void {
+    const rows: unknown[][] = [];
+    for (const node of nodes) {
+      if (node.name && node.kind && this.isSegmentableKind(node.kind)) {
+        this.collectNameSegmentRows(node.name, rows);
+      }
+    }
+    this.insertNameSegmentRows(rows);
+  }
+
+  /** Wipe the segment vocabulary (and the write-path memo). The fork's full
+   *  index does NOT call this — its contentHash skip-guard leaves unchanged
+   *  files unrewritten, so a start-wipe would starve the vocab; full indexes
+   *  prune instead (pruneNameSegmentVocabOrphans). Kept for parity/tests and
+   *  explicit admin flows. */
+  clearNameSegmentVocab(): void {
+    this.db.exec('DELETE FROM name_segment_vocab');
+    this.segmentedNames.clear();
+  }
+
+  /** Drop vocab rows whose name no longer has a live segmentable definition
+   *  — the fork adaptation of upstream's clear-at-index-start orphan cleanup
+   *  (a full index calls this at its end). The memo is cleared wholesale:
+   *  pruned names must be re-segmentable if they come back, and keeping the
+   *  rest costs only re-splits absorbed by INSERT OR IGNORE. */
+  pruneNameSegmentVocabOrphans(): void {
+    this.db.exec(`
+      DELETE FROM name_segment_vocab
+      WHERE NOT EXISTS (
+        SELECT 1 FROM nodes n
+        WHERE n.name = name_segment_vocab.name AND n.kind NOT IN ('file', 'import')
+      )
+    `);
+    this.segmentedNames.clear();
+  }
+
+  /** True when the vocab has no rows — an index built before the table
+   *  existed. `sync` uses this to heal such databases (see
+   *  CodeGraph.rebuildNameSegmentVocab). */
+  isNameSegmentVocabEmpty(): boolean {
+    const row = this.db.prepare('SELECT 1 FROM name_segment_vocab LIMIT 1').get();
+    return !row;
+  }
+
+  /** One page of distinct segmentable node names, for batched vocab rebuilds
+   *  (file basenames and import specifiers are excluded — see
+   *  isSegmentableKind). */
+  getDistinctNodeNames(limit: number, offset: number): string[] {
+    const rows = this.db
+      .prepare("SELECT DISTINCT name FROM nodes WHERE kind NOT IN ('file', 'import') ORDER BY name LIMIT ? OFFSET ?")
+      .all(limit, offset) as Array<{ name: string }>;
+    return rows.map((r) => r.name);
+  }
+
+  /** Insert segments for a batch of names in one transaction (vocab heal
+   *  path — CodeGraph.rebuildNameSegmentVocab pages through the graph with
+   *  this). Deliberately bypasses the segmentedNames memo: a heal runs
+   *  against a table that was emptied behind this process's back (upgrade
+   *  migration, external clear), so the memo's "already written" assumption
+   *  does not hold here. */
+  insertNameSegmentsBatch(names: string[]): void {
+    const rows: unknown[][] = [];
+    for (const name of names) {
+      for (const segment of splitIdentifierSegments(name)) rows.push([segment, name]);
+    }
+    this.insertNameSegmentRows(rows);
   }
 
   /**
@@ -1267,10 +1400,10 @@ export class QueryBuilder {
 
     // Fork adaptation: the FTS candidate arm searches {name search_text} —
     // this fork's `search_text` column holds the split identifier words
-    // (explainHowThingsWork → "explain how things work"), covering the sub-word
-    // candidate role upstream's name_segment_vocab plays (the fork creates that
-    // table but never populates it; the vocab arm above stays for parity and
-    // fires if/when a populate flow lands).
+    // (explainHowThingsWork → "explain how things work"). That split is
+    // ASCII-only, so the vocab arm keeps its own weight: name_segment_vocab
+    // is populated on the node write path with the Unicode-aware
+    // splitIdentifierSegments, catching accented segments no FTS arm sees.
     const names = this.db.prepare(`
       SELECT name FROM (
         SELECT v.name FROM name_segment_vocab v
