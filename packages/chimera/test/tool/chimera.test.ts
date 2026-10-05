@@ -1467,7 +1467,13 @@ describe("tool.chimera", () => {
       expect(context).toContain("ordinary: warn — active obligations remain; review, resolve, ignore, or explicitly justify ordinary closeout")
       expect(context).not.toContain("ordinary: block")
       expect(context).toContain("apocalypse: block — all active obligations must be resolved or ignored")
-      expect(context).toContain(obligation.id)
+      // The prompt context renders at most MAX_ACTIVE_OBLIGATIONS (8) active obligations
+      // in store order (created_at ASC, id ASC). Whether the refresh sees the ImportedBy
+      // relation as a relation-delta addition is timing-dependent, so a sync can yield
+      // more than 8 candidates and audit-order obligations[0] may be truncated away.
+      // All obligations from one sync share createdAt, so store order is id-sorted and
+      // the lowest id is always rendered.
+      expect(context).toContain(synced.metadata.obligations.map((item) => item.id).toSorted()[0])
 
       const claimed = yield* runObligationClaim({ obligationID: obligation.id })
       expect(claimed.metadata.obligations[0].status).toBe("claimed")
