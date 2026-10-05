@@ -24,8 +24,9 @@ import type { PendingFile } from '../sync';
 import { LockUnavailableError } from '../sync';
 import { tryAcquireWriterLock, releaseWriterLock, writerLockHeldMessage } from './writer-lock';
 import type { Node, Edge, SearchResult, Subgraph, NodeKind } from '../types';
-import { isTestFile } from '../search/query-utils';
+import { isTestFile, STOP_WORDS } from '../search/query-utils';
 import { extractQueryPaths, queryMightContainPaths, type QueryLineAnchor, type QuerySetAsideMatch } from '../search/query-paths';
+import { isEnglishProseStopword } from '../search/identifier-segments';
 import {
   existsSync,
   readFileSync,
@@ -2112,7 +2113,26 @@ export class ToolHandler {
           const lc = ct.toLowerCase();
           return n.filePath.toLowerCase().includes(lc) || n.qualifiedName.toLowerCase().includes(lc);
         });
+      // NL-stopword guard (fork adaptation of upstream v1.6.1's seeder
+      // guard): upstream requires same-file corroboration for EVERY bare
+      // lowercase token (its fileNameSets/coNamedInFile system); the fork
+      // does not carry that system, so at minimum a token that is neither
+      // precise-shaped (camelCase, PascalCase, snake_case, `$`, qualified)
+      // nor free of the stopword vocabulary must not seed. The vocabulary is
+      // the union of the two lists the fork already keeps: STOP_WORDS (the
+      // search-side set the FTS channel drops — "the", "for", "with", …) and
+      // upstream's ENGLISH_PROSE_STOPWORDS (the context-side set: filler,
+      // hyper-common dev verbs, and words ABOUT code — "check", "write",
+      // "file", …). Before this guard the seeder exact-matched same-named
+      // callables ("check the throttle…" → `function the()`), which then
+      // earned the +50 named-seed score and displaced the real answer files.
+      const isPreciseToken = (x: string) =>
+        /[._$]|::|\//.test(x) || /[a-z][A-Z]/.test(x) || /^[A-Z]/.test(x);
       for (const t of tokens) {
+        if (!isPreciseToken(t)) {
+          const lc = t.toLowerCase();
+          if (STOP_WORDS.has(lc) || isEnglishProseStopword(lc)) continue;
+        }
         // Enumerate ALL defs of a bare token via the direct index, not FTS — a
         // 50+-overload name (tokio `poll`) ranks the wanted def (`Harness::poll`)
         // below the FTS cut, so findAllSymbols would never see it and the

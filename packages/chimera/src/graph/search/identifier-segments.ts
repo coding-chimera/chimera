@@ -45,3 +45,52 @@ export function splitIdentifierSegments(name: string): string[] {
   }
   return [...out];
 }
+
+/**
+ * English query/prose words that are never evidence a symbol was NAMED,
+ * however rare their name happens to be in a given repo: function words,
+ * filler, hyper-common dev verbs, and words ABOUT code rather than OF it
+ * ("rename this file", "there's an issue"). Measured FPs that motivated this
+ * upstream: "fix THIS typo" matched `resolveDeferredThisMemberRefs`, "WRITE a
+ * haiku" matched `writeConfig`.
+ *
+ * English-only ON PURPOSE: identifiers are written in English, so only
+ * English prose words can accidentally collide with symbol names. Other
+ * languages' function words ("avec", "pendant", "dieser") don't match
+ * anything and need no list. Domain nouns ("state", "checkout", "order")
+ * stay OUT — they are exactly the signal.
+ *
+ * Fork consumer: handleExplore's named-symbol seeder guards its bare-token
+ * path with this list (upstream guards that path with its fileNameSets/
+ * corroboration system, which the fork does not carry).
+ */
+const ENGLISH_PROSE_STOPWORDS = new Set([
+  'about', 'above', 'actually', 'after', 'again', 'against', 'almost', 'along', 'also', 'always',
+  'another', 'anything', 'around', 'away', 'back', 'because', 'been', 'before', 'behind', 'being',
+  'below', 'best', 'better', 'between', 'both', 'cannot', 'come', 'could', 'does', 'doing', 'done',
+  'down', 'each', 'either', 'else', 'even', 'ever', 'every', 'everything', 'fine', 'first', 'from',
+  'getting', 'give', 'goes', 'going', 'gone', 'good', 'great', 'have', 'having', 'help', 'here',
+  'inside', 'instead', 'into', 'just', 'keep', 'know', 'last', 'least', 'less', 'like', 'likely',
+  'little', 'look', 'looking', 'made', 'make', 'making', 'many', 'maybe', 'mind', 'more', 'most',
+  'much', 'must', 'need', 'needs', 'never', 'next', 'nice', 'none', 'nothing', 'okay', 'only',
+  'onto', 'other', 'otherwise', 'over', 'please', 'pretty', 'probably', 'quite', 'rather', 'really',
+  'right', 'same', 'seem', 'seems', 'should', 'show', 'since', 'some', 'someone', 'something',
+  'somewhere', 'soon', 'still', 'such', 'sure', 'take', 'than', 'thank', 'thanks', 'that', 'their',
+  'them', 'then', 'there', 'these', 'they', 'thing', 'things', 'think', 'this', 'those', 'though',
+  'tried', 'tries', 'trying', 'under', 'until', 'upon', 'very', 'want', 'wants', 'well', 'went',
+  'were', 'what', 'when', 'which', 'while', 'will', 'wish', 'with', 'within', 'without', 'would',
+  'wrong', 'your', 'yours',
+  // words ABOUT code, not OF it — present in a huge share of queries while
+  // almost never naming the symbol the user means
+  'again', 'change', 'changes', 'check', 'class', 'classes', 'code', 'detail', 'details',
+  'directory', 'error', 'errors', 'example', 'examples', 'file', 'files', 'folder', 'function',
+  'functions', 'issue', 'issues', 'line', 'lines', 'method', 'methods', 'name', 'names', 'problem',
+  'problems', 'project', 'question', 'questions', 'rename', 'test', 'tests', 'type', 'types',
+  'update', 'value', 'values', 'warning', 'warnings', 'work', 'working', 'write', 'writing',
+]);
+
+/** True when the (already-lowercased) word is an English prose stopword that
+ *  must never seed a symbol search. */
+export function isEnglishProseStopword(word: string): boolean {
+  return ENGLISH_PROSE_STOPWORDS.has(word);
+}
