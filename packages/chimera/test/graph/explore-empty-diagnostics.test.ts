@@ -98,6 +98,16 @@ describe('empty explore diagnostics (#1904)', () => {
     expect(text).toContain('`withholdValue`');
   });
 
+  it('offers segment-vocab candidates for words the ASCII search_text split cannot match', async () => {
+    // `flowCafé`'s search_text split is ASCII-only ("flow caf"), so no FTS
+    // arm can match the prose word "café" — only the name_segment_vocab arm
+    // (Unicode-aware splitIdentifierSegments) sees that segment.
+    await index({ 'logic.ts': 'export function flowCafé() { return 1; }\n' });
+    const miss = cg.getExploreMissDiagnostics('café');
+    expect(miss.matched).toContain('café');
+    expect(miss.candidates).toContain('flowCafé');
+  });
+
   it('does not offer deleted symbols left in the segment vocabulary', async () => {
     await index({ ...registration, 'logic.py': 'def explainHowThingsWork():\n    return 1\n' });
     fs.unlinkSync(path.join(dir, 'logic.py'));

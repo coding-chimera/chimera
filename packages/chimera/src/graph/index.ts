@@ -63,6 +63,7 @@ import {
   type ExtractionSemanticsStatus,
 } from './db';
 import { QueryBuilder } from './db/queries';
+import { createYielder } from './resolution/cooperative-yield';
 import {
   isInitialized,
   createDirectory,
@@ -1553,6 +1554,13 @@ export class CodeGraph {
         }
 
         if (result.success) {
+          // Segment-vocabulary orphan cleanup. The fork's full index skips
+          // REWRITING unchanged files (storeExtractionResultTxn's contentHash
+          // guard), so upstream's clear-at-start + write-path-repopulate would
+          // starve the vocab on a re-index; the write path filled in the
+          // (re-)extracted files above, and this drops rows whose definitions
+          // are gone (deleted files, renames).
+          try { this.queries.pruneNameSegmentVocabOrphans(); } catch { /* vocab is advisory — never fail an index over it */ }
           // Stamp the extraction semantics this database now holds: a full
           // indexAll has just re-extracted every indexable file with the
           // current extractor. An incremental sync into an existing database
@@ -1710,6 +1718,13 @@ export class CodeGraph {
       // earns the extraction-semantics stamp; a sync over existing content
       // must never stamp.
       const freshDatabase = this.queries.getFileCount() === 0;
+      // Vocab heal trigger (upstream v1.6.1 parity): an index built before
+      // name_segment_vocab existed (or before its populate flow landed in
+      // this fork) has an empty table; incremental writes below only cover
+      // changed files, so capture emptiness BEFORE the sync starts.
+      const vocabWasEmpty = (() => {
+        try { return this.queries.isNameSegmentVocabEmpty(); } catch { return false; }
+      })();
       // Synthesis-refresh trigger (upstream #2033, fork landing). An
       // interrupted index may have absorbed its changed files before
       // resolution/synthesis ran; the pending marker (set by migration v13,
@@ -1876,6 +1891,17 @@ export class CodeGraph {
           this.db.runMaintenance();
         }
 
+        // Heal the segment vocabulary on indexes built before the populate
+        // flow existed (upgrade path): backfill every segmentable name
+        // (INSERT OR IGNORE, so the rows this sync just wrote are fine).
+        // Batched + yielding — sync can run on the daemon's liveness-watchdog
+        // thread (upstream #850/#1091).
+        try {
+          if (vocabWasEmpty && this.queries.getNodeAndEdgeCount().nodes > 0) {
+            await this.rebuildNameSegmentVocab();
+          }
+        } catch { /* vocab is advisory — never fail a sync over it */ }
+
         if (freshDatabase) {
           this.queries.setMetadata(
             EXTRACTION_SEMANTICS_METADATA_KEY,
@@ -1902,6 +1928,23 @@ export class CodeGraph {
       } finally {
         this.fileLock.release();
       }
+  }
+
+  /**
+   * Rebuild the segment vocabulary from the current graph, batched and
+   * yielding — the upgrade-heal path for indexes built before the vocab
+   * populate flow existed. Runs inside the index mutex and file lock
+   * (syncLocked holds both).
+   */
+  private async rebuildNameSegmentVocab(): Promise<void> {
+    const maybeYield = createYielder();
+    const BATCH = 2000;
+    for (let offset = 0; ; offset += BATCH) {
+      const names = this.queries.getDistinctNodeNames(BATCH, offset);
+      if (names.length === 0) break;
+      this.queries.insertNameSegmentsBatch(names);
+      await maybeYield();
+    }
   }
 
   /**
