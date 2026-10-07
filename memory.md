@@ -519,3 +519,6 @@ loop 挂起修复前的对比基线（本机 macOS, bun 1.4.0, `bun test --timeo
 - **审计体系战果**：dependabot install 真拦截一次（anpm 内网域名 191 条入 lock 被拦+清洗）；registry 纪律已固化 env.md（本仓 install 必带 --registry npmmirror）；长期方案（项目级 .npmrc）待拍板。
 - 累计推送：772174f1f 前的 61 + explore 11 + dependabot 3 + WSL 5 + pad = 待推送时更新总数
 
+
+### 宿主重启后 flake 归因终验（2026-10-02）
+- 'loop sets status to busy then idle'（prompt.test.ts it.live 3s 预算）**洗清**：新宿主（PID 11170，1.2GB 干净态）复跑全 test/session **597/0 零失败**；真因=旧数日宿主（3.3GB+ RSS、JSC 棘轮+交换压力）与测试并发的负载拖慢，非 lease 同步工作回归（其量级毫秒级）。load-pool 该条降级为"仅超老旧宿主下出现"。
