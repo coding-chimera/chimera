@@ -1,0 +1,294 @@
+import { Effect, Layer, Context, Schema, Types } from "effect"
+import { and, eq, gt, sql } from "drizzle-orm"
+import { BusEvent } from "@/bus/bus-event"
+import { Bus } from "@/bus"
+import { Database } from "@/storage/db"
+import { zod } from "@/util/effect-zod"
+import { withStatics } from "@/util/schema"
+import { MessageID, SessionID } from "./schema"
+import { GoalTable, MessageTable } from "./session.sql"
+import type { MessageV2 } from "./message-v2"
+
+const MAX_OBJECTIVE_CHARS = 800
+
+// Circuit breakers for goal auto-continuation: a continuation turn that ends
+// without any tool call counts as unproductive; MAX_EMPTY_CONTINUATIONS
+// consecutive unproductive continuations flip an active goal to blocked, and
+// continuation stops after MAX_CONTINUATION_TURNS consecutive continuation
+// turns regardless of productivity.
+export const MAX_EMPTY_CONTINUATIONS = 3
+export const MAX_CONTINUATION_TURNS = 25
+
+const BUDGET_LIMITED_GUIDANCE =
+  "The goal token budget is exhausted. Wrap up the current turn soon, do not start new substantive work for this goal, and report progress against the objective."
+
+export const Status = Schema.Literals(["active", "paused", "blocked", "budget_limited", "complete"])
+  .annotate({ identifier: "GoalStatus" })
+  .pipe(withStatics((s) => ({ zod: zod(s) })))
+export type Status = Schema.Schema.Type<typeof Status>
+
+export const Info = Schema.Struct({
+  objective: Schema.String,
+  status: Status,
+  tokenBudget: Schema.optional(Schema.Number),
+  tokensUsed: Schema.Number,
+  lastUsageMessageID: Schema.optional(Schema.String),
+  consecutiveEmptyContinuations: Schema.optional(Schema.Number),
+  consecutiveContinuations: Schema.optional(Schema.Number),
+})
+  .annotate({ identifier: "Goal" })
+  .pipe(withStatics((s) => ({ zod: zod(s) })))
+export type Info = Types.DeepMutable<Schema.Schema.Type<typeof Info>>
+
+export const Event = {
+  Updated: BusEvent.define(
+    "goal.updated",
+    Schema.Struct({
+      sessionID: SessionID,
+      goal: Info,
+    }),
+  ),
+}
+
+export interface Interface {
+  readonly get: (sessionID: SessionID) => Effect.Effect<Info | undefined>
+  readonly create: (input: {
+    sessionID: SessionID
+    objective: string
+    tokenBudget?: number
+  }) => Effect.Effect<Info, Error>
+  readonly updateStatus: (input: { sessionID: SessionID; status: Status }) => Effect.Effect<Info, Error>
+  readonly account: (sessionID: SessionID) => Effect.Effect<void>
+  readonly recordContinuation: (input: { sessionID: SessionID; productive: boolean }) => Effect.Effect<Info | undefined>
+  readonly resetContinuation: (sessionID: SessionID) => Effect.Effect<void>
+  readonly render: (sessionID: SessionID) => Effect.Effect<string | undefined>
+}
+
+export class Service extends Context.Service<Service, Interface>()("@opencode/SessionGoal") {}
+
+function compact(input: string) {
+  const value = input.replace(/\s+/g, " ").trim()
+  return value.length > MAX_OBJECTIVE_CHARS ? `${value.slice(0, MAX_OBJECTIVE_CHARS - 3)}...` : value
+}
+
+// Allowed status transitions: active -> complete|blocked|paused, paused -> active
+// (user-requested resume), and anything -> complete. Resuming a blocked or
+// budget_limited goal is not expressible; a new goal must be created instead.
+function isAllowedTransition(from: Status, to: Status) {
+  if (to === "complete") return true
+  if (from === "active") return to === "blocked" || to === "paused"
+  return from === "paused" && to === "active"
+}
+
+export function billableTokens(tokens: MessageV2.TokenUsage) {
+  return Math.max(0, tokens.input - tokens.cache.read + tokens.output)
+}
+
+// Outcome of one finished continuation turn. A productive turn resets the
+// empty streak; an unproductive one extends it. Three consecutive empty
+// streak flips an active goal to blocked (the circuit breaker).
+export function continuationOutcome(goal: Info, input: { productive: boolean }): Info {
+  const consecutiveEmptyContinuations = input.productive ? 0 : (goal.consecutiveEmptyContinuations ?? 0) + 1
+  const next: Info = {
+    ...goal,
+    consecutiveEmptyContinuations,
+    consecutiveContinuations: (goal.consecutiveContinuations ?? 0) + 1,
+  }
+  if (consecutiveEmptyContinuations >= MAX_EMPTY_CONTINUATIONS && next.status === "active")
+    return { ...next, status: "blocked" }
+  return next
+}
+
+// Whether the run loop should inject another synthetic continuation turn for
+// this goal: it must exist, be active, and stay under the turn cap.
+export function canAutoContinue(goal: Info | undefined) {
+  return (
+    goal !== undefined && goal.status === "active" && (goal.consecutiveContinuations ?? 0) < MAX_CONTINUATION_TURNS
+  )
+}
+
+const formatTokens = (value: number) => value.toLocaleString("en-US")
+
+const AUTO_CONTINUATION_GUIDANCE =
+  "- This goal auto-continues: when a turn ends with the goal active, a continuation turn starts automatically. Turns that end without any tool calls count as unproductive; 3 consecutive unproductive continuations mark the goal blocked."
+
+export function format(goal: Info) {
+  if (goal.status === "complete")
+    return [`## Session Goal`, `- Status: complete · Objective: ${compact(goal.objective)}`].join("\n")
+  const usage =
+    goal.tokenBudget === undefined
+      ? `- Tokens used: ${formatTokens(goal.tokensUsed)} (no budget set)`
+      : `- Tokens used: ${formatTokens(goal.tokensUsed)} / budget: ${formatTokens(goal.tokenBudget)} (${formatTokens(Math.max(0, goal.tokenBudget - goal.tokensUsed))} remaining)`
+  return [
+    "## Session Goal",
+    `- Status: ${goal.status}`,
+    `- Objective: ${compact(goal.objective)}`,
+    usage,
+    ...(goal.status === "active" ? [AUTO_CONTINUATION_GUIDANCE] : []),
+    ...(goal.status === "budget_limited" ? [BUDGET_LIMITED_GUIDANCE] : []),
+  ].join("\n")
+}
+
+export const layer = Layer.effect(
+  Service,
+  Effect.gen(function* () {
+    const bus = yield* Bus.Service
+
+    const get = Effect.fn("Goal.get")(function* (sessionID: SessionID) {
+      return yield* Effect.sync(() =>
+        Database.use((db) => db.select().from(GoalTable).where(eq(GoalTable.session_id, sessionID)).limit(1).get())
+          ?.data,
+      )
+    })
+
+    const create = Effect.fn("Goal.create")(function* (input: { sessionID: SessionID; objective: string; tokenBudget?: number }) {
+      const objective = compact(input.objective)
+      if (!objective) return yield* Effect.fail(new Error("The goal objective must not be empty."))
+      const existing = yield* get(input.sessionID)
+      if (existing && existing.status !== "complete")
+        return yield* Effect.fail(
+          new Error(
+            "cannot create a new goal because this session has an unfinished goal; complete or update the existing goal first",
+          ),
+        )
+      const goal: Info = {
+        objective,
+        status: "active",
+        ...(input.tokenBudget !== undefined ? { tokenBudget: input.tokenBudget } : {}),
+        tokensUsed: 0,
+      }
+      yield* Effect.sync(() =>
+        Database.transaction((db) => {
+          db.delete(GoalTable).where(eq(GoalTable.session_id, input.sessionID)).run()
+          db.insert(GoalTable)
+            .values([{ session_id: input.sessionID, data: goal }])
+            .run()
+        }),
+      )
+      yield* bus.publish(Event.Updated, { sessionID: input.sessionID, goal })
+      return goal
+    })
+
+    const updateStatus = Effect.fn("Goal.updateStatus")(function* (input: { sessionID: SessionID; status: Status }) {
+      const current = yield* get(input.sessionID)
+      if (!current) return yield* Effect.fail(new Error("No goal is set for this session; create one first."))
+      if (current.status === input.status)
+        return yield* Effect.fail(new Error(`The goal is already ${input.status}.`))
+      if (!isAllowedTransition(current.status, input.status)) {
+        if (input.status === "active" && (current.status === "blocked" || current.status === "budget_limited"))
+          return yield* Effect.fail(
+            new Error(
+              `You cannot resume a ${current.status} goal with goal_update; resuming requires the user to create a new goal.`,
+            ),
+          )
+        if (current.status === "complete")
+          return yield* Effect.fail(new Error("This goal is already complete; create a new goal to start further work."))
+        return yield* Effect.fail(new Error(`Cannot transition the goal from ${current.status} to ${input.status}.`))
+      }
+      const goal: Info = { ...current, status: input.status }
+      yield* Effect.sync(() =>
+        Database.use((db) =>
+          db.update(GoalTable).set({ data: goal }).where(eq(GoalTable.session_id, input.sessionID)).run(),
+        ),
+      )
+      yield* bus.publish(Event.Updated, { sessionID: input.sessionID, goal })
+      return goal
+    })
+
+    // Incremental token accounting: sum billable tokens of completed assistant
+    // messages newer than the stored watermark, then persist the new total and
+    // watermark. Never rescans full history; a no-op when no goal row exists.
+    const account = Effect.fn("Goal.account")(function* (sessionID: SessionID) {
+      const current = yield* get(sessionID)
+      if (!current) return
+      const rows = yield* Effect.sync(() =>
+        Database.use((db) =>
+          db
+            .select()
+            .from(MessageTable)
+            .where(
+              and(
+                eq(MessageTable.session_id, sessionID),
+                current.lastUsageMessageID ? gt(MessageTable.id, MessageID.make(current.lastUsageMessageID)) : undefined,
+                sql`json_extract(${MessageTable.data}, '$.role') = 'assistant'`,
+                sql`json_extract(${MessageTable.data}, '$.time.completed') IS NOT NULL`,
+              ),
+            )
+            .orderBy(MessageTable.id)
+            .all(),
+        ),
+      )
+      if (rows.length === 0) return
+      const delta = rows.reduce((total, row) => {
+        const message = row.data as MessageV2.Info
+        if (message.role !== "assistant") return total
+        return total + billableTokens(message.tokens)
+      }, 0)
+      const accounted: Info = {
+        ...current,
+        tokensUsed: current.tokensUsed + delta,
+        lastUsageMessageID: rows[rows.length - 1].id,
+      }
+      const goal: Info =
+        accounted.status === "active" &&
+        accounted.tokenBudget !== undefined &&
+        accounted.tokensUsed >= accounted.tokenBudget
+          ? { ...accounted, status: "budget_limited" }
+          : accounted
+      yield* Effect.sync(() =>
+        Database.use((db) =>
+          db.update(GoalTable).set({ data: goal }).where(eq(GoalTable.session_id, sessionID)).run(),
+        ),
+      )
+      yield* bus.publish(Event.Updated, { sessionID, goal })
+    })
+
+    // Persist a goal row and publish the update; shared by the continuation
+    // bookkeeping methods below.
+    const persist = Effect.fnUntraced(function* (sessionID: SessionID, goal: Info) {
+      yield* Effect.sync(() =>
+        Database.use((db) =>
+          db.update(GoalTable).set({ data: goal }).where(eq(GoalTable.session_id, sessionID)).run(),
+        ),
+      )
+      yield* bus.publish(Event.Updated, { sessionID, goal })
+      return goal
+    })
+
+    // Record one finished auto-continuation turn; no-op (undefined) when the
+    // session has no goal row.
+    const recordContinuation = Effect.fn("Goal.recordContinuation")(function* (input: {
+      sessionID: SessionID
+      productive: boolean
+    }) {
+      const current = yield* get(input.sessionID)
+      if (!current) return undefined
+      return yield* persist(input.sessionID, continuationOutcome(current, { productive: input.productive }))
+    })
+
+    // A real user turn clears the continuation streak so each new user message
+    // starts a fresh breaker window.
+    const resetContinuation = Effect.fn("Goal.resetContinuation")(function* (sessionID: SessionID) {
+      const current = yield* get(sessionID)
+      if (!current) return
+      if (current.consecutiveEmptyContinuations === undefined && current.consecutiveContinuations === undefined) return
+      const goal: Info = { ...current }
+      delete goal.consecutiveEmptyContinuations
+      delete goal.consecutiveContinuations
+      yield* persist(sessionID, goal)
+    })
+
+    const render = Effect.fn("Goal.render")(function* (sessionID: SessionID) {
+      yield* account(sessionID)
+      const goal = yield* get(sessionID)
+      if (!goal) return undefined
+      return format(goal)
+    })
+
+    return Service.of({ get, create, updateStatus, account, recordContinuation, resetContinuation, render })
+  }),
+)
+
+export const defaultLayer = layer.pipe(Layer.provide(Bus.layer))
+
+export * as Goal from "./goal"

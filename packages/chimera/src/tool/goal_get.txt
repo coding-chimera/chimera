@@ -1,0 +1,3 @@
+Get the current goal for this session, including status, token budget, and token usage.
+
+Returns the persisted goal block when a goal exists, or "No goal is set for this session." when none does. The reported token usage is refreshed from completed assistant turns before the result is returned, so it is current for this turn.

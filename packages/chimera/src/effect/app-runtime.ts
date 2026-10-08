@@ -29,6 +29,7 @@ import { Question } from "@/question"
 import { Permission } from "@/permission"
 import { Todo } from "@/session/todo"
 import { WorkBrief } from "@/session/work-brief"
+import { Goal } from "@/session/goal"
 import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { SessionRunState } from "@/session/run-state"
@@ -91,7 +92,7 @@ export const AppLayer = Layer.mergeAll(
   Discovery.defaultLayer,
   Question.defaultLayer,
   Permission.defaultLayer,
-  Layer.mergeAll(Todo.defaultLayer, WorkBrief.defaultLayer),
+  Layer.mergeAll(Todo.defaultLayer, WorkBrief.defaultLayer, Goal.defaultLayer),
   Session.defaultLayer,
   SessionStatus.defaultLayer,
   SessionRunState.defaultLayer,

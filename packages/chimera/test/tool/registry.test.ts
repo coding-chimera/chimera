@@ -14,6 +14,7 @@ import { Plugin } from "@/plugin"
 import { Question } from "@/question"
 import { Todo } from "@/session/todo"
 import { WorkBrief } from "@/session/work-brief"
+import { Goal } from "@/session/goal"
 import { Skill } from "@/skill"
 import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
@@ -53,7 +54,7 @@ const makeRegistryLayer = () =>
       Layer.provide(Plugin.defaultLayer),
       Layer.provide(Question.defaultLayer),
       Layer.provide(Todo.defaultLayer),
-      Layer.provide(WorkBrief.defaultLayer),
+      Layer.provide(Layer.mergeAll(WorkBrief.defaultLayer, Goal.defaultLayer)),
       Layer.provide(Skill.defaultLayer),
       Layer.provide(Agent.defaultLayer),
       Layer.provide(Session.defaultLayer),
@@ -265,6 +266,10 @@ describe("tool.registry", () => {
       expect(preferTool?.description).toContain("explicitly")
       expect(suppressTool?.description).toContain("ONLY")
       expect(suppressTool?.description).toContain("explicitly")
+      const primaryIds = tools.map((tool) => tool.id)
+      expect(primaryIds).toContain("goal_get")
+      expect(primaryIds).toContain("goal_create")
+      expect(primaryIds).toContain("goal_update")
       const descriptions = tools
         .filter((tool) => tool.id === "task" || tool.id === "chimera_swarm")
         .map((tool) => tool.description)
@@ -300,6 +305,10 @@ describe("tool.registry", () => {
       expect(ids).toContain("subagent_model_routes")
       expect(ids).not.toContain("subagent_model_prefer")
       expect(ids).not.toContain("subagent_model_suppress")
+      // Goals are a root-session feature: continuation skips subagent sessions.
+      expect(ids).not.toContain("goal_get")
+      expect(ids).not.toContain("goal_create")
+      expect(ids).not.toContain("goal_update")
     }),
   )
 

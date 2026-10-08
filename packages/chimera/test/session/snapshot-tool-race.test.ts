@@ -49,6 +49,7 @@ import { Skill } from "../../src/skill"
 import { SystemPrompt } from "../../src/session/system"
 import { Todo } from "../../src/session/todo"
 import { WorkBrief } from "../../src/session/work-brief"
+import { Goal } from "../../src/session/goal"
 import { SessionCompaction } from "../../src/session/compaction"
 import { RemoteCompaction } from "../../src/session/remote-compaction"
 import { Instruction } from "../../src/session/instruction"
@@ -150,6 +151,7 @@ function makeHttp() {
   const question = Question.layer.pipe(Layer.provideMerge(deps))
   const todo = Todo.layer.pipe(Layer.provideMerge(deps))
   const workBrief = WorkBrief.layer.pipe(Layer.provideMerge(deps))
+  const goal = Goal.layer.pipe(Layer.provideMerge(deps))
   const chimeraPromptContext = ChimeraPromptContext.layer.pipe(Layer.provideMerge(deps))
   const registry = ToolRegistry.layer.pipe(
     Layer.provideMerge(DelegationLimiter.defaultLayer),
@@ -163,6 +165,7 @@ function makeHttp() {
     Layer.provideMerge(todo),
     Layer.provideMerge(workBrief),
     Layer.provideMerge(question),
+    Layer.provideMerge(goal),
     Layer.provideMerge(deps),
   )
   const trunc = Truncate.layer.pipe(Layer.provideMerge(deps))

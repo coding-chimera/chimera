@@ -19,7 +19,7 @@ import { SystemPrompt } from "../../src/session/system"
 const BASELINE = {
   generic: 25332,
   deepseek: 27972,
-  deepseekUltra: 31057,
+  deepseekUltra: 31911,
   kimi: 27349,
   gpt55: 30042,
   claude: 29452,
@@ -38,7 +38,12 @@ const TOOL_BUDGETS = {
   "shell/shell.txt": 6287,
 } as const
 
-const TOOL_TOTAL_BUDGET = 80974
+// 2026-10-08 re-record: the experimental session-goal tools (goal_get.txt,
+// goal_create.txt, goal_update.txt = 1888 bytes) raised the floor from 80974.
+// 2026-10-08 re-record (phase 2): one auto-continuation sentence in
+// goal_create.txt and goal_update.txt raised the floor to 83332, and the
+// ultra.txt "Session goals" section raised the deepseekUltra skeleton to 31911.
+const TOOL_TOTAL_BUDGET = 83332
 
 const CAPABILITY_TOOLS = { chimera_search: {}, workbrief: {}, browser_open: {}, read: {}, bash: {} }
 

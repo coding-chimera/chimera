@@ -1,0 +1,9 @@
+Create the session goal: a persistent per-session objective with a status lifecycle and an optional token budget. The goal is re-injected into the runtime context every turn, so it survives compaction.
+
+Create a goal only when explicitly requested by the user or system/developer instructions; do not infer goals from ordinary tasks. Set token_budget only when an explicit token budget is requested.
+
+The objective must be a single compact statement of what the session is trying to accomplish. A new goal starts with status "active" and zero tokens used.
+
+Creating fails when this session still has an unfinished goal (any status other than "complete"). Complete or update the existing goal first; a session cannot have two unfinished goals.
+
+An active goal auto-continues: when a turn ends with the goal active, a continuation turn starts automatically and work persists until the goal is complete, blocked, paused, or budget_limited; turns that end without any tool call count as unproductive, and 3 consecutive unproductive continuations mark the goal blocked.
