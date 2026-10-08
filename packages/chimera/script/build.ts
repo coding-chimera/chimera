@@ -355,6 +355,20 @@ for (const item of targets) {
     },
   })
 
+  // Bun's compile step can emit a Mach-O whose embedded adhoc signature does
+  // not match the file contents (observed on darwin-arm64 with a large
+  // embedded WebUI payload): the kernel then SIGKILLs every exec ("Killed: 9")
+  // on any later exec, while the build-time smoke test can still pass through
+  // macOS's stale per-inode signature cache. Force a fresh adhoc signature
+  // and verify it on disk so broken artifacts fail the build here.
+  // Gated to darwin hosts: publish.yml's build-cli cross-compiles the full
+  // target matrix on ubuntu-latest where no codesign tool exists — darwin
+  // artifacts built on Linux stay unprotected until rcodesign lands there.
+  if (item.os === "darwin" && process.platform === "darwin") {
+    await $`codesign --sign - --force ${binaryPath}`
+    await $`codesign --verify ${binaryPath}`
+  }
+
   assertNoEmbeddedBuildPaths({
     artifactPath: path.relative(dir, binaryPath),
     bytes: new Uint8Array(await Bun.file(binaryPath).arrayBuffer()),
