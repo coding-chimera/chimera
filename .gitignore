@@ -32,5 +32,8 @@ logs/
 *.bun-build
 tsconfig.tsbuildinfo
 
+# Local prompt-optimization bench (harness + run state; state/ holds auth.json copies)
+bench/
+
 # Local paper reading bundles
 papers/2309.12499-codeplan/
