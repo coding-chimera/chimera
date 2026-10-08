@@ -1,0 +1,29 @@
+Perform structural file edits anchored to CodeGraph node refs instead of text anchors.
+
+Each edit names one indexed syntax node via its typed graph ref (`node:<id>`, exactly the `Ref:` line emitted by `chimera_search`, `chimera_file_symbols`, or `chimera_impact`) and applies one structural operation to that node's source range:
+
+- `replace` — rewrite the node (whole function/method/class/member) with `content`.
+- `delete` — remove the node; do not pass `content`.
+- `insert_before` / `insert_after` — add sibling content around the node's line block.
+
+# When to use ast_edit vs edit
+
+Prefer ast_edit when you already have graph refs and the change is node-granular: rewriting a whole function or method body, deleting a class member or import statement, inserting a sibling declaration. Prefer the edit tool for text-precise small changes, when you have no graph refs at hand, or when the graph surface is unavailable — with an uninitialized project the graph has no nodes, refs cannot resolve, and ast_edit fails; run `chimera graph init` + `chimera graph index` (or the chimera_init_graph tool) first, or just use edit.
+
+# Rules
+
+- ONE file per call: `file` is absolute or project-relative, and every ref must resolve to a node in that file. Split multi-file work into separate calls.
+- `content` is used VERBATIM — supply correctly-indented text with NO trailing newline. Multi-line nodes snap to whole source lines (leading indentation is replaced by your content's own indentation); single-line nodes (imports, one-line members) keep exact column boundaries. Insert content always lands as its own line(s) adjacent to the node.
+- Overlapping edits are rejected in one call (e.g. replacing a method and a statement inside it). Use separate calls, highest-offset-first is fine because ids may shift between them.
+- Refs may be stale (an earlier edit shifted lines, an external change moved the symbol). ast_edit filesystem-syncs the file first and SELF-HEALS: a stale ref is re-anchored to the live node by identity (kind + name, parent chain when ambiguous) and the relocation is reported — do not re-search first. A hard failure only happens when the node genuinely no longer exists or the match is ambiguous; the error then carries the current candidate refs for this file — pick one and retry directly.
+- After a successful call the result lists fresh `node:<id>` refs for the edited symbols; chain follow-up edits from those refs.
+- Edits apply as byte-range splices in reverse document order; the mutation rides the same audit pipeline as edit (permission "edit" applies).
+
+# Example
+
+file: "src/tool/ast_edit.ts"
+edits: [
+  { ref: "node:function:1a2b...", op: "replace", content: "function parseRef(ref: string) {\n  return ref.slice(5)\n}" },
+  { ref: "node:import:9f8e...", op: "insert_after", content: 'import { is } from "@effect/opentelemetry"' },
+  { ref: "node:method:3c4d...", op: "delete" }
+]

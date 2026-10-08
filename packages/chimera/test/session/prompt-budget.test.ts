@@ -48,7 +48,9 @@ const TOOL_BUDGETS = {
 // plus one tool_search parenthetical in task.txt/swarm.txt raised the floor to
 // 84982. Those 11 deferred tool descriptions (10405 B) are no longer sent by
 // default; the exposed-deferred-budget test below pins the trade.
-const TOOL_TOTAL_BUDGET = 84982
+// 2026-10-08 re-record (ast_edit tool): the always-on ast_edit.txt (2916 B)
+// raised the floor to 87898.
+const TOOL_TOTAL_BUDGET = 87898
 
 // The description bytes withheld from the default model-facing set by the
 // ToolSearch defer filter: every registered deferred tool's .txt is off the
