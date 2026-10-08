@@ -22,6 +22,7 @@ import { BrowserTypeTool } from "./browser_type"
 import { BrowserScreenshotTool } from "./browser_screenshot"
 import { BrowserCloseTool } from "./browser_close"
 import { WriteTool } from "./write"
+import { AstEditTool } from "./ast_edit"
 import { WorkBriefTool } from "./workbrief"
 import { GoalCreateTool, GoalGetTool, GoalUpdateTool } from "./goal"
 import { ToolSearchTool } from "./tool_search"
@@ -144,6 +145,7 @@ export const layer = Layer.effect(
     const shell = yield* ShellTool
     const globtool = yield* GlobTool
     const writetool = yield* WriteTool
+    const astedit = yield* AstEditTool
     const workbrief = yield* WorkBriefTool
     const toolSearchTool = yield* ToolSearchTool
     const goalGet = yield* GoalGetTool
@@ -268,6 +270,7 @@ export const layer = Layer.effect(
           grep: Tool.init(greptool),
           edit: Tool.init(edit),
           write: Tool.init(writetool),
+          astEdit: Tool.init(astedit),
           workbrief: Tool.init(workbrief),
           toolSearch: Tool.init(toolSearchTool),
           goalGet: Tool.init(goalGet),
@@ -326,6 +329,7 @@ export const layer = Layer.effect(
             tool.grep,
             tool.edit,
             tool.write,
+            tool.astEdit,
             tool.workbrief,
             tool.toolSearch,
             tool.goalGet,
