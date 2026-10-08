@@ -1,0 +1,5 @@
+Update the status of this session's goal.
+
+Set status to `complete` only when the objective has actually been achieved and no required work remains. Set status to `blocked` only when the same blocking condition has repeated and no progress path remains. Set status to `paused` only at the user's explicit request. Set status to `active` only to resume a paused goal at the user's explicit request. You cannot clear budget_limited with this tool. When marking a budgeted goal complete, report the final token usage from the tool result to the user.
+
+Transitions allowed: active -> complete, blocked, or paused; paused -> active (resume); any status -> complete. Resuming a blocked or budget_limited goal is not possible with this tool; that requires the user to ask for a new goal. The tool fails when no goal exists. Any status other than active stops auto-continuation; while a goal is active, turns that end without any tool call count as unproductive and 3 consecutive unproductive continuations mark the goal blocked automatically.

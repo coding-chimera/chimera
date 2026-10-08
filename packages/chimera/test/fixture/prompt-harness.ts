@@ -42,6 +42,7 @@ import { Todo } from "../../src/session/todo"
 import { ToolRegistry } from "@/tool/registry"
 import { Truncate } from "@/tool/truncate"
 import { WorkBrief } from "../../src/session/work-brief"
+import { Goal } from "../../src/session/goal"
 import { TestLLMServer } from "../lib/llm-server"
 import { Image } from "../../src/image/image"
 import type { Config as ConfigInfo } from "@/config/config"
@@ -171,6 +172,7 @@ export function makePromptHarness() {
   const question = Question.layer.pipe(Layer.provideMerge(deps))
   const todo = Todo.layer.pipe(Layer.provideMerge(deps))
   const workBrief = WorkBrief.layer.pipe(Layer.provideMerge(deps))
+  const goal = Goal.layer.pipe(Layer.provideMerge(deps))
   const chimeraPromptContext = ChimeraPromptContext.layer.pipe(Layer.provideMerge(deps))
   const registry = ToolRegistry.layer.pipe(
     Layer.provideMerge(DelegationLimiter.defaultLayer),
@@ -184,6 +186,7 @@ export function makePromptHarness() {
     Layer.provideMerge(todo),
     Layer.provideMerge(workBrief),
     Layer.provideMerge(question),
+    Layer.provideMerge(goal),
     Layer.provideMerge(deps),
   )
   const trunc = Truncate.layer.pipe(Layer.provideMerge(deps))

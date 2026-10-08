@@ -23,6 +23,7 @@ import { BrowserScreenshotTool } from "./browser_screenshot"
 import { BrowserCloseTool } from "./browser_close"
 import { WriteTool } from "./write"
 import { WorkBriefTool } from "./workbrief"
+import { GoalCreateTool, GoalGetTool, GoalUpdateTool } from "./goal"
 import {
   MemoryForgetTool,
   MemoryListTool,
@@ -79,6 +80,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { Question } from "../question"
 import { Todo } from "../session/todo"
 import { WorkBrief } from "../session/work-brief"
+import { Goal } from "../session/goal"
 import { LSP } from "@/lsp/lsp"
 import { Instruction } from "../session/instruction"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
@@ -141,6 +143,9 @@ export const layer = Layer.effect(
     const globtool = yield* GlobTool
     const writetool = yield* WriteTool
     const workbrief = yield* WorkBriefTool
+    const goalGet = yield* GoalGetTool
+    const goalCreate = yield* GoalCreateTool
+    const goalUpdate = yield* GoalUpdateTool
     const edit = yield* EditTool
     const greptool = yield* GrepTool
     const patchtool = yield* ApplyPatchTool
@@ -246,10 +251,10 @@ export const layer = Layer.effect(
           }
         }
 
-        yield* config.get()
+        const cfg = yield* config.get()
         const questionEnabled =
           ["app", "cli", "desktop"].includes(Flag.OPENCODE_CLIENT) || Flag.OPENCODE_ENABLE_QUESTION_TOOL
-        const memories = (yield* config.get()).memories
+        const memories = cfg.memories
         const memoryToolsEnabled = memories?.enabled === true && memories?.dedicated_tools === true
 
         const tool = yield* Effect.all({
@@ -261,6 +266,9 @@ export const layer = Layer.effect(
           edit: Tool.init(edit),
           write: Tool.init(writetool),
           workbrief: Tool.init(workbrief),
+          goalGet: Tool.init(goalGet),
+          goalCreate: Tool.init(goalCreate),
+          goalUpdate: Tool.init(goalUpdate),
           task: Tool.init(task),
           taskCancel: Tool.init(taskCancel),
           fetch: Tool.init(webfetch),
@@ -315,6 +323,9 @@ export const layer = Layer.effect(
             tool.edit,
             tool.write,
             tool.workbrief,
+            tool.goalGet,
+            tool.goalCreate,
+            tool.goalUpdate,
             tool.task,
             tool.taskCancel,
             tool.chimeraSwarm,
@@ -412,11 +423,13 @@ export const layer = Layer.effect(
 
     const tools: Interface["tools"] = Effect.fn("ToolRegistry.tools")(function* (input) {
       const filtered = (yield* all()).filter((tool) => {
-        if (
-          (tool.id === SubagentModelPreferTool.id || tool.id === SubagentModelSuppressTool.id) &&
-          input.agent.mode === "subagent"
-        )
-          return false
+        if (input.agent.mode === "subagent") {
+          if (tool.id === SubagentModelPreferTool.id || tool.id === SubagentModelSuppressTool.id) return false
+          // Goals are a root-session feature: continuation skips subagent sessions
+          // (parentID guard), so the tools would be half-functional noise in a child.
+          if (tool.id === GoalGetTool.id || tool.id === GoalCreateTool.id || tool.id === GoalUpdateTool.id)
+            return false
+        }
 
         if (tool.id === WebSearchTool.id) {
           return !usesProviderHostedWebSearch(input.providerID)
@@ -478,7 +491,7 @@ export const defaultLayer = Layer.suspend(() =>
       Layer.provide(Plugin.defaultLayer),
       Layer.provide(Question.defaultLayer),
       Layer.provide(Todo.defaultLayer),
-      Layer.provide(WorkBrief.defaultLayer),
+      Layer.provide(Layer.mergeAll(WorkBrief.defaultLayer, Goal.defaultLayer)),
       Layer.provide(Skill.defaultLayer),
       Layer.provide(Agent.defaultLayer),
       Layer.provide(Session.defaultLayer),

@@ -25,6 +25,7 @@ import { ModelID, ProviderID } from "../../src/provider/schema"
 import { Question } from "../../src/question"
 import { Todo } from "../../src/session/todo"
 import { WorkBrief } from "../../src/session/work-brief"
+import { Goal } from "../../src/session/goal"
 import { Session } from "@/session/session"
 import { SessionMessageTable } from "../../src/session/session.sql"
 import { LLM } from "../../src/session/llm"
@@ -249,6 +250,7 @@ function makeHttp(imageLayer: Layer.Layer<Image.Service> = Image.defaultLayer) {
   const question = Question.layer.pipe(Layer.provideMerge(deps))
   const todo = Todo.layer.pipe(Layer.provideMerge(deps))
   const workBrief = WorkBrief.layer.pipe(Layer.provideMerge(deps))
+  const goal = Goal.layer.pipe(Layer.provideMerge(deps))
   const chimeraPromptContext = ChimeraPromptContext.layer.pipe(Layer.provideMerge(deps))
   const registry = ToolRegistry.layer.pipe(
     Layer.provideMerge(DelegationLimiter.defaultLayer),
@@ -262,6 +264,7 @@ function makeHttp(imageLayer: Layer.Layer<Image.Service> = Image.defaultLayer) {
     Layer.provideMerge(todo),
     Layer.provideMerge(workBrief),
     Layer.provideMerge(question),
+    Layer.provideMerge(goal),
     Layer.provideMerge(deps),
   )
   const trunc = Truncate.layer.pipe(Layer.provideMerge(deps))

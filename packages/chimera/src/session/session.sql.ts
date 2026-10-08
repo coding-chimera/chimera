@@ -125,6 +125,24 @@ export const WorkBriefTable = sqliteTable("work_brief", {
   ...Timestamps,
 })
 
+type GoalData = {
+  objective: string
+  status: "active" | "paused" | "blocked" | "budget_limited" | "complete"
+  tokenBudget?: number
+  tokensUsed: number
+  lastUsageMessageID?: string // watermark for incremental token accounting
+  consecutiveEmptyContinuations?: number // auto-continuation circuit breaker
+  consecutiveContinuations?: number
+}
+export const GoalTable = sqliteTable("goal", {
+  session_id: text()
+    .$type<SessionID>()
+    .primaryKey()
+    .references(() => SessionTable.id, { onDelete: "cascade" }),
+  data: text({ mode: "json" }).notNull().$type<GoalData>(),
+  ...Timestamps,
+})
+
 export const SessionMessageTable = sqliteTable(
   "session_message",
   {

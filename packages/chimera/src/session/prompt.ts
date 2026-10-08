@@ -45,6 +45,7 @@ import { BackgroundJob } from "@/agent/background-job"
 import { ConfigMarkdown } from "@/config/markdown"
 import { SessionSummary } from "./summary"
 import { WorkBrief } from "./work-brief"
+import { Goal } from "./goal"
 import { PromptStats } from "./prompt-stats"
 import { ChimeraPromptContext } from "@/chimera/prompt-context"
 import { EditIntentClaims } from "@/chimera/edit-intent"
@@ -96,10 +97,48 @@ IMPORTANT:
 
 const STRUCTURED_OUTPUT_SYSTEM_PROMPT = `IMPORTANT: The user has requested structured output. You MUST use the StructuredOutput tool to provide your final response. Do NOT respond with plain text - you MUST call the StructuredOutput tool with your answer formatted according to the schema.`
 
+// Steering text for the synthetic goal-continuation user message.
+const GOAL_CONTINUATION_PROMPT = `<goal-continuation>
+Continue working toward the active session goal (see the Session Goal section of the runtime context).
+- Take the next concrete step now; do not end the turn merely because one step finished. This goal persists across turns — ending a turn does not require shrinking the objective to what fits now.
+- If the objective is verifiably achieved, call goal_update with status "complete" (report final token usage to the user). If the same blocking condition has repeated with no remaining path, call goal_update with status "blocked".
+- If you need user input to proceed, use the question tool instead of ending the turn.
+- Auto-continuation is bounded: turns ending without any tool call count as unproductive; 3 consecutive unproductive continuations mark the goal blocked, and continuation stops after 25 consecutive continuation turns.
+</goal-continuation>`
+
+// A synthetic continuation user message is identified by a `goalContinuation`
+// marker in its text part metadata, the same way runtime-context messages are
+// identified by `metadata.runtimeContext` (both ride the generic part metadata
+// record; see MessageV2.TextPart).
+function isGoalContinuationPart(part: MessageV2.Part) {
+  return part.type === "text" && part.metadata?.goalContinuation === true
+}
+
+// A finished continuation turn is productive when any assistant message of the
+// turn (id > the turn's user message) carries a model-initiated tool part —
+// the same predicate as the loop's hasToolCalls re-loop check, scoped to the
+// turn instead of only the final message (a turn that ran tools and then
+// summarized in plain text is still productive).
+function turnMadeToolCalls(messages: MessageV2.WithParts[], afterID: MessageID) {
+  return messages.some(
+    (msg) =>
+      msg.info.role === "assistant" &&
+      msg.info.id > afterID &&
+      msg.parts.some((part) => part.type === "tool" && !part.metadata?.providerExecuted),
+  )
+}
+
+// The user message that owns the current turn: the loop's `lastUser` may be a
+// runtime-context message appended after the real request, so the turn
+// boundary for goal continuation is the newest non-runtime-context user message.
+function goalTurnOwner(messages: MessageV2.WithParts[]) {
+  return messages.findLast((msg) => msg.info.role === "user" && !isRuntimeContextMessage(msg))
+}
+
 const log = Log.create({ service: "session.prompt" })
 
 type RuntimeContextSection = {
-  key: "workBrief" | "chimera" | "subagentModels" | "subagentScheduling" | "backgroundTasks"
+  key: "workBrief" | "goal" | "chimera" | "subagentModels" | "subagentScheduling" | "backgroundTasks"
   title: string
   content: string
   hash: string
@@ -254,6 +293,7 @@ export const layer = Layer.effect(
     const revert = yield* SessionRevert.Service
     const summary = yield* SessionSummary.Service
     const workBrief = yield* WorkBrief.Service
+    const goal = yield* Goal.Service
     const chimeraPromptContext = yield* ChimeraPromptContext.Service
     const sys = yield* SystemPrompt.Service
     const llm = yield* LLM.Service
@@ -335,6 +375,7 @@ export const layer = Layer.effect(
         workBrief.render(input.sessionID),
         chimeraPromptContext.render(input.sessionID, sessions),
       ])
+      const goalSuffix = yield* goal.render(input.sessionID)
       const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
       const agent = yield* agents.get(input.agent)
       const ruleset = Permission.merge(agent.permission, session.permission ?? [])
@@ -386,6 +427,7 @@ export const layer = Layer.effect(
       })
       return [
         workBriefSuffix ? { key: "workBrief" as const, title: "Current Work Brief", content: workBriefSuffix, hash: hash(workBriefSuffix) } : undefined,
+        goalSuffix ? { key: "goal" as const, title: "Session Goal", content: goalSuffix, hash: hash(goalSuffix) } : undefined,
         chimeraContextSuffix
           ? {
               key: "chimera" as const,
@@ -489,6 +531,64 @@ export const layer = Layer.effect(
         time: input.time,
         text: previous ? runtimeUpdateText(previous, sections) : runtimeSnapshotText(sections),
       })
+    })
+
+    // Goal auto-continuation: when a run-loop exit is reached with an active goal,
+    // bill the finished continuation turn (or clear the streak for a real user
+    // turn) and inject a synthetic continuation user message so the loop keeps
+    // working. Returns true when a continuation was injected; the caller must
+    // continue instead of breaking.
+    const tryGoalContinuation = Effect.fn("SessionPrompt.tryGoalContinuation")(function* (input: {
+      sessionID: SessionID
+      session: Session.Info
+      lastUser: MessageV2.User
+      messages: MessageV2.WithParts[]
+      productive?: boolean
+    }) {
+      // Subagent sessions never auto-continue: the goal belongs to the root session.
+      if (input.session.parentID) return false
+      // The turn owner (not `lastUser`, which may be an appended runtime-context
+      // message) carries the user intent the continuation streak is measured on.
+      const turnOwner = goalTurnOwner(input.messages)
+      const owner = turnOwner?.info.role === "user" ? turnOwner.info : input.lastUser
+      // Structured-output requests are one-shot flows; do not extend them.
+      if (owner.format?.type === "json_schema") return false
+      if (!(yield* goal.get(input.sessionID))) return false
+
+      if (turnOwner && turnOwner.parts.some(isGoalContinuationPart)) {
+        // The loop-top exit caller passes the productivity it already derived
+        // from its fresh snapshot; the stop/blocked caller omits it because
+        // handle.message parts are missing from the stale snapshot and need a re-read.
+        const productive =
+          input.productive ??
+          turnMadeToolCalls(yield* MessageV2.filterCompactedEffect(input.sessionID), turnOwner.info.id)
+        yield* goal.recordContinuation({ sessionID: input.sessionID, productive })
+      } else {
+        yield* goal.resetContinuation(input.sessionID)
+      }
+
+      if (!Goal.canAutoContinue(yield* goal.get(input.sessionID))) return false
+
+      const info: MessageV2.User = {
+        id: MessageID.ascending(),
+        role: "user",
+        sessionID: input.sessionID,
+        time: { created: Date.now() },
+        agent: owner.agent,
+        model: owner.model,
+      }
+      const part: MessageV2.TextPart = {
+        id: PartID.ascending(),
+        messageID: info.id,
+        sessionID: input.sessionID,
+        type: "text",
+        text: GOAL_CONTINUATION_PROMPT,
+        synthetic: true,
+        metadata: { goalContinuation: true },
+      }
+      yield* sessions.updateMessage(info)
+      yield* sessions.updatePart(part)
+      return true
     })
 
     const toolContextMessages = (history: MessageV2.WithParts[]) =>
@@ -2347,6 +2447,22 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
                 yield* slog.info("output cutoff retry", { retries: cutoffRetries })
               }
             } else {
+              // Loop-top exit (normal end of a turn): all assistant messages of
+              // the finished turn are in this iteration's fresh `msgs`, so
+              // productivity is scanned in-memory (no re-read). Each finished
+              // turn is recorded at most once: after an injection the newer
+              // continuation makes `lastUser.id < lastAssistant.id` false on the
+              // next iteration, and without an injection the loop breaks here.
+              if (
+                yield* tryGoalContinuation({
+                  sessionID,
+                  session,
+                  lastUser,
+                  messages: msgs,
+                  productive: turnMadeToolCalls(msgs, goalTurnOwner(msgs)?.info.id ?? lastUser.id),
+                })
+              )
+                continue
               yield* slog.info("exiting loop")
               break
             }
@@ -2588,7 +2704,17 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
               }
             }
 
-            if (result === "stop") return "break" as const
+            if (result === "stop") {
+              // Blocked/error end of this turn. The just-finished assistant
+              // (handle.message) is not in the stale `msgs` snapshot, so the
+              // helper re-reads to measure productivity. A continuation returns
+              // "continue" and its newer id makes the loop-top exit check skip
+              // next iteration, so this turn is recorded once (the loop-top
+              // site above will not see it again).
+              if (yield* tryGoalContinuation({ sessionID, session, lastUser, messages: msgs }))
+                return "continue" as const
+              return "break" as const
+            }
             if (result === "compact") {
               yield* compaction.create({
                 sessionID,
@@ -2931,6 +3057,7 @@ export const defaultLayer = Layer.suspend(() =>
       Layer.mergeAll(
         SessionSummary.defaultLayer,
         WorkBrief.defaultLayer,
+        Goal.defaultLayer,
         ChimeraPromptContext.defaultLayer,
         Memory.defaultLayer,
         Image.defaultLayer,
