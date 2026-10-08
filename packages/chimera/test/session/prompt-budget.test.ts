@@ -3,6 +3,7 @@ import { readdirSync, readFileSync } from "node:fs"
 import path from "node:path"
 import type { Provider } from "../../src/provider/provider"
 import { SystemPrompt } from "../../src/session/system"
+import { ToolSearch } from "../../src/session/tool-search"
 
 // Prompt budget baseline (L1 of the prompt-optimization bench). These ceilings
 // are the recorded byte sizes of the current assembly; any increase is a
@@ -32,8 +33,8 @@ const BASELINE = {
 // signal for the rendered description).
 const TOOL_BUDGETS = {
   "todowrite.txt": 9183,
-  "task.txt": 7000,
-  "swarm.txt": 6894,
+  "task.txt": 7055,
+  "swarm.txt": 6951,
   "workbrief.txt": 6546,
   "shell/shell.txt": 6287,
 } as const
@@ -43,7 +44,18 @@ const TOOL_BUDGETS = {
 // 2026-10-08 re-record (phase 2): one auto-continuation sentence in
 // goal_create.txt and goal_update.txt raised the floor to 83332, and the
 // ultra.txt "Session goals" section raised the deepseekUltra skeleton to 31911.
-const TOOL_TOTAL_BUDGET = 83332
+// 2026-10-08 re-record (progressive tool disclosure): tool_search.txt (1532 B)
+// plus one tool_search parenthetical in task.txt/swarm.txt raised the floor to
+// 84982. Those 11 deferred tool descriptions (10405 B) are no longer sent by
+// default; the exposed-deferred-budget test below pins the trade.
+const TOOL_TOTAL_BUDGET = 84982
+
+// The description bytes withheld from the default model-facing set by the
+// ToolSearch defer filter: every registered deferred tool's .txt is off the
+// wire until revealed, so the per-request description cost drops below the
+// full-registration floor recorded above.
+const DEFERRED_TXT_BUDGET = 10405
+const TOOL_SEARCH_TXT_BUDGET = 1532
 
 const CAPABILITY_TOOLS = { chimera_search: {}, workbrief: {}, browser_open: {}, read: {}, bash: {} }
 
@@ -87,6 +99,22 @@ describe("session prompt budget", () => {
   test("tool description total stays within the recorded baseline", () => {
     const bytes = toolFiles().reduce((sum, file) => sum + readFileSync(file, "utf8").length, 0)
     expect(bytes).toBeLessThanOrEqual(TOOL_TOTAL_BUDGET)
+  })
+
+  test("deferred tool descriptions stay off the default exposed set", () => {
+    const deferredBytes = [...ToolSearch.DEFERRED_TOOL_IDS].reduce(
+      (sum, id) => sum + readFileSync(path.join(toolDir, `${id}.txt`), "utf8").length,
+      0,
+    )
+    expect(deferredBytes).toBeLessThanOrEqual(DEFERRED_TXT_BUDGET)
+    // the discovery tool itself is the only new always-on description
+    expect(readFileSync(path.join(toolDir, "tool_search.txt"), "utf8").length).toBeLessThanOrEqual(
+      TOOL_SEARCH_TXT_BUDGET,
+    )
+    // default exposed description bytes: full floor minus the deferred set
+    // (withholds ~10.4KB) plus tool_search.txt (~1.5KB)
+    expect(deferredBytes).toBeGreaterThan(TOOL_SEARCH_TXT_BUDGET)
+    expect(TOOL_TOTAL_BUDGET - deferredBytes).toBeLessThan(TOOL_TOTAL_BUDGET)
   })
 
   test("top tool descriptions stay within per-tool budgets", () => {

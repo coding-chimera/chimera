@@ -46,6 +46,7 @@ import { ConfigMarkdown } from "@/config/markdown"
 import { SessionSummary } from "./summary"
 import { WorkBrief } from "./work-brief"
 import { Goal } from "./goal"
+import { ToolSearch } from "./tool-search"
 import { PromptStats } from "./prompt-stats"
 import { ChimeraPromptContext } from "@/chimera/prompt-context"
 import { EditIntentClaims } from "@/chimera/edit-intent"
@@ -294,6 +295,7 @@ export const layer = Layer.effect(
     const summary = yield* SessionSummary.Service
     const workBrief = yield* WorkBrief.Service
     const goal = yield* Goal.Service
+    const toolSearch = yield* ToolSearch.Service
     const chimeraPromptContext = yield* ChimeraPromptContext.Service
     const sys = yield* SystemPrompt.Service
     const llm = yield* LLM.Service
@@ -913,13 +915,27 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           Effect.onInterrupt(() => processor.failToolCall(callID, abortError(signal)).pipe(Effect.ignore)),
         )
 
+      // Progressive tool disclosure: deferred tools stay registered but are
+      // omitted from the model-facing record until `tool_search` reveals them
+      // for this session. Revealed tools are collected and appended at the
+      // very end of the record (after the MCP entries below) so every
+      // already-visible tool's position stays byte-stable across reveals,
+      // keeping provider prompt-caches intact.
+      const revealedDeferred = toolSearch.revealed(session.id)
+      const deferredHidden: string[] = []
+      const revealedTools: [string, AITool][] = []
       for (const item of yield* registry.tools({
         modelID: ModelID.make(model.api.id),
         providerID: model.providerID,
         agent,
       })) {
+        const deferred = toolSearch.isDeferred(item.id)
+        if (deferred && !revealedDeferred.has(item.id)) {
+          deferredHidden.push(item.id)
+          continue
+        }
         const schema = ProviderTransform.schema(model, EffectZod.toJsonSchema(item.parameters))
-        tools[item.id] = tool({
+        const built = tool({
           description: item.description,
           inputSchema: jsonSchema(schema),
           execute(args, options) {
@@ -961,6 +977,11 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             )
           },
         })
+        if (deferred) {
+          revealedTools.push([item.id, built])
+          continue
+        }
+        tools[item.id] = built
       }
 
       // Resource tools are offered only when a connected server actually advertises resources.
@@ -1295,7 +1316,8 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         tools[key] = item
       }
 
-      return tools
+      for (const [id, built] of revealedTools) tools[id] = built
+      return { tools, deferredHidden }
     })
 
     const handleSubtask = Effect.fn("SessionPrompt.handleSubtask")(function* (input: {
@@ -2559,7 +2581,7 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
             const lastUserMsg = msgs.findLast(realUser)
             const bypassAgentCheck = lastUserMsg?.parts.some((p) => p.type === "agent") ?? false
 
-            const tools = yield* resolveTools({
+            const { tools, deferredHidden } = yield* resolveTools({
               agent,
               session,
               model,
@@ -2681,6 +2703,7 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
               system,
               messages: [...modelMsgs, ...extraModelMsgs],
               tools,
+              deferredHidden,
               model,
               toolChoice: format.type === "json_schema" ? "required" : undefined,
             })
@@ -3058,6 +3081,7 @@ export const defaultLayer = Layer.suspend(() =>
         SessionSummary.defaultLayer,
         WorkBrief.defaultLayer,
         Goal.defaultLayer,
+        ToolSearch.defaultLayer,
         ChimeraPromptContext.defaultLayer,
         Memory.defaultLayer,
         Image.defaultLayer,

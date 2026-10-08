@@ -50,6 +50,7 @@ import { SystemPrompt } from "../../src/session/system"
 import { Todo } from "../../src/session/todo"
 import { WorkBrief } from "../../src/session/work-brief"
 import { Goal } from "../../src/session/goal"
+import { ToolSearch } from "../../src/session/tool-search"
 import { SessionCompaction } from "../../src/session/compaction"
 import { RemoteCompaction } from "../../src/session/remote-compaction"
 import { Instruction } from "../../src/session/instruction"
@@ -137,6 +138,7 @@ function makeHttp() {
     AgentSvc.defaultLayer,
     Command.defaultLayer,
     Permission.defaultLayer,
+    ToolSearch.defaultLayer,
     Plugin.defaultLayer,
     Config.defaultLayer,
     routingLayer,

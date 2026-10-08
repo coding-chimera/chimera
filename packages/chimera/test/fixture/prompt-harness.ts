@@ -43,6 +43,7 @@ import { ToolRegistry } from "@/tool/registry"
 import { Truncate } from "@/tool/truncate"
 import { WorkBrief } from "../../src/session/work-brief"
 import { Goal } from "../../src/session/goal"
+import { ToolSearch } from "../../src/session/tool-search"
 import { TestLLMServer } from "../lib/llm-server"
 import { Image } from "../../src/image/image"
 import type { Config as ConfigInfo } from "@/config/config"
@@ -157,6 +158,7 @@ export function makePromptHarness() {
     AgentSvc.defaultLayer,
     Command.defaultLayer,
     Permission.defaultLayer,
+    ToolSearch.defaultLayer,
     Plugin.defaultLayer,
     Config.defaultLayer,
     routingLayer,

@@ -31,6 +31,7 @@ import { EffectBridge } from "@/effect/bridge"
 import * as Option from "effect/Option"
 import * as OtelTracer from "@effect/opentelemetry/Tracer"
 import { CodexResponses } from "./codex-responses"
+import { ToolSearch } from "./tool-search"
 
 const log = Log.create({ service: "llm" })
 export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
@@ -115,6 +116,10 @@ export type StreamInput = {
   messages: ModelMessage[]
   small?: boolean
   tools: Record<string, Tool>
+  // Ids the ToolSearch defer filter removed from `tools` upstream
+  // (SessionPrompt.resolveTools). Only the system-prompt capability layers
+  // see them restored (see capabilityTools); the wire record never does.
+  deferredHidden?: string[]
   abort?: AbortSignal
   retries?: number
   toolChoice?: "auto" | "required" | "none"
@@ -127,10 +132,9 @@ export type StreamRequest = Omit<StreamInput, "abort"> & {
 // Assembles the attributed system prompt segments in send order. Joining the
 // segment contents is byte-identical to the legacy unattributed assembly.
 export function systemSegments(
-  input: Pick<
-    StreamRequest,
-    "model" | "agent" | "small" | "parentSessionID" | "system" | "user" | "tools"
-  >,
+  input: Pick<StreamRequest, "model" | "agent" | "small" | "parentSessionID" | "system" | "user"> & {
+    tools: Record<string, unknown>
+  },
   multiAgent: string | undefined,
   variant: string | undefined,
 ): SystemPrompt.Segment[] {
@@ -215,7 +219,11 @@ const live: Layer.Layer<
       // (core/chimera, core/workbrief, core/browser) must gate on the tools
       // the model can actually see, not the raw pre-permission list.
       const tools = resolveTools(input)
-      const segments = systemSegments({ ...input, tools }, multiAgent, profile.key)
+      // Capability layers must stay byte-identical to the pre-defer assembly:
+      // gate on the permission-allowed view that re-includes the ids the
+      // ToolSearch defer filter hid (capabilitySegments only checks key
+      // presence), not on the wire record itself.
+      const segments = systemSegments({ ...input, tools: capabilityTools(tools, input) }, multiAgent, profile.key)
       // experimental.system_context: the first turn stores the assembled
       // baseline, later turns reuse it and inject source changes as an extra
       // system message. Small calls (title/summary) own no epoch. Epoch
@@ -453,7 +461,10 @@ const live: Layer.Layer<
         workflowModel.toolExecutor = async (toolName, argsJson, _requestID) => {
           const t = tools[toolName]
           if (!t || !t.execute) {
-            return { result: "", error: `Unknown tool: ${toolName}` }
+            return {
+              result: "",
+              error: `Unknown tool: ${toolName}${ToolSearch.isDeferredTool(toolName) ? ToolSearch.DEFERRED_TOOL_HINT : ""}`,
+            }
           }
           try {
             const result = await t.execute!(JSON.parse(argsJson), {
@@ -676,6 +687,24 @@ function resolveTools(input: Pick<StreamInput, "tools" | "agent" | "permission" 
     Permission.merge(input.agent.permission, input.permission ?? []),
   )
   return Record.filter(input.tools, (_, k) => input.user.tools?.[k] !== false && !disabled.has(k))
+}
+
+// Builds the capability-layer tool view for systemSegments: re-adds the ids the
+// ToolSearch defer filter removed, gated by the same permission/user-tool
+// filters resolveTools applies, so core/browser et al. cannot distinguish a
+// deferred-hidden tool from a never-registered one. Placeholder values are
+// fine: capabilitySegments only checks truthiness of the key.
+function capabilityTools(tools: Record<string, Tool>, input: StreamInput): Record<string, unknown> {
+  const hidden = input.deferredHidden
+  if (!hidden?.length) return tools
+  const disabled = Permission.disabled(hidden, Permission.merge(input.agent.permission, input.permission ?? []))
+  const view: Record<string, unknown> = { ...tools }
+  for (const id of hidden) {
+    if (disabled.has(id)) continue
+    if (input.user.tools?.[id] === false) continue
+    view[id] ??= true
+  }
+  return view
 }
 
 // Check if messages contain any tool-call content
