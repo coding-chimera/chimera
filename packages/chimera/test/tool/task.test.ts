@@ -1530,7 +1530,9 @@ describe("tool.task", () => {
       expect(description).toContain("- luna -> test/test-model: Luna profile")
       expect(description).toContain("Direct model selection:")
       expect(description).toContain("- Pass model as an exact provider/model route.")
-      expect(description).toContain("- Use subagent_model_routes to inspect concrete current routes for a model identity.")
+      expect(description).toContain(
+        "- Use subagent_model_routes to inspect concrete current routes for a model identity (if not in your tool list, reveal them with `tool_search`).",
+      )
     }),
     { config: delegationConfig },
 

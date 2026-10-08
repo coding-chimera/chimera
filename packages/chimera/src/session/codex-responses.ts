@@ -8,6 +8,7 @@ import { codexAuthHeaders, codexEndpointUrl } from "@/plugin/codex"
 import type { Provider } from "@/provider/provider"
 import type { Event as LLMEvent } from "./llm"
 import { decodeRemoteCompactionInput, type RemoteCompactionOutputItem } from "./remote-compaction-codec"
+import { ToolSearch } from "./tool-search"
 
 type CodexOAuthAuth = Extract<Auth.Info, { type: "oauth" }>
 
@@ -1059,7 +1060,12 @@ function abortReason(signal: AbortSignal) {
 async function executeTool(input: CodexResponsesInput, toolName: string, args: unknown, toolCallId: string) {
   const tool = input.tools[toolName]
   if (!tool?.execute) {
-    return event({ type: "tool-error", toolCallId, toolName, error: new Error(`Unknown tool: ${toolName}`) })
+    return event({
+      type: "tool-error",
+      toolCallId,
+      toolName,
+      error: new Error(`Unknown tool: ${toolName}${ToolSearch.isDeferredTool(toolName) ? ToolSearch.DEFERRED_TOOL_HINT : ""}`),
+    })
   }
   try {
     return event({

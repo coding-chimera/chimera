@@ -26,6 +26,7 @@ import { Question } from "../../src/question"
 import { Todo } from "../../src/session/todo"
 import { WorkBrief } from "../../src/session/work-brief"
 import { Goal } from "../../src/session/goal"
+import { ToolSearch } from "../../src/session/tool-search"
 import { Session } from "@/session/session"
 import { SessionMessageTable } from "../../src/session/session.sql"
 import { LLM } from "../../src/session/llm"
@@ -236,6 +237,7 @@ function makeHttp(imageLayer: Layer.Layer<Image.Service> = Image.defaultLayer) {
     AgentSvc.defaultLayer,
     Command.defaultLayer,
     Permission.defaultLayer,
+    ToolSearch.defaultLayer,
     Plugin.defaultLayer,
     Config.defaultLayer,
     routingLayer,

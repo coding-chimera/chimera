@@ -38,6 +38,7 @@ const InputObject = Schema.StructWithRest(
     todowrite: Schema.optional(Action),
     workbrief: Schema.optional(Action),
     goal: Schema.optional(Action),
+    tool_search: Schema.optional(Action),
     memory_remember: Schema.optional(Action),
     memory_list: Schema.optional(Action),
     memory_forget: Schema.optional(Action),

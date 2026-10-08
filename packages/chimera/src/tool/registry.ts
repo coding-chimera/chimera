@@ -24,6 +24,7 @@ import { BrowserCloseTool } from "./browser_close"
 import { WriteTool } from "./write"
 import { WorkBriefTool } from "./workbrief"
 import { GoalCreateTool, GoalGetTool, GoalUpdateTool } from "./goal"
+import { ToolSearchTool } from "./tool_search"
 import {
   MemoryForgetTool,
   MemoryListTool,
@@ -81,6 +82,7 @@ import { Question } from "../question"
 import { Todo } from "../session/todo"
 import { WorkBrief } from "../session/work-brief"
 import { Goal } from "../session/goal"
+import { ToolSearch } from "../session/tool-search"
 import { LSP } from "@/lsp/lsp"
 import { Instruction } from "../session/instruction"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
@@ -143,6 +145,7 @@ export const layer = Layer.effect(
     const globtool = yield* GlobTool
     const writetool = yield* WriteTool
     const workbrief = yield* WorkBriefTool
+    const toolSearchTool = yield* ToolSearchTool
     const goalGet = yield* GoalGetTool
     const goalCreate = yield* GoalCreateTool
     const goalUpdate = yield* GoalUpdateTool
@@ -266,6 +269,7 @@ export const layer = Layer.effect(
           edit: Tool.init(edit),
           write: Tool.init(writetool),
           workbrief: Tool.init(workbrief),
+          toolSearch: Tool.init(toolSearchTool),
           goalGet: Tool.init(goalGet),
           goalCreate: Tool.init(goalCreate),
           goalUpdate: Tool.init(goalUpdate),
@@ -323,6 +327,7 @@ export const layer = Layer.effect(
             tool.edit,
             tool.write,
             tool.workbrief,
+            tool.toolSearch,
             tool.goalGet,
             tool.goalCreate,
             tool.goalUpdate,
@@ -403,7 +408,8 @@ export const layer = Layer.effect(
             profiles.map(([name, entry]) => `- ${name} -> ${entry.model}${entry.variant ? ` (variant: ${entry.variant})` : ""}${entry.description ? `: ${entry.description}` : ""}`).join("\n"),
           ].join("\n")
         : ""
-      const directModelSection = "Direct model selection:\n- Pass model as an exact provider/model route.\n- Use variant only when the selected route advertises it.\n- Use subagent_model_routes to inspect concrete current routes for a model identity."
+      const directModelSection =
+        "Direct model selection:\n- Pass model as an exact provider/model route.\n- Use variant only when the selected route advertises it.\n- Use subagent_model_routes to inspect concrete current routes for a model identity (if not in your tool list, reveal them with `tool_search`)."
       const schedulingView = yield* scheduling.currentView({
         ruleset: agent.permission,
         projectID: ProjectID.global,
@@ -491,7 +497,7 @@ export const defaultLayer = Layer.suspend(() =>
       Layer.provide(Plugin.defaultLayer),
       Layer.provide(Question.defaultLayer),
       Layer.provide(Todo.defaultLayer),
-      Layer.provide(Layer.mergeAll(WorkBrief.defaultLayer, Goal.defaultLayer)),
+      Layer.provide(Layer.mergeAll(WorkBrief.defaultLayer, Goal.defaultLayer, ToolSearch.defaultLayer)),
       Layer.provide(Skill.defaultLayer),
       Layer.provide(Agent.defaultLayer),
       Layer.provide(Session.defaultLayer),
