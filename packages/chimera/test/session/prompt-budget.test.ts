@@ -50,7 +50,9 @@ const TOOL_BUDGETS = {
 // default; the exposed-deferred-budget test below pins the trade.
 // 2026-10-08 re-record (ast_edit tool): the always-on ast_edit.txt (2916 B)
 // raised the floor to 87898.
-const TOOL_TOTAL_BUDGET = 87898
+// 2026-10-08 re-record (ast_edit pattern mode): the pattern-mode section of the
+// always-on ast_edit.txt (2916 B -> 5722 B) raised the floor to 90704.
+const TOOL_TOTAL_BUDGET = 90704
 
 // The description bytes withheld from the default model-facing set by the
 // ToolSearch defer filter: every registered deferred tool's .txt is off the

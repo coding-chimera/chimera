@@ -1,4 +1,6 @@
-Perform structural file edits anchored to CodeGraph node refs instead of text anchors.
+Perform structural file edits by CodeGraph node refs (`edits`) or by ast-grep style pattern matching (`rewrites`). A call is EXACTLY one mode: pass `edits` or `rewrites`, never both.
+
+# Ref mode: `edits` (graph-anchored)
 
 Each edit names one indexed syntax node via its typed graph ref (`node:<id>`, exactly the `Ref:` line emitted by `chimera_search`, `chimera_file_symbols`, or `chimera_impact`) and applies one structural operation to that node's source range:
 
@@ -6,20 +8,40 @@ Each edit names one indexed syntax node via its typed graph ref (`node:<id>`, ex
 - `delete` — remove the node; do not pass `content`.
 - `insert_before` / `insert_after` — add sibling content around the node's line block.
 
+# Pattern mode: `rewrites` (structural codemod)
+
+Each rewrite is `{ pattern, replacement }` and rewrites EVERY structural match of that pattern in the file, in one pass. It needs NO graph: it runs in projects that never ran `chimera graph init`.
+
+- Metavariables: `$NAME` matches exactly one node, `$_` matches any node without capturing it, `$$$NAME` matches zero or more sibling nodes. Names are UPPERCASE and stand for whole nodes; a name used twice must match identical code (`$A == $A` matches `x == x`, never `x == y`).
+- `pattern` must parse as ONE ast node of the file's language (taken from the extension). Verified languages: typescript, tsx, javascript, python; other languages the graph carries a grammar for are attempted as-is; a file whose language has no grammar is refused.
+- `replacement` is the text written in place of every match, with the pattern's metavariables spliced back in. Multi-line captures keep their relative layout and are re-indented to the match. A `$NAME` the pattern never captures renders as NOTHING — a typo silently drops that code, so keep the names aligned.
+- An EMPTY `replacement` deletes every match: `{ pattern: "debugger", replacement: "" }`.
+- A rewrite that matches nothing is NOT an error — it reports `0 replacements` (codemod semantics). Only a call where every rewrite matches nothing throws the no-op error.
+- Nested or conflicting matches are rejected in one call (one pattern matching a node inside another's match, or the same span with different text): narrow the patterns or split calls. Byte-identical duplicate matches collapse into one write.
+- A file with SYNTAX ERRORS is refused — pattern rewriting there is unsafe; fix the file first or use edit.
+
+Both modes edit an EXISTING file (use the write tool to create a new one).
+
+Pattern example: `file: "src/session/prompt.ts"` with `rewrites: [{ pattern: "console.log($$$ARGS)", replacement: "logger.debug($$$ARGS)" }, { pattern: "debugger", replacement: "" }]` rewrites every `console.log(...)` call and deletes every `debugger` statement in that one file.
+
 # When to use ast_edit vs edit
 
-Prefer ast_edit when you already have graph refs and the change is node-granular: rewriting a whole function or method body, deleting a class member or import statement, inserting a sibling declaration. Prefer the edit tool for text-precise small changes, when you have no graph refs at hand, or when the graph surface is unavailable — with an uninitialized project the graph has no nodes, refs cannot resolve, and ast_edit fails; run `chimera graph init` + `chimera graph index` (or the chimera_init_graph tool) first, or just use edit.
+Pick the mode by the shape of the work, inside ONE file per call:
+
+- Pattern mode (`rewrites`): repetitive structural rewrites — rename a call shape, drop a wrapper, delete logging calls, convert `==` to `===` — wherever the same node shape occurs many times. No refs, no initialized graph needed.
+- Ref mode (`edits`): one precise node you already hold as a `node:<id>` ref (whole function/method/class rewrite, member or import delete, sibling insert). It self-heals stale refs and hands back fresh refs to chain from.
+- The edit tool: plain text changes, files whose language has no grammar, files with syntax errors, or node-granular work when the graph surface is unavailable — with an uninitialized project the graph has no nodes, refs cannot resolve, and ref mode fails; run `chimera graph init` + `chimera graph index` (or the chimera_init_graph tool) first, use pattern mode, or just use edit.
 
 # Rules
 
-- ONE file per call: `file` is absolute or project-relative, and every ref must resolve to a node in that file. Split multi-file work into separate calls.
+- ONE file per call: `file` is absolute or project-relative. In ref mode every ref must resolve to a node in that file; in pattern mode every rewrite applies to that file. Split multi-file work into separate calls.
 - `content` is used VERBATIM — supply correctly-indented text with NO trailing newline. Multi-line nodes snap to whole source lines (leading indentation is replaced by your content's own indentation); single-line nodes (imports, one-line members) keep exact column boundaries. Insert content always lands as its own line(s) adjacent to the node.
-- Overlapping edits are rejected in one call (e.g. replacing a method and a statement inside it). Use separate calls, highest-offset-first is fine because ids may shift between them.
+- Overlapping operations are rejected in one call (a ref-mode edit replacing a method and another deleting a statement inside it; two pattern rewrites whose matches nest or disagree). Use separate calls, highest-offset-first is fine because ids may shift between them.
 - Refs may be stale (an earlier edit shifted lines, an external change moved the symbol). ast_edit filesystem-syncs the file first and SELF-HEALS: a stale ref is re-anchored to the live node by identity (kind + name, parent chain when ambiguous) and the relocation is reported — do not re-search first. A hard failure only happens when the node genuinely no longer exists or the match is ambiguous; the error then carries the current candidate refs for this file — pick one and retry directly.
 - After a successful call the result lists fresh `node:<id>` refs for the edited symbols; chain follow-up edits from those refs.
-- Edits apply as byte-range splices in reverse document order; the mutation rides the same audit pipeline as edit (permission "edit" applies).
+- Both modes apply byte-range splices in reverse document order and ride the same audit pipeline as edit (permission "edit" applies; predesign gate, provenance record, formatter, LSP oracle and propagation check included).
 
-# Example
+# Ref-mode example
 
 file: "src/tool/ast_edit.ts"
 edits: [
