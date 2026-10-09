@@ -3,6 +3,10 @@ import * as Log from "@opencode-ai/core/util/log"
 import type { Interface as BusInterface } from "@/bus"
 import { BusEvent } from "@/bus/bus-event"
 import { InstanceState } from "@/effect/instance-state"
+import { Database } from "@/storage/db"
+import { SessionTable } from "@/session/session.sql"
+import type { SessionID } from "@/session/schema"
+import { eq } from "drizzle-orm"
 import type { Tool } from "@/tool/tool"
 import {
   cancelEditIntentWaiters,
@@ -97,9 +101,14 @@ const ORPHAN_SWEEP_GRACE_MS = EDIT_INTENT_CLAIM_DEFAULT_TTL_MS
  * A `chimera_predesign` run that declares files registers one claim per file
  * for the declaring session. Claims are advisory coordination state in the
  * project CodeGraph database — not filesystem locks:
- * - the mutation gate blocks edits on files claimed by OTHER sessions and
- *   registers the blocked session as a waiter (first-come-first-served queue);
- * - claims release on explicit signals — the holder's run completing
+ * - the mutation gate blocks edits on files claimed by sessions from ANOTHER
+ *   session family — holders are compared by root ancestor along the session
+ *   parent_id chain, so a parent's claims never gate its own subagents — and
+ *   registers the blocked session as a waiter (first-come-first-served queue;
+ *   queue/waiter bookkeeping still keys the real session id);
+ * - claims release on explicit signals — the holder closing its work batch
+ *   through `chimera_audit_recent` (explicit), the holder's run completing
+ *   with no background/subagent jobs its session family still owns running
  *   (session idle), the holder's session being removed — with a TTL as
  *   crash fallback only;
  * - releases wake registered waiters through the session-addressable
@@ -231,8 +240,66 @@ function earliestHolders(claims: EditIntentClaimRecord[]) {
 }
 
 /**
- * First-come-first-served queue fairness: a foreign claim blocks the checking
- * session only when it outranks that session's own earliest claim on the file.
+ * Session-family merge for conflict detection: "foreign" is decided by the
+ * holder's ROOT ANCESTOR on the session table's parent_id chain, not the raw
+ * session id — a parent's claims must never gate its own subagents' edits
+ * (the subagent session is a child in the same family), and a subagent's
+ * claims must never gate the parent or its siblings.
+ *
+ * The session table lives in the application database (session ids are
+ * globally unique), not the per-project claim store, so the lineage reads go
+ * through Database.use. Resolution is conservative: a session whose lineage
+ * cannot be read (deleted row, storage trouble, broken or cyclic chain,
+ * depth overrun) has no root and every pair involving it stays FOREIGN — the
+ * pre-merge blocking behavior. Real nesting depth is ≤3; the cap only
+ * guards pathological cycles.
+ */
+const FAMILY_WALK_MAX_DEPTH = 16
+
+function readSessionParentRow(sessionID: string) {
+  try {
+    return Database.use((db) =>
+      db
+        .select({ parentID: SessionTable.parent_id })
+        .from(SessionTable)
+        .where(eq(SessionTable.id, sessionID as SessionID))
+        .get(),
+    )
+  } catch (error) {
+    log.warn("edit-intent session lineage read failed", { sessionID, error })
+    return undefined
+  }
+}
+
+function resolveSessionFamilyRoot(sessionID: string): string | undefined {
+  const seen = new Set<string>()
+  let current = sessionID
+  for (let depth = 0; depth < FAMILY_WALK_MAX_DEPTH; depth++) {
+    if (!seen.add(current)) return undefined
+    const row = readSessionParentRow(current)
+    if (!row) return undefined
+    if (row.parentID === null || row.parentID === undefined) return current
+    current = row.parentID
+  }
+  return undefined
+}
+
+/** Holder ids that share the checking session's family root (conflict-exempt). */
+function sameFamilyHolders(sessionID: string, holderIDs: string[]) {
+  const roots = new Map<string, string | undefined>()
+  const rootOf = (id: string) => {
+    if (!roots.has(id)) roots.set(id, resolveSessionFamilyRoot(id))
+    return roots.get(id)
+  }
+  const own = rootOf(sessionID)
+  if (own === undefined) return new Set<string>()
+  return new Set(holderIDs.filter((id) => rootOf(id) === own))
+}
+
+/**
+ * First-come-first-served queue fairness: a foreign (other-family) claim
+ * blocks the checking session only when it outranks that session's own
+ * earliest claim on the file.
  * The front of the queue (or a session without any foreign competition) never
  * blocks, so a later predesign can not lock out an earlier holder.
  *
@@ -242,10 +309,17 @@ function earliestHolders(claims: EditIntentClaimRecord[]) {
  * so a later declaration whose id happens to sort lower would otherwise steal
  * the queue front and hide the real holder.
  */
-function queueConflicts(claims: EditIntentClaimRecord[], sessionID: string) {
+const queueConflicts = Effect.fnUntraced(function* (claims: EditIntentClaimRecord[], sessionID: string) {
+  const foreignClaims = claims.filter((claim) => claim.sessionID !== sessionID)
+  const exempt =
+    foreignClaims.length === 0
+      ? new Set<string>()
+      : yield* Effect.sync(() =>
+          sameFamilyHolders(sessionID, [...new Set(foreignClaims.map((claim) => claim.sessionID))]),
+        )
   const arrivalRank = new Map(claims.map((claim, index) => [claim, index]))
   const own = earliestHolders(claims.filter((claim) => claim.sessionID === sessionID))
-  const foreign = earliestHolders(claims.filter((claim) => claim.sessionID !== sessionID))
+  const foreign = earliestHolders(foreignClaims.filter((claim) => !exempt.has(claim.sessionID)))
   const conflicts: EditIntentConflict[] = []
   for (const [filePath, holder] of foreign) {
     const mine = own.get(filePath)
@@ -254,7 +328,7 @@ function queueConflicts(claims: EditIntentClaimRecord[], sessionID: string) {
     conflicts.push(conflictFrom(holder, mine !== undefined))
   }
   return conflicts.sort((a, b) => a.filePath.localeCompare(b.filePath))
-}
+})
 
 /**
  * G1 wake-priority soft holds: for each file, the earliest woken waiter
@@ -384,7 +458,7 @@ export const registerFromPredesign = Effect.fn("EditIntentClaims.registerFromPre
     }),
   )
   const conflicts = mergeConflicts([
-    ...queueConflicts(active, input.sessionID),
+    ...(yield* queueConflicts(active, input.sessionID)),
     ...[...blockedSet].map((file) => wakePriorityConflict(holds.get(file)!, false, yieldedSet.has(file))),
   ])
   // Queue this session behind every holder so the release broadcast (L2 wake)
@@ -455,7 +529,7 @@ export const checkMutation = Effect.fn("EditIntentClaims.checkMutation")(functio
       return [] as EditIntentClaimRecord[]
     }),
   )
-  const conflicts = queueConflicts(claims, input.sessionID)
+  const conflicts = yield* queueConflicts(claims, input.sessionID)
   // G1: files without a real claim conflict can still be soft-held by
   // another session's in-window wake — the first waiter gets a bounded
   // head start to re-claim before fresh arrivals race it.
@@ -498,7 +572,7 @@ export function blockedResult(input: { toolID: string; conflicts: EditIntentConf
       }),
       "",
       "What to do:",
-      "- Do not retry this mutation in a loop; the claim stays active until the holder's run completes or its session is removed (a TTL is only a crash fallback).",
+      "- Do not retry this mutation in a loop; the claim stays active until the holder releases it explicitly (its chimera_audit_recent closeout), its run completes with no background/subagent jobs its family still owns running, or its session is removed (a TTL is only a crash fallback).",
       "- Continue with non-conflicting files first; when every conflicting file frees up, a release notice is injected into this session automatically — re-read the files then (they may have changed) and continue the blocked work.",
       ...(unqueued.length > 0
         ? [`- Record chimera_predesign declaring ${unqueued.map((conflict) => conflict.filePath).join(", ")} to queue your own claim behind the holder${unqueued.length > 1 ? "s" : ""}.`]
@@ -566,7 +640,8 @@ export function wakeText(target: EditIntentWakeTarget) {
   ].join("\n")
 }
 
-export const releaseForSession = Effect.fn("EditIntentClaims.releaseForSession")(function* (input: {
+/** Release + host-scoped wake-take, with the released claim rows reported back. */
+const releaseWithReport = Effect.fnUntraced(function* (input: {
   projectRoot: string
   sessionID: string
   reason: EditIntentClaimReleaseReason
@@ -585,7 +660,7 @@ export const releaseForSession = Effect.fn("EditIntentClaims.releaseForSession")
       }),
     )
   }
-  if (released.length === 0) return [] as EditIntentWakeTarget[]
+  if (released.length === 0) return { released, targets: [] as EditIntentWakeTarget[] }
   // Host-scoped take: only waiters registered by this process can be injected
   // into here; foreign-hosted waiters stay 'waiting' for their own process's
   // poll to pick up (flipping them here would strand the wake forever).
@@ -597,7 +672,15 @@ export const releaseForSession = Effect.fn("EditIntentClaims.releaseForSession")
       return [] as EditIntentWaiterRecord[]
     }),
   )
-  return groupWakeTargets(woken, input.reason)
+  return { released, targets: groupWakeTargets(woken, input.reason) }
+})
+
+export const releaseForSession = Effect.fn("EditIntentClaims.releaseForSession")(function* (input: {
+  projectRoot: string
+  sessionID: string
+  reason: EditIntentClaimReleaseReason
+}) {
+  return (yield* releaseWithReport(input)).targets
 })
 
 /**
@@ -612,7 +695,7 @@ export const Released = BusEvent.define(
   "chimera.edit_intent.released",
   Schema.Struct({
     projectRoot: Schema.String,
-    reason: Schema.Literal("session_removed"),
+    reason: Schema.Literals(["session_removed", "explicit"]),
     targets: Schema.Array(
       Schema.Struct({
         sessionID: Schema.String,
@@ -636,6 +719,35 @@ export const publishRemovalRelease = Effect.fn("EditIntentClaims.publishRemovalR
     targets: targets.map((target) => ({ sessionID: target.sessionID, files: target.files })),
   })
 })
+
+/**
+ * Explicit closeout release (`chimera_audit_recent`): the holder finished its
+ * work batch and frees its claims without waiting for the idle transition.
+ * Same tree-world contract as publishRemovalRelease — the release and the
+ * host-scoped wake-take happen here, the wake targets ride the Released bus
+ * event to the SessionPrompt watcher (which owns injectSynthetic). Returns
+ * the release report so the caller can render what was freed; callers must
+ * isolate failures — unlock trouble never breaks the invoking tool.
+ */
+export const releaseExplicitly = Effect.fn("EditIntentClaims.releaseExplicitly")(function* (input: {
+  bus: BusInterface
+  projectRoot: string
+  sessionID: string
+}) {
+  const { released, targets } = yield* releaseWithReport({
+    projectRoot: input.projectRoot,
+    sessionID: input.sessionID,
+    reason: "explicit",
+  })
+  if (targets.length === 0) return { released, targets }
+  yield* input.bus.publish(Released, {
+    projectRoot: input.projectRoot,
+    reason: "explicit",
+    targets: targets.map((target) => ({ sessionID: target.sessionID, files: target.files })),
+  })
+  return { released, targets }
+})
+
 
 /**
  * Wake-pull for a session that just became idle: its own still-waiting
@@ -815,7 +927,7 @@ export const contextLines = Effect.fn("EditIntentClaims.contextLines")(function*
     "Edit Intent Claims:",
     ...(own.length > 0
       ? [
-          `- held by you: ${ownShown.join(", ")}${ownOmitted > 0 ? ` (+${ownOmitted} more)` : ""} — other sessions' edits to these files are blocked until this run completes (advisory coordination; a TTL is only a crash fallback).`,
+          `- held by you: ${ownShown.join(", ")}${ownOmitted > 0 ? ` (+${ownOmitted} more)` : ""} — other session families' edits to these files are blocked until this batch releases (explicit chimera_audit_recent closeout, or run completion with no family-owned running jobs; a TTL is only a crash fallback).`,
         ]
       : []),
     ...blocked.map((waiter) => {

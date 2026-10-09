@@ -3010,17 +3010,21 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
     })
 
     // Edit-intent claims L2: release + wake. When a session's run goes idle
-    // (its work batch completed), its advisory claims release and the sessions
-    // queued behind them receive a synthetic release notice through the
-    // session-addressable inject channel — the same primitive background task
-    // completion uses. A session that was busy when its blocker released is
-    // drained on its own idle transition; a busy wake target consumes the
-    // notice in its running loop's next iteration. Session removal releases
-    // inside Session.remove and broadcasts EditIntentClaims.Released; this
-    // watcher injects for those targets too. Cross-process wakes ride a light
-    // poll fiber (below): waiter rows are host-stamped, so a release in
-    // another process leaves foreign-hosted rows waiting for their own
-    // process's poll to take them and inject locally.
+    // (its work batch completed and no background/subagent job its session
+    // family still owns is running — see the idle-release gate below), its
+    // advisory claims release and the sessions queued behind them receive a
+    // synthetic release notice through the session-addressable inject
+    // channel — the same primitive background task completion uses. A
+    // session that was busy when its blocker released is drained on its own
+    // idle transition; a busy wake target consumes the notice in its running
+    // loop's next iteration. Session removal releases inside Session.remove,
+    // a chimera_audit_recent closeout releases explicitly through
+    // EditIntentClaims.releaseExplicitly, and both broadcast
+    // EditIntentClaims.Released; this watcher injects for those targets too.
+    // Cross-process wakes ride a light poll fiber (below): waiter rows are
+    // host-stamped, so a release in another process leaves foreign-hosted
+    // rows waiting for their own process's poll to take them and inject
+    // locally.
     //
     // Bus is instance-scoped, so the subscriptions live in per-instance state
     // (fibers forked in the instance scope, torn down on dispose); prompt()
@@ -3038,12 +3042,83 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
       const drained = yield* EditIntentClaims.drainForSession({ projectRoot: root, sessionID })
       yield* wakeEditIntentTargets([...released, ...drained])
     })
+
+    // Idle-release gate: SessionStatus.Event.Idle only means this session's
+    // own prompt turn ended. A background dispatch this session owns
+    // (task background=true) — or one owned by any DESCENDANT session
+    // (nested dispatches; chimera_swarm workers register as foreground
+    // jobs and count too: the gate keys ownership, not the background flag)
+    // — can still be doing real work on the claimed files while the session
+    // sits idle, so releasing then would let another session claim files the
+    // running family is about to touch. Skip the release (and the drain/
+    // wake) while any running job owned by the session family exists;
+    // background-job has no terminal bus event, so a skipped release forks a
+    // scoped re-check that waits on the blocking jobs' settle and releases
+    // once they clear while the session is still idle (if it went busy
+    // again, its next Idle event re-runs this gate). Ownership rides the
+    // typed ownerSessionId; the registry is per-process in-memory state, so
+    // cross-process or crashed jobs stay invisible here and the claim TTL
+    // remains the crash fallback.
+    const sessionFamilyIDs = Effect.fnUntraced(function* (sessionID: SessionID) {
+      const family = new Set<string>()
+      const pending: string[] = [sessionID]
+      // Subagent nesting is shallow (≤3); the size cap bounds pathological
+      // fan-out and the visited set breaks cycles.
+      while (pending.length > 0 && family.size < 256) {
+        const current = pending.shift()!
+        if (family.has(current)) continue
+        family.add(current)
+        const children = yield* sessions
+          .children(SessionID.make(current))
+          .pipe(Effect.catchCause(() => Effect.succeed([] as Session.Info[])))
+        for (const child of children) pending.push(child.id)
+      }
+      return family
+    })
+
+    const ownedRunningJobs = Effect.fnUntraced(function* (sessionID: SessionID) {
+      const jobs = Option.getOrUndefined(background)
+      if (!jobs) return [] as BackgroundJob.Info[]
+      const running = (yield* jobs.list()).filter(
+        (job) => job.status === "running" && typeof job.ownerSessionId === "string",
+      )
+      if (running.length === 0) return []
+      const family = yield* sessionFamilyIDs(sessionID)
+      return running.filter((job) => family.has(job.ownerSessionId!))
+    })
+
+    const recheckEditIntentRelease = Effect.fnUntraced(function* (root: string, sessionID: SessionID) {
+      const jobs = Option.getOrUndefined(background)
+      if (!jobs) return
+      // Every iteration advances on a real job settle; the cap only bounds a
+      // session whose family keeps dispatching forever (its claims fall back
+      // to the TTL).
+      for (let attempt = 0; attempt < 64; attempt++) {
+        const blockers = yield* ownedRunningJobs(sessionID)
+        if (blockers.length === 0) {
+          const current = yield* status.get(sessionID)
+          if (current.type === "idle") yield* releaseEditIntentClaims(root, sessionID)
+          return
+        }
+        yield* Effect.raceAll(blockers.map((job) => jobs.wait({ id: job.id }).pipe(Effect.asVoid)))
+      }
+    })
     const editIntentWatch = yield* InstanceState.make(
       Effect.fn("SessionPrompt.editIntentWatch")(function* (ctx) {
+        const scope = yield* Scope.Scope
         const root = ctx.worktree === "/" ? ctx.directory : ctx.worktree
         yield* bus.subscribe(SessionStatus.Event.Idle).pipe(
           Stream.runForEach((event) =>
-            releaseEditIntentClaims(root, event.properties.sessionID).pipe(
+            Effect.gen(function* () {
+              if ((yield* ownedRunningJobs(event.properties.sessionID)).length > 0) {
+                yield* recheckEditIntentRelease(root, event.properties.sessionID).pipe(
+                  Effect.forkIn(scope, { startImmediately: true }),
+                  Effect.asVoid,
+                )
+                return
+              }
+              yield* releaseEditIntentClaims(root, event.properties.sessionID)
+            }).pipe(
               Effect.catchCause((cause) => Effect.sync(() => log.error("edit-intent idle release failed", { cause }))),
             ),
           ),

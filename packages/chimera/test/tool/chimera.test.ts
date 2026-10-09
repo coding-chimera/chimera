@@ -6,7 +6,7 @@ import { Bus } from "@/bus"
 import { Chimera } from "@/chimera"
 import { ChimeraPromptContext } from "@/chimera/prompt-context"
 import type { ProjectGraphState } from "@/chimera"
-import { readActiveEditIntentClaims, readAuditRuns, readEditIntentWaiters, readPredesignRuns } from "@/chimera/store"
+import { readActiveEditIntentClaims, readAuditRuns, readEditIntentWaiters, readPredesignRuns, registerEditIntentClaims, registerEditIntentWaiter } from "@/chimera/store"
 import { SessionToolMetadata } from "@/chimera/session-tool-metadata"
 import { DatabaseConnection, getDatabasePath } from "@/graph"
 import type { Node as CodeGraphNode } from "@/graph"
@@ -2045,6 +2045,70 @@ describe("search/file_symbols output enrichment", () => {
       expect(none.lines.some((line) => line.startsWith("  Refs("))).toBe(false)
       expect(none.lines).not.toContain("  return 'glyph'")
       expect(none.lines).not.toContain("  Tests:")
+    }),
+  )
+})
+
+describe("tool.chimera audit_recent explicit edit-intent unlock", () => {
+  it.instance("chimera_audit_recent releases the session's edit-intent claims and reports the unlock", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const target = path.join(test.directory, "unlock.ts")
+      yield* trackWrite({
+        filePath: target,
+        content: "export const unlock = 1\n",
+        patch: `--- unlock.ts
++++ unlock.ts
+@@ -0,0 +1 @@
++export const unlock = 1
+`,
+        callID: "call_chimera_audit_explicit_unlock",
+      })
+      yield* Effect.promise(() =>
+        registerEditIntentClaims(test.directory, {
+          id: "predesign_unlock",
+          sessionID: ctx.sessionID,
+          agent: "build",
+          files: ["unlock.ts"],
+          intent: "unlock test",
+        }),
+      )
+      yield* Effect.promise(() =>
+        registerEditIntentWaiter(test.directory, {
+          sessionID: "ses_unlock_waiter",
+          filePath: "unlock.ts",
+          blockerSessionID: ctx.sessionID,
+          reason: "mutation_gate:edit",
+        }),
+      )
+
+      const result = yield* runAuditRecent({ refresh: false })
+      expect(result.output).toContain("Released 1 edit-intent claim(s): unlock.ts; woke 1 queued session(s).")
+      const active = yield* Effect.promise(() => readActiveEditIntentClaims(test.directory, { sessionID: ctx.sessionID }))
+      expect(active).toHaveLength(0)
+      const woken = yield* Effect.promise(() =>
+        readEditIntentWaiters(test.directory, { sessionID: "ses_unlock_waiter", status: "woken" }),
+      )
+      expect(woken).toHaveLength(1)
+    }),
+  )
+
+  it.instance("chimera_audit_recent stays silent about edit-intent claims when the session holds none", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const target = path.join(test.directory, "quiet.ts")
+      yield* trackWrite({
+        filePath: target,
+        content: "export const quiet = 1\n",
+        patch: `--- quiet.ts
++++ quiet.ts
+@@ -0,0 +1 @@
++export const quiet = 1
+`,
+        callID: "call_chimera_audit_explicit_quiet",
+      })
+      const result = yield* runAuditRecent({ refresh: false })
+      expect(result.output).not.toContain("edit-intent claim")
     }),
   )
 })

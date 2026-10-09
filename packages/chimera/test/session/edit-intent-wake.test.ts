@@ -1,5 +1,7 @@
 import { afterEach, describe, expect } from "bun:test"
-import { Effect } from "effect"
+import { Deferred, Effect } from "effect"
+import { BackgroundJob } from "@/agent/background-job"
+import { Bus } from "@/bus"
 import { Chimera } from "@/chimera"
 import { EditIntentClaims } from "@/chimera/edit-intent"
 import { readActiveEditIntentClaims, readEditIntentWaiters, registerEditIntentWaiter, releaseEditIntentClaims } from "@/chimera/store"
@@ -11,7 +13,7 @@ import { MessageID, SessionID } from "../../src/session/schema"
 import { ModelID, ProviderID } from "../../src/provider/schema"
 import { InstanceState } from "@/effect/instance-state"
 import { makePromptHarness, testProviderConfig } from "../fixture/prompt-harness"
-import { disposeAllInstances, provideTmpdirServer } from "../fixture/fixture"
+import { disposeAllInstances, provideTmpdirInstance, provideTmpdirServer } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
 const it = testEffect(makePromptHarness())
@@ -304,6 +306,243 @@ describe("edit-intent claims L2 wake (release → inject)", () => {
         // own process's poll.
         const foreign = yield* Effect.promise(() => readEditIntentWaiters(root, { sessionID: "ses_foreign_parked", status: "waiting" }))
         expect(foreign).toHaveLength(1)
+      }),
+      { git: true, config: (url) => testProviderConfig(url) },
+    ),
+  )
+})
+
+describe("edit-intent claims: session-family exemption (parent claims never gate subagents)", () => {
+  it.live("a claim never blocks the holder's own subagent family, but still blocks foreign sessions", () =>
+    provideTmpdirInstance(
+      Effect.fnUntraced(function* (dir) {
+        yield* initGraph()
+        const root = yield* projectRoot()
+        const sessions = yield* Session.Service
+        const parent = yield* sessions.create({ title: "Parent" })
+        const child = yield* sessions.create({ title: "Child", parentID: parent.id })
+        const grandchild = yield* sessions.create({ title: "Grandchild", parentID: child.id })
+        const stranger = yield* sessions.create({ title: "Stranger" })
+        yield* EditIntentClaims.registerFromPredesign({
+          projectRoot: root,
+          sessionID: parent.id,
+          agent: "build",
+          predesignID: "predesign_family_parent",
+          intent: "parent refactor",
+          files: ["shared.ts"],
+        })
+
+        const childCheck = yield* EditIntentClaims.checkMutation({
+          projectRoot: root,
+          sessionID: child.id,
+          toolID: "edit",
+          files: [{ absolutePath: `${dir}/shared.ts`, graphPath: "shared.ts" }],
+        })
+        expect(childCheck).toHaveLength(0)
+        const grandchildCheck = yield* EditIntentClaims.checkMutation({
+          projectRoot: root,
+          sessionID: grandchild.id,
+          toolID: "edit",
+          files: [{ absolutePath: `${dir}/shared.ts`, graphPath: "shared.ts" }],
+        })
+        expect(grandchildCheck).toHaveLength(0)
+
+        // Predesign side: a child declaring the same file reports no conflict
+        // and registers its claim freely.
+        const childPredesign = yield* EditIntentClaims.registerFromPredesign({
+          projectRoot: root,
+          sessionID: child.id,
+          agent: "build",
+          predesignID: "predesign_family_child",
+          intent: "child work",
+          files: ["shared.ts"],
+        })
+        expect(childPredesign.conflicts).toHaveLength(0)
+        expect(childPredesign.registered.map((claim) => claim.filePath)).toEqual(["shared.ts"])
+
+        // Foreign sessions keep blocking, oldest holder first.
+        const strangerCheck = yield* EditIntentClaims.checkMutation({
+          projectRoot: root,
+          sessionID: stranger.id,
+          toolID: "edit",
+          files: [{ absolutePath: `${dir}/shared.ts`, graphPath: "shared.ts" }],
+        })
+        expect(strangerCheck).toHaveLength(1)
+        expect(strangerCheck[0]!.holder.sessionID).toBe(parent.id)
+
+        // Conservative fallback: a holder whose session row cannot be
+        // resolved (deleted or synthetic id) stays foreign even against a
+        // resolvable checker inside another family.
+        yield* EditIntentClaims.registerFromPredesign({
+          projectRoot: root,
+          sessionID: "ses_family_ghost",
+          agent: "build",
+          predesignID: "predesign_family_ghost",
+          intent: "ghost claim",
+          files: ["ghost.ts"],
+        })
+        const ghostCheck = yield* EditIntentClaims.checkMutation({
+          projectRoot: root,
+          sessionID: child.id,
+          toolID: "edit",
+          files: [{ absolutePath: `${dir}/ghost.ts`, graphPath: "ghost.ts" }],
+        })
+        expect(ghostCheck).toHaveLength(1)
+
+        // The child's own claim does not gate the parent in return.
+        const parentCheck = yield* EditIntentClaims.checkMutation({
+          projectRoot: root,
+          sessionID: parent.id,
+          toolID: "edit",
+          files: [{ absolutePath: `${dir}/shared.ts`, graphPath: "shared.ts" }],
+        })
+        expect(parentCheck).toHaveLength(0)
+      }),
+      { git: true },
+    ),
+  )
+})
+
+describe("edit-intent claims: idle-release gate and explicit closeout release", () => {
+  it.live(
+    "idle with a running job owned by the session keeps claims; the job's terminal transition releases them and wakes the waiter",
+    () =>
+      provideTmpdirServer(
+        Effect.fnUntraced(function* ({ dir, llm }) {
+          void dir
+          yield* initGraph()
+          const root = yield* projectRoot()
+          const sessions = yield* Session.Service
+          const status = yield* SessionStatus.Service
+          const background = yield* BackgroundJob.Service
+
+          const holder = yield* sessions.create({ title: "Holder" })
+          const waiter = yield* seedWaiter(sessions, "Waiter", "settled-echo", llm)
+          yield* EditIntentClaims.registerFromPredesign({
+            projectRoot: root,
+            sessionID: holder.id,
+            agent: "build",
+            predesignID: "predesign_bg_holder",
+            intent: "holder refactor",
+            files: ["shared.ts"],
+          })
+          yield* EditIntentClaims.registerFromPredesign({
+            projectRoot: root,
+            sessionID: waiter.id,
+            agent: "build",
+            predesignID: "predesign_bg_waiter",
+            intent: "waiter refactor",
+            files: ["shared.ts"],
+          })
+
+          // A background dispatch is still running when the holder turns idle.
+          const gate = yield* Deferred.make<string>()
+          yield* background.start({ id: "job_bg_gate_owner", ownerSessionId: holder.id, run: Deferred.await(gate) })
+          yield* status.set(holder.id, { type: "idle" })
+          yield* Effect.sleep("300 millis")
+
+          // The gate holds: claims stay active and the waiter is not woken.
+          const heldActive = yield* Effect.promise(() => readActiveEditIntentClaims(root, { sessionID: holder.id }))
+          expect(heldActive).toHaveLength(1)
+          const stillWaiting = yield* Effect.promise(() => readEditIntentWaiters(root, { sessionID: waiter.id, status: "waiting" }))
+          expect(stillWaiting).toHaveLength(1)
+
+          // The job settles: the re-check fiber releases and wakes through the
+          // normal idle-reason chain.
+          yield* Deferred.succeed(gate, "child done")
+          const { wake } = yield* pollWake(sessions, waiter.id, "settled-echo")
+          expect(wake).toContain("the holder's run completed")
+          const released = yield* Effect.promise(() => readActiveEditIntentClaims(root, { sessionID: holder.id }))
+          expect(released).toHaveLength(0)
+        }),
+        { git: true, config: (url) => testProviderConfig(url) },
+      ),
+  )
+
+  it.live("idle with a running job owned by a descendant session also keeps the claims until it settles", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ dir, llm }) {
+        void dir
+        yield* initGraph()
+        const root = yield* projectRoot()
+        const sessions = yield* Session.Service
+        const status = yield* SessionStatus.Service
+        const background = yield* BackgroundJob.Service
+
+        const parent = yield* sessions.create({ title: "Parent" })
+        const child = yield* sessions.create({ title: "Child", parentID: parent.id })
+        const waiter = yield* seedWaiter(sessions, "Waiter", "nested-echo", llm)
+        yield* EditIntentClaims.registerFromPredesign({
+          projectRoot: root,
+          sessionID: parent.id,
+          agent: "build",
+          predesignID: "predesign_nested_holder",
+          intent: "parent refactor",
+          files: ["shared.ts"],
+        })
+        yield* EditIntentClaims.registerFromPredesign({
+          projectRoot: root,
+          sessionID: waiter.id,
+          agent: "build",
+          predesignID: "predesign_nested_waiter",
+          intent: "waiter refactor",
+          files: ["shared.ts"],
+        })
+
+        // The nested dispatch is owned by the CHILD session; the parent's
+        // idle transition must still hold its claims.
+        const gate = yield* Deferred.make<string>()
+        yield* background.start({ id: "job_bg_gate_descendant", ownerSessionId: child.id, run: Deferred.await(gate) })
+        yield* status.set(parent.id, { type: "idle" })
+        yield* Effect.sleep("300 millis")
+        const heldActive = yield* Effect.promise(() => readActiveEditIntentClaims(root, { sessionID: parent.id }))
+        expect(heldActive).toHaveLength(1)
+
+        yield* Deferred.succeed(gate, "nested done")
+        const { wake } = yield* pollWake(sessions, waiter.id, "nested-echo")
+        expect(wake).toContain("the holder's run completed")
+      }),
+      { git: true, config: (url) => testProviderConfig(url) },
+    ),
+  )
+
+  it.live("an explicit closeout release wakes the queued session without waiting for idle", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ dir, llm }) {
+        void dir
+        yield* initGraph()
+        const root = yield* projectRoot()
+        const sessions = yield* Session.Service
+        const bus = yield* Bus.Service
+        const holder = yield* sessions.create({ title: "Holder" })
+        const waiter = yield* seedWaiter(sessions, "Waiter", "explicit-echo", llm)
+        yield* EditIntentClaims.registerFromPredesign({
+          projectRoot: root,
+          sessionID: holder.id,
+          agent: "build",
+          predesignID: "predesign_explicit_holder",
+          intent: "holder refactor",
+          files: ["shared.ts"],
+        })
+        const queued = yield* EditIntentClaims.registerFromPredesign({
+          projectRoot: root,
+          sessionID: waiter.id,
+          agent: "build",
+          predesignID: "predesign_explicit_waiter",
+          intent: "waiter refactor",
+          files: ["shared.ts"],
+        })
+        expect(queued.conflicts).toHaveLength(1)
+
+        const outcome = yield* EditIntentClaims.releaseExplicitly({ bus, projectRoot: root, sessionID: holder.id })
+        expect(outcome.released.map((claim) => claim.filePath)).toEqual(["shared.ts"])
+        expect(outcome.targets.map((target) => target.sessionID)).toEqual([waiter.id])
+
+        // The holder never goes idle: the Released bus event drives the wake.
+        const { wake } = yield* pollWake(sessions, waiter.id, "explicit-echo")
+        expect(wake).toContain("the holder released it explicitly")
+        const holderActive = yield* Effect.promise(() => readActiveEditIntentClaims(root, { sessionID: holder.id }))
+        expect(holderActive).toHaveLength(0)
       }),
       { git: true, config: (url) => testProviderConfig(url) },
     ),

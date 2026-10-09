@@ -2,6 +2,7 @@ import path from "path"
 import { createHash } from "crypto"
 import { Cause, Effect, Exit, Schema } from "effect"
 import * as Log from "@opencode-ai/core/util/log"
+import { Bus } from "@/bus"
 import { InstanceState } from "@/effect/instance-state"
 import {
   Chimera,
@@ -3162,7 +3163,7 @@ export const ChimeraPredesignTool = Tool.define<typeof PredesignParameters, Pred
                     "",
                     "Edit-intent claims:",
                     ...(claims.registered.length > 0
-                      ? [`- Registered on ${claims.registered.length} declared file(s): other sessions' mutations of them are blocked until this session's run completes (advisory coordination; the TTL is only a crash fallback).`]
+                      ? [`- Registered on ${claims.registered.length} declared file(s): other session families' mutations of them are blocked until this batch releases (explicit chimera_audit_recent closeout, or run completion with no family-owned running jobs; sessions in your own subagent family are never blocked; the TTL is only a crash fallback).`]
                       : []),
                     ...claims.conflicts.slice(0, 3).map(
                       (conflict) =>
@@ -3390,26 +3391,52 @@ export const ChimeraAuditTool = Tool.define<typeof AuditParameters, AuditMetadat
   }),
 )
 
-export const ChimeraAuditRecentTool = Tool.define<typeof RecentAuditParameters, AuditMetadata, never>(
+export const ChimeraAuditRecentTool = Tool.define<typeof RecentAuditParameters, AuditMetadata, Bus.Service>(
   "chimera_audit_recent",
-  Effect.succeed({
-    description: AUDIT_RECENT_DESCRIPTION,
-    parameters: RecentAuditParameters,
-    execute: (params: Schema.Schema.Type<typeof RecentAuditParameters>, ctx: Tool.Context<AuditMetadata>) =>
-      Effect.gen(function* () {
-        yield* permission(ctx, "chimera_audit_recent", {
-          refresh: params.refresh !== false,
-        })
-        const audit = yield* buildAudit(params, { ctx: ctx as Tool.Context })
-        const auditRunID = yield* persistAuditRun(audit)
-        const recorded = { ...audit, auditRunID, ref: chimeraRef("audit", auditRunID) }
+  Effect.gen(function* () {
+    // Bus is needed for the explicit closeout unlock wake broadcast below;
+    // the registry layer provides it like every other change tool.
+    const bus = yield* Bus.Service
+    return {
+      description: AUDIT_RECENT_DESCRIPTION,
+      parameters: RecentAuditParameters,
+      execute: (params: Schema.Schema.Type<typeof RecentAuditParameters>, ctx: Tool.Context<AuditMetadata>) =>
+        Effect.gen(function* () {
+          yield* permission(ctx, "chimera_audit_recent", {
+            refresh: params.refresh !== false,
+          })
+          const audit = yield* buildAudit(params, { ctx: ctx as Tool.Context })
+          const auditRunID = yield* persistAuditRun(audit)
+          const recorded = { ...audit, auditRunID, ref: chimeraRef("audit", auditRunID) }
 
-        return {
-          title: "Chimera audit",
-          output: formatAuditOutput(recorded),
-          metadata: recorded,
-        }
-      }).pipe(Effect.orDie),
+          // Explicit closeout unlock: completing this audit means the
+          // session's current work batch is wrapped up, so its edit-intent
+          // claims release now (queued sessions wake through the same
+          // Released bus channel as session removal) instead of waiting for
+          // the idle transition. Isolated: unlock trouble must never fail or
+          // distort the audit itself.
+          const unlock = yield* EditIntentClaims.releaseExplicitly({
+            bus,
+            projectRoot: recorded.projectRoot,
+            sessionID: ctx.sessionID,
+          }).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
+
+          return {
+            title: "Chimera audit",
+            output: [
+              formatAuditOutput(recorded),
+              ...(unlock && unlock.released.length > 0
+                ? [
+                    `Released ${unlock.released.length} edit-intent claim(s): ${unlock.released
+                      .map((claim) => claim.filePath)
+                      .join(", ")}; woke ${unlock.targets.length} queued session(s).`,
+                  ]
+                : []),
+            ].join("\n"),
+            metadata: recorded,
+          }
+        }).pipe(Effect.orDie),
+    }
   }),
 )
 
