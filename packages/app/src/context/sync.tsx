@@ -304,6 +304,9 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       const items = (messages.data ?? []).filter((x) => !!x?.info?.id)
       const session = items.map((x) => clean(x.info)).sort((a, b) => cmp(a.id, b.id))
       const part = items.map((message) => ({ id: message.info.id, part: sortParts(message.parts) }))
+      // No response = the request never got an HTTP reply (network error); fail loudly
+      // instead of reporting an empty page as complete, as the old TypeError did.
+      if (!messages.response) throw new Error("Session messages request failed: no response from server")
       const cursor = messages.response.headers.get("x-next-cursor") ?? undefined
       return {
         session,

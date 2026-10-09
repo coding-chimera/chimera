@@ -473,7 +473,9 @@ export const Terminal = (props: TerminalProps) => {
       const gone = () =>
         client.pty
           .get({ ptyID: id }, { throwOnError: false })
-          .then((result) => result.response.status === 404)
+          // No response = the probe never got an HTTP reply (network error), so a 404
+          // cannot be confirmed; fall back to "not gone" like the catch branch below.
+          .then((result) => result.response?.status === 404)
           .catch((err) => {
             debugTerminal("failed to inspect terminal session", err)
             return false
@@ -493,6 +495,9 @@ export const Terminal = (props: TerminalProps) => {
             throw err
           })
         if (!result) return
+        // No response = the ticket request never got an HTTP reply (network error);
+        // throw so open()'s catch reports it via fail(), matching the prior path.
+        if (!result.response) throw new Error("PTY connect ticket failed: no response from server")
         if (result.response.status === 200 && result.data?.ticket) return result.data.ticket
         if (result.response.status === 404 || result.response.status === 405) return
         if (result.response.status === 403)

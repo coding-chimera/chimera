@@ -479,6 +479,9 @@ export function DialogConnectProvider(props: { provider: string }) {
         return
       }
 
+      // This view only renders while method() is set, which requires methodIndex;
+      // the guard only narrows the type for the required callback `method` param.
+      if (store.methodIndex === undefined) return
       setFormStore("error", undefined)
       const result = await globalSDK.client.provider.oauth
         .callback({
@@ -533,6 +536,8 @@ export function DialogConnectProvider(props: { provider: string }) {
 
     onMount(() => {
       void (async () => {
+        // Same as OAuthCodeView: rendering is gated on method(), so methodIndex is set.
+        if (store.methodIndex === undefined) return
         const result = await globalSDK.client.provider.oauth
           .callback({
             providerID: props.provider,
