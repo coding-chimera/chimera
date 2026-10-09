@@ -1,6 +1,6 @@
 Perform structural file edits by CodeGraph node refs (`edits`) or by ast-grep style pattern matching (`rewrites`). A call is EXACTLY one mode: pass `edits` or `rewrites`, never both.
 
-# Ref mode: `edits` (graph-anchored)
+# Ref mode: `edits` (graph-anchored, single file)
 
 Each edit names one indexed syntax node via its typed graph ref (`node:<id>`, exactly the `Ref:` line emitted by `chimera_search`, `chimera_file_symbols`, or `chimera_impact`) and applies one structural operation to that node's source range:
 
@@ -8,38 +8,53 @@ Each edit names one indexed syntax node via its typed graph ref (`node:<id>`, ex
 - `delete` — remove the node; do not pass `content`.
 - `insert_before` / `insert_after` — add sibling content around the node's line block.
 
+Ref mode edits ONE file per call (`file`); every ref must resolve inside it. `paths` is pattern-mode only.
+
 # Pattern mode: `rewrites` (structural codemod)
 
-Each rewrite is `{ pattern, replacement }` and rewrites EVERY structural match of that pattern in the file, in one pass. It needs NO graph: it runs in projects that never ran `chimera graph init`.
+Each rewrite is `{ pattern, replacement }` and rewrites EVERY structural match of that pattern in one pass. It needs NO graph: it runs in projects that never ran `chimera graph init`. Address the files with exactly one of:
+
+- `file` — one existing file (single-file, strict semantics below).
+- `paths` — multi-file codemod: entries are files, directories, or globs, expanded by the repo's gitignore-aware file walk. Max 100 files per call — beyond the cap the call fails outright (no silent truncation). Directories and globs prune `node_modules` unless an entry names it; blank entries, globs addressing files outside the project, and missing plain entries are errors, and a call whose paths match no files at all fails.
+
+Shared rules:
 
 - Metavariables: `$NAME` matches exactly one node, `$_` matches any node without capturing it, `$$$NAME` matches zero or more sibling nodes. Names are UPPERCASE and stand for whole nodes; a name used twice must match identical code (`$A == $A` matches `x == x`, never `x == y`).
-- `pattern` must parse as ONE ast node of the file's language (taken from the extension). Verified languages: typescript, tsx, javascript, python; other languages the graph carries a grammar for are attempted as-is; a file whose language has no grammar is refused.
+- `pattern` must parse as ONE ast node of the FILE's language (taken from the extension). Verified languages: typescript, tsx, javascript, python; other languages the graph carries a grammar for are attempted as-is.
 - `replacement` is the text written in place of every match, with the pattern's metavariables spliced back in. Multi-line captures keep their relative layout and are re-indented to the match. A `$NAME` the pattern never captures renders as NOTHING — a typo silently drops that code, so keep the names aligned.
 - An EMPTY `replacement` deletes every match: `{ pattern: "debugger", replacement: "" }`.
-- A rewrite that matches nothing is NOT an error — it reports `0 replacements` (codemod semantics). Only a call where every rewrite matches nothing throws the no-op error.
-- Nested or conflicting matches are rejected in one call (one pattern matching a node inside another's match, or the same span with different text): narrow the patterns or split calls. Byte-identical duplicate matches collapse into one write.
-- A file with SYNTAX ERRORS is refused — pattern rewriting there is unsafe; fix the file first or use edit.
+- A rewrite that matches nothing is NOT an error — it reports `0 replacements` (codemod semantics). Only a call that changes no byte anywhere throws the no-op error.
+- Nested or conflicting matches within one file are rejected: one pattern matching a node inside another's match, or the same span with different text. Byte-identical duplicate matches collapse into one write.
 
-Both modes edit an EXISTING file (use the write tool to create a new one).
+Single-file semantics: a file whose language has no grammar is refused; a file with SYNTAX ERRORS is refused — pattern rewriting there is unsafe, fix the file first or use edit.
 
-Pattern example: `file: "src/session/prompt.ts"` with `rewrites: [{ pattern: "console.log($$$ARGS)", replacement: "logger.debug($$$ARGS)" }, { pattern: "debugger", replacement: "" }]` rewrites every `console.log(...)` call and deletes every `debugger` statement in that one file.
+Multi-file (`paths`) semantics — partial coverage is normal, silent damage is not:
+
+- Each file parses in its own detected language. A file is SKIPPED and reported (the call still succeeds) when it is binary, over the graph size limit, has no grammar, has SYNTAX ERRORS, or when a rewrite does not compile in that file's language (a TS-only pattern simply skips Python files and vice versa).
+- Overlap conflicts are HARD failures computed BEFORE any write: if any addressed file has nested/conflicting matches, NOTHING is written and the error names the file(s). Fix the patterns or split calls and rerun.
+- On success all changed files are written together through one permission ask and one mutation record; each file keeps its own BOM handling and formatter pass. The result prints per-file lines (`path: N replacement(s)` / `skipped: <reason>`) plus totals; the inline changed-block window appears only when exactly one file changed — per-file diffs stay in metadata.
+
+Both modes edit EXISTING files (use the write tool to create new ones).
+
+Single-file example: `file: "src/session/prompt.ts"` with `rewrites: [{ pattern: "console.log($$$ARGS)", replacement: "logger.debug($$$ARGS)" }, { pattern: "debugger", replacement: "" }]` rewrites every `console.log(...)` call and deletes every `debugger` statement in that one file.
+Multi-file example: `paths: ["src", "test"]` with the same rewrites sweeps both trees in one atomic call.
 
 # When to use ast_edit vs edit
 
-Pick the mode by the shape of the work, inside ONE file per call:
+Pick the mode by the shape of the work:
 
-- Pattern mode (`rewrites`): repetitive structural rewrites — rename a call shape, drop a wrapper, delete logging calls, convert `==` to `===` — wherever the same node shape occurs many times. No refs, no initialized graph needed.
+- Pattern mode (`rewrites`): repetitive structural rewrites — rename a call shape, drop a wrapper, delete logging calls, convert `==` to `===` — wherever the same node shape occurs many times, in one file or across a whole tree via `paths`. No refs, no initialized graph needed.
 - Ref mode (`edits`): one precise node you already hold as a `node:<id>` ref (whole function/method/class rewrite, member or import delete, sibling insert). It self-heals stale refs and hands back fresh refs to chain from.
 - The edit tool: plain text changes, files whose language has no grammar, files with syntax errors, or node-granular work when the graph surface is unavailable — with an uninitialized project the graph has no nodes, refs cannot resolve, and ref mode fails; run `chimera graph init` + `chimera graph index` (or the chimera_init_graph tool) first, use pattern mode, or just use edit.
 
 # Rules
 
-- ONE file per call: `file` is absolute or project-relative. In ref mode every ref must resolve to a node in that file; in pattern mode every rewrite applies to that file. Split multi-file work into separate calls.
+- Ref mode: one file per call (`file`). Pattern mode: exactly one of `file` / `paths`; `paths` addresses up to 100 files in one call. Split ref-mode work into one call per file.
 - `content` is used VERBATIM — supply correctly-indented text with NO trailing newline. Multi-line nodes snap to whole source lines (leading indentation is replaced by your content's own indentation); single-line nodes (imports, one-line members) keep exact column boundaries. Insert content always lands as its own line(s) adjacent to the node.
-- Overlapping operations are rejected in one call (a ref-mode edit replacing a method and another deleting a statement inside it; two pattern rewrites whose matches nest or disagree). Use separate calls, highest-offset-first is fine because ids may shift between them.
+- Overlapping operations are rejected in one call (a ref-mode edit replacing a method and another deleting a statement inside it; two pattern rewrites whose matches nest or disagree). With `paths`, a conflict in ANY addressed file writes NOTHING. Use separate calls for sequential work, highest-offset-first is fine because ids may shift between them.
 - Refs may be stale (an earlier edit shifted lines, an external change moved the symbol). ast_edit filesystem-syncs the file first and SELF-HEALS: a stale ref is re-anchored to the live node by identity (kind + name, parent chain when ambiguous) and the relocation is reported — do not re-search first. A hard failure only happens when the node genuinely no longer exists or the match is ambiguous; the error then carries the current candidate refs for this file — pick one and retry directly.
 - After a successful call the result lists fresh `node:<id>` refs for the edited symbols; chain follow-up edits from those refs.
-- Both modes apply byte-range splices in reverse document order and ride the same audit pipeline as edit (permission "edit" applies; predesign gate, provenance record, formatter, LSP oracle and propagation check included).
+- Both modes apply byte-range splices in reverse document order and ride the same audit pipeline as edit (permission "edit" applies — one ask covering all `paths` files; predesign gate, provenance record, formatter, LSP oracle and propagation check included).
 
 # Ref-mode example
 

@@ -9,6 +9,7 @@ import { LSP } from "@/lsp/lsp"
 import { Format } from "@/format"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { AstEditTool } from "@/tool/ast_edit"
+import { Ripgrep } from "@/file/ripgrep"
 import { Tool } from "@/tool/tool"
 import { isInitialized, type Node as CodeGraphNode } from "@/graph"
 import { Truncate } from "@/tool/truncate"
@@ -38,6 +39,7 @@ const it = testEffect(
     LSP.defaultLayer,
     AppFileSystem.defaultLayer,
     Format.defaultLayer,
+    Ripgrep.defaultLayer,
   ),
 )
 
@@ -592,6 +594,191 @@ describe("tool.ast_edit pattern mode", () => {
       expect(message).toContain("no tree-sitter grammar")
       expect(message).toContain("typescript, tsx, javascript, python")
       expect(message).toContain("edit tool")
+    }),
+  )
+
+  // --- multi-file pattern mode (`paths`) ---
+
+  const CODEMOD2 = `export function other(value: number) {\n  console.log(value)\n}\n`
+
+  const setupPatternFiles = Effect.fn("AstEditTest.setupPatternFiles")(function* (files: Record<string, string>) {
+    const test = yield* TestInstance
+    yield* Effect.promise(async () => {
+      for (const [name, content] of Object.entries(files)) {
+        const file = path.join(test.directory, name)
+        await fs.mkdir(path.dirname(file), { recursive: true })
+        await fs.writeFile(file, content)
+      }
+    })
+    return test.directory
+  })
+
+  const readAt = (directory: string, name: string) =>
+    Effect.promise(() => fs.readFile(path.join(directory, name), "utf-8"))
+
+  it.instance("rewrites several files addressed through one glob", () =>
+    Effect.gen(function* () {
+      const directory = yield* setupPatternFiles({ "cm-one.ts": CODEMOD, "cm-two.ts": CODEMOD2 })
+      const result = yield* runAstEdit({
+        paths: ["cm-*.ts"],
+        rewrites: [{ pattern: "console.log($$$ARGS)", replacement: "logger.info($$$ARGS)" }],
+      })
+
+      expect(result.output).toContain("- cm-one.ts: 2 replacement(s)")
+      expect(result.output).toContain("- cm-two.ts: 1 replacement(s)")
+      expect(result.output).toContain("Totals: 2 file(s) changed with 3 replacement(s)")
+      expect(result.title).toContain("AST edit applied to 2 files:")
+      expect(yield* readAt(directory, "cm-one.ts")).toBe(RECORDED)
+      expect(yield* readAt(directory, "cm-two.ts")).toContain("logger.info(value)")
+      const multi = (
+        result.metadata.astEdit as {
+          pattern: {
+            addressing: string
+            totals: { addressed: number; changed: number; replacements: number; skipped: number }
+            files: Array<{ file: string; status: string }>
+          }
+        }
+      ).pattern
+      expect(multi.addressing).toBe("paths")
+      expect(multi.totals.changed).toBe(2)
+      expect(multi.totals.replacements).toBe(3)
+      expect(multi.files.map((entry) => [entry.file, entry.status])).toEqual([
+        ["cm-one.ts", "changed"],
+        ["cm-two.ts", "changed"],
+      ])
+    }),
+  )
+
+  it.instance("skips a file whose language cannot compile the pattern instead of failing the call", () =>
+    Effect.gen(function* () {
+      const directory = yield* setupPatternFiles({
+        "lm-a.ts": CODEMOD,
+        "lm-b.py": "def alpha(): return 42\n",
+      })
+      const result = yield* runAstEdit({
+        paths: ["lm-a.ts", "lm-b.py"],
+        rewrites: [{ pattern: "def $NAME(): return $VALUE", replacement: "def $NAME(): return 0" }],
+      })
+
+      expect(result.output).toContain("- lm-a.ts: skipped: rewrite 1 does not compile in typescript")
+      expect(result.output).toContain("- lm-b.py: 1 replacement(s)")
+      expect(yield* readAt(directory, "lm-b.py")).toBe("def alpha(): return 0\n")
+      expect(yield* readAt(directory, "lm-a.ts")).toBe(CODEMOD)
+    }),
+  )
+
+  it.instance("skips a file with syntax errors and still applies the others", () =>
+    Effect.gen(function* () {
+      const directory = yield* setupPatternFiles({ "se-ok.ts": CODEMOD, "se-broken.ts": BROKEN })
+      const result = yield* runAstEdit({
+        paths: ["se-*.ts"],
+        rewrites: [{ pattern: "console.log($$$ARGS)", replacement: "logger.info($$$ARGS)" }],
+      })
+
+      expect(result.output).toContain("- se-broken.ts: skipped: syntax errors")
+      expect(result.output).toContain("- se-ok.ts: 2 replacement(s)")
+      expect(yield* readAt(directory, "se-ok.ts")).toContain("logger.info")
+      expect(yield* readAt(directory, "se-broken.ts")).toBe(BROKEN)
+    }),
+  )
+
+  it.instance("writes nothing when one addressed file has an overlap conflict", () =>
+    Effect.gen(function* () {
+      const directory = yield* setupPatternFiles({ "ov-a.ts": NESTED, "ov-b.ts": CODEMOD })
+      const exit = yield* runAstEdit({
+        paths: ["ov-*.ts"],
+        rewrites: [
+          { pattern: "outer($A)", replacement: "keep($A)" },
+          { pattern: "inner($A)", replacement: "deep($A)" },
+        ],
+      }).pipe(Effect.exit)
+
+      const message = failureMessage(exit)
+      expect(message).toContain("no files were written")
+      expect(message).toContain("ov-a.ts")
+      expect(yield* readAt(directory, "ov-a.ts")).toBe(NESTED)
+      expect(yield* readAt(directory, "ov-b.ts")).toBe(CODEMOD)
+    }),
+  )
+
+  it.instance("refuses more addressed files than the pattern-mode cap", () =>
+    Effect.gen(function* () {
+      const files: Record<string, string> = {}
+      for (let i = 0; i < 101; i++) files[`cap/cap${String(i).padStart(3, "0")}.ts`] = CODEMOD
+      yield* setupPatternFiles(files)
+      const exit = yield* runAstEdit({
+        paths: ["cap"],
+        rewrites: [{ pattern: "console.log($$$ARGS)", replacement: "logger.info($$$ARGS)" }],
+      }).pipe(Effect.exit)
+
+      expect(failureMessage(exit)).toContain("more than 100 files")
+    }),
+  )
+
+  it.instance("rejects paths with edits, doubled addressing, and unaddressed rewrites", () =>
+    Effect.gen(function* () {
+      yield* setupPatternFiles({ "val-a.ts": CODEMOD })
+
+      const refPaths = yield* runAstEdit({
+        file: "val-a.ts",
+        paths: ["val-*.ts"],
+        edits: [{ ref: "node:function:00000000000000000000000000000000", op: "delete" }],
+      }).pipe(Effect.exit)
+      expect(failureMessage(refPaths)).toContain("pattern-mode only")
+
+      const both = yield* runAstEdit({
+        file: "val-a.ts",
+        paths: ["val-*.ts"],
+        rewrites: [{ pattern: "console.log($$$ARGS)", replacement: "logger.info($$$ARGS)" }],
+      }).pipe(Effect.exit)
+      expect(failureMessage(both)).toContain("exactly one of")
+
+      const neither = yield* runAstEdit({
+        rewrites: [{ pattern: "console.log($$$ARGS)", replacement: "logger.info($$$ARGS)" }],
+      }).pipe(Effect.exit)
+      expect(failureMessage(neither)).toContain("no addressing")
+    }),
+  )
+
+  it.instance("skips binary and grammarless files found through a glob", () =>
+    Effect.gen(function* () {
+      const directory = yield* setupPatternFiles({ "bu-ok.ts": CODEMOD, "bu-note.txt": "console.log(1)\n" })
+      yield* Effect.promise(() =>
+        fs.writeFile(path.join(directory, "bu-data.bin"), Buffer.from([98, 105, 110, 0, 1, 2, 3, 0, 4, 5, 6, 0])),
+      )
+      const result = yield* runAstEdit({
+        paths: ["bu-*"],
+        rewrites: [{ pattern: "console.log($$$ARGS)", replacement: "logger.info($$$ARGS)" }],
+      })
+
+      expect(result.output).toContain("- bu-ok.ts: 2 replacement(s)")
+      expect(result.output).toContain("- bu-note.txt: skipped: no tree-sitter grammar")
+      expect(result.output).toContain("- bu-data.bin: skipped: binary content")
+      expect(yield* readAt(directory, "bu-ok.ts")).toContain("logger.info")
+    }),
+  )
+
+  it.instance("prunes node_modules from discovery unless a path names it", () =>
+    Effect.gen(function* () {
+      const directory = yield* setupPatternFiles({
+        "src/app.ts": CODEMOD,
+        "src/node_modules/dep.ts": CODEMOD,
+      })
+
+      const pruned = yield* runAstEdit({
+        paths: ["src"],
+        rewrites: [{ pattern: "console.log($$$ARGS)", replacement: "logger.info($$$ARGS)" }],
+      })
+      expect(pruned.output).toContain("- src/app.ts: 2 replacement(s)")
+      expect(pruned.output).not.toContain("dep.ts")
+      expect(yield* readAt(directory, "src/node_modules/dep.ts")).toBe(CODEMOD)
+
+      const named = yield* runAstEdit({
+        paths: ["src/node_modules"],
+        rewrites: [{ pattern: "console.log($$$ARGS)", replacement: "logger.info($$$ARGS)" }],
+      })
+      expect(named.output).toContain("- src/node_modules/dep.ts: 2 replacement(s)")
+      expect(yield* readAt(directory, "src/node_modules/dep.ts")).toContain("logger.info")
     }),
   )
 })

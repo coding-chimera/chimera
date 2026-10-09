@@ -1,5 +1,6 @@
 import * as path from "path"
 import { Effect, Schema } from "effect"
+import * as Stream from "effect/Stream"
 import * as Tool from "./tool"
 import { LSP } from "@/lsp/lsp"
 import { createTwoFilesPatch, diffLines } from "diff"
@@ -8,6 +9,7 @@ import { Bus } from "../bus"
 import { File } from "../file"
 import { FileWatcher } from "../file/watcher"
 import { Format } from "../format"
+import { Ripgrep } from "../file/ripgrep"
 import { InstanceState } from "@/effect/instance-state"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { assertExternalDirectoryEffect } from "./external-directory"
@@ -18,6 +20,7 @@ import { inlinePropagationCheck } from "@/chimera/propagation-probe"
 import { GraphSchemaMigrationRequiredError, isInitialized, type Node as CodeGraphNode } from "@/graph"
 import type { CodeGraphAdapter } from "@/chimera/codegraph-adapter"
 import { detectLanguage, hasTreeSitterGrammar } from "@/graph/extraction/grammars"
+import { MAX_SOURCE_FILE_SIZE_BYTES } from "@/graph/file-limits"
 import type { Node as SyntaxNode } from "@/graph/web-tree-sitter-types"
 import {
   applyReplacements,
@@ -26,6 +29,7 @@ import {
   findMatchesInTree,
   parseSource,
   renderTemplateReplacement,
+  type CompileResult,
 } from "@/graph/pattern"
 import { trimDiff } from "./edit"
 import { formatChangedBlock } from "./hashline"
@@ -60,14 +64,19 @@ const Rewrite = Schema.Struct({
 })
 
 export const Parameters = Schema.Struct({
-  file: Schema.String.annotate({
-    description: "Absolute or project-relative path of the target file. All edits or rewrites in one call apply to this single file.",
+  file: Schema.optional(Schema.String).annotate({
+    description:
+      "Absolute or project-relative path of the one target file. Ref mode requires it; in pattern mode it is the single-file addressing sugar.",
+  }),
+  paths: Schema.optional(Schema.Array(Schema.String)).annotate({
+    description:
+      "Pattern mode only: files, directories, or globs (each entry) addressed by one atomic multi-file codemod, max 100 files per call. Exactly one of file / paths in a pattern call; paths never mixes with edits.",
   }),
   edits: Schema.optional(Schema.Array(Operation)).annotate({
     description: "Ref mode: AST-anchored edits resolved through graph node refs. Provide edits OR rewrites, never both in one call.",
   }),
   rewrites: Schema.optional(Schema.Array(Rewrite)).annotate({
-    description: "Pattern mode: structural codemod rewrites applied to every match in the file; needs no graph. Provide rewrites OR edits, never both in one call.",
+    description: "Pattern mode: structural codemod rewrites applied to every match in the addressed file(s) (`file` or `paths`); needs no graph. Provide rewrites OR edits, never both in one call.",
   }),
 })
 
@@ -80,6 +89,16 @@ type RewriteInput = Schema.Schema.Type<typeof Rewrite>
 type Mode =
   | { kind: "refs"; edits: readonly EditInput[] }
   | { kind: "patterns"; rewrites: readonly RewriteInput[] }
+
+/**
+ * Fully resolved call: ref mode is always single-file; pattern mode takes
+ * either one explicit `file` (strict semantics) or `paths` (multi-file
+ * codemod semantics).
+ */
+type Resolved =
+  | { kind: "refs"; file: string; edits: readonly EditInput[] }
+  | { kind: "pattern-file"; file: string; rewrites: readonly RewriteInput[] }
+  | { kind: "pattern-paths"; paths: readonly string[]; rewrites: readonly RewriteInput[] }
 
 /** One {pattern, replacement} codemod rewrite and what it matched. */
 type RewritePlan = {
@@ -105,6 +124,59 @@ type FileText = {
   /** starts[i] = character offset where line i+1 begins; a trailing sentinel equals text.length */
   starts: number[]
 }
+
+/** One addressed file's before/after state, carried through the shared commit path. */
+type TouchedFile = {
+  filePath: string
+  relative: string
+  hadBom: boolean
+  contentOld: string
+  contentNew: string
+  diff: string
+  formatterTouched: boolean
+  /** pre-write line ranges the propagation probe seeds from */
+  probe: { startLine: number; endLine: number }[]
+}
+
+/** A rewrite plan annotated with how many collapsed splices the file actually applies. */
+type AppliedRewrite = RewritePlan & { applied: number }
+
+/** Per-file skip/no-match report for a multi-file pattern-mode call. */
+type FileReport = {
+  file: string
+  language: string
+  status: "skipped" | "unmatched"
+  reason: string
+  rewrites: AppliedRewrite[]
+}
+
+/**
+ * A file whose splices are fully computed for a multi-file pattern-mode call —
+ * computed before anything is written, so one file's conflict can fail the whole
+ * call atomically.
+ */
+type PlannedFile = {
+  filePath: string
+  relative: string
+  language: string
+  text: string
+  bom: boolean
+  edits: PatternSplice[]
+  finalText: string
+  plans: AppliedRewrite[]
+  probe: { startLine: number; endLine: number }[]
+}
+
+/** What analyzing one addressed file of a multi-file pattern-mode call produced. */
+type PlanResult =
+  | { kind: "planned"; file: PlannedFile }
+  | { kind: "skipped"; report: FileReport }
+  | { kind: "conflict"; file: { relative: string; conflicts: string[] } }
+
+/** A multi-file pattern-mode run either stops at the predesign gate or yields its outcome. */
+type ModeRun =
+  | { blocked: true; result: Tool.ExecuteResult }
+  | { blocked: false; outcome: ModeOutcome }
 
 /**
  * The pre-sync identity of a stale ref: the graph record captured before the
@@ -136,6 +208,30 @@ type Planned = {
 }
 
 const eolOf = (text: string) => (text.includes("\r\n") ? "\r\n" : "\n")
+
+/** Maximum files one pattern-mode `paths` call may address. */
+const MAX_PATTERN_FILES = 100
+
+/** Glob magic that routes a `paths` entry through discovery instead of a direct stat. */
+const GLOB_MAGIC = /[*?[\]{}]/
+const NODE_MODULES_SEGMENT = /(^|[\\/])node_modules([\\/]|$)/
+
+/**
+ * Whether decoded content smells binary: NUL bytes in the head, or a
+ * file-limits-style share of non-whitespace control bytes — compressed payload
+ * like the MPEG-TS clips that squat the `.ts` extension, or the replacement
+ * characters a lossy UTF-8 decode of arbitrary bytes produces.
+ */
+function looksBinary(text: string) {
+  const head = text.slice(0, 8192)
+  if (head.includes("\u0000")) return true
+  let control = 0
+  for (let i = 0; i < head.length; i++) {
+    const code = head.charCodeAt(i)
+    if ((code < 0x20 && (code < 0x09 || code > 0x0d)) || code === 0xfffd) control++
+  }
+  return head.length > 0 && control >= head.length / 64
+}
 
 function fileText(text: string): FileText {
   const starts = [0]
@@ -484,6 +580,39 @@ function resolveMode(params: Params): Mode {
 }
 
 /**
+ * Resolve mode and addressing in one discriminated result: pattern mode
+ * addresses its files either with one explicit `file` or with `paths`
+ * (files, directories, globs) — never both, so the addressing is
+ * unambiguous. Ref mode never multi-files: every ref must resolve inside
+ * the one file named by `file`.
+ */
+function resolveCall(params: Params): Resolved {
+  const mode = resolveMode(params)
+  if (mode.kind === "refs") {
+    if (params.paths !== undefined && params.paths.length > 0) {
+      throw new Error(
+        "ast_edit: `paths` is pattern-mode only — ref mode edits one file per call via `file`; split ref work into one call per file.",
+      )
+    }
+    if (!params.file) {
+      throw new Error("ast_edit: ref mode requires `file` — every edit ref resolves inside that single file.")
+    }
+    return { kind: "refs", file: params.file, edits: mode.edits }
+  }
+  if (params.file && params.paths !== undefined && params.paths.length > 0) {
+    throw new Error(
+      "ast_edit: pattern mode takes exactly one of `file` (single file) or `paths` (multi-file codemod) — this call passed both.",
+    )
+  }
+  if (params.file) return { kind: "pattern-file", file: params.file, rewrites: mode.rewrites }
+  if (params.paths !== undefined && params.paths.length > 0)
+    return { kind: "pattern-paths", paths: params.paths, rewrites: mode.rewrites }
+  throw new Error(
+    "ast_edit: no addressing given for the pattern rewrites — pass `file` for one file or `paths` (files, directories, or globs, max 100 files) for a multi-file codemod.",
+  )
+}
+
+/**
  * 1-based lines carrying tree-sitter ERROR or MISSING nodes, capped at `limit`
  * for a short refusal message. An error node's own subtree is noise, so the
  * walk does not descend past it.
@@ -507,12 +636,14 @@ function spliceLabel(splice: PatternSplice, plans: RewritePlan[], file: FileText
 /**
  * Collapse byte-identical matches (two rewrites spelling the same fix on the
  * same span keep one, attributed to the first rewrite in call order), then
- * reject any remaining overlap with the same strictness as ref mode: touching
+ * compute remaining overlaps with the same strictness as ref mode: touching
  * spans are fine, nested or equal-but-different spans are not. Sweeping the
  * start-sorted list against the widest end seen so far catches a match that
  * contains several others, which adjacent-only comparison would miss.
+ * Single-file callers reject conflicts through collapsePatternEdits; multi-file
+ * callers collect them into an atomic no-write failure.
  */
-function collapsePatternEdits(splices: PatternSplice[], plans: RewritePlan[], file: FileText, relative: string) {
+function collapseSplices(splices: PatternSplice[], plans: RewritePlan[], file: FileText) {
   const unique = new Map<string, PatternSplice>()
   for (const splice of splices) {
     const key = `${splice.start}\u0000${splice.end}\u0000${splice.replacement}`
@@ -526,6 +657,11 @@ function collapsePatternEdits(splices: PatternSplice[], plans: RewritePlan[], fi
       conflicts.push(`${spliceLabel(splice, plans, file)} overlaps ${spliceLabel(widest, plans, file)}`)
     if (!widest || widest.end < splice.end) widest = splice
   }
+  return { ordered, conflicts }
+}
+
+function collapsePatternEdits(splices: PatternSplice[], plans: RewritePlan[], file: FileText, relative: string) {
+  const { ordered, conflicts } = collapseSplices(splices, plans, file)
   if (conflicts.length > 0) {
     throw new Error(
       `ast_edit: overlapping pattern matches in ${relative}; split the rewrites into separate calls or narrow the patterns so they never match nested ranges:\n${conflicts.map((line) => `- ${line}`).join("\n")}`,
@@ -543,8 +679,8 @@ type ModeOutcome = {
   newLines: string[]
   windowStart: number
   windowEnd: number
-  /** pre-write line ranges the propagation probe seeds from */
-  probe: { startLine: number; endLine: number }[]
+  /** before/after state of every file this call wrote (one entry per file) */
+  touched: TouchedFile[]
   /** ast_edit payload published mid-call through ctx.metadata */
   liveMetadata: Record<string, unknown>
   /** ast_edit payload on the returned result; the tail adds formatterTouched */
@@ -558,6 +694,7 @@ export const AstEditTool = Tool.define(
     const afs = yield* AppFileSystem.Service
     const format = yield* Format.Service
     const bus = yield* Bus.Service
+    const rg = yield* Ripgrep.Service
 
     return {
       description: DESCRIPTION,
@@ -565,63 +702,60 @@ export const AstEditTool = Tool.define(
       execute: (params: Params, ctx: Tool.Context) =>
         Effect.gen(function* () {
           const instance = yield* InstanceState.context
-          const mode = resolveMode(params)
-          const filePath = AppFileSystem.resolve(
-            path.isAbsolute(params.file) ? params.file : path.join(instance.directory, params.file),
-          )
-          yield* assertExternalDirectoryEffect(ctx, filePath)
+          const call = resolveCall(params)
           const displayRoot = instance.worktree === "/" ? instance.directory : instance.worktree
-          if (mode.kind === "refs" && !isInitialized(displayRoot)) {
-            throw new Error(
-              `ast_edit: the Chimera graph surface is not initialized for this project, so node refs are unavailable. ` +
-                `Ask the user to run 'chimera graph init' then 'chimera graph index' (or call chimera_init_graph if that tool is available to you), ` +
-                `or use the edit tool for text-anchored changes instead. Pattern mode (rewrites) needs no graph.`,
-            )
-          }
           const changeID = `chg_${ulid()}`
 
-          const predesign = yield* Chimera.requirePredesignForMutation({
-            toolID: "ast_edit",
-            ctx,
-            files: [filePath],
-          })
-          if (!predesign.allowed) return predesign.result
-
-          let diff = ""
-          let contentOld = ""
-          let contentNew = ""
-          let formatterTouched = false
+          /**
+           * Render the diff for one addressed file. Called before the permission
+           * ask so the diff shown always matches what will be written.
+           */
+          const stage = (rec: TouchedFile, text: string) => {
+            rec.contentNew = text
+            rec.diff = trimDiff(createTwoFilesPatch(rec.filePath, rec.filePath, rec.contentOld, text))
+          }
 
           /**
-           * Write the spliced/rewritten content and ride the shared mutation side
-           * effects: no-op guard, permission ask, BOM-preserving write, formatter,
-           * File/FileWatcher bus events. Both modes call it inside their own
-           * trackToolMutation so the provenance record is identical.
+           * Per-file half of the shared commit path: BOM-preserving write,
+           * formatter, File/FileWatcher bus events. Single-file calls run it
+           * under their per-file permission ask; the multi-file call asks once
+           * for the whole set and then loops this over every changed file.
            */
-          const commit = (text: string, noOp: string, hadBom: boolean) =>
+          const writeFormatted = (rec: TouchedFile) =>
             Effect.gen(function* () {
-              if (text === contentOld) throw new Error(noOp)
-              contentNew = text
-              diff = trimDiff(createTwoFilesPatch(filePath, filePath, contentOld, contentNew))
-              yield* ctx.ask({
-                permission: "edit",
-                patterns: [path.relative(displayRoot, filePath)],
-                always: ["*"],
-                metadata: {
-                  filepath: filePath,
-                  diff,
-                },
-              })
-              const next = Bom.split(contentNew)
-              const desiredBom = hadBom || next.bom
-              yield* afs.writeWithDirs(filePath, Bom.join(next.text, desiredBom))
-              formatterTouched = yield* format.file(filePath)
-              if (formatterTouched) contentNew = yield* Bom.syncFile(afs, filePath, desiredBom)
-              yield* bus.publish(File.Event.Edited, { file: filePath })
-              yield* bus.publish(FileWatcher.Event.Updated, { file: filePath, event: "change" })
+              const next = Bom.split(rec.contentNew)
+              const desiredBom = rec.hadBom || next.bom
+              yield* afs.writeWithDirs(rec.filePath, Bom.join(next.text, desiredBom))
+              rec.formatterTouched = yield* format.file(rec.filePath)
+              if (rec.formatterTouched) rec.contentNew = yield* Bom.syncFile(afs, rec.filePath, desiredBom)
+              yield* bus.publish(File.Event.Edited, { file: rec.filePath })
+              yield* bus.publish(FileWatcher.Event.Updated, { file: rec.filePath, event: "change" })
             })
 
-          const runRefMode = (edits: readonly EditInput[]) =>
+          /**
+           * Write one file and ride the shared single-file mutation side
+           * effects: no-op guard, permission ask, BOM-preserving write,
+           * formatter, File/FileWatcher bus events. Both single-file modes
+           * call it inside their own trackToolMutation so the provenance
+           * record is identical.
+           */
+          const commit = (rec: TouchedFile, text: string, noOp: string) =>
+            Effect.gen(function* () {
+              if (text === rec.contentOld) throw new Error(noOp)
+              stage(rec, text)
+              yield* ctx.ask({
+                permission: "edit",
+                patterns: [rec.relative],
+                always: ["*"],
+                metadata: {
+                  filepath: rec.filePath,
+                  diff: rec.diff,
+                },
+              })
+              yield* writeFormatted(rec)
+            })
+
+          const runRefMode = (edits: readonly EditInput[], filePath: string, rec: TouchedFile) =>
             Effect.gen(function* () {
               const planned = yield* Chimera.withProjectGraph(
                 { watch: false },
@@ -648,7 +782,8 @@ export const AstEditTool = Tool.define(
 
                     yield* Effect.promise(() => state.graph.syncFiles([filePath]))
                     const source = yield* Bom.readFile(afs, filePath)
-                    contentOld = source.text
+                    rec.contentOld = source.text
+                    rec.hadBom = source.bom
                     const file = fileText(source.text)
 
                     const plans = edits.map((edit, index) => planEdit(state, relative, edit, index, identities[index], file))
@@ -663,7 +798,7 @@ export const AstEditTool = Tool.define(
                         metadata: () => ({
                           create: false,
                           filePath,
-                          diff,
+                          diff: rec.diff,
                           changeID,
                           astEdit: {
                             schemaVersion: 1,
@@ -680,7 +815,7 @@ export const AstEditTool = Tool.define(
                       },
                       Effect.gen(function* () {
                         const spliced = applySplices(file, plans)
-                        yield* commit(spliced.text, "No changes to apply: ast_edit splices are a no-op.", source.bom)
+                        yield* commit(rec, spliced.text, "No changes to apply: ast_edit splices are a no-op.")
                         return spliced
                       }),
                     )
@@ -714,9 +849,10 @@ export const AstEditTool = Tool.define(
                 freshRef: planned.fresh.get(plan.index) ? `node:${planned.fresh.get(plan.index)}` : undefined,
               }))
               const relocations = planned.plans.filter((plan) => plan.relocated).map((plan) => plan.note)
-              const final = fileText(contentNew)
+              const final = fileText(rec.contentNew)
               const windowStart = planned.plans.reduce((min, plan) => Math.min(min, planned.spans.get(plan.index)?.startLine ?? plan.node.startLine), final.lines.length)
               const windowEnd = planned.plans.reduce((max, plan) => Math.max(max, planned.spans.get(plan.index)?.endLine ?? plan.node.endLine), 1)
+              rec.probe = planned.plans.map((plan) => ({ startLine: plan.node.startLine, endLine: plan.node.endLine }))
 
               return {
                 head: [
@@ -742,26 +878,30 @@ export const AstEditTool = Tool.define(
                 newLines: final.lines,
                 windowStart,
                 windowEnd,
-                probe: planned.plans.map((plan) => ({ startLine: plan.node.startLine, endLine: plan.node.endLine })),
+                touched: [rec],
                 liveMetadata: { schemaVersion: 1, results },
                 metadata: { schemaVersion: 1, results, relocations },
               } satisfies ModeOutcome
             })
 
           /**
-           * Pattern mode: one parse, every structural match rewritten in a single
-           * splice pass. It deliberately needs no graph surface — refs are not
-           * involved, so it runs the same pipeline in uninitialized projects.
+           * Single-file pattern mode: one parse, every structural match rewritten
+           * in a single splice pass. It deliberately needs no graph surface —
+           * refs are not involved, so it runs the same pipeline in uninitialized
+           * projects. Strict per-file semantics: syntax errors and uncompilable
+           * patterns REFUSE the call; the lenient skip contract belongs to the
+           * multi-file `paths` call.
            */
-          const runPatternMode = (rewrites: readonly RewriteInput[]) =>
+          const runPatternMode = (rewrites: readonly RewriteInput[], filePath: string, rec: TouchedFile) =>
             Effect.gen(function* () {
-              const relative = path.relative(displayRoot, filePath)
+              const relative = rec.relative
               const exists = yield* afs.existsSafe(filePath)
               if (!exists) {
                 throw new Error(`ast_edit: file ${relative} does not exist. Use the write tool to create files; ast_edit only edits existing files.`)
               }
               const source = yield* Bom.readFile(afs, filePath)
-              contentOld = source.text
+              rec.contentOld = source.text
+              rec.hadBom = source.bom
               const file = fileText(source.text)
               const language = detectLanguage(filePath, source.text)
               if (!hasTreeSitterGrammar(language)) {
@@ -834,16 +974,16 @@ export const AstEditTool = Tool.define(
                   metadata: () => ({
                     create: false,
                     filePath,
-                    diff,
+                    diff: rec.diff,
                     changeID,
                     astEdit: patternMetadata,
                   }),
                 },
                 Effect.gen(function* () {
                   yield* commit(
+                    rec,
                     applyReplacements(source.text, edits),
                     "No changes to apply: ast_edit pattern rewrites are a no-op.",
-                    source.bom,
                   )
                 }),
               )
@@ -851,12 +991,14 @@ export const AstEditTool = Tool.define(
               // Offset every edit by the length change of the ones before it (the
               // engine splices left to right) to point at the written content.
               let shift = 0
-              const final = fileText(contentNew)
+              const final = fileText(rec.contentNew)
               const spans = edits.map((edit) => {
                 const start = edit.start + shift
                 shift += edit.replacement.length - (edit.end - edit.start)
                 return rangeLines(final, start, start + edit.replacement.length)
               })
+
+              rec.probe = edits.map((edit) => rangeLines(file, edit.start, edit.end))
 
               return {
                 head: [
@@ -867,32 +1009,405 @@ export const AstEditTool = Tool.define(
                 newLines: final.lines,
                 windowStart: spans.reduce((min, span) => Math.min(min, span.startLine), final.lines.length),
                 windowEnd: spans.reduce((max, span) => Math.max(max, span.endLine), 1),
-                probe: edits.map((edit) => rangeLines(file, edit.start, edit.end)),
+                touched: [rec],
                 liveMetadata: patternMetadata,
                 metadata: patternMetadata,
               } satisfies ModeOutcome
             })
 
+          /**
+           * Expand `paths` entries — files, directories, or globs — into concrete
+           * files through the repo's established gitignore-aware `rg --files` walk
+           * (the same Ripgrep service the grep tool uses). Directories and globs
+           * prune `node_modules` unless the entry itself names it, and skip hidden
+           * files. The 100-file cap fails the call outright — no silent
+           * truncation, and a call that addresses nothing is an error, not a
+           * success.
+           */
+          const discoverPatternFiles = Effect.fnUntraced(function* (inputs: readonly string[]) {
+            const found = new Set<string>()
+            const walk = (cwd: string, globs: string[], named: boolean) =>
+              rg
+                .files({
+                  cwd,
+                  glob: named ? globs : [...globs, "!node_modules/**", "!**/node_modules/**"],
+                  hidden: false,
+                  signal: ctx.abort,
+                })
+                .pipe(
+                  Stream.take(MAX_PATTERN_FILES + 1),
+                  Stream.runForEach((file) => Effect.sync(() => found.add(AppFileSystem.resolve(path.join(cwd, file))))),
+                )
+            const project = AppFileSystem.resolve(instance.directory)
+            for (const input of inputs) {
+              const entry = input.trim()
+              if (!entry) throw new Error("ast_edit: paths contains a blank entry.")
+              const absolute = path.isAbsolute(entry)
+              const resolved = AppFileSystem.resolve(absolute ? entry : path.join(instance.directory, entry))
+              if (!GLOB_MAGIC.test(entry)) {
+                const info = yield* afs.stat(resolved).pipe(Effect.catch(() => Effect.succeed(undefined)))
+                if (!info) throw new Error(`ast_edit: paths entry "${entry}" does not exist.`)
+                if (info.type === "File") {
+                  found.add(resolved)
+                  continue
+                }
+                if (info.type === "Directory") {
+                  yield* walk(resolved, [], NODE_MODULES_SEGMENT.test(entry))
+                  continue
+                }
+                throw new Error(`ast_edit: paths entry "${entry}" is neither a file nor a directory.`)
+              }
+              if (!absolute) {
+                yield* walk(project, [entry], NODE_MODULES_SEGMENT.test(entry))
+                continue
+              }
+              const inside = path.relative(project, resolved)
+              if (inside.startsWith("..") || path.isAbsolute(inside))
+                throw new Error(
+                  `ast_edit: glob entries must address files inside the project directory — "${entry}" resolves outside it. Name a single file directly or use the edit tool.`,
+                )
+              yield* walk(project, [inside], NODE_MODULES_SEGMENT.test(entry))
+            }
+            if (found.size > MAX_PATTERN_FILES)
+              throw new Error(
+                `ast_edit: the paths of this call address more than ${MAX_PATTERN_FILES} files (pattern-mode cap: ${MAX_PATTERN_FILES} per call); narrow the paths or split the codemod into separate calls.`,
+              )
+            if (found.size === 0)
+              throw new Error(`ast_edit: paths matched no files: ${inputs.map((entry) => `"${entry}"`).join(", ")}.`)
+            return [...found].toSorted()
+          })
+
+          /**
+           * Analyze one addressed file of a multi-file call: size/binary/grammar
+           * gates, a parse in the file's own detected language, per-rewrite
+           * compilation for that language, and the shared collapse/overlap rules.
+           * Anything that makes the file unsafe or unmatchable is a skipped report
+           * (partial coverage is normal in a codemod sweep); only an overlap
+           * conflict is a hard failure, carried out for the atomic no-write abort.
+           */
+          const planPatternFile = Effect.fnUntraced(function* (
+            filePath: string,
+            rewrites: readonly RewriteInput[],
+            compiled: Map<string, CompileResult>,
+          ) {
+            const relative = path.relative(displayRoot, filePath)
+            const skipped = (language: string, reason: string): PlanResult => ({
+              kind: "skipped",
+              report: { file: relative, language, status: "skipped", reason, rewrites: [] },
+            })
+            const info = yield* afs.stat(filePath).pipe(Effect.catch(() => Effect.succeed(undefined)))
+            if (!info || info.type !== "File") return skipped("unknown", "the path is not an existing regular file")
+            if (info.size > MAX_SOURCE_FILE_SIZE_BYTES)
+              return skipped(
+                detectLanguage(filePath),
+                `file is ${info.size} bytes, above the ${MAX_SOURCE_FILE_SIZE_BYTES}-byte graph size limit`,
+              )
+            const source = yield* Bom.readFile(afs, filePath).pipe(Effect.catch(() => Effect.succeed(undefined)))
+            if (!source) return skipped(detectLanguage(filePath), "the file could not be read")
+            const language = detectLanguage(filePath, source.text)
+            if (looksBinary(source.text)) return skipped(language, "binary content")
+            if (!hasTreeSitterGrammar(language))
+              return skipped(language, `no tree-sitter grammar for language \"${language}\"`)
+            yield* Effect.promise(() => ensureGrammarLoaded(language))
+            const tree = parseSource(language, source.text)
+            if (!tree) return skipped(language, `the ${language} grammar did not load`)
+            const file = fileText(source.text)
+            const plans: RewritePlan[] = []
+            const splices: PatternSplice[] = []
+            let issue: string | undefined
+            try {
+              const broken = syntaxErrorLines(tree.rootNode, 3)
+              if (broken.length > 0)
+                issue = `syntax errors (ERROR/MISSING nodes at lines ${broken.join(", ")}); pattern rewriting is unsafe here`
+              for (const [index, rewrite] of rewrites.entries()) {
+                if (issue) break
+                const key = `${language}\u0000${rewrite.pattern}`
+                let hit = compiled.get(key)
+                if (!hit) {
+                  hit = compilePattern(rewrite.pattern, language)
+                  compiled.set(key, hit)
+                }
+                if (!hit.ok) {
+                  issue = `rewrite ${index + 1} does not compile in ${language}: ${hit.error.message}`
+                  break
+                }
+                const matches = findMatchesInTree(hit.pattern, tree, source.text)
+                for (const match of matches) {
+                  splices.push({
+                    rewrite: index,
+                    start: match.replacedRange.start,
+                    end: match.replacedRange.end,
+                    replacement:
+                      rewrite.replacement === "" ? "" : renderTemplateReplacement(rewrite.replacement, match, source.text),
+                  })
+                }
+                plans.push({
+                  index,
+                  pattern: rewrite.pattern,
+                  replacement: rewrite.replacement,
+                  render: rewrite.replacement === "" ? "delete" : "template",
+                  matches: matches.length,
+                })
+              }
+            } finally {
+              tree.delete()
+            }
+            if (issue) return skipped(language, issue)
+            const collapsed = collapseSplices(splices, plans, file)
+            if (collapsed.conflicts.length > 0) {
+              const conflict: PlanResult = { kind: "conflict", file: { relative, conflicts: collapsed.conflicts } }
+              return conflict
+            }
+            const summaries: AppliedRewrite[] = plans.map((plan) => ({
+              ...plan,
+              applied: collapsed.ordered.filter((edit) => edit.rewrite === plan.index).length,
+            }))
+            if (collapsed.ordered.length === 0) {
+              const report: PlanResult = {
+                kind: "skipped",
+                report: { file: relative, language, status: "unmatched", reason: "", rewrites: summaries },
+              }
+              return report
+            }
+            const planned: PlanResult = {
+              kind: "planned",
+              file: {
+                filePath,
+                relative,
+                language,
+                text: source.text,
+                bom: source.bom,
+                edits: collapsed.ordered,
+                finalText: applyReplacements(source.text, collapsed.ordered),
+                plans: summaries,
+                probe: collapsed.ordered.map((edit) => rangeLines(file, edit.start, edit.end)),
+              },
+            }
+            return planned
+          })
+
+          /**
+           * Multi-file pattern mode: discovery, then every file is fully spliced
+           * BEFORE anything is written — one overlap conflict anywhere fails the
+           * call with zero files touched. The successful write rides one
+           * trackToolMutation over all changed files, one permission ask carrying
+           * every relative path, and per-file BOM/format/bus effects.
+           */
+          const runPatternPaths = (rewrites: readonly RewriteInput[], inputs: readonly string[]) =>
+            Effect.gen(function* () {
+              const found = yield* discoverPatternFiles(inputs)
+              for (const filePath of found) yield* assertExternalDirectoryEffect(ctx, filePath)
+              const predesign = yield* Chimera.requirePredesignForMutation({
+                toolID: "ast_edit",
+                ctx,
+                files: found,
+                multiFile: found.length > 1,
+              })
+              if (!predesign.allowed) return { blocked: true as const, result: predesign.result }
+
+              const compiled = new Map<string, CompileResult>()
+              const results: PlanResult[] = []
+              for (const filePath of found) results.push(yield* planPatternFile(filePath, rewrites, compiled))
+
+              const conflicts = results.flatMap((result) =>
+                result.kind === "conflict" ? result.file.conflicts.map((line) => `${result.file.relative}: ${line}`) : [],
+              )
+              if (conflicts.length > 0) {
+                throw new Error(
+                  `ast_edit: overlapping pattern matches; no files were written — split the rewrites into separate calls or narrow the patterns so they never match nested ranges:\n${conflicts.map((line) => `- ${line}`).join("\n")}`,
+                )
+              }
+
+              const planned = results.flatMap((result) => (result.kind === "planned" ? [result.file] : []))
+              const changed = planned.filter((item) => item.finalText !== item.text)
+              if (changed.length === 0) {
+                const matched = planned.reduce((sum, item) => sum + item.edits.length, 0)
+                throw new Error(
+                  `No changes to apply: ${rewrites.length} pattern(s) matched ${matched} time(s) across ${found.length} addressed file(s) and rewrote nothing. A rewrite that matches nothing is fine on its own (it reports 0 replacements); this call changed no bytes anywhere.`,
+                )
+              }
+
+              const touched: TouchedFile[] = changed.map((item) => {
+                const rec: TouchedFile = {
+                  filePath: item.filePath,
+                  relative: item.relative,
+                  hadBom: item.bom,
+                  contentOld: item.text,
+                  contentNew: item.finalText,
+                  diff: "",
+                  formatterTouched: false,
+                  probe: item.probe,
+                }
+                stage(rec, rec.contentNew)
+                return rec
+              })
+
+              const fileMetadata = results.flatMap<{
+                file: string
+                language: string
+                status: "skipped" | "unmatched" | "no-change" | "changed"
+                reason?: string
+                replacements?: number
+                rewrites: AppliedRewrite[]
+              }>((result) => {
+                if (result.kind === "conflict") return []
+                if (result.kind === "skipped")
+                  return [
+                    {
+                      file: result.report.file,
+                      language: result.report.language,
+                      status: result.report.status,
+                      reason: result.report.reason || undefined,
+                      rewrites: result.report.rewrites,
+                    },
+                  ]
+                const item = result.file
+                return [
+                  {
+                    file: item.relative,
+                    language: item.language,
+                    status: item.finalText === item.text ? "no-change" : "changed",
+                    replacements: item.finalText === item.text ? 0 : item.edits.length,
+                    rewrites: item.plans,
+                  },
+                ]
+              })
+              const skippedCount = results.filter((r) => r.kind === "skipped" && r.report.status === "skipped").length
+              const unmatchedCount = results.filter((r) => r.kind === "skipped" && r.report.status === "unmatched").length
+              const noChangeCount = planned.length - changed.length
+              const totalReplacements = changed.reduce((sum, item) => sum + item.edits.length, 0)
+              const astEdit = {
+                schemaVersion: 1,
+                pattern: {
+                  addressing: "paths",
+                  paths: [...inputs],
+                  cap: MAX_PATTERN_FILES,
+                  totals: {
+                    addressed: found.length,
+                    changed: touched.length,
+                    replacements: totalReplacements,
+                    noChange: noChangeCount,
+                    unmatched: unmatchedCount,
+                    skipped: skippedCount,
+                  },
+                  files: fileMetadata,
+                },
+              }
+
+              yield* Chimera.trackToolMutation(
+                {
+                  toolID: "ast_edit",
+                  ctx,
+                  files: touched.map((rec) => rec.filePath),
+                  bus,
+                  metadata: () => ({
+                    create: false,
+                    filePaths: touched.map((rec) => rec.filePath),
+                    diff: touched.map((rec) => rec.diff).join("\n"),
+                    changeID,
+                    astEdit,
+                  }),
+                },
+                Effect.gen(function* () {
+                  yield* ctx.ask({
+                    permission: "edit",
+                    patterns: touched.map((rec) => rec.relative),
+                    always: ["*"],
+                    metadata: {
+                      filepath: touched.map((rec) => rec.relative).join(", "),
+                      diff: touched.map((rec) => rec.diff).join("\n"),
+                      files: touched.map((rec) => ({
+                        filePath: rec.filePath,
+                        relativePath: rec.relative,
+                        type: "update",
+                        patch: rec.diff,
+                      })),
+                    },
+                  })
+                  for (const rec of touched) yield* writeFormatted(rec)
+                }),
+              )
+
+              const lines = results.flatMap((result) => {
+                if (result.kind === "conflict") return []
+                if (result.kind === "skipped")
+                  return [
+                    result.report.status === "unmatched"
+                      ? `- ${result.report.file}: 0 replacement(s)`
+                      : `- ${result.report.file}: skipped: ${result.report.reason}`,
+                  ]
+                const item = result.file
+                if (item.finalText === item.text)
+                  return [`- ${item.relative}: 0 replacement(s) (the matches rewrote identical text)`]
+                return [`- ${item.relative}: ${item.edits.length} replacement(s)`]
+              })
+              const head = [
+                `Pattern codemod over ${found.length} addressed file(s):`,
+                ...lines,
+                `Totals: ${touched.length} file(s) changed with ${totalReplacements} replacement(s); ${noChangeCount} identical, ${unmatchedCount} without a match, ${skippedCount} skipped`,
+              ].join("\n")
+
+              // The changed-block window renders only when exactly one file
+              // changed; multi-file diffs stay in metadata. Offset every edit by
+              // the length change of the ones before it (the engine splices left
+              // to right) to point at the written content.
+              let newLines: string[] = []
+              let windowStart = 1
+              let windowEnd = 0
+              if (touched.length === 1) {
+                const item = changed[0]
+                const final = fileText(touched[0].contentNew)
+                let shift = 0
+                const spans = item.edits.map((edit) => {
+                  const start = edit.start + shift
+                  shift += edit.replacement.length - (edit.end - edit.start)
+                  return rangeLines(final, start, start + edit.replacement.length)
+                })
+                newLines = final.lines
+                windowStart = spans.reduce((min, span) => Math.min(min, span.startLine), final.lines.length)
+                windowEnd = spans.reduce((max, span) => Math.max(max, span.endLine), 1)
+              }
+
+              return {
+                blocked: false as const,
+                outcome: {
+                  head,
+                  notes: "",
+                  newLines,
+                  windowStart,
+                  windowEnd,
+                  touched,
+                  liveMetadata: astEdit,
+                  metadata: astEdit,
+                } satisfies ModeOutcome,
+              }
+            })
+
           /** Shared mutation tail: diff stats, metadata, output, LSP oracle, propagation. */
           const finish = (outcome: ModeOutcome) =>
             Effect.gen(function* () {
+              const touched = outcome.touched
+              const multiple = touched.length > 1
+              const filediffs: Snapshot.FileDiff[] = []
               let additions = 0
               let deletions = 0
-              for (const change of diffLines(contentOld, contentNew)) {
-                if (change.added) additions += change.count || 0
-                if (change.removed) deletions += change.count || 0
+              for (const rec of touched) {
+                let fileAdditions = 0
+                let fileDeletions = 0
+                for (const change of diffLines(rec.contentOld, rec.contentNew)) {
+                  if (change.added) fileAdditions += change.count || 0
+                  if (change.removed) fileDeletions += change.count || 0
+                }
+                additions += fileAdditions
+                deletions += fileDeletions
+                filediffs.push({ file: rec.filePath, patch: rec.diff, additions: fileAdditions, deletions: fileDeletions })
               }
-              const filediff: Snapshot.FileDiff = {
-                file: filePath,
-                patch: diff,
-                additions,
-                deletions,
-              }
+              const diff = multiple ? touched.map((rec) => rec.diff).join("\n") : touched[0].diff
 
               yield* ctx.metadata({
                 metadata: {
                   diff,
-                  filediff,
+                  ...(multiple ? { filediffs } : { filediff: filediffs[0] }),
                   changeID,
                   astEdit: outcome.liveMetadata,
                 },
@@ -911,7 +1426,7 @@ export const AstEditTool = Tool.define(
                 output += `\n\n${formatChangedBlock(outcome.newLines, outcome.windowStart, outcome.windowEnd)}`
               }
 
-              yield* lsp.touchFile(filePath, "document")
+              for (const rec of touched) yield* lsp.touchFile(rec.filePath, "document")
               const diagnostics = yield* lsp.diagnostics()
               const diagnosticCount = Chimera.countOracleDiagnostics(diagnostics)
               yield* Chimera.recordToolOracle({
@@ -922,31 +1437,79 @@ export const AstEditTool = Tool.define(
                 payload: {
                   lsp: {
                     diagnostics,
-                    files: [filePath],
+                    files: touched.map((rec) => rec.filePath),
                     diagnosticCount,
                   },
                 },
               }).pipe(Effect.ignore)
-              const normalizedFilePath = AppFileSystem.normalizePath(filePath)
-              const block = LSP.Diagnostic.report(filePath, diagnostics[normalizedFilePath] ?? [])
-              if (block) output += `\n\nLSP errors detected in this file, please fix:\n${block}`
+              for (const rec of touched) {
+                const block = LSP.Diagnostic.report(rec.filePath, diagnostics[AppFileSystem.normalizePath(rec.filePath)] ?? [])
+                if (!block) continue
+                output += multiple
+                  ? `\n\nLSP errors detected in ${rec.relative}, please fix:\n${block}`
+                  : `\n\nLSP errors detected in this file, please fix:\n${block}`
+              }
 
-              output += `\n\n${yield* inlinePropagationCheck([{ file: filePath, ranges: outcome.probe }], ctx.sessionID)}`
+              output += `\n\n${yield* inlinePropagationCheck(
+                touched.map((rec) => ({ file: rec.filePath, ranges: rec.probe })),
+                ctx.sessionID,
+              )}`
 
               return {
-                title: path.relative(displayRoot, filePath),
+                title: multiple
+                  ? `AST edit applied to ${touched.length} files:\n${touched.map((rec) => `- ${rec.relative}`).join("\n")}`
+                  : touched[0].relative,
                 output,
                 metadata: {
                   diagnostics,
                   diff,
-                  filediff,
+                  ...(multiple ? { filediffs } : { filediff: filediffs[0] }),
                   changeID,
-                  astEdit: { ...outcome.metadata, formatterTouched },
+                  astEdit: {
+                    ...outcome.metadata,
+                    formatterTouched: multiple ? touched.some((rec) => rec.formatterTouched) : touched[0].formatterTouched,
+                  },
                 },
               }
             })
 
-          const applied = mode.kind === "refs" ? yield* runRefMode(mode.edits) : yield* runPatternMode(mode.rewrites)
+          if (call.kind === "pattern-paths") {
+            const run = yield* runPatternPaths(call.rewrites, call.paths)
+            if (run.blocked) return run.result
+            return yield* finish(run.outcome)
+          }
+
+          const filePath = AppFileSystem.resolve(
+            path.isAbsolute(call.file) ? call.file : path.join(instance.directory, call.file),
+          )
+          yield* assertExternalDirectoryEffect(ctx, filePath)
+          if (call.kind === "refs" && !isInitialized(displayRoot)) {
+            throw new Error(
+              `ast_edit: the Chimera graph surface is not initialized for this project, so node refs are unavailable. ` +
+                `Ask the user to run 'chimera graph init' then 'chimera graph index' (or call chimera_init_graph if that tool is available to you), ` +
+                `or use the edit tool for text-anchored changes instead. Pattern mode (rewrites) needs no graph.`,
+            )
+          }
+          const predesign = yield* Chimera.requirePredesignForMutation({
+            toolID: "ast_edit",
+            ctx,
+            files: [filePath],
+          })
+          if (!predesign.allowed) return predesign.result
+          const rec: TouchedFile = {
+            filePath,
+            relative: path.relative(displayRoot, filePath),
+            hadBom: false,
+            contentOld: "",
+            contentNew: "",
+            diff: "",
+            formatterTouched: false,
+            probe: [],
+          }
+          const applied =
+            call.kind === "refs"
+              ? yield* runRefMode(call.edits, filePath, rec)
+              : yield* runPatternMode(call.rewrites, filePath, rec)
           return yield* finish(applied)
         }).pipe(Effect.orDie),
     }
