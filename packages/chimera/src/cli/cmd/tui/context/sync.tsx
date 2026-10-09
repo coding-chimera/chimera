@@ -466,7 +466,10 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
               const part = draft[result.index]
               const field = event.properties.field as keyof typeof part
               const existing = part[field] as string | undefined
-              ;(part[field] as string) = (existing ?? "") + event.properties.delta
+              // Only append to fields that already exist as strings on the part; live-only
+              // tool-preview deltas ("raw" / "hunk") must not be materialised here.
+              if (typeof existing !== "string") return
+              ;(part[field] as string) = existing + event.properties.delta
             }),
           )
           break

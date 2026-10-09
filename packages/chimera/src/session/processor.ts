@@ -9,6 +9,7 @@ import { Snapshot } from "@/snapshot"
 import * as Session from "./session"
 import { LLM } from "./llm"
 import { MessageV2 } from "./message-v2"
+import { StreamingPreview } from "./streaming-preview"
 import { isOverflow } from "./overflow"
 import { Token } from "@/util/token"
 import { PartID } from "./schema"
@@ -166,6 +167,8 @@ type ToolCall = {
   messageID: MessageV2.ToolPart["messageID"]
   sessionID: MessageV2.ToolPart["sessionID"]
   done: Deferred.Deferred<void>
+  raw: string
+  preview: StreamingPreview.Tracker | undefined
 }
 // Temporary bridge: Copilot billing survives only in raw provider chunks here.
 export function copilotTotalNanoAiu(value: unknown) {
@@ -332,6 +335,22 @@ export const layer: Layer.Layer<
         return true
       })
 
+      const publishPreview = Effect.fnUntraced(function* (call: ToolCall, force: boolean) {
+        const tracker = call.preview
+        if (!tracker) return
+        if (force) call.preview = undefined
+        const hunks = yield* (force ? StreamingPreview.finalize(tracker, call.raw) : StreamingPreview.update(tracker, call.raw))
+        for (const hunk of hunks) {
+          yield* session.updatePartDelta({
+            sessionID: call.sessionID,
+            messageID: call.messageID,
+            partID: call.partID,
+            field: "hunk",
+            delta: JSON.stringify(hunk),
+          })
+        }
+      })
+
       const handleEvent = Effect.fnUntraced(function* (value: StreamEvent) {
         switch (value.type) {
           case "start":
@@ -423,11 +442,33 @@ export const layer: Layer.Layer<
               partID: part.id,
               messageID: part.messageID,
               sessionID: part.sessionID,
+              raw: "",
+              preview: StreamingPreview.create(value.toolName, ctx.assistantMessage.path.cwd),
             }
             return
 
-          case "tool-input-delta":
+          case "tool-input-delta": {
+            const call = ctx.toolcalls[value.id]
+            if (!call) return
+            call.raw += value.delta
+            yield* session.updatePartDelta({
+              sessionID: call.sessionID,
+              messageID: call.messageID,
+              partID: call.partID,
+              field: "raw",
+              delta: value.delta,
+            })
+            // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
+            yield* EventV2.run(sync, SessionEvent.Tool.Input.Delta.Sync, {
+              sessionID: ctx.sessionID,
+              assistantMessageID: SessionEvent.messageID(ctx.assistantMessage.id),
+              callID: value.id,
+              delta: value.delta,
+              timestamp: DateTime.makeUnsafe(Date.now()),
+            })
+            yield* publishPreview(call, false)
             return
+          }
 
           case "tool-input-end": {
             // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
@@ -438,6 +479,8 @@ export const layer: Layer.Layer<
               text: "",
               timestamp: DateTime.makeUnsafe(Date.now()),
             })
+            const ended = ctx.toolcalls[value.id]
+            if (ended) yield* publishPreview(ended, true)
             return
           }
 

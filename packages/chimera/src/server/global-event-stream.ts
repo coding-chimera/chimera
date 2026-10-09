@@ -65,6 +65,11 @@ function deltaKey(event: GlobalEvent) {
   if (!properties || typeof properties !== "object") return
   const { sessionID, messageID, partID, field, delta } = properties as Record<string, unknown>
   if (typeof delta !== "string") return
+  // Merging concatenates delta strings, so only additively-applied fields may
+  // merge: "text" chunks and streamed tool-arg "raw" fragments. Discrete payloads
+  // such as "hunk" (one JSON object per completed edit op) would corrupt into
+  // invalid JSON if concatenated within the merge window.
+  if (field !== "text" && field !== "raw") return
   if (typeof sessionID !== "string" || typeof messageID !== "string" || typeof partID !== "string") return
   return [event.directory, event.project, event.workspace, sessionID, messageID, partID, field].join("\u0000")
 }

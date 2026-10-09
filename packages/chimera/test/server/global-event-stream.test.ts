@@ -157,6 +157,35 @@ describe("global event stream", () => {
     }
   })
 
+  test("merges raw tool-arg deltas but never discrete hunk deltas", async () => {
+    const stream = createGlobalEventStream({ heartbeatIntervalMs: 0, deltaMergeWindowMs: 20 })
+
+    try {
+      await stream.events.next()
+      // Discrete per-op hunk payloads are complete JSON objects: concatenating
+      // two inside the merge window would corrupt both into invalid JSON.
+      emitDelta('{"index":0,"before":"a","after":"b"}', { field: "hunk" })
+      emitDelta('{"index":1,"before":"c","after":"d"}', { field: "hunk" })
+      emitDelta('{"filePath', { field: "raw" })
+      emitDelta('":"x"}', { field: "raw" })
+
+      expect((await stream.events.next()).value?.payload?.properties).toMatchObject({
+        field: "hunk",
+        delta: '{"index":0,"before":"a","after":"b"}',
+      })
+      expect((await stream.events.next()).value?.payload?.properties).toMatchObject({
+        field: "hunk",
+        delta: '{"index":1,"before":"c","after":"d"}',
+      })
+      expect((await stream.events.next()).value?.payload?.properties).toMatchObject({
+        field: "raw",
+        delta: '{"filePath":"x"}',
+      })
+    } finally {
+      stream.close()
+    }
+  })
+
   test("keeps deltas for different parts and envelopes separate", async () => {
     const stream = createGlobalEventStream({ heartbeatIntervalMs: 0, deltaMergeWindowMs: 20 })
 
