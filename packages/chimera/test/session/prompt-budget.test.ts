@@ -33,6 +33,7 @@ const BASELINE = {
 // signal for the rendered description).
 const TOOL_BUDGETS = {
   "todowrite.txt": 9183,
+  "ast_edit.txt": 7551,
   "task.txt": 7055,
   "swarm.txt": 6951,
   "workbrief.txt": 6546,
@@ -52,7 +53,11 @@ const TOOL_BUDGETS = {
 // raised the floor to 87898.
 // 2026-10-08 re-record (ast_edit pattern mode): the pattern-mode section of the
 // always-on ast_edit.txt (2916 B -> 5722 B) raised the floor to 90704.
-const TOOL_TOTAL_BUDGET = 90704
+// 2026-10-09 re-record (ast_edit multi-file pattern mode): the `paths` addressing,
+// per-language compile semantics, skipped-vs-failed contract, 100-file cap, and
+// atomicity rules added to the always-on ast_edit.txt (5722 B -> 7551 B) raised
+// the floor to 92533.
+const TOOL_TOTAL_BUDGET = 92533
 
 // The description bytes withheld from the default model-facing set by the
 // ToolSearch defer filter: every registered deferred tool's .txt is off the
