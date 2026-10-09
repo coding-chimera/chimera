@@ -1,0 +1,3394 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "id": "a7a57b30-4435-4055-b867-a89d1d2ab4c6",
+  "prevIds": [
+    "e3f1007f-c2bb-4e0f-b528-0dc732ec3042"
+  ],
+  "ddl": [
+    {
+      "entityType": "tables",
+      "name": "project"
+    },
+    {
+      "entityType": "tables",
+      "name": "message"
+    },
+    {
+      "entityType": "tables",
+      "name": "part"
+    },
+    {
+      "entityType": "tables",
+      "name": "permission"
+    },
+    {
+      "entityType": "tables",
+      "name": "session"
+    },
+    {
+      "entityType": "tables",
+      "name": "todo"
+    },
+    {
+      "entityType": "tables",
+      "name": "session_share"
+    },
+    {
+      "entityType": "tables",
+      "name": "control_account"
+    },
+    {
+      "entityType": "tables",
+      "name": "account"
+    },
+    {
+      "entityType": "tables",
+      "name": "account_state"
+    },
+    {
+      "entityType": "tables",
+      "name": "event_sequence"
+    },
+    {
+      "entityType": "tables",
+      "name": "event"
+    },
+    {
+      "entityType": "tables",
+      "name": "workspace"
+    },
+    {
+      "entityType": "tables",
+      "name": "session_message"
+    },
+    {
+      "entityType": "tables",
+      "name": "work_brief"
+    },
+    {
+      "entityType": "tables",
+      "name": "memory_note"
+    },
+    {
+      "entityType": "tables",
+      "name": "memory_stage1_output"
+    },
+    {
+      "entityType": "tables",
+      "name": "memory_job"
+    },
+    {
+      "entityType": "tables",
+      "name": "memory_session_state"
+    },
+    {
+      "entityType": "tables",
+      "name": "model_telemetry_event"
+    },
+    {
+      "entityType": "tables",
+      "name": "model_telemetry_tombstone"
+    },
+    {
+      "entityType": "tables",
+      "name": "model_telemetry_session_binding"
+    },
+    {
+      "entityType": "tables",
+      "name": "model_telemetry_delegation"
+    },
+    {
+      "entityType": "tables",
+      "name": "model_telemetry_oracle_link"
+    },
+    {
+      "entityType": "tables",
+      "name": "session_context_epoch"
+    },
+    {
+      "entityType": "tables",
+      "name": "storage_maintenance"
+    },
+    {
+      "entityType": "columns",
+      "table": "project",
+      "name": "id",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "message",
+      "name": "id",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "part",
+      "name": "id",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "permission",
+      "name": "project_id",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session",
+      "name": "id",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "todo",
+      "name": "session_id",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session_share",
+      "name": "session_id",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "control_account",
+      "name": "email",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "account",
+      "name": "id",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "account_state",
+      "name": "id",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "event_sequence",
+      "name": "aggregate_id",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "event",
+      "name": "id",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "workspace",
+      "name": "id",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session_message",
+      "name": "id",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "work_brief",
+      "name": "session_id",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_note",
+      "name": "id",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_stage1_output",
+      "name": "session_id",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_job",
+      "name": "kind",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_session_state",
+      "name": "session_id",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_event",
+      "name": "project_id",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_tombstone",
+      "name": "project_id",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_session_binding",
+      "name": "project_id",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_delegation",
+      "name": "project_id",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_oracle_link",
+      "name": "project_id",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session_context_epoch",
+      "name": "session_id",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "storage_maintenance",
+      "name": "key",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "project",
+      "name": "worktree",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "message",
+      "name": "session_id",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "part",
+      "name": "message_id",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "permission",
+      "name": "time_created",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session",
+      "name": "project_id",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "todo",
+      "name": "content",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session_share",
+      "name": "id",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "control_account",
+      "name": "url",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "account",
+      "name": "email",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "account_state",
+      "name": "active_account_id",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "event_sequence",
+      "name": "seq",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "event",
+      "name": "aggregate_id",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "workspace",
+      "name": "type",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session_message",
+      "name": "session_id",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "work_brief",
+      "name": "data",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_note",
+      "name": "scope",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_stage1_output",
+      "name": "project_id",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_job",
+      "name": "job_key",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_session_state",
+      "name": "mode",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_event",
+      "name": "event_id",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_tombstone",
+      "name": "event_id",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_session_binding",
+      "name": "session_id",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_delegation",
+      "name": "session_id",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_oracle_link",
+      "name": "oracle_key",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session_context_epoch",
+      "name": "baseline",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "storage_maintenance",
+      "name": "time_created",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "project",
+      "name": "vcs",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "message",
+      "name": "time_created",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "part",
+      "name": "session_id",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "permission",
+      "name": "time_updated",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session",
+      "name": "parent_id",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "todo",
+      "name": "status",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session_share",
+      "name": "secret",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "control_account",
+      "name": "access_token",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "account",
+      "name": "url",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "account_state",
+      "name": "active_org_id",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "event_sequence",
+      "name": "owner_id",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "event",
+      "name": "seq",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "workspace",
+      "name": "name",
+      "type": "text",
+      "default": "''",
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session_message",
+      "name": "type",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "work_brief",
+      "name": "time_created",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_note",
+      "name": "project_id",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_stage1_output",
+      "name": "source_updated_at",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_job",
+      "name": "status",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_session_state",
+      "name": "pollution_reason",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_event",
+      "name": "content_checksum",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_tombstone",
+      "name": "content_checksum",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_session_binding",
+      "name": "episode_id",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_delegation",
+      "name": "episode_id",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_oracle_link",
+      "name": "session_id",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session_context_epoch",
+      "name": "snapshot",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "project",
+      "name": "name",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "message",
+      "name": "time_updated",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "part",
+      "name": "time_created",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "permission",
+      "name": "data",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session",
+      "name": "slug",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "todo",
+      "name": "priority",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session_share",
+      "name": "url",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "control_account",
+      "name": "refresh_token",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "account",
+      "name": "access_token",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "event",
+      "name": "type",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "workspace",
+      "name": "branch",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session_message",
+      "name": "time_created",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "work_brief",
+      "name": "time_updated",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_note",
+      "name": "text",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_stage1_output",
+      "name": "source_deleted_at",
+      "type": "integer",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_job",
+      "name": "worker_id",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_session_state",
+      "name": "time_polluted",
+      "type": "integer",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_event",
+      "name": "schema_version",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_tombstone",
+      "name": "time_compacted",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_session_binding",
+      "name": "parent_delegation_id",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_delegation",
+      "name": "decision_id",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_oracle_link",
+      "name": "delegation_id",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session_context_epoch",
+      "name": "baseline_seq",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "project",
+      "name": "icon_url",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "message",
+      "name": "data",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "part",
+      "name": "time_updated",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session",
+      "name": "directory",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "todo",
+      "name": "position",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session_share",
+      "name": "time_created",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "control_account",
+      "name": "token_expiry",
+      "type": "integer",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "account",
+      "name": "refresh_token",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "event",
+      "name": "data",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "workspace",
+      "name": "directory",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session_message",
+      "name": "time_updated",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_note",
+      "name": "source_kind",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_stage1_output",
+      "name": "payload",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_job",
+      "name": "ownership_token",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_session_state",
+      "name": "created_watermark",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_event",
+      "name": "event_type",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_tombstone",
+      "name": "time_created",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_session_binding",
+      "name": "next_attempt_index",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_delegation",
+      "name": "delegation_id",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_oracle_link",
+      "name": "episode_id",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "project",
+      "name": "icon_color",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "part",
+      "name": "data",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session",
+      "name": "title",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "todo",
+      "name": "time_created",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session_share",
+      "name": "time_updated",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "control_account",
+      "name": "active",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "account",
+      "name": "token_expiry",
+      "type": "integer",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "workspace",
+      "name": "extra",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session_message",
+      "name": "data",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_note",
+      "name": "source_session_id",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_stage1_output",
+      "name": "rollout_summary",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_job",
+      "name": "lease_until",
+      "type": "integer",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_session_state",
+      "name": "updated_watermark",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_event",
+      "name": "episode_id",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_tombstone",
+      "name": "time_updated",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_session_binding",
+      "name": "time_created",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_delegation",
+      "name": "parent_delegation_id",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_oracle_link",
+      "name": "attempt_index",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "project",
+      "name": "time_created",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session",
+      "name": "version",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "todo",
+      "name": "time_updated",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "control_account",
+      "name": "time_created",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "account",
+      "name": "time_created",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "workspace",
+      "name": "project_id",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_note",
+      "name": "source_message_id",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_stage1_output",
+      "name": "rollout_slug",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_job",
+      "name": "retry_at",
+      "type": "integer",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_session_state",
+      "name": "time_created",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_event",
+      "name": "decision_id",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_session_binding",
+      "name": "time_updated",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_delegation",
+      "name": "attempt_index",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_oracle_link",
+      "name": "verification_event_id",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "project",
+      "name": "time_updated",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session",
+      "name": "share_url",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "control_account",
+      "name": "time_updated",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "account",
+      "name": "time_updated",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_note",
+      "name": "content_checksum",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_stage1_output",
+      "name": "generated_at",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_job",
+      "name": "retry_remaining",
+      "type": "integer",
+      "default": "0",
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_session_state",
+      "name": "time_updated",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_event",
+      "name": "delegation_id",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_delegation",
+      "name": "workload",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_oracle_link",
+      "name": "verification_kind",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "project",
+      "name": "time_initialized",
+      "type": "integer",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session",
+      "name": "summary_additions",
+      "type": "integer",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_note",
+      "name": "usage_count",
+      "type": "integer",
+      "default": "0",
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_stage1_output",
+      "name": "usage_count",
+      "type": "integer",
+      "default": "0",
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_job",
+      "name": "last_error",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_event",
+      "name": "parent_delegation_id",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_delegation",
+      "name": "action",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_oracle_link",
+      "name": "status",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "project",
+      "name": "sandboxes",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session",
+      "name": "summary_deletions",
+      "type": "integer",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_note",
+      "name": "last_usage",
+      "type": "integer",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_stage1_output",
+      "name": "last_usage",
+      "type": "integer",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_job",
+      "name": "input_watermark",
+      "type": "integer",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_event",
+      "name": "attempt_index",
+      "type": "integer",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_delegation",
+      "name": "fanout",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_oracle_link",
+      "name": "trusted",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "project",
+      "name": "commands",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session",
+      "name": "summary_files",
+      "type": "integer",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_note",
+      "name": "selected_for_stage2_time_updated",
+      "type": "integer",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_stage1_output",
+      "name": "selected_for_stage2_source_updated_at",
+      "type": "integer",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_job",
+      "name": "last_success_watermark",
+      "type": "integer",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_event",
+      "name": "workload",
+      "type": "text",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_delegation",
+      "name": "terminal_event_type",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_oracle_link",
+      "name": "time_occurred",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "project",
+      "name": "icon_url_override",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session",
+      "name": "summary_diffs",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_note",
+      "name": "time_created",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_job",
+      "name": "time_started",
+      "type": "integer",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_event",
+      "name": "workload_context",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_delegation",
+      "name": "terminal_event_id",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_oracle_link",
+      "name": "time_created",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session",
+      "name": "revert",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_note",
+      "name": "time_updated",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_job",
+      "name": "time_finished",
+      "type": "integer",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_event",
+      "name": "action",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_delegation",
+      "name": "terminal_checksum",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_oracle_link",
+      "name": "time_updated",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session",
+      "name": "permission",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_note",
+      "name": "time_deleted",
+      "type": "integer",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_job",
+      "name": "time_created",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_event",
+      "name": "policy",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_delegation",
+      "name": "terminal_time",
+      "type": "integer",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session",
+      "name": "time_created",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "memory_job",
+      "name": "time_updated",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_event",
+      "name": "execution",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_delegation",
+      "name": "time_created",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session",
+      "name": "time_updated",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_event",
+      "name": "usage",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_delegation",
+      "name": "time_updated",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session",
+      "name": "time_compacting",
+      "type": "integer",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_event",
+      "name": "quota",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session",
+      "name": "time_archived",
+      "type": "integer",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_event",
+      "name": "verification",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session",
+      "name": "workspace_id",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_event",
+      "name": "feedback",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session",
+      "name": "path",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_event",
+      "name": "fanout",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session",
+      "name": "agent",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_event",
+      "name": "time_occurred",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session",
+      "name": "model",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_event",
+      "name": "time_created",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "session",
+      "name": "usage",
+      "type": "text",
+      "default": null,
+      "notNull": false,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "columns",
+      "table": "model_telemetry_event",
+      "name": "time_updated",
+      "type": "integer",
+      "default": null,
+      "notNull": true,
+      "autoincrement": false,
+      "generated": null
+    },
+    {
+      "entityType": "fks",
+      "table": "message",
+      "name": "fk_message_session_id_session_id_fk",
+      "tableTo": "session",
+      "columns": [
+        "session_id"
+      ],
+      "columnsTo": [
+        "id"
+      ],
+      "nameExplicit": true,
+      "onDelete": "CASCADE",
+      "onUpdate": "NO ACTION"
+    },
+    {
+      "entityType": "fks",
+      "table": "part",
+      "name": "fk_part_message_id_message_id_fk",
+      "tableTo": "message",
+      "columns": [
+        "message_id"
+      ],
+      "columnsTo": [
+        "id"
+      ],
+      "nameExplicit": true,
+      "onDelete": "CASCADE",
+      "onUpdate": "NO ACTION"
+    },
+    {
+      "entityType": "fks",
+      "table": "permission",
+      "name": "fk_permission_project_id_project_id_fk",
+      "tableTo": "project",
+      "columns": [
+        "project_id"
+      ],
+      "columnsTo": [
+        "id"
+      ],
+      "nameExplicit": true,
+      "onDelete": "CASCADE",
+      "onUpdate": "NO ACTION"
+    },
+    {
+      "entityType": "fks",
+      "table": "session",
+      "name": "fk_session_project_id_project_id_fk",
+      "tableTo": "project",
+      "columns": [
+        "project_id"
+      ],
+      "columnsTo": [
+        "id"
+      ],
+      "nameExplicit": true,
+      "onDelete": "CASCADE",
+      "onUpdate": "NO ACTION"
+    },
+    {
+      "entityType": "fks",
+      "table": "todo",
+      "name": "fk_todo_session_id_session_id_fk",
+      "tableTo": "session",
+      "columns": [
+        "session_id"
+      ],
+      "columnsTo": [
+        "id"
+      ],
+      "nameExplicit": true,
+      "onDelete": "CASCADE",
+      "onUpdate": "NO ACTION"
+    },
+    {
+      "entityType": "fks",
+      "table": "session_share",
+      "name": "fk_session_share_session_id_session_id_fk",
+      "tableTo": "session",
+      "columns": [
+        "session_id"
+      ],
+      "columnsTo": [
+        "id"
+      ],
+      "nameExplicit": true,
+      "onDelete": "CASCADE",
+      "onUpdate": "NO ACTION"
+    },
+    {
+      "entityType": "fks",
+      "table": "account_state",
+      "name": "fk_account_state_active_account_id_account_id_fk",
+      "tableTo": "account",
+      "columns": [
+        "active_account_id"
+      ],
+      "columnsTo": [
+        "id"
+      ],
+      "nameExplicit": true,
+      "onDelete": "SET NULL",
+      "onUpdate": "NO ACTION"
+    },
+    {
+      "entityType": "fks",
+      "table": "event",
+      "name": "fk_event_aggregate_id_event_sequence_aggregate_id_fk",
+      "tableTo": "event_sequence",
+      "columns": [
+        "aggregate_id"
+      ],
+      "columnsTo": [
+        "aggregate_id"
+      ],
+      "nameExplicit": true,
+      "onDelete": "CASCADE",
+      "onUpdate": "NO ACTION"
+    },
+    {
+      "entityType": "fks",
+      "table": "workspace",
+      "name": "fk_workspace_project_id_project_id_fk",
+      "tableTo": "project",
+      "columns": [
+        "project_id"
+      ],
+      "columnsTo": [
+        "id"
+      ],
+      "nameExplicit": true,
+      "onDelete": "CASCADE",
+      "onUpdate": "NO ACTION"
+    },
+    {
+      "entityType": "fks",
+      "table": "session_message",
+      "name": "fk_session_message_session_id_session_id_fk",
+      "tableTo": "session",
+      "columns": [
+        "session_id"
+      ],
+      "columnsTo": [
+        "id"
+      ],
+      "nameExplicit": true,
+      "onDelete": "CASCADE",
+      "onUpdate": "NO ACTION"
+    },
+    {
+      "entityType": "fks",
+      "table": "work_brief",
+      "name": "fk_work_brief_session_id_session_id_fk",
+      "tableTo": "session",
+      "columns": [
+        "session_id"
+      ],
+      "columnsTo": [
+        "id"
+      ],
+      "nameExplicit": true,
+      "onDelete": "CASCADE",
+      "onUpdate": "NO ACTION"
+    },
+    {
+      "entityType": "fks",
+      "table": "model_telemetry_event",
+      "name": "fk_model_telemetry_event_project_id_project_id_fk",
+      "tableTo": "project",
+      "columns": [
+        "project_id"
+      ],
+      "columnsTo": [
+        "id"
+      ],
+      "nameExplicit": true,
+      "onDelete": "CASCADE",
+      "onUpdate": "NO ACTION"
+    },
+    {
+      "entityType": "fks",
+      "table": "model_telemetry_tombstone",
+      "name": "fk_model_telemetry_tombstone_project_id_project_id_fk",
+      "tableTo": "project",
+      "columns": [
+        "project_id"
+      ],
+      "columnsTo": [
+        "id"
+      ],
+      "nameExplicit": true,
+      "onDelete": "CASCADE",
+      "onUpdate": "NO ACTION"
+    },
+    {
+      "entityType": "fks",
+      "table": "model_telemetry_session_binding",
+      "name": "fk_model_telemetry_session_binding_session_id_session_id_fk",
+      "tableTo": "session",
+      "columns": [
+        "session_id"
+      ],
+      "columnsTo": [
+        "id"
+      ],
+      "nameExplicit": true,
+      "onDelete": "CASCADE",
+      "onUpdate": "NO ACTION"
+    },
+    {
+      "entityType": "fks",
+      "table": "model_telemetry_session_binding",
+      "name": "fk_model_telemetry_session_binding_project_id_project_id_fk",
+      "tableTo": "project",
+      "columns": [
+        "project_id"
+      ],
+      "columnsTo": [
+        "id"
+      ],
+      "nameExplicit": true,
+      "onDelete": "CASCADE",
+      "onUpdate": "NO ACTION"
+    },
+    {
+      "entityType": "fks",
+      "table": "model_telemetry_delegation",
+      "name": "fk_model_telemetry_delegation_session_id_session_id_fk",
+      "tableTo": "session",
+      "columns": [
+        "session_id"
+      ],
+      "columnsTo": [
+        "id"
+      ],
+      "nameExplicit": true,
+      "onDelete": "CASCADE",
+      "onUpdate": "NO ACTION"
+    },
+    {
+      "entityType": "fks",
+      "table": "model_telemetry_delegation",
+      "name": "fk_model_telemetry_delegation_project_id_project_id_fk",
+      "tableTo": "project",
+      "columns": [
+        "project_id"
+      ],
+      "columnsTo": [
+        "id"
+      ],
+      "nameExplicit": true,
+      "onDelete": "CASCADE",
+      "onUpdate": "NO ACTION"
+    },
+    {
+      "entityType": "fks",
+      "table": "model_telemetry_oracle_link",
+      "name": "fk_model_telemetry_oracle_link_project_id_project_id_fk",
+      "tableTo": "project",
+      "columns": [
+        "project_id"
+      ],
+      "columnsTo": [
+        "id"
+      ],
+      "nameExplicit": true,
+      "onDelete": "CASCADE",
+      "onUpdate": "NO ACTION"
+    },
+    {
+      "entityType": "fks",
+      "table": "session_context_epoch",
+      "name": "fk_session_context_epoch_session_id_session_id_fk",
+      "tableTo": "session",
+      "columns": [
+        "session_id"
+      ],
+      "columnsTo": [
+        "id"
+      ],
+      "nameExplicit": true,
+      "onDelete": "CASCADE",
+      "onUpdate": "NO ACTION"
+    },
+    {
+      "entityType": "pks",
+      "table": "todo",
+      "name": "todo_pk",
+      "columns": [
+        "session_id",
+        "position"
+      ],
+      "nameExplicit": false
+    },
+    {
+      "entityType": "pks",
+      "table": "control_account",
+      "name": "control_account_pk",
+      "columns": [
+        "email",
+        "url"
+      ],
+      "nameExplicit": false
+    },
+    {
+      "entityType": "pks",
+      "table": "memory_job",
+      "name": "memory_job_pk",
+      "columns": [
+        "kind",
+        "job_key"
+      ],
+      "nameExplicit": false
+    },
+    {
+      "entityType": "pks",
+      "table": "model_telemetry_event",
+      "name": "model_telemetry_event_pk",
+      "columns": [
+        "project_id",
+        "event_id"
+      ],
+      "nameExplicit": false
+    },
+    {
+      "entityType": "pks",
+      "table": "model_telemetry_tombstone",
+      "name": "model_telemetry_tombstone_pk",
+      "columns": [
+        "project_id",
+        "event_id"
+      ],
+      "nameExplicit": false
+    },
+    {
+      "entityType": "pks",
+      "table": "model_telemetry_session_binding",
+      "name": "model_telemetry_session_binding_pk",
+      "columns": [
+        "project_id",
+        "session_id"
+      ],
+      "nameExplicit": false
+    },
+    {
+      "entityType": "pks",
+      "table": "model_telemetry_delegation",
+      "name": "model_telemetry_delegation_pk",
+      "columns": [
+        "project_id",
+        "delegation_id"
+      ],
+      "nameExplicit": false
+    },
+    {
+      "entityType": "pks",
+      "table": "model_telemetry_oracle_link",
+      "name": "model_telemetry_oracle_link_pk",
+      "columns": [
+        "project_id",
+        "oracle_key"
+      ],
+      "nameExplicit": false
+    },
+    {
+      "entityType": "pks",
+      "table": "project",
+      "name": "project_pk",
+      "nameExplicit": false,
+      "columns": [
+        "id"
+      ]
+    },
+    {
+      "entityType": "pks",
+      "table": "message",
+      "name": "message_pk",
+      "nameExplicit": false,
+      "columns": [
+        "id"
+      ]
+    },
+    {
+      "entityType": "pks",
+      "table": "part",
+      "name": "part_pk",
+      "nameExplicit": false,
+      "columns": [
+        "id"
+      ]
+    },
+    {
+      "entityType": "pks",
+      "table": "permission",
+      "name": "permission_pk",
+      "nameExplicit": false,
+      "columns": [
+        "project_id"
+      ]
+    },
+    {
+      "entityType": "pks",
+      "table": "session",
+      "name": "session_pk",
+      "nameExplicit": false,
+      "columns": [
+        "id"
+      ]
+    },
+    {
+      "entityType": "pks",
+      "table": "session_share",
+      "name": "session_share_pk",
+      "nameExplicit": false,
+      "columns": [
+        "session_id"
+      ]
+    },
+    {
+      "entityType": "pks",
+      "table": "account",
+      "name": "account_pk",
+      "nameExplicit": false,
+      "columns": [
+        "id"
+      ]
+    },
+    {
+      "entityType": "pks",
+      "table": "account_state",
+      "name": "account_state_pk",
+      "nameExplicit": false,
+      "columns": [
+        "id"
+      ]
+    },
+    {
+      "entityType": "pks",
+      "table": "event_sequence",
+      "name": "event_sequence_pk",
+      "nameExplicit": false,
+      "columns": [
+        "aggregate_id"
+      ]
+    },
+    {
+      "entityType": "pks",
+      "table": "event",
+      "name": "event_pk",
+      "nameExplicit": false,
+      "columns": [
+        "id"
+      ]
+    },
+    {
+      "entityType": "pks",
+      "table": "workspace",
+      "name": "workspace_pk",
+      "nameExplicit": false,
+      "columns": [
+        "id"
+      ]
+    },
+    {
+      "entityType": "pks",
+      "table": "session_message",
+      "name": "session_message_pk",
+      "nameExplicit": false,
+      "columns": [
+        "id"
+      ]
+    },
+    {
+      "entityType": "pks",
+      "table": "work_brief",
+      "name": "work_brief_pk",
+      "nameExplicit": false,
+      "columns": [
+        "session_id"
+      ]
+    },
+    {
+      "entityType": "pks",
+      "table": "memory_note",
+      "name": "memory_note_pk",
+      "nameExplicit": false,
+      "columns": [
+        "id"
+      ]
+    },
+    {
+      "entityType": "pks",
+      "table": "memory_stage1_output",
+      "name": "memory_stage1_output_pk",
+      "nameExplicit": false,
+      "columns": [
+        "session_id"
+      ]
+    },
+    {
+      "entityType": "pks",
+      "table": "memory_session_state",
+      "name": "memory_session_state_pk",
+      "nameExplicit": false,
+      "columns": [
+        "session_id"
+      ]
+    },
+    {
+      "entityType": "pks",
+      "table": "session_context_epoch",
+      "name": "session_context_epoch_pk",
+      "nameExplicit": false,
+      "columns": [
+        "session_id"
+      ]
+    },
+    {
+      "entityType": "pks",
+      "table": "storage_maintenance",
+      "name": "storage_maintenance_pk",
+      "nameExplicit": false,
+      "columns": [
+        "key"
+      ]
+    },
+    {
+      "entityType": "indexes",
+      "table": "memory_job",
+      "name": "memory_job_kind_status_retry_lease_idx",
+      "isUnique": false,
+      "origin": "manual",
+      "where": null,
+      "columns": [
+        {
+          "value": "kind",
+          "isExpression": false
+        },
+        {
+          "value": "status",
+          "isExpression": false
+        },
+        {
+          "value": "retry_at",
+          "isExpression": false
+        },
+        {
+          "value": "lease_until",
+          "isExpression": false
+        }
+      ]
+    },
+    {
+      "entityType": "indexes",
+      "table": "memory_note",
+      "name": "memory_note_selected_for_stage2_idx",
+      "isUnique": false,
+      "origin": "manual",
+      "where": null,
+      "columns": [
+        {
+          "value": "selected_for_stage2_time_updated",
+          "isExpression": false
+        }
+      ]
+    },
+    {
+      "entityType": "indexes",
+      "table": "memory_note",
+      "name": "memory_note_content_checksum_idx",
+      "isUnique": false,
+      "origin": "manual",
+      "where": null,
+      "columns": [
+        {
+          "value": "content_checksum",
+          "isExpression": false
+        }
+      ]
+    },
+    {
+      "entityType": "indexes",
+      "table": "memory_note",
+      "name": "memory_note_source_session_idx",
+      "isUnique": false,
+      "origin": "manual",
+      "where": null,
+      "columns": [
+        {
+          "value": "source_session_id",
+          "isExpression": false
+        }
+      ]
+    },
+    {
+      "entityType": "indexes",
+      "table": "memory_note",
+      "name": "memory_note_scope_project_time_deleted_idx",
+      "isUnique": false,
+      "origin": "manual",
+      "where": null,
+      "columns": [
+        {
+          "value": "scope",
+          "isExpression": false
+        },
+        {
+          "value": "project_id",
+          "isExpression": false
+        },
+        {
+          "value": "time_deleted",
+          "isExpression": false
+        }
+      ]
+    },
+    {
+      "entityType": "indexes",
+      "table": "memory_session_state",
+      "name": "memory_session_state_mode_updated_watermark_idx",
+      "isUnique": false,
+      "origin": "manual",
+      "where": null,
+      "columns": [
+        {
+          "value": "mode",
+          "isExpression": false
+        },
+        {
+          "value": "updated_watermark",
+          "isExpression": false
+        }
+      ]
+    },
+    {
+      "entityType": "indexes",
+      "table": "memory_stage1_output",
+      "name": "memory_stage1_output_selected_for_stage2_idx",
+      "isUnique": false,
+      "origin": "manual",
+      "where": null,
+      "columns": [
+        {
+          "value": "selected_for_stage2_source_updated_at",
+          "isExpression": false
+        }
+      ]
+    },
+    {
+      "entityType": "indexes",
+      "table": "memory_stage1_output",
+      "name": "memory_stage1_output_project_generated_at_idx",
+      "isUnique": false,
+      "origin": "manual",
+      "where": null,
+      "columns": [
+        {
+          "value": "project_id",
+          "isExpression": false
+        },
+        {
+          "value": "generated_at",
+          "isExpression": false
+        }
+      ]
+    },
+    {
+      "entityType": "indexes",
+      "table": "memory_stage1_output",
+      "name": "memory_stage1_output_source_updated_at_idx",
+      "isUnique": false,
+      "origin": "manual",
+      "where": null,
+      "columns": [
+        {
+          "value": "source_updated_at",
+          "isExpression": false
+        },
+        {
+          "value": "session_id",
+          "isExpression": false
+        }
+      ]
+    },
+    {
+      "entityType": "indexes",
+      "table": "message",
+      "name": "message_session_time_created_id_idx",
+      "isUnique": false,
+      "origin": "manual",
+      "where": null,
+      "columns": [
+        {
+          "value": "session_id",
+          "isExpression": false
+        },
+        {
+          "value": "time_created",
+          "isExpression": false
+        },
+        {
+          "value": "id",
+          "isExpression": false
+        }
+      ]
+    },
+    {
+      "entityType": "indexes",
+      "table": "model_telemetry_delegation",
+      "name": "model_telemetry_delegation_project_session_attempt_idx",
+      "isUnique": false,
+      "origin": "manual",
+      "where": null,
+      "columns": [
+        {
+          "value": "project_id",
+          "isExpression": false
+        },
+        {
+          "value": "session_id",
+          "isExpression": false
+        },
+        {
+          "value": "attempt_index",
+          "isExpression": false
+        }
+      ]
+    },
+    {
+      "entityType": "indexes",
+      "table": "model_telemetry_event",
+      "name": "model_telemetry_event_project_event_type_time_occurred_idx",
+      "isUnique": false,
+      "origin": "manual",
+      "where": null,
+      "columns": [
+        {
+          "value": "project_id",
+          "isExpression": false
+        },
+        {
+          "value": "event_type",
+          "isExpression": false
+        },
+        {
+          "value": "time_occurred",
+          "isExpression": false
+        }
+      ]
+    },
+    {
+      "entityType": "indexes",
+      "table": "model_telemetry_event",
+      "name": "model_telemetry_event_project_delegation_time_occurred_idx",
+      "isUnique": false,
+      "origin": "manual",
+      "where": null,
+      "columns": [
+        {
+          "value": "project_id",
+          "isExpression": false
+        },
+        {
+          "value": "delegation_id",
+          "isExpression": false
+        },
+        {
+          "value": "time_occurred",
+          "isExpression": false
+        }
+      ]
+    },
+    {
+      "entityType": "indexes",
+      "table": "model_telemetry_event",
+      "name": "model_telemetry_event_project_episode_time_occurred_idx",
+      "isUnique": false,
+      "origin": "manual",
+      "where": null,
+      "columns": [
+        {
+          "value": "project_id",
+          "isExpression": false
+        },
+        {
+          "value": "episode_id",
+          "isExpression": false
+        },
+        {
+          "value": "time_occurred",
+          "isExpression": false
+        }
+      ]
+    },
+    {
+      "entityType": "indexes",
+      "table": "model_telemetry_event",
+      "name": "model_telemetry_event_project_time_occurred_event_id_idx",
+      "isUnique": false,
+      "origin": "manual",
+      "where": null,
+      "columns": [
+        {
+          "value": "project_id",
+          "isExpression": false
+        },
+        {
+          "value": "time_occurred",
+          "isExpression": false
+        },
+        {
+          "value": "event_id",
+          "isExpression": false
+        }
+      ]
+    },
+    {
+      "entityType": "indexes",
+      "table": "model_telemetry_oracle_link",
+      "name": "model_telemetry_oracle_link_project_delegation_idx",
+      "isUnique": false,
+      "origin": "manual",
+      "where": null,
+      "columns": [
+        {
+          "value": "project_id",
+          "isExpression": false
+        },
+        {
+          "value": "delegation_id",
+          "isExpression": false
+        }
+      ]
+    },
+    {
+      "entityType": "indexes",
+      "table": "model_telemetry_oracle_link",
+      "name": "model_telemetry_oracle_link_project_session_idx",
+      "isUnique": false,
+      "origin": "manual",
+      "where": null,
+      "columns": [
+        {
+          "value": "project_id",
+          "isExpression": false
+        },
+        {
+          "value": "session_id",
+          "isExpression": false
+        }
+      ]
+    },
+    {
+      "entityType": "indexes",
+      "table": "model_telemetry_session_binding",
+      "name": "model_telemetry_session_binding_project_episode_idx",
+      "isUnique": false,
+      "origin": "manual",
+      "where": null,
+      "columns": [
+        {
+          "value": "project_id",
+          "isExpression": false
+        },
+        {
+          "value": "episode_id",
+          "isExpression": false
+        }
+      ]
+    },
+    {
+      "entityType": "indexes",
+      "table": "model_telemetry_tombstone",
+      "name": "model_telemetry_tombstone_time_compacted_idx",
+      "isUnique": false,
+      "origin": "manual",
+      "where": null,
+      "columns": [
+        {
+          "value": "time_compacted",
+          "isExpression": false
+        }
+      ]
+    },
+    {
+      "entityType": "indexes",
+      "table": "part",
+      "name": "part_message_id_id_idx",
+      "isUnique": false,
+      "origin": "manual",
+      "where": null,
+      "columns": [
+        {
+          "value": "message_id",
+          "isExpression": false
+        },
+        {
+          "value": "id",
+          "isExpression": false
+        }
+      ]
+    },
+    {
+      "entityType": "indexes",
+      "table": "part",
+      "name": "part_session_idx",
+      "isUnique": false,
+      "origin": "manual",
+      "where": null,
+      "columns": [
+        {
+          "value": "session_id",
+          "isExpression": false
+        }
+      ]
+    },
+    {
+      "entityType": "indexes",
+      "table": "session",
+      "name": "session_workspace_idx",
+      "isUnique": false,
+      "origin": "manual",
+      "where": null,
+      "columns": [
+        {
+          "value": "workspace_id",
+          "isExpression": false
+        }
+      ]
+    },
+    {
+      "entityType": "indexes",
+      "table": "session",
+      "name": "session_parent_idx",
+      "isUnique": false,
+      "origin": "manual",
+      "where": null,
+      "columns": [
+        {
+          "value": "parent_id",
+          "isExpression": false
+        }
+      ]
+    },
+    {
+      "entityType": "indexes",
+      "table": "session",
+      "name": "session_project_idx",
+      "isUnique": false,
+      "origin": "manual",
+      "where": null,
+      "columns": [
+        {
+          "value": "project_id",
+          "isExpression": false
+        }
+      ]
+    },
+    {
+      "entityType": "indexes",
+      "table": "session_message",
+      "name": "session_message_time_created_idx",
+      "isUnique": false,
+      "origin": "manual",
+      "where": null,
+      "columns": [
+        {
+          "value": "time_created",
+          "isExpression": false
+        }
+      ]
+    },
+    {
+      "entityType": "indexes",
+      "table": "session_message",
+      "name": "session_message_session_type_idx",
+      "isUnique": false,
+      "origin": "manual",
+      "where": null,
+      "columns": [
+        {
+          "value": "session_id",
+          "isExpression": false
+        },
+        {
+          "value": "type",
+          "isExpression": false
+        }
+      ]
+    },
+    {
+      "entityType": "indexes",
+      "table": "session_message",
+      "name": "session_message_session_idx",
+      "isUnique": false,
+      "origin": "manual",
+      "where": null,
+      "columns": [
+        {
+          "value": "session_id",
+          "isExpression": false
+        }
+      ]
+    },
+    {
+      "entityType": "indexes",
+      "table": "todo",
+      "name": "todo_session_idx",
+      "isUnique": false,
+      "origin": "manual",
+      "where": null,
+      "columns": [
+        {
+          "value": "session_id",
+          "isExpression": false
+        }
+      ]
+    }
+  ],
+  "renames": []
+}
