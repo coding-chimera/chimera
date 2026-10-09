@@ -343,7 +343,7 @@ function predesignArtifact(root: string) {
   return path.join(artifactDir(root), "predesign-runs.jsonl")
 }
 
-function toolProvenanceArtifact(root: string) {
+export function toolProvenanceArtifact(root: string) {
   return path.join(artifactDir(root), TOOL_PROVENANCE_FILE)
 }
 
@@ -1079,13 +1079,14 @@ export const requirePredesignForMutation: (input: MutationPredesignInput) => Eff
   )
   const risks = files.map(predesignRisk)
   const risky = risks.filter((risk) => risk.highRisk)
-  if (!isInitialized(root)) return { required: false, allowed: true as const, files, risks }
   const destructiveRisk = Boolean(input.destructive || input.rename || input.multiFile) && risky.length > 0
   const required = risky.length > 0 || destructiveRisk
   // Advisory edit-intent claims gate every declared file regardless of risk
-  // classification and regardless of predesign availability: coordination is
-  // orthogonal to the predesign ceremony, and a blocked session queues as a
-  // waiter so the holder's release wakes it (L2 inject channel).
+  // classification, predesign availability, and graph initialization:
+  // coordination state lives in the project store (lazily created by the
+  // predesign flow) and is enforced even when the graph was never
+  // initialized; a blocked session queues as a waiter so the holder's
+  // release wakes it (L2 inject channel).
   const claimConflicts = yield* EditIntentClaims.checkMutation({
     projectRoot: root,
     sessionID: input.ctx.sessionID,
@@ -1102,6 +1103,11 @@ export const requirePredesignForMutation: (input: MutationPredesignInput) => Eff
       result: EditIntentClaims.blockedResult({ toolID: input.toolID, conflicts: claimConflicts }),
     }
   }
+  // The predesign-evidence ceremony stays graph-gated: without an
+  // initialized graph there is no impact evidence to demand and mutation
+  // provenance tracking is inactive, so the risky-mutation requirement
+  // degrades off (claims enforcement above is unaffected).
+  if (!isInitialized(root)) return { required: false, allowed: true as const, files, risks }
   if (!required) return { required, allowed: true as const, files, risks }
   if (!(yield* predesignToolAvailable(input.ctx))) return { required: false, allowed: true as const, files, risks }
 

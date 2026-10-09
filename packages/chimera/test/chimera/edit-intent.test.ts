@@ -6,6 +6,7 @@ import { Chimera } from "@/chimera"
 import { EditIntentClaims } from "@/chimera/edit-intent"
 import {
   currentHostBootID,
+  closeStoreConnections,
   readActiveEditIntentClaims,
   readEditIntentWaiters,
   recordPredesignRun,
@@ -39,7 +40,7 @@ function gateCtx(sessionID: string) {
   }
 }
 
-/** Store functions only open an existing project DB; they must never create graph data. */
+/** Pre-create a graph-initialized project DB so store functions open an existing file; claim writes may also lazily create a store-only DB (never graph data) in projects left uninitialized. */
 async function dbDir() {
   const tmp = await tmpdir()
   DatabaseConnection.initialize(getDatabasePath(tmp.path)).close()
@@ -227,8 +228,10 @@ describe("edit-intent claims store", () => {
     expect(await Effect.runPromise(EditIntentClaims.drainForSession({ projectRoot: tmp.path, sessionID: "ses_b" }))).toHaveLength(0)
   })
 
-  test("claims degrade open when no database exists", async () => {
+  test("reads degrade open on an absent store, while claim writes lazily create a store-only database", async () => {
     await using tmp = await tmpdir()
+    // Bare gate reads and release/drain probes on a project with no claims
+    // stay empty and must not mint a database out of nothing.
     const conflicts = await Effect.runPromise(
       EditIntentClaims.checkMutation({
         projectRoot: tmp.path,
@@ -240,14 +243,46 @@ describe("edit-intent claims store", () => {
     expect(conflicts).toHaveLength(0)
     expect(await Effect.runPromise(EditIntentClaims.releaseForSession({ projectRoot: tmp.path, sessionID: "ses_a", reason: "session_idle" }))).toHaveLength(0)
     expect(await Effect.runPromise(EditIntentClaims.drainForSession({ projectRoot: tmp.path, sessionID: "ses_b" }))).toHaveLength(0)
-    expect(await Effect.runPromise(EditIntentClaims.registerFromPredesign({
+    expect(await Bun.file(getDatabasePath(tmp.path)).exists()).toBe(false)
+    // Predesign-style claim registration persists anyway: the explicit write
+    // flow creates the coordination store on demand.
+    const registeredResult = await Effect.runPromise(EditIntentClaims.registerFromPredesign({
       projectRoot: tmp.path,
       sessionID: "ses_a",
       agent: "build",
       predesignID: "predesign_a",
-      intent: "no db",
+      intent: "no graph",
       files: ["f.ts"],
-    }))).toEqual({ registered: [], conflicts: [] })
+    }))
+    expect(registeredResult.conflicts).toEqual([])
+    expect(registeredResult.registered.map((claim) => claim.filePath)).toEqual(["f.ts"])
+    // The lazily created file is store-only: the graph stays uninitialized.
+    // (Release pooled connections first so the schema probe stats the file
+    // as its own writer left it — closeStoreConnections returns void.)
+    closeStoreConnections()
+    expect(CodeGraph.isInitialized(tmp.path)).toBe(false)
+    // A foreign session's gate read now sees the claim and blocks it without any graph.
+    const blocked = await Effect.runPromise(
+      EditIntentClaims.checkMutation({
+        projectRoot: tmp.path,
+        sessionID: "ses_b",
+        toolID: "edit",
+        files: [{ absolutePath: path.join(tmp.path, "f.ts"), graphPath: "f.ts" }],
+      }),
+    )
+    expect(blocked).toHaveLength(1)
+    expect(blocked[0]!.holder.sessionID).toBe("ses_a")
+    // A later explicit graph init applies the graph schema in place over the
+    // store-only file; coordination rows survive unchanged. Releasing the
+    // pooled store connections first and folding the WAL into the main file
+    // (what a real cross-process init's last-connection close does) makes
+    // the schema visible to the stat+mtime-keyed initialization probe.
+    closeStoreConnections()
+    const init = DatabaseConnection.initialize(getDatabasePath(tmp.path))
+    init.getDb().pragma("wal_checkpoint(TRUNCATE)")
+    init.close()
+    expect(CodeGraph.isInitialized(tmp.path)).toBe(true)
+    expect(await readActiveEditIntentClaims(tmp.path, { files: ["f.ts"] })).toHaveLength(1)
   })
 })
 
@@ -258,6 +293,51 @@ describe("edit-intent claim gate (requirePredesignForMutation)", () => {
     graph.close()
     return test
   })
+
+  it.instance("enforces claims in a project whose graph was never initialized", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* EditIntentClaims.registerFromPredesign({
+        projectRoot: test.directory,
+        sessionID: "ses_holder",
+        agent: "build",
+        predesignID: "predesign_nograph",
+        intent: "holder work without a graph",
+        files: ["notes.md"],
+      })
+      expect(CodeGraph.isInitialized(test.directory)).toBe(false)
+
+      const blocked = yield* Chimera.requirePredesignForMutation({
+        toolID: "write",
+        ctx: gateCtx("ses_stranger"),
+        files: [path.join(test.directory, "notes.md")],
+      })
+      expect(blocked.allowed).toBe(false)
+      if (blocked.allowed) return
+      expect(blocked.blockedBy).toBe("edit-intent-claim")
+      expect(blocked.result.output).toContain("ses_holder")
+      expect(blocked.result.output).toContain("holder work without a graph")
+
+      // The predesign-evidence ceremony stays graph-gated: a high-risk path
+      // is not demanded without an initialized graph.
+      const allowed = yield* Chimera.requirePredesignForMutation({
+        toolID: "write",
+        ctx: gateCtx("ses_stranger"),
+        files: [path.join(test.directory, "src/tool/some-surface.ts")],
+      })
+      expect(allowed.allowed).toBe(true)
+      if (!allowed.allowed) return
+      expect(allowed.required).toBe(false)
+      // And the claimed file unblocks once the holder releases.
+      yield* EditIntentClaims.releaseForSession({ projectRoot: test.directory, sessionID: "ses_holder", reason: "explicit" })
+      const after = yield* Chimera.requirePredesignForMutation({
+        toolID: "write",
+        ctx: gateCtx("ses_stranger"),
+        files: [path.join(test.directory, "notes.md")],
+      })
+      expect(after.allowed).toBe(true)
+    }),
+  )
 
   it.instance("blocks another session's mutation on a claimed file and queues it as a waiter", () =>
     Effect.gen(function* () {

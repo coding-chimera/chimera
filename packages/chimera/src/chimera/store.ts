@@ -860,9 +860,32 @@ export function closeStoreConnections() {
   }
 }
 
-async function withDb<T>(projectRoot: string, fn: (db: ChimeraDb, dbPath: string) => T) {
+/**
+ * Lazily create a store-only database (Chimera overlay tables, NO graph
+ * schema — `isInitialized` stays false until an explicit `chimera graph
+ * init`, which then applies the graph schema in place over this file).
+ * The predesign/claim write flows pass `ensureStore` so cross-session edit
+ * coordination persists even in projects that never initialized the graph;
+ * the schema_versions stamp kept by initializeStoreOnly stops
+ * DatabaseConnection.open from sneaking graph tables in via migration.
+ * Read paths and graph-side writes never create: a bare gate check or an
+ * idle-release probe must not mint a database out of nothing.
+ */
+async function ensureStoreDatabase(dbPath: string) {
+  if (await Bun.file(dbPath).exists()) return true
+  try {
+    DatabaseConnection.initializeStoreOnly(dbPath, { storageExtensions: [CHIMERA_STORAGE_EXTENSION] }).close()
+    return true
+  } catch {
+    // Creation race: another writer won — the file being present now is
+    // just as good as having created it ourselves.
+    return Bun.file(dbPath).exists()
+  }
+}
+
+async function withDb<T>(projectRoot: string, fn: (db: ChimeraDb, dbPath: string) => T, options: { ensureStore?: boolean } = {}) {
   const dbPath = databaseStorePath(projectRoot)
-  if (!(await Bun.file(dbPath).exists())) return undefined
+  if (!(await Bun.file(dbPath).exists()) && !(options.ensureStore && (await ensureStoreDatabase(dbPath)))) return undefined
   try {
     const connection = acquireStoreConnection(dbPath, false)
     return fn(connection.getDb(), dbPath)
@@ -1557,7 +1580,7 @@ export async function recordPredesignRun(projectRoot: string, artifact: string, 
       record.createdAt,
     )
     return true
-  })
+  }, { ensureStore: true })
   if (!wrote) await appendJsonl(artifact, record)
   return record
 }
@@ -1758,7 +1781,7 @@ export async function registerEditIntentClaims(projectRoot: string, input: EditI
       ...files,
     )
     return registered
-  })
+  }, { ensureStore: true })
   return records ?? []
 }
 
@@ -1881,7 +1904,7 @@ export async function registerEditIntentWaiter(
         updated_at = excluded.updated_at
     `).run(input.sessionID, filePath, input.blockerSessionID, input.reason ?? null, host?.pid ?? null, host?.bootID ?? null, now, now)
     return true
-  })
+  }, { ensureStore: true })
   return wrote ?? false
 }
 
