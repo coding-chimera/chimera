@@ -775,6 +775,9 @@ export default function Layout(props: ParentProps) {
             const next = items.map((x) => x.info).filter((m): m is Message => !!m?.id)
             const sorted = mergeByID([], next)
             const stale = markPrefetched(directory, sessionID)
+            // No response = network-level failure; throw inside retry() so the prefetch fails,
+            // non-transient and rethrown, exactly like the old TypeError did.
+            if (!messages.response) throw new Error("Session messages prefetch failed: no response from server")
             const cursor = messages.response.headers.get("x-next-cursor") ?? undefined
             const meta = {
               limit: sorted.length,
