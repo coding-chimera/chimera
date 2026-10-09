@@ -131,6 +131,14 @@ async function copyKernelPrebuild(targetBinDir: string, target: NpmPlatformTarge
 }
 
 const singleFlag = process.argv.includes("--single")
+// Cross-leg local builds: --platform=<leg> restricts the matrix to exactly one
+// npm platform target ("linux-x64" or the full platform package name). Host-only
+// steps (codesign, smoke test) stay gated on the current platform, so a foreign
+// leg builds and packs without executing any fresh binary on this machine.
+const platformFlag = process.argv.find((arg) => arg.startsWith("--platform="))?.slice("--platform=".length)
+if (platformFlag && singleFlag) {
+  throw new Error("--platform and --single are mutually exclusive: --platform selects one cross leg, --single builds the host leg")
+}
 const baselineFlag = process.argv.includes("--baseline")
 const skipInstall = process.argv.includes("--skip-install")
 const sourcemapsFlag = process.argv.includes("--sourcemaps")
@@ -236,26 +244,38 @@ const embeddedNewWebUIFileMap = embedNewWebUi
   ? await createEmbeddedWebUIBundle({ label: "NewWeb", packageDir: "../../newweb" })
   : null
 
-const targets = singleFlag
+const targets = platformFlag
   ? npmPlatformTargets.filter((item) => {
-      if (item.os !== process.platform || item.arch !== process.arch) {
-        return false
-      }
-
-      // When building for the current platform, prefer a single native binary by default.
-      // Baseline binaries require additional Bun artifacts and can be flaky to download.
-      if (item.avx2 === false) {
-        return baselineFlag
-      }
-
-      // also skip abi-specific builds for the same reason
-      if (item.abi !== undefined) {
-        return false
-      }
-
-      return true
+      const legName = platformPackageName(pkg.name, item)
+      return legName === platformFlag || legName === `${pkg.name}-${platformFlag}`
     })
-  : npmPlatformTargets
+  : singleFlag
+    ? npmPlatformTargets.filter((item) => {
+        if (item.os !== process.platform || item.arch !== process.arch) {
+          return false
+        }
+
+        // When building for the current platform, prefer a single native binary by default.
+        // Baseline binaries require additional Bun artifacts and can be flaky to download.
+        if (item.avx2 === false) {
+          return baselineFlag
+        }
+
+        // also skip abi-specific builds for the same reason
+        if (item.abi !== undefined) {
+          return false
+        }
+
+        return true
+      })
+    : npmPlatformTargets
+if (platformFlag && targets.length !== 1) {
+  throw new Error(
+    `--platform=${platformFlag} must select exactly one leg (matched: ${targets
+      .map((item) => platformPackageName(pkg.name, item))
+      .join(", ") || "none"}; e.g. "linux-x64")`,
+  )
+}
 
 const preservedTarballDir = preserveNpmTarballs
   ? await fs.promises.mkdtemp(path.join(os.tmpdir(), "chimera-npm-tarballs-"))
