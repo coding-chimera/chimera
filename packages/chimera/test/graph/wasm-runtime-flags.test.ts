@@ -85,3 +85,76 @@ describe('buildRelaunchArgv', () => {
     }
   });
 });
+
+// =============================================================================
+// Runtime split: Bun must be skipped, Node must keep the re-exec.
+//
+// `chimera graph` is also run under Bun (`bun run src/index.ts graph ...`), and
+// Bun (a) impersonates Node in `process.versions.node`, (b) embeds its own V8,
+// so the turboshaft Zone OOM the flag exists to prevent does not apply, and
+// (c) parses its own argv before the script path, which turns the flag-first
+// re-exec into a routing failure (`error: unknown command 'graph'`).
+//
+// Each case runs in a child process, because the split reads process-level
+// state: `process.versions` is stubbed to simulate the runtime and
+// `process.execPath` is pointed at /bin/echo, so the argv a re-exec *would*
+// use is recorded on stdout instead of launching anything.
+// =============================================================================
+
+const modulePath = path.join(import.meta.dir, '..', '..', 'src', 'graph', 'extraction', 'wasm-runtime-flags.ts');
+
+type HarnessRun = { status: number | null; output: string; relaunchedArgv: string };
+
+function runRelaunchHarness(versions: Record<string, string>): HarnessRun {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-relaunch-runtime-'));
+  try {
+    const harness = path.join(dir, 'harness.ts');
+    // The script the relaunch would re-invoke; echoed back by the fake execPath so
+    // the recorded argv can be inspected.
+    const scriptPath = path.join(dir, 'cli.ts');
+    fs.writeFileSync(
+      harness,
+      [
+        `import { relaunchWithWasmRuntimeFlagsIfNeeded } from ${JSON.stringify(modulePath)};`,
+        'const hostExecPath = process.execPath;',
+        `Object.defineProperty(process, 'versions', { value: ${JSON.stringify(versions)}, configurable: true, writable: true });`,
+        "Object.defineProperty(process, 'execArgv', { value: [], configurable: true, writable: true });",
+        "Object.defineProperty(process, 'execPath', { value: '/bin/echo', configurable: true, writable: true });",
+        `relaunchWithWasmRuntimeFlagsIfNeeded(${JSON.stringify(scriptPath)});`,
+        "process.stdout.write('RETURNED:' + hostExecPath);",
+      ].join('\n'),
+    );
+    // The re-exec guard envs would each suppress the relaunch on their own; the
+    // harness has to start from a clean slate to prove the runtime branch.
+    const env: Record<string, string | undefined> = { ...process.env };
+    delete env.CODEGRAPH_WASM_RELAUNCHED;
+    delete env.CODEGRAPH_NO_RELAUNCH;
+    const res = spawnSync(process.execPath, [harness], { encoding: 'utf8', env, timeout: 60_000 });
+    return { status: res.status, output: `${res.stdout ?? ''}${res.stderr ?? ''}`, relaunchedArgv: scriptPath };
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+describe('relaunchWithWasmRuntimeFlagsIfNeeded runtime split', () => {
+  // /bin/echo is POSIX-only and is what the harness uses as the fake relaunch target.
+  const posix = process.platform !== 'win32';
+
+  it.runIf(posix)('skips the re-exec under Bun (no flag in argv, caller continues)', () => {
+    const run = runRelaunchHarness({ node: '26.3.0', bun: '1.4.0' });
+    expect(run.status).toBe(0);
+    // Bun impersonates Node 26 in process.versions.node, so without the skip this
+    // argv would launch `bun --liftoff-only <script> ...` and die on routing.
+    expect(run.output).toContain('RETURNED:');
+    expect(run.output).not.toContain('--liftoff-only');
+  });
+
+  it.runIf(posix)('still re-execs with the WASM flags when the runtime is Node', () => {
+    const run = runRelaunchHarness({ node: '24.0.0' });
+    expect(run.status).toBe(0);
+    // The recorded argv proves the flag-first re-exec still fires on Node, and the
+    // missing marker proves the caller did not continue in-process.
+    expect(run.output).toContain(`${WASM_RUNTIME_FLAGS[0]} ${run.relaunchedArgv}`);
+    expect(run.output).not.toContain('RETURNED:');
+  });
+});
