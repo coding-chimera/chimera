@@ -7,6 +7,7 @@ import { type ProviderMetadata, type LanguageModelUsage } from "ai"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { BackgroundJob } from "@/agent/background-job"
 import { EditIntentClaims } from "@/chimera/edit-intent"
+import { ProcessRegistry } from "@/chimera/process-registry"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 
 import { Database } from "@/storage/db"
@@ -755,6 +756,17 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
         // removal cleanup below; the claim TTL is the crash fallback.
         if (hasInstance) {
           yield* EditIntentClaims.publishRemovalRelease({ bus, sessionID }).pipe(Effect.ignoreCause({ log: true }))
+          // Release this session's registered child processes from the process
+          // registry so a removed session never keeps owning live rows; the
+          // registry TTL is the crash fallback. Isolated like the claim release
+          // above so registry trouble can never skip the removal cleanup below.
+          const instance = yield* InstanceState.context
+          yield* Effect.promise(() =>
+            ProcessRegistry.releaseForSession(
+              instance.worktree === "/" ? instance.directory : instance.worktree,
+              sessionID,
+            ),
+          ).pipe(Effect.ignoreCause({ log: true }))
         }
 
         deleteSessionMemory({ sessionID })

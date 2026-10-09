@@ -50,6 +50,7 @@ import { ToolSearch } from "./tool-search"
 import { PromptStats } from "./prompt-stats"
 import { ChimeraPromptContext } from "@/chimera/prompt-context"
 import { EditIntentClaims } from "@/chimera/edit-intent"
+import { ProcessRegistry } from "@/chimera/process-registry"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { SessionProcessor } from "./processor"
 import { Tool } from "@/tool/tool"
@@ -139,7 +140,7 @@ function goalTurnOwner(messages: MessageV2.WithParts[]) {
 const log = Log.create({ service: "session.prompt" })
 
 type RuntimeContextSection = {
-  key: "workBrief" | "goal" | "chimera" | "subagentModels" | "subagentScheduling" | "backgroundTasks"
+  key: "workBrief" | "goal" | "chimera" | "subagentModels" | "subagentScheduling" | "backgroundTasks" | "sessionProcesses"
   title: string
   content: string
   hash: string
@@ -427,6 +428,32 @@ export const layer = Layer.effect(
           `${running.length} running background ${running.length === 1 ? "task" : "tasks"}. You will be notified automatically when a task finishes — do not sleep, poll, or check its progress. Cancel one with the task_cancel tool using its task_id.`,
         ].join("\n")
       })
+      // Cross-session OS process visibility: push the session process registry into the
+      // injected context so agents see which Chimera session owns which bash-tool child
+      // process without any tool call. Absolute timestamps only — relative times would
+      // change every turn and churn the section hash into needless re-injections.
+      const sessionProcesses = yield* Effect.gen(function* () {
+        const ctx = yield* InstanceState.context
+        const projectRoot = ctx.worktree === "/" ? ctx.directory : ctx.worktree
+        const entries = yield* Effect.promise(() => ProcessRegistry.listActive(projectRoot)).pipe(
+          Effect.catch(() => Effect.succeed([] as ProcessRegistry.ProcessEntry[])),
+        )
+        if (entries.length === 0) return undefined
+        const visible = entries.slice(0, 10)
+        const lines = visible.map((entry) => {
+          const owner = entry.sessionID === input.sessionID ? "this session" : `session ${entry.sessionID}`
+          return `- pid ${entry.pid} pgid ${entry.pgid ?? "-"} "${entry.command}" started_at ${entry.startedAt} (${owner})`
+        })
+        // listActive is started_at ASC, so keeping the head is stable while the set is.
+        if (entries.length > visible.length) lines.push(`- …and ${entries.length - visible.length} more`)
+        return [
+          "## Session Processes",
+          "",
+          ...lines,
+          "",
+          "These OS processes were spawned by Chimera sessions in this project via the bash tool. Do not kill another session's process; the bash tool blocks cross-session kills unless CHIMERA_KILL_CONFIRM=1 is set.",
+        ].join("\n")
+      })
       return [
         workBriefSuffix ? { key: "workBrief" as const, title: "Current Work Brief", content: workBriefSuffix, hash: hash(workBriefSuffix) } : undefined,
         goalSuffix ? { key: "goal" as const, title: "Session Goal", content: goalSuffix, hash: hash(goalSuffix) } : undefined,
@@ -460,6 +487,14 @@ export const layer = Layer.effect(
               title: "Background Tasks",
               content: backgroundTasks,
               hash: hash(backgroundTasks),
+            }
+          : undefined,
+        sessionProcesses
+          ? {
+              key: "sessionProcesses" as const,
+              title: "Session Processes",
+              content: sessionProcesses,
+              hash: hash(sessionProcesses),
             }
           : undefined,
       ].filter((section): section is RuntimeContextSection => Boolean(section))

@@ -20,6 +20,7 @@ import { PermissionRoutes } from "./permission"
 import { ProjectRoutes } from "./project"
 import { SessionRoutes } from "./session"
 import { PtyRoutes } from "./pty"
+import { ProcessRoutes } from "./process"
 import { McpRoutes } from "./mcp"
 import { FileRoutes } from "./file"
 import { ConfigRoutes } from "./config"
@@ -39,6 +40,7 @@ import { GraphPaths } from "./httpapi/groups/graph"
 import { McpPaths } from "./httpapi/groups/mcp"
 import { MemoryPaths } from "./httpapi/groups/memory"
 import { PtyPaths } from "./httpapi/groups/pty"
+import { ProcessPaths } from "./httpapi/groups/process"
 import { SessionPaths } from "./httpapi/groups/session"
 import { SyncPaths } from "./httpapi/groups/sync"
 import { TuiPaths } from "./httpapi/groups/tui"
@@ -133,6 +135,7 @@ export const InstanceRoutes = (upgrade: UpgradeWebSocket, opts?: CorsOptions): H
     app.delete(PtyPaths.remove, (c) => handler(c.req.raw, context))
     app.post(PtyPaths.connectToken, (c) => handler(c.req.raw, context))
     app.get(PtyPaths.connect, (c) => handler(c.req.raw, context))
+    app.get(ProcessPaths.list, (c) => handler(c.req.raw, context))
     app.get(SessionPaths.list, (c) => handler(c.req.raw, context))
     app.get(SessionPaths.status, (c) => handler(c.req.raw, context))
     app.get(SessionPaths.get, (c) => handler(c.req.raw, context))
@@ -184,6 +187,7 @@ export const InstanceRoutes = (upgrade: UpgradeWebSocket, opts?: CorsOptions): H
   return app
     .route("/project", ProjectRoutes())
     .route("/pty", PtyRoutes(upgrade, opts))
+    .route("/process", ProcessRoutes())
     .route("/config", ConfigRoutes())
     .route("/experimental", ExperimentalRoutes())
     .route("/session", SessionRoutes())

@@ -14,6 +14,7 @@ import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
 import { Todo } from "@/session/todo"
 import { WorkBrief } from "@/session/work-brief"
+import { Goal } from "@/session/goal"
 import { Effect } from "effect"
 import { Agent } from "@/agent/agent"
 import { Snapshot } from "@/snapshot"
@@ -28,6 +29,7 @@ import { lazy } from "@/util/lazy"
 import { zodObject } from "@/util/effect-zod"
 import { Bus } from "@/bus"
 import { NamedError } from "@opencode-ai/core/util/error"
+import { NotFoundError } from "@/storage/storage"
 import { jsonRequest, runRequest } from "./trace"
 
 const log = Log.create({ service: "server" })
@@ -285,6 +287,142 @@ export const SessionRoutes = lazy(() =>
           return yield* workBrief.get(sessionID)
         })
       },
+    )
+    .get(
+      "/:sessionID/goal",
+      describeRoute({
+        summary: "Get session goal",
+        description: "Retrieve the session goal, or 404 when no goal is set.",
+        operationId: "session.goal",
+        responses: {
+          200: {
+            description: "Current goal",
+            content: {
+              "application/json": {
+                schema: resolver(Goal.Info.zod),
+              },
+            },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          sessionID: SessionID.zod,
+        }),
+      ),
+      async (c) => {
+        const sessionID = c.req.valid("param").sessionID
+        const current = await runRequest(
+          "SessionRoutes.goal",
+          c,
+          Effect.gen(function* () {
+            const session = yield* Session.Service
+            yield* session.get(sessionID)
+            const goal = yield* Goal.Service
+            return yield* goal.get(sessionID)
+          }),
+        )
+        if (!current) throw new NotFoundError({ message: `No goal is set for session: ${sessionID}` })
+        return c.json(current)
+      },
+    )
+    .put(
+      "/:sessionID/goal",
+      describeRoute({
+        summary: "Set session goal",
+        description:
+          "Create a new session goal, rejected with 400 when the objective is empty or an unfinished goal already exists.",
+        operationId: "session.goalSet",
+        responses: {
+          200: {
+            description: "Created goal",
+            content: {
+              "application/json": {
+                schema: resolver(Goal.Info.zod),
+              },
+            },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          sessionID: SessionID.zod,
+        }),
+      ),
+      validator(
+        "json",
+        z.object({
+          objective: z.string(),
+          tokenBudget: z.number().int().positive().optional(),
+        }),
+      ),
+      async (c) => {
+        const sessionID = c.req.valid("param").sessionID
+        const body = c.req.valid("json")
+        const result = await runRequest(
+          "SessionRoutes.goalSet",
+          c,
+          Effect.gen(function* () {
+            const session = yield* Session.Service
+            yield* session.get(sessionID)
+            const goal = yield* Goal.Service
+            return yield* goal
+              .create({
+                sessionID,
+                objective: body.objective,
+                ...(body.tokenBudget !== undefined ? { tokenBudget: body.tokenBudget } : {}),
+              })
+              .pipe(
+                Effect.match({
+                  onFailure: (error) => ({ rejected: true as const, message: error.message }),
+                  onSuccess: (goal) => ({ rejected: false as const, goal }),
+                }),
+              )
+          }),
+        )
+        // Domain rejections (empty objective, unfinished goal) surface as 400 with the
+        // service message; storage NotFoundError from the session lookup keeps its 404.
+        if (result.rejected)
+          return c.json(new NamedError.Unknown({ message: result.message }).toObject(), { status: 400 })
+        return c.json(result.goal)
+      },
+    )
+    .delete(
+      "/:sessionID/goal",
+      describeRoute({
+        summary: "Clear session goal",
+        description: "Remove the session goal and publish a goal.cleared event. Returns false when no goal was set.",
+        operationId: "session.goalClear",
+        responses: {
+          200: {
+            description: "Goal cleared",
+            content: {
+              "application/json": {
+                schema: resolver(z.boolean()),
+              },
+            },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          sessionID: SessionID.zod,
+        }),
+      ),
+      async (c) =>
+        jsonRequest("SessionRoutes.goalClear", c, function* () {
+          const sessionID = c.req.valid("param").sessionID
+          const session = yield* Session.Service
+          yield* session.get(sessionID)
+          const goal = yield* Goal.Service
+          return yield* goal.clear(sessionID)
+        }),
     )
     .post(
       "/",

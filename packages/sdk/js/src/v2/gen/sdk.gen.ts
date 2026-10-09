@@ -132,6 +132,7 @@ import type {
   PermissionRespondErrors,
   PermissionRespondResponses,
   PermissionRuleset,
+  ProcessListResponses,
   ProjectCurrentResponses,
   ProjectInitGitResponses,
   ProjectListResponses,
@@ -187,6 +188,12 @@ import type {
   SessionForkResponses,
   SessionGetErrors,
   SessionGetResponses,
+  SessionGoalClearErrors,
+  SessionGoalClearResponses,
+  SessionGoalErrors,
+  SessionGoalResponses,
+  SessionGoalSetErrors,
+  SessionGoalSetResponses,
   SessionInitErrors,
   SessionInitResponses,
   SessionListErrors,
@@ -3514,6 +3521,38 @@ export class Pty extends HeyApiClient {
   }
 }
 
+export class Process extends HeyApiClient {
+  /**
+   * List active session processes
+   *
+   * Get all running child processes registered in the session process registry for the current project, joined with the owning session's title and agent.
+   */
+  public list<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<ProcessListResponses, unknown, ThrowOnError>({
+      url: "/process",
+      ...options,
+      ...params,
+    })
+  }
+}
+
 export class Question extends HeyApiClient {
   /**
    * List pending questions
@@ -4294,6 +4333,111 @@ export class Session2 extends HeyApiClient {
       url: "/session/{sessionID}/work_brief",
       ...options,
       ...params,
+    })
+  }
+
+  /**
+   * Clear session goal
+   *
+   * Remove the session goal and publish a goal.cleared event. Returns false when no goal was set.
+   */
+  public goalClear<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).delete<SessionGoalClearResponses, SessionGoalClearErrors, ThrowOnError>({
+      url: "/session/{sessionID}/goal",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get session goal
+   *
+   * Retrieve the session goal, or 404 when no goal is set.
+   */
+  public goal<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<SessionGoalResponses, SessionGoalErrors, ThrowOnError>({
+      url: "/session/{sessionID}/goal",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Set session goal
+   *
+   * Create a new session goal, rejected with 400 when the objective is empty or an unfinished goal already exists.
+   */
+  public goalSet<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+      objective: string
+      tokenBudget?: number
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "objective" },
+            { in: "body", key: "tokenBudget" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).put<SessionGoalSetResponses, SessionGoalSetErrors, ThrowOnError>({
+      url: "/session/{sessionID}/goal",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
     })
   }
 
@@ -6335,6 +6479,11 @@ export class OpencodeClient extends HeyApiClient {
   private _pty?: Pty
   get pty(): Pty {
     return (this._pty ??= new Pty({ client: this.client }))
+  }
+
+  private _process?: Process
+  get process(): Process {
+    return (this._process ??= new Process({ client: this.client }))
   }
 
   private _question?: Question

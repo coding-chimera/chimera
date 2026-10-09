@@ -1,12 +1,12 @@
 import { Effect, Layer, Context, Schema, Types } from "effect"
-import { and, eq, gt, sql } from "drizzle-orm"
+import { and, eq, gt, inArray, sql } from "drizzle-orm"
 import { BusEvent } from "@/bus/bus-event"
 import { Bus } from "@/bus"
 import { Database } from "@/storage/db"
 import { zod } from "@/util/effect-zod"
 import { withStatics } from "@/util/schema"
 import { MessageID, SessionID } from "./schema"
-import { GoalTable, MessageTable } from "./session.sql"
+import { GoalTable, MessageTable, SessionTable } from "./session.sql"
 import type { MessageV2 } from "./message-v2"
 
 const MAX_OBJECTIVE_CHARS = 800
@@ -32,7 +32,7 @@ export const Info = Schema.Struct({
   status: Status,
   tokenBudget: Schema.optional(Schema.Number),
   tokensUsed: Schema.Number,
-  lastUsageMessageID: Schema.optional(Schema.String),
+  usageWatermarks: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   consecutiveEmptyContinuations: Schema.optional(Schema.Number),
   consecutiveContinuations: Schema.optional(Schema.Number),
 })
@@ -48,6 +48,12 @@ export const Event = {
       goal: Info,
     }),
   ),
+  Cleared: BusEvent.define(
+    "goal.cleared",
+    Schema.Struct({
+      sessionID: SessionID,
+    }),
+  ),
 }
 
 export interface Interface {
@@ -59,6 +65,7 @@ export interface Interface {
   }) => Effect.Effect<Info, Error>
   readonly updateStatus: (input: { sessionID: SessionID; status: Status }) => Effect.Effect<Info, Error>
   readonly account: (sessionID: SessionID) => Effect.Effect<void>
+  readonly clear: (sessionID: SessionID) => Effect.Effect<boolean>
   readonly recordContinuation: (input: { sessionID: SessionID; productive: boolean }) => Effect.Effect<Info | undefined>
   readonly resetContinuation: (sessionID: SessionID) => Effect.Effect<void>
   readonly render: (sessionID: SessionID) => Effect.Effect<string | undefined>
@@ -84,6 +91,35 @@ export function billableTokens(tokens: MessageV2.TokenUsage) {
   return Math.max(0, tokens.input - tokens.cache.read + tokens.output)
 }
 
+// Rows persisted before token accounting became per-session carry a single
+// `lastUsageMessageID` watermark that applied to the goal's own session.
+// `get` folds that field into `usageWatermarks` on read; new writes never
+// include it.
+type LegacyWatermark = { lastUsageMessageID?: string }
+
+// Transitive closure of the session subtree rooted at `sessionID`: child
+// (subagent) sessions discovered one `parent_id` hop at a time, each level a
+// single lookup on the indexed `session_parent_idx`. The visited set also
+// guards against accidental parent cycles.
+function descendantIDs(db: Database.TxOrDb, sessionID: SessionID) {
+  const seen = new Set<SessionID>()
+  let frontier: SessionID[] = [sessionID]
+  while (frontier.length > 0) {
+    const next: SessionID[] = []
+    for (const row of db
+      .select({ id: SessionTable.id })
+      .from(SessionTable)
+      .where(inArray(SessionTable.parent_id, frontier))
+      .all()) {
+      if (seen.has(row.id)) continue
+      seen.add(row.id)
+      next.push(row.id)
+    }
+    frontier = next
+  }
+  return [...seen]
+}
+
 // Outcome of one finished continuation turn. A productive turn resets the
 // empty streak; an unproductive one extends it. Three consecutive empty
 // streak flips an active goal to blocked (the circuit breaker).
@@ -102,9 +138,7 @@ export function continuationOutcome(goal: Info, input: { productive: boolean }):
 // Whether the run loop should inject another synthetic continuation turn for
 // this goal: it must exist, be active, and stay under the turn cap.
 export function canAutoContinue(goal: Info | undefined) {
-  return (
-    goal !== undefined && goal.status === "active" && (goal.consecutiveContinuations ?? 0) < MAX_CONTINUATION_TURNS
-  )
+  return goal !== undefined && goal.status === "active" && (goal.consecutiveContinuations ?? 0) < MAX_CONTINUATION_TURNS
 }
 
 const formatTokens = (value: number) => value.toLocaleString("en-US")
@@ -135,13 +169,24 @@ export const layer = Layer.effect(
     const bus = yield* Bus.Service
 
     const get = Effect.fn("Goal.get")(function* (sessionID: SessionID) {
-      return yield* Effect.sync(() =>
-        Database.use((db) => db.select().from(GoalTable).where(eq(GoalTable.session_id, sessionID)).limit(1).get())
-          ?.data,
+      const data = yield* Effect.sync(
+        () =>
+          Database.use((db) => db.select().from(GoalTable).where(eq(GoalTable.session_id, sessionID)).limit(1).get())
+            ?.data,
       )
+      if (!data) return undefined
+      const legacy = (data as LegacyWatermark).lastUsageMessageID
+      if (legacy === undefined) return data
+      const goal: Info = { ...data, usageWatermarks: { [sessionID]: legacy, ...data.usageWatermarks } }
+      delete (goal as LegacyWatermark).lastUsageMessageID
+      return goal
     })
 
-    const create = Effect.fn("Goal.create")(function* (input: { sessionID: SessionID; objective: string; tokenBudget?: number }) {
+    const create = Effect.fn("Goal.create")(function* (input: {
+      sessionID: SessionID
+      objective: string
+      tokenBudget?: number
+    }) {
       const objective = compact(input.objective)
       if (!objective) return yield* Effect.fail(new Error("The goal objective must not be empty."))
       const existing = yield* get(input.sessionID)
@@ -172,8 +217,7 @@ export const layer = Layer.effect(
     const updateStatus = Effect.fn("Goal.updateStatus")(function* (input: { sessionID: SessionID; status: Status }) {
       const current = yield* get(input.sessionID)
       if (!current) return yield* Effect.fail(new Error("No goal is set for this session; create one first."))
-      if (current.status === input.status)
-        return yield* Effect.fail(new Error(`The goal is already ${input.status}.`))
+      if (current.status === input.status) return yield* Effect.fail(new Error(`The goal is already ${input.status}.`))
       if (!isAllowedTransition(current.status, input.status)) {
         if (input.status === "active" && (current.status === "blocked" || current.status === "budget_limited"))
           return yield* Effect.fail(
@@ -182,7 +226,9 @@ export const layer = Layer.effect(
             ),
           )
         if (current.status === "complete")
-          return yield* Effect.fail(new Error("This goal is already complete; create a new goal to start further work."))
+          return yield* Effect.fail(
+            new Error("This goal is already complete; create a new goal to start further work."),
+          )
         return yield* Effect.fail(new Error(`Cannot transition the goal from ${current.status} to ${input.status}.`))
       }
       const goal: Info = { ...current, status: input.status }
@@ -195,39 +241,54 @@ export const layer = Layer.effect(
       return goal
     })
 
-    // Incremental token accounting: sum billable tokens of completed assistant
-    // messages newer than the stored watermark, then persist the new total and
-    // watermark. Never rescans full history; a no-op when no goal row exists.
+    // Incremental token accounting across the session subtree: for the goal's
+    // own session and every descendant (subagent) session, sum billable tokens
+    // of completed assistant messages newer than that session's watermark,
+    // advance the watermarks, and persist the aggregate once. Sessions without
+    // a watermark (e.g. children created after the goal) count their full
+    // history, matching how the goal's own session is accounted from scratch.
+    // Never rescans full history; a no-op when no goal row exists.
     const account = Effect.fn("Goal.account")(function* (sessionID: SessionID) {
       const current = yield* get(sessionID)
       if (!current) return
-      const rows = yield* Effect.sync(() =>
+      const scanned = yield* Effect.sync(() =>
         Database.use((db) =>
-          db
-            .select()
-            .from(MessageTable)
-            .where(
-              and(
-                eq(MessageTable.session_id, sessionID),
-                current.lastUsageMessageID ? gt(MessageTable.id, MessageID.make(current.lastUsageMessageID)) : undefined,
-                sql`json_extract(${MessageTable.data}, '$.role') = 'assistant'`,
-                sql`json_extract(${MessageTable.data}, '$.time.completed') IS NOT NULL`,
-              ),
-            )
-            .orderBy(MessageTable.id)
-            .all(),
+          [sessionID, ...descendantIDs(db, sessionID)].map((id) => {
+            const watermark = current.usageWatermarks?.[id]
+            const rows = db
+              .select()
+              .from(MessageTable)
+              .where(
+                and(
+                  eq(MessageTable.session_id, id),
+                  watermark ? gt(MessageTable.id, MessageID.make(watermark)) : undefined,
+                  sql`json_extract(${MessageTable.data}, '$.role') = 'assistant'`,
+                  sql`json_extract(${MessageTable.data}, '$.time.completed') IS NOT NULL`,
+                ),
+              )
+              .orderBy(MessageTable.id)
+              .all()
+            const last = rows.at(-1)?.id
+            if (last === undefined) return undefined
+            const delta = rows.reduce((total, row) => {
+              const message = row.data as MessageV2.Info
+              if (message.role !== "assistant") return total
+              return total + billableTokens(message.tokens)
+            }, 0)
+            return { sessionID: id, last, delta }
+          }),
         ),
       )
-      if (rows.length === 0) return
-      const delta = rows.reduce((total, row) => {
-        const message = row.data as MessageV2.Info
-        if (message.role !== "assistant") return total
-        return total + billableTokens(message.tokens)
-      }, 0)
+      const advanced = scanned.filter((entry): entry is NonNullable<typeof entry> => entry !== undefined)
+      if (advanced.length === 0) return
+      const delta = advanced.reduce((total, entry) => total + entry.delta, 0)
       const accounted: Info = {
         ...current,
         tokensUsed: current.tokensUsed + delta,
-        lastUsageMessageID: rows[rows.length - 1].id,
+        usageWatermarks: Object.fromEntries([
+          ...Object.entries(current.usageWatermarks ?? {}),
+          ...advanced.map((entry) => [entry.sessionID, entry.last] as const),
+        ]),
       }
       const goal: Info =
         accounted.status === "active" &&
@@ -236,20 +297,29 @@ export const layer = Layer.effect(
           ? { ...accounted, status: "budget_limited" }
           : accounted
       yield* Effect.sync(() =>
-        Database.use((db) =>
-          db.update(GoalTable).set({ data: goal }).where(eq(GoalTable.session_id, sessionID)).run(),
-        ),
+        Database.use((db) => db.update(GoalTable).set({ data: goal }).where(eq(GoalTable.session_id, sessionID)).run()),
       )
       yield* bus.publish(Event.Updated, { sessionID, goal })
+    })
+
+    // Remove the goal row and publish `goal.cleared`; consumers drop the goal
+    // from their view of the session. Idempotent: reports whether a goal
+    // existed to clear.
+    const clear = Effect.fn("Goal.clear")(function* (sessionID: SessionID) {
+      const current = yield* get(sessionID)
+      if (!current) return false
+      yield* Effect.sync(() =>
+        Database.use((db) => db.delete(GoalTable).where(eq(GoalTable.session_id, sessionID)).run()),
+      )
+      yield* bus.publish(Event.Cleared, { sessionID })
+      return true
     })
 
     // Persist a goal row and publish the update; shared by the continuation
     // bookkeeping methods below.
     const persist = Effect.fnUntraced(function* (sessionID: SessionID, goal: Info) {
       yield* Effect.sync(() =>
-        Database.use((db) =>
-          db.update(GoalTable).set({ data: goal }).where(eq(GoalTable.session_id, sessionID)).run(),
-        ),
+        Database.use((db) => db.update(GoalTable).set({ data: goal }).where(eq(GoalTable.session_id, sessionID)).run()),
       )
       yield* bus.publish(Event.Updated, { sessionID, goal })
       return goal
@@ -285,7 +355,7 @@ export const layer = Layer.effect(
       return format(goal)
     })
 
-    return Service.of({ get, create, updateStatus, account, recordContinuation, resetContinuation, render })
+    return Service.of({ get, create, updateStatus, account, clear, recordContinuation, resetContinuation, render })
   }),
 )
 

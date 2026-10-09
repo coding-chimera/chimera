@@ -190,7 +190,7 @@ describe("Chimera store", () => {
     const db = DatabaseConnection.open(getDatabasePath(tmp.path))
     try {
       const tables = (db.getDb().prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((row) => row.name)
-      expect(db.getStorageExtensionVersion("chimera")).toBe(7)
+      expect(db.getStorageExtensionVersion("chimera")).toBe(8)
       expect(tables).toContain("chimera_change_event")
       expect(tables).toContain("chimera_semantic_snapshot")
       expect(tables).toContain("chimera_semantic_object")
@@ -199,6 +199,7 @@ describe("Chimera store", () => {
       expect(tables).toContain("chimera_commit_change_summary")
       expect(tables).toContain("chimera_edit_intent_claim")
       expect(tables).toContain("chimera_edit_intent_waiter")
+      expect(tables).toContain("chimera_process_registry")
     } finally {
       db.close()
     }
@@ -228,12 +229,13 @@ describe("Chimera store", () => {
       legacy.close()
     }
 
-    // The first writable store open applies v6+v7 (ALTER TABLE ADD COLUMN only).
+    // The first writable store open applies v6+v7+v8 (ALTER TABLE ADD COLUMN and
+    // CREATE TABLE IF NOT EXISTS steps only).
     await registerEditIntentWaiter(tmp.path, { sessionID: "ses_new", filePath: "f.ts", blockerSessionID: "ses_blocker" })
 
     const db = DatabaseConnection.open(dbPath, { storageExtensions: [CHIMERA_STORAGE_EXTENSION] })
     try {
-      expect(db.getStorageExtensionVersion("chimera")).toBe(7)
+      expect(db.getStorageExtensionVersion("chimera")).toBe(8)
       const columns = (db.getDb().prepare("PRAGMA table_info(chimera_edit_intent_waiter)").all() as Array<{ name: string }>).map((row) => row.name)
       expect(columns).toContain("host_pid")
       expect(columns).toContain("host_boot_id")
@@ -255,11 +257,11 @@ describe("Chimera store", () => {
     expect(newRow.hostPID).toBe(process.pid)
     expect(newRow.hostBootID).toBe(currentHostBootID())
 
-    // Idempotent: reopening and re-writing never re-runs v6/v7 (no duplicate-column error).
+    // Idempotent: reopening and re-writing never re-runs v6/v7/v8 (no duplicate-column error).
     await registerEditIntentWaiter(tmp.path, { sessionID: "ses_again", filePath: "f.ts", blockerSessionID: "ses_blocker" })
     const reopen = DatabaseConnection.open(dbPath, { storageExtensions: [CHIMERA_STORAGE_EXTENSION] })
     try {
-      expect(reopen.getStorageExtensionVersion("chimera")).toBe(7)
+      expect(reopen.getStorageExtensionVersion("chimera")).toBe(8)
     } finally {
       reopen.close()
     }

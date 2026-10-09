@@ -21,6 +21,8 @@ import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner
 import { ShellPrompt, type Parameters } from "./shell/prompt"
 import { BashArity } from "@/permission/arity"
 import { Chimera } from "@/chimera"
+import { ProcessRegistry } from "@/chimera/process-registry"
+import type { SubagentPromptOps } from "@/agent/subagent-dispatch"
 
 export { Parameters } from "./shell/prompt"
 
@@ -83,6 +85,18 @@ function shellOracleStatus(command: string, code: number | null, expired: boolea
   if (expired || aborted) return "fail"
   if (code === 0 || isExpectedDiffInspectionExit(command, code)) return "pass"
   return "fail"
+}
+
+// Both spawner backends (Node platform and cross-spawn) fail `exitCode` with a
+// PlatformError carrying "Process interrupted due to receipt of signal: 'X'"
+// when a child dies from a signal. Extract the signal name for the process
+// registry's external-kill classification; anything else keeps the existing
+// failure behavior.
+const SIGNAL_DEATH = /receipt of signal: '([A-Za-z0-9_]+)'/
+
+function signalDeathName(error: unknown) {
+  const nested = error instanceof Error && error.cause instanceof Error ? ` ${error.cause.message}` : ""
+  return SIGNAL_DEATH.exec(`${String(error)}${nested}`)?.[1]
 }
 
 type Part = {
@@ -436,6 +450,8 @@ export const ShellTool = Tool.define(
       return {
         ...process.env,
         ...extra.env,
+        // Process registry attribution marker on the bash tool's spawns only
+        CHIMERA_SESSION: ctx.sessionID,
       }
     })
 
@@ -447,6 +463,7 @@ export const ShellTool = Tool.define(
         env: NodeJS.ProcessEnv
         timeout: number
         description: string
+        projectRoot: string
       },
       ctx: Tool.Context,
     ) {
@@ -474,6 +491,34 @@ export const ShellTool = Tool.define(
       const code: number | null = yield* Effect.scoped(
         Effect.gen(function* () {
           const handle = yield* spawner.spawn(cmd(input.shell, input.command, input.cwd, input.env))
+
+          // Process registry: record the child so other sessions can see the
+          // ownership, gate cross-session kills, and detect external signal
+          // deaths. Spawn is detached on POSIX, so the child leads its own
+          // process group and pgid === pid.
+          const registered = yield* Effect.promise(() =>
+            ProcessRegistry.register({
+              projectRoot: input.projectRoot,
+              sessionID: ctx.sessionID,
+              pid: Number(handle.pid),
+              pgid: process.platform === "win32" ? null : Number(handle.pid),
+              command: input.command,
+              cwd: input.cwd,
+            }),
+          ).pipe(Effect.catch(() => Effect.succeed(undefined)))
+          let settled = false
+          // Safety net: every scope outcome (normal, timeout/abort, defect, or
+          // interruption) deregisters exactly once; the guarded UPDATE in the
+          // store also dedupes against the classification path below.
+          yield* Effect.addFinalizer(() =>
+            Effect.gen(function* () {
+              if (settled || !registered) return
+              settled = true
+              yield* Effect.promise(() => ProcessRegistry.markExited(input.projectRoot, registered.id, null)).pipe(
+                Effect.catch(() => Effect.void),
+              )
+            }),
+          )
 
           const output = yield* Effect.forkScoped(
             Stream.runForEach(Stream.decodeText(handle.all), (chunk) => {
@@ -537,9 +582,19 @@ export const ShellTool = Tool.define(
           const timeout = Effect.sleep(`${input.timeout + 100} millis`)
 
           const exit = yield* Effect.raceAll([
-            handle.exitCode.pipe(Effect.map((code) => ({ kind: "exit" as const, code }))),
-            abort.pipe(Effect.map(() => ({ kind: "abort" as const, code: null }))),
-            timeout.pipe(Effect.map(() => ({ kind: "timeout" as const, code: null }))),
+            handle.exitCode.pipe(
+              Effect.map((code) => ({ kind: "exit" as const, code, signal: undefined as string | undefined })),
+              // Signal death arrives as a PlatformError failure carrying the signal
+              // name; fold it into a null code plus signal for the registry, while
+              // any other platform error keeps failing the tool like before.
+              Effect.catch((error) => {
+                const signal = signalDeathName(error)
+                if (!signal) return Effect.fail(error)
+                return Effect.succeed({ kind: "exit" as const, code: null, signal })
+              }),
+            ),
+            abort.pipe(Effect.map(() => ({ kind: "abort" as const, code: null, signal: undefined }))),
+            timeout.pipe(Effect.map(() => ({ kind: "timeout" as const, code: null, signal: undefined }))),
           ])
 
           if (exit.kind === "abort") {
@@ -549,6 +604,31 @@ export const ShellTool = Tool.define(
           if (exit.kind === "timeout") {
             expired = true
             yield* handle.kill({ forceKillAfter: "3 seconds" }).pipe(Effect.orDie)
+          }
+
+          // Registry transition for the race outcome: the tool's own timeout or
+          // abort kill is owner-initiated and records a plain exit; a signal
+          // death the tool did not initiate is an external kill — flip the row
+          // to 'killed' and notify the owning session through the synthetic
+          // inject channel, never failing the shell tool over a notification hiccup.
+          if (registered && !settled) {
+            settled = true
+            if (exit.kind === "exit" && exit.signal) {
+              const killed = yield* Effect.promise(() => ProcessRegistry.markKilled(input.projectRoot, registered.id)).pipe(
+                Effect.catch(() => Effect.succeed(undefined)),
+              )
+              const injectSynthetic = (ctx.extra?.promptOps as SubagentPromptOps | undefined)?.injectSynthetic
+              if (killed && injectSynthetic) {
+                yield* injectSynthetic({
+                  sessionID: ctx.sessionID,
+                  text: `<process_killed>Registered process pid ${registered.pid} ("${registered.command}") was killed externally (signal ${exit.signal}).</process_killed>`,
+                }).pipe(Effect.ignoreCause({ log: true }))
+              }
+            } else {
+              yield* Effect.promise(() =>
+                ProcessRegistry.markExited(input.projectRoot, registered.id, exit.kind === "exit" ? exit.code : null),
+              ).pipe(Effect.catch(() => Effect.void))
+            }
           }
 
           yield* Fiber.join(output)
@@ -635,6 +715,7 @@ export const ShellTool = Tool.define(
           execute: (params: Parameters, ctx: Tool.Context) =>
             Effect.gen(function* () {
               const executeInstance = yield* InstanceState.context
+              const projectRoot = executeInstance.worktree === "/" ? executeInstance.directory : executeInstance.worktree
               const cwd = params.workdir
                 ? yield* resolvePath(params.workdir, executeInstance.directory, shell)
                 : executeInstance.directory
@@ -654,6 +735,22 @@ export const ShellTool = Tool.define(
                 }),
               )
 
+              // Kill gate: a direct numeric-pid kill aimed at another session's
+              // registered process is refused until the command re-confirms with
+              // CHIMERA_KILL_CONFIRM=1 (which extractKillTargets treats as a pass).
+              // Degrade-open: registry or storage trouble never blocks execution.
+              const killTargets = ProcessRegistry.extractKillTargets(params.command)
+              if (killTargets.length > 0) {
+                const active = yield* Effect.promise(() => ProcessRegistry.listActive(projectRoot)).pipe(
+                  Effect.catch(() => Effect.succeed([] as ProcessRegistry.ProcessEntry[])),
+                )
+                const foreign = ProcessRegistry.findForeignKillTarget(active, killTargets, ctx.sessionID)
+                if (foreign)
+                  throw new Error(
+                    `Blocked: pid ${foreign.pid} is registered to Chimera session ${foreign.sessionID} ("${foreign.command}", started ${foreign.startedAt}). To confirm you intend to kill another session's process, re-run with CHIMERA_KILL_CONFIRM=1 set (e.g. CHIMERA_KILL_CONFIRM=1 kill ${foreign.pid}).`,
+                  )
+              }
+
               return yield* run(
                 {
                   shell,
@@ -662,6 +759,7 @@ export const ShellTool = Tool.define(
                   env: yield* shellEnv(ctx, cwd),
                   timeout,
                   description: params.description,
+                  projectRoot,
                 },
                 ctx,
               )

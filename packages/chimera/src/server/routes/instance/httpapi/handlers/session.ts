@@ -17,6 +17,7 @@ import { SessionRunState } from "@/session/run-state"
 import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
 import { Todo } from "@/session/todo"
+import { Goal } from "@/session/goal"
 import { WorkBrief } from "@/session/work-brief"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { NotFoundError } from "@/storage/storage"
@@ -26,7 +27,9 @@ import * as Stream from "effect/Stream"
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder, HttpApiError, HttpApiSchema } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
+import * as ApiError from "../errors"
 import {
+  GoalSetPayload,
   CommandPayload,
   DiffQuery,
   ForkPayload,
@@ -56,6 +59,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const statusSvc = yield* SessionStatus.Service
     const todoSvc = yield* Todo.Service
     const workBriefSvc = yield* WorkBrief.Service
+    const goalSvc = yield* Goal.Service
     const summary = yield* SessionSummary.Service
     const bus = yield* Bus.Service
     const scope = yield* Scope.Scope
@@ -115,6 +119,32 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
 
     const workBrief = Effect.fn("SessionHttpApi.workBrief")(function* (ctx: { params: { sessionID: SessionID } }) {
       return yield* workBriefSvc.get(ctx.params.sessionID)
+    })
+
+    const goal = Effect.fn("SessionHttpApi.goal")(function* (ctx: { params: { sessionID: SessionID } }) {
+      yield* SessionError.mapStorageNotFound(session.get(ctx.params.sessionID))
+      const current = yield* goalSvc.get(ctx.params.sessionID)
+      if (!current) return yield* ApiError.notFound(`No goal is set for session: ${ctx.params.sessionID}`)
+      return current
+    })
+
+    const goalSet = Effect.fn("SessionHttpApi.goalSet")(function* (ctx: {
+      params: { sessionID: SessionID }
+      payload: typeof GoalSetPayload.Type
+    }) {
+      yield* SessionError.mapStorageNotFound(session.get(ctx.params.sessionID))
+      return yield* goalSvc
+        .create({
+          sessionID: ctx.params.sessionID,
+          objective: ctx.payload.objective,
+          ...(ctx.payload.tokenBudget !== undefined ? { tokenBudget: ctx.payload.tokenBudget } : {}),
+        })
+        .pipe(Effect.mapError(() => new HttpApiError.BadRequest({})))
+    })
+
+    const goalClear = Effect.fn("SessionHttpApi.goalClear")(function* (ctx: { params: { sessionID: SessionID } }) {
+      yield* SessionError.mapStorageNotFound(session.get(ctx.params.sessionID))
+      return yield* goalSvc.clear(ctx.params.sessionID)
     })
 
     const diff = Effect.fn("SessionHttpApi.diff")(function* (ctx: {
@@ -237,13 +267,15 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       params: { sessionID: SessionID }
       payload: typeof InitPayload.Type
     }) {
-      yield* promptSvc.command({
-        sessionID: ctx.params.sessionID,
-        messageID: ctx.payload.messageID,
-        model: `${ctx.payload.providerID}/${ctx.payload.modelID}`,
-        command: Command.Default.INIT,
-        arguments: "",
-      }).pipe(Effect.mapError(() => new HttpApiError.BadRequest({})))
+      yield* promptSvc
+        .command({
+          sessionID: ctx.params.sessionID,
+          messageID: ctx.payload.messageID,
+          model: `${ctx.payload.providerID}/${ctx.payload.modelID}`,
+          command: Command.Default.INIT,
+          arguments: "",
+        })
+        .pipe(Effect.mapError(() => new HttpApiError.BadRequest({})))
       return true
     })
 
@@ -324,9 +356,9 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       params: { sessionID: SessionID }
       payload: typeof CommandPayload.Type
     }) {
-      return yield* promptSvc.command({ ...ctx.payload, sessionID: ctx.params.sessionID }).pipe(
-        Effect.mapError(() => new HttpApiError.BadRequest({})),
-      )
+      return yield* promptSvc
+        .command({ ...ctx.payload, sessionID: ctx.params.sessionID })
+        .pipe(Effect.mapError(() => new HttpApiError.BadRequest({})))
     })
     const shell = Effect.fn("SessionHttpApi.shell")(function* (ctx: {
       params: { sessionID: SessionID }
@@ -415,6 +447,9 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("children", children)
       .handle("todo", todo)
       .handle("workBrief", workBrief)
+      .handle("goal", goal)
+      .handle("goalSet", goalSet)
+      .handle("goalClear", goalClear)
       .handle("diff", diff)
       .handle("messages", messages)
       .handle("message", message)

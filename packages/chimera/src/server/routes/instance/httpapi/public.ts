@@ -314,6 +314,17 @@ function applyLegacySchemaOverrides(spec: OpenApiSpec) {
   }
   if (schemas.GlobalSession?.properties?.project)
     schemas.GlobalSession.properties.project = nullable(schemas.GlobalSession.properties.project)
+  const processProperties = schemas.Process?.properties
+  if (processProperties) {
+    // Process registry rows carry genuinely nullable required fields:
+    // Schema.NullOr store columns plus the session-join fields. Re-add the
+    // null that the component-level stripOptionalNull removed, same
+    // treatment as Workspace above.
+    for (const key of ["hostBootID", "pgid", "cwd", "exitCode", "exitedAt", "sessionTitle", "agent"]) {
+      const value = processProperties[key]
+      if (value) processProperties[key] = nullable(value)
+    }
+  }
   const providerOptions = schemas.ProviderConfig?.properties?.options
   if (providerOptions) providerOptions.additionalProperties = {}
   const eligibilityPatch = schemas.RemoteCompactionEligibilityPatch?.properties

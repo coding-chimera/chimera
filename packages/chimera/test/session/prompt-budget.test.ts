@@ -33,11 +33,11 @@ const BASELINE = {
 // signal for the rendered description).
 const TOOL_BUDGETS = {
   "todowrite.txt": 9183,
-  "ast_edit.txt": 7551,
+  "ast_edit.txt": 10331,
   "task.txt": 7055,
   "swarm.txt": 6951,
   "workbrief.txt": 6546,
-  "shell/shell.txt": 6287,
+  "shell/shell.txt": 7174,
 } as const
 
 // 2026-10-08 re-record: the experimental session-goal tools (goal_get.txt,
@@ -57,7 +57,14 @@ const TOOL_BUDGETS = {
 // per-language compile semantics, skipped-vs-failed contract, 100-file cap, and
 // atomicity rules added to the always-on ast_edit.txt (5722 B -> 7551 B) raised
 // the floor to 92533.
-const TOOL_TOTAL_BUDGET = 92533
+// 2026-10-09 re-record (ast_edit rename mode): the always-on Rename-mode section +
+// three-mode mode-selection rules (7551 -> 10331) plus 889 B of concurrent
+// session-goal description growth raised the floor to 96202.
+// 2026-10-09 re-record (concurrency note): a concurrent session's shell.txt
+// growth (6286 -> 7174) is folded into the per-tool budget above so the
+// recorded floor matches the live tree; ast_edit rename mode owns the
+// ast_edit.txt raise (7551 -> 10331) and the 96202 total floor.
+const TOOL_TOTAL_BUDGET = 96202
 
 // The description bytes withheld from the default model-facing set by the
 // ToolSearch defer filter: every registered deferred tool's .txt is off the

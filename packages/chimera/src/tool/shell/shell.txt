@@ -10,6 +10,13 @@ IMPORTANT: This tool is for terminal operations like git, npm, docker, etc. DO N
 
 ${commandSection}
 
+# Session process registry
+
+Processes spawned through this tool are registered in the per-project process registry and become visible to other concurrent Chimera sessions in the same project.
+- Before killing an unfamiliar process, check the Session Processes runtime-context section (when present) to see which processes other sessions own; do not kill pids registered to another session.
+- Direct kills targeting numeric pids (`kill [-SIG] <pid>...`, `kill -- -<pgid>`) are refused when the pid or process group belongs to a different session's registered process. If you genuinely intend that, re-run with the confirmation marker: `CHIMERA_KILL_CONFIRM=1 kill <pid>`.
+- If one of your registered processes is killed by an external signal, a `<process_killed>` notice is injected into this session; treat it as a concurrent-session conflict and investigate instead of blindly retrying.
+
 # Committing changes with git
 
 Only create commits when requested by the user. If unclear, ask first. When the user asks you to create a new git commit, follow these steps carefully:
