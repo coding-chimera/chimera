@@ -1,11 +1,14 @@
-import { describe, expect, test } from "bun:test"
+import { beforeEach, describe, expect, test } from "bun:test"
 import { existsSync } from "node:fs"
 import path from "node:path"
 import { Effect } from "effect"
+import { eq } from "drizzle-orm"
+import { Database } from "@/storage/db"
 import { CodexResponses, type CodexResponsesInput } from "@/session/codex-responses"
 import { SessionPrompt } from "@/session/prompt"
 import { Session } from "@/session/session"
 import { SessionID } from "@/session/schema"
+import { ToolRevealTable } from "@/session/session.sql"
 import { ToolSearch } from "@/session/tool-search"
 import { makePromptHarness, testProviderConfig } from "../fixture/prompt-harness"
 import { provideTmpdirServer } from "../fixture/fixture"
@@ -15,6 +18,24 @@ const it = testEffect(ToolSearch.defaultLayer)
 const loopIt = testEffect(makePromptHarness())
 
 const candidates = ToolSearch.DEFERRED_TOOLS.map((entry) => ({ id: entry.id, description: entry.summary }))
+
+// tool_reveal rows FK-reference session rows (which FK-reference project
+// rows); seed the parent chain for the synthetic unit sessions, mirroring
+// test/session/goal.test.ts. The module-level reveal cache is also reset so
+// every test reloads from the database deterministically.
+beforeEach(() => {
+  ToolSearch.resetRevealCache()
+  Database.Client().$client.exec(`
+    DELETE FROM tool_reveal;
+    DELETE FROM session WHERE id LIKE 'ses_tool_search_unit%';
+    DELETE FROM project WHERE id = 'prj_tool_search_test';
+    INSERT INTO project (id, worktree, sandboxes, time_created, time_updated)
+    VALUES ('prj_tool_search_test', '/tmp/tool-search-test', '[]', 0, 0);
+    INSERT INTO session (id, project_id, slug, directory, title, version, time_created, time_updated)
+    VALUES ('ses_tool_search_unit_a', 'prj_tool_search_test', 'tool-search-a', '/tmp/tool-search-test', 'Tool Search A', 'test', 0, 0),
+           ('ses_tool_search_unit_b', 'prj_tool_search_test', 'tool-search-b', '/tmp/tool-search-test', 'Tool Search B', 'test', 0, 0);
+  `)
+})
 
 // The chat-completions wire serializes the tool record as [{type:"function",
 // function:{name,...}}]; extract the ordered names from a captured request body.
@@ -87,12 +108,45 @@ describe("session.tool-search", () => {
       const toolSearch = yield* ToolSearch.Service
       const sessionID = SessionID.make("ses_tool_search_unit_a")
       const other = SessionID.make("ses_tool_search_unit_b")
-      expect(toolSearch.revealed(sessionID).size).toBe(0)
-      toolSearch.reveal(sessionID, ["lsp", "lsp", "read", "bogus"])
-      expect(new Set(toolSearch.revealed(sessionID))).toEqual(new Set(["lsp"]))
-      toolSearch.reveal(sessionID, ["lsp", "browser_open"])
-      expect(new Set(toolSearch.revealed(sessionID))).toEqual(new Set(["lsp", "browser_open"]))
-      expect(toolSearch.revealed(other).size).toBe(0)
+      expect((yield* toolSearch.revealed(sessionID)).size).toBe(0)
+      yield* toolSearch.reveal(sessionID, ["lsp", "lsp", "read", "bogus"])
+      expect(new Set(yield* toolSearch.revealed(sessionID))).toEqual(new Set(["lsp"]))
+      yield* toolSearch.reveal(sessionID, ["lsp", "browser_open"])
+      expect(new Set(yield* toolSearch.revealed(sessionID))).toEqual(new Set(["lsp", "browser_open"]))
+      expect((yield* toolSearch.revealed(other)).size).toBe(0)
+    }),
+  )
+
+  it.live("reveals reload from the database after the in-memory cache resets", () =>
+    Effect.gen(function* () {
+      const toolSearch = yield* ToolSearch.Service
+      const sessionID = SessionID.make("ses_tool_search_unit_a")
+      yield* toolSearch.reveal(sessionID, ["lsp", "browser_click"])
+      ToolSearch.resetRevealCache()
+      expect(new Set(yield* toolSearch.revealed(sessionID))).toEqual(new Set(["lsp", "browser_click"]))
+      const row = yield* Effect.sync(() =>
+        Database.use((db) =>
+          db.select().from(ToolRevealTable).where(eq(ToolRevealTable.session_id, sessionID)).limit(1).get(),
+        ),
+      )
+      expect(new Set(row?.data.revealed)).toEqual(new Set(["lsp", "browser_click"]))
+    }),
+  )
+
+  it.live("stale ids from older catalog versions are dropped on load", () =>
+    Effect.gen(function* () {
+      const toolSearch = yield* ToolSearch.Service
+      const sessionID = SessionID.make("ses_tool_search_unit_a")
+      yield* Effect.sync(() =>
+        Database.use((db) =>
+          db
+            .insert(ToolRevealTable)
+            .values({ session_id: sessionID, data: { revealed: ["lsp", "retired_tool"] } })
+            .run(),
+        ),
+      )
+      ToolSearch.resetRevealCache()
+      expect(new Set(yield* toolSearch.revealed(sessionID))).toEqual(new Set(["lsp"]))
     }),
   )
 })
