@@ -9,9 +9,11 @@ import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
 import { Todo } from "@/session/todo"
 import { WorkBrief } from "@/session/work-brief"
+import { Goal } from "@/session/goal"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { Snapshot } from "@/snapshot"
 import { Schema, SchemaGetter, Struct } from "effect"
+import { PositiveInt } from "@/util/schema"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/unstable/httpapi"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
 import { WorkspaceRoutingMiddleware } from "../middleware/workspace-routing"
@@ -77,6 +79,10 @@ export const RevertPayload = Schema.Struct(Struct.omit(SessionRevert.RevertInput
 export const PermissionResponsePayload = Schema.Struct({
   response: Permission.Reply,
 })
+export const GoalSetPayload = Schema.Struct({
+  objective: Schema.String,
+  tokenBudget: Schema.optional(PositiveInt),
+})
 
 export const SessionPaths = {
   list: root,
@@ -85,6 +91,7 @@ export const SessionPaths = {
   children: `${root}/:sessionID/children`,
   todo: `${root}/:sessionID/todo`,
   workBrief: `${root}/:sessionID/work_brief`,
+  goal: `${root}/:sessionID/goal`,
   diff: `${root}/:sessionID/diff`,
   messages: `${root}/:sessionID/message`,
   message: `${root}/:sessionID/message/:messageID`,
@@ -189,6 +196,42 @@ export const SessionApi = HttpApi.make("session")
             identifier: "session.workBrief",
             summary: "Get session work brief",
             description: "Retrieve the Current Work Brief associated with a specific session.",
+          }),
+        ),
+        HttpApiEndpoint.get("goal", SessionPaths.goal, {
+          params: { sessionID: SessionID },
+          success: described(Goal.Info, "Current goal"),
+          error: [HttpApiError.BadRequest, ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.goal",
+            summary: "Get session goal",
+            description: "Retrieve the session goal, or 404 when no goal is set.",
+          }),
+        ),
+        HttpApiEndpoint.put("goalSet", SessionPaths.goal, {
+          params: { sessionID: SessionID },
+          payload: GoalSetPayload,
+          success: described(Goal.Info, "Created goal"),
+          error: [HttpApiError.BadRequest, ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.goalSet",
+            summary: "Set session goal",
+            description:
+              "Create a new session goal, rejected with 400 when the objective is empty or an unfinished goal already exists.",
+          }),
+        ),
+        HttpApiEndpoint.delete("goalClear", SessionPaths.goal, {
+          params: { sessionID: SessionID },
+          success: described(Schema.Boolean, "Goal cleared"),
+          error: [HttpApiError.BadRequest, ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.goalClear",
+            summary: "Clear session goal",
+            description:
+              "Remove the session goal and publish a goal.cleared event. Returns false when no goal was set.",
           }),
         ),
         HttpApiEndpoint.get("diff", SessionPaths.diff, {

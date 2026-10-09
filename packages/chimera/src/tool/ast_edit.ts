@@ -55,28 +55,45 @@ const Operation = Schema.Struct({
 const Rewrite = Schema.Struct({
   pattern: Schema.String.annotate({
     description:
-      "Structural pattern that must parse as ONE ast node: $NAME captures one node, $_ matches any node without capturing it, $$$NAME matches zero or more siblings. Names are UPPERCASE whole-node placeholders; a name repeated in the pattern must match identical code."
+      "Structural pattern that must parse as ONE ast node: $NAME captures one node, $_ matches any node without capturing it, $$$NAME matches zero or more siblings. Names are UPPERCASE whole-node placeholders; a name repeated in the pattern must match identical code.",
   }),
   replacement: Schema.String.annotate({
     description:
-      "Text written in place of EVERY match, with the pattern's metavariables spliced back in (console.log($$$ARGS) -> logger.info($$$ARGS)). Multi-line captures are re-indented to the match. An empty string deletes each matched node."
+      "Text written in place of EVERY match, with the pattern's metavariables spliced back in (console.log($$$ARGS) -> logger.info($$$ARGS)). Multi-line captures are re-indented to the match. An empty string deletes each matched node.",
+  }),
+})
+
+const RenameOp = Schema.Struct({
+  ref: Schema.String.annotate({
+    description:
+      "Typed graph node ref 'node:<id>' of the declaration to rename (the Ref: line emitted by chimera_search / chimera_file_symbols / chimera_impact)",
+  }),
+  to: Schema.String.annotate({
+    description:
+      "New simple identifier for the symbol, validated against the definition file's language family and checked for a same-file name collision.",
   }),
 })
 
 export const Parameters = Schema.Struct({
   file: Schema.optional(Schema.String).annotate({
     description:
-      "Absolute or project-relative path of the one target file. Ref mode requires it; in pattern mode it is the single-file addressing sugar.",
+      "Absolute or project-relative path of the one target file. Ref mode requires it; in pattern mode it is the single-file addressing sugar; rename mode forbids it.",
   }),
   paths: Schema.optional(Schema.Array(Schema.String)).annotate({
     description:
       "Pattern mode only: files, directories, or globs (each entry) addressed by one atomic multi-file codemod, max 100 files per call. Exactly one of file / paths in a pattern call; paths never mixes with edits.",
   }),
   edits: Schema.optional(Schema.Array(Operation)).annotate({
-    description: "Ref mode: AST-anchored edits resolved through graph node refs. Provide edits OR rewrites, never both in one call.",
+    description:
+      "Ref mode: AST-anchored edits resolved through graph node refs. Provide exactly one of edits / rewrites / rename per call.",
   }),
   rewrites: Schema.optional(Schema.Array(Rewrite)).annotate({
-    description: "Pattern mode: structural codemod rewrites applied to every match in the addressed file(s) (`file` or `paths`); needs no graph. Provide rewrites OR edits, never both in one call.",
+    description:
+      "Pattern mode: structural codemod rewrites applied to every match in the addressed file(s) (`file` or `paths`); needs no graph. Provide exactly one of edits / rewrites / rename per call.",
+  }),
+  rename: Schema.optional(RenameOp).annotate({
+    description:
+      "Rename mode: rename the declaration behind a graph ref plus every reference the graph resolved at a precise tier, across files; leftover occurrences come back as a review list. The symbol is addressed through rename.ref; exactly one of edits / rewrites / rename per call.",
   }),
 })
 
@@ -84,21 +101,24 @@ type Params = Schema.Schema.Type<typeof Parameters>
 type EditInput = Schema.Schema.Type<typeof Operation>
 type AstOp = "replace" | "delete" | "insert_before" | "insert_after"
 type RewriteInput = Schema.Schema.Type<typeof Rewrite>
+type RenameInput = Schema.Schema.Type<typeof RenameOp>
 
-/** A call is exactly one of the two addressing modes. */
+/** A call is exactly one of the three addressing modes. */
 type Mode =
   | { kind: "refs"; edits: readonly EditInput[] }
   | { kind: "patterns"; rewrites: readonly RewriteInput[] }
+  | { kind: "rename"; rename: RenameInput }
 
 /**
  * Fully resolved call: ref mode is always single-file; pattern mode takes
  * either one explicit `file` (strict semantics) or `paths` (multi-file
- * codemod semantics).
+ * codemod semantics); rename mode is addressed entirely through its ref.
  */
 type Resolved =
   | { kind: "refs"; file: string; edits: readonly EditInput[] }
   | { kind: "pattern-file"; file: string; rewrites: readonly RewriteInput[] }
   | { kind: "pattern-paths"; paths: readonly string[]; rewrites: readonly RewriteInput[] }
+  | { kind: "rename"; rename: RenameInput }
 
 /** One {pattern, replacement} codemod rewrite and what it matched. */
 type RewritePlan = {
@@ -174,9 +194,7 @@ type PlanResult =
   | { kind: "conflict"; file: { relative: string; conflicts: string[] } }
 
 /** A multi-file pattern-mode run either stops at the predesign gate or yields its outcome. */
-type ModeRun =
-  | { blocked: true; result: Tool.ExecuteResult }
-  | { blocked: false; outcome: ModeOutcome }
+type ModeRun = { blocked: true; result: Tool.ExecuteResult } | { blocked: false; outcome: ModeOutcome }
 
 /**
  * The pre-sync identity of a stale ref: the graph record captured before the
@@ -211,6 +229,328 @@ const eolOf = (text: string) => (text.includes("\r\n") ? "\r\n" : "\n")
 
 /** Maximum files one pattern-mode `paths` call may address. */
 const MAX_PATTERN_FILES = 100
+
+/** Kinds the rename mode may address as a renameable declaration (graph NodeKind vocabulary). */
+const RENAMEABLE_KINDS = new Set([
+  "function",
+  "method",
+  "class",
+  "struct",
+  "interface",
+  "trait",
+  "protocol",
+  "enum",
+  "enum_member",
+  "union",
+  "type_alias",
+  "variable",
+  "constant",
+  "property",
+  "field",
+  "parameter",
+])
+
+/** The resolver tiers precise enough for rename mode to rewrite a site automatically. */
+const PRECISE_RESOLVERS = new Set(["import", "qualified-name", "exact-match", "function-ref"])
+
+/** Identifier-shaped syntax node types a rename site may land on (union over supported grammars). */
+const SITE_NODE_TYPES = new Set([
+  "identifier",
+  "type_identifier",
+  "property_identifier",
+  "field_identifier",
+  "constant",
+  "simple_identifier",
+])
+
+/** Crowd cap per analyzed file; beyond it a site misses the lookup and goes to review — never a guess. */
+const MAX_RENAME_SITES = 256
+
+/** Render cap for the review list; the full list always survives in the tool metadata. */
+const MAX_REVIEW_SHOWN = 80
+
+type RenameSite = { start: number; end: number; line: number; column: number }
+
+/** One occurrence reviewed instead of rewritten. */
+type ReviewEntry = { group: string; file: string; line: number; context: string }
+
+/** ast_edit rename-mode metadata payload; freshRef fills in after the write re-sync. */
+type RenameMetadata = {
+  schemaVersion: 1
+  rename: {
+    from: string
+    to: string
+    kind: string
+    language: string
+    definition: {
+      ref: string
+      file: string
+      line: number
+      relocated: boolean
+      freshRef?: string
+    }
+    sites: { file: string; line: number; context: string }[]
+    review: ReviewEntry[]
+    totals: { sites: number; files: number; review: number }
+  }
+}
+
+const renameFamily = (language: string) =>
+  ["typescript", "tsx", "javascript", "jsx", "vue", "astro", "svelte"].includes(language)
+    ? "js"
+    : language === "python"
+      ? "python"
+      : language === "go"
+        ? "go"
+        : language === "rust"
+          ? "rust"
+          : "other"
+
+const IDENTIFIER_SHAPE: Record<ReturnType<typeof renameFamily>, RegExp> = {
+  js: /^[A-Za-z_$][A-Za-z0-9_$]*$/,
+  python: /^[A-Za-z_][A-Za-z0-9_]*$/,
+  go: /^[A-Za-z_][A-Za-z0-9_]*$/,
+  rust: /^[A-Za-z_][A-Za-z0-9_]*$/,
+  other: /^[A-Za-z_][A-Za-z0-9_]*$/,
+}
+
+// Small per-family reserved-word tables: enough to refuse the names that would
+// break every file at once, not a language spec (site checks guard the rest).
+const RESERVED_WORDS: Record<ReturnType<typeof renameFamily>, Set<string>> = {
+  js: new Set([
+    "await",
+    "break",
+    "case",
+    "catch",
+    "class",
+    "const",
+    "continue",
+    "debugger",
+    "default",
+    "delete",
+    "do",
+    "else",
+    "enum",
+    "export",
+    "extends",
+    "false",
+    "finally",
+    "for",
+    "function",
+    "if",
+    "import",
+    "in",
+    "instanceof",
+    "interface",
+    "let",
+    "new",
+    "null",
+    "package",
+    "private",
+    "protected",
+    "public",
+    "return",
+    "static",
+    "super",
+    "switch",
+    "this",
+    "throw",
+    "true",
+    "try",
+    "typeof",
+    "undefined",
+    "var",
+    "void",
+    "while",
+    "with",
+    "yield",
+  ]),
+  python: new Set([
+    "and",
+    "as",
+    "assert",
+    "async",
+    "await",
+    "break",
+    "class",
+    "continue",
+    "def",
+    "del",
+    "elif",
+    "else",
+    "except",
+    "False",
+    "finally",
+    "for",
+    "from",
+    "global",
+    "if",
+    "import",
+    "in",
+    "is",
+    "lambda",
+    "None",
+    "nonlocal",
+    "not",
+    "or",
+    "pass",
+    "raise",
+    "return",
+    "True",
+    "try",
+    "while",
+    "with",
+    "yield",
+  ]),
+  go: new Set([
+    "break",
+    "case",
+    "chan",
+    "const",
+    "continue",
+    "default",
+    "defer",
+    "else",
+    "fallthrough",
+    "for",
+    "func",
+    "go",
+    "goto",
+    "if",
+    "import",
+    "interface",
+    "map",
+    "package",
+    "range",
+    "return",
+    "select",
+    "struct",
+    "switch",
+    "type",
+    "var",
+  ]),
+  rust: new Set([
+    "as",
+    "async",
+    "await",
+    "break",
+    "const",
+    "continue",
+    "crate",
+    "dyn",
+    "else",
+    "enum",
+    "extern",
+    "false",
+    "fn",
+    "for",
+    "if",
+    "impl",
+    "in",
+    "let",
+    "loop",
+    "match",
+    "mod",
+    "move",
+    "mut",
+    "pub",
+    "ref",
+    "return",
+    "self",
+    "Self",
+    "static",
+    "struct",
+    "super",
+    "trait",
+    "true",
+    "type",
+    "unsafe",
+    "unsized",
+    "use",
+    "where",
+    "while",
+  ]),
+  other: new Set(),
+}
+
+const onlyOne = <T>(items: T[]) => (items.length === 1 ? items[0] : undefined)
+
+/** True when `node` IS the name/property field of its parent declaration (never a mere same-text mention). */
+function isDeclarationName(node: SyntaxNode) {
+  const parent = node.parent
+  if (!parent) return false
+  const byName = parent.childForFieldName("name")
+  if (byName && byName.equals(node)) return true
+  const byProperty = parent.childForFieldName("property")
+  return !!byProperty && byProperty.equals(node)
+}
+
+/**
+ * One walk collects every identifier-shaped occurrence of `name` (auto-rewrite
+ * site candidates) and the subset that are declaration name fields (definition
+ * header candidates). Shorthand properties are deliberately NOT site types:
+ * renaming `{ alpha }` changes the property key too — that goes to review.
+ */
+function collectRenameSites(root: SyntaxNode, name: string, into: { sites: RenameSite[]; decls: RenameSite[] }) {
+  if (into.sites.length >= MAX_RENAME_SITES) return
+  if (SITE_NODE_TYPES.has(root.type) && root.text === name) {
+    const site = {
+      start: root.startIndex,
+      end: root.endIndex,
+      line: root.startPosition.row + 1,
+      column: root.startPosition.column,
+    }
+    into.sites.push(site)
+    if (isDeclarationName(root)) into.decls.push(site)
+  }
+  for (const child of root.children) collectRenameSites(child, name, into)
+}
+
+/** Review groups render in this order; entry groups are matched by prefix. */
+const REVIEW_GROUP_ORDER = [
+  "non-precise resolution tier",
+  "heuristic provenance",
+  "file-level import edge",
+  "reference name",
+  "reference site",
+  "referencing file",
+  "textual-only",
+]
+
+const groupRank = (group: string) => {
+  const index = REVIEW_GROUP_ORDER.findIndex((prefix) => group.startsWith(prefix))
+  return index === -1 ? REVIEW_GROUP_ORDER.length : index
+}
+
+/** The review list grouped by reason, file:line + one-line context each, ending with the standing warning. */
+function renderReview(review: ReviewEntry[]) {
+  if (review.length === 0)
+    return "Review list: empty — every graph-visible reference matched a precise edge and was rewritten."
+  const byGroup = new Map<string, ReviewEntry[]>()
+  for (const entry of review) {
+    const list = byGroup.get(entry.group)
+    if (list) list.push(entry)
+    else byGroup.set(entry.group, [entry])
+  }
+  const groups = [...byGroup.entries()].toSorted(
+    (a, b) => groupRank(a[0]) - groupRank(b[0]) || a[0].localeCompare(b[0]),
+  )
+  const lines = ["Review list (not rewritten):"]
+  let shown = 0
+  for (const [group, entries] of groups) {
+    lines.push(`- ${group} (${entries.length}):`)
+    for (const entry of entries) {
+      if (shown >= MAX_REVIEW_SHOWN) {
+        lines.push(`- ... ${review.length - shown} more review entries elided; the full list is in the tool metadata.`)
+        return lines.join("\n")
+      }
+      shown += 1
+      lines.push(`  - ${entry.file}:${entry.line}${entry.context ? `  ${entry.context}` : ""}`)
+    }
+  }
+  lines.push("Review the occurrences above manually — they were NOT rewritten.")
+  return lines.join("\n")
+}
 
 /** Glob magic that routes a `paths` entry through discovery instead of a direct stat. */
 const GLOB_MAGIC = /[*?[\]{}]/
@@ -363,7 +703,9 @@ function resolveTarget(
   const graph = state.graph
   const live = graph.node(refID)
   if (live && live.filePath !== graphPath) {
-    throw new Error(`ast_edit: ref node:${refID} belongs to ${live.filePath}, but this call targets ${graphPath}. Keep every ref in a single file.`)
+    throw new Error(
+      `ast_edit: ref node:${refID} belongs to ${live.filePath}, but this call targets ${graphPath}. Keep every ref in a single file.`,
+    )
   }
   if (identity && identity.node.filePath !== graphPath) {
     throw new Error(
@@ -377,7 +719,9 @@ function resolveTarget(
   const oldRange = identity ? `lines ${identity.node.startLine}-${identity.node.endLine}` : "lines ?-?"
   const candidates = candidatesInFile(graph, graphPath, kind, name)
   const pool =
-    candidates.length > 1 && identity ? candidates.filter((node) => parentChain(graph, node.id).join("/") === identity.chain.join("/")) : candidates
+    candidates.length > 1 && identity
+      ? candidates.filter((node) => parentChain(graph, node.id).join("/") === identity.chain.join("/"))
+      : candidates
   const chosen = pool.length === 1 ? pool[0] : undefined
   if (chosen) {
     const note =
@@ -419,29 +763,48 @@ function planEdit(
     }
   }
   if (edit.op === "replace") {
-    if (edit.content === undefined) throw new Error(`ast_edit: op replace requires content (edit ${index + 1}, ref ${edit.ref}).`)
+    if (edit.content === undefined)
+      throw new Error(`ast_edit: op replace requires content (edit ${index + 1}, ref ${edit.ref}).`)
     if (edit.content === "") {
-      throw new Error(`ast_edit: replace content must not be empty (edit ${index + 1}); use op delete to remove the node.`)
+      throw new Error(
+        `ast_edit: replace content must not be empty (edit ${index + 1}); use op delete to remove the node.`,
+      )
     }
   }
-  if ((edit.op === "insert_before" || edit.op === "insert_after") && (edit.content === undefined || edit.content.trim() === "")) {
+  if (
+    (edit.op === "insert_before" || edit.op === "insert_after") &&
+    (edit.content === undefined || edit.content.trim() === "")
+  ) {
     throw new Error(`ast_edit: ${edit.op} requires non-blank content (edit ${index + 1}, ref ${edit.ref}).`)
   }
   const content = edit.content ?? ""
   const resolved = resolveTarget(state, graphPath, refID, identity, file)
   const isInsert = edit.op === "insert_before" || edit.op === "insert_after"
-  const base = { index, refID, op: edit.op, node: resolved.node, relocated: resolved.relocated, note: resolved.note, isInsert }
+  const base = {
+    index,
+    refID,
+    op: edit.op,
+    node: resolved.node,
+    relocated: resolved.relocated,
+    note: resolved.note,
+    isInsert,
+  }
   if (edit.op === "delete") {
     const range = nodeSpliceRange(file, resolved.node)
     let end = range.end
     // Whole-line deletes swallow the trailing newline so no blank line is left behind.
-    const whole = range.start === lineStart(file, resolved.node.startLine) && end === lineContentEnd(file, resolved.node.endLine)
+    const whole =
+      range.start === lineStart(file, resolved.node.startLine) && end === lineContentEnd(file, resolved.node.endLine)
     if (whole) {
       if (file.text.charCodeAt(end) === 13 && file.text.charCodeAt(end + 1) === 10) end += 2
       else if (file.text.charCodeAt(end) === 10) end += 1
       // Deleting a block framed by blank separator lines on both sides swallows
       // the following blank line too, so the surviving separator stays singular.
-      if (resolved.node.startLine >= 2 && file.lines[resolved.node.startLine - 2]?.trim() === "" && file.lines[resolved.node.endLine]?.trim() === "") {
+      if (
+        resolved.node.startLine >= 2 &&
+        file.lines[resolved.node.startLine - 2]?.trim() === "" &&
+        file.lines[resolved.node.endLine]?.trim() === ""
+      ) {
         if (file.text.charCodeAt(end) === 13 && file.text.charCodeAt(end + 1) === 10) end += 2
         else if (file.text.charCodeAt(end) === 10) end += 1
       }
@@ -459,7 +822,8 @@ function planEdit(
     return { ...base, start: point, end: point, point, payload: block + eol }
   }
   const anchorEnd = lineStart(file, resolved.node.endLine + 1)
-  const needsLead = anchorEnd >= file.text.length && file.text.length > 0 && file.text.charCodeAt(file.text.length - 1) !== 10
+  const needsLead =
+    anchorEnd >= file.text.length && file.text.length > 0 && file.text.charCodeAt(file.text.length - 1) !== 10
   return { ...base, start: anchorEnd, end: anchorEnd, point: anchorEnd, payload: (needsLead ? eol : "") + block + eol }
 }
 
@@ -469,7 +833,13 @@ function checkOverlaps(plans: Planned[], graphPath: string) {
     for (let j = i + 1; j < plans.length; j++) {
       const a = plans[i]
       const b = plans[j]
-      const clash = a.isInsert ? (b.isInsert ? false : b.start < a.point && a.point < b.end) : b.isInsert ? a.start < b.point && b.point < a.end : a.start < b.end && b.start < a.end
+      const clash = a.isInsert
+        ? b.isInsert
+          ? false
+          : b.start < a.point && a.point < b.end
+        : b.isInsert
+          ? a.start < b.point && b.point < a.end
+          : a.start < b.end && b.start < a.end
       if (clash) {
         conflicts.push(
           `edit ${i + 1} (${a.op} ${a.node.kind} ${a.node.name}, lines ${a.node.startLine}-${a.node.endLine}) conflicts with edit ${j + 1} (${b.op} ${b.node.kind} ${b.node.name}, lines ${b.node.startLine}-${b.node.endLine})`,
@@ -499,17 +869,26 @@ function applySplices(file: FileText, plans: Planned[]) {
     text = text.slice(0, plan.start) + plan.payload + text.slice(plan.end)
   }
   const final = fileText(text)
-  const deltas = plans.map((plan) => ({ point: plan.point, isInsert: plan.isInsert, index: plan.index, value: plan.payload.length - (plan.end - plan.start) }))
-  const appliedAfter = (self: { point: number; isInsert: boolean; index: number }, other: { point: number; isInsert: boolean; index: number }) =>
+  const deltas = plans.map((plan) => ({
+    point: plan.point,
+    isInsert: plan.isInsert,
+    index: plan.index,
+    value: plan.payload.length - (plan.end - plan.start),
+  }))
+  const appliedAfter = (
+    self: { point: number; isInsert: boolean; index: number },
+    other: { point: number; isInsert: boolean; index: number },
+  ) =>
     other.point < self.point ||
-    (other.point === self.point &&
-      (self.isInsert
-        ? other.isInsert && other.index < self.index
-        : other.isInsert))
+    (other.point === self.point && (self.isInsert ? other.isInsert && other.index < self.index : other.isInsert))
   const spans = new Map<number, { startLine: number; endLine: number }>()
   for (const plan of plans) {
     const self = { point: plan.point, isInsert: plan.isInsert, index: plan.index }
-    const shift = deltas.reduce((sum, other, otherIndex) => (otherIndex === plan.index ? sum : appliedAfter(self, other) ? sum + other.value : sum), 0)
+    const shift = deltas.reduce(
+      (sum, other, otherIndex) =>
+        otherIndex === plan.index ? sum : appliedAfter(self, other) ? sum + other.value : sum,
+      0,
+    )
     if (plan.op === "delete") {
       const at = lineOfOffset(final, plan.start + shift)
       spans.set(plan.index, { startLine: at, endLine: at })
@@ -532,7 +911,12 @@ function applySplices(file: FileText, plans: Planned[]) {
  * re-anchor edited symbols by identity (kind+name, line-window tie-break) to
  * hand back fresh refs that follow-up ast_edit calls can chain from.
  */
-function freshRefs(state: ProjectGraphState, graphPath: string, plans: Planned[], spans: Map<number, { startLine: number; endLine: number }>) {
+function freshRefs(
+  state: ProjectGraphState,
+  graphPath: string,
+  plans: Planned[],
+  spans: Map<number, { startLine: number; endLine: number }>,
+) {
   const fresh = new Map<number, string>()
   for (const plan of plans) {
     if (plan.op === "delete") continue
@@ -554,28 +938,32 @@ function freshRefs(state: ProjectGraphState, graphPath: string, plans: Planned[]
 }
 
 /**
- * A call addresses the file either by graph refs (`edits`) or by structural
- * patterns (`rewrites`) — never both, so the two modes never compete over one
- * splice and the error surface stays unambiguous.
+ * A call addresses the file either by graph refs (`edits`), by structural
+ * patterns (`rewrites`), or renames one graph-addressed symbol (`rename`) —
+ * never more than one mode, so the modes never compete over one splice and
+ * the error surface stays unambiguous.
  */
 function resolveMode(params: Params): Mode {
-  const edits = params.edits
-  const rewrites = params.rewrites
-  if (edits !== undefined && rewrites !== undefined) {
+  const given = [
+    params.edits !== undefined ? "edits" : undefined,
+    params.rewrites !== undefined ? "rewrites" : undefined,
+    params.rename !== undefined ? "rename" : undefined,
+  ].filter((name): name is string => name !== undefined)
+  if (given.length > 1)
     throw new Error(
-      `ast_edit: one mode per call — this call passed both edits (${edits.length}) and rewrites (${rewrites.length}). Split it into a ref-mode call (edits) and a pattern-mode call (rewrites).`,
+      `ast_edit: one mode per call — this call passed ${given.join(" and ")}. Pass exactly one of edits / rewrites / rename.`,
     )
+  if (params.edits !== undefined) {
+    if (params.edits.length === 0) throw new Error("ast_edit requires at least one edit.")
+    return { kind: "refs", edits: params.edits }
   }
-  if (edits !== undefined) {
-    if (edits.length === 0) throw new Error("ast_edit requires at least one edit.")
-    return { kind: "refs", edits }
+  if (params.rewrites !== undefined) {
+    if (params.rewrites.length === 0) throw new Error("ast_edit requires at least one rewrite.")
+    return { kind: "patterns", rewrites: params.rewrites }
   }
-  if (rewrites !== undefined) {
-    if (rewrites.length === 0) throw new Error("ast_edit requires at least one rewrite.")
-    return { kind: "patterns", rewrites }
-  }
+  if (params.rename !== undefined) return { kind: "rename", rename: params.rename }
   throw new Error(
-    "ast_edit: no mode given — pass edits: [{ ref, op, content? }] for graph-ref mode, or rewrites: [{ pattern, replacement }] for pattern-codemod mode (exactly one of the two per call).",
+    "ast_edit: no mode given — pass edits: [{ ref, op, content? }] for graph-ref mode, rewrites: [{ pattern, replacement }] for pattern-codemod mode, or rename: { ref, to } for graph rename mode (exactly one of the three per call).",
   )
 }
 
@@ -584,7 +972,8 @@ function resolveMode(params: Params): Mode {
  * addresses its files either with one explicit `file` or with `paths`
  * (files, directories, globs) — never both, so the addressing is
  * unambiguous. Ref mode never multi-files: every ref must resolve inside
- * the one file named by `file`.
+ * the one file named by `file`. Rename mode addresses the symbol itself
+ * through `rename.ref` and forbids `file` / `paths`.
  */
 function resolveCall(params: Params): Resolved {
   const mode = resolveMode(params)
@@ -598,6 +987,13 @@ function resolveCall(params: Params): Resolved {
       throw new Error("ast_edit: ref mode requires `file` — every edit ref resolves inside that single file.")
     }
     return { kind: "refs", file: params.file, edits: mode.edits }
+  }
+
+  if (mode.kind === "rename") {
+    if (params.file) throw new Error("ast_edit: rename mode addresses the symbol through rename.ref — drop `file`.")
+    if (params.paths !== undefined && params.paths.length > 0)
+      throw new Error("ast_edit: rename mode addresses the symbol through rename.ref — drop `paths`.")
+    return { kind: "rename", rename: mode.rename }
   }
   if (params.file && params.paths !== undefined && params.paths.length > 0) {
     throw new Error(
@@ -757,74 +1153,76 @@ export const AstEditTool = Tool.define(
 
           const runRefMode = (edits: readonly EditInput[], filePath: string, rec: TouchedFile) =>
             Effect.gen(function* () {
-              const planned = yield* Chimera.withProjectGraph(
-                { watch: false },
-                (state) =>
-                  Effect.gen(function* () {
-                    const relative = path.relative(state.projectRoot, filePath).replaceAll("\\", "/")
-                    if (relative.startsWith("..") || path.isAbsolute(relative)) {
-                      throw new Error(
-                        `ast_edit: ${filePath} lies outside the graph project root ${state.projectRoot}; node refs cannot resolve. Use the edit tool instead.`,
-                      )
-                    }
-                    const exists = yield* afs.existsSafe(filePath)
-                    if (!exists) {
-                      throw new Error(`ast_edit: file ${relative} does not exist. Use the write tool to create files; ast_edit only edits existing files that the graph can index.`)
-                    }
-
-                    // Pre-sync identities: a stale ref id still resolves in the
-                    // un-synced graph when the file moved externally, giving the
-                    // kind/name/parent-chain anchors that survive the sync rewrite.
-                    const identities = edits.map((edit) => {
-                      const node = state.graph.node(parseNodeRef(edit.ref))
-                      return node ? { node, chain: parentChain(state.graph, node.id) } : undefined
-                    })
-
-                    yield* Effect.promise(() => state.graph.syncFiles([filePath]))
-                    const source = yield* Bom.readFile(afs, filePath)
-                    rec.contentOld = source.text
-                    rec.hadBom = source.bom
-                    const file = fileText(source.text)
-
-                    const plans = edits.map((edit, index) => planEdit(state, relative, edit, index, identities[index], file))
-                    checkOverlaps(plans, relative)
-
-                    const applied = yield* Chimera.trackToolMutation(
-                      {
-                        toolID: "ast_edit",
-                        ctx,
-                        files: [filePath],
-                        bus,
-                        metadata: () => ({
-                          create: false,
-                          filePath,
-                          diff: rec.diff,
-                          changeID,
-                          astEdit: {
-                            schemaVersion: 1,
-                            edits: plans.map((plan) => ({
-                              op: plan.op,
-                              ref: `node:${plan.refID}`,
-                              appliedRef: `node:${plan.node.id}`,
-                              kind: plan.node.kind,
-                              name: plan.node.name,
-                              relocated: plan.relocated,
-                            })),
-                          },
-                        }),
-                      },
-                      Effect.gen(function* () {
-                        const spliced = applySplices(file, plans)
-                        yield* commit(rec, spliced.text, "No changes to apply: ast_edit splices are a no-op.")
-                        return spliced
-                      }),
+              const planned = yield* Chimera.withProjectGraph({ watch: false }, (state) =>
+                Effect.gen(function* () {
+                  const relative = path.relative(state.projectRoot, filePath).replaceAll("\\", "/")
+                  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+                    throw new Error(
+                      `ast_edit: ${filePath} lies outside the graph project root ${state.projectRoot}; node refs cannot resolve. Use the edit tool instead.`,
                     )
+                  }
+                  const exists = yield* afs.existsSafe(filePath)
+                  if (!exists) {
+                    throw new Error(
+                      `ast_edit: file ${relative} does not exist. Use the write tool to create files; ast_edit only edits existing files that the graph can index.`,
+                    )
+                  }
 
-                    // trackToolMutation re-synced the file after the write; the DB
-                    // nodes now describe the final content.
-                    const fresh = freshRefs(state, relative, plans, applied.spans)
-                    return { plans, spans: applied.spans, fresh }
-                  }),
+                  // Pre-sync identities: a stale ref id still resolves in the
+                  // un-synced graph when the file moved externally, giving the
+                  // kind/name/parent-chain anchors that survive the sync rewrite.
+                  const identities = edits.map((edit) => {
+                    const node = state.graph.node(parseNodeRef(edit.ref))
+                    return node ? { node, chain: parentChain(state.graph, node.id) } : undefined
+                  })
+
+                  yield* Effect.promise(() => state.graph.syncFiles([filePath]))
+                  const source = yield* Bom.readFile(afs, filePath)
+                  rec.contentOld = source.text
+                  rec.hadBom = source.bom
+                  const file = fileText(source.text)
+
+                  const plans = edits.map((edit, index) =>
+                    planEdit(state, relative, edit, index, identities[index], file),
+                  )
+                  checkOverlaps(plans, relative)
+
+                  const applied = yield* Chimera.trackToolMutation(
+                    {
+                      toolID: "ast_edit",
+                      ctx,
+                      files: [filePath],
+                      bus,
+                      metadata: () => ({
+                        create: false,
+                        filePath,
+                        diff: rec.diff,
+                        changeID,
+                        astEdit: {
+                          schemaVersion: 1,
+                          edits: plans.map((plan) => ({
+                            op: plan.op,
+                            ref: `node:${plan.refID}`,
+                            appliedRef: `node:${plan.node.id}`,
+                            kind: plan.node.kind,
+                            name: plan.node.name,
+                            relocated: plan.relocated,
+                          })),
+                        },
+                      }),
+                    },
+                    Effect.gen(function* () {
+                      const spliced = applySplices(file, plans)
+                      yield* commit(rec, spliced.text, "No changes to apply: ast_edit splices are a no-op.")
+                      return spliced
+                    }),
+                  )
+
+                  // trackToolMutation re-synced the file after the write; the DB
+                  // nodes now describe the final content.
+                  const fresh = freshRefs(state, relative, plans, applied.spans)
+                  return { plans, spans: applied.spans, fresh }
+                }),
               ).pipe(
                 Effect.catchDefect((defect) =>
                   defect instanceof GraphSchemaMigrationRequiredError
@@ -850,8 +1248,14 @@ export const AstEditTool = Tool.define(
               }))
               const relocations = planned.plans.filter((plan) => plan.relocated).map((plan) => plan.note)
               const final = fileText(rec.contentNew)
-              const windowStart = planned.plans.reduce((min, plan) => Math.min(min, planned.spans.get(plan.index)?.startLine ?? plan.node.startLine), final.lines.length)
-              const windowEnd = planned.plans.reduce((max, plan) => Math.max(max, planned.spans.get(plan.index)?.endLine ?? plan.node.endLine), 1)
+              const windowStart = planned.plans.reduce(
+                (min, plan) => Math.min(min, planned.spans.get(plan.index)?.startLine ?? plan.node.startLine),
+                final.lines.length,
+              )
+              const windowEnd = planned.plans.reduce(
+                (max, plan) => Math.max(max, planned.spans.get(plan.index)?.endLine ?? plan.node.endLine),
+                1,
+              )
               rec.probe = planned.plans.map((plan) => ({ startLine: plan.node.startLine, endLine: plan.node.endLine }))
 
               return {
@@ -867,14 +1271,25 @@ export const AstEditTool = Tool.define(
                           : `lines ${plan.node.startLine}-${plan.node.endLine}`
                     const fresh = planned.fresh.get(plan.index)
                     const verb =
-                      plan.op === "replace" ? "replaced" : plan.op === "delete" ? "deleted" : plan.op === "insert_before" ? "inserted before" : "inserted after"
-                    return [`- ${verb} ${plan.node.kind} ${plan.node.name} (${where})`, fresh ? `  ref: node:${fresh}` : undefined]
+                      plan.op === "replace"
+                        ? "replaced"
+                        : plan.op === "delete"
+                          ? "deleted"
+                          : plan.op === "insert_before"
+                            ? "inserted before"
+                            : "inserted after"
+                    return [
+                      `- ${verb} ${plan.node.kind} ${plan.node.name} (${where})`,
+                      fresh ? `  ref: node:${fresh}` : undefined,
+                    ]
                       .filter(Boolean)
                       .join("\n")
                   }),
                 ].join("\n"),
                 notes:
-                  relocations.length > 0 ? `Self-healed refs:\n${relocations.map((note) => `- ${note}`).join("\n")}` : "",
+                  relocations.length > 0
+                    ? `Self-healed refs:\n${relocations.map((note) => `- ${note}`).join("\n")}`
+                    : "",
                 newLines: final.lines,
                 windowStart,
                 windowEnd,
@@ -897,7 +1312,9 @@ export const AstEditTool = Tool.define(
               const relative = rec.relative
               const exists = yield* afs.existsSafe(filePath)
               if (!exists) {
-                throw new Error(`ast_edit: file ${relative} does not exist. Use the write tool to create files; ast_edit only edits existing files.`)
+                throw new Error(
+                  `ast_edit: file ${relative} does not exist. Use the write tool to create files; ast_edit only edits existing files.`,
+                )
               }
               const source = yield* Bom.readFile(afs, filePath)
               rec.contentOld = source.text
@@ -929,7 +1346,9 @@ export const AstEditTool = Tool.define(
                 for (const [index, rewrite] of rewrites.entries()) {
                   const compiled = compilePattern(rewrite.pattern, language)
                   if (!compiled.ok) {
-                    throw new Error(`ast_edit: rewrite ${index + 1} is not a usable ${language} pattern — ${compiled.error.message}`)
+                    throw new Error(
+                      `ast_edit: rewrite ${index + 1} is not a usable ${language} pattern — ${compiled.error.message}`,
+                    )
                   }
                   const matches = findMatchesInTree(compiled.pattern, tree, source.text)
                   for (const match of matches) {
@@ -938,7 +1357,9 @@ export const AstEditTool = Tool.define(
                       start: match.replacedRange.start,
                       end: match.replacedRange.end,
                       replacement:
-                        rewrite.replacement === "" ? "" : renderTemplateReplacement(rewrite.replacement, match, source.text),
+                        rewrite.replacement === ""
+                          ? ""
+                          : renderTemplateReplacement(rewrite.replacement, match, source.text),
                     })
                   }
                   plans.push({
@@ -1036,7 +1457,9 @@ export const AstEditTool = Tool.define(
                 })
                 .pipe(
                   Stream.take(MAX_PATTERN_FILES + 1),
-                  Stream.runForEach((file) => Effect.sync(() => found.add(AppFileSystem.resolve(path.join(cwd, file))))),
+                  Stream.runForEach((file) =>
+                    Effect.sync(() => found.add(AppFileSystem.resolve(path.join(cwd, file)))),
+                  ),
                 )
             const project = AppFileSystem.resolve(instance.directory)
             for (const input of inputs) {
@@ -1138,7 +1561,9 @@ export const AstEditTool = Tool.define(
                     start: match.replacedRange.start,
                     end: match.replacedRange.end,
                     replacement:
-                      rewrite.replacement === "" ? "" : renderTemplateReplacement(rewrite.replacement, match, source.text),
+                      rewrite.replacement === ""
+                        ? ""
+                        : renderTemplateReplacement(rewrite.replacement, match, source.text),
                   })
                 }
                 plans.push({
@@ -1210,7 +1635,9 @@ export const AstEditTool = Tool.define(
               for (const filePath of found) results.push(yield* planPatternFile(filePath, rewrites, compiled))
 
               const conflicts = results.flatMap((result) =>
-                result.kind === "conflict" ? result.file.conflicts.map((line) => `${result.file.relative}: ${line}`) : [],
+                result.kind === "conflict"
+                  ? result.file.conflicts.map((line) => `${result.file.relative}: ${line}`)
+                  : [],
               )
               if (conflicts.length > 0) {
                 throw new Error(
@@ -1273,7 +1700,9 @@ export const AstEditTool = Tool.define(
                 ]
               })
               const skippedCount = results.filter((r) => r.kind === "skipped" && r.report.status === "skipped").length
-              const unmatchedCount = results.filter((r) => r.kind === "skipped" && r.report.status === "unmatched").length
+              const unmatchedCount = results.filter(
+                (r) => r.kind === "skipped" && r.report.status === "unmatched",
+              ).length
               const noChangeCount = planned.length - changed.length
               const totalReplacements = changed.reduce((sum, item) => sum + item.edits.length, 0)
               const astEdit = {
@@ -1383,6 +1812,503 @@ export const AstEditTool = Tool.define(
               }
             })
 
+          /**
+           * Rename mode: one graph-addressed declaration renamed across every
+           * file where the graph proved a precise reference edge. Only edges
+           * that are symbol-level (metadata refName), resolved by the precise
+           * tiers, and not heuristic-provenance are rewritten; every other
+           * edge, every ambiguous/missing site, and every grep-level occurrence
+           * without an accepted edge lands in a review list instead. All files
+           * are fully spliced BEFORE anything is written — a hard error (bad
+           * name, collision, unanalyzable definition header, overlapping
+           * splices) touches zero files. The write rides one permission ask and
+           * one trackToolMutation over all changed files, like the multi-file
+           * pattern call.
+           */
+          const runRename = (rename: RenameInput) =>
+            Effect.gen(function* () {
+              const analyzed = yield* Chimera.withProjectGraph({ watch: false }, (state) =>
+                Effect.gen(function* () {
+                  const graph = state.graph
+                  const refID = parseNodeRef(rename.ref)
+                  const pre = graph.node(refID)
+                  if (!pre)
+                    throw new Error(
+                      `ast_edit: rename.ref node:${refID} does not exist in the current graph. Re-locate the declaration with chimera_search or chimera_file_symbols and pass its fresh Ref: line.`,
+                    )
+                  if (!pre.name)
+                    throw new Error(`ast_edit: rename needs a named declaration; node:${refID} (${pre.kind}) carries no name.`)
+                  if (pre.kind === "file" || !RENAMEABLE_KINDS.has(pre.kind))
+                    throw new Error(
+                      `ast_edit: ${pre.kind} ${pre.name} (node:${refID}) is not a renameable declaration. Rename supports function, method, class, struct, interface, trait, protocol, enum, enum_member, union, type_alias, variable, constant, property, field, and parameter.`,
+                    )
+
+                  const identity: RefIdentity = { node: pre, chain: parentChain(graph, pre.id) }
+                  const defFile = AppFileSystem.resolve(path.join(state.projectRoot, pre.filePath))
+                  yield* Effect.promise(() => graph.syncFiles([defFile]))
+                  const defSource = yield* Bom.readFile(afs, defFile)
+                  const resolved = resolveTarget(state, pre.filePath, refID, identity, fileText(defSource.text))
+                  const defNode = resolved.node
+                  const oldName = defNode.name
+
+                  const language = detectLanguage(pre.filePath, defSource.text)
+                  const family = renameFamily(language)
+                  const langLabel = family === "other" ? language : `${family}-family`
+                  if (!IDENTIFIER_SHAPE[family].test(rename.to))
+                    throw new Error(
+                      `ast_edit: rename.to "${rename.to}" is not a valid identifier in ${langLabel} (${language}) as used by ${pre.filePath}. Nothing was written.`,
+                    )
+                  if (RESERVED_WORDS[family].has(rename.to))
+                    throw new Error(
+                      `ast_edit: rename.to "${rename.to}" is a reserved word in ${langLabel} (${pre.filePath}); pick a different name. Nothing was written.`,
+                    )
+                  if (rename.to === oldName)
+                    throw new Error(`ast_edit: rename.to "${rename.to}" equals the current name — nothing would change.`)
+                  const collision = graph
+                    .nodesInFile(defNode.filePath)
+                    .find((node) => node.id !== defNode.id && node.kind !== "file" && node.name === rename.to)
+                  if (collision)
+                    throw new Error(
+                      [
+                        `ast_edit: rename: "${rename.to}" already exists in ${defNode.filePath} — the rename would collide with:`,
+                        formatCandidate(collision),
+                        `Rename or remove that symbol first, or pick a different name. Nothing was written.`,
+                      ].join("\n"),
+                    )
+
+                  /** One analyzed (or refused) referencing file and its rename-site candidates. */
+                  type SiteFile = {
+                    rel: string
+                    abs: string
+                    file: FileText
+                    bom: boolean
+                    sites: RenameSite[]
+                    decls: RenameSite[]
+                    reason?: string
+                  }
+                  const cache = new Map<string, SiteFile>()
+                  const prepareFile = (rel: string) =>
+                    Effect.gen(function* () {
+                      const hit = cache.get(rel)
+                      if (hit) return hit
+                      const abs = AppFileSystem.resolve(path.join(state.projectRoot, rel))
+                      const source = yield* Bom.readFile(afs, abs).pipe(Effect.catch(() => Effect.succeed(undefined)))
+                      if (!source) {
+                        const missing: SiteFile = {
+                          rel,
+                          abs,
+                          file: fileText(""),
+                          bom: false,
+                          sites: [],
+                          decls: [],
+                          reason: "the file could not be read",
+                        }
+                        cache.set(rel, missing)
+                        return missing
+                      }
+                      const prepared: SiteFile = {
+                        rel,
+                        abs,
+                        file: fileText(source.text),
+                        bom: source.bom,
+                        sites: [],
+                        decls: [],
+                      }
+                      const lang = detectLanguage(rel, source.text)
+                      let refusal: string | undefined
+                      if (!hasTreeSitterGrammar(lang)) refusal = `no tree-sitter grammar for language "${lang}"`
+                      if (!refusal) {
+                        yield* Effect.promise(() => ensureGrammarLoaded(lang))
+                        const tree = parseSource(lang, source.text)
+                        if (!tree) refusal = `the ${lang} grammar did not load`
+                        else {
+                          try {
+                            if (syntaxErrorLines(tree.rootNode, 1).length > 0) refusal = "the file has syntax errors"
+                            else collectRenameSites(tree.rootNode, oldName, prepared)
+                          } finally {
+                            tree.delete()
+                          }
+                        }
+                      }
+                      if (refusal) prepared.reason = refusal
+                      cache.set(rel, prepared)
+                      return prepared
+                    })
+
+                  // Sync the referencing files too, so every edge line/column and
+                  // every site splice is computed against current on-disk content.
+                  const structuralEdge = (kind: string) => kind === "contains" || kind === "exports"
+                  const refRels = [
+                    ...new Set(
+                      graph
+                        .incomingEdges(defNode.id)
+                        .filter((edge) => !structuralEdge(edge.kind))
+                        .map((edge) => graph.node(edge.source)?.filePath)
+                        .filter((rel): rel is string => rel !== undefined),
+                    ),
+                  ]
+                  if (refRels.length > MAX_PATTERN_FILES)
+                    throw new Error(
+                      `ast_edit: rename references more than ${MAX_PATTERN_FILES} files (${refRels.length}); the rename cannot be applied atomically — narrow the blast radius first. Nothing was written.`,
+                    )
+                  yield* Effect.promise(() =>
+                    graph.syncFiles([
+                      defFile,
+                      ...refRels.map((rel) => AppFileSystem.resolve(path.join(state.projectRoot, rel))),
+                    ]),
+                  )
+
+                  const review: ReviewEntry[] = []
+                  const refSites: { file: string; line: number; context: string }[] = []
+                  const splices = new Map<string, RenameSite[]>()
+                  const seenSites = new Set<string>()
+                  const edgeContext = (sf: SiteFile | undefined, line: number) =>
+                    (sf?.file.lines[line - 1] ?? "").trim().slice(0, 120)
+                  const addSite = (sf: SiteFile, site: RenameSite) => {
+                    const key = `${sf.rel}:${site.start}:${site.end}`
+                    if (seenSites.has(key)) return
+                    seenSites.add(key)
+                    const list = splices.get(sf.rel)
+                    if (list) list.push(site)
+                    else splices.set(sf.rel, [site])
+                    refSites.push({ file: sf.rel, line: site.line, context: edgeContext(sf, site.line) })
+                  }
+                  for (const edge of graph.incomingEdges(defNode.id)) {
+                    if (structuralEdge(edge.kind)) continue
+                    const srcNode = graph.node(edge.source)
+                    const rel = srcNode?.filePath
+                    const line = edge.line ?? srcNode?.startLine ?? 0
+                    const meta = edge.metadata ?? {}
+                    const refName = typeof meta.refName === "string" ? meta.refName : undefined
+                    const resolvedBy = typeof meta.resolvedBy === "string" ? meta.resolvedBy : "unrecorded"
+                    const fileLabel = rel ?? `missing source node:${edge.source}`
+                    const sfForReview = rel ? yield* prepareFile(rel) : undefined
+                    if (!refName) {
+                      review.push({
+                        group: "file-level import edge (no symbol reference)",
+                        file: fileLabel,
+                        line,
+                        context: edgeContext(sfForReview, line),
+                      })
+                      continue
+                    }
+                    if (!PRECISE_RESOLVERS.has(resolvedBy)) {
+                      review.push({
+                        group: `non-precise resolution tier "${resolvedBy}"`,
+                        file: fileLabel,
+                        line,
+                        context: edgeContext(sfForReview, line),
+                      })
+                      continue
+                    }
+                    if (edge.provenance === "heuristic") {
+                      review.push({
+                        group: "heuristic provenance",
+                        file: fileLabel,
+                        line,
+                        context: edgeContext(sfForReview, line),
+                      })
+                      continue
+                    }
+                    if (refName !== oldName) {
+                      review.push({
+                        group: `reference name "${refName}" is not the renamed symbol (aliased import or qualified reference)`,
+                        file: fileLabel,
+                        line,
+                        context: edgeContext(sfForReview, line),
+                      })
+                      continue
+                    }
+                    if (!srcNode || !rel) {
+                      review.push({
+                        group: "reference site not located precisely (source node missing from the graph)",
+                        file: fileLabel,
+                        line,
+                        context: "",
+                      })
+                      continue
+                    }
+                    const sf = yield* prepareFile(rel)
+                    if (sf.reason) {
+                      review.push({
+                        group: `referencing file left unanalyzed: ${sf.reason}`,
+                        file: rel,
+                        line,
+                        context: edgeContext(sf, line),
+                      })
+                      continue
+                    }
+                    const inSourceRange = (site: RenameSite) =>
+                      srcNode.kind === "file" ||
+                      (site.line >= srcNode.startLine && site.line <= srcNode.endLine)
+                    const hit =
+                      sf.sites.find(
+                        (site) => site.line === line && site.column === (edge.column ?? 0) && inSourceRange(site),
+                      ) ??
+                      onlyOne(sf.sites.filter((site) => site.line === line && inSourceRange(site))) ??
+                      onlyOne(sf.sites.filter(inSourceRange))
+                    if (!hit) {
+                      review.push({
+                        group: "reference site not located precisely (ambiguous or missing identifier)",
+                        file: rel,
+                        line,
+                        context: edgeContext(sf, line),
+                      })
+                      continue
+                    }
+                    addSite(sf, hit)
+                  }
+
+                  const defPrepared = yield* prepareFile(defNode.filePath)
+                  if (defPrepared.reason)
+                    throw new Error(
+                      `ast_edit: rename: the definition file ${defNode.filePath} cannot be analyzed (${defPrepared.reason}) — nothing was written; use the edit tool for this symbol.`,
+                    )
+                  const headerSites = defPrepared.decls.filter(
+                    (site) =>
+                      site.line >= defNode.startLine && site.line <= Math.min(defNode.startLine + 3, defNode.endLine),
+                  )
+                  const defHit = onlyOne(headerSites)
+                  if (!defHit)
+                    throw new Error(
+                      `ast_edit: rename: the name "${oldName}" was not located uniquely in the ${defNode.kind} ${oldName} declaration header (lines ${defNode.startLine}-${defNode.endLine}, ${headerSites.length} candidate(s)) — nothing was written. This declaration shape is not mechanically renameable; use the edit tool.`,
+                    )
+                  const defKey = `${defNode.filePath}:${defHit.start}:${defHit.end}`
+                  if (!seenSites.has(defKey)) {
+                    seenSites.add(defKey)
+                    const defList = splices.get(defNode.filePath)
+                    if (defList) defList.push(defHit)
+                    else splices.set(defNode.filePath, [defHit])
+                  }
+
+                  const writes = [...splices.entries()]
+                    .toSorted((a, b) => a[0].localeCompare(b[0]))
+                    .map(([rel, sites]) => {
+                      const sf = cache.get(rel)
+                      if (!sf)
+                        throw new Error(`ast_edit: rename: internal planning gap — ${rel} was spliced but not analyzed.`)
+                      const edits = sites
+                        .toSorted((a, b) => a.start - b.start)
+                        .map((site) => ({ start: site.start, end: site.end, replacement: rename.to }))
+                      return {
+                        rel,
+                        abs: sf.abs,
+                        file: sf.file,
+                        bom: sf.bom,
+                        edits,
+                        finalText: applyReplacements(sf.file.text, edits),
+                      }
+                    })
+
+                  // Textual sweep: grep-level same-name occurrences in the analyzed
+                  // files that carry no accepted edge — strings, comments, dynamic
+                  // uses the graph cannot see. Line-level exclusion against accepted
+                  // sites, definition header, and already-reviewed edge lines.
+                  const excluded = new Map<string, Set<number>>()
+                  const exclude = (rel: string, line: number) => {
+                    if (line <= 0) return
+                    const set = excluded.get(rel)
+                    if (set) set.add(line)
+                    else excluded.set(rel, new Set([line]))
+                  }
+                  for (const site of refSites) exclude(site.file, site.line)
+                  exclude(defNode.filePath, defHit.line)
+                  for (const entry of review) exclude(entry.file, entry.line)
+                  const okFiles = new Map<string, SiteFile>()
+                  for (const [rel, sf] of cache) if (!sf.reason) okFiles.set(rel, sf)
+                  const sweep = yield* rg
+                    .search({
+                      cwd: displayRoot,
+                      pattern: `\\b${oldName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`,
+                      file: [...okFiles.values()].map((sf) => sf.abs),
+                      limit: 200,
+                      signal: ctx.abort,
+                    })
+                    .pipe(Effect.catch(() => Effect.succeed<Ripgrep.SearchResult>({ items: [], partial: false })))
+                  const seenTextual = new Set<string>()
+                  for (const item of sweep.items) {
+                    const rel = path.isAbsolute(item.path.text)
+                      ? path.relative(state.projectRoot, item.path.text)
+                      : item.path.text
+                    if (!okFiles.has(rel) || excluded.get(rel)?.has(item.line_number)) continue
+                    const key = `${rel}:${item.line_number}`
+                    if (seenTextual.has(key)) continue
+                    seenTextual.add(key)
+                    review.push({
+                      group: "textual-only, unverified (string, comment, or dynamic use the graph cannot see)",
+                      file: rel,
+                      line: item.line_number,
+                      context: item.lines.text.trim().slice(0, 120),
+                    })
+                  }
+
+                  const touched: TouchedFile[] = writes.map((item) => {
+                    const rec: TouchedFile = {
+                      filePath: item.abs,
+                      relative: path.relative(displayRoot, item.abs),
+                      hadBom: item.bom,
+                      contentOld: item.file.text,
+                      contentNew: item.finalText,
+                      diff: "",
+                      formatterTouched: false,
+                      probe: item.edits.map((edit) => rangeLines(item.file, edit.start, edit.end)),
+                    }
+                    stage(rec, rec.contentNew)
+                    return rec
+                  })
+
+                  for (const rec of touched) yield* assertExternalDirectoryEffect(ctx, rec.filePath)
+                  const predesign = yield* Chimera.requirePredesignForMutation({
+                    toolID: "ast_edit",
+                    ctx,
+                    files: touched.map((rec) => rec.filePath),
+                    multiFile: touched.length > 1,
+                  })
+                  if (!predesign.allowed) return { blocked: true as const, result: predesign.result }
+
+                  const astEdit: RenameMetadata = {
+                    schemaVersion: 1,
+                    rename: {
+                      from: oldName,
+                      to: rename.to,
+                      kind: defNode.kind,
+                      language,
+                      definition: {
+                        ref: `node:${defNode.id}`,
+                        file: defNode.filePath,
+                        line: defHit.line,
+                        relocated: resolved.relocated,
+                      },
+                      sites: refSites,
+                      review,
+                      totals: { sites: refSites.length, files: touched.length, review: review.length },
+                    },
+                  }
+
+                  yield* Chimera.trackToolMutation(
+                    {
+                      toolID: "ast_edit",
+                      ctx,
+                      files: touched.map((rec) => rec.filePath),
+                      bus,
+                      metadata: () => ({
+                        create: false,
+                        filePaths: touched.map((rec) => rec.filePath),
+                        diff: touched.map((rec) => rec.diff).join("\n"),
+                        changeID,
+                        astEdit,
+                      }),
+                    },
+                    Effect.gen(function* () {
+                      yield* ctx.ask({
+                        permission: "edit",
+                        patterns: touched.map((rec) => rec.relative),
+                        always: ["*"],
+                        metadata: {
+                          filepath: touched.map((rec) => rec.relative).join(", "),
+                          diff: touched.map((rec) => rec.diff).join("\n"),
+                          files: touched.map((rec) => ({
+                            filePath: rec.filePath,
+                            relativePath: rec.relative,
+                            type: "update",
+                            patch: rec.diff,
+                          })),
+                        },
+                      })
+                      for (const rec of touched) yield* writeFormatted(rec)
+                    }),
+                  )
+
+                  // trackToolMutation re-synced every written file; the renamed
+                  // declaration now lives under its new name with a fresh node id.
+                  const renamed = graph
+                    .nodesInFile(defNode.filePath)
+                    .filter((node) => node.kind === defNode.kind && node.name === rename.to)
+                  const freshRef = renamed.length === 1 ? `node:${renamed[0].id}` : undefined
+                  astEdit.rename.definition.freshRef = freshRef
+                  return {
+                    blocked: false as const,
+                    touched,
+                    writes,
+                    astEdit,
+                    review,
+                    refSites: [...refSites].toSorted((a, b) => a.file.localeCompare(b.file) || a.line - b.line),
+                    oldName,
+                    to: rename.to,
+                    defKind: defNode.kind,
+                    defRel: defNode.filePath,
+                    defLine: defHit.line,
+                    relocated: resolved.relocated,
+                    note: resolved.note,
+                    freshRef,
+                  }
+                }),
+              ).pipe(
+                Effect.catchDefect((defect) =>
+                  defect instanceof GraphSchemaMigrationRequiredError
+                    ? Effect.fail(
+                        new Error(
+                          `ast_edit: ${defect.message} — ask the user to run 'chimera graph index' in this project to migrate the graph, or rename manually with the edit tool meanwhile.`,
+                        ),
+                      )
+                    : Effect.die(defect),
+                ),
+                Effect.orDie,
+              )
+              if (analyzed.blocked) return analyzed
+
+              const siteFiles = new Set(analyzed.refSites.map((site) => site.file))
+              const head = [
+                `Renamed ${analyzed.defKind} ${analyzed.oldName} -> ${analyzed.to}`,
+                `- definition: ${analyzed.defRel}:${analyzed.defLine}${
+                  analyzed.freshRef ? `  (fresh ref: ${analyzed.freshRef})` : ""
+                }`,
+                analyzed.refSites.length > 0
+                  ? `- ${analyzed.refSites.length} reference site(s) auto-rewritten across ${siteFiles.size} file(s):`
+                  : "- no reference sites were auto-rewritten (only the declaration header changed)",
+                ...analyzed.refSites.map(
+                  (site) => `  - ${site.file}:${site.line}${site.context ? `  ${site.context}` : ""}`,
+                ),
+                "",
+                renderReview(analyzed.review),
+              ].join("\n")
+              const notes = analyzed.relocated ? `Self-healed refs:\n- ${analyzed.note}` : ""
+
+              // The changed-block window renders only when exactly one file was
+              // written; multi-file diffs stay in metadata. Offset every edit by the
+              // length change of the ones before it (the engine splices left to right).
+              let newLines: string[] = []
+              let windowStart = 1
+              let windowEnd = 0
+              if (analyzed.touched.length === 1) {
+                const item = analyzed.writes[0]
+                const final = fileText(analyzed.touched[0].contentNew)
+                let shift = 0
+                const spans = item.edits.map((edit) => {
+                  const start = edit.start + shift
+                  shift += edit.replacement.length - (edit.end - edit.start)
+                  return rangeLines(final, start, start + edit.replacement.length)
+                })
+                newLines = final.lines
+                windowStart = spans.reduce((min, span) => Math.min(min, span.startLine), final.lines.length)
+                windowEnd = spans.reduce((max, span) => Math.max(max, span.endLine), 1)
+              }
+
+              return {
+                blocked: false as const,
+                outcome: {
+                  head,
+                  notes,
+                  newLines,
+                  windowStart,
+                  windowEnd,
+                  touched: analyzed.touched,
+                  liveMetadata: analyzed.astEdit,
+                  metadata: analyzed.astEdit,
+                } satisfies ModeOutcome,
+              }
+            })
+
           /** Shared mutation tail: diff stats, metadata, output, LSP oracle, propagation. */
           const finish = (outcome: ModeOutcome) =>
             Effect.gen(function* () {
@@ -1400,7 +2326,12 @@ export const AstEditTool = Tool.define(
                 }
                 additions += fileAdditions
                 deletions += fileDeletions
-                filediffs.push({ file: rec.filePath, patch: rec.diff, additions: fileAdditions, deletions: fileDeletions })
+                filediffs.push({
+                  file: rec.filePath,
+                  patch: rec.diff,
+                  additions: fileAdditions,
+                  deletions: fileDeletions,
+                })
               }
               const diff = multiple ? touched.map((rec) => rec.diff).join("\n") : touched[0].diff
 
@@ -1443,7 +2374,10 @@ export const AstEditTool = Tool.define(
                 },
               }).pipe(Effect.ignore)
               for (const rec of touched) {
-                const block = LSP.Diagnostic.report(rec.filePath, diagnostics[AppFileSystem.normalizePath(rec.filePath)] ?? [])
+                const block = LSP.Diagnostic.report(
+                  rec.filePath,
+                  diagnostics[AppFileSystem.normalizePath(rec.filePath)] ?? [],
+                )
                 if (!block) continue
                 output += multiple
                   ? `\n\nLSP errors detected in ${rec.relative}, please fix:\n${block}`
@@ -1467,7 +2401,9 @@ export const AstEditTool = Tool.define(
                   changeID,
                   astEdit: {
                     ...outcome.metadata,
-                    formatterTouched: multiple ? touched.some((rec) => rec.formatterTouched) : touched[0].formatterTouched,
+                    formatterTouched: multiple
+                      ? touched.some((rec) => rec.formatterTouched)
+                      : touched[0].formatterTouched,
                   },
                 },
               }
@@ -1475,6 +2411,19 @@ export const AstEditTool = Tool.define(
 
           if (call.kind === "pattern-paths") {
             const run = yield* runPatternPaths(call.rewrites, call.paths)
+            if (run.blocked) return run.result
+            return yield* finish(run.outcome)
+          }
+
+          if (call.kind === "rename") {
+            if (!isInitialized(displayRoot)) {
+              throw new Error(
+                `ast_edit: the Chimera graph surface is not initialized for this project, so rename.ref cannot resolve. ` +
+                  `Ask the user to run 'chimera graph init' then 'chimera graph index' (or call chimera_init_graph if that tool is available to you), ` +
+                  `or rename manually: grep the old name and edit every occurrence. Pattern mode (rewrites) needs no graph.`,
+              )
+            }
+            const run = yield* runRename(call.rename)
             if (run.blocked) return run.result
             return yield* finish(run.outcome)
           }

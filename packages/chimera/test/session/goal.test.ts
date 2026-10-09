@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm"
 import { Database } from "@/storage/db"
 import { Goal } from "@/session/goal"
 import { MessageID, SessionID } from "@/session/schema"
-import { MessageTable } from "@/session/session.sql"
+import { GoalTable, MessageTable } from "@/session/session.sql"
 import { MessageV2 } from "@/session/message-v2"
 import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
@@ -23,8 +23,8 @@ beforeEach(() => {
   Database.Client().$client.exec(`
     DELETE FROM goal;
     DELETE FROM part WHERE session_id = 'ses_goal_test';
-    DELETE FROM message WHERE session_id = 'ses_goal_test';
-    DELETE FROM session WHERE id = 'ses_goal_test';
+    DELETE FROM message WHERE session_id LIKE 'ses_goal%';
+    DELETE FROM session WHERE id LIKE 'ses_goal%';
     DELETE FROM project WHERE id = 'prj_goal_test';
     INSERT INTO project (id, worktree, sandboxes, time_created, time_updated)
     VALUES ('prj_goal_test', '/tmp/goal-test', '[]', 0, 0);
@@ -33,7 +33,8 @@ beforeEach(() => {
   `)
 })
 
-function insertAssistant(
+function assistantMessage(
+  targetSessionID: string,
   id: MessageID,
   tokens: { input: number; output: number; cacheRead: number; cacheWrite: number },
   completed = true,
@@ -55,7 +56,45 @@ function insertAssistant(
     agent: "test",
     path: { cwd: "/", root: "/" },
   } as unknown as (typeof MessageTable.$inferInsert)["data"]
-  return Effect.sync(() => Database.use((db) => db.insert(MessageTable).values({ id, session_id: sessionID, data }).run()))
+  return Effect.sync(() =>
+    Database.use((db) =>
+      db
+        .insert(MessageTable)
+        .values({ id, session_id: SessionID.make(targetSessionID), data })
+        .run(),
+    ),
+  )
+}
+
+function insertAssistant(
+  id: MessageID,
+  tokens: { input: number; output: number; cacheRead: number; cacheWrite: number },
+  completed = true,
+) {
+  return assistantMessage(sessionID, id, tokens, completed)
+}
+
+// Subagent-style session rows with `parent_id` set, mirroring how child
+// dispatch creates descendant sessions for the accounting tests.
+function insertSession(id: string, parentID?: string) {
+  return Effect.sync(() =>
+    Database.Client().$client.exec(
+      `INSERT INTO session (id, project_id, parent_id, slug, directory, title, version, time_created, time_updated)
+       VALUES ('${id}', 'prj_goal_test', ${parentID ? `'${parentID}'` : "NULL"}, '${id}', '/tmp/goal-test', 'Goal Test Session', 'test', 0, 0)`,
+    ),
+  )
+}
+
+// Direct row writer used to seed the pre-watermarks legacy goal shape.
+function insertGoalData(data: Record<string, unknown>) {
+  return Effect.sync(() =>
+    Database.use((db) =>
+      db
+        .insert(GoalTable)
+        .values({ session_id: sessionID, data: data as (typeof GoalTable.$inferInsert)["data"] })
+        .run(),
+    ),
+  )
 }
 
 function finalizeAssistant(id: MessageID) {
@@ -147,10 +186,7 @@ describe("session.goal", () => {
 
       const fromBlocked = yield* goal.updateStatus({ sessionID, status: "complete" })
       expect(fromBlocked.status).toBe("complete")
-      yield* expectRejected(
-        goal.updateStatus({ sessionID, status: "active" }),
-        "already complete; create a new goal",
-      )
+      yield* expectRejected(goal.updateStatus({ sessionID, status: "active" }), "already complete; create a new goal")
     }),
   )
 
@@ -172,7 +208,7 @@ describe("session.goal", () => {
       yield* goal.account(sessionID)
       let stored = yield* goal.get(sessionID)
       expect(stored?.tokensUsed).toBe(1040)
-      expect(stored?.lastUsageMessageID).toBe(second)
+      expect(stored?.usageWatermarks).toEqual({ [sessionID]: second })
 
       yield* goal.account(sessionID)
       stored = yield* goal.get(sessionID)
@@ -183,7 +219,7 @@ describe("session.goal", () => {
       yield* goal.account(sessionID)
       stored = yield* goal.get(sessionID)
       expect(stored?.tokensUsed).toBe(3040)
-      expect(stored?.lastUsageMessageID).toBe(inflight)
+      expect(stored?.usageWatermarks).toEqual({ [sessionID]: inflight })
     }),
   )
 
@@ -206,6 +242,128 @@ describe("session.goal", () => {
       yield* insertAssistant(MessageID.ascending(), { input: 100, output: 10, cacheRead: 0, cacheWrite: 0 })
       yield* goal.account(sessionID)
       expect(yield* goal.get(sessionID)).toBeUndefined()
+    }),
+  )
+
+  it.instance("clear removes the goal row and reports whether one existed", () =>
+    Effect.gen(function* () {
+      const goal = yield* Goal.Service
+      yield* goal.create({ sessionID, objective: "clear me" })
+      expect(yield* goal.clear(sessionID)).toBe(true)
+      expect(yield* goal.get(sessionID)).toBeUndefined()
+      expect(yield* goal.clear(sessionID)).toBe(false)
+      // account stays a no-op after clearing
+      yield* insertAssistant(MessageID.ascending(), { input: 100, output: 10, cacheRead: 0, cacheWrite: 0 })
+      yield* goal.account(sessionID)
+      expect(yield* goal.get(sessionID)).toBeUndefined()
+    }),
+  )
+
+  it.instance("legacy lastUsageMessageID rows normalize into per-session watermarks", () =>
+    Effect.gen(function* () {
+      const goal = yield* Goal.Service
+      const counted = MessageID.ascending()
+      // a message already accounted under the legacy watermark (500 billable)
+      yield* insertAssistant(counted, { input: 500, output: 100, cacheRead: 100, cacheWrite: 0 })
+      yield* insertGoalData({
+        objective: "legacy",
+        status: "active",
+        tokensUsed: 500,
+        lastUsageMessageID: counted,
+      })
+
+      // `get` folds the legacy field into the goal session's watermark
+      const stored = yield* goal.get(sessionID)
+      expect(stored?.usageWatermarks).toEqual({ [sessionID]: counted })
+
+      const fresh = MessageID.ascending()
+      // billable: 100 - 0 + 10 = 110
+      yield* insertAssistant(fresh, { input: 100, output: 10, cacheRead: 0, cacheWrite: 0 })
+      yield* goal.account(sessionID)
+      const accounted = yield* goal.get(sessionID)
+      expect(accounted?.tokensUsed).toBe(610)
+      expect(accounted?.usageWatermarks).toEqual({ [sessionID]: fresh })
+
+      // the persisted row was rewritten without the legacy field
+      const raw = yield* Effect.sync(() =>
+        Database.use((db) => db.select().from(GoalTable).where(eq(GoalTable.session_id, sessionID)).get()),
+      )
+      expect((raw?.data as Record<string, unknown>).lastUsageMessageID).toBeUndefined()
+    }),
+  )
+
+  it.instance("account aggregates descendant session tokens without double counting", () =>
+    Effect.gen(function* () {
+      const goal = yield* Goal.Service
+      yield* goal.create({ sessionID, objective: "aggregate" })
+      yield* insertSession("ses_goal_child", "ses_goal_test")
+      yield* insertSession("ses_goal_grand", "ses_goal_child")
+
+      // billable: 1000 - 300 + 200 = 900 in the child
+      const childMsg = MessageID.ascending()
+      yield* assistantMessage("ses_goal_child", childMsg, { input: 1000, output: 200, cacheRead: 300, cacheWrite: 0 })
+      // billable: 50 - 0 + 10 = 60 in the grandchild (transitive closure)
+      const grandMsg = MessageID.ascending()
+      yield* assistantMessage("ses_goal_grand", grandMsg, { input: 50, output: 10, cacheRead: 0, cacheWrite: 0 })
+      // in-flight child message must not count yet
+      yield* assistantMessage(
+        "ses_goal_child",
+        MessageID.ascending(),
+        { input: 5000, output: 5000, cacheRead: 0, cacheWrite: 0 },
+        false,
+      )
+      // an unrelated root session's usage must not leak into the goal
+      yield* insertSession("ses_goal_other")
+      yield* assistantMessage("ses_goal_other", MessageID.ascending(), {
+        input: 400,
+        output: 1,
+        cacheRead: 0,
+        cacheWrite: 0,
+      })
+
+      yield* goal.account(sessionID)
+      let stored = yield* goal.get(sessionID)
+      expect(stored?.tokensUsed).toBe(960)
+      // only sessions with new completed assistant rows get watermarks
+      expect(stored?.usageWatermarks).toEqual({ ses_goal_child: childMsg, ses_goal_grand: grandMsg })
+
+      // re-accounting does not double count
+      yield* goal.account(sessionID)
+      stored = yield* goal.get(sessionID)
+      expect(stored?.tokensUsed).toBe(960)
+
+      // a new child created mid-goal counts its full history
+      yield* insertSession("ses_goal_child2", "ses_goal_test")
+      const newChildMsg = MessageID.ascending()
+      // billable: 100 - 0 + 40 = 140
+      yield* assistantMessage("ses_goal_child2", newChildMsg, { input: 100, output: 40, cacheRead: 0, cacheWrite: 5 })
+      yield* goal.account(sessionID)
+      stored = yield* goal.get(sessionID)
+      expect(stored?.tokensUsed).toBe(1100)
+      expect(stored?.usageWatermarks).toEqual({
+        ses_goal_child: childMsg,
+        ses_goal_grand: grandMsg,
+        ses_goal_child2: newChildMsg,
+      })
+    }),
+  )
+
+  it.instance("child-driven usage flips the root goal to budget_limited", () =>
+    Effect.gen(function* () {
+      const goal = yield* Goal.Service
+      yield* goal.create({ sessionID, objective: "budgeted subtree", tokenBudget: 100 })
+      yield* insertSession("ses_goal_child", "ses_goal_test")
+      // billable: 150 in the child alone crosses the root goal's budget
+      yield* assistantMessage("ses_goal_child", MessageID.ascending(), {
+        input: 150,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+      })
+      yield* goal.account(sessionID)
+      const stored = yield* goal.get(sessionID)
+      expect(stored?.tokensUsed).toBe(150)
+      expect(stored?.status).toBe("budget_limited")
     }),
   )
 
@@ -245,7 +403,9 @@ describe("session.goal", () => {
 
       const limited = yield* goal.render(sessionID)
       expect(limited).toContain("- Status: budget_limited")
-      expect(limited).toContain("The goal token budget is exhausted. Wrap up the current turn soon, do not start new substantive work for this goal, and report progress against the objective.")
+      expect(limited).toContain(
+        "The goal token budget is exhausted. Wrap up the current turn soon, do not start new substantive work for this goal, and report progress against the objective.",
+      )
 
       yield* goal.updateStatus({ sessionID, status: "complete" })
       const done = yield* goal.render(sessionID)
@@ -357,10 +517,9 @@ describe("session.goal continuation decision", () => {
   })
 
   test("a productive turn resets the near-broken streak", () => {
-    const streak = Goal.continuationOutcome(
-      Goal.continuationOutcome(base, { productive: false }),
-      { productive: false },
-    )
+    const streak = Goal.continuationOutcome(Goal.continuationOutcome(base, { productive: false }), {
+      productive: false,
+    })
     const reset = Goal.continuationOutcome(streak, { productive: true })
     expect(reset.consecutiveEmptyContinuations).toBe(0)
     expect(reset.consecutiveContinuations).toBe(3)
@@ -368,7 +527,12 @@ describe("session.goal continuation decision", () => {
   })
 
   test("the blocked flip only applies to active goals", () => {
-    const paused: Goal.Info = { ...base, status: "paused", consecutiveEmptyContinuations: 2, consecutiveContinuations: 2 }
+    const paused: Goal.Info = {
+      ...base,
+      status: "paused",
+      consecutiveEmptyContinuations: 2,
+      consecutiveContinuations: 2,
+    }
     const outcome = Goal.continuationOutcome(paused, { productive: false })
     expect(outcome.consecutiveEmptyContinuations).toBe(3)
     expect(outcome.status).toBe("paused")

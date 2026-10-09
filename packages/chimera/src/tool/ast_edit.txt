@@ -1,4 +1,4 @@
-Perform structural file edits by CodeGraph node refs (`edits`) or by ast-grep style pattern matching (`rewrites`). A call is EXACTLY one mode: pass `edits` or `rewrites`, never both.
+Perform structural file edits by CodeGraph node refs (`edits`), by ast-grep style pattern matching (`rewrites`), or rename a graph-addressed symbol across files (`rename`). A call is EXACTLY one mode: pass `edits`, `rewrites`, or `rename` — never more.
 
 # Ref mode: `edits` (graph-anchored, single file)
 
@@ -34,7 +34,18 @@ Multi-file (`paths`) semantics — partial coverage is normal, silent damage is 
 - Overlap conflicts are HARD failures computed BEFORE any write: if any addressed file has nested/conflicting matches, NOTHING is written and the error names the file(s). Fix the patterns or split calls and rerun.
 - On success all changed files are written together through one permission ask and one mutation record; each file keeps its own BOM handling and formatter pass. The result prints per-file lines (`path: N replacement(s)` / `skipped: <reason>`) plus totals; the inline changed-block window appears only when exactly one file changed — per-file diffs stay in metadata.
 
-Both modes edit EXISTING files (use the write tool to create new ones).
+All modes edit EXISTING files (use the write tool to create new ones).
+
+# Rename mode: `rename` (graph-addressed cross-file rename)
+
+`rename: { ref, to }` renames one declaration (the `node:<id>` Ref) everywhere the graph can prove a reference — definition header, import specifiers, and use sites across files — in one atomic call. The symbol is addressed through the ref: pass no `file` / `paths`. `to` must be a valid, non-reserved identifier for the definition file's language family, and renaming onto a name a same-file symbol already owns FAILS with the collision listed.
+
+What gets auto-rewritten (precise tier only): an incoming reference edge is rewritten when ALL hold — it is symbol-level (a stamped `refName`), resolved by `import`, `qualified-name`, `exact-match`, or `function-ref`, and not heuristic provenance. Each accepted site is re-located in a fresh parse of the referencing file at the edge's exact line/column (falling back to the edge line, then the referencing node's range); a site that resolves to zero or several same-name identifiers is NOT guessed — it goes to the review list. Aliased imports (`import { a as x }`), qualified references (`obj.a`), shorthand properties (`{ a }`), and unresolvable barrel re-export chains never match the plain-name contract and land in the review list too.
+
+Everything else comes back as a review list grouped by reason — non-precise tiers (fuzzy / framework / file-path / instance-method), heuristic edges, file-level import edges, ambiguous sites, and a textual sweep of grep-level old-name occurrences in the analyzed files that no accepted edge covers (strings, comments, dynamic uses the graph cannot see). Those occurrences are the MODEL'S responsibility: grep or read each one and apply follow-up edits yourself when it is a true positive. A hard failure (invalid or reserved `to`, collision, a definition header whose name is not uniquely locatable, more than 100 referencing files) writes NOTHING.
+
+After a successful call the graph re-syncs and the result returns the renamed symbol's fresh `node:<id>` ref to chain from.
+
 
 Single-file example: `file: "src/session/prompt.ts"` with `rewrites: [{ pattern: "console.log($$$ARGS)", replacement: "logger.debug($$$ARGS)" }, { pattern: "debugger", replacement: "" }]` rewrites every `console.log(...)` call and deletes every `debugger` statement in that one file.
 Multi-file example: `paths: ["src", "test"]` with the same rewrites sweeps both trees in one atomic call.
@@ -45,16 +56,17 @@ Pick the mode by the shape of the work:
 
 - Pattern mode (`rewrites`): repetitive structural rewrites — rename a call shape, drop a wrapper, delete logging calls, convert `==` to `===` — wherever the same node shape occurs many times, in one file or across a whole tree via `paths`. No refs, no initialized graph needed.
 - Ref mode (`edits`): one precise node you already hold as a `node:<id>` ref (whole function/method/class rewrite, member or import delete, sibling insert). It self-heals stale refs and hands back fresh refs to chain from.
+- Rename mode (`rename: { ref, to }`): rename a symbol where the graph can prove its references — definition header, import specifiers, and precise use sites across files update in one atomic call; fuzzy/qualified/aliased/ambiguous and textual-only occurrences arrive as a review list YOU must check and finish by hand.
 - The edit tool: plain text changes, files whose language has no grammar, files with syntax errors, or node-granular work when the graph surface is unavailable — with an uninitialized project the graph has no nodes, refs cannot resolve, and ref mode fails; run `chimera graph init` + `chimera graph index` (or the chimera_init_graph tool) first, use pattern mode, or just use edit.
 
 # Rules
 
-- Ref mode: one file per call (`file`). Pattern mode: exactly one of `file` / `paths`; `paths` addresses up to 100 files in one call. Split ref-mode work into one call per file.
+- Ref mode: one file per call (`file`). Pattern mode: exactly one of `file` / `paths`; `paths` addresses up to 100 files in one call. Rename mode: `rename.ref` addresses the symbol — pass neither `file` nor `paths`. Split ref-mode work into one call per file.
 - `content` is used VERBATIM — supply correctly-indented text with NO trailing newline. Multi-line nodes snap to whole source lines (leading indentation is replaced by your content's own indentation); single-line nodes (imports, one-line members) keep exact column boundaries. Insert content always lands as its own line(s) adjacent to the node.
 - Overlapping operations are rejected in one call (a ref-mode edit replacing a method and another deleting a statement inside it; two pattern rewrites whose matches nest or disagree). With `paths`, a conflict in ANY addressed file writes NOTHING. Use separate calls for sequential work, highest-offset-first is fine because ids may shift between them.
 - Refs may be stale (an earlier edit shifted lines, an external change moved the symbol). ast_edit filesystem-syncs the file first and SELF-HEALS: a stale ref is re-anchored to the live node by identity (kind + name, parent chain when ambiguous) and the relocation is reported — do not re-search first. A hard failure only happens when the node genuinely no longer exists or the match is ambiguous; the error then carries the current candidate refs for this file — pick one and retry directly.
 - After a successful call the result lists fresh `node:<id>` refs for the edited symbols; chain follow-up edits from those refs.
-- Both modes apply byte-range splices in reverse document order and ride the same audit pipeline as edit (permission "edit" applies — one ask covering all `paths` files; predesign gate, provenance record, formatter, LSP oracle and propagation check included).
+- All modes apply byte-range splices in reverse document order and ride the same audit pipeline as edit (permission "edit" applies — one ask covering all files of the call; predesign gate, provenance record, formatter, LSP oracle and propagation check included).
 
 # Ref-mode example
 
@@ -64,3 +76,7 @@ edits: [
   { ref: "node:import:9f8e...", op: "insert_after", content: 'import { is } from "@effect/opentelemetry"' },
   { ref: "node:method:3c4d...", op: "delete" }
 ]
+
+# Rename-mode example
+
+rename: { ref: "node:function:1a2b...", to: "parseRef" } renames that function, its import bindings in other files, and every precisely-resolved use site in one call; anything the graph cannot prove comes back grouped in the review list for you to check.

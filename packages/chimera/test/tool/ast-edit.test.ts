@@ -1,5 +1,6 @@
 import { afterEach, describe, expect } from "bun:test"
 import fs from "fs/promises"
+import { Database } from "bun:sqlite"
 import path from "path"
 import { Cause, Effect, Exit, Layer } from "effect"
 import { Bus } from "@/bus"
@@ -79,15 +80,15 @@ const setupFixture = Effect.fn("AstEditTest.setup")(function* (content: string =
 })
 
 const fileNodes = Effect.fn("AstEditTest.fileNodes")(function* () {
-  return yield* Chimera.withProjectGraph(
-    { watch: false, sync: false },
-    (state) => Effect.sync(() => state.graph.nodesInFile("fixture.ts")),
+  return yield* Chimera.withProjectGraph({ watch: false, sync: false }, (state) =>
+    Effect.sync(() => state.graph.nodesInFile("fixture.ts")),
   )
 })
 
 const refOf = (nodes: CodeGraphNode[], kind: string, name: string) => {
   const hit = nodes.find((node) => node.kind === kind && node.name === name)
-  if (!hit) throw new Error(`fixture has no ${kind} ${name}: ${nodes.map((node) => `${node.kind}:${node.name}`).join(", ")}`)
+  if (!hit)
+    throw new Error(`fixture has no ${kind} ${name}: ${nodes.map((node) => `${node.kind}:${node.name}`).join(", ")}`)
   return `node:${hit.id}`
 }
 
@@ -122,7 +123,8 @@ describe("tool.ast_edit", () => {
       const content = yield* readFixture(file)
       expect(content).toContain("export function alpha(): number {\n  return 42\n}")
       expect(content).toContain("export function beta(value: number) {")
-      const results = (result.metadata.astEdit as { results: Array<{ freshRef?: string; kind: string; name: string }> }).results
+      const results = (result.metadata.astEdit as { results: Array<{ freshRef?: string; kind: string; name: string }> })
+        .results
       expect(results[0]?.kind).toBe("function")
       expect(results[0]?.name).toBe("alpha")
       expect(results[0]?.freshRef).toMatch(/^node:function:/)
@@ -130,7 +132,9 @@ describe("tool.ast_edit", () => {
       // The fresh ref chains: a follow-up call edits the same node without relocation.
       const second = yield* runAstEdit({
         file: "fixture.ts",
-        edits: [{ ref: results[0]!.freshRef!, op: "replace", content: "export function alpha(): number {\n  return 7\n}" }],
+        edits: [
+          { ref: results[0]!.freshRef!, op: "replace", content: "export function alpha(): number {\n  return 7\n}" },
+        ],
       })
       expect(second.output).toContain("replaced function alpha")
       expect(second.output).not.toContain("relocated")
@@ -188,7 +192,7 @@ export class Holder {
       expect(result.output).toContain("relocated function alpha")
       expect(result.output).toContain("lines 3-5 -> lines 6-8")
       const content = yield* readFixture(file)
-      expect(content.startsWith("// shifted\n// up\n// three\nimport { stat } from \"fs\"")).toBe(true)
+      expect(content.startsWith('// shifted\n// up\n// three\nimport { stat } from "fs"')).toBe(true)
       expect(content).toContain("export function alpha() {\n  return 0\n}")
       expect(content).not.toContain("return 1")
     }),
@@ -200,7 +204,12 @@ export class Holder {
       const nodes = yield* fileNodes()
       const alphaRef = refOf(nodes, "function", "alpha")
 
-      yield* Effect.promise(() => fs.writeFile(file, 'import { stat } from "fs"\n\nexport function beta(value: number) {\n  return value + 1\n}\n'))
+      yield* Effect.promise(() =>
+        fs.writeFile(
+          file,
+          'import { stat } from "fs"\n\nexport function beta(value: number) {\n  return value + 1\n}\n',
+        ),
+      )
 
       const exit = yield* runAstEdit({
         file: "fixture.ts",
@@ -779,6 +788,252 @@ describe("tool.ast_edit pattern mode", () => {
       })
       expect(named.output).toContain("- src/node_modules/dep.ts: 2 replacement(s)")
       expect(yield* readAt(directory, "src/node_modules/dep.ts")).toContain("logger.info")
+    }),
+  )
+})
+
+describe("tool.ast_edit rename mode", () => {
+  type RenameReview = { group: string; file: string; line: number; context: string }
+  type RenameMeta = {
+    from: string
+    to: string
+    kind: string
+    definition: { ref: string; file: string; line: number; relocated: boolean; freshRef?: string }
+    sites: { file: string; line: number; context: string }[]
+    review: RenameReview[]
+    totals: { sites: number; files: number; review: number }
+  }
+  const renameMeta = (metadata: unknown) => (metadata as { astEdit: { rename: RenameMeta } }).astEdit.rename
+
+  const RM_DEF = `export function alpha(value: number) {\n  return value + 1\n}\n`
+  const RM_USE = `import { alpha } from "./rm-def"\n\nexport function useIt(n: number) {\n  return alpha(n)\n}\n`
+  const RM_USE_TEXT = `import { alpha } from "./rm-def"\n\nexport function useIt(n: number) {\n  return alpha(n)\n}\n\nexport const label = "alpha"\n`
+  const RM_USE_TWICE = `import { alpha } from "./rm-def"\n\nexport function useIt(n: number, m: number) {\n  return alpha(n) + alpha(m)\n}\n`
+  const RM_PY_DEF = `def alpha(value):\n    return value + 1\n`
+  const RM_PY_USE = `from rm_def import alpha\n\ndef use(n):\n    return alpha(n)\n`
+
+  const setupRenameFiles = Effect.fn("AstEditTest.setupRenameFiles")(function* (files: Record<string, string>) {
+    const test = yield* TestInstance
+    yield* Effect.promise(async () => {
+      for (const [name, content] of Object.entries(files)) {
+        const file = path.join(test.directory, name)
+        await fs.mkdir(path.dirname(file), { recursive: true })
+        await fs.writeFile(file, content)
+      }
+    })
+    yield* Chimera.initProjectGraph({ watch: false })
+    return test.directory
+  })
+
+  const readAt = (directory: string, name: string) =>
+    Effect.promise(() => fs.readFile(path.join(directory, name), "utf-8"))
+
+  const nodesIn = Effect.fn("AstEditTest.nodesIn")(function* (rel: string) {
+    return yield* Chimera.withProjectGraph({ watch: false, sync: false }, (state) =>
+      Effect.sync(() => state.graph.nodesInFile(rel)),
+    )
+  })
+
+  /** Direct graph-db surgery for edge shapes a small fixture does not produce naturally. */
+  const craftEdges = Effect.fn("AstEditTest.craftEdges")(function* (
+    directory: string,
+    run: (db: Database) => void,
+  ) {
+    yield* Effect.promise(async () => {
+      const db = new Database(path.join(directory, ".chimera", "codegraph.db"))
+      try {
+        db.run("PRAGMA busy_timeout = 5000")
+        run(db)
+      } finally {
+        db.close()
+      }
+    })
+  })
+
+  it.instance("renames a function across files: definition, import binding, and call site rewritten", () =>
+    Effect.gen(function* () {
+      const directory = yield* setupRenameFiles({ "rm-def.ts": RM_DEF, "rm-use.ts": RM_USE })
+      const ref = refOf(yield* nodesIn("rm-def.ts"), "function", "alpha")
+
+      const result = yield* runAstEdit({ rename: { ref, to: "beta" } })
+
+      expect(result.output).toContain("AST edit applied successfully.")
+      expect(result.output).toContain("Renamed function alpha -> beta")
+      expect(result.output).toContain("- 2 reference site(s) auto-rewritten across 1 file(s):")
+      expect(result.output).toContain("Review list: empty")
+      expect(yield* readAt(directory, "rm-def.ts")).toContain("export function beta(value: number) {")
+      const use = yield* readAt(directory, "rm-use.ts")
+      expect(use).toContain('import { beta } from "./rm-def"')
+      expect(use).toContain("return beta(n)")
+      expect(use).not.toContain("alpha")
+
+      const meta = renameMeta(result.metadata)
+      expect(meta.from).toBe("alpha")
+      expect(meta.to).toBe("beta")
+      expect(meta.totals.sites).toBe(2)
+      expect(meta.definition.freshRef).toMatch(/^node:function:/)
+      expect(meta.definition.freshRef).toBe(refOf(yield* nodesIn("rm-def.ts"), "function", "beta"))
+    }),
+  )
+
+  it.instance("leaves same-name occurrences with no precise edge untouched and review-lists them", () =>
+    Effect.gen(function* () {
+      const directory = yield* setupRenameFiles({ "rm-def.ts": RM_DEF, "rm-use.ts": RM_USE_TEXT })
+      const ref = refOf(yield* nodesIn("rm-def.ts"), "function", "alpha")
+
+      const result = yield* runAstEdit({ rename: { ref, to: "beta" } })
+
+      const use = yield* readAt(directory, "rm-use.ts")
+      expect(use).toContain('import { beta } from "./rm-def"')
+      expect(use).toContain("return beta(n)")
+      expect(use).toContain('export const label = "alpha"')
+      expect(result.output).toContain("textual-only, unverified")
+      expect(result.output).toContain('- rm-use.ts:7  export const label = "alpha"')
+      expect(result.output).toContain("Review the occurrences above manually — they were NOT rewritten.")
+      expect(renameMeta(result.metadata).review.length).toBe(1)
+    }),
+  )
+
+  it.instance("review-lists a non-precise-tier edge instead of rewriting its site", () =>
+    Effect.gen(function* () {
+      const directory = yield* setupRenameFiles({ "rm-def.ts": RM_DEF, "rm-use.ts": RM_USE })
+      const defID = refOf(yield* nodesIn("rm-def.ts"), "function", "alpha").slice("node:".length)
+      yield* craftEdges(directory, (db) => {
+        db
+          .prepare("UPDATE edges SET metadata = ? WHERE target = ? AND kind = 'calls'")
+          .run('{"resolvedBy":"fuzzy","refName":"alpha"}', defID)
+      })
+
+      const result = yield* runAstEdit({ rename: { ref: `node:${defID}`, to: "beta" } })
+
+      expect(result.output).toContain('non-precise resolution tier "fuzzy"')
+      const use = yield* readAt(directory, "rm-use.ts")
+      expect(use).toContain('import { beta } from "./rm-def"')
+      expect(use).toContain("return alpha(n)")
+      expect(yield* readAt(directory, "rm-def.ts")).toContain("export function beta")
+      expect(result.output).toContain("Review the occurrences above manually")
+      const meta = renameMeta(result.metadata)
+      expect(meta.totals.sites).toBe(1)
+      expect(meta.review.some((entry) => entry.group.includes('"fuzzy"'))).toBe(true)
+    }),
+  )
+
+  it.instance("sends an ambiguously-located site to the review list and applies the precise ones", () =>
+    Effect.gen(function* () {
+      const directory = yield* setupRenameFiles({ "rm-def.ts": RM_DEF, "rm-use.ts": RM_USE_TWICE })
+      const defID = refOf(yield* nodesIn("rm-def.ts"), "function", "alpha").slice("node:".length)
+      yield* craftEdges(directory, (db) => {
+        db
+          .prepare(
+            "INSERT INTO edges (source, target, kind, metadata, line, col, provenance) VALUES (?, ?, 'references', ?, 4, 0, NULL)",
+          )
+          .run("file:rm-use.ts", defID, '{"resolvedBy":"exact-match","refName":"alpha"}')
+      })
+
+      const result = yield* runAstEdit({ rename: { ref: `node:${defID}`, to: "beta" } })
+
+      expect(result.output).toContain("reference site not located precisely")
+      const use = yield* readAt(directory, "rm-use.ts")
+      expect(use).toContain("return beta(n) + beta(m)")
+      expect(use).toContain('import { beta } from "./rm-def"')
+      expect(yield* readAt(directory, "rm-def.ts")).toContain("export function beta")
+    }),
+  )
+
+  it.instance("refuses a rename that collides with a same-file symbol and writes nothing", () =>
+    Effect.gen(function* () {
+      const def = `export function alpha() {\n  return 1\n}\n\nfunction beta() {\n  return 2\n}\n`
+      const directory = yield* setupRenameFiles({ "rm-def.ts": def, "rm-use.ts": RM_USE })
+      const ref = refOf(yield* nodesIn("rm-def.ts"), "function", "alpha")
+
+      const exit = yield* runAstEdit({ rename: { ref, to: "beta" } }).pipe(Effect.exit)
+      expect(failureMessage(exit)).toContain('"beta" already exists in rm-def.ts')
+      expect(failureMessage(exit)).toContain("Nothing was written")
+
+      expect(yield* readAt(directory, "rm-def.ts")).toBe(def)
+      expect(yield* readAt(directory, "rm-use.ts")).toBe(RM_USE)
+    }),
+  )
+
+  it.instance("refuses invalid and reserved rename targets without writing", () =>
+    Effect.gen(function* () {
+      const directory = yield* setupRenameFiles({ "rm-def.ts": RM_DEF, "rm-use.ts": RM_USE })
+      const ref = refOf(yield* nodesIn("rm-def.ts"), "function", "alpha")
+
+      const invalid = yield* runAstEdit({ rename: { ref, to: "beta(x)" } }).pipe(Effect.exit)
+      expect(failureMessage(invalid)).toContain("not a valid identifier")
+      const reserved = yield* runAstEdit({ rename: { ref, to: "return" } }).pipe(Effect.exit)
+      expect(failureMessage(reserved)).toContain("reserved word")
+
+      expect(yield* readAt(directory, "rm-def.ts")).toBe(RM_DEF)
+      expect(yield* readAt(directory, "rm-use.ts")).toBe(RM_USE)
+    }),
+  )
+
+  it.instance("fails a deleted definition with the fresh candidate list, like ref mode", () =>
+    Effect.gen(function* () {
+      const directory = yield* setupRenameFiles({ "rm-def.ts": RM_DEF, "rm-use.ts": RM_USE })
+      const ref = refOf(yield* nodesIn("rm-def.ts"), "function", "alpha")
+      yield* Effect.promise(() =>
+        fs.writeFile(path.join(directory, "rm-def.ts"), `export function omega() {\n  return 0\n}\n`),
+      )
+
+      const exit = yield* runAstEdit({ rename: { ref, to: "beta" } }).pipe(Effect.exit)
+      const message = failureMessage(exit)
+      expect(message).toContain("does not resolve")
+      expect(message).toContain("no function named alpha remains")
+      expect(message).toContain("Current function candidates in rm-def.ts:")
+      expect(yield* readAt(directory, "rm-use.ts")).toBe(RM_USE)
+    }),
+  )
+
+  it.instance("self-heals a shifted definition ref and reports the relocation", () =>
+    Effect.gen(function* () {
+      const directory = yield* setupRenameFiles({ "rm-def.ts": RM_DEF, "rm-use.ts": RM_USE })
+      const ref = refOf(yield* nodesIn("rm-def.ts"), "function", "alpha")
+      yield* Effect.promise(() => fs.writeFile(path.join(directory, "rm-def.ts"), `// moved down\n${RM_DEF}`))
+
+      const result = yield* runAstEdit({ rename: { ref, to: "beta" } })
+
+      expect(result.output).toContain("Self-healed refs:")
+      expect(result.output).toContain("relocated function alpha")
+      expect(yield* readAt(directory, "rm-def.ts")).toContain("export function beta(value: number)")
+      expect(yield* readAt(directory, "rm-use.ts")).toContain("return beta(n)")
+    }),
+  )
+
+  it.instance("renames a python function across files end to end", () =>
+    Effect.gen(function* () {
+      const directory = yield* setupRenameFiles({ "rm_def.py": RM_PY_DEF, "rm-use.py": RM_PY_USE })
+      const ref = refOf(yield* nodesIn("rm_def.py"), "function", "alpha")
+
+      const result = yield* runAstEdit({ rename: { ref, to: "gamma" } })
+
+      expect(result.output).toContain("Renamed function alpha -> gamma")
+      expect(result.output).toContain("- 2 reference site(s) auto-rewritten across 1 file(s):")
+      expect(yield* readAt(directory, "rm_def.py")).toContain("def gamma(value):")
+      const use = yield* readAt(directory, "rm-use.py")
+      expect(use).toContain("from rm_def import gamma")
+      expect(use).toContain("return gamma(n)")
+    }),
+  )
+
+  it.instance("rejects rename combined with other modes or single-file addressing", () =>
+    Effect.gen(function* () {
+      yield* setupRenameFiles({ "rm-def.ts": RM_DEF, "rm-use.ts": RM_USE })
+      const ref = refOf(yield* nodesIn("rm-def.ts"), "function", "alpha")
+
+      const withFile = yield* runAstEdit({ file: "rm-def.ts", rename: { ref, to: "beta" } }).pipe(Effect.exit)
+      expect(failureMessage(withFile)).toContain("drop `file`")
+
+      const withEdits = yield* runAstEdit({
+        edits: [{ ref, op: "delete" }],
+        rename: { ref, to: "beta" },
+      }).pipe(Effect.exit)
+      expect(failureMessage(withEdits)).toContain("one mode per call")
+
+      const withPaths = yield* runAstEdit({ paths: ["rm-use.ts"], rename: { ref, to: "beta" } }).pipe(Effect.exit)
+      expect(failureMessage(withPaths)).toContain("drop `paths`")
     }),
   )
 })

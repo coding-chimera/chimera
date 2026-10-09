@@ -17,6 +17,7 @@ import { SessionPaths } from "../../src/server/routes/instance/httpapi/groups/se
 import { Session } from "@/session/session"
 import { MessageID, PartID, SessionID, type SessionID as SessionIDType } from "../../src/session/schema"
 import { MessageV2 } from "../../src/session/message-v2"
+import { Goal } from "@/session/goal"
 import { Database } from "@/storage/db"
 import { SessionMessageTable, SessionTable } from "@/session/session.sql"
 import { SessionMessage } from "../../src/v2/session-message"
@@ -717,6 +718,80 @@ describe("session HttpApi", () => {
             },
           ),
         ).toBe(true)
+      }),
+    ),
+  )
+
+  it.live(
+    "serves session goal get/set/clear routes on both backends",
+    withTmp({ git: true, config: { formatter: false, lsp: false } }, (tmp) =>
+      Effect.gen(function* () {
+        const headers = { "x-chimera-directory": tmp.path, "content-type": "application/json" }
+        for (const experimental of [false, true]) {
+          const label = experimental ? "effect" : "legacy"
+          const session = yield* createSession(tmp.path, { title: `goal ${label}` })
+          const route = pathFor(SessionPaths.goal, { sessionID: session.id })
+
+          // no goal yet -> 404 NotFoundError envelope
+          const missing = yield* requestWithBackend(experimental, route, { headers })
+          expect(missing.status).toBe(404)
+          expect(yield* responseJson(missing)).toMatchObject({ name: "NotFoundError" })
+
+          // set -> created active goal
+          const created = yield* requestWithBackend(experimental, route, {
+            method: "PUT",
+            headers,
+            body: JSON.stringify({ objective: `ship ${label}`, tokenBudget: 500 }),
+          })
+          expect(created.status).toBe(200)
+          expect(yield* json<Goal.Info>(created)).toMatchObject({
+            objective: `ship ${label}`,
+            status: "active",
+            tokensUsed: 0,
+            tokenBudget: 500,
+          })
+
+          // get -> the stored goal
+          const fetched = yield* json<Goal.Info>(yield* requestWithBackend(experimental, route, { headers }))
+          expect(fetched).toMatchObject({ objective: `ship ${label}`, status: "active" })
+
+          // re-set is rejected while the goal is unfinished
+          const rejected = yield* requestWithBackend(experimental, route, {
+            method: "PUT",
+            headers,
+            body: JSON.stringify({ objective: "second" }),
+          })
+          expect(rejected.status).toBe(400)
+
+          // an empty objective is rejected too
+          const empty = yield* requestWithBackend(experimental, route, {
+            method: "PUT",
+            headers,
+            body: JSON.stringify({ objective: "   " }),
+          })
+          expect(empty.status).toBe(400)
+
+          // clear -> true, then the row is gone and a second clear reports false
+          const cleared = yield* requestWithBackend(experimental, route, { method: "DELETE", headers })
+          expect(cleared.status).toBe(200)
+          expect(yield* json<boolean>(cleared)).toBe(true)
+          expect((yield* requestWithBackend(experimental, route, { headers })).status).toBe(404)
+          const reclear = yield* requestWithBackend(experimental, route, { method: "DELETE", headers })
+          expect(reclear.status).toBe(200)
+          expect(yield* json<boolean>(reclear)).toBe(false)
+
+          // an unknown session is 404 on every method
+          const ghost = pathFor(SessionPaths.goal, { sessionID: SessionID.descending() })
+          expect((yield* requestWithBackend(experimental, ghost, { headers })).status).toBe(404)
+          expect(
+            (yield* requestWithBackend(experimental, ghost, {
+              method: "PUT",
+              headers,
+              body: JSON.stringify({ objective: "x" }),
+            })).status,
+          ).toBe(404)
+          expect((yield* requestWithBackend(experimental, ghost, { method: "DELETE", headers })).status).toBe(404)
+        }
       }),
     ),
   )

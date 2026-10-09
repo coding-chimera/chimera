@@ -40,6 +40,7 @@ import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
 import { Todo } from "@/session/todo"
 import { WorkBrief } from "@/session/work-brief"
+import { Goal } from "@/session/goal"
 import { SessionShare } from "@/share/session"
 import { ShareNext } from "@/share/share-next"
 import { Skill } from "@/skill"
@@ -72,6 +73,7 @@ import { permissionHandlers } from "./handlers/permission"
 import { projectHandlers } from "./handlers/project"
 import { providerHandlers } from "./handlers/provider"
 import { ptyConnectRoute, ptyHandlers } from "./handlers/pty"
+import { processHandlers } from "./handlers/process"
 import { questionHandlers } from "./handlers/question"
 import { sessionHandlers } from "./handlers/session"
 import { syncHandlers } from "./handlers/sync"
@@ -130,6 +132,7 @@ const instanceApiRoutes = HttpApiBuilder.layer(InstanceHttpApi).pipe(
     memoryHandlers,
     projectHandlers,
     ptyHandlers,
+    processHandlers,
     questionHandlers,
     permissionHandlers,
     providerHandlers,
@@ -207,6 +210,7 @@ export function createRoutes(corsOptions?: CorsOptions) {
       Skill.defaultLayer,
       Todo.defaultLayer,
       WorkBrief.defaultLayer,
+      Goal.defaultLayer,
       ToolRegistry.defaultLayer,
       Vcs.defaultLayer,
       V2Integration.defaultLayer,

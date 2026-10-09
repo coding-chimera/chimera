@@ -1,5 +1,5 @@
 import path from "path"
-import { createHash } from "crypto"
+import { createHash, randomUUID } from "crypto"
 import { appendFile, mkdir, stat } from "fs/promises"
 import { DatabaseConnection, diffRelations, getDatabasePath, type FrozenRelation, type FrozenSemanticObject, type StorageExtension } from "@/graph"
 import type { ChangeFact } from "./change-classifier"
@@ -593,6 +593,31 @@ ALTER TABLE chimera_edit_intent_waiter ADD COLUMN host_boot_id TEXT;
       description: "Add woken_at to edit-intent waiters for the bounded wake-priority handoff window",
       sql: `
 ALTER TABLE chimera_edit_intent_waiter ADD COLUMN woken_at TEXT;
+`,
+    },
+    {
+      version: 8,
+      description: "Create session process registry table for cross-session process ownership",
+      sql: `
+CREATE TABLE IF NOT EXISTS chimera_process_registry (
+  id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  host_boot_id TEXT,
+  pid INTEGER NOT NULL,
+  pgid INTEGER,
+  command TEXT NOT NULL,
+  cwd TEXT,
+  status TEXT NOT NULL DEFAULT 'running',
+  exit_code INTEGER,
+  started_at TEXT NOT NULL,
+  exited_at TEXT,
+  expires_at TEXT NOT NULL,
+  PRIMARY KEY (id)
+);
+
+CREATE INDEX IF NOT EXISTS chimera_process_registry_session_status_idx ON chimera_process_registry(session_id, status);
+CREATE INDEX IF NOT EXISTS chimera_process_registry_status_expires_idx ON chimera_process_registry(status, expires_at);
+CREATE INDEX IF NOT EXISTS chimera_process_registry_pid_idx ON chimera_process_registry(pid);
 `,
     },
   ],
@@ -2032,6 +2057,224 @@ export async function cancelEditIntentWaitersByHostBootID(projectRoot: string, h
     return Number(result.changes ?? 0)
   })
   return cancelled ?? 0
+}
+
+export type ProcessRegistryStatus = "running" | "exited" | "killed" | "expired" | "released"
+
+/** Crash-fallback lifetime of a registered child process: normal deregistration is exit-driven. */
+export const PROCESS_REGISTRY_TTL_MS = 24 * 60 * 60 * 1000
+
+export type ProcessRegistryInput = {
+  sessionID: string
+  /** Defaults to the current process host identity; null stamps no host. */
+  hostBootID?: string | null
+  pid: number
+  pgid?: number | null
+  command: string
+  cwd?: string | null
+  ttlMs?: number
+}
+
+export type ProcessRegistryRecord = {
+  id: string
+  sessionID: string
+  hostBootID: string | null
+  pid: number
+  pgid: number | null
+  command: string
+  cwd: string | null
+  status: ProcessRegistryStatus
+  exitCode: number | null
+  startedAt: string
+  exitedAt: string | null
+}
+
+type ProcessRegistryRow = {
+  id: string
+  session_id: string
+  host_boot_id: string | null
+  pid: number
+  pgid: number | null
+  command: string
+  cwd: string | null
+  status: string
+  exit_code: number | null
+  started_at: string
+  exited_at: string | null
+  expires_at: string
+}
+
+function processRegistryStatus(status: string): ProcessRegistryStatus {
+  if (status === "exited" || status === "killed" || status === "expired" || status === "released") return status
+  return "running"
+}
+
+function processRegistryRecord(row: ProcessRegistryRow): ProcessRegistryRecord {
+  return {
+    id: row.id,
+    sessionID: row.session_id,
+    hostBootID: row.host_boot_id,
+    pid: row.pid,
+    pgid: row.pgid,
+    command: row.command,
+    cwd: row.cwd,
+    status: processRegistryStatus(row.status),
+    exitCode: row.exit_code,
+    startedAt: row.started_at,
+    exitedAt: row.exited_at,
+  }
+}
+
+/**
+ * Signal-0 liveness probe: answers "dead" only when the pid is provably gone
+ * (ESRCH or an impossible pid); EPERM means the process exists under another
+ * user — alive. Same convention as the edit-intent host probe, and the same
+ * pid-namespace caveat: processes in separate namespaces sharing one project
+ * volume can misjudge each other's pids.
+ */
+function isPIDAlive(pid: number) {
+  if (!Number.isInteger(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as { code?: string }).code === "EPERM"
+  }
+}
+
+// Lazy TTL enforcement (same philosophy as the claim TTL): a registered row
+// past its crash-fallback lifetime flips to expired on any writable read, so
+// a host that died before reporting the child's exit stops claiming ownership
+// without a background sweeper.
+function expireStaleProcesses(db: ChimeraDb, now: string) {
+  db.prepare("UPDATE chimera_process_registry SET status = 'expired', exited_at = ? WHERE status = 'running' AND expires_at <= ?").run(now, now)
+}
+
+export async function registerProcess(projectRoot: string, input: ProcessRegistryInput): Promise<ProcessRegistryRecord | undefined> {
+  if (!Number.isInteger(input.pid) || input.pid <= 0) return undefined
+  const hostBootID = input.hostBootID === undefined ? currentHostBootID() : input.hostBootID
+  const startedAt = new Date().toISOString()
+  const ttlMs = Math.max(60_000, Math.floor(input.ttlMs ?? PROCESS_REGISTRY_TTL_MS))
+  const expiresAt = new Date(Date.parse(startedAt) + ttlMs).toISOString()
+  const id = `proc_${randomUUID()}`
+  return withDb(projectRoot, (db) => {
+    expireStaleProcesses(db, startedAt)
+    db.prepare(
+      `
+      INSERT INTO chimera_process_registry (
+        id, session_id, host_boot_id, pid, pgid, command, cwd, status, exit_code, started_at, exited_at, expires_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', NULL, ?, NULL, ?)
+    `,
+    ).run(id, input.sessionID, hostBootID, input.pid, input.pgid ?? null, input.command, input.cwd ?? null, startedAt, expiresAt)
+    return {
+      id,
+      sessionID: input.sessionID,
+      hostBootID,
+      pid: input.pid,
+      pgid: input.pgid ?? null,
+      command: input.command,
+      cwd: input.cwd ?? null,
+      status: "running" as const,
+      exitCode: null,
+      startedAt,
+      exitedAt: null,
+    } satisfies ProcessRegistryRecord
+  })
+}
+
+/** Idempotent transition: the guarded UPDATE flips a running row exactly once, so a later mark on the same id returns undefined. */
+export async function markProcessExited(
+  projectRoot: string,
+  id: string,
+  exitCode: number | null,
+  options: { now?: string } = {},
+): Promise<ProcessRegistryRecord | undefined> {
+  const now = options.now ?? new Date().toISOString()
+  return withDb(projectRoot, (db) => {
+    const flipped = db
+      .prepare("UPDATE chimera_process_registry SET status = 'exited', exit_code = ?, exited_at = ? WHERE id = ? AND status = 'running'")
+      .run(exitCode, now, id)
+    if (Number(flipped.changes ?? 0) === 0) return undefined
+    const row = db.prepare("SELECT * FROM chimera_process_registry WHERE id = ?").get(id) as ProcessRegistryRow | undefined
+    return row ? processRegistryRecord(row) : undefined
+  })
+}
+
+/** Same exactly-once guard as markProcessExited; the row records an external signal kill, not a clean exit. */
+export async function markProcessKilled(
+  projectRoot: string,
+  id: string,
+  options: { now?: string } = {},
+): Promise<ProcessRegistryRecord | undefined> {
+  const now = options.now ?? new Date().toISOString()
+  return withDb(projectRoot, (db) => {
+    const flipped = db
+      .prepare("UPDATE chimera_process_registry SET status = 'killed', exited_at = ? WHERE id = ? AND status = 'running'")
+      .run(now, id)
+    if (Number(flipped.changes ?? 0) === 0) return undefined
+    const row = db.prepare("SELECT * FROM chimera_process_registry WHERE id = ?").get(id) as ProcessRegistryRow | undefined
+    return row ? processRegistryRecord(row) : undefined
+  })
+}
+
+/**
+ * Active rows: lazy TTL expiry, then a signal-0 liveness sweep so a crashed
+ * host's still-'running' rows stop claiming ownership before the TTL horizon
+ * (rows failing liveness flip to 'expired', persisted, not just filtered).
+ * Like the claim surface this opens the db read-write for the flip; degrade
+ * open to an empty list when the store is unavailable.
+ */
+export async function readActiveProcesses(
+  projectRoot: string,
+  options: { sessionID?: string; excludeSessionID?: string; now?: string; limit?: number } = {},
+): Promise<ProcessRegistryRecord[]> {
+  const now = options.now ?? new Date().toISOString()
+  const limit = Math.max(1, Math.min(500, Math.floor(options.limit ?? 200)))
+  const rows = await withDb(projectRoot, (db) => {
+    expireStaleProcesses(db, now)
+    const running = db
+      .prepare("SELECT id, pid FROM chimera_process_registry WHERE status = 'running'")
+      .all() as Array<{ id: string; pid: number }>
+    const dead = running.filter((item) => !isPIDAlive(item.pid)).map((item) => item.id)
+    if (dead.length > 0) {
+      db.prepare(
+        `UPDATE chimera_process_registry SET status = 'expired', exited_at = ? WHERE status = 'running' AND id IN (${dead.map(() => "?").join(", ")})`,
+      ).run(now, ...dead)
+    }
+    const where = ["status = 'running'"]
+    const params: unknown[] = []
+    if (options.sessionID) {
+      where.push("session_id = ?")
+      params.push(options.sessionID)
+    }
+    if (options.excludeSessionID) {
+      where.push("session_id != ?")
+      params.push(options.excludeSessionID)
+    }
+    params.push(limit)
+    return db
+      .prepare(`SELECT * FROM chimera_process_registry WHERE ${where.join(" AND ")} ORDER BY started_at ASC, rowid ASC LIMIT ?`)
+      .all(...params) as ProcessRegistryRow[]
+  })
+  return (rows ?? []).map(processRegistryRecord)
+}
+
+/** Flip every running row of one session to released; returns the flipped records. */
+export async function releaseProcessesForSession(
+  projectRoot: string,
+  sessionID: string,
+  options: { now?: string } = {},
+): Promise<ProcessRegistryRecord[]> {
+  const now = options.now ?? new Date().toISOString()
+  const released = await withDb(projectRoot, (db) => {
+    const rows = db
+      .prepare("SELECT * FROM chimera_process_registry WHERE session_id = ? AND status = 'running'")
+      .all(sessionID) as ProcessRegistryRow[]
+    if (rows.length === 0) return []
+    db.prepare("UPDATE chimera_process_registry SET status = 'released', exited_at = ? WHERE session_id = ? AND status = 'running'").run(now, sessionID)
+    return rows.map((row) => ({ ...processRegistryRecord(row), status: "released" as const, exitedAt: now }))
+  })
+  return released ?? []
 }
 
 /**

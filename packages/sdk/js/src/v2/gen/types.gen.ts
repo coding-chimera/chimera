@@ -14,6 +14,7 @@ export type Event =
   | EventFileEdited
   | EventFileWatcherUpdated
   | EventChimeraEditIntentReleased
+  | EventProcessChanged1
   | EventLspClientDiagnostics
   | EventLspUpdated
   | EventMessagePartDelta
@@ -30,6 +31,8 @@ export type Event =
   | EventQuestionRejected
   | EventTodoUpdated
   | EventWorkBriefUpdated
+  | EventGoalUpdated
+  | EventGoalCleared
   | EventMcpToolsChanged
   | EventMcpBrowserOpenFailed
   | EventCommandStarted
@@ -298,6 +301,20 @@ export type WorkBrief = {
   openQuestions: Array<string>
   relevantEvidence: Array<string>
   closeout: Array<string>
+}
+
+export type GoalStatus = "active" | "paused" | "blocked" | "budget_limited" | "complete"
+
+export type Goal = {
+  objective: string
+  status: GoalStatus
+  tokenBudget?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  tokensUsed: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  usageWatermarks?: {
+    [key: string]: string
+  }
+  consecutiveEmptyContinuations?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  consecutiveContinuations?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
 }
 
 export type Project = {
@@ -862,6 +879,7 @@ export type GlobalEvent = {
     | EventFileEdited
     | EventFileWatcherUpdated
     | EventChimeraEditIntentReleased
+    | EventProcessChanged
     | EventLspClientDiagnostics
     | EventLspUpdated
     | EventMessagePartDelta
@@ -878,6 +896,8 @@ export type GlobalEvent = {
     | EventQuestionRejected
     | EventTodoUpdated
     | EventWorkBriefUpdated
+    | EventGoalUpdated
+    | EventGoalCleared
     | EventMcpToolsChanged
     | EventMcpBrowserOpenFailed
     | EventCommandStarted
@@ -1041,6 +1061,8 @@ export type PermissionConfig =
       external_directory?: PermissionRuleConfig
       todowrite?: PermissionActionConfig
       workbrief?: PermissionActionConfig
+      goal?: PermissionActionConfig
+      tool_search?: PermissionActionConfig
       memory_remember?: PermissionActionConfig
       memory_list?: PermissionActionConfig
       memory_forget?: PermissionActionConfig
@@ -2184,6 +2206,22 @@ export type EffectHttpApiErrorForbidden = {
   _tag: "Forbidden"
 }
 
+export type Process = {
+  id: string
+  sessionID: string
+  hostBootID: string | null
+  pid: number
+  pgid: number | null
+  command: string
+  cwd: string | null
+  status: "running" | "exited" | "killed" | "expired" | "released"
+  exitCode: number | null
+  startedAt: string
+  exitedAt: string | null
+  sessionTitle: string | null
+  agent: string | null
+}
+
 export type ProviderAuthMethod = {
   type: "oauth" | "api"
   label: string
@@ -2387,6 +2425,18 @@ export type WorkspaceWarpError = {
   data: {
     message: string
   }
+}
+
+export type Goal3 = {
+  objective: string
+  status: GoalStatus
+  tokenBudget?: number | "NaN" | "Infinity" | "-Infinity"
+  tokensUsed: number | "NaN" | "Infinity" | "-Infinity"
+  usageWatermarks?: {
+    [key: string]: string
+  }
+  consecutiveEmptyContinuations?: number | "NaN" | "Infinity" | "-Infinity"
+  consecutiveContinuations?: number | "NaN" | "Infinity" | "-Infinity"
 }
 
 export type CompactionPart1 = {
@@ -3227,6 +3277,28 @@ export type EventChimeraEditIntentReleased = {
   }
 }
 
+export type EventProcessChanged = {
+  id: string
+  type: "process.changed"
+  properties: {
+    sessionID: string
+    change: "registered" | "exited" | "killed"
+    process: {
+      id: string
+      sessionID: string
+      hostBootID: string
+      pid: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      pgid: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      command: string
+      cwd: string
+      status: "running" | "exited" | "killed" | "expired" | "released"
+      exitCode: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      startedAt: string
+      exitedAt: string
+    }
+  }
+}
+
 export type EventLspClientDiagnostics = {
   id: string
   type: "lsp.client.diagnostics"
@@ -3363,6 +3435,23 @@ export type EventWorkBriefUpdated = {
   properties: {
     sessionID: string
     brief: WorkBrief
+  }
+}
+
+export type EventGoalUpdated = {
+  id: string
+  type: "goal.updated"
+  properties: {
+    sessionID: string
+    goal: Goal
+  }
+}
+
+export type EventGoalCleared = {
+  id: string
+  type: "goal.cleared"
+  properties: {
+    sessionID: string
   }
 }
 
@@ -4519,6 +4608,28 @@ export type EventSessionPromptStats1 = {
       hash: string
     }>
     warnings: Array<string>
+  }
+}
+
+export type EventProcessChanged1 = {
+  id: string
+  type: "process.changed"
+  properties: {
+    sessionID: string
+    change: "registered" | "exited" | "killed"
+    process: {
+      id: string
+      sessionID: string
+      hostBootID: string
+      pid: number | "NaN" | "Infinity" | "-Infinity"
+      pgid: number | "NaN" | "Infinity" | "-Infinity"
+      command: string
+      cwd: string
+      status: "running" | "exited" | "killed" | "expired" | "released"
+      exitCode: number | "NaN" | "Infinity" | "-Infinity"
+      startedAt: string
+      exitedAt: string
+    }
   }
 }
 
@@ -6800,6 +6911,25 @@ export type PtyConnectTokenResponses = {
 
 export type PtyConnectTokenResponse = PtyConnectTokenResponses[keyof PtyConnectTokenResponses]
 
+export type ProcessListData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/process"
+}
+
+export type ProcessListResponses = {
+  /**
+   * List of active processes
+   */
+  200: Array<Process>
+}
+
+export type ProcessListResponse = ProcessListResponses[keyof ProcessListResponses]
+
 export type QuestionListData = {
   body?: never
   path?: never
@@ -7444,6 +7574,111 @@ export type SessionWorkBriefResponses = {
 }
 
 export type SessionWorkBriefResponse = SessionWorkBriefResponses[keyof SessionWorkBriefResponses]
+
+export type SessionGoalClearData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/goal"
+}
+
+export type SessionGoalClearErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+}
+
+export type SessionGoalClearError = SessionGoalClearErrors[keyof SessionGoalClearErrors]
+
+export type SessionGoalClearResponses = {
+  /**
+   * Goal cleared
+   */
+  200: boolean
+}
+
+export type SessionGoalClearResponse = SessionGoalClearResponses[keyof SessionGoalClearResponses]
+
+export type SessionGoalData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/goal"
+}
+
+export type SessionGoalErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+}
+
+export type SessionGoalError = SessionGoalErrors[keyof SessionGoalErrors]
+
+export type SessionGoalResponses = {
+  /**
+   * Current goal
+   */
+  200: Goal
+}
+
+export type SessionGoalResponse = SessionGoalResponses[keyof SessionGoalResponses]
+
+export type SessionGoalSetData = {
+  body?: {
+    objective: string
+    tokenBudget?: number
+  }
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/goal"
+}
+
+export type SessionGoalSetErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+}
+
+export type SessionGoalSetError = SessionGoalSetErrors[keyof SessionGoalSetErrors]
+
+export type SessionGoalSetResponses = {
+  /**
+   * Created goal
+   */
+  200: Goal
+}
+
+export type SessionGoalSetResponse = SessionGoalSetResponses[keyof SessionGoalSetResponses]
 
 export type SessionDiffData = {
   body?: never

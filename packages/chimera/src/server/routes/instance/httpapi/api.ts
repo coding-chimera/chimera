@@ -16,6 +16,7 @@ import { PermissionApi } from "./groups/permission"
 import { ProjectApi } from "./groups/project"
 import { ProviderApi } from "./groups/provider"
 import { PtyApi, PtyConnectApi } from "./groups/pty"
+import { ProcessApi } from "./groups/process"
 import { QuestionApi } from "./groups/question"
 import { SessionApi } from "./groups/session"
 import { SyncApi } from "./groups/sync"
@@ -40,6 +41,7 @@ export const InstanceHttpApi = HttpApi.make("chimera-instance")
   .addHttpApi(MemoryApi)
   .addHttpApi(ProjectApi)
   .addHttpApi(PtyApi)
+  .addHttpApi(ProcessApi)
   .addHttpApi(QuestionApi)
   .addHttpApi(PermissionApi)
   .addHttpApi(ProviderApi)

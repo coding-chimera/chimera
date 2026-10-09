@@ -130,7 +130,7 @@ type GoalData = {
   status: "active" | "paused" | "blocked" | "budget_limited" | "complete"
   tokenBudget?: number
   tokensUsed: number
-  lastUsageMessageID?: string // watermark for incremental token accounting
+  usageWatermarks?: Record<string, string> // per-session watermark for incremental token accounting
   consecutiveEmptyContinuations?: number // auto-continuation circuit breaker
   consecutiveContinuations?: number
 }
