@@ -36,6 +36,7 @@ import { getGlyphs } from '../ui/glyphs';
 
 import { buildNode25BlockBanner, buildNodeTooOldBanner, MIN_NODE_MAJOR } from './node-version-check';
 import { relaunchWithWasmRuntimeFlagsIfNeeded } from '../extraction/wasm-runtime-flags';
+import { isBunRuntime } from '../runtime';
 
 // Lazy-load heavy modules (graph runtime, runInstaller) to keep CLI startup fast.
 async function loadCodeGraph(): Promise<typeof import('../index')> {
@@ -137,22 +138,30 @@ function prepareRuntime(argv: readonly string[]): void {
   if (prepared) return;
   prepared = true;
 
-  const nodeVersion = process.versions.node;
-  const nodeMajor = parseNodeMajor(nodeVersion);
-  const guardLevel = classifyNodeGuardLevel(nodeVersion);
+  // Bun publishes its Node-API compatibility target in `process.versions.node`
+  // (e.g. "26.3.0" on Bun 1.4) while embedding its own V8 build, so the version
+  // strings below describe a runtime we are not running on: the guard blocks a
+  // Node 25.x V8 turboshaft Zone crash that Bun does not share, and would
+  // hard-block every Bun `chimera graph` command. Skip the classification, and
+  // the exempt-command warning with it, under Bun. The Node path is unchanged.
+  if (!isBunRuntime()) {
+    const nodeVersion = process.versions.node;
+    const nodeMajor = parseNodeMajor(nodeVersion);
+    const guardLevel = classifyNodeGuardLevel(nodeVersion);
 
-  if (guardLevel !== 'ok') {
-    if (isGuardExemptSubcommand(argv)) {
-      process.stderr.write(buildGuardExemptWarning(nodeVersion, nodeMajor, argv[0] ?? '') + '\n');
-    } else {
-      const banner = guardLevel === 'too-old'
-        ? buildNodeTooOldBanner(nodeVersion)
-        : buildNode25BlockBanner(nodeVersion);
-      process.stderr.write(banner + '\n');
-      if (!unsafeNodeOverrideEnabled()) {
-        process.exit(1);
+    if (guardLevel !== 'ok') {
+      if (isGuardExemptSubcommand(argv)) {
+        process.stderr.write(buildGuardExemptWarning(nodeVersion, nodeMajor, argv[0] ?? '') + '\n');
+      } else {
+        const banner = guardLevel === 'too-old'
+          ? buildNodeTooOldBanner(nodeVersion)
+          : buildNode25BlockBanner(nodeVersion);
+        process.stderr.write(banner + '\n');
+        if (!unsafeNodeOverrideEnabled()) {
+          process.exit(1);
+        }
+        // Override active - banner shown for visibility, continuing.
       }
-      // Override active - banner shown for visibility, continuing.
     }
   }
 
@@ -163,6 +172,8 @@ function prepareRuntime(argv: readonly string[]): void {
   // inherits this process's flags) is compiled. See ../extraction/wasm-runtime-flags.
   // Kept for exempt commands too: `status` reaches TreeSitter.Parser.init() via
   // CodeGraph.open() and needs the flag as well.
+  // No-ops under Bun, which neither needs the flag nor accepts this argv delivery
+  // (see ../runtime.ts and ../extraction/wasm-runtime-flags).
   relaunchWithWasmRuntimeFlagsIfNeeded(import.meta.filename);
 
   process.on('uncaughtException', (error) => {

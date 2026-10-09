@@ -31,6 +31,7 @@
  * too.
  */
 import { spawnSync } from 'child_process';
+import { isBunRuntime } from '../runtime';
 
 /**
  * The V8 flag(s) that keep tree-sitter grammar compilation off the turboshaft
@@ -90,6 +91,13 @@ export function buildRelaunchArgv(
  * OOM is still better than refusing to start.
  */
 export function relaunchWithWasmRuntimeFlagsIfNeeded(scriptPath: string): void {
+  // Bun is not Node: it embeds its own V8, so the turboshaft Zone OOM this
+  // delivery mechanism exists to prevent does not apply, and Bun parses its own
+  // argv before the script path — a V8 flag up front breaks command routing
+  // (`error: unknown command 'graph'`). Skip the re-exec entirely under Bun; the
+  // no-relaunch path is already supported (HOST_PPID_ENV stays unset, see above).
+  if (isBunRuntime()) return;
+
   if (processHasWasmRuntimeFlags()) return;
   if (process.env[RELAUNCH_GUARD_ENV]) return;
   if (process.env.CODEGRAPH_NO_RELAUNCH) return;
