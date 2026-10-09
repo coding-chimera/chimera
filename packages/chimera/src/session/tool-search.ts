@@ -1,5 +1,8 @@
-import { Context, Layer } from "effect"
+import { Context, Effect, Layer } from "effect"
+import { eq } from "drizzle-orm"
+import { Database } from "@/storage/db"
 import { SessionID } from "./schema"
+import { ToolRevealTable } from "./session.sql"
 
 // Progressive tool disclosure (inspired by OpenAI Codex `tool_search`): the
 // tools below stay registered but are omitted from the model-facing tool list
@@ -111,44 +114,76 @@ export function scoreDeferred(query: string, limit: number, candidates: readonly
     .slice(0, cap)
 }
 
-// Module-level reveal state rather than layer-closure state: several default
-// layer sites (SessionPrompt, ToolRegistry, app-runtime, test harnesses) can
-// materialize more than one Service instance in a process, and a reveal made
-// through one must be visible to resolveTools through another. Keyed by
-// globally-unique SessionID; losing reveals on process restart is accepted v1
-// behavior (a fresh session re-discovers via tool_search).
-const revealedState = new Map<string, Set<string>>()
+// Reveal state is database-backed (`tool_reveal` rows keyed by session) so a
+// resumed session keeps its revealed tools across process restarts, with a
+// module-level cache on top. The cache stays module-level rather than layer-
+// closure state: several default layer sites (SessionPrompt, ToolRegistry,
+// app-runtime, test harnesses) can materialize more than one Service instance
+// in a process, and a reveal made through one must be visible to resolveTools
+// through another. Rows are cascade-deleted with their session; loading drops
+// ids that are no longer in the deferred catalog so stale reveals from older
+// versions never resurface.
+const revealCache = new Map<string, Set<string>>()
 
-export function revealed(sessionID: SessionID): ReadonlySet<string> {
-  return revealedState.get(sessionID) ?? EMPTY_SET
+/** Test seam: drop the in-memory cache so the next read reloads from the database. */
+export function resetRevealCache() {
+  revealCache.clear()
 }
 
-const EMPTY_SET: ReadonlySet<string> = new Set()
+function loadRevealed(sessionID: SessionID) {
+  const cached = revealCache.get(sessionID)
+  if (cached) return cached
+  const row = Database.use((db) =>
+    db.select().from(ToolRevealTable).where(eq(ToolRevealTable.session_id, sessionID)).limit(1).get(),
+  )
+  const loaded = new Set(row?.data.revealed.filter((id) => isDeferredTool(id)))
+  revealCache.set(sessionID, loaded)
+  return loaded
+}
 
-export function reveal(sessionID: SessionID, ids: readonly string[]) {
-  const revealedIds = revealedState.get(sessionID) ?? new Set<string>()
-  for (const id of ids) {
-    if (isDeferredTool(id)) revealedIds.add(id)
-  }
-  revealedState.set(sessionID, revealedIds)
+function persistRevealed(sessionID: SessionID, ids: readonly string[]) {
+  Database.use((db) =>
+    db
+      .insert(ToolRevealTable)
+      .values({ session_id: sessionID, data: { revealed: [...ids] } })
+      .onConflictDoUpdate({
+        target: ToolRevealTable.session_id,
+        set: { data: { revealed: [...ids] } },
+      })
+      .run(),
+  )
 }
 
 export interface Interface {
   readonly isDeferred: (id: string) => boolean
-  readonly revealed: (sessionID: SessionID) => ReadonlySet<string>
-  readonly reveal: (sessionID: SessionID, ids: readonly string[]) => void
+  readonly revealed: (sessionID: SessionID) => Effect.Effect<ReadonlySet<string>>
+  readonly reveal: (sessionID: SessionID, ids: readonly string[]) => Effect.Effect<void>
   readonly search: (input: { query: string; limit: number; candidates: readonly Candidate[] }) => Match[]
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionToolSearch") {}
 
-export const layer = Layer.succeed(
+export const layer = Layer.effect(
   Service,
-  Service.of({
-    isDeferred: isDeferredTool,
-    revealed,
-    reveal,
-    search: (input) => scoreDeferred(input.query, input.limit, input.candidates),
+  Effect.gen(function* () {
+    const revealed = Effect.fn("ToolSearch.revealed")(function* (sessionID: SessionID) {
+      return yield* Effect.sync(() => loadRevealed(sessionID))
+    })
+
+    const reveal = Effect.fn("ToolSearch.reveal")(function* (sessionID: SessionID, ids: readonly string[]) {
+      const revealedIds = yield* Effect.sync(() => loadRevealed(sessionID))
+      const additions = ids.filter((id) => isDeferredTool(id) && !revealedIds.has(id))
+      if (additions.length === 0) return
+      yield* Effect.sync(() => persistRevealed(sessionID, [...revealedIds, ...additions]))
+      for (const id of additions) revealedIds.add(id)
+    })
+
+    return Service.of({
+      isDeferred: isDeferredTool,
+      revealed,
+      reveal,
+      search: (input) => scoreDeferred(input.query, input.limit, input.candidates),
+    })
   }),
 )
 

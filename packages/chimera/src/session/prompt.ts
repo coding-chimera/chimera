@@ -956,7 +956,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       // very end of the record (after the MCP entries below) so every
       // already-visible tool's position stays byte-stable across reveals,
       // keeping provider prompt-caches intact.
-      const revealedDeferred = toolSearch.revealed(session.id)
+      const revealedDeferred = yield* toolSearch.revealed(session.id)
       const deferredHidden: string[] = []
       const revealedTools: [string, AITool][] = []
       for (const item of yield* registry.tools({

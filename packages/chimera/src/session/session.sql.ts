@@ -143,6 +143,18 @@ export const GoalTable = sqliteTable("goal", {
   ...Timestamps,
 })
 
+type ToolRevealData = {
+  revealed: string[]
+}
+export const ToolRevealTable = sqliteTable("tool_reveal", {
+  session_id: text()
+    .$type<SessionID>()
+    .primaryKey()
+    .references(() => SessionTable.id, { onDelete: "cascade" }),
+  data: text({ mode: "json" }).notNull().$type<ToolRevealData>(),
+  ...Timestamps,
+})
+
 export const SessionMessageTable = sqliteTable(
   "session_message",
   {

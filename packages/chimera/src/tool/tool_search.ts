@@ -68,10 +68,10 @@ export const ToolSearchTool = Tool.define<
             metadata: {},
             output: `No deferred tools matched "${params.query}"; try another keyword. Deferred categories: browser_* (browser automation), lsp (language-server intelligence), subagent_model_* (subagent model routing).`,
           }
-        const revealed = toolSearch.revealed(ctx.sessionID)
+        const revealed = yield* toolSearch.revealed(ctx.sessionID)
         const already = matches.filter((match) => revealed.has(match.id))
         const fresh = matches.filter((match) => !revealed.has(match.id))
-        toolSearch.reveal(
+        yield* toolSearch.reveal(
           ctx.sessionID,
           matches.map((match) => match.id),
         )
