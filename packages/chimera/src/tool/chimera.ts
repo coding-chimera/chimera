@@ -475,7 +475,7 @@ type PredesignStageMetadata = {
 
 type PredesignMetadata = {
   projectRoot: string
-  snapshot: CodeGraphSnapshot
+  snapshot?: CodeGraphSnapshot
   runID: string
   ref: string
   intent: string
@@ -568,7 +568,7 @@ type AuditCandidate = {
 
 type AuditMetadata = {
   projectRoot: string
-  snapshot: CodeGraphSnapshot
+  snapshot?: CodeGraphSnapshot
   source: "input" | "recent_provenance" | "git_diff"
   changedFiles: string[]
   classifications: Array<{ file: string; classification: ChangeClassification; reason: string }>
@@ -2194,7 +2194,7 @@ function makeObligation(audit: AuditMetadata, candidate: AuditCandidate, now: st
       type: audit.source,
       provenanceID: audit.provenance?.id,
       changedFiles: audit.changedFiles,
-      snapshotRevision: audit.snapshot.revision,
+      snapshotRevision: audit.snapshot?.revision ?? "graph-uninitialized",
       seedNodes: audit.seedNodes,
       changeFacts: audit.changeFacts,
     },
@@ -2202,8 +2202,8 @@ function makeObligation(audit: AuditMetadata, candidate: AuditCandidate, now: st
       version: 1,
       status: "current",
       reason: "obligation was created from the current audit snapshot",
-      sourceRevision: audit.snapshot.revision,
-      currentRevision: audit.snapshot.revision,
+      sourceRevision: audit.snapshot?.revision ?? "graph-uninitialized",
+      currentRevision: audit.snapshot?.revision ?? "graph-uninitialized",
     },
     createdAt: now,
     updatedAt: now,
@@ -2395,7 +2395,7 @@ function formatAuditOutput(audit: AuditMetadata) {
   return [
     "Chimera propagation audit (non-persistent first pass).",
     `Source: ${audit.source}`,
-    `Graph revision: ${audit.snapshot.revision}`,
+    `Graph revision: ${audit.snapshot?.revision ?? "graph-uninitialized"}`,
     audit.auditRunID ? `Audit run: ${audit.auditRunID}` : undefined,
     audit.auditRunID ? `Ref: ${chimeraRef("audit", audit.auditRunID)}` : undefined,
     "",
@@ -2581,7 +2581,7 @@ function persistAuditRun(audit: AuditMetadata) {
       source: audit.source,
       provenanceID: audit.provenance?.id,
       changedFiles: audit.changedFiles,
-      snapshotRevision: audit.snapshot.revision,
+      snapshotRevision: audit.snapshot?.revision ?? "graph-uninitialized",
       seedNodes: audit.seedNodes,
       obligations: audit.obligations,
       payload: audit,
@@ -3031,27 +3031,44 @@ export const ChimeraPredesignTool = Tool.define<typeof PredesignParameters, Pred
           PREDESIGN_PERMISSION_TIMEOUT_MS,
         )
         const instance = yield* InstanceState.context
-        const state = yield* predesignStage(
-          ctx,
-          "open graph",
-          openProjectGraphForTool(ctx as Tool.Context, params.refresh !== false),
-        )
+        const root = contextProjectRoot(instance)
+        // Edit-intent claims (cross-session coordination) need no graph;
+        // scope/impact evidence does. An uninitialized project skips the
+        // graph stages and degrades the evidence section to a single
+        // explanatory line on the claims-bearing receipt — the same silent-
+        // degrade posture as the propagation probe — while claims register
+        // and gate normally (store created lazily on first declaration).
+        const graphAvailable = yield* Effect.sync(() => CodeGraph.isInitialized(root)).pipe(Effect.orDie)
+        const state = graphAvailable
+          ? yield* predesignStage(
+              ctx,
+              "open graph",
+              openProjectGraphForTool(ctx as Tool.Context, params.refresh !== false),
+            )
+          : undefined
         const depth = bounded(params.depth, 2, 5)
         const limit = bounded(params.limit, 30, 100)
-        const graphFiles = graphFilesFromPaths(state.projectRoot, instance.directory, files)
-        yield* predesignStage(
-          ctx,
-          "sync files",
-          graphFiles.length
-            ? Effect.promise(() => syncExistingGraphFiles(state, graphFiles, "force")).pipe(Effect.orDie)
-            : Effect.void,
-        )
+        const graphFiles = graphFilesFromPaths(root, instance.directory, files)
+        if (state) {
+          yield* predesignStage(
+            ctx,
+            "sync files",
+            graphFiles.length
+              ? Effect.promise(() => syncExistingGraphFiles(state, graphFiles, "force")).pipe(Effect.orDie)
+              : Effect.void,
+          )
+        }
         const normalizedFiles = graphFiles.map((file) => file.graphPath)
-        const snapshot = state.graph.snapshot()
+        const snapshot = state?.graph.snapshot()
         const { seedNodes, impact } = yield* predesignStage(
           ctx,
           "build impact",
           Effect.sync(() => {
+            if (!state || !snapshot)
+              return {
+                seedNodes: [] as CodeGraphNode[],
+                impact: { fileDependents: [] as string[], impactedNodes: [] as CodeGraphNode[], evidence: [] as AuditCandidate[] },
+              }
             const seedNodes = uniqueNodes([
               ...nodeIDs.flatMap((nodeID) => {
                 const node = state.graph.node(nodeID)
@@ -3076,8 +3093,8 @@ export const ChimeraPredesignTool = Tool.define<typeof PredesignParameters, Pred
             }
           }),
         )
-        const projectedSeeds = seedNodes.map((node) => state.graph.projectNode(node, snapshot))
-        const projectedImpacted = impact.impactedNodes.map((node) => state.graph.projectNode(node, snapshot))
+        const projectedSeeds = state && snapshot ? seedNodes.map((node) => state.graph.projectNode(node, snapshot)) : []
+        const projectedImpacted = state && snapshot ? impact.impactedNodes.map((node) => state.graph.projectNode(node, snapshot)) : []
         const coverage = {
           files: normalizedFiles.length,
           symbols: symbols.length,
@@ -3088,7 +3105,7 @@ export const ChimeraPredesignTool = Tool.define<typeof PredesignParameters, Pred
           ctx,
           "record run",
           Effect.promise(() =>
-            recordPredesignRun(state.projectRoot, predesignArtifact(state.artifact), {
+            recordPredesignRun(root, predesignArtifact(state?.artifact ?? Chimera.toolProvenanceArtifact(root)), {
               sessionID: ctx.sessionID,
               messageID: ctx.messageID,
               callID: ctx.callID,
@@ -3099,7 +3116,7 @@ export const ChimeraPredesignTool = Tool.define<typeof PredesignParameters, Pred
               impactedNodes: projectedImpacted,
               fileDependents: impact.fileDependents,
               evidence: impact.evidence,
-              snapshotRevision: snapshot.revision,
+              snapshotRevision: snapshot?.revision ?? "graph-uninitialized",
               payload: {
                 coverage,
                 depth,
@@ -3116,12 +3133,14 @@ export const ChimeraPredesignTool = Tool.define<typeof PredesignParameters, Pred
         // Edit-intent claims (cross-session coordination): declared files
         // become advisory claims for this session; earlier foreign holders
         // queue this session as a waiter for the release wake. Degrades
-        // open — claim storage trouble never fails the predesign run.
+        // open — claim storage trouble never fails the predesign run. Works
+        // with or without an initialized graph (the claim store is created
+        // lazily here when the project never initialized the graph).
         const claims = yield* predesignStage(
           ctx,
           "register claims",
           EditIntentClaims.registerFromPredesign({
-            projectRoot: state.projectRoot,
+            projectRoot: root,
             sessionID: ctx.sessionID,
             messageID: ctx.messageID,
             callID: ctx.callID,
@@ -3129,7 +3148,7 @@ export const ChimeraPredesignTool = Tool.define<typeof PredesignParameters, Pred
             predesignID: record.id,
             intent,
             files: normalizedFiles,
-            snapshotRevision: snapshot.revision,
+            snapshotRevision: snapshot?.revision,
           }),
         )
 
@@ -3140,10 +3159,11 @@ export const ChimeraPredesignTool = Tool.define<typeof PredesignParameters, Pred
             title: "Chimera pre-design",
             output: [
               "Chimera pre-design evidence recorded.",
+              ...(state ? [] : ["Graph surface is not initialized in this project: scope/impact evidence is unavailable and was skipped (edit-intent claims are unaffected — claims need no graph). Run `chimera graph init` and `chimera graph index` to enable graph evidence."]),
               `Run: ${record.id}`,
               `Ref: ${chimeraRef("predesign", record.id)}`,
               `Intent: ${intent}`,
-              `Graph revision: ${snapshot.revision}`,
+              `Graph revision: ${snapshot?.revision ?? "not indexed (graph uninitialized)"}`,
               "",
               "Coverage:",
               `- files: ${inlinePreview(normalizedFiles)}`,
@@ -3176,7 +3196,7 @@ export const ChimeraPredesignTool = Tool.define<typeof PredesignParameters, Pred
               "- Drill down only when a dependent needs inspection: chimera_impact with the refs above, or chimera_predesign rerun with narrower files.",
             ].join("\n"),
             metadata: {
-              projectRoot: state.projectRoot,
+              projectRoot: root,
               snapshot,
               runID: record.id,
               ref: chimeraRef("predesign", record.id),
@@ -3405,6 +3425,46 @@ export const ChimeraAuditRecentTool = Tool.define<typeof RecentAuditParameters, 
           yield* permission(ctx, "chimera_audit_recent", {
             refresh: params.refresh !== false,
           })
+          // The explicit closeout unlock is graph-independent: with an
+          // uninitialized graph the propagation audit itself is unavailable
+          // (the graph-side half of this tool), but the holder's edit-intent
+          // claims must still release — queued sessions do not wait on graph
+          // state. Degrade to an audit-less closeout that still runs the
+          // unlock and reports it in the same wording as the full path.
+          const instance = yield* InstanceState.context
+          const root = contextProjectRoot(instance)
+          if (!(yield* Effect.sync(() => CodeGraph.isInitialized(root)).pipe(Effect.orDie))) {
+            const unlock = yield* EditIntentClaims.releaseExplicitly({
+              bus,
+              projectRoot: root,
+              sessionID: ctx.sessionID,
+            }).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
+            return {
+              title: "Chimera audit",
+              output: [
+                "Chimera graph surface is not initialized in this project; the propagation audit is unavailable.",
+                "Run `chimera graph init` and `chimera graph index` to enable graph audits (mutation provenance is also inactive until then).",
+                ...(unlock && unlock.released.length > 0
+                  ? [
+                      `Released ${unlock.released.length} edit-intent claim(s): ${unlock.released
+                        .map((claim) => claim.filePath)
+                        .join(", ")}; woke ${unlock.targets.length} queued session(s).`,
+                    ]
+                  : []),
+              ].join("\n"),
+              metadata: {
+                projectRoot: root,
+                source: "input" as const,
+                changedFiles: [],
+                classifications: [],
+                changeFacts: [],
+                seedNodes: [],
+                impactedNodes: [],
+                fileDependents: [],
+                obligations: [],
+              },
+            }
+          }
           const audit = yield* buildAudit(params, { ctx: ctx as Tool.Context })
           const auditRunID = yield* persistAuditRun(audit)
           const recorded = { ...audit, auditRunID, ref: chimeraRef("audit", auditRunID) }

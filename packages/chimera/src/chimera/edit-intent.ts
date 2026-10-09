@@ -100,14 +100,20 @@ const ORPHAN_SWEEP_GRACE_MS = EDIT_INTENT_CLAIM_DEFAULT_TTL_MS
  *
  * A `chimera_predesign` run that declares files registers one claim per file
  * for the declaring session. Claims are advisory coordination state in the
- * project CodeGraph database — not filesystem locks:
+ * project Chimera store — the CodeGraph database once the graph is
+ * initialized, or the store file created lazily by the predesign flow while
+ * it is not (a store-only database that never carries the graph schema, so
+ * the project keeps reading as graph-uninitialized) — not filesystem locks:
  * - the mutation gate blocks edits on files claimed by sessions from ANOTHER
  *   session family — holders are compared by root ancestor along the session
  *   parent_id chain, so a parent's claims never gate its own subagents — and
  *   registers the blocked session as a waiter (first-come-first-served queue;
- *   queue/waiter bookkeeping still keys the real session id);
+ *   queue/waiter bookkeeping still keys the real session id; enforcement
+ *   works with or without an initialized graph),
  * - claims release on explicit signals — the holder closing its work batch
- *   through `chimera_audit_recent` (explicit), the holder's run completing
+ *   through `chimera_audit_recent` (explicit; the unlock also runs on the
+ *   degraded audit-less closeout when the graph is uninitialized), the
+ *   holder's run completing
  *   with no background/subagent jobs its session family still owns running
  *   (session idle), the holder's session being removed — with a TTL as
  *   crash fallback only;

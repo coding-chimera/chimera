@@ -180,6 +180,52 @@ export class DatabaseConnection {
   }
 
   /**
+   * Create a store-only database: a valid SQLite file carrying the schema-
+   * version stamp and the given storage-extension tables, but NONE of the
+   * graph schema tables. Consumers use this to persist coordination state
+   * (Chimera edit-intent claims) in a project whose graph is not initialized.
+   *
+   * The schema_versions row is stamped at CURRENT_SCHEMA_VERSION so later
+   * {@link DatabaseConnection.open} calls skip graph migrations, and the graph
+   * stays uninitialized as seen by `isInitialized()` (its probe wants the
+   * `nodes` table, which is absent here). A later explicit `chimera graph
+   * init` applies the idempotent schema.sql in place over this file, so the
+   * coordination tables survive unchanged when the graph arrives.
+   *
+   * This is an explicit write flow: like {@link initialize}, it creates the
+   * directory and the database file. Read-only surfaces must not call it.
+   */
+  static initializeStoreOnly(dbPath: string, options: Pick<DatabaseOpenOptions, 'storageExtensions'> = {}): DatabaseConnection {
+    const dir = path.dirname(dbPath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+
+    const { db, backend } = createDatabase(dbPath);
+    const conn = new DatabaseConnection(db, dbPath, backend);
+
+    try {
+      configureConnection(db);
+      // DDL mirrors schema.sql's schema_versions so a later graph migration
+      // pass sees the identical table (CREATE IF NOT EXISTS is a no-op).
+      db.exec(
+        'CREATE TABLE IF NOT EXISTS schema_versions (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL, description TEXT)',
+      );
+      db.prepare(
+        'INSERT OR IGNORE INTO schema_versions (version, applied_at, description) VALUES (?, ?, ?)',
+      ).run(CURRENT_SCHEMA_VERSION, Date.now(), 'Store-only database: extension tables only, graph schema not installed');
+
+      for (const extension of options.storageExtensions ?? []) {
+        conn.applyStorageExtension(extension);
+      }
+      return conn;
+    } catch (error) {
+      try { conn.close(); } catch { }
+      throw error;
+    }
+  }
+
+  /**
    * Open an existing database
    */
   static open(dbPath: string, options: DatabaseOpenOptions = {}): DatabaseConnection {

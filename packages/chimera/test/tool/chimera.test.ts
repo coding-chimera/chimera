@@ -8,7 +8,7 @@ import { ChimeraPromptContext } from "@/chimera/prompt-context"
 import type { ProjectGraphState } from "@/chimera"
 import { readActiveEditIntentClaims, readAuditRuns, readEditIntentWaiters, readPredesignRuns, registerEditIntentClaims, registerEditIntentWaiter } from "@/chimera/store"
 import { SessionToolMetadata } from "@/chimera/session-tool-metadata"
-import { DatabaseConnection, getDatabasePath } from "@/graph"
+import { CodeGraph, DatabaseConnection, getDatabasePath } from "@/graph"
 import type { Node as CodeGraphNode } from "@/graph"
 import { createDatabase } from "@/graph/db/sqlite-adapter"
 import { CURRENT_SCHEMA_VERSION, getCurrentVersion } from "@/graph/db/migrations"
@@ -527,6 +527,44 @@ describe("tool.chimera", () => {
       )
       expect(waiters.map((waiter) => waiter.filePath)).toEqual(["source.ts"])
       expect(waiters[0]!.blockerSessionID).toBe(ctx.sessionID)
+    }),
+  )
+
+  it.instance("records a claims-bearing pre-design without a graph, degrading impact evidence", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      // No initGraph: the predesign handler must skip the graph stages and
+      // still register claims (the store is created lazily, store-only).
+      expect(CodeGraph.isInitialized(test.directory)).toBe(false)
+      const stages: string[] = []
+      const result = yield* runPredesign(
+        { intent: "modify source without a graph", files: ["source.ts"] },
+        {
+          ...ctx,
+          metadata: (value: { metadata?: Record<string, any> }) =>
+            Effect.sync(() => {
+              const stage = value.metadata?.chimeraPredesignStage
+              if (stage?.status === "running") stages.push(stage.stage)
+            }),
+        },
+      )
+      expect(result.title).toBe("Chimera pre-design")
+      expect(result.output).toContain("Graph surface is not initialized")
+      expect(result.output).toContain("not indexed (graph uninitialized)")
+      expect(result.output).toContain("Registered on 1 declared file(s)")
+      expect(result.metadata.runID).toEqual(expect.stringMatching(/^predesign_/))
+      expect(stages).toEqual(["permission", "build impact", "record run", "register claims", "return result"])
+      // Claims landed in the lazily created store-only database; the graph
+      // surface still reads as uninitialized.
+      const claims = yield* Effect.promise(() => readActiveEditIntentClaims(test.directory, { files: ["source.ts"] }))
+      expect(claims).toHaveLength(1)
+      expect(claims[0]!.sessionID).toBe(ctx.sessionID)
+      expect(CodeGraph.isInitialized(test.directory)).toBe(false)
+      // The declared run is recorded too (readPredesignRuns falls through to the store).
+      const runs = yield* Effect.promise(() =>
+        readPredesignRuns(test.directory, path.join(test.directory, ".chimera", "chimera", "predesign-runs.jsonl"), { sessionID: ctx.sessionID }),
+      )
+      expect(runs[0]?.id).toBe(result.metadata.runID)
     }),
   )
 
@@ -2109,6 +2147,43 @@ describe("tool.chimera audit_recent explicit edit-intent unlock", () => {
       })
       const result = yield* runAuditRecent({ refresh: false })
       expect(result.output).not.toContain("edit-intent claim")
+    }),
+  )
+
+  it.instance("chimera_audit_recent degrades to an audit-less closeout that still releases claims without a graph", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      // No graph anywhere: claims still registered, and the explicit
+      // closeout unlock must fire so the wake loop never waits on graph state.
+      expect(CodeGraph.isInitialized(test.directory)).toBe(false)
+      yield* Effect.promise(() =>
+        registerEditIntentClaims(test.directory, {
+          id: "predesign_nograph_unlock",
+          sessionID: ctx.sessionID,
+          agent: "build",
+          files: ["loose.ts"],
+          intent: "unlock without a graph",
+        }),
+      )
+      yield* Effect.promise(() =>
+        registerEditIntentWaiter(test.directory, {
+          sessionID: "ses_nograph_waiter",
+          filePath: "loose.ts",
+          blockerSessionID: ctx.sessionID,
+          reason: "mutation_gate:edit",
+        }),
+      )
+
+      const result = yield* runAuditRecent({ refresh: false })
+      expect(result.title).toBe("Chimera audit")
+      expect(result.output).toContain("graph surface is not initialized")
+      expect(result.output).toContain("Released 1 edit-intent claim(s): loose.ts; woke 1 queued session(s).")
+      const active = yield* Effect.promise(() => readActiveEditIntentClaims(test.directory, { sessionID: ctx.sessionID }))
+      expect(active).toHaveLength(0)
+      const woken = yield* Effect.promise(() =>
+        readEditIntentWaiters(test.directory, { sessionID: "ses_nograph_waiter", status: "woken" }),
+      )
+      expect(woken).toHaveLength(1)
     }),
   )
 })

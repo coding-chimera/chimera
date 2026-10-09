@@ -4,7 +4,7 @@ Mutations tracked through `edit`, `write`, and `apply_patch` are audited automat
 
 Do NOT pass file paths to this tool — it audits the latest mutation automatically; use `chimera_audit` for explicit files, symbols, or node ids. One audit per mutation batch is enough — do not also run chimera_audit on the same files afterwards; chimera_audit is for explicit seeds from other sources (external patches, a specific symbol).
 
-Calling this tool also acts as the explicit closeout unlock for cross-session edit coordination: the `chimera_predesign` edit-intent claims your session registered are released the moment the audit completes, and queued sessions are woken immediately (the output then ends with a `Released N edit-intent claim(s): ...; woke M queued session(s).` line). You do not need to wait for your run to go idle.
+Calling this tool also acts as the explicit closeout unlock for cross-session edit coordination: the `chimera_predesign` edit-intent claims your session registered are released the moment the audit completes, and queued sessions are woken immediately (the output then ends with a `Released N edit-intent claim(s): ...; woke M queued session(s).` line). You do not need to wait for your run to go idle. In a project whose graph is not initialized the propagation audit itself is unavailable: the tool then degrades to an audit-less closeout that still runs this unlock and prints the same `Released N ...` line after the degradation note — claims need no graph.
 
 Mechanics: findings are structural evidence, not commands or tracked obligations. Provenance files missing graph records are filesystem-synced before classification. Set `refresh` to false only when current graph state is known sufficient.
 
