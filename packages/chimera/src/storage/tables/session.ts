@@ -1,0 +1,196 @@
+import { sqliteTable, text, integer, index, primaryKey } from "drizzle-orm/sqlite-core"
+import type { SystemContext } from "@opencode-ai/core/system-context"
+import { ProjectTable } from "../../project/project.sql"
+import type { MessageV2 } from "../../session/message-v2"
+import type { SessionMessage } from "../../v2/session-message"
+import type { Snapshot } from "../../snapshot"
+import type { Session } from "../../session/session"
+import type { Permission } from "../../permission"
+import type { ProjectID } from "../../project/schema"
+import type { SessionID, MessageID, PartID } from "@/contracts/session-ids"
+import type { WorkspaceID } from "../../control-plane/schema"
+import { Timestamps } from "../schema.sql"
+
+type PartData = Omit<MessageV2.Part, "id" | "sessionID" | "messageID">
+type InfoData = Omit<MessageV2.Info, "id" | "sessionID">
+type SessionMessageData = Omit<(typeof SessionMessage.Message)["Encoded"], "type" | "id">
+
+export const SessionTable = sqliteTable(
+  "session",
+  {
+    id: text().$type<SessionID>().primaryKey(),
+    project_id: text()
+      .$type<ProjectID>()
+      .notNull()
+      .references(() => ProjectTable.id, { onDelete: "cascade" }),
+    workspace_id: text().$type<WorkspaceID>(),
+    parent_id: text().$type<SessionID>(),
+    slug: text().notNull(),
+    directory: text().notNull(),
+    path: text(),
+    title: text().notNull(),
+    version: text().notNull(),
+    share_url: text(),
+    summary_additions: integer(),
+    summary_deletions: integer(),
+    summary_files: integer(),
+    summary_diffs: text({ mode: "json" }).$type<Snapshot.FileDiff[]>(),
+    revert: text({ mode: "json" }).$type<{ messageID: MessageID; partID?: PartID; snapshot?: string; diff?: string }>(),
+    permission: text({ mode: "json" }).$type<Permission.Ruleset>(),
+    agent: text(),
+    model: text({ mode: "json" }).$type<{
+      id: string
+      providerID: string
+      variant?: string
+    }>(),
+    usage: text({ mode: "json" }).$type<Session.Usage>(),
+    ...Timestamps,
+    time_compacting: integer(),
+    time_archived: integer(),
+  },
+  (table) => [
+    index("session_project_idx").on(table.project_id),
+    index("session_workspace_idx").on(table.workspace_id),
+    index("session_parent_idx").on(table.parent_id),
+  ],
+)
+
+export const MessageTable = sqliteTable(
+  "message",
+  {
+    id: text().$type<MessageID>().primaryKey(),
+    session_id: text()
+      .$type<SessionID>()
+      .notNull()
+      .references(() => SessionTable.id, { onDelete: "cascade" }),
+    ...Timestamps,
+    data: text({ mode: "json" }).notNull().$type<InfoData>(),
+  },
+  (table) => [index("message_session_time_created_id_idx").on(table.session_id, table.time_created, table.id)],
+)
+
+export const PartTable = sqliteTable(
+  "part",
+  {
+    id: text().$type<PartID>().primaryKey(),
+    message_id: text()
+      .$type<MessageID>()
+      .notNull()
+      .references(() => MessageTable.id, { onDelete: "cascade" }),
+    session_id: text().$type<SessionID>().notNull(),
+    ...Timestamps,
+    data: text({ mode: "json" }).notNull().$type<PartData>(),
+  },
+  (table) => [
+    index("part_message_id_id_idx").on(table.message_id, table.id),
+    index("part_session_idx").on(table.session_id),
+  ],
+)
+
+export const TodoTable = sqliteTable(
+  "todo",
+  {
+    session_id: text()
+      .$type<SessionID>()
+      .notNull()
+      .references(() => SessionTable.id, { onDelete: "cascade" }),
+    content: text().notNull(),
+    status: text().notNull(),
+    priority: text().notNull(),
+    position: integer().notNull(),
+    ...Timestamps,
+  },
+  (table) => [
+    primaryKey({ columns: [table.session_id, table.position] }),
+    index("todo_session_idx").on(table.session_id),
+  ],
+)
+
+type WorkBriefData = {
+  intent?: string
+  confirmedDecisions: string[]
+  constraints: string[]
+  acceptanceCriteria: string[]
+  openQuestions: string[]
+  relevantEvidence: string[]
+  closeout: string[]
+}
+
+export const WorkBriefTable = sqliteTable("work_brief", {
+  session_id: text()
+    .$type<SessionID>()
+    .primaryKey()
+    .references(() => SessionTable.id, { onDelete: "cascade" }),
+  data: text({ mode: "json" }).notNull().$type<WorkBriefData>(),
+  ...Timestamps,
+})
+
+type GoalData = {
+  objective: string
+  status: "active" | "paused" | "blocked" | "budget_limited" | "complete"
+  tokenBudget?: number
+  tokensUsed: number
+  usageWatermarks?: Record<string, string> // per-session watermark for incremental token accounting
+  consecutiveEmptyContinuations?: number // auto-continuation circuit breaker
+  consecutiveContinuations?: number
+}
+export const GoalTable = sqliteTable("goal", {
+  session_id: text()
+    .$type<SessionID>()
+    .primaryKey()
+    .references(() => SessionTable.id, { onDelete: "cascade" }),
+  data: text({ mode: "json" }).notNull().$type<GoalData>(),
+  ...Timestamps,
+})
+
+type ToolRevealData = {
+  revealed: string[]
+  // Per-tool reveal timestamps (JSON payload only — no column, no migration).
+  // Drives compaction-time promotion in SessionPrompt; see src/session/tool-search.ts.
+  revealedAt?: Record<string, number>
+}
+export const ToolRevealTable = sqliteTable("tool_reveal", {
+  session_id: text()
+    .$type<SessionID>()
+    .primaryKey()
+    .references(() => SessionTable.id, { onDelete: "cascade" }),
+  data: text({ mode: "json" }).notNull().$type<ToolRevealData>(),
+  ...Timestamps,
+})
+
+export const SessionMessageTable = sqliteTable(
+  "session_message",
+  {
+    id: text().$type<SessionMessage.ID>().primaryKey(),
+    session_id: text()
+      .$type<SessionID>()
+      .notNull()
+      .references(() => SessionTable.id, { onDelete: "cascade" }),
+    type: text().$type<SessionMessage.Type>().notNull(),
+    ...Timestamps,
+    data: text({ mode: "json" }).notNull().$type<SessionMessageData>(),
+  },
+  (table) => [
+    index("session_message_session_idx").on(table.session_id),
+    index("session_message_session_type_idx").on(table.session_id, table.type),
+    index("session_message_time_created_idx").on(table.time_created),
+  ],
+)
+
+export const PermissionTable = sqliteTable("permission", {
+  project_id: text()
+    .primaryKey()
+    .references(() => ProjectTable.id, { onDelete: "cascade" }),
+  ...Timestamps,
+  data: text({ mode: "json" }).notNull().$type<Permission.Ruleset>(),
+})
+
+export const SessionContextEpochTable = sqliteTable("session_context_epoch", {
+  session_id: text()
+    .$type<SessionID>()
+    .primaryKey()
+    .references(() => SessionTable.id, { onDelete: "cascade" }),
+  baseline: text().notNull(),
+  snapshot: text({ mode: "json" }).notNull().$type<SystemContext.Snapshot>(),
+  baseline_seq: integer().notNull(),
+})
