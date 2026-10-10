@@ -10,8 +10,8 @@ import {
 import { MemoryStore } from "@/memory/store"
 import { ProjectTable } from "@/project/project.sql"
 import { ProjectID } from "@/project/schema"
-import { SessionTable } from "@/session/session.sql"
-import { SessionID } from "@/session/schema"
+import { SessionTable } from "@/storage/tables/session.sql"
+import { SessionID } from "@/contracts/session-ids"
 import { Database } from "@/storage/db"
 
 const projectA = ProjectID.make("project-a")

@@ -14,7 +14,7 @@ import {
 } from "@/tool/memory"
 import { Truncate } from "@/tool/truncate"
 import { ToolRegistry } from "@/tool/registry"
-import { MessageID, SessionID } from "@/session/schema"
+import { MessageID, SessionID } from "@/contracts/session-ids"
 import { testEffect } from "../lib/effect"
 
 const toolsLayer = Layer.mergeAll(

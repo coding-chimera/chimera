@@ -6,7 +6,7 @@ import { Permission } from "../../src/permission"
 import { PermissionPersist } from "../../src/permission/persist"
 import { PermissionID } from "../../src/permission/schema"
 import { Session } from "../../src/session/session"
-import { SessionID } from "../../src/session/schema"
+import { SessionID } from "../../src/contracts/session-ids"
 import { disposeAllInstances, provideInstance, reloadTestInstance, tmpdirScoped } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 

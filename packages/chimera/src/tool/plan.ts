@@ -6,7 +6,7 @@ import { Session } from "@/session/session"
 import { MessageV2 } from "../session/message-v2"
 import { Provider } from "@/provider/provider"
 import { InstanceState } from "@/effect/instance-state"
-import { type SessionID, MessageID, PartID } from "../session/schema"
+import { type SessionID, MessageID, PartID } from "../contracts/session-ids"
 import EXIT_DESCRIPTION from "./plan-exit.txt"
 
 function getLastModel(sessionID: SessionID) {

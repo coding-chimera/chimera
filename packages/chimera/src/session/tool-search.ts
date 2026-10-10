@@ -1,8 +1,8 @@
 import { Context, Effect, Layer } from "effect"
 import { eq } from "drizzle-orm"
 import { Database } from "@/storage/db"
-import { SessionID } from "./schema"
-import { ToolRevealTable } from "./session.sql"
+import { SessionID } from "@/contracts/session-ids"
+import { ToolRevealTable } from "@/storage/tables/session.sql"
 
 // Progressive tool disclosure (inspired by OpenAI Codex `tool_search`): the
 // tools below stay registered but are omitted from the model-facing tool list

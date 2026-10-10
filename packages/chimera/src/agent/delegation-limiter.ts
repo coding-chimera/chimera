@@ -1,7 +1,7 @@
 import { Config } from "@/config/config"
 import { ConfigDelegation } from "@/config/delegation"
 import { InstanceState } from "@/effect/instance-state"
-import type { SessionID } from "@/session/schema"
+import type { SessionID } from "@/contracts/session-ids"
 import { Context, Effect, Layer, Semaphore } from "effect"
 
 type Holder = {

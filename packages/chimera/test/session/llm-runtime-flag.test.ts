@@ -10,7 +10,7 @@ import { ProviderID, ModelID } from "../../src/provider/schema"
 import { tmpdir } from "../fixture/fixture"
 import type { Agent } from "../../src/agent/agent"
 import { MessageV2 } from "../../src/session/message-v2"
-import { SessionID, MessageID } from "../../src/session/schema"
+import { SessionID, MessageID } from "../../src/contracts/session-ids"
 import { AppRuntime } from "../../src/effect/app-runtime"
 
 // L4.4 native llm runtime pilot (experimental.llm_runtime) seam coverage.

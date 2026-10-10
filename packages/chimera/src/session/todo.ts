@@ -1,6 +1,6 @@
 import { BusEvent } from "@/bus/bus-event"
 import { Bus } from "@/bus"
-import { SessionID } from "./schema"
+import { SessionID } from "@/contracts/session-ids"
 import { zod } from "@/util/effect-zod"
 import { withStatics } from "@/util/schema"
 import { Effect, Layer, Context, Schema } from "effect"
@@ -8,7 +8,7 @@ import z from "zod"
 import { Database } from "@/storage/db"
 import { eq } from "drizzle-orm"
 import { asc } from "drizzle-orm"
-import { TodoTable } from "./session.sql"
+import { TodoTable } from "@/storage/tables/session.sql"
 
 export const Info = Schema.Struct({
   content: Schema.String.annotate({ description: "Brief description of the task" }),

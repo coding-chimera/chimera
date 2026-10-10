@@ -1,5 +1,5 @@
 import { WorkspaceID } from "@/control-plane/schema"
-import { SessionID } from "@/session/schema"
+import { SessionID } from "@/contracts/session-ids"
 import { SessionMessage } from "@/v2/session-message"
 import { Prompt } from "@/v2/session-prompt"
 import { SessionV2 } from "@/v2/session"

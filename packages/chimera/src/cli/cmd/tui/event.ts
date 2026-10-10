@@ -1,5 +1,5 @@
 import { BusEvent } from "@/bus/bus-event"
-import { SessionID } from "@/session/schema"
+import { SessionID } from "@/contracts/session-ids"
 import { PositiveInt } from "@/util/schema"
 import { Effect, Schema } from "effect"
 

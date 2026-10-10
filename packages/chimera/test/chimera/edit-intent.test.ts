@@ -15,7 +15,7 @@ import {
   releaseEditIntentClaims,
   takeWokenEditIntentWaiters,
 } from "@/chimera/store"
-import { MessageID, SessionID } from "@/session/schema"
+import { MessageID, SessionID } from "@/contracts/session-ids"
 import { disposeAllInstances, tmpdir, TestInstance } from "../fixture/fixture"
 import { it } from "../lib/effect"
 

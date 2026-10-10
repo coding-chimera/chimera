@@ -7,7 +7,7 @@ import { Truncate } from "@/tool/truncate"
 import { Instance } from "../../src/project/instance"
 import { WithInstance } from "../../src/project/with-instance"
 import { WebFetchTool } from "../../src/tool/webfetch"
-import { SessionID, MessageID } from "../../src/session/schema"
+import { SessionID, MessageID } from "../../src/contracts/session-ids"
 
 const projectRoot = path.join(import.meta.dir, "../..")
 

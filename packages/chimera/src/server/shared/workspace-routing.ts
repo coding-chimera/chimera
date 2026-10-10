@@ -1,4 +1,4 @@
-import { SessionID } from "@/session/schema"
+import { SessionID } from "@/contracts/session-ids"
 
 type Rule = { method?: string; path: string; exact?: boolean; action: "local" | "forward" }
 

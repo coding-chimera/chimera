@@ -6,7 +6,7 @@ import { zod } from "@/util/effect-zod"
 import { withStatics } from "@/util/schema"
 import * as Session from "./session"
 import { MessageV2 } from "./message-v2"
-import { SessionID, MessageID } from "./schema"
+import { SessionID, MessageID } from "@/contracts/session-ids"
 
 function unquoteGitPath(input: string) {
   if (!input.startsWith('"')) return input

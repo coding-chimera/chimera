@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
 import { Agent } from "@/agent/agent"
-import { MessageID, SessionID } from "@/session/schema"
+import { MessageID, SessionID } from "@/contracts/session-ids"
 import { WorkBrief } from "@/session/work-brief"
 import { Database } from "@/storage/db"
 import { Truncate } from "@/tool/truncate"

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { PromptStats } from "../../src/session/prompt-stats"
-import type { MessageID, SessionID } from "../../src/session/schema"
+import type { MessageID, SessionID } from "../../src/contracts/session-ids"
 
 describe("prompt stats", () => {
   test("summarizes request blocks without prompt text", () => {

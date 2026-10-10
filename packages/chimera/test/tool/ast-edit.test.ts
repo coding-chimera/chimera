@@ -14,7 +14,7 @@ import { Ripgrep } from "@/file/ripgrep"
 import { Tool } from "@/tool/tool"
 import { isInitialized, type Node as CodeGraphNode } from "@/graph"
 import { Truncate } from "@/tool/truncate"
-import { SessionID, MessageID } from "@/session/schema"
+import { SessionID, MessageID } from "@/contracts/session-ids"
 import { TestInstance, disposeAllInstances } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 

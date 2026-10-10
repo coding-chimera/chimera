@@ -6,7 +6,7 @@ import { AppRuntime } from "../../src/effect/app-runtime"
 import { WithInstance } from "../../src/project/with-instance"
 import { Session as SessionNs } from "@/session/session"
 import { Storage } from "@/storage/storage"
-import { SessionID } from "../../src/session/schema"
+import { SessionID } from "../../src/contracts/session-ids"
 import { Snapshot } from "../../src/snapshot"
 
 void Log.init({ print: false })

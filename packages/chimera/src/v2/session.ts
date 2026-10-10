@@ -1,5 +1,5 @@
-import { SessionMessageTable, SessionTable } from "@/session/session.sql"
-import { SessionID } from "@/session/schema"
+import { SessionMessageTable, SessionTable } from "@/storage/tables/session.sql"
+import { SessionID } from "@/contracts/session-ids"
 import { WorkspaceID } from "@/control-plane/schema"
 import { and, asc, desc, eq, gt, gte, isNull, like, lt, or, type SQL } from "@/storage/db"
 import * as Database from "@/storage/db"

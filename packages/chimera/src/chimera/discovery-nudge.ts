@@ -1,6 +1,6 @@
 import { Effect } from "effect"
 import { isInitialized } from "@/graph"
-import type { SessionID } from "@/session/schema"
+import type { SessionID } from "@/contracts/session-ids"
 
 /**
  * Tool-side graph discovery nudge, appended to text-exploration tool results.

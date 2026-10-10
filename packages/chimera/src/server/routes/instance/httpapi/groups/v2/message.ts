@@ -1,4 +1,4 @@
-import { SessionID } from "@/session/schema"
+import { SessionID } from "@/contracts/session-ids"
 import { SessionMessage } from "@/v2/session-message"
 import { Schema } from "effect"
 import { HttpApiEndpoint, HttpApiError, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"

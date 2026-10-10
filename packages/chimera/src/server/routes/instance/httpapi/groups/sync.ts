@@ -1,5 +1,5 @@
 import { NonNegativeInt } from "@/util/schema"
-import { SessionID } from "@/session/schema"
+import { SessionID } from "@/contracts/session-ids"
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
 import { InstanceContextMiddleware } from "../middleware/instance-context"

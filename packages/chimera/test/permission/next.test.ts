@@ -16,7 +16,7 @@ import {
   tmpdirScoped,
 } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
-import { MessageID, SessionID } from "../../src/session/schema"
+import { MessageID, SessionID } from "../../src/contracts/session-ids"
 
 const bus = Bus.layer
 const env = Layer.mergeAll(Permission.layer.pipe(Layer.provide(bus)), bus, CrossSpawnSpawner.defaultLayer)

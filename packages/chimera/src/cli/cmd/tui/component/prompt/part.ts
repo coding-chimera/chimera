@@ -1,4 +1,4 @@
-import { PartID } from "@/session/schema"
+import { PartID } from "@/contracts/session-ids"
 import { displaySlice } from "@/cli/cmd/prompt-display"
 import type { PromptInfo } from "./history"
 

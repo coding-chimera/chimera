@@ -1,7 +1,7 @@
 import { BusEvent } from "@/bus/bus-event"
 import { Bus } from "@/bus"
 import * as Session from "./session"
-import { SessionID, MessageID, PartID } from "./schema"
+import { SessionID, MessageID, PartID } from "@/contracts/session-ids"
 import { Provider } from "@/provider/provider"
 import { MessageV2 } from "./message-v2"
 import z from "zod"

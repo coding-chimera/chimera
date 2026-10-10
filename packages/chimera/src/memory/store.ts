@@ -16,8 +16,8 @@ import {
   type SQL,
 } from "drizzle-orm"
 import type { ProjectID } from "../project/schema"
-import { SessionTable } from "../session/session.sql"
-import type { MessageID, SessionID } from "../session/schema"
+import { SessionTable } from "../storage/tables/session.sql"
+import type { MessageID, SessionID } from "../contracts/session-ids"
 import { Database, type TxOrDb } from "../storage/db"
 import {
   MemoryJobTable,

@@ -18,7 +18,7 @@ import * as InstanceState from "@/effect/instance-state"
 import { errors } from "../../error"
 import { Session } from "@/session/session"
 import { WorkspaceContext } from "@/control-plane/workspace-context"
-import { SessionID } from "@/session/schema"
+import { SessionID } from "@/contracts/session-ids"
 import { Effect } from "effect"
 
 const ReplayEvent = z.object({

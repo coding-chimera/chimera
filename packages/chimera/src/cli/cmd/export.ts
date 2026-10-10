@@ -1,6 +1,6 @@
 import { Session } from "@/session/session"
 import { MessageV2 } from "../../session/message-v2"
-import { SessionID } from "../../session/schema"
+import { SessionID } from "../../contracts/session-ids"
 import { effectCmd, fail } from "../effect-cmd"
 import { UI } from "../ui"
 import * as prompts from "@clack/prompts"

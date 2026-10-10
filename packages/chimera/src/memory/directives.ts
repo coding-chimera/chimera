@@ -1,4 +1,4 @@
-import type { MessageID, SessionID } from "@/session/schema"
+import type { MessageID, SessionID } from "@/contracts/session-ids"
 import { MemorySecurity } from "./security"
 
 const DIRECTIVE = /^\s*(?:remember|memory|记住|记忆)\s*[:：]\s*(.+?)\s*$/i

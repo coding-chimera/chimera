@@ -17,7 +17,7 @@ import { ModelID, ProviderID } from "../../src/provider/schema"
 import { LLM } from "../../src/session/llm"
 import { MessageV2 } from "../../src/session/message-v2"
 import { Session } from "../../src/session/session"
-import { MessageID, SessionID } from "../../src/session/schema"
+import { MessageID, SessionID } from "../../src/contracts/session-ids"
 import { disposeAllInstances, provideInstance, reloadTestInstance, tmpdirScoped } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 

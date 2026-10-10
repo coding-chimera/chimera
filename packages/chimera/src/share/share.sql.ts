@@ -1,5 +1,5 @@
 import { sqliteTable, text } from "drizzle-orm/sqlite-core"
-import { SessionTable } from "../session/session.sql"
+import { SessionTable } from "../storage/tables/session.sql"
 import { Timestamps } from "../storage/schema.sql"
 
 export const SessionShareTable = sqliteTable("session_share", {

@@ -16,7 +16,7 @@ import { Filesystem } from "@/util/filesystem"
 import { tmpdir } from "../fixture/fixture"
 import type { Agent } from "../../src/agent/agent"
 import { MessageV2 } from "../../src/session/message-v2"
-import { SessionID, MessageID } from "../../src/session/schema"
+import { SessionID, MessageID } from "../../src/contracts/session-ids"
 import { AppRuntime } from "../../src/effect/app-runtime"
 
 async function getModel(providerID: ProviderID, modelID: ModelID) {
