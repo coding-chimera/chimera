@@ -223,33 +223,89 @@ const graphStates = new Map<string, Promise<ProjectGraphState>>()
 // (R1 A4) graphStates had no capacity bound: one live connection+watcher per
 // project root opened in non-readOnly mode, released only when every directory
 // mapped to the root was disposed. Long-lived servers that cycle through many
-// projects accumulated handles. The cache is now LRU-capped; only roots idle
+// projects accumulated handles. The cache is LRU-capped; only roots idle
 // beyond GRAPH_STATE_IDLE_EVICT_MS are eviction candidates, so an actively used
 // root is never closed underneath its callers. The non-readOnly release path
 // keeps its shrink() semantics — this bounds the resident count, not the
 // per-use lifecycle.
+//
+// (B1) The cap alone did not reclaim a handful of long-lived projects: a
+// `chimera web` server holding 3 projects stayed under the cap forever, and
+// WebUI presence heartbeats keep the owning instances alive, so the instance
+// disposer never fires either. The idle sweep now also closes any cached root
+// whose graph has been quiet for GRAPH_STATE_IDLE_TTL_MS (default 10 min,
+// aligned with InstanceStore's DEFAULT_IDLE_TTL_MS), below the cap. Reopening
+// is transparent: the next openProjectGraph call reopens the connection and
+// re-arms its watcher, and the sync path reconciles changes missed while idle.
 const GRAPH_STATE_CACHE_MAX = 32
 const GRAPH_STATE_IDLE_EVICT_MS = 30 * 60 * 1000
+const DEFAULT_GRAPH_STATE_IDLE_TTL_MS = 10 * 60 * 1000
+const DEFAULT_GRAPH_STATE_IDLE_SWEEP_MS = 60 * 1000
 const graphStateLastUsed = new Map<string, number>()
+/** In-flight withProjectGraph holds per root; a root in use is never evicted. */
+const graphStateInUse = new Map<string, number>()
+
+function envNumber(names: string[], fallback: number) {
+  const raw = names.map((name) => process.env[name]).find((value) => value)
+  const parsed = raw ? Number(raw) : fallback
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback
+}
+
+/** (B1) Idle-reclaim settings; read per sweep so tests can retune without a reload. */
+function graphStateIdleSettings() {
+  return {
+    idleTtlMs: envNumber(["CHIMERA_GRAPH_STATE_IDLE_TTL_MS"], DEFAULT_GRAPH_STATE_IDLE_TTL_MS),
+    sweepMs: envNumber(["CHIMERA_GRAPH_STATE_IDLE_SWEEP_MS"], DEFAULT_GRAPH_STATE_IDLE_SWEEP_MS),
+  }
+}
 
 function touchGraphState(root: string) {
   graphStateLastUsed.set(root, Date.now())
 }
 
-function evictGraphStates(): Promise<number> {
-  if (graphStates.size <= GRAPH_STATE_CACHE_MAX) return Promise.resolve(0)
+function acquireGraphStateUse(root: string) {
+  graphStateInUse.set(root, (graphStateInUse.get(root) ?? 0) + 1)
+}
+
+function releaseGraphStateUse(root: string) {
+  const next = (graphStateInUse.get(root) ?? 1) - 1
+  if (next > 0) graphStateInUse.set(root, next)
+  else graphStateInUse.delete(root)
+  // The idle clock starts when the operation ends, so a long sync cannot be
+  // evicted by a sweep that runs while it is still in flight.
+  touchGraphState(root)
+}
+
+async function evictGraphStates(): Promise<number> {
   const now = Date.now()
+  const evictions: Promise<void>[] = []
+  const { idleTtlMs } = graphStateIdleSettings()
+  // (B1) Idle reclaim below the cap: close roots whose graph has been quiet for
+  // the TTL. 0 disables idle reclaim and leaves only the cap ceiling.
+  if (idleTtlMs > 0) {
+    const idle = [...graphStateLastUsed.entries()]
+      .filter(([root, at]) => graphStates.has(root) && (graphStateInUse.get(root) ?? 0) === 0 && now - at >= idleTtlMs)
+      .sort((a, b) => a[1] - b[1])
+    for (const [root] of idle) {
+      graphLog.info("evicting idle graph state", { root, cacheSize: graphStates.size, idleTtlMs })
+      evictions.push(closeGraphRoot(root))
+    }
+  }
+  if (graphStates.size <= GRAPH_STATE_CACHE_MAX) {
+    await Promise.all(evictions)
+    return evictions.length
+  }
   const candidates = [...graphStateLastUsed.entries()]
-    .filter(([root, at]) => graphStates.has(root) && now - at > GRAPH_STATE_IDLE_EVICT_MS)
+    .filter(([root, at]) => graphStates.has(root) && (graphStateInUse.get(root) ?? 0) === 0 && now - at > GRAPH_STATE_IDLE_EVICT_MS)
     .sort((a, b) => a[1] - b[1])
   if (candidates.length === 0) {
     graphLog.warn("graph state cache over capacity with no idle eviction candidates", {
       cacheSize: graphStates.size,
       capacity: GRAPH_STATE_CACHE_MAX,
     })
-    return Promise.resolve(0)
+    await Promise.all(evictions)
+    return evictions.length
   }
-  const evictions: Promise<void>[] = []
   for (const [root] of candidates) {
     // closeGraphRoot removes the entry from graphStates synchronously, so the
     // live size already reflects every eviction pushed so far.
@@ -257,7 +313,22 @@ function evictGraphStates(): Promise<number> {
     graphLog.warn("evicting idle graph state (cache cap)", { root, cacheSize: graphStates.size })
     evictions.push(closeGraphRoot(root))
   }
-  return Promise.all(evictions).then(() => evictions.length)
+  await Promise.all(evictions)
+  return evictions.length
+}
+
+let graphStateSweepTimer: ReturnType<typeof setInterval> | undefined
+
+/** (B1) Arm the periodic idle sweep once; no-op when already armed or sweepMs is 0. */
+function armGraphStateIdleSweep() {
+  if (graphStateSweepTimer) return
+  const { sweepMs } = graphStateIdleSettings()
+  if (sweepMs <= 0) return
+  graphStateSweepTimer = setInterval(() => {
+    void evictGraphStates().catch(() => undefined)
+  }, sweepMs)
+  // Housekeeping only: never keep the process alive just for the sweep.
+  graphStateSweepTimer.unref?.()
 }
 
 /** Test seam (R1 A4): current graph-state cache size. */
@@ -284,6 +355,22 @@ export function graphStateForTest(root: string) {
 /** Test seam: close and evict one cached graph root (releases handles/watchers). */
 export function closeGraphRootForTest(root: string) {
   return closeGraphRoot(root)
+}
+
+/** Test seam (B1): run one idle-reclaim pass (the periodic sweep body). */
+export function sweepIdleGraphStatesForTest() {
+  return evictGraphStates()
+}
+
+/** Test seam (B1): arm/disarm the periodic idle sweep. */
+export function armGraphStateIdleSweepForTest() {
+  armGraphStateIdleSweep()
+}
+
+export function disarmGraphStateIdleSweepForTest() {
+  if (!graphStateSweepTimer) return
+  clearInterval(graphStateSweepTimer)
+  graphStateSweepTimer = undefined
 }
 const graphRootsByDirectory = new Map<string, string>()
 const directoriesByGraphRoot = new Map<string, Set<string>>()
@@ -859,6 +946,7 @@ function openGraphState(
   graphStates.set(root, tracked)
   touchGraphState(root)
   void evictGraphStates().catch(() => undefined)
+  armGraphStateIdleSweep()
   return tracked
 }
 
@@ -1190,12 +1278,22 @@ export function withProjectGraph<A, E, R>(
   use: (state: ProjectGraphState) => Effect.Effect<A, E, R>,
 ) {
   const readOnly = input.readOnly === true
+  const tracked = (state: ProjectGraphState) => !readOnly && state.crossProject !== true
   return Effect.acquireUseRelease(
-    openProjectGraph(input),
+    openProjectGraph(input).pipe(
+      Effect.tap((state) => Effect.sync(() => (tracked(state) ? acquireGraphStateUse(state.projectRoot) : undefined))),
+    ),
     use,
-    // Cross-project opens are forced read-only inside openProjectGraph; key the
-    // release off the resolved state so those connections are closed, not shrunk.
-    (state) => readOnly || state.crossProject === true ? Effect.promise(() => state.graph.close()).pipe(Effect.ignore) : Effect.sync(() => state.graph.shrink()),
+    (state) =>
+      Effect.sync(() => (tracked(state) ? releaseGraphStateUse(state.projectRoot) : undefined)).pipe(
+        Effect.andThen(
+          // Cross-project opens are forced read-only inside openProjectGraph; key the
+          // release off the resolved state so those connections are closed, not shrunk.
+          readOnly || state.crossProject === true
+            ? Effect.promise(() => state.graph.close()).pipe(Effect.ignore)
+            : Effect.sync(() => state.graph.shrink()),
+        ),
+      ),
   )
 }
 

@@ -44,6 +44,13 @@ process.env["OPENCODE_EXPERIMENTAL_EVENT_SYSTEM"] = "true"
 // explicitly (and inject the RSS probe) per test.
 process.env["CHIMERA_INSTANCE_MEMORY_BUDGET_MB"] ??= "0"
 
+// B1 graph-state idle reclaim arms a process-level sweep timer on the first
+// writer graph open. A full `bun test` process shares that module cache, so a
+// live timer could evict injected/backdated test roots mid-assertion. Default
+// the sweep interval to 0 (timer disabled) for the suite; the idle-reclaim
+// tests set CHIMERA_GRAPH_STATE_IDLE_TTL_MS/SWEEP_MS explicitly and drive the
+// sweep through the test seams.
+process.env["CHIMERA_GRAPH_STATE_IDLE_SWEEP_MS"] ??= "0"
 // Set test home directory to isolate tests from user's actual home directory
 // This prevents tests from picking up real user configs/skills from ~/.claude/skills
 const testHome = path.join(dir, "home")

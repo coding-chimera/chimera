@@ -717,6 +717,8 @@ sidecar 的名字取自路径（strip `.chimera/`、`agent(s)`、`command(s)` �
 | `CODEGRAPH_ASCII` / `CODEGRAPH_UNICODE` | 强制图形字符集 |
 | `CODEGRAPH_DEBUG` | graph 调试日志 |
 | `CHIMERA_PARSE_WORKER_PATH` | 解析 worker 路径覆盖（构建期） |
+| `CHIMERA_GRAPH_STATE_IDLE_TTL_MS` | 已打开项目图连接的空闲淘汰 TTL（默认 600000ms = 10 分钟，与 `CHIMERA_INSTANCE_IDLE_TTL_MS` 对齐）；低于缓存上限也会淘汰空闲连接，下次查询透明重开并重建 watcher；设 0 关闭空闲淘汰（仅保留 32 个 root 的 LRU 上限） |
+| `CHIMERA_GRAPH_STATE_IDLE_SWEEP_MS` | 图连接空闲清扫间隔（默认 60000ms）；设 0 关闭后台定时清扫（手动/请求触发的淘汰仍生效） |
 
 源码：`packages/chimera/src/graph/`（`directory.ts`、`db/index.ts`、`db/wal-valve.ts`、`sync/watch-policy.ts`、`mcp/*`、`index.ts`、`resolution/*`、`extraction/*`、`errors.ts`、`ui/glyphs.ts`）。
 
