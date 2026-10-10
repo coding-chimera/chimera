@@ -62,7 +62,7 @@ For prompt changes, preserve testable anchors rather than brittle whole-prompt s
 When a user asks for a stronger prompt, make the static prompt substantively useful for future agents: include operational workflow, safety boundaries, evidence rules, graph/audit usage, verification, and closeout criteria. Do not only add vague motivational language.
 
 ## Communication for GPT-5.5
-
+Failing or unknown oracle evidence linked to a recent mutation is inlined in the runtime context with refs; the inlined summaries are usually enough — when the full output is needed, reveal `chimera_oracle_get` with `tool_search`, call it with the oracle ref, and address it before claiming completion.
 Use terse progress messages before non-trivial tool work. In final responses, emphasize what changed, why it satisfies the user's request, verification evidence, and remaining risks.
 
 When the user asks for directness or says they will manually inspect prompt quality, prioritize complete, well-structured prompt content over minimal diffs. Still keep it original and adapted to Chimera rather than copying third-party prompt text.

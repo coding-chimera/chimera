@@ -18,13 +18,13 @@ import { ToolSearch } from "../../src/session/tool-search"
 // runtime state and intentionally out of scope.
 
 const BASELINE = {
-  generic: 25332,
-  deepseek: 27972,
-  deepseekUltra: 31911,
-  kimi: 27349,
-  gpt55: 30042,
-  claude: 29452,
-  gemini: 26690,
+  generic: 25888,
+  deepseek: 28528,
+  deepseekUltra: 32467,
+  kimi: 27905,
+  gpt55: 30900,
+  claude: 30008,
+  gemini: 27246,
 } as const
 
 // Per-tool description budgets for the top offenders; the total budget below
@@ -57,21 +57,27 @@ const TOOL_BUDGETS = {
 // per-language compile semantics, skipped-vs-failed contract, 100-file cap, and
 // atomicity rules added to the always-on ast_edit.txt (5722 B -> 7551 B) raised
 // the floor to 92533.
-// 2026-10-09 re-record (ast_edit rename mode): the always-on Rename-mode section +
-// three-mode mode-selection rules (7551 -> 10331) plus 889 B of concurrent
-// session-goal description growth raised the floor to 96202.
 // 2026-10-09 re-record (concurrency note): a concurrent session's shell.txt
 // growth (6286 -> 7174) is folded into the per-tool budget above so the
 // recorded floor matches the live tree; ast_edit rename mode owns the
 // ast_edit.txt raise (7551 -> 10331) and the 96202 total floor.
-const TOOL_TOTAL_BUDGET = 96202
+// 2026-10-10 re-record (progressive disclosure phase 2): tool_search.txt was
+// rewritten for tail-section reveal semantics (1532 -> 2030 B), which also
+// raised the always-on floor (96202 -> 98124; the drift since the last
+// recording — concurrent prompt-layer and description growth — is folded in
+// the same way the concurrency note above folds shell.txt growth). Six
+// deferred tools join the catalog (chimera_obligations_sync/_claim/_resolve/
+// _ignore, chimera_oracle_recent/_get = +3949 B withheld), lifting
+// DEFERRED_TXT_BUDGET to 14354. Skeletons re-recorded for the chimera.txt /
+// gpt-5.5.txt disclosure wording sync.
+const TOOL_TOTAL_BUDGET = 98124
 
 // The description bytes withheld from the default model-facing set by the
 // ToolSearch defer filter: every registered deferred tool's .txt is off the
 // wire until revealed, so the per-request description cost drops below the
 // full-registration floor recorded above.
-const DEFERRED_TXT_BUDGET = 10405
-const TOOL_SEARCH_TXT_BUDGET = 1532
+const DEFERRED_TXT_BUDGET = 14354
+const TOOL_SEARCH_TXT_BUDGET = 2030
 
 const CAPABILITY_TOOLS = { chimera_search: {}, workbrief: {}, browser_open: {}, read: {}, bash: {} }
 

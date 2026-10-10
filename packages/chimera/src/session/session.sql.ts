@@ -145,6 +145,9 @@ export const GoalTable = sqliteTable("goal", {
 
 type ToolRevealData = {
   revealed: string[]
+  // Per-tool reveal timestamps (JSON payload only — no column, no migration).
+  // Drives compaction-time promotion in SessionPrompt; see src/session/tool-search.ts.
+  revealedAt?: Record<string, number>
 }
 export const ToolRevealTable = sqliteTable("tool_reveal", {
   session_id: text()
