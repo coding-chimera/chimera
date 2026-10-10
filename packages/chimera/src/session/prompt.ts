@@ -1963,6 +1963,88 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       return { info: assistant, parts: [part] }
     })
 
+    // /goal: user-side entry to the session goal service. Model-free like
+    // /init-graph: echo the typed command as a user message, run the goal
+    // operation, and answer with an assistant text message (same feedback
+    // shape as other built-in commands).
+    const goalCommand = Effect.fn("SessionPrompt.goalCommand")(function* (input: CommandInput) {
+      const ctx = yield* InstanceState.context
+      const agentName = input.agent ?? (yield* agents.defaultAgent())
+      const model = yield* commandModel(input)
+      const args = input.arguments.trim()
+      const userMsg = yield* sessions.updateMessage({
+        id: input.messageID ?? MessageID.ascending(),
+        sessionID: input.sessionID,
+        time: { created: Date.now() },
+        role: "user",
+        agent: agentName,
+        model,
+      } satisfies MessageV2.User)
+      yield* sessions.updatePart({
+        id: PartID.ascending(),
+        messageID: userMsg.id,
+        sessionID: input.sessionID,
+        type: "text",
+        text: args ? `/goal ${args}` : "/goal",
+      } satisfies MessageV2.TextPart)
+      const started = Date.now()
+      yield* bus.publish(Command.Event.Started, {
+        name: input.command,
+        sessionID: input.sessionID,
+        arguments: input.arguments,
+      })
+
+      const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+      const text = yield* Effect.gen(function* () {
+        // Goals are a root-session feature: token accounting walks the session
+        // subtree and auto-continuation only runs for parentless sessions.
+        if (session.parentID)
+          return "Session goals belong to the root session. Run /goal in the parent session instead."
+        if (!args) return (yield* goal.render(input.sessionID)) ?? "No goal is set for this session."
+        if (args.toLowerCase() === "clear") {
+          const current = yield* goal.get(input.sessionID)
+          if (!current) return "No goal is set for this session."
+          yield* goal.clear(input.sessionID)
+          return `Goal cleared: ${current.objective}`
+        }
+        return yield* goal.create({ sessionID: input.sessionID, objective: args }).pipe(
+          Effect.map(Goal.format),
+          Effect.catch((error) => Effect.succeed(`Goal not set: ${error.message}`)),
+        )
+      })
+
+      const assistant = yield* sessions.updateMessage({
+        id: MessageID.ascending(),
+        sessionID: input.sessionID,
+        parentID: userMsg.id,
+        mode: agentName,
+        agent: agentName,
+        cost: 0,
+        path: { cwd: ctx.directory, root: ctx.worktree },
+        time: { created: started, completed: Date.now() },
+        role: "assistant",
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        modelID: model.modelID,
+        providerID: model.providerID,
+        finish: "stop",
+      } satisfies MessageV2.Assistant)
+      const part = yield* sessions.updatePart({
+        id: PartID.ascending(),
+        messageID: assistant.id,
+        sessionID: input.sessionID,
+        type: "text",
+        text,
+      } satisfies MessageV2.TextPart)
+      yield* sessions.touch(input.sessionID)
+      yield* bus.publish(Command.Event.Executed, {
+        name: input.command,
+        sessionID: input.sessionID,
+        arguments: input.arguments,
+        messageID: assistant.id,
+      })
+      return { info: assistant, parts: [part] }
+    })
+
     const createUserMessage = Effect.fn("SessionPrompt.createUserMessage")(function* (input: PromptInput) {
       const agentName = input.agent || (yield* agents.defaultAgent())
       const ag = yield* agents.get(agentName)
@@ -2905,6 +2987,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         throw error
       }
       if (input.command === Command.Default.INIT_GRAPH) return yield* initGraphCommand(input)
+      if (input.command === Command.Default.GOAL) return yield* goalCommand(input)
       const agentName = cmd.agent ?? input.agent ?? (yield* agents.defaultAgent())
 
       const raw = input.arguments.match(argsRegex) ?? []

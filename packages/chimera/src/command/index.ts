@@ -81,6 +81,7 @@ export const Default = {
   INIT: "init",
   INIT_GRAPH: "init-graph",
   REVIEW: "review",
+  GOAL: "goal",
 } as const
 
 export interface Interface {
@@ -114,6 +115,15 @@ export const layer = Layer.effect(
       commands[Default.INIT_GRAPH] = {
         name: Default.INIT_GRAPH,
         description: "initialize or sync Chimera graph data without editing AGENTS.md",
+        source: "command",
+        template: "",
+        hints: [],
+      }
+      // /goal is a model-free built-in: SessionPrompt.command special-cases it
+      // and dispatches to the Goal service (same shape as /init-graph above).
+      commands[Default.GOAL] = {
+        name: Default.GOAL,
+        description: "show, set, or clear the session goal: /goal [objective|clear]",
         source: "command",
         template: "",
         hints: [],
