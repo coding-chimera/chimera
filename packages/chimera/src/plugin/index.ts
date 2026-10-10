@@ -33,6 +33,21 @@ import type { WorkspaceAdapter } from "@/control-plane/types"
 
 const log = Log.create({ service: "plugin" })
 
+export interface ServerPort {
+  fetch: (input: RequestInfo | URL, init?: RequestInit) => Response | Promise<Response>
+  url: () => URL | undefined
+}
+
+let serverPort: ServerPort | undefined
+
+export function setServerPort(port: ServerPort) {
+  serverPort = port
+}
+
+export function _resetServerPortForTest() {
+  serverPort = undefined
+}
+
 type State = {
   hooks: Hooks[]
 }
@@ -127,13 +142,11 @@ export const layer = Layer.effect(
           bridge.fork(bus.publish(Session.Event.Error, { error: new NamedError.Unknown({ message }).toObject() }))
         }
 
-        const { Server } = yield* Effect.promise(() => import("../server/server"))
-
         const client = createOpencodeClient({
           baseUrl: "http://localhost:4096",
           directory: ctx.directory,
           headers: ServerAuth.headers(),
-          fetch: async (...args) => Server.Default().app.fetch(...args),
+          fetch: async (...args) => serverPort?.fetch(...args) ?? fetch(...args),
         })
         const cfg = yield* config.get()
         const input: PluginInput = {
@@ -147,7 +160,7 @@ export const layer = Layer.effect(
             },
           },
           get serverUrl(): URL {
-            return Server.url ?? new URL("http://localhost:4096")
+            return serverPort?.url() ?? new URL("http://localhost:4096")
           },
           // @ts-expect-error
           $: typeof Bun === "undefined" ? undefined : Bun.$,

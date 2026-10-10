@@ -2,6 +2,7 @@ import { generateSpecs } from "hono-openapi"
 import { Hono } from "hono"
 import { adapter } from "#hono"
 import { lazy } from "@/util/lazy"
+import { Plugin } from "@/plugin"
 import * as Log from "@opencode-ai/core/util/log"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { WorkspaceID } from "@/control-plane/schema"
@@ -32,6 +33,11 @@ import type { CorsOptions } from "./cors"
 globalThis.AI_SDK_LOG_WARNINGS = false
 
 initProjectors()
+
+Plugin.setServerPort({
+  fetch: (input, init) => Default().app.fetch(input instanceof Request ? input : new Request(input, init)),
+  url: () => url,
+})
 
 const log = Log.create({ service: "server" })
 
