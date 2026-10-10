@@ -289,7 +289,9 @@ W4 开路（并行）    : D.2 启动握手 + Swift MVP（SSE/WS 客户端）
 | 10-10 15:29 / 16:02 | `4b545f733` + `1db73d775`：内建 `/goal` slash 命令（command/index.ts + session/prompt.ts 命令分发 + goal.test.ts） | session/prompt.ts（L4 编排）与 command（L3）新增边，**A 线开工前须重测 SCC 基线**；`/command` 列表新增项对 D 线 GUI 客户端可见（斜杠命令自动完成面） |
 | 10-10 12:35 | `b86962078` progressive tool disclosure phase 2（tool-search 揭示不再动 wire 数组，走 runtime-context 尾段） | 计划写作期间落笔；session/llm 运行时面变更，同样计入 SCC 基线复测范围 |
 | 10-10 16:30 | **W1 开工**：基线复测 file-SCC 246 / module-SCC 36 / 283 环边，与上午基线一致（`/goal` 两笔未漂移基线）；A1 删边模拟 246→154 再确认。oxlint `import/no-cycle` 证伪（stub 规则），A.4 门禁改为自研 check-layering.ts 前置到 W1 | 执行中 |
-| 10-10 16:5x | `db69e4f4c` check-layering 门禁落地（145 行，含反证 exit 1 验证，跑一遍 <1s）；A1 plugin→server 注入缝落地，SCC 隔离实测 **246→154**（typecheck 绿、test/plugin 131 过、真实插件加载冒烟过），待常驻测试补齐后提交 | W1 首批两项达成；模块级 SCC 仍 36（A1 只删文件级边，`plugin→server/auth` 静态边留给后续） |
+| 10-10 17:0x | **W1 已落 6 笔**：门禁 `db69e4f4c`；B2 `f2c33b984`（SQLite 16/32MB，-16.2MB/连接实测）；A1 `3a807fbc9`（SCC 246→154 + 常驻注入测试 133 过）；A2-p1 `c624eb35a` + A2-p2 `1f5797f10`（163 文件/193 处重指向，OpenAPI 零 schema 漂移、drizzle check 绿）；B5 `fa5582ef4`（grammar 空闲 5s 全局释放，8 语言常驻 -7.2MB，索引产物字节一致）；B4 `7d5276988`（opt-in 堆软上限，默认关闭） | 见下行两项计划修正 |
+| 10-10 17:0x | **计划修正 1（B4）**：主动 GC 实测 RSS 收益不可复现、全量 GC 停顿 59-226ms 真实 → B4 降级为默认关闭的 opt-in 逃生口；B 线真实赢面是 B1/B2/B5 的结构性收敛，B4 不再计入 <500MB 目标的预期贡献 | B.2 表 B4 行语义已变 |
+| 10-10 17:0x | **计划修正 2（A2）**：A2 从构造上缩不了模块 SCC——session 留在 36 团里是另外 141 条边的责任（server 63 / tool 21 / effect 14，多为 import type），schema/sql 边从来不是绑定边。**模块级收缩的真正杠杆=类型边剥离（~400 处）+ A4/A5/A6**；A2 的价值是所有权归位（L1 契约/L2 表），不是 SCC 数字。A2-p2 余 5 文件被并发会话 claim（goal feature），shim 暂留，释放后收尾 | A.3 表 A2 行预期需改写；A.4 反作弊条款据此强化 |
 
 **基线复测条款**：A.1 的 SCC 数字（246/36/283）与 B.1 的内存数字（1.5GB/4.1GB）均为 2026-10-10 上午实测；每线开工当天用同一脚本/同一测量法复测一遍，以新基线验收。
 
