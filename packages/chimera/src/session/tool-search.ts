@@ -89,6 +89,31 @@ export function isDeferredTool(id: string) {
 export const DEFERRED_TOOL_HINT =
   " It is registered but deferred — reveal it with `tool_search`, then call it directly by name."
 
+// tool_search is the gateway to the deferred catalog: it must never be
+// deferred itself, it must never leave the model-visible tool set (llm.ts
+// resolveTools re-includes it unconditionally), and its unknown-tool guidance
+// must never be self-referential. Observed self-lock: the model calls a
+// deferred tool, is told "reveal it with tool_search", then calls tool_search
+// under an alias (`tool-search`, `ToolSearch`) which misses the registered
+// name — the intercept guidance for the miss pointed back at tool_search and
+// the model could never reach it. Alias normalization folds separator/case
+// variants so the repair paths can canonicalize them into a real call.
+export const TOOL_SEARCH_ID = "tool_search"
+
+export function isToolSearchAlias(id: string) {
+  return id.toLowerCase().replace(/[-\s]+/g, "_") === TOOL_SEARCH_ID
+}
+
+// Message for the unknown-tool intercept sites (AI SDK repair, Codex Responses
+// executor, workflow executor): deferred ids keep the reveal guidance, a
+// misnamed tool_search call gets the exact invocation contract instead of a
+// pointer back at itself.
+export function unknownToolGuidance(id: string) {
+  if (isToolSearchAlias(id))
+    return `Unknown tool: ${id}. The tool-discovery gateway is named exactly \`${TOOL_SEARCH_ID}\` — call it as \`${TOOL_SEARCH_ID}\` with { "query": "<keywords>" } to search and reveal deferred tools. It is always in your tool list; it is never deferred and cannot be revealed.`
+  return `Unknown tool: ${id}${isDeferredTool(id) ? DEFERRED_TOOL_HINT : ""}`
+}
+
 export function deferredSummary(id: string) {
   return DEFERRED_TOOLS.find((tool) => tool.id === id)?.summary
 }
