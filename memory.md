@@ -12,6 +12,32 @@ Guidelines:
 
 ## Notes
 
+### Chimera 大重构调研完成（2026-10-10，13 路 subagent 调查，未动代码，待用户拍板起步战线）
+
+- **四条战线**：① 解环（运行时 246 文件巨团 SCC）② 减重（serve 常驻 1.5GB→目标 <500MB）③ newweb 解构+潮酷化 ④ 原生 GUI（mac Swift/Linux Qt，原生为主 webui 并存）
+- **解环**：模块级 36 节点 283 环边；**单点最大杠杆=plugin/index.ts:130 一条动态 import server/server，切掉文件 SCC 246→154**；session/schema.ts 是纯叶子可直迁（packages/schema 已存在可作 L1 容器）；session/session.sql.ts 下沉 storage/tables 需连带表列类型；迁移序=schema→组合根(L6 composition/)→tool 端口(contracts/)→server service 门面→graph 独立成包（graph 出边=0 不在团内）。防回归=oxlint import/no-cycle（已装）+自研 SCC 规模门禁（复用 script/trace-imports.ts 解析逻辑；切割集分析脚本在 /var/folders/.../T/chimera/{modgraph,scc,sim,sim3}.ts）。注意：纯搬迁不缩文件级 SCC，只有真删边才缩；400 处 import type 剥离是低成本消边
+- **减重实测**：用户 web 进程 PID 实测 1.5GB/peak 4.1GB，大头=JSC 堆棘轮（507MB 常驻+320MB swapped）；serve 空闲稳定态仅 127MB；裸 bun 12MB、--version 218MB、graph index 219 文件 571MB。五刀：图连接空闲淘汰（3 项目 db 常驻）/SQLite mmap 256→32 cache 64→16/消息驻留收敛（全局 chimera.db 2.68GB，part 表 1.8GB）/heap cap+主动 GC/grammar 缓存卸载。R3 收口（图 store/resolution Rust 桥已落地待开闸）预期再 -0.5~-0.9GB
+- **Rust 结论**：全量重写 12-24 人月当前 No-Go（Effect 编排语义不可跨 FFI、20 provider SDK、上游同步断裂）；选择性 Rust=R3 收口+R5' sidecar；归档 RUST_MIGRATION_PLAN.md 同判
+- **原生 GUI**：API 面基本可行（~170 REST operation 全在 OpenAPI）；硬缺口=SSE 客户端+PTY WS 客户端（原生自写）+启动握手（loopback+随机 token，server 侧需新增）；codex 仓库无 GUI 源码（桌面 app 闭源经 app-server JSON-RPC 接入=同架构先例）；codex-rs=157 crate Rust workspace
+- **潮酷（参照 codex TUI）**：语义色纪律（单 accent+对比度 Lab 校验+能力降级）+克制微动效（shimmer/庆祝动画+reduced-motion）+流式增量渲染/危险动作仪式化+重快照测试——潮=纪律非重设计
+- **onboarding 快赢**：server/SDK API 全就绪，newweb 已有 ProviderSettings.tsx，缺的只是首启状态机（零 provider→自动弹配置）；TUI 参照 app.tsx:445-454；closure json:449 标 ui:deferred
+- **newweb 结构其实是对的**（features 零交叉 import）；传播深 70% 来自 barrel 串联+attachment/contexts 枢纽（8 个 god file 下游共享同一条 16 层链）；11 个 god file 解构蓝图已出（含分块行数/拆分顺序/难点）
+- **IM 参照调研完成（2026-10-10，TG-iOS×5+Synapse×5+agent-as-client×1，规格已入 CHIMERA_REFACTOR_PLAN.md D.5）**：用户拍板 IM 是参照模型非目标架构（不拆 agent 成独立进程）；核心结论=seq 游标精确等式判连续+服务端权威下发、after= 幂等恢复三件套 next_seq/limited/gap_from、keyset 分页禁 OFFSET、服务端过滤用编译 predicate+序列化前过滤、未读=写入时预计算+单游标+增量计数+对账逃生阀、列表=持久化轻量排序索引+operation 增量 patch、GUI 客户端=Postbox 稀疏缓存 hole 模型+串行写队列+离屏 20pt 释放+TextReveal 速率平滑；Synapse 反面教材=缓存按条目数非字节+驱逐默认关+SQLite 单写者纪律；agent-as-client 边界已测绘仅作档案（SessionProcessor/LLM/Snapshot/Permission/SessionRunState 一圈，SessionTurnLease 可复用）
+
+### FrontierSWE v2 多模型对照实验（2026-10-09 设计完成，待 Phase 0 开工）
+
+- **目标**：测 Chimera 多模型编排能力（非 k3 水平），产出改良方案。基准=/Volumes/workspace/frontier-swe-v2（34 Harbor 任务，官方 verifier 不改一字节）
+- **对照**：A组=kimi-k3 max + deny task/chimera_swarm（单模型基线）；B组=kimi-k3 ultra + 调度器自由路由。k3 的 ultra≡max 推理档（transform.ts 映射 top effort），差异精确=编排层
+- **任务集=6**：原生 4=qubit-routing(纯py)/crash-proof-flash(zig@0.14)/spice(rust+brew ngspice)/QE-rust(stretch,需编pw.x+烘焙参考)；Apple Container 2=git-to-zig/flight-sim（linux/amd64 镜像，需先装 Rosetta：sudo softwareupdate --install-rosetta）。本机已装 container CLI 1.3.0
+- **执行**：无 Harbor。workspace 复制到本地工作目录→chimera run --variant <max|ultra> --dangerously-skip-permissions --format json →原生/容器内跑 tests/test.sh(verify.py)。20h/任务不截断，并发 2-3
+- **verifier shim（不改 verifier 字节）**：symlink /app /logs/verifier /root/tests（需一次 sudo）+ PATH 前置 runuser/setpriv 透传 shim + brew coreutils(timeout)
+- **关键坑**：①漏 --variant ultra 则 multi_agent_mode 静默不注入（llm.ts:97-106）②子代理禁 ultra 变体（subagent-execution.ts 硬拒）③前台 task 无超时→外层硬杀④遥测在 chimera.db（message 表 model/variant/token/cost + model_telemetry_*），stdout JSONL 只有 task part metadata⑤模型走内网 relay 11.161.198.115:3000，Modal 云不可达故弃用
+- **配置注入**：容器内用 CHIMERA_CONFIG_CONTENT 注入 provider.ali-inc+delegation 配置（源=~/.config/chimera/chimera.jsonc），auth 用 env 或 auth.json
+- **状态（2026-10-10 13:35）**：Phase 1 Wave 1 在跑——qubit A=r2 / qubit B=r3 / git-to-zig B=r2(容器)。完成监听 watch_and_verify.sh(pid 27709) 会在每个 run 退出后自动串行跑 verifier → runs/wave1-results.md。`scripts/status.sh` 随时看全景。Wave 2（剩 9 个运行）等用户看过 Wave 1 结果再放；Wave 2 起 arm-b.jsonc 已加 kimi-k3 excludeModels（k3 太慢不适合做 sub）
+- **里程碑**：观测性补丁=快照 swe-experiment 分支 010400ca（delegation_started/progress/finished，8 测试+typecheck+实弹委派全绿）；容器链路全通（二进制 Rosetta 启动✓、relay 401=可达✓）；60min 诊断=805s 静默是 relay 缓冲 ultra thinking 非挂死；委派实弹：调度器给 general/builder 选 qwen3.8-flash@medium 符合设计
+- **改良清单**：#1 delegation JSONL 事件✅已落地 / #2 stream stall 看门狗（>900s+工具在飞感知）待立项 / #3 委派期间 root JSONL 静默（#1 已修）/ #4 Config.ensureGitignore 不容忍 EROFS 只读挂载（容器标准模式必崩，agent_container_run.sh 已去 :ro 绕过，正式修复待主仓）/ #5 parent-model fallback 绕过 excludeModels 与调度器（git-to-zig r2 实测：kimi-k3@high 子代理），待立项
+- **坑**：隔离 XDG 下原生 session 库=chimera-local.db、linux 二进制容器内=chimera.db；container 名无 arm 段（审计小坑）；容器 config 挂载不能 :ro（#4）
+
 ### K-v2 P5-2：9 残留语言 parity 验证+wave-4 开路由 + semantics v5 + 重索引（2026-09-18，builder=P5-1 同 session，1 commit 未 push）
 
 - **parity 门（先验证后开路由）**：首扫 9 残留语言发现**唯一残差类=kernel returnType wire 为 N BARE 形 vs fork RAW returnTypeText oracle**（in-repo：go 4/python 216/rust 448/csharp 29 处 drift；java/ruby/swift in-repo 零语料→**自建 fixture 语料**（cbench/k-v2-p5-2/corpus，6 语言+Lombok 件）实证 java 7/php 3/swift 2 同类 drift，ruby 双臂天然无 returnType、go/csharp 干净）。处置=P4 scala 判例：**7 模块 kernel wire 改 RAW 镜像**（go 'result'/java 'type'/python 'return_type'/rust 'return_type'/csharp 'returns'/php 'return_type'/swift 'return_type'；trim+colon-strip+200 UTF-16 cap+empty→None）；bare-shape 规约移到 resolution `lookupCalleeReturnType`→`chainReceiverTypeName` 归一化（指针/引用/生命周期/const、非嵌套泛型、swift `?`、尾段、**Self/static→'self' 标记保留**=#608/#1861 链语义不丢）；java `normalize_java_type` 仅留 Lombok 合成路径（wasm java.ts 生成器同源=双臂一致，fixture 实证）。**终态：residual-9 exit 0 全计数器归零**（c 38 identical+13 defer/cpp 25+10 defer/python 58/rust 25/csharp 1/go 1/php 1；快照 ksd-parity-p52-residual9-final + post-routing 双份）；fixture 6 语言全 identical；**routed-9 回归 exit 0**（429/430 基线保持）
