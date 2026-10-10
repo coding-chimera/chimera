@@ -152,7 +152,7 @@ export const Client = lazy(() => {
   db.run("PRAGMA journal_mode = WAL")
   db.run("PRAGMA synchronous = NORMAL")
   db.run("PRAGMA busy_timeout = 5000")
-  db.run("PRAGMA cache_size = -64000")
+  db.run("PRAGMA cache_size = -16000")
   db.run("PRAGMA foreign_keys = ON")
   db.run(`PRAGMA journal_size_limit = ${WAL_JOURNAL_SIZE_LIMIT_BYTES}`)
   db.run("PRAGMA wal_checkpoint(PASSIVE)")

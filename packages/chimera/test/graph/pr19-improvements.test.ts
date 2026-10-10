@@ -420,14 +420,14 @@ describe('Database Layer Improvements', () => {
     expect(synchronous).toBe(1);
 
     const cacheSize = rawDb.pragma('cache_size', { simple: true }) as number;
-    // defaults match upstream codegraph: 64MB cache, 256MB mmap (env-overridable)
-    expect(cacheSize).toBe(-65536);
+    // defaults favor resident memory: 16MB cache, 32MB mmap (env-overridable)
+    expect(cacheSize).toBe(-16384);
 
     const tempStore = rawDb.pragma('temp_store', { simple: true });
     expect(tempStore).toBe(1);
 
     const mmapSize = rawDb.pragma('mmap_size', { simple: true }) as number;
-    expect(mmapSize).toBe(268435456);
+    expect(mmapSize).toBe(33554432);
 
     db.close();
   });

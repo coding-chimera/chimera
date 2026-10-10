@@ -57,10 +57,13 @@ const sqlitePragmaMB = (name: string, fallback: number) => {
 };
 
 // Hot/cold OS-level tuning: mmap keeps hot pages resident and lets the OS evict
-// cold pages back to disk; cache_size is the per-connection page cache. Defaults
-// match upstream codegraph (64MB cache, 256MB mmap) and are env-overridable.
-const sqliteCacheKiB = () => Math.max(1024, sqlitePragmaMB('CHIMERA_SQLITE_CACHE_MB', 64) * 1024);
-const sqliteMmapBytes = () => sqlitePragmaMB('CHIMERA_SQLITE_MMAP_MB', 256) * 1024 * 1024;
+// cold pages back to disk; cache_size is the per-connection page cache. A resident
+// process can hold several project connections at once (e.g. the web server), so
+// these defaults favor the long-lived query case over raw index-build throughput:
+// a short-lived index/sync run can raise them via CHIMERA_SQLITE_CACHE_MB /
+// CHIMERA_SQLITE_MMAP_MB (see docs/configuration.md). Both are env-overridable.
+const sqliteCacheKiB = () => Math.max(1024, sqlitePragmaMB('CHIMERA_SQLITE_CACHE_MB', 16) * 1024);
+const sqliteMmapBytes = () => sqlitePragmaMB('CHIMERA_SQLITE_MMAP_MB', 32) * 1024 * 1024;
 // temp_store stays FILE by default: chimera runs inside an agent runtime where
 // large sorts/joins spilling to disk are safer than unbounded memory. Set
 // CHIMERA_SQLITE_TEMP_STORE=MEMORY to mirror upstream codegraph's default.
