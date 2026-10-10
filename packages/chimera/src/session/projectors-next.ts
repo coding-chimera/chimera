@@ -5,8 +5,8 @@ import { SessionMessageUpdater } from "@/v2/session-message-updater"
 import { SessionEvent } from "@/v2/session-event"
 import * as DateTime from "effect/DateTime"
 import { SyncEvent } from "@/sync"
-import { SessionMessageTable, SessionTable } from "./session.sql"
-import type { SessionID } from "./schema"
+import { SessionMessageTable, SessionTable } from "@/storage/tables/session.sql"
+import type { SessionID } from "@/contracts/session-ids"
 import { Schema } from "effect"
 
 const decodeMessage = Schema.decodeUnknownSync(SessionMessage.Message)

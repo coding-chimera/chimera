@@ -14,7 +14,7 @@ import { MemoryPaths } from "../../src/server/routes/instance/httpapi/groups/mem
 import { PublicApi } from "../../src/server/routes/instance/httpapi/public"
 import { PtyPaths } from "../../src/server/routes/instance/httpapi/groups/pty"
 import { SessionPaths } from "../../src/server/routes/instance/httpapi/groups/session"
-import { MessageID, PartID } from "../../src/session/schema"
+import { MessageID, PartID } from "../../src/contracts/session-ids"
 import { Session } from "@/session/session"
 import * as Log from "@opencode-ai/core/util/log"
 import { resetDatabase } from "../fixture/db"

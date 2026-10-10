@@ -9,7 +9,7 @@ import { MessageV2 } from "../../src/session/message-v2"
 import { Permission } from "../../src/permission"
 import { ProjectID } from "../../src/project/schema"
 import { Session } from "../../src/session/session"
-import { MessageID, SessionID } from "../../src/session/schema"
+import { MessageID, SessionID } from "../../src/contracts/session-ids"
 import {
   DESCRIPTION,
   Parameters,

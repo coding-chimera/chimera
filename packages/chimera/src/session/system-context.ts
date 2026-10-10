@@ -2,7 +2,7 @@ import { Effect, Option, Schema } from "effect"
 import { SystemContext } from "@opencode-ai/core/system-context"
 import * as Log from "@opencode-ai/core/util/log"
 import { ContextEpoch } from "./context-epoch"
-import { SessionID } from "./schema"
+import { SessionID } from "@/contracts/session-ids"
 import { SystemPrompt } from "./system"
 
 const log = Log.create({ service: "system-context" })

@@ -1,1 +1,1 @@
-export * from "@/storage/tables/session"
+export * from "@/storage/tables/session.sql"

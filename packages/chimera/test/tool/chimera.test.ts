@@ -16,7 +16,7 @@ import { Agent } from "@/agent/agent"
 import { ModelTelemetry } from "@/agent/model-telemetry"
 import { InstanceState } from "@/effect/instance-state"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
-import { MessageID, SessionID } from "@/session/schema"
+import { MessageID, SessionID } from "@/contracts/session-ids"
 import {
   ChimeraAuditRecentTool,
   ChimeraAuditTool,

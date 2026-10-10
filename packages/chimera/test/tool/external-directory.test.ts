@@ -8,7 +8,7 @@ import { assertExternalDirectory } from "../../src/tool/external-directory"
 import { Filesystem } from "@/util/filesystem"
 import { tmpdir } from "../fixture/fixture"
 import type { Permission } from "../../src/permission"
-import { SessionID, MessageID } from "../../src/session/schema"
+import { SessionID, MessageID } from "../../src/contracts/session-ids"
 
 const baseCtx: Omit<Tool.Context, "ask"> = {
   sessionID: SessionID.make("ses_test"),

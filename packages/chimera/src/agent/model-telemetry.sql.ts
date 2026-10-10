@@ -2,8 +2,8 @@ import { index, integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlit
 import { ProjectTable } from "../project/project.sql"
 import type { ProjectID } from "../project/schema"
 import { Timestamps } from "../storage/schema.sql"
-import { SessionTable } from "../session/session.sql"
-import type { SessionID } from "../session/schema"
+import { SessionTable } from "../storage/tables/session.sql"
+import type { SessionID } from "../contracts/session-ids"
 import type { DelegationTelemetryEvent } from "./model-telemetry"
 
 type EventField<Name extends PropertyKey> = Name extends keyof DelegationTelemetryEvent

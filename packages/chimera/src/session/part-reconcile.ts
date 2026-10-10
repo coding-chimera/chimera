@@ -1,9 +1,9 @@
 import { and, eq, like, ne, sql } from "drizzle-orm"
 import { Database } from "@/storage/db"
 import { StorageMaintenanceTable } from "@/storage/maintenance.sql"
-import { MessageTable, PartTable } from "./session.sql"
+import { MessageTable, PartTable } from "@/storage/tables/session.sql"
 import { SessionTurnLease } from "./turn-lease"
-import type { SessionID } from "./schema"
+import type { SessionID } from "@/contracts/session-ids"
 import type { MessageV2 } from "./message-v2"
 
 /** Error text written into orphaned tool states (mirrors the background-job open-time reconciliation wording). */

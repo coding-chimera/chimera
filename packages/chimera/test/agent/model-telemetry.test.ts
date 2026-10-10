@@ -10,8 +10,8 @@ import {
 } from "../../src/agent/model-telemetry.sql"
 import { ProjectTable } from "@/project/project.sql"
 import { ProjectID } from "@/project/schema"
-import { SessionTable } from "@/session/session.sql"
-import { SessionID } from "@/session/schema"
+import { SessionTable } from "@/storage/tables/session.sql"
+import { SessionID } from "@/contracts/session-ids"
 import { Database } from "@/storage/db"
 import * as Telemetry from "../../src/agent/model-telemetry"
 

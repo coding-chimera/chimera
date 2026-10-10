@@ -12,7 +12,7 @@ import { Agent } from "../../src/agent/agent"
 import { Bus } from "../../src/bus"
 import { Truncate } from "@/tool/truncate"
 import { tmpdir } from "../fixture/fixture"
-import { SessionID, MessageID } from "../../src/session/schema"
+import { SessionID, MessageID } from "../../src/contracts/session-ids"
 
 const runtime = ManagedRuntime.make(
   Layer.mergeAll(

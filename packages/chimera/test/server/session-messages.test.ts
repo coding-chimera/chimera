@@ -5,7 +5,7 @@ import { WithInstance } from "../../src/project/with-instance"
 import { Server } from "../../src/server/server"
 import { Session as SessionNs } from "@/session/session"
 import { MessageV2 } from "../../src/session/message-v2"
-import { MessageID, PartID, type SessionID } from "../../src/session/schema"
+import { MessageID, PartID, type SessionID } from "../../src/contracts/session-ids"
 import * as Log from "@opencode-ai/core/util/log"
 import { disposeAllInstances, tmpdir } from "../fixture/fixture"
 

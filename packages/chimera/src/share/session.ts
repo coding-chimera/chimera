@@ -1,5 +1,5 @@
 import { Session } from "@/session/session"
-import { SessionID } from "@/session/schema"
+import { SessionID } from "@/contracts/session-ids"
 import { SyncEvent } from "@/sync"
 import { Effect, Layer, Scope, Context } from "effect"
 import { Config } from "@/config/config"

@@ -1,5 +1,5 @@
 import { Schema } from "effect"
-import { SessionID } from "./schema"
+import { SessionID } from "@/contracts/session-ids"
 
 export class ContextSnapshotDecodeError extends Schema.TaggedErrorClass<ContextSnapshotDecodeError>()(
   "Session.ContextSnapshotDecodeError",

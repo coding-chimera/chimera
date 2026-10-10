@@ -1,7 +1,7 @@
 import { Effect, Schema } from "effect"
 import type { MessageV2 } from "../session/message-v2"
 import type { Permission } from "../permission"
-import type { SessionID, MessageID } from "../session/schema"
+import type { SessionID, MessageID } from "../contracts/session-ids"
 import * as Truncate from "./truncate"
 import { Agent } from "@/agent/agent"
 

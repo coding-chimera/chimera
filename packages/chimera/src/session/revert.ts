@@ -10,7 +10,7 @@ import { zod } from "@/util/effect-zod"
 import { withStatics } from "@/util/schema"
 import * as Session from "./session"
 import { MessageV2 } from "./message-v2"
-import { SessionID, MessageID, PartID } from "./schema"
+import { SessionID, MessageID, PartID } from "@/contracts/session-ids"
 import { SessionRunState } from "./run-state"
 import { SessionSummary } from "./summary"
 

@@ -2,7 +2,7 @@ import { Effect } from "effect"
 import { effectCmd } from "../effect-cmd"
 import { Session } from "@/session/session"
 import { Database } from "@/storage/db"
-import { SessionTable } from "../../session/session.sql"
+import { SessionTable } from "../../storage/tables/session.sql"
 import { Project } from "@/project/project"
 import { InstanceRef } from "@/effect/instance-ref"
 

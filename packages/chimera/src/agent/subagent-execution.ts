@@ -1,7 +1,7 @@
 import { Provider } from "@/provider/provider"
 import { Effect } from "effect"
 import { ModelID, ProviderID } from "../provider/schema"
-import { SessionID } from "../session/schema"
+import { SessionID } from "../contracts/session-ids"
 import type { Agent } from "./agent"
 import { highestNonUltraVariant } from "./subagent-capability-prior"
 

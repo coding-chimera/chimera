@@ -1,6 +1,6 @@
 import { index, integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core"
 import type { ProjectID } from "../project/schema"
-import type { MessageID, SessionID } from "../session/schema"
+import type { MessageID, SessionID } from "../contracts/session-ids"
 import { Timestamps } from "../storage/schema.sql"
 
 export type MemoryScope = "global" | "project"

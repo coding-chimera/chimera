@@ -15,7 +15,7 @@
  * Exit 2 = usage failure.
  */
 import { SessionTurnLease } from "../../src/session/turn-lease"
-import type { SessionID } from "../../src/session/schema"
+import type { SessionID } from "../../src/contracts/session-ids"
 
 const [mode, sessionArg, holdArg] = process.argv.slice(2)
 if (!mode || !sessionArg || (mode !== "hold" && mode !== "take")) {

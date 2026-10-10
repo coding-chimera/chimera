@@ -6,7 +6,7 @@ import { Permission } from "@/permission"
 import { ProjectID } from "@/project/schema"
 import { Provider } from "@/provider/provider"
 import { ModelID, ProviderID } from "@/provider/schema"
-import { SessionID, MessageID } from "@/session/schema"
+import { SessionID, MessageID } from "@/contracts/session-ids"
 import { Session } from "@/session/session"
 import {
   DESCRIPTION as PREFER_DESCRIPTION,

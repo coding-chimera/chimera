@@ -1,7 +1,7 @@
 import { and, eq, lt, or } from "drizzle-orm"
 import { Database } from "@/storage/db"
 import { SessionTurnLeaseTable } from "./turn-lease.sql"
-import type { SessionID } from "./schema"
+import type { SessionID } from "@/contracts/session-ids"
 
 /**
  * Process-scoped host identity stamped onto turn-lease rows at acquire time.

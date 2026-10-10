@@ -4,7 +4,7 @@ import path from "path"
 import * as fs from "fs/promises"
 import { DiscoveryNudge } from "../../src/chimera/discovery-nudge"
 import { CodeGraph } from "../../src/graph"
-import { SessionID } from "../../src/session/schema"
+import { SessionID } from "../../src/contracts/session-ids"
 import { testEffect } from "../lib/effect"
 import { TestInstance } from "../fixture/fixture"
 const it = testEffect(Layer.empty)

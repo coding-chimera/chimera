@@ -9,7 +9,7 @@ import { Flag } from "@opencode-ai/core/flag/flag"
 import { mkdir } from "fs/promises"
 import path from "path"
 import { Database } from "@/storage/db"
-import { SessionTable } from "@/session/session.sql"
+import { SessionTable } from "@/storage/tables/session.sql"
 import { eq } from "drizzle-orm"
 
 void Log.init({ print: false })

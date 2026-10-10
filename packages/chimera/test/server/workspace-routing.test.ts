@@ -4,7 +4,7 @@ import {
   getWorkspaceRouteSessionID,
   workspaceProxyURL,
 } from "../../src/server/shared/workspace-routing"
-import { SessionID } from "../../src/session/schema"
+import { SessionID } from "../../src/contracts/session-ids"
 
 describe("isLocalWorkspaceRoute", () => {
   test("GET /session is local", () => {

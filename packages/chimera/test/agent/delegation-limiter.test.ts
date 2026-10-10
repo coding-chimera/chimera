@@ -1,7 +1,7 @@
 import { afterEach, describe, expect } from "bun:test"
 import { Effect, Fiber } from "effect"
 import { DelegationLimiter } from "../../src/agent/delegation-limiter"
-import { SessionID } from "../../src/session/schema"
+import { SessionID } from "../../src/contracts/session-ids"
 import { disposeAllInstances } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 

@@ -8,7 +8,7 @@ import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { withTransientReadRetry } from "@/util/effect-http-client"
 import { Global } from "@opencode-ai/core/global"
 import type { MessageV2 } from "./message-v2"
-import type { MessageID } from "./schema"
+import type { MessageID } from "@/contracts/session-ids"
 
 const FILES = [
   "AGENTS.md",

@@ -9,7 +9,7 @@ import { Instance } from "../../src/project/instance"
 import { SkillTool } from "../../src/tool/skill"
 import { ToolRegistry } from "@/tool/registry"
 import { disposeAllInstances, provideTmpdirInstance } from "../fixture/fixture"
-import { SessionID, MessageID } from "../../src/session/schema"
+import { SessionID, MessageID } from "../../src/contracts/session-ids"
 import { testEffect } from "../lib/effect"
 
 const baseCtx: Omit<Tool.Context, "ask"> = {

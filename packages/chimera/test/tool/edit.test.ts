@@ -15,7 +15,7 @@ import { BusEvent } from "../../src/bus/bus-event"
 import { recordPredesignRun } from "@/chimera/store"
 import { getCodeGraphDir } from "../../src/graph"
 import { Truncate } from "@/tool/truncate"
-import { SessionID, MessageID } from "../../src/session/schema"
+import { SessionID, MessageID } from "../../src/contracts/session-ids"
 import { lineHash } from "../../src/tool/hashline"
 
 const ctx = {

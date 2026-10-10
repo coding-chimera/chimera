@@ -6,7 +6,7 @@ import { MemoryStore } from "@/memory/store"
 import { MemoryTranscript } from "@/memory/transcript"
 import type { MessageV2 } from "@/session/message-v2"
 import { Session } from "@/session/session"
-import type { MessageID, SessionID } from "@/session/schema"
+import type { MessageID, SessionID } from "@/contracts/session-ids"
 import { testEffect } from "../lib/effect"
 
 const runtime = testEffect(Memory.defaultLayer.pipe(Layer.provideMerge(Session.defaultLayer)))

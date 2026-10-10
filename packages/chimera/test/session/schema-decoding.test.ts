@@ -7,7 +7,7 @@ import { SessionRevert } from "../../src/session/revert"
 import { SessionStatus } from "../../src/session/status"
 import { SessionSummary } from "../../src/session/summary"
 import { Todo } from "../../src/session/todo"
-import { SessionID, MessageID, PartID } from "../../src/session/schema"
+import { SessionID, MessageID, PartID } from "../../src/contracts/session-ids"
 import { ProjectID } from "../../src/project/schema"
 import { WorkspaceID } from "../../src/control-plane/schema"
 

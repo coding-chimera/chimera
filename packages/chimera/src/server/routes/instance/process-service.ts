@@ -2,7 +2,7 @@ import { Effect, Option, Schema } from "effect"
 import { ProcessRegistry } from "@/chimera/process-registry"
 import * as InstanceState from "@/effect/instance-state"
 import { Session } from "@/session/session"
-import { SessionID } from "@/session/schema"
+import { SessionID } from "@/contracts/session-ids"
 import { PositiveInt } from "@/util/schema"
 
 function projectRoot(input: { directory: string; worktree: string }) {

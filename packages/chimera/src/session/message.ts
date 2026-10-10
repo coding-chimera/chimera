@@ -1,5 +1,5 @@
 import { Schema } from "effect"
-import { SessionID } from "./schema"
+import { SessionID } from "@/contracts/session-ids"
 import { ModelID, ProviderID } from "../provider/schema"
 import { zod } from "@/util/effect-zod"
 import { NonNegativeInt, withStatics } from "@/util/schema"

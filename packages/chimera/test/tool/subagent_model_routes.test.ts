@@ -15,7 +15,7 @@ import {
   queryRoutes,
 } from "../../src/tool/subagent_model_routes"
 import { ModelID, ProviderID } from "../../src/provider/schema"
-import { MessageID, SessionID } from "../../src/session/schema"
+import { MessageID, SessionID } from "../../src/contracts/session-ids"
 import { ProviderTest } from "../fake/provider"
 import { TestConfig } from "../fixture/config"
 import { testEffect } from "../lib/effect"

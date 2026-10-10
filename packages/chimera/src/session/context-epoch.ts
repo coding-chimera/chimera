@@ -7,8 +7,8 @@ import { SyncEvent } from "@/sync"
 import { EventV2 } from "@/v2/event"
 import { SessionEvent } from "@/v2/session-event"
 import { ContextSnapshotDecodeError } from "./error"
-import { MessageID, SessionID } from "./schema"
-import { MessageTable, SessionContextEpochTable } from "./session.sql"
+import { MessageID, SessionID } from "@/contracts/session-ids"
+import { MessageTable, SessionContextEpochTable } from "@/storage/tables/session.sql"
 
 export interface Prepared {
   readonly baseline: string

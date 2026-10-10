@@ -1,5 +1,5 @@
 import { SyncEvent } from "@/sync"
-import { MessageID } from "@/session/schema"
+import { MessageID } from "@/contracts/session-ids"
 import { Modelv2 } from "./model"
 import { Event as SchemaEvent } from "@opencode-ai/schema/event"
 import { Model } from "@opencode-ai/schema/model"

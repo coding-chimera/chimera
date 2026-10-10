@@ -12,7 +12,7 @@ import {
   type PredesignRunRecord,
 } from "./store"
 import type { ToolMutationRecord } from "./provenance"
-import type { SessionID } from "@/session/schema"
+import type { SessionID } from "@/contracts/session-ids"
 import type { MessageV2 } from "@/session/message-v2"
 import { Session } from "@/session/session"
 import { getGraphDataRootInfo } from "@/graph"

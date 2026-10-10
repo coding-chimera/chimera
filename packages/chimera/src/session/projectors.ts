@@ -4,7 +4,7 @@ import { and } from "drizzle-orm"
 import { SyncEvent } from "@/sync"
 import * as Session from "./session"
 import { MessageV2 } from "./message-v2"
-import { SessionTable, MessageTable, PartTable } from "./session.sql"
+import { SessionTable, MessageTable, PartTable } from "@/storage/tables/session.sql"
 import { Log } from "@opencode-ai/core/util/log"
 import nextProjectors from "./projectors-next"
 

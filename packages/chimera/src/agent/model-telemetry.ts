@@ -11,8 +11,8 @@ import {
   ModelTelemetryTombstoneTable,
 } from "./model-telemetry.sql"
 import { ProjectID, type ProjectID as ProjectIDType } from "@/project/schema"
-import { SessionTable } from "@/session/session.sql"
-import type { SessionID } from "@/session/schema"
+import { SessionTable } from "@/storage/tables/session.sql"
+import type { SessionID } from "@/contracts/session-ids"
 import { Database, type TxOrDb } from "@/storage/db"
 
 const MAX_STRING_LENGTH = 128

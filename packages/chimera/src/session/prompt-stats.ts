@@ -1,6 +1,6 @@
 import { createHash } from "crypto"
 import { BusEvent } from "@/bus/bus-event"
-import { SessionID, MessageID } from "./schema"
+import { SessionID, MessageID } from "@/contracts/session-ids"
 import { Schema } from "effect"
 import type { ModelMessage, Tool } from "ai"
 

@@ -1,7 +1,7 @@
 import { describe, test, expect } from "bun:test"
 import { Effect, Layer, ManagedRuntime, Schema } from "effect"
 import { Agent } from "../../src/agent/agent"
-import { MessageID, SessionID } from "../../src/session/schema"
+import { MessageID, SessionID } from "../../src/contracts/session-ids"
 import { Tool } from "@/tool/tool"
 import { Truncate } from "@/tool/truncate"
 

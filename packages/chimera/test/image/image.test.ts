@@ -1,7 +1,7 @@
 import { describe, expect } from "bun:test"
 import { Cause, Effect, Exit, Layer } from "effect"
 import { Image } from "@/image/image"
-import { MessageID, PartID, SessionID } from "@/session/schema"
+import { MessageID, PartID, SessionID } from "@/contracts/session-ids"
 import path from "node:path"
 import { TestConfig } from "../fixture/config"
 import { testEffect } from "../lib/effect"

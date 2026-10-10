@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 import { Session as SessionNs } from "@/session/session"
-import type { SessionID } from "../../src/session/schema"
+import type { SessionID } from "../../src/contracts/session-ids"
 import * as Log from "@opencode-ai/core/util/log"
 import { Instance } from "../../src/project/instance"
 import { WithInstance } from "../../src/project/with-instance"

@@ -1,5 +1,5 @@
 import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core"
-import type { SessionID } from "./schema"
+import type { SessionID } from "@/contracts/session-ids"
 
 /**
  * Cross-process turn mutex for session runs.

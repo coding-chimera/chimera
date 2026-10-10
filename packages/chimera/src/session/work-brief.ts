@@ -5,8 +5,8 @@ import { Bus } from "@/bus"
 import { Database } from "@/storage/db"
 import { zod } from "@/util/effect-zod"
 import { withStatics } from "@/util/schema"
-import { SessionID } from "./schema"
-import { WorkBriefTable } from "./session.sql"
+import { SessionID } from "@/contracts/session-ids"
+import { WorkBriefTable } from "@/storage/tables/session.sql"
 
 const MAX_ITEMS = 12
 const MAX_ITEM_CHARS = 300
