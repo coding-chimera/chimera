@@ -279,6 +279,20 @@ W4 开路（并行）    : D.2 启动握手 + Swift MVP（SSE/WS 客户端）
 
 依赖关系：战线 A/B 是地基（GUI 也连这个 server）；C 可并行；D 在握手就绪后启动。每个 W 的 DoD 含「验证基线」节对应测试点，缺测不计完成。
 
+## 变更面跟踪（计划落笔后的新变更）
+
+计划定稿（2026-10-10 15:15 +08:00，commit e6c901b4d）后两个仓的新增变更，及对各战线的影响：
+
+| 时间 | 变更 | 对计划的影响 |
+|---|---|---|
+| 10-10 15:14 | newweb `35512534` SessionStatusPanel 进程面板 + `67f28825` 工具参数流式预览（配 server 端 `8e396af01`） | **部分推进 C.2 潮酷纪律第 3 条**（流式增量渲染已在 message 链路落地，TG TextReveal 式平滑仍未做）；DefaultRenderer(+92)/messageStore(+47)/ToolPartView 体积增长，C.1 god file 解构蓝图的行数基线以开工时实测为准；流式渲染客户端纪律与 D.5 客户端侧规格第 5/6 条同向，webui 可作为 GUI 的参照实现 |
+| 10-10 15:29 / 16:02 | `4b545f733` + `1db73d775`：内建 `/goal` slash 命令（command/index.ts + session/prompt.ts 命令分发 + goal.test.ts） | session/prompt.ts（L4 编排）与 command（L3）新增边，**A 线开工前须重测 SCC 基线**；`/command` 列表新增项对 D 线 GUI 客户端可见（斜杠命令自动完成面） |
+| 10-10 12:35 | `b86962078` progressive tool disclosure phase 2（tool-search 揭示不再动 wire 数组，走 runtime-context 尾段） | 计划写作期间落笔；session/llm 运行时面变更，同样计入 SCC 基线复测范围 |
+
+**基线复测条款**：A.1 的 SCC 数字（246/36/283）与 B.1 的内存数字（1.5GB/4.1GB）均为 2026-10-10 上午实测；每线开工当天用同一脚本/同一测量法复测一遍，以新基线验收。
+
+---
+
 ## 开放问题
 
 - 起步战线顺序（用户："等我再看看"）。
