@@ -123,7 +123,7 @@ export const layer = Layer.effect(
       // and dispatches to the Goal service (same shape as /init-graph above).
       commands[Default.GOAL] = {
         name: Default.GOAL,
-        description: "show, set, or clear the session goal: /goal [objective|clear]",
+        description: "show, set, clear, or resume the session goal: /goal [objective|clear|resume]",
         source: "command",
         template: "",
         hints: [],

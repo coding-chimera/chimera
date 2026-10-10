@@ -70,7 +70,10 @@ const TOOL_BUDGETS = {
 // _ignore, chimera_oracle_recent/_get = +3949 B withheld), lifting
 // DEFERRED_TXT_BUDGET to 14354. Skeletons re-recorded for the chimera.txt /
 // gpt-5.5.txt disclosure wording sync.
-const TOOL_TOTAL_BUDGET = 98124
+// 2026-10-10 re-record (/goal resume): the goal_update.txt transition note now
+// points blocked-resume users at `/goal resume` and states the budget-priority
+// refusal (1036 -> 1282), raising the always-on floor to 98370.
+const TOOL_TOTAL_BUDGET = 98370
 
 // The description bytes withheld from the default model-facing set by the
 // ToolSearch defer filter: every registered deferred tool's .txt is off the

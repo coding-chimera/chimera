@@ -1964,9 +1964,11 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     })
 
     // /goal: user-side entry to the session goal service. Model-free like
-    // /init-graph: echo the typed command as a user message, run the goal
-    // operation, and answer with an assistant text message (same feedback
-    // shape as other built-in commands).
+    // /init-graph — except `/goal resume`, which after flipping the goal back
+    // to active kicks one continuation turn inline (see the kick below):
+    // echo the typed command as a user message, run the goal operation, and
+    // answer with an assistant text message (same feedback shape as other
+    // built-in commands).
     const goalCommand = Effect.fn("SessionPrompt.goalCommand")(function* (input: CommandInput) {
       const ctx = yield* InstanceState.context
       const agentName = input.agent ?? (yield* agents.defaultAgent())
@@ -1995,21 +1997,72 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       })
 
       const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
-      const text = yield* Effect.gen(function* () {
+      const outcome = yield* Effect.gen(function* () {
         // Goals are a root-session feature: token accounting walks the session
         // subtree and auto-continuation only runs for parentless sessions.
         if (session.parentID)
-          return "Session goals belong to the root session. Run /goal in the parent session instead."
-        if (!args) return (yield* goal.render(input.sessionID)) ?? "No goal is set for this session."
+          return {
+            text: "Session goals belong to the root session. Run /goal in the parent session instead.",
+            resumed: false,
+          }
+        if (!args)
+          return {
+            text: (yield* goal.render(input.sessionID)) ?? "No goal is set for this session.",
+            resumed: false,
+          }
+        // Subcommand keywords match the whole trimmed argument,
+        // case-insensitively: objectives spelled exactly "clear"/"resume"
+        // cannot be set, while a multi-word "resume the build ..." is an
+        // objective, not a resume. Same accepted trade-off as the clear keyword.
         if (args.toLowerCase() === "clear") {
           const current = yield* goal.get(input.sessionID)
-          if (!current) return "No goal is set for this session."
+          if (!current) return { text: "No goal is set for this session.", resumed: false }
           yield* goal.clear(input.sessionID)
-          return `Goal cleared: ${current.objective}`
+          return { text: `Goal cleared: ${current.objective}`, resumed: false }
+        }
+        if (args.toLowerCase() === "resume") {
+          const current = yield* goal.get(input.sessionID)
+          if (!current) return { text: "No goal is set for this session.", resumed: false }
+          // Budget limits take priority over pause/resume (codex semantics):
+          // resuming would silently re-arm work past the cap, so the only
+          // exit is a new goal with a fresh budget; usage stays accounted.
+          if (current.status === "budget_limited")
+            return {
+              text: [
+                "Goal not resumed: the token budget takes priority over resume. Create a goal with a fresh budget instead (run `/goal <new objective>` or ask the model to goal_create); existing usage stays accounted.",
+                Goal.format(current),
+              ].join("\n\n"),
+              resumed: false,
+            }
+          if (current.status === "active")
+            return {
+              text: ["Goal already active — auto-continuation is running.", Goal.format(current)].join("\n\n"),
+              resumed: false,
+            }
+          if (current.status === "complete")
+            return {
+              text: [
+                "Goal is complete and cannot be resumed; run /goal <objective> to start a new goal.",
+                Goal.format(current),
+              ].join("\n\n"),
+              resumed: false,
+            }
+          return yield* goal.resume(input.sessionID).pipe(
+            Effect.map((resumed) => ({
+              text: [
+                current.status === "blocked"
+                  ? `Resumed (blocked streak reset): ${resumed.objective}`
+                  : `Resumed: ${resumed.objective}`,
+                Goal.format(resumed),
+              ].join("\n\n"),
+              resumed: true,
+            })),
+            Effect.catch((error) => Effect.succeed({ text: `Goal not resumed: ${error.message}`, resumed: false })),
+          )
         }
         return yield* goal.create({ sessionID: input.sessionID, objective: args }).pipe(
-          Effect.map(Goal.format),
-          Effect.catch((error) => Effect.succeed(`Goal not set: ${error.message}`)),
+          Effect.map((created) => ({ text: Goal.format(created), resumed: false })),
+          Effect.catch((error) => Effect.succeed({ text: `Goal not set: ${error.message}`, resumed: false })),
         )
       })
 
@@ -2033,7 +2086,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         messageID: assistant.id,
         sessionID: input.sessionID,
         type: "text",
-        text,
+        text: outcome.text,
       } satisfies MessageV2.TextPart)
       yield* sessions.touch(input.sessionID)
       yield* bus.publish(Command.Event.Executed, {
@@ -2042,6 +2095,26 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         arguments: input.arguments,
         messageID: assistant.id,
       })
+
+      // Immediate continuation kick for a successful `/goal resume`:
+      // `tryGoalContinuation` normally only runs at run-loop exit points, so
+      // without this a resumed goal would idle until the next user turn. The
+      // resume command is itself a real user turn, so invoke the same inject
+      // helper directly (it re-arms the breaker window via resetContinuation
+      // and writes the synthetic `<goal-continuation>` user message when
+      // auto-continuation applies), then drive the injected message through
+      // the standard `loop` entry: blocking the command response for that run
+      // matches template commands, which run a full `prompt()` turn inline,
+      // and `loop` dedupes through the run state if a turn is somehow active.
+      if (outcome.resumed) {
+        const injected = yield* tryGoalContinuation({
+          sessionID: input.sessionID,
+          session,
+          lastUser: userMsg,
+          messages: yield* MessageV2.filterCompactedEffect(input.sessionID),
+        })
+        if (injected) yield* loop({ sessionID: input.sessionID })
+      }
       return { info: assistant, parts: [part] }
     })
 

@@ -64,6 +64,7 @@ export interface Interface {
     tokenBudget?: number
   }) => Effect.Effect<Info, Error>
   readonly updateStatus: (input: { sessionID: SessionID; status: Status }) => Effect.Effect<Info, Error>
+  readonly resume: (sessionID: SessionID) => Effect.Effect<Info, Error>
   readonly account: (sessionID: SessionID) => Effect.Effect<void>
   readonly clear: (sessionID: SessionID) => Effect.Effect<boolean>
   readonly recordContinuation: (input: { sessionID: SessionID; productive: boolean }) => Effect.Effect<Info | undefined>
@@ -78,9 +79,13 @@ function compact(input: string) {
   return value.length > MAX_OBJECTIVE_CHARS ? `${value.slice(0, MAX_OBJECTIVE_CHARS - 3)}...` : value
 }
 
-// Allowed status transitions: active -> complete|blocked|paused, paused -> active
-// (user-requested resume), and anything -> complete. Resuming a blocked or
-// budget_limited goal is not expressible; a new goal must be created instead.
+// Allowed model-side status transitions: active -> complete|blocked|paused,
+// paused -> active (user-requested resume), and anything -> complete.
+// Resuming a blocked or budget_limited goal is not model-expressible:
+// paused/blocked resume rides the separate user-side `resume` method, and a
+// budget_limited goal needs a new goal (the budget cap takes priority over
+// resume). Mirrors codex ext/goal, where resume is a user/system controlled
+// channel and budget limits outrank pause/resume.
 function isAllowedTransition(from: Status, to: Status) {
   if (to === "complete") return true
   if (from === "active") return to === "blocked" || to === "paused"
@@ -219,10 +224,16 @@ export const layer = Layer.effect(
       if (!current) return yield* Effect.fail(new Error("No goal is set for this session; create one first."))
       if (current.status === input.status) return yield* Effect.fail(new Error(`The goal is already ${input.status}.`))
       if (!isAllowedTransition(current.status, input.status)) {
-        if (input.status === "active" && (current.status === "blocked" || current.status === "budget_limited"))
+        if (input.status === "active" && current.status === "blocked")
           return yield* Effect.fail(
             new Error(
-              `You cannot resume a ${current.status} goal with goal_update; resuming requires the user to create a new goal.`,
+              "You cannot resume a blocked goal with goal_update; resuming is the user's call — ask them to run /goal resume.",
+            ),
+          )
+        if (input.status === "active" && current.status === "budget_limited")
+          return yield* Effect.fail(
+            new Error(
+              "You cannot resume a budget_limited goal with goal_update: the token budget takes priority over resume. The user must create a new goal with a fresh budget (/goal <objective> or goal_create).",
             ),
           )
         if (current.status === "complete")
@@ -348,6 +359,36 @@ export const layer = Layer.effect(
       yield* persist(sessionID, goal)
     })
 
+    // User-side resume (`/goal resume`). Deliberately separate from
+    // updateStatus: the model-facing transition table keeps blocked -> active
+    // unavailable (codex: resume is user/system controlled, never a model tool
+    // capability). paused -> active re-arms auto-continuation; blocked ->
+    // active additionally zeroes the consecutive-empty-continuation streak so
+    // the breaker starts a fresh blocked audit (3 more unproductive
+    // continuations are needed to re-block), while the total-turn cap counter
+    // is kept. budget_limited refuses — the budget limit takes priority over
+    // resume, so a new goal with a fresh budget is required and the existing
+    // usage ledger stays untouched. complete is terminal.
+    const resume = Effect.fn("Goal.resume")(function* (sessionID: SessionID) {
+      const current = yield* get(sessionID)
+      if (!current) return yield* Effect.fail(new Error("No goal is set for this session; create one first."))
+      if (current.status === "active") return yield* Effect.fail(new Error("The goal is already active."))
+      if (current.status === "complete")
+        return yield* Effect.fail(new Error("This goal is already complete; create a new goal to start further work."))
+      if (current.status === "budget_limited")
+        return yield* Effect.fail(
+          new Error(
+            "The goal token budget is exhausted; budget limits take priority over resume. Create a new goal with a fresh budget instead.",
+          ),
+        )
+      const goal: Info = {
+        ...current,
+        status: "active",
+        ...(current.status === "blocked" ? { consecutiveEmptyContinuations: 0 } : {}),
+      }
+      return yield* persist(sessionID, goal)
+    })
+
     const render = Effect.fn("Goal.render")(function* (sessionID: SessionID) {
       yield* account(sessionID)
       const goal = yield* get(sessionID)
@@ -355,7 +396,17 @@ export const layer = Layer.effect(
       return format(goal)
     })
 
-    return Service.of({ get, create, updateStatus, account, clear, recordContinuation, resetContinuation, render })
+    return Service.of({
+      get,
+      create,
+      updateStatus,
+      resume,
+      account,
+      clear,
+      recordContinuation,
+      resetContinuation,
+      render,
+    })
   }),
 )
 
