@@ -66,8 +66,8 @@ Chimera 的问题不是"缺功能"，而是三件事同时发生：
 
 ### A.4 防回归（机械化）
 
-- **立即**：oxlint `import/no-cycle`（根 `.oxlintrc.json`，已装 1.60.0，实测支持），先只报错。
-- **门禁**：自研 `script/check-layering.ts`（复用 `script/trace-imports.ts` 解析逻辑），断言目录级最大 SCC ≤ 阈值（35→28→24→18→10 逐里程碑），`bun typecheck` 并列进 CI。
+- **立即**：~~oxlint `import/no-cycle`~~ **已证伪**（2026-10-10 实测：1.60.0 该规则是 stub，两文件互导探针 0 警告）。改为门禁前置：自研 `packages/chimera/script/check-layering.ts`（移植已验证的 scc.ts/modgraph.ts 解析+Tarjan），W1 即上闸。
+- **门禁**：check-layering 断言文件级/目录级最大 SCC ≤ 阈值（起点 246/36，逐里程碑收紧），`bun run check:layering` 与 `bun typecheck` 并列进 CI（CI 接线在 W2）。
 - **终态**：dependency-cruiser 分层规则（配置草案在分层设计报告 §3.2）。
 - **反作弊**：每刀记录删的是值边还是类型边；SCC 不变的动作不算进展。
 
@@ -271,7 +271,7 @@ server 补全 6 项各配 API 契约测试：
 ## 路线图（开工后）
 
 ```
-W1 止血（1-2 周）  : A1 解环第一刀 + A2 schema 下沉 | B1-B5 五刀 | oxlint no-cycle 上闸
+W1 止血（1-2 周）  : A1 解环第一刀 + A2 schema 下沉 | B1-B5 五刀 | check-layering 门禁上闸（oxlint 证伪后前置）
 W2 立规（2-3 周）  : A4 组合根 L6 | SCC 门禁脚本进 CI | C.3 onboarding + C.1 barrel 拆除
 W3 收口（3-4 周）  : A5 tool 端口 + A6 server 门面 | R3 开闸验证 | god file 批次 ①-③
 W4 开路（并行）    : D.2 启动握手 + Swift MVP（SSE/WS 客户端）
@@ -288,6 +288,7 @@ W4 开路（并行）    : D.2 启动握手 + Swift MVP（SSE/WS 客户端）
 | 10-10 15:14 | newweb `35512534` SessionStatusPanel 进程面板 + `67f28825` 工具参数流式预览（配 server 端 `8e396af01`） | **部分推进 C.2 潮酷纪律第 3 条**（流式增量渲染已在 message 链路落地，TG TextReveal 式平滑仍未做）；DefaultRenderer(+92)/messageStore(+47)/ToolPartView 体积增长，C.1 god file 解构蓝图的行数基线以开工时实测为准；流式渲染客户端纪律与 D.5 客户端侧规格第 5/6 条同向，webui 可作为 GUI 的参照实现 |
 | 10-10 15:29 / 16:02 | `4b545f733` + `1db73d775`：内建 `/goal` slash 命令（command/index.ts + session/prompt.ts 命令分发 + goal.test.ts） | session/prompt.ts（L4 编排）与 command（L3）新增边，**A 线开工前须重测 SCC 基线**；`/command` 列表新增项对 D 线 GUI 客户端可见（斜杠命令自动完成面） |
 | 10-10 12:35 | `b86962078` progressive tool disclosure phase 2（tool-search 揭示不再动 wire 数组，走 runtime-context 尾段） | 计划写作期间落笔；session/llm 运行时面变更，同样计入 SCC 基线复测范围 |
+| 10-10 16:30 | **W1 开工**：基线复测 file-SCC 246 / module-SCC 36 / 283 环边，与上午基线一致（`/goal` 两笔未漂移基线）；A1 删边模拟 246→154 再确认。oxlint `import/no-cycle` 证伪（stub 规则），A.4 门禁改为自研 check-layering.ts 前置到 W1 | 执行中 |
 
 **基线复测条款**：A.1 的 SCC 数字（246/36/283）与 B.1 的内存数字（1.5GB/4.1GB）均为 2026-10-10 上午实测；每线开工当天用同一脚本/同一测量法复测一遍，以新基线验收。
 
