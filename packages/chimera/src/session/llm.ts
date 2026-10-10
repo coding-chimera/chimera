@@ -480,7 +480,7 @@ const live: Layer.Layer<
           if (!t || !t.execute) {
             return {
               result: "",
-              error: `Unknown tool: ${toolName}${ToolSearch.isDeferredTool(toolName) ? ToolSearch.DEFERRED_TOOL_HINT : ""}`,
+              error: ToolSearch.unknownToolGuidance(toolName),
             }
           }
           try {
@@ -588,14 +588,20 @@ const live: Layer.Layer<
         async experimental_repairToolCall(failed) {
           const toolName = failed.toolCall.toolName
           const lower = toolName.toLowerCase()
-          if (lower !== toolName && tools[lower]) {
+          // Separator/case canonicalization: models routinely rename tools
+          // (`tool-search`, `ToolSearch` for `tool_search`). A miss on the
+          // gateway used to self-lock: the intercept guidance still pointed at
+          // tool_search while the misnamed call could never reach it.
+          const canonical = lower.replace(/[-\s]+/g, "_")
+          const repaired = tools[lower] ? lower : tools[canonical] ? canonical : undefined
+          if (repaired && repaired !== toolName) {
             l.info("repairing tool call", {
               tool: toolName,
-              repaired: lower,
+              repaired,
             })
             return {
               ...failed.toolCall,
-              toolName: lower,
+              toolName: repaired,
             }
           }
           // Progressive-disclosure execution loop: a revealed-but-unpromoted tool
@@ -638,7 +644,7 @@ const live: Layer.Layer<
               ...failed.toolCall,
               input: JSON.stringify({
                 tool: toolName,
-                error: `Unknown tool: ${toolName}${ToolSearch.DEFERRED_TOOL_HINT}`,
+                error: ToolSearch.unknownToolGuidance(toolName),
               }),
               toolName: "invalid",
             }
@@ -749,7 +755,22 @@ function resolveTools(input: Pick<StreamInput, "tools" | "agent" | "permission" 
     Object.keys(input.tools),
     Permission.merge(input.agent.permission, input.permission ?? []),
   )
-  return Record.filter(input.tools, (_, k) => input.user.tools?.[k] !== false && !disabled.has(k))
+  const filtered = Record.filter(input.tools, (_, k) => input.user.tools?.[k] !== false && !disabled.has(k))
+  // tool_search never leaves the model-visible set: it is the gateway to the
+  // deferred catalog and every disclosure guidance line points at it, so a
+  // ruleset or per-message toggle that filters it out while the guidance stays
+  // produces a self-lock (the model is told "reveal it with tool_search" but
+  // cannot call tool_search). Revealing never grants permission — every
+  // revealed tool still enforces its own gate at call time — so keeping the
+  // gateway visible grants nothing itself. Utility agents whose whole set is
+  // denied (title/summary/compaction, empty `filtered`) keep an empty record.
+  if (
+    Object.keys(filtered).length > 0 &&
+    input.tools[ToolSearch.TOOL_SEARCH_ID] &&
+    !filtered[ToolSearch.TOOL_SEARCH_ID]
+  )
+    filtered[ToolSearch.TOOL_SEARCH_ID] = input.tools[ToolSearch.TOOL_SEARCH_ID]
+  return filtered
 }
 
 // Permission-filter the revealed-but-unpromoted defs exactly like

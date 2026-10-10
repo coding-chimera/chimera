@@ -266,6 +266,31 @@ test("the unknown-tool hint mentions tool_search", () => {
   expect(ToolSearch.DEFERRED_TOOL_HINT.startsWith(" ")).toBe(true)
 })
 
+test("tool_search is never deferred and its call aliases are recognized", () => {
+  expect(ToolSearch.DEFERRED_TOOL_IDS.has(ToolSearch.TOOL_SEARCH_ID)).toBe(false)
+  expect(ToolSearch.isDeferredTool(ToolSearch.TOOL_SEARCH_ID)).toBe(false)
+  expect(ToolSearch.isToolSearchAlias("tool_search")).toBe(true)
+  expect(ToolSearch.isToolSearchAlias("tool-search")).toBe(true)
+  expect(ToolSearch.isToolSearchAlias("Tool_Search")).toBe(true)
+  expect(ToolSearch.isToolSearchAlias("tool search")).toBe(true)
+  expect(ToolSearch.isToolSearchAlias("lsp")).toBe(false)
+  expect(ToolSearch.isToolSearchAlias("tool_searcher")).toBe(false)
+})
+
+test("unknown-tool guidance for a tool_search miss is not self-referential", () => {
+  const guidance = ToolSearch.unknownToolGuidance("tool-search")
+  // the alias intercept must not tell the model to reveal/via tool_search —
+  // that guidance is what dead-locked the misnamed call
+  expect(guidance).not.toContain("reveal it with")
+  expect(guidance).toContain("named exactly `tool_search`")
+  expect(guidance).toContain('"query"')
+  // deferred ids keep the reveal guidance, unknown ids get a plain message
+  expect(ToolSearch.unknownToolGuidance("lsp")).toBe(
+    "Unknown tool: lsp It is registered but deferred — reveal it with `tool_search`, then call it directly by name.",
+  )
+  expect(ToolSearch.unknownToolGuidance("bashh")).toBe("Unknown tool: bashh")
+})
+
 describe("session.tool-search prompt loop (phase 2)", () => {
   const startSession = Effect.fnUntraced(function* (title: string, permission?: Permission.Ruleset) {
     const sessions = yield* Session.Service
@@ -417,6 +442,90 @@ describe("session.tool-search prompt loop (phase 2)", () => {
           throw new Error("invalid tool part missing")
         expect(invalid.state.output).toContain("reveal it with `tool_search`")
         expect(toolPart(messages, "chimera_oracle_get")).toBeUndefined()
+      }),
+      { git: true, config: testProviderConfig },
+    ),
+  )
+
+  loopIt.live("tool_search stays visible and callable after every deferred tool is revealed", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const toolSearch = yield* ToolSearch.Service
+        const session = yield* startSession("Full reveal")
+        // reveal the whole deferred catalog up front (service-level, bypasses
+        // the tool_search permission filter): the gateway must not be a
+        // one-shot tool that leaves the visible set once the catalog is empty
+        yield* toolSearch.reveal(session.id, [...ToolSearch.DEFERRED_TOOL_IDS])
+
+        yield* promptStart(session.id, "start")
+        yield* llm.tool("tool_search", { query: "browser" })
+        yield* llm.text("done")
+        yield* prompt.loop({ sessionID: session.id })
+
+        // tool_search rode every wire request and executed (all matches were
+        // already revealed)
+        for (const names of wireLists(yield* llm.inputs)) expect(names).toContain("tool_search")
+        const messages = yield* sessions.messages({ sessionID: session.id })
+        const search = toolPart(messages, "tool_search")
+        if (search?.type !== "tool" || search.state.status !== "completed")
+          throw new Error("tool_search did not execute after full reveal")
+        expect(search.state.output).toContain("Already revealed in this session")
+      }),
+      { git: true, config: testProviderConfig },
+    ),
+  )
+
+  loopIt.live("a ruleset denying tool_search cannot remove it from the model-visible set", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const session = yield* startSession("Denied gateway", [
+          { permission: "*", pattern: "*", action: "allow" },
+          { permission: "tool_search", pattern: "*", action: "deny" },
+        ])
+        yield* promptStart(session.id, "start")
+        yield* llm.tool("tool_search", { query: "browser" })
+        yield* llm.text("done")
+        yield* prompt.loop({ sessionID: session.id })
+
+        // the visibility invariant wins over the deny rule: the gateway stays
+        // on the wire and the call routes into the real tool (reaching its
+        // permission gate, which refuses it) instead of being intercepted as
+        // an unknown tool with self-referential reveal guidance
+        for (const names of wireLists(yield* llm.inputs)) expect(names).toContain("tool_search")
+        const messages = yield* sessions.messages({ sessionID: session.id })
+        expect(toolPart(messages, "invalid")).toBeUndefined()
+        const search = toolPart(messages, "tool_search")
+        if (search?.type !== "tool") throw new Error("tool_search call never reached the tool")
+        // the permission system stays the call-time kill switch
+        expect(search.state.status).toBe("error")
+      }),
+      { git: true, config: testProviderConfig },
+    ),
+  )
+
+  loopIt.live("a misnamed tool-search alias call is repaired into a real tool_search execution", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const session = yield* startSession("Alias repair")
+        yield* promptStart(session.id, "start")
+        // the self-lock trigger: the model renames the gateway; the repair
+        // path canonicalizes the alias instead of intercepting it as unknown
+        yield* llm.tool("tool-search", { query: "language server" })
+        yield* llm.text("done")
+        yield* prompt.loop({ sessionID: session.id })
+
+        const messages = yield* sessions.messages({ sessionID: session.id })
+        expect(toolPart(messages, "invalid")).toBeUndefined()
+        const search = toolPart(messages, "tool_search")
+        if (search?.type !== "tool" || search.state.status !== "completed")
+          throw new Error("alias call was not repaired into tool_search")
+        expect(search.state.output).toContain("lsp")
       }),
       { git: true, config: testProviderConfig },
     ),
@@ -591,11 +700,13 @@ describe("session.tool-search unknown tool", () => {
     ]
   }
 
-  async function drive(input: Partial<CodexResponsesInput>) {
+  async function drive(input: Partial<CodexResponsesInput>, name = "lsp") {
     using server = Bun.serve({
       port: 0,
       fetch() {
-        return new Response(responseStream(toolCallChunks("lsp")), { headers: { "Content-Type": "text/event-stream" } })
+        return new Response(responseStream(toolCallChunks(name)), {
+          headers: { "Content-Type": "text/event-stream" },
+        })
       },
     })
     const events: any[] = []
@@ -645,5 +756,32 @@ describe("session.tool-search unknown tool", () => {
     const result = events.find((event) => event.type === "tool-result")
     expect(result?.output).toEqual({ output: "revealed-ok", title: "lsp", metadata: {} })
     expect(events.find((event) => event.type === "tool-error")).toBeUndefined()
+  })
+
+  test("a misnamed tool-search alias executes the registered gateway on the codex wire", async () => {
+    const events = await drive(
+      {
+        tools: {
+          tool_search: tool({
+            inputSchema: jsonSchema<{ query?: string }>({
+              type: "object",
+              properties: { query: { type: "string" } },
+            }),
+            execute: async () => ({ output: "gateway-ok", title: "tool_search", metadata: {} }),
+          }),
+        },
+      },
+      "tool-search",
+    )
+    const result = events.find((event) => event.type === "tool-result")
+    expect(result?.output).toEqual({ output: "gateway-ok", title: "tool_search", metadata: {} })
+    expect(events.find((event) => event.type === "tool-error")).toBeUndefined()
+  })
+
+  test("an unresolvable tool_search alias gets gateway guidance, not a self-referential reveal hint", async () => {
+    const events = await drive({}, "tool-search")
+    const failure = events.find((event) => event.type === "tool-error")
+    expect(failure?.error.message).toContain("named exactly `tool_search`")
+    expect(failure?.error.message).not.toContain("reveal it with")
   })
 })

@@ -1144,18 +1144,24 @@ function abortReason(signal: AbortSignal) {
 }
 
 async function executeTool(input: CodexResponsesInput, toolName: string, args: unknown, toolCallId: string) {
-  // registered-tool execution first, then the revealed-by-name view: revealing
-  // a tool makes it callable by name through the identical def the tool list
-  // would have carried (context, permission ask, plugin triggers included).
-  const tool = input.tools[toolName] ?? input.revealedCallable?.[toolName]
+  // registered-tool execution first (canonicalizing separator/case aliases —
+  // models routinely rename `tool_search`, and a gateway miss must not degrade
+  // into self-referential reveal guidance), then the revealed-by-name view:
+  // revealing a tool makes it callable by name through the identical def the
+  // tool list would have carried (context, permission ask, plugin triggers
+  // included).
+  const canonical = toolName.toLowerCase().replace(/[-\s]+/g, "_")
+  const tool =
+    input.tools[toolName] ??
+    input.tools[canonical] ??
+    input.revealedCallable?.[toolName] ??
+    input.revealedCallable?.[canonical]
   if (!tool?.execute) {
     return event({
       type: "tool-error",
       toolCallId,
       toolName,
-      error: new Error(
-        `Unknown tool: ${toolName}${ToolSearch.isDeferredTool(toolName) ? ToolSearch.DEFERRED_TOOL_HINT : ""}`,
-      ),
+      error: new Error(ToolSearch.unknownToolGuidance(toolName)),
     })
   }
   try {
