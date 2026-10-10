@@ -181,13 +181,69 @@ describe("session.goal", () => {
 
       yield* expectRejected(
         goal.updateStatus({ sessionID, status: "active" }),
-        "resuming requires the user to create a new goal",
+        "resuming is the user's call — ask them to run /goal resume",
       )
       yield* expectRejected(goal.updateStatus({ sessionID, status: "paused" }), "Cannot transition")
 
       const fromBlocked = yield* goal.updateStatus({ sessionID, status: "complete" })
       expect(fromBlocked.status).toBe("complete")
       yield* expectRejected(goal.updateStatus({ sessionID, status: "active" }), "already complete; create a new goal")
+    }),
+  )
+
+  it.instance("resume moves a paused goal back to active and guards no-goal/active/complete sources", () =>
+    Effect.gen(function* () {
+      const goal = yield* Goal.Service
+      yield* expectRejected(goal.resume(sessionID), "No goal is set for this session")
+      yield* goal.create({ sessionID, objective: "resume me" })
+      yield* expectRejected(goal.resume(sessionID), "already active")
+      yield* goal.updateStatus({ sessionID, status: "paused" })
+      const resumed = yield* goal.resume(sessionID)
+      expect(resumed.status).toBe("active")
+      expect(resumed.objective).toBe("resume me")
+      expect((yield* goal.get(sessionID))?.status).toBe("active")
+
+      yield* goal.updateStatus({ sessionID, status: "complete" })
+      yield* expectRejected(goal.resume(sessionID), "already complete; create a new goal")
+    }),
+  )
+
+  it.instance("resume from blocked zeroes the empty streak for a fresh blocked audit", () =>
+    Effect.gen(function* () {
+      const goal = yield* Goal.Service
+      yield* goal.create({ sessionID, objective: "blocked audit" })
+      yield* goal.recordContinuation({ sessionID, productive: false })
+      yield* goal.recordContinuation({ sessionID, productive: false })
+      const blocked = yield* goal.recordContinuation({ sessionID, productive: false })
+      expect(blocked?.status).toBe("blocked")
+      expect(blocked?.consecutiveEmptyContinuations).toBe(3)
+
+      const resumed = yield* goal.resume(sessionID)
+      expect(resumed.status).toBe("active")
+      expect(resumed.consecutiveEmptyContinuations).toBe(0)
+      // the total continuation-turn cap keeps counting across a resume
+      expect(resumed.consecutiveContinuations).toBe(3)
+
+      // fresh audit: the next three unproductive continuations re-block
+      yield* goal.recordContinuation({ sessionID, productive: false })
+      yield* goal.recordContinuation({ sessionID, productive: false })
+      expect((yield* goal.get(sessionID))?.status).toBe("active")
+      const reblocked = yield* goal.recordContinuation({ sessionID, productive: false })
+      expect(reblocked?.status).toBe("blocked")
+      expect(reblocked?.consecutiveEmptyContinuations).toBe(3)
+    }),
+  )
+
+  it.instance("resume refuses a budget_limited goal without touching the usage ledger", () =>
+    Effect.gen(function* () {
+      const goal = yield* Goal.Service
+      yield* goal.create({ sessionID, objective: "budgeted resume", tokenBudget: 100 })
+      yield* insertAssistant(MessageID.ascending(), { input: 200, output: 0, cacheRead: 100, cacheWrite: 0 })
+      yield* goal.account(sessionID)
+      yield* expectRejected(goal.resume(sessionID), "budget limits take priority over resume")
+      const stored = yield* goal.get(sessionID)
+      expect(stored?.status).toBe("budget_limited")
+      expect(stored?.tokensUsed).toBe(100)
     }),
   )
 
@@ -991,6 +1047,179 @@ describe("session.goal /goal command", () => {
           "Session goals belong to the root session",
         )
         expect(yield* goal.get(child.id)).toBeUndefined()
+      }),
+      { git: true, config: testProviderConfig },
+    ),
+  )
+
+  loopIt.live("/goal resume unblocks a blocked goal with a fresh audit and kicks a continuation turn", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const goal = yield* Goal.Service
+        const session = yield* sessions.create({
+          title: "Goal resume",
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+        yield* goal.create({ sessionID: session.id, objective: "drift" })
+        yield* goal.recordContinuation({ sessionID: session.id, productive: false })
+        yield* goal.recordContinuation({ sessionID: session.id, productive: false })
+        yield* goal.recordContinuation({ sessionID: session.id, productive: false })
+        const blocked = yield* goal.get(session.id)
+        expect(blocked?.status).toBe("blocked")
+        expect(blocked?.consecutiveEmptyContinuations).toBe(3)
+
+        // the kicked continuation turn works with a tool call, then pauses
+        yield* llm.tool("goal_update", { status: "paused" })
+        yield* llm.text("paused for now")
+
+        const result = yield* prompt.command({
+          sessionID: session.id,
+          command: Command.Default.GOAL,
+          model: "test/test-model",
+          arguments: "resume",
+        })
+        const text = result.parts.find((part) => part.type === "text")?.text
+        expect(text).toContain("Resumed (blocked streak reset): drift")
+        expect(text).toContain("- Status: active")
+
+        // resume does not wait for the next user turn: the synthetic
+        // continuation message was injected and actually run
+        const messages = yield* sessions.messages({ sessionID: session.id })
+        const continuations = continuationParts(messages)
+        expect(continuations).toHaveLength(1)
+        expect(continuations[0]?.text).toContain("<goal-continuation>")
+        expect(continuations[0]?.synthetic).toBe(true)
+        expect(yield* llm.calls).toBe(2)
+        expect(yield* llm.pending).toBe(0)
+
+        // the resume counted as a real user turn: the breaker window is
+        // fresh, and the productive continuation recorded a zeroed streak
+        const stored = yield* goal.get(session.id)
+        expect(stored?.status).toBe("paused")
+        expect(stored?.consecutiveEmptyContinuations).toBe(0)
+        expect(stored?.consecutiveContinuations).toBe(1)
+      }),
+      { git: true, config: testProviderConfig },
+    ),
+  )
+
+  loopIt.live("/goal Resume re-arms a paused goal and continues it immediately", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const goal = yield* Goal.Service
+        const session = yield* sessions.create({
+          title: "Goal resume paused",
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+        yield* goal.create({ sessionID: session.id, objective: "pause then resume" })
+        yield* goal.updateStatus({ sessionID: session.id, status: "paused" })
+
+        yield* llm.tool("goal_update", { status: "complete" })
+        yield* llm.text("done")
+
+        // case-insensitive keyword, like the existing Clear subcommand
+        const result = yield* prompt.command({
+          sessionID: session.id,
+          command: Command.Default.GOAL,
+          model: "test/test-model",
+          arguments: "Resume",
+        })
+        const text = result.parts.find((part) => part.type === "text")?.text
+        expect(text).toContain("Resumed: pause then resume")
+        expect(text).not.toContain("streak reset")
+        expect(text).toContain("- Status: active")
+        expect(continuationParts(yield* sessions.messages({ sessionID: session.id }))).toHaveLength(1)
+        expect(yield* llm.calls).toBe(2)
+        expect((yield* goal.get(session.id))?.status).toBe("complete")
+      }),
+      { git: true, config: testProviderConfig },
+    ),
+  )
+
+  loopIt.live("/goal resume reports no-goal, no-op, and budget-priority refusal model-free", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const goal = yield* Goal.Service
+        const session = yield* sessions.create({
+          title: "Goal resume branches",
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+        const send = (value: string) =>
+          prompt.command({
+            sessionID: session.id,
+            command: Command.Default.GOAL,
+            model: "test/test-model",
+            arguments: value,
+          })
+
+        // no goal: same unset copy as bare /goal and clear
+        const unset = yield* send("resume")
+        expect(unset.parts.find((part) => part.type === "text")?.text).toBe("No goal is set for this session.")
+
+        yield* goal.create({ sessionID: session.id, objective: "budget test", tokenBudget: 100 })
+
+        // active: explicit no-op (keyword matching is case-insensitive)
+        const active = yield* send("RESUME")
+        const activeText = active.parts.find((part) => part.type === "text")?.text
+        expect(activeText).toContain("Goal already active")
+        expect(activeText).toContain("- Status: active")
+
+        // whole-word keyword only: a multi-word "resume ..." is an objective
+        const objective = yield* send("resume the build")
+        expect(objective.parts.find((part) => part.type === "text")?.text).toContain(
+          "Goal not set: cannot create a new goal because this session has an unfinished goal",
+        )
+
+        // cross the budget via account-on-render, then resume is refused
+        yield* assistantMessage(session.id, MessageID.ascending(), {
+          input: 200,
+          output: 0,
+          cacheRead: 100,
+          cacheWrite: 0,
+        })
+        const shown = yield* send("")
+        expect(shown.parts.find((part) => part.type === "text")?.text).toContain("- Status: budget_limited")
+        const refusal = yield* send("resume")
+        const refusalText = refusal.parts.find((part) => part.type === "text")?.text
+        expect(refusalText).toContain("Goal not resumed: the token budget takes priority over resume")
+        expect(refusalText).toContain("/goal <new objective>")
+        expect(refusalText).toContain("goal_create")
+        const stillLimited = yield* goal.get(session.id)
+        expect(stillLimited?.status).toBe("budget_limited")
+        expect(stillLimited?.tokensUsed).toBe(100)
+
+        // complete: terminal, no revival
+        yield* goal.updateStatus({ sessionID: session.id, status: "complete" })
+        const done = yield* send("resume")
+        const doneText = done.parts.find((part) => part.type === "text")?.text
+        expect(doneText).toContain("Goal is complete and cannot be resumed")
+        expect(doneText).toContain("- Status: complete")
+
+        // subagent sessions keep the root-only refusal for resume
+        const child = yield* sessions.create({
+          title: "Goal resume sub child",
+          parentID: session.id,
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+        const sub = yield* prompt.command({
+          sessionID: child.id,
+          command: Command.Default.GOAL,
+          model: "test/test-model",
+          arguments: "resume",
+        })
+        expect(sub.parts.find((part) => part.type === "text")?.text).toContain(
+          "Session goals belong to the root session",
+        )
+        expect(yield* goal.get(child.id)).toBeUndefined()
+
+        // none of these branches ran the model
+        expect(yield* llm.calls).toBe(0)
       }),
       { git: true, config: testProviderConfig },
     ),
