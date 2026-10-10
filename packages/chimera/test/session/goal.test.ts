@@ -7,6 +7,7 @@ import { MessageID, SessionID } from "@/session/schema"
 import { GoalTable, MessageTable } from "@/session/session.sql"
 import { MessageV2 } from "@/session/message-v2"
 import { Session } from "@/session/session"
+import { Command } from "@/command"
 import { SessionPrompt } from "@/session/prompt"
 import { makePromptHarness, testProviderConfig } from "../fixture/prompt-harness"
 import { provideTmpdirServer } from "../fixture/fixture"
@@ -823,6 +824,173 @@ describe("session.goal auto-continuation loop", () => {
         expect(continuationParts(yield* sessions.messages({ sessionID: session.id }))).toHaveLength(0)
         const stored = yield* goal.get(session.id)
         expect(stored?.consecutiveContinuations).toBeUndefined()
+      }),
+      { git: true, config: testProviderConfig },
+    ),
+  )
+})
+
+describe("session.goal /goal command", () => {
+  loopIt.live("/goal registers, creates, shows, and refuses a second unfinished goal model-free", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const goal = yield* Goal.Service
+        const commands = yield* Command.Service
+
+        const listed = yield* commands.list()
+        expect(listed.some((command) => command.name === Command.Default.GOAL)).toBe(true)
+
+        const session = yield* sessions.create({
+          title: "Goal command",
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+        const created = yield* prompt.command({
+          sessionID: session.id,
+          command: Command.Default.GOAL,
+          model: "test/test-model",
+          arguments: "  ship the widget  ",
+        })
+        expect(created.info.role).toBe("assistant")
+        expect(created.parts.find((part) => part.type === "text")?.text).toContain("- Objective: ship the widget")
+        const stored = yield* goal.get(session.id)
+        expect(stored?.objective).toBe("ship the widget")
+        expect(stored?.status).toBe("active")
+
+        // the typed command is echoed (trimmed) as a user text part, like /init-graph
+        const messages = yield* sessions.messages({ sessionID: session.id })
+        const echoed = messages
+          .find((message) => message.info.role === "user")
+          ?.parts.find((part) => part.type === "text")
+        expect(echoed?.text).toBe("/goal ship the widget")
+
+        // bare /goal renders the current state (objective, status, usage)
+        const shown = yield* prompt.command({
+          sessionID: session.id,
+          command: Command.Default.GOAL,
+          model: "test/test-model",
+          arguments: "",
+        })
+        const shownText = shown.parts.find((part) => part.type === "text")?.text
+        expect(shownText).toContain("## Session Goal")
+        expect(shownText).toContain("- Status: active")
+        expect(shownText).toContain("- Objective: ship the widget")
+        expect(shownText).toContain("Tokens used")
+
+        // goal_create semantics: a second create is refused while unfinished
+        const refused = yield* prompt.command({
+          sessionID: session.id,
+          command: Command.Default.GOAL,
+          model: "test/test-model",
+          arguments: "another objective",
+        })
+        expect(refused.parts.find((part) => part.type === "text")?.text).toContain(
+          "Goal not set: cannot create a new goal because this session has an unfinished goal",
+        )
+        expect((yield* goal.get(session.id))?.objective).toBe("ship the widget")
+        expect(yield* llm.calls).toBe(0)
+      }),
+      { git: true, config: testProviderConfig },
+    ),
+  )
+
+  loopIt.live("/goal clear removes the goal; unset sessions report no goal", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* () {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const goal = yield* Goal.Service
+        const session = yield* sessions.create({
+          title: "Goal clear",
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+
+        const emptyShow = yield* prompt.command({
+          sessionID: session.id,
+          command: Command.Default.GOAL,
+          model: "test/test-model",
+          arguments: "",
+        })
+        expect(emptyShow.parts.find((part) => part.type === "text")?.text).toBe("No goal is set for this session.")
+        const emptyClear = yield* prompt.command({
+          sessionID: session.id,
+          command: Command.Default.GOAL,
+          model: "test/test-model",
+          arguments: "clear",
+        })
+        expect(emptyClear.parts.find((part) => part.type === "text")?.text).toBe("No goal is set for this session.")
+
+        yield* prompt.command({
+          sessionID: session.id,
+          command: Command.Default.GOAL,
+          model: "test/test-model",
+          arguments: "ship the widget",
+        })
+        const cleared = yield* prompt.command({
+          sessionID: session.id,
+          command: Command.Default.GOAL,
+          model: "test/test-model",
+          arguments: "Clear",
+        })
+        expect(cleared.parts.find((part) => part.type === "text")?.text).toBe("Goal cleared: ship the widget")
+        expect(yield* goal.get(session.id)).toBeUndefined()
+      }),
+      { git: true, config: testProviderConfig },
+    ),
+  )
+
+  loopIt.live("/goal replaces a completed goal via the create path", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* () {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const goal = yield* Goal.Service
+        const session = yield* sessions.create({
+          title: "Goal replace",
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+        yield* goal.create({ sessionID: session.id, objective: "first objective" })
+        yield* goal.updateStatus({ sessionID: session.id, status: "complete" })
+
+        const replaced = yield* prompt.command({
+          sessionID: session.id,
+          command: Command.Default.GOAL,
+          model: "test/test-model",
+          arguments: "second objective",
+        })
+        expect(replaced.parts.find((part) => part.type === "text")?.text).toContain("- Objective: second objective")
+        const stored = yield* goal.get(session.id)
+        expect(stored?.objective).toBe("second objective")
+        expect(stored?.status).toBe("active")
+      }),
+      { git: true, config: testProviderConfig },
+    ),
+  )
+
+  loopIt.live("/goal in a subagent session explains root-session scope and sets nothing", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* () {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const goal = yield* Goal.Service
+        const parent = yield* sessions.create({ title: "Goal sub parent" })
+        const child = yield* sessions.create({
+          title: "Goal sub child",
+          parentID: parent.id,
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+
+        const result = yield* prompt.command({
+          sessionID: child.id,
+          command: Command.Default.GOAL,
+          model: "test/test-model",
+          arguments: "child work",
+        })
+        expect(result.parts.find((part) => part.type === "text")?.text).toContain(
+          "Session goals belong to the root session",
+        )
+        expect(yield* goal.get(child.id)).toBeUndefined()
       }),
       { git: true, config: testProviderConfig },
     ),
