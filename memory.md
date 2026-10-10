@@ -12,10 +12,12 @@ Guidelines:
 
 ## Notes
 
-### Chimera 大重构调研完成（2026-10-10，13 路 subagent 调查，未动代码，待用户拍板起步战线）
+### Chimera 大重构 W1 执行中（2026-10-10 开工，调研 13 路已完成见 CHIMERA_REFACTOR_PLAN.md）
+
+- **W1 状态**：基线复测 246/36/283 与上午一致；A1 模拟 246→154 再确认。5 路 builder 后台施工中：A1 plugin 动态 import→组合根注入、A2 schema 下沉（OpenAPI 字节一致+drizzle 零漂移）、B2 SQLite 默认值下调、B5 grammar 卸载、check-layering 门禁脚本。B1/B3/B4 留第二波（避免内存实测互相污染）。oxlint import/no-cycle 已证伪（1.60.0 stub 规则），门禁改自研。纪律：每步一 commit、缺测=未完成
 
 - **四条战线**：① 解环（运行时 246 文件巨团 SCC）② 减重（serve 常驻 1.5GB→目标 <500MB）③ newweb 解构+潮酷化 ④ 原生 GUI（mac Swift/Linux Qt，原生为主 webui 并存）
-- **解环**：模块级 36 节点 283 环边；**单点最大杠杆=plugin/index.ts:130 一条动态 import server/server，切掉文件 SCC 246→154**；session/schema.ts 是纯叶子可直迁（packages/schema 已存在可作 L1 容器）；session/session.sql.ts 下沉 storage/tables 需连带表列类型；迁移序=schema→组合根(L6 composition/)→tool 端口(contracts/)→server service 门面→graph 独立成包（graph 出边=0 不在团内）。防回归=oxlint import/no-cycle（已装）+自研 SCC 规模门禁（复用 script/trace-imports.ts 解析逻辑；切割集分析脚本在 /var/folders/.../T/chimera/{modgraph,scc,sim,sim3}.ts）。注意：纯搬迁不缩文件级 SCC，只有真删边才缩；400 处 import type 剥离是低成本消边
+- **解环**：模块级 36 节点 283 环边；**单点最大杠杆=plugin/index.ts:130 一条动态 import server/server，切掉文件 SCC 246→154**；session/schema.ts 是纯叶子可直迁（packages/schema 已存在可作 L1 容器）；session/session.sql.ts 下沉 storage/tables 需连带表列类型；迁移序=schema→组合根(L6 composition/)→tool 端口(contracts/)→server service 门面→graph 独立成包（graph 出边=0 不在团内）。防回归=自研 check-layering.ts 门禁（oxlint import/no-cycle 已证伪为 1.60.0 stub 规则；切割集分析脚本在 /var/folders/.../T/chimera/{modgraph,scc,sim,sim3}.ts）。注意：纯搬迁不缩文件级 SCC，只有真删边才缩；400 处 import type 剥离是低成本消边
 - **减重实测**：用户 web 进程 PID 实测 1.5GB/peak 4.1GB，大头=JSC 堆棘轮（507MB 常驻+320MB swapped）；serve 空闲稳定态仅 127MB；裸 bun 12MB、--version 218MB、graph index 219 文件 571MB。五刀：图连接空闲淘汰（3 项目 db 常驻）/SQLite mmap 256→32 cache 64→16/消息驻留收敛（全局 chimera.db 2.68GB，part 表 1.8GB）/heap cap+主动 GC/grammar 缓存卸载。R3 收口（图 store/resolution Rust 桥已落地待开闸）预期再 -0.5~-0.9GB
 - **Rust 结论**：全量重写 12-24 人月当前 No-Go（Effect 编排语义不可跨 FFI、20 provider SDK、上游同步断裂）；选择性 Rust=R3 收口+R5' sidecar；归档 RUST_MIGRATION_PLAN.md 同判
 - **原生 GUI**：API 面基本可行（~170 REST operation 全在 OpenAPI）；硬缺口=SSE 客户端+PTY WS 客户端（原生自写）+启动握手（loopback+随机 token，server 侧需新增）；codex 仓库无 GUI 源码（桌面 app 闭源经 app-server JSON-RPC 接入=同架构先例）；codex-rs=157 crate Rust workspace
