@@ -724,8 +724,8 @@ sidecar 的名字取自路径（strip `.chimera/`、`agent(s)`、`command(s)` �
 
 | 变量 | 作用 |
 | --- | --- |
-| `CHIMERA_SQLITE_CACHE_MB` | SQLite 页缓存大小（默认 64 MB） |
-| `CHIMERA_SQLITE_MMAP_MB` | SQLite mmap 大小（默认 256 MB） |
+| `CHIMERA_SQLITE_CACHE_MB` | SQLite 页缓存大小（默认 16 MB，常驻内存优先；索引构建可调大） |
+| `CHIMERA_SQLITE_MMAP_MB` | SQLite mmap 大小（默认 32 MB） |
 | `CHIMERA_SQLITE_TEMP_STORE` | 设为 `MEMORY` 强制内存临时存储（默认 `FILE`） |
 
 源码：`packages/chimera/src/graph/db/index.ts`。

@@ -304,11 +304,11 @@ describe('hot/cold SQLite tuning', () => {
     else process.env[key] = value;
   };
 
-  it('defaults match upstream codegraph: 64MB cache, 256MB mmap, FILE temp_store', () => {
+  it('defaults favor resident memory: 16MB cache, 32MB mmap, FILE temp_store', () => {
     for (const key of SQLITE_ENV_KEYS) setEnv(key, undefined);
     const p = openPragmas();
-    expect(p.cacheSize).toBe(-64 * 1024);
-    expect(p.mmapSize).toBe(256 * 1024 * 1024);
+    expect(p.cacheSize).toBe(-16 * 1024);
+    expect(p.mmapSize).toBe(32 * 1024 * 1024);
     expect(p.tempStore).toBe(1); // FILE
   });
 
@@ -327,8 +327,8 @@ describe('hot/cold SQLite tuning', () => {
     setEnv('CHIMERA_SQLITE_MMAP_MB', '-5');
     setEnv('CHIMERA_SQLITE_TEMP_STORE', 'bogus');
     const p = openPragmas();
-    expect(p.cacheSize).toBe(-64 * 1024);
-    expect(p.mmapSize).toBe(256 * 1024 * 1024);
+    expect(p.cacheSize).toBe(-16 * 1024);
+    expect(p.mmapSize).toBe(32 * 1024 * 1024);
     expect(p.tempStore).toBe(1); // anything != MEMORY stays FILE
   });
 });
