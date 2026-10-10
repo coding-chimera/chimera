@@ -2,7 +2,7 @@ import { Provider } from "@/provider/provider"
 import * as Log from "@opencode-ai/core/util/log"
 import { Context, Effect, Layer, Record } from "effect"
 import * as Stream from "effect/Stream"
-import { streamText, wrapLanguageModel, type ModelMessage, type Tool, tool, jsonSchema } from "ai"
+import { streamText, wrapLanguageModel, NoSuchToolError, type ModelMessage, type Tool, tool, jsonSchema } from "ai"
 import { openai } from "@ai-sdk/openai"
 import { mergeDeep } from "remeda"
 import { GitLabWorkflowLanguageModel } from "gitlab-ai-provider"
@@ -73,7 +73,11 @@ type VariantProfile = {
 // With nothing explicitly selected, the model's configured default_variant /
 // default_effort (L4.3 capability layers) pick the advertised variant before
 // the lowest-non-ultra fallback.
-function resolveVariantProfile(model: Provider.Model, selected: string | undefined, hasConfiguredOptions: boolean): VariantProfile {
+function resolveVariantProfile(
+  model: Provider.Model,
+  selected: string | undefined,
+  hasConfiguredOptions: boolean,
+): VariantProfile {
   const advertised = model.variants ?? {}
   if (!selected) {
     if (hasConfiguredOptions) return { options: {} }
@@ -94,7 +98,10 @@ function resolveVariantProfile(model: Provider.Model, selected: string | undefin
   return { options: {} }
 }
 
-function multiAgentPolicy(input: Pick<StreamRequest, "model" | "parentSessionID" | "small">, variant: string | undefined) {
+function multiAgentPolicy(
+  input: Pick<StreamRequest, "model" | "parentSessionID" | "small">,
+  variant: string | undefined,
+) {
   if (input.small) return
   if (input.model.backend_semantics !== "codex" && variant !== "ultra") return
   const body = input.parentSessionID
@@ -120,6 +127,13 @@ export type StreamInput = {
   // (SessionPrompt.resolveTools). Only the system-prompt capability layers
   // see them restored (see capabilityTools); the wire record never does.
   deferredHidden?: string[]
+  // Deferred tools revealed for this session but not yet promoted by a
+  // compaction boundary (SessionPrompt.resolveTools built these defs exactly
+  // like registered ones). They are deliberately absent from the wire `tools`
+  // record; the experimental_repairToolCall path executes a by-name call for an
+  // id in this view through the normal execution closure. Promoted ids ride
+  // `tools` instead.
+  revealedCallable?: Record<string, Tool>
   abort?: AbortSignal
   retries?: number
   toolChoice?: "auto" | "required" | "none"
@@ -210,7 +224,7 @@ const live: Layer.Layer<
       if (profile.unadvertisedUltra) {
         return yield* Effect.fail(
           new Error(
-            `Model ${input.model.providerID}/${input.model.id} does not advertise an "ultra" variant. Available variants: ${Object.keys(input.model.variants ?? {}).join(", ") || "none"}.`
+            `Model ${input.model.providerID}/${input.model.id} does not advertise an "ultra" variant. Available variants: ${Object.keys(input.model.variants ?? {}).join(", ") || "none"}.`,
           ),
         )
       }
@@ -219,20 +233,23 @@ const live: Layer.Layer<
       // (core/chimera, core/workbrief, core/browser) must gate on the tools
       // the model can actually see, not the raw pre-permission list.
       const tools = resolveTools(input)
+      const revealedCallable = revealedCallableTools(input)
       // Capability layers must stay byte-identical to the pre-defer assembly:
       // gate on the permission-allowed view that re-includes the ids the
       // ToolSearch defer filter hid (capabilitySegments only checks key
       // presence), not on the wire record itself.
-      const segments = systemSegments({ ...input, tools: capabilityTools(tools, input) }, multiAgent, profile.key)
+      const segments = systemSegments(
+        { ...input, tools: capabilityTools(tools, input, revealedCallable) },
+        multiAgent,
+        profile.key,
+      )
       // experimental.system_context: the first turn stores the assembled
       // baseline, later turns reuse it and inject source changes as an extra
       // system message. Small calls (title/summary) own no epoch. Epoch
       // failures degrade to the default assembly.
       const prepared =
         !input.small && cfg.experimental?.system_context
-          ? Option.getOrUndefined(
-              yield* SessionSystemContext.prepare(epoch, SessionID.make(input.sessionID), segments),
-            )
+          ? Option.getOrUndefined(yield* SessionSystemContext.prepare(epoch, SessionID.make(input.sessionID), segments))
           : undefined
       const system: string[] = prepared
         ? [prepared.baseline, ...(prepared.delta ? [prepared.delta] : [])]
@@ -297,7 +314,6 @@ const live: Layer.Layer<
         options.instructions = system.join("\n")
       }
 
-
       const params = yield* plugin.trigger(
         "chat.params",
         {
@@ -340,9 +356,9 @@ const live: Layer.Layer<
         // symbol` schema brand is type-incompatible with the top-level provider
         // 3.0.16 backing ai's Tool type. Runtime is safe: both copies register
         // the same global symbols (Symbol.for("vercel.ai.*")) (L4.1 SDK bump).
-        tools[OPENAI_HOSTED_WEB_SEARCH_TOOL] = (
-          Object.keys(hostedWebSearch).length > 0 ? openai.tools.webSearch(hostedWebSearch) : openai.tools.webSearch()
-        ) as unknown as Tool
+        tools[OPENAI_HOSTED_WEB_SEARCH_TOOL] = (Object.keys(hostedWebSearch).length > 0
+          ? openai.tools.webSearch(hostedWebSearch)
+          : openai.tools.webSearch()) as unknown as Tool
       }
 
       if (isOpenaiOauth) {
@@ -362,6 +378,7 @@ const live: Layer.Layer<
             system,
             messages: input.messages,
             tools,
+            revealedCallable,
             toolChoice: input.toolChoice,
             params,
             headers: directHeaders,
@@ -569,10 +586,11 @@ const live: Layer.Layer<
           })
         },
         async experimental_repairToolCall(failed) {
-          const lower = failed.toolCall.toolName.toLowerCase()
-          if (lower !== failed.toolCall.toolName && tools[lower]) {
+          const toolName = failed.toolCall.toolName
+          const lower = toolName.toLowerCase()
+          if (lower !== toolName && tools[lower]) {
             l.info("repairing tool call", {
-              tool: failed.toolCall.toolName,
+              tool: toolName,
               repaired: lower,
             })
             return {
@@ -580,10 +598,55 @@ const live: Layer.Layer<
               toolName: lower,
             }
           }
+          // Progressive-disclosure execution loop: a revealed-but-unpromoted tool
+          // is by design not in the wire tool array, so the SDK raises NoSuchToolError
+          // for a by-name call. Splice the def — built by SessionPrompt.resolveTools
+          // through the same registry/context/permission/plugin-trigger path as a
+          // registered tool — into the live record and return the call unchanged: the
+          // re-validation passes and it executes normally. The provider request was
+          // already sent, so this never rewrites the request's tool array.
+          if (revealedCallable && NoSuchToolError.isInstance(failed.error)) {
+            const revealedId = revealedCallable[toolName]
+              ? toolName
+              : lower !== toolName && revealedCallable[lower]
+                ? lower
+                : undefined
+            if (revealedId) {
+              l.info("executing revealed tool via repair", { tool: toolName, resolved: revealedId })
+              tools[revealedId] = revealedCallable[revealedId]
+              return { ...failed.toolCall, toolName: revealedId }
+            }
+          }
+          if (NoSuchToolError.isInstance(failed.error) && input.revealedCallable?.[toolName]) {
+            // Revealed earlier but permission/user-filtered out of the callable
+            // view: revealing never grants permission, say so instead of looping.
+            return {
+              ...failed.toolCall,
+              input: JSON.stringify({
+                tool: toolName,
+                error: `Tool ${toolName} was revealed but is not permitted for this agent/session; do not retry it.`,
+              }),
+              toolName: "invalid",
+            }
+          }
+          if (
+            NoSuchToolError.isInstance(failed.error) &&
+            (ToolSearch.isDeferredTool(toolName) || ToolSearch.isDeferredTool(lower))
+          ) {
+            // Deferred and never revealed: guide the model to reveal it first.
+            return {
+              ...failed.toolCall,
+              input: JSON.stringify({
+                tool: toolName,
+                error: `Unknown tool: ${toolName}${ToolSearch.DEFERRED_TOOL_HINT}`,
+              }),
+              toolName: "invalid",
+            }
+          }
           return {
             ...failed.toolCall,
             input: JSON.stringify({
-              tool: failed.toolCall.toolName,
+              tool: toolName,
               error: failed.error.message,
             }),
             toolName: "invalid",
@@ -689,21 +752,41 @@ function resolveTools(input: Pick<StreamInput, "tools" | "agent" | "permission" 
   return Record.filter(input.tools, (_, k) => input.user.tools?.[k] !== false && !disabled.has(k))
 }
 
+// Permission-filter the revealed-but-unpromoted defs exactly like
+// resolveTools filters the wire record: the repair path must not execute a
+// revealed tool that the agent/session ruleset denies or the user message's
+// per-tool toggles turned off.
+function revealedCallableTools(input: Pick<StreamInput, "revealedCallable" | "agent" | "permission" | "user">) {
+  const revealed = input.revealedCallable
+  if (!revealed || Object.keys(revealed).length === 0) return undefined
+  const disabled = Permission.disabled(
+    Object.keys(revealed),
+    Permission.merge(input.agent.permission, input.permission ?? []),
+  )
+  return Record.filter(revealed, (_, k) => input.user.tools?.[k] !== false && !disabled.has(k))
+}
+
 // Builds the capability-layer tool view for systemSegments: re-adds the ids the
 // ToolSearch defer filter removed, gated by the same permission/user-tool
 // filters resolveTools applies, so core/browser et al. cannot distinguish a
 // deferred-hidden tool from a never-registered one. Placeholder values are
 // fine: capabilitySegments only checks truthiness of the key.
-function capabilityTools(tools: Record<string, Tool>, input: StreamInput): Record<string, unknown> {
+function capabilityTools(tools: Record<string, Tool>, input: StreamInput, revealedCallable?: Record<string, Tool>) {
   const hidden = input.deferredHidden
-  if (!hidden?.length) return tools
-  const disabled = Permission.disabled(hidden, Permission.merge(input.agent.permission, input.permission ?? []))
+  if (!hidden?.length && !revealedCallable) return tools
+  const disabled = hidden?.length
+    ? Permission.disabled(hidden, Permission.merge(input.agent.permission, input.permission ?? []))
+    : new Set<string>()
   const view: Record<string, unknown> = { ...tools }
-  for (const id of hidden) {
+  for (const id of hidden ?? []) {
     if (disabled.has(id)) continue
     if (input.user.tools?.[id] === false) continue
     view[id] ??= true
   }
+  // Revealed tools are callable through the repair path even while off the
+  // array, so capability layers must see them (the callable view is already
+  // permission-filtered).
+  for (const id of Object.keys(revealedCallable ?? {})) view[id] ??= true
   return view
 }
 

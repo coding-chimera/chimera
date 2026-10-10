@@ -160,7 +160,11 @@ export function classifyTransportError(error: unknown) {
 }
 
 class WebSocketResponseError extends Error {
-  constructor(message: string, readonly retryable: boolean, readonly fallback: boolean) {
+  constructor(
+    message: string,
+    readonly retryable: boolean,
+    readonly fallback: boolean,
+  ) {
     super(message)
     this.name = "WebSocketResponseError"
   }
@@ -180,6 +184,11 @@ export type CodexResponsesInput = {
   system: string[]
   messages: ModelMessage[]
   tools: Record<string, Tool>
+  // Revealed-but-unpromoted deferred tools (permission-filtered in LLM.run).
+  // Mirrors the AI SDK repair path in llm.ts: a by-name call falls back to this
+  // view so revealed tools execute on the Codex Responses wire without ever
+  // appearing in the request's tool array (buildRequestBody ignores this field).
+  revealedCallable?: Record<string, Tool>
   toolChoice?: "auto" | "required" | "none"
   params: {
     temperature?: number
@@ -257,7 +266,12 @@ async function buildHeaders(input: CodexResponsesInput) {
   return headers
 }
 
-async function* streamHttp(input: CodexResponsesInput, body: RequestBody, headers: Headers, session: WebSocketSessionState) {
+async function* streamHttp(
+  input: CodexResponsesInput,
+  body: RequestBody,
+  headers: Headers,
+  session: WebSocketSessionState,
+) {
   const url = codexEndpointUrl("responses", input.endpoint)
   let response: Response
   try {
@@ -310,7 +324,12 @@ async function* streamHttp(input: CodexResponsesInput, body: RequestBody, header
   }
 }
 
-async function* streamWebSocketWithRetry(input: CodexResponsesInput, body: RequestBody, headers: Headers, session: WebSocketSessionState) {
+async function* streamWebSocketWithRetry(
+  input: CodexResponsesInput,
+  body: RequestBody,
+  headers: Headers,
+  session: WebSocketSessionState,
+) {
   const retries = webSocketStreamRetries(input)
   for (let attempt = 0; ; attempt++) {
     try {
@@ -329,10 +348,16 @@ async function* streamWebSocketWithRetry(input: CodexResponsesInput, body: Reque
   }
 }
 
-async function prewarmWebSocket(input: CodexResponsesInput, body: RequestBody, headers: Headers, session: WebSocketSessionState) {
+async function prewarmWebSocket(
+  input: CodexResponsesInput,
+  body: RequestBody,
+  headers: Headers,
+  session: WebSocketSessionState,
+) {
   if (session.lastRequest || session.prewarmed) return
   if (input.params.options.codexResponsesPrewarm === false) return
-  for await (const _ of streamWebSocket(input, body, headers, session, true)) {}
+  for await (const _ of streamWebSocket(input, body, headers, session, true)) {
+  }
   session.prewarmed = true
 }
 function webSocketStreamRetries(input: CodexResponsesInput) {
@@ -350,9 +375,20 @@ function retryableWebSocketFailure(error: unknown) {
   return error instanceof WebSocketResponseError && error.retryable
 }
 
-async function* streamWebSocket(input: CodexResponsesInput, body: RequestBody, headers: Headers, session: WebSocketSessionState, warmup = false) {
+async function* streamWebSocket(
+  input: CodexResponsesInput,
+  body: RequestBody,
+  headers: Headers,
+  session: WebSocketSessionState,
+  warmup = false,
+) {
   const values: Record<string, unknown>[] = []
-  for await (const value of sendWebSocketRequest(input, headers, buildWebSocketRequest(session, body, warmup), session)) {
+  for await (const value of sendWebSocketRequest(
+    input,
+    headers,
+    buildWebSocketRequest(session, body, warmup),
+    session,
+  )) {
     values.push(value)
   }
   const state = createStreamState(session)
@@ -439,7 +475,10 @@ function useWebSocket(input: CodexResponsesInput, session: WebSocketSessionState
   if (session.fallbackHttp) return false
   if (transport === "http") return false
   if (input.params.options.codexResponsesWebSocket === false) return false
-  return (transport === "websocket" || input.params.options.codexResponsesWebSocket === true) && typeof globalThis.WebSocket === "function"
+  return (
+    (transport === "websocket" || input.params.options.codexResponsesWebSocket === true) &&
+    typeof globalThis.WebSocket === "function"
+  )
 }
 
 function resetWebSocketSession(session: WebSocketSessionState) {
@@ -478,7 +517,8 @@ export function diagnoseWebSocketIncrementalRequest(
   body: RequestBody,
 ): WebSocketIncrementalDiagnostics {
   const currentInputCount = body.input.length
-  if (!session.lastRequest || !session.lastResponse?.responseId) return { status: "miss", reason: "missing_baseline", currentInputCount }
+  if (!session.lastRequest || !session.lastResponse?.responseId)
+    return { status: "miss", reason: "missing_baseline", currentInputCount }
   const baseline = [...session.lastRequest.input, ...session.lastResponse.itemsAdded]
   const changedNonInputKeys = changedRequestKeys(requestWithoutInput(session.lastRequest), requestWithoutInput(body))
   if (changedNonInputKeys.length) {
@@ -495,7 +535,9 @@ export function diagnoseWebSocketIncrementalRequest(
     const firstMismatchIndex = firstInputMismatchIndex(body.input, baseline)
     return {
       status: "miss",
-      reason: runtimeContextPrefixMismatch(body.input, baseline, firstMismatchIndex) ? "runtime_context_changed" : "input_prefix_mismatch",
+      reason: runtimeContextPrefixMismatch(body.input, baseline, firstMismatchIndex)
+        ? "runtime_context_changed"
+        : "input_prefix_mismatch",
       baselineInputCount: baseline.length,
       currentInputCount,
       responseItemsAddedCount: session.lastResponse.itemsAdded.length,
@@ -538,13 +580,19 @@ function runtimeContextPrefixMismatch(input: ResponsesInputItem[], baseline: Res
 
 function runtimeContextInputItem(item: ResponsesInputItem | undefined) {
   const text = inputItemText(item)
-  return text.includes("<runtime-context>") || text.includes("## Runtime Context Update") || text.includes("## Current Work Brief") || text.includes("## Chimera Execution Context")
+  return (
+    text.includes("<runtime-context>") ||
+    text.includes("## Runtime Context Update") ||
+    text.includes("## Current Work Brief") ||
+    text.includes("## Chimera Execution Context")
+  )
 }
 
 function inputItemText(item: ResponsesInputItem | undefined): string {
   if (!item) return ""
   if ("content" in item && typeof item.content === "string") return item.content
-  if ("content" in item && Array.isArray(item.content)) return item.content.map((part) => textValue((part as Record<string, unknown>).text)).join("\n")
+  if ("content" in item && Array.isArray(item.content))
+    return item.content.map((part) => textValue((part as Record<string, unknown>).text)).join("\n")
   return ""
 }
 
@@ -564,7 +612,8 @@ function turnStateClientMetadata(session: WebSocketSessionState) {
 
 function captureTurnState(state: StreamState, value: unknown) {
   if (state.turnState || value === undefined || value === null) return
-  const text = typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? String(value) : undefined
+  const text =
+    typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? String(value) : undefined
   if (text) state.turnState = text
 }
 
@@ -582,7 +631,12 @@ function recordHeaderValue(headers: Record<string, unknown> | undefined, name: s
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value)
   return undefined
 }
-async function* sendWebSocketRequest(input: CodexResponsesInput, headers: Headers, request: Record<string, unknown>, session: WebSocketSessionState) {
+async function* sendWebSocketRequest(
+  input: CodexResponsesInput,
+  headers: Headers,
+  request: Record<string, unknown>,
+  session: WebSocketSessionState,
+) {
   const socket = await openWebSocket(input, headers, session)
   const queue: Record<string, unknown>[] = []
   let resume: (() => void) | undefined
@@ -605,17 +659,25 @@ async function* sendWebSocketRequest(input: CodexResponsesInput, headers: Header
     }
   }
   const onError = (value: Event) => {
-    failure = new WebSocketResponseError(stringOption(recordOption(value)?.message) ?? "Codex Responses WebSocket failed", true, true)
+    failure = new WebSocketResponseError(
+      stringOption(recordOption(value)?.message) ?? "Codex Responses WebSocket failed",
+      true,
+      true,
+    )
     done = true
     wake()
   }
   const onClose = () => {
-    if (!done) failure = new WebSocketResponseError("Codex Responses WebSocket closed before a terminal event", true, true)
+    if (!done)
+      failure = new WebSocketResponseError("Codex Responses WebSocket closed before a terminal event", true, true)
     done = true
     wake()
   }
   const onAbort = () => {
-    failure = input.abort.reason instanceof Error ? input.abort.reason : new WebSocketResponseError("Codex Responses WebSocket aborted", false, false)
+    failure =
+      input.abort.reason instanceof Error
+        ? input.abort.reason
+        : new WebSocketResponseError("Codex Responses WebSocket aborted", false, false)
     done = true
     socket.close()
     wake()
@@ -657,18 +719,24 @@ async function openWebSocket(input: CodexResponsesInput, headers: Headers, sessi
 }
 
 function newWebSocket(url: string, headers: Headers) {
-  const WebSocketClient = globalThis.WebSocket as unknown as new (url: string, init?: { headers: Record<string, string> }) => WebSocket
+  const WebSocketClient = globalThis.WebSocket as unknown as new (
+    url: string,
+    init?: { headers: Record<string, string> },
+  ) => WebSocket
   return new WebSocketClient(url, { headers: headerRecord(headers) })
 }
 
 async function waitWebSocketOpen(input: CodexResponsesInput, socket: WebSocket) {
   if (socket.readyState === 1) return
   await new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      cleanup()
-      socket.close()
-      reject(new WebSocketResponseError("Codex Responses WebSocket connection timed out", false, true))
-    }, numberOption(input.params.options.codexResponsesWebSocketConnectTimeoutMs) ?? WEBSOCKET_CONNECT_TIMEOUT_MS)
+    const timeout = setTimeout(
+      () => {
+        cleanup()
+        socket.close()
+        reject(new WebSocketResponseError("Codex Responses WebSocket connection timed out", false, true))
+      },
+      numberOption(input.params.options.codexResponsesWebSocketConnectTimeoutMs) ?? WEBSOCKET_CONNECT_TIMEOUT_MS,
+    )
     const cleanup = () => {
       clearTimeout(timeout)
       socket.removeEventListener("open", onOpen)
@@ -686,7 +754,11 @@ async function waitWebSocketOpen(input: CodexResponsesInput, socket: WebSocket) 
     const onAbort = () => {
       cleanup()
       socket.close()
-      reject(input.abort.reason instanceof Error ? input.abort.reason : new WebSocketResponseError("Codex Responses WebSocket aborted", false, false))
+      reject(
+        input.abort.reason instanceof Error
+          ? input.abort.reason
+          : new WebSocketResponseError("Codex Responses WebSocket aborted", false, false),
+      )
     }
     socket.addEventListener("open", onOpen)
     socket.addEventListener("error", onError)
@@ -718,7 +790,9 @@ function webSocketDataText(data: unknown) {
 
 function isTerminalChunk(value: Record<string, unknown>) {
   const type = stringOption(value.type)
-  return type === "response.completed" || type === "response.incomplete" || type === "response.failed" || type === "error"
+  return (
+    type === "response.completed" || type === "response.incomplete" || type === "response.failed" || type === "error"
+  )
 }
 
 function handleChunk(value: Record<string, unknown>, input: CodexResponsesInput, state: StreamState) {
@@ -778,16 +852,15 @@ function handleChunk(value: Record<string, unknown>, input: CodexResponsesInput,
     const itemId = stringOption(value.item_id) ?? "message-0"
     if (!state.currentTextId) {
       state.currentTextId = itemId
-      outputs.push(
-        event({ type: "text-start", id: itemId, providerMetadata: { openai: { itemId } } }),
-      )
+      outputs.push(event({ type: "text-start", id: itemId, providerMetadata: { openai: { itemId } } }))
     }
     outputs.push(event({ type: "text-delta", id: state.currentTextId, text: stringOption(value.delta) ?? "" }))
     return outputs
   }
   if (type === "response.function_call_arguments.delta" || type === "response.custom_tool_call_input.delta") {
     const outputIndex = numberOption(value.output_index) ?? 0
-    const match = state.toolCalls[outputIndex] ?? toolCallById(state, stringOption(value.item_id), stringOption(value.call_id))
+    const match =
+      state.toolCalls[outputIndex] ?? toolCallById(state, stringOption(value.item_id), stringOption(value.call_id))
     if (match) {
       const delta = stringOption(value.delta) ?? ""
       match.arguments += delta
@@ -797,7 +870,8 @@ function handleChunk(value: Record<string, unknown>, input: CodexResponsesInput,
   }
   if (type === "response.reasoning_summary_part.added") {
     const summaryIndex = numberOption(value.summary_index) ?? 0
-    const part = state.currentReasoningOutputIndex === null ? undefined : state.reasoning[state.currentReasoningOutputIndex]
+    const part =
+      state.currentReasoningOutputIndex === null ? undefined : state.reasoning[state.currentReasoningOutputIndex]
     if (part && !part.summaryIndexes.includes(summaryIndex)) {
       part.summaryIndexes.push(summaryIndex)
       outputs.push(
@@ -811,7 +885,8 @@ function handleChunk(value: Record<string, unknown>, input: CodexResponsesInput,
     return outputs
   }
   if (type === "response.reasoning_summary_text.delta") {
-    const part = state.currentReasoningOutputIndex === null ? undefined : state.reasoning[state.currentReasoningOutputIndex]
+    const part =
+      state.currentReasoningOutputIndex === null ? undefined : state.reasoning[state.currentReasoningOutputIndex]
     if (part) {
       outputs.push(
         event({
@@ -842,7 +917,9 @@ function handleChunk(value: Record<string, unknown>, input: CodexResponsesInput,
             event({
               type: "reasoning-end",
               id: `${part.id}:${summaryIndex}`,
-              providerMetadata: { openai: { itemId: part.id, reasoningEncryptedContent: item.encrypted_content ?? null } },
+              providerMetadata: {
+                openai: { itemId: part.id, reasoningEncryptedContent: item.encrypted_content ?? null },
+              },
             }),
           )
         }
@@ -904,7 +981,8 @@ function handleChunk(value: Record<string, unknown>, input: CodexResponsesInput,
     state.serviceTier = stringOption(response?.service_tier) ?? state.serviceTier
     state.completed = type === "response.completed"
     state.terminal = type === "response.completed" ? "completed" : "incomplete"
-    if (!state.completed) outputs.push(event({ type: "error", error: incompleteError(input, response, state.replaySafe) }))
+    if (!state.completed)
+      outputs.push(event({ type: "error", error: incompleteError(input, response, state.replaySafe) }))
     return outputs
   }
   if (type === "response.failed" || type === "error") {
@@ -970,7 +1048,8 @@ function codexError(
 
 function httpError(input: CodexResponsesInput, response: Response, responseBody: string) {
   return codexError(input, {
-    message: responseBody.trim() || response.statusText || `Codex Responses request failed with status ${response.status}`,
+    message:
+      responseBody.trim() || response.statusText || `Codex Responses request failed with status ${response.status}`,
     phase: "http",
     code: `http_${response.status}`,
     type: "http_error",
@@ -1018,7 +1097,11 @@ function unexpectedEofError(input: CodexResponsesInput, replaySafe: boolean, cau
   })
 }
 
-function incompleteError(input: CodexResponsesInput, response: Record<string, unknown> | undefined, replaySafe: boolean) {
+function incompleteError(
+  input: CodexResponsesInput,
+  response: Record<string, unknown> | undefined,
+  replaySafe: boolean,
+) {
   const reason = stringOption(recordOption(response?.incomplete_details)?.reason)
   const code = reason ?? "response_incomplete"
   const message = reason ? `Codex Responses incomplete: ${reason}` : "Codex Responses incomplete"
@@ -1049,7 +1132,10 @@ function responseFailureError(
     type,
     replaySafe,
     retryable: RETRYABLE_RESPONSE_ERRORS.has(code) || RETRYABLE_RESPONSE_ERRORS.has(type),
-    responseBody: JSON.stringify({ type: "error", error: stripUndefined({ code: details.code, type: details.type, message: details.message }) }),
+    responseBody: JSON.stringify({
+      type: "error",
+      error: stripUndefined({ code: details.code, type: details.type, message: details.message }),
+    }),
   })
 }
 
@@ -1058,13 +1144,18 @@ function abortReason(signal: AbortSignal) {
 }
 
 async function executeTool(input: CodexResponsesInput, toolName: string, args: unknown, toolCallId: string) {
-  const tool = input.tools[toolName]
+  // registered-tool execution first, then the revealed-by-name view: revealing
+  // a tool makes it callable by name through the identical def the tool list
+  // would have carried (context, permission ask, plugin triggers included).
+  const tool = input.tools[toolName] ?? input.revealedCallable?.[toolName]
   if (!tool?.execute) {
     return event({
       type: "tool-error",
       toolCallId,
       toolName,
-      error: new Error(`Unknown tool: ${toolName}${ToolSearch.isDeferredTool(toolName) ? ToolSearch.DEFERRED_TOOL_HINT : ""}`),
+      error: new Error(
+        `Unknown tool: ${toolName}${ToolSearch.isDeferredTool(toolName) ? ToolSearch.DEFERRED_TOOL_HINT : ""}`,
+      ),
     })
   }
   try {
@@ -1091,7 +1182,9 @@ async function* parseSSE(body: ReadableStream<Uint8Array>) {
       let index = buffer.search(/\r?\n\r?\n/)
       while (index >= 0) {
         const raw = buffer.slice(0, index)
-        buffer = buffer.slice(buffer.match(/\r?\n\r?\n/)?.index === index && buffer[index] === "\r" ? index + 4 : index + 2)
+        buffer = buffer.slice(
+          buffer.match(/\r?\n\r?\n/)?.index === index && buffer[index] === "\r" ? index + 4 : index + 2,
+        )
         const parsed = parseSSEBlock(raw)
         if (parsed) yield parsed
         index = buffer.search(/\r?\n\r?\n/)
@@ -1131,9 +1224,12 @@ function buildReasoning(input: CodexResponsesInput) {
 }
 
 function buildInclude(options: Record<string, unknown>, hasReasoning: boolean, hasWebSearch: boolean) {
-  const include = Array.isArray(options.include) ? options.include.filter((item): item is string => typeof item === "string") : []
+  const include = Array.isArray(options.include)
+    ? options.include.filter((item): item is string => typeof item === "string")
+    : []
   if (hasReasoning && !include.includes("reasoning.encrypted_content")) include.push("reasoning.encrypted_content")
-  if (hasWebSearch && !include.includes("web_search_call.action.sources")) include.push("web_search_call.action.sources")
+  if (hasWebSearch && !include.includes("web_search_call.action.sources"))
+    include.push("web_search_call.action.sources")
   return include
 }
 
@@ -1175,10 +1271,15 @@ function hostedWebSearchTool(tool: Tool) {
   if (provider.id !== "openai.web_search" && provider.id !== "openai.web_search_preview") return undefined
   const args = recordOption(provider.args)
   const filters = recordOption(args?.filters)
-  const allowedDomains = Array.isArray(filters?.allowedDomains) ? filters.allowedDomains.filter((item): item is string => typeof item === "string") : undefined
+  const allowedDomains = Array.isArray(filters?.allowedDomains)
+    ? filters.allowedDomains.filter((item): item is string => typeof item === "string")
+    : undefined
   return stripUndefined({
     type: provider.id === "openai.web_search_preview" ? "web_search_preview" : "web_search",
-    external_web_access: provider.id === "openai.web_search" && typeof args?.externalWebAccess === "boolean" ? args.externalWebAccess : undefined,
+    external_web_access:
+      provider.id === "openai.web_search" && typeof args?.externalWebAccess === "boolean"
+        ? args.externalWebAccess
+        : undefined,
     filters: allowedDomains?.length ? { allowed_domains: allowedDomains } : undefined,
     search_context_size: searchContextSize(args?.searchContextSize),
     user_location: recordOption(args?.userLocation),
@@ -1220,7 +1321,9 @@ function responseItemToInputItem(item: ResponseItem): ResponsesInputItem | undef
     return {
       type: "reasoning",
       encrypted_content: item.encrypted_content ?? null,
-      summary: Array.isArray(item.summary) ? item.summary.flatMap((part) => (part.text ? [{ type: "summary_text" as const, text: part.text }] : [])) : [],
+      summary: Array.isArray(item.summary)
+        ? item.summary.flatMap((part) => (part.text ? [{ type: "summary_text" as const, text: part.text }] : []))
+        : [],
     }
   }
   return undefined
@@ -1239,7 +1342,9 @@ function messageToResponsesItems(message: ModelMessage): ResponsesInputItem[] {
 }
 
 function assistantItems(message: Extract<ModelMessage, { role: "assistant" }>): ResponsesInputItem[] {
-  const content = (Array.isArray(message.content) ? message.content : [{ type: "text", text: message.content }]) as Array<Record<string, unknown>>
+  const content = (
+    Array.isArray(message.content) ? message.content : [{ type: "text", text: message.content }]
+  ) as Array<Record<string, unknown>>
   return content.flatMap((part): ResponsesInputItem[] => {
     if (!isRecord(part)) return []
     const openai = openaiProviderOptions(part)
@@ -1278,7 +1383,9 @@ function assistantItems(message: Extract<ModelMessage, { role: "assistant" }>): 
 function isHostedWebSearchReplay(part: Record<string, unknown>) {
   if (textValue(part.toolName) !== "web_search") return false
   const itemId = stringOption(openaiProviderOptions(part)?.itemId)
-  return part.providerExecuted === true || itemId?.startsWith("ws_") === true || textValue(part.toolCallId).startsWith("ws_")
+  return (
+    part.providerExecuted === true || itemId?.startsWith("ws_") === true || textValue(part.toolCallId).startsWith("ws_")
+  )
 }
 
 function toolResultItems(content: unknown): ResponsesInputItem[] {
@@ -1331,7 +1438,9 @@ function userContentParts(content: unknown): Array<Record<string, unknown>> {
     if (mediaType === "application/pdf" && data) {
       const url = urlString(data)
       if (url) return [{ type: "input_file", file_url: url }]
-      return [{ type: "input_file", filename: textValue(part.filename) || "file.pdf", file_data: mediaData(data, mediaType) }]
+      return [
+        { type: "input_file", filename: textValue(part.filename) || "file.pdf", file_data: mediaData(data, mediaType) },
+      ]
     }
     return [{ type: "input_text", text: `[Attached ${mediaType || "file"}: ${textValue(part.filename) || "file"}]` }]
   })
@@ -1344,7 +1453,14 @@ function filePartData(part: Record<string, unknown>) {
 function mediaData(data: unknown, mediaType: string) {
   const url = urlString(data)
   if (url) return url
-  const base64 = typeof data === "string" ? data : data instanceof ArrayBuffer ? Buffer.from(data).toString("base64") : data instanceof Uint8Array ? Buffer.from(data).toString("base64") : textValue(data)
+  const base64 =
+    typeof data === "string"
+      ? data
+      : data instanceof ArrayBuffer
+        ? Buffer.from(data).toString("base64")
+        : data instanceof Uint8Array
+          ? Buffer.from(data).toString("base64")
+          : textValue(data)
   if (base64.startsWith("data:")) return base64
   return `data:${mediaType};base64,${base64}`
 }
@@ -1356,7 +1472,10 @@ function urlString(value: unknown) {
 }
 
 function openaiProviderOptions(part: Record<string, unknown>) {
-  return recordOption(recordOption(part.providerOptions)?.openai) ?? recordOption(recordOption(part.providerMetadata)?.openai)
+  return (
+    recordOption(recordOption(part.providerOptions)?.openai) ??
+    recordOption(recordOption(part.providerMetadata)?.openai)
+  )
 }
 
 function textValue(value: unknown) {

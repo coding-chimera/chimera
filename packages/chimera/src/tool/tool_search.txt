@@ -5,7 +5,9 @@ Some tools are NOT in your tool list at the start of a session. They stay regist
 - `browser_*` — browser automation (browser_open, browser_snapshot, browser_click, browser_type, browser_screenshot, browser_close): navigate URLs, snapshot accessibility refs, click, type, screenshot, close tabs.
 - `lsp` — language-server code intelligence (definitions, references, hover, document and workspace symbols, implementation, call hierarchy).
 - `subagent_model_*` — subagent model routing (subagent_model_routes: concrete routes for a model identity; subagent_model_schedule: cost-aware per-workload recommendations; subagent_model_prefer / subagent_model_suppress: route preferences).
+- `chimera_obligation_*` / `chimera_obligations_sync` — tracked follow-up obligations (claim, resolve, ignore, persist findings).
+- `chimera_oracle_*` — verification evidence recall (recent oracle list, full oracle output by ref).
 
-Query with plain keywords (e.g. "browser", "references", "model route"); matches on tool ids weigh more than matches on the summary. Only tools allowed for your agent and session can be revealed: a permission-denied tool never appears in results, and revealing a tool does not grant permission to call it.
+Query with plain keywords (e.g. "browser", "references", "model route", "obligation", "oracle"); matches on tool ids weigh more than matches on the summary. Only tools allowed for your agent and session can be revealed: a permission-denied tool never appears in results, and revealing a tool does not grant permission to call it.
 
-Revealed tools are appended to your tool list and become callable from your next model call; they stay revealed for the rest of the session. If a tool call fails with "Unknown tool", the tool is likely deferred — search for it here instead of retrying.
+Revealing does NOT change your tool list: the revealed tool becomes callable directly by name right away, with arguments matching the full description returned here. The runtime executes by-name calls for revealed tools even though they stay out of the tool array; they join the array automatically at the next context compaction, and the reveal persists for the rest of the session. If a tool call fails with "Unknown tool", the tool is likely deferred — search for it here instead of retrying.

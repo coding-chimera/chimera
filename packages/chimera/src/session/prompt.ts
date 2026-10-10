@@ -140,7 +140,15 @@ function goalTurnOwner(messages: MessageV2.WithParts[]) {
 const log = Log.create({ service: "session.prompt" })
 
 type RuntimeContextSection = {
-  key: "workBrief" | "goal" | "chimera" | "subagentModels" | "subagentScheduling" | "backgroundTasks" | "sessionProcesses"
+  key:
+    | "workBrief"
+    | "goal"
+    | "chimera"
+    | "subagentModels"
+    | "subagentScheduling"
+    | "backgroundTasks"
+    | "sessionProcesses"
+    | "revealedTools"
   title: string
   content: string
   hash: string
@@ -167,6 +175,29 @@ function backgroundJobModel(metadata?: Record<string, unknown>) {
   if (typeof providerID !== "string" || typeof modelID !== "string") return undefined
   const base = `${providerID}/${modelID}`
   return typeof variant === "string" && variant.length > 0 ? `${base} @${variant}` : base
+}
+
+// Compaction boundary used to derive revealed-tool promotion: the creation
+// time of the newest completed compaction summary message. Promotion is pure
+// derivation (reveal timestamp vs this time) — no extra state or column. An
+// in-flight or failed summary must not promote anything, so those are skipped.
+// Mirrors filterCompacted's completed-summary predicate.
+function latestCompactionTime(messages: Iterable<MessageV2.WithParts>) {
+  let time: number | undefined
+  for (const msg of messages) {
+    if (msg.info.role !== "assistant" || !msg.info.summary || !msg.info.finish || msg.info.error) continue
+    if (time === undefined || msg.info.time.created > time) time = msg.info.time.created
+  }
+  return time
+}
+
+// Single shared promotion predicate for resolveTools and the revealedTools
+// tail section so the array view and the injected text can never disagree:
+// a revealed tool is promoted into the tool array once its reveal happened
+// at or before the newest completed compaction (an untimestamped reveal from
+// a legacy row carries the row's upper-bound time, so this stays safe).
+function isPromotedReveal(revealTime: number | undefined, compactionTime: number | undefined) {
+  return compactionTime !== undefined && revealTime !== undefined && revealTime <= compactionTime
 }
 
 function runtimeContextHash(sections: RuntimeContextSection[]) {
@@ -256,7 +287,9 @@ export interface Interface {
   readonly command: (input: CommandInput) => Effect.Effect<MessageV2.WithParts, Image.Error>
 
   readonly resolvePromptParts: (template: string) => Effect.Effect<PromptInput["parts"]>
-  readonly injectSynthetic: (input: InjectSyntheticInput) => Effect.Effect<MessageV2.WithParts, InstanceType<typeof NotFoundError>>
+  readonly injectSynthetic: (
+    input: InjectSyntheticInput,
+  ) => Effect.Effect<MessageV2.WithParts, InstanceType<typeof NotFoundError>>
 }
 export type InjectSyntheticInput = {
   sessionID: SessionID
@@ -368,17 +401,52 @@ export const layer = Layer.effect(
       return history.slice(0, idx + 1).filter((msg) => !isRuntimeContextMessage(msg))
     }
 
+    // The `revealedTools` tail section: every deferred tool revealed for this
+    // session that has NOT yet been promoted by a compaction boundary, rendered
+    // as `- id(compact signature) — summary`. The signature comes from the tool's
+    // schema (registry view, no model-specific transform) so the model can call
+    // the tool by name with plausible arguments while its schema stays off the
+    // wire. Promotion keeps the section and the tool array in exact agreement
+    // through isPromotedReveal.
+    const renderRevealedTools = Effect.fn("SessionPrompt.renderRevealedTools")(function* (input: {
+      sessionID: SessionID
+      messages: Iterable<MessageV2.WithParts>
+    }) {
+      const revealed = yield* toolSearch.revealed(input.sessionID)
+      if (revealed.size === 0) return undefined
+      const revealTimes = yield* toolSearch.revealTimes(input.sessionID)
+      const compactionTime = latestCompactionTime(input.messages)
+      const unpromoted = [...revealed]
+        .filter((id) => !isPromotedReveal(revealTimes.get(id), compactionTime))
+        .toSorted((a, b) => a.localeCompare(b))
+      if (unpromoted.length === 0) return undefined
+      const defs = new Map((yield* registry.all()).map((def) => [def.id, def]))
+      const lines = unpromoted.map((id) => {
+        const def = defs.get(id)
+        const signature = def ? ToolSearch.compactSignature(EffectZod.toJsonSchema(def.parameters)) : ""
+        return `- \`${id}${signature}\` — ${ToolSearch.deferredSummary(id) ?? "revealed deferred tool"}`
+      })
+      return [
+        "## Revealed Deferred Tools",
+        "",
+        "These tools were revealed for this session via `tool_search`. They are NOT in your tool list, but you can call them directly by name with arguments matching the signature below — revealed calls are executed through the normal path. They join the tool list automatically at the next compaction.",
+        "",
+        ...lines,
+      ].join("\n")
+    })
 
     const runtimeContextSections = Effect.fn("SessionPrompt.runtimeContextSections")(function* (input: {
       sessionID: SessionID
       agent: string
       tools?: Record<string, boolean>
+      messages: Iterable<MessageV2.WithParts>
     }) {
       const [workBriefSuffix, chimeraContextSuffix] = yield* Effect.all([
         workBrief.render(input.sessionID),
         chimeraPromptContext.render(input.sessionID, sessions),
       ])
       const goalSuffix = yield* goal.render(input.sessionID)
+      const revealedToolsSuffix = yield* renderRevealedTools({ sessionID: input.sessionID, messages: input.messages })
       const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
       const agent = yield* agents.get(input.agent)
       const ruleset = Permission.merge(agent.permission, session.permission ?? [])
@@ -389,9 +457,7 @@ export const layer = Layer.effect(
       const subagentSnapshot = canDelegate
         ? yield* scheduling.currentSnapshot({ ruleset, projectID: session.projectID })
         : undefined
-      const subagentModels = subagentSnapshot
-        ? SubagentModelCatalog.disclosure(subagentSnapshot.catalog)
-        : undefined
+      const subagentModels = subagentSnapshot ? SubagentModelCatalog.disclosure(subagentSnapshot.catalog) : undefined
       const subagentSchedulingView = subagentSnapshot?.view
       const subagentScheduling = subagentSchedulingView
         ? SubagentModelScheduling.disclosure(subagentSchedulingView)
@@ -455,8 +521,17 @@ export const layer = Layer.effect(
         ].join("\n")
       })
       return [
-        workBriefSuffix ? { key: "workBrief" as const, title: "Current Work Brief", content: workBriefSuffix, hash: hash(workBriefSuffix) } : undefined,
-        goalSuffix ? { key: "goal" as const, title: "Session Goal", content: goalSuffix, hash: hash(goalSuffix) } : undefined,
+        workBriefSuffix
+          ? {
+              key: "workBrief" as const,
+              title: "Current Work Brief",
+              content: workBriefSuffix,
+              hash: hash(workBriefSuffix),
+            }
+          : undefined,
+        goalSuffix
+          ? { key: "goal" as const, title: "Session Goal", content: goalSuffix, hash: hash(goalSuffix) }
+          : undefined,
         chimeraContextSuffix
           ? {
               key: "chimera" as const,
@@ -495,6 +570,14 @@ export const layer = Layer.effect(
               title: "Session Processes",
               content: sessionProcesses,
               hash: hash(sessionProcesses),
+            }
+          : undefined,
+        revealedToolsSuffix
+          ? {
+              key: "revealedTools" as const,
+              title: "Revealed Deferred Tools",
+              content: revealedToolsSuffix,
+              hash: hash(revealedToolsSuffix),
             }
           : undefined,
       ].filter((section): section is RuntimeContextSection => Boolean(section))
@@ -552,6 +635,7 @@ export const layer = Layer.effect(
         sessionID: input.sessionID,
         agent: input.agent,
         tools: input.tools,
+        messages: input.messages,
       })
       const nextHash = runtimeContextHash(sections)
       const previous = latestRuntimeContext(input.messages, input.newestFirst)
@@ -859,10 +943,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       model: Provider.Model
       session: Session.Info
       tools?: Record<string, boolean>
-      processor: Pick<
-        SessionProcessor.Handle,
-        "message" | "updateToolCall" | "completeToolCall" | "failToolCall"
-      >
+      processor: Pick<SessionProcessor.Handle, "message" | "updateToolCall" | "completeToolCall" | "failToolCall">
       bypassAgentCheck: boolean
       messages: MessageV2.WithParts[]
       abort: AbortSignal
@@ -881,7 +962,9 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       // all in scope — and passed through ctx.extra.
       const chimeraPredesignAvailable =
         input.tools?.["chimera_predesign"] !== false &&
-        !Permission.disabled(["chimera_predesign"], Permission.merge(agent.permission, session.permission ?? [])).has("chimera_predesign")
+        !Permission.disabled(["chimera_predesign"], Permission.merge(agent.permission, session.permission ?? [])).has(
+          "chimera_predesign",
+        )
 
       const context = (args: any, options: ToolExecutionOptions): Tool.Context => ({
         sessionID: session.id,
@@ -950,15 +1033,19 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           Effect.onInterrupt(() => processor.failToolCall(callID, abortError(signal)).pipe(Effect.ignore)),
         )
 
-      // Progressive tool disclosure: deferred tools stay registered but are
-      // omitted from the model-facing record until `tool_search` reveals them
-      // for this session. Revealed tools are collected and appended at the
-      // very end of the record (after the MCP entries below) so every
-      // already-visible tool's position stays byte-stable across reveals,
-      // keeping provider prompt-caches intact.
+      // Progressive tool disclosure phase 2: deferred tools stay registered and
+      // revealed ones stay OUT of the model-facing record. Unpromoted revealed
+      // tools are collected into `revealedCallable` — they ride the tail
+      // `revealedTools` runtime-context section and the LLM repair path executes
+      // calls by name — so every visible tool's position stays byte-stable even
+      // across reveals. A reveal at or before the newest completed compaction
+      // summary is promoted into the record here (the provider cache is rebuilt
+      // across that boundary anyway, so the schema bytes are free).
       const revealedDeferred = yield* toolSearch.revealed(session.id)
+      const revealTimes = yield* toolSearch.revealTimes(session.id)
+      const compactionTime = latestCompactionTime(messages)
       const deferredHidden: string[] = []
-      const revealedTools: [string, AITool][] = []
+      const revealedCallable: Record<string, AITool> = {}
       for (const item of yield* registry.tools({
         modelID: ModelID.make(model.api.id),
         providerID: model.providerID,
@@ -1013,7 +1100,8 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           },
         })
         if (deferred) {
-          revealedTools.push([item.id, built])
+          if (isPromotedReveal(revealTimes.get(item.id), compactionTime)) tools[item.id] = built
+          else revealedCallable[item.id] = built
           continue
         }
         tools[item.id] = built
@@ -1149,16 +1237,10 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                       b.client + "\u0000" + b.name + "\u0000" + b.uriTemplate,
                     ),
                   )
-                const content = JSON.stringify(
-                  { resourceTemplates: filtered.map(formatMcpCatalogEntry) },
-                  null,
-                  2,
-                )
+                const content = JSON.stringify({ resourceTemplates: filtered.map(formatMcpCatalogEntry) }, null, 2)
                 const truncated = yield* truncate.output(content, {}, agent)
                 const output = {
-                  title: parsed.server
-                    ? `MCP resource templates: ${parsed.server}`
-                    : "MCP resource templates",
+                  title: parsed.server ? `MCP resource templates: ${parsed.server}` : "MCP resource templates",
                   metadata: {
                     count: filtered.length,
                     servers: resourceServers,
@@ -1351,8 +1433,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         tools[key] = item
       }
 
-      for (const [id, built] of revealedTools) tools[id] = built
-      return { tools, deferredHidden }
+      return { tools, deferredHidden, revealedCallable }
     })
 
     const handleSubtask = Effect.fn("SessionPrompt.handleSubtask")(function* (input: {
@@ -1727,21 +1808,20 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       return yield* Effect.failCause(exit.cause)
     })
 
-    const assertRemoteCompactionModelUnlocked = Effect.fn("SessionPrompt.assertRemoteCompactionModelUnlocked")(function* (input: {
-      sessionID: SessionID
-      model: { providerID: ProviderID; modelID: ModelID }
-    }) {
-      const lock = yield* sessions.remoteCompactionLock(input.sessionID)
-      if (!lock) return
-      const model = yield* getModel(input.model.providerID, input.model.modelID, input.sessionID)
-      const resolution = yield* remoteCompaction.resolve({ model, session: { sessionID: input.sessionID, lock } })
-      if (resolution.replay.mode !== "blocked") return
-      const error = new NamedError.Unknown({
-        message: `This session already installed remote compaction and is locked to ${lock.providerID}/${lock.modelID}. Requested ${input.model.providerID}/${input.model.modelID}. Fork or start a new session to use another provider or logical model.`,
-      })
-      yield* bus.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() })
-      throw error
-    })
+    const assertRemoteCompactionModelUnlocked = Effect.fn("SessionPrompt.assertRemoteCompactionModelUnlocked")(
+      function* (input: { sessionID: SessionID; model: { providerID: ProviderID; modelID: ModelID } }) {
+        const lock = yield* sessions.remoteCompactionLock(input.sessionID)
+        if (!lock) return
+        const model = yield* getModel(input.model.providerID, input.model.modelID, input.sessionID)
+        const resolution = yield* remoteCompaction.resolve({ model, session: { sessionID: input.sessionID, lock } })
+        if (resolution.replay.mode !== "blocked") return
+        const error = new NamedError.Unknown({
+          message: `This session already installed remote compaction and is locked to ${lock.providerID}/${lock.modelID}. Requested ${input.model.providerID}/${input.model.modelID}. Fork or start a new session to use another provider or logical model.`,
+        })
+        yield* bus.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() })
+        throw error
+      },
+    )
 
     const lastModel = Effect.fnUntraced(function* (sessionID: SessionID) {
       const match = yield* sessions.findMessage(sessionID, (m) => m.info.role === "user" && !!m.info.model)
@@ -1758,59 +1838,59 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       )
     })
 
-const COMMAND_PROGRESS_INTERVAL_MS = 1_000
+    const COMMAND_PROGRESS_INTERVAL_MS = 1_000
 
-// Publishes throttled command.progress events from the graph sync onProgress callback.
-// The first event goes out immediately, then at most one per second unless a phase
-// completes. commandGraphProgress(input).complete() sends the terminal "complete"
-// phase so both UIs can hide the indicator before command.executed arrives.
-const commandGraphProgress = (input: CommandInput) => {
-  const startedAt = Date.now()
-  let latest: IndexProgress | undefined
-  let emitted = false
-  let lastEmittedAt = 0
+    // Publishes throttled command.progress events from the graph sync onProgress callback.
+    // The first event goes out immediately, then at most one per second unless a phase
+    // completes. commandGraphProgress(input).complete() sends the terminal "complete"
+    // phase so both UIs can hide the indicator before command.executed arrives.
+    const commandGraphProgress = (input: CommandInput) => {
+      const startedAt = Date.now()
+      let latest: IndexProgress | undefined
+      let emitted = false
+      let lastEmittedAt = 0
 
-  const emit = (progress: IndexProgress) => {
-    const now = Date.now()
-    const phaseDone = progress.total > 0 && progress.current >= progress.total
-    if (emitted && !phaseDone && now - lastEmittedAt < COMMAND_PROGRESS_INTERVAL_MS) return
-    emitted = true
-    lastEmittedAt = now
-    const file = progress.currentFile
-    void Bus.publish(Command.Event.Progress, {
-      name: input.command,
-      sessionID: input.sessionID,
-      arguments: input.arguments,
-      phase: progress.phase,
-      current: progress.current,
-      total: progress.total,
-      currentFile: file && file.length > 80 ? `...${file.slice(-77)}` : file,
-      elapsedMs: now - startedAt,
-    }).catch(() => undefined)
-  }
+      const emit = (progress: IndexProgress) => {
+        const now = Date.now()
+        const phaseDone = progress.total > 0 && progress.current >= progress.total
+        if (emitted && !phaseDone && now - lastEmittedAt < COMMAND_PROGRESS_INTERVAL_MS) return
+        emitted = true
+        lastEmittedAt = now
+        const file = progress.currentFile
+        void Bus.publish(Command.Event.Progress, {
+          name: input.command,
+          sessionID: input.sessionID,
+          arguments: input.arguments,
+          phase: progress.phase,
+          current: progress.current,
+          total: progress.total,
+          currentFile: file && file.length > 80 ? `...${file.slice(-77)}` : file,
+          elapsedMs: now - startedAt,
+        }).catch(() => undefined)
+      }
 
-  return {
-    onProgress(progress: IndexProgress) {
-      latest = progress
-      emit(progress)
-    },
-    complete() {
-      const now = Date.now()
-      void Bus.publish(Command.Event.Progress, {
-        name: input.command,
-        sessionID: input.sessionID,
-        arguments: input.arguments,
-        phase: "complete",
-        current: latest?.current ?? 0,
-        total: latest?.total ?? 0,
-        currentFile: undefined,
-        elapsedMs: now - startedAt,
-      }).catch(() => undefined)
-    },
-  }
-}
+      return {
+        onProgress(progress: IndexProgress) {
+          latest = progress
+          emit(progress)
+        },
+        complete() {
+          const now = Date.now()
+          void Bus.publish(Command.Event.Progress, {
+            name: input.command,
+            sessionID: input.sessionID,
+            arguments: input.arguments,
+            phase: "complete",
+            current: latest?.current ?? 0,
+            total: latest?.total ?? 0,
+            currentFile: undefined,
+            elapsedMs: now - startedAt,
+          }).catch(() => undefined)
+        },
+      }
+    }
 
-const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (input: CommandInput) {
+    const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (input: CommandInput) {
       const ctx = yield* InstanceState.context
       const agentName = input.agent ?? (yield* agents.defaultAgent())
       const model = yield* commandModel(input)
@@ -2363,34 +2443,34 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
       return { info, parts }
     }, Effect.scoped)
 
-    const prompt: (input: PromptInput) => Effect.Effect<MessageV2.WithParts, Image.Error> = Effect.fn("SessionPrompt.prompt")(function* (input: PromptInput) {
-        // Arm the per-instance edit-intent release watcher (memoized; the
-        // subscriptions need instance context, which layer build lacks).
-        yield* InstanceState.get(editIntentWatch)
-        const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
-        yield* revert.cleanup(session)
-        const message = yield* createUserMessage(input)
-        yield* sessions.touch(input.sessionID)
+    const prompt: (input: PromptInput) => Effect.Effect<MessageV2.WithParts, Image.Error> = Effect.fn(
+      "SessionPrompt.prompt",
+    )(function* (input: PromptInput) {
+      // Arm the per-instance edit-intent release watcher (memoized; the
+      // subscriptions need instance context, which layer build lacks).
+      yield* InstanceState.get(editIntentWatch)
+      const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+      yield* revert.cleanup(session)
+      const message = yield* createUserMessage(input)
+      yield* sessions.touch(input.sessionID)
 
-        const permissions: Permission.Ruleset = []
-        for (const [t, enabled] of Object.entries(input.tools ?? {})) {
-          permissions.push({ permission: t, action: enabled ? "allow" : "deny", pattern: "*" })
-        }
-        if (permissions.length > 0) {
-          session.permission = [
-            ...(session.permission ?? []).filter(
-              (rule) =>
-                !permissions.some((slot) => slot.permission === rule.permission && slot.pattern === rule.pattern),
-            ),
-            ...permissions,
-          ]
-          yield* sessions.updatePermissionSlots({ sessionID: session.id, rules: permissions }).pipe(Effect.orDie)
-        }
+      const permissions: Permission.Ruleset = []
+      for (const [t, enabled] of Object.entries(input.tools ?? {})) {
+        permissions.push({ permission: t, action: enabled ? "allow" : "deny", pattern: "*" })
+      }
+      if (permissions.length > 0) {
+        session.permission = [
+          ...(session.permission ?? []).filter(
+            (rule) => !permissions.some((slot) => slot.permission === rule.permission && slot.pattern === rule.pattern),
+          ),
+          ...permissions,
+        ]
+        yield* sessions.updatePermissionSlots({ sessionID: session.id, rules: permissions }).pipe(Effect.orDie)
+      }
 
-        if (input.noReply === true) return message
-        return yield* loop({ sessionID: input.sessionID })
-      },
-    )
+      if (input.noReply === true) return message
+      return yield* loop({ sessionID: input.sessionID })
+    })
 
     const injectSynthetic = Effect.fn("SessionPrompt.injectSynthetic")(function* (input: InjectSyntheticInput) {
       // Typed failure (NotFoundError) instead of Effect.orDie: a notify path that
@@ -2469,7 +2549,11 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
           let loopState = inspectLoopMessages(msgs)
 
           if (!loopState.lastUser) throw new Error("No user message found in stream. This should never happen.")
-          const model = yield* getModel(loopState.lastUser.model.providerID, loopState.lastUser.model.modelID, sessionID)
+          const model = yield* getModel(
+            loopState.lastUser.model.providerID,
+            loopState.lastUser.model.modelID,
+            sessionID,
+          )
           const remoteCompaction = yield* remoteCompactionReplay(sessionID, model)
           if (remoteCompaction === "text") {
             msgs = yield* MessageV2.filterCompactedEffect(sessionID, { remoteCompaction })
@@ -2495,8 +2579,7 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
             lastUser.id < lastAssistant.id
           ) {
             const hasText = lastAssistantMsg?.parts.some((p) => p.type === "text") ?? false
-            const isCutoff =
-              lastAssistant.finish === "length" && !hasText && cutoffRetries < CUTOFF_MAX_RETRIES
+            const isCutoff = lastAssistant.finish === "length" && !hasText && cutoffRetries < CUTOFF_MAX_RETRIES
             if (cutoffPending || isCutoff) {
               if (!cutoffPending) {
                 cutoffRetries++
@@ -2616,7 +2699,7 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
             const lastUserMsg = msgs.findLast(realUser)
             const bypassAgentCheck = lastUserMsg?.parts.some((p) => p.type === "agent") ?? false
 
-            const { tools, deferredHidden } = yield* resolveTools({
+            const { tools, deferredHidden, revealedCallable } = yield* resolveTools({
               agent,
               session,
               model,
@@ -2690,13 +2773,14 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
                 MessageV2.toModelMessagesEffect(msgs.slice(0, currentUserIndex), model, { remoteCompaction }),
                 MessageV2.toModelMessagesEffect(msgs.slice(currentUserIndex), model, { remoteCompaction }),
               ])
-              return { history, runtime: [] as ModelMessage[], memory: memoryContext ? [memoryContext.message] : [], current }
+              return {
+                history,
+                runtime: [] as ModelMessage[],
+                memory: memoryContext ? [memoryContext.message] : [],
+                current,
+              }
             })
-            const modelMsgs = [
-              ...splitModelMsgs.history,
-              ...splitModelMsgs.memory,
-              ...splitModelMsgs.current,
-            ]
+            const modelMsgs = [...splitModelMsgs.history, ...splitModelMsgs.memory, ...splitModelMsgs.current]
             const system = [
               ...env,
               ...instructions,
@@ -2739,6 +2823,7 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
               messages: [...modelMsgs, ...extraModelMsgs],
               tools,
               deferredHidden,
+              revealedCallable,
               model,
               toolChoice: format.type === "json_schema" ? "required" : undefined,
             })
@@ -2869,7 +2954,10 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
               )
               yield* handle.exitCode
               return output
-            }).pipe(Effect.scoped, Effect.catch(() => Effect.succeed(""))),
+            }).pipe(
+              Effect.scoped,
+              Effect.catch(() => Effect.succeed("")),
+            ),
           ),
           { concurrency: "unbounded" },
         )
@@ -2910,23 +2998,21 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
         (part) => part.type !== "file" || !inputFiles.has(fileURLToPath(part.url)),
       )
       const isSubtask = (agent.mode === "subagent" && cmd.subtask !== false) || cmd.subtask === true
-      const parts = (isSubtask
-        ? [
-            {
-              type: "subtask" as const,
-              agent: agent.name,
-              description: cmd.description ?? "",
-              command: input.command,
-              model: { providerID: taskModel.providerID, modelID: taskModel.modelID },
-              prompt: templateParts.find((y) => y.type === "text")?.text ?? "",
-            },
-          ]
-        : [...uniqueTemplateParts, ...(input.parts ?? [])]
-
+      const parts = (
+        isSubtask
+          ? [
+              {
+                type: "subtask" as const,
+                agent: agent.name,
+                description: cmd.description ?? "",
+                command: input.command,
+                model: { providerID: taskModel.providerID, modelID: taskModel.modelID },
+                prompt: templateParts.find((y) => y.type === "text")?.text ?? "",
+              },
+            ]
+          : [...uniqueTemplateParts, ...(input.parts ?? [])]
       ).map((part) =>
-        part.type === "text"
-          ? { ...part, metadata: { ...part.metadata, memorySource: "command" } }
-          : part,
+        part.type === "text" ? { ...part, metadata: { ...part.metadata, memorySource: "command" } } : part,
       )
 
       const userAgent = isSubtask ? (input.agent ?? (yield* agents.defaultAgent())) : agentName
@@ -3038,7 +3124,11 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
       }
     })
     const releaseEditIntentClaims = Effect.fnUntraced(function* (root: string, sessionID: SessionID) {
-      const released = yield* EditIntentClaims.releaseForSession({ projectRoot: root, sessionID, reason: "session_idle" })
+      const released = yield* EditIntentClaims.releaseForSession({
+        projectRoot: root,
+        sessionID,
+        reason: "session_idle",
+      })
       const drained = yield* EditIntentClaims.drainForSession({ projectRoot: root, sessionID })
       yield* wakeEditIntentTargets([...released, ...drained])
     })
@@ -3147,7 +3237,9 @@ const initGraphCommand = Effect.fn("SessionPrompt.initGraphCommand")(function* (
         // first tick immediately, then waits between completions.
         yield* EditIntentClaims.pollCrossProcessWakes({ projectRoot: root }).pipe(
           Effect.flatMap(wakeEditIntentTargets),
-          Effect.catchCause((cause) => Effect.sync(() => log.error("edit-intent cross-process poll failed", { cause }))),
+          Effect.catchCause((cause) =>
+            Effect.sync(() => log.error("edit-intent cross-process poll failed", { cause })),
+          ),
           Effect.repeat(Schedule.spaced("3 seconds")),
           Effect.forkScoped,
         )

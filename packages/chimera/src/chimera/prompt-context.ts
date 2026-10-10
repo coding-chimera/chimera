@@ -1,7 +1,16 @@
 import path from "path"
 import { Context, Effect, Layer, Option } from "effect"
 import { InstanceState } from "@/effect/instance-state"
-import { readAuditRuns, readOracleResults, readPersistentObligationStore, readPredesignRuns, readRecentProvenanceRecords, type AuditRunRecord, type OracleRecord, type PredesignRunRecord } from "./store"
+import {
+  readAuditRuns,
+  readOracleResults,
+  readPersistentObligationStore,
+  readPredesignRuns,
+  readRecentProvenanceRecords,
+  type AuditRunRecord,
+  type OracleRecord,
+  type PredesignRunRecord,
+} from "./store"
 import type { ToolMutationRecord } from "./provenance"
 import type { SessionID } from "@/session/schema"
 import type { MessageV2 } from "@/session/message-v2"
@@ -68,25 +77,29 @@ function artifactPaths(root: string, file: string) {
 
 async function readProvenanceWithFallback(root: string) {
   let records = [] as ToolMutationRecord[]
-  for (const artifact of artifactPaths(root, "tool-provenance.jsonl")) records = await readRecentProvenanceRecords(root, artifact, { limit: MAX_RECENT_MUTATIONS * 20 })
+  for (const artifact of artifactPaths(root, "tool-provenance.jsonl"))
+    records = await readRecentProvenanceRecords(root, artifact, { limit: MAX_RECENT_MUTATIONS * 20 })
   return records
 }
 
 async function readPredesignsWithFallback(root: string, sessionID: SessionID) {
   let records = [] as PredesignRunRecord[]
-  for (const artifact of artifactPaths(root, "predesign-runs.jsonl")) records = await readPredesignRuns(root, artifact, { sessionID, limit: MAX_RECENT_PREDESIGNS })
+  for (const artifact of artifactPaths(root, "predesign-runs.jsonl"))
+    records = await readPredesignRuns(root, artifact, { sessionID, limit: MAX_RECENT_PREDESIGNS })
   return records
 }
 
 async function readObligationsWithFallback(root: string) {
   let store: ObligationStore = { schemaVersion: 1, obligations: [] }
-  for (const artifact of artifactPaths(root, "obligations.json")) store = await readPersistentObligationStore<PromptObligation>(root, artifact, store)
+  for (const artifact of artifactPaths(root, "obligations.json"))
+    store = await readPersistentObligationStore<PromptObligation>(root, artifact, store)
   return store
 }
 
 async function readOraclesWithFallback(root: string, sessionID: SessionID) {
   let records = [] as OracleRecord[]
-  for (const artifact of artifactPaths(root, "oracle-results.jsonl")) records = await readOracleResults(root, artifact, { sessionID, limit: 50, includePassing: true })
+  for (const artifact of artifactPaths(root, "oracle-results.jsonl"))
+    records = await readOracleResults(root, artifact, { sessionID, limit: 50, includePassing: true })
   return records
 }
 
@@ -107,9 +120,7 @@ function recentMutations(records: ToolMutationRecord[], sessionID: SessionID) {
 }
 
 function recentPredesigns(records: PredesignRunRecord[], sessionID: SessionID) {
-  return records
-    .filter((record) => record.sessionID === sessionID)
-    .slice(0, MAX_RECENT_PREDESIGNS)
+  return records.filter((record) => record.sessionID === sessionID).slice(0, MAX_RECENT_PREDESIGNS)
 }
 
 function activeObligations(store: ObligationStore) {
@@ -157,26 +168,41 @@ function graphSnapshot(recent: ToolMutationRecord[], predesigns: PredesignRunRec
 const FRONTEND_COMPONENT_FILE = /\.(tsx|jsx|vue|svelte)$/
 
 function frontendVerificationGap(recent: ToolMutationRecord[], oracles: OracleRecord[]) {
-  const mutation = recent.find((record) => record.files.some((file) => FRONTEND_COMPONENT_FILE.test(file.graphPath ?? file.absolutePath)))
+  const mutation = recent.find((record) =>
+    record.files.some((file) => FRONTEND_COMPONENT_FILE.test(file.graphPath ?? file.absolutePath)),
+  )
   if (!mutation) return undefined
   const verified = oracles.some((oracle) => oracle.trusted && oracle.finishedAt >= mutation.finishedAt)
   if (verified) return undefined
   return "- Frontend component mutation without trusted verification evidence: run the project's lint/tests before closeout (framework invariants such as React hook ordering are invisible to structural audit); if the project has no lint configuration, report that gap to the user."
 }
 
-function closeoutSignals(recent: ToolMutationRecord[], obligations: PromptObligation[], predesigns: PredesignRunRecord[], oracles: OracleRecord[], audits: AuditRunRecord[], drift: string | undefined) {
+function closeoutSignals(
+  recent: ToolMutationRecord[],
+  obligations: PromptObligation[],
+  predesigns: PredesignRunRecord[],
+  oracles: OracleRecord[],
+  audits: AuditRunRecord[],
+  drift: string | undefined,
+) {
   const frontendGap = frontendVerificationGap(recent, oracles)
   return [
     ...(recent.length && !latestAudit(audits, recent[0])
-      ? ["- Recent mutation present but no audit evidence was recorded (graph degraded during the edit?): run `chimera_audit_recent` before claiming completion."]
+      ? [
+          "- Recent mutation present but no audit evidence was recorded (graph degraded during the edit?): run `chimera_audit_recent` before claiming completion.",
+        ]
       : []),
     ...(drift ? [drift] : []),
     ...(frontendGap ? [frontendGap] : []),
     ...(predesigns.length && recent.length === 0
       ? ["- Pre-design evidence recorded; mutations are audited automatically when they land."]
       : []),
-    ...(obligations.length ? ["- Active obligations remain: review, resolve, or ignore each relevant obligation before closeout."] : []),
-    ...(recent.length || obligations.length || predesigns.length || drift ? [] : ["- No Chimera closeout signals recorded."]),
+    ...(obligations.length
+      ? ["- Active obligations remain: review, resolve, or ignore each relevant obligation before closeout."]
+      : []),
+    ...(recent.length || obligations.length || predesigns.length || drift
+      ? []
+      : ["- No Chimera closeout signals recorded."]),
   ]
 }
 
@@ -194,26 +220,47 @@ function gateLine(mode: "ordinary" | "apocalypse", decision: "pass" | "warn" | "
   return `- ${mode}: ${decision}${reasons.length ? ` — ${reasons.join("; ")}` : ""}`
 }
 
-function closeoutGate(recent: ToolMutationRecord[], obligations: PromptObligation[], audits: AuditRunRecord[], oracles: OracleRecord[]) {
+function closeoutGate(
+  recent: ToolMutationRecord[],
+  obligations: PromptObligation[],
+  audits: AuditRunRecord[],
+  oracles: OracleRecord[],
+) {
   const latest = recent[0]
   const audit = latestAudit(audits, latest)
   const linkedOracles = oracles.filter((oracle) => linkedToLatest(oracle, latest))
   const ordinaryReasons = [
-    latest && !audit ? "latest mutation has no recorded audit evidence (auto-record degraded); run chimera_audit_recent" : undefined,
-    obligations.length ? "active obligations remain; review, resolve, ignore, or explicitly justify ordinary closeout" : undefined,
-    linkedOracles.length ? "failing/unknown oracle evidence is linked to the latest mutation; review the Linked Verification Evidence lines and address or dismiss each before closeout" : undefined,
+    latest && !audit
+      ? "latest mutation has no recorded audit evidence (auto-record degraded); run chimera_audit_recent"
+      : undefined,
+    obligations.length
+      ? "active obligations remain; review, resolve, ignore, or explicitly justify ordinary closeout"
+      : undefined,
+    linkedOracles.length
+      ? "failing/unknown oracle evidence is linked to the latest mutation; review the Linked Verification Evidence lines and address or dismiss each before closeout"
+      : undefined,
   ].filter((item): item is string => Boolean(item))
   const apocalypseReasons = [
-    latest && !audit ? "latest mutation has no recorded audit run (auto-record degraded); run chimera_audit_recent" : undefined,
+    latest && !audit
+      ? "latest mutation has no recorded audit run (auto-record degraded); run chimera_audit_recent"
+      : undefined,
     obligations.length ? "all active obligations must be resolved or ignored" : undefined,
-    linkedOracles.length ? "linked failing/unknown oracle evidence must be addressed; summaries are inlined above, chimera_oracle_get fetches full output" : undefined,
-    latest && audit ? undefined : !latest ? undefined : "verification evidence or not-applicable rationale must be explicit",
+    linkedOracles.length
+      ? "linked failing/unknown oracle evidence must be addressed; the summaries inlined above are usually sufficient — full output via `chimera_oracle_get` (a deferred tool: reveal it with `tool_search`, then pass the oracle ref)"
+      : undefined,
+    latest && audit
+      ? undefined
+      : !latest
+        ? undefined
+        : "verification evidence or not-applicable rationale must be explicit",
   ].filter((item): item is string => Boolean(item))
 
   return [
     gateLine("ordinary", ordinaryReasons.length ? "warn" : "pass", ordinaryReasons),
     gateLine("apocalypse", apocalypseReasons.length ? "block" : "pass", apocalypseReasons),
-    audit ? `- latest audit evidence: ${audit.id} at ${audit.createdAt}` : "- latest audit evidence: none recorded for latest mutation",
+    audit
+      ? `- latest audit evidence: ${audit.id} at ${audit.createdAt}`
+      : "- latest audit evidence: none recorded for latest mutation",
   ]
 }
 
@@ -221,11 +268,19 @@ const MAX_INLINE_ORACLES = 5
 
 function oracleSummaryLine(oracle: OracleRecord) {
   const payload = oracle.payload as
-    | { shell?: { command?: string; exit?: number | null; output?: string }; lsp?: { diagnosticCount?: number; files?: string[] } }
+    | {
+        shell?: { command?: string; exit?: number | null; output?: string }
+        lsp?: { diagnosticCount?: number; files?: string[] }
+      }
     | undefined
   if (oracle.kind === "shell" && payload?.shell) {
     const command = (payload.shell.command ?? "").split("\n")[0].trim().slice(0, 80)
-    const detail = (payload.shell.output ?? "").split("\n").map((line) => line.trim()).filter(Boolean).pop()?.slice(0, 120)
+    const detail = (payload.shell.output ?? "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .pop()
+      ?.slice(0, 120)
     return {
       key: `shell:${command}:${payload.shell.exit}`,
       line: `- [${oracle.status}] shell exit ${payload.shell.exit ?? "?"}: ${command || "(no command)"}${detail ? ` — ${detail}` : ""} (oracle:${oracle.id})`,
@@ -238,7 +293,10 @@ function oracleSummaryLine(oracle: OracleRecord) {
       line: `- [${oracle.status}] lsp: ${payload?.lsp?.diagnosticCount ?? "?"} diagnostic(s) in ${file} (oracle:${oracle.id})`,
     }
   }
-  return { key: `${oracle.kind}:${oracle.id}`, line: `- [${oracle.status}] ${oracle.kind} evidence (oracle:${oracle.id})` }
+  return {
+    key: `${oracle.kind}:${oracle.id}`,
+    line: `- [${oracle.status}] ${oracle.kind} evidence (oracle:${oracle.id})`,
+  }
 }
 
 /**
@@ -285,7 +343,9 @@ function scopeFlaggedFiles(messages: readonly MessageV2.WithParts[]): ScopeFlag[
         if (start < 0) continue
         // Normalize annotations before splitting: the via group contains a
         // ", " separator, so fold it into a NUL-delimited depth marker.
-        const list = line.slice(start + SCOPE_REACHES_MARKER.length).split(SCOPE_LIST_END)[0]
+        const list = line
+          .slice(start + SCOPE_REACHES_MARKER.length)
+          .split(SCOPE_LIST_END)[0]
           .replace(/ \(\+\d+ more\)/g, "")
           .replace(/ \(via [^)]*?, (\d+) hops\)/g, "\u0000$1")
           .replace(/ \(via [^)]*\)/g, "\u00002")
@@ -307,7 +367,12 @@ function scopeFlaggedFiles(messages: readonly MessageV2.WithParts[]): ScopeFlag[
   return flagged
 }
 
-function scopeDriftSignal(flagged: ScopeFlag[], records: readonly ToolMutationRecord[], sessionID: SessionID, predesigns: PredesignRunRecord[]) {
+function scopeDriftSignal(
+  flagged: ScopeFlag[],
+  records: readonly ToolMutationRecord[],
+  sessionID: SessionID,
+  predesigns: PredesignRunRecord[],
+) {
   if (flagged.length === 0) return undefined
   const touched = new Set(
     records
@@ -323,7 +388,9 @@ function scopeDriftSignal(flagged: ScopeFlag[], records: readonly ToolMutationRe
     .filter((entry) => entry.depth >= 2 && !touched.has(entry.file) && !declared.has(entry.file))
     .map((entry) => entry.file)
   if (open.length === 0) return undefined
-  const shown = open.slice(0, MAX_SCOPE_DRIFT_DISPLAY).join(", ") + (open.length > MAX_SCOPE_DRIFT_DISPLAY ? ` (+${open.length - MAX_SCOPE_DRIFT_DISPLAY} more)` : "")
+  const shown =
+    open.slice(0, MAX_SCOPE_DRIFT_DISPLAY).join(", ") +
+    (open.length > MAX_SCOPE_DRIFT_DISPLAY ? ` (+${open.length - MAX_SCOPE_DRIFT_DISPLAY} more)` : "")
   return `- Unreconciled scope drift: ${shown} — named by propagation scope checks during this session but never edited or declared in a predesign since. Reconcile each one before closeout: reading alone misses cross-encoding drift (a stale decimal 1 vs a new 0x02), so where feasible RUN each named file's exported functions once against the new behavior — stale hardcodes throw. Then edit it (record a predesign first if the gate asks) or explicitly state why it needs no change.`
 }
 
@@ -347,7 +414,10 @@ function discoveryCounts(messages: readonly MessageV2.WithParts[]) {
   return { graphCalls, textCalls, markerSeen }
 }
 
-const graphDiscoveryHint = Effect.fnUntraced(function* (root: string, messages: Option.Option<readonly MessageV2.WithParts[]>) {
+const graphDiscoveryHint = Effect.fnUntraced(function* (
+  root: string,
+  messages: Option.Option<readonly MessageV2.WithParts[]>,
+) {
   if (getGraphDataRootInfo(root).dataRootStatus === "uninitialized") return undefined
   if (Option.isNone(messages)) return undefined
   const counts = discoveryCounts(messages.value)
@@ -355,10 +425,29 @@ const graphDiscoveryHint = Effect.fnUntraced(function* (root: string, messages: 
   return [GRAPH_DISCOVERY_HINT_HEADER, GRAPH_DISCOVERY_HINT_BODY]
 })
 
-function renderContext(recent: ToolMutationRecord[], obligations: PromptObligation[], predesigns: PredesignRunRecord[], audits: AuditRunRecord[], oracles: OracleRecord[], hint: readonly string[] | undefined, drift: string | undefined, claimsLines: string[]) {
+function renderContext(
+  recent: ToolMutationRecord[],
+  obligations: PromptObligation[],
+  predesigns: PredesignRunRecord[],
+  audits: AuditRunRecord[],
+  oracles: OracleRecord[],
+  hint: readonly string[] | undefined,
+  drift: string | undefined,
+  claimsLines: string[],
+) {
   const nonPassingOracles = oracles.filter((oracle) => oracle.status !== "pass")
   const oracleLines = linkedOracleLines(recent, nonPassingOracles)
-  if (recent.length === 0 && obligations.length === 0 && predesigns.length === 0 && audits.length === 0 && nonPassingOracles.length === 0 && claimsLines.length === 0 && !hint && !drift) return undefined
+  if (
+    recent.length === 0 &&
+    obligations.length === 0 &&
+    predesigns.length === 0 &&
+    audits.length === 0 &&
+    nonPassingOracles.length === 0 &&
+    claimsLines.length === 0 &&
+    !hint &&
+    !drift
+  )
+    return undefined
   return [
     "## Chimera Execution Context",
     "",
@@ -387,23 +476,18 @@ function renderContext(recent: ToolMutationRecord[], obligations: PromptObligati
     "Active Obligations:",
     ...(obligations.length
       ? obligations.map(
-        (item) =>
+          (item) =>
             `- ${item.id} [${item.status}] ${item.target}; risk: ${item.risk}; evidence: ${item.evidence}; lifecycle: ${item.replayLifecycle?.status ?? "unknown"}; reason: ${compact(item.staleReason ?? item.reason)}`,
-      )
+        )
       : ["- None active."]),
     ...(oracleLines.length
       ? [
           "",
-          "Linked Verification Evidence (failing/unknown results linked to recent mutations; full output via chimera_oracle_get with ref oracle:<id>):",
+          "Linked Verification Evidence (failing/unknown results linked to recent mutations; these summaries are usually sufficient — for full output, reveal `chimera_oracle_get` with `tool_search` and pass ref oracle:<id>):",
           ...oracleLines,
         ]
       : []),
-    ...(claimsLines.length
-      ? [
-          "",
-          ...claimsLines,
-        ]
-      : []),
+    ...(claimsLines.length ? ["", ...claimsLines] : []),
     "",
     "Closeout Gate:",
     ...closeoutGate(recent, obligations, audits, nonPassingOracles),
@@ -417,7 +501,10 @@ function renderContext(recent: ToolMutationRecord[], obligations: PromptObligati
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
-    const render = Effect.fn("ChimeraPromptContext.render")(function* (sessionID: SessionID, sessions: Session.Interface) {
+    const render = Effect.fn("ChimeraPromptContext.render")(function* (
+      sessionID: SessionID,
+      sessions: Session.Interface,
+    ) {
       const instance = yield* InstanceState.context
       const root = projectRoot(instance)
       const records = yield* Effect.promise(() => readProvenanceWithFallback(root))
@@ -435,7 +522,16 @@ export const layer = Layer.effect(
         sessionPredesigns,
       )
       const claimsLines = yield* EditIntentClaims.contextLines({ projectRoot: root, sessionID })
-      return renderContext(recentMutations(records, sessionID), activeObligations(store), sessionPredesigns, audits, oracles, hint, drift, claimsLines)
+      return renderContext(
+        recentMutations(records, sessionID),
+        activeObligations(store),
+        sessionPredesigns,
+        audits,
+        oracles,
+        hint,
+        drift,
+        claimsLines,
+      )
     })
 
     return Service.of({ render })
