@@ -285,6 +285,85 @@ const unavailableGrammarErrors = new Map<Language, string>();
 let parserInitialized = false;
 
 /**
+ * Production grammar unload (B5). A loaded grammar (WASM Language) and its
+ * parser are cached for the whole process, so a long-running server — the
+ * web/graph server and its in-process index/sync paths, plus the ast-grep
+ * pattern engine — accumulates one resident WebAssembly instance per language
+ * it has ever parsed and never releases it. We therefore drop a language's
+ * grammar + parser once NO grammar has been touched for
+ * `GRAMMAR_IDLE_UNLOAD_MS`; the next parse reloads through
+ * loadGrammarsForLanguages (every bulk index/sync preloads, and the pattern
+ * engine calls ensureGrammarLoaded first), so extraction output is unchanged.
+ *
+ * Dev/test is untouched: `loadAllGrammars` (the tests' entry point) pins the
+ * caches for the process, and the default worker pool already reclaims its
+ * grammars by recycling workers. Set CODEGRAPH_GRAMMAR_IDLE_UNLOAD_MS=0 to
+ * disable the idle release entirely.
+ */
+const DEFAULT_GRAMMAR_IDLE_UNLOAD_MS = 5000;
+
+let grammarsPinned = false;
+let grammarIdleTimer: ReturnType<typeof setTimeout> | null = null;
+let lastGrammarActivityAt = 0;
+
+/** Idle-release window; `CODEGRAPH_GRAMMAR_IDLE_UNLOAD_MS=0` disables it. */
+function grammarIdleUnloadMs(): number {
+  const raw = process.env.CODEGRAPH_GRAMMAR_IDLE_UNLOAD_MS;
+  if (raw !== undefined && raw !== '') {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed >= 0) return Math.floor(parsed);
+  }
+  return DEFAULT_GRAMMAR_IDLE_UNLOAD_MS;
+}
+
+/**
+ * Record grammar use and (re)arm the idle-release timer. Cheap by design:
+ * a number bump plus a guarded timer check on the hot getParser path.
+ */
+function noteGrammarActivity(): void {
+  lastGrammarActivityAt = Date.now();
+  if (grammarsPinned || grammarIdleTimer) return;
+  const idleMs = grammarIdleUnloadMs();
+  if (idleMs <= 0) return;
+  grammarIdleTimer = setTimeout(runGrammarIdleUnload, idleMs);
+  grammarIdleTimer.unref?.();
+}
+
+/**
+ * Fire only when the whole process has been grammar-idle for the full window;
+ * otherwise re-arm for the remainder. Guarding on GLOBAL idleness (not
+ * per-language) is what makes the release safe mid-batch: any parse keeps the
+ * timer from firing, so a grammar in use is never evicted.
+ */
+function runGrammarIdleUnload(): void {
+  grammarIdleTimer = null;
+  if (grammarsPinned) return;
+  const idleMs = grammarIdleUnloadMs();
+  if (idleMs <= 0) return;
+  const since = Date.now() - lastGrammarActivityAt;
+  if (since < idleMs) {
+    grammarIdleTimer = setTimeout(runGrammarIdleUnload, idleMs - since);
+    grammarIdleTimer.unref?.();
+    return;
+  }
+  releaseIdleGrammars();
+}
+
+/**
+ * Drop every cached grammar + parser. web-tree-sitter gives each grammar its
+ * own WebAssembly instance (and linear memory), so releasing the Language
+ * reference lets it be collected — unlike a single shared heap, which could
+ * never shrink.
+ */
+function releaseIdleGrammars(): void {
+  for (const language of new Set([...parserCache.keys(), ...languageCache.keys()])) {
+    resetParser(language);
+    languageCache.delete(language);
+  }
+  lastGrammarActivityAt = 0;
+}
+
+/**
  * Initialize the tree-sitter WASM runtime. Must be called before loading grammars.
  * Does NOT load any grammar WASM files — use loadGrammarsForLanguages() for that.
  * Idempotent — safe to call multiple times.
@@ -519,6 +598,10 @@ export async function loadGrammarsForLanguages(languages: Language[], wasmBytes?
       unavailableGrammarErrors.set(lang, message);
     }
   }
+
+  // Any preload counts as activity: it (re)arms the B5 idle-release timer, and
+  // a pinned process (tests via loadAllGrammars) ignores it.
+  noteGrammarActivity();
 }
 
 /**
@@ -526,6 +609,13 @@ export async function loadGrammarsForLanguages(languages: Language[], wasmBytes?
  * backward compatibility. Prefer loadGrammarsForLanguages() in production.
  */
 export async function loadAllGrammars(): Promise<void> {
+  // Tests (and any full-preload caller) pin every grammar for the process: the
+  // B5 idle release must never evict a grammar a test is about to use.
+  grammarsPinned = true;
+  if (grammarIdleTimer) {
+    clearTimeout(grammarIdleTimer);
+    grammarIdleTimer = null;
+  }
   const allLanguages = Object.keys(WASM_GRAMMAR_FILES) as GrammarLanguage[];
   await loadGrammarsForLanguages(allLanguages);
 }
@@ -543,6 +633,7 @@ export function isGrammarsInitialized(): boolean {
  */
 export function getParser(language: Language): Parser | null {
   if (parserCache.has(language)) {
+    noteGrammarActivity();
     return parserCache.get(language)!;
   }
 
@@ -554,6 +645,7 @@ export function getParser(language: Language): Parser | null {
   const parser = new TreeSitter.Parser();
   parser.setLanguage(lang);
   parserCache.set(language, parser);
+  noteGrammarActivity();
   return parser;
 }
 
@@ -744,8 +836,9 @@ export function clearParserCache(): void {
  * Test hook (T0-1): evict ONE language's compiled grammar and cached parser
  * so the lazy defer-seam load (deferred-grammar.ts) can be exercised even in
  * the shared bun-test process, where other suites' loadAllGrammars has
- * already populated languageCache. Production never unloads grammars; a
- * later loadGrammarsForLanguages([lang]) restores the entry.
+ * already populated languageCache. Production also unloads now, but only via
+ * the idle release (releaseIdleGrammars) once the whole process has been
+ * grammar-idle; a later loadGrammarsForLanguages([lang]) restores the entry.
  */
 export function unloadGrammarForTests(language: Language): void {
   resetParser(language);
