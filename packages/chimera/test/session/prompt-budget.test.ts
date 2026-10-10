@@ -73,7 +73,11 @@ const TOOL_BUDGETS = {
 // 2026-10-10 re-record (/goal resume): the goal_update.txt transition note now
 // points blocked-resume users at `/goal resume` and states the budget-priority
 // refusal (1036 -> 1282), raising the always-on floor to 98370.
-const TOOL_TOTAL_BUDGET = 98370
+// 2026-10-10 re-record (goal breakers F1-F4): goal_create.txt and
+// goal_update.txt grew for the tool-failure/turn-error breaker and
+// create-then-start wording (+507 string-length against the HEAD tree,
+// whose total was exactly 98370), raising the always-on floor to 98877.
+const TOOL_TOTAL_BUDGET = 98877
 
 // The description bytes withheld from the default model-facing set by the
 // ToolSearch defer filter: every registered deferred tool's .txt is off the

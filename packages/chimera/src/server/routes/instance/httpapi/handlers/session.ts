@@ -19,7 +19,7 @@ import { SessionSummary } from "@/session/summary"
 import { Todo } from "@/session/todo"
 import { Goal } from "@/session/goal"
 import { WorkBrief } from "@/session/work-brief"
-import { MessageID, PartID, SessionID } from "@/session/schema"
+import { MessageID, PartID, SessionID } from "@/contracts/session-ids"
 import { NotFoundError } from "@/storage/storage"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { Cause, Effect, Option, Schema, Scope } from "effect"
@@ -106,7 +106,15 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     })
 
     const get = Effect.fn("SessionHttpApi.get")(function* (ctx: { params: { sessionID: SessionID } }) {
-      return yield* SessionError.mapStorageNotFound(session.get(ctx.params.sessionID))
+      const info = yield* SessionError.mapStorageNotFound(session.get(ctx.params.sessionID))
+      // Restart/reopen kick (F2), parity with the legacy Hono route: opening a
+      // session is this process's resume signal, so an active goal is kicked
+      // once per live instance (best-effort — a plain session read must not fail).
+      yield* promptSvc.resumeGoalOnOpen(ctx.params.sessionID).pipe(
+        Effect.catchCause(() => Effect.succeed(false)),
+        Effect.asVoid,
+      )
+      return info
     })
 
     const children = Effect.fn("SessionHttpApi.children")(function* (ctx: { params: { sessionID: SessionID } }) {
@@ -133,13 +141,22 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       payload: typeof GoalSetPayload.Type
     }) {
       yield* SessionError.mapStorageNotFound(session.get(ctx.params.sessionID))
-      return yield* goalSvc
+      const created = yield* goalSvc
         .create({
           sessionID: ctx.params.sessionID,
           objective: ctx.payload.objective,
           ...(ctx.payload.tokenBudget !== undefined ? { tokenBudget: ctx.payload.tokenBudget } : {}),
         })
         .pipe(Effect.mapError(() => new HttpApiError.BadRequest({})))
+      // Create-then-start (F1, codex apply_external_goal_set -> continue_if_idle),
+      // parity with the legacy Hono route: an idle session gets its first
+      // continuation turn now (forked inside the kick); a busy one picks the
+      // goal up at its run-loop exit points.
+      yield* promptSvc.kickGoalContinuation(ctx.params.sessionID).pipe(
+        Effect.catchCause(() => Effect.succeed(false)),
+        Effect.asVoid,
+      )
+      return created
     })
 
     const goalClear = Effect.fn("SessionHttpApi.goalClear")(function* (ctx: { params: { sessionID: SessionID } }) {

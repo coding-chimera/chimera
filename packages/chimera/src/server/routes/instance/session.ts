@@ -1,7 +1,7 @@
 import { Hono } from "hono"
 import { stream } from "hono/streaming"
 import { describeRoute, validator, resolver } from "hono-openapi"
-import { SessionID, MessageID, PartID } from "@/session/schema"
+import { SessionID, MessageID, PartID } from "@/contracts/session-ids"
 import z from "zod"
 import { Session } from "@/session/session"
 import { MessageV2 } from "@/session/message-v2"
@@ -187,7 +187,18 @@ export const SessionRoutes = lazy(() =>
         const sessionID = c.req.valid("param").sessionID
         return jsonRequest("SessionRoutes.get", c, function* () {
           const session = yield* Session.Service
-          return yield* session.get(sessionID)
+          const info = yield* session.get(sessionID)
+          // Restart/reopen hook (F2, see SessionPrompt.resumeGoalOnOpen): GET
+          // /session/:id is the request clients take when they bring a session
+          // back into the live runtime (WebUI session open, CLI --continue/--
+          // session), so an active goal there gets one continuation kick per
+          // live instance. Passive goal/status reads never reach this route,
+          // and the kick is best-effort: it must not fail a plain session read.
+          yield* SessionPrompt.Service.use((prompt) => prompt.resumeGoalOnOpen(sessionID)).pipe(
+            Effect.catchCause(() => Effect.succeed(false)),
+            Effect.asVoid,
+          )
+          return info
         })
       },
     )
@@ -370,7 +381,7 @@ export const SessionRoutes = lazy(() =>
             const session = yield* Session.Service
             yield* session.get(sessionID)
             const goal = yield* Goal.Service
-            return yield* goal
+            const outcome = yield* goal
               .create({
                 sessionID,
                 objective: body.objective,
@@ -382,6 +393,18 @@ export const SessionRoutes = lazy(() =>
                   onSuccess: (goal) => ({ rejected: false as const, goal }),
                 }),
               )
+            // Create-then-start (F1, codex apply_external_goal_set ->
+            // continue_if_idle, ext/goal/src/runtime.rs:237-241): when the
+            // session is idle, kick one continuation turn immediately; the
+            // response is not held — the run loop is forked inside the kick.
+            // Busy or non-auto-continuable goals skip: an in-flight run picks
+            // the goal up at its loop-exit points.
+            if (!outcome.rejected)
+              yield* SessionPrompt.Service.use((prompt) => prompt.kickGoalContinuation(sessionID)).pipe(
+                Effect.catchCause(() => Effect.succeed(false)),
+                Effect.asVoid,
+              )
+            return outcome
           }),
         )
         // Domain rejections (empty objective, unfinished goal) surface as 400 with the

@@ -5,8 +5,8 @@ import { Bus } from "@/bus"
 import { Database } from "@/storage/db"
 import { zod } from "@/util/effect-zod"
 import { withStatics } from "@/util/schema"
-import { MessageID, SessionID } from "./schema"
-import { GoalTable, MessageTable, SessionTable } from "./session.sql"
+import { MessageID, SessionID } from "@/contracts/session-ids"
+import { GoalTable, MessageTable, SessionTable } from "@/storage/tables/session.sql"
 import type { MessageV2 } from "./message-v2"
 
 const MAX_OBJECTIVE_CHARS = 800
@@ -15,9 +15,14 @@ const MAX_OBJECTIVE_CHARS = 800
 // without any tool call counts as unproductive; MAX_EMPTY_CONTINUATIONS
 // consecutive unproductive continuations flip an active goal to blocked, and
 // continuation stops after MAX_CONTINUATION_TURNS consecutive continuation
-// turns regardless of productivity.
+// turns regardless of productivity. A turn whose tool calls keep failing is
+// "productive" by that measure, so a third breaker counts terminal tool
+// failures across continuation turns: MAX_CONSECUTIVE_TOOL_FAILURES
+// consecutive failing tool calls flip an active goal to blocked (codex
+// ext/goal accounting.rs:143-161 — consecutive execution-failure止损).
 export const MAX_EMPTY_CONTINUATIONS = 3
 export const MAX_CONTINUATION_TURNS = 25
+export const MAX_CONSECUTIVE_TOOL_FAILURES = 3
 
 const BUDGET_LIMITED_GUIDANCE =
   "The goal token budget is exhausted. Wrap up the current turn soon, do not start new substantive work for this goal, and report progress against the objective."
@@ -35,6 +40,8 @@ export const Info = Schema.Struct({
   usageWatermarks: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   consecutiveEmptyContinuations: Schema.optional(Schema.Number),
   consecutiveContinuations: Schema.optional(Schema.Number),
+  consecutiveToolFailures: Schema.optional(Schema.Number),
+  blockedReason: Schema.optional(Schema.String),
 })
   .annotate({ identifier: "Goal" })
   .pipe(withStatics((s) => ({ zod: zod(s) })))
@@ -65,9 +72,14 @@ export interface Interface {
   }) => Effect.Effect<Info, Error>
   readonly updateStatus: (input: { sessionID: SessionID; status: Status }) => Effect.Effect<Info, Error>
   readonly resume: (sessionID: SessionID) => Effect.Effect<Info, Error>
+  readonly block: (input: { sessionID: SessionID; reason: string }) => Effect.Effect<Info | undefined>
   readonly account: (sessionID: SessionID) => Effect.Effect<void>
   readonly clear: (sessionID: SessionID) => Effect.Effect<boolean>
-  readonly recordContinuation: (input: { sessionID: SessionID; productive: boolean }) => Effect.Effect<Info | undefined>
+  readonly recordContinuation: (input: {
+    sessionID: SessionID
+    productive: boolean
+    toolOutcomes?: boolean[]
+  }) => Effect.Effect<Info | undefined>
   readonly resetContinuation: (sessionID: SessionID) => Effect.Effect<void>
   readonly render: (sessionID: SessionID) => Effect.Effect<string | undefined>
 }
@@ -127,15 +139,27 @@ function descendantIDs(db: Database.TxOrDb, sessionID: SessionID) {
 
 // Outcome of one finished continuation turn. A productive turn resets the
 // empty streak; an unproductive one extends it. Three consecutive empty
-// streak flips an active goal to blocked (the circuit breaker).
-export function continuationOutcome(goal: Info, input: { productive: boolean }): Info {
+// streak flips an active goal to blocked (the circuit breaker). `toolOutcomes`
+// is the ordered terminal outcome of the turn's tool calls (completed -> true,
+// error -> false), counted only for continuation turns: any success zeroes the
+// tool-failure streak, and MAX_CONSECUTIVE_TOOL_FAILURES consecutive failures
+// flip the goal to blocked. Omitting the field leaves the streak untouched.
+export function continuationOutcome(goal: Info, input: { productive: boolean; toolOutcomes?: boolean[] }): Info {
   const consecutiveEmptyContinuations = input.productive ? 0 : (goal.consecutiveEmptyContinuations ?? 0) + 1
+  const toolFailures = input.toolOutcomes?.reduce(
+    (streak, ok) => (ok ? 0 : streak + 1),
+    goal.consecutiveToolFailures ?? 0,
+  )
   const next: Info = {
     ...goal,
     consecutiveEmptyContinuations,
     consecutiveContinuations: (goal.consecutiveContinuations ?? 0) + 1,
+    ...(toolFailures === undefined ? {} : { consecutiveToolFailures: toolFailures }),
   }
-  if (consecutiveEmptyContinuations >= MAX_EMPTY_CONTINUATIONS && next.status === "active")
+  if (
+    next.status === "active" &&
+    (consecutiveEmptyContinuations >= MAX_EMPTY_CONTINUATIONS || (toolFailures ?? 0) >= MAX_CONSECUTIVE_TOOL_FAILURES)
+  )
     return { ...next, status: "blocked" }
   return next
 }
@@ -149,7 +173,7 @@ export function canAutoContinue(goal: Info | undefined) {
 const formatTokens = (value: number) => value.toLocaleString("en-US")
 
 const AUTO_CONTINUATION_GUIDANCE =
-  "- This goal auto-continues: when a turn ends with the goal active, a continuation turn starts automatically. Turns that end without any tool calls count as unproductive; 3 consecutive unproductive continuations mark the goal blocked."
+  "- This goal auto-continues: when a turn ends with the goal active, a continuation turn starts automatically. Turns that end without any tool calls count as unproductive; 3 consecutive unproductive continuations mark the goal blocked. 3 consecutive failing tool calls in continuation turns, or a turn ending on a non-retryable error, also mark it blocked."
 
 export function format(goal: Info) {
   if (goal.status === "complete")
@@ -160,7 +184,9 @@ export function format(goal: Info) {
       : `- Tokens used: ${formatTokens(goal.tokensUsed)} / budget: ${formatTokens(goal.tokenBudget)} (${formatTokens(Math.max(0, goal.tokenBudget - goal.tokensUsed))} remaining)`
   return [
     "## Session Goal",
-    `- Status: ${goal.status}`,
+    goal.blockedReason === undefined
+      ? `- Status: ${goal.status}`
+      : `- Status: ${goal.status} · Reason: ${goal.blockedReason}`,
     `- Objective: ${compact(goal.objective)}`,
     usage,
     ...(goal.status === "active" ? [AUTO_CONTINUATION_GUIDANCE] : []),
@@ -174,7 +200,9 @@ export const layer = Layer.effect(
     const bus = yield* Bus.Service
 
     const get = Effect.fn("Goal.get")(function* (sessionID: SessionID) {
-      const data = yield* Effect.sync(
+      // The row's `data` is a loose JSON column; read it through the service's
+      // own `Info` shape (this service is the only writer).
+      const data: Info | undefined = yield* Effect.sync(
         () =>
           Database.use((db) => db.select().from(GoalTable).where(eq(GoalTable.session_id, sessionID)).limit(1).get())
             ?.data,
@@ -243,6 +271,9 @@ export const layer = Layer.effect(
         return yield* Effect.fail(new Error(`Cannot transition the goal from ${current.status} to ${input.status}.`))
       }
       const goal: Info = { ...current, status: input.status }
+      // A system-tripped block reason is stale once the model itself moves the
+      // goal (the user re-audited the situation through the model).
+      if (input.status !== "blocked") delete goal.blockedReason
       yield* Effect.sync(() =>
         Database.use((db) =>
           db.update(GoalTable).set({ data: goal }).where(eq(GoalTable.session_id, input.sessionID)).run(),
@@ -336,26 +367,48 @@ export const layer = Layer.effect(
       return goal
     })
 
-    // Record one finished auto-continuation turn; no-op (undefined) when the
+    // System-side circuit-breaker trip (codex ext/goal extension.rs:397-421:
+    // a turn ending on an error must stop auto-continuation instead of letting
+    // the injected retry loop burn tokens). Records the reason and flips an
+    // active goal to blocked; goals in any other state (or absent) are left
+    // untouched and reported as undefined.
+    const block = Effect.fn("Goal.block")(function* (input: { sessionID: SessionID; reason: string }) {
+      const current = yield* get(input.sessionID)
+      if (!current || current.status !== "active") return undefined
+      return yield* persist(input.sessionID, { ...current, status: "blocked", blockedReason: input.reason })
+    })
+
+    // Record one finished auto-continuation turn's breaker bookkeeping (see
+    // continuationOutcome for the streak semantics); no-op (undefined) when the
     // session has no goal row.
     const recordContinuation = Effect.fn("Goal.recordContinuation")(function* (input: {
       sessionID: SessionID
       productive: boolean
+      toolOutcomes?: boolean[]
     }) {
       const current = yield* get(input.sessionID)
       if (!current) return undefined
-      return yield* persist(input.sessionID, continuationOutcome(current, { productive: input.productive }))
+      return yield* persist(
+        input.sessionID,
+        continuationOutcome(current, { productive: input.productive, toolOutcomes: input.toolOutcomes }),
+      )
     })
 
-    // A real user turn clears the continuation streak so each new user message
-    // starts a fresh breaker window.
+    // A real user turn clears the continuation streaks so each new user
+    // message starts a fresh breaker window.
     const resetContinuation = Effect.fn("Goal.resetContinuation")(function* (sessionID: SessionID) {
       const current = yield* get(sessionID)
       if (!current) return
-      if (current.consecutiveEmptyContinuations === undefined && current.consecutiveContinuations === undefined) return
+      if (
+        current.consecutiveEmptyContinuations === undefined &&
+        current.consecutiveContinuations === undefined &&
+        current.consecutiveToolFailures === undefined
+      )
+        return
       const goal: Info = { ...current }
       delete goal.consecutiveEmptyContinuations
       delete goal.consecutiveContinuations
+      delete goal.consecutiveToolFailures
       yield* persist(sessionID, goal)
     })
 
@@ -363,10 +416,11 @@ export const layer = Layer.effect(
     // updateStatus: the model-facing transition table keeps blocked -> active
     // unavailable (codex: resume is user/system controlled, never a model tool
     // capability). paused -> active re-arms auto-continuation; blocked ->
-    // active additionally zeroes the consecutive-empty-continuation streak so
-    // the breaker starts a fresh blocked audit (3 more unproductive
-    // continuations are needed to re-block), while the total-turn cap counter
-    // is kept. budget_limited refuses — the budget limit takes priority over
+    // active additionally zeroes the consecutive-empty-continuation streak and
+    // the tool-failure streak so the breakers start a fresh audit (3 more
+    // unproductive continuations or failing tool calls are needed to re-block),
+    // clears the recorded block reason, while the total-turn cap counter is
+    // kept. budget_limited refuses — the budget limit takes priority over
     // resume, so a new goal with a fresh budget is required and the existing
     // usage ledger stays untouched. complete is terminal.
     const resume = Effect.fn("Goal.resume")(function* (sessionID: SessionID) {
@@ -384,8 +438,14 @@ export const layer = Layer.effect(
       const goal: Info = {
         ...current,
         status: "active",
-        ...(current.status === "blocked" ? { consecutiveEmptyContinuations: 0 } : {}),
+        ...(current.status === "blocked"
+          ? {
+              consecutiveEmptyContinuations: 0,
+              ...(current.consecutiveToolFailures === undefined ? {} : { consecutiveToolFailures: 0 }),
+            }
+          : {}),
       }
+      if (current.status === "blocked") delete goal.blockedReason
       return yield* persist(sessionID, goal)
     })
 
@@ -401,6 +461,7 @@ export const layer = Layer.effect(
       create,
       updateStatus,
       resume,
+      block,
       account,
       clear,
       recordContinuation,

@@ -133,6 +133,8 @@ type GoalData = {
   usageWatermarks?: Record<string, string> // per-session watermark for incremental token accounting
   consecutiveEmptyContinuations?: number // auto-continuation circuit breaker
   consecutiveContinuations?: number
+  consecutiveToolFailures?: number // tool-failure circuit breaker (continuation turns)
+  blockedReason?: string // why a system breaker flipped the goal to blocked
 }
 export const GoalTable = sqliteTable("goal", {
   session_id: text()
