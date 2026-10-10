@@ -1,14 +1,16 @@
 import { beforeEach, describe, expect, test } from "bun:test"
 import { Cause, Effect, Exit } from "effect"
 import { eq } from "drizzle-orm"
+import path from "path"
 import { Database } from "@/storage/db"
 import { Goal } from "@/session/goal"
-import { MessageID, SessionID } from "@/session/schema"
-import { GoalTable, MessageTable } from "@/session/session.sql"
+import { MessageID, SessionID } from "@/contracts/session-ids"
+import { GoalTable, MessageTable } from "@/storage/tables/session.sql"
 import { MessageV2 } from "@/session/message-v2"
 import { Session } from "@/session/session"
 import { Command } from "@/command"
 import { SessionPrompt } from "@/session/prompt"
+import { BackgroundJob } from "@/agent/background-job"
 import { makePromptHarness, testProviderConfig } from "../fixture/prompt-harness"
 import { provideTmpdirServer } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
@@ -191,6 +193,35 @@ describe("session.goal", () => {
     }),
   )
 
+  it.instance("block trips only an active goal, records the reason, and clears on resume/update", () =>
+    Effect.gen(function* () {
+      const goal = yield* Goal.Service
+      expect(yield* goal.block({ sessionID, reason: "no goal yet" })).toBeUndefined()
+
+      yield* goal.create({ sessionID, objective: "breaker" })
+      const blocked = yield* goal.block({ sessionID, reason: "turn ended with a non-retryable error: boom" })
+      expect(blocked?.status).toBe("blocked")
+      expect(blocked?.blockedReason).toContain("non-retryable")
+      expect((yield* goal.get(sessionID))?.blockedReason).toContain("boom")
+
+      // a second trip does not overwrite an already non-active goal
+      // a second trip against the already-blocked goal is a no-op and keeps
+      // the first reason
+      expect(yield* goal.block({ sessionID, reason: "ignored" })).toBeUndefined()
+      expect((yield* goal.get(sessionID))?.blockedReason).toContain("boom")
+
+      // resume from blocked clears the recorded reason for a fresh audit
+      const resumed = yield* goal.resume(sessionID)
+      expect(resumed.status).toBe("active")
+      expect(resumed.blockedReason).toBeUndefined()
+
+      // and a model-side status change clears a stale reason too
+      yield* goal.block({ sessionID, reason: "stale" }).pipe(Effect.orDie)
+      const done = yield* goal.updateStatus({ sessionID, status: "complete" })
+      expect(done.blockedReason).toBeUndefined()
+    }),
+  )
+
   it.instance("resume moves a paused goal back to active and guards no-goal/active/complete sources", () =>
     Effect.gen(function* () {
       const goal = yield* Goal.Service
@@ -231,6 +262,26 @@ describe("session.goal", () => {
       const reblocked = yield* goal.recordContinuation({ sessionID, productive: false })
       expect(reblocked?.status).toBe("blocked")
       expect(reblocked?.consecutiveEmptyContinuations).toBe(3)
+    }),
+  )
+
+  it.instance("resume from blocked zeroes the tool-failure streak too", () =>
+    Effect.gen(function* () {
+      const goal = yield* Goal.Service
+      yield* goal.create({ sessionID, objective: "tool audit" })
+      yield* goal.recordContinuation({ sessionID, productive: true, toolOutcomes: [false] })
+      yield* goal.recordContinuation({ sessionID, productive: true, toolOutcomes: [false] })
+      const blocked = yield* goal.recordContinuation({ sessionID, productive: true, toolOutcomes: [false] })
+      expect(blocked?.status).toBe("blocked")
+      expect(blocked?.consecutiveToolFailures).toBe(3)
+
+      const resumed = yield* goal.resume(sessionID)
+      expect(resumed.status).toBe("active")
+      expect(resumed.consecutiveToolFailures).toBe(0)
+
+      // fresh audit: one failure now stays active, three re-block
+      yield* goal.recordContinuation({ sessionID, productive: true, toolOutcomes: [false] })
+      expect((yield* goal.get(sessionID))?.status).toBe("active")
     }),
   )
 
@@ -504,6 +555,29 @@ describe("session.goal", () => {
     }),
   )
 
+  it.instance("recordContinuation folds toolOutcomes into the persisted streak", () =>
+    Effect.gen(function* () {
+      const goal = yield* Goal.Service
+      yield* goal.create({ sessionID, objective: "tool streak" })
+
+      const one = yield* goal.recordContinuation({ sessionID, productive: true, toolOutcomes: [false, false] })
+      expect(one?.consecutiveToolFailures).toBe(2)
+      expect(one?.status).toBe("active")
+
+      const reset = yield* goal.recordContinuation({ sessionID, productive: true, toolOutcomes: [true, false] })
+      expect(reset?.consecutiveToolFailures).toBe(1)
+
+      const blocked = yield* goal.recordContinuation({ sessionID, productive: true, toolOutcomes: [false, false] })
+      expect(blocked?.consecutiveToolFailures).toBe(3)
+      expect(blocked?.status).toBe("blocked")
+
+      // omitting toolOutcomes leaves the streak untouched but keeps counting turns
+      const untouched = yield* goal.recordContinuation({ sessionID, productive: true })
+      expect(untouched?.consecutiveToolFailures).toBe(3)
+      expect(untouched?.consecutiveContinuations).toBe(4)
+    }),
+  )
+
   it.instance("recordContinuation is a no-op without a goal row", () =>
     Effect.gen(function* () {
       const goal = yield* Goal.Service
@@ -519,11 +593,12 @@ describe("session.goal", () => {
 
       yield* goal.create({ sessionID, objective: "reset" })
       yield* goal.recordContinuation({ sessionID, productive: false })
-      yield* goal.recordContinuation({ sessionID, productive: false })
+      yield* goal.recordContinuation({ sessionID, productive: true, toolOutcomes: [false] })
       yield* goal.resetContinuation(sessionID)
       const stored = yield* goal.get(sessionID)
       expect(stored?.consecutiveEmptyContinuations).toBeUndefined()
       expect(stored?.consecutiveContinuations).toBeUndefined()
+      expect(stored?.consecutiveToolFailures).toBeUndefined()
       expect(stored?.status).toBe("active")
       // idempotent: a second reset with no counters set changes nothing
       yield* goal.resetContinuation(sessionID)
@@ -537,10 +612,14 @@ describe("session.goal", () => {
       yield* goal.create({ sessionID, objective: "auto" })
       const rendered = yield* goal.render(sessionID)
       expect(rendered).toContain(
-        "- This goal auto-continues: when a turn ends with the goal active, a continuation turn starts automatically. Turns that end without any tool calls count as unproductive; 3 consecutive unproductive continuations mark the goal blocked.",
+        "- This goal auto-continues: when a turn ends with the goal active, a continuation turn starts automatically. Turns that end without any tool calls count as unproductive; 3 consecutive unproductive continuations mark the goal blocked. 3 consecutive failing tool calls in continuation turns, or a turn ending on a non-retryable error, also mark it blocked.",
       )
-      yield* goal.updateStatus({ sessionID, status: "paused" })
-      expect(yield* goal.render(sessionID)).not.toContain("This goal auto-continues")
+      yield* goal.render(sessionID).pipe(Effect.asVoid)
+      const blocked = yield* goal.block({ sessionID, reason: "turn ended with a non-retryable error: boom" })
+      expect(blocked?.status).toBe("blocked")
+      expect((yield* goal.render(sessionID)) ?? "").toContain(
+        "- Status: blocked · Reason: turn ended with a non-retryable error: boom",
+      )
     }),
   )
 })
@@ -621,6 +700,38 @@ describe("session.goal continuation decision", () => {
     expect(Goal.canAutoContinue({ ...base, consecutiveContinuations: Goal.MAX_CONTINUATION_TURNS - 1 })).toBe(true)
     expect(Goal.canAutoContinue({ ...base, consecutiveContinuations: Goal.MAX_CONTINUATION_TURNS })).toBe(false)
   })
+
+  test("tool outcomes fold a streak, reset on success, and block at three", () => {
+    const one = Goal.continuationOutcome(base, { productive: true, toolOutcomes: [false] })
+    expect(one.consecutiveToolFailures).toBe(1)
+    expect(one.status).toBe("active")
+
+    const two = Goal.continuationOutcome(one, { productive: true, toolOutcomes: [false] })
+    expect(two.consecutiveToolFailures).toBe(2)
+
+    // a success anywhere in the turn zeroes the streak (codex semantics: any
+    // progress resets the failure audit)
+    const reset = Goal.continuationOutcome(two, { productive: true, toolOutcomes: [false, true] })
+    expect(reset.consecutiveToolFailures).toBe(0)
+    expect(reset.status).toBe("active")
+
+    const three = Goal.continuationOutcome(
+      Goal.continuationOutcome(Goal.continuationOutcome(base, { productive: true, toolOutcomes: [false] }), {
+        productive: true,
+        toolOutcomes: [false],
+      }),
+      { productive: true, toolOutcomes: [false] },
+    )
+    expect(three.consecutiveToolFailures).toBe(3)
+    expect(three.status).toBe("blocked")
+  })
+
+  test("omitting toolOutcomes leaves an existing streak untouched", () => {
+    const streak = Goal.continuationOutcome(base, { productive: true, toolOutcomes: [false, false] })
+    const untouched = Goal.continuationOutcome(streak, { productive: true })
+    expect(untouched.consecutiveToolFailures).toBe(2)
+    expect(untouched.status).toBe("active")
+  })
 })
 
 // ── auto-continuation run-loop integration (harness-driven) ─────────────────
@@ -629,6 +740,14 @@ const continuationParts = (messages: MessageV2.WithParts[]) =>
   messages
     .flatMap((msg) => msg.parts)
     .filter((part): part is MessageV2.TextPart => part.type === "text" && part.metadata?.goalContinuation === true)
+
+// A job whose run never settles, registered as owned by `ownerSessionID`.
+// The goal continuation stop-gate counts family ownership, not the
+// foreground/background flag (mirrors background-tasks-context.test.ts).
+const startHeldJob = Effect.fnUntraced(function* (ownerSessionID: SessionID, id: string) {
+  const jobs = yield* BackgroundJob.Service
+  yield* jobs.start({ id, type: "task", title: "held", ownerSessionId: ownerSessionID, run: Effect.never })
+})
 
 describe("session.goal auto-continuation loop", () => {
   loopIt.live("an active goal injects a synthetic continuation turn after a no-tool turn", () =>
@@ -884,10 +1003,416 @@ describe("session.goal auto-continuation loop", () => {
       { git: true, config: testProviderConfig },
     ),
   )
+
+  loopIt.live("a run-loop exit while the family still runs a job is not a stop: no injection, no counter change", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const goal = yield* Goal.Service
+        const jobs = yield* BackgroundJob.Service
+        const session = yield* sessions.create({
+          title: "True stop",
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+        yield* goal.create({ sessionID: session.id, objective: "wait for the family" })
+        // Pre-seed a mid-breaker window (streak 2, cont 2): if the waiting beat
+        // reached any bookkeeping, resetContinuation would clear the counters
+        // (a real user turn) or recordContinuation would extend the streak
+        // toward a false blocked flip (a continuation turn).
+        yield* goal.recordContinuation({ sessionID: session.id, productive: false })
+        yield* goal.recordContinuation({ sessionID: session.id, productive: false })
+
+        yield* startHeldJob(session.id, "stop-waiting")
+        yield* prompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "start" }],
+        })
+        yield* llm.text("one") // the real turn ends without a tool call
+        yield* llm.text("two") // bait a pre-fix racing continuation would burn
+        yield* prompt.loop({ sessionID: session.id })
+
+        // True stop has not happened: the beat is skipped whole — no injected
+        // continuation, no extra model call, counters untouched.
+        expect(yield* llm.calls).toBe(1)
+        expect(yield* llm.pending).toBe(1)
+        expect(continuationParts(yield* sessions.messages({ sessionID: session.id }))).toHaveLength(0)
+        const waiting = yield* goal.get(session.id)
+        expect(waiting?.status).toBe("active")
+        expect(waiting?.consecutiveEmptyContinuations).toBe(2)
+        expect(waiting?.consecutiveContinuations).toBe(2)
+
+        // The family job settles; the next turn end is a true stop and
+        // continuation works exactly as before the fix.
+        yield* jobs.cancel("stop-waiting")
+        yield* prompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "again" }],
+        })
+        yield* llm.tool("goal_update", { status: "complete" }) // productive continuation turn
+        yield* llm.text("done")
+        yield* prompt.loop({ sessionID: session.id })
+
+        expect(yield* llm.calls).toBe(4)
+        expect(yield* llm.pending).toBe(0)
+        expect(continuationParts(yield* sessions.messages({ sessionID: session.id }))).toHaveLength(1)
+        const stored = yield* goal.get(session.id)
+        expect(stored?.status).toBe("complete")
+        expect(stored?.consecutiveEmptyContinuations).toBe(0)
+        expect(stored?.consecutiveContinuations).toBe(1)
+      }),
+      { git: true, config: testProviderConfig },
+    ),
+  )
+
+  loopIt.live("a running job owned by a descendant session also defers the continuation beat", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const goal = yield* Goal.Service
+        const jobs = yield* BackgroundJob.Service
+        const root = yield* sessions.create({
+          title: "Family root",
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+        const child = yield* sessions.create({
+          title: "Family child",
+          parentID: root.id,
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+        yield* goal.create({ sessionID: root.id, objective: "orchestrate" })
+        yield* startHeldJob(child.id, "stop-descendant")
+        yield* prompt.prompt({
+          sessionID: root.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "start" }],
+        })
+        yield* llm.text("one")
+        yield* llm.text("two")
+        yield* prompt.loop({ sessionID: root.id })
+
+        // The gate walks the whole session family (sessionFamilyIDs BFS), so a
+        // descendant-owned job defers the root's continuation too.
+        expect(yield* llm.calls).toBe(1)
+        expect(yield* llm.pending).toBe(1)
+        expect(continuationParts(yield* sessions.messages({ sessionID: root.id }))).toHaveLength(0)
+        expect((yield* goal.get(root.id))?.status).toBe("active")
+
+        yield* jobs.cancel("stop-descendant")
+      }),
+      { git: true, config: testProviderConfig },
+    ),
+  )
+
+  loopIt.live("three consecutive failing tool calls in continuation turns block the goal", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const goal = yield* Goal.Service
+        const session = yield* sessions.create({
+          title: "Failing tools",
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+        yield* goal.create({ sessionID: session.id, objective: "flaky tools" })
+        yield* prompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "start" }],
+        })
+        // user turn ends without tools -> continuation 1; three continuation
+        // turns each end on a single failing tool call (productive, so the
+        // empty-streak breaker stays blind to it — the F4 breaker catches it)
+        yield* llm.text("one")
+        for (let turn = 0; turn < 3; turn++) {
+          yield* llm.tool("read", { filePath: "/nonexistent-goal-bench-file" })
+          yield* llm.text(`fail ${turn + 1}`)
+        }
+
+        yield* prompt.loop({ sessionID: session.id })
+        expect(yield* llm.calls).toBe(7)
+        expect(yield* llm.pending).toBe(0)
+        const messages = yield* sessions.messages({ sessionID: session.id })
+        expect(continuationParts(messages)).toHaveLength(3)
+
+        const stored = yield* goal.get(session.id)
+        expect(stored?.status).toBe("blocked")
+        expect(stored?.consecutiveToolFailures).toBe(3)
+        expect(stored?.consecutiveEmptyContinuations).toBe(0)
+        expect(stored?.consecutiveContinuations).toBe(3)
+      }),
+      { git: true, config: testProviderConfig },
+    ),
+  )
+
+  loopIt.live("a success zeroes the tool streak and user-turn failures do not count", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm, dir }) {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const goal = yield* Goal.Service
+        const session = yield* sessions.create({
+          title: "Streak reset",
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+        yield* goal.create({ sessionID: session.id, objective: "recover" })
+        // the real user turn already ends on a failing tool call: resetContinuation
+        // clears the streak, so that failure must never enter the counter
+        yield* prompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "start" }],
+        })
+        yield* llm.tool("read", { filePath: "/nonexistent-goal-bench-file" })
+        yield* llm.text("user turn done")
+        // continuation 1: failure -> streak 1
+        yield* llm.tool("read", { filePath: "/nonexistent-goal-bench-file" })
+        yield* llm.text("cont 1")
+        // continuation 2: success (the fixture config file exists) -> streak 0
+        yield* llm.tool("read", { filePath: path.join(dir, "chimera.json") })
+        yield* llm.text("cont 2")
+        // continuation 3 ends the chain: the goal is paused by a productive tool
+        yield* llm.tool("goal_update", { status: "paused" })
+        yield* llm.text("cont 3")
+
+        yield* prompt.loop({ sessionID: session.id })
+        expect(yield* llm.pending).toBe(0)
+        const messages = yield* sessions.messages({ sessionID: session.id })
+        expect(continuationParts(messages)).toHaveLength(3)
+
+        const stored = yield* goal.get(session.id)
+        // the user-turn failure was not counted (else the streak would sit
+        // one higher and the sequence could re-block), and the mid-chain
+        // success zeroed what continuation 1 had accumulated
+        expect(stored?.status).toBe("paused")
+        expect(stored?.consecutiveToolFailures).toBe(0)
+      }),
+      { git: true, config: testProviderConfig },
+    ),
+  )
+})
+
+describe("session.goal turn-error breaker (F3)", () => {
+  loopIt.live("a non-retryable turn error blocks the active goal and stops continuation", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const goal = yield* Goal.Service
+        const session = yield* sessions.create({
+          title: "Turn error",
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+        yield* goal.create({ sessionID: session.id, objective: "crash course" })
+        yield* prompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "start" }],
+        })
+        // a 400 response is a non-retryable API error: the turn halts after
+        // SessionRetry declines to retry it, and the F3 breaker trips
+        yield* llm.error(400, { error: { message: "invalid_request: boom" } })
+
+        yield* prompt.loop({ sessionID: session.id })
+        // the pre-fix loop injected a continuation after the error turn; the
+        // F3 breaker exits instead (no second model call)
+        expect(yield* llm.calls).toBe(1)
+        expect(yield* llm.pending).toBe(0)
+        expect(continuationParts(yield* sessions.messages({ sessionID: session.id }))).toHaveLength(0)
+
+        const stored = yield* goal.get(session.id)
+        expect(stored?.status).toBe("blocked")
+        expect(stored?.blockedReason).toContain("non-retryable")
+        expect(stored?.blockedReason).toContain("invalid_request")
+      }),
+      { git: true, config: testProviderConfig },
+    ),
+  )
+
+  loopIt.live("a retryable failure does not trip the goal breaker", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const goal = yield* Goal.Service
+        const session = yield* sessions.create({
+          title: "Retryable error",
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+        yield* goal.create({ sessionID: session.id, objective: "rate limited" })
+        // four identical 500s: the first is the call, three are SessionRetry
+        // attempts (the default retry limit, with backoff waits); the exhausted
+        // retryable error must NOT flip the goal, and the continuation the
+        // pre-existing stop-site flow injects finishes it
+        for (let attempt = 0; attempt < 4; attempt++) yield* llm.error(500, { error: { message: "server overloaded" } })
+        yield* llm.tool("goal_update", { status: "complete" })
+        yield* llm.text("done")
+
+        yield* prompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "start" }],
+        })
+        yield* prompt.loop({ sessionID: session.id })
+
+        expect(yield* llm.calls).toBe(6)
+        expect(yield* llm.pending).toBe(0)
+        const stored = yield* goal.get(session.id)
+        expect(stored?.status).toBe("complete")
+        expect(stored?.blockedReason).toBeUndefined()
+      }),
+      { git: true, config: testProviderConfig },
+    ),
+  )
+})
+
+describe("session.goal external kick (F1) and reopen kick (F2)", () => {
+  loopIt.live("kickGoalContinuation starts an active goal on an idle session", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const goal = yield* Goal.Service
+        const session = yield* sessions.create({
+          title: "External kick",
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+        // one real user turn gives the session the history/kick precondition
+        yield* prompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "hello" }],
+        })
+        yield* llm.text("hi")
+        yield* prompt.loop({ sessionID: session.id })
+
+        // goal lands via the service (what HTTP PUT drives, minus the route);
+        // the kicked continuation turn completes it
+        yield* goal.create({ sessionID: session.id, objective: "goal from outside" })
+        yield* llm.tool("goal_update", { status: "complete" })
+        yield* llm.text("all done")
+
+        expect(yield* prompt.kickGoalContinuation(session.id)).toBe(true)
+        // drive the forked run to completion and inspect the result
+        yield* prompt.loop({ sessionID: session.id })
+        expect(yield* llm.calls).toBe(3)
+        expect(yield* llm.pending).toBe(0)
+        const messages = yield* sessions.messages({ sessionID: session.id })
+        expect(continuationParts(messages)).toHaveLength(1)
+
+        const stored = yield* goal.get(session.id)
+        expect(stored?.status).toBe("complete")
+      }),
+      { git: true, config: testProviderConfig },
+    ),
+  )
+
+  loopIt.live("kickGoalContinuation skips goals that must not auto-continue", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const goal = yield* Goal.Service
+
+        // paused: nothing to kick
+        const paused = yield* sessions.create({
+          title: "Kick paused",
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+        yield* prompt.prompt({
+          sessionID: paused.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "hello" }],
+        })
+        yield* llm.text("hi")
+        yield* prompt.loop({ sessionID: paused.id })
+        yield* goal.create({ sessionID: paused.id, objective: "paused goal" })
+        yield* goal.updateStatus({ sessionID: paused.id, status: "paused" })
+        expect(yield* prompt.kickGoalContinuation(paused.id)).toBe(false)
+
+        // no goal at all
+        expect(yield* prompt.kickGoalContinuation(sessionID)).toBe(false)
+
+        // a brand-new session with no user message: nothing to inherit
+        // agent/model from, the first real turn's loop exit covers it
+        const fresh = yield* sessions.create({
+          title: "Kick fresh",
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+        yield* goal.create({ sessionID: fresh.id, objective: "fresh goal" })
+        expect(yield* prompt.kickGoalContinuation(fresh.id)).toBe(false)
+        expect(continuationParts(yield* sessions.messages({ sessionID: fresh.id }))).toHaveLength(0)
+
+        // subagent-owned goals are never kicked
+        const child = yield* sessions.create({
+          title: "Kick sub",
+          parentID: paused.id,
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+        yield* goal.create({ sessionID: child.id, objective: "child goal" })
+        expect(yield* prompt.kickGoalContinuation(child.id)).toBe(false)
+
+        expect(yield* llm.calls).toBe(1)
+        expect(yield* llm.pending).toBe(0)
+      }),
+      { git: true, config: testProviderConfig },
+    ),
+  )
+
+  loopIt.live("resumeGoalOnOpen kicks once per instance and never for inactive goals", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const goal = yield* Goal.Service
+        const session = yield* sessions.create({
+          title: "Reopen kick",
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+        yield* prompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "hello" }],
+        })
+        yield* llm.text("hi")
+        yield* prompt.loop({ sessionID: session.id })
+
+        yield* goal.create({ sessionID: session.id, objective: "recover after restart" })
+        yield* llm.tool("goal_update", { status: "complete" })
+        yield* llm.text("recovered")
+
+        // first "open" after a (simulated) restart enters the live runtime: the
+        // goal is kicked and actually runs
+        expect(yield* prompt.resumeGoalOnOpen(session.id)).toBe(true)
+        yield* prompt.loop({ sessionID: session.id })
+        expect(continuationParts(yield* sessions.messages({ sessionID: session.id }))).toHaveLength(1)
+        expect((yield* goal.get(session.id))?.status).toBe("complete")
+
+        // repeated opens of the same session in the same instance are idempotent
+        expect(yield* prompt.resumeGoalOnOpen(session.id)).toBe(false)
+        expect(yield* llm.calls).toBe(3)
+        expect(yield* llm.pending).toBe(0)
+      }),
+      { git: true, config: testProviderConfig },
+    ),
+  )
 })
 
 describe("session.goal /goal command", () => {
-  loopIt.live("/goal registers, creates, shows, and refuses a second unfinished goal model-free", () =>
+  loopIt.live("/goal create-then-start kicks the continuation; show and refuse stay model-free", () =>
     provideTmpdirServer(
       Effect.fnUntraced(function* ({ llm }) {
         const prompt = yield* SessionPrompt.Service
@@ -898,28 +1423,46 @@ describe("session.goal /goal command", () => {
         const listed = yield* commands.list()
         expect(listed.some((command) => command.name === Command.Default.GOAL)).toBe(true)
 
-        const session = yield* sessions.create({
-          title: "Goal command",
+        // create is no longer model-free (F1, codex apply_external_goal_set ->
+        // continue_if_idle): the command kicks a continuation turn and blocks on
+        // it; the queued replies finish the goal inside that run.
+        yield* llm.tool("goal_update", { status: "complete" })
+        yield* llm.text("widget shipped")
+        const kicked = yield* sessions.create({
+          title: "Goal command kick",
           permission: [{ permission: "*", pattern: "*", action: "allow" }],
         })
         const created = yield* prompt.command({
-          sessionID: session.id,
+          sessionID: kicked.id,
           command: Command.Default.GOAL,
           model: "test/test-model",
           arguments: "  ship the widget  ",
         })
         expect(created.info.role).toBe("assistant")
         expect(created.parts.find((part) => part.type === "text")?.text).toContain("- Objective: ship the widget")
-        const stored = yield* goal.get(session.id)
-        expect(stored?.objective).toBe("ship the widget")
-        expect(stored?.status).toBe("active")
+        const kickedStored = yield* goal.get(kicked.id)
+        expect(kickedStored?.objective).toBe("ship the widget")
+        // the kicked loop ran (and finished) before the command returned
+        expect(kickedStored?.status).toBe("complete")
 
         // the typed command is echoed (trimmed) as a user text part, like /init-graph
-        const messages = yield* sessions.messages({ sessionID: session.id })
+        const messages = yield* sessions.messages({ sessionID: kicked.id })
         const echoed = messages
           .find((message) => message.info.role === "user")
           ?.parts.find((part) => part.type === "text")
         expect(echoed?.text).toBe("/goal ship the widget")
+        expect(continuationParts(messages)).toHaveLength(1)
+        expect(yield* llm.calls).toBe(2)
+        expect(yield* llm.pending).toBe(0)
+
+        // with a pre-existing unfinished goal the branches that must not run
+        // the model still do not: goal.create via the service does not kick,
+        // bare /goal renders state, and a second create is refused
+        const session = yield* sessions.create({
+          title: "Goal command",
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+        yield* goal.create({ sessionID: session.id, objective: "ship the widget" })
 
         // bare /goal renders the current state (objective, status, usage)
         const shown = yield* prompt.command({
@@ -945,7 +1488,7 @@ describe("session.goal /goal command", () => {
           "Goal not set: cannot create a new goal because this session has an unfinished goal",
         )
         expect((yield* goal.get(session.id))?.objective).toBe("ship the widget")
-        expect(yield* llm.calls).toBe(0)
+        expect(yield* llm.calls).toBe(2)
       }),
       { git: true, config: testProviderConfig },
     ),
@@ -996,9 +1539,9 @@ describe("session.goal /goal command", () => {
     ),
   )
 
-  loopIt.live("/goal replaces a completed goal via the create path", () =>
+  loopIt.live("/goal replaces a completed goal via the create path and starts it", () =>
     provideTmpdirServer(
-      Effect.fnUntraced(function* () {
+      Effect.fnUntraced(function* ({ llm }) {
         const prompt = yield* SessionPrompt.Service
         const sessions = yield* Session.Service
         const goal = yield* Goal.Service
@@ -1009,6 +1552,10 @@ describe("session.goal /goal command", () => {
         yield* goal.create({ sessionID: session.id, objective: "first objective" })
         yield* goal.updateStatus({ sessionID: session.id, status: "complete" })
 
+        // the replacement create kicks its continuation turn (F1); the queued
+        // replies finish the new goal before the command returns
+        yield* llm.tool("goal_update", { status: "complete" })
+        yield* llm.text("second objective done")
         const replaced = yield* prompt.command({
           sessionID: session.id,
           command: Command.Default.GOAL,
@@ -1018,7 +1565,9 @@ describe("session.goal /goal command", () => {
         expect(replaced.parts.find((part) => part.type === "text")?.text).toContain("- Objective: second objective")
         const stored = yield* goal.get(session.id)
         expect(stored?.objective).toBe("second objective")
-        expect(stored?.status).toBe("active")
+        expect(stored?.status).toBe("complete")
+        expect(continuationParts(yield* sessions.messages({ sessionID: session.id }))).toHaveLength(1)
+        expect(yield* llm.calls).toBe(2)
       }),
       { git: true, config: testProviderConfig },
     ),

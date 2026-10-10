@@ -2,7 +2,7 @@ import path from "path"
 import os from "os"
 import { createHash } from "crypto"
 import * as EffectZod from "@/util/effect-zod"
-import { SessionID, MessageID, PartID } from "./schema"
+import { SessionID, MessageID, PartID } from "@/contracts/session-ids"
 import { MessageV2 } from "./message-v2"
 import * as Log from "@opencode-ai/core/util/log"
 import { SessionRevert } from "./revert"
@@ -56,6 +56,7 @@ import { SessionProcessor } from "./processor"
 import { Tool } from "@/tool/tool"
 import { Permission } from "@/permission"
 import { SessionStatus } from "./status"
+import { SessionRetry } from "./retry"
 import { SubagentModelCatalog } from "@/agent/subagent-model-catalog"
 import { LLM } from "./llm"
 import { Shell } from "@/shell/shell"
@@ -83,7 +84,7 @@ import * as DateTime from "effect/DateTime"
 import { eq } from "@/storage/db"
 import * as Database from "@/storage/db"
 import { NotFoundError } from "@/storage/storage"
-import { SessionTable } from "./session.sql"
+import { SessionTable } from "@/storage/tables/session.sql"
 import { Memory } from "@/memory/memory"
 
 // @ts-ignore
@@ -105,7 +106,7 @@ Continue working toward the active session goal (see the Session Goal section of
 - Take the next concrete step now; do not end the turn merely because one step finished. This goal persists across turns — ending a turn does not require shrinking the objective to what fits now.
 - If the objective is verifiably achieved, call goal_update with status "complete" (report final token usage to the user). If the same blocking condition has repeated with no remaining path, call goal_update with status "blocked".
 - If you need user input to proceed, use the question tool instead of ending the turn.
-- Auto-continuation is bounded: turns ending without any tool call count as unproductive; 3 consecutive unproductive continuations mark the goal blocked, and continuation stops after 25 consecutive continuation turns.
+- Auto-continuation is bounded: turns ending without any tool call count as unproductive; 3 consecutive unproductive continuations, 3 consecutive failing tool calls in continuation turns, or a turn ending on a non-retryable error mark the goal blocked, and continuation stops after 25 consecutive continuation turns.
 </goal-continuation>`
 
 // A synthetic continuation user message is identified by a `goalContinuation`
@@ -135,6 +136,26 @@ function turnMadeToolCalls(messages: MessageV2.WithParts[], afterID: MessageID) 
 // boundary for goal continuation is the newest non-runtime-context user message.
 function goalTurnOwner(messages: MessageV2.WithParts[]) {
   return messages.findLast((msg) => msg.info.role === "user" && !isRuntimeContextMessage(msg))
+}
+
+// The terminal tool outcomes of a finished turn, in order: a tool part whose
+// state reached `completed` counts as a success, `error` as a failure;
+// pending/running parts have no terminal state and are skipped. Scoped like
+// turnMadeToolCalls (model-initiated parts only) for the goal tool-failure
+// breaker, which folds this list into the streak across continuation turns
+// (codex ext/goal accounting.rs:143-161).
+function turnToolOutcomes(messages: MessageV2.WithParts[], afterID: MessageID) {
+  return messages.flatMap((msg) =>
+    msg.info.role === "assistant" && msg.info.id > afterID
+      ? msg.parts.flatMap((part) =>
+          part.type === "tool" &&
+          !part.metadata?.providerExecuted &&
+          (part.state.status === "completed" || part.state.status === "error")
+            ? [part.state.status === "completed"]
+            : [],
+        )
+      : [],
+  )
 }
 
 const log = Log.create({ service: "session.prompt" })
@@ -290,6 +311,8 @@ export interface Interface {
   readonly injectSynthetic: (
     input: InjectSyntheticInput,
   ) => Effect.Effect<MessageV2.WithParts, InstanceType<typeof NotFoundError>>
+  readonly kickGoalContinuation: (sessionID: SessionID) => Effect.Effect<boolean>
+  readonly resumeGoalOnOpen: (sessionID: SessionID) => Effect.Effect<boolean>
 }
 export type InjectSyntheticInput = {
   sessionID: SessionID
@@ -675,15 +698,41 @@ export const layer = Layer.effect(
       // Structured-output requests are one-shot flows; do not extend them.
       if (owner.format?.type === "json_schema") return false
       if (!(yield* goal.get(input.sessionID))) return false
+      // True stop = this turn ended AND no running job in the session family
+      // (this session plus every descendant; the idle-release gate helpers from
+      // fc60c30ef count ownership regardless of the foreground/background flag,
+      // so chimera_swarm workers count too). A run-loop exit while the family
+      // still works is not a stop: injecting a continuation now would make the
+      // root compete with its own running subagents, and a waiting continuation
+      // turn that makes no tool calls would poison the unproductive streak
+      // toward a false blocked flip. Skip the whole beat instead: no
+      // recordContinuation and no resetContinuation (waiting turns enter no
+      // counter, unlike F4-style unproductive accounting), no injected message,
+      // return false. Re-drive is inherent: when a background job settles, its
+      // result is injected into the owning session by
+      // TaskTool.notifyBackgroundResult -> SessionPrompt.injectSynthetic, which
+      // runs a fresh owner turn whose loop exit re-runs this gate. A family job
+      // that never settles keeps the goal silently paused instead of burning
+      // continuation turns — the safe direction; cross-process or crashed jobs
+      // stay invisible here, exactly as in the idle-release gate.
+      if ((yield* ownedRunningJobs(input.sessionID)).length > 0) return false
 
       if (turnOwner && turnOwner.parts.some(isGoalContinuationPart)) {
         // The loop-top exit caller passes the productivity it already derived
         // from its fresh snapshot; the stop/blocked caller omits it because
         // handle.message parts are missing from the stale snapshot and need a re-read.
-        const productive =
-          input.productive ??
-          turnMadeToolCalls(yield* MessageV2.filterCompactedEffect(input.sessionID), turnOwner.info.id)
-        yield* goal.recordContinuation({ sessionID: input.sessionID, productive })
+        // Productivity and the tool-outcome list must be measured on the same
+        // snapshot: the loop-top exit caller passes the productivity it already
+        // derived from its fresh `msgs` (reused for both checks); the stop/blocked
+        // caller omits it because handle.message parts are missing from the stale
+        // snapshot, so one re-read serves both.
+        const snapshot =
+          input.productive === undefined ? yield* MessageV2.filterCompactedEffect(input.sessionID) : input.messages
+        yield* goal.recordContinuation({
+          sessionID: input.sessionID,
+          productive: input.productive ?? turnMadeToolCalls(snapshot, turnOwner.info.id),
+          toolOutcomes: turnToolOutcomes(snapshot, turnOwner.info.id),
+        })
       } else {
         yield* goal.resetContinuation(input.sessionID)
       }
@@ -710,6 +759,68 @@ export const layer = Layer.effect(
       yield* sessions.updateMessage(info)
       yield* sessions.updatePart(part)
       return true
+    })
+
+    // External-set kickoff (F1): codex starts an externally-set goal right away
+    // — apply_external_goal_set -> continue_if_idle (ext/goal/src/runtime.rs:237-241,
+    // 479-492) — so an idle session whose goal was just created/replaced through a
+    // side channel (HTTP PUT, or the reopen hook below) gets one continuation turn
+    // now instead of lying dormant until the next user message. Mirrors the
+    // `/goal resume` kick: inject the synthetic `<goal-continuation>` user message
+    // through the same helper, then drive it through the standard `loop` entry,
+    // forked so the HTTP response is not held. A busy session is deliberately
+    // skipped: its own run-loop exit points re-run the continuation gate when the
+    // in-flight turn ends, and injecting now would interleave with that turn's
+    // bookkeeping. A session with no user message at all is also skipped — the
+    // synthetic turn's agent/model are inherited from the newest user message, and
+    // guessing a provider default here would silently bill a model the user never
+    // picked; its first real user turn ends on the loop's own continuation hook.
+    const kickGoalContinuation = Effect.fn("SessionPrompt.kickGoalContinuation")(function* (sessionID: SessionID) {
+      if (!Goal.canAutoContinue(yield* goal.get(sessionID))) return false
+      const session = yield* sessions.get(sessionID).pipe(Effect.catch(() => Effect.succeed(undefined)))
+      if (!session || session.parentID) return false
+      // continue_if_idle: local runners busy, or a foreign process holding the
+      // session's turn lease (RemoteBusyError), both mean this process must not
+      // start a turn on top of an in-flight one.
+      const busy = yield* Effect.exit(state.assertNotBusy(sessionID)).pipe(Effect.map(Exit.isFailure))
+      if (busy) return false
+      const msgs = yield* MessageV2.filterCompactedEffect(sessionID)
+      const newest = msgs.findLast((msg) => msg.info.role === "user")
+      if (!newest || newest.info.role !== "user") return false
+      const injected = yield* tryGoalContinuation({ sessionID, session, lastUser: newest.info, messages: msgs })
+      if (injected) yield* loop({ sessionID }).pipe(Effect.forkIn(scope, { startImmediately: true }), Effect.asVoid)
+      return injected
+    })
+
+    // Restart/reopen hook (F2): codex restores goal work after a thread resume —
+    // restore_after_resume (ext/goal/src/runtime.rs:401-423) plus the host's
+    // post-resume idle trigger (thread_processor.rs:4245). Chimera's server has no
+    // dedicated resume RPC; the request every client (WebUI session-open via
+    // `session.get`, CLI --continue/--session via the SDK) takes when it brings a
+    // session back into the live runtime is GET /session/:sessionID, so that route
+    // arms one kick per session per live instance. The armed set is per-instance
+    // state: repeated opens inside this process never re-kick, while a restart
+    // (fresh instance) re-arms — the goal status and idle checks inside
+    // kickGoalContinuation make even a spurious arm a no-op. Passive reads that
+    // do not enter the live runtime (GET .../goal, status probes, SSE attach)
+    // never arm, so viewing goal state alone does not start work.
+    const goalResumeArmed = yield* InstanceState.make(
+      Effect.fn("SessionPrompt.goalResumeArmed")(function* () {
+        return new Set<SessionID>()
+      }),
+    )
+    const resumeGoalOnOpen = Effect.fn("SessionPrompt.resumeGoalOnOpen")(function* (sessionID: SessionID) {
+      const armed = yield* InstanceState.get(goalResumeArmed)
+      if (armed.has(sessionID)) return false
+      armed.add(sessionID)
+      return yield* kickGoalContinuation(sessionID).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("goal resume-on-open kick failed", {
+            sessionID,
+            cause: Cause.pretty(cause),
+          }).pipe(Effect.as(false)),
+        ),
+      )
     })
 
     const toolContextMessages = (history: MessageV2.WithParts[]) =>
@@ -2003,12 +2114,12 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         if (session.parentID)
           return {
             text: "Session goals belong to the root session. Run /goal in the parent session instead.",
-            resumed: false,
+            kick: false,
           }
         if (!args)
           return {
             text: (yield* goal.render(input.sessionID)) ?? "No goal is set for this session.",
-            resumed: false,
+            kick: false,
           }
         // Subcommand keywords match the whole trimmed argument,
         // case-insensitively: objectives spelled exactly "clear"/"resume"
@@ -2016,13 +2127,13 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         // objective, not a resume. Same accepted trade-off as the clear keyword.
         if (args.toLowerCase() === "clear") {
           const current = yield* goal.get(input.sessionID)
-          if (!current) return { text: "No goal is set for this session.", resumed: false }
+          if (!current) return { text: "No goal is set for this session.", kick: false }
           yield* goal.clear(input.sessionID)
-          return { text: `Goal cleared: ${current.objective}`, resumed: false }
+          return { text: `Goal cleared: ${current.objective}`, kick: false }
         }
         if (args.toLowerCase() === "resume") {
           const current = yield* goal.get(input.sessionID)
-          if (!current) return { text: "No goal is set for this session.", resumed: false }
+          if (!current) return { text: "No goal is set for this session.", kick: false }
           // Budget limits take priority over pause/resume (codex semantics):
           // resuming would silently re-arm work past the cap, so the only
           // exit is a new goal with a fresh budget; usage stays accounted.
@@ -2032,12 +2143,12 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 "Goal not resumed: the token budget takes priority over resume. Create a goal with a fresh budget instead (run `/goal <new objective>` or ask the model to goal_create); existing usage stays accounted.",
                 Goal.format(current),
               ].join("\n\n"),
-              resumed: false,
+              kick: false,
             }
           if (current.status === "active")
             return {
               text: ["Goal already active — auto-continuation is running.", Goal.format(current)].join("\n\n"),
-              resumed: false,
+              kick: false,
             }
           if (current.status === "complete")
             return {
@@ -2045,7 +2156,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 "Goal is complete and cannot be resumed; run /goal <objective> to start a new goal.",
                 Goal.format(current),
               ].join("\n\n"),
-              resumed: false,
+              kick: false,
             }
           return yield* goal.resume(input.sessionID).pipe(
             Effect.map((resumed) => ({
@@ -2055,14 +2166,18 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                   : `Resumed: ${resumed.objective}`,
                 Goal.format(resumed),
               ].join("\n\n"),
-              resumed: true,
+              kick: true,
             })),
-            Effect.catch((error) => Effect.succeed({ text: `Goal not resumed: ${error.message}`, resumed: false })),
+            Effect.catch((error) => Effect.succeed({ text: `Goal not resumed: ${error.message}`, kick: false })),
           )
         }
+        // Create-then-start (F1, codex apply_external_goal_set ->
+        // continue_if_idle): a successful create lands an active goal, so the
+        // command kicks the same immediate continuation as resume instead of
+        // leaving the goal dormant in an idle session.
         return yield* goal.create({ sessionID: input.sessionID, objective: args }).pipe(
-          Effect.map((created) => ({ text: Goal.format(created), resumed: false })),
-          Effect.catch((error) => Effect.succeed({ text: `Goal not set: ${error.message}`, resumed: false })),
+          Effect.map((created) => ({ text: Goal.format(created), kick: true })),
+          Effect.catch((error) => Effect.succeed({ text: `Goal not set: ${error.message}`, kick: false })),
         )
       })
 
@@ -2096,17 +2211,19 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         messageID: assistant.id,
       })
 
-      // Immediate continuation kick for a successful `/goal resume`:
-      // `tryGoalContinuation` normally only runs at run-loop exit points, so
-      // without this a resumed goal would idle until the next user turn. The
-      // resume command is itself a real user turn, so invoke the same inject
-      // helper directly (it re-arms the breaker window via resetContinuation
-      // and writes the synthetic `<goal-continuation>` user message when
-      // auto-continuation applies), then drive the injected message through
-      // the standard `loop` entry: blocking the command response for that run
-      // matches template commands, which run a full `prompt()` turn inline,
-      // and `loop` dedupes through the run state if a turn is somehow active.
-      if (outcome.resumed) {
+      // Immediate continuation kick for a successful `/goal <objective>` create
+      // or `/goal resume` (F1; codex apply_external_goal_set -> continue_if_idle,
+      // ext/goal/src/runtime.rs:237-241): `tryGoalContinuation` normally only runs
+      // at run-loop exit points, so without this a newly set or resumed goal
+      // would idle until the next user turn. The command is itself a real user
+      // turn, so invoke the same inject helper directly (it re-arms the breaker
+      // window via resetContinuation and writes the synthetic
+      // `<goal-continuation>` user message when auto-continuation applies), then
+      // drive the injected message through the standard `loop` entry: blocking the
+      // command response for that run matches template commands, which run a full
+      // `prompt()` turn inline, and `loop` dedupes through the run state if a turn
+      // is somehow active.
+      if (outcome.kick) {
         const injected = yield* tryGoalContinuation({
           sessionID: input.sessionID,
           session,
@@ -3003,6 +3120,28 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             }
 
             if (result === "stop") {
+              // Non-retryable turn error (F3, codex ext/goal extension.rs:397-421:
+              // "prevent the auto-continuation loop from burning tokens on a turn
+              // that will keep failing"): trip the goal breaker with the recorded
+              // reason and exit — an injected continuation would re-error
+              // immediately. Retryable failures (rate-limit backoff already
+              // exhausted by SessionRetry above the halt) deliberately do NOT flip
+              // the goal: resume is the user's call and the unproductive-streak
+              // breaker still catches an error-only continuation chain.
+              const turnError = handle.message.error
+              if (turnError && !SessionRetry.retryable(turnError)) {
+                const reason =
+                  isRecord(turnError.data) && typeof turnError.data.message === "string"
+                    ? turnError.data.message
+                    : "unknown error"
+                const blockedGoal = yield* goal.block({
+                  sessionID,
+                  reason: `turn ended with a non-retryable error: ${reason}`,
+                })
+                if (blockedGoal) yield* slog.info("goal blocked on turn error", { reason: blockedGoal.blockedReason })
+                yield* slog.info("exiting loop after turn error")
+                return "break" as const
+              }
               // Blocked/error end of this turn. The just-finished assistant
               // (handle.message) is not in the stale `msgs` snapshot, so the
               // helper re-reads to measure productivity. A continuation returns
@@ -3410,6 +3549,8 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       command,
       resolvePromptParts,
       injectSynthetic,
+      kickGoalContinuation,
+      resumeGoalOnOpen,
     })
   }),
 )
