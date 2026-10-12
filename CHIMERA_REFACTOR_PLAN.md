@@ -292,7 +292,7 @@ W4 开路（并行）    : D.2 启动握手 + Swift MVP（SSE/WS 客户端）
 | 10-10 17:0x | **W1 已落 6 笔**：门禁 `db69e4f4c`；B2 `f2c33b984`（SQLite 16/32MB，-16.2MB/连接实测）；A1 `3a807fbc9`（SCC 246→154 + 常驻注入测试 133 过）；A2-p1 `c624eb35a` + A2-p2 `1f5797f10`（163 文件/193 处重指向，OpenAPI 零 schema 漂移、drizzle check 绿）；B5 `fa5582ef4`（grammar 空闲 5s 全局释放，8 语言常驻 -7.2MB，索引产物字节一致）；B4 `7d5276988`（opt-in 堆软上限，默认关闭） | 见下行两项计划修正 |
 | 10-10 17:0x | **计划修正 1（B4）**：主动 GC 实测 RSS 收益不可复现、全量 GC 停顿 59-226ms 真实 → B4 降级为默认关闭的 opt-in 逃生口；B 线真实赢面是 B1/B2/B5 的结构性收敛，B4 不再计入 <500MB 目标的预期贡献 | B.2 表 B4 行语义已变 |
 | 10-10 17:0x | **计划修正 2（A2）**：A2 从构造上缩不了模块 SCC——session 留在 36 团里是另外 141 条边的责任（server 63 / tool 21 / effect 14，多为 import type），schema/sql 边从来不是绑定边。**模块级收缩的真正杠杆=类型边剥离（~400 处）+ A4/A5/A6**；A2 的价值是所有权归位（L1 契约/L2 表），不是 SCC 数字。A2-p2 余 5 文件被并发会话 claim（goal feature），shim 暂留，释放后收尾 | A.3 表 A2 行预期需改写；A.4 反作弊条款据此强化 |
-| 10-12 22:2x | **extraction 6 环评估（只读）+ 实施刀已派**：环=双向星形 hub（`tree-sitter.ts` 8106 行同载核心类与 `extractFromSource` 分派函数）。切法：分派器逐字抽成独立 `extract-from-source.ts` → 预期 file-SCC 6→3（残余=db/sqlite-adapter 等 3 环）。module 36 恒不变（同模块内） | A 线 file 级最后一刀进行中 |
+| 10-12 22:4x | **extraction 环崩解 `a87072650`，A 线 file 级收官**：分派器 `extractFromSource` 逐字抽至 `extract-from-source.ts`（索引 parity 逐位一致：76,944 节点/195,032 边），file-SCC 6→**3**；门禁钉死 3（`abbec9bf1`）。残余 3 环=graph/db 内部。**A 线 file 级全程：246→154→70→11→8→7→6→3**；module 级 36 留给切集 5 刀（需架构决策） | A 线 file 级完成；A.7 graph 独立成包与 module 切集另行排期 |
 **基线复测条款**：A.1 的 SCC 数字（246/36/283）与 B.1 的内存数字（1.5GB/4.1GB）均为 2026-10-10 上午实测；每线开工当天用同一脚本/同一测量法复测一遍，以新基线验收。
 
 ---
