@@ -160,6 +160,12 @@ function turnToolOutcomes(messages: MessageV2.WithParts[], afterID: MessageID) {
 
 const log = Log.create({ service: "session.prompt" })
 
+// B3 residency convergence: newest-first window (messages) the session-open goal
+// kick reads before falling back to the full compacted history. An idle goal
+// session's newest real user message is recent, so a fixed tail keeps opening a
+// long session bounded instead of materializing its whole history.
+const GOAL_KICK_WINDOW = 50
+
 type RuntimeContextSection = {
   key:
     | "workBrief"
@@ -784,7 +790,14 @@ export const layer = Layer.effect(
       // start a turn on top of an in-flight one.
       const busy = yield* Effect.exit(state.assertNotBusy(sessionID)).pipe(Effect.map(Exit.isFailure))
       if (busy) return false
-      const msgs = yield* MessageV2.filterCompactedEffect(sessionID)
+      // Read a bounded tail first; fall back to the full compacted history only
+      // when the window carries no non-runtime-context user message (goalTurnOwner
+      // would then be missing). Older messages are irrelevant to the goal checks,
+      // which scan forward from the newest user, so truncation is safe.
+      const recent = MessageV2.recent({ sessionID, limit: GOAL_KICK_WINDOW })
+      const msgs = recent.some((msg) => msg.info.role === "user" && !isRuntimeContextMessage(msg))
+        ? recent
+        : yield* MessageV2.filterCompactedEffect(sessionID)
       const newest = msgs.findLast((msg) => msg.info.role === "user")
       if (!newest || newest.info.role !== "user") return false
       const injected = yield* tryGoalContinuation({ sessionID, session, lastUser: newest.info, messages: msgs })

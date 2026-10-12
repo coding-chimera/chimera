@@ -1509,3 +1509,185 @@ describe("MessageV2.partsTail (R1 hotspot-1)", () => {
     })
   })
 })
+
+describe("MessageV2.recent / hasMessages (B3 windowed reads)", () => {
+  test("recent returns at most limit, oldest-first, matching page().items", async () => {
+    await WithInstance.provide({
+      directory: root,
+      fn: async () => {
+        const session = await svc.create({})
+        await fill(session.id, 5)
+
+        expect(MessageV2.recent({ sessionID: session.id, limit: 3 })).toEqual(
+          MessageV2.page({ sessionID: session.id, limit: 3 }).items,
+        )
+        expect(MessageV2.recent({ sessionID: session.id, limit: 3 }).length).toBe(3)
+        const all = MessageV2.recent({ sessionID: session.id, limit: 50 })
+        expect(all.length).toBe(5)
+        expect(all.map((m) => m.info.id)).toEqual(
+          Array.from(MessageV2.stream(session.id))
+            .reverse()
+            .map((m) => m.info.id),
+        )
+        expect(MessageV2.recent({ sessionID: session.id, limit: 0 })).toEqual([])
+
+        await svc.remove(session.id)
+      },
+    })
+  })
+
+  test("hasMessages probes existence without loading history", async () => {
+    await WithInstance.provide({
+      directory: root,
+      fn: async () => {
+        const session = await svc.create({})
+        expect(MessageV2.hasMessages(session.id)).toBe(false)
+        await addUser(session.id, "hi")
+        expect(MessageV2.hasMessages(session.id)).toBe(true)
+        await svc.remove(session.id)
+      },
+    })
+  })
+})
+
+describe("MessageV2.snapshotRange / messageThread (B3 targeted summarize reads)", () => {
+  async function addSnapshotParts(sessionID: SessionID, messageID: MessageID, start?: string, finish?: string) {
+    if (start !== undefined) {
+      await svc.updatePart({
+        id: PartID.ascending(),
+        sessionID,
+        messageID,
+        type: "step-start",
+        snapshot: start,
+      } as MessageV2.StepStartPart)
+    }
+    if (finish !== undefined) {
+      await svc.updatePart({
+        id: PartID.ascending(),
+        sessionID,
+        messageID,
+        type: "step-finish",
+        reason: "stop",
+        snapshot: finish,
+        cost: 0,
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      } as MessageV2.StepFinishPart)
+    }
+  }
+
+  test("snapshotRange returns the earliest step-start and latest step-finish", async () => {
+    await WithInstance.provide({
+      directory: root,
+      fn: async () => {
+        const session = await svc.create({})
+        const u1 = await addUser(session.id, "one")
+        const a1 = await addAssistant(session.id, u1)
+        await addSnapshotParts(session.id, a1, "start-1", "finish-1")
+        const u2 = await addUser(session.id, "two")
+        const a2 = await addAssistant(session.id, u2)
+        await addSnapshotParts(session.id, a2, "start-2", "finish-2")
+
+        expect(MessageV2.snapshotRange(session.id)).toEqual({ from: "start-1", to: "finish-2" })
+        await svc.remove(session.id)
+      },
+    })
+  })
+
+  test("snapshotRange ignores empty snapshots and empty sessions", async () => {
+    await WithInstance.provide({
+      directory: root,
+      fn: async () => {
+        const session = await svc.create({})
+        expect(MessageV2.snapshotRange(session.id)).toEqual({})
+        const u = await addUser(session.id, "x")
+        const a = await addAssistant(session.id, u)
+        // empty string is treated as absent, matching computeDiff's truthiness guard
+        await addSnapshotParts(session.id, a, "", "")
+        expect(MessageV2.snapshotRange(session.id)).toEqual({})
+        await addSnapshotParts(session.id, a, "start", "finish")
+        expect(MessageV2.snapshotRange(session.id)).toEqual({ from: "start", to: "finish" })
+        await svc.remove(session.id)
+      },
+    })
+  })
+
+  test("messageThread returns the target plus its assistant children only", async () => {
+    await WithInstance.provide({
+      directory: root,
+      fn: async () => {
+        const session = await svc.create({})
+        const target = await addUser(session.id, "target")
+        const child = await addAssistant(session.id, target)
+        const otherUser = await addUser(session.id, "other")
+        await addAssistant(session.id, otherUser)
+
+        const thread = MessageV2.messageThread(session.id, target)
+        expect(thread.map((m) => m.info.id)).toEqual([target, child])
+        expect(thread.every((m) => Array.isArray(m.parts))).toBe(true)
+        await svc.remove(session.id)
+      },
+    })
+  })
+})
+
+describe("B3 targeted reads match the full-history scan", () => {
+  test("snapshotRange / messageThread equal the old full-history computation", async () => {
+    await WithInstance.provide({
+      directory: root,
+      fn: async () => {
+        const session = await svc.create({})
+        for (let i = 0; i < 3; i++) {
+          const u = await addUser(session.id, "u" + i)
+          const a = await addAssistant(session.id, u)
+          await svc.updatePart({
+            id: PartID.ascending(),
+            sessionID: session.id,
+            messageID: a,
+            type: "step-start",
+            snapshot: "s" + i,
+          } as MessageV2.StepStartPart)
+          await svc.updatePart({
+            id: PartID.ascending(),
+            sessionID: session.id,
+            messageID: a,
+            type: "step-finish",
+            reason: "stop",
+            snapshot: "f" + i,
+            cost: 0,
+            tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+          } as MessageV2.StepFinishPart)
+        }
+
+        // Old computation: scan the full oldest-first history exactly as
+        // SessionSummary.computeDiff did before the targeted reads landed.
+        const all = Array.from(MessageV2.stream(session.id)).reverse()
+        let from: string | undefined
+        let to: string | undefined
+        for (const m of all) {
+          if (!from) {
+            for (const p of m.parts) {
+              if (p.type === "step-start" && p.snapshot) {
+                from = p.snapshot
+                break
+              }
+            }
+          }
+          for (const p of m.parts) {
+            if (p.type === "step-finish" && p.snapshot) to = p.snapshot
+          }
+        }
+        expect(MessageV2.snapshotRange(session.id)).toEqual({ from, to })
+
+        const target = all[0]!.info.id
+        const oldThread = all.filter(
+          (m) => m.info.id === target || (m.info.role === "assistant" && m.info.parentID === target),
+        )
+        expect(MessageV2.messageThread(session.id, target).map((m) => m.info.id)).toEqual(
+          oldThread.map((m) => m.info.id),
+        )
+
+        await svc.remove(session.id)
+      },
+    })
+  })
+})

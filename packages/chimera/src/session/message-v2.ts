@@ -1211,6 +1211,16 @@ export function* stream(sessionID: SessionID) {
     before = next.cursor
   }
 }
+/**
+ * Bounded newest-first window: at most `limit` messages, returned oldest-first
+ * (the same order `page().items` uses). Long-lived read paths that only need
+ * recent context read through this instead of materializing the whole session.
+ * It rides the same `page` primitive the HTTP route exposes, so no contract
+ * changes; the caller decides the window size.
+ */
+export function recent(input: { sessionID: SessionID; limit: number }): WithParts[] {
+  return page({ sessionID: input.sessionID, limit: input.limit }).items
+}
 
 export function parts(message_id: MessageID) {
   const rows = Database.use((db) =>
@@ -1273,6 +1283,83 @@ export function get(input: { sessionID: SessionID; messageID: MessageID }): With
     info: info(row),
     parts: parts(input.messageID),
   }
+}
+
+/**
+ * Cheap existence probe for read paths that must skip empty sessions without
+ * hydrating any history (replaces `Session.messages(...).length === 0`).
+ */
+export function hasMessages(sessionID: SessionID): boolean {
+  return (
+    Database.use((db) =>
+      db.select({ id: MessageTable.id }).from(MessageTable).where(eq(MessageTable.session_id, sessionID)).limit(1).get(),
+    ) !== undefined
+  )
+}
+
+/**
+ * The session's snapshot range — the earliest `step-start` snapshot and the
+ * latest `step-finish` snapshot — read with two indexed part queries instead of
+ * hydrating the whole history. `SessionSummary.summarize` used to load every
+ * message/part just to find these two values, so a long session
+ * re-materialized its full history on every assistant message.
+ *
+ * Ordering matches `SessionSummary.computeDiff` over a full oldest-first load:
+ * the first step-start and the last step-finish in message order. Empty-string
+ * snapshots are ignored exactly like computeDiff's `if (part.snapshot)` guard.
+ */
+export function snapshotRange(sessionID: SessionID): { from?: string; to?: string } {
+  const snapshotOf = (type: "step-start" | "step-finish", order: "asc" | "desc") =>
+    Database.use((db) => {
+      const query = db
+        .select({ snapshot: sql<string | null>`json_extract(${PartTable.data}, '$.snapshot')` })
+        .from(PartTable)
+        .innerJoin(MessageTable, eq(PartTable.message_id, MessageTable.id))
+        .where(
+          and(
+            eq(PartTable.session_id, sessionID),
+            sql`json_extract(${PartTable.data}, '$.type') = ${type}`,
+            sql`json_extract(${PartTable.data}, '$.snapshot') IS NOT NULL`,
+            sql`json_extract(${PartTable.data}, '$.snapshot') != ''`,
+          ),
+        )
+      return order === "asc"
+        ? query.orderBy(MessageTable.time_created, MessageTable.id, PartTable.id).limit(1).get()
+        : query.orderBy(desc(MessageTable.time_created), desc(MessageTable.id), desc(PartTable.id)).limit(1).get()
+    })
+  return {
+    from: snapshotOf("step-start", "asc")?.snapshot ?? undefined,
+    to: snapshotOf("step-finish", "desc")?.snapshot ?? undefined,
+  }
+}
+
+/**
+ * The target message plus its assistant children, hydrated with parts and
+ * ordered oldest-first — the exact subset `SessionSummary` used to filter out
+ * of a full-session load for its message-level diff. Bounded by the thread size
+ * instead of the session history.
+ */
+export function messageThread(sessionID: SessionID, messageID: MessageID): WithParts[] {
+  const rows = Database.use((db) =>
+    db
+      .select()
+      .from(MessageTable)
+      .where(
+        and(
+          eq(MessageTable.session_id, sessionID),
+          or(
+            eq(MessageTable.id, messageID),
+            and(
+              sql`json_extract(${MessageTable.data}, '$.role') = 'assistant'`,
+              sql`json_extract(${MessageTable.data}, '$.parentID') = ${messageID}`,
+            ),
+          ),
+        ),
+      )
+      .orderBy(MessageTable.time_created, MessageTable.id)
+      .all(),
+  )
+  return hydrate(rows)
 }
 
 export function filterCompacted(msgs: Iterable<WithParts>, options?: { remoteCompaction?: RemoteCompactionReplay }) {

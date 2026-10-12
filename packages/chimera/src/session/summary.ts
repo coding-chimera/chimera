@@ -125,10 +125,14 @@ export const layer = Layer.effect(
       sessionID: SessionID
       messageID: MessageID
     }) {
-      const all = yield* sessions.messages({ sessionID: input.sessionID })
-      if (!all.length) return
-
-      const diffs = yield* computeDiff({ messages: all })
+      // B3 residency convergence: targeted reads replace a full-session load.
+      // The session diff only needs the snapshot range (earliest step-start /
+      // latest step-finish) and the message diff only the target thread; the
+      // old path materialized every message/part here on every assistant
+      // message, ratcheting resident memory in a long-lived server.
+      if (!MessageV2.hasMessages(input.sessionID)) return
+      const range = MessageV2.snapshotRange(input.sessionID)
+      const diffs = range.from && range.to ? yield* snapshot.diffFull(range.from, range.to) : []
       yield* sessions.setSummary({
         sessionID: input.sessionID,
         summary: {
@@ -140,9 +144,7 @@ export const layer = Layer.effect(
       yield* storage.write(["session_diff", input.sessionID], diffs).pipe(Effect.ignore)
       yield* bus.publish(Session.Event.Diff, { sessionID: input.sessionID, diff: diffs })
 
-      const messages = all.filter(
-        (m) => m.info.id === input.messageID || (m.info.role === "assistant" && m.info.parentID === input.messageID),
-      )
+      const messages = MessageV2.messageThread(input.sessionID, input.messageID)
       const target = messages.find((m) => m.info.id === input.messageID)
       if (!target || target.info.role !== "user") return
       const msgDiffs = messageSummaryDiffs(yield* computeDiff({ messages }))
