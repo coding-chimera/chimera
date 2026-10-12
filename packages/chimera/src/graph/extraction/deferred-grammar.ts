@@ -21,7 +21,7 @@
  * process/worker lifetime, so the lazy cost is paid once per language.
  */
 import type { ExtractionResult, Language } from '../types';
-import { extractFromSource } from './tree-sitter';
+import { extractFromSource } from './extract-from-source';
 import { loadGrammarsForLanguages } from './grammars';
 import { kernelRoutes } from './kernel';
 

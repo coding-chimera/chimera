@@ -81,7 +81,7 @@
 
 import * as fs from 'fs'
 import * as path from 'path'
-import { extractFromSource } from '../src/graph/extraction/tree-sitter'
+import { extractFromSource } from '../src/graph/extraction/extract-from-source'
 import { detectLanguage, EXTENSION_MAP, initGrammars, loadGrammarsForLanguages } from '../src/graph/extraction/grammars'
 import { getKernel, resetKernelRoutingForTests, tryKernelExtract, type KernelModule } from '../src/graph/extraction/kernel'
 import type { Edge, ExtractionResult, Language, Node, UnresolvedReference } from '../src/graph/types'

@@ -20,7 +20,7 @@ import {
   UnresolvedReference,
 } from '../types';
 import { QueryBuilder } from '../db/queries';
-import { extractFromSource } from './tree-sitter';
+import { extractFromSource } from './extract-from-source';
 import { detectLanguage, isSourceFile, isLanguageSupported, isFileLevelOnlyLanguage, initGrammars, loadGrammarsForLanguages } from './grammars';
 import { loadIncludeIgnoredPatterns } from '../config';
 import { ParseWorkerPool, resolveParsePoolSize, resolveParseTimeoutMs } from './parse-pool';
@@ -2479,7 +2479,7 @@ export class ExtractionOrchestrator {
 }
 
 // Re-export useful types and functions
-export { extractFromSource } from './tree-sitter';
+export { extractFromSource } from './extract-from-source';
 export { extractWithDeferredGrammarLoad, missingKernelDeferredGrammar } from './deferred-grammar';
 export { filterKernelRoutedLanguages, isKernelOnlyLanguageSet, DEFER_ELIGIBLE_LANGUAGES } from './kernel';
 export { detectLanguage, isSourceFile, isLanguageSupported, isGrammarLoaded, getSupportedLanguages, initGrammars, loadGrammarsForLanguages, loadAllGrammars } from './grammars';
