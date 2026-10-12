@@ -174,7 +174,6 @@ export type {
   WatchSyncSummary,
   PendingFile,
 } from './sync';
-export { MCPServer } from './mcp';
 export { projectLanguageAwareSignals } from './semantic/language-signals';
 
 function loadCodeGraphVersion(): string {
