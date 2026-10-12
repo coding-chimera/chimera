@@ -11,7 +11,7 @@ import { Env } from "../../src/env"
 import { Global } from "@opencode-ai/core/global"
 import { Filesystem } from "@/util/filesystem"
 import { Effect } from "effect"
-import { AppRuntime } from "../../src/effect/app-runtime"
+import { AppRuntime } from "../../src/composition/app-runtime"
 import { makeRuntime } from "../../src/effect/run-service"
 
 const env = makeRuntime(Env.Service, Env.defaultLayer)

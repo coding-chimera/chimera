@@ -4,7 +4,7 @@ import { Config } from "@/config/config"
 import { Instance } from "../src/project/instance"
 import { WithInstance } from "../src/project/with-instance"
 import { disposeAllInstances, tmpdir } from "./fixture/fixture"
-import { AppRuntime } from "../src/effect/app-runtime"
+import { AppRuntime } from "../src/composition/app-runtime"
 
 const load = () => AppRuntime.runPromise(Config.Service.use((svc) => svc.get()))
 

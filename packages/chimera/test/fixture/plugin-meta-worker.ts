@@ -23,6 +23,6 @@ const { PluginMeta } = await import("../../src/plugin/meta")
 try {
   await PluginMeta.touch(msg.spec, msg.target, msg.id)
 } finally {
-  const { AppRuntime } = await import("../../src/effect/app-runtime")
+  const { AppRuntime } = await import("../../src/composition/app-runtime")
   await AppRuntime.dispose()
 }

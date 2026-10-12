@@ -43,7 +43,7 @@ Important current facts:
 - there is no `packages/server` workspace yet on this branch
 - the main host server is still Hono-based in `src/server/server.ts`
 - current OpenAPI generation is Hono-based through `Server.openapi()` and `cli/cmd/generate.ts`
-- the Effect runtime and app layer are centralized in `src/effect/app-runtime.ts` and `src/effect/run-service.ts`
+- the Effect runtime and app layer are centralized in `src/composition/app-runtime.ts` and `src/effect/run-service.ts`
 - there are already bridged Effect `HttpApi` slices under `src/server/routes/instance/httpapi/*`
 - those slices are mounted into the Hono server behind `OPENCODE_EXPERIMENTAL_HTTPAPI`
 - the bridge currently covers `question`, `permission`, `provider`, partial `config`, and partial `project` routes
@@ -231,7 +231,7 @@ Current OpenAPI flow:
 
 Current runtime and service layer:
 
-- `src/effect/app-runtime.ts`
+- `src/composition/app-runtime.ts`
 - `src/effect/run-service.ts`
 
 ## Ownership rules
@@ -250,7 +250,7 @@ Keep in `packages/opencode` for now:
 - `src/server/routes/**/*.ts`
 - `src/server/middleware.ts`
 - `src/server/adapter.*.ts`
-- `src/effect/app-runtime.ts`
+- `src/composition/app-runtime.ts`
 - `src/effect/run-service.ts`
 - all Effect services until they move to `packages/core`
 

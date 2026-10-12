@@ -6,7 +6,7 @@ import { provideInstance, tmpdirScoped } from "../fixture/fixture"
 import { Config } from "@/config/config"
 import { Agent as AgentSvc } from "../../src/agent/agent"
 import { Color } from "@/util/color"
-import { AppRuntime } from "../../src/effect/app-runtime"
+import { AppRuntime } from "../../src/composition/app-runtime"
 import { testEffect } from "../lib/effect"
 
 const it = testEffect(Layer.mergeAll(AgentSvc.defaultLayer, CrossSpawnSpawner.defaultLayer))

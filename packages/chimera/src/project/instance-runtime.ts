@@ -1,4 +1,4 @@
-import { AppRuntime } from "@/effect/app-runtime"
+import { AppRuntime } from "@/composition/app-runtime"
 import { type InstanceContext } from "./instance-context"
 import { InstanceStore, type LoadInput } from "./instance-store"
 

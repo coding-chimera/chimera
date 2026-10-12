@@ -1,6 +1,6 @@
 import type { Argv } from "yargs"
 import { Effect, Schema } from "effect"
-import { AppRuntime, type AppServices } from "@/effect/app-runtime"
+import { AppRuntime, type AppServices } from "@/composition/app-runtime"
 import { InstanceStore } from "@/project/instance-store"
 import { InstanceRef } from "@/effect/instance-ref"
 import { Instance } from "@/project/instance"

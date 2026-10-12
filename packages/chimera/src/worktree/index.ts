@@ -20,6 +20,7 @@ import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { BootstrapRuntime } from "@/effect/bootstrap-runtime"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { InstanceState } from "@/effect/instance-state"
+import { makeRuntime } from "@/effect/run-service"
 import { zod as effectZod } from "@/util/effect-zod"
 import type z from "zod"
 import { withStatics } from "@/util/schema"
@@ -562,5 +563,9 @@ export const appLayer = layer.pipe(
 )
 
 export const defaultLayer = appLayer.pipe(Layer.provide(InstanceLayer.layer))
+
+// Service-local runtime so Promise/ALS callers (e.g. the workspace adapter) can run
+// Worktree effects without importing the L6 composition root (src/composition/*).
+export const runtime = makeRuntime(Service, defaultLayer)
 
 export * as Worktree from "."

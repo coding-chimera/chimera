@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { AppRuntime } from "../../src/effect/app-runtime"
+import { AppRuntime } from "../../src/composition/app-runtime"
 import { Bus } from "../../src/bus"
 import { Effect } from "effect"
 import { Instance } from "../../src/project/instance"

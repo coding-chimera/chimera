@@ -16,7 +16,7 @@ import { ProviderID, ModelID } from "../../src/provider/schema"
 import { Filesystem } from "@/util/filesystem"
 import { Env } from "../../src/env"
 import { Effect } from "effect"
-import { AppRuntime } from "../../src/effect/app-runtime"
+import { AppRuntime } from "../../src/composition/app-runtime"
 import { makeRuntime } from "../../src/effect/run-service"
 import { encodeRemoteCompactionInput } from "@/session/remote-compaction-codec"
 

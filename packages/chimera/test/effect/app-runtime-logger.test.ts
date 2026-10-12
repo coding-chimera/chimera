@@ -1,7 +1,7 @@
 import { expect } from "bun:test"
 import { Context, Effect, Layer, Logger } from "effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
-import { AppRuntime } from "../../src/effect/app-runtime"
+import { AppRuntime } from "../../src/composition/app-runtime"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceRef } from "../../src/effect/instance-ref"
 import * as EffectLogger from "@opencode-ai/core/effect/logger"

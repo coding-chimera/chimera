@@ -261,7 +261,7 @@ Tool-specific filesystem cleanup notes live in `tools.md`.
 
 This phase is no longer broadly open. There are 5 `makeRuntime(...)` call sites under `src/`, and only a small subset are still ordinary facade-removal targets. The live checklist now lives in `facades.md`.
 
-These facades exist because cyclic imports used to force each service to build its own independent runtime. Now that the layer DAG is acyclic and `AppRuntime` (`src/effect/app-runtime.ts`) composes everything into one `ManagedRuntime`, we're removing them.
+These facades exist because cyclic imports used to force each service to build its own independent runtime. Now that the layer DAG is acyclic and `AppRuntime` (`src/composition/app-runtime.ts`) composes everything into one `ManagedRuntime`, we're removing them.
 
 ### Process
 

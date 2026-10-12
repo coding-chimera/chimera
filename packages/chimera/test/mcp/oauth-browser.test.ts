@@ -112,7 +112,7 @@ beforeEach(() => {
 
 // Import modules after mocking
 const { MCP } = await import("../../src/mcp/index")
-const { AppRuntime } = await import("../../src/effect/app-runtime")
+const { AppRuntime } = await import("../../src/composition/app-runtime")
 const { Bus } = await import("../../src/bus")
 const { McpOAuthCallback } = await import("../../src/mcp/oauth-callback")
 const { Instance } = await import("../../src/project/instance")

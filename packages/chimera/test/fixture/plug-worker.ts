@@ -96,6 +96,6 @@ try {
   process.stderr.write(text)
   process.exitCode = 1
 } finally {
-  const { AppRuntime } = await import("../../src/effect/app-runtime")
+  const { AppRuntime } = await import("../../src/composition/app-runtime")
   await AppRuntime.dispose()
 }

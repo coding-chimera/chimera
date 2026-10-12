@@ -4,7 +4,7 @@ import { EventSequenceTable } from "@/sync/event.sql"
 import { Workspace } from "@/control-plane/workspace"
 import type { WorkspaceID } from "@/control-plane/schema"
 import * as Log from "@opencode-ai/core/util/log"
-import { AppRuntime } from "@/effect/app-runtime"
+import { AppRuntime } from "@/composition/app-runtime"
 import { Effect } from "effect"
 
 export const HEADER = "x-chimera-sync"

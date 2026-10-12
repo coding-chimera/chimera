@@ -6,7 +6,7 @@ import { Global } from "@opencode-ai/core/global"
 import { Filesystem } from "@/util/filesystem"
 import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
 import { Effect } from "effect"
-import { AppRuntime } from "@/effect/app-runtime"
+import { AppRuntime } from "@/composition/app-runtime"
 
 import { parsePluginSpecifier, pluginSource } from "./shared"
 

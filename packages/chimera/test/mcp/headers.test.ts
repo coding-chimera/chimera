@@ -46,7 +46,7 @@ beforeEach(() => {
 
 // Import MCP after mocking
 const { MCP } = await import("../../src/mcp/index")
-const { AppRuntime } = await import("../../src/effect/app-runtime")
+const { AppRuntime } = await import("../../src/composition/app-runtime")
 const { Instance } = await import("../../src/project/instance")
 const { WithInstance } = await import("../../src/project/with-instance")
 const { tmpdir } = await import("../fixture/fixture")

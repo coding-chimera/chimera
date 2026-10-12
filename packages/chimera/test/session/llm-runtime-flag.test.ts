@@ -11,7 +11,7 @@ import { tmpdir } from "../fixture/fixture"
 import type { Agent } from "../../src/agent/agent"
 import { MessageV2 } from "../../src/session/message-v2"
 import { SessionID, MessageID } from "../../src/contracts/session-ids"
-import { AppRuntime } from "../../src/effect/app-runtime"
+import { AppRuntime } from "../../src/composition/app-runtime"
 
 // L4.4 native llm runtime pilot (experimental.llm_runtime) seam coverage.
 // Both flag states run the identical deepseek fixture against one local SSE

@@ -1,4 +1,4 @@
-import { AppRuntime } from "@/effect/app-runtime"
+import { AppRuntime } from "@/composition/app-runtime"
 import { InstanceRef } from "@/effect/instance-ref"
 import { context } from "./instance-context"
 import { InstanceStore } from "./instance-store"

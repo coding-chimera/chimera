@@ -174,7 +174,7 @@ type Runtime = {
   PublicApi: (typeof import("../src/server/routes/instance/httpapi/public"))["PublicApi"]
   ExperimentalHttpApiServer: (typeof import("../src/server/routes/instance/httpapi/server"))["ExperimentalHttpApiServer"]
   Server: (typeof import("../src/server/server"))["Server"]
-  AppLayer: (typeof import("../src/effect/app-runtime"))["AppLayer"]
+  AppLayer: (typeof import("../src/composition/app-runtime"))["AppLayer"]
   InstanceRef: (typeof import("../src/effect/instance-ref"))["InstanceRef"]
   Instance: (typeof import("../src/project/instance"))["Instance"]
   InstanceStore: (typeof import("../src/project/instance-store"))["InstanceStore"]
@@ -195,7 +195,7 @@ function runtime() {
     const publicApi = await import("../src/server/routes/instance/httpapi/public")
     const httpApiServer = await import("../src/server/routes/instance/httpapi/server")
     const server = await import("../src/server/server")
-    const appRuntime = await import("../src/effect/app-runtime")
+    const appRuntime = await import("../src/composition/app-runtime")
     const instanceRef = await import("../src/effect/instance-ref")
     const instance = await import("../src/project/instance")
     const instanceStore = await import("../src/project/instance-store")
