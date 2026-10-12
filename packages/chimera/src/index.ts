@@ -60,7 +60,12 @@ process.on("uncaughtException", (e) => {
 const args = hideBin(process.argv)
 const graphArgs = graphCliArgs(args, process.argv.slice(1))
 if (graphArgs) {
-  await runChimeraCli(graphArgs, { programName: "chimera graph" })
+  await runChimeraCli(graphArgs, {
+    programName: "chimera graph",
+    // Composition-root injection keeps `chimera graph` free of a chimera-module import.
+    compactEvidence: (projectPath, options) =>
+      import("@/chimera/store").then((store) => store.compactCommittedChangeEvidence(projectPath, options)),
+  })
   process.exit()
 }
 

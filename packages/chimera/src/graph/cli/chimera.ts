@@ -185,9 +185,41 @@ function prepareRuntime(argv: readonly string[]): void {
   });
 }
 
+export type CompactEvidenceOptions = {
+  dryRun?: boolean;
+  vacuum?: boolean;
+  activeSessionID?: string;
+};
+
+export type CompactEvidenceResult = {
+  projectRoot: string;
+  dbPath: string;
+  commit?: string;
+  tree?: string;
+  dryRun: boolean;
+  vacuum: boolean;
+  candidateEvents: number;
+  compactedEvents: number;
+  deletedFacts: number;
+  deletedSemanticSnapshots: number;
+  deletedSemanticObjects: number;
+  rewrittenFactPayloads: number;
+  summariesWritten: number;
+  dbBytesBefore?: number;
+  dbBytesAfter?: number;
+};
+
+// Composition-root injection: the `chimera graph` CLI is a leaf and must not import
+// the chimera store (module-SCC cut). The `chimera` entrypoint supplies this handler.
+export type CompactEvidence = (
+  projectPath: string,
+  options?: CompactEvidenceOptions,
+) => Promise<CompactEvidenceResult>;
+
 export type RunChimeraCliOptions = {
   defaultToInstaller?: boolean;
   programName?: string;
+  compactEvidence?: CompactEvidence;
 };
 
 export async function runChimeraCli(argv = process.argv.slice(2), options: RunChimeraCliOptions = {}): Promise<void> {
@@ -204,10 +236,10 @@ export async function runChimeraCli(argv = process.argv.slice(2), options: RunCh
     }
   }
 
-  await main(argv.length === 0 ? ['--help'] : argv, options.programName ?? 'chimera');
+  await main(argv.length === 0 ? ['--help'] : argv, options.programName ?? 'chimera', options.compactEvidence);
 }
 
-async function main(argv = process.argv.slice(2), programName = 'chimera') {
+async function main(argv = process.argv.slice(2), programName = 'chimera', compactEvidence?: CompactEvidence) {
 
 const program = new Command();
 
@@ -1065,8 +1097,11 @@ program
         process.exit(1);
       }
 
-      const { compactCommittedChangeEvidence } = await import('../../chimera/store');
-      const result = await compactCommittedChangeEvidence(projectPath, {
+      if (!compactEvidence) {
+        error('compact-evidence is unavailable in this entrypoint');
+        process.exit(1);
+      }
+      const result = await compactEvidence(projectPath, {
         dryRun: options.dryRun,
         vacuum: options.vacuum,
         activeSessionID: options.activeSession,

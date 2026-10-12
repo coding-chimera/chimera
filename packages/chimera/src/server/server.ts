@@ -27,6 +27,7 @@ import { disposeMiddleware } from "./routes/instance/httpapi/lifecycle"
 import { WebSocketTracker } from "./routes/instance/httpapi/websocket-tracker"
 import { PublicApi } from "./routes/instance/httpapi/public"
 import * as ServerBackend from "./backend"
+import { ServerAuth } from "./auth"
 import type { CorsOptions } from "./cors"
 
 // @ts-ignore This global is needed to prevent ai-sdk from logging warnings to stdout https://github.com/vercel/ai/blob/2dc67e0ef538307f21368db32d5a12345d98831b/packages/ai/src/logger/log-warnings.ts#L85
@@ -37,6 +38,7 @@ initProjectors()
 Plugin.setServerPort({
   fetch: (input, init) => Default().app.fetch(input instanceof Request ? input : new Request(input, init)),
   url: () => url,
+  headers: () => ServerAuth.headers(),
 })
 
 const log = Log.create({ service: "server" })

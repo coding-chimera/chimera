@@ -10,7 +10,6 @@ import { Bus } from "../bus"
 import * as Log from "@opencode-ai/core/util/log"
 import { createOpencodeClient } from "@opencode-ai/sdk"
 import { Flag } from "@opencode-ai/core/flag/flag"
-import { ServerAuth } from "@/server/auth"
 import { CodexAuthPlugin } from "./codex"
 import { Session } from "@/session/session"
 import { NamedError } from "@opencode-ai/core/util/error"
@@ -36,6 +35,7 @@ const log = Log.create({ service: "plugin" })
 export interface ServerPort {
   fetch: (input: RequestInfo | URL, init?: RequestInit) => Response | Promise<Response>
   url: () => URL | undefined
+  headers: () => Record<string, string> | undefined
 }
 
 let serverPort: ServerPort | undefined
@@ -145,7 +145,7 @@ export const layer = Layer.effect(
         const client = createOpencodeClient({
           baseUrl: "http://localhost:4096",
           directory: ctx.directory,
-          headers: ServerAuth.headers(),
+          headers: serverPort?.headers(),
           fetch: async (...args) => serverPort?.fetch(...args) ?? fetch(...args),
         })
         const cfg = yield* config.get()
