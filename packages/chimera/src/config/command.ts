@@ -5,6 +5,7 @@ import { Schema } from "effect"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { Glob } from "@opencode-ai/core/util/glob"
 import { Bus } from "@/bus"
+import { SessionErrorEvent } from "@/session/error-event"
 import { zod } from "@/util/effect-zod"
 import { withStatics } from "@/util/schema"
 import { configEntryNameFromPath } from "./entry-name"
@@ -34,12 +35,11 @@ export async function load(dir: string) {
     dot: true,
     symlink: true,
   })) {
-    const md = await ConfigMarkdown.parse(item).catch(async (err) => {
+    const md = await ConfigMarkdown.parse(item).catch((err) => {
       const message = ConfigMarkdown.FrontmatterError.isInstance(err)
         ? err.data.message
         : `Failed to parse command ${item}`
-      const { Session } = await import("@/session/session")
-      void Bus.publish(Session.Event.Error, { error: new NamedError.Unknown({ message }).toObject() })
+      void Bus.publish(SessionErrorEvent.Error, { error: new NamedError.Unknown({ message }).toObject() })
       log.error("failed to load command", { command: item, err })
       return undefined
     })

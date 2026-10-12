@@ -33,7 +33,7 @@ const BASELINE = {
 // signal for the rendered description).
 const TOOL_BUDGETS = {
   "todowrite.txt": 9183,
-  "ast_edit.txt": 10331,
+  "ast_edit.txt": 10984,
   "task.txt": 7055,
   "swarm.txt": 6951,
   "workbrief.txt": 6546,
@@ -77,7 +77,11 @@ const TOOL_BUDGETS = {
 // goal_update.txt grew for the tool-failure/turn-error breaker and
 // create-then-start wording (+507 string-length against the HEAD tree,
 // whose total was exactly 98370), raising the always-on floor to 98877.
-const TOOL_TOTAL_BUDGET = 98877
+// 2026-10-12 re-record (blocked-mutation replay): the edit/write/apply_patch/
+// ast_edit descriptions gained the replay-key guidance (replay stashes, single-
+// consumption, gate re-check semantics), raising ast_edit.txt (10331 -> 10984)
+// and the always-on floor to 101308.
+const TOOL_TOTAL_BUDGET = 101308
 
 // The description bytes withheld from the default model-facing set by the
 // ToolSearch defer filter: every registered deferred tool's .txt is off the

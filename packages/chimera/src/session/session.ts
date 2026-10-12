@@ -29,6 +29,7 @@ import { ProjectTable } from "../project/project.sql"
 import { Storage } from "@/storage/storage"
 import * as Log from "@opencode-ai/core/util/log"
 import { MessageV2 } from "./message-v2"
+import { SessionErrorEvent } from "./error-event"
 import type { InstanceContext } from "../project/instance"
 import { InstanceState } from "@/effect/instance-state"
 import { Snapshot } from "@/snapshot"
@@ -406,15 +407,7 @@ export const Event = {
       diff: Schema.Array(Snapshot.FileDiff),
     }),
   ),
-  Error: BusEvent.define(
-    "session.error",
-    Schema.Struct({
-      sessionID: Schema.optional(SessionID),
-      // Reuses MessageV2.Assistant.fields.error (already Schema.optional) so
-      // the derived zod keeps the same discriminated-union shape on the bus.
-      error: MessageV2.Assistant.fields.error,
-    }),
-  ),
+  Error: BusEvent.define("session.error", SessionErrorEvent.ErrorSchema),
 }
 
 export function plan(input: { slug: string; time: { created: number } }, instance: InstanceContext) {

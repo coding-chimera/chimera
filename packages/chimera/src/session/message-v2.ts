@@ -22,7 +22,17 @@ import { ModelID, ProviderID } from "@/provider/schema"
 import { Effect, Schema, Types } from "effect"
 import { zod, ZodOverride } from "@/util/effect-zod"
 import { NonNegativeInt, withStatics } from "@/util/schema"
-import { namedSchemaError } from "@/util/named-schema-error"
+import {
+  AbortedError,
+  APIError,
+  AssistantErrorSchema,
+  AuthError,
+  ContextOverflowError,
+  OutputLengthError,
+  StructuredOutputError,
+  type AssistantError,
+} from "./error-event"
+export { AbortedError, APIError, AuthError, ContextOverflowError, OutputLengthError, StructuredOutputError }
 import * as EffectLogger from "@opencode-ai/core/effect/logger"
 import { encodeRemoteCompactionInput } from "./remote-compaction-codec"
 
@@ -36,7 +46,6 @@ interface FetchDecompressionError extends Error {
 export const SYNTHETIC_ATTACHMENT_PROMPT = "Attached image(s) from tool result:"
 export { isMedia }
 
-export const OutputLengthError = namedSchemaError("MessageOutputLengthError", {})
 
 export const MAX_STORED_MESSAGE_SUMMARY_BYTES = 1024 * 1024
 
@@ -92,28 +101,6 @@ function ensureStoredSummariesTrimmed(sessionID: SessionID) {
   })
   rememberTrimmedSession(sessionID)
 }
-export const AbortedError = namedSchemaError("MessageAbortedError", { message: Schema.String })
-export const StructuredOutputError = namedSchemaError("StructuredOutputError", {
-  message: Schema.String,
-  retries: NonNegativeInt,
-})
-export const AuthError = namedSchemaError("ProviderAuthError", {
-  providerID: Schema.String,
-  message: Schema.String,
-})
-export const APIError = namedSchemaError("APIError", {
-  message: Schema.String,
-  statusCode: Schema.optional(NonNegativeInt),
-  isRetryable: Schema.Boolean,
-  responseHeaders: Schema.optional(Schema.Record(Schema.String, Schema.String)),
-  responseBody: Schema.optional(Schema.String),
-  metadata: Schema.optional(Schema.Record(Schema.String, Schema.String)),
-})
-export type APIError = z.infer<typeof APIError.Schema>
-export const ContextOverflowError = namedSchemaError("ContextOverflowError", {
-  message: Schema.String,
-  responseBody: Schema.optional(Schema.String),
-})
 
 export class OutputFormatText extends Schema.Class<OutputFormatText>("OutputFormatText")({
   type: Schema.Literal("text"),
@@ -566,30 +553,6 @@ export type Part =
   | RetryPart
   | CompactionPart
 
-// Zod discriminated union kept for the legacy Hono OpenAPI path.
-const AssistantErrorZod = z.discriminatedUnion("name", [
-  AuthError.Schema,
-  NamedError.Unknown.Schema,
-  OutputLengthError.Schema,
-  AbortedError.Schema,
-  StructuredOutputError.Schema,
-  ContextOverflowError.Schema,
-  APIError.Schema,
-])
-type AssistantError = z.infer<typeof AssistantErrorZod>
-
-// Effect Schema for the same union — used by HttpApi OpenAPI generation.
-const AssistantErrorSchema = Schema.Union([
-  AuthError.EffectSchema,
-  Schema.Struct({ name: Schema.Literal("UnknownError"), data: Schema.Struct({ message: Schema.String }) }).annotate({
-    identifier: "UnknownError",
-  }),
-  OutputLengthError.EffectSchema,
-  AbortedError.EffectSchema,
-  StructuredOutputError.EffectSchema,
-  ContextOverflowError.EffectSchema,
-  APIError.EffectSchema,
-]).annotate({ discriminator: "name" })
 
 // ── Prompt input schemas ─────────────────────────────────────────────────────
 //
