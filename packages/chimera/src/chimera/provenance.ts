@@ -1,6 +1,7 @@
 import path from "path"
 import fs from "fs"
 import { Effect, Exit, Option, Schema } from "effect"
+import { ulid } from "ulid"
 import * as Log from "@opencode-ai/core/util/log"
 import type { Interface as BusInterface } from "@/bus"
 import { BusEvent } from "@/bus/bus-event"
@@ -115,6 +116,8 @@ export interface MutationPredesignInput {
   destructive?: boolean
   multiFile?: boolean
   rename?: boolean
+  /** Full tool input of the blocked call, stashed so a later replay can reuse it unchanged. */
+  params?: unknown
 }
 
 export interface ToolOracleInput {
@@ -1156,6 +1159,51 @@ const predesignToolAvailable = Effect.fnUntraced(function* (ctx: Tool.Context) {
   return true
 })
 
+const BLOCKED_MUTATION_LIMIT = 100
+
+type BlockedMutation = { toolID: string; params: unknown }
+
+// Process-local stash of inputs blocked by the mutation gate, keyed by
+// `${sessionID}:${replayKey}`. A later call with replay="<key>" reuses the
+// stashed input instead of regenerating it. Bounded so a long session cannot
+// grow it without limit; the oldest entry is evicted first.
+const blockedMutations = new Map<string, BlockedMutation>()
+
+export function stashBlockedMutation(input: { sessionID: string; toolID: string; params: unknown }): string {
+  const replayKey = `rpl_${ulid()}`
+  blockedMutations.set(`${input.sessionID}:${replayKey}`, { toolID: input.toolID, params: input.params })
+  if (blockedMutations.size > BLOCKED_MUTATION_LIMIT) {
+    const oldest = blockedMutations.keys().next().value
+    if (oldest !== undefined) blockedMutations.delete(oldest)
+  }
+  return replayKey
+}
+
+// Single-use lookup: a hit removes the entry. A missing key, a different
+// session, or a different toolID all resolve to undefined without consuming a
+// mismatched entry (so the owning tool can still replay it).
+export function resolveBlockedMutation(input: { sessionID: string; toolID: string; key: string }): unknown | undefined {
+  const mapKey = `${input.sessionID}:${input.key}`
+  const entry = blockedMutations.get(mapKey)
+  if (!entry || entry.toolID !== input.toolID) return undefined
+  blockedMutations.delete(mapKey)
+  return entry.params
+}
+
+function replayStashNotice(key: string): string {
+  return `Your blocked input was stashed (replay key: ${key}). After satisfying the gate (record chimera_predesign for a pre-design block, or wait for the edit-intent claim release), re-call this tool with replay: "${key}" to reuse the stashed input unchanged instead of regenerating it. If the evidence changes what you want to write, ignore replay and re-issue the full call.`
+}
+
+function withReplayStash(result: Tool.ExecuteResult, input: MutationPredesignInput): Tool.ExecuteResult {
+  if (input.params === undefined) return result
+  const replayKey = stashBlockedMutation({ sessionID: input.ctx.sessionID, toolID: input.toolID, params: input.params })
+  return {
+    ...result,
+    output: `${result.output}\n\n${replayStashNotice(replayKey)}`,
+    metadata: { ...result.metadata, replayKey },
+  }
+}
+
 export const requirePredesignForMutation: (input: MutationPredesignInput) => Effect.Effect<MutationPredesignDecision> = Effect.fn(
   "Chimera.requirePredesignForMutation",
 )(function* (input: MutationPredesignInput) {
@@ -1188,7 +1236,7 @@ export const requirePredesignForMutation: (input: MutationPredesignInput) => Eff
       blockedBy: "edit-intent-claim" as const,
       files,
       risks,
-      result: EditIntentClaims.blockedResult({ toolID: input.toolID, conflicts: claimConflicts }),
+      result: withReplayStash(EditIntentClaims.blockedResult({ toolID: input.toolID, conflicts: claimConflicts }), input),
     }
   }
   // The predesign-evidence ceremony stays graph-gated: without an
@@ -1217,16 +1265,19 @@ export const requirePredesignForMutation: (input: MutationPredesignInput) => Eff
     blockedBy: "predesign" as const,
     files,
     risks,
-    result: {
-      title: "Chimera pre-design required",
-      output,
-      metadata: {
-        chimeraPredesignRequired: true,
-        toolID: input.toolID,
-        files: files.map((file) => file.graphPath ?? file.absolutePath),
-        risks,
+    result: withReplayStash(
+      {
+        title: "Chimera pre-design required",
+        output,
+        metadata: {
+          chimeraPredesignRequired: true,
+          toolID: input.toolID,
+          files: files.map((file) => file.graphPath ?? file.absolutePath),
+          risks,
+        },
       },
-    },
+      input,
+    ),
   }
 })
 

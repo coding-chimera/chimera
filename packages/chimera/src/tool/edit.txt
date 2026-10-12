@@ -12,5 +12,6 @@ Usage:
 - Stale anchors self-heal: when an anchor no longer matches its line, the tool scans the file for a unique content match and relocates the anchor automatically, reporting the relocation in the output. Ambiguous or missing matches fail with the current `LINE#ID` anchors in the error, usable directly for retry.
 - The edit will FAIL for overlapping ranges, empty anchored inserts, and no-op edits.
 - Legacy `oldString` / `newString` / `replaceAll` parameters are not supported.
-- If this tool reports Chimera pre-design is required, call `chimera_predesign` with intent and likely files/symbols, then retry the mutation.
+- The Chimera mutation gate runs only AFTER your full call is generated: a blocked call discards everything you composed. Before composing large or risky edits (shared contracts — APIs, prompts, providers, runtime, config, packaging, graph/audit — or changes spanning 3+ files), call `chimera_predesign` FIRST with intent and likely files/symbols.
+- If a call is still blocked, the blocked result stashes your input under a replay key: satisfy the gate, then re-call this tool with `replay: "<key>"` to reuse the stashed input unchanged instead of regenerating it. Re-issue the full call only when the predesign evidence changes what you want to write.
 - Successful mutations are audited automatically at edit time; read the inline propagation summary in the result and deep-dive with `chimera_audit_recent` only when it flags dependents you must inspect or audit evidence is reported missing.

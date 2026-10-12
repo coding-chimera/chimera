@@ -31,6 +31,14 @@ export const ApplyPatchTool = Tool.define(
       params: Schema.Schema.Type<typeof Parameters>,
       ctx: Tool.Context,
     ) {
+      if (params.replay) {
+        const stashed = Chimera.resolveBlockedMutation({ sessionID: ctx.sessionID, toolID: "apply_patch", key: params.replay })
+        if (stashed === undefined)
+          throw new Error(
+            `Unknown, expired, or mismatched replay key "${params.replay}". Re-issue the full call with complete arguments.`,
+          )
+        params = stashed as Schema.Schema.Type<typeof Parameters>
+      }
       if (!params.patchText) {
         return yield* Effect.fail(new Error("patchText is required"))
       }
@@ -208,6 +216,7 @@ export const ApplyPatchTool = Tool.define(
         destructive: fileChanges.some((change) => change.type === "delete"),
         rename: fileChanges.some((change) => change.type === "move"),
         multiFile: fileChanges.length > 1,
+        params,
       })
       if (!predesign.allowed) return predesign.result
 

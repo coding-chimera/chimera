@@ -67,6 +67,8 @@ Pick the mode by the shape of the work:
 - Refs may be stale (an earlier edit shifted lines, an external change moved the symbol). ast_edit filesystem-syncs the file first and SELF-HEALS: a stale ref is re-anchored to the live node by identity (kind + name, parent chain when ambiguous) and the relocation is reported — do not re-search first. A hard failure only happens when the node genuinely no longer exists or the match is ambiguous; the error then carries the current candidate refs for this file — pick one and retry directly.
 - After a successful call the result lists fresh `node:<id>` refs for the edited symbols; chain follow-up edits from those refs.
 - All modes apply byte-range splices in reverse document order and ride the same audit pipeline as edit (permission "edit" applies — one ask covering all files of the call; predesign gate, provenance record, formatter, LSP oracle and propagation check included).
+- The Chimera mutation gate runs only AFTER your full call is generated: a blocked call discards everything you composed. Before composing large or risky edits (shared contracts — APIs, prompts, providers, runtime, config, packaging, graph/audit — or changes spanning 3+ files), call `chimera_predesign` FIRST with intent and likely files/symbols.
+- If a call is still blocked, the blocked result stashes your input under a replay key: satisfy the gate, then re-call this tool with `replay: "<key>"` to reuse the stashed input unchanged instead of regenerating it. Re-issue the full call only when the predesign evidence changes what you want to write.
 
 # Ref-mode example
 

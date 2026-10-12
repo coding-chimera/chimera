@@ -10,6 +10,10 @@ const log = Log.create({ service: "patch" })
 // Schema definitions
 export const PatchParamsSchema = Schema.Struct({
   patchText: Schema.String.annotate({ description: "The full patch text that describes all changes to be made" }),
+  replay: Schema.optional(Schema.String).annotate({
+    description:
+      "Replay key from a blocked call of this same tool: reuses the stashed input from that blocked attempt; other arguments are ignored. Only valid after the gate that blocked it is satisfied.",
+  }),
 })
 export const PatchSchema = zodObject(PatchParamsSchema)
 

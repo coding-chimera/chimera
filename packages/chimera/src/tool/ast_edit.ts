@@ -95,6 +95,10 @@ export const Parameters = Schema.Struct({
     description:
       "Rename mode: rename the declaration behind a graph ref plus every reference the graph resolved at a precise tier, across files; leftover occurrences come back as a review list. The symbol is addressed through rename.ref; exactly one of edits / rewrites / rename per call.",
   }),
+  replay: Schema.optional(Schema.String).annotate({
+    description:
+      "Replay key from a blocked call of this same tool: reuses the stashed input from that blocked attempt; other arguments are ignored. Only valid after the gate that blocked it is satisfied.",
+  }),
 })
 
 type Params = Schema.Schema.Type<typeof Parameters>
@@ -1097,6 +1101,14 @@ export const AstEditTool = Tool.define(
       parameters: Parameters,
       execute: (params: Params, ctx: Tool.Context) =>
         Effect.gen(function* () {
+          if (params.replay) {
+            const stashed = Chimera.resolveBlockedMutation({ sessionID: ctx.sessionID, toolID: "ast_edit", key: params.replay })
+            if (stashed === undefined)
+              throw new Error(
+                `Unknown, expired, or mismatched replay key "${params.replay}". Re-issue the full call with complete arguments.`,
+              )
+            params = stashed as Params
+          }
           const instance = yield* InstanceState.context
           const call = resolveCall(params)
           const displayRoot = instance.worktree === "/" ? instance.directory : instance.worktree
@@ -1627,6 +1639,7 @@ export const AstEditTool = Tool.define(
                 ctx,
                 files: found,
                 multiFile: found.length > 1,
+                params,
               })
               if (!predesign.allowed) return { blocked: true as const, result: predesign.result }
 
@@ -2163,6 +2176,7 @@ export const AstEditTool = Tool.define(
                     ctx,
                     files: touched.map((rec) => rec.filePath),
                     multiFile: touched.length > 1,
+                    params,
                   })
                   if (!predesign.allowed) return { blocked: true as const, result: predesign.result }
 
@@ -2443,6 +2457,7 @@ export const AstEditTool = Tool.define(
             toolID: "ast_edit",
             ctx,
             files: [filePath],
+            params,
           })
           if (!predesign.allowed) return predesign.result
           const rec: TouchedFile = {

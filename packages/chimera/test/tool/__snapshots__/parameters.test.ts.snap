@@ -8,6 +8,10 @@ exports[`tool parameters JSON Schema (wire shape) apply_patch 1`] = `
       "description": "The full patch text that describes all changes to be made",
       "type": "string",
     },
+    "replay": {
+      "description": "Replay key from a blocked call of this same tool: reuses the stashed input from that blocked attempt; other arguments are ignored. Only valid after the gate that blocked it is satisfied.",
+      "type": "string",
+    },
   },
   "required": [
     "patchText",
@@ -775,6 +779,10 @@ exports[`tool parameters JSON Schema (wire shape) edit 1`] = `
       "description": "Move the final file content to this path and remove the original path.",
       "type": "string",
     },
+    "replay": {
+      "description": "Replay key from a blocked call of this same tool: reuses the stashed input from that blocked attempt; other arguments are ignored. Only valid after the gate that blocked it is satisfied.",
+      "type": "string",
+    },
   },
   "required": [
     "filePath",
@@ -1320,6 +1328,10 @@ exports[`tool parameters JSON Schema (wire shape) write 1`] = `
     },
     "filePath": {
       "description": "The absolute path to the file to write (must be absolute, not relative)",
+      "type": "string",
+    },
+    "replay": {
+      "description": "Replay key from a blocked call of this same tool: reuses the stashed input from that blocked attempt; other arguments are ignored. Only valid after the gate that blocked it is satisfied.",
       "type": "string",
     },
   },

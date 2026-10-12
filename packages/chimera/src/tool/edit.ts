@@ -55,6 +55,10 @@ export const Parameters = Schema.Struct({
   delete: Schema.optional(Schema.Boolean).annotate({ description: "Delete the file. Requires edits: [] and cannot be combined with rename." }),
   rename: Schema.optional(Schema.String).annotate({ description: "Move the final file content to this path and remove the original path." }),
   expectedFileHash: Schema.optional(Schema.String).annotate({ description: "Optional read-time file hash used only to report drift." }),
+  replay: Schema.optional(Schema.String).annotate({
+    description:
+      "Replay key from a blocked call of this same tool: reuses the stashed input from that blocked attempt; other arguments are ignored. Only valid after the gate that blocked it is satisfied.",
+  }),
 })
 
 type EditInput = Schema.Schema.Type<typeof Operation>
@@ -272,6 +276,14 @@ export const EditTool = Tool.define(
       parameters: Parameters,
       execute: (params: Params, ctx: Tool.Context) =>
         Effect.gen(function* () {
+          if (params.replay) {
+            const stashed = Chimera.resolveBlockedMutation({ sessionID: ctx.sessionID, toolID: "edit", key: params.replay })
+            if (stashed === undefined)
+              throw new Error(
+                `Unknown, expired, or mismatched replay key "${params.replay}". Re-issue the full call with complete arguments.`,
+              )
+            params = stashed as Params
+          }
           const instance = yield* InstanceState.context
           const filePath = AppFileSystem.resolve(path.isAbsolute(params.filePath) ? params.filePath : path.join(instance.directory, params.filePath))
           const renamePath = params.rename
@@ -300,6 +312,7 @@ export const EditTool = Tool.define(
             destructive: params.delete,
             rename: Boolean(renamePath),
             multiFile: Boolean(renamePath),
+            params,
           })
           if (!predesign.allowed) return predesign.result
 

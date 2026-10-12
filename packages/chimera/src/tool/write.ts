@@ -25,7 +25,13 @@ export const Parameters = Schema.Struct({
   filePath: Schema.String.annotate({
     description: "The absolute path to the file to write (must be absolute, not relative)",
   }),
+  replay: Schema.optional(Schema.String).annotate({
+    description:
+      "Replay key from a blocked call of this same tool: reuses the stashed input from that blocked attempt; other arguments are ignored. Only valid after the gate that blocked it is satisfied.",
+  }),
 })
+
+type Params = Schema.Schema.Type<typeof Parameters>
 
 export const WriteTool = Tool.define(
   "write",
@@ -38,8 +44,16 @@ export const WriteTool = Tool.define(
     return {
       description: DESCRIPTION,
       parameters: Parameters,
-      execute: (params: { content: string; filePath: string }, ctx: Tool.Context) =>
+      execute: (params: Params, ctx: Tool.Context) =>
         Effect.gen(function* () {
+          if (params.replay) {
+            const stashed = Chimera.resolveBlockedMutation({ sessionID: ctx.sessionID, toolID: "write", key: params.replay })
+            if (stashed === undefined)
+              throw new Error(
+                `Unknown, expired, or mismatched replay key "${params.replay}". Re-issue the full call with complete arguments.`,
+              )
+            params = stashed as Params
+          }
           const instance = yield* InstanceState.context
           const filepath = path.isAbsolute(params.filePath)
             ? params.filePath
@@ -55,7 +69,7 @@ export const WriteTool = Tool.define(
           let written = contentNew
 
           const diff = trimDiff(createTwoFilesPatch(filepath, filepath, contentOld, contentNew))
-          const predesign = yield* Chimera.requirePredesignForMutation({ toolID: "write", ctx, files: [filepath] })
+          const predesign = yield* Chimera.requirePredesignForMutation({ toolID: "write", ctx, files: [filepath], params })
           if (!predesign.allowed) return predesign.result
           yield* ctx.ask({
             permission: "edit",

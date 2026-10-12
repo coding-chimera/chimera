@@ -9,7 +9,7 @@ Declared `files` also register advisory edit-intent claims for cross-session coo
 This is not post-change verification: after a successful mutation run `chimera_audit_recent`, plus build/typecheck/lint/tests when correctness matters.
 
 After this tool:
-- Review the impact evidence, then retry the mutation if it was gate-blocked. A recorded run is pre-edit evidence, not proof the mutation is correct.
+- Review the impact evidence, then retry the mutation if it was gate-blocked: `edit`/`write`/`apply_patch` blocked results carry a replay key, so re-call the tool with `replay: "<key>"` to reuse the stashed input unchanged instead of regenerating it (re-issue the full call if the evidence changes what you want to write). A recorded run is pre-edit evidence, not proof the mutation is correct.
 - On claim conflicts: proceed with non-conflicting work; the release notice arrives automatically — no polling or retry loops.
 
 Automation setups that cannot call this tool (scripted drivers, CI agents) should deny it in the agent config — `tools.chimera_predesign = false` or an agent permission deny — which also auto-releases the mutation gate for that agent (the gate's deadlock guard). Edit-intent claim coordination still applies unchanged.
