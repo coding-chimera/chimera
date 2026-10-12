@@ -27,7 +27,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { errorMessage } from "@/util/error"
 import { PluginLoader } from "./loader"
 import { parsePluginSpecifier, readPluginId, readV1Plugin, resolvePluginId } from "./shared"
-import { registerAdapter } from "@/control-plane/adapters"
+import type { ProjectID } from "@/project/schema"
 import type { WorkspaceAdapter } from "@/control-plane/types"
 
 const log = Log.create({ service: "plugin" })
@@ -46,6 +46,27 @@ export function setServerPort(port: ServerPort) {
 
 export function _resetServerPortForTest() {
   serverPort = undefined
+}
+
+// Injected seam for workspace-adapter registration. The plugin input is the
+// runtime injection surface, but registering an adapter writes into the
+// control-plane registry; injecting the capability keeps plugin free of a
+// static control-plane dependency (the composition root wires the real
+// `registerAdapter`). Mirrors the ServerPort seam above.
+export type WorkspaceAdapterRegistrar = (
+  projectID: ProjectID,
+  type: string,
+  adapter: WorkspaceAdapter,
+) => void
+
+let workspaceAdapterRegistrar: WorkspaceAdapterRegistrar | undefined
+
+export function setWorkspaceAdapterRegistrar(registrar: WorkspaceAdapterRegistrar) {
+  workspaceAdapterRegistrar = registrar
+}
+
+export function _resetWorkspaceAdapterRegistrarForTest() {
+  workspaceAdapterRegistrar = undefined
 }
 
 type State = {
@@ -156,7 +177,7 @@ export const layer = Layer.effect(
           directory: ctx.directory,
           experimental_workspace: {
             register(type: string, adapter: PluginWorkspaceAdapter) {
-              registerAdapter(ctx.project.id, type, adapter as WorkspaceAdapter)
+              workspaceAdapterRegistrar?.(ctx.project.id, type, adapter as WorkspaceAdapter)
             },
           },
           get serverUrl(): URL {

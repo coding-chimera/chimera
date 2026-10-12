@@ -11,6 +11,7 @@ process.env.OPENCODE_DISABLE_DEFAULT_PLUGINS = "1"
 
 const { Flag } = await import("@opencode-ai/core/flag/flag")
 const { Plugin } = await import("../../src/plugin/index")
+const { registerAdapter } = await import("../../src/control-plane/adapters")
 const { Workspace } = await import("../../src/control-plane/workspace")
 const { InstanceBootstrap } = await import("../../src/project/bootstrap")
 const { Instance } = await import("../../src/project/instance")
@@ -21,6 +22,10 @@ const workspaceLayer = Workspace.defaultLayer.pipe(
 )
 const it = testEffect(Layer.mergeAll(Plugin.defaultLayer, workspaceLayer, CrossSpawnSpawner.defaultLayer))
 
+// Production wires this at the composition root (src/composition/app-runtime.ts);
+// this test exercises the injected seam directly, mirroring server-port.test.ts.
+Plugin.setWorkspaceAdapterRegistrar(registerAdapter)
+
 const experimental = Flag.OPENCODE_EXPERIMENTAL_WORKSPACES
 
 Flag.OPENCODE_EXPERIMENTAL_WORKSPACES = true
@@ -30,6 +35,7 @@ afterEach(async () => {
 })
 
 afterAll(() => {
+  Plugin._resetWorkspaceAdapterRegistrarForTest()
   if (disableDefault === undefined) {
     delete process.env.OPENCODE_DISABLE_DEFAULT_PLUGINS
   } else {

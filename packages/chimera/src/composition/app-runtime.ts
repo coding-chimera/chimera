@@ -53,6 +53,7 @@ import { InstanceLayer } from "@/project/instance-layer"
 import { Project } from "@/project/project"
 import { Vcs } from "@/project/vcs"
 import { Workspace } from "@/control-plane/workspace"
+import { registerAdapter } from "@/control-plane/adapters"
 import { Worktree } from "@/worktree"
 import { Pty } from "@/pty"
 import { PtyTicket } from "@/pty/ticket"
@@ -64,6 +65,10 @@ import { Npm } from "@opencode-ai/core/npm"
 import { memoMap } from "@opencode-ai/core/effect/memo-map"
 import { WebUIPreferences } from "@/server/webui-preferences"
 
+// The plugin input is the runtime injection surface for workspace adapters, but
+// plugin must not statically depend on the control-plane registry. The
+// composition root owns the wiring (L6), mirroring Plugin.setServerPort.
+Plugin.setWorkspaceAdapterRegistrar(registerAdapter)
 export const AppLayer = Layer.mergeAll(
   Npm.defaultLayer,
   AppFileSystem.defaultLayer,
