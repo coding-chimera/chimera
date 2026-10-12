@@ -27,7 +27,7 @@ import { Bus } from '@/bus';
 import { Chimera } from '@/chimera';
 import { ChimeraPromptContext } from '@/chimera/prompt-context';
 import { Agent } from '@/agent/agent';
-import { MessageID, SessionID } from '@/session/schema';
+import { MessageID, SessionID } from '@/contracts/session-ids';
 import { ChimeraSearchTool, ChimeraStatusTool } from '@/tool/chimera';
 import { Tool } from '@/tool/tool';
 import { Truncate } from '@/tool/truncate';
