@@ -149,79 +149,169 @@ export function planStoreFusion(ops: readonly RecordedOp[]): FusePlan {
   return { kind: 'storeFileResult', file };
 }
 
-/** Encode a recorded log into one StoreBuffers batch. Fusion applies unless
- *  `fuse` is false (standalone single-op commits, which are never a canonical
- *  multi-write shape and must keep their plain per-op encoding). */
-export function encodeRecordedOps(ops: readonly RecordedOp[], fuse = true): { buffers: ReturnType<StoreBuffersBuilder['finish']>; plan: FusePlan } {
-  const b = new StoreBuffersBuilder();
-  const plan = fuse ? planStoreFusion(ops) : ({ kind: 'raw' } as FusePlan);
+/**
+ * Encode a recorded log into one StoreBuffers batch. Fusion applies unless
+ * `fuse` is false (standalone single-op commits, which are never a canonical
+ * multi-write shape and must keep their plain per-op encoding).
+ *
+ * A batched transaction (indexAll's ordered store loop) records N
+ * storeExtractionResultTxn units back to back in file order; `fuse` segments
+ * that log and emits ONE native op per canonical unit — so the native arm
+ * commits the whole batch through a single store_commit_batch (one
+ * BEGIN/COMMIT) while each file keeps its own OP_STORE_FILE_RESULT semantics.
+ * Rust redoes each unit's snapshot/delete/re-attach SEQUENTIALLY inside the
+ * batch transaction, so unit k's snapshot sees units 1..k-1 exactly as N
+ * sequential per-file commits would — the per-file semantics are preserved.
+ */
+export interface EncodedBatch {
+  buffers: ReturnType<StoreBuffersBuilder['finish']>;
+  plan: FusePlan;
+  /** Per-unit fusion tally (one canonical unit = one count), so commitCount
+   *  stays per-batch while fusionCounts stays per-file. */
+  counts: Record<FusedKind, number>;
+}
 
-  if (plan.kind === 'deleteFileResurrect') {
-    b.opDeleteFile(plan.path!, true);
-    return { buffers: b.finish(), plan };
-  }
-
-  if (plan.kind === 'storeFileResult') {
-    const fileIndex = b.file(plan.file!);
-    const nodeStart = b.nodes;
-    for (const o of ops) if (o.kind === 'insertNodes') for (const n of o.nodes) b.node(n);
-    const nodeEnd = b.nodes;
-    const edgeStart = b.edges;
-    for (const o of ops) if (o.kind === 'insertEdges') for (const e of o.edges) b.edge(e);
-    const edgeEnd = b.edges;
-    const refStart = b.refs;
-    for (const o of ops) if (o.kind === 'insertRefs') for (const r of o.refs) b.ref(r);
-    const refEnd = b.refs;
-    b.opStoreFileResult(
-      fileIndex,
-      nodeEnd > nodeStart ? [nodeStart, nodeEnd] : null,
-      edgeEnd > edgeStart ? [edgeStart, edgeEnd] : null,
-      refEnd > refStart ? [refStart, refEnd] : null
-    );
-    return { buffers: b.finish(), plan };
-  }
-
-  for (const o of ops) {
-    switch (o.kind) {
-      case 'insertNodes': {
-        if (o.nodes.length === 0) break;
-        const start = b.nodes;
-        for (const n of o.nodes) b.node(n);
-        b.opInsertNodes([start, b.nodes]);
-        break;
-      }
-      case 'insertEdges': {
-        if (o.edges.length === 0) break;
-        const start = b.edges;
-        for (const e of o.edges) b.edge(e);
-        b.opInsertEdges([start, b.edges]);
-        break;
-      }
-      case 'insertRefs': {
-        if (o.refs.length === 0) break;
-        const start = b.refs;
-        for (const r of o.refs) b.ref(r);
-        b.opInsertRefs([start, b.refs]);
-        break;
-      }
-      case 'upsertFile':
-        b.opUpsertFile(b.file(o.file));
-        break;
-      case 'deleteFile':
-        b.opDeleteFile(o.path, false);
-        break;
-      case 'deleteUnresolvedByIds':
-        b.opDeleteUnresolvedByIds(o.ids);
-        break;
-      case 'deleteResolvedTriples':
-        b.opDeleteSpecificResolvedRefs(o.refs);
-        break;
-      case 'markRefsFailed':
-        b.opMarkRefsFailed(o.refs);
-        break;
+/** Emit one recorded op through the plain per-op encoding (no fusion). */
+function emitRawOp(b: StoreBuffersBuilder, o: RecordedOp): void {
+  switch (o.kind) {
+    case 'insertNodes': {
+      if (o.nodes.length === 0) break;
+      const start = b.nodes;
+      for (const n of o.nodes) b.node(n);
+      b.opInsertNodes([start, b.nodes]);
+      break;
     }
+    case 'insertEdges': {
+      if (o.edges.length === 0) break;
+      const start = b.edges;
+      for (const e of o.edges) b.edge(e);
+      b.opInsertEdges([start, b.edges]);
+      break;
+    }
+    case 'insertRefs': {
+      if (o.refs.length === 0) break;
+      const start = b.refs;
+      for (const r of o.refs) b.ref(r);
+      b.opInsertRefs([start, b.refs]);
+      break;
+    }
+    case 'upsertFile':
+      b.opUpsertFile(b.file(o.file));
+      break;
+    case 'deleteFile':
+      b.opDeleteFile(o.path, false);
+      break;
+    case 'deleteUnresolvedByIds':
+      b.opDeleteUnresolvedByIds(o.ids);
+      break;
+    case 'deleteResolvedTriples':
+      b.opDeleteSpecificResolvedRefs(o.refs);
+      break;
+    case 'markRefsFailed':
+      b.opMarkRefsFailed(o.refs);
+      break;
   }
-  return { buffers: b.finish(), plan };
+}
+
+/** Emit a fused OP_STORE_FILE_RESULT unit (Rust recomputes the re-attach). */
+function emitStoreFileResult(b: StoreBuffersBuilder, ops: readonly RecordedOp[], file: FileRecord): void {
+  const fileIndex = b.file(file);
+  const nodeStart = b.nodes;
+  for (const o of ops) if (o.kind === 'insertNodes') for (const n of o.nodes) b.node(n);
+  const nodeEnd = b.nodes;
+  const edgeStart = b.edges;
+  for (const o of ops) if (o.kind === 'insertEdges') for (const e of o.edges) b.edge(e);
+  const edgeEnd = b.edges;
+  const refStart = b.refs;
+  for (const o of ops) if (o.kind === 'insertRefs') for (const r of o.refs) b.ref(r);
+  const refEnd = b.refs;
+  b.opStoreFileResult(
+    fileIndex,
+    nodeEnd > nodeStart ? [nodeStart, nodeEnd] : null,
+    edgeEnd > edgeStart ? [edgeStart, edgeEnd] : null,
+    refEnd > refStart ? [refStart, refEnd] : null
+  );
+}
+
+/**
+ * Split a recorded op log into independently-fusable canonical units. A
+ * batched store run is a concatenation of canonical producer shapes in file
+ * order; each unit is classified by planStoreFusion. A non-canonical op is
+ * emitted alone (raw) and never swallowed into a neighbouring unit, so a raw
+ * op can never be replayed as part of a fused unit it does not belong to.
+ */
+export function segmentRecordedOps(
+  ops: readonly RecordedOp[]
+): Array<{ plan: FusePlan; ops: RecordedOp[] }> {
+  const segments: Array<{ plan: FusePlan; ops: RecordedOp[] }> = [];
+  let i = 0;
+  while (i < ops.length) {
+    // Shape B: a run of insertRefs immediately followed by deleteFile
+    // (removeFileResurrectingRefs). Checked first so an insertRefs run is never
+    // mistaken for the tail of a storeFileResult unit.
+    if (ops[i].kind === 'insertRefs') {
+      let j = i;
+      while (j < ops.length && ops[j].kind === 'insertRefs') j++;
+      if (j < ops.length && ops[j].kind === 'deleteFile') {
+        const unit = ops.slice(i, j + 1);
+        segments.push({ plan: planStoreFusion(unit), ops: unit });
+        i = j + 1;
+        continue;
+      }
+    }
+    // Shape A: the unit ends at the next upsertFile. Validate structurally;
+    // a non-canonical candidate falls through to a single raw op.
+    if (ops[i].kind === 'upsertFile' || ops[i].kind === 'deleteFile' || INSERT_KINDS.has(ops[i].kind)) {
+      let u = i;
+      while (u < ops.length && ops[u].kind !== 'upsertFile') u++;
+      if (u < ops.length) {
+        const unit = ops.slice(i, u + 1);
+        const plan = planStoreFusion(unit);
+        if (plan.kind === 'storeFileResult') {
+          segments.push({ plan, ops: unit });
+          i = u + 1;
+          continue;
+        }
+      }
+    }
+    segments.push({ plan: { kind: 'raw' }, ops: [ops[i]] });
+    i++;
+  }
+  return segments;
+}
+
+export function encodeRecordedOps(ops: readonly RecordedOp[], fuse = true): EncodedBatch {
+  const b = new StoreBuffersBuilder();
+  const counts: Record<FusedKind, number> = { storeFileResult: 0, deleteFileResurrect: 0, raw: 0 };
+  const segments: Array<{ plan: FusePlan; ops: RecordedOp[] }> = fuse
+    ? segmentRecordedOps(ops)
+    : ops.map((o) => ({ plan: { kind: 'raw' } as FusePlan, ops: [o] }));
+
+  for (const seg of segments) {
+    if (seg.plan.kind === 'deleteFileResurrect') {
+      b.opDeleteFile(seg.plan.path!, true);
+      counts.deleteFileResurrect++;
+      continue;
+    }
+    if (seg.plan.kind === 'storeFileResult') {
+      emitStoreFileResult(b, seg.ops, seg.plan.file!);
+      counts.storeFileResult++;
+      continue;
+    }
+    for (const o of seg.ops) emitRawOp(b, o);
+    counts.raw += seg.ops.length;
+  }
+
+  // Summary kind for lastFusion: the single fused kind when the batch is
+  // homogeneous, otherwise 'raw' (mixed/only-raw batches).
+  const plan: FusePlan =
+    counts.storeFileResult > 0 && counts.deleteFileResurrect === 0 && counts.raw === 0
+      ? { kind: 'storeFileResult' }
+      : counts.deleteFileResurrect > 0 && counts.storeFileResult === 0 && counts.raw === 0
+        ? { kind: 'deleteFileResurrect' }
+        : { kind: 'raw' };
+
+  return { buffers: b.finish(), plan, counts };
 }
 
 /** True for errors that indicate a systematic bridge/wire bug (disable sticky). */
@@ -401,8 +491,9 @@ export class StoreBridge {
   commit(ops: readonly RecordedOp[], fuse = true): StoreWriteStats {
     let buffers;
     let plan: FusePlan;
+    let counts: Record<FusedKind, number>;
     try {
-      ({ buffers, plan } = encodeRecordedOps(ops, fuse));
+      ({ buffers, plan, counts } = encodeRecordedOps(ops, fuse));
     } catch (err) {
       this.disable(`encode failure: ${err instanceof Error ? err.message : String(err)}`);
       throw err;
@@ -412,7 +503,7 @@ export class StoreBridge {
       this.lastStats = stats;
       this.commitCount++;
       this.lastFusion = plan.kind;
-      this.fusionCounts[plan.kind]++;
+      for (const kind of Object.keys(counts) as FusedKind[]) this.fusionCounts[kind] += counts[kind];
       return stats;
     } catch (err) {
       if (isStoreWireError(err)) this.disable(err instanceof Error ? err.message : String(err));

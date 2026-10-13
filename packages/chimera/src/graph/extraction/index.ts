@@ -47,6 +47,31 @@ import type { ResolutionContext } from '../resolution/types';
  */
 const FILE_IO_BATCH_SIZE = 10;
 
+/**
+ * Files per store commit in the bulk index path. The pre-batching boundary was
+ * ONE commit per file (storeExtractionResult's own transaction); at 800+ files
+ * that per-file BEGIN/COMMIT plus per-commit native FFI crossing dominated the
+ * store segment. N contiguous file results are now accumulated and committed
+ * through ONE QueryBuilder.transaction on BOTH arms (TS db.transaction / native
+ * store_commit_batch), amortizing the commit overhead while keeping file-order
+ * and per-file snapshot semantics. 1 restores per-file commits.
+ * Overridable with CODEGRAPH_STORE_BATCH.
+ */
+const DEFAULT_STORE_BATCH_FILES = 64;
+function resolveStoreBatchSize(raw: string | undefined): number {
+  const n = Number.parseInt(raw ?? '', 10);
+  return Number.isFinite(n) && n >= 1 ? n : DEFAULT_STORE_BATCH_FILES;
+}
+
+/** One file's extraction result awaiting a batched store commit. */
+interface StoreBatchItem {
+  filePath: string;
+  content: string;
+  language: Language;
+  stats: fs.Stats;
+  result: ExtractionResult;
+}
+
 // PARSER_RESET_INTERVAL moved to parse-worker.ts (runs in worker thread)
 
 // Compiled single-binary builds inject the parse-worker entrypoint path via
@@ -1294,25 +1319,27 @@ export class ExtractionOrchestrator {
     // deterministic — byte-identical to the single-worker path — instead of
     // drifting with parse timing. The `completed` buffer holds at most ~window
     // size out-of-order results, so memory stays bounded.
-    const windowSize = pool ? Math.max(4, pool.size * 2) : 1;
+    const storeBatchSize = resolveStoreBatchSize(process.env.CODEGRAPH_STORE_BATCH);
+    // The commit window must admit a full store batch or dispatch would block
+    // before the batch can ever fill (deadlock between backpressure and batch).
+    const windowSize = Math.max(storeBatchSize, pool ? Math.max(4, pool.size * 2) : 1);
     const inFlight = new Set<Promise<void>>();
     const completed = new Map<number,
       | { ok: true; filePath: string; content: string; stats: fs.Stats; result: ExtractionResult }
       | { ok: false; filePath: string; err: unknown }>();
     let nextSeq = 0;       // file-order sequence assigned at dispatch
-    let nextToStore = 0;   // cursor: next sequence to commit
+    let nextToStore = 0;   // cursor: next sequence consumed into the ordered batch
     let aborted = false;
+    // Contiguous, file-ordered store results awaiting a batched commit. Bounded
+    // by storeBatchSize; committed through ONE QueryBuilder.transaction per batch
+    // on both arms (see commitExtractionResultsBatch).
+    const pending: StoreBatchItem[] = [];
 
-    const storeResult = async (filePath: string, content: string, stats: fs.Stats, result: ExtractionResult): Promise<void> => {
+    // Tally one parsed result and report whether it carries a DB store unit.
+    // Kept separate from the commit so a batch can accumulate many files before
+    // one transaction (the pre-batching per-file boundary was one commit/file).
+    const tallyResult = (filePath: string, content: string, result: ExtractionResult): boolean => {
       processed++;
-
-      // Store in database on main thread (SQLite is not thread-safe)
-      if (result.nodes.length > 0 || result.errors.length === 0) {
-        const language = detectLanguage(filePath, content);
-        // Awaited: the store may now spend macrotask backoff time on a
-        // transient SQLITE_BUSY retry (see commitExtractionResult).
-        await this.commitExtractionResult(filePath, content, language, stats, result);
-      }
 
       if (result.errors.length > 0) {
         for (const err of result.errors) {
@@ -1340,6 +1367,9 @@ export class ExtractionOrchestrator {
       }
 
       onProgress?.({ phase: 'parsing', current: processed, total, currentFile: filePath });
+      // Store in database on main thread (SQLite is not thread-safe) — only
+      // files with symbols, or with no errors, carry a store unit.
+      return result.nodes.length > 0 || result.errors.length === 0;
     };
 
     const recordParseFailure = (filePath: string, err: unknown): void => {
@@ -1354,32 +1384,51 @@ export class ExtractionOrchestrator {
       onProgress?.({ phase: 'parsing', current: processed, total });
     };
 
-    // Commit buffered parses to the DB in file order, advancing the cursor
-    // over contiguous completed results. Runs after each parse settles (and
-    // once more after the drain). storeResult is async, so commits are
-    // SERIALIZED on a promise chain — concurrent parse completions append to
-    // the chain instead of interleaving mid-store, preserving both the
-    // file-order commit invariant and the single-writer discipline for SQLite.
+    // Commit buffered parses to the DB in file order. Runs after each parse
+    // settles (and once more after the drain). Commits are SERIALIZED on a
+    // promise chain — concurrent parse completions append to the chain instead
+    // of interleaving mid-store, preserving both the file-order commit
+    // invariant and the single-writer discipline for SQLite. Contiguous
+    // completed results accumulate into `pending` and flush as ONE transaction
+    // per batch (storeBatchSize files) on both arms — the batched form of the
+    // pre-batching per-file commit boundary.
     let flushChain: Promise<void> = Promise.resolve();
     let flushError: unknown = null;
+
+    // Flush the accumulated ordered batch as one transaction (dual-arm: TS
+    // db.transaction / native store_commit_batch). Writer-side WAL backstop:
+    // when the valve's hard cap is breached, pause at this between-transactions
+    // boundary until a full backfill lands (upstream #1231 wiring).
+    const flushPending = async (): Promise<void> => {
+      if (pending.length === 0) return;
+      const items = pending.splice(0, pending.length);
+      const bp = walBackpressure?.();
+      if (bp) await bp;
+      await this.commitExtractionResultsBatch(items);
+    };
+
     const flushOrdered = (): Promise<void> => {
       flushChain = flushChain.then(async () => {
         if (aborted || flushError) return;
         try {
           while (completed.has(nextToStore)) {
-            const item = completed.get(nextToStore)!;
-            completed.delete(nextToStore);
-            nextToStore++;
-            if (item.ok) {
-              // Writer-side backstop: when the WAL valve's hard cap is breached,
-              // pause the commit stream at this between-transactions boundary
-              // until a full backfill lands (upstream #1231 wiring).
-              const bp = walBackpressure?.();
-              if (bp) await bp;
-              await storeResult(item.filePath, item.content, item.stats, item.result);
-            } else {
-              recordParseFailure(item.filePath, item.err);
+            // Consume contiguous results into the batch, committing only when a
+            // full batch is ready — a partial batch waits for more completions
+            // (or the end-of-stream drain below).
+            while (completed.has(nextToStore) && pending.length < storeBatchSize) {
+              const item = completed.get(nextToStore)!;
+              completed.delete(nextToStore);
+              nextToStore++;
+              if (item.ok) {
+                const language = detectLanguage(item.filePath, item.content);
+                if (tallyResult(item.filePath, item.content, item.result)) {
+                  pending.push({ filePath: item.filePath, content: item.content, language, stats: item.stats, result: item.result });
+                }
+              } else {
+                recordParseFailure(item.filePath, item.err);
+              }
             }
+            if (pending.length >= storeBatchSize) await flushPending();
           }
         } catch (err) {
           flushError = err;
@@ -1388,6 +1437,24 @@ export class ExtractionOrchestrator {
           // after the feed loop escapes (see spin-proof comment there) — so
           // the silent infinite-spin failure mode became undiagnosable.
           // One line, with the message, through this file's own logger.
+          logWarn('Extraction flush failed; commit cursor frozen', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      });
+      return flushChain;
+    };
+
+    // End-of-stream drain: commit the trailing partial batch. Called once after
+    // every parse has settled (per-completion flushOrdered only commits FULL
+    // batches, so the tail would otherwise never commit).
+    const drainPending = (): Promise<void> => {
+      flushChain = flushChain.then(async () => {
+        if (aborted || flushError) return;
+        try {
+          await flushPending();
+        } catch (err) {
+          flushError = err;
           logWarn('Extraction flush failed; commit cursor frozen', {
             error: err instanceof Error ? err.message : String(err),
           });
@@ -1537,6 +1604,7 @@ export class ExtractionOrchestrator {
     // Drain: wait for every dispatched parse to settle and commit.
     while (inFlight.size > 0) await Promise.race(inFlight);
     await flushOrdered();
+    await drainPending();
     if (flushError) {
       // Destroy the parse pool on the failure path too (upstream #2079):
       // its worker threads would otherwise outlive the failed index.
@@ -1998,37 +2066,40 @@ export class ExtractionOrchestrator {
   }
 
   /**
-   * DB commit of one extraction result with bounded retry on transient
-   * write-lock contention (P1 reliability fix). This is the bulk indexAll
-   * commit — the flushChain call whose throw used to freeze the commit
-   * cursor. A transient error (conservative whitelist: SQLITE_BUSY /
-   * "database is locked", i.e. a concurrent writer outlasting the 5s
-   * busy_timeout) retries up to STORE_COMMIT_RETRY_DELAYS_MS.length times
-   * with MACROTASK backoff — a microtask "delay" would keep starving the
-   * timer phase, the exact starvation that made the original failure mode
-   * an unwatchdog-able hang. Anything else (and a still-failing last retry)
-   * rethrows to the flushChain catch, which now logs it and unblocks the
-   * feed loop. Re-running storeExtractionResult is safe: the file record
-   * (contentHash skip-guard) is written LAST, so a failed commit can never
-   * make its own retry skip the work, and node/edge inserts are
-   * INSERT OR REPLACE / INSERT OR IGNORE, so replaying a partially
-   * committed batch cannot collide.
+   * DB commit of a batch of extraction results as ONE transaction with bounded
+   * retry on transient write-lock contention (P1 reliability fix). This is the
+   * bulk indexAll commit — the flushPending call whose throw used to freeze the
+   * commit cursor. The batch is committed through ONE QueryBuilder.transaction
+   * (dual-arm: TS db.transaction / native store_commit_batch), collapsing the
+   * pre-batching per-file commit boundary into per-batch commits while the
+   * units stay in file order. A transient error (conservative whitelist:
+   * SQLITE_BUSY / "database is locked", i.e. a concurrent writer outlasting the
+   * 5s busy_timeout) retries up to STORE_COMMIT_RETRY_DELAYS_MS.length times
+   * with MACROTASK backoff — a microtask "delay" would keep starving the timer
+   * phase, the exact starvation that made the original failure mode an
+   * unwatchdog-able hang. Anything else (and a still-failing last retry)
+   * rethrows to the flushChain catch, which logs it and unblocks the feed loop.
+   * Re-running the batch is safe: a failed transaction rolls back whole, the
+   * file record (contentHash skip-guard) is written LAST, and node/edge inserts
+   * are INSERT OR REPLACE / INSERT OR IGNORE, so replaying cannot collide.
    */
-  private async commitExtractionResult(
-    filePath: string,
-    content: string,
-    language: Language,
-    stats: fs.Stats,
-    result: ExtractionResult
-  ): Promise<void> {
+  private async commitExtractionResultsBatch(items: readonly StoreBatchItem[]): Promise<void> {
     for (let attempt = 0; ; attempt++) {
       try {
-        this.storeExtractionResult(filePath, content, language, stats, result);
+        this.queries.transaction(() => {
+          for (const item of items) {
+            // Per-file commit unit, JOINing the outer batch transaction (both
+            // arms nest: native records into one op log, TS adapter depth-joins).
+            // Routing through storeExtractionResult keeps the per-file commit
+            // seam (and its BUSY-retry injection point) intact.
+            this.storeExtractionResult(item.filePath, item.content, item.language, item.stats, item.result);
+          }
+        });
         return;
       } catch (err) {
         if (attempt >= STORE_COMMIT_RETRY_DELAYS_MS.length || !isTransientStoreError(err)) throw err;
-        logWarn('Transient store failure during ordered commit; retrying', {
-          filePath,
+        logWarn('Transient store failure during batched ordered commit; retrying', {
+          files: items.length,
           retry: attempt + 1,
           delayMs: STORE_COMMIT_RETRY_DELAYS_MS[attempt],
           error: err instanceof Error ? err.message : String(err),
@@ -2048,9 +2119,8 @@ export class ExtractionOrchestrator {
    * re-insert used to lose those edges permanently — the next run's snapshot
    * comes back empty (the rows are already gone) and the caller files are
    * never revisited. One transaction makes the whole unit all-or-nothing:
-   * any failure rolls back to the pre-store state, which also makes the
-   * commitExtractionResult BUSY retry replay against a clean slate instead
-   * of a partially-committed one.
+   * commitExtractionResultsBatch BUSY retry replay against a clean slate
+   * instead of a partially-committed one.
    */
   private storeExtractionResult(
     filePath: string,
