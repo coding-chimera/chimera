@@ -37,3 +37,6 @@ bench/
 
 # Local paper reading bundles
 papers/2309.12499-codeplan/
+
+# Local cross-session memory pad (never commit; may contain local-only context)
+memory.md
