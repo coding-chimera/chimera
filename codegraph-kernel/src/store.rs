@@ -198,6 +198,7 @@
 //! exactly one BEGIN/COMMIT pair for all its ops.
 #![allow(clippy::too_many_arguments)]
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -205,7 +206,7 @@ use std::time::Instant;
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{CachedStatement, Connection, OptionalExtension};
 
 use crate::buffers::{EDGE_KINDS, NODE_KINDS, NONE};
 
@@ -599,16 +600,17 @@ const CROSS_FILE_INCOMING_SQL: &str = "SELECT e.source, e.kind, e.metadata, e.li
     AND e.kind != 'contains'
     AND src.file_path != ?1";
 
-/// metadata NULL vs malformed-JSON parity: TS rowToEdge runs safeJsonParse —
-/// invalid text degrades to undefined (re-bind → NULL). Valid compact JSON is
-/// passed through byte-identical (no parse/re-stringify round trip, which
-/// could reorder keys differently from JS insertion order).
-fn metadata_sql(md: Option<&str>) -> Option<String> {
-    md.filter(|s| serde_json::from_str::<serde_json::Value>(s).is_ok()).map(|s| s.to_string())
-}
+/// metadata contract: valid-by-construction, byte-identical passthrough.
+///
+/// The TS write path (`insertEdge`, queries.ts) binds `JSON.stringify(edge.metadata)`
+/// and never re-parses it, and every writer emits compact JSON or NULL, so
+/// malformed metadata text is unreachable in the DB. The native store therefore
+/// binds metadata straight through — no `serde_json` validation, no
+/// parse/re-stringify round trip (which could reorder keys differently from JS
+/// insertion order). This is the contract the encoder must uphold.
 
-fn sql_insert_node(conn: &Connection, n: &NodeView) -> rusqlite::Result<()> {
-    conn.prepare_cached(INSERT_NODE_SQL)?.execute(rusqlite::params![
+fn sql_insert_node(stmt: &mut CachedStatement<'_>, n: &NodeView) -> rusqlite::Result<()> {
+    stmt.execute(rusqlite::params![
         n.id,
         n.kind,
         n.name,
@@ -660,17 +662,18 @@ fn sql_insert_edge_rows<'a>(conn: &Connection, rows: impl Iterator<Item = EdgeBi
     if binds.is_empty() {
         return Ok(());
     }
-    let existing = sql_existing_node_ids(conn, binds.iter().flat_map(|b| [b.source, b.target.as_str()]))?;
+    let existing = sql_existing_node_ids(conn, binds.iter().flat_map(|b| [b.source, b.target.as_ref()]))?;
+    let mut stmt = conn.prepare_cached(INSERT_EDGE_SQL)?;
     for b in &binds {
-        if !existing.contains(b.source) || !existing.contains(b.target.as_str()) {
+        if !existing.contains(b.source) || !existing.contains(b.target.as_ref()) {
             stats.edges_dropped_dangling += 1;
             continue;
         }
-        let changes = conn.prepare_cached(INSERT_EDGE_SQL)?.execute(rusqlite::params![
+        let changes = stmt.execute(rusqlite::params![
             b.source,
-            b.target.as_str(),
+            b.target.as_ref(),
             b.kind,
-            b.metadata.as_deref(),
+            b.metadata,
             b.line,
             b.col,
             b.provenance,
@@ -684,39 +687,44 @@ fn sql_insert_edge_rows<'a>(conn: &Connection, rows: impl Iterator<Item = EdgeBi
     Ok(())
 }
 
-/// One bound edge insert. `target` is owned because the re-attach path
-/// rewrites it to the freshly mapped node id; everything else borrows the
-/// wire arena (or the snapshot row) zero-copy.
+/// One bound edge insert. `target` is a `Cow` because the re-attach path may
+/// rewrite it to the freshly mapped node id; every other field borrows the
+/// wire arena (or the snapshot row) zero-copy. `metadata` is passed through
+/// byte-identical (see the metadata contract above).
 struct EdgeBind<'a> {
     source: &'a str,
-    target: String,
+    target: Cow<'a, str>,
     kind: &'a str,
-    metadata: Option<String>,
+    metadata: Option<&'a str>,
     line: Option<i64>,
     col: Option<i64>,
     provenance: Option<&'a str>
 }
 
-struct RefBind {
-    from_node_id: String,
-    reference_name: String,
-    reference_kind: String,
+/// One bound ref insert. Wire rows borrow the arena zero-copy; only the two
+/// fields the resurrect path extracts from the metadata JSON (reference
+/// name/kind) may own their text, so those are `Cow`.
+struct RefBind<'a> {
+    from_node_id: &'a str,
+    reference_name: Cow<'a, str>,
+    reference_kind: Cow<'a, str>,
     line: i64,
     col: i64,
-    candidates_json: Option<String>,
-    file_path: String,
-    language: String,
+    candidates_json: Option<&'a str>,
+    file_path: &'a str,
+    language: &'a str,
 }
 
 fn sql_insert_ref_binds(conn: &Connection, binds: &[RefBind], stats: &mut Stats) -> rusqlite::Result<()> {
+    let mut stmt = conn.prepare_cached(INSERT_REF_SQL)?;
     for b in binds {
-        let changes = conn.prepare_cached(INSERT_REF_SQL)?.execute(rusqlite::params![
+        let changes = stmt.execute(rusqlite::params![
             b.from_node_id,
-            b.reference_name,
-            b.reference_kind,
+            b.reference_name.as_ref(),
+            b.reference_kind.as_ref(),
             b.line,
             b.col,
-            b.candidates_json.as_deref(),
+            b.candidates_json,
             b.file_path,
             b.language,
         ])?;
@@ -785,7 +793,7 @@ fn sql_snapshot_cross_file_incoming(conn: &Connection, path: &str) -> rusqlite::
 /// resurrectRefFromDroppedEdge (extraction/index.ts:889) — rebuild the
 /// ORIGINAL unresolved ref from the metadata refName/refKind stamp; None
 /// (silent drop) without a usable stamp.
-fn resurrect_ref(e: &CrossEdge) -> Option<RefBind> {
+fn resurrect_ref<'i>(e: &'i CrossEdge) -> Option<RefBind<'i>> {
     let md = e.metadata.as_deref()?;
     let v: serde_json::Value = serde_json::from_str(md).ok()?;
     let ref_name = v.get("refName").and_then(|x| x.as_str())?;
@@ -794,16 +802,19 @@ fn resurrect_ref(e: &CrossEdge) -> Option<RefBind> {
     }
     // TS: typeof refKind === 'string' ? refKind : e.kind — empty string
     // passes the typeof check, so only a non-string falls back to e.kind.
-    let ref_kind = v.get("refKind").and_then(|x| x.as_str()).unwrap_or(e.kind.as_str());
+    let ref_kind = v.get("refKind").and_then(|x| x.as_str());
     Some(RefBind {
-        from_node_id: e.source.clone(),
-        reference_name: ref_name.to_string(),
-        reference_kind: ref_kind.to_string(),
+        from_node_id: e.source.as_str(),
+        reference_name: Cow::Owned(ref_name.to_string()),
+        reference_kind: match ref_kind {
+            Some(k) => Cow::Owned(k.to_string()),
+            None => Cow::Borrowed(e.kind.as_str()),
+        },
         line: e.line.unwrap_or(0),
         col: e.col.unwrap_or(0),
         candidates_json: None,
-        file_path: e.source_file_path.clone(),
-        language: e.source_language.clone(),
+        file_path: e.source_file_path.as_str(),
+        language: e.source_language.as_str(),
     })
 }
 
@@ -819,23 +830,24 @@ fn reference_name_tail(name: &str) -> &str {
 // Op execution
 // ---------------------------------------------------------------------------
 
-/// Owned re-attach/resurrect plan so borrows of `incoming` and the kind/name
-/// map coexist without lifetime entanglement.
+/// Borrowed re-attach/resurrect plan: `reinserted` borrows the snapshot rows
+/// and the wire-arena kind/name map; `resurrected` borrows the snapshot rows
+/// (owning text only for the JSON-derived name/kind).
 struct ReattachPlan<'a> {
     reinserted: Vec<EdgeBind<'a>>,
-    resurrected: Vec<RefBind>,
+    resurrected: Vec<RefBind<'a>>,
 }
 
-fn plan_reattach<'i>(incoming: &'i [CrossEdge], by_kind_name: &HashMap<String, String>) -> ReattachPlan<'i> {
+fn plan_reattach<'i>(incoming: &'i [CrossEdge], by_kind_name: &HashMap<(&'i str, &'i str), &'i str>) -> ReattachPlan<'i> {
     let mut plan = ReattachPlan { reinserted: Vec::new(), resurrected: Vec::new() };
     for e in incoming {
-        let key = format!("{}\0{}", e.target_kind, e.target_name);
+        let key = (e.target_kind.as_str(), e.target_name.as_str());
         match by_kind_name.get(&key) {
             Some(new_id) => plan.reinserted.push(EdgeBind {
                 source: e.source.as_str(),
-                target: new_id.clone(),
+                target: Cow::Borrowed(*new_id),
                 kind: e.kind.as_str(),
-                metadata: metadata_sql(e.metadata.as_deref()),
+                metadata: e.metadata.as_deref(),
                 line: e.line,
                 col: e.col,
                 provenance: e.provenance.as_deref(),
@@ -884,18 +896,21 @@ fn op_store_file_result<'a>(conn: &Connection, wire: &Wire<'a>, op: &OpView<'a>,
     }
 
     // ④ nodes — validity filter, insert, (kind,name)→id map (last wins).
-    let mut by_kind_name: HashMap<String, String> = HashMap::new();
+    // Keys/values borrow the wire arena zero-copy (no per-node format!/
+    // to_string); `plan_reattach` is lifetime-parameterized over the map.
+    let mut by_kind_name: HashMap<(&str, &str), &str> = HashMap::new();
     let mut inserted_ids: HashSet<&str> = HashSet::new();
+    let mut node_stmt = conn.prepare_cached(INSERT_NODE_SQL).map_err(err)?;
     for i in op.nodes.clone() {
         let n = wire.node(i)?;
         if !n.valid() {
             stats.nodes_skipped_invalid += 1;
             continue;
         }
-        sql_insert_node(conn, &n).map_err(err)?;
+        sql_insert_node(&mut node_stmt, &n).map_err(err)?;
         stats.nodes_inserted += 1;
         inserted_ids.insert(n.id.unwrap());
-        by_kind_name.insert(format!("{}\0{}", n.kind.unwrap(), n.name.unwrap()), n.id.unwrap().to_string());
+        by_kind_name.insert((n.kind.unwrap(), n.name.unwrap()), n.id.unwrap());
     }
 
     // ⑤ re-attach / resurrect, TS batch order: edges first, then refs.
@@ -918,9 +933,9 @@ fn op_store_file_result<'a>(conn: &Connection, wire: &Wire<'a>, op: &OpView<'a>,
         }
         batch_binds.push(EdgeBind {
             source,
-            target: target.to_string(),
+            target: Cow::Borrowed(target),
             kind,
-            metadata: metadata_sql(e.metadata_json),
+            metadata: e.metadata_json,
             line: e.line.map(|v| v as i64),
             col: e.col.map(|v| v as i64),
             provenance: e.provenance,
@@ -942,14 +957,14 @@ fn op_store_file_result<'a>(conn: &Connection, wire: &Wire<'a>, op: &OpView<'a>,
             continue;
         }
         ref_binds.push(RefBind {
-            from_node_id: from.to_string(),
-            reference_name: name.to_string(),
-            reference_kind: kind.to_string(),
+            from_node_id: from,
+            reference_name: Cow::Borrowed(name),
+            reference_kind: Cow::Borrowed(kind),
             line: r.line.unwrap_or(0) as i64,
             col: r.col.unwrap_or(0) as i64,
-            candidates_json: r.candidates_json.map(|s| s.to_string()),
-            file_path: r.file_path.unwrap_or(path).to_string(),
-            language: r.language.unwrap_or(file_language).to_string(),
+            candidates_json: r.candidates_json,
+            file_path: r.file_path.unwrap_or(path),
+            language: r.language.unwrap_or(file_language),
         });
     }
     sql_insert_ref_binds(conn, &ref_binds, stats).map_err(err)?;
@@ -978,13 +993,14 @@ fn op_delete_file(conn: &Connection, op: &OpView, stats: &mut Stats) -> Result<(
 }
 
 fn op_insert_nodes<'a>(conn: &Connection, wire: &Wire<'a>, op_nodes: std::ops::Range<u32>, stats: &mut Stats) -> Result<()> {
+    let mut stmt = conn.prepare_cached(INSERT_NODE_SQL).map_err(err)?;
     for i in op_nodes {
         let n = wire.node(i)?;
         if !n.valid() {
             stats.nodes_skipped_invalid += 1;
             continue;
         }
-        sql_insert_node(conn, &n).map_err(err)?;
+        sql_insert_node(&mut stmt, &n).map_err(err)?;
         stats.nodes_inserted += 1;
     }
     Ok(())
@@ -999,9 +1015,9 @@ fn op_insert_edges<'a>(conn: &Connection, wire: &Wire<'a>, op_edges: std::ops::R
         };
         binds.push(EdgeBind {
             source,
-            target: target.to_string(),
+            target: Cow::Borrowed(target),
             kind,
-            metadata: metadata_sql(e.metadata_json),
+            metadata: e.metadata_json,
             line: e.line.map(|v| v as i64),
             col: e.col.map(|v| v as i64),
             provenance: e.provenance,
@@ -1018,14 +1034,14 @@ fn op_insert_refs<'a>(conn: &Connection, wire: &Wire<'a>, op_refs: std::ops::Ran
             return Err(wire_err("ref row without from_node_id/reference_name/reference_kind".into()));
         };
         binds.push(RefBind {
-            from_node_id: from.to_string(),
-            reference_name: name.to_string(),
-            reference_kind: kind.to_string(),
+            from_node_id: from,
+            reference_name: Cow::Borrowed(name),
+            reference_kind: Cow::Borrowed(kind),
             line: r.line.unwrap_or(0) as i64,
             col: r.col.unwrap_or(0) as i64,
-            candidates_json: r.candidates_json.map(|s| s.to_string()),
-            file_path: r.file_path.unwrap_or("").to_string(),
-            language: r.language.unwrap_or("unknown").to_string(),
+            candidates_json: r.candidates_json,
+            file_path: r.file_path.unwrap_or(""),
+            language: r.language.unwrap_or("unknown"),
         });
     }
     sql_insert_ref_binds(conn, &binds, stats).map_err(err)
@@ -1904,6 +1920,29 @@ mod tests {
         assert_eq!(rows[0][3], Value::Text("{\"refName\":\"b\"}".into())); // byte-identical passthrough
         assert_eq!(rows[0][4], Value::Integer(3));
         assert_eq!(rows[0][6], Value::Text("tree-sitter".into()));
+    }
+
+    #[test]
+    fn edge_metadata_passes_through_byte_identical_without_validation() {
+        let db = TempDb::new();
+        let h = handle(&db);
+        let mut b = Builder::default();
+        b.node("function:a", "function", "a", "x.ts", "typescript", 1, None, None, 1, 0);
+        b.node("function:b", "function", "b", "x.ts", "typescript", 2, None, None, 1, 0);
+        h.store_insert_nodes_(b.finish()).unwrap();
+
+        // The native insert path binds metadata straight through (it is
+        // valid-by-construction on the TS side); this pins the removed
+        // serde_json validation: valid compact JSON is byte-identical, and a
+        // non-JSON stamp is no longer degraded to NULL.
+        let mut e = Builder::default();
+        e.edge("function:a", "function:b", "calls", Some("{\"refName\":\"b\",\"refKind\":\"calls\"}"), Some(1), Some(0), None);
+        e.edge("function:b", "function:a", "references", Some("not-json"), Some(2), Some(0), None);
+        assert_eq!(h.store_insert_edges_(e.finish()).unwrap(), 2);
+        let rows = db.rows("SELECT metadata FROM edges ORDER BY source, target");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0][0], Value::Text("{\"refName\":\"b\",\"refKind\":\"calls\"}".into()));
+        assert_eq!(rows[1][0], Value::Text("not-json".into()));
     }
 
     #[test]
