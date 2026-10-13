@@ -2782,9 +2782,15 @@ export class QueryBuilder {
    */
   deleteSpecificResolvedReferences(refs: Array<{ fromNodeId: string; referenceName: string; referenceKind: string }>): number {
     if (refs.length === 0) return 0;
-    // Value-returning write: inside a native recorded transaction the change
-    // count cannot be resolved before the flush — downgrade the whole unit.
-    if (this.rec) throw new StoreDowngradeSignal('deleteSpecificResolvedReferences returns a change count');
+    // Value-returning write: inside a native recorded unit the change count
+    // cannot be resolved before the flush, so record the op and report the
+    // INPUT length. The only consumer is the resolution progress callback
+    // (processed += consumed); StoreWriteStats.refsDeleted carries the exact
+    // count for callers that need it.
+    if (this.rec) {
+      this.rec.ops.push({ kind: 'deleteResolvedTriples', refs });
+      return refs.length;
+    }
     if (this.storeRouteActive()) {
       try {
         return this.store!.commitCount1({ kind: 'deleteResolvedTriples', refs }, 'refsDeleted');
@@ -2817,10 +2823,16 @@ export class QueryBuilder {
    * persistence chunk still has one commit boundary.
    */
   deleteUnresolvedReferencesByIds(ids: number[]): number {
-    if (this.rec) throw new StoreDowngradeSignal('deleteUnresolvedReferencesByIds returns a change count');
+    const uniqueIds = [...new Set(ids)];
+    if (uniqueIds.length === 0) return 0;
+    // Same recording contract as deleteSpecificResolvedReferences: record the
+    // op and report the input length; the exact count lives in
+    // StoreWriteStats.refsDeleted.
+    if (this.rec) {
+      this.rec.ops.push({ kind: 'deleteUnresolvedByIds', ids: uniqueIds });
+      return uniqueIds.length;
+    }
     if (this.storeRouteActive()) {
-      const uniqueIds = [...new Set(ids)];
-      if (uniqueIds.length === 0) return 0;
       try {
         return this.store!.commitCount1({ kind: 'deleteUnresolvedByIds', ids: uniqueIds }, 'refsDeleted');
       } catch (err) {

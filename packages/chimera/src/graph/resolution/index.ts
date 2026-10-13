@@ -1409,10 +1409,16 @@ export class ReferenceResolver {
 
     const PERSIST_CHUNK = 1000;
     const edges = this.createEdges(result.resolved);
-    for (let i = 0; i < edges.length; i += PERSIST_CHUNK) {
-      this.queries.insertEdges(edges.slice(i, i + PERSIST_CHUNK));
-      await maybeYield();
-    }
+    // Same two-crossing batching as resolveAndPersistBatched: batch edges in
+    // one transaction, the file-level sweep outside it (its delete is an
+    // uncovered write), then resolved deletes + failed marks in a second.
+    this.queries.transaction(() => {
+      for (let i = 0; i < edges.length; i += PERSIST_CHUNK) {
+        this.queries.insertEdges(edges.slice(i, i + PERSIST_CHUNK));
+      }
+    });
+    await maybeYield();
+
     // Materialize file-level import edges for the involved files only.
     const listFilePaths = [...new Set(refs.map((ref) => ref.filePath || this.getFilePathFromNodeId(ref.fromNodeId)))];
     this.materializeFileLevelImportEdges(listFilePaths);
@@ -1422,20 +1428,20 @@ export class ReferenceResolver {
       referenceName: r.original.referenceName,
       referenceKind: r.original.referenceKind,
     }));
-    for (let i = 0; i < resolvedKeys.length; i += PERSIST_CHUNK) {
-      this.queries.deleteSpecificResolvedReferences(resolvedKeys.slice(i, i + PERSIST_CHUNK));
-      await maybeYield();
-    }
-
     const unresolvedKeys = result.unresolved.map((r) => ({
       fromNodeId: r.fromNodeId,
       referenceName: r.referenceName,
       referenceKind: r.referenceKind,
     }));
-    for (let i = 0; i < unresolvedKeys.length; i += PERSIST_CHUNK) {
-      this.queries.markReferencesFailed(unresolvedKeys.slice(i, i + PERSIST_CHUNK));
-      await maybeYield();
-    }
+    this.queries.transaction(() => {
+      for (let i = 0; i < resolvedKeys.length; i += PERSIST_CHUNK) {
+        this.queries.deleteSpecificResolvedReferences(resolvedKeys.slice(i, i + PERSIST_CHUNK));
+      }
+      for (let i = 0; i < unresolvedKeys.length; i += PERSIST_CHUNK) {
+        this.queries.markReferencesFailed(unresolvedKeys.slice(i, i + PERSIST_CHUNK));
+      }
+    });
+    await maybeYield();
 
     return result;
   }
@@ -1516,24 +1522,32 @@ export class ReferenceResolver {
       // Persist edges immediately in bounded sub-transactions with yields
       // between chunks so a large batch never monopolizes the event loop.
       const edges = native ? native.decoded.batchEdges : this.createEdges(result.resolved);
-      for (let i = 0; i < edges.length; i += persistenceChunkSize) {
-        this.queries.insertEdges(edges.slice(i, i + persistenceChunkSize));
-        await maybeYield();
-      }
+      // (R3d) Batch persistence collapses each 5000-ref batch into at most TWO
+      // native store crossings. The batch edges ride the first transaction;
+      // the file-level sweep, resolved deletions and failed marks ride the
+      // second. The per-file sweep DELETE stays OUTSIDE both: it is an
+      // uncovered write (recording it would downgrade the unit) and its
+      // delete/insert pair was never atomic. Write order is unchanged —
+      // edges → sweep(delete+insert) → delete resolved → mark failed.
+      this.queries.transaction(() => {
+        for (let i = 0; i < edges.length; i += persistenceChunkSize) {
+          this.queries.insertEdges(edges.slice(i, i + persistenceChunkSize));
+        }
+      });
+      await maybeYield();
+
       // Materialize file-level import edges scoped to this batch's files;
       // delete-then-insert keeps it idempotent across repeated batches.
       const batchFilePaths = [...new Set(batch.map((ref) => ref.filePath || this.getFilePathFromNodeId(ref.fromNodeId)))];
+      const sweepEdges: Edge[] = [];
       if (native) {
         // The Rust sweep already computed the delete-then-insert rows for
         // these files — apply them through the existing arms (the TS
         // materialize would recompute the identical edge set).
-        const sweepEdges: Edge[] = [];
         for (const sweep of native.decoded.sweeps) {
           this.queries.deleteFileLevelImportEdgesBySource(sweep.sourceNodeId);
           sweepEdges.push(...sweep.edges);
         }
-        if (sweepEdges.length > 0) this.queries.insertEdges(sweepEdges);
-        await maybeYield();
       } else {
         this.materializeFileLevelImportEdges(batchFilePaths);
       }
@@ -1545,17 +1559,12 @@ export class ReferenceResolver {
       // retryable by a later sync that adds the satisfying symbol. Resolved rows
       // loaded from the database carry stable IDs; tuple delete remains the
       // compatibility path.
-      let consumed = 0;
       const resolvedRefs = native
         ? // Wire rows carry exactly the fields deleteUnresolvedReferences
           // reads (id? + the tuple); the full UnresolvedRef fields were
           // consumed inside the native batch.
           (native.decoded.resolved as unknown as UnresolvedRef[])
         : result.resolved.map((ref) => ref.original);
-      for (let i = 0; i < resolvedRefs.length; i += persistenceChunkSize) {
-        consumed += this.deleteUnresolvedReferences(resolvedRefs.slice(i, i + persistenceChunkSize));
-        await maybeYield();
-      }
       const unresolvedKeys = native
         ? native.decoded.failed
         : result.unresolved.map((ref) => ({
@@ -1563,12 +1572,23 @@ export class ReferenceResolver {
             referenceName: ref.referenceName,
             referenceKind: ref.referenceKind,
           }));
-      for (let i = 0; i < unresolvedKeys.length; i += persistenceChunkSize) {
-        const chunk = unresolvedKeys.slice(i, i + persistenceChunkSize);
-        this.queries.markReferencesFailed(chunk);
-        consumed += chunk.length;
-        await maybeYield();
-      }
+      // Second crossing: sweep inserts + resolved deletions + failed marks.
+      // The recording arm reports the INPUT length for the change-count deletes
+      // (progress-only consumer); the TS arm reports real changes.
+      const consumed = this.queries.transaction(() => {
+        if (native && sweepEdges.length > 0) this.queries.insertEdges(sweepEdges);
+        let count = 0;
+        for (let i = 0; i < resolvedRefs.length; i += persistenceChunkSize) {
+          count += this.deleteUnresolvedReferences(resolvedRefs.slice(i, i + persistenceChunkSize));
+        }
+        for (let i = 0; i < unresolvedKeys.length; i += persistenceChunkSize) {
+          const chunk = unresolvedKeys.slice(i, i + persistenceChunkSize);
+          this.queries.markReferencesFailed(chunk);
+          count += chunk.length;
+        }
+        return count;
+      });
+      await maybeYield();
 
       // Aggregate stats
       aggregateStats.total += result.stats.total;
