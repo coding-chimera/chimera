@@ -768,6 +768,30 @@ function compactEvidenceForPayload(evidence: ChangeFact["evidence"]): ChangeFact
   }
 }
 
+// (field-level slimming) evidence_json keeps only fields that cannot be rebuilt
+// from the semantic snapshot refs. relationDelta, beforeNode and afterNode are
+// re-derived by hydrateFactFromSemanticSnapshots from chimera_semantic_object;
+// semanticDiff has no reader after a storage round-trip. The legacy fallback
+// for rows without semanticSnapshots is preserved, so old embedded evidence
+// still replays.
+function compactEvidenceForStorage(evidence: ChangeFact["evidence"]): ChangeFact["evidence"] {
+  return {
+    version: evidence.version,
+    source: evidence.source,
+    rule: evidence.rule,
+    confidenceReason: evidence.confidenceReason,
+    graph: evidence.graph,
+    file: evidence.file,
+    hunk: evidence.hunk,
+    languageSignals: evidence.languageSignals,
+    statementEffect: evidence.statementEffect,
+    fileSemantic: evidence.fileSemantic,
+    semanticSnapshots: evidence.semanticSnapshots,
+    replayLifecycle: evidence.replayLifecycle,
+    signals: evidence.signals,
+  }
+}
+
 function compactFactPayload(fact: ChangeFact): ChangeFact {
   return {
     ...fact,
@@ -1153,6 +1177,16 @@ function readSemanticRelations(db: ChimeraDb, hashes: string[] | undefined) {
   })
 }
 
+// beforeObjectHashes/afterObjectHashes list the touched node first, then every
+// relation of that side. Relations are stored with kind 'relation', so the
+// only node/file object in the list is the touched before/after node.
+function readSemanticNode(db: ChimeraDb, hashes: string[] | undefined) {
+  return unique(hashes ?? []).flatMap((hash) => {
+    const row = cachedPrepare(db, "SELECT payload_json FROM chimera_semantic_object WHERE hash = ? AND kind IN ('node', 'file')").get(hash) as SemanticObjectRow | undefined
+    return row ? parseJson<FrozenSemanticObject>(row.payload_json) : []
+  })[0]
+}
+
 function withReplayLifecycle(fact: ChangeFact, input: NonNullable<ChangeFact["evidence"]["replayLifecycle"]>): ChangeFact {
   return {
     ...fact,
@@ -1175,35 +1209,47 @@ function hydrateFactFromSemanticSnapshots(db: ChimeraDb, fact: ChangeFact): Chan
       sourceRevision: fact.evidence.graph.beforeRevision ?? fact.evidence.graph.afterRevision,
     })
   }
+  const beforeNode = readSemanticNode(db, refs.beforeObjectHashes)
+  const afterNode = readSemanticNode(db, refs.afterObjectHashes)
+  const hydratedNodes = beforeNode || afterNode
+    ? {
+        ...fact,
+        evidence: {
+          ...fact.evidence,
+          beforeNode: beforeNode ?? fact.evidence.beforeNode,
+          afterNode: afterNode ?? fact.evidence.afterNode,
+        },
+      }
+    : fact
   const expectedRelations = (refs.beforeRelationHashes?.length ?? 0) + (refs.afterRelationHashes?.length ?? 0)
-  if (expectedRelations === 0) return fact
+  if (expectedRelations === 0) return hydratedNodes
   const beforeRelations = readSemanticRelations(db, refs.beforeRelationHashes)
   const afterRelations = readSemanticRelations(db, refs.afterRelationHashes)
   const foundRelations = beforeRelations.length + afterRelations.length
   if (foundRelations !== expectedRelations) {
-    return withReplayLifecycle(fact, {
+    return withReplayLifecycle(hydratedNodes, {
       version: 1,
       status: "missing_snapshot_refs",
       reason: "semantic snapshot relation refs could not all be resolved from chimera_semantic_object",
-      sourceRevision: fact.evidence.graph.beforeRevision ?? fact.evidence.graph.afterRevision,
+      sourceRevision: hydratedNodes.evidence.graph.beforeRevision ?? hydratedNodes.evidence.graph.afterRevision,
       expectedRefs: expectedRelations,
       foundRefs: foundRelations,
     })
   }
   return {
-    ...fact,
+    ...hydratedNodes,
     evidence: {
-      ...fact.evidence,
+      ...hydratedNodes.evidence,
       relationDelta: diffRelations(beforeRelations, afterRelations),
       replayLifecycle: {
         version: 1 as const,
         status: "replayable" as const,
         reason: "relation delta hydrated from semantic snapshot refs",
-        sourceRevision: fact.evidence.graph.beforeRevision ?? fact.evidence.graph.afterRevision,
+        sourceRevision: hydratedNodes.evidence.graph.beforeRevision ?? hydratedNodes.evidence.graph.afterRevision,
         expectedRefs: expectedRelations,
         foundRefs: foundRelations,
       },
-      signals: unique(["semantic_snapshot_refs", "semantic_snapshot_refs_hydrated", "replay_lifecycle:replayable", ...fact.evidence.signals]),
+      signals: unique(["semantic_snapshot_refs", "semantic_snapshot_refs_hydrated", "replay_lifecycle:replayable", ...hydratedNodes.evidence.signals]),
     },
   }
 }
@@ -1427,7 +1473,7 @@ export async function writeChangeFacts(projectRoot: string, facts: ChangeFact[])
           fact.changeKind,
           fact.subjectKind,
           fact.confidence,
-          safeJson(fact.evidence),
+          safeJson(compactEvidenceForStorage(fact.evidence)),
           safeJson(compactFactPayload(fact)),
           fact.createdAt,
         )

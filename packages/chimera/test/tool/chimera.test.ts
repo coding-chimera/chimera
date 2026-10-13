@@ -1296,7 +1296,6 @@ describe("tool.chimera", () => {
       const result = yield* runAuditRecent({ refresh: false })
       const fact = result.metadata.changeFacts.find((item) =>
         item.subjectKind === "signature" &&
-        item.evidence.semanticDiff?.changedFields.includes("signature") &&
         item.evidence.relationDelta?.beforeRelations.some((relation) => relation.payload.relation === "CalledBy") &&
         item.evidence.relationDelta?.afterRelations.some((relation) => relation.payload.relation === "CalledBy"),
       )

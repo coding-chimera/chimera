@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import fs from "fs/promises"
 import path from "path"
-import { DatabaseConnection, getDatabasePath, type FrozenRelation, type FrozenSemanticObject } from "@/graph"
+import { DatabaseConnection, diffNodeSemantics, diffRelations, getDatabasePath, type FrozenRelation, type FrozenSemanticObject } from "@/graph"
 import { appendProvenanceRecord, CHIMERA_STORAGE_EXTENSION, closeStoreConnections, compactCommittedChangeEvidence, currentHostBootID, readChangeFacts, readCommitChangeSummaries, readEditIntentWaiters, readPersistentObligationStore, readPersistentObligationStoreReadOnly, recordOracleResult, registerEditIntentWaiter, storeConnectionCount, writeChangeFacts } from "../../src/chimera/store"
 import type { ChangeFact } from "../../src/chimera/change-classifier"
 import type { ToolMutationRecord } from "../../src/chimera/provenance"
@@ -268,7 +268,7 @@ describe("Chimera store", () => {
     expect(await readEditIntentWaiters(tmp.path, { status: "waiting" })).toHaveLength(3)
   })
 
-  test("stores raw change evidence outside payload_json to avoid duplicating large relation payloads", async () => {
+  test("stores compact change evidence and hydrates reconstructible fields from semantic snapshots", async () => {
     await using tmp = await tmpdir()
     DatabaseConnection.initialize(getDatabasePath(tmp.path)).close()
     await appendProvenanceRecord(
@@ -289,12 +289,17 @@ describe("Chimera store", () => {
       expect(payload.evidence.beforeNode).toBeUndefined()
       expect(payload.evidence.relationDelta).toBeUndefined()
       expect(payload.evidence.semanticSnapshots?.beforeRelationHashes).toHaveLength(1)
-      expect(evidence.beforeNode?.payload.name).toBe("target")
-      expect(evidence.relationDelta?.removedRelations).toHaveLength(1)
-      expect(row.payload_json.length).toBeLessThan(row.evidence_json.length)
+      expect(evidence.beforeNode).toBeUndefined()
+      expect(evidence.relationDelta).toBeUndefined()
+      expect(evidence.semanticDiff).toBeUndefined()
+      expect(evidence.semanticSnapshots?.beforeRelationHashes).toHaveLength(1)
     } finally {
       db.close()
     }
+
+    const [stored] = await readChangeFacts(tmp.path, ["event:store-test"])
+    expect(stored?.evidence.beforeNode?.payload.name).toBe("target")
+    expect(stored?.evidence.relationDelta?.removedRelations).toHaveLength(1)
   })
 
   test("hydrates relation delta from semantic snapshot refs when compact evidence is absent", async () => {
@@ -330,6 +335,7 @@ describe("Chimera store", () => {
     expect(stored?.evidence.signals).toContain("semantic_snapshot_refs")
     expect(stored?.evidence.relationDelta?.removedRelations).toHaveLength(1)
     expect(stored?.evidence.relationDelta?.removedRelations[0]?.payload.otherNode.name).toBe("caller")
+    expect(stored?.evidence.beforeNode?.payload.name).toBe("target")
     expect(stored?.evidence.replayLifecycle?.status).toBe("replayable")
     expect(stored?.evidence.replayLifecycle?.expectedRefs).toBe(1)
     expect(stored?.evidence.replayLifecycle?.foundRefs).toBe(1)
@@ -353,12 +359,15 @@ describe("Chimera store", () => {
     try {
       const row = db.getDb().prepare("SELECT payload_json, evidence_json FROM chimera_change_fact WHERE id = ?").get("fact_store_test") as { payload_json: string; evidence_json: string }
       const payload = JSON.parse(row.payload_json) as ChangeFact
-      payload.evidence = JSON.parse(row.evidence_json) as ChangeFact["evidence"]
-      delete payload.evidence.semanticSnapshots
-      payload.evidence.signals = payload.evidence.signals.filter((signal) => signal !== "semantic_snapshot_refs")
+      const evidence = JSON.parse(row.evidence_json) as ChangeFact["evidence"]
+      // Rebuild a legacy "fat" row: embedded relation evidence, no snapshot refs.
+      evidence.beforeNode = focal
+      evidence.relationDelta = diffRelations([relation(focal, caller)], [])
+      delete evidence.semanticSnapshots
+      evidence.signals = evidence.signals.filter((signal) => signal !== "semantic_snapshot_refs")
       db.getDb().prepare("UPDATE chimera_change_fact SET payload_json = ?, evidence_json = ? WHERE id = ?").run(
         JSON.stringify(payload),
-        JSON.stringify(payload.evidence),
+        JSON.stringify(evidence),
         payload.id,
       )
     } finally {
@@ -408,6 +417,79 @@ describe("Chimera store", () => {
     expect(stored?.evidence.replayLifecycle?.expectedRefs).toBe(1)
     expect(stored?.evidence.replayLifecycle?.foundRefs).toBe(0)
     expect(stored?.evidence.signals).toContain("replay_lifecycle:missing_snapshot_refs")
+  })
+
+  test("hydrated relation delta matches a legacy fat row for the same fact", async () => {
+    await using tmp = await tmpdir()
+    DatabaseConnection.initialize(getDatabasePath(tmp.path)).close()
+    await appendProvenanceRecord(
+      tmp.path,
+      path.join(tmp.path, ".codegraph", "chimera", "tool-provenance.jsonl"),
+      record(tmp.path),
+    )
+
+    const focal = node("focal", "target")
+    const caller = node("caller", "caller")
+    const expectedDelta = diffRelations([relation(focal, caller)], [])
+    await writeChangeFacts(tmp.path, [fact({ eventID: "event:store-test", beforeNode: focal, relation: relation(focal, caller) })])
+
+    const db = DatabaseConnection.open(getDatabasePath(tmp.path))
+    try {
+      const row = db.getDb().prepare("SELECT evidence_json FROM chimera_change_fact WHERE id = ?").get("fact_store_test") as { evidence_json: string }
+      const fat = JSON.parse(row.evidence_json) as ChangeFact["evidence"]
+      fat.beforeNode = focal
+      fat.relationDelta = expectedDelta
+      delete fat.semanticSnapshots
+      db.getDb().prepare("UPDATE chimera_change_fact SET evidence_json = ? WHERE id = ?").run(JSON.stringify(fat), "fact_store_test")
+    } finally {
+      db.close()
+    }
+    const [fatStored] = await readChangeFacts(tmp.path, ["event:store-test"])
+    expect(fatStored?.evidence.relationDelta).toEqual(expectedDelta)
+
+    await writeChangeFacts(tmp.path, [fact({ eventID: "event:store-test", beforeNode: focal, relation: relation(focal, caller) })])
+    const [slimStored] = await readChangeFacts(tmp.path, ["event:store-test"])
+    expect(slimStored?.evidence.relationDelta).toEqual(fatStored?.evidence.relationDelta)
+    expect(slimStored?.evidence.beforeNode?.payload.name).toBe(fatStored?.evidence.beforeNode?.payload.name)
+  })
+
+  test("omits relation-delta bytes from evidence_json for a relation-heavy fact", async () => {
+    await using tmp = await tmpdir()
+    DatabaseConnection.initialize(getDatabasePath(tmp.path)).close()
+    await appendProvenanceRecord(
+      tmp.path,
+      path.join(tmp.path, ".codegraph", "chimera", "tool-provenance.jsonl"),
+      record(tmp.path),
+    )
+
+    const focal = node("focal", "target")
+    const relations = Array.from({ length: 200 }, (_, index) => relation(focal, node(`caller_${index}`, `caller${index}`)))
+    const fat = fact({ eventID: "event:store-test", beforeNode: focal, relation: relations[0]! })
+    fat.evidence.relationDelta = {
+      schemaVersion: 1,
+      source: { system: "codegraph", beforeRevision: "before", afterRevision: "after" },
+      beforeRelations: relations,
+      afterRelations: [],
+      addedRelations: [],
+      removedRelations: relations,
+    }
+    fat.evidence.semanticDiff = diffNodeSemantics(focal, node("focal_after", "target"))
+    const fatBytes = JSON.stringify(fat.evidence).length
+
+    await writeChangeFacts(tmp.path, [fat])
+
+    const db = DatabaseConnection.open(getDatabasePath(tmp.path))
+    try {
+      const row = db.getDb().prepare("SELECT evidence_json FROM chimera_change_fact WHERE id = ?").get("fact_store_test") as { evidence_json: string }
+      const evidence = JSON.parse(row.evidence_json) as ChangeFact["evidence"]
+      expect(evidence.relationDelta).toBeUndefined()
+      expect(evidence.beforeNode).toBeUndefined()
+      expect(evidence.semanticDiff).toBeUndefined()
+      // The remaining bytes are the load-bearing hash arrays in semanticSnapshots.
+      expect(row.evidence_json.length).toBeLessThan(fatBytes / 10)
+    } finally {
+      db.close()
+    }
   })
 
   test("compacts trusted oracle-passed committed evidence into commit summaries", async () => {
