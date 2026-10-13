@@ -8,6 +8,7 @@ import { Flag } from "@opencode-ai/core/flag/flag"
 import { BackgroundJob } from "@/agent/background-job"
 import { EditIntentClaims } from "@/chimera/edit-intent"
 import { ProcessRegistry } from "@/chimera/process-registry"
+import { ProcessWatch } from "@/chimera/process-watch"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 
 import { Database } from "@/storage/db"
@@ -760,6 +761,12 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
               sessionID,
             ),
           ).pipe(Effect.ignoreCause({ log: true }))
+          // Drop this session's proc_notify exit subscriptions: they are
+          // host-local and could only ever inject into this now-removed session.
+          ProcessWatch.releaseForSession(
+            instance.worktree === "/" ? instance.directory : instance.worktree,
+            sessionID,
+          )
         }
 
         deleteSessionMemory({ sessionID })

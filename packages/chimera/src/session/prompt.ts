@@ -51,6 +51,7 @@ import { PromptStats } from "./prompt-stats"
 import { ChimeraPromptContext } from "@/chimera/prompt-context"
 import { EditIntentClaims } from "@/chimera/edit-intent"
 import { ProcessRegistry } from "@/chimera/process-registry"
+import { ProcessWatch } from "@/chimera/process-watch"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { SessionProcessor } from "./processor"
 import { Tool } from "@/tool/tool"
@@ -546,7 +547,7 @@ export const layer = Layer.effect(
           "",
           ...lines,
           "",
-          "These OS processes were spawned by Chimera sessions in this project via the bash tool. Do not kill another session's process; the bash tool blocks cross-session kills unless CHIMERA_KILL_CONFIRM=1 is set.",
+          "These OS processes were spawned by Chimera sessions in this project via the bash tool. Do not kill another session's process; the bash tool blocks cross-session kills unless CHIMERA_KILL_CONFIRM=1 is set. Subscribe to a listed process's exit with proc_notify(pid).",
         ].join("\n")
       })
       return [
@@ -2731,9 +2732,11 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     const prompt: (input: PromptInput) => Effect.Effect<MessageV2.WithParts, Image.Error> = Effect.fn(
       "SessionPrompt.prompt",
     )(function* (input: PromptInput) {
-      // Arm the per-instance edit-intent release watcher (memoized; the
-      // subscriptions need instance context, which layer build lacks).
+      // Arm the per-instance edit-intent release watcher and process-exit watch
+      // (memoized; the subscriptions need instance context, which layer build
+      // lacks).
       yield* InstanceState.get(editIntentWatch)
+      yield* InstanceState.get(processWatch)
       const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
       yield* revert.cleanup(session)
       const message = yield* createUserMessage(input)
@@ -3548,6 +3551,75 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           Effect.catchCause((cause) =>
             Effect.sync(() => log.error("edit-intent cross-process poll failed", { cause })),
           ),
+          Effect.repeat(Schedule.spaced("3 seconds")),
+          Effect.forkScoped,
+        )
+      }),
+    )
+
+    // Process-exit watch: proc_notify registers one-shot subscriptions in host
+    // memory; this per-instance watcher bridges the shared registry into local
+    // session injections. Fast channel: the in-process ProcessRegistry.Changed
+    // bus event (fires on owner-reported exit/kill). Slow channel: a light poll
+    // that also covers exits reported by another host process and liveness
+    // deaths the bus never saw — a detached runner with no instance context has
+    // its publish swallowed (process-registry.ts publishChange), and a
+    // cross-process exit has no local bus event at all.
+    const notifyProcessExit = Effect.fnUntraced(function* (
+      root: string,
+      row: ProcessRegistry.ProcessEntry,
+      detected: ProcessWatch.ProcessExitDetection,
+    ) {
+      for (const subscription of ProcessWatch.takeByPid(root, row.pid)) {
+        yield* injectSynthetic({
+          sessionID: SessionID.make(subscription.sessionID),
+          text: ProcessWatch.exitText(subscription, row, detected),
+        }).pipe(Effect.ignoreCause({ log: true }))
+      }
+    })
+    const pollProcessWatch = Effect.fnUntraced(function* (root: string) {
+      const now = Date.now()
+      const subscriptions = ProcessWatch.listForProject(root)
+      if (subscriptions.length === 0) return
+      const live: ProcessWatch.ProcessWatchSubscription[] = []
+      for (const subscription of subscriptions) {
+        if (subscription.expiresAt === null || subscription.expiresAt > now) {
+          live.push(subscription)
+          continue
+        }
+        const taken = ProcessWatch.take(root, subscription.sessionID, subscription.pid)
+        if (!taken) continue
+        yield* injectSynthetic({
+          sessionID: SessionID.make(taken.sessionID),
+          text: ProcessWatch.timeoutText(taken),
+        }).pipe(Effect.ignoreCause({ log: true }))
+      }
+      const pids = [...new Set(live.map((subscription) => subscription.pid))]
+      if (pids.length === 0) return
+      const rows = yield* Effect.promise(() => ProcessRegistry.getByPids(root, pids)).pipe(
+        Effect.catch(() => Effect.succeed([] as ProcessRegistry.ProcessEntry[])),
+      )
+      for (const row of ProcessWatch.latestPerPid(rows)) {
+        if (row.status === "running") continue
+        yield* notifyProcessExit(root, row, row.status === "expired" ? "liveness-poll" : "owner-report")
+      }
+    })
+    const processWatch = yield* InstanceState.make(
+      Effect.fn("SessionPrompt.processWatch")(function* (ctx) {
+        const root = ctx.worktree === "/" ? ctx.directory : ctx.worktree
+        yield* bus.subscribe(ProcessRegistry.Changed).pipe(
+          Stream.runForEach((event) =>
+            Effect.gen(function* () {
+              if (event.properties.change === "registered") return
+              yield* notifyProcessExit(root, event.properties.process, "owner-report")
+            }).pipe(
+              Effect.catchCause((cause) => Effect.sync(() => log.error("process-watch bus notify failed", { cause }))),
+            ),
+          ),
+          Effect.forkScoped,
+        )
+        yield* pollProcessWatch(root).pipe(
+          Effect.catchCause((cause) => Effect.sync(() => log.error("process-watch poll failed", { cause }))),
           Effect.repeat(Schedule.spaced("3 seconds")),
           Effect.forkScoped,
         )

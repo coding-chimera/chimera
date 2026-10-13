@@ -8,6 +8,7 @@ import { GrepTool } from "./grep"
 import { ReadTool } from "./read"
 import { TaskTool } from "./task"
 import { TaskCancelTool } from "./task-cancel"
+import { ProcNotifyTool } from "./proc-notify"
 import { ChimeraSwarmTool } from "./swarm"
 import { SubagentModelScheduleTool } from "./subagent_model_schedule"
 import { SubagentModelRoutesTool } from "./subagent_model_routes"
@@ -129,6 +130,7 @@ export const layer = Layer.effect(
     const invalid = yield* InvalidTool
     const task = yield* TaskTool
     const taskCancel = yield* TaskCancelTool
+    const procNotify = yield* ProcNotifyTool
     const read = yield* ReadTool
     const question = yield* QuestionTool
     const todo = yield* TodoWriteTool
@@ -278,6 +280,7 @@ export const layer = Layer.effect(
           goalUpdate: Tool.init(goalUpdate),
           task: Tool.init(task),
           taskCancel: Tool.init(taskCancel),
+          procNotify: Tool.init(procNotify),
           fetch: Tool.init(webfetch),
           todo: Tool.init(todo),
           search: Tool.init(websearch),
@@ -337,6 +340,7 @@ export const layer = Layer.effect(
             tool.goalUpdate,
             tool.task,
             tool.taskCancel,
+            tool.procNotify,
             tool.chimeraSwarm,
             tool.subagentModelRoutes,
             tool.subagentModelSchedule,

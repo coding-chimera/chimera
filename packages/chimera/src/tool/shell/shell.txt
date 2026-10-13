@@ -16,6 +16,7 @@ Processes spawned through this tool are registered in the per-project process re
 - Before killing an unfamiliar process, check the Session Processes runtime-context section (when present) to see which processes other sessions own; do not kill pids registered to another session.
 - Direct kills targeting numeric pids (`kill [-SIG] <pid>...`, `kill -- -<pgid>`) are refused when the pid or process group belongs to a different session's registered process. If you genuinely intend that, re-run with the confirmation marker: `CHIMERA_KILL_CONFIRM=1 kill <pid>`.
 - If one of your registered processes is killed by an external signal, a `<process_killed>` notice is injected into this session; treat it as a concurrent-session conflict and investigate instead of blindly retrying.
+- To be notified when a registered process exits without polling for it, subscribe with `proc_notify(pid)`; it injects a one-shot `<process_exited>` notice when the process reaches a terminal state.
 
 # Committing changes with git
 

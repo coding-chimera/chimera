@@ -1,0 +1,15 @@
+Subscribe to the exit of a process registered in this project's Session Processes registry, and receive a one-shot `<process_exited>` notice injected into your session when it terminates. This is the push-notification replacement for polling a long-running process you did not spawn or cannot await.
+
+Use this when:
+- A graph sync or index is blocked by another session's lock (the lock error names the holder PID) and you want to resume once that process finishes instead of retrying in a loop.
+- You are waiting on a long-running process owned by another session in this project (listed in the Session Processes runtime-context section).
+- You spawned a process that detached or that you can no longer await directly, and you want its exit to wake you.
+
+Rules:
+- Only pids present in this project's process registry can be watched. Register a process by running it through the bash tool; arbitrary OS pids are rejected. If the pid is unknown the tool errors and lists the currently active registered pids.
+- The subscription is one-shot: the first terminal signal (exited, killed, or expired) injects exactly one notice and destroys the watch. Re-subscribe if you need to watch again.
+- Watching is keyed by pid and fans out: several sessions may watch the same pid and each gets its own notice. A watch belongs to the session that created it and is dropped when that session is removed.
+- If the process is already terminal when you call, no subscription is created and the tool returns its exit details synchronously.
+- Pass `timeout_s` to bound the wait: if the process is still running when the timeout elapses, a `<process_watch_timeout>` notice is injected instead and the watch is removed. The process is not killed.
+
+This tool is a notification subscription only. It does not stream or return the process's output, does not capture an exit code as verification evidence, and is not an oracle. Use it to avoid polling, not to inspect results.

@@ -6,6 +6,7 @@ import {
   markProcessExited,
   markProcessKilled,
   readActiveProcesses,
+  readProcessesByPids,
   registerProcess,
   releaseProcessesForSession,
   type ProcessRegistryRecord,
@@ -120,6 +121,15 @@ export async function releaseForSession(projectRoot: string, sessionID: string):
  */
 export async function listActive(projectRoot: string): Promise<ProcessEntry[]> {
   return readActiveProcesses(projectRoot)
+}
+
+/**
+ * Every row for the requested pids, any status (newest-per-pid resolution is the
+ * caller's job). Backs the process-watch poll and proc_notify's pid lookup:
+ * unlike listActive this read also returns terminal rows. Degrade-open.
+ */
+export async function getByPids(projectRoot: string, pids: number[]): Promise<ProcessEntry[]> {
+  return readProcessesByPids(projectRoot, pids)
 }
 
 /**

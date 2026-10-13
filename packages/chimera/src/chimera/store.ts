@@ -2301,6 +2301,39 @@ export async function releaseProcessesForSession(
 }
 
 /**
+ * Every row for the requested pids, any status, for the process-watch poll and
+ * pid resolution. Lazy TTL expiry plus a signal-0 liveness sweep run first, so
+ * a dead-but-running row comes back as 'expired' (persisted), mirroring
+ * readActiveProcesses. Degrade-open: an unavailable store yields no rows.
+ */
+export async function readProcessesByPids(
+  projectRoot: string,
+  pids: number[],
+  options: { now?: string } = {},
+): Promise<ProcessRegistryRecord[]> {
+  const wanted = [...new Set(pids.filter((pid) => Number.isInteger(pid) && pid > 0))]
+  if (wanted.length === 0) return []
+  const now = options.now ?? new Date().toISOString()
+  const rows = await withDb(projectRoot, (db) => {
+    expireStaleProcesses(db, now)
+    const placeholders = wanted.map(() => "?").join(", ")
+    const running = db
+      .prepare(`SELECT id, pid FROM chimera_process_registry WHERE status = 'running' AND pid IN (${placeholders})`)
+      .all(...wanted) as Array<{ id: string; pid: number }>
+    const dead = running.filter((item) => !isPIDAlive(item.pid)).map((item) => item.id)
+    if (dead.length > 0) {
+      db.prepare(
+        `UPDATE chimera_process_registry SET status = 'expired', exited_at = ? WHERE status = 'running' AND id IN (${dead.map(() => "?").join(", ")})`,
+      ).run(now, ...dead)
+    }
+    return db
+      .prepare(`SELECT * FROM chimera_process_registry WHERE pid IN (${placeholders}) ORDER BY started_at ASC, rowid ASC`)
+      .all(...wanted) as ProcessRegistryRow[]
+  })
+  return (rows ?? []).map(processRegistryRecord)
+}
+
+/**
  * Cancel pre-v6 waiters without a host stamp whose updated_at is older than
  * `orphanedBefore`. The grace window keeps mixed-version concurrency safe: a
  * still-live old-binary process can wake its own un-stamped waiters through

@@ -77,6 +77,16 @@ describe('FileLock', () => {
     }
   });
 
+  it('lock contention with a live owner names proc_notify as the resume path', () => {
+    const lock = new FileLock(lockPath);
+    lock.acquire();
+    try {
+      expect(() => new FileLock(lockPath).acquire()).toThrow(new RegExp(`proc_notify\\(${process.pid}\\)`));
+    } finally {
+      lock.release();
+    }
+  });
+
   it('should detect and remove stale locks from dead processes', () => {
     // Write a lock file with a PID that doesn't exist
     // PID 99999999 is extremely unlikely to be a real process

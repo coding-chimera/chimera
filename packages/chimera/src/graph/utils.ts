@@ -217,7 +217,8 @@ export class FileLock {
         if (owner?.pid !== undefined && isProcessAlive(owner.pid)) {
           throw new Error(
             `CodeGraph database is locked by another process (PID ${owner.pid}). ` +
-            `If this is stale, run 'chimera graph unlock' or delete ${this.lockPath}`
+            `If this is stale, run 'chimera graph unlock' or delete ${this.lockPath}; ` +
+            `subscribe to its completion via proc_notify(${owner.pid})`
           );
         }
         if (owner?.pid === undefined && lockAge < FileLock.STALE_TIMEOUT_MS) {
