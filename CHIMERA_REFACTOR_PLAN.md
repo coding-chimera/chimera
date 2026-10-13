@@ -292,7 +292,7 @@ W4 开路（并行）    : D.2 启动握手 + Swift MVP（SSE/WS 客户端）
 | 10-10 17:0x | **W1 已落 6 笔**：门禁 `db69e4f4c`；B2 `f2c33b984`（SQLite 16/32MB，-16.2MB/连接实测）；A1 `3a807fbc9`（SCC 246→154 + 常驻注入测试 133 过）；A2-p1 `c624eb35a` + A2-p2 `1f5797f10`（163 文件/193 处重指向，OpenAPI 零 schema 漂移、drizzle check 绿）；B5 `fa5582ef4`（grammar 空闲 5s 全局释放，8 语言常驻 -7.2MB，索引产物字节一致）；B4 `7d5276988`（opt-in 堆软上限，默认关闭） | 见下行两项计划修正 |
 | 10-10 17:0x | **计划修正 1（B4）**：主动 GC 实测 RSS 收益不可复现、全量 GC 停顿 59-226ms 真实 → B4 降级为默认关闭的 opt-in 逃生口；B 线真实赢面是 B1/B2/B5 的结构性收敛，B4 不再计入 <500MB 目标的预期贡献 | B.2 表 B4 行语义已变 |
 | 10-10 17:0x | **计划修正 2（A2）**：A2 从构造上缩不了模块 SCC——session 留在 36 团里是另外 141 条边的责任（server 63 / tool 21 / effect 14，多为 import type），schema/sql 边从来不是绑定边。**模块级收缩的真正杠杆=类型边剥离（~400 处）+ A4/A5/A6**；A2 的价值是所有权归位（L1 契约/L2 表），不是 SCC 数字。A2-p2 余 5 文件被并发会话 claim（goal feature），shim 暂留，释放后收尾 | A.3 表 A2 行预期需改写；A.4 反作弊条款据此强化 |
-| 10-13 02:5x | **小泄漏三连修落地 `90f49ba0e`**：share 负缓存消除（miss 不再驻留）+ revealCache/webSocketSessions LRU 上限 256（5000 实测→256）；codex 侧按设计保留 sticky fallback 改 LRU 而非关连删（dispatch 偏离已记录并验证） | B 线追加收益；注意：并发 builder 的 graph 编辑当前把树打破（extraction/index.ts 重复声明），属其在途状态 |
+| 10-13 03:1x | **native 慢 2× 归因（只读，file:line 级）**：不是 Rust 等效实现问题，而是 TS 之上叠了行级序列化层（JS 编码扁平 buffer→FFI→Rust 解码→owned 重分配）。主因=编码器分配风暴（encoder.ts 每行 Buffer.alloc+每串 Buffer.from+收尾 concat）；次因=Rust 侧每行 owned 化+每边 serde_json 校验。经典嫌疑全证伪（prepare_cached 已用、WAL+NORMAL 对齐、连接调优非差距源）。修法：① TS 侧编码器单次预分配（已派工）② Rust 侧瘦身边校验/owned 化（需 CI 验证，后排） | 批量化+编码器双修进行中 |
 **基线复测条款**：A.1 的 SCC 数字（246/36/283）与 B.1 的内存数字（1.5GB/4.1GB）均为 2026-10-10 上午实测；每线开工当天用同一脚本/同一测量法复测一遍，以新基线验收。
 
 ---
