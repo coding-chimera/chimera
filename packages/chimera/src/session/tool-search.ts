@@ -226,6 +226,10 @@ type RevealedState = {
   readonly times: Map<string, number>
 }
 
+// Bounded: a long-lived process reveals across many sessions, so an unbounded
+// map would grow monotonically with the session count. Cap it with LRU
+// eviction; a dropped entry only costs one indexed SELECT on the next touch.
+export const REVEAL_CACHE_MAX = 256
 const revealCache = new Map<string, RevealedState>()
 
 /** Test seam: drop the in-memory cache so the next read reloads from the database. */
@@ -233,9 +237,28 @@ export function resetRevealCache() {
   revealCache.clear()
 }
 
+/** Test seam: whether a session's reveal state is currently cached. */
+export function revealCacheHas(sessionID: string) {
+  return revealCache.has(sessionID)
+}
+
+function rememberRevealed(sessionID: string, state: RevealedState) {
+  // Re-insert to refresh LRU position (Map iterates in insertion order).
+  revealCache.delete(sessionID)
+  revealCache.set(sessionID, state)
+  while (revealCache.size > REVEAL_CACHE_MAX) {
+    const oldest = revealCache.keys().next()
+    if (oldest.done) break
+    revealCache.delete(oldest.value)
+  }
+}
+
 function loadRevealed(sessionID: SessionID) {
   const cached = revealCache.get(sessionID)
-  if (cached) return cached
+  if (cached) {
+    rememberRevealed(sessionID, cached)
+    return cached
+  }
   const row = Database.use((db) =>
     db.select().from(ToolRevealTable).where(eq(ToolRevealTable.session_id, sessionID)).limit(1).get(),
   )
@@ -245,7 +268,7 @@ function loadRevealed(sessionID: SessionID) {
     [...ids].map((id) => [id, row?.data.revealedAt?.[id] ?? legacyTime] as [string, number]),
   )
   const loaded = { ids, times }
-  revealCache.set(sessionID, loaded)
+  rememberRevealed(sessionID, loaded)
   return loaded
 }
 

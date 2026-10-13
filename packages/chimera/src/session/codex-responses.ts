@@ -99,7 +99,28 @@ type StreamState = {
 type ChunkOutput = LLMEvent | (() => Promise<LLMEvent>)
 
 const log = Log.create({ service: "codex.responses" })
+// Retained websocket sessions are keyed per endpoint+account+session and must
+// outlive a single socket (sticky HTTP fallback, incremental baseline), so they
+// are not dropped on close. Cap them with LRU eviction instead: a dropped entry
+// only costs a fresh socket and one non-incremental request on the next touch.
+export const WEBSOCKET_SESSION_CACHE_MAX = 256
 const webSocketSessions = new Map<string, WebSocketSessionState>()
+
+/** Test seam: current number of retained websocket sessions. */
+export function webSocketSessionCacheSize() {
+  return webSocketSessions.size
+}
+
+function rememberWebSocketSession(key: string, session: WebSocketSessionState) {
+  // Re-insert to refresh LRU position (Map iterates in insertion order).
+  webSocketSessions.delete(key)
+  webSocketSessions.set(key, session)
+  while (webSocketSessions.size > WEBSOCKET_SESSION_CACHE_MAX) {
+    const oldest = webSocketSessions.keys().next()
+    if (oldest.done) break
+    webSocketSessions.delete(oldest.value)
+  }
+}
 const WEBSOCKET_CONNECT_TIMEOUT_MS = 3_000
 const WEBSOCKET_STREAM_RETRIES = 5
 const CODEX_RESPONSE_RETRY_LIMIT = 2
@@ -461,12 +482,16 @@ function finishEvents(state: StreamState) {
   return outputs
 }
 
-function webSocketSession(input: CodexResponsesInput) {
+/** Returns the retained websocket session for an input (also a test seam for the LRU cap). */
+export function webSocketSession(input: CodexResponsesInput) {
   const key = `${codexEndpointUrl("responses", input.endpoint)}:${input.auth.accountId ?? ""}:${input.sessionID}`
   const existing = webSocketSessions.get(key)
-  if (existing) return existing
+  if (existing) {
+    rememberWebSocketSession(key, existing)
+    return existing
+  }
   const session: WebSocketSessionState = {}
-  webSocketSessions.set(key, session)
+  rememberWebSocketSession(key, session)
   return session
 }
 

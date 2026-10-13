@@ -68,6 +68,18 @@ async function collect(input: CodexResponsesInput) {
   return events
 }
 
+test("retained websocket sessions are LRU-bounded and reused by key", () => {
+  const max = CodexResponses.WEBSOCKET_SESSION_CACHE_MAX
+  const first = CodexResponses.webSocketSession(baseInput({ sessionID: "session-ws-lru-0" }))
+  // same endpoint + account + session reuses the retained entry
+  expect(CodexResponses.webSocketSession(baseInput({ sessionID: "session-ws-lru-0" }))).toBe(first)
+  for (let index = 0; index < max + 25; index++) {
+    CodexResponses.webSocketSession(baseInput({ sessionID: `session-ws-lru-${index}` }))
+  }
+  // the cap bounds the module-level map no matter how many sessions streamed
+  expect(CodexResponses.webSocketSessionCacheSize()).toBe(max)
+})
+
 function apiError(events: any[]) {
   const error = events.find((event) => event.type === "error")?.error
   if (!APICallError.isInstance(error)) throw new Error("expected APICallError")

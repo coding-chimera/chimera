@@ -41,7 +41,7 @@ export type Share = typeof ShareSchema.Type
 type State = {
   queue: Map<SessionID, Map<string, Data>>
   scope: Scope.Closeable
-  shared: Map<SessionID, Share | null>
+  shared: Map<SessionID, Share>
 }
 
 type Data =
@@ -235,13 +235,14 @@ export const layer = Layer.effect(
 
     const getCached = Effect.fnUntraced(function* (sessionID: SessionID) {
       const s = yield* InstanceState.get(state)
-      if (s.shared.has(sessionID)) {
-        const cached = s.shared.get(sessionID)
-        return cached === null ? undefined : cached
-      }
+      const cached = s.shared.get(sessionID)
+      if (cached) return cached
 
       const share = yield* get(sessionID)
-      s.shared.set(sessionID, share ?? null)
+      // Only positive results are cached: storing a null for every unshared
+      // session would grow the map monotonically with the session count in a
+      // long-lived process. A miss just costs one indexed SELECT on the next touch.
+      if (share) s.shared.set(sessionID, share)
       return share
     })
 

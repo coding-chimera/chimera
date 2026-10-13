@@ -388,4 +388,51 @@ describe("ShareNext", () => {
       { config: { enterprise: { url: "https://legacy-share.example.com" } } },
     ),
   )
+  it.live("does not cache a negative share lookup, so a later share still syncs", () =>
+    provideTmpdirInstance(
+      () => {
+        const seen: string[] = []
+        const client = HttpClient.make((req) => {
+          if (req.url.endsWith("/sync")) seen.push(req.url)
+          return Effect.succeed(json(req, { ok: true }))
+        })
+
+        return Effect.gen(function* () {
+          const bus = yield* Bus.Service
+          const share = yield* ShareNext.Service
+          const session = yield* Session.Service
+
+          const info = yield* session.create({ title: "first" })
+          yield* share.init()
+          yield* Effect.sleep(50)
+
+          // Touch the session while it is unshared: the old negative cache memoized
+          // this miss (a null entry) and masked the share row inserted below, leaking
+          // one null per unshared session. The fix must re-read and sync.
+          yield* bus.publish(Session.Event.Diff, { sessionID: info.id, diff: [] })
+          yield* Effect.sleep(50)
+
+          yield* Effect.sync(() =>
+            Database.use((db) =>
+              db
+                .insert(SessionShareTable)
+                .values({
+                  session_id: info.id,
+                  id: "shr_abc",
+                  url: "https://legacy-share.example.com/share/abc",
+                  secret: "sec_123",
+                })
+                .run(),
+            ),
+          )
+
+          yield* bus.publish(Session.Event.Diff, { sessionID: info.id, diff: [] })
+          yield* Effect.sleep(1_250)
+
+          expect(seen).toEqual(["https://legacy-share.example.com/api/share/shr_abc/sync"])
+        }).pipe(Effect.provide(wired(client)))
+      },
+      { config: { enterprise: { url: "https://legacy-share.example.com" } } },
+    ),
+  )
 })

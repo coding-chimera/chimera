@@ -230,6 +230,25 @@ describe("session.tool-search", () => {
     }),
   )
 
+  it.live("reveal cache is LRU-bounded and refreshes recently used sessions", () =>
+    Effect.gen(function* () {
+      const toolSearch = yield* ToolSearch.Service
+      const max = ToolSearch.REVEAL_CACHE_MAX
+      const id = (index: number) => `ses_tool_search_lru_${index}`
+      for (let index = 0; index < max + 25; index++) {
+        yield* toolSearch.revealed(SessionID.make(id(index)))
+      }
+      // the cap bounds the module-level cache no matter how many sessions stream
+      expect(ToolSearch.revealCacheHas(id(max + 24))).toBe(true)
+      expect(ToolSearch.revealCacheHas(id(0))).toBe(false)
+      // touching the oldest cached entry refreshes its LRU position, so it survives the next insert
+      yield* toolSearch.revealed(SessionID.make(id(25)))
+      yield* toolSearch.revealed(SessionID.make(id(max + 25)))
+      expect(ToolSearch.revealCacheHas(id(25))).toBe(true)
+      expect(ToolSearch.revealCacheHas(id(26))).toBe(false)
+    }),
+  )
+
   test("compactSignature renders a compact formal-parameter list", () => {
     expect(
       ToolSearch.compactSignature({
