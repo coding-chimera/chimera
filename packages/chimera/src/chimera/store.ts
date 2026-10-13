@@ -669,10 +669,27 @@ function semanticObjectFilePath(input: FrozenSemanticObject | FrozenRelation) {
   return input.payload.filePath
 }
 
+// Content addressing must key on logical content only. A node/relation is
+// re-extracted with a fresh `graphRevision` on every sync (FrozenSemanticObject
+// source plus every FrozenRelationNode), so hashing the raw object made each
+// revision a distinct row and killed cross-revision reuse. Project out the
+// volatile revision stamps for hashing; the stored payload keeps them verbatim
+// for provenance readers (commit summaries read source.codegraphVersion, and
+// diffRelations stamps its source from the relation payload).
+function semanticObjectHashInput(input: unknown): unknown {
+  if (Array.isArray(input)) return input.map(semanticObjectHashInput)
+  if (input === null || typeof input !== "object") return input
+  return Object.fromEntries(
+    Object.entries(input as Record<string, unknown>)
+      .filter(([key]) => key !== "graphRevision")
+      .map(([key, value]) => [key, semanticObjectHashInput(value)]),
+  )
+}
+
 function semanticObject(input: FrozenSemanticObject | FrozenRelation): SemanticObjectRecord {
   const kind = semanticObjectKind(input)
   return {
-    hash: hashBytes(`chimera-object:v1 ${kind}`, stableJson(input)),
+    hash: hashBytes(`chimera-object:v1 ${kind}`, stableJson(semanticObjectHashInput(input))),
     kind,
     codegraphID: semanticObjectCodegraphID(input),
     filePath: semanticObjectFilePath(input),

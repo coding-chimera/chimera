@@ -118,6 +118,14 @@ function relation(focal: FrozenSemanticObject, other: FrozenSemanticObject): Fro
   }
 }
 
+// Re-stamp a frozen object/relation with a different graph revision. Only the
+// volatile revision fields change; the logical content is identical.
+function atRevision(input: FrozenSemanticObject, revision: string): FrozenSemanticObject
+function atRevision(input: FrozenRelation, revision: string): FrozenRelation
+function atRevision(input: FrozenSemanticObject | FrozenRelation, revision: string) {
+  return { ...input, source: { ...input.source, graphRevision: revision } }
+}
+
 function fact(input: { eventID: string; beforeNode: FrozenSemanticObject; relation: FrozenRelation }): ChangeFact {
   return {
     schemaVersion: 1,
@@ -451,6 +459,60 @@ describe("Chimera store", () => {
     const [slimStored] = await readChangeFacts(tmp.path, ["event:store-test"])
     expect(slimStored?.evidence.relationDelta).toEqual(fatStored?.evidence.relationDelta)
     expect(slimStored?.evidence.beforeNode?.payload.name).toBe(fatStored?.evidence.beforeNode?.payload.name)
+  })
+
+  test("dedupes semantic objects across graph revisions with a content-only hash", async () => {
+    await using tmp = await tmpdir()
+    DatabaseConnection.initialize(getDatabasePath(tmp.path)).close()
+    const provenance = path.join(tmp.path, ".codegraph", "chimera", "tool-provenance.jsonl")
+    await appendProvenanceRecord(tmp.path, provenance, { ...record(tmp.path), id: "event:rev1" })
+    await appendProvenanceRecord(tmp.path, provenance, { ...record(tmp.path), id: "event:rev2" })
+
+    const focal = node("focal", "target")
+    const caller = node("caller", "caller")
+    await writeChangeFacts(tmp.path, [fact({ eventID: "event:rev1", beforeNode: focal, relation: relation(focal, caller) })])
+
+    // The same logical node/relation is re-extracted under a new revision: only
+    // the graphRevision stamps differ, so the content-only hash must reuse the
+    // single stored row instead of minting a fresh one per revision.
+    const focalRev2 = atRevision(focal, "rev2")
+    const callerRev2 = atRevision(caller, "rev2")
+    const relationRev2 = atRevision(relation(focalRev2, callerRev2), "rev2")
+    const factRev2 = fact({ eventID: "event:rev2", beforeNode: focalRev2, relation: relationRev2 })
+    factRev2.id = "fact_store_test_rev2"
+    await writeChangeFacts(tmp.path, [factRev2])
+
+    const db = DatabaseConnection.open(getDatabasePath(tmp.path))
+    try {
+      const relations = db.getDb().prepare("SELECT COUNT(*) AS count FROM chimera_semantic_object WHERE kind = 'relation'").get() as { count: number }
+      const nodes = db.getDb().prepare("SELECT COUNT(*) AS count FROM chimera_semantic_object WHERE kind = 'node'").get() as { count: number }
+      expect(relations.count).toBe(1)
+      expect(nodes.count).toBe(1)
+    } finally {
+      db.close()
+    }
+
+    const [storedRev1] = await readChangeFacts(tmp.path, ["event:rev1"])
+    const [storedRev2] = await readChangeFacts(tmp.path, ["event:rev2"])
+    expect(storedRev1?.evidence.replayLifecycle?.status).toBe("replayable")
+    expect(storedRev2?.evidence.replayLifecycle?.status).toBe("replayable")
+
+    // Both facts hydrate the relation delta from the single shared row, so the
+    // deltas are identical.
+    expect(storedRev2?.evidence.relationDelta).toEqual(storedRev1?.evidence.relationDelta)
+
+    // The hydrated relation content matches a direct diff of the rev2 relations;
+    // only the revision stamp in `source` reflects the first write.
+    const relationIdentity = (delta: ChangeFact["evidence"]["relationDelta"]) =>
+      delta?.removedRelations.map((entry) => ({
+        relation: entry.payload.relation,
+        direction: entry.payload.direction,
+        edgeKind: entry.payload.edgeKind,
+        focal: entry.payload.focalNode.nodeKey,
+        other: entry.payload.otherNode.nodeKey,
+      }))
+    expect(relationIdentity(storedRev2?.evidence.relationDelta)).toEqual(relationIdentity(diffRelations([relationRev2], [])))
+    expect(storedRev2?.evidence.beforeNode?.payload.name).toBe("target")
   })
 
   test("omits relation-delta bytes from evidence_json for a relation-heavy fact", async () => {
