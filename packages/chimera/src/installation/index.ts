@@ -53,7 +53,7 @@ export const Info = zodObject(InfoSchema)
 export type Info = Schema.Schema.Type<typeof InfoSchema>
 
 export const USER_AGENT = `chimera/${InstallationChannel}/${InstallationVersion}/${Flag.OPENCODE_CLIENT}`
-const NPM_PACKAGE = "chimera"
+const NPM_PACKAGE = "@coding-chimera/chimera"
 
 export function isPreview() {
   return InstallationChannel !== "latest"
@@ -205,7 +205,7 @@ export const layer: Layer.Layer<Service, never, HttpClient.HttpClient | ChildPro
           if (detectedMethod === "npm" || detectedMethod === "bun" || detectedMethod === "pnpm") {
             const response = yield* httpOk.execute(
               HttpClientRequest.get(
-                `${yield* NpmConfig.registry(process.cwd())}/${NPM_PACKAGE}/${InstallationChannel}`,
+                `${yield* NpmConfig.registry(process.cwd())}/${NPM_PACKAGE.replace("/", "%2F")}/${InstallationChannel}`,
               ).pipe(HttpClientRequest.acceptJson),
             )
             const data = yield* HttpClientResponse.schemaBodyJson(NpmPackage)(response)
