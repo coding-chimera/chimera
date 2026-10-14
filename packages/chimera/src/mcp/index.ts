@@ -28,7 +28,7 @@ import { McpCatalog } from "./catalog"
 import { BusEvent } from "../bus/bus-event"
 import { Bus } from "@/bus"
 import { TuiEvent } from "@/cli/cmd/tui/event"
-import open from "open"
+import { openUrl } from "@/util/open-url"
 import { Cause, Effect, Exit, Layer, Context, Schema, Stream } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
@@ -908,7 +908,7 @@ export const layer = Layer.effect(
 
       const callbackPromise = McpOAuthCallback.waitForCallback(result.oauthState, mcpName)
 
-      yield* Effect.tryPromise(() => open(result.authorizationUrl)).pipe(
+      yield* Effect.tryPromise(() => openUrl(result.authorizationUrl)).pipe(
         Effect.flatMap((subprocess) =>
           Effect.callback<void, Error>((resume) => {
             const timer = setTimeout(() => resume(Effect.void), 500)

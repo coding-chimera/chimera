@@ -4,7 +4,7 @@ import { UI } from "../ui"
 import { effectCmd } from "../effect-cmd"
 import { withNetworkOptions, resolveNetworkOptions } from "../network"
 import { Flag } from "@opencode-ai/core/flag/flag"
-import open from "open"
+import { openUrl } from "@/util/open-url"
 import { networkInterfaces } from "os"
 
 function getNetworkIPs() {
@@ -77,11 +77,11 @@ export const WebCommand = effectCmd({
       }
 
       // Open localhost in browser
-      if (args.open) open(localhostUrl).catch(() => {})
+      if (args.open) openUrl(localhostUrl).catch(() => {})
     } else {
       const displayUrl = server.url.toString()
       UI.println(UI.Style.TEXT_INFO_BOLD + "  Web interface:    ", UI.Style.TEXT_NORMAL, displayUrl)
-      if (args.open) open(displayUrl).catch(() => {})
+      if (args.open) openUrl(displayUrl).catch(() => {})
     }
 
     yield* Effect.never

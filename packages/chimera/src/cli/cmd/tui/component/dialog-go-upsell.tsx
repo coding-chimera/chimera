@@ -1,6 +1,6 @@
 import { BoxRenderable, RGBA, TextAttributes } from "@opentui/core"
 import { useKeyboard } from "@opentui/solid"
-import open from "open"
+import { openUrl } from "@/util/open-url"
 import { createSignal, onCleanup, onMount } from "solid-js"
 import { selectedForeground, useTheme } from "@tui/context/theme"
 import { useDialog, type DialogContext } from "@tui/ui/dialog"
@@ -17,7 +17,7 @@ export type DialogGoUpsellProps = {
 }
 
 function subscribe(props: DialogGoUpsellProps, dialog: ReturnType<typeof useDialog>) {
-  open(GO_URL).catch(() => {})
+  openUrl(GO_URL).catch(() => {})
   props.onClose?.()
   dialog.clear()
 }
