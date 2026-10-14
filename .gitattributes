@@ -1,0 +1,3 @@
+# Vendored tree-sitter grammar sources (generated parser.c / scanner.c) compiled by
+# the codegraph-kernel Rust build; excluded from GitHub linguist language stats.
+codegraph-kernel/grammars/** linguist-vendored
