@@ -496,3 +496,63 @@ L4 风险 top5（含 F1/F2/K-v2 新交互面）：①**gateway/provider-utils �
 - **§11.6 风险实锤并已处置**：openai 3.0.88 嵌套 provider 3.0.14 的 `unique symbol` 品牌与顶层 3.0.16 名义分裂→fork 自有 hosted-web-search 两处带注释 scoped cast（`Symbol.for` 全局注册实证 runtime 安全）。
 - **联合验收**：typecheck 绿；config+provider 族 713/0；session 族 542/0；全量套件 5452 tests/**26 fail=重述基线精确命中**（环境16+httpapi-config8+SDK2，零负载池零新增）；bun.lock anpm=0；推前五类审计零命中；同波推送（K-v2 原子先例）=origin `81175a2ff`。
 - pitfall 沉淀：#41 pgrep -f 模式自匹配（bench 守卫改可执行名/PID 文件）。
+
+## v2 架构对照（2026-10-14 调研，drift-20261014 配套；W1-W6 六簇报告综合）
+
+证据基础：六簇深研报告归档 `/Volumes/workspace/opencode-snapshot/drift-20261014/triage/v2-arch-w{1..6}-*.md`（w1 运行时核心/w2 provider+credential/w3 plugin+config/w4 server+部署/w5 cli+gui/w6 chimera 特有面嫁接成本）；全部 file:line/LOC 实盘，parent 已亲验关键断言并裁决两处跨组冲突（见本节末）。上游基线=dev@`1c28c2fec`（v2.0.28+4 天），fork 基线=`dafca068d`。
+
+### 十二维对照总表（压缩版，细节见簇报告）
+
+| # | 维度 | 上游 v2 | fork 现状 | 差距定性 |
+|---|---|---|---|---|
+| 1 | 会话执行 | durable inbox（session_inbox 表）+drain/Continuation 代数（runner/index.ts:22-42）+六态 Outcome（step.ts:32-42，含 OutputLimit streak/Continue 续写/一次性恢复预算）+崩溃清算 settleStale* | prompt.ts 3894 行内联控制流；goal/workbrief/runtime-context/park/swarm 全部 fork 钩子无 tagged 分派；OutputLimit 对应物仅窄版 cutoff 重试 | **架构冲突**（B 案最贵面；OutputLimit 语义可按 llm.ts:273-330 在 v1 先行独立补齐） |
+| 2 | 事件 | 三分：schema 契约（event.ts 205+session-event.ts 723+~30 个 *-event.ts）/bus.ts 908（publish+durable+projectors）/event/sql.ts 26（表） | vendored core/event.ts 638 单文件（上游已无对应物）+src/v2 桥（fork-owned）+v1 Bus 双轨；sdk/newweb 零直接消费 EventV2 | 结构分叉；**L5.1 Location shim 重锚到 src/v2 桥（选项 b）可首次实现 vendored 面零 shim** |
+| 3 | 存储 | core/database（drizzle 子树内迁、迁移 50、embedder `_` 前缀命名空间官方 seam、bootstrap 双路） | 双库：主 chimera.db（29 手写迁移+两段式）+chimera-v2.db（vendored 38 迁移，隔离纪律）；孤儿包 effect-drizzle-sqlite | 同构可对账；**+12 迁移追平是 credential re-vendor 前置**（含 session_inbox/execution_claim/credential 域数据迁移三件需验 no-op 容忍）；孤儿包=删除候选 |
+| 4 | provider | packages/ai 217 文件（protocols 40+/providers 目录化/route/transport 含超时体系/media 族）+core plugin/provider 36 插件；AI SDK 路径在 v2 不存在 | **三套资产并存**：v1 单体（shipping：provider.ts 2662/transform.ts 1499/copilot sdk 24 文件）+llm 09-21 快照（flag 后 pilot）+部分 vendored core 插件面 | 结构分叉；**llm/src 56/56 与上游 e059ac59 逐字节一致（零本地改造）→刷新=直取 ai HEAD+重放 8 非 src 文件+4 GONE 映射**；硬骨头=v1 特有能力（rewriteRelayReasoningEvents/transform 特化/balance/ultra 映射/models.dev 发现）在 ai 无对应物，退役 v1 前逐一落位；llm_runtime flag 终局=ai 转正、AI SDK 路径退役 |
+| 5 | plugin | host.ts 702 行 Context ~24 域+hooks 统一注册+runtime-modules host-Effect 注入（c28e9ec3 机制性消灭双 Effect）+promise/adapter 双向适配 | host-seam 180 行仅 2 真域（catalog/integration，余 die-stub 响式失败）；loader.ts 裸 import；PluginContext 类型 09-01 世代；9 内建 v1 插件+v1 Hooks 生态 | 域覆盖 ~2/20；**不整包 re-vendor（上游 host 已耦合 24 个 v2 服务），维持 seam 逐域扩**（credential/tool/storage 先行，permission.assert 依赖链最后）；c28e9ec3 移植=独立低成本堵门项（不依赖 core v2 树） |
+| 6 | config | 全 schema 化（schema/config 19 模块）+discovery Entry[]/latest() 惰性+model-compatibility 数据化（provider 级继承、插件可写、进 OpenAPI）+v1 migrate 三链 | config.ts 1050 行单体 zod/Schema 混排+fork 特有节（delegation/memories/model_capabilities/variants/remote_compaction_models）+v2-compat 反向接受层+transform.ts 硬编码启发式 | 语义重叠表达层不同；**compatibility schema 应成真源、transform.ts 改消费方**；fork 特有节需私有 schema 扩展包安置；managed 优先级两侧终态一致（见裁决②）；v1→v2 用户迁移链 fork 无需跟进（方向相反） |
+| 7 | server | protocol 30 groups 契约+server 31 handlers+client.ts/httpapi-codegen/packages/client 生成链+event-feed（溢出杀订阅 fail-fast） | 双树：httpapi 25 组自有契约 0.0.1+legacy Hono 13 组；hey-api OpenAPI 链→sdk v2/gen→newweb；SSE drop-oldest+gap 标记 | 契约漂移单向（fork 契约非上游镜像）；**event-feed 语义相反且 fork 方案更优，不对齐**；契约增量吸收=全链单改（groups+handlers+sdk 重生成+newweb）；vendored protocol 零消费者死重待裁决删除/降级 |
+| 8 | CLI/TUI | cli 包：声明式 Spec 命令树+惰性 handler+八通道 updater Effect service；tui 独立包 285 文件（mini 40/model-preference/devtools 新面，opentui 0.6.3） | yargs 直连+cmd 26 项+debug 11 件；tui 内嵌 125 文件（进程内 worker/attach 架构，opentui 0.2.2）；同名仅 56 且不同 API 基座 | CLI 映射成本低（graph `--graph` argv 预扫描需保入口特例）；**TUI 世代断层：批量移植不可行，三选一：冻结点状吸收/整体换轨重放 69 独有文件语义/弃 tui 转 WebUI** |
+| 9 | GUI 哲学 | gui-extensions 861 文件：Extension.define manifest+Registry/Contract/Ipc 四件套类型强制「shell vs feature」硬分界；session-ui 纯渲染组件库；app=纯 core shell | newweb 散点耦合（SSE/REST 直调）+app/ui legacy；chimera 定制（graph 面板/obligation/variant）以改源码形式存在不可携带 | **newweb 战役应借契约面把 chimera 定制外置为扩展（化解嵌套仓禁改矛盾）**；native GUI 只借 Ipc schema 桥先例；app+ui=退役候选；上游 app 与 OpenCodeUI 系永久分叉仅服务端契约汇合 |
+| 10 | credential | credential.ts 328（含 External/activate）+integration.ts 886+auth.json 已由 import_legacy_credentials 收敛单轨；窗口 4 轮演进 | **三轨**：v1 auth.json（shipping 主轨）+src/v2/auth.ts 文件账户口+vendored credential 表（138 行裁剪版，无 External/activate，无上游 blob 匹配） | 重刷 integration（686 行漂）需 delta 考古非覆盖；必须保住 makeLocationNode/v2 Service 名/chimera-v2.db 隔离；External/activate 引入须与 plugin 面联动否则悬空 |
+| 11 | 部署面 | services/四独立 Worker（www/update/files/changelog）；update=JWT+D1 自更新分发 | 升级走包管理器（upgrade.ts）、changelog 走 script/changelog.ts（AI 生成） | **确认不消费零吸收**；提醒：对外 API 文档应取 Server.openapi() 非 vendored protocol |
+| 12 | chimera 特有面 | （无对应物） | graph 181f/81.5k LOC（出边=0 实证）、chimera 审计 16f/8.6k、工具 46f/15.1k、prompt/agent 52f/23.7k、memories/lsp/ide/share 自持 | 见 B 案成本地图 |
+
+### B 案嫁接成本地图（W6 实盘，修正 G6 估算）
+
+| 面 | 规模 | 冲突类型 | 人日 |
+|---|---|---|---|
+| graph 引擎 | 181f/81.5k | 直搬（提包+cli 薄壳） | 2-4 |
+| chimera 审计 | 16f/8.6k | seam 重接（3 挂点+event 拆分重锚） | 6-10 |
+| 工具面 | 46f/15.1k | Tool.Def→Tool.Info 适配 shim+tool_search 架构冲突重实现 | 12-20 |
+| prompt/agent 执行体系 | 52f/23.7k+22txt | **架构冲突需重铸**（v2 runner 不同构；Job/SubagentCompletion 可减半恢复语义） | **20-35** |
+| server fork 路由 | 118f/16k | seam 偏架构冲突（双树→v2 handlers 框架） | 8-15 |
+| cli 命令/TUI 重接 | 34f/6k + 125f/25.8k | seam / 架构冲突（参照全过期） | 4-7 + 8-20 |
+| provider | 39f/11.2k | seam+去重（copilot 4494 LOC vs core/github-copilot 重叠未逐行核=最大方差源） | 8-16 |
+| config | 28f/3.7k | seam（schema 化逐节改写） | 3-6 |
+| storage/会话数据 | 双 db+12 sql.ts | **架构冲突（事件溯源范式）** | 5-10 |
+| 其它（browser/memory/skill/lsp/share/mcp/打包矩阵） | ~50f/10k | 混合（打包=架构冲突） | 12-20 |
+| **面合计** | | | **88-163** |
+| 集成税（5452 测试基线重对/flag 门控/~30 commits 天移动靶） | | | +15-25 |
+| **B 案修正总计** | | | **≈105-185 人日（中位 ~140）** |
+
+对 G6 60-120 的修正：低估源=cli 实盘 169 文件（G6 记 85）且 TUI 重接未单列；v2 Tool.Info ctx 过薄致 46 工具逐个适配；tool_search 披露/prompt 层注册表/session 事件溯源三处是无 seam 架构冲突；双变体打包矩阵需重设计。**B 案上限应上修至 ~160；除非 copilot 去重与 SubagentJob 复用超预期，落入 G6 区间概率低**。
+
+### A 案（re-baseline）波及面与成本修正
+
+- 波及 = 6/10 面（chimera 轻度/src-v2 seam/tui 分诊/provider/config 轻度/storage 追平），无使 A 案膨胀的新面——**G6 A 案推荐维持，10-20 人日估价与 W6 兼容**。
+- 成本下修项：llm→ai 刷新零 src delta（裁决①）；成本上修项：credential/integration 需 delta 考古（无 blob 匹配的裁剪副本）。
+- A 批顺序建议（依赖关系）：迁移追平（+12）→ credential/integration 重刷 → llm→ai 整包 → schema/protocol/codemode 处置（含 protocol 包去留裁决）→ v2-core trunk 重刷（state/event 拆分重锚=选项 b）→ M10 重取参照。前置独立项：c28e9ec3 host-Effect 堵门、5683367e compatibleModel 小补。
+
+### 关键裁决（parent，跨簇冲突）
+
+1. **llm 字节一致性（W2↔G4a）**：W2 对——fork packages/llm/src 56/56 与上游 `e059ac59`（09-21）逐字节一致（parent 抽 4 文件复核含 G4a 点名的 executor.ts=0 diff）；G4a「55/56 本地改造」实为对 09-19 边界树的差异误归因（LLMError 命名亦不成立，09-21 上游已是 AIError）。
+2. **config managed 优先级（W3↔G2a）**：G2a 对——上游终态（6dc4d4e7）managed 组（system dir+MDM plist）最后加载覆盖一切、policies 反序保 file-based authority，与 fork 一致；ba82b370 的「system 最低」是次日即被修正的中间态（坑 #1）。
+3. **W6↔G6 实盘口径**：cli=169 文件（W6 find 实盘）采信；fork src 总盘 840 ts/tsx（G6 口径 755，差异=tui/新增文件）。
+
+### 遗留待办（本调研产出）
+
+- fork 自有 bug：`src/installation/index.ts:56` NPM_PACKAGE="chimera"（未带 scope，与发布名 @coding-chimera/chimera 漂移，graph/installer:50 用的是对名）——升级检测查错包+自动升级可能装到第三方占名包（供应链面）；独立小批待拍板。
+- copilot sdk 4494 LOC vs 上游 core/github-copilot 重叠度逐行核（B 案最大方差源，A 批 refresh 时顺带）。
+- `chimera debug info` 是否与 debug config 同泄漏面（B1 报告 flag，待查）。
+- F3 TUI 三选一决策（冻结/换轨/弃）随 Q4 拍板。

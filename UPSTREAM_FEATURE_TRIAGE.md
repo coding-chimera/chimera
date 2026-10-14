@@ -530,6 +530,7 @@ L1 vendor 时点（09-04）到 C 集窗口起点（09-19）之间 v2 侧对四�
 5. **交叉一致**：82d4c890 G1①=G5 P1 ✓；38454c6e G2b④=G5④ ✓；4fbdea2d G2a④休眠门=G5 深判 ✓。
 6. **方法论盲点（入 pitfalls #43）**：关键词横切只扫 subject，安全 guard 藏在 refactor/feat 补丁体内即漏（29f07e0c 实例）；缓解=深判组带「补丁内安全语义」上报义务 + parent 跨组合并。
 7. **G2a↔W3 冲突裁决（config managed 优先级）**：W3 质疑「fork 系统级目录最高 vs 上游 ba82b370 system 最低，语义相反」——parent 读上游终态裁决：**G2a 对，W3 踩坑 #1（中间态陷阱）**。ba82b370（10-12）曾把 system 目录置最低加载位，**次日 6dc4d4e7（10-13）修正为终态**：managed（system dir+MDM plist）最后加载覆盖一切，policies 拆出 toReversed 先载保 file-based authority——与 fork managed.ts/config.ts（"managed preferences override everything"）语义一致，§14.3 的③判定维持。残留细节：fork 无 managedPolicies 拆分/反序机制（policies 面未 vendored），L5 vendor config 面时备忘。
+8. **G4a↔W2 冲突裁决（llm vendored 字节一致性，影响 A 批成本）**：G4a 称「56 文件仅 1 个与上游 09-19 边界 blob 一致，55/56 已本地改造，禁 sha cherry-pick」——W2 实测推翻：fork packages/llm/src 与上游 `e059ac59`（09-21，L4.2 vendor 时点）**逐字节一致（diff -rq 空，56/56）**，parent 抽 4 文件复核（含 G4a 点名的 route/executor.ts=0 diff；LLMError 在 e059ac59 上游原版即 8 处=非 fork 改造）。G4a 错因=拿浅克隆 09-19 边界树而非真实快照 commit 做基线，把上游代际差（LLMError→AIError 等 09-21 后演进）误归因 fork 本地 delta。**修正：llm→ai 刷新=直取 ai HEAD 终态+重放 8 个非 src 文件（package.json/AGENTS/README/tutorial/4 test）+4 GONE 文件映射+消费方 import 适配，A 批最大单项成本大幅下修**（工作面清单见计划书「v2 架构对照」节/W2 报告）。G4a 的 cherry-pick 条目本体（落点 file:line）不受影响，仍有效。
 
 ### 14.6 批次归并结论
 
@@ -541,7 +542,7 @@ L1 vendor 时点（09-04）到 C 集窗口起点（09-19）之间 v2 侧对四�
 - **R6 dep bump 批**：togetherai 2.0.68、gitlab 6.19.0；备忘 bun-pty 0.4.11。
 - **R7 plugin P1**：c28e9ec3 host-Effect guard（~150 行）。
 - **R8 小件**：5683367e L5 前置补、97a86b76 F3 随批、be674e31+d21b0790 legacy app/ui、ACP 追溯复判批。
-- **L5/re-baseline 捆绑（待 Q1 拍板后开工）**：llm→ai 整包刷新（三方基线对齐后按文件重 vendor+重放本地 delta，**禁 sha cherry-pick**——56 文件仅 1 个与上游 09-19 边界 blob 一致；7125f5f8 浅克隆伪影剔除 diff 基线；含 044d8b7d/69a71426/5673bfa4/a22754f7/e41e7e90/4c0d0ff4/317dfbc6/8656838a-pilot 侧）；schema/protocol/codemode re-vendor（含缺口 123 条+4be28c97 time_archived+禁采 4 条例外）；drizzle→core/database/drizzle 对账；v2-core trunk 重刷（state.ts 282 行/integration.ts 686/credential.ts 268/event.ts 拆分重锚 L5.1 shim/迁移 38→50）；a3f7f42a OutputLimit 续写；权限语义链三件终态；4fbdea2d+codemode 加固四件（接线门）。
+- **L5/re-baseline 捆绑（待 Q1 拍板后开工）**：llm→ai 整包刷新（**成本修正见 14.5-8：fork llm src 零本地改造，直取 ai HEAD+重放 8 非 src 文件+4 GONE 映射，无需三方基线重放**；7125f5f8 浅克隆伪影剔除 diff 基线；含 044d8b7d/69a71426/5673bfa4/a22754f7/e41e7e90/4c0d0ff4/317dfbc6/8656838a-pilot 侧）；schema/protocol/codemode re-vendor（含缺口 123 条+4be28c97 time_archived+禁采 4 条例外）；drizzle→core/database/drizzle 对账；v2-core trunk 重刷（state.ts 282 行/integration.ts 686/credential.ts 268/event.ts 拆分重锚 L5.1 shim/迁移 38→50）；a3f7f42a OutputLimit 续写；权限语义链三件终态；4fbdea2d+codemode 加固四件（接线门）。
 - **战略批（Q1-Q8 拍板后）**：re-baseline A 案 10-20 人日（锚 v2.0.28=`026b106b`；漂移主体来自 promote merge 本身，promote 后 4 天仅 1 commit 触及 L5 vendored 集=静止目标一次性对账）。
 
 ### 14.7 拍板清单（2026-10-14，一轮过；每项带建议默认值）
