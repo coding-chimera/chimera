@@ -201,6 +201,22 @@ codex 的"潮"= 纪律而非重设计，可迁移的四条：
 
 ---
 
+## 战线 E：会话执行改良（codex 路子，2026-10-14 用户拍板）
+
+背景：v2 架构对照（UPSTREAM_V2_MIGRATION_PLAN.md「v2 架构对照」节）确认 fork 会话执行=prompt.ts 3894 行内联控制流，上游 v2=数据库驱动代数系统（session_inbox+drain/Continuation+六态 Outcome）。**拍板：不迁 v2 代数**（封闭扩展面与 fork 差异化钩子冲突，改代数=永久偏离上游），参照系走 codex 路子——codex 实证（4 月 codex.rs→session/ 大重构后，5 月 input_queue、9 月 daemon_recovery、10 月后台 compaction 全部增量落位，结构在高提交强度下稳态 6 个月）：过程式循环保留，耐久/恢复靠 append-only 日志+重建，不靠代数。
+
+codex 参照锚点（/Volumes/workspace/codex，codex-rs/core/src/session/）：turn.rs 3330（run_turn :164、sampling loop :1640）、mod.rs 5517、input_queue.rs 810（TurnInput enum+内存队列，5 月 #22728）、daemon_recovery.rs（中断回合快照，9 月 #45807，RecordedTurnInput=输入落日志后才标记）、rollout_reconstruction.rs（日志重建）、7a0a8ac9c4（回合收尾关闭输入准入）、1b6e0d8145（prompt 组装内容溯源——fork Source-attributed segments 已先行）。
+
+候选批次（按拍板优先级）：
+
+1. **E1 input queue 收敛**：fork 的 steer/injectSynthetic/park 语义散在 prompt.ts 各分支，收敛为显式队列+TurnInput 式 enum；seam 位置参照 codex input_queue.rs + 7a0a8ac9c4 收尾准入闸。
+2. **E2 daemon_recovery 式中断恢复**：fork 消息本就在 SQLite，补的是"执行意图"快照（回合开始落快照）+ 重启后识别被中断回合并恢复；与已有 goal 持久化（goal.ts）自然衔接。比 v2 settleStale*/inbox 表成本低一个量级。
+3. **E3 单步 Outcome 化（第三优先，可缓）**：单步执行多出口（cutoff/overflow/retry/compaction）收敛成 tagged union 返回值，拿穷举分派+分支可测性；codex 证明不做也能跑，故排在 E1/E2 之后。
+
+与上游同步的关系：E 线全是 fork 自有重构，零上游冲突；OutputLimit 续写（a3f7f42a）仍归上游同步 Q10/A 批，不在本线。
+
+---
+
 ## 验证基线（预期测试点）
 
 每项改动的 DoD 除代码外必须包含本节对应测试点的实测结果；审计时逐项核对，**缺测 = 未完成**。基线数字取自 2026-10-10 实测（见 B.1 / D.4）。
