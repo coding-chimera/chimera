@@ -580,3 +580,31 @@ L1 vendor 时点（09-04）到 C 集窗口起点（09-19）之间 v2 侧对四�
 - REST 实耗 **2/60**（compare+rate_limit）；`git ls-remote` ×3（不耗 API）；blobless clone 1 次+deepen 1 次；codeload tarball 1 份（79.7MB）；组内偶用 commit/*.patch web 端点。
 - 8 组 worker（7 reviewer qwen3.8-max-0902/low + 1 scout deepseek-v4.1-flash/low）报告全文归档 `drift-20261014/triage/`；parent 亲验清单：G3b 两条②（child-store.ts:91/marked.tsx:474 逐字比对）、G2b 两红旗+一③（authorization.ts/pty-ticket.ts/native-arch 缺失/autocomplete.tsx:589-592）、G6 三断言（state.ts 282 行逐位复现/lsp-ide 严格路径 0 命中/L5 完成记录计划书:481）+drizzle 矛盾裁决、G5 三断言（debug config 明文/ACP 面存在/gray-matter 调用点）、G1 三红旗（oauth-provider 零校验+上游 guard 补丁/copilot throw 逐字/bedrock 无条件 true）、G2a 三红旗（300_000 在位/ripgrep PowerShell 逐字/hashline 行尾模型）、G4a 两 P1（overflow 正则缺口/parseSSEBlock 调用方语义）。
 - fork 侧全程只读（另一会话在途工作未受扰）；上游镜像未动；未执行任何新鲜落盘二进制；本轮零代码修改、零提交（迁移批次待拍板后另行开工）。
+
+## 15. 新增漂移分诊（2026-10-14 微窗口：`1c28c2fec..a7ad408d`，7 commits）
+
+### 15.0 总览对账
+
+- 窗口 7 = ①0 / ②1 / ③0 / ④6 / ⑤0（对账：0+1+0+6+0=7 ✓）；安全横切 P0×0 / P1×0；窗口内无版本 bump（dev 仍 2.0.28）。
+- 方法：快照 blobless 原位 fetch（`f576da50..a7ad408d`）+ parent `git show` 逐条亲验；窗口 <10 条不开 swarm。
+- **上游结构事实（Q1 输入）**：v2.0.28 tag（`026b106b`，10-13 08:17 release commit）**不在 dev 线上**——上游 release 侧切流打 tag，该 tag 与 dev tip 的 merge-base=`044d8b7d`。若 Q1 钉 v2.0.28，锚后漂移需单独挂账（f576da50 即首例）；或 Q1 改锚 dev 快照点。
+
+### 15.1 逐条明细
+
+| commit | 标题 | 触及面 | 分类 | 依据/处置 |
+|---|---|---|---|---|
+| f576da50 | feat(core): stabilize top-level policies config (#55297) | core config.ts/normalize.ts/managed-policy.ts/plugin provider + schema config + OpenAPI +37 行 | ②需适配 | v2 policies 从 experimental 稳定化为顶层键；落点=fork L5 vendored v2-core trunk 刷新面，**归 re-baseline A 批**；该 commit 晚于 v2.0.28 release cut（10-13 08:17），不在锚 026b106b 树内→锚后漂移挂账首条 |
+| 165cd2e8 | feat(desktop): pair devices through remote access (#55306) | packages/gui-extensions pairing（contract/remote/page） | ④无关 | fork 无 gui-extensions/desktop v2 面；信息性：原生 GUI 战线可参考其 pairing contract+remote 握手设计（loopback 配对恰是 fork GUI 调研硬缺口的上游实现样本） |
+| def5d948 | chore(tui): revert OpenTUI 0.6 upgrade (#55300) | tui/cli/latex/merman/theme + catalog 回退 | ④无可移植（revert） | **信号修正**：上游 0.6.3 升级同日撤回，dev tip=OpenTUI **0.5.17**；技术债条目「fork 0.2.2 vs 上游 0.6.2」过期→实为 vs 0.5.17；0.6 有上游实证问题，F3 换轨目标以 0.5.x 为准 |
+| 5aabb619 | fix(plugin): support Figma Git installs and dev releases (#55304) | plugins/figma package.json+lock | ④无关 | fork 无 packages/plugins 面 |
+| f1632d05 | fix(plugin): use public Figma endpoint and OAuth defaults (#55252) | plugins/figma index.ts/README | ④无关 | 同上；安全语义=去 app 专用端点改公共 DCR，上游自有插件内部事 |
+| 6cc58b90 | docs(go): add Gemini 4 Argon Contributor (#55314) | docs | ④无关 | — |
+| a7ad408d | fix(stats): normalize deepseek v4.1 flash codename (#55330) | stats domain | ④无关 | fork 无 packages/stats 面 |
+
+### 15.2 处置与拍板
+
+| # | 事项 | 建议 |
+|---|---|---|
+| Q15-1 | 窗口整体 | **无独立批次价值**：f576da50 挂 A 批锚后漂移账（或作 Q1 改锚 dev 快照的论据）；其余 6 条④归档 |
+| Q15-2 | 漂移基线推进 | **1c28c2fec → a7ad408d**（本轮已 fetch 入快照，下轮起点） |
+| Q15-3 | OpenTUI 技术债条目 | **修正为「fork 0.2.2 vs 上游 0.5.17」**；0.6 撤回事实入 F3 重分诊输入 |
