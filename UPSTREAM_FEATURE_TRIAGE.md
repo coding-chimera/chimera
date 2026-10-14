@@ -423,3 +423,159 @@ GitHub API 实耗 **9/12** 次（`23ec4f55c8` `bec9ee41af` `199a4cdbea` `0b082b0
 - **F3 随批**：7561b4a050、a97622c801。
 - **无动作**：③④⑤ 共 13 条（已等价/已同步/fork 不消费）。
 - **L4 开工待用户批复**：细分计划草案已入计划书（## L4 细分计划（草案 2026-09-20）节），含 http-recorder 连带 vendor 决策点与拍板#7 前置建议。
+
+## 14. 新增漂移分诊（2026-10-14 窗口全量：`ebb7b76eca..1c28c2fec`，可见 1052 / API 口径 4628）
+
+> 注：§13.6 末行「L4 开工待用户批复」已被事实超越——L4 全线完结（2026-09-22）、**L5 亦已于 2026-09-23 完成并推送**（计划书「L5 完成记录」节；skill progress.md 09-22 快照滞后未记）。本节按 L5 已完成的现实评估。
+
+### 14.0 窗口核心事件：上游 promote v2 → dev 主线
+
+- `5caf1f9f` "chore: promote v2 to dev"（2026-10-10，双亲 merge：dev/v1 侧 `055d95bb` × v2 侧 `46172108`）。包级变化：**删除** `packages/opencode`（v1 运行时，fork 直系祖先，830 文件）、`llm`（→`ai` 更名+扩充）、`docs`、`effect-sqlite-node`、`sdk-next`；**新增** `ai`、`gui-extensions`(861)、`cli`(182)、`server`(64)、`session-ui`(93)、`merman`、`latex`、`theme`、`util`、`simulation`、`plugin-browser`、根 `services/`；`app` 重写(680A/496D)、`core` 重构(444A/158D/300M)、`tui` 重写(508 文件 +94k 行，上游 285 ts 文件 vs fork 125)。promote diff 总量 4380A/2195D/1309M。
+- **版本策略**：dev = v2 主线，根 package.json `opencode 2.0.28`（v2.0.x tag 自 09-12 即存在，promote 前 v2 侧已在发版；10-13 仍日发版）。v1 = 维护线：tag 至 `v1.19.0`（10-11，promote 次日），此后 v1 分支可见活动仅 bot docs（10-12）——**v1 修复流实质终止（推断，基于 HEAD patch+tag 日期，shallow clone 无法枚举 v1 全 log）**。`refs/heads/2.0` = 2026-04 探索分支，半年未动，已作废。
+- **落点映射失效**：旧映射「上游 `packages/opencode/src` ↔ fork `packages/chimera/src`」的 dev 侧参照树已不存在。新映射（G6 逐个 ls-tree 实证）：session/provider/tool/config/permission/mcp/skill→`packages/core/src`；cli→`packages/cli`；server→`packages/server`；llm→`packages/ai`；acp→`packages/cli/src/acp`；**lsp/ide/share 运行时面已删除**（新树 `src/(lsp|ide)/` 命中=0）；v1 配置兼容层=`core/src/v1/config/`（其余 v1 面零兼容）。血统对账（fix backlog）改指 `refs/heads/v1`。
+- **effect-drizzle-sqlite 成为上游孤儿包（parent 裁决，纠正 G6）**：promote 后上游该包只剩 `examples/*.sql`+`sst-env.d.ts`，src 整体迁入 `packages/core/src/database/drizzle/`（effect-sqlite/{driver,index,session}.ts、sqlite-core/effect/* 等在位）。fork 的完整 vendored 副本（src/effect-sqlite、internal、sqlite-core、up-migrations）自此为 **fork-owned**；L5 re-baseline 的对账对象=`core/src/database/drizzle/` 子树。G6 报告「0 差异仍字节一致」行作废。
+
+方法学：REST 预算 2 次（compare+rate_limit；4628>300 compare 截断只回尾 250 条，不可用），改 **blobless shallow clone**（`--filter=blob:none --shallow-since=2026-09-19`，后 deepen 至 09-01）落 `/Volumes/workspace/opencode-snapshot/upstream-dev-20261014/`；量化/路径富化（`git show --name-only`，零 REST）/终态核查全在 clone 本地。镜像 `/Volumes/workspace/opencode` 未动（仍 9f69463f1d，只读纪律保持）。归档：`/Volumes/workspace/opencode-snapshot/drift-20261014/`（SUMMARY.md、三集合清单、era/富化表、security-extended.txt、gap-scan、triage/g{1,2a,2b,3b,4a,4b,5,6}.md 八组全文、tarball `opencode-dev-52ba7d630f.tar.gz` 79.7MB）。窗口终点钉 `1c28c2fec`（2026-10-14T03:07Z；巡检期间 dev 又前进至 `f576da50`，为下轮起点）。
+
+### 14.1 三层对账与五分类总表
+
+| 层 | 数字 | 说明 |
+|---|---|---|
+| API ahead_by（至 52ba7d63） | 4628 | compare 1 次 |
+| 本地可见（至 1c28c2fec） | 1052 | = A(first-parent 非 merge) 209 + B(sync-merge 侧) 29 + C(v2 promote 侧) 810 + merge 本体 4 |
+| 不可见 v2 存量历史 | 3577 | 09-19 前的 v2 分支史（shallow 截断；deepen 后 C 全量=1661）；属 L5 战略面，不逐条分诊 |
+
+A+B 238 条按**路径富化**（非 scope 标签，坑 #2 免疫）三分：fork 相关 99 + deps 3（④：changelog worker/console db/figma plugin，均不消费）+ 不消费面 136（console 46/web 37/stats 18/services 15/nix 14/infra 9/…；抽样 12 条复核全过）。相关 99 = 深判 93 + release-sync 噪音 6（parent 机械裁决④）。
+
+| 组 | 面 | 条数 | ① | ② | ③ | ④ | ⑤ |
+|---|---|---|---|---|---|---|---|
+| G1 | PRE 时代 v1 结构（opencode/老core/tui/patches） | 23 | 5 | 12 | 2 | 4 | 0 |
+| G2a | POST core/ai/plugin | 29 | 0 | 9 | 3 | 17 | 0 |
+| G2b | POST cli/server/protocol/tui/sdk | 13 | 0 | 4 | 4 | 5 | 0 |
+| G3b | POST app/ui/desktop/session-ui/gui-extensions | 28 | 0 | 2 | 0 | 26 | 0 |
+| **合计（93）** | | | **5** | **27** | **9** | **52** | **0** |
+
+C 集 810 = G4a 盘点 136（packages/ai，=delta 地图 103 + cherry-pick 33）+ G4b 盘点 78（schema 21/protocol 9/codemode 30/plugin 17/http-recorder 1）+ 其余 596（v2 未 vendor 面：core 193/tui 93/app 85/cli 38/acp 37/desktop 32/…，L5 整批吸收，不逐条）。
+
+安全横切（全量 1052 subjects）：基础关键词 12 命中、扩展面 69 命中 → G5 深判 = 假阳性 49 + 深判 20（**P0×0 / P1×2 / P2×3 / ④不暴露×15**）；另 G1 深读补丁**额外逮到 2 条关键词面漏网安全项**（29f07e0c guard 藏在 refactor、4fbdea2d 藏在 fix——后者 G2a 亦独立命中）。行为关键词 19 命中，真信号 3 条（e8b3e19e/f30d06ea/317dfbc6，后者入 G4a P1）。
+
+### 14.2 可动作项明细（①②/红字旗/P1，按批次归组；证据全文见归档组报告）
+
+**独立小批·安全（P1 高优先）**
+
+| sha | subject | fork 证据 | 规模 |
+|---|---|---|---|
+| 82d4c890+c98d9c65 | redact credentials in debug config | `src/cli/cmd/debug/config.ts:11-12` 逐字 pre-fix（resolved config 全量明文 stdout：apiKey/headers/oauth secret/带凭据 URL）| ~25 行（redact.ts 纯函数+一行包裹）|
+| 29f07e0c（安全子集） | MCP OAuth redirect 协议校验 | `src/mcp/oauth-provider.ts:138-141` 零校验直通 + `src/mcp/index.ts:911` 裸 `open()`；恶意 MCP server 可下发 file://自定义 scheme 拉起本地程序；另有 5 处裸 open（account/web/tui×3）| ~15 行（openUrl http/https guard）；6 处全收口 ~40 行 |
+| d8e31d84 | server connect route checks 对齐 | `src/server/routes/instance/httpapi/middleware/authorization.ts:68` URL 正则跳过凭据 vs HttpRouter 分发可分歧（auth bypass 面）；`PtyPaths.connect` 常量现成（groups/pty.ts:31-32）；fork 只需 PTY 一条腿 | 小 |
+**独立小批·可用性（现在动，均命中 shipping v1 面）**
+
+| sha | subject | fork 证据 | 规模 |
+|---|---|---|---|
+| d8129ca1 | chunk timeout 默认 5→15min | `src/provider/provider.ts:2233` `?? 300_000`（上轮刚判⑤的 5min 被上游改掉；动因=DeepSeek 类推理流长静默；fork relay 实测 805s 静默先例背书；配套 `timeout:false` 已在 :2317-2320）| 1 行（headerTimeout 保持 300_000 与上游终态一致）|
+| 126b7b63 | ripgrep Windows 去 PowerShell | `src/file/ripgrep.ts:255-268` 逐字 pre-fix（组策略禁 PowerShell→搜索面瘫；bsdtar ANSI 码页→非 ASCII 用户目录碎裂）；上游解法=System32\tar.exe+cwd+相对 ASCII 名 | 机械近直移（run() 加 cwd 参数）|
+| b2a3926e | Copilot 交错思考不杀流 | vendored `src/provider/sdk/copilot/chat/openai-compatible-chat-language-model.ts:468-478` 第二个 reasoning_opaque 直接 throw（逐字 pre-fix）；convert-to-openai-compatible-chat-messages.ts:88/98 回程覆盖丢段 | ~10 行近逐字 |
+| c1013472 | Bedrock tool-result 图片白名单 | `src/session/message-v2.ts:850` bedrock 无条件 `return true`（比上游 pre-fix 更宽）；非 Claude/Nova/Llama4 模型整请求被拒；保留 :849 mantle 分支 | ~6 行（与 83802d80 mime 过滤同文件串行）|
+| b471c2b4 | MCP browser launcher 失败补查 | `src/mcp/index.ts:911-924` 同形内联，缺 exitCode 即时补查 | 3 行 |
+| 3731aace | 发布 native arch 校验 | fork 12 腿（含 win32-arm64）嵌 rust kernel .node+node-pty+wasm，`script/build.ts` 无 arch 校验（grep 0 命中）；上游 `script/native-arch.ts` 自包含可拷；上游 2.0.27 曾实发 Win ARM64 嵌 x64 rust_pty.dll 且 CI 全绿 | 拷贝+build.ts 每腿接线 |
+
+**独立小批·数据正确性（需小设计+排程协调）**
+
+| sha | subject | fork 证据 | 规模 |
+|---|---|---|---|
+| 0cb43477（类级适配） | edit 保留混合行尾 | fork hashline 架构不同但缺陷同源更重：`src/tool/hashline.ts:29-31` detectLineEnding 一票定全文件 + `:49-52` joinText 整文件重写→混合行尾文件被触碰一次即全量归一（diff 噪音/blame 破坏/.bat 类损坏）；上游修法（LF 视图+LCS 回填）不可直移，需按快照结构自设计（逐行行尾记忆）；**`src/tool/*` 现有在途会话脏改，排程须协调** | 中 |
+
+**provider fix 批（共享热区串行：message-v2.ts / provider.ts / transform.ts）**
+
+| sha | subject | fork 证据 | 备注 |
+|---|---|---|---|
+| 35fc7a77 | CF AI Gateway 超时包装 | `src/provider/provider.ts:986-1063` loader 自建客户端绕过 :2233-2328 resolveSDK 超时（SSE 停滞→无限挂起）；零件齐（wrapSSE:60/timeoutController:171）| ~60 行；先验 ai-gateway-provider 3.1.2 是否导出 parseAiGatewayOptions/binding |
+| 83802d80（过滤子集） | xai invalid_image 防护 | message-v2.ts:846-856 无 xai 分支、:991-1000 hoist 无 mime 白名单→GIF 等仍整请求被拒 | ~8 行；xai 3.0.82→3.0.139 大跳单独拍板 |
+| 610df0b5 | gemini thinking 默认反转 | `src/provider/transform.ts:708/1159/1180/1289-1291` 仍 `includes("gemini-3")` 旧门控，无 isLegacyGemini/gemma 双档 | 语义手工适配（非补丁套用）|
+| 5e2df97a | OpenAI ultrafast tier | fork @ai-sdk/openai 3.0.88 无补丁（zod 静默剥离 tier）| 与上轮 ea2d59d7ca serviceTier 项合并 |
+
+**context-overflow 正则批（C 集唯一命中 v1 默认路径的族；每条 1 行正则，双落点 `src/provider/error.ts:17-35` + `packages/llm/src/provider-error.ts:4-32`）**：5d707f1a（Together/TGI `` `inputs` tokens + `max_new_tokens` must be <= N ``，parent 实证 fork 现有 24 条 pattern 无一命中该文案）、f0f4c94c（Novita 无括号变体）、9c4c5870（DeepInfra）、599bdc98（Nova mid-stream validationException）、a80a0001（WorkersAI 413）。误分类后果=overflow 不触发压缩走通用重试/裸报错。
+
+**dep bump 批**：8bf288ec togetherai 2.0.41→2.0.68（流式 usage 缺失污染成本遥测，fork 调度面消费 usage）；gitlab-ai-provider 6.15.0→6.19.0（45719ace/79e8eee5/fa495675 三合一；fork transform.ts:1080-1091 已按 reasoning_efforts 元数据泛化，纯 dep 动作）；备忘：bun-pty ≥0.4.11（若发布 win-arm，854b3bb9 载体）。
+
+**plugin P1**：c28e9ec3 host-Effect runtime guard——上游给 plugin 注入宿主 Effect 运行时（runtime-modules.ts/runtime.ts，防插件自带 effect 副本致 Context.Tag 失配）；fork `src/plugin/loader.ts:124` 裸 `await import(row.entry)` 实证，同类缺陷面；~150 行 M 规模适配。
+
+**L5 前置小补（可先行）**：5683367e compatibleModel（vendored `packages/core/src/v1/config/provider-options.ts` 缺 COMPATIBLE_KEYS 面，+27 行纯新增自包含；v1→v2 config 迁移三链 5683367e→a22754f7→43bb7ba3 的链首，L5 vendor migrate.ts 时取三链终态）。
+
+**F3 TUI 随批**：97a86b76（dialog-status.tsx:34-35 path.sep，4 行，Windows /status 插件名显示整段路径）。
+
+**legacy app/ui 小批（低优先）**：be674e31（`packages/app/src/context/global-sync/child-store.ts:91` 裸 unpin 驱逐循环，queueMicrotask 修法，parent 实证逐字同源）、d21b0790（`packages/ui/src/context/marked.tsx:474-476` link 标签内格式不渲染，parseInline 修法，parent 实证）。
+
+**C 集 cherry-pick（llm 面，flag 后 pilot 生效）**：P1 中除正则族五条（上列，v1 直接受益）外——317dfbc6（mid-stream 连接丢失误报 decode error 且不可重试，`packages/llm/src/route/executor.ts:327-335`，~30 行）、4c0d0ff4（llm HTTP transport 完全无 header/chunk 超时→挂起无限等待，`route/transport/http.ts`+`schema/options.ts`，~80 行）、8656838a（bare `data: null` SSE 帧；**parent 修正：v1 侧 `codex-responses.ts:1219/1227` 两调用方均 `if (parsed)` truthy 判→null 静默丢弃不断流，降级 P2；pilot 侧 `packages/llm/src/protocols/shared.ts:247` filter 缺 `!== "null"` 仍 P1**，1-2 行，与 ad15173a Vertex keepalive 同点移植）。P2×25 全文见归档 g4a.md（要点：033b9ea5 Claude 能力硬编码 `anthropic-messages.ts:356` 比上游 pre-fix 还老一代、2aaa265c+14af33d5 错误 body 解码、c9037745/20610e66 thinking-budget 族、7f245b09 OpenRouter reasoning 预算）。
+
+**禁采清单（上游已删除、fork 仍消费）**：4c63a35d、9277761a、77c5f7a5、4a18a866（G4b 核，L5 re-vendor 时不得跟随删除）。
+
+### 14.3 无动作项摘要（③④，紧凑记录）
+
+- **③ fork 已等价（9）**：9b4882db（build.ts:376-390 adhoc 重签+verify 比上游更强）、3a35b45d（codex-model.ts:61-78 版本代数判定泛化覆盖 GPT-6 allowlist）、6dc4d4e7+ba82b370（fork managed config 已最高优先级，config.ts:844-860/managed.ts:25-38，与上游双提交终态语义收敛）、460c626a（fork 已 `timeout:false` 双落点）、1c74b9f0（autocomplete.tsx:589-592 offset===0+startsWith 守卫，parent 实证）、e5a557ef（upgrade.ts:29/30-44 unknown method 双路径安全）、707de583（installation/index.ts:152-173 路径优先排序同语义；附带观察：fork 探测无超时为既有状态，可选自有小修）、47e5e715（substring 检测对 symlinked home 天然免疫）。
+- **④ 无关/结构分叉/未消费（52+6 release-sync+3 deps）**：G1 4 条（a79ecfe1 stats 站点、e9f8a210 命名空间头**注意盲移植反扩大 session-id 暴露**、fc827ea8 bot 格式化、f5ce4f88 fork core 无 filesystem/search 模块）；G2a 17 条（多为 v2 plugin host/runner/config-discovery 未 vendor 面→L5 捆绑吸收：6a7cedcb/73517183/14380732 权限语义链、d7826750 credential.activate、43bb7ba3、a3f7f42a OutputLimit 续写【高价值 L5 项，v1 先行与否待拍板】、7bac892c、823ac87f、4fbdea2d codemode file:// guard【休眠安全门：L5 vendor web.ts 必须自带 guard 终态】、e5f4bf4c、4d3d8fd7 docs、d0a2ce32/65f89077 opentui 世代差（fork 0.2.2 vs 上游 0.6.2）、bd23808a 可选 5 行微移植、854b3bb9、35ef2294【catalog 备忘：fork 收录 gpt-6.1 代际时对齐 input 500k/context 628k】、e41e7e90）；G2b 5 条（4ea42c47/7b33bcea/5b22e915 session-ui/client/gui-extensions 未消费、d46588fe WinGet 分发面无、38454c6e 无 pair/tunnel 面【consent-gate 模式留档：fork 引入互联网暴露面时必备】）；G3b 26 条（v2 app 重写面结构分叉；**方向②关注 2 条：417f120e server viewed watermarks/`time.viewed`、b8f925e5 per-project auto-accept——server 契约线索，newweb 战役核对**；7e858f47 dialog.tsx 血缘重叠但依赖 fork 不存在的 dialog stack）。
+- **skip 136 + deps 3**：console/web/stats/services/nix/infra/.github/.opencode 等不消费面（路径富化判定+抽样 12 条复核）。
+- **C 集其余 596 + 不可见 3577**：v2 未 vendor 面与存量史，L5/re-baseline 战略整批吸收，不逐条。
+
+### 14.4 缺口补扫（vendored 整包 09-03..09-19，deepen 后补）
+
+L1 vendor 时点（09-04）到 C 集窗口起点（09-19）之间 v2 侧对四个 vendored 包的漂移：**123 条**（schema 59 / protocol 63 / codemode 62 / effect-drizzle-sqlite **0**，多包重叠），全文 `gap-scan-0904-0919.txt`。构成：codemode 解释器全量重写流（acorn typed AST、Runtime/Frame 拆分、原型链、test262 全量 vendor）+ protocol 简化流（~20 条 Dax Raad refactor）+ schema provider/model settings 分离（cbd91136/219ecada）。**结论：不逐条拾取，随 L5 整包 re-vendor（codemode/protocol）或对账式重搬（schema）**；例外——**codemode 沙箱加固四件（3045156f `__proto__` 剥离、48875190 递归上限 RangeError@10000、76594882 内建 string/array/promise caps、1eeaaab7 反射访问限制）+ 窗口内 4fbdea2d file:// guard = 「codemode v1 接线」拍板项的强制安全前置门**（接线批必须自带这五件终态）。
+
+### 14.5 跨组对账与 parent 修正（坑 #9 执行记录）
+
+1. **G6「effect-drizzle-sqlite 0 差异」推翻**：parent ls-tree 实证上游包 src 已迁 `core/src/database/drizzle/`，包成孤儿（见 14.0）。
+2. **G4a 8656838a v1 侧降级**：parent 实证 codex-responses 两调用方 `if (parsed)` 静默丢 null，v1 不断流；P1 仅存 pilot 面（见 14.2）。
+3. **「fork 无 ACP 面」假设推翻**：fork ACP server 于 2026-10-08 引入（`54a85410d`，src/acp/ 10 文件+index.ts 注册）。上轮 §13.3 95daf90670 判④当时正确、现已过时。**追溯复判清单（小批）**：95daf90670（acp session options）、7e42a897（model/agent changes from other clients）、134d0ede/3d94a909/ec90ad50（acp permission 三连）对照 fork src/acp/ 复判；本轮 f17b15ea 已由 G5 按真实面判 P2（`src/acp/service.ts:153-193,353` cwd 未校验/delete 无 cancel）。
+4. **链序修正**：a22754f7（provider-level compatibility）在前、69a71426（cacheFormat）是后续扩展（G2a merge-base 验证，与派工猜测相反）。
+5. **交叉一致**：82d4c890 G1①=G5 P1 ✓；38454c6e G2b④=G5④ ✓；4fbdea2d G2a④休眠门=G5 深判 ✓。
+6. **方法论盲点（入 pitfalls #43）**：关键词横切只扫 subject，安全 guard 藏在 refactor/feat 补丁体内即漏（29f07e0c 实例）；缓解=深判组带「补丁内安全语义」上报义务 + parent 跨组合并。
+7. **G2a↔W3 冲突裁决（config managed 优先级）**：W3 质疑「fork 系统级目录最高 vs 上游 ba82b370 system 最低，语义相反」——parent 读上游终态裁决：**G2a 对，W3 踩坑 #1（中间态陷阱）**。ba82b370（10-12）曾把 system 目录置最低加载位，**次日 6dc4d4e7（10-13）修正为终态**：managed（system dir+MDM plist）最后加载覆盖一切，policies 拆出 toReversed 先载保 file-based authority——与 fork managed.ts/config.ts（"managed preferences override everything"）语义一致，§14.3 的③判定维持。残留细节：fork 无 managedPolicies 拆分/反序机制（policies 面未 vendored），L5 vendor config 面时备忘。
+
+### 14.6 批次归并结论
+
+- **R1 独立小批·安全**（P1×3）：82d4c890 redact、29f07e0c openUrl guard 子集、d8e31d84 authz route-context。
+- **R2 独立小批·可用性**（6 件）：d8129ca1 15min、126b7b63 ripgrep、b2a3926e copilot、c1013472+83802d80 过滤（message-v2.ts 同文件串行）、b471c2b4、3731aace native-arch。
+- **R3 独立小批·数据正确性**：0cb43477 类级 hashline 逐行行尾（需设计+排程协调在途会话）。
+- **R4 provider fix 批**：35fc7a77、610df0b5、5e2df97a（+上轮 ea2d59d7ca 遗留）。
+- **R5 overflow 正则批**：5d707f1a/f0f4c94c/9c4c5870/599bdc98/a80a0001（v1 error.ts+llm provider-error.ts 双落点）。
+- **R6 dep bump 批**：togetherai 2.0.68、gitlab 6.19.0；备忘 bun-pty 0.4.11。
+- **R7 plugin P1**：c28e9ec3 host-Effect guard（~150 行）。
+- **R8 小件**：5683367e L5 前置补、97a86b76 F3 随批、be674e31+d21b0790 legacy app/ui、ACP 追溯复判批。
+- **L5/re-baseline 捆绑（待 Q1 拍板后开工）**：llm→ai 整包刷新（三方基线对齐后按文件重 vendor+重放本地 delta，**禁 sha cherry-pick**——56 文件仅 1 个与上游 09-19 边界 blob 一致；7125f5f8 浅克隆伪影剔除 diff 基线；含 044d8b7d/69a71426/5673bfa4/a22754f7/e41e7e90/4c0d0ff4/317dfbc6/8656838a-pilot 侧）；schema/protocol/codemode re-vendor（含缺口 123 条+4be28c97 time_archived+禁采 4 条例外）；drizzle→core/database/drizzle 对账；v2-core trunk 重刷（state.ts 282 行/integration.ts 686/credential.ts 268/event.ts 拆分重锚 L5.1 shim/迁移 38→50）；a3f7f42a OutputLimit 续写；权限语义链三件终态；4fbdea2d+codemode 加固四件（接线门）。
+- **战略批（Q1-Q8 拍板后）**：re-baseline A 案 10-20 人日（锚 v2.0.28=`026b106b`；漂移主体来自 promote merge 本身，promote 后 4 天仅 1 commit 触及 L5 vendored 集=静止目标一次性对账）。
+
+### 14.7 拍板清单（2026-10-14，一轮过；每项带建议默认值）
+
+**战略（G6 Q1-Q8）**
+
+| # | 问题 | 建议 |
+|---|---|---|
+| Q1 | re-baseline 锚点 | **钉 v2.0.28 tag（026b106b）**，作业面静止；完成后再评估跳下一 tag |
+| Q2 | v1 fix backlog ≈374 处置 | **冻结**：安全/数据丢失子集按 v1 分支 HEAD（abce98e0）终筛一轮，其余判随 v1 EOL 作废 |
+| Q3 | fork packages/llm 是否随上游更名 ai | **保留 llm 包名，内容 re-baseline 到 ai 树**（更名波及 import/flag/seam 全链，收益仅名义）|
+| Q4 | F3 TUI 战役 | **暂停批量移植**（上游 tui +94k 行重写，参照 diff 全过期）；仅修 fork 自证缺陷（a97622c801 exit(0)、97a86b76）；重分诊待 re-baseline 后 |
+| Q5 | M10（copilot providerMetadata 改名） | **先对 packages/ai 重取参照**再决定移植/作废（上游可能已自行等价改名）|
+| Q6 | database 迁移 38→50（+12） | **追平**（integration/credential re-vendor 大概率依赖；沿用 chimera-v2.db 隔离纪律）|
+| Q7 | L6 清扫清单 | **A 批完成后立即重写**（新树包边界已变，现清单全部过期）|
+| Q8 | 选项 B（整体迁 2.0 结构，60-120 人日） | **暂不立项**；A 完成后按实际工作量复评（若 A 超 25 人日则 B 相对价值上升）|
+
+**批次级**
+
+| # | 问题 | 建议 |
+|---|---|---|
+| Q9 | d8129ca1 chunk timeout 15min | **直接采纳进 R2**（上游动因明确+fork relay 长静默实测背书，无需单独拍板）|
+| Q10 | a3f7f42a OutputLimit 续写 v1 先行移植？ | **随 Q1 A 批/L5 捆绑**（v2 runner 未 vendor，v1 独立移植=新写一套；若 L5 短期内不开工再议先行）|
+| Q11 | f66b86ce darwin CLI Developer ID 签名基建 | **维持现状+挂账**（fork build.ts:384-386 自认缺口；rcodesign/ macOS runner 是 CI 基建决策，随 CI 批）|
+| Q12 | xai 3.0.82→3.0.139 大跳+patch 重做 | **缓行**：R4 先落 mime 过滤子集；版本大跳随下轮 SDK bump 拍板（上轮拍板#15 同族）|
+| Q13 | e9f8a210 命名空间 session identity headers | **不移植**（fork 网关路径已有 x-opencode-session，无消费方；盲移植扩大 session-id 暴露面）|
+| Q14 | 2bf145b9 release highlights TUI 特性 | **不做**（fork changelog 管线不同=AI changelog；跨 build define+发布管线+TUI 三层，纯 UX）|
+| Q15 | 039eb85b Win ARM64 原生安装 | **缓行**（fork 形态是「装不出原生」非「装错」，功能可用性能降级；在意 Win ARM64 体验再立项）|
+| Q16 | Effect 4.0.1（41b03dea） | **随 L5 gate**（fork beta.83，升级是独立战役）|
+| Q17 | credential/connection 特性链（369aad30/4c33a253/87a1ebcc/5e73d5cb+70c6c8cb/53179dae/5c5c709fee） | **L5 捆绑整链评估**（G4b 标 P2 待拍板；含 auth export/import 凭证导出面需安全评审）|
+| Q18 | protocol 包去留（fork 零消费者） | **L5 时廉价整包 re-vendor 或移除**（与 httpapi-codegen/sdk 联动决策）|
+
+### 14.8 来源与用量
+
+- REST 实耗 **2/60**（compare+rate_limit）；`git ls-remote` ×3（不耗 API）；blobless clone 1 次+deepen 1 次；codeload tarball 1 份（79.7MB）；组内偶用 commit/*.patch web 端点。
+- 8 组 worker（7 reviewer qwen3.8-max-0902/low + 1 scout deepseek-v4.1-flash/low）报告全文归档 `drift-20261014/triage/`；parent 亲验清单：G3b 两条②（child-store.ts:91/marked.tsx:474 逐字比对）、G2b 两红旗+一③（authorization.ts/pty-ticket.ts/native-arch 缺失/autocomplete.tsx:589-592）、G6 三断言（state.ts 282 行逐位复现/lsp-ide 严格路径 0 命中/L5 完成记录计划书:481）+drizzle 矛盾裁决、G5 三断言（debug config 明文/ACP 面存在/gray-matter 调用点）、G1 三红旗（oauth-provider 零校验+上游 guard 补丁/copilot throw 逐字/bedrock 无条件 true）、G2a 三红旗（300_000 在位/ripgrep PowerShell 逐字/hashline 行尾模型）、G4a 两 P1（overflow 正则缺口/parseSSEBlock 调用方语义）。
+- fork 侧全程只读（另一会话在途工作未受扰）；上游镜像未动；未执行任何新鲜落盘二进制；本轮零代码修改、零提交（迁移批次待拍板后另行开工）。
