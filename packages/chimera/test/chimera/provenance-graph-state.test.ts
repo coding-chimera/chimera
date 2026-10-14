@@ -204,3 +204,47 @@ describe("graphStates direct-path in-use guard (B1)", () => {
     expect(Chimera.isTrackedGraphState({ ...base, crossProject: true }, false)).toBe(false)
   })
 })
+
+describe("openProjectGraph in-use window (B1)", () => {
+  it.instance("tracks the resolved root in-use across open+sync, releasing when the open completes", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "sample.ts"), "export const openWindowSample = 1\n"))
+      // Unindexed DB -> refreshProjectGraph runs a full sync that emits progress.
+      const setup = yield* Effect.promise(() => CodeGraph.init(test.directory, { index: false }))
+      setup.close()
+
+      const observed: number[] = []
+      yield* Chimera.openProjectGraph({
+        sync: true,
+        watch: false,
+        onProgress: () => observed.push(Chimera.graphStateInUseForTest(test.directory)),
+      })
+
+      // Every sync progress tick observed the root held in-use; the earlier
+      // (pre-fix) code only tracked after the open returned, so this was 0.
+      expect(observed.length).toBeGreaterThan(0)
+      expect(observed.every((n) => n >= 1)).toBe(true)
+      expect(Chimera.graphStateInUseForTest(test.directory)).toBe(0)
+      yield* Effect.promise(() => Chimera.closeGraphRootForTest(test.directory))
+    }),
+  )
+
+  it.instance("initProjectGraph keeps the root in-use across init+index+sync", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "sample.ts"), "export const initWindowSample = 1\n"))
+
+      const observed: number[] = []
+      yield* Chimera.initProjectGraph({
+        watch: false,
+        onProgress: () => observed.push(Chimera.graphStateInUseForTest(test.directory)),
+      })
+
+      expect(observed.length).toBeGreaterThan(0)
+      expect(observed.every((n) => n >= 1)).toBe(true)
+      expect(Chimera.graphStateInUseForTest(test.directory)).toBe(0)
+      yield* Effect.promise(() => Chimera.closeGraphRootForTest(test.directory))
+    }),
+  )
+})

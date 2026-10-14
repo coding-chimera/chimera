@@ -359,6 +359,11 @@ export function graphStateCount() {
   return graphStates.size
 }
 
+/** Test seam (B1): current in-flight use count for a root (0 when untracked). */
+export function graphStateInUseForTest(root: string) {
+  return graphStateInUse.get(root) ?? 0
+}
+
 /** Test seam (R1 A4): inject a fake state with a backdated last-used time. */
 export function injectGraphStateForTest(root: string, state: ProjectGraphState, lastUsedAt: number) {
   graphStates.set(root, Promise.resolve(state))
@@ -1332,16 +1337,32 @@ export const openProjectGraph = Effect.fn("Chimera.openProjectGraph")(function* 
   }
   if (!target.crossProject) yield* Effect.sync(() => rememberGraphRoot(instance.directory, target.root))
   const readOnly = input.readOnly || target.crossProject
-  const s = yield* Effect.promise(() =>
-    openGraphState(target.root, {
-      init: target.crossProject ? false : input.init,
-      readOnly,
-      watch: target.crossProject ? false : (input.watch ?? !readOnly),
-      onProgress: input.onProgress,
-    }),
-  ).pipe(Effect.orDie)
-  if (input.sync && !readOnly) yield* Effect.promise(() => refreshProjectGraph(s, input.onProgress)).pipe(Effect.orDie)
-  return target.crossProject ? { ...s, crossProject: true } : s
+  // (B1) Acquire the in-use guard for the resolved root BEFORE opening. The
+  // open — and the optional sync below — can exceed the idle TTL (a first
+  // index of a large repo), and openProjectGraph returns before the caller's
+  // own use begins. Callers that hold the state beyond this call
+  // (withProjectGraph, openProjectGraphForTool) extend the protection with
+  // their own track/untrack around their use; the brief handoff gap is covered
+  // by the release's fresh idle clock. Read-only and cross-project opens are
+  // untracked (readOnly already folds in crossProject).
+  const tracked = !readOnly
+  if (tracked) yield* Effect.sync(() => acquireGraphStateUse(target.root))
+  return yield* Effect.gen(function* () {
+    const s = yield* Effect.promise(() =>
+      openGraphState(target.root, {
+        init: target.crossProject ? false : input.init,
+        readOnly,
+        watch: target.crossProject ? false : (input.watch ?? !readOnly),
+        onProgress: input.onProgress,
+      }),
+    ).pipe(Effect.orDie)
+    if (input.sync && !readOnly) yield* Effect.promise(() => refreshProjectGraph(s, input.onProgress)).pipe(Effect.orDie)
+    return target.crossProject ? { ...s, crossProject: true } : s
+  }).pipe(
+    Effect.ensuring(Effect.sync(() => {
+      if (tracked) releaseGraphStateUse(target.root)
+    })),
+  )
 })
 
 export function withProjectGraph<A, E, R>(
