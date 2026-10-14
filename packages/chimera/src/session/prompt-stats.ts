@@ -60,8 +60,7 @@ function hash(input: string) {
   return createHash("sha256").update(input).digest("hex").slice(0, 16)
 }
 
-function summarizeBlock(kind: string, role: string | undefined, input: unknown): Block {
-  const text = serialize(input)
+function summarizeBlock(kind: string, role: string | undefined, text: string): Block {
   return {
     kind,
     ...(role ? { role } : {}),
@@ -72,13 +71,12 @@ function summarizeBlock(kind: string, role: string | undefined, input: unknown):
   }
 }
 
-function containsRuntimeContext(input: unknown) {
-  const text = serialize(input)
+function containsRuntimeContext(text: string) {
   return RuntimeContextTerms.some((term) => text.includes(term))
 }
 
-function countRuntimeSections(input: unknown) {
-  return (serialize(input).match(new RegExp(ContextMarker, "g")) ?? []).length
+function countRuntimeSections(text: string) {
+  return (text.match(new RegExp(ContextMarker, "g")) ?? []).length
 }
 
 function toolSummary(tools: Record<string, Tool>) {
@@ -103,14 +101,26 @@ export function summarizePreparedRequest(input: {
   tools: Record<string, Tool>
 }): Info {
   const memory = input.memory ?? []
+  // Serialize each input exactly once and reuse it for blocks, warnings and
+  // fingerprints. The previous version re-serialized history three times and
+  // rebuilt toolSummary four times per LLM step.
+  const systemText = serialize(input.system)
+  const historyText = serialize(input.history)
+  const runtimeText = serialize(input.runtime)
+  const memoryText = serialize(memory)
+  const currentText = serialize(input.current)
+  const extraText = serialize(input.extra)
+  const toolsText = serialize(toolSummary(input.tools))
+  const runtimeBlock = summarizeBlock("runtime_context", "user", runtimeText)
+  const toolsBlock = summarizeBlock("tools", undefined, toolsText)
   const blocks = [
-    summarizeBlock("system", "system", input.system),
-    summarizeBlock("history", undefined, input.history),
-    summarizeBlock("runtime_context", "user", input.runtime),
-    summarizeBlock("memory_context", "user", memory),
-    summarizeBlock("current_turn", "user", input.current),
-    summarizeBlock("extra", undefined, input.extra),
-    summarizeBlock("tools", undefined, toolSummary(input.tools)),
+    summarizeBlock("system", "system", systemText),
+    summarizeBlock("history", undefined, historyText),
+    runtimeBlock,
+    summarizeBlock("memory_context", "user", memoryText),
+    summarizeBlock("current_turn", "user", currentText),
+    summarizeBlock("extra", undefined, extraText),
+    toolsBlock,
   ].filter((block) => block.chars > 0)
   const totals = blocks.reduce(
     (acc, block) => ({
@@ -122,13 +132,21 @@ export function summarizePreparedRequest(input: {
     { chars: 0, bytes: 0, approxTokens: 0, blocks: 0 },
   )
   const warnings = [
-    containsRuntimeContext(input.system) ? "runtime context leaked into system" : undefined,
+    containsRuntimeContext(systemText) ? "runtime context leaked into system" : undefined,
     input.runtime.length > 1 ? "multiple runtime context messages" : undefined,
-    countRuntimeSections(input.runtime) > 1 ? "duplicated runtime context markers" : undefined,
+    countRuntimeSections(runtimeText) > 1 ? "duplicated runtime context markers" : undefined,
     memory.length > 1 ? "multiple memory context messages" : undefined,
-    summarizeBlock("runtime_context", "user", input.runtime).bytes > 16_000 ? "runtime context over 16KB" : undefined,
-    summarizeBlock("tools", undefined, toolSummary(input.tools)).bytes > 200_000 ? "tool schemas over 200KB" : undefined,
+    runtimeBlock.bytes > 16_000 ? "runtime context over 16KB" : undefined,
+    toolsBlock.bytes > 200_000 ? "tool schemas over 200KB" : undefined,
   ].filter((warning): warning is string => Boolean(warning))
+  const fingerprints = {
+    system: hash(systemText),
+    history: hash(historyText),
+    runtime: hash(runtimeText),
+    memory: hash(memoryText),
+    current: hash(currentText),
+    tools: hash(toolsText),
+  }
   return {
     sessionID: input.sessionID,
     messageID: input.messageID,
@@ -140,13 +158,15 @@ export function summarizePreparedRequest(input: {
     createdAt: Date.now(),
     totals,
     fingerprints: {
-      system: hash(serialize(input.system)),
-      history: hash(serialize(input.history)),
-      runtime: hash(serialize(input.runtime)),
-      memory: hash(serialize(memory)),
-      current: hash(serialize(input.current)),
-      tools: hash(serialize(toolSummary(input.tools))),
-      request: hash(serialize({ system: input.system, history: input.history, runtime: input.runtime, memory, current: input.current, extra: input.extra, tools: toolSummary(input.tools) })),
+      ...fingerprints,
+      // Chained digest of the per-block hashes instead of re-serializing the
+      // whole request into a second giant string. Consumers (TUI sidebar,
+      // `chimera run` event stream) use `request` only as an opaque display /
+      // equality id, never comparing it across versions, so determinism plus
+      // input-sensitivity is preserved without the extra full serialization.
+      request: hash(
+        [fingerprints.system, fingerprints.history, fingerprints.runtime, fingerprints.memory, fingerprints.current, hash(extraText), fingerprints.tools].join(":"),
+      ),
     },
     blocks,
     warnings,

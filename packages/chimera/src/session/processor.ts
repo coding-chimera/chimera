@@ -77,18 +77,29 @@ function stringifyToolOutput(output: unknown) {
   return JSON.stringify(jsonSafe(output))
 }
 
+function serializeLength(input: unknown) {
+  if (input === undefined) return 0
+  return (typeof input === "string" ? input : JSON.stringify(input)).length
+}
+
 function estimateInputTokens(input: Pick<LLM.StreamInput, "system" | "messages" | "tools">) {
-  return Token.estimate(
-    JSON.stringify({
-      system: input.system,
-      messages: input.messages,
-      tools: Object.entries(input.tools).map(([name, tool]) => ({
+  // `Token.estimate` is a chars/4 heuristic, so summing per-part serialized
+  // lengths is equivalent to serializing the whole `{system,messages,tools}`
+  // payload up to the handful of structural JSON characters the composite
+  // wrapper adds (a few tokens). This only feeds the compaction threshold, so
+  // the negligible drift is acceptable and we avoid building a giant string
+  // every step.
+  const length =
+    serializeLength(input.system) +
+    serializeLength(input.messages) +
+    serializeLength(
+      Object.entries(input.tools).map(([name, tool]) => ({
         name,
         description: tool.description,
         inputSchema: tool.inputSchema,
       })),
-    }),
-  )
+    )
+  return Token.estimateLength(length)
 }
 
 function isCompleteToolOutput(output: unknown): output is CompleteToolOutput {
