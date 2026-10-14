@@ -7,6 +7,7 @@ import { EventPaths } from "../../src/server/routes/instance/httpapi/event"
 import { PtyPaths } from "../../src/server/routes/instance/httpapi/groups/pty"
 import { ExperimentalHttpApiServer } from "../../src/server/routes/instance/httpapi/server"
 import { PtyID } from "../../src/pty/schema"
+import { PTY_CONNECT_TICKET_QUERY } from "../../src/server/shared/pty-ticket"
 import { resetDatabase } from "../fixture/db"
 import { disposeAllInstances, tmpdir } from "../fixture/fixture"
 import * as Log from "@opencode-ai/core/util/log"
@@ -85,5 +86,32 @@ describe("HttpApi raw route authorization", () => {
     })
     await cancelBody(authed)
     expect(authed.status).toBe(404)
+  })
+
+  test("skips credentials for a ticketed PTY connect request", async () => {
+    await using tmp = await tmpdir({ git: true, config: { formatter: false, lsp: false } })
+    const server = app({ password: "secret" })
+    const route = PtyPaths.connect.replace(":ptyID", PtyID.ascending())
+    const headers = { "x-chimera-directory": tmp.path }
+
+    const ticketed = await server.request(`${route}?${PTY_CONNECT_TICKET_QUERY}=opaque`, { headers })
+    await cancelBody(ticketed)
+    // The connect handler runs and 404s the missing session instead of the
+    // middleware returning 401, proving the credential check was skipped.
+    expect(ticketed.status).toBe(404)
+
+    const unticketed = await server.request(route, { headers })
+    await cancelBody(unticketed)
+    expect(unticketed.status).toBe(401)
+  })
+
+  test("does not skip a non-connect route carrying a ticket query", async () => {
+    await using tmp = await tmpdir({ git: true, config: { formatter: false, lsp: false } })
+    const server = app({ password: "secret" })
+    const headers = { "x-chimera-directory": tmp.path }
+
+    const response = await server.request(`${PtyPaths.list}?${PTY_CONNECT_TICKET_QUERY}=opaque`, { headers })
+    await cancelBody(response)
+    expect(response.status).toBe(401)
   })
 })

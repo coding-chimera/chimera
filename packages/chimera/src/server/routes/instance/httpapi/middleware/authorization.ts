@@ -1,7 +1,7 @@
 import { ServerAuth } from "@/server/auth"
 import { Effect, Encoding, Redacted } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
-import { hasPtyConnectTicketURL } from "@/server/shared/pty-ticket"
+import { PTY_CONNECT_PATH, PTY_CONNECT_TICKET_QUERY } from "@/server/shared/pty-ticket"
 import { isPublicUIPath } from "@/server/shared/public-ui"
 
 const AUTH_TOKEN_QUERY = "auth_token"
@@ -65,7 +65,14 @@ export const authorizationRouterMiddleware = HttpRouter.middleware()(
         const request = yield* HttpServerRequest.HttpServerRequest
         const url = new URL(request.url, "http://localhost")
         if (isPublicUIPath(request.method, url.pathname)) return yield* effect
-        if (hasPtyConnectTicketURL(url)) return yield* effect
+        // Skip credential checks only when Effect matched the registered PTY
+        // connect route and a ticket is present; the connect handler then
+        // consumes and validates the ticket. Comparing the matched route path
+        // (the same constant used for dispatch) keeps authorization and
+        // dispatch from disagreeing about the request path.
+        const route = yield* HttpRouter.RouteContext
+        if (route.route.path === PTY_CONNECT_PATH && !!url.searchParams.get(PTY_CONNECT_TICKET_QUERY))
+          return yield* effect
         return yield* credentialFromURL(url, request).pipe(
           Effect.flatMap((credential) => validateRawCredential(effect, credential, config)),
         )
