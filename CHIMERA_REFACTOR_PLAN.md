@@ -212,6 +212,7 @@ codex 参照锚点（/Volumes/workspace/codex，codex-rs/core/src/session/）：
 1. **E1 input queue 收敛**：fork 的 steer/injectSynthetic/park 语义散在 prompt.ts 各分支，收敛为显式队列+TurnInput 式 enum；seam 位置参照 codex input_queue.rs + 7a0a8ac9c4 收尾准入闸。
 2. **E2 daemon_recovery 式中断恢复**：fork 消息本就在 SQLite，补的是"执行意图"快照（回合开始落快照）+ 重启后识别被中断回合并恢复；与已有 goal 持久化（goal.ts）自然衔接。比 v2 settleStale*/inbox 表成本低一个量级。
 3. **E3 单步 Outcome 化（第三优先，可缓）**：单步执行多出口（cutoff/overflow/retry/compaction）收敛成 tagged union 返回值，拿穷举分派+分支可测性；codex 证明不做也能跑，故排在 E1/E2 之后。
+4. **E4 心跳保活对（2026-10-14 用户拍板立项）**：问题=沉默判死超时的两难（短=误杀长推理/缓冲 relay，长=真死连接发现慢；上游 d8129ca1 只能把默认提到 15min 兜底）。正解=**relay 侧 SSE comment 心跳**（缓冲期周期发 `: keepalive`，参照上游 framing.ts 对 Vertex partner `: keepalive` / `: li` / `data: null` 三方言的丢弃处理——接收侧 fork 已就绪，chunkTimeout 包在原始字节流上故心跳刷新判死时钟）+ **fork 侧 chunkTimeout 随后调回短值**（真死快发现）。前置：R2 的 15min 兜底先落（心跳未上前不可短化）。边界：relay 服务端不在本仓（内网 infra），fork 侧可先行备好配置面。
 
 与上游同步的关系：E 线全是 fork 自有重构，零上游冲突；OutputLimit 续写（a3f7f42a）仍归上游同步 Q10/A 批，不在本线。
 
