@@ -668,8 +668,16 @@ export class ToolHandler {
   // and is never evicted here.
   private static readonly PROJECT_CACHE_MAX_INSTANCES = 8;
   private static readonly WORKTREE_MISMATCH_CACHE_MAX = 256;
+  // (B1-MCP) Cross-project connections had no idle reclaim: the B1 sweep in
+  // provenance.ts does not see this cache, so a long-lived MCP server held up
+  // to PROJECT_CACHE_MAX_INSTANCES connections forever even when quiet. Idle
+  // cross-project instances are closed on the next cache access; 0 disables.
+  private static readonly PROJECT_CACHE_IDLE_TTL_DEFAULT_MS = 10 * 60 * 1000;
   // Cache of opened CodeGraph instances for cross-project queries
   private projectCache: Map<string, CodeGraph> = new Map();
+  // Last-use time per cached instance (aliases share one entry); drives idle
+  // reclaim. The server-owned default instance is never tracked or evicted.
+  private projectCacheLastUsed: Map<CodeGraph, number> = new Map();
   // Freshness ownership of explicitly-opened projects (upstream #1835/#2036):
   // instance -> the writer-lock root it holds, or null when another live
   // process owns updates and this connection only reads.
@@ -871,12 +879,15 @@ export class ToolHandler {
       return this.cg;
     }
 
+    // (B1-MCP) Reclaim idle cross-project connections on every cache access.
+    this.evictIdleProjectCache();
     // Check cache first (using original path as key)
     if (this.projectCache.has(projectPath)) {
       const cached = this.projectCache.get(projectPath)!;
       // (R1 A5) Refresh LRU recency for the alias key.
       this.projectCache.delete(projectPath);
       this.projectCache.set(projectPath, cached);
+      this.touchProjectCache(cached);
       return cached;
     }
 
@@ -922,6 +933,7 @@ export class ToolHandler {
       this.projectCache.delete(resolvedRoot);
       this.projectCache.set(resolvedRoot, cg);
       this.projectCache.set(projectPath, cg);
+      this.touchProjectCache(cg);
       return cg;
     }
 
@@ -934,6 +946,7 @@ export class ToolHandler {
         this.projectCache.delete(root);
         this.projectCache.set(root, open);
         this.projectCache.set(projectPath, open);
+        this.touchProjectCache(open);
         return open;
       }
     }
@@ -954,6 +967,7 @@ export class ToolHandler {
     if (projectPath !== resolvedRoot && projectPath !== ownerRoot) {
       this.projectCache.set(projectPath, cg);
     }
+    this.touchProjectCache(cg);
     this.evictProjectCacheOverflow();
     return cg;
   }
@@ -1007,6 +1021,49 @@ export class ToolHandler {
   }
 
   /**
+   * (B1-MCP) Idle TTL for cross-project cached connections; env override, 0 disables.
+   */
+  private static projectCacheIdleTtlMs(): number {
+    const raw = process.env.CODEGRAPH_MCP_PROJECT_CACHE_IDLE_TTL_MS;
+    if (raw !== undefined && raw !== '') {
+      const parsed = Number(raw);
+      if (Number.isFinite(parsed) && parsed >= 0) return Math.floor(parsed);
+    }
+    return ToolHandler.PROJECT_CACHE_IDLE_TTL_DEFAULT_MS;
+  }
+
+  /** Record that a cached cross-project instance was just used. */
+  private touchProjectCache(cg: CodeGraph): void {
+    this.projectCacheLastUsed.set(cg, Date.now());
+  }
+
+  /**
+   * (B1-MCP) Close cross-project instances idle beyond the TTL. Mirrors B1's
+   * in-use-guarded sweep: it runs synchronously on the next cache access, so a
+   * connection in active use is never closed underneath a caller. The
+   * server-owned default instance is never a victim; 0 disables.
+   */
+  private evictIdleProjectCache(now = Date.now()): void {
+    const ttl = ToolHandler.projectCacheIdleTtlMs();
+    if (ttl <= 0) return;
+    for (const cg of new Set(this.projectCache.values())) {
+      if (cg === this.cg) continue;
+      const last = this.projectCacheLastUsed.get(cg);
+      if (last === undefined || now - last < ttl) continue;
+      for (const [key, value] of this.projectCache) {
+        if (value === cg) this.projectCache.delete(key);
+      }
+      this.projectCacheLastUsed.delete(cg);
+      try {
+        cg.close();
+      } catch {
+        // Best effort: a broken connection must not wedge cache bookkeeping.
+      }
+      this.releaseProjectLease(cg);
+    }
+  }
+
+  /**
    * (R1 A5) Keep at most PROJECT_CACHE_MAX_INSTANCES distinct cached instances.
    * Map iteration order is insertion order and hits re-insert their keys, so
    * first-appearance order approximates LRU. The coldest instances are closed
@@ -1050,6 +1107,7 @@ export class ToolHandler {
       this.releaseProjectLease(cg);
     }
     this.projectCache.clear();
+    this.projectCacheLastUsed.clear();
     this.projectLeases.clear();
     this.worktreeMismatchCache.clear();
   }

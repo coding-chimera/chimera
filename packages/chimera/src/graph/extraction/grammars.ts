@@ -291,7 +291,9 @@ let parserInitialized = false;
  * pattern engine — accumulates one resident WebAssembly instance per language
  * it has ever parsed and never releases it. We therefore drop a language's
  * grammar + parser once NO grammar has been touched for
- * `GRAMMAR_IDLE_UNLOAD_MS`; the next parse reloads through
+ * `GRAMMAR_IDLE_UNLOAD_MS` (default 60s — long enough that intermittent
+ * single-file use does not thrash reloading WASM instances; the earlier 5s
+ * window churned on any short idle gap); the next parse reloads through
  * loadGrammarsForLanguages (every bulk index/sync preloads, and the pattern
  * engine calls ensureGrammarLoaded first), so extraction output is unchanged.
  *
@@ -300,7 +302,7 @@ let parserInitialized = false;
  * grammars by recycling workers. Set CODEGRAPH_GRAMMAR_IDLE_UNLOAD_MS=0 to
  * disable the idle release entirely.
  */
-const DEFAULT_GRAMMAR_IDLE_UNLOAD_MS = 5000;
+const DEFAULT_GRAMMAR_IDLE_UNLOAD_MS = 60_000;
 
 let grammarsPinned = false;
 let grammarIdleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -314,6 +316,11 @@ function grammarIdleUnloadMs(): number {
     if (Number.isFinite(parsed) && parsed >= 0) return Math.floor(parsed);
   }
   return DEFAULT_GRAMMAR_IDLE_UNLOAD_MS;
+}
+
+/** Test seam (B5): the resolved idle-release window in ms (env override honored). */
+export function grammarIdleUnloadMsForTest(): number {
+  return grammarIdleUnloadMs();
 }
 
 /**

@@ -279,6 +279,26 @@ function releaseGraphStateUse(root: string) {
   touchGraphState(root)
 }
 
+/**
+ * (B1) Whether a resolved state may occupy an idle-reclaim slot. Read-only and
+ * cross-project opens are never cached (openGraphState returns them untracked)
+ * and must not keep a slot warm, so tracking them would be a no-op at best and
+ * would wrongly spare an unrelated writable root at worst.
+ */
+export function isTrackedGraphState(state: ProjectGraphState, readOnly: boolean) {
+  return !readOnly && state.crossProject !== true
+}
+
+/** (B1) Mark a tracked state in use for the caller's operation; no-op otherwise. */
+export function trackGraphStateUse(state: ProjectGraphState, readOnly: boolean) {
+  if (isTrackedGraphState(state, readOnly)) acquireGraphStateUse(state.projectRoot)
+}
+
+/** (B1) Release a tracked state's use and restart its idle clock; no-op otherwise. */
+export function untrackGraphStateUse(state: ProjectGraphState, readOnly: boolean) {
+  if (isTrackedGraphState(state, readOnly)) releaseGraphStateUse(state.projectRoot)
+}
+
 async function evictGraphStates(): Promise<number> {
   const now = Date.now()
   const evictions: Promise<void>[] = []
@@ -1329,14 +1349,13 @@ export function withProjectGraph<A, E, R>(
   use: (state: ProjectGraphState) => Effect.Effect<A, E, R>,
 ) {
   const readOnly = input.readOnly === true
-  const tracked = (state: ProjectGraphState) => !readOnly && state.crossProject !== true
   return Effect.acquireUseRelease(
     openProjectGraph(input).pipe(
-      Effect.tap((state) => Effect.sync(() => (tracked(state) ? acquireGraphStateUse(state.projectRoot) : undefined))),
+      Effect.tap((state) => Effect.sync(() => trackGraphStateUse(state, readOnly))),
     ),
     use,
     (state) =>
-      Effect.sync(() => (tracked(state) ? releaseGraphStateUse(state.projectRoot) : undefined)).pipe(
+      Effect.sync(() => untrackGraphStateUse(state, readOnly)).pipe(
         Effect.andThen(
           // Cross-project opens are forced read-only inside openProjectGraph; key the
           // release off the resolved state so those connections are closed, not shrunk.

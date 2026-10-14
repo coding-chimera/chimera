@@ -79,3 +79,80 @@ describe('ToolHandler projectCache eviction (R1 A5)', () => {
     expect(closed).toEqual([]);
   });
 });
+
+const savedTtl = process.env.CODEGRAPH_MCP_PROJECT_CACHE_IDLE_TTL_MS;
+
+function restoreTtl() {
+  if (savedTtl === undefined) delete process.env.CODEGRAPH_MCP_PROJECT_CACHE_IDLE_TTL_MS;
+  else process.env.CODEGRAPH_MCP_PROJECT_CACHE_IDLE_TTL_MS = savedTtl;
+}
+
+function lastUsed(handler: ToolHandler) {
+  return (handler as unknown as { projectCacheLastUsed: Map<FakeGraph, number> }).projectCacheLastUsed;
+}
+
+function evictIdle(handler: ToolHandler, now: number) {
+  (handler as unknown as { evictIdleProjectCache: (now?: number) => void }).evictIdleProjectCache(now);
+}
+
+describe('ToolHandler projectCache idle TTL (B1-MCP)', () => {
+  test('closes instances idle beyond the TTL, sparing recently used ones', () => {
+    const handler = new ToolHandler(null);
+    const closed: string[] = [];
+    const stale = fake('stale', closed);
+    const fresh = fake('fresh', closed);
+    injectCache(handler, [['/stale', stale], ['/fresh', fresh]]);
+    const now = Date.now();
+    lastUsed(handler).set(stale, now - 60 * 60 * 1000);
+    lastUsed(handler).set(fresh, now);
+
+    evictIdle(handler, now);
+
+    const cache = (handler as unknown as { projectCache: Map<string, CodeGraphType> }).projectCache;
+    expect(closed).toEqual(['stale']);
+    expect(cache.has('/stale')).toBe(false);
+    expect(cache.has('/fresh')).toBe(true);
+  });
+
+  test('never idle-evicts the server-owned default instance', () => {
+    const closed: string[] = [];
+    const dflt = fake('default', closed);
+    const handler = new ToolHandler(dflt as unknown as CodeGraphType);
+    injectCache(handler, [['/default', dflt]]);
+    lastUsed(handler).set(dflt, Date.now() - 60 * 60 * 1000);
+
+    evictIdle(handler, Date.now());
+
+    const cache = (handler as unknown as { projectCache: Map<string, CodeGraphType> }).projectCache;
+    expect(closed).toEqual([]);
+    expect(cache.has('/default')).toBe(true);
+  });
+
+  test('0 disables idle eviction', () => {
+    process.env.CODEGRAPH_MCP_PROJECT_CACHE_IDLE_TTL_MS = '0';
+    try {
+      const handler = new ToolHandler(null);
+      const closed: string[] = [];
+      const stale = fake('stale', closed);
+      injectCache(handler, [['/stale', stale]]);
+      lastUsed(handler).set(stale, Date.now() - 60 * 60 * 1000);
+
+      evictIdle(handler, Date.now());
+
+      expect(closed).toEqual([]);
+    } finally {
+      restoreTtl();
+    }
+  });
+
+  test('an entry with no recorded last-use is left alone', () => {
+    const handler = new ToolHandler(null);
+    const closed: string[] = [];
+    const untracked = fake('untracked', closed);
+    injectCache(handler, [['/untracked', untracked]]);
+
+    evictIdle(handler, Date.now() + 10 * 60 * 1000);
+
+    expect(closed).toEqual([]);
+  });
+});

@@ -765,16 +765,26 @@ function createSyncProgressReporter(ctx: Tool.Context, enabled: boolean) {
   }
 }
 
-function openProjectGraphForTool(ctx: Tool.Context, refresh: boolean, options: { init?: boolean; readOnly?: boolean; projectPath?: string } = {}) {
+export function openProjectGraphForTool(ctx: Tool.Context, refresh: boolean, options: { init?: boolean; readOnly?: boolean; projectPath?: string } = {}) {
   const reporter = createSyncProgressReporter(ctx, refresh && !options.readOnly && !options.projectPath)
-  return Chimera.openProjectGraph({
-    init: options.init ?? false,
-    readOnly: options.readOnly,
-    sync: refresh && !options.readOnly,
-    watch: false,
-    onProgress: reporter.onProgress,
-    projectPath: options.projectPath,
-  }).pipe(
+  const readOnly = options.readOnly === true
+  // (B1) The direct path bypassed withProjectGraph's in-use refcount, so a long
+  // open/sync could outlive the 10-minute idle TTL and be closed by a sweep
+  // mid-operation. Track the state for the whole enclosing operation by pairing
+  // the acquire with an Effect.acquireRelease; callers resolve the resulting
+  // Scope requirement with Effect.scoped so the release lands when their tool
+  // body ends, not when the open returns.
+  return Effect.acquireRelease(
+    Chimera.openProjectGraph({
+      init: options.init ?? false,
+      readOnly: options.readOnly,
+      sync: refresh && !options.readOnly,
+      watch: false,
+      onProgress: reporter.onProgress,
+      projectPath: options.projectPath,
+    }).pipe(Effect.tap((state) => Effect.sync(() => Chimera.trackGraphStateUse(state, readOnly)))),
+    (state) => Effect.sync(() => Chimera.untrackGraphStateUse(state, readOnly)),
+  ).pipe(
     Effect.ensuring(Effect.sync(() => reporter.done())),
   )
 }
@@ -3210,7 +3220,7 @@ export const ChimeraPredesignTool = Tool.define<typeof PredesignParameters, Pred
             },
           })),
         )
-      }).pipe(Effect.orDie),
+      }).pipe(Effect.scoped, Effect.orDie),
   }),
 )
 
@@ -3407,7 +3417,7 @@ export const ChimeraAuditTool = Tool.define<typeof AuditParameters, AuditMetadat
           output: formatAuditOutput(recorded),
           metadata: recorded,
         }
-      }).pipe(Effect.orDie),
+      }).pipe(Effect.scoped, Effect.orDie),
   }),
 )
 
@@ -3495,7 +3505,7 @@ export const ChimeraAuditRecentTool = Tool.define<typeof RecentAuditParameters, 
             ].join("\n"),
             metadata: recorded,
           }
-        }).pipe(Effect.orDie),
+        }).pipe(Effect.scoped, Effect.orDie),
     }
   }),
 )
@@ -3537,7 +3547,7 @@ export const ChimeraOracleRecentTool = Tool.define<typeof OracleRecentParameters
             oracles,
           },
         }
-      }).pipe(Effect.orDie),
+      }).pipe(Effect.scoped, Effect.orDie),
   }),
 )
 
@@ -3572,7 +3582,7 @@ export const ChimeraOracleGetTool = Tool.define<typeof OracleGetParameters, Orac
             oracles: [oracle],
           },
         }
-      }).pipe(Effect.orDie),
+      }).pipe(Effect.scoped, Effect.orDie),
   }),
 )
 
@@ -3611,7 +3621,7 @@ export const ChimeraObligationsListTool = Tool.define<typeof ObligationsListPara
             obligations,
           },
         }
-      }).pipe(Effect.orDie),
+      }).pipe(Effect.scoped, Effect.orDie),
   }),
 )
 
@@ -3674,7 +3684,7 @@ export const ChimeraObligationsSyncTool = Tool.define<typeof ObligationsSyncPara
             audit,
           },
         }
-      }).pipe(Effect.orDie),
+      }).pipe(Effect.scoped, Effect.orDie),
   }),
 )
 
@@ -3719,7 +3729,7 @@ export const ChimeraObligationClaimTool = Tool.define<typeof ObligationClaimPara
             obligations,
           },
         }
-      }).pipe(Effect.orDie),
+      }).pipe(Effect.scoped, Effect.orDie),
   }),
 )
 
@@ -3769,7 +3779,7 @@ export const ChimeraObligationResolveTool = Tool.define<typeof ObligationResolve
             obligations,
           },
         }
-      }).pipe(Effect.orDie),
+      }).pipe(Effect.scoped, Effect.orDie),
   }),
 )
 
@@ -3819,7 +3829,7 @@ export const ChimeraObligationIgnoreTool = Tool.define<typeof ObligationIgnorePa
             obligations,
           },
         }
-      }).pipe(Effect.orDie),
+      }).pipe(Effect.scoped, Effect.orDie),
   }),
 )
 
@@ -3927,6 +3937,6 @@ export const ChimeraContextTool = Tool.define<typeof ContextParameters, ContextM
             overlay,
           },
         }
-      }).pipe(Effect.orDie),
+      }).pipe(Effect.scoped, Effect.orDie),
   }),
 )

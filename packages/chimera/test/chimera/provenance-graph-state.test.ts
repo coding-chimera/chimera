@@ -19,6 +19,8 @@ import path from "path"
 import { Chimera } from "@/chimera/provenance"
 import type { ProjectGraphState } from "@/chimera/provenance"
 import { CodeGraph } from "@/graph"
+import { openProjectGraphForTool } from "@/tool/chimera"
+import type { Context as ToolContext } from "@/tool/tool"
 import { testEffect } from "../lib/effect"
 import { TestInstance } from "../fixture/fixture"
 
@@ -155,4 +157,50 @@ describe("graphStates idle reclaim + reopen (B1)", () => {
       }
     }),
   )
+})
+
+describe("graphStates direct-path in-use guard (B1)", () => {
+  it.instance("the direct openProjectGraphForTool path holds the root in-use, so the idle sweep spares it until release", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "sample.ts"), "export const directPathSample = 1\n"))
+      const setup = yield* Effect.promise(() => CodeGraph.init(test.directory, { index: true }))
+      setup.close()
+
+      process.env.CHIMERA_GRAPH_STATE_IDLE_TTL_MS = "1"
+      try {
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const state = yield* openProjectGraphForTool(undefined as unknown as ToolContext, false)
+            expect(state.projectRoot).toBe(test.directory)
+            // Idle past the 1ms TTL while the direct operation still holds the
+            // use: the sweep must not close a connection in active use.
+            yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 15)))
+            yield* Effect.promise(() => Chimera.sweepIdleGraphStatesForTest())
+            expect(yield* Effect.promise(async () => Chimera.graphStateForTest(test.directory))).toBeDefined()
+          }),
+        )
+        // Scope closed -> the use is released and the idle clock restarts, so
+        // the next sweep past the TTL reclaims the root.
+        yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 15)))
+        yield* Effect.promise(() => Chimera.sweepIdleGraphStatesForTest())
+        expect(yield* Effect.promise(async () => Chimera.graphStateForTest(test.directory))).toBeUndefined()
+      } finally {
+        restoreEnv()
+        yield* Effect.promise(() => Chimera.closeGraphRootForTest(test.directory))
+      }
+    }),
+  )
+
+  test("read-only and cross-project states are never tracked for idle reclaim", () => {
+    const base: ProjectGraphState = {
+      projectRoot: "/fake/tracked",
+      artifact: "",
+      storePath: "",
+      graph: {} as ProjectGraphState["graph"],
+    }
+    expect(Chimera.isTrackedGraphState(base, false)).toBe(true)
+    expect(Chimera.isTrackedGraphState(base, true)).toBe(false)
+    expect(Chimera.isTrackedGraphState({ ...base, crossProject: true }, false)).toBe(false)
+  })
 })
