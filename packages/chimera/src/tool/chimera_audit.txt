@@ -2,7 +2,7 @@ Run a first-pass Chimera propagation audit for explicit changed files, a changed
 
 Use this tool when the audit seed comes from another source — files changed by an external patch or shell command, or one specific symbol, route handler, or config surface — and you want non-persistent propagation findings.
 
-Do NOT use it as the default post-mutation audit; use `chimera_audit_recent` after successful file mutations.
+Do NOT use it for tool-made mutations — those are audited automatically at edit time and `chimera_audit_recent` reads that recorded evidence.
 
 Mechanics: provide at least one seed (`files`, `filePath`, `symbol`, `ref`, or legacy `nodeID`), preferring `ref` copied from `Ref: node:<id>`; `range` requires `filePath`. Explicit file seeds are filesystem-synced before resolution, even when untracked by git. Findings are structural evidence, not commands or tracked obligations.
 
