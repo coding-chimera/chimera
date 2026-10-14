@@ -77,18 +77,25 @@ function stringifyToolOutput(output: unknown) {
   return JSON.stringify(jsonSafe(output))
 }
 
-function serializeLength(input: unknown) {
+export function serializeLength(input: unknown): number {
   if (input === undefined) return 0
-  return (typeof input === "string" ? input : JSON.stringify(input)).length
+  if (typeof input === "string") return input.length
+  // Recurse per element so a large array (e.g. the full message history) never
+  // materializes as one giant transient string; the largest single stringify is
+  // then the biggest element, not the whole collection. Structural JSON
+  // characters (array brackets, separators) are dropped, which is negligible
+  // under the chars/4 token heuristic.
+  if (Array.isArray(input)) return input.reduce((sum, item) => sum + serializeLength(item), 0)
+  return JSON.stringify(input).length
 }
 
 function estimateInputTokens(input: Pick<LLM.StreamInput, "system" | "messages" | "tools">) {
-  // `Token.estimate` is a chars/4 heuristic, so summing per-part serialized
+  // `Token.estimate` is a chars/4 heuristic; summing per-element serialized
   // lengths is equivalent to serializing the whole `{system,messages,tools}`
-  // payload up to the handful of structural JSON characters the composite
-  // wrapper adds (a few tokens). This only feeds the compaction threshold, so
-  // the negligible drift is acceptable and we avoid building a giant string
-  // every step.
+  // payload up to the structural JSON characters the composite wrapper and
+  // array separators add (a few tokens). This only feeds the compaction
+  // threshold, so the negligible drift is acceptable and we avoid building a
+  // giant string every step.
   const length =
     serializeLength(input.system) +
     serializeLength(input.messages) +

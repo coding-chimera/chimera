@@ -17,7 +17,7 @@ import { DatabaseConnection, getDatabasePath } from "@/graph"
 import { Session } from "@/session/session"
 import { LLM } from "../../src/session/llm"
 import { MessageV2 } from "../../src/session/message-v2"
-import { SessionProcessor, copilotTotalNanoAiu } from "../../src/session/processor"
+import { SessionProcessor, copilotTotalNanoAiu, serializeLength } from "../../src/session/processor"
 import { MessageID, PartID, SessionID } from "../../src/contracts/session-ids"
 import { SessionStatus } from "../../src/session/status"
 import { SessionSummary } from "../../src/session/summary"
@@ -1657,6 +1657,33 @@ describe("copilotTotalNanoAiu", () => {
     expect(copilotTotalNanoAiu({})).toBeUndefined()
     expect(copilotTotalNanoAiu("not-object")).toBeUndefined()
     expect(copilotTotalNanoAiu(null)).toBeUndefined()
+  })
+})
+
+describe("serializeLength", () => {
+  test("never stringifies an array as a whole", () => {
+    const messages: Array<{ role: string; content: string }> = [{ role: "user", content: "hello" }]
+    Object.defineProperty(messages, "toJSON", {
+      value: () => {
+        throw new Error("whole-array stringify")
+      },
+    })
+    expect(() => JSON.stringify(messages)).toThrow()
+    expect(serializeLength(messages)).toBe(JSON.stringify({ role: "user", content: "hello" }).length)
+  })
+
+  test("matches whole-array length within structural-character drift", () => {
+    const values = Array.from({ length: 25 }, (_, i) => ({ id: i, content: "x".repeat(20) }))
+    const whole = JSON.stringify(values).length
+    const perElement = serializeLength(values)
+    expect(perElement).toBeLessThanOrEqual(whole)
+    expect(whole - perElement).toBeLessThan(values.length * 8)
+  })
+
+  test("handles strings, undefined and nested arrays", () => {
+    expect(serializeLength(undefined)).toBe(0)
+    expect(serializeLength("abc")).toBe(3)
+    expect(serializeLength([["ab"], "c", undefined])).toBe(3)
   })
 })
 
