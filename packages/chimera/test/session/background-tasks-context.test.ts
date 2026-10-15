@@ -3,6 +3,7 @@ import { Effect } from "effect"
 import { BackgroundJob } from "@/agent/background-job"
 import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
+import { SessionActivity } from "@/session/activity"
 import { MessageV2 } from "../../src/session/message-v2"
 import { MessageID, SessionID } from "../../src/contracts/session-ids"
 import { ModelID, ProviderID } from "../../src/provider/schema"
@@ -182,5 +183,41 @@ describe("session.prompt runtime context — Background Tasks section", () => {
         }),
         { git: true, config: (url) => ({ ...testProviderConfig(url), delegation: { background_subagents: false } }) },
       ),
+  )
+})
+
+describe("SessionActivity.ownedActiveJobs — delivery-pending counts as active", () => {
+  it.live("a settled-but-undelivered job keeps the family active until markDelivered", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ dir }) {
+        void dir
+        const activity = yield* SessionActivity.Service
+        const jobs = yield* BackgroundJob.Service
+        const chat = yield* seedSession()
+
+        // Start a job that settles immediately; its delivery stays pending
+        // until markDelivered runs (the notify-fiber window the strengthened
+        // filter must treat as active).
+        yield* jobs.start({
+          id: "bg-settled-pending",
+          type: "task",
+          title: "settle probe",
+          ownerSessionId: chat.id,
+          run: Effect.succeed("done"),
+        })
+        // wait resolves on settle (done deferred), before delivery.
+        yield* jobs.wait({ id: "bg-settled-pending" })
+
+        const blockers = yield* activity.ownedActiveJobs(chat.id)
+        expect(blockers.map((job) => job.id)).toContain("bg-settled-pending")
+        expect(blockers.every((job) => job.status !== "running" || job.delivery === "pending")).toBe(true)
+        expect(yield* activity.isActive(chat.id)).toBe(true)
+
+        yield* jobs.markDelivered("bg-settled-pending")
+        expect(yield* activity.ownedActiveJobs(chat.id)).toHaveLength(0)
+        expect(yield* activity.isActive(chat.id)).toBe(false)
+      }),
+      { git: true, config: (url) => testProviderConfig(url) },
+    ),
   )
 })

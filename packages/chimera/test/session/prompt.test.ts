@@ -42,6 +42,7 @@ import { SessionRevert } from "../../src/session/revert"
 import { SessionRunState } from "../../src/session/run-state"
 import { MessageID, PartID, SessionID } from "../../src/contracts/session-ids"
 import { SessionStatus } from "../../src/session/status"
+import { SessionActivity } from "../../src/session/activity"
 import { SessionV2 } from "../../src/v2/session"
 import { SyncEvent } from "../../src/sync"
 import { Skill } from "../../src/skill"
@@ -253,6 +254,7 @@ function makeHttp(imageLayer: Layer.Layer<Image.Service> = Image.defaultLayer) {
   const todo = Todo.layer.pipe(Layer.provideMerge(deps))
   const workBrief = WorkBrief.layer.pipe(Layer.provideMerge(deps))
   const goal = Goal.layer.pipe(Layer.provideMerge(deps))
+  const activity = SessionActivity.layer.pipe(Layer.provideMerge(deps))
   const chimeraPromptContext = ChimeraPromptContext.layer.pipe(Layer.provideMerge(deps))
   const registry = ToolRegistry.layer.pipe(
     Layer.provideMerge(DelegationLimiter.defaultLayer),
@@ -290,6 +292,7 @@ function makeHttp(imageLayer: Layer.Layer<Image.Service> = Image.defaultLayer) {
       Layer.provideMerge(registry),
       Layer.provideMerge(trunc),
       Layer.provideMerge(workBrief),
+      Layer.provideMerge(activity),
       Layer.provideMerge(chimeraPromptContext),
       Layer.provide(Instruction.defaultLayer),
       Layer.provide(SystemPrompt.defaultLayer),

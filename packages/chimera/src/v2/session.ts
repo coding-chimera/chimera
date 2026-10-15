@@ -22,6 +22,7 @@ import { SessionCompaction } from "@/session/compaction"
 import { SessionPrompt } from "@/session/prompt"
 import { SessionRevert } from "@/session/revert"
 import { SessionStatus } from "@/session/status"
+import { SessionActivity } from "@/session/activity"
 import * as Log from "@opencode-ai/core/util/log"
 
 const log = Log.create({ service: "v2.session" })
@@ -204,6 +205,7 @@ export const layer = Layer.effect(
     const compaction = yield* SessionCompaction.Service
     const revert = yield* SessionRevert.Service
     const status = yield* SessionStatus.Service
+    const activity = yield* SessionActivity.Service
     const agents = yield* Agent.Service
     const decodeMessage = Schema.decodeUnknownSync(SessionMessage.Message)
 
@@ -484,20 +486,20 @@ export const layer = Layer.effect(
         yield* sessionPrompt.loop({ sessionID })
       }),
       wait: Effect.fn("V2Session.wait")(function* (sessionID) {
-        // SessionStatus is the fork's in-flight marker: the prompt loop
-        // marks the session busy while an assistant turn (compaction
-        // included) runs and idle when it settles (src/session/prompt.ts,
-        // src/session/processor.ts). Polls on a short cadence instead of
-        // only subscribing to the status bus: an idle transition landing
-        // between a read and a later subscription would hang the waiter
-        // forever, and wait must always resolve. Semantics: resolves when
-        // the marker reads idle; a detached turn that has not marked the
-        // session busy yet can resolve early.
-        yield* Stream.fromEffectSchedule(status.get(sessionID), Schedule.spaced("50 millis")).pipe(
-          Stream.dropWhile((info) => info.type !== "idle"),
-          Stream.take(1),
-          Stream.runDrain,
-        )
+        // Family-aware quiescence (SessionActivity.waitQuiescent): resolves
+        // when this session AND every descendant read idle and no
+        // running∨delivery-pending job owned by the family is left. The
+        // SessionStatus marker remains the fork's in-flight signal: the
+        // prompt loop marks a session busy while an assistant turn
+        // (compaction included) runs and idle when it settles
+        // (src/session/prompt.ts, src/session/processor.ts). Polls on a
+        // short cadence instead of only subscribing to the status bus: an
+        // idle transition landing between a read and a later subscription
+        // would hang the waiter forever, and wait must always resolve.
+        // Compared to the former root-only status poll this no longer
+        // resolves early while a detached background subagent turn or an
+        // undelivered job result is still in flight in the family.
+        yield* activity.waitQuiescent(sessionID)
       }),
     }
 
@@ -519,6 +521,7 @@ export const defaultLayer: Layer.Layer<Service> = layer.pipe(
       SessionCompaction.defaultLayer,
       SessionRevert.defaultLayer,
       SessionStatus.defaultLayer,
+      SessionActivity.defaultLayer,
       Agent.defaultLayer,
     ),
   ),

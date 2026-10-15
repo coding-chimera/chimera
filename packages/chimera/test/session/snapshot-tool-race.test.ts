@@ -57,6 +57,7 @@ import { Instruction } from "../../src/session/instruction"
 import { SessionProcessor } from "../../src/session/processor"
 import { SessionRunState } from "../../src/session/run-state"
 import { SessionStatus } from "../../src/session/status"
+import { SessionActivity } from "../../src/session/activity"
 import { Snapshot } from "../../src/snapshot"
 import { ToolRegistry } from "@/tool/registry"
 import { DelegationLimiter } from "@/agent/delegation-limiter"
@@ -154,6 +155,7 @@ function makeHttp() {
   const todo = Todo.layer.pipe(Layer.provideMerge(deps))
   const workBrief = WorkBrief.layer.pipe(Layer.provideMerge(deps))
   const goal = Goal.layer.pipe(Layer.provideMerge(deps))
+  const activity = SessionActivity.layer.pipe(Layer.provideMerge(deps))
   const chimeraPromptContext = ChimeraPromptContext.layer.pipe(Layer.provideMerge(deps))
   const registry = ToolRegistry.layer.pipe(
     Layer.provideMerge(DelegationLimiter.defaultLayer),
@@ -195,6 +197,7 @@ function makeHttp() {
       Layer.provideMerge(registry),
       Layer.provideMerge(trunc),
       Layer.provideMerge(workBrief),
+      Layer.provideMerge(activity),
       Layer.provideMerge(chimeraPromptContext),
       Layer.provide(Instruction.defaultLayer),
       Layer.provide(SystemPrompt.defaultLayer),

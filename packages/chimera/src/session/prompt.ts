@@ -57,6 +57,7 @@ import { SessionProcessor } from "./processor"
 import { Tool } from "@/tool/tool"
 import { Permission } from "@/permission"
 import { SessionStatus } from "./status"
+import { SessionActivity } from "./activity"
 import { SessionRetry } from "./retry"
 import { SubagentModelCatalog } from "@/agent/subagent-model-catalog"
 import { LLM } from "./llm"
@@ -355,6 +356,7 @@ export const layer = Layer.effect(
     const instruction = yield* Instruction.Service
     const state = yield* SessionRunState.Service
     const background = yield* Effect.serviceOption(BackgroundJob.Service)
+    const activity = yield* SessionActivity.Service
     const revert = yield* SessionRevert.Service
     const summary = yield* SessionSummary.Service
     const workBrief = yield* WorkBrief.Service
@@ -705,24 +707,28 @@ export const layer = Layer.effect(
       // Structured-output requests are one-shot flows; do not extend them.
       if (owner.format?.type === "json_schema") return false
       if (!(yield* goal.get(input.sessionID))) return false
-      // True stop = this turn ended AND no running job in the session family
-      // (this session plus every descendant; the idle-release gate helpers from
-      // fc60c30ef count ownership regardless of the foreground/background flag,
-      // so chimera_swarm workers count too). A run-loop exit while the family
-      // still works is not a stop: injecting a continuation now would make the
-      // root compete with its own running subagents, and a waiting continuation
-      // turn that makes no tool calls would poison the unproductive streak
-      // toward a false blocked flip. Skip the whole beat instead: no
-      // recordContinuation and no resetContinuation (waiting turns enter no
-      // counter, unlike F4-style unproductive accounting), no injected message,
-      // return false. Re-drive is inherent: when a background job settles, its
-      // result is injected into the owning session by
-      // TaskTool.notifyBackgroundResult -> SessionPrompt.injectSynthetic, which
-      // runs a fresh owner turn whose loop exit re-runs this gate. A family job
-      // that never settles keeps the goal silently paused instead of burning
-      // continuation turns — the safe direction; cross-process or crashed jobs
-      // stay invisible here, exactly as in the idle-release gate.
-      if ((yield* ownedRunningJobs(input.sessionID)).length > 0) return false
+      // True stop = this turn ended AND no active job in the session family
+      // (this session plus every descendant — SessionActivity.familyIDs;
+      // ownership counts regardless of the foreground/background flag, so
+      // chimera_swarm workers count too, and delivery-pending jobs count as
+      // active: a settled job whose result-aggregation turn has not been
+      // injected yet is not quiescence — the running-only filter this gate
+      // used to apply let a continuation fire into that window). A run-loop
+      // exit while the family still works is not a stop: injecting a
+      // continuation now would make the root compete with its own running
+      // subagents, and a waiting continuation turn that makes no tool calls
+      // would poison the unproductive streak toward a false blocked flip.
+      // Skip the whole beat instead: no recordContinuation and no
+      // resetContinuation (waiting turns enter no counter, unlike F4-style
+      // unproductive accounting), no injected message, return false.
+      // Re-drive is inherent: when a background job settles, its result is
+      // injected into the owning session by TaskTool.notifyBackgroundResult
+      // -> SessionPrompt.injectSynthetic, which runs a fresh owner turn
+      // whose loop exit re-runs this gate. A family job that never settles
+      // keeps the goal silently paused instead of burning continuation
+      // turns — the safe direction; cross-process or crashed jobs stay
+      // invisible here, exactly as in the idle-release gate.
+      if ((yield* activity.ownedActiveJobs(input.sessionID)).length > 0) return false
 
       if (turnOwner && turnOwner.parts.some(isGoalContinuationPart)) {
         // The loop-top exit caller passes the productivity it already derived
@@ -791,6 +797,15 @@ export const layer = Layer.effect(
       // start a turn on top of an in-flight one.
       const busy = yield* Effect.exit(state.assertNotBusy(sessionID)).pipe(Effect.map(Exit.isFailure))
       if (busy) return false
+      // Family-liveness gate (SessionActivity): assertNotBusy above covers the
+      // root runner and the foreign turn lease; isActive additionally covers
+      // family member statuses and running∨delivery-pending jobs the family
+      // owns, so an external kick never injects a continuation that competes
+      // with this root's own in-flight subagents — symmetric with the
+      // loop-exit gate in tryGoalContinuation. Both checks are kept: isActive
+      // does not see foreign-process leases, assertNotBusy does not see
+      // family jobs.
+      if (yield* activity.isActive(sessionID)) return false
       // Read a bounded tail first; fall back to the full compacted history only
       // when the window carries no non-runtime-context user message (goalTurnOwner
       // would then be missing). Older messages are irrelevant to the goal checks,
@@ -3451,57 +3466,37 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     // jobs and count too: the gate keys ownership, not the background flag)
     // — can still be doing real work on the claimed files while the session
     // sits idle, so releasing then would let another session claim files the
-    // running family is about to touch. Skip the release (and the drain/
-    // wake) while any running job owned by the session family exists;
+    // running family is about to touch. The liveness predicate is
+    // SessionActivity.ownedActiveJobs: running ∨ delivery-pending jobs owned
+    // by the family (a settled job whose notify fiber has not finished
+    // injecting the result still guards the claims — releasing inside that
+    // window would race the aggregation turn it is about to wake). Skip the
+    // release (and the drain/wake) while any such job exists;
     // background-job has no terminal bus event, so a skipped release forks a
-    // scoped re-check that waits on the blocking jobs' settle and releases
-    // once they clear while the session is still idle (if it went busy
-    // again, its next Idle event re-runs this gate). Ownership rides the
-    // typed ownerSessionId; the registry is per-process in-memory state, so
+    // scoped re-check that waits for family quiescence and releases once it
+    // clears while the session is still idle (if it went busy again, its
+    // next Idle event re-runs this gate). Ownership rides the typed
+    // ownerSessionId; the registry is per-process in-memory state, so
     // cross-process or crashed jobs stay invisible here and the claim TTL
     // remains the crash fallback.
-    const sessionFamilyIDs = Effect.fnUntraced(function* (sessionID: SessionID) {
-      const family = new Set<string>()
-      const pending: string[] = [sessionID]
-      // Subagent nesting is shallow (≤3); the size cap bounds pathological
-      // fan-out and the visited set breaks cycles.
-      while (pending.length > 0 && family.size < 256) {
-        const current = pending.shift()!
-        if (family.has(current)) continue
-        family.add(current)
-        const children = yield* sessions
-          .children(SessionID.make(current))
-          .pipe(Effect.catchCause(() => Effect.succeed([] as Session.Info[])))
-        for (const child of children) pending.push(child.id)
-      }
-      return family
-    })
-
-    const ownedRunningJobs = Effect.fnUntraced(function* (sessionID: SessionID) {
-      const jobs = Option.getOrUndefined(background)
-      if (!jobs) return [] as BackgroundJob.Info[]
-      const running = (yield* jobs.list()).filter(
-        (job) => job.status === "running" && typeof job.ownerSessionId === "string",
-      )
-      if (running.length === 0) return []
-      const family = yield* sessionFamilyIDs(sessionID)
-      return running.filter((job) => family.has(job.ownerSessionId!))
-    })
-
     const recheckEditIntentRelease = Effect.fnUntraced(function* (root: string, sessionID: SessionID) {
-      const jobs = Option.getOrUndefined(background)
-      if (!jobs) return
-      // Every iteration advances on a real job settle; the cap only bounds a
-      // session whose family keeps dispatching forever (its claims fall back
-      // to the TTL).
+      // Every iteration advances on a real family quiescence; the cap only
+      // bounds a session whose family keeps re-busying forever (its claims
+      // fall back to the TTL). Waiting through SessionActivity.waitQuiescent
+      // instead of racing jobs.wait({ id }) per blocker fixes the
+      // delivery-pending spin: jobs.wait resolves the instant a job settles,
+      // so a blocker list of settled-but-undelivered jobs would resolve
+      // every race immediately and burn all 64 attempts while the notify
+      // fiber is still injecting; waitQuiescent treats delivery-pending as
+      // active and holds until the settle-to-delivered window closes.
       for (let attempt = 0; attempt < 64; attempt++) {
-        const blockers = yield* ownedRunningJobs(sessionID)
+        const blockers = yield* activity.ownedActiveJobs(sessionID)
         if (blockers.length === 0) {
           const current = yield* status.get(sessionID)
           if (current.type === "idle") yield* releaseEditIntentClaims(root, sessionID)
           return
         }
-        yield* Effect.raceAll(blockers.map((job) => jobs.wait({ id: job.id }).pipe(Effect.asVoid)))
+        yield* activity.waitQuiescent(sessionID)
       }
     })
     const editIntentWatch = yield* InstanceState.make(
@@ -3511,7 +3506,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         yield* bus.subscribe(SessionStatus.Event.Idle).pipe(
           Stream.runForEach((event) =>
             Effect.gen(function* () {
-              if ((yield* ownedRunningJobs(event.properties.sessionID)).length > 0) {
+              if ((yield* activity.ownedActiveJobs(event.properties.sessionID)).length > 0) {
                 yield* recheckEditIntentRelease(root, event.properties.sessionID).pipe(
                   Effect.forkIn(scope, { startImmediately: true }),
                   Effect.asVoid,
@@ -3659,7 +3654,9 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(AppFileSystem.defaultLayer),
     Layer.provide(Plugin.defaultLayer),
     Layer.provide(Question.defaultLayer),
-    Layer.provide(Layer.mergeAll(Session.defaultLayer, SessionRevert.defaultLayer, SyncEvent.defaultLayer)),
+    Layer.provide(
+      Layer.mergeAll(Session.defaultLayer, SessionRevert.defaultLayer, SyncEvent.defaultLayer, SessionActivity.defaultLayer),
+    ),
     Layer.provide(
       Layer.mergeAll(
         SessionSummary.defaultLayer,

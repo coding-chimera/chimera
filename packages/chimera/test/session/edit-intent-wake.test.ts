@@ -448,8 +448,16 @@ describe("edit-intent claims: idle-release gate and explicit closeout release", 
           expect(stillWaiting).toHaveLength(1)
 
           // The job settles: the re-check fiber releases and wakes through the
-          // normal idle-reason chain.
+          // normal idle-reason chain. Delivery marking mirrors the production
+          // notify contract (settle -> inject -> markDelivered): the
+          // idle-release gate counts a settled-but-undelivered job as an
+          // active blocker, so claims stay held through the settle.
           yield* Deferred.succeed(gate, "child done")
+          yield* background.wait({ id: "job_bg_gate_owner" })
+          yield* Effect.sleep("300 millis")
+          const settledHeld = yield* Effect.promise(() => readActiveEditIntentClaims(root, { sessionID: holder.id }))
+          expect(settledHeld).toHaveLength(1)
+          yield* background.markDelivered("job_bg_gate_owner")
           const { wake } = yield* pollWake(sessions, waiter.id, "settled-echo")
           expect(wake).toContain("the holder's run completed")
           const released = yield* Effect.promise(() => readActiveEditIntentClaims(root, { sessionID: holder.id }))
@@ -499,6 +507,11 @@ describe("edit-intent claims: idle-release gate and explicit closeout release", 
         expect(heldActive).toHaveLength(1)
 
         yield* Deferred.succeed(gate, "nested done")
+        // Settle alone does not release: the gate treats the delivery-pending
+        // window as active (production notify fibers mark delivery after
+        // injecting the result), so mirror the contract here.
+        yield* background.wait({ id: "job_bg_gate_descendant" })
+        yield* background.markDelivered("job_bg_gate_descendant")
         const { wake } = yield* pollWake(sessions, waiter.id, "nested-echo")
         expect(wake).toContain("the holder's run completed")
       }),

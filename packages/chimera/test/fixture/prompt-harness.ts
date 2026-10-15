@@ -33,6 +33,7 @@ import { SessionPrompt } from "../../src/session/prompt"
 import { SessionRevert } from "../../src/session/revert"
 import { SessionRunState } from "../../src/session/run-state"
 import { SessionStatus } from "../../src/session/status"
+import { SessionActivity } from "../../src/session/activity"
 import { SessionSummary } from "@/session/summary"
 import { Skill } from "../../src/skill"
 import { Snapshot } from "../../src/snapshot"
@@ -175,6 +176,7 @@ export function makePromptHarness() {
   const todo = Todo.layer.pipe(Layer.provideMerge(deps))
   const workBrief = WorkBrief.layer.pipe(Layer.provideMerge(deps))
   const goal = Goal.layer.pipe(Layer.provideMerge(deps))
+  const activity = SessionActivity.layer.pipe(Layer.provideMerge(deps))
   const chimeraPromptContext = ChimeraPromptContext.layer.pipe(Layer.provideMerge(deps))
   const registry = ToolRegistry.layer.pipe(
     Layer.provideMerge(DelegationLimiter.defaultLayer),
@@ -213,6 +215,7 @@ export function makePromptHarness() {
       Layer.provideMerge(registry),
       Layer.provideMerge(trunc),
       Layer.provideMerge(workBrief),
+      Layer.provideMerge(activity),
       Layer.provideMerge(chimeraPromptContext),
       Layer.provide(Instruction.defaultLayer),
       Layer.provide(SystemPrompt.defaultLayer),

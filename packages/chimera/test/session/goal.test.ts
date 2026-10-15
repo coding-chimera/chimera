@@ -1045,8 +1045,12 @@ describe("session.goal auto-continuation loop", () => {
         expect(waiting?.consecutiveContinuations).toBe(2)
 
         // The family job settles; the next turn end is a true stop and
-        // continuation works exactly as before the fix.
+        // continuation works exactly as before the fix. Delivery marking
+        // mirrors the production notify contract (every terminal path —
+        // cancel included — runs inject + markDelivered): the gate counts
+        // the settled-but-undelivered window as still active.
         yield* jobs.cancel("stop-waiting")
+        yield* jobs.markDelivered("stop-waiting")
         yield* prompt.prompt({
           sessionID: session.id,
           agent: "build",
