@@ -399,8 +399,12 @@ for (const item of targets) {
   await copyWebTreeSitterRuntime(path.join(dir, "dist", name, "bin"))
   await copyKernelPrebuild(path.join(dir, "dist", name, "bin"), item)
 
-  // Smoke test: only run if binary is for current platform
-  if (item.os === process.platform && item.arch === process.arch && !item.abi) {
+  // Smoke test: only run if binary is for current platform. Set
+  // CHIMERA_BUILD_SKIP_SMOKE=1 to skip it where executing a freshly built
+  // binary is restricted — binary execution verification is then a
+  // separately authorized step (CI covers the same check on release builds).
+  const skipSmoke = ["1", "true"].includes(process.env.CHIMERA_BUILD_SKIP_SMOKE ?? "")
+  if (!skipSmoke && item.os === process.platform && item.arch === process.arch && !item.abi) {
     const smokeCwd = await fs.promises.mkdtemp(path.join(os.tmpdir(), "chimera-smoke-"))
     console.log(`Running smoke test: ${path.relative(dir, binaryPath)} --version`)
     try {
