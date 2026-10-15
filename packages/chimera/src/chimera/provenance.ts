@@ -21,6 +21,7 @@ import { Permission } from "@/permission"
 import { appendProvenanceRecord, databaseStorePath, readPredesignRuns, readProvenanceRecords, readRecentProvenanceRecords, recordAuditRun, recordOracleResult, writeChangeFacts, type OracleLinkedChange, type OracleStatus, type OracleVerificationKind } from "./store"
 import { TOOL_MUTATION_PREDESIGN_REQUIRED } from "./guidance"
 import { EditIntentClaims } from "./edit-intent"
+import { ReadOnlyPool, type ReadOnlyLease } from "./read-only-pool"
 
 type ShadowOracleRecorder = (input: {
   projectID: string
@@ -247,6 +248,33 @@ const DEFAULT_GRAPH_STATE_IDLE_SWEEP_MS = 60 * 1000
 const graphStateLastUsed = new Map<string, number>()
 /** In-flight withProjectGraph holds per root; a root in use is never evicted. */
 const graphStateInUse = new Map<string, number>()
+/**
+ * Pooled read-only leases keyed by the state object handed to the caller.
+ * Registered by openGraphState's pooled read-only branch and re-registered
+ * for openProjectGraph's crossProject copy (a spread of the pooled state).
+ */
+const readOnlyLeases = new WeakMap<ProjectGraphState, ReadOnlyLease>()
+
+/**
+ * Return a read-only state's pooled lease: `ok` (from the Effect exit status)
+ * decides return-to-pool vs destroy. A state without a registered lease is
+ * closed directly (pre-pooling read-only behavior); writer states must never
+ * be passed here — their lifecycle belongs to graphStates.
+ */
+export function releaseReadOnlyGraph(state: ProjectGraphState, ok: boolean) {
+  const lease = readOnlyLeases.get(state)
+  if (lease) {
+    readOnlyLeases.delete(state)
+    lease.release(ok)
+    return Promise.resolve()
+  }
+  return state.graph.close().catch(() => undefined)
+}
+
+/** Test seam: the pooled read-only lease registered for a state, if any. */
+export function readOnlyLeaseForTest(state: ProjectGraphState) {
+  return readOnlyLeases.get(state)
+}
 
 function envNumber(names: string[], fallback: number) {
   const raw = names.map((name) => process.env[name]).find((value) => value)
@@ -303,6 +331,8 @@ async function evictGraphStates(): Promise<number> {
   const now = Date.now()
   const evictions: Promise<void>[] = []
   const { idleTtlMs } = graphStateIdleSettings()
+  // Read-only pool idle/maxLifetime reap rides this sweep (no second interval).
+  ReadOnlyPool.reapReadOnlyPool(now)
   // (B1) Idle reclaim below the cap: close roots whose graph has been quiet for
   // the TTL. 0 disables idle reclaim and leaves only the cap ceiling.
   if (idleTtlMs > 0) {
@@ -913,7 +943,35 @@ function openGraphState(
   root: string,
   options: { init?: boolean; readOnly?: boolean; watch?: boolean; onProgress?: (progress: CodeGraphIndexProgress) => void } = {},
 ): Promise<ProjectGraphState> {
-  const cached = options.readOnly ? undefined : graphStates.get(root)
+  // Read-only opens go through the pool (tarn/sqlx-shaped, see
+  // read-only-pool.ts): one warm connection per root instead of a fresh
+  // SQLite connection per graph HTTP request or read-only tool open. The
+  // lease is stashed keyed by the returned state; withProjectGraph's release
+  // callback returns it keyed by exit status. Boundary: a caller that
+  // bypasses withProjectGraph must release via releaseReadOnlyGraph itself,
+  // or the pooled entry stays pinned in-use — openProjectGraphForTool does,
+  // and the MCP/CLI read-only opens inside src/graph/ stay unpooled.
+  if (options.readOnly) {
+    return ReadOnlyPool.acquire(root, () =>
+      CodeGraphAdapter.open(root, {
+        init: false,
+        index: false,
+        sync: false,
+        readOnly: true,
+        cacheSizeMB: ReadOnlyPool.readOnlyCacheSizeMB(),
+        onProgress: options.onProgress,
+      }).then((graph) => ({
+        graph,
+        projectRoot: root,
+        artifact: toolProvenanceArtifact(root),
+        storePath: databaseStorePath(root),
+      })),
+    ).then((lease) => {
+      readOnlyLeases.set(lease.state, lease)
+      return lease.state
+    })
+  }
+  const cached = graphStates.get(root)
   if (cached) {
     // A cached handle keeps working against an unlinked sqlite file, so requests
     // against externally-removed graph data (e.g. rm -rf .chimera) surface
@@ -1357,7 +1415,13 @@ export const openProjectGraph = Effect.fn("Chimera.openProjectGraph")(function* 
       }),
     ).pipe(Effect.orDie)
     if (input.sync && !readOnly) yield* Effect.promise(() => refreshProjectGraph(s, input.onProgress)).pipe(Effect.orDie)
-    return target.crossProject ? { ...s, crossProject: true } : s
+    if (!target.crossProject) return s
+    const crossState = { ...s, crossProject: true }
+    // The spread copies a pooled read-only state; re-register the lease for
+    // the caller-visible object so withProjectGraph's release finds it.
+    const lease = readOnlyLeases.get(s)
+    if (lease) readOnlyLeases.set(crossState, lease)
+    return crossState
   }).pipe(
     Effect.ensuring(Effect.sync(() => {
       if (tracked) releaseGraphStateUse(target.root)
@@ -1375,13 +1439,14 @@ export function withProjectGraph<A, E, R>(
       Effect.tap((state) => Effect.sync(() => trackGraphStateUse(state, readOnly))),
     ),
     use,
-    (state) =>
+    (state, exit) =>
       Effect.sync(() => untrackGraphStateUse(state, readOnly)).pipe(
         Effect.andThen(
           // Cross-project opens are forced read-only inside openProjectGraph; key the
-          // release off the resolved state so those connections are closed, not shrunk.
+          // release off the resolved state so those connections return to the
+          // read-only pool on success and are destroyed on failure, not shrunk.
           readOnly || state.crossProject === true
-            ? Effect.promise(() => state.graph.close()).pipe(Effect.ignore)
+            ? Effect.promise(() => releaseReadOnlyGraph(state, Exit.isSuccess(exit))).pipe(Effect.ignore)
             : Effect.sync(() => state.graph.shrink()),
         ),
       ),

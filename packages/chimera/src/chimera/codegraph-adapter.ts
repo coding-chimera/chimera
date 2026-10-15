@@ -56,6 +56,8 @@ export interface OpenOptions {
   sync?: boolean
   readOnly?: boolean
   onProgress?: (progress: IndexProgress) => void
+  /** Per-connection SQLite page-cache override in MB (pooled read-only opens). */
+  cacheSizeMB?: number
 }
 
 function emptySyncResult(): CodeGraphSyncResult {
@@ -78,7 +80,7 @@ export class CodeGraphAdapter {
   static async open(projectRoot: string, options: OpenOptions = {}) {
     const root = path.resolve(projectRoot)
     if (CodeGraph.isInitialized(root)) {
-      const adapter = new CodeGraphAdapter(root, await CodeGraph.open(root, { sync: false, readOnly: options.readOnly }))
+      const adapter = new CodeGraphAdapter(root, await CodeGraph.open(root, { sync: false, readOnly: options.readOnly, cacheSizeMB: options.cacheSizeMB }))
       if (options.sync && !options.readOnly) await adapter.sync({ onProgress: options.onProgress })
       return adapter
     }
@@ -93,6 +95,14 @@ export class CodeGraphAdapter {
 
   close() {
     return this.graph.close()
+  }
+
+  /**
+   * Whether the underlying connection was closed. The read-only pool's
+   * checkout validation uses this to drop dead entries.
+   */
+  isClosed() {
+    return this.graph.isClosed()
   }
 
   /**

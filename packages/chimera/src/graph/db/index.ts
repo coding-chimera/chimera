@@ -48,6 +48,13 @@ declare const CHIMERA_DB_SCHEMA: string | undefined;
 export interface DatabaseOpenOptions {
   readOnly?: boolean;
   storageExtensions?: readonly StorageExtension[];
+  /**
+   * Per-connection page-cache override in MB. Defaults to the
+   * CHIMERA_SQLITE_CACHE_MB env (16MB). Pooled read-only opens pass a
+   * smaller budget (see src/chimera/read-only-pool.ts); writer opens and
+   * direct opens never set it, so their behavior is unchanged.
+   */
+  cacheSizeMB?: number;
 }
 
 const sqlitePragmaMB = (name: string, fallback: number) => {
@@ -64,6 +71,11 @@ const sqlitePragmaMB = (name: string, fallback: number) => {
 // CHIMERA_SQLITE_MMAP_MB (see docs/configuration.md). Both are env-overridable.
 const sqliteCacheKiB = () => Math.max(1024, sqlitePragmaMB('CHIMERA_SQLITE_CACHE_MB', 16) * 1024);
 const sqliteMmapBytes = () => sqlitePragmaMB('CHIMERA_SQLITE_MMAP_MB', 32) * 1024 * 1024;
+// Per-open cache override (pooled read-only opens); falls back to the env default.
+const sqliteCacheKiBFor = (options: DatabaseOpenOptions) =>
+  options.cacheSizeMB !== undefined && Number.isFinite(options.cacheSizeMB) && options.cacheSizeMB >= 0
+    ? Math.max(1024, Math.floor(options.cacheSizeMB) * 1024)
+    : sqliteCacheKiB();
 // temp_store stays FILE by default: chimera runs inside an agent runtime where
 // large sorts/joins spilling to disk are safer than unbounded memory. Set
 // CHIMERA_SQLITE_TEMP_STORE=MEMORY to mirror upstream codegraph's default.
@@ -97,7 +109,7 @@ export function resolveWalHealBytes(envVal: string | undefined): number {
 function configureConnection(db: SqliteDatabase, options: DatabaseOpenOptions = {}): void {
   db.pragma('busy_timeout = 5000');
   db.pragma('foreign_keys = ON');
-  db.pragma(`cache_size = -${sqliteCacheKiB()}`);
+  db.pragma(`cache_size = -${sqliteCacheKiBFor(options)}`);
   db.pragma(`mmap_size = ${sqliteMmapBytes()}`);
   if (options.readOnly) {
     db.pragma('query_only = ON');

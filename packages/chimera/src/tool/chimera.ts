@@ -783,7 +783,18 @@ export function openProjectGraphForTool(ctx: Tool.Context, refresh: boolean, opt
       onProgress: reporter.onProgress,
       projectPath: options.projectPath,
     }).pipe(Effect.tap((state) => Effect.sync(() => Chimera.trackGraphStateUse(state, readOnly)))),
-    (state) => Effect.sync(() => Chimera.untrackGraphStateUse(state, readOnly)),
+    (state) =>
+      Effect.sync(() => Chimera.untrackGraphStateUse(state, readOnly)).pipe(
+        Effect.andThen(
+          // Pooled read-only lease: the scope ended (acquireRelease's release
+          // carries no exit status), so return it to the pool — checkout
+          // validation covers staleness. Writer states have no lease and
+          // stay cached in graphStates untouched.
+          readOnly || state.crossProject === true
+            ? Effect.promise(() => Chimera.releaseReadOnlyGraph(state, true)).pipe(Effect.ignore)
+            : Effect.void,
+        ),
+      ),
   ).pipe(
     Effect.ensuring(Effect.sync(() => reporter.done())),
   )

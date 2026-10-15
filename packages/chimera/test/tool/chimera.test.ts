@@ -4,6 +4,7 @@ import path from "path"
 import { Cause, Effect, Exit, Layer } from "effect"
 import { Bus } from "@/bus"
 import { Chimera } from "@/chimera"
+import { ReadOnlyPool } from "@/chimera/read-only-pool"
 import { ChimeraPromptContext } from "@/chimera/prompt-context"
 import type { ProjectGraphState } from "@/chimera"
 import { readActiveEditIntentClaims, readAuditRuns, readEditIntentWaiters, readPredesignRuns, registerEditIntentClaims, registerEditIntentWaiter } from "@/chimera/store"
@@ -381,7 +382,7 @@ describe("tool.chimera", () => {
     }),
   )
 
-  it.instance("closes read-only scoped graph state without closing cached graph state", () =>
+  it.instance("returns read-only scoped graph state to the pool without closing cached graph state", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
       yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "scoped.ts"), "export const scoped = 1\n"))
@@ -391,13 +392,19 @@ describe("tool.chimera", () => {
         { readOnly: true, watch: false, sync: false },
         (state) => Effect.succeed(state),
       )
-      expect(() => readOnlyState.graph.snapshot()).toThrow()
+      // Pooled contract: the read-only connection is returned to the pool on
+      // release (stays open and warm), and its lease is consumed.
+      expect(readOnlyState.graph.snapshot().fileCount).toBeGreaterThan(0)
+      expect(Chimera.readOnlyLeaseForTest(readOnlyState)).toBeUndefined()
+      expect(ReadOnlyPool.readOnlyPoolStats(test.directory).size).toBe(1)
+      expect(ReadOnlyPool.readOnlyPoolStats(test.directory).inUse).toBe(0)
 
       const cachedState = yield* Chimera.withProjectGraph(
         { watch: false, sync: false },
         (state) => Effect.succeed(state),
       )
       expect(cachedState.graph.snapshot().fileCount).toBeGreaterThan(0)
+      ReadOnlyPool.resetReadOnlyPoolForTest()
     }),
   )
 

@@ -927,6 +927,9 @@ export interface OpenOptions {
 
   /** Whether to run in read-only mode */
   readOnly?: boolean;
+
+  /** Per-connection SQLite page-cache override in MB (see DatabaseOpenOptions). */
+  cacheSizeMB?: number;
 }
 
 /**
@@ -1247,7 +1250,7 @@ export class CodeGraph {
     }
 
     const dbPath = getDatabasePath(resolvedRoot);
-    const db = DatabaseConnection.open(dbPath, { readOnly: options.readOnly });
+    const db = DatabaseConnection.open(dbPath, { readOnly: options.readOnly, cacheSizeMB: options.cacheSizeMB });
     const queries = new QueryBuilder(db.getDb(), openStoreBridge(dbPath, options.readOnly));
 
     const instance = new CodeGraph(db, queries, resolvedRoot);
@@ -1270,7 +1273,7 @@ export class CodeGraph {
   /**
    * Open synchronously (without sync)
    */
-  static openSync(projectRoot: string, options: Pick<OpenOptions, 'readOnly'> = {}): CodeGraph {
+  static openSync(projectRoot: string, options: Pick<OpenOptions, 'readOnly' | 'cacheSizeMB'> = {}): CodeGraph {
     const resolvedRoot = path.resolve(projectRoot);
 
     // Check if initialized
@@ -1286,7 +1289,7 @@ export class CodeGraph {
     }
 
     const dbPath = getDatabasePath(resolvedRoot);
-    const db = DatabaseConnection.open(dbPath, { readOnly: options.readOnly });
+    const db = DatabaseConnection.open(dbPath, { readOnly: options.readOnly, cacheSizeMB: options.cacheSizeMB });
     const queries = new QueryBuilder(db.getDb(), openStoreBridge(dbPath, options.readOnly));
 
     return new CodeGraph(db, queries, resolvedRoot);
@@ -1438,6 +1441,15 @@ export class CodeGraph {
   shrink(): void {
     this.db.shrinkMemory();
     this.queries.clearCache();
+  }
+
+  /**
+   * Whether close() has run (the underlying connection is no longer open).
+   * The read-only pool's checkout validation uses this to drop entries that
+   * were closed underneath it.
+   */
+  isClosed(): boolean {
+    return !this.db.isOpen();
   }
 
   /**
