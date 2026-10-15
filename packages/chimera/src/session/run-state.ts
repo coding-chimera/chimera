@@ -61,6 +61,13 @@ export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const status = yield* SessionStatus.Service
+    // InstanceStore is intentionally not in this layer's own provide chain: it reaches
+    // construction through the app compositions' root-level provideMerge(InstanceLayer.layer)
+    // (empirically visible to member construction), and compositions without it degrade by
+    // design to no pin reconciler / no instance lease (Option.isSome guards below). Do not
+    // self-provide here: InstanceStore.defaultLayer drags in the dynamic-import
+    // InstanceBootstrap layer and would cycle project bootstrap.
+    // service-wiring: optional root provideMerge wiring + designed degradation (see above)
     const store = yield* Effect.serviceOption(InstanceStore.Service)
     const background = yield* Effect.serviceOption(BackgroundJob.Service)
     const state = yield* InstanceState.make(

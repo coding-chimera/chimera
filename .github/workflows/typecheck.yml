@@ -22,3 +22,6 @@ jobs:
 
       - name: Run layering gate
         run: bun run --cwd packages/chimera check:layering
+
+      - name: Run service-wiring gate
+        run: bun run --cwd packages/chimera check:service-wiring

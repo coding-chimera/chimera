@@ -36,7 +36,8 @@
     "dev": "bun run --conditions=browser ./src/index.ts",
     "dev:temporary": "bun run --conditions=browser ./src/temporary.ts",
     "db": "bun drizzle-kit",
-    "check:layering": "bun run script/check-layering.ts --max-file-scc=3 --max-module-scc=36"
+    "check:layering": "bun run script/check-layering.ts --max-file-scc=3 --max-module-scc=36",
+    "check:service-wiring": "bun run script/check-service-wiring.ts"
   },
   "bin": {
     "chimera": "./bin/chimera"
