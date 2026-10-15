@@ -7,6 +7,7 @@ import { NodeFileSystem } from "@effect/platform-node"
 import * as NodePath from "@effect/platform-node/NodePath"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Global } from "@opencode-ai/core/global"
+import { Config } from "../../src/config/config"
 import { BrowserArtifact } from "../../src/browser/artifact"
 import { BrowserRuntime } from "../../src/browser/runtime"
 import { BrowserSnapshot } from "../../src/browser/snapshot"
@@ -91,6 +92,9 @@ class FakeContext implements BrowserRuntime.BrowserContextLike {
 
 class FakeBrowser implements BrowserRuntime.BrowserLike {
   closed = false
+  /** null keeps the session process registry path inert for these tests. */
+  pid: number | null = null
+  readonly disconnectHandlers: Array<() => void> = []
   readonly contexts: FakeContext[] = []
   readonly contextOptions: Array<Parameters<BrowserRuntime.BrowserLike["newContext"]>[0]> = []
 
@@ -132,6 +136,14 @@ class FakeDriver implements BrowserRuntime.Driver {
     return this.browser()
   }
 
+  pid(browser: BrowserRuntime.BrowserLike) {
+    return browser instanceof FakeBrowser ? browser.pid : null
+  }
+
+  onDisconnected(browser: BrowserRuntime.BrowserLike, handler: () => void) {
+    if (browser instanceof FakeBrowser) browser.disconnectHandlers.push(handler)
+  }
+
   private async browser() {
     await Bun.sleep(10)
     const browser = new FakeBrowser()
@@ -155,6 +167,7 @@ const artifactLayer = BrowserArtifact.layer.pipe(
 const runtimeLayer = BrowserRuntime.layerWith(driver).pipe(
   Layer.provide(artifactLayer),
   Layer.provide(platformLayer),
+  Layer.provide(Config.defaultLayer),
 )
 const it = testEffect(Layer.mergeAll(runtimeLayer, platformLayer))
 

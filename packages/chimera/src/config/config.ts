@@ -26,6 +26,7 @@ import { zod } from "@/util/effect-zod"
 import { NonNegativeInt, PositiveInt, withStatics, type DeepMutable } from "@/util/schema"
 import { ConfigAgent } from "./agent"
 import { ConfigAttachment } from "./attachment"
+import { ConfigBrowser } from "./browser"
 import { ConfigCommand } from "./command"
 import { ConfigDelegation } from "./delegation"
 import { ConfigFormatter } from "./formatter"
@@ -287,6 +288,9 @@ export const Info = Schema.Struct({
   tools: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)),
   attachment: Schema.optional(ConfigAttachment.Info).annotate({
     description: "Attachment handling configuration",
+  }),
+  browser: Schema.optional(ConfigBrowser.Info).annotate({
+    description: "Browser tool launch settings (headless/headed)",
   }),
   enterprise: Schema.optional(
     Schema.Struct({

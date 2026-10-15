@@ -4,7 +4,9 @@ import { Context, Effect, FileSystem, Layer, Schema, Semaphore } from "effect"
 import { NodeFileSystem } from "@effect/platform-node"
 import { pathToFileURL } from "url"
 import { ulid } from "ulid"
+import { Config } from "@/config/config"
 import { InstanceState } from "@/effect/instance-state"
+import { ProcessRegistry } from "@/chimera/process-registry"
 import { BrowserArtifact } from "./artifact"
 import { BrowserDiscovery } from "./discovery"
 import { BrowserSnapshot } from "./snapshot"
@@ -50,6 +52,8 @@ export interface SnapshotResult extends BrowserSnapshot.Result {
 export interface ScreenshotResult {
   readonly artifact: BrowserArtifact.Artifact
   readonly attachment: BrowserArtifact.Attachment
+  /** Server-relative URL the WebUI can load the artifact from (markdown-friendly). */
+  readonly url: string
 }
 
 export class RuntimeError extends Schema.TaggedErrorClass<RuntimeError>()("BrowserRuntimeError", {
@@ -92,6 +96,10 @@ export interface Driver {
     readonly timeout: number
   }) => Promise<BrowserLike>
   readonly connectOverCDP: (endpoint: string, options?: { readonly timeout?: number }) => Promise<BrowserLike>
+  /** Local browser process pid; null when the driver cannot observe one (e.g. remote CDP). */
+  readonly pid: (browser: BrowserLike) => number | null
+  /** Subscribe to the browser-level disconnect signal (headed window closed by the user). */
+  readonly onDisconnected: (browser: BrowserLike, handler: () => void) => void
 }
 
 export interface Interface {
@@ -113,6 +121,9 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/Br
 type Connection = {
   readonly mode: "remote" | "local"
   readonly browser: BrowserLike
+  readonly pid?: number
+  registry?: { readonly projectRoot: string; readonly entryID: string }
+  ownerSessionID?: string
 }
 
 type TabState = {
@@ -136,6 +147,10 @@ type State = {
 
 const DEFAULT_TIMEOUT = 15_000
 
+// Descriptive command text for the session process registry entry of a locally
+// launched browser (the registry row is shared with bash-tool child processes).
+const BROWSER_PROCESS_COMMAND = "chromium (chimera browser)"
+
 // playwright-core is external at build time (bun cannot inline its dynamic
 // requires), so load it lazily: startup never touches it and a missing
 // package surfaces as a per-operation RuntimeError instead of crashing.
@@ -149,6 +164,13 @@ const PLAYWRIGHT_DRIVER: Driver = {
   launch: async (options) => (await loadChromium()).launch(options) as unknown as BrowserLike,
   connectOverCDP: async (endpoint, options) =>
     (await loadChromium()).connectOverCDP(endpoint, options) as unknown as BrowserLike,
+  // playwright Browser.process() is null for CDP connections, so remote mode
+  // never registers a pid it cannot observe.
+  pid: (browser) => (browser as { process?: () => { pid?: number } | null }).process?.()?.pid ?? null,
+  onDisconnected: (browser, handler) => {
+    const emitter = browser as { on?: (event: "disconnected", listener: () => void) => void }
+    emitter.on?.("disconnected", handler)
+  },
 }
 
 export const layerWith = (driver: Driver) =>
@@ -157,6 +179,7 @@ export const layerWith = (driver: Driver) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
       const artifacts = yield* BrowserArtifact.Service
+      const config = yield* Config.Service
 
       const attempt = <A>(operation: string, run: () => Promise<A>) =>
         Effect.tryPromise({
@@ -179,9 +202,15 @@ export const layerWith = (driver: Driver) =>
         Effect.gen(function* () {
           yield* Effect.forEach(Array.from(current.sessions.values()), cleanupSession, { concurrency: "unbounded" })
           current.sessions.clear()
-          if (!current.connection) return
-          yield* attempt("close browser connection", () => current.connection!.browser.close()).pipe(Effect.ignore)
+          const connection = current.connection
+          if (!connection) return
           current.connection = undefined
+          yield* attempt("close browser connection", () => connection.browser.close()).pipe(Effect.ignore)
+          const registry = connection.registry
+          if (registry)
+            yield* Effect.promise(() => ProcessRegistry.markExited(registry.projectRoot, registry.entryID, null)).pipe(
+              Effect.catch(() => Effect.void),
+            )
         })
 
       const state = yield* InstanceState.make<State>(() =>
@@ -198,11 +227,40 @@ export const layerWith = (driver: Driver) =>
       const connect = (endpoint: string, timeout: number) =>
         attempt("connect to browser CDP", () => driver.connectOverCDP(endpoint, { timeout }))
 
+      const currentProjectRoot = () =>
+        InstanceState.context.pipe(Effect.map((ctx) => (ctx.worktree === "/" ? ctx.directory : ctx.worktree)))
 
-      const ensureConnection = (current: State, launch: LaunchOptions = {}) =>
+      // The connection is a per-directory singleton shared across sessions. When a
+      // different session reuses it and the original registry entry is already
+      // terminal/released (sweep, TTL, or session removal), re-register the live
+      // browser pid under the new session so cross-session visibility and the kill
+      // gate keep working. Degrade-open: registry trouble never blocks the browser.
+      const refreshRegistryOwner = (connection: Connection, sessionID: string) =>
+        Effect.gen(function* () {
+          const pid = connection.pid
+          if (connection.mode !== "local" || pid === undefined) return
+          if (connection.ownerSessionID === sessionID) return
+          const existing = connection.registry
+          if (existing) {
+            const rows = yield* Effect.promise(() => ProcessRegistry.getByPids(existing.projectRoot, [pid])).pipe(
+              Effect.catch(() => Effect.succeed([] as ProcessRegistry.ProcessEntry[])),
+            )
+            if (rows.some((row) => row.id === existing.entryID && row.status === "running")) return
+          }
+          const projectRoot = yield* currentProjectRoot()
+          const registered = yield* registerBrowserProcess(projectRoot, sessionID, pid)
+          if (!registered) return
+          connection.registry = { projectRoot, entryID: registered.id }
+          connection.ownerSessionID = sessionID
+        })
+
+      const ensureConnection = (current: State, sessionID: string, launch: LaunchOptions = {}) =>
         current.lock.withPermits(1)(
           Effect.gen(function* () {
-            if (current.connection) return current.connection
+            if (current.connection) {
+              yield* refreshRegistryOwner(current.connection, sessionID)
+              return current.connection
+            }
             const timeout = launch.timeout ?? DEFAULT_TIMEOUT
             const cdpUrl = launch.cdpUrl ?? process.env.CHIMERA_BROWSER_CDP_URL
             if (cdpUrl) {
@@ -219,15 +277,39 @@ export const layerWith = (driver: Driver) =>
                 (cause) => new RuntimeError({ operation: "discover browser", message: cause.message }),
               ),
             )
+            // Priority: explicit launch option > config browser.headless > env > headless.
+            const configured = yield* config.get().pipe(
+              Effect.map((info) => info.browser?.headless),
+              Effect.catch(() => Effect.succeed(undefined)),
+            )
+            const headless = launch.headless ?? configured ?? process.env.CHIMERA_BROWSER_HEADLESS !== "false"
             const browser = yield* attempt("launch browser", () =>
               driver.launch({
                 executablePath: discovered.path,
-                headless: launch.headless ?? process.env.CHIMERA_BROWSER_HEADLESS !== "false",
+                headless,
                 timeout,
               }),
             )
-            const connection = { mode: "local" as const, browser }
+            const pid = driver.pid(browser)
+            const connection: Connection = { mode: "local", browser, ...(pid === null ? {} : { pid }) }
             current.connection = connection
+            if (pid === null) return connection
+            // Session process registry: record the launched browser so concurrent
+            // sessions see it, the kill gate covers it, and proc_notify can watch it.
+            // Degrade-open exactly like the shell tool: failure never blocks launch.
+            const projectRoot = yield* currentProjectRoot()
+            const registered = yield* registerBrowserProcess(projectRoot, sessionID, pid)
+            if (!registered) return connection
+            connection.registry = { projectRoot, entryID: registered.id }
+            connection.ownerSessionID = sessionID
+            driver.onDisconnected(browser, () => {
+              void ProcessRegistry.markExited(projectRoot, registered.id, null).catch(() => undefined)
+              // A headed window closed by the user kills every context; drop the dead
+              // connection so the next open relaunches.
+              if (current.connection !== connection) return
+              current.connection = undefined
+              current.sessions.clear()
+            })
             return connection
           }),
         )
@@ -236,7 +318,7 @@ export const layerWith = (driver: Driver) =>
         Effect.gen(function* () {
           const hit = current.sessions.get(sessionID)
           if (hit) return hit
-          const connection = yield* ensureConnection(current, launch)
+          const connection = yield* ensureConnection(current, sessionID, launch)
           const session: SessionState = {
             context: yield* attempt("create browser context", () =>
               connection.browser.newContext(launch?.locale ? { locale: launch.locale } : undefined),
@@ -402,7 +484,14 @@ export const layerWith = (driver: Driver) =>
                   (cause) => new RuntimeError({ operation: "attach browser screenshot", message: errorMessage(cause) }),
                 ),
               )
-              return { artifact, attachment }
+              const url = yield* artifacts
+                .urlPath({ sessionID: input.sessionID, filename: artifact.filename })
+                .pipe(
+                  Effect.mapError(
+                    (cause) => new RuntimeError({ operation: "resolve browser artifact url", message: errorMessage(cause) }),
+                  ),
+                )
+              return { artifact, attachment, url }
             }),
           )
         }),
@@ -439,7 +528,13 @@ export const layer = layerWith(PLAYWRIGHT_DRIVER)
 export const defaultLayer = layer.pipe(
   Layer.provide(BrowserArtifact.defaultLayer),
   Layer.provide(NodeFileSystem.layer),
+  Layer.provide(Config.defaultLayer),
 )
+
+const registerBrowserProcess = (projectRoot: string, sessionID: string, pid: number) =>
+  Effect.promise(() =>
+    ProcessRegistry.register({ projectRoot, sessionID, pid, pgid: null, command: BROWSER_PROCESS_COMMAND }),
+  ).pipe(Effect.catch(() => Effect.succeed(undefined)))
 
 function scopeRefs(result: BrowserSnapshot.Result, generation: number): BrowserSnapshot.Result {
   const prefix = `g${generation}`

@@ -17,6 +17,8 @@ import { errors } from "../error"
 import { disposeAllInstancesAndEmitGlobalDisposed } from "../global-lifecycle"
 import { WebUIPreferences } from "@/server/webui-preferences"
 import { InstanceStore } from "@/project/instance-store"
+import { Global } from "@opencode-ai/core/global"
+import { BrowserArtifact } from "@/browser/artifact"
 import "@/server/event"
 
 const log = Log.create({ service: "server" })
@@ -329,6 +331,40 @@ export const GlobalRoutes = lazy(() =>
           },
         })
         return c.json({ success: true, version: target })
+      },
+    )
+    .get(
+      "/browser-artifact/:projectHash/:sessionHash/:filename",
+      describeRoute({
+        summary: "Get browser artifact image",
+        description:
+          "Serve one image artifact written by the browser tools from the managed browser-artifact directory. Path parameters are the project/session hashes embedded in the artifact URLs returned by browser_screenshot; traversal outside the artifact root, unknown content types, and missing files all answer 404. Served without instance middleware so HTML <img> tags can load it directly.",
+        operationId: "global.browserArtifact",
+        responses: {
+          200: {
+            description: "Artifact image bytes",
+            content: {
+              "image/png": {
+                schema: resolver(z.string().describe("Binary image bytes; content-type varies by artifact extension")),
+              },
+            },
+          },
+          ...errors(404),
+        },
+      }),
+      async (c) => {
+        const resolved = BrowserArtifact.resolveArtifactFile(
+          Global.Path.data,
+          c.req.param("projectHash"),
+          c.req.param("sessionHash"),
+          c.req.param("filename"),
+        )
+        if (!resolved) return c.notFound()
+        return c.body(await Bun.file(resolved.path).arrayBuffer(), 200, {
+          "Content-Type": resolved.mime,
+          "Cache-Control": "private, max-age=86400",
+          "X-Content-Type-Options": "nosniff",
+        })
       },
     ),
 )

@@ -58,6 +58,7 @@ function makeArtifacts() {
         filename: artifact.filename,
         url: `data:${artifact.mime};base64,ZmFrZQ==`,
       }),
+    urlPath: (input) => Effect.succeed(`/global/browser-artifact/test-project/test-session/${input.filename}`),
   }
   return { service, data, writes }
 }
@@ -141,6 +142,7 @@ function makeRuntime(options: {
             filename: `runtime-${calls.screenshots}.png`,
             url: "data:image/png;base64,cG5n",
           },
+          url: `/global/browser-artifact/test-project/test-session/runtime-${calls.screenshots}.png`,
         }
       })
     },

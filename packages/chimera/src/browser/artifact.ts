@@ -3,6 +3,8 @@ export * as BrowserArtifact from "./artifact"
 import { Context, Effect, FileSystem, Layer, Path, PlatformError, Schema } from "effect"
 import { NodeFileSystem } from "@effect/platform-node"
 import * as NodePath from "@effect/platform-node/NodePath"
+import { existsSync, statSync } from "node:fs"
+import * as StaticPath from "node:path"
 import { Global } from "@opencode-ai/core/global"
 import { Hash } from "@opencode-ai/core/util/hash"
 import { InstanceState } from "@/effect/instance-state"
@@ -33,6 +35,44 @@ export interface WriteInput {
   readonly data: Uint8Array | string
 }
 
+/** Root segment of the persistent artifact tree under the global data directory. */
+const ARTIFACT_ROOT = "browser-artifacts"
+
+/** Image content types servable through the global browser-artifact HTTP route. */
+const ARTIFACT_CONTENT_TYPES: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+}
+
+/** Session subdirectory name inside a project's persistent artifact root. */
+export function sessionHash(sessionID: string) {
+  return Hash.fast(sessionID).slice(0, 24)
+}
+
+/** Server-relative URL path the global browser-artifact route serves. */
+export function artifactUrlPath(projectKey: string, sessionHashValue: string, filename: string) {
+  return `/global/browser-artifact/${projectKey}/${sessionHashValue}/${filename}`
+}
+
+/**
+ * Resolve one artifact file under `<dataRoot>/browser-artifacts` for the HTTP
+ * route. Traversal-safe: the resolved path must stay inside the artifact root,
+ * the extension must map to a known image content type, and the target must be
+ * an existing regular file. Any violation yields undefined (route answers 404).
+ */
+export function resolveArtifactFile(dataRoot: string, projectKey: string, sessionHashValue: string, filename: string) {
+  const root = StaticPath.resolve(dataRoot, ARTIFACT_ROOT)
+  const target = StaticPath.resolve(root, projectKey, sessionHashValue, filename)
+  if (!target.startsWith(root + StaticPath.sep)) return undefined
+  const mime = ARTIFACT_CONTENT_TYPES[StaticPath.extname(target).toLowerCase()]
+  if (!mime) return undefined
+  if (!existsSync(target) || !statSync(target).isFile()) return undefined
+  return { path: target, mime }
+}
+
 export class PathError extends Schema.TaggedErrorClass<PathError>()("BrowserArtifactPathError", {
   message: Schema.String,
   path: Schema.String,
@@ -44,6 +84,11 @@ export interface Interface {
   readonly write: (input: WriteInput) => Effect.Effect<Artifact, PlatformError.PlatformError | PathError>
   readonly read: (artifact: Artifact) => Effect.Effect<Uint8Array, PlatformError.PlatformError | PathError>
   readonly attachment: (artifact: Artifact) => Effect.Effect<Attachment, PlatformError.PlatformError | PathError>
+  /** Server-relative URL path serving the artifact through the global HTTP route. */
+  readonly urlPath: (input: {
+    readonly sessionID: string
+    readonly filename: string
+  }) => Effect.Effect<string, PlatformError.PlatformError>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/BrowserArtifact") {}
@@ -61,7 +106,8 @@ export const layer = Layer.effect(
         yield* fs.makeDirectory(temporaryRoot, { recursive: true })
         return {
           runtimeDirectory: yield* fs.makeTempDirectoryScoped({ directory: temporaryRoot, prefix: "runtime-" }),
-          persistentRoot: path.join(global.data, "browser-artifacts", projectKey),
+          persistentRoot: path.join(global.data, ARTIFACT_ROOT, projectKey),
+          projectKey,
         }
       }),
     )
@@ -115,6 +161,10 @@ export const layer = Layer.effect(
           filename: artifact.filename,
           url: `data:${artifact.mime};base64,${Buffer.from(bytes).toString("base64")}`,
         }
+      }),
+      urlPath: Effect.fn("BrowserArtifact.urlPath")(function* (input: { sessionID: string; filename: string }) {
+        const current = yield* InstanceState.get(state)
+        return artifactUrlPath(current.projectKey, sessionHash(input.sessionID), input.filename)
       }),
     })
   }),

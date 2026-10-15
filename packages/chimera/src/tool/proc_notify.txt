@@ -6,7 +6,7 @@ Use this when:
 - You spawned a process that detached or that you can no longer await directly, and you want its exit to wake you.
 
 Rules:
-- Only pids present in this project's process registry can be watched. Register a process by running it through the bash tool; arbitrary OS pids are rejected. If the pid is unknown the tool errors and lists the currently active registered pids.
+- Only pids present in this project's process registry can be watched. Processes are registered by running them through the bash tool and by browser tools launching a local browser instance; arbitrary OS pids are rejected. If the pid is unknown the tool errors and lists the currently active registered pids.
 - The subscription is one-shot: the first terminal signal (exited, killed, or expired) injects exactly one notice and destroys the watch. Re-subscribe if you need to watch again.
 - Watching is keyed by pid and fans out: several sessions may watch the same pid and each gets its own notice. A watch belongs to the session that created it and is dropped when that session is removed.
 - If the process is already terminal when you call, no subscription is created and the tool returns its exit details synchronously.

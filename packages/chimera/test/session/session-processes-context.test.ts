@@ -151,7 +151,7 @@ describe("session.prompt runtime context — Session Processes section", () => {
             `- pid ${process.pid} pgid - "tail -f server.log" started_at ${foreign.startedAt} (session ${other.id})`,
           )
           expect(text).toContain(
-            "These OS processes were spawned by Chimera sessions in this project via the bash tool. Do not kill another session's process; the bash tool blocks cross-session kills unless CHIMERA_KILL_CONFIRM=1 is set.",
+            "These OS processes were spawned by Chimera sessions in this project (bash-tool child processes and locally launched browser instances). Do not kill another session's process; the bash tool blocks cross-session kills unless CHIMERA_KILL_CONFIRM=1 is set.",
           )
           // ANTI-CHURN: no relative times anywhere (would re-inject every turn).
           expect(text).not.toContain("ago")

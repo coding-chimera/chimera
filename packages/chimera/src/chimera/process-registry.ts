@@ -16,12 +16,13 @@ import {
 const log = Log.create({ service: "chimera.process-registry" })
 
 /**
- * Session process registry: every bash-tool child process is recorded in the
- * shared per-project Chimera DB so concurrent sessions see each other's
- * spawned processes, cross-session kills are gated, and the owner learns when
- * a registered process is killed externally. The store surface is fully
- * degrade-open: any storage trouble yields no rows and never throws, so the
- * shell tool keeps executing commands when the registry is unavailable.
+ * Session process registry: every bash-tool child process and locally launched
+ * browser instance is recorded in the shared per-project Chimera DB so
+ * concurrent sessions see each other's spawned processes, cross-session kills
+ * are gated, and the owner learns when a registered process is killed
+ * externally. The store surface is fully degrade-open: any storage trouble
+ * yields no rows and never throws, so the shell and browser tools keep working
+ * when the registry is unavailable.
  */
 
 /** One registered child process; the shared read shape for prompt context and HTTP routes. */

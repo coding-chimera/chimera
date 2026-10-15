@@ -50,6 +50,7 @@ export const GlobalPaths = {
   dispose: "/global/dispose",
   presence: "/global/presence",
   upgrade: "/global/upgrade",
+  browserArtifact: "/global/browser-artifact/:projectHash/:sessionHash/:filename",
 } as const
 
 export const GlobalApi = HttpApi.make("global").add(
@@ -143,6 +144,21 @@ export const GlobalApi = HttpApi.make("global").add(
           identifier: "global.upgrade",
           summary: "Upgrade opencode",
           description: "Upgrade opencode to the specified version or latest if not specified.",
+        }),
+      ),
+      HttpApiEndpoint.get("browserArtifact", GlobalPaths.browserArtifact, {
+        params: {
+          projectHash: Schema.String,
+          sessionHash: Schema.String,
+          filename: Schema.String,
+        },
+        success: described(Schema.Uint8Array, "Artifact image bytes"),
+      }).annotateMerge(
+        OpenApi.annotations({
+          identifier: "global.browserArtifact",
+          summary: "Get browser artifact image",
+          description:
+            "Serve one image artifact written by the browser tools from the managed browser-artifact directory. Path parameters are the project/session hashes embedded in the artifact URLs returned by browser_screenshot; traversal outside the artifact root, unknown content types, and missing files all answer 404. Served without instance middleware so HTML <img> tags can load it directly.",
         }),
       ),
     )

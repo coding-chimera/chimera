@@ -32,11 +32,12 @@ export const BrowserScreenshotTool = Tool.define(
           )
           return {
             title: `Browser screenshot: ${screenshot.artifact.filename}`,
-            output: `Screenshot saved to ${screenshot.artifact.path}`,
+            output: `Screenshot saved to ${screenshot.artifact.path}\nMarkdown: ![screenshot](${screenshot.url})`,
             metadata: {
               tabID: tab.id,
               artifactPath: screenshot.artifact.path,
               filename: screenshot.artifact.filename,
+              url: screenshot.url,
             },
             attachments: [screenshot.attachment],
           }

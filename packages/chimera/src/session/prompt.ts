@@ -549,7 +549,7 @@ export const layer = Layer.effect(
           "",
           ...lines,
           "",
-          "These OS processes were spawned by Chimera sessions in this project via the bash tool. Do not kill another session's process; the bash tool blocks cross-session kills unless CHIMERA_KILL_CONFIRM=1 is set. Subscribe to a listed process's exit with proc_notify(pid).",
+          "These OS processes were spawned by Chimera sessions in this project (bash-tool child processes and locally launched browser instances). Do not kill another session's process; the bash tool blocks cross-session kills unless CHIMERA_KILL_CONFIRM=1 is set. Subscribe to a listed process's exit with proc_notify(pid).",
         ].join("\n")
       })
       return [

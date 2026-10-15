@@ -45,7 +45,7 @@ export const ProcNotifyTool = Tool.define(
             )
             return yield* Effect.fail(
               new Error(
-                `No registered process with pid ${pid} in this project. Active registered pids: ${activePidList(active)}. proc_notify only watches processes spawned by the bash tool in this project.`,
+                `No registered process with pid ${pid} in this project. Active registered pids: ${activePidList(active)}. proc_notify only watches processes registered in this project (bash-tool child processes and browser instances launched by browser tools).`,
               ),
             )
           }

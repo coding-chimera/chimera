@@ -7,6 +7,10 @@ import * as Tool from "./tool"
 export const Parameters = Schema.Struct({
   url: Schema.String.annotate({ description: "Absolute http:// or https:// URL to open" }),
   timeout: Schema.optional(Schema.Number).annotate({ description: "Optional navigation timeout in milliseconds" }),
+  headless: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Run the browser without a visible window (default, also settable via config browser.headless). Pass false to launch a headed browser the user can watch and intervene in.",
+  }),
 })
 
 export const BrowserOpenTool = Tool.define(
@@ -29,7 +33,10 @@ export const BrowserOpenTool = Tool.define(
             runtime.open({
               sessionID: ctx.sessionID,
               url: url.href,
-              launch: params.timeout === undefined ? undefined : { timeout: params.timeout },
+              launch: {
+                ...(params.headless === undefined ? {} : { headless: params.headless }),
+                ...(params.timeout === undefined ? {} : { timeout: params.timeout }),
+              },
             }),
           )
           const currentOrigin = origin(tab.url)
