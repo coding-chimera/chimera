@@ -37,7 +37,7 @@ const TOOL_BUDGETS = {
   "task.txt": 7055,
   "swarm.txt": 6951,
   "workbrief.txt": 6546,
-  "shell/shell.txt": 7174,
+  "shell/shell.txt": 7501,
 } as const
 
 // 2026-10-08 re-record: the experimental session-goal tools (goal_get.txt,
@@ -81,13 +81,19 @@ const TOOL_BUDGETS = {
 // ast_edit descriptions gained the replay-key guidance (replay stashes, single-
 // consumption, gate re-check semantics), raising ast_edit.txt (10331 -> 10984)
 // and the always-on floor to 101308.
-const TOOL_TOTAL_BUDGET = 101308
+// 2026-10-15 re-record (proc_notify + browser tooling, two unrecorded batches):
+// 7b651dd07 added proc_notify.txt (2015 B, always-on) and grew shell.txt
+// (7176 -> 7375); 6c905444d (browser process registry / headed mode) grew
+// shell.txt further (7375 -> 7501) and the deferred browser_open/
+// browser_screenshot/proc_notify wording (+411 B deferred). Floor 101308 ->
+// 104151; DEFERRED_TXT_BUDGET 14354 -> 14765.
+const TOOL_TOTAL_BUDGET = 104151
 
 // The description bytes withheld from the default model-facing set by the
 // ToolSearch defer filter: every registered deferred tool's .txt is off the
 // wire until revealed, so the per-request description cost drops below the
 // full-registration floor recorded above.
-const DEFERRED_TXT_BUDGET = 14354
+const DEFERRED_TXT_BUDGET = 14765
 const TOOL_SEARCH_TXT_BUDGET = 2030
 
 const CAPABILITY_TOOLS = { chimera_search: {}, workbrief: {}, browser_open: {}, read: {}, bash: {} }

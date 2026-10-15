@@ -90,6 +90,11 @@ describe("session.system", () => {
       expect(unknown).toContain("# Code editing rules")
       expect(unknown).toContain("# Git rules")
       expect(unknown).toContain("Do not create, modify, or populate `.env`")
+      // Hard-rule anchors: the generate-then-execute binary ban must survive
+      // prompt slimming — its 2026-10-14 compression dropped the approval
+      // requirement and a real session fell through the loophole the same week.
+      expect(unknown).toContain("generate-then-execute pattern mirrors attack chains")
+      expect(unknown).toContain("requires explicit user approval or a trusted CI environment")
       expect(unknown).not.toContain("You are opencode")
       expect(unknown).not.toContain("github.com/anomalyco/opencode")
 
