@@ -3637,6 +3637,15 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
 export const defaultLayer = Layer.suspend(() =>
   layer.pipe(
+    // BackgroundJob must enter through THIS chain, not as an app-level
+    // mergeAll sibling: serviceOption(BackgroundJob.Service) above resolves at
+    // layer-construction time and sibling layers are invisible there — the
+    // Option was None in every production composition from its introduction
+    // (2026-09-08) until this provide, silently disabling the Background Tasks
+    // runtime-context section while harness tests stayed green (they wire
+    // provideMerge straight into the inner layer). Merged into the Session
+    // provide below because layer.pipe caps at 20 arguments; the shared
+    // memoMap keeps one engine (SessionRunState/SessionActivity pattern).
     Layer.provide(SessionRunState.defaultLayer),
     Layer.provide(SessionStatus.defaultLayer),
     Layer.provide(SessionCompaction.defaultLayer),
@@ -3655,7 +3664,7 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(Plugin.defaultLayer),
     Layer.provide(Question.defaultLayer),
     Layer.provide(
-      Layer.mergeAll(Session.defaultLayer, SessionRevert.defaultLayer, SyncEvent.defaultLayer, SessionActivity.defaultLayer),
+      Layer.mergeAll(Session.defaultLayer, SessionRevert.defaultLayer, SyncEvent.defaultLayer, SessionActivity.defaultLayer, BackgroundJob.defaultLayer),
     ),
     Layer.provide(
       Layer.mergeAll(
