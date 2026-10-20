@@ -12,7 +12,109 @@
 
 ---
 
-## ① 现状盘点：常驻进程面、内存与生命周期热点
+## ⓪ 2026-10-20 执行状态与收口清单（执行期更新，本节为最新事实源）
+
+> 本节由 2026-10-20 执行会话写入。调研结论维持不变（选择性 Rust、全量重写 No-Go、A 主 B 补，见 :176）；现状已越过 §④ 的 R2/R3 实施段，进入收口期。证据带 file:line 或 cbench 归档路径。
+
+### 0.1 五面落地状态（codegraph-kernel：30 文件 / 40,273 行 Rust，52 napi 函数 + 20 object）
+
+| 面 | 默认状态 | 门 | 证据 |
+|---|---|---|---|
+| 提取（19/20 语言，r 未路由） | 默认 ON | `CODEGRAPH_KERNEL=0` | `packages/chimera/src/graph/extraction/kernel/index.ts:164-234`；`codegraph-kernel/src/lib.rs:243` |
+| 图存储写（R3a） | 默认 ON | `CODEGRAPH_STORE=0` | `src/graph/store/loader.ts:193-196`；`codegraph-kernel/src/store.rs:1396-1536` |
+| 解析读上下文（R3b） | 默认 ON | `CODEGRAPH_CTX=0` | `src/graph/resolution/ctx-bridge.ts:77-98`；`codegraph-kernel/src/resolver_ctx.rs:1457-1748` |
+| 引用解析批处理（R3c） | 默认 ON | `CODEGRAPH_RESOLVE=0` | `src/graph/resolution/resolve-bridge.ts:416-435`；`codegraph-kernel/src/resolver.rs:6919,6965` |
+| 主存储 SQLite 桥（R2'） | **默认 OFF**（判定修正见 0.2） | `CHIMERA_SQLITE_BRIDGE=1` opt-in | `src/storage/db-bridge.ts:179-182`；`codegraph-kernel/src/sqlite_bridge.rs:429-695` |
+
+验证基线（cbench/memory-campaign/REPORT-20261019.md）：桥电池 73 + kernel 电池 95 + resolution/store oracle 343 + cargo test 89 = 600 项 0 失败；store/ctx/resolution 三套 parity 零 diff；R3 双臂内存 185.1MB vs 231.2MB（−20%）；semantics 维持 v6 未 bump。本机 darwin-arm64 prebuild 导出面已与源码对账（sqliteBridge* 13 导出 + SqliteBridgeHandle 齐全）。
+
+### 0.2 R2'（sqlite 桥）开闸判定修正 —— 暂缓翻转，先收口读路径
+
+2026-10-20 本会话原计划「直接翻转默认 ON」，被 cbench W3 实测否决（REPORT-20261019.md:74-82）：桥 ON 写吞吐 12578.6 ops/s（−3.1%，持平）但**读吞吐 82815.7 rows/s（−30.6%）**、内存持平；归档结论「桥 v1 价值在结构不在速度，读路径优化立项后再议翻转」。执行序修正为：
+
+1. **读路径优化（本会话已落地）**：`sqlite_bridge.rs` 新增流式 `query_map`/`query_first`（边 step 边建 JS 值，消除 `Vec<Vec<CellValue>>` 二次物化；`get()` 只 step 首行）、cell 按值消费消除逐 cell clone、TEXT 合法 UTF-8 零中间拷贝直建 JS string、列名每查询一次 interning、每行单次 `napi_define_properties` 合并边界 crossing。ABI/契约/值映射/返回形状零变化。验证：cargo test 106/106、db-bridge 双臂 18/18（390 expect）、storage 全套件 67/67（parent 独立复验）。官方 W3 口径复测（`memory-campaign.ts --only w3`，各 7 repeats 隔离子进程）：读差距 **−30.3% → −26.7%**（桥臂读 +4.3%，写持平）——**±5% 判据未达成**。剩余差距结构性：ABI 冻结下每 cell 的 napi 值创建调用不可再合并，而 bun:sqlite 走 JSC 内联完全绕过 NAPI（与 cbench 归因一致）。
+2. **本轮判定：不翻转，维持 `CHIMERA_SQLITE_BRIDGE=1` opt-in**（−26.7% 超 ±5% 判据）。翻转的前置条件更新为：wire 形状重设计（行数据 ArrayBuffer 编码 + TS 侧解码，或投影下推）另立项并复测达标后，再执行既定翻转动作——kill switch `CHIMERA_SQLITE_BRIDGE=0`（与本文 :198 预设一致），门函数改写对齐 `storeEnabled()`（`src/graph/store/loader.ts:193-196`），同步 `db-bridge.ts:7-13,175-178`、`db.bun.ts:61-64` 注释与 `test/storage/db-bridge.test.ts:107-122` 三态断言。**立项已落：见 0.7。**（0.7 执行结果：packed 收齐到 −15.2% 仍未达标 + 读峰值 RSS 驻留 +370MB 待收口，④ 未执行，判定详见 0.7 末。）
+3. 遗留面：node 臂未接桥（`src/storage/db.node.ts` 无 `createBridgeClient` 调用）；prebuilds 待随下次发布重发布。
+
+### 0.3 R3 收口剩余项
+
+- 代码层：三刀 default-on 已完成，本条覆盖旧文档「待开闸」表述（`CHIMERA_REFACTOR_PLAN.md:91` 同此更新）。
+- 分发层（CI-only，本地不可验）：kernel-prebuild 8 腿（含 win32 x64/arm64）首跑绿 + 发布产物带 kernel 确认；`publish.yml:69-205` 的 `continue-on-error` 意味着缺腿会静默不带 kernel——发布 checklist 应核对 8 腿产物齐全。
+- TS 双实现退役（`src/graph/resolution/` 21,681 行）：待生产浸泡稳定后按 §④ 同款分批绞杀，保留 `=0` 回退门；框架 extract() 钩子与 import/alias 预计算（9,234 + ~1,370 行）逐项判定迁移或冻结边界。
+
+### 0.4 ③④⑤ 维持原判
+
+- ③ store/resolution SQLite 吞吐深挖：kernel 内侧常设轨道（已开始：`20282f18b` slim store insert path — borrowed binds）。
+- ④ R4 server 纯逻辑面（10-15 人日，:103）：前置 = 双 HTTP backend 统一。
+- ⑤ R5' watcher sidecar + SQLite 池（15-25 人日，:104）。
+- 全量重写 No-Go 条件不变（Effect 编排语义不可跨 FFI / 20 provider SDK / 上游同步断裂）。
+
+### 0.5 2026-10-20 卫生修复（本会话执行，完成态见勾选）
+
+- [x] `codegraph-kernel/src/lib.rs:49-55` + `resolver.rs:4` 过期「dead code / no napi export」注释改写（`resolve_batch` 已导出，`resolver.rs:6964-6965`）。（已落地；`#[allow(dead_code)]` 因残余死项（常量/字段/方法）经 cargo check 实证后保留，注释已说明原因）
+- [x] `nix/desktop.nix` 删除 + `flake.nix` 引用清理（`cargoRoot` 指向已不存在的 `packages/desktop/src-tauri`，desktop 已是 Electron）。（已落地：flake.nix 两处 callPackage + 别名 + inherit 全清，rg 零残留；本机无 nix，语法验证为括号配平检查，权威验证待有 nix 环境补 `nix-instantiate --parse`）
+- [x] `publish.yml:494` 遗留 `RUST_TARGET` 移除 + `packages/desktop/scripts/copy-bundles.ts`（零引用孤儿）删除 + `utils.ts` 死导出清理（保留 `resolveChannel`）。（已落地：含收尾追加删除 SIDECAR_BINARIES/copyBinaryToSidecarFolder/windowsify 死链；`packages/desktop` `bun run typecheck` exit 0）
+- [x] 根 `AGENTS.md:18` 「wasm fallback」措辞澄清（wasm = 上游预编译 tree-sitter grammar 字节拷贝，非 Rust 产物；`src/graph/extraction/wasm/MANIFEST.md:3-12`）。（已落地）
+
+### 0.6 不确定项核实结果（2026-10-20 本会话，逐条已闭环）
+
+- cbench 归档仓本机可考（相邻仓 `cbench/`），`rust-plan/R3_PROPOSAL.md`、`memory-campaign/REPORT-20261019.md`、W3 双臂数据已直接引用，不再是不确定项。
+- prebuild 与源码同步性：本机 darwin-arm64 prebuild 含 sqliteBridge* 全 13 导出（strings 对账），与源码一致；prebuilds 被 gitignore，跨平台一致性只能靠 CI 核对（见 0.3 分发层）。
+- R3「开闸」真实状态 = 源码默认 ON + 本地 600 项验证零 diff；发布二进制生效范围取决于 CI 腿产出（win32 两腿待首跑）。
+- kernel parity 测试门控：缺 kernel 时 skip；`CODEGRAPH_KERNEL_EXPECT=1` 把 skip 升级为 fail（`test/graph/kernel-grammar-parity.test.ts:63-71`）。
+
+### 0.7 R2'-pack 立项：桥读路径 wire 形状重设计（ArrayBuffer + TS 解码）
+
+**目标**：把读路径从「每 cell 一次 napi 值创建」改为「每查询一次跨边界」——Rust 将整结果集编码进扁平 ArrayBuffer，TS 侧 DataView+TextDecoder 解码。达标判据 = W3 官方口径（`script/bench/memory-campaign.ts --only w3`）读差距收进 ±5% + 三臂 parity 全绿，达标后执行 0.2 翻转动作。变更面已全量调查（2026-10-20 scout，下文 file:line）。
+
+**wire 布局（对齐 store.rs / ExtractBuffers 既有惯例）**：
+- 两个 buffer 一次跨边界：`grid`（头部 + 定长 cell 网格）+ `arena`（TEXT/BLOB 字节拼接，无 dedup 无对齐，store.rs:142-145 惯例）。
+- grid 头部：u8 layout_version（解码器不符即硬错误，`kernel/decode.ts:89-92` 同姿势）、flags u8、column_count u16、row_count u32、列名区 (off u32, len u32) 引用 arena（packed-values 路径可省列名）。
+- cell 定长 12 字节：tag u8（0=NULL / 1=f64 / 2=TEXT / 3=BLOB）+ pad + 载荷（f64 LE 或 arena (off,len)，缺席=0xFFFF_FFFF）。定长网格=「定长行×行数」惯例（decode.ts:103）；**逐 cell tag 必须存在**——SQLite 列动态类型，列级 tag 覆盖不了混合类型行。
+- TS 解码惯例：全 LE；arena 整段一次 `TextDecoder.decode` 后切片；成对布局镜像文件 + 「MUST MATCH BYTE FOR BYTE」注释（`kernel/layout.ts` ↔ `buffers.rs` 先例）。
+
+**兼容策略（不 bump ABI）**：
+- `SQLITE_BRIDGE_ABI_VERSION` 保持 1（既有 13 函数签名零变化）；packed 走**可选导出**（`sqliteBridgeAllPacked?` 等，`storeClose?` 可选导出的先例，`store/loader.ts:85-90`）+ `BRIDGE_CAPABILITIES` 追加 `packed-read`。
+- 新 capability **不进** `BRIDGE_REQUIRED_CAPABILITIES`（否则老二进制被整体拒用，`db-bridge.ts:115-126`）；TS 运行时探测，缺失则回落对象路径——新 TS × 老二进制、旧 TS × 新二进制双向安全。
+- export probe 硬门列表（`db-bridge.ts:143-158`）**不加** packed 函数；`postinstall.mjs` 只校验 extraction kernel ABI=2（:27,62-89），无需改。
+
+**变更面总表**：
+
+| 文件 | 改动 | 风险 |
+|---|---|---|
+| `codegraph-kernel/src/sqlite_bridge.rs` | 新增 packed 编码器 + 3 个可选导出（all/values/get）+ capability 注册 | 高（核心工作量） |
+| `codegraph-kernel/src/`（新模块或 buffers.rs） | 布局成文 + cargo 单元测试 | 中 |
+| `src/storage/db-bridge.ts` | 接口可选方法 + 运行时探测 + statement 闭包（:282-287）接解码 | 中 |
+| `src/storage/db-bridge-decode.ts`（新） | DataView/TextDecoder 解码器 + 布局镜像注释 | 中 |
+| `test/storage/db-bridge.test.ts` | 契约正反例 + value-mapping 扩展（2^53+1 有损 double、BLOB、多字节、大文本）+ 双臂升**三臂**（bun / 对象 / packed） | 中 |
+| `script/bench/memory-campaign.ts` | 无结构改动（W3 走 init() 全链路；可加 packed 探测标记） | 低 |
+| `postinstall.mjs` / `db.node.ts` / `src/graph/**` | **不改**：postinstall 只查 kernel ABI；node 臂不接桥；graph DB 与桥零耦合（grep 证实） | 无 |
+
+**drizzle 消费链要点（决定 packed 收益形状）**：drizzle session 只调 client 的 prepare/exec/transaction（session.js:19-35）；核心 ORM select（有 fields）走 `values()` 位置数组 + `mapResultRow`（:77-79）——**packed values（无列名、跳过对象拼装）是主收益面**；裸 sql``/RQB 才需要 `all()` 对象形状（列名编进 grid 头即可）；`get()` 单行保持对象路径（已只 step 首行，单行成本可忽略）。
+
+**执行拆分（依赖序）**：① Rust packed 编码器 + cargo 单测（布局正确性、值映射逐字节对账）→ ② TS 解码器 + 单元测试（含畸形 buffer 硬错误）→ ③ 三臂 parity + W3 bench 复测，结果写回本节 → ④ 达标后执行 0.2 翻转动作。
+
+**回退**：capability 缺失即自动回落对象路径，无需 env；packed 自身 bug 用既有 `CHIMERA_SQLITE_BRIDGE=0` 全关。
+
+**风险**：value-mapping 边界（2^53+1 有损、bun 非 strict 语义）是 packed 最易偏处，测试先行；小结果集 packed 有头部固定成本，以 get()/小 all 保持对象路径规避。
+
+**执行结果（2026-10-20，步骤①②③完成；本机 darwin-arm64，BENCH_W3_REPEATS=3，官方口径 `--only w3`，归档 `r2pack-packed-20261020-1452` / `r2pack-object-20261020-1453`）**：
+
+- 实现终稿：**单 buffer**（header‖names‖grid‖arena 拼接，header u32 偏移描述各段）一次跨边界 —— 每查询恰好 1 个 napi 值（两 buffer 方案需 object+2×Uint8Array 共 3 个 napi 值）；arena 存 TEXT 原始字节（Rust 不做 lossy 转码），TS TextDecoder 的 WHATWG maximal-subpart 替换与对象路径 from_utf8_lossy 逐字节对齐（bun 三臂测试钉死，含截断序列 replacement 计数=6 的非法 UTF-8 样本）；TS 解码 fast path = arena 整段一次 decode 后按字节偏移切片（`decoded.length === arenaLen` 时每字符恰消耗 1 字节，偏移==索引可证），含多字节字符时回落逐 cell 零拷贝 subarray decode。
+- 兼容面：ABI 保持 1；`sqliteBridgeAllPacked?`/`sqliteBridgeValuesPacked?` 可选导出 + `packed-read` capability（不进 BRIDGE_REQUIRED_CAPABILITIES、不进 export probe 硬门）；TS 按导出存在性探测，per-call kill switch `CHIMERA_SQLITE_BRIDGE_PACKED=0`（默认 ON）；get() 保持对象路径。
+- 测试：cargo 113 通过（含 7 个 packed 编码器单测：布局字节级/values 无列名/空结果集/全类型/非法 UTF-8 原样/大文本 BLOB/2^53+1 有损）；bun test/storage/ 93 通过 0 skip（三臂 parity、packed 路由反证（object 导出被替换为 thrower 仍通过）、fake module 有/无 packed 导出正反例、解码器畸形 buffer 硬错误纯 TS 单测 12 个）。
+
+| W3 臂 | 读 rows/s（3 rep 均值） | vs bun | 读 peak RSS | 写 ops/s | 写 peak RSS |
+|---|---|---|---|---|---|
+| bun（bridge-off，两 campaign 合并 6 rep） | 114 712 | — | ~283 MB | 12 091 | ~158 MB |
+| 桥对象（on + PACKED=0） | 74 393 | **−35.1%** | ~281 MB | 11 608 | ~159 MB |
+| 桥 packed（on，默认） | 97 242 | **−15.2%** | **~652 MB** | 11 930 | ~159 MB |
+
+- 判定素材：读差距 −26.7%（R2 流式基线）→ **−15.2%**（packed），packed vs 对象 **+30.7%**；**未收进 ±5%**。本 campaign 对象臂自身测得 −35.1%（比历史 −26.7% 更深），提示跨 run 机器方差在 ±8pt 量级，三臂同机同窗口对照才是可信口径。
+- **packed 臂读 peak RSS ~652MB（vs 对象/bun ~282MB，+370MB）**：定位为 wire buffer 分配器驻留而非泄漏 —— 裸 napi 探针 200 次查询 ×1.7MB buffer，RSS 361→413→413MB 两轮后封顶（释放内存被复用，非无界增长），驻留量≈读循环 in-flight churn 峰值。对以内存为纲的 campaign 这是需要上级权衡的回归面（候选缓解：per-connection scratch buffer 复用（改变 wire 生命周期语义）、或 decode 后显式释放提示）。
+- ④（0.2 翻转）未执行：±5% 未达标 + RSS 回归待决，判定归上级。
+
+**上级判定（2026-10-20，parent）**：④ 不执行，桥整体维持 default-OFF opt-in。packed 在桥 opt-in 臂内**保持默认 ON**——opt-in 臂的意义就是收集实测数据，packed 相对对象臂读吞吐 +30.7% 是严格更优的实验面，且 RSS 驻留已被探针证实有界封顶、非泄漏。翻转前置升级为**双条件**：① W3 官方口径读差距收进 ±5%；② packed 读峰值 RSS 驻留收口（候选：per-connection scratch buffer 复用——改变 wire 生命周期语义，需契约层设计——或解码后显式释放提示）。二者齐备才执行 0.2 翻转动作。
 
 ### 1.1 实测：短跑标定 vs 长驻实运行差一个数量级
 
