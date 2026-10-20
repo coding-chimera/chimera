@@ -235,7 +235,6 @@ export function buildRequestBody(input: CodexResponsesInput) {
     input: toResponsesInput(input.messages),
     tools: toResponsesTools(input.tools),
     tool_choice: input.toolChoice ?? "auto",
-    parallel_tool_calls: false,
     reasoning,
     include,
     prompt_cache_key: stringOption(input.params.options.promptCacheKey) ?? input.sessionID,

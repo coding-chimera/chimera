@@ -192,7 +192,7 @@ describe("session.codex-responses", () => {
     expect(body.prompt_cache_key).toBe("session-codex-direct")
     expect(body.store).toBe(false)
     expect(body.stream).toBe(true)
-    expect(body.parallel_tool_calls).toBe(false)
+    expect(body.parallel_tool_calls).toBeUndefined()
     expect(body.tools[0].type).toBe("function")
     expect(body.tools[0].name).toBe("lookup")
   })
