@@ -491,7 +491,6 @@ jobs:
           OPENCODE_VERSION: ${{ needs.version.outputs.version }}
           OPENCODE_CHANNEL: prod
           OPENCODE_CLI_ARTIFACT: ${{ (runner.os == 'Windows' && 'chimera-cli-windows-no-webui') || 'chimera-cli-no-webui' }}
-          RUST_TARGET: ${{ matrix.settings.target }}
           GH_TOKEN: ${{ github.token }}
           GITHUB_RUN_ID: ${{ github.run_id }}
 
