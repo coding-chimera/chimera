@@ -104,8 +104,8 @@ describe("plugin.codex", () => {
       output: 128_000,
     })
     expect(models["gpt-5.6-sol"]?.limit).toEqual({
-      context: 500_000,
-      input: 372_000,
+      context: 1_000_000,
+      input: 872_000,
       output: 128_000,
     })
     expect(models["gpt-5.6-sol"]?.cost).toEqual({

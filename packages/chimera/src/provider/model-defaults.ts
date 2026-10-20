@@ -280,19 +280,52 @@ export const CODEX_MODEL_PROFILES: Record<string, CodexProfile> = {
     aliases: ["fast", "pro"],
     catalogSemantics: true,
     codexEfforts: ["low", "medium", "high", "xhigh", "max"],
-    codexInputLimit: 372_000,
+    codexInputLimit: 872_000,
   },
   "gpt-5.6-terra": {
     aliases: ["fast", "pro"],
     catalogSemantics: true,
     codexEfforts: ["low", "medium", "high", "xhigh", "max"],
-    codexInputLimit: 372_000,
+    codexInputLimit: 872_000,
   },
   "gpt-5.6-luna": {
     aliases: ["fast", "pro"],
     catalogSemantics: true,
     codexEfforts: ["low", "medium", "high", "xhigh", "max"],
-    codexInputLimit: 372_000,
+    codexInputLimit: 872_000,
+  },
+  // gpt-6 family + codex-auto-review. Source: upstream openai/codex
+  // codex-rs/models-manager/models.json, 2026-10-20. Although upstream declares a
+  // native "ultra" level for astra/6.1-sol (and 5.6-sol/5.6-terra), a 2026-10-20
+  // live probe of the Codex backend rejected it (HTTP 400: level "ultra" not
+  // supported, valid levels low..max). Profiles therefore cap at max and ultra
+  // stays a Chimera product tier. codex-auto-review is visibility:hide upstream,
+  // so it is not a catalog model. Input limits raised to 872K on 2026-10-20 per
+  // user directive: from 5.6-sol up the window is directly specifiable at 1M
+  // (872K input + 128K output reserve).
+  "gpt-6-astra": {
+    catalogSemantics: true,
+    codexEfforts: ["low", "medium", "high", "xhigh", "max"],
+    codexInputLimit: 872_000,
+  },
+  "gpt-6.1-sol": {
+    catalogSemantics: true,
+    codexEfforts: ["low", "medium", "high", "xhigh", "max"],
+    codexInputLimit: 872_000,
+  },
+  "gpt-6-sol": {
+    catalogSemantics: true,
+    codexEfforts: ["low", "medium", "high", "xhigh", "max"],
+    codexInputLimit: 872_000,
+  },
+  "gpt-6-luna": {
+    catalogSemantics: true,
+    codexEfforts: ["low", "medium", "high", "xhigh", "max"],
+    codexInputLimit: 872_000,
+  },
+  "codex-auto-review": {
+    codexEfforts: ["low", "medium", "high", "xhigh", "max"],
+    codexInputLimit: 872_000,
   },
 }
 

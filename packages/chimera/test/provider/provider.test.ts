@@ -363,7 +363,7 @@ test("custom OpenAI-compatible provider reuses known model metadata", async () =
       expect(fast.backend_semantics).toBe("codex")
       expect(fast.reasoning_efforts).toEqual(["none", "low", "medium", "high", "xhigh", "max"])
       expect(Object.keys(fast.variants ?? {})).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"])
-      expect(fast.limit).toEqual({ context: 500_000, input: 372_000, output: 128_000 })
+      expect(fast.limit).toEqual({ context: 1_000_000, input: 872_000, output: 128_000 })
     },
   })
 })
@@ -427,7 +427,7 @@ test("backend semantics resolves model over provider and preserves explicit vari
       expect((await getLanguage(sol)).provider).toBe("custom-codex.chat")
       expect(sol.api.npm).toBe("@ai-sdk/openai-compatible")
       expect(sol.backend_semantics).toBe("codex")
-      expect(sol.limit).toEqual({ context: 500_000, input: 372_000, output: 128_000 })
+      expect(sol.limit).toEqual({ context: 1_000_000, input: 872_000, output: 128_000 })
       expect(sol.variants?.max).toBeUndefined()
       expect(sol.variants?.ultra).toEqual({ reasoningEffort: "ultra", custom: true })
       expect(sol.variants?.ultra.reasoningSummary).toBeUndefined()

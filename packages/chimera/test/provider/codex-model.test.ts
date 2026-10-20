@@ -50,3 +50,48 @@ describe("codex-model.isOAuthModel", () => {
     expect(CodexModel.isOAuthModel(id)).toBe(allowed)
   })
 })
+
+describe("codex-model gpt-6 profiles", () => {
+  test("gpt-6 profiles cap at max and advertise the product ultra tier", () => {
+    expect(CodexModel.reasoningEfforts("gpt-6-astra")).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra",
+    ])
+    expect(CodexModel.reasoningEfforts("gpt-6.1-sol")).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra",
+    ])
+    expect(CodexModel.reasoningEfforts("gpt-6-luna")).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra",
+    ])
+    expect(CodexModel.highestReasoningEffort(CodexModel.reasoningEfforts("gpt-6-astra"))).toBe("max")
+    expect(CodexModel.smallReasoningEffort("gpt-6-astra")).toBe("low")
+  })
+
+  test("configured efforts intersect with the profile tiers", () => {
+    expect(CodexModel.reasoningEfforts("gpt-6-astra", ["low", "max"])).toEqual(["low", "max", "ultra"])
+    expect(CodexModel.reasoningEfforts("gpt-6-astra", ["low", "max", "ultra"])).toEqual(["low", "max", "ultra"])
+  })
+
+  test("gpt-6 family and codex-auto-review profiles resolve", () => {
+    expect(CodexModel.capabilityModelID("openai/gpt-6-astra")).toBe("gpt-6-astra")
+    expect(CodexModel.capabilityModelID("gpt-6.1-sol")).toBe("gpt-6.1-sol")
+    expect(CodexModel.capabilityModelID("codex-auto-review")).toBe("codex-auto-review")
+    expect(CodexModel.limit("gpt-6-astra")).toEqual({ context: 1_000_000, input: 872_000, output: 128_000 })
+    expect(CodexModel.supportsCatalogSemantics("gpt-6-astra")).toBe(true)
+    expect(CodexModel.supportsCatalogSemantics("codex-auto-review")).toBe(false)
+  })
+})

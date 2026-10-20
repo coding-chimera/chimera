@@ -1246,6 +1246,27 @@ export function options(input: {
     }
   }
 
+  // Codex-semantics models of any id (gpt-6 family, codex-auto-review) also ask
+  // for a reasoning summary and encrypted content; the npm allowlist still gates
+  // which transports understand these parameters. Live-probed 2026-10-20: the
+  // Codex backend returns summary_text plus encrypted_content on gpt-6-astra.
+  if (input.model.backend_semantics === "codex") {
+    if (
+      (input.model.api.npm === "@ai-sdk/openai" ||
+        input.model.api.npm === "@ai-sdk/azure" ||
+        input.model.api.npm === "@ai-sdk/github-copilot" ||
+        input.model.api.npm === "@ai-sdk/amazon-bedrock/mantle") &&
+      result["reasoningSummary"] === undefined
+    ) {
+      result["reasoningSummary"] = "auto"
+    }
+    if (input.model.api.npm === "@ai-sdk/openai" || input.model.api.npm === "@ai-sdk/amazon-bedrock/mantle") {
+      const include = Array.isArray(result["include"]) ? [...result["include"]] : []
+      if (!include.includes("reasoning.encrypted_content")) include.push("reasoning.encrypted_content")
+      result["include"] = include
+    }
+  }
+
   if (input.model.providerID === "venice") {
     result["promptCacheKey"] = input.sessionID
   }

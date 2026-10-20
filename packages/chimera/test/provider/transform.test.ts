@@ -782,6 +782,36 @@ describe("ProviderTransform.options - gpt-5 textVerbosity", () => {
     expect(result.store).toBe(false)
   })
 
+  test("codex-semantics gpt-6 model receives reasoningSummary and encrypted reasoning include", () => {
+    const model = { ...createGpt5Model("gpt-6-astra"), backend_semantics: "codex" as const }
+    const result = ProviderTransform.options({ model, sessionID, providerOptions: {} })
+    expect(result.reasoningSummary).toBe("auto")
+    expect(result.include).toEqual(["reasoning.encrypted_content"])
+  })
+
+  test("codex-semantics codex-auto-review receives the same injections without a gpt- prefix", () => {
+    const model = { ...createGpt5Model("codex-auto-review"), backend_semantics: "codex" as const }
+    const result = ProviderTransform.options({ model, sessionID, providerOptions: {} })
+    expect(result.reasoningSummary).toBe("auto")
+    expect(result.include).toEqual(["reasoning.encrypted_content"])
+  })
+
+  test("codex-semantics openai-compatible model does not receive transport-only reasoning fields", () => {
+    const model = {
+      ...createGpt5Model("gpt-6-luna"),
+      providerID: "custom-provider",
+      backend_semantics: "codex" as const,
+      api: {
+        id: "gpt-6-luna",
+        url: "https://api.custom.com",
+        npm: "@ai-sdk/openai-compatible",
+      },
+    }
+    const result = ProviderTransform.options({ model, sessionID, providerOptions: {} })
+    expect(result.reasoningSummary).toBeUndefined()
+    expect(result.include).toBeUndefined()
+  })
+
 })
 
 describe("ProviderTransform.options - gateway", () => {
@@ -2981,6 +3011,23 @@ describe("ProviderTransform.variants", () => {
     expect(result.ultra.reasoningSummary).toBeUndefined()
     expect(result.ultra.include).toBeUndefined()
     expect(ProviderTransform.smallOptions(model)).toEqual({ reasoningEffort: "low" })
+  })
+
+  test("gpt-6 profiles advertise ultra mapped to max", () => {
+    const model = createMockModel({
+      id: "custom/gpt-6-astra",
+      providerID: "custom",
+      backend_semantics: "codex",
+      api: {
+        id: "gpt-6-astra",
+        url: "https://api.custom.test",
+        npm: "@ai-sdk/openai-compatible",
+      },
+    })
+    const result = ProviderTransform.variants(model)
+    expect(Object.keys(result)).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"])
+    expect(result.max).toEqual({ reasoningEffort: "max" })
+    expect(result.ultra).toEqual({ reasoningEffort: "max" })
   })
 
   test("codex semantics filters variants by provider reasoning efforts", () => {
