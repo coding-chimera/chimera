@@ -46,16 +46,19 @@ mod php;
 mod rlang;
 mod ruby;
 mod resolver_ctx;
-// R3c-1: internal resolution strategy tree (name-matcher + resolveOne). No
-// napi export yet — unreachable from any exported entry point until R3c-2
-// wires the resolve_batch face, so the whole module is dead code at build
-// time (exercised by cargo tests only). Allow rather than leave a wall of
-// dead_code warnings.
+// R3c: internal resolution strategy tree (name-matcher + resolveOne). Since
+// R3c-2 the module is LIVE code: it exports `#[napi] pub fn resolve_batch`
+// (one boundary crossing per ref batch, ResolveBuffers in /
+// ResolveBuffersOut persist-plan wire face). The allow stays because parts
+// of the ported strategy tree are still compiler-dead outside tests —
+// wire-layout row-size constants (RESOLVE_*_ROW_SIZE, doc/test anchors) and
+// a few ported matcher fields — verified via cargo check 2026-10-20.
 #[allow(dead_code)]
 mod resolver;
 mod rustlang;
 mod scala;
 mod stack;
+mod sqlite_bridge;
 mod store;
 mod swift;
 mod textutil;

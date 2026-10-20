@@ -1,8 +1,9 @@
 //! resolver — R3c-1: the name-matcher strategy tree + resolveOne's single-ref
 //! arbitration flow, ported from `packages/chimera/src/graph/resolution/`
-//! (name-matcher.ts 3,214 lines + index.ts resolveOne face). INTERNAL module:
-//! no napi exports in this baton — R3c-2 designs the `resolve_batch` wire face
-//! and the TS routing. Reads go through resolver_ctx's `CtxConn` in-crate
+//! (name-matcher.ts 3,214 lines + index.ts resolveOne face). Live napi
+//! surface since R3c-2: `#[napi] pub fn resolve_batch` (bottom of this file)
+//! is the wire face — ResolveBuffers in / ResolveBuffersOut persist-plan out,
+//! one boundary crossing per ref batch. Reads go through resolver_ctx's `CtxConn` in-crate
 //! (the 18-getter ResolutionContext face already lives there); strategy data
 //! the FFI boundary rules keep TS-side (R3 proposal §4) arrives PRECOMPUTED
 //! via `ExternalStrategies` (案 A): import/JVM-import/framework results per

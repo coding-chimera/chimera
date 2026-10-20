@@ -1,5 +1,6 @@
 import { Database, type Statement } from "bun:sqlite"
 import { drizzle } from "drizzle-orm/bun-sqlite"
+import { createBridgeClient } from "./db-bridge"
 
 // (R2) drizzle-orm's bun-sqlite session re-prepares every query
 // (`new PreparedQuery(this.client.prepare(query.sql), ...)` in
@@ -57,7 +58,11 @@ export function withPrepareCache(sqlite: Database, limit = PREPARE_CACHE_LIMIT):
 }
 
 export function init(path: string) {
-  const sqlite = withPrepareCache(new Database(path, { create: true }))
+  // Opt-in native bridge (CHIMERA_SQLITE_BRIDGE=1, db-bridge.ts): consulted
+  // FIRST at the client-creation seam; any failure — kill switch off, binary
+  // missing, contract mismatch, open error — returns null and silently keeps
+  // the bun:sqlite path below (default-OFF, zero behavior change).
+  const sqlite = (createBridgeClient(path) ?? withPrepareCache(new Database(path, { create: true }))) as Database
   const db = drizzle({ client: sqlite })
   return db
 }
