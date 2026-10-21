@@ -1814,3 +1814,136 @@ describe("session.message-v2.fromError", () => {
     expect(MessageV2.APIError.isInstance(result)).toBe(false)
   })
 })
+
+function toolNamesIn(messages: Awaited<ReturnType<typeof MessageV2.toModelMessages>>) {
+  return messages.flatMap((message) => {
+    if (typeof message.content === "string") return []
+    return message.content.flatMap((part) =>
+      part.type === "tool-call" || part.type === "tool-result" ? [part.toolName] : [],
+    )
+  })
+}
+
+function toolSearchInput(input: Record<string, unknown>): MessageV2.ToolPart {
+  return {
+    ...basePart("m-tool-search", "p-tool-search"),
+    type: "tool",
+    callID: "call-tool-search",
+    tool: "tool_search",
+    state: {
+      status: "completed",
+      input,
+      output: "ok",
+      title: "tool_search",
+      metadata: {},
+      time: { start: 0, end: 1 },
+    },
+  } as MessageV2.ToolPart
+}
+
+function toolSearchConversation(part: MessageV2.ToolPart): MessageV2.WithParts[] {
+  const userID = "m-tool-search-user"
+  const assistantID = "m-tool-search-assistant"
+  return [
+    {
+      info: userInfo(userID),
+      parts: [{ ...basePart(userID, "u1"), type: "text", text: "search" }] as MessageV2.Part[],
+    },
+    {
+      info: assistantInfo(assistantID, userID),
+      parts: [{ ...part, messageID: MessageID.make(assistantID), id: PartID.make("p-tool-search") }],
+    },
+  ]
+}
+
+describe("session.message-v2 legacy tool_search replay shim", () => {
+  test("renames legacy-shaped tool_search parts on the openai responses wire", async () => {
+    const messages = await MessageV2.toModelMessages(
+      toolSearchConversation(toolSearchInput({ query: "graph" })),
+      model,
+    )
+
+    expect(toolNamesIn(messages)).toStrictEqual(["tool_search_legacy", "tool_search_legacy"])
+  })
+
+  test("keeps the name for non-openai models", async () => {
+    const anthropicModel: Provider.Model = { ...model, api: { ...model.api, npm: "@ai-sdk/anthropic" } }
+    const messages = await MessageV2.toModelMessages(
+      toolSearchConversation(toolSearchInput({ query: "graph" })),
+      anthropicModel,
+    )
+
+    expect(toolNamesIn(messages)).toStrictEqual(["tool_search", "tool_search"])
+  })
+
+  test("keeps the name when the openai model explicitly uses the chat wire", async () => {
+    const chatModel: Provider.Model = { ...model, wire_api: "chat" }
+    const messages = await MessageV2.toModelMessages(
+      toolSearchConversation(toolSearchInput({ query: "graph" })),
+      chatModel,
+    )
+
+    expect(toolNamesIn(messages)).toStrictEqual(["tool_search", "tool_search"])
+  })
+
+  test("keeps the name for native tool_search parts carrying arguments", async () => {
+    const messages = await MessageV2.toModelMessages(
+      toolSearchConversation(toolSearchInput({ arguments: { query: "graph" }, call_id: "call-tool-search" })),
+      model,
+    )
+
+    expect(toolNamesIn(messages)).toStrictEqual(["tool_search", "tool_search"])
+  })
+
+  test("renames legacy-shaped error parts too", async () => {
+    const part: MessageV2.ToolPart = {
+      ...basePart("m-tool-search", "p-tool-search"),
+      type: "tool",
+      callID: "call-tool-search",
+      tool: "tool_search",
+      state: { status: "error", input: { query: "graph" }, error: "boom", time: { start: 0, end: 1 } },
+    }
+    const messages = await MessageV2.toModelMessages(toolSearchConversation(part), model)
+
+    expect(toolNamesIn(messages)).toContain("tool_search_legacy")
+  })
+
+  test("replays a native tool_search result as a json tool-result", async () => {
+    const tools = [
+      {
+        type: "function",
+        name: "browser_open",
+        description: "open",
+        parameters: { type: "object" },
+        defer_loading: true,
+      },
+    ]
+    const part = {
+      ...toolSearchInput({ arguments: { query: "browser" }, call_id: "call-tool-search" }),
+      state: {
+        status: "completed",
+        input: { arguments: { query: "browser" }, call_id: "call-tool-search" },
+        output: JSON.stringify({ tools }),
+        title: "tool_search",
+        metadata: {},
+        time: { start: 0, end: 1 },
+      },
+    } as MessageV2.ToolPart
+    const messages = await MessageV2.toModelMessages(toolSearchConversation(part), model)
+
+    expect(toolResultOutputs(messages)).toEqual([{ type: "json", value: { tools } }])
+  })
+
+  test("keeps a legacy gateway tool_search result as text", async () => {
+    const messages = await MessageV2.toModelMessages(toolSearchConversation(toolSearchInput({ query: "graph" })), model)
+
+    expect(toolResultOutputs(messages)).toEqual([{ type: "text", value: "ok" }])
+  })
+})
+
+function toolResultOutputs(messages: Awaited<ReturnType<typeof MessageV2.toModelMessages>>) {
+  return messages.flatMap((message) => {
+    if (typeof message.content === "string") return []
+    return message.content.flatMap((part) => (part.type === "tool-result" ? [part.output] : []))
+  })
+}

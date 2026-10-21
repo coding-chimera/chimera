@@ -1,8 +1,35 @@
-import { Context, Effect, Layer } from "effect"
+import { Context, Effect, Layer, Schema } from "effect"
+import { openai } from "@ai-sdk/openai"
+import type { JSONObject } from "@ai-sdk/provider"
 import { eq } from "drizzle-orm"
 import { Database } from "@/storage/db"
 import { SessionID } from "@/contracts/session-ids"
 import { ToolRevealTable } from "@/storage/tables/session.sql"
+import { Permission } from "@/permission"
+import { PositiveInt } from "@/util/schema"
+import DESCRIPTION from "@/tool/tool_search.txt"
+// Full description text for the deferred catalog. These are the exact .txt
+// files the tool definitions import as their description, so tool_search can
+// hand the model the complete contract at reveal time (the runtime-context
+// tail section only carries id + compact signature + summary).
+import DESC_BROWSER_OPEN from "@/tool/browser_open.txt"
+import DESC_BROWSER_SNAPSHOT from "@/tool/browser_snapshot.txt"
+import DESC_BROWSER_CLICK from "@/tool/browser_click.txt"
+import DESC_BROWSER_TYPE from "@/tool/browser_type.txt"
+import DESC_BROWSER_SCREENSHOT from "@/tool/browser_screenshot.txt"
+import DESC_BROWSER_CLOSE from "@/tool/browser_close.txt"
+import DESC_LSP from "@/tool/lsp.txt"
+import DESC_SUBAGENT_ROUTES from "@/tool/subagent_model_routes.txt"
+import DESC_SUBAGENT_SCHEDULE from "@/tool/subagent_model_schedule.txt"
+import DESC_SUBAGENT_PREFER from "@/tool/subagent_model_prefer.txt"
+import DESC_SUBAGENT_SUPPRESS from "@/tool/subagent_model_suppress.txt"
+import DESC_OBLIGATIONS_SYNC from "@/tool/chimera_obligations_sync.txt"
+import DESC_OBLIGATION_CLAIM from "@/tool/chimera_obligation_claim.txt"
+import DESC_OBLIGATION_RESOLVE from "@/tool/chimera_obligation_resolve.txt"
+import DESC_OBLIGATION_IGNORE from "@/tool/chimera_obligation_ignore.txt"
+import DESC_ORACLE_RECENT from "@/tool/chimera_oracle_recent.txt"
+import DESC_ORACLE_GET from "@/tool/chimera_oracle_get.txt"
+
 
 // Progressive tool disclosure (inspired by OpenAI Codex `tool_search`): the
 // tools below stay registered but are omitted from the model-facing tool list
@@ -77,6 +104,31 @@ export const DEFERRED_TOOLS: readonly DeferredTool[] = [
     summary: "Retrieve one captured Chimera oracle result by typed ref for its full shell or LSP evidence.",
   },
 ] as const
+
+export const DEFERRED_DESCRIPTIONS: Record<string, string> = {
+  browser_open: DESC_BROWSER_OPEN,
+  browser_snapshot: DESC_BROWSER_SNAPSHOT,
+  browser_click: DESC_BROWSER_CLICK,
+  browser_type: DESC_BROWSER_TYPE,
+  browser_screenshot: DESC_BROWSER_SCREENSHOT,
+  browser_close: DESC_BROWSER_CLOSE,
+  lsp: DESC_LSP,
+  subagent_model_routes: DESC_SUBAGENT_ROUTES,
+  subagent_model_schedule: DESC_SUBAGENT_SCHEDULE,
+  subagent_model_prefer: DESC_SUBAGENT_PREFER,
+  subagent_model_suppress: DESC_SUBAGENT_SUPPRESS,
+  chimera_obligations_sync: DESC_OBLIGATIONS_SYNC,
+  chimera_obligation_claim: DESC_OBLIGATION_CLAIM,
+  chimera_obligation_resolve: DESC_OBLIGATION_RESOLVE,
+  chimera_obligation_ignore: DESC_OBLIGATION_IGNORE,
+  chimera_oracle_recent: DESC_ORACLE_RECENT,
+  chimera_oracle_get: DESC_ORACLE_GET,
+}
+
+// Subagent-mode registry views hide the preference-mutation tools (see
+// ToolRegistry.tools); tool_search must not promise to reveal what the
+// registry will never list for this agent mode.
+export const SUBAGENT_HIDDEN = ["subagent_model_prefer", "subagent_model_suppress"]
 
 export const DEFERRED_TOOL_IDS: ReadonlySet<string> = new Set(DEFERRED_TOOLS.map((tool) => tool.id))
 
@@ -157,6 +209,113 @@ export function scoreDeferred(query: string, limit: number, candidates: readonly
     })
     .filter((match) => match.score > 0)
   return scored.toSorted((a, b) => b.score - a.score || a.id.localeCompare(b.id)).slice(0, cap)
+}
+
+// Gateway parameters shared by the function tool and the OpenAI-native
+// provider tool so both variants accept exactly the same arguments.
+export const ToolSearchParameters = Schema.Struct({
+  query: Schema.String.annotate({
+    description: 'Keyword query for deferred tools, e.g. "browser", "references", "model route".',
+  }),
+  limit: Schema.optional(PositiveInt).annotate({
+    description: `Maximum number of tools to reveal. Defaults to ${DEFAULT_REVEAL_LIMIT}, capped at ${MAX_REVEAL_LIMIT}.`,
+  }),
+})
+
+// Candidate set both gateway variants search: permission-denied ids and the
+// subagent-hidden preference tools never surface, so a reveal can never
+// promise a tool the agent cannot call.
+export function deferredCandidates(input: {
+  agentMode: string
+  permission: Permission.Ruleset
+}): Candidate[] {
+  const denied = Permission.disabled(
+    DEFERRED_TOOLS.map((tool) => tool.id),
+    input.permission,
+  )
+  return DEFERRED_TOOLS.filter(
+    (tool) => !denied.has(tool.id) && !(input.agentMode === "subagent" && SUBAGENT_HIDDEN.includes(tool.id)),
+  ).map((tool) => ({ id: tool.id, description: tool.summary }))
+}
+
+// OpenAI-native tool_search (client execution) is wired on the OpenAI
+// Responses transport for OAI-native backends only: the official OpenAI
+// provider (providerID "openai"), plus models/providers configured with
+// codex/openai backend semantics (codex relays and similar endpoints).
+// Other providers keep the function tool: the native tool is a
+// provider-defined tool the Chat Completions transport and the Codex OAuth
+// serializer do not model. `wire_api` is optional and only an explicit
+// "chat" selects the Chat Completions transport (the built-in openai loader
+// always builds sdk.responses(...)), so an absent value means Responses —
+// same convention as message-v2's usesOpenAIResponses.
+export function isOpenaiNativeToolSearch(
+  model: {
+    api: { npm: string }
+    wire_api?: "chat" | "responses"
+    backend_semantics?: "openai" | "codex" | "alibailian"
+  },
+  providerWireAPI?: "chat" | "responses",
+  providerID?: string,
+) {
+  if (model.api.npm !== "@ai-sdk/openai") return false
+  if ((model.wire_api ?? providerWireAPI) === "chat") return false
+  if (providerID === "openai") return true
+  return model.backend_semantics === "codex" || model.backend_semantics === "openai"
+}
+
+export type NativeToolSearchInput = {
+  agentMode: string
+  permission: Permission.Ruleset
+  // JSON schema the model fills for the gateway itself ({ query, limit? }).
+  parameters: JSONObject
+  // Deferred id -> the wire JSON schema built for that tool this turn.
+  schemas: Record<string, JSONObject>
+  // Persists the reveal (tool_reveal row + runtime-context section) so the
+  // returned tools stay callable by name through the repair path.
+  reveal: (ids: readonly string[]) => Promise<void>
+}
+
+// Provider-defined `tool_search` in client execution mode: the model asks for
+// tools, we return function definitions inline in `tool_search_output`, and
+// the following request calls them by name. Results are typed by the SDK
+// (`{tools: [...]}`), so history replay is a legal tool_search_output instead
+// of the function-tool shape the relay rejects.
+export function nativeToolSearch(input: NativeToolSearchInput) {
+  return openai.tools.toolSearch({
+    execution: "client",
+    description: DESCRIPTION,
+    parameters: input.parameters,
+    async execute(request) {
+      const args = nativeArguments(request.arguments)
+      const matches = scoreDeferred(args.query, args.limit ?? DEFAULT_REVEAL_LIMIT, deferredCandidates(input))
+      if (matches.length === 0) return { tools: [] }
+      await input.reveal(matches.map((match) => match.id))
+      return {
+        tools: matches.flatMap((match) => {
+          const parameters = input.schemas[match.id]
+          if (!parameters) return []
+          return [
+            {
+              type: "function",
+              name: match.id,
+              description:
+                DEFERRED_DESCRIPTIONS[match.id] ?? deferredSummary(match.id) ?? "revealed deferred tool",
+              parameters,
+              defer_loading: true,
+            },
+          ]
+        }),
+      }
+    },
+  })
+}
+
+function nativeArguments(value: unknown) {
+  const args = value && typeof value === "object" ? (value as Record<string, unknown>) : {}
+  return {
+    query: typeof args.query === "string" ? args.query : "",
+    limit: typeof args.limit === "number" ? args.limit : undefined,
+  }
 }
 
 const MAX_SIGNATURE_PARAMS = 8

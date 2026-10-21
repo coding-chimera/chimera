@@ -3,7 +3,8 @@ import { existsSync } from "node:fs"
 import path from "node:path"
 import { Effect } from "effect"
 import { eq } from "drizzle-orm"
-import { tool, jsonSchema } from "ai"
+import { tool, jsonSchema, type Tool as AITool } from "ai"
+import { applyNativeToolSearch } from "@/session/llm"
 import { Database } from "@/storage/db"
 import { CodexResponses, type CodexResponsesInput } from "@/session/codex-responses"
 import { MessageV2 } from "@/session/message-v2"
@@ -802,5 +803,181 @@ describe("session.tool-search unknown tool", () => {
     const failure = events.find((event) => event.type === "tool-error")
     expect(failure?.error.message).toContain("named exactly `tool_search`")
     expect(failure?.error.message).not.toContain("reveal it with")
+  })
+})
+
+// OpenAI-native tool_search (client execution). The provider tool is built by
+// SessionPrompt.resolveTools and only reaches the wire through
+// applyNativeToolSearch (llm.ts), so both halves are covered here.
+describe("session.tool-search native gateway (openai.tool_search)", () => {
+  const parameters = {
+    type: "object",
+    properties: { query: { type: "string" }, limit: { type: "integer" } },
+    required: ["query"],
+  }
+  // Every deferred id gets a schema so a query can project any match.
+  const schemas = Object.fromEntries(
+    ToolSearch.DEFERRED_TOOLS.map((tool) => [tool.id, { type: "object", properties: {} }]),
+  ) as ToolSearch.NativeToolSearchInput["schemas"]
+  schemas.browser_open = { type: "object", properties: { url: { type: "string" } }, required: ["url"] }
+  const options = { toolCallId: "call_native", messages: [], abortSignal: new AbortController().signal }
+  const run = async (input: ToolSearch.NativeToolSearchInput, args: unknown) => {
+    const native = ToolSearch.nativeToolSearch(input)
+    const execute = native.execute as unknown as (
+      request: unknown,
+      options: unknown,
+    ) => PromiseLike<{ tools: Array<Record<string, unknown>> }>
+    return execute({ arguments: args, call_id: "call_native" }, options)
+  }
+  const gateway = (overrides: Partial<ToolSearch.NativeToolSearchInput> = {}): ToolSearch.NativeToolSearchInput => ({
+    agentMode: "primary",
+    permission: [],
+    parameters,
+    schemas,
+    reveal: async () => {},
+    ...overrides,
+  })
+
+  test("builds a provider-defined client-execution tool_search", () => {
+    const native = ToolSearch.nativeToolSearch(gateway()) as unknown as {
+      type: string
+      id: string
+      args: Record<string, unknown>
+    }
+    expect(native.type).toBe("provider")
+    expect(native.id).toBe("openai.tool_search")
+    expect(native.args).toEqual({ execution: "client", description: expect.stringContaining("deferred tools"), parameters })
+  })
+
+  test("projects matched tools with their full description, schema, and defer_loading", async () => {
+    const revealed: string[][] = []
+    const output = await run(
+      gateway({ reveal: async (ids) => void revealed.push([...ids]) }),
+      { query: "browser_open", limit: 1 },
+    )
+    expect(output.tools).toEqual([
+      {
+        type: "function",
+        name: "browser_open",
+        description: ToolSearch.DEFERRED_DESCRIPTIONS.browser_open,
+        parameters: schemas.browser_open,
+        defer_loading: true,
+      },
+    ])
+    expect(revealed).toEqual([["browser_open"]])
+  })
+
+  test("returns no tools for a miss and reveals nothing", async () => {
+    const revealed: string[][] = []
+    const output = await run(
+      gateway({ reveal: async (ids) => void revealed.push([...ids]) }),
+      { query: "zzz-not-a-tool" },
+    )
+    expect(output.tools).toEqual([])
+    expect(revealed).toEqual([])
+  })
+
+  test("drops permission-denied deferred tools from the native catalog", async () => {
+    const output = await run(
+      gateway({ permission: [{ permission: "browser_open", pattern: "*", action: "deny" }] }),
+      { query: "browser", limit: 10 },
+    )
+    const names = output.tools.map((tool) => tool.name)
+    expect(names).not.toContain("browser_open")
+    expect(names).toContain("browser_snapshot")
+  })
+
+  test("hides subagent-hidden preference tools for subagent agents", async () => {
+    const primary = await run(gateway(), { query: "subagent_model_prefer" })
+    expect(primary.tools.map((tool) => tool.name)).toEqual(["subagent_model_prefer"])
+    const subagent = await run(gateway({ agentMode: "subagent" }), { query: "subagent_model_prefer" })
+    expect(subagent.tools).toEqual([])
+  })
+})
+
+describe("session.tool-search native wire gate", () => {
+  const native = ToolSearch.nativeToolSearch({
+    agentMode: "primary",
+    permission: [],
+    parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+    schemas: {},
+    reveal: async () => {},
+  }) as unknown as AITool
+  const functionTool = tool({
+    description: "gateway",
+    inputSchema: jsonSchema({ type: "object", properties: { query: { type: "string" } } }),
+    execute: async () => "ok",
+  })
+  const model = (overrides: Record<string, unknown> = {}) => ({
+    api: { npm: "@ai-sdk/openai" },
+    wire_api: "responses",
+    backend_semantics: "codex",
+    ...overrides,
+  })
+const gate = (
+tools: Record<string, AITool>,
+overrides: Record<string, unknown> = {},
+providerWireAPI?: "chat" | "responses",
+    nativeToolSearch: AITool | null = native,
+    providerID?: string,
+) => {
+applyNativeToolSearch(
+tools,
+// @ts-expect-error structural model stub for the pure gate
+{ model: model(overrides), nativeToolSearch: nativeToolSearch ?? undefined },
+      providerWireAPI,
+      providerID,
+)
+return tools
+}
+  test("replaces the function gateway on the openai responses wire", () => {
+    const tools = gate({ tool_search: functionTool })
+    expect(tools.tool_search).toBe(native)
+  })
+
+  test("accepts the provider-level responses wire when the model omits wire_api", () => {
+    const tools = gate({ tool_search: functionTool }, { wire_api: undefined }, "responses")
+    expect(tools.tool_search).toBe(native)
+  })
+
+  test("keeps the function gateway for every non-native transport", () => {
+    expect(gate({ tool_search: functionTool }, { wire_api: "chat" }).tool_search).toBe(functionTool)
+    expect(gate({ tool_search: functionTool }, { wire_api: undefined }, "chat").tool_search).toBe(functionTool)
+    expect(gate({ tool_search: functionTool }, { backend_semantics: undefined }).tool_search).toBe(functionTool)
+    expect(gate({ tool_search: functionTool }, { backend_semantics: "alibailian" }).tool_search).toBe(functionTool)
+    expect(gate({ tool_search: functionTool }, { api: { npm: "@ai-sdk/openai-compatible" } }).tool_search).toBe(
+      functionTool,
+    )
+  })
+
+test("does nothing when no native tool was built or the record has no gateway", () => {
+expect(gate({ tool_search: functionTool }, {}, undefined, null).tool_search).toBe(functionTool)
+const withoutGateway = gate({ read: functionTool })
+expect(Object.keys(withoutGateway)).toEqual(["read"])
+  })
+
+  test("treats the official OpenAI provider as OAI-native without explicit wire/semantics config", () => {
+    // The built-in openai loader always uses the Responses transport, so an
+    // absent wire_api and backend_semantics must not keep the function tool.
+    const tools = gate(
+      { tool_search: functionTool },
+      { wire_api: undefined, backend_semantics: undefined },
+      undefined,
+      native,
+      "openai",
+    )
+    expect(tools.tool_search).toBe(native)
+  })
+
+  test("keeps the function gateway on the official provider's explicit chat wire", () => {
+    expect(
+      gate(
+        { tool_search: functionTool },
+        { wire_api: "chat", backend_semantics: undefined },
+        undefined,
+        native,
+        "openai",
+      ).tool_search,
+    ).toBe(functionTool)
   })
 })

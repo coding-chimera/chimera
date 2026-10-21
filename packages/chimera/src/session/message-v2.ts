@@ -834,6 +834,38 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
 ) {
   const result: UIMessage[] = []
   const toolNames = new Set<string>()
+/**
+ * Historical `tool_search` parts written by the old gateway stored
+ * `{ query, limit? }` as their input. Replaying them on the OpenAI Responses
+ * transport makes @ai-sdk/openai emit a `tool_search_call` whose `arguments`
+ * field is `undefined`, and the wire drops the key, so the API rejects every
+ * subsequent request with 400 `Missing required parameter:
+ * 'input[N].arguments'`. Native tool_search parts (client mode) store
+ * `{ arguments, call_id }` and must keep their real name.
+ *
+ * Renaming only the replayed name keeps storage and `function_call_output`
+ * pairing untouched: outputs are matched by `call_id`, not by tool name.
+ */
+function isLegacyToolSearch(part: ToolPart) {
+  if (part.tool !== "tool_search") return false
+  if (!isRecord(part.state.input)) return false
+  return !Object.hasOwn(part.state.input, "arguments")
+}
+
+function usesOpenAIResponses(model: Provider.Model) {
+  if (model.api.npm !== "@ai-sdk/openai") return false
+  // `wire_api` is optional. Only an explicit "chat" selects the Chat
+  // Completions transport: the built-in openai/xai loaders always build
+  // `sdk.responses(...)`, and configured providers copy their wire_api onto
+  // the model (provider.ts), so an absent value must be treated as Responses.
+  return model.wire_api !== "chat"
+}
+
+function wireToolName(part: ToolPart, model: Provider.Model) {
+  if (!isLegacyToolSearch(part)) return part.tool
+  return usesOpenAIResponses(model) ? "tool_search_legacy" : part.tool
+}
+
   // Track media from tool results that need to be injected as user messages
   // for providers that don't support media in tool results.
   //
@@ -901,6 +933,26 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
         if (part.type === "text" && !part.ignored)
           userMessage.parts.push({
             type: "text",
+  // Native OpenAI tool_search (client execution) results replay as
+  // `tool_search_output`, which @ai-sdk/openai emits only for a json
+  // tool-result carrying `{tools}` (@ai-sdk/openai dist/index.js). The gateway
+  // stores its result as text, so re-parse it here; legacy gateway output and
+  // truncated/compacted output fall back to the default text projection.
+  function toNativeToolSearchModelOutput(options: { toolCallId: string; input: unknown; output: unknown }) {
+    const output = options.output
+    const parsed = typeof output === "string" ? parseJsonRecord(output) : output
+    if (isRecord(parsed) && Array.isArray(parsed.tools)) return { type: "json" as const, value: parsed }
+    return toModelOutput(options)
+  }
+
+  function parseJsonRecord(text: string): unknown {
+    try {
+      return JSON.parse(text)
+    } catch {
+      return undefined
+    }
+  }
+
             text: part.text,
           })
         // text/plain and directory files are converted into text parts, ignore them
@@ -983,7 +1035,8 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
             type: "step-start",
           })
         if (part.type === "tool") {
-          toolNames.add(part.tool)
+          const toolName = wireToolName(part, model)
+          toolNames.add(toolName)
           if (part.state.status === "completed") {
             const outputText = part.state.time.compacted
               ? "[Old tool result content cleared]"
@@ -1014,7 +1067,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
                 : outputText
 
             assistantMessage.parts.push({
-              type: ("tool-" + part.tool) as `tool-${string}`,
+              type: ("tool-" + toolName) as `tool-${string}`,
               state: "output-available",
               toolCallId: part.callID,
               input: part.state.input,
@@ -1027,7 +1080,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
             const output = part.state.metadata?.interrupted === true ? part.state.metadata.output : undefined
             if (typeof output === "string") {
               assistantMessage.parts.push({
-                type: ("tool-" + part.tool) as `tool-${string}`,
+                type: ("tool-" + toolName) as `tool-${string}`,
                 state: "output-available",
                 toolCallId: part.callID,
                 input: part.state.input,
@@ -1037,7 +1090,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
               })
             } else {
               assistantMessage.parts.push({
-                type: ("tool-" + part.tool) as `tool-${string}`,
+                type: ("tool-" + toolName) as `tool-${string}`,
                 state: "output-error",
                 toolCallId: part.callID,
                 input: part.state.input,
@@ -1051,7 +1104,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
           // Anthropic/Claude APIs require every tool_use to have a corresponding tool_result
           if (part.state.status === "pending" || part.state.status === "running")
             assistantMessage.parts.push({
-              type: ("tool-" + part.tool) as `tool-${string}`,
+              type: ("tool-" + toolName) as `tool-${string}`,
               state: "output-error",
               toolCallId: part.callID,
               input: part.state.input,
@@ -1101,7 +1154,12 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
     }
   }
 
-  const tools = Object.fromEntries(Array.from(toolNames).map((toolName) => [toolName, { toModelOutput }]))
+  const tools = Object.fromEntries(
+    Array.from(toolNames).map((toolName) => [
+      toolName,
+      { toModelOutput: toolName === "tool_search" ? toNativeToolSearchModelOutput : toModelOutput },
+    ]),
+  )
 
   return yield* Effect.promise(() =>
     convertToModelMessages(

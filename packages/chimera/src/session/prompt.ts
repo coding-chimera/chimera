@@ -11,7 +11,7 @@ import { Agent } from "../agent/agent"
 import { Provider } from "@/provider/provider"
 import { ModelID, ProviderID } from "../provider/schema"
 import { type Tool as AITool, tool, jsonSchema, type ToolExecutionOptions, asSchema, type ModelMessage } from "ai"
-import type { JSONSchema7 } from "@ai-sdk/provider"
+import type { JSONObject, JSONSchema7 } from "@ai-sdk/provider"
 import { SessionCompaction } from "./compaction"
 import { Bus } from "../bus"
 import { ProviderTransform } from "@/provider/transform"
@@ -1193,12 +1193,18 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       })) {
         const deferred = toolSearch.isDeferred(item.id)
         if (deferred && !revealedDeferred.has(item.id)) {
+      // Wire JSON schema per deferred tool, so the OpenAI-native tool_search
+      // can hand the model the exact definition the registry would have sent.
+      const deferredSchemas: Record<string, JSONObject> = {}
           deferredHidden.push(item.id)
           continue
         }
-        const schema = ProviderTransform.schema(model, EffectZod.toJsonSchema(item.parameters))
         const built = tool({
           description: item.description,
+        // Schema is captured before the defer filter: the native gateway hands
+        // the model definitions for tools that are still hidden this turn.
+        const schema = ProviderTransform.schema(model, EffectZod.toJsonSchema(item.parameters))
+        if (deferred) deferredSchemas[item.id] = schema as JSONObject
           inputSchema: jsonSchema(schema),
           execute(args, options) {
             const ctx = context(args, options)
@@ -1573,7 +1579,25 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         tools[key] = item
       }
 
-      return { tools, deferredHidden, revealedCallable }
+      // OpenAI-native tool_search (client execution): built only for models
+      // routed through @ai-sdk/openai. LLM.stream makes the final wire decision
+      // (Responses transport + OpenAI/Codex semantics, and not the Codex OAuth
+      // serializer), so every other provider keeps the function tool unchanged.
+      const nativeToolSearch =
+        model.api.npm === "@ai-sdk/openai" && tools[ToolSearch.TOOL_SEARCH_ID]
+          ? (ToolSearch.nativeToolSearch({
+              agentMode: agent.mode,
+              permission: Permission.merge(agent.permission, session.permission ?? []),
+              parameters: ProviderTransform.schema(
+                model,
+                EffectZod.toJsonSchema(ToolSearch.ToolSearchParameters),
+              ) as JSONObject,
+              schemas: deferredSchemas,
+              reveal: (ids) => run.promise(toolSearch.reveal(session.id, ids)),
+            }) as unknown as AITool)
+          : undefined
+
+      return { tools, deferredHidden, revealedCallable, nativeToolSearch }
     })
 
     const handleSubtask = Effect.fn("SessionPrompt.handleSubtask")(function* (input: {
@@ -3002,7 +3026,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             const lastUserMsg = msgs.findLast(realUser)
             const bypassAgentCheck = lastUserMsg?.parts.some((p) => p.type === "agent") ?? false
 
-            const { tools, deferredHidden, revealedCallable } = yield* resolveTools({
+            const { tools, deferredHidden, revealedCallable, nativeToolSearch } = yield* resolveTools({
               agent,
               session,
               model,
@@ -3137,6 +3161,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               yield* sessions.updateMessage(handle.message)
               return "break" as const
             }
+              nativeToolSearch,
 
             const finished = handle.message.finish && !["tool-calls", "unknown"].includes(handle.message.finish)
             if (finished && !handle.message.error) {

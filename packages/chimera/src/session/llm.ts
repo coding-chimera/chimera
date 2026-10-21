@@ -134,6 +134,12 @@ export type StreamInput = {
   // id in this view through the normal execution closure. Promoted ids ride
   // `tools` instead.
   revealedCallable?: Record<string, Tool>
+  // Provider-defined OpenAI tool_search (client execution) built by
+  // SessionPrompt.resolveTools. Applied to the wire record only when the
+  // model actually runs the OpenAI Responses transport with OpenAI/Codex
+  // backend semantics (see isOpenaiNativeToolSearch); otherwise the function
+  // tool already in `tools` stays. Never set for small (title/summary) calls.
+  nativeToolSearch?: Tool
   abort?: AbortSignal
   retries?: number
   toolChoice?: "auto" | "required" | "none"
@@ -407,6 +413,12 @@ const live: Layer.Layer<
         })
           ? yield* provider.getRequestOptions(input.model)
           : undefined
+      // Progressive disclosure on the OpenAI Responses transport: swap the
+      // function-tool gateway for the provider-defined tool_search so history
+      // replay is a legal tool_search_output. The Codex OAuth serializer
+      // returned above and the experimental native runtime keeps the function
+      // tool, so both stay untouched.
+      if (!nativeRequestOptions) applyNativeToolSearch(tools, input, item.wire_api, item.id)
       const language = nativeRequestOptions
         ? NativeLLMLanguageModel.languageModel({
             providerID: input.model.providerID,
@@ -809,6 +821,26 @@ function capabilityTools(tools: Record<string, Tool>, input: StreamInput, reveal
   // permission-filtered).
   for (const id of Object.keys(revealedCallable ?? {})) view[id] ??= true
   return view
+}
+
+// Wire-time switch from the Chimera function-tool gateway to the provider-
+// defined OpenAI tool_search (client execution). Only the OpenAI Responses
+// transport with OpenAI/Codex backend semantics gets the native tool; every
+// other provider keeps the function tool. Mutates the per-request record in
+// place, like the hosted web_search injection above.
+export function applyNativeToolSearch(
+  tools: Record<string, Tool>,
+  input: {
+    model: Pick<Provider.Model, "api" | "wire_api" | "backend_semantics">
+    nativeToolSearch?: Tool
+  },
+  providerWireAPI: Provider.Info["wire_api"],
+  providerID?: string,
+) {
+  const native = input.nativeToolSearch
+  if (!native || !tools[ToolSearch.TOOL_SEARCH_ID]) return
+  if (!ToolSearch.isOpenaiNativeToolSearch(input.model, providerWireAPI, providerID)) return
+  tools[ToolSearch.TOOL_SEARCH_ID] = native
 }
 
 // Check if messages contain any tool-call content
