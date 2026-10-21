@@ -52,32 +52,60 @@ export type SubagentModelSelection = Pick<
 const ULTRA_VARIANT_ERROR =
   "Subagents do not support the ultra variant; ultra is reserved for root sessions. Omit variant or choose a non-ultra variant."
 
+const isBlankSelector = (value: string | undefined) => value !== undefined && value.trim().length === 0
+
+// Models sometimes emit empty optional selector fields instead of omitting them. Treat a blank selector as
+// omitted for exclusivity/dependency checks and resolution. A single blank primary selector supplied directly
+// still fails with its dedicated error; serialized tool payloads normalize blank keys before validation.
+export const normalizeSubagentModelSelection = (input: SubagentModelSelection): SubagentModelSelection => ({
+  modelProfile: isBlankSelector(input.modelProfile) ? undefined : input.modelProfile,
+  model: isBlankSelector(input.model) ? undefined : input.model,
+  modelIdentity: isBlankSelector(input.modelIdentity) ? undefined : input.modelIdentity,
+  provider: isBlankSelector(input.provider) ? undefined : input.provider,
+  variant: isBlankSelector(input.variant) ? undefined : input.variant,
+})
+
 export const validateSubagentModelSelection = Effect.fn("SubagentExecution.validateSelection")(function* (
   input: SubagentModelSelection,
 ) {
-  if (input.model !== undefined && input.modelProfile !== undefined) {
+  const selection = normalizeSubagentModelSelection(input)
+  if (selection.model !== undefined && selection.modelProfile !== undefined) {
     return yield* Effect.fail(
-      new Error("model and model_profile are mutually exclusive: pass either model or model_profile, not both"),
+      new Error(
+        `model and model_profile are mutually exclusive: got model=${JSON.stringify(selection.model)}, model_profile=${JSON.stringify(selection.modelProfile)}; pass exactly one and omit the other field entirely`,
+      ),
     )
   }
-  if (input.modelIdentity !== undefined && (input.model !== undefined || input.modelProfile !== undefined)) {
+  if (selection.modelIdentity !== undefined && (selection.model !== undefined || selection.modelProfile !== undefined)) {
+    const received = [
+      selection.model === undefined ? undefined : `model=${JSON.stringify(selection.model)}`,
+      selection.modelProfile === undefined ? undefined : `model_profile=${JSON.stringify(selection.modelProfile)}`,
+      `model_identity=${JSON.stringify(selection.modelIdentity)}`,
+    ].filter((entry) => entry !== undefined)
     return yield* Effect.fail(
-      new Error("model_profile, model, and model_identity are mutually exclusive: pass at most one selector"),
+      new Error(
+        `model_profile, model, and model_identity are mutually exclusive: got ${received.join(", ")}; pass at most one selector and omit the others entirely`,
+      ),
     )
   }
-  if (input.provider !== undefined && input.modelIdentity === undefined) {
+  if (selection.provider !== undefined && selection.modelIdentity === undefined) {
     return yield* Effect.fail(new Error("provider requires model_identity; exact model already includes its provider"))
   }
-  if (input.modelIdentity !== undefined && input.modelIdentity.trim().length === 0) {
-    return yield* Effect.fail(new Error("model_identity must not be empty"))
+  const blankPrimaryCount = [input.modelProfile, input.model, input.modelIdentity].filter(isBlankSelector).length
+  const hasConcretePrimary = [input.modelProfile, input.model, input.modelIdentity].some(
+    (value) => value !== undefined && !isBlankSelector(value),
+  )
+  if (!hasConcretePrimary && blankPrimaryCount === 1) {
+    if (isBlankSelector(input.modelProfile)) return yield* Effect.fail(new Error("Model profile name must not be empty"))
+    if (isBlankSelector(input.modelIdentity)) return yield* Effect.fail(new Error("model_identity must not be empty"))
+    if (isBlankSelector(input.model)) {
+      return yield* Effect.fail(new Error(`Invalid model ${JSON.stringify(input.model)}: expected "provider/model"`))
+    }
   }
-  if (input.provider !== undefined && input.provider.trim().length === 0) {
-    return yield* Effect.fail(new Error("provider must not be empty"))
-  }
-  if (input.variant !== undefined && input.variant.toLowerCase() === "ultra") {
+  if (selection.variant !== undefined && selection.variant.toLowerCase() === "ultra") {
     return yield* Effect.fail(new Error(ULTRA_VARIANT_ERROR))
   }
-  if (input.variant !== undefined && input.model === undefined && input.modelIdentity === undefined) {
+  if (selection.variant !== undefined && selection.model === undefined && selection.modelIdentity === undefined) {
     return yield* Effect.fail(new Error("variant requires model or model_identity"))
   }
 })
@@ -151,7 +179,13 @@ export const resolveSubagentExecution: (
   input: SubagentExecutionInput,
 ) {
   yield* validateSubagentModelSelection(input)
-  if (input.existing?.model && input.modelProfile === undefined && input.model === undefined && input.modelIdentity === undefined) {
+  const selection = normalizeSubagentModelSelection(input)
+  if (
+    input.existing?.model &&
+    selection.modelProfile === undefined &&
+    selection.model === undefined &&
+    selection.modelIdentity === undefined
+  ) {
     return yield* applyResume({
       subagentType: input.subagentType,
       existing: input.existing,
@@ -168,16 +202,16 @@ export const resolveSubagentExecution: (
     })
   }
 
-  if (input.model !== undefined) {
-    const parsed = Provider.parseModel(input.model)
+  if (selection.model !== undefined) {
+    const parsed = Provider.parseModel(selection.model)
     if (parsed.providerID.trim().length === 0 || parsed.modelID.trim().length === 0) {
-      return yield* Effect.fail(new Error(`Invalid model "${input.model}": expected "provider/model"`))
+      return yield* Effect.fail(new Error(`Invalid model "${selection.model}": expected "provider/model"`))
     }
     const info = yield* input.validateModel(parsed.providerID, parsed.modelID)
-    if (input.variant !== undefined && !info.variants?.[input.variant]) {
+    if (selection.variant !== undefined && !info.variants?.[selection.variant]) {
       return yield* Effect.fail(
         new Error(
-          `Model ${parsed.providerID}/${parsed.modelID} does not advertise variant "${input.variant}". Available variants: ${Object.keys(info.variants ?? {}).join(", ") || "none"}.`
+          `Model ${parsed.providerID}/${parsed.modelID} does not advertise variant "${selection.variant}". Available variants: ${Object.keys(info.variants ?? {}).join(", ") || "none"}.`
         ),
       )
     }
@@ -186,26 +220,26 @@ export const resolveSubagentExecution: (
       existing: input.existing,
       resolved: {
         agent: input.subagentType,
-        model: { providerID: parsed.providerID, modelID: parsed.modelID, variant: input.variant },
+        model: { providerID: parsed.providerID, modelID: parsed.modelID, variant: selection.variant },
         source: "request-model",
       },
     })
     return withDefaultVariant(resolved, info)
   }
 
-  if (input.modelIdentity !== undefined) {
+  if (selection.modelIdentity !== undefined) {
     if (!input.resolveModelIdentity) {
       return yield* Effect.fail(new Error("model_identity resolution is unavailable"))
     }
     const route = yield* input.resolveModelIdentity({
-      modelIdentity: input.modelIdentity,
-      provider: input.provider,
+      modelIdentity: selection.modelIdentity,
+      provider: selection.provider,
     })
     const info = yield* input.validateModel(route.providerID, route.modelID)
-    if (input.variant !== undefined && !info.variants?.[input.variant]) {
+    if (selection.variant !== undefined && !info.variants?.[selection.variant]) {
       return yield* Effect.fail(
         new Error(
-          `Model ${route.providerID}/${route.modelID} does not advertise variant "${input.variant}". Available variants: ${Object.keys(info.variants ?? {}).join(", ") || "none"}.`,
+          `Model ${route.providerID}/${route.modelID} does not advertise variant "${selection.variant}". Available variants: ${Object.keys(info.variants ?? {}).join(", ") || "none"}.`,
         ),
       )
     }
@@ -214,17 +248,16 @@ export const resolveSubagentExecution: (
       existing: input.existing,
       resolved: {
         agent: input.subagentType,
-        model: { providerID: route.providerID, modelID: route.modelID, variant: input.variant },
+        model: { providerID: route.providerID, modelID: route.modelID, variant: selection.variant },
         source: "request-model-identity",
       },
     })
     return withDefaultVariant(resolved, info)
   }
 
-
   const profiles = input.delegation?.model_profiles
   const routeProfile = input.delegation?.routes?.[input.subagentType]
-  const profileName = input.modelProfile ?? routeProfile
+  const profileName = selection.modelProfile ?? routeProfile
 
   if (profileName !== undefined) {
     if (profileName.trim().length === 0) {
@@ -234,7 +267,7 @@ export const resolveSubagentExecution: (
     const valid = Object.keys(profiles ?? {})
     if (!entry) {
       const message =
-        input.modelProfile !== undefined
+        selection.modelProfile !== undefined
           ? `Unknown model profile: ${profileName}. Valid profiles: ${valid.join(", ")}`
           : `Unknown model profile: ${profileName} for route "${input.subagentType}". Valid profiles: ${valid.join(", ")}`
       return yield* Effect.fail(new Error(message))
@@ -259,7 +292,7 @@ export const resolveSubagentExecution: (
         agent: input.subagentType,
         profile: profileName,
         model: { providerID: parsed.providerID, modelID: parsed.modelID, variant },
-        source: input.modelProfile !== undefined ? "request-profile" : "role-route",
+        source: selection.modelProfile !== undefined ? "request-profile" : "role-route",
       },
     })
     return withDefaultVariant(resolved, info)

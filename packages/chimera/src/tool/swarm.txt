@@ -51,3 +51,9 @@ For parallel editing, keep items independent and scoped by file/range/symbol whe
 Minimal call examples:
 - `{ preset: "audit-followup", from: "pending_obligations", concurrency: 8 }`
 - `{ prompt_template: "Item {{index}}/{{total}}: {{item}}", items: ["Review src/auth.ts", { file: "src/api.ts", scope: "route handlers", questions: ["callers?", "error paths?"] }] }`
+
+Minimal call — no selector fields are needed:
+
+{ prompt_template: "Review {{item}}", items: ["src/auth.ts", "src/api.ts"] }
+
+Omit every optional selector you are not using (`workload`, `model`, `model_profile`, `model_identity`, `provider`, `variant`). Omit the key entirely; never pass `""`, `null`, or `"none"`, because an empty string counts as a supplied value and fails mutual-exclusion validation. Pass `workload` alone to let the scheduler route every worker; pass at most one of `model`, `model_profile`, or `model_identity` to pin a route, and add `workload` only when you also want its attribution/validation.

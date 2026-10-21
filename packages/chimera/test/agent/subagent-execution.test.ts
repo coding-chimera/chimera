@@ -593,6 +593,120 @@ describe("SubagentExecution.ultra policy", () => {
     }),
   )
 
+  it.effect("ignores whitespace-only optional selectors alongside a concrete selector", () =>
+    Effect.gen(function* () {
+      const profileWithEmptyModel = yield* resolveSubagentExecution({
+        subagentType: "general",
+        model: "",
+        modelProfile: "flash",
+        parent,
+        subagent: subagent(),
+        delegation: { model_profiles: { flash: { model: "test/test-model" } } },
+        validateModel: () => ok,
+      })
+      expect(profileWithEmptyModel.source).toBe("request-profile")
+      expect(profileWithEmptyModel.profile).toBe("flash")
+
+      const modelWithEmptySelectors = yield* resolveSubagentExecution({
+        subagentType: "general",
+        model: "test/test-model",
+        modelProfile: " ",
+        modelIdentity: "",
+        variant: "",
+        parent,
+        subagent: subagent(),
+        validateModel: () => ok,
+      })
+      expect(modelWithEmptySelectors.source).toBe("request-model")
+      expect(modelWithEmptySelectors.model.modelID).toBe(ModelID.make("test-model"))
+      expect(modelWithEmptySelectors.model.variant).toBe("max")
+    }),
+  )
+
+  it.effect("treats all blank optional selectors as omitted and falls back to the agent config", () =>
+    Effect.gen(function* () {
+      const result = yield* resolveSubagentExecution({
+        subagentType: "general",
+        model: "",
+        modelProfile: " ",
+        modelIdentity: "",
+        provider: "\t",
+        variant: "",
+        parent,
+        subagent: subagent({
+          model: { providerID: ProviderID.make("agent"), modelID: ModelID.make("agent-model") },
+        }),
+        validateModel: () => ok,
+      })
+      expect(result.source).toBe("agent-config")
+      expect(result.model.providerID).toBe(ProviderID.make("agent"))
+      expect(result.model.modelID).toBe(ModelID.make("agent-model"))
+      expect(result.model.variant).toBeUndefined()
+    }),
+  )
+
+  it.effect("ignores a blank provider when resolving a concrete model_identity", () =>
+    Effect.gen(function* () {
+      const seen: Array<{ modelIdentity: string; provider?: string }> = []
+      const result = yield* resolveSubagentExecution({
+        subagentType: "general",
+        modelIdentity: "gpt-5.6",
+        provider: " ",
+        parent,
+        subagent: subagent(),
+        validateModel: () => ok,
+        resolveModelIdentity: (input) =>
+          Effect.sync(() => {
+            seen.push(input)
+            return { providerID: ProviderID.make("test"), modelID: ModelID.make("deployment-a") }
+          }),
+      })
+      expect(seen).toEqual([{ modelIdentity: "gpt-5.6", provider: undefined }])
+      expect(result.source).toBe("request-model-identity")
+      expect(result.model.modelID).toBe(ModelID.make("deployment-a"))
+    }),
+  )
+
+  it.effect("silently ignores a standalone blank provider or variant instead of failing a dependency check", () =>
+    Effect.gen(function* () {
+      const providerOnly = yield* resolveSubagentExecution({
+        subagentType: "general",
+        provider: " ",
+        parent,
+        subagent: subagent(),
+        validateModel: () => ok,
+      })
+      expect(providerOnly.source).toBe("parent")
+
+      const variantOnly = yield* resolveSubagentExecution({
+        subagentType: "general",
+        variant: "",
+        parent,
+        subagent: subagent(),
+        validateModel: () => ok,
+      })
+      expect(variantOnly.source).toBe("parent")
+      expect(variantOnly.model.variant).toBe("high")
+    }),
+  )
+
+  it.effect("keeps non-empty model_profile and model_identity mutually exclusive", () =>
+    Effect.gen(function* () {
+      const error = yield* resolveSubagentExecution({
+        subagentType: "general",
+        modelProfile: "flash",
+        modelIdentity: "gpt-5.6",
+        parent,
+        subagent: subagent(),
+        delegation: { model_profiles: { flash: { model: "test/test-model" } } },
+        validateModel: () => ok,
+      }).pipe(Effect.flip)
+      expect(String(error)).toContain("mutually exclusive")
+      expect(String(error)).toContain('model_profile="flash"')
+      expect(String(error)).toContain('model_identity="gpt-5.6"')
+    }),
+  )
+
   it.effect("resolves an explicit direct model with source request-model", () =>
     Effect.gen(function* () {
       const result = yield* resolveSubagentExecution({
@@ -716,6 +830,8 @@ describe("SubagentExecution.ultra policy", () => {
         validateModel: () => ok,
       }).pipe(Effect.flip)
       expect(String(error)).toContain("mutually exclusive")
+      expect(String(error)).toContain('model="test/test-model"')
+      expect(String(error)).toContain('model_profile="flash"')
     }),
   )
 
@@ -913,6 +1029,8 @@ describe("SubagentExecution.ultra policy", () => {
         validateModel: () => ok,
       }).pipe(Effect.flip)
       expect(String(conflicts)).toContain("mutually exclusive")
+      expect(String(conflicts)).toContain('model="test/test-model"')
+      expect(String(conflicts)).toContain('model_identity="gpt-5.6"')
 
       const providerOnly = yield* resolveSubagentExecution({
         subagentType: "general",

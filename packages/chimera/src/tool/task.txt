@@ -21,6 +21,11 @@ Usage notes:
 6. If the agent description says it should be used proactively, try to use it without waiting for the user, subject to the active multi-agent policy and independence threshold.
 7. Subagents may dispatch further subagents when their agent type declares the `task` permission and the session is below the configured delegation depth (`delegation.max_depth`, default 3 counting the root session). Concurrent subagent runs share the runtime-wide `delegation.max_concurrent` budget (default 128) and queue when it is exhausted; a subagent waiting on its children does not consume budget.
 
+Minimal call — start from this shape and add only the fields you need:
+
+task(description="Check the retry logic", prompt="<self-contained task and the exact result you expect>", subagent_type="general")
+
+Omit every optional selector you are not using (`workload`, `model`, `model_profile`, `model_identity`, `provider`, `variant`, `task_id`). Omit the key entirely; never pass `""`, `null`, or `"none"`, because an empty string counts as a supplied value and fails mutual-exclusion validation. To let the scheduler pick the route, pass `workload` and no `model`/`model_profile`/`model_identity`. To pin a route, pass exactly one of `model`, `model_profile`, or `model_identity`, and add `workload` only when you also want its attribution/validation.
 Optional `workload`: declare the delegation archetype on each dispatch. Pass `workload` alone to let the current cost-aware scheduler choose a concrete route and non-ultra variant. Pass `workload` with `model_profile`, `model`, or `model_identity` to keep that explicit selector authoritative while validating and recording the workload for attribution. Unknown workload names are rejected with the current valid names. Omit workload to retain the existing role route -> agent config -> parent fallback chain. A model excluded from the declared workload by `delegation.scheduling.archetypes.<workload>.excludeModels` fails dispatch unless resuming; choose another model or omit workload.
 
 Optional `model_profile`: pass the name of a `delegation.model_profiles` entry from your configuration to run the subagent with that profile's model and variant. Omit it to use workload scheduling or the existing subagent/parent fallback.

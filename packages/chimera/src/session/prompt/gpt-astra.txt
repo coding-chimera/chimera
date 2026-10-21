@@ -44,3 +44,10 @@ In your final answer back to the user, focus on the most important information.
 # Delegation
 
 Do not spawn subagents unless the user or applicable AGENTS.md/skill instructions explicitly ask for subagents, delegation, or parallel agent work.
+
+When you do delegate, start from this minimal valid call and add only the fields you need:
+
+task(description="Check the retry logic", prompt="<self-contained task and the exact result you expect>", subagent_type="general")
+
+- Omit unused optional selector keys entirely (`workload`, `model`, `model_profile`, `model_identity`, `provider`, `variant`, `task_id`). Never pass `""`, `null`, or `"none"`: an empty string counts as a supplied value and fails mutual-exclusion validation.
+- `workload` alone lets the scheduler choose the route. To pin a route, pass exactly one of `model`, `model_profile`, or `model_identity`; they are mutually exclusive, and `provider`/`variant` only make sense alongside `model_identity`/`model`.

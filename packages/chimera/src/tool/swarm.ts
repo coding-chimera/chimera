@@ -3,7 +3,7 @@ import DESCRIPTION from "./swarm.txt"
 import { SubagentDispatch, type SubagentDispatchStarted, type SubagentPromptOps } from "../agent/subagent-dispatch"
 import { BackgroundJob } from "../agent/background-job"
 import * as ModelTelemetry from "../agent/model-telemetry"
-import { validateSubagentModelSelection } from "../agent/subagent-execution"
+import { normalizeSubagentModelSelection, validateSubagentModelSelection } from "../agent/subagent-execution"
 import { SubagentModelSchedulingRuntime } from "../agent/subagent-model-scheduling-runtime"
 import { Agent } from "../agent/agent"
 import { Config } from "@/config/config"
@@ -428,13 +428,14 @@ export const ChimeraSwarmTool = Tool.define(
     const scheduling = yield* SubagentModelSchedulingRuntime.make
 
     const run = Effect.fn("ChimeraSwarmTool.execute")(function* (params: Params, ctx: Tool.Context) {
-      yield* validateSubagentModelSelection({
+      const selectors = normalizeSubagentModelSelection({
         modelProfile: params.model_profile,
         model: params.model,
         modelIdentity: params.model_identity,
         provider: params.provider,
         variant: params.variant,
       })
+      yield* validateSubagentModelSelection(selectors)
       if (params.items?.length && params.from) return yield* Effect.fail(new Error("Provide either explicit items or from, not both."))
       const sourceLimit = bounded(params.limit, 20, 100)
       const sourceItems = params.from ? yield* materializeSource(params.from, sourceLimit) : undefined
@@ -466,13 +467,13 @@ export const ChimeraSwarmTool = Tool.define(
         ? yield* scheduling.resolveWorkload({
             workload: params.workload,
             select:
-              params.model_profile === undefined && params.model === undefined && params.model_identity === undefined,
+              selectors.modelProfile === undefined && selectors.model === undefined && selectors.modelIdentity === undefined,
             ruleset: Permission.merge(caller.permission, parent.permission ?? []),
             projectID: parent.projectID,
           })
         : undefined
-      const model = workload?.selection?.model ?? params.model
-      const variant = workload?.selection?.variant ?? params.variant
+      const model = workload?.selection?.model ?? selectors.model
+      const variant = workload?.selection?.variant ?? selectors.variant
       if (!ctx.extra?.bypassAgentCheck) {
         yield* ctx.ask({
           permission: "task",
@@ -493,10 +494,10 @@ export const ChimeraSwarmTool = Tool.define(
         parentSessionID: ctx.sessionID,
         parentMessageID: ctx.messageID,
         subagentType: subagent,
-        modelProfile: params.model_profile,
+        modelProfile: selectors.modelProfile,
         model,
-        modelIdentity: params.model_identity,
-        provider: params.provider,
+        modelIdentity: selectors.modelIdentity,
+        provider: selectors.provider,
         variant,
         workload: params.workload,
         authorizeProfile: (profile) =>
@@ -531,7 +532,7 @@ export const ChimeraSwarmTool = Tool.define(
       const selectionSource = prepared.resolved.source === "resume" ? "resume" : workload?.selection ? "scheduler" : "explicit"
       const action = ModelTelemetry.actionForRoute({
         route: `${prepared.resolved.model.providerID}/${prepared.resolved.model.modelID}`,
-        identity: workload?.selection?.recommendation?.identity ?? params.model_identity,
+        identity: workload?.selection?.recommendation?.identity ?? selectors.modelIdentity,
         variant: prepared.resolved.model.variant,
         selectionSource,
         resolutionSource: prepared.resolved.source,
@@ -579,11 +580,11 @@ export const ChimeraSwarmTool = Tool.define(
         itemCount: items.length,
         concurrency,
         subagent_type: subagent,
-        model_profile: params.model_profile,
+        model_profile: selectors.modelProfile,
         model,
         workload: params.workload,
-        model_identity: params.model_identity,
-        provider: params.provider,
+        model_identity: selectors.modelIdentity,
+        provider: selectors.provider,
         scopeWarningCount: scopeWarnings.length,
         scopeWarnings: scopeWarnings.map((warning) => ({
           file: warning.file,
@@ -813,11 +814,11 @@ export const ChimeraSwarmTool = Tool.define(
         preset: preset ?? "custom",
         source: params.from ?? "items",
         subagent_type: subagent,
-        model_profile: params.model_profile,
+        model_profile: selectors.modelProfile,
         model,
         workload: params.workload,
-        model_identity: params.model_identity,
-        provider: params.provider,
+        model_identity: selectors.modelIdentity,
+        provider: selectors.provider,
         items: items.length,
         concurrency,
         childRuns: childRunList(),

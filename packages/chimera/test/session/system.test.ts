@@ -304,6 +304,28 @@ describe("session.system", () => {
     }),
   )
 
+  it.effect("anchors Astra delegation guidance to a minimal task call and omitted selector keys", () =>
+    Effect.gen(function* () {
+      const astra = SystemPrompt.provider({
+        providerID: "openai",
+        api: { id: "gpt-6" },
+      } as unknown as Parameters<typeof SystemPrompt.provider>[0]).join("\n")
+      const generic = SystemPrompt.provider({
+        providerID: "openai",
+        api: { id: "gpt-5.6-sol" },
+      } as unknown as Parameters<typeof SystemPrompt.provider>[0]).join("\n")
+
+      // GPT/Astra models otherwise invent selector fields and send empty
+      // strings, which validation treats as supplied values.
+      expect(astra).toContain("start from this minimal valid call")
+      expect(astra).toContain('subagent_type="general"')
+      expect(astra).toContain("empty string counts as a supplied value")
+      expect(astra).toContain("`workload` alone lets the scheduler choose the route")
+      expect(generic).not.toContain("start from this minimal valid call")
+      yield* Effect.void
+    }),
+  )
+
   it.effect("keeps non-gpt-6 model assembly byte-identical without the Astra layer", () =>
     Effect.gen(function* () {
       // Anchor for the #13 default-invariance requirement: with no gpt-6-family

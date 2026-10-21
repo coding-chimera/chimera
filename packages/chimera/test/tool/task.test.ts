@@ -2592,6 +2592,11 @@ describe("tool.task", () => {
             prompt: "look into the cache key path",
             subagent_type: "general",
             workload: "scout",
+            model: "",
+            model_profile: " ",
+            model_identity: "",
+            provider: "",
+            variant: "",
           },
           {
             sessionID: chat.id,
@@ -2624,6 +2629,100 @@ describe("tool.task", () => {
           id: result.metadata.model.modelID,
           variant: result.metadata.model.variant,
         })
+      }),
+    { config: delegationConfig },
+  )
+
+  it.instance(
+    "execute selects the workload route when optional selector fields are blank strings",
+    () =>
+      Effect.gen(function* () {
+        const sessions = yield* Session.Service
+        const { chat, assistant } = yield* seed()
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+        const asks: Array<{ permission?: string; patterns?: readonly string[]; metadata?: Record<string, unknown> }> = []
+        let seen: SessionPrompt.PromptInput | undefined
+
+        const result = yield* def.execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+            workload: "scout",
+            model: "",
+            model_profile: " ",
+            model_identity: "",
+            provider: "\t",
+            variant: "",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps: stubOps({ onPrompt: (input) => (seen = input) }) },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: (input) =>
+              Effect.sync(() => {
+                asks.push(input)
+              }),
+          },
+        )
+
+        expect(asks.map((item) => item.permission)).toEqual(["task", "task_model"])
+        expect(asks[0]?.metadata).toMatchObject({ workload: "scout" })
+        expect(seen?.model).toEqual({
+          providerID: result.metadata.model.providerID,
+          modelID: result.metadata.model.modelID,
+        })
+        expect(seen?.variant).toBe(result.metadata.model.variant)
+        expect(result.metadata.execution).toMatchObject({ workload: "scout", source: "request-model", resumed: false })
+        expect((yield* sessions.get(result.metadata.sessionId)).model).toMatchObject({
+          providerID: result.metadata.model.providerID,
+          id: result.metadata.model.modelID,
+          variant: result.metadata.model.variant,
+        })
+      }),
+    { config: delegationConfig },
+  )
+
+  it.instance(
+    "execute treats blank optional selector fields as omitted when a model is pinned",
+    () =>
+      Effect.gen(function* () {
+        const { chat, assistant } = yield* seed()
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+        let seen: SessionPrompt.PromptInput | undefined
+
+        const result = yield* def.execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+            model: "test/test-model",
+            model_profile: " ",
+            model_identity: "",
+            provider: "\t",
+            variant: "",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps: stubOps({ onPrompt: (input) => (seen = input) }) },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+
+        expect(seen?.model).toEqual(ref)
+        expect(seen?.variant).toBe("max")
+        expect(result.metadata.execution).toMatchObject({ source: "request-model", resumed: false })
       }),
     { config: delegationConfig },
   )

@@ -9,7 +9,7 @@ import {
 } from "../agent/subagent-dispatch"
 import { BackgroundJob } from "../agent/background-job"
 import * as ModelTelemetry from "../agent/model-telemetry"
-import { validateSubagentModelSelection } from "../agent/subagent-execution"
+import { normalizeSubagentModelSelection, validateSubagentModelSelection } from "../agent/subagent-execution"
 import { Agent } from "../agent/agent"
 import { SubagentModelSchedulingRuntime } from "../agent/subagent-model-scheduling-runtime"
 import { Config } from "@/config/config"
@@ -159,13 +159,14 @@ export const TaskTool = Tool.define(
       const cfg = yield* config.get()
       const backgroundEnabled =
         cfg.delegation?.background_subagents ?? ConfigDelegation.DEFAULT_BACKGROUND_SUBAGENTS
-      yield* validateSubagentModelSelection({
+      const selectors = normalizeSubagentModelSelection({
         modelProfile: params.model_profile,
         model: params.model,
         modelIdentity: params.model_identity,
         provider: params.provider,
         variant: params.variant,
       })
+      yield* validateSubagentModelSelection(selectors)
       const runInBackground = params.background === true
       if (runInBackground && !backgroundEnabled) {
         return yield* Effect.fail(
@@ -185,16 +186,16 @@ export const TaskTool = Tool.define(
         ? yield* scheduling.resolveWorkload({
             workload: params.workload,
             select:
-              params.model_profile === undefined &&
-              params.model === undefined &&
-              params.model_identity === undefined &&
+              selectors.modelProfile === undefined &&
+              selectors.model === undefined &&
+              selectors.modelIdentity === undefined &&
               !existing?.model,
             ruleset: Permission.merge(caller.permission, parent.permission ?? []),
             projectID: parent.projectID,
           })
         : undefined
-      const model = workload?.selection?.model ?? params.model
-      const variant = workload?.selection?.variant ?? params.variant
+      const model = workload?.selection?.model ?? selectors.model
+      const variant = workload?.selection?.variant ?? selectors.variant
 
       if (!ctx.extra?.bypassAgentCheck) {
         yield* ctx.ask({
@@ -216,10 +217,10 @@ export const TaskTool = Tool.define(
         parentSessionID: ctx.sessionID,
         parentMessageID: ctx.messageID,
         subagentType: params.subagent_type,
-        modelProfile: params.model_profile,
+        modelProfile: selectors.modelProfile,
         model,
-        modelIdentity: params.model_identity,
-        provider: params.provider,
+        modelIdentity: selectors.modelIdentity,
+        provider: selectors.provider,
         variant,
         workload: params.workload,
         taskID: params.task_id,
@@ -261,7 +262,7 @@ export const TaskTool = Tool.define(
       })()
       const action = ModelTelemetry.actionForRoute({
         route: `${prepared.resolved.model.providerID}/${prepared.resolved.model.modelID}`,
-        identity: workload?.selection?.recommendation?.identity ?? params.model_identity,
+        identity: workload?.selection?.recommendation?.identity ?? selectors.modelIdentity,
         variant: prepared.resolved.model.variant,
         selectionSource,
         resolutionSource: prepared.resolved.source,

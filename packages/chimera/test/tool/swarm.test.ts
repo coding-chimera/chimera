@@ -1860,6 +1860,11 @@ describe("tool.chimera_swarm", () => {
             items: ["alpha", "beta"],
             subagent_type: "general",
             workload: "scout",
+            model: "",
+            model_profile: " ",
+            model_identity: "",
+            provider: "",
+            variant: "",
             concurrency: 2,
           },
           {
