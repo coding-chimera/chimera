@@ -28,8 +28,8 @@ const MAX_SCAN_PARTS = 60
 const MIN_TEXT_EXPLORATION_CALLS = 4
 const GRAPH_DISCOVERY_HINT_HEADER = "## Graph discovery hint"
 const GRAPH_DISCOVERY_HINT_BODY =
-  'This project is indexed. One chimera_search or chimera_impact call can replace several grep/read steps for symbol, caller, reference, and impact questions; chimera_file_symbols answers "what is in this file".'
-const GRAPH_QUERY_TOOLS = new Set<string>(["chimera_search", "chimera_file_symbols", "chimera_impact"])
+  'This project is indexed. One chimera_search call can replace several grep/read steps for symbol, caller, and reference questions; chimera_file_symbols answers "what is in this file".'
+const GRAPH_QUERY_TOOLS = new Set<string>(["chimera_search", "chimera_file_symbols"])
 const TEXT_EXPLORATION_TOOLS = new Set<string>(["grep", "glob", "read", "bash"])
 
 type PromptObligation = {
