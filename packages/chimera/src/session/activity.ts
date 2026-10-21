@@ -45,10 +45,16 @@ export const layer = Layer.effect(
         const current = pending.shift()!
         if (family.has(current)) continue
         family.add(current)
-        const children = yield* sessions
-          .children(SessionID.make(current))
-          .pipe(Effect.catchCause(() => Effect.succeed([] as Session.Info[])))
-        for (const child of children) pending.push(child.id)
+        // Id-only projection (B4 bounded reads): the 50ms isActive poll used
+        // to run children() — a full-row SELECT parsing every json column
+        // (summary_diffs, revert, ...) per child — while only .id is read.
+        // Falls back to children() for partial Session.Service mocks that
+        // predate the optional childrenIDs member.
+        const children = yield* (sessions.childrenIDs
+          ? sessions.childrenIDs(SessionID.make(current))
+          : sessions.children(SessionID.make(current)).pipe(Effect.map((kids) => kids.map((kid) => kid.id)))
+        ).pipe(Effect.catchCause(() => Effect.succeed([] as string[])))
+        for (const child of children) pending.push(child)
       }
       return family
     })

@@ -430,6 +430,8 @@ export const ToolStateCompleted = Schema.Struct({
   .pipe(withStatics((s) => ({ zod: zod(s) })))
 export type ToolStateCompleted = Types.DeepMutable<Schema.Schema.Type<typeof ToolStateCompleted>>
 
+export const CLEARED_TOOL_OUTPUT = "[Old tool result content cleared]"
+
 function truncateToolOutput(text: string, maxChars?: number) {
   if (!maxChars || text.length <= maxChars) return text
   const omitted = text.length - maxChars
@@ -784,24 +786,36 @@ const part = (row: typeof PartTable.$inferSelect) =>
 const older = (row: Cursor) =>
   or(lt(MessageTable.time_created, row.time), and(eq(MessageTable.time_created, row.time), lt(MessageTable.id, row.id)))
 
+/**
+ * Message-id batch size for part hydration (B4 bounded reads). One inArray
+ * SELECT over a whole 50-message page materialized every part row of the page
+ * — multi-MB tool outputs included — in a single row array before any consumer
+ * saw a message. Batching caps the peak row set, and the lazy generators below
+ * stop loading batches once their consumer stops pulling.
+ */
+const HYDRATE_BATCH = 20
+
+function groupParts<K extends string>(rows: Iterable<{ message_id: K; part: Part }>, partByMessage: Map<string, Part[]>) {
+  for (const row of rows) {
+    const list = partByMessage.get(row.message_id)
+    if (list) list.push(row.part)
+    else partByMessage.set(row.message_id, [row.part])
+  }
+}
+
 function hydrate(rows: (typeof MessageTable.$inferSelect)[]) {
   const ids = rows.map((row) => row.id)
   const partByMessage = new Map<string, Part[]>()
-  if (ids.length > 0) {
+  for (let start = 0; start < ids.length; start += HYDRATE_BATCH) {
     const partRows = Database.use((db) =>
       db
         .select()
         .from(PartTable)
-        .where(inArray(PartTable.message_id, ids))
+        .where(inArray(PartTable.message_id, ids.slice(start, start + HYDRATE_BATCH)))
         .orderBy(PartTable.message_id, PartTable.id)
         .all(),
     )
-    for (const row of partRows) {
-      const next = part(row)
-      const list = partByMessage.get(row.message_id)
-      if (list) list.push(next)
-      else partByMessage.set(row.message_id, [next])
-    }
+    groupParts(partRows.map((row) => ({ message_id: row.message_id, part: part(row) })), partByMessage)
   }
 
   return rows.map((row) => ({
@@ -820,20 +834,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null
 }
 
-function jsonSafe(value: unknown) {
-  const serialized = JSON.stringify(value)
-  return serialized === undefined ? null : JSON.parse(serialized)
-}
-
-export type RemoteCompactionReplay = "encoded" | "text"
-
-export const toModelMessagesEffect = Effect.fnUntraced(function* (
-  input: WithParts[],
-  model: Provider.Model,
-  options?: { stripMedia?: boolean; toolOutputMaxChars?: number; remoteCompaction?: RemoteCompactionReplay },
-) {
-  const result: UIMessage[] = []
-  const toolNames = new Set<string>()
 /**
  * Historical `tool_search` parts written by the old gateway stored
  * `{ query, limit? }` as their input. Replaying them on the OpenAI Responses
@@ -866,6 +866,20 @@ function wireToolName(part: ToolPart, model: Provider.Model) {
   return usesOpenAIResponses(model) ? "tool_search_legacy" : part.tool
 }
 
+function jsonSafe(value: unknown) {
+  const serialized = JSON.stringify(value)
+  return serialized === undefined ? null : JSON.parse(serialized)
+}
+
+export type RemoteCompactionReplay = "encoded" | "text"
+
+export const toModelMessagesEffect = Effect.fnUntraced(function* (
+  input: WithParts[],
+  model: Provider.Model,
+  options?: { stripMedia?: boolean; toolOutputMaxChars?: number; remoteCompaction?: RemoteCompactionReplay },
+) {
+  const result: UIMessage[] = []
+  const toolNames = new Set<string>()
   // Track media from tool results that need to be injected as user messages
   // for providers that don't support media in tool results.
   //
@@ -919,20 +933,6 @@ function wireToolName(part: ToolPart, model: Provider.Model) {
     return { type: "json", value: jsonSafe(output) as never }
   }
 
-  for (const msg of input) {
-    if (msg.parts.length === 0) continue
-
-    if (msg.info.role === "user") {
-      const userMessage: UIMessage = {
-        id: msg.info.id,
-        role: "user",
-        parts: [],
-      }
-      result.push(userMessage)
-      for (const part of msg.parts) {
-        if (part.type === "text" && !part.ignored)
-          userMessage.parts.push({
-            type: "text",
   // Native OpenAI tool_search (client execution) results replay as
   // `tool_search_output`, which @ai-sdk/openai emits only for a json
   // tool-result carrying `{tools}` (@ai-sdk/openai dist/index.js). The gateway
@@ -953,6 +953,20 @@ function wireToolName(part: ToolPart, model: Provider.Model) {
     }
   }
 
+  for (const msg of input) {
+    if (msg.parts.length === 0) continue
+
+    if (msg.info.role === "user") {
+      const userMessage: UIMessage = {
+        id: msg.info.id,
+        role: "user",
+        parts: [],
+      }
+      result.push(userMessage)
+      for (const part of msg.parts) {
+        if (part.type === "text" && !part.ignored)
+          userMessage.parts.push({
+            type: "text",
             text: part.text,
           })
         // text/plain and directory files are converted into text parts, ignore them
@@ -1039,7 +1053,7 @@ function wireToolName(part: ToolPart, model: Provider.Model) {
           toolNames.add(toolName)
           if (part.state.status === "completed") {
             const outputText = part.state.time.compacted
-              ? "[Old tool result content cleared]"
+              ? CLEARED_TOOL_OUTPUT
               : truncateToolOutput(part.state.output, options?.toolOutputMaxChars)
             const attachments = part.state.time.compacted || options?.stripMedia ? [] : (part.state.attachments ?? [])
 
@@ -1230,6 +1244,115 @@ export function* stream(sessionID: SessionID) {
     }
     if (!next.more || !next.cursor) break
     before = next.cursor
+  }
+}
+
+/**
+ * (B4 bounded reads) Part rows for a message batch with compacted tool-part
+ * payloads pruned at the SQL level. Compaction prune keeps the stored
+ * `state.output` blob (it only stamps `state.time.compacted`), yet every
+ * reader of a compacted part replaces the output anyway: toModelMessages
+ * substitutes CLEARED_TOOL_OUTPUT and drops attachments, the TUI renders
+ * nothing, and read-tool dedup skips them. Pruning with json_set/json_remove
+ * (SQLite C speed) keeps multi-MB dead blobs out of JSON.parse and the JSC
+ * heap on the filterCompactedEffect read chain. Only that chain reads through
+ * this; page()/stream()/parts() keep full rows so HTTP/WebUI surfaces are
+ * untouched.
+ */
+function prunedPartRows(ids: MessageID[]) {
+  const partByMessage = new Map<string, Part[]>()
+  if (ids.length === 0) return partByMessage
+  const rows = Database.use((db) =>
+    db
+      .select({
+        id: PartTable.id,
+        message_id: PartTable.message_id,
+        session_id: PartTable.session_id,
+        data: sql<string>`
+          case
+            when json_extract(${PartTable.data}, '$.type') = 'tool'
+              and json_extract(${PartTable.data}, '$.state.time.compacted') is not null
+            then json_remove(
+              json_set(${PartTable.data}, '$.state.output', json_quote(${CLEARED_TOOL_OUTPUT})),
+              '$.state.attachments'
+            )
+            else ${PartTable.data}
+          end`,
+      })
+      .from(PartTable)
+      .where(inArray(PartTable.message_id, ids))
+      .orderBy(PartTable.message_id, PartTable.id)
+      .all(),
+  )
+  for (const row of rows) {
+    const next = {
+      ...JSON.parse(row.data),
+      id: row.id,
+      sessionID: row.session_id,
+      messageID: row.message_id,
+    } as Part
+    const list = partByMessage.get(row.message_id)
+    if (list) list.push(next)
+    else partByMessage.set(row.message_id, [next])
+  }
+  return partByMessage
+}
+
+/**
+ * The same walk order as stream() (newest-first, 50-message pages, page()'s
+ * not-found semantics), but parts hydrate in bounded batches interleaved with
+ * consumption and compacted tool payloads stay out of the heap (see
+ * prunedPartRows). filterCompacted's early break at the compaction boundary
+ * therefore skips both later pages and later batches of the boundary page.
+ * Field-consumption evidence for the prune lives on prunedPartRows; the
+ * filter itself only reads info.role/id/summary/finish/error/parentID plus
+ * compaction part type/tail_start_id/remote, none of which the projection
+ * touches.
+ */
+function* streamCompactionPruned(sessionID: SessionID): Generator<WithParts> {
+  ensureStoredSummariesTrimmed(sessionID)
+  SessionPartReconcile.ensureOrphansReconciled(sessionID)
+  const size = 50
+  let before: Cursor | undefined
+  let probed = false
+  while (true) {
+    const rows = Database.use((db) =>
+      db
+        .select()
+        .from(MessageTable)
+        .where(
+          before
+            ? and(eq(MessageTable.session_id, sessionID), older(before))
+            : eq(MessageTable.session_id, sessionID),
+        )
+        .orderBy(desc(MessageTable.time_created), desc(MessageTable.id))
+        .limit(size + 1)
+        .all(),
+    )
+    if (rows.length === 0) {
+      // Only a first empty page must distinguish "empty session" from "no
+      // such session" exactly like page() does; later pages just end the walk.
+      if (!probed) {
+        const row = Database.use((db) =>
+          db.select({ id: SessionTable.id }).from(SessionTable).where(eq(SessionTable.id, sessionID)).get(),
+        )
+        if (!row) throw new NotFoundError({ message: `Session not found: ${sessionID}` })
+      }
+      return
+    }
+    probed = true
+    const more = rows.length > size
+    const slice = more ? rows.slice(0, size) : rows
+    for (let start = 0; start < slice.length; start += HYDRATE_BATCH) {
+      const batch = slice.slice(start, start + HYDRATE_BATCH)
+      const partByMessage = prunedPartRows(batch.map((row) => row.id))
+      for (const row of batch) {
+        yield { info: info(row), parts: partByMessage.get(row.id) ?? [] }
+      }
+    }
+    if (!more) return
+    const tail = slice[slice.length - 1]!
+    before = { id: tail.id, time: tail.time_created }
   }
 }
 /**
@@ -1446,7 +1569,7 @@ export const filterCompactedEffect = Effect.fnUntraced(function* (
   sessionID: SessionID,
   options?: { remoteCompaction?: RemoteCompactionReplay },
 ) {
-  return filterCompacted(stream(sessionID), options)
+  return filterCompacted(streamCompactionPruned(sessionID), options)
 })
 
 function codexResponsesMetadata(value: unknown) {

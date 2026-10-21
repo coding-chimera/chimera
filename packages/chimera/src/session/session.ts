@@ -594,6 +594,15 @@ export interface Interface {
   readonly diff: (sessionID: SessionID) => Effect.Effect<Snapshot.FileDiff[]>
   readonly messages: (input: { sessionID: SessionID; limit?: number }) => Effect.Effect<MessageV2.WithParts[]>
   readonly children: (parentID: SessionID) => Effect.Effect<Info[]>
+  /**
+   * Child session ids only. `children` parses every json column per row
+   * (summary_diffs, revert, permission, usage, ...), which the 50ms
+   * SessionActivity liveness poll and remove()'s cascade do not need — they
+   * only read `.id`. Optional on the interface for the same reason as
+   * setCompacting: partial Session.Service mocks exist outside this module;
+   * the real layer always provides it.
+   */
+  readonly childrenIDs?: (parentID: SessionID) => Effect.Effect<string[]>
   readonly remove: (sessionID: SessionID) => Effect.Effect<void, NotFound>
   readonly updateMessage: <T extends MessageV2.Info>(msg: T) => Effect.Effect<T>
   readonly removeMessage: (input: { sessionID: SessionID; messageID: MessageID }) => Effect.Effect<MessageID>
@@ -720,12 +729,23 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
       return rows.map(fromRow)
     })
 
+    const childrenIDs = Effect.fn("Session.childrenIDs")(function* (parentID: SessionID) {
+      const rows = yield* db((d) =>
+        d
+          .select({ id: SessionTable.id })
+          .from(SessionTable)
+          .where(eq(SessionTable.parent_id, parentID))
+          .all(),
+      )
+      return rows.map((row) => row.id)
+    })
+
     const remove: Interface["remove"] = Effect.fnUntraced(function* (sessionID: SessionID) {
       const session = yield* get(sessionID)
       try {
-        const kids = yield* children(sessionID)
-        for (const child of kids) {
-          yield* remove(child.id)
+        const kids = yield* childrenIDs(sessionID)
+        for (const kid of kids) {
+          yield* remove(kid)
         }
 
         // `remove` needs to work in all cases, such as a broken
@@ -1065,6 +1085,7 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
       diff,
       messages,
       children,
+      childrenIDs,
       remove,
       updateMessage,
       removeMessage,
