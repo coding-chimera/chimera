@@ -22,7 +22,6 @@ import {
   ChimeraAuditRecentTool,
   ChimeraAuditTool,
   ChimeraFileSymbolsTool,
-  ChimeraImpactTool,
   ChimeraInitGraphTool,
   ChimeraOracleGetTool,
   ChimeraOracleRecentTool,
@@ -126,15 +125,6 @@ const runPredesign = Effect.fn("ChimeraToolTest.runPredesign")(function* (
   next: Tool.Context = ctx,
 ) {
   const info = yield* ChimeraPredesignTool
-  const tool = yield* info.init()
-  return yield* tool.execute(args, next)
-})
-
-const runImpact = Effect.fn("ChimeraToolTest.runImpact")(function* (
-  args: Tool.InferParameters<typeof ChimeraImpactTool>,
-  next: Tool.Context = ctx,
-) {
-  const info = yield* ChimeraImpactTool
   const tool = yield* info.init()
   return yield* tool.execute(args, next)
 })
@@ -596,45 +586,6 @@ describe("tool.chimera", () => {
       expect(result.output).not.toContain("Impact evidence (")
       // The receipt is a compact gate-satisfaction record; bulk stays in metadata/store.
       expect(result.output.length).toBeLessThan(2500)
-    }),
-  )
-
-  it.instance("analyzes symbol impact seeds", () =>
-    Effect.gen(function* () {
-      const test = yield* TestInstance
-      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "source.ts"), "export function source() { return 1 }\n"))
-      yield* Effect.promise(() =>
-        fs.writeFile(
-          path.join(test.directory, "caller.ts"),
-          "import { source } from './source'\nexport function caller() { return source() }\n",
-        ),
-      )
-      yield* initGraph()
-
-      const result = yield* runImpact({ symbol: "source", depth: 2 })
-
-      expect(result.title).toBe("Chimera impact")
-      expect(result.output).toContain("Seed symbols")
-      expect(result.output).toContain("Impact evidence")
-      expect(result.output).toContain("cause_chain")
-      expect(result.metadata.seeds.length).toBeGreaterThan(0)
-    }),
-  )
-
-  it.instance("lists closest candidate symbols when impact seed does not resolve", () =>
-    Effect.gen(function* () {
-      const test = yield* TestInstance
-      yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "source.ts"), "export function trackedImpactSource() { return 1 }\n"))
-      yield* initGraph()
-
-      const result = yield* runImpact({ symbol: "impactWobble" })
-
-      expect(result.title).toBe("Chimera impact")
-      expect(result.output).toContain("No graph seed resolved")
-      expect(result.output).toContain("Closest symbol candidates")
-      expect(result.output).toContain("trackedImpactSource")
-      expect(result.output).toContain("Ref: node:")
-      expect(result.metadata.seeds).toHaveLength(0)
     }),
   )
 
@@ -1630,14 +1581,6 @@ describe("cross-project projectPath", () => {
       expect(symbols.metadata.projectRoot).toBe(bRoot)
       expect(symbols.metadata.results.some((item) => item.node.name === "crossProjectMarker")).toBe(true)
 
-      const impact = yield* runImpact({ symbol: "crossProjectMarker", projectPath: bRoot })
-      expect(impact.title).toBe("Chimera impact")
-      expect(impact.output.split("\n")[0]).toBe(crossMarkerLine(bRoot))
-      expect(impact.metadata.crossProject).toBe(true)
-      expect(impact.metadata.projectRoot).toBe(bRoot)
-      expect(impact.metadata.seeds.some((seed) => seed?.payload.name === "crossProjectMarker")).toBe(true)
-      expect(impact.metadata.fileDependents).toContain("consumer.ts")
-
       const status = yield* runStatus({ projectPath: bRoot })
       expect(status.title).toBe("Chimera status")
       expect(status.output).toContain("Chimera graph surface is ready.")
@@ -1668,11 +1611,6 @@ describe("cross-project projectPath", () => {
       expect(symbols.metadata.crossProject).toBe(true)
       expect(symbols.metadata.results).toHaveLength(0)
       expect(symbols.output).toContain("No indexed symbols found")
-
-      const impact = yield* runImpact({ filePath: "late-cross.ts", projectPath: bRoot })
-      expect(impact.metadata.crossProject).toBe(true)
-      expect(impact.metadata.seeds).toHaveLength(0)
-      expect(impact.output).toContain("No symbol seeds")
 
       const search = yield* runSearch({ query: "lateCrossSymbol", projectPath: bRoot })
       expect(search.metadata.results).toHaveLength(0)
@@ -1711,11 +1649,6 @@ describe("cross-project projectPath", () => {
       expect(status.output).not.toContain("cross-project")
       expect(status.metadata.crossProject).toBe(false)
       expect(status.metadata.initialized).toBe(true)
-
-      const impact = yield* runImpact({ symbol: "localRootMarker", projectPath: test.directory })
-      expect(impact.output).not.toContain("cross-project")
-      expect(impact.metadata.crossProject).toBe(false)
-      expect(impact.metadata.seeds.some((seed) => seed?.payload.name === "localRootMarker")).toBe(true)
 
       yield* Effect.promise(() =>
         fs.writeFile(path.join(test.directory, "late-local-root.ts"), "export function lateLocalRootSymbol() { return 2 }\n"),
@@ -1768,14 +1701,6 @@ describe("cross-project projectPath", () => {
         expect(message).toContain("chimera graph init")
       }
 
-      const impactExit = yield* runImpact({ symbol: "bOnlySymbol", projectPath: bRoot }).pipe(Effect.exit)
-      expect(Exit.isFailure(impactExit)).toBe(true)
-      if (Exit.isFailure(impactExit)) {
-        const error = Cause.squash(impactExit.cause)
-        const message = error instanceof Error ? error.message : String(error)
-        expect(message).toContain("Chimera graph is not initialized")
-      }
-
       expect(yield* Effect.promise(() => Bun.file(path.join(bRoot, ".chimera")).exists())).toBe(false)
       expect(yield* Effect.promise(() => Bun.file(path.join(bRoot, ".codegraph")).exists())).toBe(false)
     }),
@@ -1807,11 +1732,6 @@ describe("cross-project projectPath", () => {
       expect(symbols.output).toContain("chimera graph index")
       expect(symbols.metadata.needsMigration).toBe(true)
       expect(symbols.metadata.results).toHaveLength(0)
-
-      const impact = yield* runImpact({ symbol: "crossProjectMarker", projectPath: bRoot, refresh: false })
-      expect(impact.output).toContain(crossMarkerLine(bRoot))
-      expect(impact.output).toContain("chimera graph index")
-      expect(impact.metadata.needsMigration).toBe(true)
 
       // The cross-project read-only surface must not migrate the target database
       expect(graphSchemaVersion(bRoot)).toBe(6)
@@ -2049,7 +1969,7 @@ describe("search/file_symbols output enrichment", () => {
         "  consumers/three.ts:2",
         "  consumers/one.ts:1 (file-level)",
         "  consumers/two.ts:1 (file-level)",
-        "  +1 more (chimera_impact ref:node:fn:glyphs:trackedGlyph 可展开)",
+        "  +1 more (chimera_audit ref:node:fn:glyphs:trackedGlyph 可展开)",
       ])
       const bareHit2 = sumBytes(["  Refs(1):", "  consumers/two.ts:1 (file-level)"])
       const excerptTotal = sumBytes([
@@ -2064,7 +1984,7 @@ describe("search/file_symbols output enrichment", () => {
       const full = yield* run(100000)
       expect(full.lines).toContain("  Refs(6):")
       expect(full.lines).toContain("  consumers/one.ts:2 export const alpha = trackedGlyph()")
-      expect(full.lines.some((line) => line.startsWith("  +1 more (chimera_impact ref:node:fn:glyphs:trackedGlyph"))).toBe(true)
+      expect(full.lines.some((line) => line.startsWith("  +1 more (chimera_audit ref:node:fn:glyphs:trackedGlyph"))).toBe(true)
       expect(full.lines).toContain("  Refs(1):")
       expect(full.lines).toContain("  return 'glyph'")
 
@@ -2073,7 +1993,7 @@ describe("search/file_symbols output enrichment", () => {
       expect(bare.lines).toContain("  Refs(6):")
       expect(bare.lines).toContain("  consumers/one.ts:2")
       expect(bare.lines).toContain("  consumers/three.ts:1 (file-level)")
-      expect(bare.lines.some((line) => line.startsWith("  +1 more (chimera_impact"))).toBe(true)
+      expect(bare.lines.some((line) => line.startsWith("  +1 more (chimera_audit"))).toBe(true)
       expect(bare.lines).not.toContain("export const alpha = trackedGlyph()")
       expect(bare.lines.every((line) => !/^  consumers\/[^:]+:\d+ [^(]/.test(line))).toBe(true)
       expect(bare.lines).toContain("  return 'glyph'")

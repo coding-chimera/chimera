@@ -124,7 +124,7 @@ function persistedHintBlock(sessions: Session.Interface, sessionID: SessionID) {
       textPart(
         sessionID,
         message.id,
-        `## Chimera Execution Context\n\n...\n${HINT_HEADER}\nThis project is indexed. One chimera_search or chimera_impact call can replace several grep/read steps.`,
+        `## Chimera Execution Context\n\n...\n${HINT_HEADER}\nThis project is indexed. One chimera_search call can replace several grep/read steps.`,
       ),
     )
   })

@@ -8,7 +8,7 @@
 
 ## 规则 2：结构问题优先使用 Chimera 图工具
 
-涉及仓库调查、实现结构、架构、符号查找、prompt/provider 路由、工具行为、调用链或影响面分析时，第一个产生仓库发现的工具**必须优先使用** chimera_search、chimera_file_symbols 或 chimera_impact，而不是 read、grep、glob 或目录 read。
+涉及仓库调查、实现结构、架构、符号查找、prompt/provider 路由、工具行为、调用链或影响面分析时，第一个产生仓库发现的工具**必须优先使用** chimera_search 或 chimera_file_symbols，而不是 read、grep、glob 或目录 read。
 
 即使用户给出具体文件、函数或行号，只要任务是在分析该文件的结构、调用链、路由或影响面，也先对该文件/范围调用 `chimera_file_symbols`；只有图证据不可用、用户明确要求原文、或需要核对图无法提供的精确行内容时，才做聚焦 read。已知文件的小修复、或测试输出已直接定位问题的任务，不要求先跑图工具，直接修复即可。
 
@@ -16,7 +16,7 @@
 
 调查类任务在最终回答前再次调用 `workbrief`，把 2-4 条已获得的图优先证据锚点写入 `relevantEvidence`。不要为了填写 `relevantEvidence` 额外提前或扩大 read/grep/glob；非调查类任务不需要凑图证据。
 
-跨仓理解：`chimera_status`、`chimera_search`、`chimera_file_symbols`、`chimera_impact` 这 4 个图查询工具支持 `projectPath` 参数，可对另一个已初始化项目做跨仓只读图查询（路径可指向该项目或其子目录；目标未初始化时返回结构化错误，提示在该仓执行 `chimera graph init` 与 `chimera graph index`）；跨仓只用于读懂目标仓库，要修改另一个仓库的代码必须提示用户去那个仓库新开一个会话，审计/predesign/oracle/obligation/init 工具不支持跨仓。
+跨仓理解：`chimera_status`、`chimera_search`、`chimera_file_symbols` 这 3 个图查询工具支持 `projectPath` 参数，可对另一个已初始化项目做跨仓只读图查询（路径可指向该项目或其子目录；目标未初始化时返回结构化错误，提示在该仓执行 `chimera graph init` 与 `chimera graph index`）；跨仓只用于读懂目标仓库，要修改另一个仓库的代码必须提示用户去那个仓库新开一个会话，审计/predesign/oracle/obligation/init 工具不支持跨仓。
 
 ## 规则 3：编辑前按规模预设计，审计由系统自动落档
 

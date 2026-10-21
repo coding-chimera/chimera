@@ -13,7 +13,6 @@ import { Parameters as ApplyPatch } from "../../src/tool/apply_patch"
 import {
   AuditParameters as ChimeraAudit,
   FileSymbolsParameters as ChimeraFileSymbols,
-  ImpactParameters as ChimeraImpact,
   ObligationClaimParameters as ChimeraObligationClaim,
   ObligationIgnoreParameters as ChimeraObligationIgnore,
   ObligationResolveParameters as ChimeraObligationResolve,
@@ -60,7 +59,6 @@ describe("tool parameters", () => {
     test("chimera_audit_recent", () => expect(toJsonSchema(ChimeraAuditRecent)).toMatchSnapshot())
     test("chimera_file_symbols", () => expect(toJsonSchema(ChimeraFileSymbols)).toMatchSnapshot())
     test("chimera_predesign", () => expect(toJsonSchema(ChimeraPredesign)).toMatchSnapshot())
-    test("chimera_impact", () => expect(toJsonSchema(ChimeraImpact)).toMatchSnapshot())
     test("chimera_obligation_claim", () => expect(toJsonSchema(ChimeraObligationClaim)).toMatchSnapshot())
     test("chimera_obligation_ignore", () => expect(toJsonSchema(ChimeraObligationIgnore)).toMatchSnapshot())
     test("chimera_obligation_resolve", () => expect(toJsonSchema(ChimeraObligationResolve)).toMatchSnapshot())

@@ -1,6 +1,6 @@
 Initialize or synchronize the Chimera/CodeGraph graph data for the current project.
 
-Use this tool when read-only tools report the graph is not initialized (`chimera_status`, or the structured zero-result state from `chimera_search` / `chimera_file_symbols` / `chimera_impact`), or when the index is stale and needs a fresh sync.
+Use this tool when read-only tools report the graph is not initialized (`chimera_status`, or the structured zero-result state from `chimera_search` / `chimera_file_symbols`), or when the index is stale and needs a fresh sync.
 
 Explicit WRITE flow: creates or migrates graph data under `.chimera/` (database, lock, job, migration files). Do not call it speculatively — when the graph is ready, use the read-only tools. `refresh` (default true) also syncs the index from current sources; set it to false only for initialization without an immediate sync.
 

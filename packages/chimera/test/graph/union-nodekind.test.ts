@@ -36,7 +36,7 @@ describe('union NodeKind table contract', () => {
   });
 
   it("accepts kind:union in the search query parser (schema derived from NODE_KINDS)", () => {
-    // chimera_search / chimera_file_symbols / chimera_impact kind enum parameters
+    // chimera_search / chimera_file_symbols kind enum parameters
     // and the graph route kind validation all derive from this one set.
     const parsed = parseQuery('kind:union packet');
     expect(parsed.kinds).toContain('union' as NodeKind);

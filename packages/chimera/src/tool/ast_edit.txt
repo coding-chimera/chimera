@@ -2,7 +2,7 @@ Perform structural file edits by CodeGraph node refs (`edits`), by ast-grep styl
 
 # Ref mode: `edits` (graph-anchored, single file)
 
-Each edit names one indexed syntax node via its typed graph ref (`node:<id>`, exactly the `Ref:` line emitted by `chimera_search`, `chimera_file_symbols`, or `chimera_impact`) and applies one structural operation to that node's source range:
+Each edit names one indexed syntax node via its typed graph ref (`node:<id>`, exactly the `Ref:` line emitted by `chimera_search` or `chimera_file_symbols`) and applies one structural operation to that node's source range:
 
 - `replace` — rewrite the node (whole function/method/class/member) with `content`.
 - `delete` — remove the node; do not pass `content`.

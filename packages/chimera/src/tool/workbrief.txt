@@ -65,9 +65,9 @@ Use `clear` when the active task has changed enough that old intent, constraints
 ## Examples
 
 <example>
-User: Do not modify code yet. First inspect why chimera_impact keeps failing and report.
+User: Do not modify code yet. First inspect why chimera_search keeps failing and report.
 Assistant: Calls workbrief with:
-- intent: Inspect why chimera_impact calls fail and report without code changes.
+- intent: Inspect why chimera_search calls fail and report without code changes.
 - constraints: Do not modify code.
 - acceptanceCriteria: Source-backed explanation of the failure mode.
 </example>

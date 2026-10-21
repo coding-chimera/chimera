@@ -60,7 +60,6 @@ import STATUS_DESCRIPTION from "./chimera_status.txt"
 import SEARCH_DESCRIPTION from "./chimera_search.txt"
 import FILE_SYMBOLS_DESCRIPTION from "./chimera_file_symbols.txt"
 import PREDESIGN_DESCRIPTION from "./chimera_predesign.txt"
-import IMPACT_DESCRIPTION from "./chimera_impact.txt"
 import CONTEXT_DESCRIPTION from "./chimera_context.txt"
 import AUDIT_RECENT_DESCRIPTION from "./chimera_audit_recent.txt"
 import AUDIT_DESCRIPTION from "./chimera_audit.txt"
@@ -190,41 +189,6 @@ export const PredesignParameters = Schema.Struct({
   }),
 }).annotate({
   description: "Record pre-edit Chimera evidence before a risky mutation.",
-})
-
-export const ImpactParameters = Schema.Struct({
-  ref: Schema.optional(Schema.String).annotate({
-    description: ChimeraRefDescription,
-  }),
-  symbol: Schema.optional(Schema.String).annotate({
-    description: "Symbol name to analyze. Used when ref/nodeID is not supplied.",
-  }),
-  nodeID: Schema.optional(Schema.String).annotate({
-    description: "Legacy exact CodeGraph node id to analyze."
-  }),
-  filePath: Schema.optional(Schema.String).annotate({
-    description: "File to analyze for file-level dependents; absolute or project-relative.",
-  }),
-  range: Schema.optional(Range).annotate({
-    description: "Optional source range inside filePath; seed symbols are nodes intersecting this range.",
-  }),
-  kind: Schema.optional(NodeKind).annotate({
-    description: "Optional node kind filter when resolving symbol or range seeds.",
-  }),
-  depth: Schema.optional(Schema.Number).annotate({
-    description: "Graph traversal depth for symbol impact. Defaults to 2, capped at 5.",
-  }),
-  limit: Schema.optional(Schema.Number).annotate({
-    description: "Maximum impacted symbols/files to return. Defaults to 20, capped at 100.",
-  }),
-  projectPath: Schema.optional(Schema.String).annotate({
-    description: "Optional path to another initialized Chimera project (or a subdirectory of it) for read-only cross-project queries."
-  }),
-  refresh: Schema.optional(Schema.Boolean).annotate({
-    description: RefreshDescription,
-  }),
-}).annotate({
-  description: "Provide at least one impact seed: ref, nodeID, symbol, or filePath."
 })
 
 export const ContextParameters = Schema.Struct({
@@ -491,22 +455,6 @@ type PredesignMetadata = {
     preciseFiles: boolean
   }
   chimeraPredesignStage?: PredesignStageMetadata
-}
-
-type ImpactMetadata = {
-  projectRoot: string
-  crossProject?: boolean
-  needsMigration?: boolean
-  needsReindex?: boolean
-  extractionSemanticsVersion?: number | null
-  requiredExtractionSemanticsVersion?: number
-  schemaVersion?: number
-  requiredVersion?: number
-  snapshot?: CodeGraphSnapshot
-  seeds: Array<FrozenSemanticObject | null>
-  impacted: Array<FrozenSemanticObject | null>
-  fileDependents: string[]
-  evidence: AuditCandidate[]
 }
 
 type ContextMetadata = {
@@ -1173,7 +1121,7 @@ interface RenderedRefsLine {
   sourceBytes: number
 }
 
-/** Incoming caller/reference sites for one symbol — the same callers chain `chimera_impact` uses. */
+/** Incoming caller/reference sites for one symbol — the same callers chain the impact evidence walk uses. */
 async function refSitesForNode(state: ProjectGraphState, node: CodeGraphNode): Promise<RefSite[]> {
   let relations: CodeGraphRelation[]
   try {
@@ -1262,7 +1210,7 @@ function renderRefsBlock(node: CodeGraphNode, sites: RefSite[]): RenderedRefsLin
   }
   const more = sites.length - shown.length
   if (more > 0) {
-    const hint = `  +${more} more (chimera_impact ref:${chimeraRef("node", node.id)} 可展开)`
+    const hint = `  +${more} more (chimera_audit ref:${chimeraRef("node", node.id)} 可展开)`
     out.push({ line: hint, bare: hint, sourceBytes: 0 })
   }
   return out
@@ -3214,7 +3162,7 @@ export const ChimeraPredesignTool = Tool.define<typeof PredesignParameters, Pred
                   ]
                 : []),
               "- Full evidence is stored in this run; mutations covered by this pre-design are audited automatically at edit time.",
-              "- Drill down only when a dependent needs inspection: chimera_impact with the refs above, or chimera_predesign rerun with narrower files.",
+              "- Drill down only when a dependent needs inspection: chimera_predesign rerun with narrower files, or chimera_audit with explicit refs.",
             ].join("\n"),
             metadata: {
               projectRoot: root,
@@ -3232,172 +3180,6 @@ export const ChimeraPredesignTool = Tool.define<typeof PredesignParameters, Pred
           })),
         )
       }).pipe(Effect.scoped, Effect.orDie),
-  }),
-)
-
-export const ChimeraImpactTool = Tool.define<typeof ImpactParameters, ImpactMetadata, never>(
-  "chimera_impact",
-  Effect.succeed({
-    description: IMPACT_DESCRIPTION,
-    parameters: ImpactParameters,
-    execute: (params: Schema.Schema.Type<typeof ImpactParameters>, ctx: Tool.Context<ImpactMetadata>) =>
-      Effect.gen(function* () {
-        yield* permission(ctx, "chimera_impact", {
-          ref: params.ref,
-          symbol: params.symbol,
-          nodeID: params.nodeID,
-          filePath: params.filePath,
-          projectPath: params.projectPath,
-          refresh: params.refresh !== false,
-        })
-        yield* DiscoveryNudge.noteGraphQuery(ctx.sessionID)
-        const instance = yield* InstanceState.context
-        return yield* catchSchemaMigrationRequired(
-          withProjectGraphForTool(
-            ctx as Tool.Context,
-            params.refresh !== false,
-            { init: false, projectPath: params.projectPath },
-          (state) =>
-            Effect.gen(function* () {
-              const depth = bounded(params.depth, 2, 5)
-              const limit = bounded(params.limit, 20, 100)
-              const file = params.filePath ? graphFile(state.projectRoot, state.crossProject ? state.projectRoot : instance.directory, params.filePath) : undefined
-              if (file && !state.crossProject) {
-                yield* Effect.promise(() => syncExistingGraphFiles(state, [file], "force")).pipe(Effect.orDie)
-              }
-              const snapshot = state.graph.snapshot()
-              const semantics = state.graph.extractionSemanticsStatus()
-              const normalizedFile = file?.graphPath
-              const kinds = params.kind ? [params.kind] : undefined
-              const nodeID = chimeraRefID(params.ref, ["node"]) ?? params.nodeID?.trim()
-              const symbolResults = params.symbol ? state.graph.searchNodes(params.symbol, { kinds, limit: 5 }) : []
-              const seedNodes = uniqueNodes(
-                nodeID
-                  ? [state.graph.node(nodeID)].filter((node): node is CodeGraphNode => Boolean(node))
-                  : normalizedFile && params.range
-                    ? state.graph.nodesIntersectingRange(normalizedFile, params.range, { kinds, smallestOnly: false })
-                    : params.symbol
-                      ? symbolResults.map((result) => result.node)
-                      : normalizedFile
-                        ? state.graph.nodesInFile(normalizedFile).filter((node) => !params.kind || node.kind === params.kind).slice(0, 5)
-                        : [],
-              )
-              if (seedNodes.length === 0 && !normalizedFile) {
-                const candidates = uniqueNodes([
-                  ...symbolResults.map((result) => result.node),
-                  ...(symbolResults.length === 0 && params.symbol
-                    ? symbolCandidateTerms(params.symbol).flatMap((term) =>
-                        state.graph.searchNodes(term, { kinds, limit: 5 }).map((result) => result.node),
-                      )
-                    : []),
-                ]).slice(0, 5)
-                return {
-                  title: "Chimera impact",
-                  output: [
-                    ...(state.crossProject ? [`Project: ${state.projectRoot} (cross-project, read-only)`, ""] : []),
-                    "Static graph evidence:",
-                    "",
-                    "Seed symbols:",
-                    "- No graph seed resolved for the provided ref/nodeID/symbol.",
-                    "",
-                    `Closest symbol candidates (${candidates.length}):`,
-                    ...(candidates.length ? candidates.map((node) => formatNode(node)) : ["- None found."]),
-                    ...(semantics.needsReindex
-                      ? [`- ${extractionSemanticsStatusLine(semantics)} ${extractionSemanticsGuidance(state.crossProject === true)}`]
-                      : []),
-                  ].join("\n"),
-                  metadata: {
-                    projectRoot: state.projectRoot,
-                    crossProject: state.crossProject === true,
-                    snapshot,
-                    ...(semantics.needsReindex
-                      ? { needsReindex: true, extractionSemanticsVersion: semantics.storedVersion, requiredExtractionSemanticsVersion: semantics.currentVersion }
-                      : {}),
-                    seeds: [],
-                    impacted: [],
-                    fileDependents: [],
-                    evidence: [],
-                  },
-                }
-              }
-
-              const impact = buildImpactEvidence({
-                state,
-                snapshot,
-                seedNodes,
-                changedFiles: normalizedFile ? [normalizedFile] : [],
-                changeFacts: [],
-                normalizedFile,
-                source: "input",
-                depth,
-                limit,
-              })
-
-              return {
-                title: "Chimera impact",
-                output: [
-                  ...(state.crossProject ? [`Project: ${state.projectRoot} (cross-project, read-only)`, ""] : []),
-                  "Static graph evidence:",
-                  "",
-                  "Seed symbols:",
-                  ...(seedNodes.length ? seedNodes.map((node) => formatNode(node)) : ["- No symbol seeds; file-level impact only."]),
-                  "",
-                  "Change classification:",
-                  ...(normalizedFile ? [formatClassification({ file: normalizedFile, ...classifyFile(normalizedFile) })] : ["- No changed file supplied."]),
-                  "",
-                  `File dependents (${impact.fileDependents.length}):`,
-                  ...(impact.fileDependents.length ? impact.fileDependents.map((file) => `- ${file}`) : ["- None found."]),
-                  "",
-                  `Impacted symbols (${impact.impactedNodes.length}):`,
-                  ...(impact.impactedNodes.length
-                    ? impact.impactedNodes.map((node) => `${formatNode(node)}\n  risk: ${riskForNode(node)}\n  risk_reason: ${riskReasonForNode(node)}`)
-                    : ["- None found."]),
-                  "",
-                  "Impact evidence:",
-                  ...(impact.evidence.length ? impact.evidence.map(formatEvidence) : ["- None found."]),
-                  ...(semantics.needsReindex
-                    ? [`- ${extractionSemanticsStatusLine(semantics)} ${extractionSemanticsGuidance(state.crossProject === true)}`]
-                    : []),
-                ].join("\n"),
-                metadata: {
-                  projectRoot: state.projectRoot,
-                  crossProject: state.crossProject === true,
-                  snapshot,
-                  ...(semantics.needsReindex
-                    ? { needsReindex: true, extractionSemanticsVersion: semantics.storedVersion, requiredExtractionSemanticsVersion: semantics.currentVersion }
-                    : {}),
-                  seeds: seedNodes.map((node) => state.graph.projectNode(node, snapshot)),
-                  impacted: impact.impactedNodes.map((node) => state.graph.projectNode(node, snapshot)),
-                  fileDependents: impact.fileDependents,
-                  evidence: impact.evidence,
-                },
-              }
-            }),
-          ),
-          (error) => {
-            const target = Chimera.resolveProjectGraphTarget(params.projectPath, contextProjectRoot(instance))
-            return {
-              title: "Chimera impact",
-              output: [
-                ...(target.crossProject ? [`Project: ${target.root} (cross-project, read-only)`] : []),
-                "Static graph evidence:",
-                `- ${schemaMigrationStatusLine(error)} ${schemaMigrationGuidance(target.crossProject === true)}`,
-              ].join("\n"),
-              metadata: {
-                needsMigration: true,
-                schemaVersion: error.currentVersion,
-                requiredVersion: error.requiredVersion,
-                projectRoot: target.root,
-                crossProject: target.crossProject,
-                seeds: [],
-                impacted: [],
-                fileDependents: [],
-                evidence: [],
-              },
-            }
-          },
-        )
-      }).pipe(Effect.orDie),
   }),
 )
 

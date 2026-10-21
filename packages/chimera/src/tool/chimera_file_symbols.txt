@@ -10,4 +10,4 @@ Mechanics: explicit `filePath` values are filesystem-synced before resolution, e
 `projectPath`: optional path to another initialized Chimera project (or its subdirectory) for strictly read-only cross-project queries; never initializes or writes there. In cross-project mode `filePath` resolves against the target's indexed records and is not filesystem-synced. See `chimera_status` for full cross-project rules.
 
 After this tool:
-- Copy `Ref: node:<id>` from output when a later Chimera tool accepts `ref` or `refs`; use `chimera_impact` or `chimera_audit` when the listed symbols may propagate behavior.
+- Copy `Ref: node:<id>` from output when a later Chimera tool accepts `ref` or `refs`; use `chimera_audit` when the listed symbols may propagate behavior.

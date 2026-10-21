@@ -2,7 +2,7 @@ Build compact Chimera graph context for architecture, search, impact, or audit w
 
 Use this tool when you need one compact context pack combining CodeGraph context with Chimera provenance, selected impact, and active obligation metadata.
 
-Do NOT use it when a narrower graph lookup is enough — prefer `chimera_search`, `chimera_file_symbols`, or `chimera_impact` for specific questions. Provide one of `query`, `symbol`, `nodeID`, `filePath`, or use `mode=arch` for architecture-oriented context; `includeCode=false` yields metadata-only context. Explicit `filePath` values are synced from the filesystem before resolution, even when untracked by git.
+Do NOT use it when a narrower graph lookup is enough — prefer `chimera_search` or `chimera_file_symbols` for specific questions. Provide one of `query`, `symbol`, `nodeID`, `filePath`, or use `mode=arch` for architecture-oriented context; `includeCode=false` yields metadata-only context. Explicit `filePath` values are synced from the filesystem before resolution, even when untracked by git.
 
 After this tool:
 - Treat returned context as evidence for planning, not as proof that implementation is complete.

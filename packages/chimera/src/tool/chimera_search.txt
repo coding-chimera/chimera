@@ -15,4 +15,4 @@ Query phrasing:
 `projectPath`: optional path to another initialized Chimera project (or its subdirectory) for strictly read-only cross-project queries; never initializes or writes there. See `chimera_status` for full cross-project rules. An uninitialized graph returns the structured unavailable state with zero results — call `chimera_init_graph` first.
 
 After this tool:
-- Copy `Ref: node:<id>` when a later tool accepts `ref`/`refs`; use `chimera_impact` for caller impact, and `read` only after graph evidence points to concrete files.
+- Copy `Ref: node:<id>` when a later tool accepts `ref`/`refs`, and `read` only after graph evidence points to concrete files.

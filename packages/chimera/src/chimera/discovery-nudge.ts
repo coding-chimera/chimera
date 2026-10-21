@@ -13,7 +13,7 @@ import type { SessionID } from "@/contracts/session-ids"
  * inefficiently — the result tail of grep/glob/read.
  */
 export const GRAPH_DISCOVERY_HINT =
-  'Graph discovery hint: this project is indexed. One chimera_search or chimera_impact call can replace several grep/read steps for symbol, caller, reference, and impact questions; chimera_file_symbols answers "what is in this file".'
+  'Graph discovery hint: this project is indexed. One chimera_search call can replace several grep/read steps for symbol, caller, and reference questions; chimera_file_symbols answers "what is in this file".'
 
 const MIN_TEXT_EXPLORATION_CALLS = 4
 const MAX_SESSION_ENTRIES = 500

@@ -198,7 +198,6 @@ export const layer = Layer.effect(
                 chimera_status: "allow",
                 chimera_search: "allow",
                 chimera_file_symbols: "allow",
-                chimera_impact: "allow",
                 external_directory: {
                   "*": "ask",
                   ...Object.fromEntries(whitelistedDirs.map((dir) => [dir, "allow"])),

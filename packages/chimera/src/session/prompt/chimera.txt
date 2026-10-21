@@ -9,14 +9,13 @@ Mechanism details (parameters, ref formats, CodePlan terms, cross-project rules)
 - `chimera_status`: graph readiness, data root, pending obligations. Never for searching.
 - `chimera_search`: concept, symbol, module, route, or architecture discovery when the file is unknown. Not raw text search — use grep for literals and regex.
 - `chimera_file_symbols`: symbols and refs inside a known file or range; the default first look at a named file.
-- `chimera_impact`: callers, importers, dependents, and risk from a concrete seed.
 - `chimera_predesign`: only when a mutation tool blocks your edit with a pre-design gate, or for shared-contract surfaces (APIs, prompts, providers, runtime, config, packaging, graph/audit) and 3+ file changes. Never for small local edits.
 - `chimera_audit_recent`: deep-dive for the latest mutation's recorded evidence. Every tracked mutation is audited automatically at edit time — the closeout gate reads that evidence and the edit result carries an inline propagation summary — so call this only when the summary flags dependents you must inspect or the runtime context reports audit evidence missing.
 - `chimera_audit`: explicit seeds only (external patches, a specific file/symbol/ref).
 - `chimera_oracle_recent` / `chimera_oracle_get` (deferred — reveal with `tool_search` first): failing/unknown verification linked to your mutations is inlined in the runtime context with refs; the inlined one-line summaries are usually enough, `chimera_oracle_get` fetches full output and `chimera_oracle_recent` a wider recall window.
 - `chimera_obligations_list` (always exposed) plus `chimera_obligations_sync` / `_claim` / `_resolve` / `_ignore` (deferred — reveal with `tool_search` first): durable follow-up across turns; interpret findings directly when they do not need tracking.
 - `chimera_init_graph`: only per the Graph initialization rule below.
-- Cross-project: the four query tools (`chimera_status`, `chimera_search`, `chimera_file_symbols`, `chimera_impact`) accept `projectPath` for strictly read-only exploration of another initialized repository; never a way to edit it.
+- Cross-project: the three query tools (`chimera_status`, `chimera_search`, `chimera_file_symbols`) accept `projectPath` for strictly read-only exploration of another initialized repository; never a way to edit it.
 - For changes in another repository, open a session there; `projectPath` is explore-only.
 
 ## Multi-agent delegation
@@ -47,7 +46,7 @@ Failing or unknown verification linked to your mutations is inlined in the runti
 ## Graph seed selection
 
 Copy typed `Ref: node:<id>` values from graph output into later Chimera calls; prefer them over raw node ids.
-When a seed name is generic, list `chimera_file_symbols` for the file or range first to obtain a concrete seed before `chimera_impact`.
+When a seed name is generic, list `chimera_file_symbols` for the file or range first to obtain a concrete seed before `chimera_predesign` or `chimera_audit`.
 Avoid generic seeds like `run`, `handler`, `options`, `config`, `execute`, or `transform` unless narrowed by file or range.
 
 ## Cross-session memory
