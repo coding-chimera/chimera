@@ -1,11 +1,16 @@
 import { describe, expect, spyOn, test } from "bun:test"
 import { text } from "node:stream/consumers"
+import path from "path"
+import fs from "fs/promises"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { Global } from "@opencode-ai/core/global"
 import type { InstanceContext } from "@/project/instance"
 import * as LSPServer from "@/lsp/server"
+import * as Launch from "@/lsp/launch"
+import type { Child } from "@/lsp/launch"
 import * as Which from "@/util/which"
 import { spawn } from "@/lsp/launch"
+import { tmpdir } from "../fixture/fixture"
 
 const ctx = { directory: process.cwd() } as InstanceContext
 
@@ -127,5 +132,121 @@ describe("LSP process launch", () => {
     expect(await text(child.stdout)).toBe("hello")
     expect(await child.exited).toBe(0)
     await child.stop()
+  })
+})
+
+describe("Typescript server selection", () => {
+  const fakeChild = {} as unknown as Child
+
+  function mockSpawn() {
+    const calls: { cmd: string; args: string[]; cwd?: string }[] = []
+    const spy = spyOn(Launch, "spawn").mockImplementation(((cmd: string, args?: string[]) => {
+      calls.push({ cmd, args: args ?? [] })
+      return fakeChild
+    }) as unknown as typeof Launch.spawn)
+    return { calls, spy }
+  }
+
+  async function writePackageFile(pkgDir: string, name: string, content: string) {
+    await fs.mkdir(path.dirname(path.join(pkgDir, name)), { recursive: true })
+    await Bun.write(path.join(pkgDir, name), content)
+  }
+
+  test("spawns typescript-language-server when lib/tsserver.js resolves (TS <= 6)", async () => {
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        const pkgDir = path.join(dir, "node_modules", "typescript")
+        await writePackageFile(pkgDir, "package.json", JSON.stringify({ name: "typescript", version: "5.8.2" }))
+        await writePackageFile(pkgDir, "lib/tsserver.js", "// tsserver")
+        return pkgDir
+      },
+    })
+    const { calls, spy } = mockSpawn()
+    const npmPackages: string[] = []
+    try {
+      const handle = await LSPServer.Typescript.spawn(
+        tmp.path,
+        { directory: tmp.path } as InstanceContext,
+        async () => 0,
+        async (pkg) => {
+          npmPackages.push(pkg)
+          return "/fake/typescript-language-server"
+        },
+        command,
+      )
+      expect(npmPackages).toEqual(["typescript-language-server"])
+      expect(calls.length).toBe(1)
+      expect(calls[0]!.cmd).toBe("/fake/typescript-language-server")
+      expect(calls[0]!.args).toEqual(["--stdio"])
+      expect(handle?.process).toBe(fakeChild)
+      expect(handle?.initialization).toEqual({ tsserver: { path: path.join(tmp.extra, "lib", "tsserver.js") } })
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  test("spawns the workspace tsc --lsp --stdio when tsserver.js is gone but TS7 is installed", async () => {
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        const pkgDir = path.join(dir, "node_modules", "typescript")
+        // Mimic the real typescript@7 exports map: subpaths like lib/tsserver.js and bin/tsc
+        // are NOT exported, only ./package.json and the main entry resolve.
+        await writePackageFile(
+          pkgDir,
+          "package.json",
+          JSON.stringify({
+            name: "typescript",
+            version: "7.0.2",
+            exports: { "./package.json": "./package.json", ".": "./lib/version.cjs" },
+          }),
+        )
+        await writePackageFile(pkgDir, "lib/version.cjs", "module.exports = { version: '7.0.2' }")
+        await writePackageFile(pkgDir, "bin/tsc", '#!/usr/bin/env node\nimport "../lib/tsc.js";\n')
+        return pkgDir
+      },
+    })
+    const { calls, spy } = mockSpawn()
+    let npmCalled = false
+    try {
+      const handle = await LSPServer.Typescript.spawn(
+        tmp.path,
+        { directory: tmp.path } as InstanceContext,
+        async () => 0,
+        async () => {
+          npmCalled = true
+          return "/fake/typescript-language-server"
+        },
+        command,
+      )
+      expect(npmCalled).toBe(false)
+      expect(calls).toEqual([{ cmd: "node", args: [path.join(tmp.extra, "bin", "tsc"), "--lsp", "--stdio"] }])
+      expect(handle?.process).toBe(fakeChild)
+      expect(handle?.initialization).toBeUndefined()
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  test("returns undefined without spawning when typescript is not installed", async () => {
+    await using tmp = await tmpdir()
+    const { calls, spy } = mockSpawn()
+    let npmCalled = false
+    try {
+      const handle = await LSPServer.Typescript.spawn(
+        tmp.path,
+        { directory: tmp.path } as InstanceContext,
+        async () => 0,
+        async () => {
+          npmCalled = true
+          return "/fake/typescript-language-server"
+        },
+        command,
+      )
+      expect(handle).toBeUndefined()
+      expect(npmCalled).toBe(false)
+      expect(calls).toEqual([])
+    } finally {
+      spy.mockRestore()
+    }
   })
 })

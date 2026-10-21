@@ -29,6 +29,7 @@ import { ConfigAttachment } from "./attachment"
 import { ConfigBrowser } from "./browser"
 import { ConfigCommand } from "./command"
 import { ConfigDelegation } from "./delegation"
+import { ConfigDiagnostics } from "./diagnostics"
 import { ConfigFormatter } from "./formatter"
 import { ConfigLayout } from "./layout"
 import { ConfigLSP } from "./lsp"
@@ -276,6 +277,10 @@ export const Info = Schema.Struct({
   lsp: Schema.optional(ConfigLSP.Info).annotate({
     description:
       "Enable or configure LSP servers. Omit or set to false to disable, true to enable built-ins, or an object to enable built-ins with overrides.",
+  }),
+  diagnostics: Schema.optional(ConfigDiagnostics.Info).annotate({
+    description:
+      "Post-mutation LSP diagnostics rendering behavior. Display-only dedupe against what the model already saw; oracle evidence always records the full diagnostics.",
   }),
   instructions: Schema.optional(Schema.mutable(Schema.Array(Schema.String))).annotate({
     description: "Additional instruction files or patterns to include",

@@ -3,6 +3,7 @@ import * as path from "path"
 import { Effect } from "effect"
 import * as Tool from "./tool"
 import { LSP } from "@/lsp/lsp"
+import { Ledger } from "@/lsp/ledger"
 import { createTwoFilesPatch } from "diff"
 import DESCRIPTION from "./write.txt"
 import { Bus } from "../bus"
@@ -16,9 +17,8 @@ import { formatWrittenBlock, splitText } from "./hashline"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import * as Bom from "@/util/bom"
 import { Chimera } from "@/chimera"
-import { inlinePropagationCheck } from "@/chimera/propagation-probe"
-
-const MAX_PROJECT_DIAGNOSTICS_FILES = 5
+import { Config } from "@/config/config"
+import { collectMutationDiagnostics, renderMutationTail } from "./mutation-diagnostics"
 
 export const Parameters = Schema.Struct({
   content: Schema.String.annotate({ description: "The content to write to the file" }),
@@ -40,6 +40,8 @@ export const WriteTool = Tool.define(
     const fs = yield* AppFileSystem.Service
     const bus = yield* Bus.Service
     const format = yield* Format.Service
+    const ledger = yield* Ledger.Service
+    const config = yield* Config.Service
 
     return {
       description: DESCRIPTION,
@@ -110,38 +112,17 @@ export const WriteTool = Tool.define(
           let output = `File written successfully. ${lineCount} lines written.`
           const writtenLines = splitText(written).lines
           if (writtenLines.length > 0) output += `\n\n${formatWrittenBlock(writtenLines)}`
-          yield* lsp.touchFile(filepath, "document")
-          const diagnostics = yield* lsp.diagnostics()
-          const diagnosticCount = Chimera.countOracleDiagnostics(diagnostics)
-          yield* Chimera.recordToolOracle({
-            kind: "lsp",
-            toolID: "write",
+          const { diagnostics } = yield* collectMutationDiagnostics({
+            lsp,
+            config,
             ctx,
-            status: diagnosticCount === 0 ? "pass" : "fail",
-            payload: {
-              lsp: {
-                diagnostics,
-                files: [filepath],
-                diagnosticCount,
-              },
-            },
-          }).pipe(Effect.ignore)
-          const normalizedFilepath = AppFileSystem.normalizePath(filepath)
-          let projectDiagnosticsCount = 0
-          for (const [file, issues] of Object.entries(diagnostics)) {
-            const current = file === normalizedFilepath
-            if (!current && projectDiagnosticsCount >= MAX_PROJECT_DIAGNOSTICS_FILES) continue
-            const block = LSP.Diagnostic.report(current ? filepath : file, issues)
-            if (!block) continue
-            if (current) {
-              output += `\n\nLSP errors detected in this file, please fix:\n${block}`
-              continue
-            }
-            projectDiagnosticsCount++
-            output += `\n\nLSP errors detected in other files:\n${block}`
-          }
-          const probeLine = yield* inlinePropagationCheck([{ file: filepath }], ctx.sessionID)
-          output += `\n\n${probeLine}`
+            toolID: "write",
+            files: [filepath],
+          })
+          output += yield* renderMutationTail({ ledger, config, sessionID: ctx.sessionID,
+            files: [{ file: filepath, label: "this file" }],
+            diagnostics,
+          probeTargets: [{ file: filepath }], })
           return {
             title: path.relative(instance.worktree, filepath),
             metadata: {

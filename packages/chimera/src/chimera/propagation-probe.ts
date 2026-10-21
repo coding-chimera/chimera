@@ -6,6 +6,7 @@ import type { Node, RelationEvidence, RelationQueryOptions, SourceRange } from "
 import type { SessionID } from "@/contracts/session-ids"
 import { DependentRelations } from "./codegraph-adapter"
 import { Chimera } from "./provenance"
+import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { readPredesignRuns, type PredesignRunRecord } from "./store"
 
 /**
@@ -94,6 +95,41 @@ function formatProbe(dependents: WalkEntry[]) {
     return "Propagation check: no dependents found for the changed file(s)."
   }
   return `Propagation check: ${dependents.length} dependent file(s) may be affected: ${dependents.slice(0, MAX_DISPLAY_DEPENDENTS).map(formatNamed).join(", ")}.`
+}
+
+/**
+ * Structured result of the inline probe. `text` is the fully rendered block
+ * (byte-identical to what `inlinePropagationCheck` appends); `renderedEntries`
+ * describes only the entries ACTUALLY displayed (top MAX_DISPLAY_DEPENDENTS)
+ * with absolute normalized file paths plus their rendered labels, so callers
+ * can attach per-entry details (LSP diagnostics) and suppress their own
+ * cross-file surfaces for exactly those files. Unrendered entries are
+ * deliberately not exposed: suppressing files the model never saw would lose
+ * information for real.
+ */
+export type ProbeRenderedEntry = { file: string; label: string }
+
+export type ProbeResult = {
+  text: string
+  dependentCount: number
+  scopeText: string
+  renderedEntries: ProbeRenderedEntry[]
+}
+
+export const EMPTY_PROBE_RESULT: ProbeResult = { text: "", dependentCount: 0, scopeText: "", renderedEntries: [] }
+
+/**
+ * Re-renders the propagation line as a bulleted entry list so per-entry
+ * detail lines (e.g. fresh LSP diagnostics, already formatted) can hang
+ * indented under each entry. Only used when at least one entry carries
+ * details; otherwise the compact single-line `formatProbe` output stays
+ * byte-identical.
+ */
+export function formatProbeDetailed(count: number, entries: Array<{ label: string; details: readonly string[] }>) {
+  return [
+    `Propagation check: ${count} dependent file(s) may be affected:`,
+    ...entries.flatMap((entry) => [`- ${entry.label}`, ...entry.details.map((detail) => `  \u2937 ${detail}`)]),
+  ].join("\n")
 }
 
 /**
@@ -292,6 +328,42 @@ async function latestPredesignFor(root: string, sessionID: SessionID) {
 }
 
 /**
+ * The session's latest predesign plus its declared scope: scope-quality seed
+ * files (exact declared-symbol resolutions or declared node ids) unioned with
+ * the declared file paths, so a predesign whose seeds are empty, or that
+ * declared a file the graph never indexed, still counts as declaring it.
+ * Fuzzy searchNodes matches are deliberately excluded — see SCOPE_SEED_KINDS.
+ * Shared by the probe's Scope check and `predesignDeclaredFiles` so the two
+ * surfaces cannot drift apart. Paths are graph-relative (forward slashes).
+ */
+async function latestPredesignScope(root: string, sessionID: SessionID) {
+  const predesign = await latestPredesignFor(root, sessionID)
+  if (!predesign) return undefined
+  return { predesign, declared: [...new Set([...declaredScopeFiles(predesign), ...graphSeeds(root, predesign.files)])] }
+}
+
+/**
+ * Absolute normalized file paths declared by the session's latest predesign
+ * run — the same declared union the probe's Scope check reconciles against.
+ * Consumers: the cross-file diagnostics filter, which must not re-push errors
+ * for files the model already declared it intends to change. Degrades to an
+ * empty list when graph data, the predesign artifact, or the read fails.
+ */
+export function predesignDeclaredFiles(sessionID: SessionID): Effect.Effect<string[]> {
+  return Effect.gen(function* () {
+    const instance = yield* InstanceState.context
+    const root = projectRoot(instance.directory, instance.worktree)
+    if (!isInitialized(root)) return []
+    const scope = yield* Effect.promise(() => latestPredesignScope(root, sessionID))
+    if (!scope) return []
+    return scope.declared.map((file) => AppFileSystem.normalizePath(path.resolve(root, file)))
+  }).pipe(
+    Effect.catch(() => Effect.succeed([])),
+    Effect.catchDefect(() => Effect.succeed([])),
+  )
+}
+
+/**
  * Symbol seeds persisted by a predesign record: each seed node was resolved
  * against the graph when the predesign ran, so its stored file + range can
  * re-seed the reconciliation walk at symbol level when the caller passed no
@@ -360,7 +432,7 @@ export function declaredScopeFiles(predesign: PredesignRunRecord): string[] {
  * Bounded inline propagation probe for change-tool success output.
  *
  * Reuses the audit/impact core path: the same `openProjectGraph` state used by
- * `chimera_audit`/`chimera_impact` and the same symbol incoming-relation set
+ * `chimera_audit` and the same symbol incoming-relation set
  * the impact evidence builder walks. No init, sync, or watch is started, so
  * the probe never creates or migrates graph data.
  *
@@ -380,23 +452,17 @@ export function declaredScopeFiles(predesign: PredesignRunRecord): string[] {
  * graph is unavailable or the probe exceeds its 500ms budget it degrades
  * silently and no line is appended.
  */
-export function inlinePropagationCheck(targets: PropagationTarget[], sessionID?: SessionID): Effect.Effect<string> {
+export function inlinePropagationProbe(targets: PropagationTarget[], sessionID?: SessionID): Effect.Effect<ProbeResult> {
   const probe = Effect.gen(function* () {
     const instance = yield* InstanceState.context
     const root = projectRoot(instance.directory, instance.worktree)
-    if (!isInitialized(root)) return ""
+    if (!isInitialized(root)) return EMPTY_PROBE_RESULT
     const seeds = graphTargets(root, targets)
-    if (seeds.length === 0) return ""
-    const predesign = sessionID !== undefined ? yield* Effect.promise(() => latestPredesignFor(root, sessionID)) : undefined
+    if (seeds.length === 0) return EMPTY_PROBE_RESULT
+    const scope = sessionID !== undefined ? yield* Effect.promise(() => latestPredesignScope(root, sessionID)) : undefined
+    const predesign = scope?.predesign
+    const declared = scope?.declared ?? []
     const seededRanges = predesign ? predesignSeedRanges(predesign) : new Map<string, SourceRange[]>()
-    // Declared scope = scope-quality seed files (exact declared-symbol
-    // resolutions or declared node ids) unioned with the declared file paths,
-    // so a predesign whose seeds are empty, or that declared a file the graph
-    // never indexed, still counts as declaring it. Fuzzy searchNodes matches
-    // are deliberately excluded — see SCOPE_SEED_KINDS.
-    const declared = predesign
-      ? [...new Set([...declaredScopeFiles(predesign), ...graphSeeds(root, predesign.files)])]
-      : []
     const { dependents, walk } = yield* Chimera.withProjectGraph(
       { readOnly: false, sync: false, watch: false },
       (state) =>
@@ -411,15 +477,28 @@ export function inlinePropagationCheck(targets: PropagationTarget[], sessionID?:
           return { dependents: full.filter((entry) => entry.depth === 1), walk: full }
         }),
     )
-    const lines = [formatProbe(dependents.slice(0, MAX_PROBE_DEPENDENTS))]
-    if (predesign && declared.length > 0) {
-      lines.push(...scopeDriftLines(predesign.id, declared, seeds.map((target) => target.file), walk))
+    const shown = dependents.slice(0, MAX_PROBE_DEPENDENTS)
+    const scopeLines = predesign && declared.length > 0
+      ? scopeDriftLines(predesign.id, declared, seeds.map((target) => target.file), walk)
+      : []
+    return {
+      text: [formatProbe(shown), ...scopeLines].join("\n"),
+      dependentCount: shown.length,
+      scopeText: scopeLines.join("\n"),
+      renderedEntries: shown.slice(0, MAX_DISPLAY_DEPENDENTS).map((entry) => ({
+        file: AppFileSystem.normalizePath(path.resolve(root, entry.file)),
+        label: formatNamed(entry),
+      })),
     }
-    return lines.join("\n")
   })
   return probe.pipe(
     Effect.timeout(PROPAGATION_PROBE_TIMEOUT_MS),
-    Effect.catch(() => Effect.succeed("")),
-    Effect.catchDefect(() => Effect.succeed("")),
+    Effect.catch(() => Effect.succeed(EMPTY_PROBE_RESULT)),
+    Effect.catchDefect(() => Effect.succeed(EMPTY_PROBE_RESULT)),
   )
+}
+
+/** String-only projection of `inlinePropagationProbe` (the pre-B2 contract). */
+export function inlinePropagationCheck(targets: PropagationTarget[], sessionID?: SessionID): Effect.Effect<string> {
+  return inlinePropagationProbe(targets, sessionID).pipe(Effect.map((result) => result.text))
 }

@@ -6,6 +6,8 @@ import { ApplyPatchTool } from "../../src/tool/apply_patch"
 import { Instance } from "../../src/project/instance"
 import { WithInstance } from "../../src/project/with-instance"
 import { LSP } from "@/lsp/lsp"
+import { Ledger } from "@/lsp/ledger"
+import { Config } from "@/config/config"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { Format } from "../../src/format"
 import { Agent } from "../../src/agent/agent"
@@ -17,6 +19,8 @@ import { SessionID, MessageID } from "../../src/contracts/session-ids"
 const runtime = ManagedRuntime.make(
   Layer.mergeAll(
     LSP.defaultLayer,
+    Ledger.defaultLayer,
+    Config.defaultLayer,
     AppFileSystem.defaultLayer,
     Format.defaultLayer,
     Bus.layer,

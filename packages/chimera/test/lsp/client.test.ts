@@ -288,6 +288,103 @@ describe("LSPClient interop", () => {
     })
   })
 
+  test("document mode completes on a cross-file publish when the edited file stays clean", async () => {
+    const handle = spawnFakeServer() as any
+    await using tmp = await tmpdir()
+    const file = path.join(tmp.path, "client.ts")
+    const other = path.join(tmp.path, "other.ts")
+    await Bun.write(file, "const x = 1\n")
+    await Bun.write(other, "export const y = 2\n")
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const client = await LSPClient.create({
+          serverID: "fake",
+          server: handle as unknown as LSPServer.Handle,
+          root: tmp.path,
+          directory: tmp.path,
+        })
+
+        const version = await client.notify.open({ path: file })
+        const started = Date.now()
+        const wait = client.waitForDiagnostics({ path: file, version, mode: "document", timeoutMs: 5_000 })
+        // The edited file itself never re-publishes (tsserver stays silent for
+        // a clean edited file); a DIFFERENT file breaks and the server pushes
+        // its diagnostics within the budget. The relaxed cross-file settle leg
+        // must complete the wait inline instead of running to the timeout.
+        await client.connection.sendNotification("test/publish-diagnostics", {
+          uri: pathToFileURL(other).href,
+          diagnostics: [
+            {
+              range: {
+                start: { line: 0, character: 0 },
+                end: { line: 0, character: 5 },
+              },
+              message: "cross-file boom",
+              severity: 1,
+            },
+          ],
+        })
+
+        expect(await wait).toBe(true)
+        expect(Date.now() - started).toBeLessThan(1_000)
+        expect(client.diagnostics.get(other)?.[0]?.message).toBe("cross-file boom")
+
+        await client.shutdown()
+      },
+    })
+  })
+
+  test("document mode ignores cross-file publishes from before the wait started", async () => {
+    const handle = spawnFakeServer() as any
+    await using tmp = await tmpdir()
+    const file = path.join(tmp.path, "client.ts")
+    const other = path.join(tmp.path, "other.ts")
+    await Bun.write(file, "const x = 1\n")
+    await Bun.write(other, "export const y = 2\n")
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const client = await LSPClient.create({
+          serverID: "fake",
+          server: handle as unknown as LSPServer.Handle,
+          root: tmp.path,
+          directory: tmp.path,
+        })
+
+        const version = await client.notify.open({ path: file })
+        await client.connection.sendNotification("test/publish-diagnostics", {
+          uri: pathToFileURL(other).href,
+          diagnostics: [
+            {
+              range: {
+                start: { line: 0, character: 0 },
+                end: { line: 0, character: 5 },
+              },
+              message: "stale boom",
+              severity: 1,
+            },
+          ],
+        })
+        for (let i = 0; i < 20 && (client.diagnostics.get(other)?.length ?? 0) === 0; i++) {
+          await new Promise((resolve) => setTimeout(resolve, 25))
+        }
+        // Guard against same-millisecond timestamps making the stale publish
+        // look fresh to the settle leg.
+        await new Promise((resolve) => setTimeout(resolve, 30))
+
+        const started = Date.now()
+        const arrived = await client.waitForDiagnostics({ path: file, version, mode: "document", timeoutMs: 300 })
+        expect(arrived).toBe(false)
+        expect(Date.now() - started).toBeLessThan(1_000)
+
+        await client.shutdown()
+      },
+    })
+  })
+
   test("document mode waits for pull diagnostics", async () => {
     const handle = spawnFakeServer() as any
     await using tmp = await tmpdir()

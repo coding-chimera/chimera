@@ -3,6 +3,8 @@ import { Effect, Schema } from "effect"
 import * as Stream from "effect/Stream"
 import * as Tool from "./tool"
 import { LSP } from "@/lsp/lsp"
+import { Ledger } from "@/lsp/ledger"
+import { collectMutationDiagnostics, renderMutationTail } from "./mutation-diagnostics"
 import { createTwoFilesPatch, diffLines } from "diff"
 import DESCRIPTION from "./ast_edit.txt"
 import { Bus } from "../bus"
@@ -16,7 +18,7 @@ import { assertExternalDirectoryEffect } from "./external-directory"
 import * as Bom from "@/util/bom"
 import { Snapshot } from "@/snapshot"
 import { Chimera, type ProjectGraphState } from "@/chimera"
-import { inlinePropagationCheck } from "@/chimera/propagation-probe"
+import { Config } from "@/config/config"
 import { GraphSchemaMigrationRequiredError, isInitialized, type Node as CodeGraphNode } from "@/graph"
 import type { CodeGraphAdapter } from "@/chimera/codegraph-adapter"
 import { detectLanguage, hasTreeSitterGrammar } from "@/graph/extraction/grammars"
@@ -38,7 +40,7 @@ import { ulid } from "ulid"
 const Operation = Schema.Struct({
   ref: Schema.String.annotate({
     description:
-      "Graph node ref 'node:<id>' (the Ref: line emitted by chimera_search / chimera_file_symbols / chimera_impact)",
+      "Graph node ref 'node:<id>' (the Ref: line emitted by chimera_search / chimera_file_symbols)",
   }),
   op: Schema.Union([
     Schema.Literal("replace"),
@@ -66,7 +68,7 @@ const Rewrite = Schema.Struct({
 const RenameOp = Schema.Struct({
   ref: Schema.String.annotate({
     description:
-      "Typed graph node ref 'node:<id>' of the declaration to rename (the Ref: line emitted by chimera_search / chimera_file_symbols / chimera_impact)",
+      "Typed graph node ref 'node:<id>' of the declaration to rename (the Ref: line emitted by chimera_search / chimera_file_symbols)",
   }),
   to: Schema.String.annotate({
     description:
@@ -642,7 +644,7 @@ function parseNodeRef(ref: string) {
   const value = ref.trim()
   if (!value.startsWith("node:")) {
     throw new Error(
-      `ast_edit: invalid ref "${ref}". Pass the typed node ref from graph tool output, formatted as node:<id> (see the "Ref:" lines from chimera_search / chimera_file_symbols / chimera_impact).`,
+      `ast_edit: invalid ref "${ref}". Pass the typed node ref from graph tool output, formatted as node:<id> (see the "Ref:" lines from chimera_search / chimera_file_symbols).`,
     )
   }
   const id = value.slice("node:".length)
@@ -1095,6 +1097,8 @@ export const AstEditTool = Tool.define(
     const format = yield* Format.Service
     const bus = yield* Bus.Service
     const rg = yield* Ripgrep.Service
+    const ledger = yield* Ledger.Service
+    const config = yield* Config.Service
 
     return {
       description: DESCRIPTION,
@@ -2371,37 +2375,17 @@ export const AstEditTool = Tool.define(
                 output += `\n\n${formatChangedBlock(outcome.newLines, outcome.windowStart, outcome.windowEnd)}`
               }
 
-              for (const rec of touched) yield* lsp.touchFile(rec.filePath, "document")
-              const diagnostics = yield* lsp.diagnostics()
-              const diagnosticCount = Chimera.countOracleDiagnostics(diagnostics)
-              yield* Chimera.recordToolOracle({
-                kind: "lsp",
-                toolID: "ast_edit",
+              const { diagnostics } = yield* collectMutationDiagnostics({
+                lsp,
+                config,
                 ctx,
-                status: diagnosticCount === 0 ? "pass" : "fail",
-                payload: {
-                  lsp: {
-                    diagnostics,
-                    files: touched.map((rec) => rec.filePath),
-                    diagnosticCount,
-                  },
-                },
-              }).pipe(Effect.ignore)
-              for (const rec of touched) {
-                const block = LSP.Diagnostic.report(
-                  rec.filePath,
-                  diagnostics[AppFileSystem.normalizePath(rec.filePath)] ?? [],
-                )
-                if (!block) continue
-                output += multiple
-                  ? `\n\nLSP errors detected in ${rec.relative}, please fix:\n${block}`
-                  : `\n\nLSP errors detected in this file, please fix:\n${block}`
-              }
-
-              output += `\n\n${yield* inlinePropagationCheck(
-                touched.map((rec) => ({ file: rec.filePath, ranges: rec.probe })),
-                ctx.sessionID,
-              )}`
+                toolID: "ast_edit",
+                files: touched.map((rec) => rec.filePath),
+              })
+              output += yield* renderMutationTail({ ledger, config, sessionID: ctx.sessionID,
+                files: touched.map((rec) => ({ file: rec.filePath, label: multiple ? rec.relative : "this file" })),
+                diagnostics,
+              probeTargets: touched.map((rec) => ({ file: rec.filePath, ranges: rec.probe })), })
 
               return {
                 title: multiple

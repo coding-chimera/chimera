@@ -10,7 +10,7 @@ import { Session } from "@/session/session"
 import { MessageV2 } from "../../src/session/message-v2"
 import { makePromptHarness, testProviderConfig } from "../fixture/prompt-harness"
 import { disposeAllInstances, provideTmpdirServer } from "../fixture/fixture"
-import { recordPredesignRun } from "@/chimera/store"
+import { recordOracleResult, recordPredesignRun } from "@/chimera/store"
 import { EditIntentClaims } from "@/chimera/edit-intent"
 import { getGraphDataRootInfo } from "@/graph"
 import { InstanceState } from "@/effect/instance-state"
@@ -422,6 +422,122 @@ describe("chimera prompt-context edit-intent claims", () => {
         const after = yield* render()
         expect(after).toContain("held by you: own.ts, surface.ts")
         expect(after ?? "").not.toContain("blocked:")
+      }),
+      { git: true, config: (url) => testProviderConfig(url) },
+    ),
+  )
+})
+
+// Realistic failing-oracle input shaped exactly like Chimera.recordToolOracle's
+// store write (link window present, linkedChanges empty) so the unlinked
+// fallback is exercised against production record shapes.
+function failingLspOracleInput(sessionID: SessionID, dir: string, file: string, finishedAt: string) {
+  return {
+    kind: "lsp" as const,
+    status: "fail" as const,
+    tool: { id: "edit", callID: `call_${file}`, messageID: MessageID.ascending(), sessionID, agent: "build" },
+    project: { root: dir, worktree: dir, directory: dir },
+    finishedAt,
+    linkWindow: {
+      source: "same_session_preceding_mutations" as const,
+      sessionID,
+      projectRoot: dir,
+      finishedBefore: finishedAt,
+      maxChanges: 20,
+    },
+    linkedChanges: [],
+    payload: { lsp: { diagnostics: {}, files: [file], diagnosticCount: 1 } },
+  }
+}
+
+describe("chimera prompt-context linked verification evidence", () => {
+  it.live("renders a failing oracle linked to a recent mutation exactly as before (no unlinked marker)", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* () {
+        yield* initGraph()
+        const instance = yield* InstanceState.context
+        const dir = instance.worktree === "/" ? instance.directory : instance.worktree
+        const sessions = yield* Session.Service
+        const session = yield* sessions.create({ title: "Oracle linked" })
+        yield* Chimera.trackToolMutation(
+          {
+            toolID: "edit",
+            ctx: driftCtx(session.id, "call_oracle_linked"),
+            files: [path.join(dir, "surface.ts")],
+          },
+          Effect.promise(() => fs.writeFile(path.join(dir, "surface.ts"), "export const patched = 1\n")),
+        )
+        const oracle = yield* Chimera.recordToolOracle({
+          kind: "lsp",
+          toolID: "edit",
+          ctx: driftCtx(session.id, "call_oracle_linked"),
+          status: "fail",
+          payload: { lsp: { diagnostics: {}, files: ["surface.ts"], diagnosticCount: 1 } },
+        })
+        expect(oracle.linkedChanges.length).toBeGreaterThan(0)
+
+        const context = yield* (yield* ChimeraPromptContext.Service).render(session.id, sessions)
+
+        expect(context).toContain("Linked Verification Evidence")
+        expect(context).toContain(`- [fail] lsp: 1 diagnostic(s) in surface.ts (oracle:${oracle.id})`)
+        expect(context ?? "").not.toContain("unlinked")
+      }),
+      { git: true, config: (url) => testProviderConfig(url) },
+    ),
+  )
+
+  it.live("surfaces a recent failing oracle with no linkedChanges as unlinked (graph-uninitialized late-diagnostics shape)", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* () {
+        yield* initGraph()
+        const sessions = yield* Session.Service
+        const session = yield* sessions.create({ title: "Oracle unlinked" })
+        // No session mutation was ever tracked (the live incident: provenance
+        // tracking is graph-gated, so a late LSP oracle links against nothing).
+        const oracle = yield* Chimera.recordToolOracle({
+          kind: "lsp",
+          toolID: "edit",
+          ctx: driftCtx(session.id, "call_late_lsp"),
+          status: "fail",
+          payload: { lsp: { diagnostics: {}, files: ["late.ts"], diagnosticCount: 1 } },
+        })
+        expect(oracle.linkedChanges).toEqual([])
+
+        const context = yield* (yield* ChimeraPromptContext.Service).render(session.id, sessions)
+
+        expect(context).toContain("Linked Verification Evidence")
+        expect(context).toContain("plus recent unlinked results")
+        expect(context).toContain(`- [fail] lsp: 1 diagnostic(s) in late.ts (unlinked; oracle:${oracle.id})`)
+      }),
+      { git: true, config: (url) => testProviderConfig(url) },
+    ),
+  )
+
+  it.live("caps the unlinked fallback to the two newest and drops results outside the recent window", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* () {
+        yield* initGraph()
+        const instance = yield* InstanceState.context
+        const dir = instance.worktree === "/" ? instance.directory : instance.worktree
+        const sessions = yield* Session.Service
+        const session = yield* sessions.create({ title: "Oracle window" })
+        const artifact = path.join(getGraphDataRootInfo(dir).dataRoot, "chimera", "oracle-results.jsonl")
+        const now = Date.now()
+        const record = (file: string, ageMs: number) =>
+          Effect.promise(() =>
+            recordOracleResult(dir, artifact, failingLspOracleInput(session.id, dir, file, new Date(now - ageMs).toISOString())),
+          )
+        const stale = yield* record("stale.ts", 60 * 60 * 1000)
+        const oldest = yield* record("oldest.ts", 30 * 1000)
+        const middle = yield* record("middle.ts", 20 * 1000)
+        const newest = yield* record("newest.ts", 10 * 1000)
+
+        const context = yield* (yield* ChimeraPromptContext.Service).render(session.id, sessions)
+
+        expect(context).toContain(`(unlinked; oracle:${newest.id})`)
+        expect(context).toContain(`(unlinked; oracle:${middle.id})`)
+        expect(context ?? "").not.toContain(oldest.id)
+        expect(context ?? "").not.toContain(stale.id)
       }),
       { git: true, config: (url) => testProviderConfig(url) },
     ),

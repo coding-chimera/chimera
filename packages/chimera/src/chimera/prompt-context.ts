@@ -265,14 +265,23 @@ function closeoutGate(
 }
 
 const MAX_INLINE_ORACLES = 5
+// Unlinked fallback (late-diagnostics surfacing gap): provenance tracking is
+// graph-gated (trackToolMutation skips uninitialized projects), so an oracle
+// recorded in a project without an initialized graph carries linkedChanges: []
+// and the strict link-intersection filter below would silently drop it. A
+// recent same-session failing/unknown oracle with no link data at all still
+// surfaces, explicitly marked `unlinked`, newest-first and tightly capped.
+const MAX_UNLINKED_INLINE_ORACLES = 2
+const UNLINKED_ORACLE_WINDOW_MS = 10 * 60 * 1000
 
-function oracleSummaryLine(oracle: OracleRecord) {
+function oracleSummaryLine(oracle: OracleRecord, unlinked: boolean) {
   const payload = oracle.payload as
     | {
         shell?: { command?: string; exit?: number | null; output?: string }
         lsp?: { diagnosticCount?: number; files?: string[] }
       }
     | undefined
+  const ref = `${unlinked ? "unlinked; " : ""}oracle:${oracle.id}`
   if (oracle.kind === "shell" && payload?.shell) {
     const command = (payload.shell.command ?? "").split("\n")[0].trim().slice(0, 80)
     const detail = (payload.shell.output ?? "")
@@ -283,19 +292,22 @@ function oracleSummaryLine(oracle: OracleRecord) {
       ?.slice(0, 120)
     return {
       key: `shell:${command}:${payload.shell.exit}`,
-      line: `- [${oracle.status}] shell exit ${payload.shell.exit ?? "?"}: ${command || "(no command)"}${detail ? ` — ${detail}` : ""} (oracle:${oracle.id})`,
+      unlinked,
+      line: `- [${oracle.status}] shell exit ${payload.shell.exit ?? "?"}: ${command || "(no command)"}${detail ? ` — ${detail}` : ""} (${ref})`,
     }
   }
   if (oracle.kind === "lsp") {
     const file = payload?.lsp?.files?.[0] ?? "unknown file"
     return {
       key: `lsp:${file}`,
-      line: `- [${oracle.status}] lsp: ${payload?.lsp?.diagnosticCount ?? "?"} diagnostic(s) in ${file} (oracle:${oracle.id})`,
+      unlinked,
+      line: `- [${oracle.status}] lsp: ${payload?.lsp?.diagnosticCount ?? "?"} diagnostic(s) in ${file} (${ref})`,
     }
   }
   return {
     key: `${oracle.kind}:${oracle.id}`,
-    line: `- [${oracle.status}] ${oracle.kind} evidence (oracle:${oracle.id})`,
+    unlinked,
+    line: `- [${oracle.status}] ${oracle.kind} evidence (${ref})`,
   }
 }
 
@@ -304,15 +316,35 @@ function oracleSummaryLine(oracle: OracleRecord) {
  * The closeout gate no longer asks the model to recall this evidence with a
  * tool call (bench: 14 recalls, 11.2KB each, action rate 1/14); the evidence
  * rides the runtime block instead and chimera_oracle_get stays for deep dives.
+ *
+ * Linked lines render exactly as before and take precedence in the shared
+ * MAX_INLINE_ORACLES budget. Oracles with no link data at all fall back to a
+ * capped, window-bounded `unlinked` rendering so late-recorded failing
+ * evidence (e.g. B3 late LSP diagnostics in a graph-uninitialized project)
+ * is never silently dropped; `hasUnlinked` lets the section header say so.
  */
-function linkedOracleLines(recent: ToolMutationRecord[], oracles: OracleRecord[]) {
+function linkedOracleLines(recent: ToolMutationRecord[], oracles: OracleRecord[], now = Date.now()) {
   const seen = new Set<string>()
-  return oracles
-    .filter((oracle) => oracle.linkedChanges.some((change) => recent.some((record) => record.id === change.id)))
-    .map(oracleSummaryLine)
+  const linkedIDs = new Set<string>()
+  const linked = oracles.flatMap((oracle) => {
+    if (!oracle.linkedChanges.some((change) => recent.some((record) => record.id === change.id))) return []
+    linkedIDs.add(oracle.id)
+    return [oracleSummaryLine(oracle, false)]
+  })
+  // Oracles arrive newest-first (readOracleResults orders by finishedAt DESC),
+  // so slice(0, cap) keeps the most recent unlinked results.
+  const unlinked = oracles
+    .filter((oracle) => !linkedIDs.has(oracle.id) && oracle.linkedChanges.length === 0)
+    .filter((oracle) => {
+      const finishedAt = Date.parse(oracle.finishedAt)
+      return Number.isFinite(finishedAt) && now - finishedAt <= UNLINKED_ORACLE_WINDOW_MS
+    })
+    .slice(0, MAX_UNLINKED_INLINE_ORACLES)
+    .map((oracle) => oracleSummaryLine(oracle, true))
+  const summaries = [...linked, ...unlinked]
     .flatMap((summary) => (seen.has(summary.key) ? [] : (seen.add(summary.key), [summary])))
     .slice(0, MAX_INLINE_ORACLES)
-    .map((summary) => summary.line)
+  return { lines: summaries.map((summary) => summary.line), hasUnlinked: summaries.some((summary) => summary.unlinked) }
 }
 
 const MAX_SCOPE_DRIFT_DISPLAY = 5
@@ -436,7 +468,7 @@ function renderContext(
   claimsLines: string[],
 ) {
   const nonPassingOracles = oracles.filter((oracle) => oracle.status !== "pass")
-  const oracleLines = linkedOracleLines(recent, nonPassingOracles)
+  const oracleEvidence = linkedOracleLines(recent, nonPassingOracles)
   if (
     recent.length === 0 &&
     obligations.length === 0 &&
@@ -480,11 +512,11 @@ function renderContext(
             `- ${item.id} [${item.status}] ${item.target}; risk: ${item.risk}; evidence: ${item.evidence}; lifecycle: ${item.replayLifecycle?.status ?? "unknown"}; reason: ${compact(item.staleReason ?? item.reason)}`,
         )
       : ["- None active."]),
-    ...(oracleLines.length
+    ...(oracleEvidence.lines.length
       ? [
           "",
-          "Linked Verification Evidence (failing/unknown results linked to recent mutations; these summaries are usually sufficient — for full output, reveal `chimera_oracle_get` with `tool_search` and pass ref oracle:<id>):",
-          ...oracleLines,
+          `Linked Verification Evidence (failing/unknown results linked to recent mutations${oracleEvidence.hasUnlinked ? ", plus recent unlinked results (no mutation provenance to link against)" : ""}; these summaries are usually sufficient — for full output, reveal \`chimera_oracle_get\` with \`tool_search\` and pass ref oracle:<id>):`,
+          ...oracleEvidence.lines,
         ]
       : []),
     ...(claimsLines.length ? ["", ...claimsLines] : []),

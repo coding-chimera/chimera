@@ -6,6 +6,8 @@ import os from "os"
 import { WriteTool } from "../../src/tool/write"
 import { Instance } from "../../src/project/instance"
 import { LSP } from "@/lsp/lsp"
+import { Ledger } from "@/lsp/ledger"
+import { Config } from "@/config/config"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { Bus } from "../../src/bus"
 import { Format } from "../../src/format"
@@ -37,6 +39,8 @@ afterEach(async () => {
 const it = testEffect(
   Layer.mergeAll(
     LSP.defaultLayer,
+    Ledger.defaultLayer,
+    Config.defaultLayer,
     AppFileSystem.defaultLayer,
     Bus.layer,
     Format.defaultLayer,

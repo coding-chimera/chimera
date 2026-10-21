@@ -14,6 +14,11 @@ import { withTimeout } from "../util/timeout"
 import { Filesystem } from "@/util/filesystem"
 
 const DIAGNOSTICS_DEBOUNCE_MS = 150
+// Quiet period after the first fresh cross-file publish before the relaxed
+// document-mode wait completes (see waitForCrossFileSettle). Kept longer than
+// DIAGNOSTICS_DEBOUNCE_MS so the edited file's own versioned push still wins
+// the race and the common case never snapshots the edited file too early.
+const DIAGNOSTICS_CROSS_FILE_SETTLE_MS = 200
 const DIAGNOSTICS_DOCUMENT_WAIT_TIMEOUT_MS = 5_000
 const DIAGNOSTICS_FULL_WAIT_TIMEOUT_MS = 10_000
 const DIAGNOSTICS_REQUEST_TIMEOUT_MS = 3_000
@@ -160,6 +165,7 @@ export async function create(input: { serverID: string; server: LSPServer.Handle
   const published = new Map<string, { at: number; version?: number }>()
   const diagnosticRegistrations = new Map<string, CapabilityRegistration>()
   const registrationListeners = new Set<() => void>()
+  const publishListeners = new Set<() => void>()
   const mergedDiagnostics = (filePath: string) =>
     dedupeDiagnostics([...(pushDiagnostics.get(filePath) ?? []), ...(pullDiagnostics.get(filePath) ?? [])])
   const updatePushDiagnostics = (filePath: string, next: Diagnostic[]) => {
@@ -187,6 +193,7 @@ export async function create(input: { serverID: string; server: LSPServer.Handle
       at: Date.now(),
       version: typeof params.version === "number" ? params.version : undefined,
     })
+    for (const listener of [...publishListeners]) listener()
     if (shouldSeedDiagnosticsOnFirstPush(input.serverID) && !pushDiagnostics.has(filePath)) {
       pushDiagnostics.set(filePath, params.diagnostics)
       return
@@ -525,48 +532,104 @@ export async function create(input: { serverID: string; server: LSPServer.Handle
     })
   }
 
-  async function waitForDocumentDiagnostics(request: { path: string; version: number; after?: number }) {
-    const startedAt = request.after ?? Date.now()
-    const pushWait = waitForFreshPush({
-      path: request.path,
-      version: request.version,
-      after: startedAt,
-      timeout: DIAGNOSTICS_DOCUMENT_WAIT_TIMEOUT_MS,
+  // Resolves true when any publishDiagnostics arrived at or after `after` and
+  // the publish stream then stayed quiet for DIAGNOSTICS_CROSS_FILE_SETTLE_MS;
+  // each further publish resets the settle timer so related publishes land
+  // together. Resolves false when nothing fresh arrived within `timeout`. The
+  // settle timer is not separately budget-clamped: the timeout leg caps the
+  // whole wait, so a publish in the final settle window still defers.
+  function waitForCrossFileSettle(request: { after: number; timeout: number }) {
+    if (request.timeout <= 0) return Promise.resolve(false)
+    return new Promise<boolean>((resolve) => {
+      let finished = false
+      let settleTimer: ReturnType<typeof setTimeout> | undefined
+      let timeoutTimer: ReturnType<typeof setTimeout> | undefined
+      const finish = (result: boolean) => {
+        if (finished) return
+        finished = true
+        if (settleTimer) clearTimeout(settleTimer)
+        if (timeoutTimer) clearTimeout(timeoutTimer)
+        publishListeners.delete(listener)
+        resolve(result)
+      }
+      const listener = () => {
+        if (![...published.values()].some((entry) => entry.at >= request.after)) return
+        if (settleTimer) clearTimeout(settleTimer)
+        settleTimer = setTimeout(() => finish(true), DIAGNOSTICS_CROSS_FILE_SETTLE_MS)
+      }
+      timeoutTimer = setTimeout(() => finish(false), request.timeout)
+      publishListeners.add(listener)
+      listener()
     })
-
-    while (Date.now() - startedAt < DIAGNOSTICS_DOCUMENT_WAIT_TIMEOUT_MS) {
-      const result = await requestDocumentDiagnostics(request.path)
-      if (result.matched) return
-      const remaining = DIAGNOSTICS_DOCUMENT_WAIT_TIMEOUT_MS - (Date.now() - startedAt)
-      if (remaining <= 0) return
-      const next = await Promise.race([
-        pushWait.then((ready) => (ready ? "push" : ("timeout" as const))),
-        waitForRegistrationChange(remaining).then((changed) => (changed ? "registration" : ("timeout" as const))),
-      ])
-      if (next !== "registration") return
-    }
   }
 
-  async function waitForFullDiagnostics(request: { path: string; version: number; after?: number }) {
+  // Returns whether fresh diagnostics arrived before the deadline. `timeoutMs`
+  // overrides the built-in wait budget (B3 two-phase wait: the inline phase
+  // passes a small budget; the detached late phase resumes with the rest).
+  //
+  // Completion criterion (relaxed for cross-file breakage): the wait ends when
+  // EITHER the edited file's own diagnostics turn fresh (its versioned push or
+  // a matching pull — the common case, unchanged) OR any publishDiagnostics
+  // arrived after the wait started and the stream settled for
+  // DIAGNOSTICS_CROSS_FILE_SETTLE_MS. The settle leg exists because servers
+  // like tsserver do not re-publish an unchanged (empty) set for a clean
+  // edited file, so a cross-file break — the highest-value push — would
+  // otherwise always run to the budget and defer. The edited file's own fresh
+  // push still wins the race in practice: its debounce (150ms) is shorter
+  // than the settle window, so the common case never collects a too-early
+  // snapshot of the edited file. The B3 late-phase resume (LSP.waitDiagnostics)
+  // shares this criterion by construction: it calls this same function. Full
+  // mode deliberately keeps the stricter edited-file-only criterion.
+  async function waitForDocumentDiagnostics(request: { path: string; version: number; after?: number; timeoutMs?: number }) {
+    const timeout = request.timeoutMs ?? DIAGNOSTICS_DOCUMENT_WAIT_TIMEOUT_MS
     const startedAt = request.after ?? Date.now()
     const pushWait = waitForFreshPush({
       path: request.path,
       version: request.version,
       after: startedAt,
-      timeout: DIAGNOSTICS_FULL_WAIT_TIMEOUT_MS,
+      timeout,
+    })
+    const crossFileWait = waitForCrossFileSettle({ after: startedAt, timeout })
+
+    while (Date.now() - startedAt < timeout) {
+      const result = await requestDocumentDiagnostics(request.path)
+      if (result.matched) return true
+      const remaining = timeout - (Date.now() - startedAt)
+      if (remaining <= 0) return false
+      const next = await Promise.race([
+        pushWait.then((ready) => (ready ? "push" : ("timeout" as const))),
+        crossFileWait.then((ready) => (ready ? "cross-file" : ("timeout" as const))),
+        waitForRegistrationChange(remaining).then((changed) => (changed ? "registration" : ("timeout" as const))),
+      ])
+      if (next === "push" || next === "cross-file") return true
+      if (next !== "registration") return false
+    }
+    return false
+  }
+
+  async function waitForFullDiagnostics(request: { path: string; version: number; after?: number; timeoutMs?: number }) {
+    const timeout = request.timeoutMs ?? DIAGNOSTICS_FULL_WAIT_TIMEOUT_MS
+    const startedAt = request.after ?? Date.now()
+    const pushWait = waitForFreshPush({
+      path: request.path,
+      version: request.version,
+      after: startedAt,
+      timeout,
     })
 
-    while (Date.now() - startedAt < DIAGNOSTICS_FULL_WAIT_TIMEOUT_MS) {
+    while (Date.now() - startedAt < timeout) {
       const result = await requestFullDiagnostics(request.path)
-      if (result.handled || result.matched) return
-      const remaining = DIAGNOSTICS_FULL_WAIT_TIMEOUT_MS - (Date.now() - startedAt)
-      if (remaining <= 0) return
+      if (result.handled || result.matched) return true
+      const remaining = timeout - (Date.now() - startedAt)
+      if (remaining <= 0) return false
       const next = await Promise.race([
         pushWait.then((ready) => (ready ? "push" : ("timeout" as const))),
         waitForRegistrationChange(remaining).then((changed) => (changed ? "registration" : ("timeout" as const))),
       ])
-      if (next !== "registration") return
+      if (next === "push") return true
+      if (next !== "registration") return false
     }
+    return false
   }
 
   // --- Public API ---
@@ -663,7 +726,22 @@ export async function create(input: { serverID: string; server: LSPServer.Handle
       }
       return result
     },
-    async waitForDiagnostics(request: { path: string; version: number; mode?: "document" | "full"; after?: number }) {
+    // Version of the document this client last synced via notify.open, or
+    // undefined when the file was never opened. The B3 late-diagnostics wait
+    // resumes against this version without re-syncing the document.
+    documentVersion(request: { path: string }) {
+      const normalizedPath = Filesystem.normalizePath(
+        path.isAbsolute(request.path) ? request.path : path.resolve(input.directory, request.path),
+      )
+      return files[normalizedPath]?.version
+    },
+    async waitForDiagnostics(request: {
+      path: string
+      version: number
+      mode?: "document" | "full"
+      after?: number
+      timeoutMs?: number
+    }) {
       const normalizedPath = Filesystem.normalizePath(
         path.isAbsolute(request.path) ? request.path : path.resolve(input.directory, request.path),
       )
@@ -673,10 +751,19 @@ export async function create(input: { serverID: string; server: LSPServer.Handle
         version: request.version,
       })
       if (request.mode === "document") {
-        await waitForDocumentDiagnostics({ path: normalizedPath, version: request.version, after: request.after })
-        return
+        return await waitForDocumentDiagnostics({
+          path: normalizedPath,
+          version: request.version,
+          after: request.after,
+          timeoutMs: request.timeoutMs,
+        })
       }
-      await waitForFullDiagnostics({ path: normalizedPath, version: request.version, after: request.after })
+      return await waitForFullDiagnostics({
+        path: normalizedPath,
+        version: request.version,
+        after: request.after,
+        timeoutMs: request.timeoutMs,
+      })
     },
     async shutdown() {
       logger.info("shutting down")

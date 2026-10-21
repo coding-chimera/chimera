@@ -115,24 +115,44 @@ export const Typescript: Info = {
   extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"],
   async spawn(root, ctx, _install, npm) {
     const tsserver = Module.resolve("typescript/lib/tsserver.js", ctx.directory)
-    log.info("typescript server", { tsserver })
-    if (!tsserver) return
-    const bin = await npm("typescript-language-server")
-    if (!bin) return
-    const proc = spawn(bin, ["--stdio"], {
-      cwd: root,
-      env: {
-        ...process.env,
-      },
-    })
-    return {
-      process: proc,
-      initialization: {
-        tsserver: {
-          path: tsserver,
+    if (tsserver) {
+      log.info("typescript server", { tsserver })
+      const bin = await npm("typescript-language-server")
+      if (!bin) return
+      const proc = spawn(bin, ["--stdio"], {
+        cwd: root,
+        env: {
+          ...process.env,
         },
-      },
+      })
+      return {
+        process: proc,
+        initialization: {
+          tsserver: {
+            path: tsserver,
+          },
+        },
+      }
     }
+    // TypeScript 7+ (native Go rewrite) removed lib/tsserver.js and gates subpaths behind
+    // an exports map, so only typescript/package.json resolves; its own `tsc --lsp --stdio`
+    // speaks LSP directly and needs no typescript-language-server wrapper.
+    const pkg = Module.resolve("typescript/package.json", ctx.directory)
+    const tsc = pkg ? path.join(path.dirname(pkg), "bin", "tsc") : undefined
+    if (tsc && (await pathExists(tsc))) {
+      log.info("typescript native lsp server", { tsc })
+      const proc = spawn("node", [tsc, "--lsp", "--stdio"], {
+        cwd: root,
+        env: {
+          ...process.env,
+        },
+      })
+      return {
+        process: proc,
+      }
+    }
+    log.warn("typescript not found, skipping TypeScript LSP", { directory: ctx.directory })
+    return
   },
 }
 

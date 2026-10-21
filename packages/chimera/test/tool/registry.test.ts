@@ -21,6 +21,7 @@ import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
 import { Provider } from "@/provider/provider"
 import { LSP } from "@/lsp/lsp"
+import { Ledger } from "@/lsp/ledger"
 import { Instruction } from "@/session/instruction"
 import { Bus } from "@/bus"
 import { FetchHttpClient } from "effect/unstable/http"
@@ -60,7 +61,7 @@ const makeRegistryLayer = () =>
       Layer.provide(Agent.defaultLayer),
       Layer.provide(Session.defaultLayer),
       Layer.provide(Provider.defaultLayer),
-      Layer.provide(LSP.defaultLayer),
+      Layer.provide(Layer.mergeAll(LSP.defaultLayer, Ledger.defaultLayer)),
       Layer.provide(Instruction.defaultLayer),
       Layer.provide(AppFileSystem.defaultLayer),
       Layer.provide(Bus.layer),

@@ -38,6 +38,7 @@ import { Config } from "@/config/config"
 import { ConfigSubagentRouting } from "@/config/subagent-routing"
 import { Auth } from "@/auth"
 import { LSP } from "@/lsp/lsp"
+import { Ledger } from "@/lsp/ledger"
 import { MCP } from "../../src/mcp"
 import { Permission } from "../../src/permission"
 import { Plugin } from "../../src/plugin"
@@ -102,7 +103,8 @@ const lsp = Layer.succeed(
     init: () => Effect.void,
     status: () => Effect.succeed([]),
     hasClients: () => Effect.succeed(false),
-    touchFile: () => Effect.void,
+    touchFile: () => Effect.succeed(true),
+    waitDiagnostics: () => Effect.succeed(true),
     diagnostics: () => Effect.succeed({}),
     hover: () => Effect.succeed(undefined),
     definition: () => Effect.succeed([]),
@@ -145,7 +147,7 @@ function makeHttp() {
     routingLayer,
     Auth.defaultLayer,
     ProviderSvc.defaultLayer,
-    lsp,
+    Layer.mergeAll(lsp, Ledger.defaultLayer),
     mcp,
     AppFileSystem.defaultLayer,
     status,

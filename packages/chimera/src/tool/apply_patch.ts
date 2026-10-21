@@ -9,13 +9,15 @@ import { createTwoFilesPatch, diffLines } from "diff"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { trimDiff } from "./edit"
 import { LSP } from "@/lsp/lsp"
+import { Ledger } from "@/lsp/ledger"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import DESCRIPTION from "./apply_patch.txt"
 import { File } from "../file"
 import { Format } from "../format"
 import * as Bom from "@/util/bom"
 import { Chimera } from "@/chimera"
-import { inlinePropagationCheck } from "@/chimera/propagation-probe"
+import { Config } from "@/config/config"
+import { collectMutationDiagnostics, renderMutationTail } from "./mutation-diagnostics"
 
 export const Parameters = Patch.PatchParamsSchema
 
@@ -26,6 +28,8 @@ export const ApplyPatchTool = Tool.define(
     const afs = yield* AppFileSystem.Service
     const format = yield* Format.Service
     const bus = yield* Bus.Service
+    const ledger = yield* Ledger.Service
+    const config = yield* Config.Service
 
     const run = Effect.fn("ApplyPatchTool.execute")(function* (
       params: Schema.Schema.Type<typeof Parameters>,
@@ -294,27 +298,18 @@ export const ApplyPatchTool = Tool.define(
         }),
       )
 
-      // Notify LSP of file changes and collect diagnostics
-      for (const change of fileChanges) {
-        if (change.type === "delete") continue
-        const target = change.movePath ?? change.filePath
-        yield* lsp.touchFile(target, "document")
-      }
-      const diagnostics = yield* lsp.diagnostics()
-      const diagnosticCount = Chimera.countOracleDiagnostics(diagnostics)
-      yield* Chimera.recordToolOracle({
-        kind: "lsp",
-        toolID: "apply_patch",
+      // Notify LSP of file changes and collect diagnostics (two-phase wait:
+      // inline budget first, late detached oracle on timeout).
+      const touchedTargets = fileChanges.flatMap((change) =>
+        change.type === "delete" ? [] : [change.movePath ?? change.filePath],
+      )
+      const { diagnostics } = yield* collectMutationDiagnostics({
+        lsp,
+        config,
         ctx,
-        status: diagnosticCount === 0 ? "pass" : "fail",
-        payload: {
-          lsp: {
-            diagnostics,
-            files: fileChanges.flatMap((change) => change.type === "delete" ? [] : [change.movePath ?? change.filePath]),
-            diagnosticCount,
-          },
-        },
-      }).pipe(Effect.ignore)
+        toolID: "apply_patch",
+        files: touchedTargets,
+      })
 
       // Generate output summary
       const summaryLines = fileChanges.map((change) => {
@@ -330,15 +325,6 @@ export const ApplyPatchTool = Tool.define(
       const title = `Success. Updated the following files:\n${summaryLines.join("\n")}`
       let output = title
 
-      for (const change of fileChanges) {
-        if (change.type === "delete") continue
-        const target = change.movePath ?? change.filePath
-        const block = LSP.Diagnostic.report(target, diagnostics[AppFileSystem.normalizePath(target)] ?? [])
-        if (!block) continue
-        const rel = path.relative(instance.worktree, target).replaceAll("\\", "/")
-        output += `\n\nLSP errors detected in ${rel}, please fix:\n${block}`
-      }
-
       // Probe targets carry old-side hunk ranges of each update diff so the
       // probe can seed symbol-level propagation against the still-unsynced
       // graph; moves (content lands at a new path) and diffs without parsable
@@ -351,8 +337,14 @@ export const ApplyPatchTool = Tool.define(
         }) : []
         return [{ file: change.filePath, ...(ranges.length > 0 ? { ranges } : {}) }]
       })
-      const probeLine = yield* inlinePropagationCheck(probeTargets, ctx.sessionID)
-      output += `\n\n${probeLine}`
+      output += yield* renderMutationTail({ ledger, config, sessionID: ctx.sessionID,
+        files: fileChanges.flatMap((change) => {
+          if (change.type === "delete") return []
+          const target = change.movePath ?? change.filePath
+          return [{ file: target, label: path.relative(instance.worktree, target).replaceAll("\\", "/") }]
+        }),
+        diagnostics,
+      probeTargets, })
       return {
         title,
         metadata: {

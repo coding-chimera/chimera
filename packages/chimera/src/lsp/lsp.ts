@@ -145,7 +145,12 @@ export interface Interface {
   readonly init: () => Effect.Effect<void>
   readonly status: () => Effect.Effect<Status[]>
   readonly hasClients: (file: string) => Effect.Effect<boolean>
-  readonly touchFile: (input: string, diagnostics?: "document" | "full") => Effect.Effect<void>
+  readonly touchFile: (
+    input: string,
+    diagnostics?: "document" | "full",
+    opts?: { waitBudgetMs?: number },
+  ) => Effect.Effect<boolean>
+  readonly waitDiagnostics: (input: { file: string; mode?: "document" | "full"; budgetMs: number }) => Effect.Effect<boolean>
   readonly diagnostics: () => Effect.Effect<Record<string, LSPClient.Diagnostic[]>>
   readonly hover: (input: LocInput, timeoutMs?: number) => Effect.Effect<any>
   readonly definition: (input: LocInput) => Effect.Effect<any[]>
@@ -401,25 +406,65 @@ export const layer = Layer.effect(
       })
     })
 
-    const touchFile = Effect.fn("LSP.touchFile")(function* (input: string, diagnostics?: "document" | "full") {
+    // Syncs the document to every matching client and (in a diagnostics mode)
+    // waits for fresh results. Returns whether all clients reported fresh
+    // diagnostics: `opts.waitBudgetMs` caps the wait (B3 inline phase) and a
+    // false return lets the caller resume via `waitDiagnostics` without
+    // re-syncing the document. Errors keep the legacy false-negative shape so
+    // callers need no new handling.
+    const touchFile = Effect.fn("LSP.touchFile")(function* (
+      input: string,
+      diagnostics?: "document" | "full",
+      opts?: { waitBudgetMs?: number },
+    ) {
       log.info("touching file", { file: input })
       const clients = yield* getClients(input)
-      yield* Effect.promise(() =>
+      return yield* Effect.promise(() =>
         Promise.all(
           clients.map(async (client) => {
             const after = Date.now()
             const version = await client.notify.open({ path: input })
-            if (!diagnostics) return
+            if (!diagnostics) return true
             return client.waitForDiagnostics({
               path: input,
               version,
               mode: diagnostics,
               after,
+              timeoutMs: opts?.waitBudgetMs,
             })
           }),
-        ).catch((err) => {
-          log.error("failed to touch file", { err, file: input })
-        }),
+        )
+          .then((arrived) => arrived.every(Boolean))
+          .catch((err) => {
+            log.error("failed to touch file", { err, file: input })
+            return false
+          }),
+      )
+    })
+
+    // Resumes the fresh-diagnostics wait for an already-synced document (B3
+    // late phase): waits against each client's tracked document version with
+    // the caller's remaining budget. Files no client has open resolve as
+    // arrived — there is nothing to wait for and collection proceeds.
+    const waitDiagnostics = Effect.fn("LSP.waitDiagnostics")(function* (input: {
+      file: string
+      mode?: "document" | "full"
+      budgetMs: number
+    }) {
+      const clients = yield* getClients(input.file)
+      return yield* Effect.promise(() =>
+        Promise.all(
+          clients.map(async (client) => {
+            const version = client.documentVersion({ path: input.file })
+            if (version === undefined) return true
+            return client.waitForDiagnostics({ path: input.file, version, mode: input.mode, timeoutMs: input.budgetMs })
+          }),
+        )
+          .then((arrived) => arrived.every(Boolean))
+          .catch((err) => {
+            log.error("failed to wait for diagnostics", { err, file: input.file })
+            return false
+          }),
       )
     })
 
@@ -570,6 +615,7 @@ export const layer = Layer.effect(
       status,
       hasClients,
       touchFile,
+      waitDiagnostics,
       diagnostics,
       hover,
       definition,

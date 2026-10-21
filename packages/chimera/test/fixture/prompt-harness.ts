@@ -18,6 +18,7 @@ import { Format } from "../../src/format"
 import { Instruction } from "../../src/session/instruction"
 import { LLM } from "../../src/session/llm"
 import { LSP } from "@/lsp/lsp"
+import { Ledger } from "@/lsp/ledger"
 import { MCP } from "../../src/mcp"
 import { MemoryManagement } from "@/memory/management"
 import { Permission } from "../../src/permission"
@@ -100,7 +101,8 @@ const lsp = Layer.succeed(
     init: () => Effect.void,
     status: () => Effect.succeed([]),
     hasClients: () => Effect.succeed(false),
-    touchFile: () => Effect.void,
+    touchFile: () => Effect.succeed(true),
+    waitDiagnostics: () => Effect.succeed(true),
     diagnostics: () => Effect.succeed({}),
     hover: () => Effect.succeed(undefined),
     definition: () => Effect.succeed([]),
@@ -165,7 +167,7 @@ export function makePromptHarness() {
     routingLayer,
     Auth.defaultLayer,
     ProviderSvc.defaultLayer,
-    lsp,
+    Layer.mergeAll(lsp, Ledger.defaultLayer),
     mcp,
     AppFileSystem.defaultLayer,
     status,

@@ -2,6 +2,8 @@ import * as path from "path"
 import { Effect, Schema, Semaphore } from "effect"
 import * as Tool from "./tool"
 import { LSP } from "@/lsp/lsp"
+import { Ledger } from "@/lsp/ledger"
+import { collectMutationDiagnostics, renderMutationTail } from "./mutation-diagnostics"
 import { createTwoFilesPatch, diffLines } from "diff"
 import DESCRIPTION from "./edit.txt"
 import { File } from "../file"
@@ -14,7 +16,7 @@ import { assertExternalDirectoryEffect } from "./external-directory"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import * as Bom from "@/util/bom"
 import { Chimera } from "@/chimera"
-import { inlinePropagationCheck } from "@/chimera/propagation-probe"
+import { Config } from "@/config/config"
 import { ulid } from "ulid"
 import {
   DISPLAY_ALGORITHM,
@@ -270,6 +272,8 @@ export const EditTool = Tool.define(
     const afs = yield* AppFileSystem.Service
     const format = yield* Format.Service
     const bus = yield* Bus.Service
+    const ledger = yield* Ledger.Service
+    const config = yield* Config.Service
 
     return {
       description: DESCRIPTION,
@@ -485,30 +489,21 @@ export const EditTool = Tool.define(
           if (anchorRelocations.length > 0) {
             output += `\n\nAnchor relocations:\n${anchorRelocations.map((note) => `- ${note}`).join("\n")}`
           }
-          if (!deleted) yield* lsp.touchFile(finalPath, "document")
-          const diagnostics = yield* lsp.diagnostics()
-          const diagnosticCount = Chimera.countOracleDiagnostics(diagnostics)
-          yield* Chimera.recordToolOracle({
-            kind: "lsp",
-            toolID: "edit",
+          const { diagnostics } = yield* collectMutationDiagnostics({
+            lsp,
+            config,
             ctx,
-            status: diagnosticCount === 0 ? "pass" : "fail",
-            payload: {
-              lsp: {
-                diagnostics,
-                files: [finalPath],
-                diagnosticCount,
-              },
-            },
-          }).pipe(Effect.ignore)
-          const normalizedFilePath = AppFileSystem.normalizePath(finalPath)
-          const block = LSP.Diagnostic.report(finalPath, diagnostics[normalizedFilePath] ?? [])
-          if (block) output += `\n\nLSP errors detected in this file, please fix:\n${block}`
-
+            toolID: "edit",
+            files: [finalPath],
+            touchFiles: deleted ? [] : [finalPath],
+          })
           const probeTargets = renamePath
             ? [{ file: filePath, ranges: beforeRangeList }, { file: renamePath }]
             : [{ file: filePath, ranges: beforeRangeList }]
-          output += `\n\n${yield* inlinePropagationCheck(probeTargets, ctx.sessionID)}`
+          output += yield* renderMutationTail({ ledger, config, sessionID: ctx.sessionID,
+            files: [{ file: finalPath, label: "this file" }],
+            diagnostics,
+          probeTargets, })
           return {
             metadata: {
               diagnostics,

@@ -7,6 +7,8 @@ import { Bus } from "@/bus"
 import { Agent } from "@/agent/agent"
 import { Chimera } from "@/chimera"
 import { LSP } from "@/lsp/lsp"
+import { Ledger } from "@/lsp/ledger"
+import { Config } from "@/config/config"
 import { Format } from "@/format"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { AstEditTool } from "@/tool/ast_edit"
@@ -38,6 +40,8 @@ const it = testEffect(
     Agent.defaultLayer,
     Truncate.defaultLayer,
     LSP.defaultLayer,
+    Ledger.defaultLayer,
+    Config.defaultLayer,
     AppFileSystem.defaultLayer,
     Format.defaultLayer,
     Ripgrep.defaultLayer,

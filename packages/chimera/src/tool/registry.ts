@@ -39,7 +39,6 @@ import {
   ChimeraAuditRecentTool,
   ChimeraAuditTool,
   ChimeraFileSymbolsTool,
-  ChimeraImpactTool,
   ChimeraInitGraphTool,
   ChimeraOracleGetTool,
   ChimeraOracleRecentTool,
@@ -86,6 +85,7 @@ import { WorkBrief } from "../session/work-brief"
 import { Goal } from "../session/goal"
 import { ToolSearch } from "../session/tool-search"
 import { LSP } from "@/lsp/lsp"
+import { Ledger } from "@/lsp/ledger"
 import { Instruction } from "../session/instruction"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { Bus } from "../bus"
@@ -161,7 +161,6 @@ export const layer = Layer.effect(
     const chimeraSearchTool = yield* ChimeraSearchTool
     const chimeraFileSymbolsTool = yield* ChimeraFileSymbolsTool
     const chimeraPredesignTool = yield* ChimeraPredesignTool
-    const chimeraImpactTool = yield* ChimeraImpactTool
     const chimeraInitGraphTool = yield* ChimeraInitGraphTool
     const chimeraAuditTool = yield* ChimeraAuditTool
     const chimeraAuditRecentTool = yield* ChimeraAuditRecentTool
@@ -299,7 +298,6 @@ export const layer = Layer.effect(
           chimeraSearch: Tool.init(chimeraSearchTool),
           chimeraFileSymbols: Tool.init(chimeraFileSymbolsTool),
           chimeraPredesign: Tool.init(chimeraPredesignTool),
-          chimeraImpact: Tool.init(chimeraImpactTool),
           chimeraInitGraph: Tool.init(chimeraInitGraphTool),
           chimeraAudit: Tool.init(chimeraAuditTool),
           chimeraAuditRecent: Tool.init(chimeraAuditRecentTool),
@@ -361,7 +359,6 @@ export const layer = Layer.effect(
             tool.chimeraSearch,
             tool.chimeraFileSymbols,
             tool.chimeraPredesign,
-            tool.chimeraImpact,
             tool.chimeraInitGraph,
             tool.chimeraAuditRecent,
             tool.chimeraAudit,
@@ -510,7 +507,7 @@ export const defaultLayer = Layer.suspend(() =>
       Layer.provide(Agent.defaultLayer),
       Layer.provide(Session.defaultLayer),
       Layer.provide(Provider.defaultLayer),
-      Layer.provide(LSP.defaultLayer),
+      Layer.provide(Layer.mergeAll(LSP.defaultLayer, Ledger.defaultLayer)),
       Layer.provide(Instruction.defaultLayer),
       Layer.provide(AppFileSystem.defaultLayer),
       Layer.provide(Bus.layer),
