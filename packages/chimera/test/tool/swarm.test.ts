@@ -925,7 +925,7 @@ describe("tool.chimera_swarm", () => {
       expect(tool?.description).toContain("parent agent owns conflict handling")
       expect(tool?.description).toContain("defaults to 16")
       expect(tool?.description).toContain("capped at 16")
-      expect(tool?.description).toContain("capacity ceiling")
+      expect(tool?.description).toContain("excess items queue automatically")
       expect(tool?.description).toContain("delegation.max_depth")
       expect(tool?.description).toContain("delegation.max_concurrent")
       expect(tool?.description).toContain("does not consume budget")

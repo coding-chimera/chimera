@@ -12,7 +12,13 @@ This is a thin fan-out helper. It does not build PlanGraph, lock files, claim ob
 
 The tool publishes each worker incrementally through `metadata.childRuns` (`queued`, `running`, `completed`, `error`, or `cancelled`) and keeps `childSessions` plus final output for compatibility. Child sessions are normal subagent sessions that frontends can display, enter, and stop individually. If the parent swarm is aborted, already-created child sessions are cancelled as part of the same abort flow. Treat any interrupted child report as incomplete evidence that the parent must re-check or rerun deliberately.
 
-Concurrency defaults to 16 and is capped at 16. Treat 16 as a capacity ceiling, not a target: use full concurrency only for independent work with disjoint scopes, and lower it for shared files, ordered dependencies, provider limits, or contended state.
+Concurrency defaults to 16 and is capped at 16 — this caps how many workers run at the same time, not how many items you may submit; excess items queue automatically. It is safe and encouraged to split large tasks into as many clear, independent items as the work supports: for read-only exploration and investigation, more workers mean broader and more detailed coverage. Lower concurrency only for shared files, ordered dependencies, provider limits, or contended state.
+
+Minimal call — no selector fields are needed:
+
+{ prompt_template: "Review {{item}}", items: ["src/auth.ts", "src/api.ts"] }
+
+Omit every optional selector you are not using (`workload`, `model`, `model_profile`, `model_identity`, `provider`, `variant`). Omit the key entirely; never pass `""`, `null`, or `"none"`, because an empty string counts as a supplied value and fails mutual-exclusion validation. Pass `workload` alone to let the scheduler route every worker; pass at most one of `model`, `model_profile`, or `model_identity` to pin a route, and add `workload` only when you also want its attribution/validation.
 
 Optional `workload`: declare one homogeneous delegation archetype for the whole fan-out. Pass `workload` alone to let the current cost-aware scheduler select one concrete route and non-ultra variant, which every worker reuses. Pass `workload` with `model_profile`, `model`, or `model_identity` to keep that explicit selector authoritative while validating and recording the workload for attribution. Unknown workload names are rejected with the current valid names. Split heterogeneous work into separate swarms. A model excluded from the declared workload by `delegation.scheduling.archetypes.<workload>.excludeModels` fails the whole fan-out before any child is created (resume excepted); choose another model or omit workload.
 
@@ -51,9 +57,3 @@ For parallel editing, keep items independent and scoped by file/range/symbol whe
 Minimal call examples:
 - `{ preset: "audit-followup", from: "pending_obligations", concurrency: 8 }`
 - `{ prompt_template: "Item {{index}}/{{total}}: {{item}}", items: ["Review src/auth.ts", { file: "src/api.ts", scope: "route handlers", questions: ["callers?", "error paths?"] }] }`
-
-Minimal call — no selector fields are needed:
-
-{ prompt_template: "Review {{item}}", items: ["src/auth.ts", "src/api.ts"] }
-
-Omit every optional selector you are not using (`workload`, `model`, `model_profile`, `model_identity`, `provider`, `variant`). Omit the key entirely; never pass `""`, `null`, or `"none"`, because an empty string counts as a supplied value and fails mutual-exclusion validation. Pass `workload` alone to let the scheduler route every worker; pass at most one of `model`, `model_profile`, or `model_identity` to pin a route, and add `workload` only when you also want its attribution/validation.
