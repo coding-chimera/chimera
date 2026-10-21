@@ -479,7 +479,10 @@ function renderContext(
     !hint &&
     !drift
   )
-    return undefined
+    // Zero-signal case still returns the coordination negative form (bare line,
+    // without the skeleton): "nothing blocks your edits" is actionable evidence
+    // and must not collapse away.
+    return "Edit coordination: no edit-intent claims in this project — nothing blocks your edits."
   return [
     "## Chimera Execution Context",
     "",
@@ -519,7 +522,13 @@ function renderContext(
           ...oracleEvidence.lines,
         ]
       : []),
-    ...(claimsLines.length ? ["", ...claimsLines] : []),
+    // Always render the coordination signal: with zero claims the negative form is the
+    // actionable evidence ("nothing blocks your edits"), so it must not be omitted. The
+    // literal "Edit Intent Claims:" stays claims-only — prompt-context.test.ts pins its
+    // absence when there are no claims.
+    ...(claimsLines.length
+      ? ["", ...claimsLines]
+      : ["", "Edit coordination: no edit-intent claims in this project — nothing blocks your edits."]),
     "",
     "Closeout Gate:",
     ...closeoutGate(recent, obligations, audits, nonPassingOracles),
