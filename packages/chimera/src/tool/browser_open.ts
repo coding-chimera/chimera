@@ -40,9 +40,12 @@ export const BrowserOpenTool = Tool.define(
             }),
           )
           const currentOrigin = origin(tab.url)
+          const relaunchNote = tab.relaunched
+            ? ` Relaunched the browser in ${params.headless === false ? "headed" : "headless"} mode; previous browser tabs were closed.`
+            : ""
           return {
             title: `Opened browser tab: ${tab.title || currentOrigin}`,
-            output: `Opened ${currentOrigin} in browser tab ${tab.id}. Run browser_snapshot before interacting.`,
+            output: `Opened ${currentOrigin} in browser tab ${tab.id}.${relaunchNote} Run browser_snapshot before interacting.`,
             metadata: { tabID: tab.id, origin: currentOrigin, title: tab.title },
           }
         }),

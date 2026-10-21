@@ -268,6 +268,25 @@ describe("browser tools", () => {
 
     expect(launch).toEqual({ headless: false, timeout: 9_000 })
   })
+
+  test("browser_open output notes the relaunch when the runtime reports a mode restart", async () => {
+    const asks: Ask[] = []
+    const runtime = fakeRuntime({
+      open: (input) =>
+        Effect.succeed({ ...tab, sessionID: input.sessionID, url: input.url ?? tab.url, relaunched: true }),
+    })
+    const result = await run(
+      BrowserOpenTool.pipe(
+        Effect.flatMap((info) => info.init()),
+        Effect.flatMap((tool) => tool.execute({ url: "https://example.com/login", headless: false }, context(asks))),
+      ),
+      runtime,
+    )
+
+    expect(result.output).toContain("Relaunched the browser in headed mode")
+    expect(result.output).toContain("previous browser tabs were closed")
+    expect(result.output).toContain("Run browser_snapshot before interacting")
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -358,6 +377,7 @@ afterAll(async () => {
 
 afterEach(async () => {
   delete process.env.CHIMERA_BROWSER_HEADLESS
+  delete process.env.CHIMERA_BROWSER_CDP_URL
   fakePid = process.pid
   await disposeAllInstances()
   await new Promise((resolve) => setTimeout(resolve, 50))
@@ -546,6 +566,128 @@ describe("browser runtime headless fallback chain", () => {
             }),
           { config: { browser: { headless: false } } },
         ),
+      )
+    }),
+  )
+})
+
+describe("browser runtime headless mode restart", () => {
+  itRegistry.live("relaunches headed when headless: false conflicts with the live headless connection", () =>
+    Effect.gen(function* () {
+      const runtime = yield* BrowserRuntime.Service
+      delete process.env.CHIMERA_BROWSER_HEADLESS
+      yield* provideTmpdirInstance((directory) =>
+        Effect.gen(function* () {
+          yield* Chimera.initProjectGraph({ watch: false })
+          const root = yield* instanceProjectRoot
+          const executable = yield* writeExecutable(directory)
+          const launchesBefore = launched.length
+          const browsersBefore = browsers.length
+          yield* runtime.open({ sessionID: "ses_restart_headless", launch: { executablePath: executable } })
+          expect(launched.at(-1)?.headless).toBe(true)
+          const firstBrowser = browsers.at(-1)!
+          const firstEntry = (yield* browserEntries(root))[0]!
+
+          const reopened = yield* runtime.open({
+            sessionID: "ses_restart_headless",
+            url: "https://example.com/after-restart",
+            launch: { executablePath: executable, headless: false },
+          })
+
+          expect(launched.length).toBe(launchesBefore + 2)
+          expect(launched.at(-1)?.headless).toBe(false)
+          expect(browsers.length).toBe(browsersBefore + 2)
+          expect(firstBrowser.closed).toBe(true)
+          expect(reopened.relaunched).toBe(true)
+          expect(reopened.url).toBe("https://example.com/after-restart")
+          const rows = yield* Effect.promise(() => ProcessRegistry.getByPids(root, [process.pid]))
+          expect(rows.find((row) => row.id === firstEntry.id)?.status).toBe("exited")
+          const entries = yield* browserEntries(root)
+          expect(entries).toHaveLength(1)
+          expect(entries[0]?.id).not.toBe(firstEntry.id)
+          expect(entries[0]?.pid).toBe(process.pid)
+        }),
+        { git: true },
+      )
+    }),
+  )
+
+  itRegistry.live("reuses the connection when the explicit headless mode matches", () =>
+    Effect.gen(function* () {
+      const runtime = yield* BrowserRuntime.Service
+      fakePid = null
+      delete process.env.CHIMERA_BROWSER_HEADLESS
+      yield* provideTmpdirInstance((directory) =>
+        Effect.gen(function* () {
+          const executable = yield* writeExecutable(directory)
+          const launchesBefore = launched.length
+          yield* runtime.open({
+            sessionID: "ses_reuse_match_a",
+            launch: { executablePath: executable, headless: true },
+          })
+
+          const reused = yield* runtime.open({
+            sessionID: "ses_reuse_match_b",
+            launch: { executablePath: executable, headless: true },
+          })
+
+          expect(launched.length).toBe(launchesBefore + 1)
+          expect(reused.relaunched).toBeUndefined()
+        }),
+        { git: true },
+      )
+    }),
+  )
+
+  itRegistry.live("reuses the connection when launch.headless is not specified", () =>
+    Effect.gen(function* () {
+      const runtime = yield* BrowserRuntime.Service
+      fakePid = null
+      delete process.env.CHIMERA_BROWSER_HEADLESS
+      yield* provideTmpdirInstance((directory) =>
+        Effect.gen(function* () {
+          const executable = yield* writeExecutable(directory)
+          const launchesBefore = launched.length
+          yield* runtime.open({
+            sessionID: "ses_reuse_undefined_a",
+            launch: { executablePath: executable, headless: false },
+          })
+          // Env now disagrees with the live connection; an unspecified parameter
+          // must not restart the browser.
+          process.env.CHIMERA_BROWSER_HEADLESS = "true"
+
+          const reused = yield* runtime.open({
+            sessionID: "ses_reuse_undefined_b",
+            launch: { executablePath: executable },
+          })
+
+          expect(launched.length).toBe(launchesBefore + 1)
+          expect(launched.at(-1)?.headless).toBe(false)
+          expect(reused.relaunched).toBeUndefined()
+        }),
+        { git: true },
+      )
+    }),
+  )
+
+  itRegistry.live("never restarts a remote CDP connection on headless requests", () =>
+    Effect.gen(function* () {
+      const runtime = yield* BrowserRuntime.Service
+      fakePid = null
+      process.env.CHIMERA_BROWSER_CDP_URL = "http://browser.test"
+      yield* provideTmpdirInstance(() =>
+        Effect.gen(function* () {
+          const launchesBefore = launched.length
+          const browsersBefore = browsers.length
+          yield* runtime.open({ sessionID: "ses_cdp_headless_a" })
+
+          const reused = yield* runtime.open({ sessionID: "ses_cdp_headless_b", launch: { headless: false } })
+
+          expect(launched.length).toBe(launchesBefore)
+          expect(browsers.length).toBe(browsersBefore + 1)
+          expect(reused.relaunched).toBeUndefined()
+        }),
+        { git: true },
       )
     }),
   )

@@ -43,6 +43,12 @@ export interface TabInfo {
   readonly current: boolean
 }
 
+export interface OpenResult extends TabInfo {
+  /** True when this open relaunched the browser because an explicit launch.headless
+   * conflicted with the live local connection; previous tabs were closed. */
+  readonly relaunched?: boolean
+}
+
 export interface SnapshotResult extends BrowserSnapshot.Result {
   readonly tabID: string
   readonly generation: number
@@ -103,7 +109,7 @@ export interface Driver {
 }
 
 export interface Interface {
-  readonly open: (input: OpenInput) => Effect.Effect<TabInfo, RuntimeError>
+  readonly open: (input: OpenInput) => Effect.Effect<OpenResult, RuntimeError>
   readonly tabs: (sessionID: string) => Effect.Effect<readonly TabInfo[], RuntimeError>
   readonly select: (sessionID: string, tabID: string) => Effect.Effect<void, RuntimeError>
   readonly snapshot: (input: TabInput & { readonly options?: BrowserSnapshot.Options }) => Effect.Effect<SnapshotResult, RuntimeError>
@@ -122,9 +128,18 @@ type Connection = {
   readonly mode: "remote" | "local"
   readonly browser: BrowserLike
   readonly pid?: number
+  /** Launch mode of a local connection; remote (CDP) has no headless concept. */
+  readonly headless?: boolean
   registry?: { readonly projectRoot: string; readonly entryID: string }
   ownerSessionID?: string
 }
+
+// An explicit launch.headless request wins over a live local connection launched
+// in the other mode: the browser must be relaunched headed/headless instead of
+// silently reusing the mismatched connection. Undefined means "caller did not
+// ask", which keeps the existing reuse behavior regardless of config/env drift.
+const headlessConflict = (connection: Connection | undefined, launch: LaunchOptions) =>
+  connection?.mode === "local" && launch.headless !== undefined && launch.headless !== connection.headless
 
 type TabState = {
   readonly id: string
@@ -257,16 +272,24 @@ export const layerWith = (driver: Driver) =>
       const ensureConnection = (current: State, sessionID: string, launch: LaunchOptions = {}) =>
         current.lock.withPermits(1)(
           Effect.gen(function* () {
-            if (current.connection) {
-              yield* refreshRegistryOwner(current.connection, sessionID)
-              return current.connection
+            const existing = current.connection
+            if (existing && !headlessConflict(existing, launch)) {
+              yield* refreshRegistryOwner(existing, sessionID)
+              return { connection: existing, relaunched: false }
             }
+            // The explicit headless request conflicts with the live local
+            // connection: tear it down (closing every session's tabs) and relaunch
+            // below. cleanupState drops current.connection before closing the old
+            // browser, so the old onDisconnected callback's stale-connection guard
+            // keeps its cleanup from racing this one.
+            const relaunched = existing !== undefined
+            if (relaunched) yield* cleanupState(current)
             const timeout = launch.timeout ?? DEFAULT_TIMEOUT
             const cdpUrl = launch.cdpUrl ?? process.env.CHIMERA_BROWSER_CDP_URL
             if (cdpUrl) {
               const connection = { mode: "remote" as const, browser: yield* connect(cdpUrl, timeout) }
               current.connection = connection
-              return connection
+              return { connection, relaunched }
             }
 
             const discovered = yield* BrowserDiscovery.discover({
@@ -291,15 +314,15 @@ export const layerWith = (driver: Driver) =>
               }),
             )
             const pid = driver.pid(browser)
-            const connection: Connection = { mode: "local", browser, ...(pid === null ? {} : { pid }) }
+            const connection: Connection = { mode: "local", browser, headless, ...(pid === null ? {} : { pid }) }
             current.connection = connection
-            if (pid === null) return connection
+            if (pid === null) return { connection, relaunched }
             // Session process registry: record the launched browser so concurrent
             // sessions see it, the kill gate covers it, and proc_notify can watch it.
             // Degrade-open exactly like the shell tool: failure never blocks launch.
             const projectRoot = yield* currentProjectRoot()
             const registered = yield* registerBrowserProcess(projectRoot, sessionID, pid)
-            if (!registered) return connection
+            if (!registered) return { connection, relaunched }
             connection.registry = { projectRoot, entryID: registered.id }
             connection.ownerSessionID = sessionID
             driver.onDisconnected(browser, () => {
@@ -310,23 +333,28 @@ export const layerWith = (driver: Driver) =>
               current.connection = undefined
               current.sessions.clear()
             })
-            return connection
+            return { connection, relaunched }
           }),
         )
 
       const getSession = (current: State, sessionID: string, launch?: LaunchOptions) =>
         Effect.gen(function* () {
-          const hit = current.sessions.get(sessionID)
-          if (hit) return hit
-          const connection = yield* ensureConnection(current, sessionID, launch)
+          // A conflicting headless request must reach ensureConnection even when
+          // this session already holds a context on the old browser; the teardown
+          // clears current.sessions, so a fresh session is created below.
+          if (!headlessConflict(current.connection, launch ?? {})) {
+            const hit = current.sessions.get(sessionID)
+            if (hit) return { session: hit, relaunched: false }
+          }
+          const ensured = yield* ensureConnection(current, sessionID, launch)
           const session: SessionState = {
             context: yield* attempt("create browser context", () =>
-              connection.browser.newContext(launch?.locale ? { locale: launch.locale } : undefined),
+              ensured.connection.browser.newContext(launch?.locale ? { locale: launch.locale } : undefined),
             ),
             tabs: new Map<string, TabState>(),
           }
           current.sessions.set(sessionID, session)
-          return session
+          return { session, relaunched: ensured.relaunched }
         })
 
       const getTab = (current: State, input: TabInput) =>
@@ -367,8 +395,8 @@ export const layerWith = (driver: Driver) =>
         open: Effect.fn("BrowserRuntime.open")(function* (input: OpenInput) {
           return yield* InstanceState.useEffect(state, (current) =>
             Effect.gen(function* () {
-              const session = yield* getSession(current, input.sessionID, input.launch)
-              const page = yield* attempt("open browser tab", () => session.context.newPage())
+              const resolved = yield* getSession(current, input.sessionID, input.launch)
+              const page = yield* attempt("open browser tab", () => resolved.session.context.newPage())
               if (input.url)
                 yield* attempt("navigate browser tab", () =>
                   page.goto(input.url!, {
@@ -377,9 +405,10 @@ export const layerWith = (driver: Driver) =>
                   }),
                 ).pipe(Effect.tapError(() => attempt("close failed browser tab", () => page.close()).pipe(Effect.ignore)))
               const tab = { id: ulid(), page, generation: 0, refs: new Map<string, BrowserSnapshot.Target>() }
-              session.tabs.set(tab.id, tab)
-              session.current = tab.id
-              return yield* info(input.sessionID, session, tab)
+              resolved.session.tabs.set(tab.id, tab)
+              resolved.session.current = tab.id
+              const opened = yield* info(input.sessionID, resolved.session, tab)
+              return resolved.relaunched ? { ...opened, relaunched: true } : opened
             }),
           )
         }),

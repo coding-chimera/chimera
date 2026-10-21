@@ -84,3 +84,8 @@
 - 验证：`bun run test:run` 全量 868 测试通过、ToolPartView 聚焦 8/8（父级复跑确认）、`bun run typecheck` 零错误。
 
 遗留风险：headed 在无显示环境 launch 失败透出 playwright 原始错误；newweb 连远端 server 时 markdown 相对 URL 图片不可达（v1 接受）；disconnect 清理为 best-effort。
+
+## 追加修复：headed 复用缺口（2026-10-16）
+
+问题：`ensureConnection` 复用分支不看 `launch.headless`——已有无头连接时传 `headless: false` 被静默忽略（用户会话实测复现；该会话另受 npm 全局旧版无此参数影响）。
+修复：`Connection` 记录 headless 模式；显式参数与现有 local 连接模式不一致时走 cleanupState 全量清理后以新模式重启（时序安全：close 前置空 connection 使 disconnected 回调 no-op，markExited 幂等）；`getSession` 短路同步修正（同会话二次 open 也要过 ensureConnection）；`browser_open` 输出注明 relaunch 及旧 tab 关闭；CDP 模式不参与判断；未显式传参维持复用。验证：typecheck 零错误 + browser 三测试文件 27 pass/0 fail（父级复跑）。
