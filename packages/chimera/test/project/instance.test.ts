@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
-import { Effect, Fiber, Layer } from "effect"
+import { Effect, Fiber, Layer, Logger, References } from "effect"
 import { InstanceRef } from "../../src/effect/instance-ref"
 import { disposeInstance, registerDisposer } from "../../src/effect/instance-registry"
 import { InstanceBootstrap } from "../../src/project/bootstrap-service"
 import { Instance } from "../../src/project/instance"
 import { WithInstance } from "../../src/project/with-instance"
-import { InstanceStore, setInstanceMemoryRssProbe } from "../../src/project/instance-store"
+import { InstanceStore, resetInstanceMemoryPressureBackoff, setInstanceMemoryRssProbe } from "../../src/project/instance-store"
 import { disposeAllInstances, tmpdir, tmpdirScoped } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
@@ -653,6 +653,103 @@ describe("InstanceStore", () => {
       for (const dir of dirs) await dir[Symbol.asyncDispose]()
       setInstanceMemoryRssProbe(undefined)
       off()
+      restore()
+    }
+  })
+
+  test("memory pressure warning carries structured log annotations instead of an object message", async () => {
+    const restore = withInstanceStoreEnv({
+      CHIMERA_INSTANCE_IDLE_TTL_MS: "600000",
+      CHIMERA_INSTANCE_IDLE_SWEEP_MS: "10",
+      CHIMERA_INSTANCE_BOOT_GRACE_MS: "0",
+      CHIMERA_INSTANCE_SWEEP_DEBOUNCE_MS: "5",
+      CHIMERA_INSTANCE_MEMORY_BUDGET_MB: "1",
+    })
+    // Far over the 1MB budget with no loaded instances: pressure runs, nothing is evictable.
+    setInstanceMemoryRssProbe(() => 512 * 1024 * 1024)
+    resetInstanceMemoryPressureBackoff()
+    const logs: { message: unknown; annotations: Readonly<Record<string, unknown>> }[] = []
+    const logger = Logger.make<unknown, void>((options) => {
+      logs.push({ message: options.message, annotations: options.fiber.getRef(References.CurrentLogAnnotations) })
+    })
+    try {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          yield* InstanceStore.Service
+          yield* Effect.sleep("40 millis")
+        }).pipe(
+          Effect.scoped,
+          // The logger must be provided to the store layer's construction so the forked sweep
+          // fiber inherits it; an outer Effect.provide is not visible to layer construction.
+          Effect.provide(instanceStoreLayer.pipe(Layer.provide(Logger.layer([logger], { mergeWithExisting: false })))),
+        ),
+      )
+      const warning = logs.find(
+        (entry) =>
+          Array.isArray(entry.message) &&
+          entry.message.some(
+            (part) => typeof part === "string" && part.includes("instance memory budget exceeded"),
+          ),
+      )
+      if (!warning) throw new Error("expected a memory-pressure warning")
+      // The message array must carry only the string: the structured fields moved into log
+      // annotations instead of being a second message element that renders as "[object Object]".
+      expect(warning.message).toEqual(["instance memory budget exceeded; evicting coldest consumer-free instances"])
+      expect(warning.annotations).toMatchObject({
+        rssMB: 512,
+        budgetMB: 1,
+        watermarkMB: 1,
+        evicted: 0,
+        consecutiveMisses: expect.any(Number),
+      })
+    } finally {
+      setInstanceMemoryRssProbe(undefined)
+      resetInstanceMemoryPressureBackoff()
+      restore()
+    }
+  })
+
+  test("memory pressure warnings back off while eviction cannot converge and resume after recovery", async () => {
+    const restore = withInstanceStoreEnv({
+      CHIMERA_INSTANCE_IDLE_TTL_MS: "600000",
+      CHIMERA_INSTANCE_IDLE_SWEEP_MS: "10",
+      CHIMERA_INSTANCE_BOOT_GRACE_MS: "0",
+      CHIMERA_INSTANCE_SWEEP_DEBOUNCE_MS: "5",
+      CHIMERA_INSTANCE_MEMORY_BUDGET_MB: "1",
+    })
+    let rss = 512 * 1024 * 1024
+    setInstanceMemoryRssProbe(() => rss)
+    resetInstanceMemoryPressureBackoff()
+    const warnings: string[] = []
+    const logger = Logger.make<unknown, void>((options) => {
+      const message = Array.isArray(options.message) ? options.message.map(String).join(" ") : String(options.message)
+      if (message.includes("instance memory budget exceeded")) warnings.push(message)
+    })
+    try {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          yield* InstanceStore.Service
+          // No loaded instances: nothing is evictable, so every pressure sweep misses.
+          yield* Effect.sleep("200 millis")
+          expect(warnings).toHaveLength(3)
+          expect(warnings.some((message) => message.includes("eviction not converging"))).toBe(false)
+          // A sweep below the budget resets the backoff...
+          rss = 1024 * 1024
+          yield* Effect.sleep("40 millis")
+          expect(warnings).toHaveLength(3)
+          // ...so the next pressure sweep warns immediately again.
+          rss = 512 * 1024 * 1024
+          yield* Effect.sleep("40 millis")
+          expect(warnings.length).toBeGreaterThan(3)
+          expect(warnings.at(-1)).not.toContain("eviction not converging")
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(instanceStoreLayer.pipe(Layer.provide(Logger.layer([logger], { mergeWithExisting: false })))),
+        ),
+      )
+    } finally {
+      setInstanceMemoryRssProbe(undefined)
+      resetInstanceMemoryPressureBackoff()
       restore()
     }
   })

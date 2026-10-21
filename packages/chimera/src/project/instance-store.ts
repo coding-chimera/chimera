@@ -105,6 +105,20 @@ export function setInstanceMemoryRssProbe(probe: (() => number) | undefined) {
   memoryRssBytes = probe ?? (() => process.memoryUsage().rss)
 }
 
+/**
+ * Convergence-aware backoff state for the memory-pressure warning. `misses` counts consecutive
+ * pressure sweeps that ended above the watermark without a successful RSS drop; `sweeps` counts
+ * pressure sweeps since the last emitted warning. Process-wide because the RSS signal is.
+ */
+let memoryPressureMisses = 0
+let memoryPressureSweeps = 0
+
+/** Test seam: resets the memory-pressure convergence backoff. */
+export function resetInstanceMemoryPressureBackoff() {
+  memoryPressureMisses = 0
+  memoryPressureSweeps = 0
+}
+
 function settings() {
   return {
     idleTtlMs: envPositiveNumber(["CHIMERA_INSTANCE_IDLE_TTL_MS", "OPENCODE_INSTANCE_IDLE_TTL_MS"], DEFAULT_IDLE_TTL_MS),
@@ -204,14 +218,16 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
       const results = yield* Effect.promise(() => runDisposers(directory))
       for (const result of results) {
         if (result.status === "fulfilled") continue
-        yield* Effect.logWarning("instance disposer did not complete", {
-          directory,
-          disposer: result.name,
-          disposerID: result.id,
-          status: result.status,
-          elapsed: result.elapsed,
-          error: result.error,
-        })
+        yield* Effect.logWarning("instance disposer did not complete").pipe(
+          Effect.annotateLogs({
+            directory,
+            disposer: result.name,
+            disposerID: result.id,
+            status: result.status,
+            elapsed: result.elapsed,
+            error: result.error,
+          }),
+        )
       }
       return results
     })
@@ -220,7 +236,7 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
       ctx: InstanceContext,
       reason?: string,
     ) {
-      yield* Effect.logInfo("disposing instance", { directory: ctx.directory, reason })
+      yield* Effect.logInfo("disposing instance").pipe(Effect.annotateLogs({ directory: ctx.directory, reason }))
       yield* runInstanceDisposers(ctx.directory)
       yield* emitDisposed({ directory: ctx.directory, project: ctx.project.id, reason })
     })
@@ -240,12 +256,9 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
         // (R1 B1) This return used to be completely silent: a directory that can never
         // be evicted (leaked lease/pin) was invisible until RSS tripped the budget.
         // Log it so sweeps leave a trace; return-value semantics are unchanged.
-        yield* Effect.logWarning("instance dispose skipped: entry still has active consumers", {
-          directory,
-          reason,
-          active: entry.active,
-          pins: entry.pins,
-        })
+        yield* Effect.logWarning("instance dispose skipped: entry still has active consumers").pipe(
+          Effect.annotateLogs({ directory, reason, active: entry.active, pins: entry.pins }),
+        )
         return false
       }
       entry.disposing = true
@@ -317,7 +330,7 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
         }
         const exit = yield* reconciler().pipe(Effect.provideService(InstanceRef, entry.ctx), Effect.exit)
         if (Exit.isFailure(exit)) {
-          yield* Effect.logWarning("pin reconciliation failed", { directory, cause: exit.cause })
+          yield* Effect.logWarning("pin reconciliation failed").pipe(Effect.annotateLogs({ directory, cause: exit.cause }))
           continue
         }
         const reconciliation = exit.value
@@ -332,13 +345,15 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
         }
         suspectedPinMismatch.delete(directory)
         const dangling = entry.pins - reconciliation.expectedPins
-        yield* Effect.logWarning("correcting dangling instance pins", {
-          directory,
-          pins: entry.pins,
-          expectedPins: reconciliation.expectedPins,
-          busyStatuses: reconciliation.busyStatuses,
-          dangling,
-        })
+        yield* Effect.logWarning("correcting dangling instance pins").pipe(
+          Effect.annotateLogs({
+            directory,
+            pins: entry.pins,
+            expectedPins: reconciliation.expectedPins,
+            busyStatuses: reconciliation.busyStatuses,
+            dangling,
+          }),
+        )
         entry.pins = reconciliation.expectedPins
         entry.active = Math.max(0, entry.active - dangling)
       }
@@ -347,29 +362,67 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
     // Pressure reclamation: only when the process RSS exceeds the budget, evict zero-consumer
     // instances coldest-first until RSS is back at the watermark (or candidates run out).
     // Presence-pinned and freshly booted instances are protected by `isEvictable`.
+    //
+    // Convergence-aware warning backoff: eviction cannot shrink resident memory that no
+    // evictable instance holds (e.g. a JSC heap ratchet), so an always-over-budget process used
+    // to emit one WARN per sweep forever. After three consecutive non-converging sweeps the
+    // warning drops to one per 2^min(misses-2, 8) sweeps (at most ~256 sweeps, ~4.3h at the
+    // default 60s cadence). Eviction itself still runs on every sweep; only WARN is throttled.
     const sweepMemoryPressure = Effect.fnUntraced(function* () {
       if (options.memoryBudgetMb <= 0) return
       const budgetBytes = options.memoryBudgetMb * 1024 * 1024
       const initialRss = memoryRssBytes()
-      if (initialRss <= budgetBytes) return
+      if (initialRss <= budgetBytes) {
+        memoryPressureMisses = 0
+        memoryPressureSweeps = 0
+        return
+      }
       const watermarkBytes = Math.floor(budgetBytes * MEMORY_PRESSURE_WATERMARK)
       const toMB = (bytes: number) => Math.round(bytes / 1024 / 1024)
-      yield* Effect.logWarning("instance memory budget exceeded; evicting coldest consumer-free instances", {
-        rssMB: toMB(initialRss),
-        budgetMB: options.memoryBudgetMb,
-        watermarkMB: toMB(watermarkBytes),
-      })
+      const priorMisses = memoryPressureMisses
       let evicted = 0
       for (const item of collectPressureCandidates(Date.now())) {
         if (memoryRssBytes() <= watermarkBytes) break
         if (yield* disposeEntry(item.directory, item.entry, "memory-pressure")) evicted++
       }
+      const finalRss = memoryRssBytes()
+      const converged = finalRss <= watermarkBytes
+      // A successful eviction that actually lowered RSS counts as progress even while the
+      // process is still above the watermark; only no-progress sweeps feed the backoff.
+      const relieved = evicted > 0 && finalRss < initialRss
+      const misses = converged || relieved ? 0 : priorMisses + 1
+      const backingOff = !converged && !relieved && priorMisses >= 3
+      memoryPressureSweeps += 1
+      if (memoryPressureSweeps >= (backingOff ? 2 ** Math.min(priorMisses - 2, 8) : 1)) {
+        memoryPressureSweeps = 0
+        yield* Effect.logWarning(
+          backingOff
+            ? "instance memory budget exceeded; evicting coldest consumer-free instances; eviction not converging; resident memory is not held by evictable instances"
+            : "instance memory budget exceeded; evicting coldest consumer-free instances",
+        ).pipe(
+          Effect.annotateLogs({
+            rssMB: toMB(finalRss),
+            budgetMB: options.memoryBudgetMb,
+            watermarkMB: toMB(watermarkBytes),
+            evicted,
+            consecutiveMisses: misses,
+          }),
+        )
+      }
+      if (converged || relieved) {
+        memoryPressureMisses = 0
+        memoryPressureSweeps = 0
+      } else {
+        memoryPressureMisses = misses
+      }
       if (evicted > 0)
-        yield* Effect.logInfo("memory-pressure eviction finished", {
-          evicted,
-          rssMB: toMB(memoryRssBytes()),
-          budgetMB: options.memoryBudgetMb,
-        })
+        yield* Effect.logInfo("memory-pressure eviction finished").pipe(
+          Effect.annotateLogs({
+            evicted,
+            rssMB: toMB(finalRss),
+            budgetMB: options.memoryBudgetMb,
+          }),
+        )
     })
 
     const sweepIdle = Effect.fn("InstanceStore.sweepIdle")(function* (reason: string) {
@@ -379,12 +432,14 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
       yield* reconcilePins()
       const candidates = collectIdleCandidates(Date.now())
       if (candidates.length > 0) {
-        yield* Effect.logInfo("disposing idle instances", {
-          reason,
-          count: candidates.length,
-          maxActiveInstances: options.maxActiveInstances,
-          idleTtlMs: options.idleTtlMs,
-        })
+        yield* Effect.logInfo("disposing idle instances").pipe(
+          Effect.annotateLogs({
+            reason,
+            count: candidates.length,
+            maxActiveInstances: options.maxActiveInstances,
+            idleTtlMs: options.idleTtlMs,
+          }),
+        )
         yield* Effect.forEach(
           candidates,
           (item) => disposeEntry(item.directory, item.entry, reason),
@@ -440,10 +495,9 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
           const lastDispose = lastDisposedAt.get(directory)
           if (lastDispose !== undefined && now - lastDispose <= options.oscillationWindowMs) {
             pinnedUntil.set(directory, now + options.oscillationPinMs)
-            yield* Effect.logWarning("instance re-booted shortly after LRU dispose; pinning to break oscillation", {
-              directory,
-              oscillationPinMs: options.oscillationPinMs,
-            })
+            yield* Effect.logWarning("instance re-booted shortly after LRU dispose; pinning to break oscillation").pipe(
+              Effect.annotateLogs({ directory, oscillationPinMs: options.oscillationPinMs }),
+            )
           }
         }
         yield* Deferred.done(entry.deferred, exit).pipe(Effect.asVoid)
@@ -469,7 +523,7 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
           const entry = makeEntry()
           cache.set(directory, entry)
           yield* Effect.gen(function* () {
-            yield* Effect.logInfo("creating instance", { directory })
+            yield* Effect.logInfo("creating instance").pipe(Effect.annotateLogs({ directory }))
             yield* completeLoad(directory, input, entry)
           }).pipe(Effect.forkIn(scope, { startImmediately: true }))
           yield* restore(Deferred.await(entry.deferred))
@@ -547,7 +601,7 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
           const entry = makeEntry()
           cache.set(directory, entry)
           yield* Effect.gen(function* () {
-            yield* Effect.logInfo("reloading instance", { directory })
+            yield* Effect.logInfo("reloading instance").pipe(Effect.annotateLogs({ directory }))
             if (previous) {
               previous.disposing = true
               yield* Deferred.await(previous.deferred).pipe(Effect.ignore)
@@ -582,7 +636,7 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
           Effect.gen(function* () {
             const exit = yield* Deferred.await(item[1].deferred).pipe(Effect.exit)
             if (Exit.isFailure(exit)) {
-              yield* Effect.logWarning("instance dispose failed", { key: item[0], cause: exit.cause })
+              yield* Effect.logWarning("instance dispose failed").pipe(Effect.annotateLogs({ key: item[0], cause: exit.cause }))
               yield* removeEntry(item[0], item[1])
               yield* Deferred.succeed(item[1].disposed, undefined).pipe(Effect.ignore)
               return
@@ -606,10 +660,12 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
       )
 
     if (options.memoryBudgetMb > MAX_RECOMMENDED_MEMORY_BUDGET_MB)
-      yield* Effect.logWarning("instance memory budget is above the recommended maximum", {
-        memoryBudgetMb: options.memoryBudgetMb,
-        recommendedMaxMb: MAX_RECOMMENDED_MEMORY_BUDGET_MB,
-      })
+      yield* Effect.logWarning("instance memory budget is above the recommended maximum").pipe(
+        Effect.annotateLogs({
+          memoryBudgetMb: options.memoryBudgetMb,
+          recommendedMaxMb: MAX_RECOMMENDED_MEMORY_BUDGET_MB,
+        }),
+      )
 
     yield* sweepIdle("idle-sweep").pipe(
       Effect.repeat(Schedule.spaced(`${options.sweepMs} millis`)),
