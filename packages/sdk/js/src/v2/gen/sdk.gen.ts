@@ -62,6 +62,7 @@ import type {
   FindSymbolsResponses,
   FindTextResponses,
   FormatterStatusResponses,
+  GlobalBrowserArtifactResponses,
   GlobalConfigGetResponses,
   GlobalConfigUpdateErrors,
   GlobalConfigUpdateResponses,
@@ -664,6 +665,38 @@ export class Global extends HeyApiClient {
         ...options?.headers,
         ...params.headers,
       },
+    })
+  }
+
+  /**
+   * Get browser artifact image
+   *
+   * Serve one image artifact written by the browser tools from the managed browser-artifact directory. Path parameters are the project/session hashes embedded in the artifact URLs returned by browser_screenshot; traversal outside the artifact root, unknown content types, and missing files all answer 404. Served without instance middleware so HTML <img> tags can load it directly.
+   */
+  public browserArtifact<ThrowOnError extends boolean = false>(
+    parameters: {
+      projectHash: string
+      sessionHash: string
+      filename: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "projectHash" },
+            { in: "path", key: "sessionHash" },
+            { in: "path", key: "filename" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<GlobalBrowserArtifactResponses, unknown, ThrowOnError>({
+      url: "/global/browser-artifact/{projectHash}/{sessionHash}/{filename}",
+      ...options,
+      ...params,
     })
   }
 

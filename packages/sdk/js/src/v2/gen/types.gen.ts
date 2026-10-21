@@ -315,6 +315,8 @@ export type Goal = {
   }
   consecutiveEmptyContinuations?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
   consecutiveContinuations?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  consecutiveToolFailures?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  blockedReason?: string
 }
 
 export type Project = {
@@ -1272,6 +1274,16 @@ export type McpRemoteConfig = {
   timeout?: number
 }
 
+export type DiagnosticsConfig = {
+  dedupe?: boolean
+  crossFile?: boolean
+  late?: boolean
+  /**
+   * Inline wait budget in milliseconds for fresh post-mutation LSP diagnostics before the tool returns without a diagnostics block (default 800). Fresh results within budget render exactly as before; on timeout the late path (diagnostics.late) carries the wait.
+   */
+  inlineBudgetMs?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+}
+
 /**
  * @deprecated Always uses stretch layout.
  */
@@ -1347,6 +1359,10 @@ export type ImageAttachmentConfig = {
 
 export type AttachmentConfig = {
   image?: ImageAttachmentConfig
+}
+
+export type BrowserConfig = {
+  headless?: boolean
 }
 
 export type Config = {
@@ -1487,6 +1503,7 @@ export type Config = {
               }
             }
       }
+  diagnostics?: DiagnosticsConfig
   instructions?: Array<string>
   layout?: LayoutConfig
   permission?: PermissionConfig
@@ -1495,6 +1512,7 @@ export type Config = {
     [key: string]: boolean
   }
   attachment?: AttachmentConfig
+  browser?: BrowserConfig
   enterprise?: {
     url?: string
   }
@@ -1528,6 +1546,13 @@ export type Config = {
     mcp_timeout?: number
     system_context?: boolean
     llm_runtime?: boolean
+    /**
+     * Read deduplication behavior for models that support it.
+     */
+    read_dedup?: {
+      gpt_6_astra?: boolean
+    }
+    astra_shell_guard?: boolean
   }
 }
 
@@ -2437,6 +2462,8 @@ export type Goal3 = {
   }
   consecutiveEmptyContinuations?: number | "NaN" | "Infinity" | "-Infinity"
   consecutiveContinuations?: number | "NaN" | "Infinity" | "-Infinity"
+  consecutiveToolFailures?: number | "NaN" | "Infinity" | "-Infinity"
+  blockedReason?: string
 }
 
 export type CompactionPart1 = {
@@ -3266,7 +3293,7 @@ export type EventChimeraEditIntentReleased = {
   type: "chimera.edit_intent.released"
   properties: {
     projectRoot: string
-    reason: "session_removed"
+    reason: "session_removed" | "explicit"
     targets: Array<{
       sessionID: string
       files: Array<{
@@ -4969,6 +4996,26 @@ export type GlobalUpgradeResponses = {
 }
 
 export type GlobalUpgradeResponse = GlobalUpgradeResponses[keyof GlobalUpgradeResponses]
+
+export type GlobalBrowserArtifactData = {
+  body?: never
+  path: {
+    projectHash: string
+    sessionHash: string
+    filename: string
+  }
+  query?: never
+  url: "/global/browser-artifact/{projectHash}/{sessionHash}/{filename}"
+}
+
+export type GlobalBrowserArtifactResponses = {
+  /**
+   * Artifact image bytes
+   */
+  200: string
+}
+
+export type GlobalBrowserArtifactResponse = GlobalBrowserArtifactResponses[keyof GlobalBrowserArtifactResponses]
 
 export type EventSubscribeData = {
   body?: never
