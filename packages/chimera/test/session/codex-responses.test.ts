@@ -303,6 +303,36 @@ describe("session.codex-responses", () => {
     expect(events.find((event) => event.type === "finish-step")?.usage.inputTokenDetails.cacheReadTokens).toBe(1)
   })
 
+  test("tags Codex reasoning summary events for provider-neutral classification", async () => {
+    using server = Bun.serve({
+      port: 0,
+      async fetch() {
+        return new Response(
+          responseStream([
+            { type: "response.created", response: { id: "resp-reasoning", created_at: 1, model: "gpt-5.5" } },
+            { type: "response.output_item.added", output_index: 0, item: { id: "rs-1", type: "reasoning", encrypted_content: null } },
+            { type: "response.reasoning_summary_text.delta", item_id: "rs-1", summary_index: 0, delta: "thinking" },
+            { type: "response.output_item.done", output_index: 0, item: { id: "rs-1", type: "reasoning", encrypted_content: null } },
+            {
+              type: "response.completed",
+              response: {
+                id: "resp-reasoning",
+                usage: { input_tokens: 3, input_tokens_details: { cached_tokens: 0 }, output_tokens: 2, output_tokens_details: { reasoning_tokens: 2 }, total_tokens: 5 },
+              },
+            },
+          ]),
+          { headers: { "Content-Type": "text/event-stream" } },
+        )
+      },
+    })
+
+    const events = await collect(baseInput({ endpoint: `${server.url.origin}/backend-api/codex/responses` }))
+    const reasoning = events.filter((event) => event.type.startsWith("reasoning-"))
+
+    expect(reasoning.map((event) => event.type)).toEqual(["reasoning-start", "reasoning-delta", "reasoning-end"])
+    for (const event of reasoning) expect(event.providerMetadata?.openai?.reasoningSummary).toBe(true)
+    expect(reasoning.find((event) => event.type === "reasoning-delta")?.text).toBe("thinking")
+  })
   test("surfaces nested Responses error messages", async () => {
     using server = Bun.serve({
       port: 0,

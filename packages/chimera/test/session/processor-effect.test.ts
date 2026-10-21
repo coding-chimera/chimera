@@ -17,7 +17,7 @@ import { DatabaseConnection, getDatabasePath } from "@/graph"
 import { Session } from "@/session/session"
 import { LLM } from "../../src/session/llm"
 import { MessageV2 } from "../../src/session/message-v2"
-import { SessionProcessor, copilotTotalNanoAiu, serializeLength } from "../../src/session/processor"
+import { SessionProcessor, copilotTotalNanoAiu, reasoningPartMetadata, serializeLength } from "../../src/session/processor"
 import { MessageID, PartID, SessionID } from "../../src/contracts/session-ids"
 import { SessionStatus } from "../../src/session/status"
 import { SessionSummary } from "../../src/session/summary"
@@ -1684,6 +1684,47 @@ describe("serializeLength", () => {
     expect(serializeLength(undefined)).toBe(0)
     expect(serializeLength("abc")).toBe(3)
     expect(serializeLength([["ab"], "c", undefined])).toBe(3)
+  })
+})
+
+describe("reasoningPartMetadata", () => {
+  const modelFor = (providerID: string) => ({ providerID }) as Provider.Model
+
+  test("classifies tagged openai and copilot summaries as summary", () => {
+    expect(reasoningPartMetadata({ openai: { itemId: "rs-1", reasoningSummary: true } }, modelFor("relay"))).toEqual({
+      openai: { itemId: "rs-1", reasoningSummary: true },
+      chimera: { reasoning: "summary" },
+    })
+    expect(reasoningPartMetadata({ copilot: { itemId: "rs-1", reasoningSummary: true } }, modelFor("copilot"))).toEqual({
+      copilot: { itemId: "rs-1", reasoningSummary: true },
+      chimera: { reasoning: "summary" },
+    })
+  })
+
+  test("treats relay openai itemId without the tag as raw", () => {
+    expect(reasoningPartMetadata({ openai: { itemId: "rs-1" } }, modelFor("relay"))).toEqual({
+      openai: { itemId: "rs-1" },
+      chimera: { reasoning: "raw" },
+    })
+  })
+
+  test("treats genuine OpenAI itemId as a summary", () => {
+    expect(reasoningPartMetadata({ openai: { itemId: "rs-1" } }, modelFor("openai"))).toEqual({
+      openai: { itemId: "rs-1" },
+      chimera: { reasoning: "summary" },
+    })
+  })
+
+  test("defaults to raw when there is no provider metadata", () => {
+    expect(reasoningPartMetadata(undefined, modelFor("openai"))).toEqual({ chimera: { reasoning: "raw" } })
+  })
+
+  test("preserves the start-time classification when a delta replaces metadata without the tag", () => {
+    const started = reasoningPartMetadata({ openai: { itemId: "rs-1", reasoningSummary: true } }, modelFor("openai"))
+    expect(reasoningPartMetadata({ openai: { itemId: "rs-1" } }, modelFor("openai"), started)).toEqual({
+      openai: { itemId: "rs-1" },
+      chimera: { reasoning: "summary" },
+    })
   })
 })
 

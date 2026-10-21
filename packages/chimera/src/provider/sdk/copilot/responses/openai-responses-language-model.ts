@@ -951,6 +951,7 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV3 {
                     copilot: {
                       itemId: value.item.id,
                       reasoningEncryptedContent: value.item.encrypted_content ?? null,
+                      reasoningSummary: true,
                     },
                   },
                 })
@@ -1102,6 +1103,7 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV3 {
                         copilot: {
                           itemId: activeReasoningPart.canonicalId,
                           reasoningEncryptedContent: value.item.encrypted_content ?? null,
+                          reasoningSummary: true,
                         },
                       },
                     })
@@ -1215,6 +1217,7 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV3 {
                     copilot: {
                       itemId: activeItem.canonicalId,
                       reasoningEncryptedContent: activeItem.encryptedContent ?? null,
+                      reasoningSummary: true,
                     },
                   },
                 })
@@ -1231,6 +1234,7 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV3 {
                   providerMetadata: {
                     copilot: {
                       itemId: activeItem.canonicalId,
+                      reasoningSummary: true,
                     },
                   },
                 })

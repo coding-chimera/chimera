@@ -148,6 +148,35 @@ function errorToolPart(part: MessageV2.ToolPart, error: unknown, end = Date.now(
   }
 }
 
+type ReasoningKind = "summary" | "raw"
+
+// Curated reasoning summaries (OpenAI Responses summary_text, fork codex/copilot parsers) are
+// distinguishable from raw chain-of-thought only by the provider metadata they carry: the fork
+// parsers tag summary events explicitly, while genuine OpenAI reasoning always arrives as a
+// summary. Relay raw reasoning_text is string-renamed to summary frames upstream but keeps
+// providerID !== "openai", so itemId alone must not be trusted there.
+function reasoningKind(providerMetadata: Record<string, unknown> | undefined, model: Provider.Model): ReasoningKind {
+  const openai = isRecord(providerMetadata?.openai) ? providerMetadata.openai : undefined
+  const copilot = isRecord(providerMetadata?.copilot) ? providerMetadata.copilot : undefined
+  if (openai?.reasoningSummary === true || copilot?.reasoningSummary === true) return "summary"
+  if (openai?.itemId !== undefined && model.providerID === "openai") return "summary"
+  return "raw"
+}
+
+// Classification is established once at reasoning-start and carried through metadata
+// replacements: summary parsers send their tag on start but not on every delta, so
+// recomputing from a later payload would flip codex/copilot summaries to "raw".
+export function reasoningPartMetadata(
+  providerMetadata: Record<string, unknown> | undefined,
+  model: Provider.Model,
+  previous?: MessageV2.ReasoningPart["metadata"],
+): Record<string, unknown> {
+  return {
+    ...providerMetadata,
+    chimera: previous?.chimera ?? { reasoning: reasoningKind(providerMetadata, model) },
+  }
+}
+
 export type Result = "compact" | "stop" | "continue"
 
 export type Event = LLM.Event
@@ -391,7 +420,7 @@ export const layer: Layer.Layer<
               type: "reasoning",
               text: "",
               time: { start: Date.now() },
-              metadata: value.providerMetadata,
+              metadata: reasoningPartMetadata(value.providerMetadata, ctx.model),
             }
             yield* session.updatePart(ctx.reasoningMap[value.id])
             return
@@ -399,7 +428,12 @@ export const layer: Layer.Layer<
           case "reasoning-delta":
             if (!(value.id in ctx.reasoningMap)) return
             ctx.reasoningMap[value.id].text += value.text
-            if (value.providerMetadata) ctx.reasoningMap[value.id].metadata = value.providerMetadata
+            if (value.providerMetadata)
+              ctx.reasoningMap[value.id].metadata = reasoningPartMetadata(
+                value.providerMetadata,
+                ctx.model,
+                ctx.reasoningMap[value.id].metadata,
+              )
             yield* session.updatePartDelta({
               sessionID: ctx.reasoningMap[value.id].sessionID,
               messageID: ctx.reasoningMap[value.id].messageID,
@@ -422,7 +456,12 @@ export const layer: Layer.Layer<
             // oxlint-disable-next-line no-self-assign -- reactivity trigger
             ctx.reasoningMap[value.id].text = ctx.reasoningMap[value.id].text
             ctx.reasoningMap[value.id].time = { ...ctx.reasoningMap[value.id].time, end: Date.now() }
-            if (value.providerMetadata) ctx.reasoningMap[value.id].metadata = value.providerMetadata
+            if (value.providerMetadata)
+              ctx.reasoningMap[value.id].metadata = reasoningPartMetadata(
+                value.providerMetadata,
+                ctx.model,
+                ctx.reasoningMap[value.id].metadata,
+              )
             yield* session.updatePart(ctx.reasoningMap[value.id])
             delete ctx.reasoningMap[value.id]
             return

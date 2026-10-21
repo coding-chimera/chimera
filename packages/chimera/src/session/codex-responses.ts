@@ -463,7 +463,7 @@ function finishEvents(state: StreamState) {
         event({
           type: "reasoning-end",
           id: `${part.id}:${summaryIndex}`,
-          providerMetadata: { openai: { itemId: part.id, reasoningEncryptedContent: part.encryptedContent ?? null } },
+          providerMetadata: { openai: { itemId: part.id, reasoningEncryptedContent: part.encryptedContent ?? null, reasoningSummary: true } },
         }),
       )
     }
@@ -854,7 +854,7 @@ function handleChunk(value: Record<string, unknown>, input: CodexResponsesInput,
         event({
           type: "reasoning-start",
           id: `${id}:0`,
-          providerMetadata: { openai: { itemId: id, reasoningEncryptedContent: item.encrypted_content ?? null } },
+          providerMetadata: { openai: { itemId: id, reasoningEncryptedContent: item.encrypted_content ?? null, reasoningSummary: true } },
         }),
       )
       return outputs
@@ -902,7 +902,7 @@ function handleChunk(value: Record<string, unknown>, input: CodexResponsesInput,
         event({
           type: "reasoning-start",
           id: `${part.id}:${summaryIndex}`,
-          providerMetadata: { openai: { itemId: part.id, reasoningEncryptedContent: part.encryptedContent ?? null } },
+          providerMetadata: { openai: { itemId: part.id, reasoningEncryptedContent: part.encryptedContent ?? null, reasoningSummary: true } },
         }),
       )
     }
@@ -917,7 +917,7 @@ function handleChunk(value: Record<string, unknown>, input: CodexResponsesInput,
           type: "reasoning-delta",
           id: `${part.id}:${numberOption(value.summary_index) ?? 0}`,
           text: stringOption(value.delta) ?? "",
-          providerMetadata: { openai: { itemId: part.id } },
+          providerMetadata: { openai: { itemId: part.id, reasoningSummary: true } },
         }),
       )
     }
@@ -942,7 +942,7 @@ function handleChunk(value: Record<string, unknown>, input: CodexResponsesInput,
               type: "reasoning-end",
               id: `${part.id}:${summaryIndex}`,
               providerMetadata: {
-                openai: { itemId: part.id, reasoningEncryptedContent: item.encrypted_content ?? null },
+                openai: { itemId: part.id, reasoningEncryptedContent: item.encrypted_content ?? null, reasoningSummary: true },
               },
             }),
           )
