@@ -17,6 +17,7 @@ import type { SessionID } from "@/contracts/session-ids"
 import { SessionRetry } from "./retry"
 import { SessionStatus } from "./status"
 import { SessionSummary } from "./summary"
+import { AstraToolPolicyViolation } from "./policy"
 import type { Provider } from "@/provider/provider"
 import { Question } from "@/question"
 import { errorMessage } from "@/util/error"
@@ -193,7 +194,8 @@ export interface Handle {
     toolCallID: string,
     output: unknown,
   ) => Effect.Effect<void>
-  readonly failToolCall: (toolCallID: string, error: unknown) => Effect.Effect<boolean>
+  readonly failToolCall: (toolCallID: string, error: unknown, input?: unknown) => Effect.Effect<boolean>
+  readonly terminated: boolean
   readonly process: (streamInput: LLM.StreamInput) => Effect.Effect<Result>
 }
 
@@ -237,6 +239,7 @@ interface ProcessorContext extends Input {
   shouldBreak: boolean
   snapshot: string | undefined
   blocked: boolean
+  terminated: boolean
   needsCompaction: boolean
   estimatedInputTokens: number
   currentText: MessageV2.TextPart | undefined
@@ -298,6 +301,7 @@ export const layer: Layer.Layer<
         shouldBreak: false,
         snapshot: initialSnapshot,
         blocked: false,
+        terminated: false,
         needsCompaction: false,
         estimatedInputTokens: 0,
         currentText: undefined,
@@ -373,11 +377,26 @@ export const layer: Layer.Layer<
         yield* settleToolCall(toolCallID)
       })
 
-      const failToolCall = Effect.fn("SessionProcessor.failToolCall")(function* (toolCallID: string, error: unknown) {
+      const failToolCall = Effect.fn("SessionProcessor.failToolCall")(function* (toolCallID: string, error: unknown, input?: unknown) {
         const match = yield* readToolCall(toolCallID)
         if (!match || !isUnfinishedToolPart(match.part)) return false
-        yield* session.updatePart(errorToolPart(match.part, error))
-        if (error instanceof Permission.RejectedError || error instanceof Question.RejectedError) {
+        // A fast-failing tool races the streamed tool-call event and lands here while
+        // the part is still pending with the placeholder `input: {}`; the executing
+        // fiber holds the real arguments, so patch them in before settling.
+        const part =
+          input !== undefined && isRecord(input) && match.part.state.status === "pending"
+            ? { ...match.part, state: { ...match.part.state, input } }
+            : match.part
+        yield* session.updatePart(errorToolPart(part, error))
+        if (AstraToolPolicyViolation.is(error)) {
+          // A tool policy violation is terminal for this run: settle the call as
+          // an error, publish through the existing halt path, and stop the
+          // provider stream. `continue_loop_on_deny` must not soften this.
+          if (!ctx.terminated) {
+            ctx.terminated = true
+            yield* halt(error)
+          }
+        } else if (error instanceof Permission.RejectedError || error instanceof Question.RejectedError) {
           ctx.blocked = ctx.shouldBreak
         }
         yield* settleToolCall(toolCallID)
@@ -574,8 +593,22 @@ export const layer: Layer.Layer<
                 ? { ...value.providerMetadata, providerExecuted: true }
                 : value.providerMetadata,
             }))
-
-            // (R1 hotspot-1) Tail query instead of a full-history SELECT per tool call:
+            // A tool-call arriving after the part already settled (an out-of-band
+            // failure won the race against the stream) finds no live call; heal the
+            // placeholder input on the error part so history replay keeps the real
+            // arguments.
+            if (!toolCall && isRecord(value.input)) {
+              const settled = MessageV2.parts(ctx.assistantMessage.id).find(
+                (part): part is MessageV2.ToolPart => part.type === "tool" && part.callID === value.toolCallId,
+              )
+              if (
+                settled?.state.status === "error" &&
+                JSON.stringify(settled.state.input) === "{}" &&
+                JSON.stringify(value.input) !== "{}"
+              ) {
+                yield* session.updatePart({ ...settled, state: { ...settled.state, input: value.input } })
+              }
+            }
             // the doom-loop check only ever looks at the last DOOM_LOOP_THRESHOLD parts.
             const recentParts = MessageV2.partsTail(ctx.assistantMessage.id, DOOM_LOOP_THRESHOLD)
 
@@ -999,6 +1032,7 @@ export const layer: Layer.Layer<
         ctx.needsCompaction = false
         ctx.estimatedInputTokens = estimateInputTokens(streamInput)
         ctx.shouldBreak = (yield* config.get()).experimental?.continue_loop_on_deny !== true
+        ctx.terminated = false
 
         return yield* Effect.gen(function* () {
           yield* Effect.gen(function* () {
@@ -1009,7 +1043,7 @@ export const layer: Layer.Layer<
 
             yield* stream.pipe(
               Stream.tap((event) => handleEvent(event)),
-              Stream.takeUntil(() => ctx.needsCompaction),
+              Stream.takeUntil(() => ctx.needsCompaction || ctx.terminated),
               Stream.runDrain,
             )
           }).pipe(
@@ -1067,6 +1101,9 @@ export const layer: Layer.Layer<
         updateToolCall,
         completeToolCall,
         failToolCall,
+        get terminated() {
+          return ctx.terminated
+        },
         process,
       } satisfies Handle
     })

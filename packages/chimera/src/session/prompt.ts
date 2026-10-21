@@ -59,6 +59,7 @@ import { Permission } from "@/permission"
 import { SessionStatus } from "./status"
 import { SessionActivity } from "./activity"
 import { SessionRetry } from "./retry"
+import { AstraToolPolicyViolation } from "./policy"
 import { SubagentModelCatalog } from "@/agent/subagent-model-catalog"
 import { LLM } from "./llm"
 import { Shell } from "@/shell/shell"
@@ -1087,6 +1088,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       bypassAgentCheck: boolean
       messages: MessageV2.WithParts[]
       abort: AbortSignal
+      onPolicyViolation?: (error: AstraToolPolicyViolation) => void
     }) {
       using _ = log.time("resolveTools")
       const { agent, model, session, processor, bypassAgentCheck, messages } = input
@@ -1159,18 +1161,23 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         )
       }
 
-      const executeGuarded = <A, E, R>(callID: string, signal: AbortSignal, effect: Effect.Effect<A, E, R>) =>
+      const executeGuarded = <A, E, R>(callID: string, signal: AbortSignal, effect: Effect.Effect<A, E, R>, toolInput?: unknown) =>
         effect.pipe(
           Effect.raceFirst(waitForAbort(signal)),
           Effect.catchCause((cause) =>
             Effect.gen(function* () {
-              yield* processor
-                .failToolCall(callID, Cause.hasInterruptsOnly(cause) ? abortError(signal) : Cause.squash(cause))
-                .pipe(Effect.ignore)
+              const failure = Cause.hasInterruptsOnly(cause) ? abortError(signal) : Cause.squash(cause)
+              // Pass the real args: a fast-failing tool races the streamed tool-call
+              // event, and failToolCall needs them to heal the placeholder input.
+              yield* processor.failToolCall(callID, failure, toolInput).pipe(Effect.ignore)
+              // A tool policy violation is terminal for the run. Abort the shared
+              // tool signal so sibling calls stop too; the tool itself only
+              // throws the marker and never aborts synchronously.
+              if (AstraToolPolicyViolation.is(failure)) input.onPolicyViolation?.(failure)
               return yield* Effect.failCause(cause)
             }),
           ),
-          Effect.onInterrupt(() => processor.failToolCall(callID, abortError(signal)).pipe(Effect.ignore)),
+          Effect.onInterrupt(() => processor.failToolCall(callID, abortError(signal), toolInput).pipe(Effect.ignore)),
         )
 
       // Progressive tool disclosure phase 2: deferred tools stay registered and
@@ -1186,25 +1193,25 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       const compactionTime = latestCompactionTime(messages)
       const deferredHidden: string[] = []
       const revealedCallable: Record<string, AITool> = {}
+      // Wire JSON schema per deferred tool, so the OpenAI-native tool_search
+      // can hand the model the exact definition the registry would have sent.
+      const deferredSchemas: Record<string, JSONObject> = {}
       for (const item of yield* registry.tools({
         modelID: ModelID.make(model.api.id),
         providerID: model.providerID,
         agent,
       })) {
         const deferred = toolSearch.isDeferred(item.id)
+        // Schema is captured before the defer filter: the native gateway hands
+        // the model definitions for tools that are still hidden this turn.
+        const schema = ProviderTransform.schema(model, EffectZod.toJsonSchema(item.parameters))
+        if (deferred) deferredSchemas[item.id] = schema as JSONObject
         if (deferred && !revealedDeferred.has(item.id)) {
-      // Wire JSON schema per deferred tool, so the OpenAI-native tool_search
-      // can hand the model the exact definition the registry would have sent.
-      const deferredSchemas: Record<string, JSONObject> = {}
           deferredHidden.push(item.id)
           continue
         }
         const built = tool({
           description: item.description,
-        // Schema is captured before the defer filter: the native gateway hands
-        // the model definitions for tools that are still hidden this turn.
-        const schema = ProviderTransform.schema(model, EffectZod.toJsonSchema(item.parameters))
-        if (deferred) deferredSchemas[item.id] = schema as JSONObject
           inputSchema: jsonSchema(schema),
           execute(args, options) {
             const ctx = context(args, options)
@@ -1241,6 +1248,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                   }
                   return output
                 }),
+                args,
               ),
             )
           },
@@ -1573,6 +1581,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 }
                 return output
               }),
+              args,
             ),
           )
         }
@@ -3035,6 +3044,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               bypassAgentCheck,
               messages: msgs,
               abort: toolAbort.signal,
+              onPolicyViolation: (error) => toolAbort.abort(error),
             })
 
             if (lastUser.format?.type === "json_schema") {
@@ -3151,6 +3161,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               tools,
               deferredHidden,
               revealedCallable,
+              nativeToolSearch,
               model,
               toolChoice: format.type === "json_schema" ? "required" : undefined,
             })
@@ -3161,7 +3172,6 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               yield* sessions.updateMessage(handle.message)
               return "break" as const
             }
-              nativeToolSearch,
 
             const finished = handle.message.finish && !["tool-calls", "unknown"].includes(handle.message.finish)
             if (finished && !handle.message.error) {
@@ -3176,6 +3186,10 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             }
 
             if (result === "stop") {
+              if (handle.terminated) {
+                yield* slog.info("exiting loop after tool policy violation")
+                return "break" as const
+              }
               // Non-retryable turn error (F3, codex ext/goal extension.rs:397-421:
               // "prevent the auto-continuation loop from burning tokens on a turn
               // that will keep failing"): trip the goal breaker with the recorded

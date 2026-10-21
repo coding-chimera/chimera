@@ -370,6 +370,18 @@ export const Info = Schema.Struct({
 })
   .annotate({ identifier: "Config" })
   .pipe(
+      read_dedup: Schema.optional(
+        Schema.Struct({
+          gpt_6_astra: Schema.optional(Schema.Boolean).annotate({
+            description:
+              "Enable read dedup for GPT-6 Astra models. Omit to keep dedup enabled; set false to disable Astra dedup only.",
+          }),
+        }).annotate({ description: "Read deduplication behavior for models that support it." }),
+      ),
+      astra_shell_guard: Schema.optional(Schema.Boolean).annotate({
+        description:
+          "Enable the shell worker rollback guard for GPT-6 Astra models. Omit to keep the guard enabled; set false to roll it back.",
+      }),
     withStatics((s) => ({
       zod: (zod(s) as unknown as z.ZodObject<any>)
         .extend({ memories: ConfigMemory.Info.zod.optional() })

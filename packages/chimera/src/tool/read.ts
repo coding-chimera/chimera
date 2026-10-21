@@ -7,6 +7,8 @@ import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { LSP } from "@/lsp/lsp"
 import DESCRIPTION from "./read.txt"
 import { InstanceState } from "@/effect/instance-state"
+import { Config } from "@/config/config"
+import { ModelPolicy } from "@/provider/model-policy"
 import { DiscoveryNudge } from "@/chimera/discovery-nudge"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { Instruction } from "../session/instruction"
@@ -25,7 +27,9 @@ const SUPPORTED_IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "
 const READ_DEDUP_MESSAGES_EXTRA = "readDedupMessages"
 const HASHLINE_PREFIX = /^(\d+)#([A-Za-z0-9-]{2})\|/
 
-function isDedupCapable(modelID: string): boolean {
+function isDedupCapable(model: ModelPolicy.ModelPolicyRef | undefined, astraDedup: boolean): boolean {
+  if (ModelPolicy.isGpt6Astra(model)) return astraDedup
+  const modelID = ModelPolicy.modelID(model) ?? ""
   const gptMatch = /^gpt-(\d+)\.(\d+)/.exec(modelID)
   if (gptMatch) {
     const major = Number(gptMatch[1])
@@ -700,7 +704,12 @@ export const ReadTool = Tool.define(
         )
       }
 
-      const useDedup = isDedupCapable(String((ctx.extra?.model as any)?.id ?? ""))
+      const config = yield* Effect.serviceOption(Config.Service)
+      const experimental = Option.isSome(config) ? (yield* config.value.get()).experimental : undefined
+      const useDedup = isDedupCapable(
+        ctx.extra?.model as ModelPolicy.ModelPolicyRef | undefined,
+        ModelPolicy.astraReadDedupEnabled(experimental?.read_dedup),
+      )
       const skipped: ReadAnchorSource[] = []
       let window: ReadDedupWindow | undefined
       let visible: LineInfo[]

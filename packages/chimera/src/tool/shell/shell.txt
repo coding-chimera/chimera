@@ -8,6 +8,8 @@ Use `${tmp}` for temporary work outside the workspace. This directory has alread
 
 IMPORTANT: This tool is for terminal operations like git, npm, docker, etc. DO NOT use it for file operations (reading, writing, editing, searching, finding files) - use the specialized tools for this instead.
 
+Some sessions enforce an additional shell policy that blocks using shell commands to read or modify workspace files (for example `cat`, `sed -n`, `grep`, `sed -i`, `tee`, output redirection, or inline interpreter scripts). When that policy is active, use the dedicated Read/Edit/Write/Grep/Glob tools instead of retrying the command through the shell.
+
 ${commandSection}
 
 # Session process registry

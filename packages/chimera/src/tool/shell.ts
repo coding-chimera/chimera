@@ -21,6 +21,7 @@ import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner
 import { ShellPrompt, type Parameters } from "./shell/prompt"
 import { BashArity } from "@/permission/arity"
 import { Chimera } from "@/chimera"
+import { ShellPolicy } from "./shell/policy"
 import { ProcessRegistry } from "@/chimera/process-registry"
 import type { SubagentPromptOps } from "@/agent/subagent-dispatch"
 
@@ -116,6 +117,10 @@ type Chunk = {
 }
 
 export const log = Log.create({ service: "shell-tool" })
+
+function astraGuardEnabled(cfg: Config.Info) {
+  return cfg.experimental?.astra_shell_guard !== false
+}
 
 const resolveWasm = (asset: string) => {
   if (asset.startsWith("file://")) return fileURLToPath(asset)
@@ -729,6 +734,10 @@ export const ShellTool = Tool.define(
                   const tree = yield* Effect.acquireRelease(parse(params.command, ps), (tree) =>
                     Effect.sync(() => tree.delete()),
                   )
+                  if (ShellPolicy.isAstraModel(ctx.extra?.model) && astraGuardEnabled(cfg)) {
+                    const violation = ShellPolicy.classify({ root: tree.rootNode, cwd, instance: executeInstance })
+                    if (violation) throw violation
+                  }
                   const scan = yield* collect(tree.rootNode, cwd, ps, shell, executeInstance)
                   if (!containsPath(cwd, executeInstance)) scan.dirs.add(cwd)
                   yield* ask(ctx, scan)

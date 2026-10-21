@@ -3234,3 +3234,36 @@ for (const input of projectUpdateInputs) {
     await snapshot(`${prefix}-normalized.json`, JSON.stringify(normalized, null, 2) + "\n")
   })
 }
+
+describe("experimental Astra model policy config", () => {
+  test("parses Astra read dedup and shell guard switches", async () => {
+    await using tmp = await tmpdir({
+      config: {
+        experimental: {
+          read_dedup: { gpt_6_astra: false },
+          astra_shell_guard: false,
+        },
+      },
+    })
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const config = await load()
+        expect(config.experimental?.read_dedup?.gpt_6_astra).toBe(false)
+        expect(config.experimental?.astra_shell_guard).toBe(false)
+      },
+    })
+  })
+
+  test("leaves omitted Astra switches undefined so consumers default to enabled", async () => {
+    await using tmp = await tmpdir({ config: { model: "test/model" } })
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const config = await load()
+        expect(config.experimental?.read_dedup?.gpt_6_astra).toBeUndefined()
+        expect(config.experimental?.astra_shell_guard).toBeUndefined()
+      },
+    })
+  })
+})

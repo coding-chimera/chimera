@@ -1,7 +1,9 @@
-import { afterEach, describe, expect } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { Cause, Effect, Exit, Layer } from "effect"
 import path from "path"
 import { Agent } from "../../src/agent/agent"
+import { Config } from "@/config/config"
+import { ModelPolicy } from "@/provider/model-policy"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { LSP } from "@/lsp/lsp"
@@ -19,7 +21,18 @@ import { testEffect } from "../lib/effect"
 
 const FIXTURES_DIR = path.join(import.meta.dir, "fixtures")
 
+let experimentalConfig: Config.Info["experimental"] | undefined
+
+const configMock = Layer.mock(Config.Service)({
+  get: () => Effect.succeed({ experimental: experimentalConfig } as Config.Info),
+  update: (config) =>
+    Effect.sync(() => {
+      experimentalConfig = config.experimental
+    }),
+})
+
 afterEach(async () => {
+  experimentalConfig = undefined
   await disposeAllInstances()
 })
 
@@ -42,6 +55,7 @@ const it = testEffect(
     Instruction.defaultLayer,
     LSP.defaultLayer,
     Truncate.defaultLayer,
+    configMock,
   ),
 )
 
@@ -513,6 +527,74 @@ describe("tool.read truncation", () => {
       expect(second.metadata.readDedup?.windowID).toBe("msg_compaction:prt_compaction:0")
     }),
   )
+
+  it.instance("gates Astra read dedup on experimental.read_dedup.gpt_6_astra", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "astra-dedup.txt")
+      yield* put(filepath, "alpha\nbeta\ngamma")
+      const tool = yield* init()
+      const first = yield* tool.execute({ filePath: filepath }, ctx)
+      const next = {
+        ...ctx,
+        extra: {
+          model: { id: "gpt-6.0-astra" },
+          readDedupMessages: [
+            {
+              info: { id: MessageID.make("msg_astra_history") },
+              parts: [
+                {
+                  id: "prt_astra_history",
+                  sessionID: ctx.sessionID,
+                  messageID: ctx.messageID,
+                  type: "tool",
+                  callID: "call_astra_history",
+                  tool: "read",
+                  state: {
+                    status: "completed",
+                    input: { filePath: filepath },
+                    output: first.output,
+                    title: first.title,
+                    metadata: first.metadata,
+                    time: { start: 1, end: 2 },
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      }
+
+      const enabled = yield* tool.execute({ filePath: filepath }, next)
+      expect(enabled.metadata.readDedup?.skipped).toBe(3)
+      expect(enabled.output).toContain("Read dedup")
+
+      const config = yield* Config.Service
+      yield* config.update({ experimental: { read_dedup: { gpt_6_astra: false } } })
+
+      const disabled = yield* tool.execute({ filePath: filepath }, next)
+      expect(disabled.metadata.readDedup?.skipped).toBe(0)
+      expect(disabled.output).not.toContain("Read dedup")
+    }),
+  )
+
+  test("isGpt6Astra matches capability, api, and id fields with provider prefixes", () => {
+    expect(ModelPolicy.isGpt6Astra({ capability_model_id: "gpt-6.0-astra" })).toBe(true)
+    expect(ModelPolicy.isGpt6Astra({ api: { id: "openai/gpt-6-astra" } })).toBe(true)
+    expect(ModelPolicy.isGpt6Astra({ id: "openai:gpt-6.1-astra" })).toBe(true)
+    expect(ModelPolicy.isGpt6Astra({ capability_model_id: "gpt-6-sol", api: { id: "gpt-6-astra" } })).toBe(false)
+    expect(ModelPolicy.isGpt6Astra({ capability_model_id: "not-astra", id: "gpt-6-astra" })).toBe(false)
+    expect(ModelPolicy.isGpt6Astra({ id: "gpt-6.0-terra" })).toBe(false)
+    expect(ModelPolicy.isGpt6Astra({ id: "gpt-6.0-astral" })).toBe(false)
+    expect(ModelPolicy.isGpt6Astra({ id: "gpt-5.6-sol" })).toBe(false)
+  })
+
+  test("astraReadDedupEnabled defaults to enabled and honors explicit values", () => {
+    expect(ModelPolicy.astraReadDedupEnabled(undefined)).toBe(true)
+    expect(ModelPolicy.astraReadDedupEnabled({})).toBe(true)
+    expect(ModelPolicy.astraReadDedupEnabled({ gpt_6_astra: true })).toBe(true)
+    expect(ModelPolicy.astraReadDedupEnabled({ gpt_6_astra: false })).toBe(false)
+  })
 
   it.instance("truncates large file by bytes and sets truncated metadata", () =>
     Effect.gen(function* () {

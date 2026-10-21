@@ -373,6 +373,42 @@ const failedToolEnv = SessionProcessor.layer.pipe(
 )
 const failedToolIt = testEffect(failedToolEnv)
 
+// A fast-failing tool calls processor.failToolCall out-of-band from the tool's
+// execute fiber, so the tool-error can land before the processor consumes the
+// already-queued tool-call event. This layer pins that arrival order.
+const racedToolInput = { filePath: "/tmp/raced.ts", edits: [{ op: "replace", pos: "1#AA", lines: "next" }] }
+const racedToolLLM = Layer.succeed(
+  LLM.Service,
+  LLM.Service.of({
+    stream: () =>
+      Stream.fromIterable([
+        { type: "start" },
+        { type: "tool-input-start", id: "call_raced", toolName: "edit" },
+        { type: "tool-error", toolCallId: "call_raced", toolName: "edit", error: new Error("edit failed") },
+        { type: "tool-call", toolCallId: "call_raced", toolName: "edit", input: racedToolInput },
+        { type: "finish" },
+      ] as LLM.Event[]),
+  }),
+)
+const racedToolDeps = Layer.mergeAll(
+  Session.defaultLayer,
+  Snapshot.defaultLayer,
+  AgentSvc.defaultLayer,
+  Permission.defaultLayer,
+  Plugin.defaultLayer,
+  Config.defaultLayer,
+  racedToolLLM,
+  Provider.defaultLayer,
+  status,
+  SyncEvent.defaultLayer,
+).pipe(Layer.provideMerge(infra))
+const racedToolEnv = SessionProcessor.layer.pipe(
+  Layer.provide(summary),
+  Layer.provide(Image.defaultLayer),
+  Layer.provideMerge(racedToolDeps),
+)
+const racedToolIt = testEffect(racedToolEnv)
+
 const boot = Effect.fn("test.boot")(function* () {
   const processors = yield* SessionProcessor.Service
   const session = yield* Session.Service
@@ -781,6 +817,57 @@ failedToolIt.live("session.processor retains tool input when execution fails", (
         expect(toolPart?.state.status).toBe("error")
         if (toolPart?.state.status !== "error") throw new Error("failed tool part was not persisted")
         expect(toolPart.state.input).toEqual(failedToolInput)
+        expect(toolPart.state.error).toBe("edit failed")
+      }),
+    { git: true, config: providerCfg("http://localhost:1/v1") },
+  ),
+)
+
+// Regression test for the production `input: {}` race: a fast-failing tool writes
+// the failure out-of-band (prompt.ts executeGuarded -> processor.failToolCall)
+// before the session fiber consumes the tool-call event. Fixed in processor.ts:
+// failToolCall patches the pending part with the fiber's real input, and a
+// late tool-call backfills the placeholder input on an already-settled error part.
+racedToolIt.live("session.processor retains tool input when tool-error arrives before tool-call", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "edit")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+        })
+
+        const value = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies MessageV2.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "edit" }],
+          tools: {},
+        })
+        const toolPart = MessageV2.parts(msg.id).find(
+          (part): part is MessageV2.ToolPart => part.type === "tool" && part.callID === "call_raced",
+        )
+
+        expect(value).toBe("continue")
+        expect(toolPart?.state.status).toBe("error")
+        if (toolPart?.state.status !== "error") throw new Error("failed tool part was not persisted")
+        expect(toolPart.state.input).toEqual(racedToolInput)
         expect(toolPart.state.error).toBe("edit failed")
       }),
     { git: true, config: providerCfg("http://localhost:1/v1") },
