@@ -1688,7 +1688,8 @@ describe("serializeLength", () => {
 })
 
 describe("reasoningPartMetadata", () => {
-  const modelFor = (providerID: string) => ({ providerID }) as Provider.Model
+  const modelFor = (providerID: string, backend_semantics?: Provider.Model["backend_semantics"]) =>
+    ({ providerID, backend_semantics }) as Provider.Model
 
   test("classifies tagged openai and copilot summaries as summary", () => {
     expect(reasoningPartMetadata({ openai: { itemId: "rs-1", reasoningSummary: true } }, modelFor("relay"))).toEqual({
@@ -1710,6 +1711,13 @@ describe("reasoningPartMetadata", () => {
 
   test("treats genuine OpenAI itemId as a summary", () => {
     expect(reasoningPartMetadata({ openai: { itemId: "rs-1" } }, modelFor("openai"))).toEqual({
+      openai: { itemId: "rs-1" },
+      chimera: { reasoning: "summary" },
+    })
+  })
+
+  test("treats codex-semantics models on a custom provider as summary", () => {
+    expect(reasoningPartMetadata({ openai: { itemId: "rs-1" } }, modelFor("custom", "codex"))).toEqual({
       openai: { itemId: "rs-1" },
       chimera: { reasoning: "summary" },
     })

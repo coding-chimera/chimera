@@ -153,13 +153,15 @@ type ReasoningKind = "summary" | "raw"
 // Curated reasoning summaries (OpenAI Responses summary_text, fork codex/copilot parsers) are
 // distinguishable from raw chain-of-thought only by the provider metadata they carry: the fork
 // parsers tag summary events explicitly, while genuine OpenAI reasoning always arrives as a
-// summary. Relay raw reasoning_text is string-renamed to summary frames upstream but keeps
-// providerID !== "openai", so itemId alone must not be trusted there.
+// summary. Responses-wire passthrough renames raw reasoning_text to summary frames upstream,
+// so itemId alone is trusted only where the backend was asked for summaries: the openai
+// provider, or codex-semantics models which get reasoningSummary=auto (ProviderTransform.options).
 function reasoningKind(providerMetadata: Record<string, unknown> | undefined, model: Provider.Model): ReasoningKind {
   const openai = isRecord(providerMetadata?.openai) ? providerMetadata.openai : undefined
   const copilot = isRecord(providerMetadata?.copilot) ? providerMetadata.copilot : undefined
   if (openai?.reasoningSummary === true || copilot?.reasoningSummary === true) return "summary"
-  if (openai?.itemId !== undefined && model.providerID === "openai") return "summary"
+  const summaryBackend = model.providerID === "openai" || model.backend_semantics === "codex"
+  if (openai?.itemId !== undefined && summaryBackend) return "summary"
   return "raw"
 }
 
