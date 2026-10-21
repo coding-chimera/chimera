@@ -370,11 +370,6 @@ export const Info = Schema.Struct({
         description:
           "Route eligible providers through the native @coding-chimera/llm route runtime instead of the AI SDK HTTP transport. Currently piloted for DeepSeek on the openai-compatible chat wire with API-key auth only; every other provider keeps the AI SDK path. When off, the default path is byte-identical and the llm package runtime is never constructed.",
       }),
-    }),
-  ),
-})
-  .annotate({ identifier: "Config" })
-  .pipe(
       read_dedup: Schema.optional(
         Schema.Struct({
           gpt_6_astra: Schema.optional(Schema.Boolean).annotate({
@@ -387,6 +382,11 @@ export const Info = Schema.Struct({
         description:
           "Enable the shell worker rollback guard for GPT-6 Astra models. Omit to keep the guard enabled; set false to roll it back.",
       }),
+    }),
+  ),
+})
+  .annotate({ identifier: "Config" })
+  .pipe(
     withStatics((s) => ({
       zod: (zod(s) as unknown as z.ZodObject<any>)
         .extend({ memories: ConfigMemory.Info.zod.optional() })

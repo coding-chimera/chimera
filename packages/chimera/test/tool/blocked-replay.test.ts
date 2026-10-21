@@ -7,6 +7,8 @@ import { EditTool } from "../../src/tool/edit"
 import { AstEditTool } from "../../src/tool/ast_edit"
 import { Tool } from "@/tool/tool"
 import { LSP } from "@/lsp/lsp"
+import { Ledger } from "@/lsp/ledger"
+import { Config } from "@/config/config"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { Bus } from "../../src/bus"
 import { Format } from "../../src/format"
@@ -38,6 +40,8 @@ afterEach(async () => {
 const it = testEffect(
   Layer.mergeAll(
     LSP.defaultLayer,
+    Ledger.defaultLayer,
+    Config.defaultLayer,
     AppFileSystem.defaultLayer,
     Bus.layer,
     Format.defaultLayer,

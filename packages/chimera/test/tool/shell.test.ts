@@ -20,6 +20,7 @@ import { Plugin } from "../../src/plugin"
 import { readOracleResults } from "../../src/chimera/store"
 import { getCodeGraphDir } from "../../src/graph"
 import { Parser } from "web-tree-sitter"
+import { ShellPolicy } from "../../src/tool/shell/policy"
 
 const runtime = ManagedRuntime.make(
   Layer.mergeAll(
@@ -1410,6 +1411,122 @@ describe("tool.shell truncation", () => {
         expect(lines.length).toBe(lineCount)
         expect(lines[0]).toBe("1")
         expect(lines[lineCount - 1]).toBe(String(lineCount))
+      },
+    })
+  })
+})
+
+describe("tool.shell astra guard", () => {
+  const astra = (requests: Array<Omit<Permission.Request, "id" | "sessionID" | "tool">>) => ({
+    ...capture(requests),
+    extra: { model: { api: { id: "gpt-6-astra" } } },
+  })
+
+  test("blocks workspace reads before permission and spawn", async () => {
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(path.join(dir, "secret.txt"), "secret")
+      },
+    })
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const bash = await initShell()
+        const requests: Array<Omit<Permission.Request, "id" | "sessionID" | "tool">> = []
+        await expect(
+          Effect.runPromise(
+            bash.execute({ command: "cat secret.txt", description: "Read secret" }, astra(requests)),
+          ),
+        ).rejects.toThrow("Astra shell guard")
+        expect(requests.length).toBe(0)
+      },
+    })
+  })
+
+  test("blocks workspace mutations before spawn", async () => {
+    await using tmp = await tmpdir()
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const bash = await initShell()
+        const requests: Array<Omit<Permission.Request, "id" | "sessionID" | "tool">> = []
+        await expect(
+          Effect.runPromise(
+            bash.execute({ command: "touch marker.txt", description: "Touch marker" }, astra(requests)),
+          ),
+        ).rejects.toThrow("Astra shell guard")
+        expect(requests.length).toBe(0)
+        expect(await Bun.file(path.join(tmp.path, "marker.txt")).exists()).toBe(false)
+      },
+    })
+  })
+
+  test("blocks inline interpreter scripts before spawn", async () => {
+    await using tmp = await tmpdir()
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const bash = await initShell()
+        const requests: Array<Omit<Permission.Request, "id" | "sessionID" | "tool">> = []
+        await expect(
+          Effect.runPromise(
+            bash.execute({ command: "python3 -c 'print(1)'", description: "Inline script" }, astra(requests)),
+          ),
+        ).rejects.toThrow("Astra shell guard")
+        expect(requests.length).toBe(0)
+      },
+    })
+  })
+
+  test("allows validation commands", async () => {
+    await using tmp = await tmpdir()
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const bash = await initShell()
+        const requests: Array<Omit<Permission.Request, "id" | "sessionID" | "tool">> = []
+        const result = await Effect.runPromise(
+          bash.execute({ command: "echo astra-allowed", description: "Echo allowed" }, astra(requests)),
+        )
+        expect(result.output).toContain("astra-allowed")
+        expect(requests.length).toBe(1)
+      },
+    })
+  })
+
+  test("leaves non-Astra shell behavior unchanged", async () => {
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(path.join(dir, "secret.txt"), "secret")
+      },
+    })
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const bash = await initShell()
+        const result = await Effect.runPromise(
+          bash.execute({ command: "cat secret.txt", description: "Read secret" }, ctx),
+        )
+        expect(result.output).toContain("secret")
+      },
+    })
+  })
+
+  test("can be disabled by config", async () => {
+    await using tmp = await tmpdir({
+      config: { experimental: { astra_shell_guard: false } },
+      init: async (dir) => {
+        await Bun.write(path.join(dir, "secret.txt"), "secret")
+      },
+    })
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const bash = await initShell()
+        const result = await Effect.runPromise(
+          bash.execute({ command: "cat secret.txt", description: "Read secret" }, astra([])),
+        )
+        expect(result.output).toContain("secret")
       },
     })
   })
