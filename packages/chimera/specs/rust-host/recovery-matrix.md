@@ -1,21 +1,23 @@
 # Rust Host H1：Durable State / Ownership / Recovery Matrix
 
-状态：**H1 设计草案（proposed H1 boundary），未实现**
+状态：**H1 部分实现（partially implemented）**。§8 的六张 host 控制表、`HostStore`、supervisor/worker 生命周期、frame/handshake 与 host bin 已落地；`commit.confirm`、host 重启 sweep、command replay、job/lease 扩列与 process adoption 仍未实现。三处并行接线（drain deadline 单一事实源、心跳发送 API、durable event commit-before-ack）见 `ipc-v0.md` 的 **Status: landing**。
 
 制定：2026-10-21
 
 服务对象：`RUST_HOST_MIGRATION_PLAN.md` H1（Rust supervisor + front door）
 适用范围：`packages/chimera` 的 session / turn / background job / permission / question / PTY / process registry / event-SSE 状态。
 
-> 本文只描述目标语义、表候选、迁移顺序和验收目标。它不修改运行时代码，不产生 migration，不声称任何表、状态或恢复行为已经存在。文中所有“现状”均以当前 checkout 的源码为证据；“建议/候选/待定”均需 H1 评审后才能进入实现。
+> 本文描述目标语义、表候选、迁移顺序和验收目标，并标注每节的实现状态。已落地部分以当前 checkout 的实现为证据（`chimera-host/src/`、`packages/chimera/src/host/`、`packages/chimera/src/storage/tables/host.sql.ts`、`migration/20261022022937_host_control_plane/`）；未落地部分保留“建议/候选/待定”措辞。
 >
-> **H1 写者边界（本文的核心约束）**：H1 期间 session/message/part/session_message 的实际写者仍是 Bun worker；H1 host 只写 host-owned control tables（`host_worker`、`host_state`、`session_turn_checkpoint`、`pending_request`、`request_idempotency`、`host_event`，以及 IPC 侧 `host_command_replay`）。H1 **不**声称能在同一 SQLite 事务内原子提交 checkpoint + message/part + event；该原子性要到 H2 把 session 写者也切到 host 后才成立。本文因此把 commit-before-ack 拆成 **host-control commit-before-ack** 与 **worker session commit confirmation/补偿协议** 两段（§5.1）。
+> **H1 写者边界（本文的核心约束）**：H1 期间 session/message/part/session_message 的实际写者仍是 Bun worker；H1 host 只写 host-owned control tables（`host_worker`、`host_state`、`session_turn_checkpoint`、`pending_request`、`request_idempotency`、`host_event`）。`host_command_replay` 仍是逻辑定义，尚未建表。H1 **不**声称能在同一 SQLite 事务内原子提交 checkpoint + message/part + event；该原子性要到 H2 把 session 写者也切到 host 后才成立。本文因此把 commit-before-ack 拆成 **host-control commit-before-ack** 与 **worker session commit confirmation/补偿协议** 两段（§5.1）。
 >
 > **Process registry 边界**：H1 host 对 `chimera_process_registry` 只读/代理，不做 adoption、不做写回；`orphaned` 状态不是 H1 必做项。H2 才处理 host ownership、CAS、signal-0 sweep 竞态（§3、§6、§8.9）。
 
 ---
 
 ## 1. 结论摘要
+
+**Status (2026-10-22): partially implemented** — 第 1、3、4、6、9 条已由实现约束落地（单写者分层、generation、三层序号、表级写权限、process registry 只读）；第 2 条 worker 可丢弃执行态仍成立；第 5 条幂等入口与第 7/8 条恢复裁决尚未接线。
 
 H1 的核心不是“把 HTTP 搬到 Rust”，而是先建立一条可验证的所有权边界：
 
@@ -35,11 +37,13 @@ H1 的核心不是“把 HTTP 搬到 Rust”，而是先建立一条可验证的
 
 ### 2.1 存储拓扑
 
+**Status (2026-10-22): implemented（拓扑；迁移数量已更新）** — 主库现有 30 个 migration 目录；新增的 `20261022022937_host_control_plane` 创建六张 host 控制表。
+
 当前存在两个独立的 SQLite 事实源，H1 不能把它们当成一个库：
 
 | 存储 | 路径/打开方式 | 迁移机制 | 当前承载 |
 |---|---|---|---|
-| 主应用库 | `Global.Path.data/chimera.db`（channel 变体见 `getChannelPath()`） | Drizzle Kit 目录 `packages/chimera/migration/<timestamp>_<slug>/migration.sql`，共 29 个目录；`Database.applyMigrations` 对已知 lineage repair 做第二遍 | session/message/part、permission ruleset、background_job、event、turn lease、goal/work_brief/tool_reveal 等 |
+| 主应用库 | `Global.Path.data/chimera.db`（channel 变体见 `getChannelPath()`） | Drizzle Kit 目录 `packages/chimera/migration/<timestamp>_<slug>/migration.sql`，共 30 个目录（含 `20261022022937_host_control_plane`）；`Database.applyMigrations` 对已知 lineage repair 做第二遍 | session/message/part、permission ruleset、background_job、event、turn lease、goal/work_brief/tool_reveal，以及 host 控制表 |
 | 项目级 Chimera store | `getDatabasePath(projectRoot)`（项目内数据根） | `src/chimera/store.ts` 内联 `PRAGMA user_version` 迁移，当前版本 8 | edit-intent waiter、`chimera_process_registry`（bash/browser 子进程） |
 
 主库打开参数（`src/storage/db.ts`）：`journal_mode=WAL`、`synchronous=NORMAL`、`busy_timeout=5000`、`cache_size=-16000`、`foreign_keys=ON`、`journal_size_limit=64MB`，并有 5 分钟一次的 `wal_checkpoint(PASSIVE)`。这意味着：
@@ -49,6 +53,8 @@ H1 的核心不是“把 HTTP 搬到 Rust”，而是先建立一条可验证的
 - WAL 不是事件日志，不能替代 durable event table。
 
 ### 2.2 现有表与字段（事实）
+
+**Status (2026-10-22): partially updated** — 下表仍是 session/job/permission 侧的现状；host 侧新增表见 §8（已落地）。`background_job`/`session_turn_lease` 的 §8.7 扩列尚未添加。
 
 | 表 | 关键字段 | 现状语义 |
 |---|---|---|
@@ -65,6 +71,8 @@ H1 的核心不是“把 HTTP 搬到 Rust”，而是先建立一条可验证的
 
 ### 2.3 现有内存态（事实）
 
+**Status (2026-10-22): unchanged** — 这些内存结构仍由 Bun 进程持有；host 侧新增 `WorkerRegistry`/`HostRuntime` 内存态（§4.2）。
+
 | 内存结构 | 位置 | 内容 | 进程重启后 |
 |---|---|---|---|
 | `runners: Map<SessionID, Runner>` | `src/session/run-state.ts` | 本进程 turn 执行器、busy 标志、中断回调 | 全部丢失；DB 中只留 lease 与已提交消息 |
@@ -78,6 +86,8 @@ H1 的核心不是“把 HTTP 搬到 Rust”，而是先建立一条可验证的
 
 ### 2.4 现有常量（事实）
 
+**Status (2026-10-22): unchanged** — 下列常量未修改；host 侧新增常量见 `chimera-host/src/frame.rs`、`handshake.rs`、`supervisor.rs`、`runtime.rs`。
+
 - turn lease：`LEASE_TTL_MS = 30min`，`RENEW_INTERVAL_MS = 10min`；`acquire` 用单语句 upsert + CAS，`release` 按 `owner_boot_id` 守卫。
 - background job：live settled 上限 200（`DEFAULT_SETTLED_LIVE_MAX`），durable 每 instance 上限 500（`DURABLE_ROWS_MAX`），prune 按 `updated_at` 最旧优先。
 - SSE：队列 1024、delta 合并 40ms、heartbeat 10s、start watchdog 60s、默认最大连接 64（`OPENCODE_GLOBAL_SSE_MAX_CONNECTIONS` 可覆盖）。
@@ -87,12 +97,16 @@ H1 的核心不是“把 HTTP 搬到 Rust”，而是先建立一条可验证的
 
 ### 2.5 现状中容易被误读的两点（事实）
 
+**Status (2026-10-22): unchanged** — 两点仍成立；H1 未改变 job 配额 scope 或 `readActiveProcesses` 的清理副作用。
+
 - **job 的 scope 与可见性不是一回事。** 配额/持久化按 `instance_directory`（`InstanceState` 以 directory 为 key），而可见性与 cancel 权利按类型化 `Info.ownerSessionId`：prompt 的 background tasks 段只列 `ownerSessionId === input.sessionID` 的 job，`task_cancel` 也按 owner 拒绝跨 session 取消。一个 session 可能被自己看不见、也取消不了的 job 挤占配额，这是已知未解陷阱，H1 不得把“registry 可见”当成“session 可见”。
 - **`readActiveProcesses` 会写库。** `src/chimera/store.ts:2313-2346` 在读取前调用 `expireStaleProcesses`，并对 `isPIDAlive(pid) === false` 的 running 行执行 `UPDATE ... SET status='expired'`。因此它是“带清理副作用的读取”；H1 的只读/代理声明必须带这个限定，不能把它当纯探针。
 
 ---
 
 ## 3. 状态所有权矩阵
+
+**Status (2026-10-22): partially implemented** — S3/S6/S8/S9/S13 的 host 表与写 API 已存在；S1/S4/S5/S7/S11/S12 仍由 Bun 写；S10（host PTY ticket）尚未实现。
 
 “H1 写者”是 H1 的硬边界；“H2 目标 owner”是迁移终点。H1 期间 session 执行仍留在 Bun worker，因此表级写权限必须显式划分。
 
@@ -126,9 +140,13 @@ H1 的核心不是“把 HTTP 搬到 Rust”，而是先建立一条可验证的
 
 ## 4. 状态枚举
 
+**Status (2026-10-22): partially implemented** — §4.2 worker 生命周期已在 `supervisor.rs` 实现；§4.8 event 分类已在 `HostEvent` 实现；turn/job/pending 状态机与 PTY/process 状态仍是 schema/文档契约。
+
 以下枚举是 H1 契约候选。实现时必须一次性写入 schema/常量/文档，禁止不同层各自发明同义值。
 
 ### 4.1 Host 生命周期
+
+**Status (2026-10-22): not implemented (proposed)** — host bin 目前是单线程循环，没有显式的 `starting→ready→draining→stopping→stopped` 状态机。
 
 ```text
 starting → ready → draining → stopping → stopped
@@ -141,6 +159,8 @@ starting → ready → draining → stopping → stopped
 
 ### 4.2 Worker 生命周期
 
+**Status (2026-10-22): implemented** — `WorkerStatus` 九态与 `ExitReason` 六值已在 `chimera-host/src/supervisor.rs` 实现，含终态不可复活与非终态唯一约束。
+
 ```text
 spawned → handshaking → ready → busy → draining → exited
                     ↘ crashed / killed / unresponsive
@@ -151,6 +171,8 @@ spawned → handshaking → ready → busy → draining → exited
 - 一个 `(workspace_id, generation)` 只能有一个非终态 worker。
 
 ### 4.3 Turn 状态
+
+**Status (2026-10-22): not implemented (proposed)** — `session_turn_checkpoint.status` 接受这些字符串，但没有状态机/迁移校验；`commit_state` 列已存在但无写入流程。
 
 ```text
 accepted → running → waiting_permission | waiting_question | waiting_tool
@@ -167,6 +189,8 @@ accepted → running → waiting_permission | waiting_question | waiting_tool
 
 ### 4.4 Job 状态
 
+**Status (2026-10-22): not implemented (proposed)** — `background_job` 未新增 `recovery_state` 列；现有 4 状态保持兼容。
+
 现有 `Status = "running" | "completed" | "error" | "cancelled"` 保持兼容，不重命名。H1 增加独立恢复维度，避免破坏 SDK/UI：
 
 ```text
@@ -181,9 +205,13 @@ recovery_state = none | interrupted | recoverable | recovered | abandoned
 
 ### 4.5 Delivery 状态
 
+**Status (2026-10-22): unchanged** — 沿用 Bun 现有 `pending|delivered`；H1 未新增 IPC 侧 delivery 状态。
+
 沿用现有 `delivery = "pending" | "delivered"`。H1 只增加 generation 绑定：`markDelivered(id, generation)` 的旧 generation 调用必须是 no-op。
 
 ### 4.6 Pending request 状态
+
+**Status (2026-10-22): partially implemented** — `pending_request` 表与 generation fencing 已实现；`request_key` 生成规则与 `orphaned/expired` 迁移未实现。
 
 ```text
 pending → answered | rejected | expired | orphaned
@@ -196,6 +224,8 @@ pending → answered | rejected | expired | orphaned
 
 ### 4.7 PTY / 进程状态
 
+**Status (2026-10-22): unchanged** — PTY 与 process registry 仍由 Bun 持有；H1 未新增 `orphaned`。
+
 PTY session（内存态）沿用 `running|exited`。
 
 Process registry 现有 `running|exited|killed|expired|released`。
@@ -205,6 +235,8 @@ Process registry 现有 `running|exited|killed|expired|released`。
 - H1 不得把 `readActiveProcesses` 的返回当成纯只读快照：它可能已经把死 pid 行改成 `expired`。
 
 ### 4.8 Event 类别
+
+**Status (2026-10-22): implemented（分类）/ partially implemented（落库）** — `HostEvent::Durable|Transient` 已实现；`host_event` 只由调用方写 durable，control 不落表。
 
 ```text
 durable     — 必须落 host_event，带全局 seq，可 replay
@@ -220,11 +252,17 @@ control     — connected/heartbeat/gap/stream_reset，不落表、不分配 dur
 
 ## 5. 不变量与规则
 
+**Status (2026-10-22): partially implemented** — §5.3 的 generation/sequence 与 §5.4 的表级写者已落地；§5.1.2 的 `commit.confirm`、§5.5 的 crash sweep 与 §5.2 的入口幂等尚未接线。
+
 ### 5.1 提交顺序
+
+**Status (2026-10-22): partially implemented** — host-control 表的写 API 已存在，但“落库后再确认”的上层编排仍在 landing（见 `ipc-v0.md` §8.2）。
 
 H1 的 commit-before-ack 分两段，不能合并成“一个事务里同时写 checkpoint + message/part + event”。
 
 #### 5.1.1 Host-control commit-before-ack（H1 成立）
+
+**Status: landing** — `HostStore` 已提供 checkpoint/pending/event/idempotency 的写方法；durable event 的“append → ack → SSE”串联与 turn/job 入口的 commit-before-ack 仍在接线。
 
 | 动作 | 必须先落库（host-owned） | 之后才能 |
 |---|---|---|
@@ -237,6 +275,8 @@ H1 的 commit-before-ack 分两段，不能合并成“一个事务里同时写 
 | 取消 | checkpoint 的 `cancel_requested_at`（host-owned）；job 侧的同类字段 H1 由 Bun 写 | 发 cancel 帧 |
 
 #### 5.1.2 Worker session commit confirmation（H1 的补偿协议）
+
+**Status (2026-10-22): not implemented (proposed)** — 没有 `commit.confirm` 帧处理，也没有 `part_watermark` 列（schema 只有 `last_message_id`/`last_event_seq`）；`commit_state` 列已建但无写入流程。
 
 message/part 由 Bun worker 写，host 不能在同一事务里替它提交。协议如下：
 
@@ -262,6 +302,8 @@ host   ── 事务：锁定 checkpoint；校验 generation；
 
 #### 5.1.3 迟到 worker 的 session 写入（H1 残余风险）
 
+**Status (2026-10-22): not implemented (proposed)** — 没有 `turn_id` 隔离查询或旧 generation `commit.confirm` 拒绝路径。
+
 H1 无法在 SQLite 层阻止旧 worker 继续 append session 行。处理规则：
 
 - 迟到行按 `turn_id` 隔离：它们保留为历史数据，但不得被当作当前 turn 的提交，也不得触发当前 turn 的 `completed`。
@@ -269,6 +311,8 @@ H1 无法在 SQLite 层阻止旧 worker 继续 append session 行。处理规则
 - 迟到行是否需要在 UI 中隐藏，列为 H1 待决项（§14），不得默认假设“旧 worker 写不进去”。
 
 ### 5.2 幂等键
+
+**Status (2026-10-22): partially implemented** — `request_idempotency` 表与 `record_idempotency`/`lookup_idempotency` 已实现；表中入口（prompt/job/permission/question/cancel）尚未接入。
 
 | 入口 | 幂等键 | 作用域 | 重复请求行为 |
 |---|---|---|---|
@@ -290,7 +334,11 @@ H1 无法在 SQLite 层阻止旧 worker 继续 append session 行。处理规则
 
 ### 5.3 Generation 与 Sequence
 
+**Status (2026-10-22): partially implemented** — 列与分配逻辑已存在；跨层闸门未全部接线。
+
 #### 5.3.1 四个 generation 层级（互不替代）
+
+**Status (2026-10-22): partially implemented** — `host_worker.generation`/`host_state.host_generation` 已由 supervisor/store 维护；`host_generation` 回退 fail-closed 与 turn/job 代次闸门未实现。
 
 | 层级 | 分配者 | 存储 | 作用域 | 递增时机 | 不匹配行为 |
 |---|---|---|---|---|---|
@@ -310,6 +358,8 @@ H1 无法在 SQLite 层阻止旧 worker 继续 append session 行。处理规则
 
 #### 5.3.2 三层 sequence（互不推算）
 
+**Status (2026-10-22): partially implemented** — `host_event.seq` 在 `append_event` 事务内用 `MAX(seq)+1` 取号，`aggregate_seq` 唯一索引已建；`transport_sequence` 已实现；`command_sequence` 未实现。
+
 | 序号 | 分配者 | 存储 | 作用域 | 单调性 | 用途 |
 |---|---|---|---|---|---|
 | `host_event.seq`（全局 durable） | host | `host_event.seq` | 数据库 | 严格 +1 | SSE `Last-Event-ID` 游标 |
@@ -326,6 +376,8 @@ H1 无法在 SQLite 层阻止旧 worker 继续 append session 行。处理规则
 6. `Last-Event-ID` 指向的 seq 小于保留窗口起点（`retention_floor_seq`）时，host 返回 `stream_reset` + 当前快照游标，而不是假装连续。
 
 ### 5.4 单写者与事务边界
+
+**Status (2026-10-22): partially implemented** — 六张 host 表由 `HostStore` 独占写；这是代码层约定，SQLite 层没有写者校验。`host_command_replay` 未建表。
 
 | 表 | H1 写者 | 读者 | H2 目标 | 备注 |
 |---|---|---|---|---|
@@ -349,6 +401,8 @@ H1 无法在 SQLite 层阻止旧 worker 继续 append session 行。处理规则
 
 ### 5.5 终态优先级与 crash sweep
 
+**Status (2026-10-22): not implemented (proposed)** — 没有 crash sweep 实现；supervisor 只做 worker 状态迁移，不改 turn/job 行。
+
 终态迁移必须在一个 host 事务内完成，并按以下优先级裁决：
 
 1. **已提交终态不可覆盖。** `completed` / `cancelled` / `failed` / `interrupted` 一旦落库，crash sweep、重复确认、迟到帧都不得改写。
@@ -360,6 +414,8 @@ H1 无法在 SQLite 层阻止旧 worker 继续 append session 行。处理规则
 
 ### 5.6 Process registry 的 H1 读取语义
 
+**Status (2026-10-22): unchanged** — host 尚未访问 process registry；H1 边界保持只读/代理。
+
 - H1 host 只能以“代理读取”方式访问项目库：可以调用 Bun 的 registry API 或只读查询，但不得执行 adoption、不得更新 `host_boot_id`、不得把 `orphaned` 写回。
 - `readActiveProcesses` 会执行 `expireStaleProcesses` 与死 pid 翻转，因此：
   - 它是一次**带清理副作用的读取**；
@@ -370,6 +426,8 @@ H1 无法在 SQLite 层阻止旧 worker 继续 append session 行。处理规则
 ---
 
 ## 6. 恢复行为矩阵
+
+**Status (2026-10-22): partially implemented** — worker crash 的 supervisor 路径已实现；host 重启 sweep、checkpoint/job/pending 收敛、SSE replay 尚未实现。
 
 图例：`H` = host 重启；`W` = worker crash；`G` = 旧 generation 写入；`C` = 取消；`R` = 重试；`S` = SSE 重连/gap。
 
@@ -392,6 +450,8 @@ H1 无法在 SQLite 层阻止旧 worker 继续 append session 行。处理规则
 | S13 worker registry | 启动时扫描非终态行 → `crashed`/`unresponsive`；不自动复用 generation | 由 host 检测 heartbeat 超时 → `crashed`；写 exit_reason | 旧 generation 的行只读；新 spawn 分配新 generation | drain → 超时 kill → `killed` | 新 generation spawn；旧 generation 永不复用 | worker 状态事件可 transient；诊断查询走 DB |
 
 ### 6.1 关键行为说明
+
+**Status (2026-10-22): not implemented (proposed)** — 以下 host 重启/worker crash 的完整收敛流程尚无实现；当前只有 `WorkerRegistry` 的 crash/backoff 与 `unresponsive` 标记。
 
 **Host 重启**
 
@@ -456,6 +516,8 @@ H1 无法在 SQLite 层阻止旧 worker 继续 append session 行。处理规则
 
 ## 7. 当前缺口（按 H1 阻塞度排序）
 
+**Status (2026-10-22): partially closed** — G1/G5/G6/G7/G10/G12/G15 的表或组件已落地，但入口接线/恢复流程多数未完成；G2/G4/G8/G14 未变化；G17 已由 §8.8 明确。
+
 | ID | 缺口 | 证据 | 影响 | H1 处理 |
 |---|---|---|---|---|
 | G1 | 无 turn intent/checkpoint | 只有 `session/message/part` 与 lease；无 turn 表 | 崩溃后无法判断“这个 turn 想做什么”，只能猜 | 新增 `session_turn_checkpoint` |
@@ -476,13 +538,19 @@ H1 无法在 SQLite 层阻止旧 worker 继续 append session 行。处理规则
 | G16 | `readActiveProcesses` 带写副作用 | `store.ts:2313-2346` 调 `expireStaleProcesses` 并翻转死 pid | 被误当纯只读探针 | H1 文档/诊断标注“带清理副作用的读取” |
 | G17 | `host_command_replay` 归属未在恢复矩阵中说明 | IPC 文档定义 command 重放窗口 | 容易和 `host_event` 混为一谈 | §8.8 明确二者边界 |
 
+**逐项状态（2026-10-22）**：G1 implemented（表+store）；G2 not implemented；G3 partial（host 无派生视图）；G4 not implemented（未扩列）；G5/G6 implemented（`pending_request` 表+API，状态机未接）；G7 partial（`host_event` 表+seq，SSE replay 未接）；G8 not implemented；G9 unchanged（H1 不 adopt）；G10 partial（store API，入口未接）；G11 unchanged；G12 implemented（supervisor/store，bin 重启编排未接）；G13 unchanged（host log 不依赖实验 flag）；G14 unchanged；G15 partial（schema/常量，`commit.confirm` 未实现）；G16 unchanged（文档已标注）；G17 documented。
+
 ---
 
 ## 8. H1 新增表候选
 
-以下均为**候选 schema**，字段名遵循仓库 snake_case + `<table>_<column>_idx` 约定；未生成 migration，未应用。所有新表默认放在主库（与 checkpoint 同库），以便 host-owned 状态在同一事务内提交。`background_job` 与 `session/message/part` 仍在主库但 H1 由 Bun 写。PTY 进程 registry 保留在项目库。
+**Status (2026-10-22): implemented（8.1–8.6）/ not implemented（8.7–8.9）** — 六表已由 `migration/20261022022937_host_control_plane` 创建，`HostStore` 提供读写；§8.7 扩列与 §8.8 replay 表未落地。
+
+以下 schema 已不再是纯候选：§8.1–§8.6 已由 `packages/chimera/src/storage/tables/host.sql.ts` 与 `migration/20261022022937_host_control_plane/migration.sql` 落地，字段名遵循仓库 snake_case + `<table>_<column>_idx` 约定。所有表在主库（与 checkpoint 同库）。`background_job` 与 `session/message/part` 仍在主库但 H1 由 Bun 写。PTY 进程 registry 保留在项目库。
 
 ### 8.1 `host_worker`
+
+**Status (2026-10-22): implemented** — 表、索引与 `HostStore::upsert_worker`/`update_worker_status` 已落地；实际 migration 另含 `time_created`/`time_updated` 列（本代码块未列）。
 
 ```text
 host_worker
@@ -514,6 +582,8 @@ INDEX host_worker_workspace_status_idx(workspace_id, status)
 
 ### 8.2 `host_state`
 
+**Status (2026-10-22): implemented（表+读写）** — `read_host_state`/`write_host_state` 已实现；`host_generation` 回退校验尚未实现。
+
 ```text
 host_state
   scope                  TEXT PRIMARY KEY        -- 'global' 或 workspace_id
@@ -528,6 +598,8 @@ host_state
 用途：generation/seq 计数器与 schema preflight。`next_event_seq` 也可由 `host_event` 的 `MAX(seq)+1` 在事务内取号；若采用计数器，必须与 event 插入同事务更新。`host_generation` 只增不减，启动时校验不回退。
 
 ### 8.3 `session_turn_checkpoint`
+
+**Status (2026-10-22): implemented（表+CRUD）** — `insert_checkpoint`/`update_checkpoint` 已实现；状态机与 `commit_state` 推进未实现。
 
 ```text
 session_turn_checkpoint
@@ -565,6 +637,8 @@ CREATE UNIQUE INDEX session_turn_checkpoint_active_idx
 
 ### 8.4 `pending_request`
 
+**Status (2026-10-22): implemented（表+generation fencing）** — `insert_pending_request`/`resolve_pending_request` 已实现；`request_key` 的 `ask_seq` 生成未实现。
+
 ```text
 pending_request
   request_id           TEXT PRIMARY KEY          -- 生命周期内稳定，重新发布不换
@@ -599,6 +673,8 @@ INDEX pending_request_status_expires_idx(status, expires_at)
 
 ### 8.5 `host_event`
 
+**Status: landing** — 表、`append_event`（事务内 `MAX(seq)+1`、`dedupe_key` 幂等）与 `send_durable_ack` 已落地；runtime/bin 尚未把 durable event 的 commit → ack → SSE 串成单一流程，也没有 `durability` 列。
+
 ```text
 host_event
   seq                  INTEGER PRIMARY KEY       -- 全局 durable 游标，SSE Last-Event-ID
@@ -629,6 +705,8 @@ INDEX host_event_created_idx(created_at)
 
 ### 8.6 `request_idempotency`
 
+**Status (2026-10-22): implemented（表+API）** — `record_idempotency`/`lookup_idempotency` 已实现，含同 key 不同 hash 冲突；入口接入与 TTL 清理未实现。
+
 ```text
 request_idempotency
   scope                TEXT NOT NULL             -- workspace/session/instance
@@ -650,6 +728,8 @@ INDEX request_idempotency_expires_idx(expires_at)
 
 ### 8.7 现有表的扩列（expand 阶段，不重建）
 
+**Status (2026-10-22): not implemented (proposed)** — `background_job` 与 `session_turn_lease` 没有新增这些列；host 也不读这些字段。
+
 | 表 | 新增列 | H1 写者 | 目的 |
 |---|---|---|---|
 | `background_job` | `owner_session_id TEXT`、`owner_worker_id TEXT`、`worker_generation INTEGER`、`request_id TEXT`、`recovery_state TEXT NOT NULL DEFAULT 'none'`、`cancel_requested_at INTEGER` | **Bun**（host 只读） | owner/fencing/恢复维度；H2 才切 host 写 |
@@ -666,6 +746,8 @@ INDEX request_idempotency_expires_idx(expires_at)
 
 ### 8.8 `host_command_replay`（IPC-owned，非业务事实源）
 
+**Status (2026-10-22): not implemented (proposed)** — 没有表、没有分配器、没有重放流程；本节仅保留边界声明。
+
 `ipc-v0.md` 定义的 `host_command_replay` 是 host→worker durable command 的有界重放窗口，用于 worker 重连时从 `last_acked_command_sequence` 之后补发 command。它与本文的关系：
 
 - **属于 IPC 传输层，不属于业务恢复矩阵。** 它的 `command_sequence` 不是 `host_event.seq`，也不是 `aggregate_seq`；不得用于客户端 SSE 的 `Last-Event-ID`。
@@ -674,6 +756,8 @@ INDEX request_idempotency_expires_idx(expires_at)
 - **本文不定义其 schema。** 以 `ipc-v0.md` 为准；本文只在 §5.3.2 与本节声明三层序号的边界，避免把 command replay 误当事件日志。
 
 ### 8.9 可选/暂缓
+
+**Status (2026-10-22): unchanged** — 以下仍按“不建”处理。
 
 - `pty_ticket` 持久表：**建议暂缓**。60s TTL + 单次消费 + host 单实例场景下，host 内存足够；host 重启后 ticket 失效是可接受语义。只有当 H1 需要多 host 共享 ticket 时才落库。
 - `worker_heartbeat` 独立表：**不建**，heartbeat 写 `host_worker.heartbeat_at`，避免每 worker 高频小行。
@@ -684,7 +768,11 @@ INDEX request_idempotency_expires_idx(expires_at)
 
 ## 9. 迁移与回退顺序
 
+**Status (2026-10-22): partially implemented** — M1（建六表）已执行；M0 preflight、M2 shadow write、M3 read flip、回退与保留策略未实现。
+
 ### 9.1 迁移纪律（必须遵守）
+
+**Status (2026-10-22): implemented（1–5）/ not implemented（6–7）** — 新表通过 Drizzle Kit migration 落地，未修改旧 migration；host 启动尚未执行 migration preflight 或 WAL 观测。
 
 1. 主库只用 Drizzle Kit：在 `packages/chimera` 执行 `bun run db generate --name <slug>`；产出 `migration/<timestamp>_<slug>/migration.sql` + `snapshot.json`，测试按 per-folder 布局读取，不依赖 `_journal.json`。
 2. 绝不修改已应用的 migration；绝不把新列折进旧 `CREATE TABLE`（会产生 lineage 分叉）。
@@ -695,6 +783,8 @@ INDEX request_idempotency_expires_idx(expires_at)
 7. 执行 migration 前记录 WAL 状态；migration 后执行一次 `PRAGMA wal_checkpoint(PASSIVE)` 作为观测点，不把它当备份。
 
 ### 9.2 分阶段顺序
+
+**Status (2026-10-22): partially implemented** — 只完成 M1（表存在，host 可写）；M2/M3 未接线，M0/M4/M5 未实现。
 
 | 阶段 | 内容 | 写路径 | 读路径 | 回退 |
 |---|---|---|---|---|
@@ -707,6 +797,8 @@ INDEX request_idempotency_expires_idx(expires_at)
 
 ### 9.3 回退规则
 
+**Status (2026-10-22): not implemented (proposed)** — 没有 `host.enabled`/逐面 flag，也没有回退演练。
+
 - **H1 不提供 down migration。** 回退 = 关闭 `host.enabled`/逐面 flag，恢复 Bun 直连；新表保留但不写。
 - 回退后 Bun 路径不得依赖新表；若某面已经 read-flip，回退前必须确认旧路径仍能读到完整数据（新表只是附加，不是唯一来源）。
 - 若 host 已写入 `pending_request`/`host_event` 后回退，Bun 必须忽略这些行；不能因为“表存在”就假设有 host。
@@ -714,6 +806,8 @@ INDEX request_idempotency_expires_idx(expires_at)
 - 回退演练必须覆盖：已有新表、WAL 未 checkpoint、旧 worker 仍持有 lease、SSE 客户端带 `Last-Event-ID`、`commit_state=committed_unconfirmed` 的 checkpoint。
 
 ### 9.4 数据保留
+
+**Status (2026-10-22): not implemented (proposed)** — 没有保留/裁剪任务；`host_event`/checkpoint/pending 行当前只增不减。
 
 | 表 | 保留策略 | 依据 |
 |---|---|---|
@@ -730,7 +824,11 @@ INDEX request_idempotency_expires_idx(expires_at)
 
 ## 10. 测试矩阵
 
+**Status (2026-10-22): partially implemented** — Rust 单测覆盖 frame/handshake/store/supervisor/host_driver/runtime，并有跨语言 e2e 与 23 条 golden vectors；下表大部分恢复/故障注入/parity 用例尚未实现。
+
 ### 10.1 单元/契约
+
+**Status (2026-10-22): partially implemented** — U2（generation 分配）、U3（stale generation）、U4（幂等 hash 冲突）、U5（event seq 连续/去重）、U7（pending 唯一性）、U10（checkpoint 部分唯一索引）已有 store/supervisor 单测；U1/U6/U8/U9/U11/U12/U13/U14 未实现或仅文档。
 
 | ID | 场景 | 断言 |
 |---|---|---|
@@ -750,6 +848,8 @@ INDEX request_idempotency_expires_idx(expires_at)
 | U14 | process registry 读取副作用 | `readActiveProcesses` 调用后死 pid 行变 `expired`；文档/诊断标注该副作用 |
 
 ### 10.2 集成/故障注入
+
+**Status (2026-10-22): partially implemented** — 只有 worker crash/backoff、drain timeout、heartbeat unresponsive 的运行时单测与一个 bun-worker e2e；I1–I21 的完整故障注入矩阵未实现。
 
 | ID | 场景 | 注入 | 断言 |
 |---|---|---|---|
@@ -777,6 +877,8 @@ INDEX request_idempotency_expires_idx(expires_at)
 
 ### 10.3 Parity（双臂）
 
+**Status (2026-10-22): not implemented (proposed)** — 没有 HTTP/SSE parity 测试；只有帧/handshake 的双臂单测与 e2e。
+
 | ID | 场景 | 断言 |
 |---|---|---|
 | P1 | prompt/steer/abort | 状态码、错误体、SSE 帧与 Bun 直连一致 |
@@ -787,6 +889,8 @@ INDEX request_idempotency_expires_idx(expires_at)
 | P6 | 取消/重试 | 终态、事件顺序、客户端可观察行为一致 |
 
 ### 10.4 迁移测试
+
+**Status (2026-10-22): partially implemented** — `test/storage/host-schema.test.ts` 覆盖 host 表存在与索引；M2–M6 未实现。
 
 | ID | 场景 | 断言 |
 |---|---|---|
@@ -801,9 +905,13 @@ INDEX request_idempotency_expires_idx(expires_at)
 
 ## 11. 验收目标（candidate defaults，待 H0 校准）
 
+**Status (2026-10-22): not calibrated** — 本节数字仍是候选默认值；H0/H1 benchmark 尚未产出校准结果。
+
 > 本节所有数字都是**候选默认值（candidate defaults）**，用于 H1 设计与 H0 基线采集，**不是已批准的 hard gate**。H0 必须先给出 Bun-only 基线，H1 评审后再决定是否把这些数字写成硬门。语义正确性条目（C1–C5、C7–C9）没有数字，保持为 H1 语义要求；恢复时间与性能数字统一移到 §11.2 并标注“待校准”。
 
 ### 11.1 正确性目标（语义门，无数字）
+
+**Status (2026-10-22): not verified** — 语义门尚未通过故障注入验证；仅部分组件有单测。
 
 | 门 | 指标 | 通过条件 |
 |---|---|---|
@@ -817,6 +925,8 @@ INDEX request_idempotency_expires_idx(expires_at)
 | C9 | commit confirmation | 未确认提交不会被当成 `completed`，也不会被重放副作用 |
 
 ### 11.2 性能/恢复候选阈值（candidate defaults，待 H0 校准）
+
+**Status (2026-10-22): not calibrated** — 只有 `chimera-host/benches/codec_bench.rs` 的编解码微基准；没有 IPC 延迟/吞吐/恢复时间数据。
 
 | 门 | 指标 | 候选默认值 |
 |---|---|---|
@@ -832,6 +942,8 @@ INDEX request_idempotency_expires_idx(expires_at)
 
 ### 11.3 内存目标（候选）
 
+**Status (2026-10-22): not measured** — 没有 soak/内存数据；host bin 当前只有单进程 tick 循环。
+
 | 门 | 指标 | 候选通过条件 |
 |---|---|---|
 | M1 | 空闲 host | 不 spawn worker；host RSS/footprint 可解释且稳定 |
@@ -841,6 +953,8 @@ INDEX request_idempotency_expires_idx(expires_at)
 | M5 | 8 路并发 | 峰值可回落；worker churn 有上限 |
 
 ### 11.4 Soak 场景
+
+**Status (2026-10-22): not implemented** — 以下场景尚未执行。
 
 1. 空闲 host 24h：无 worker、无 SSE、无请求。
 2. 单项目 8 路 session 连续 24h：turn 循环、permission/question、cancel、SSE 重连。
@@ -852,6 +966,8 @@ INDEX request_idempotency_expires_idx(expires_at)
 
 ### 11.5 证据产物
 
+**Status (2026-10-22): not implemented** — 没有统一的 run 证据输出；只有 Rust 单测/e2e 与编解码 bench。
+
 - 每次 run 输出：host/worker/process-tree 的 RSS、`phys_footprint`、compressed/swap、shared/file-backed、FD、线程、SQLite page cache/WAL 大小。
 - 计数：worker 创建/回收/原因、stale_generation 拒绝数、replay 次数、gap 次数、orphan 数、重复 turn/job 数、`committed_unconfirmed` 数。
 - 失败必须附 trace id / turn id / job id / worker generation，便于对账。
@@ -860,9 +976,13 @@ INDEX request_idempotency_expires_idx(expires_at)
 
 ## 12. 外部参照（非 Chimera 事实源）
 
+**Status (2026-10-22): unchanged（只读参考）** — 本节不描述 Chimera 实现状态。
+
 以下仅作为设计模式参考，**不得**把其文件快照、字段名或状态值当作 Chimera 的现状或契约。
 
 ### 12.1 本地 Codex app-server 的 recovery 模式
+
+**Status (2026-10-22): reference only** — 未作为实现依据验证。
 
 观察到的模式（本地只读参考）：
 
@@ -877,6 +997,8 @@ INDEX request_idempotency_expires_idx(expires_at)
 - 身份不明时默认不续跑，转人工/可重试。
 
 ### 12.2 本地 Pinvou relay 的协议模式
+
+**Status (2026-10-22): reference only** — 未作为实现依据验证。
 
 观察到的模式（本地只读参考）：
 
@@ -896,50 +1018,56 @@ INDEX request_idempotency_expires_idx(expires_at)
 
 ## 13. 明确不做 / 未实现声明
 
-- 本文没有创建任何表、migration、索引或运行时代码。
+**Status (2026-10-22): updated** — 下列“没有”声明按当前实现重写：表和 host 骨架已经存在，但 session 写者切换、process adoption 与恢复流程仍未做。
+
+- 六张 host 控制表与对应 migration 已创建（`20261022022937_host_control_plane`）；`host_command_replay` 仍未建表。
 - 本文没有修改 `turn-lease`、`background-job`、`permission`、`question`、`pty`、`event`、process registry 的任何行为。
-- 本文没有构建、安装或执行新的 host/worker 二进制。
-- 本文没有声称 `host_worker`、`host_state`、`session_turn_checkpoint`、`pending_request`、`host_event`、`request_idempotency` 已存在。
+- H1 已构建并执行 host/worker 二进制；端到端验证在 CI 的 Unix 腿执行。
+- `host_worker`、`host_state`、`session_turn_checkpoint`、`pending_request`、`host_event`、`request_idempotency` 已存在；其读写 API 在 `HostStore`。
 - 本文没有把 session/message/part 的写者切到 host；H1 仍由 Bun worker 写，H2 才翻转。
 - 本文没有引入 process registry 的 adoption、写回或 `orphaned` 状态；这些是 H2 范围。
 - 本文没有改变 `OPENCODE_EXPERIMENTAL_WORKSPACES`、SQLite bridge 或任何 feature flag 的默认值。
 - 本文没有把 Codex/Pinvou 的本地文件快照当作 Chimera 的数据来源或兼容性证据。
-- 本文没有修改 `ipc-v0.md`、`RUST_HOST_MIGRATION_PLAN.md` 或任何运行时代码；`host_command_replay` 的 schema 与语义以 `ipc-v0.md` 为准。
+- `host_command_replay` 的 schema 与语义仍以 `ipc-v0.md` 为准；本文没有实现它。
 
 ---
 
 ## 14. 待父级/H1 评审拍板
 
+**Status (2026-10-22): open** — 以下仍是待拍板项；每条附“实现侧当前默认行为”，便于知道不拍板时的现状。
+
 ### 14.1 协议语义
 
-1. `session_turn_checkpoint` 的 `intent` 边界：只存引用，还是允许存压缩后的 prompt 摘要？
-2. `pending_request` 在 host 重启后，recoverable turn 是“重新发布同 request_id + `generation+1`”，还是统一 `orphaned` 让客户端重问？
-3. `host_event` 的保留窗口按时间、行数还是字节；默认值多少？
-4. `commit.confirm` 的“提交完成”判定：以 assistant message 的终态 part 为准，还是以 worker 显式 `part_watermark` 为准？超时后 host 判定 `interrupted` 的阈值是多少？
-5. H1 中旧 worker 已 append 的迟到 session 行，是否需要在 UI/查询层隐藏？按 `turn_id` 隔离是否足够？
-6. `background_job` 是否新增 `interrupted` 状态，还是只加 `recovery_state` 保持 4 状态兼容（本文倾向后者）。H1 由 Bun 写该列是否可接受？
-7. 项目库与主库的跨库一致性是否接受“补偿 + 只读代理”而不引入第二套事务协调。
-8. `request_idempotency` 的 TTL 与客户端重试窗口如何对齐（SDK 默认重试策略需同步）。
-9. H1 是否把 PTY ticket 收敛到 host 内存（本文倾向是），还是必须落库以支持多 host。
+1. `session_turn_checkpoint` 的 `intent` 边界：只存引用，还是允许存压缩后的 prompt 摘要？**当前默认行为**：`intent` 是 `TEXT NOT NULL`，store 按不透明 JSON 处理，没有大小校验。
+2. `pending_request` 在 host 重启后，recoverable turn 是“重新发布同 request_id + `generation+1`”，还是统一 `orphaned` 让客户端重问？**当前默认行为**：没有 host 重启 sweep，行按原状态保留。
+3. `host_event` 的保留窗口按时间、行数还是字节；默认值多少？**当前默认行为**：没有裁剪任务，`host_event` 只增不减。
+4. `commit.confirm` 的“提交完成”判定：以 assistant message 的终态 part 为准，还是以 worker 显式 `part_watermark` 为准？超时后 host 判定 `interrupted` 的阈值是多少？**当前默认行为**：没有 `commit.confirm` 实现；schema 只有 `last_message_id`/`last_event_seq`，没有 `part_watermark` 列。
+5. H1 中旧 worker 已 append 的迟到 session 行，是否需要在 UI/查询层隐藏？按 `turn_id` 隔离是否足够？**当前默认行为**：没有隔离/隐藏逻辑。
+6. `background_job` 是否新增 `interrupted` 状态，还是只加 `recovery_state` 保持 4 状态兼容（本文倾向后者）。H1 由 Bun 写该列是否可接受？**当前默认行为**：保持 4 状态，未新增 `recovery_state` 列。
+7. 项目库与主库的跨库一致性是否接受“补偿 + 只读代理”而不引入第二套事务协调。**当前默认行为**：host 只打开主库，不访问项目库。
+8. `request_idempotency` 的 TTL 与客户端重试窗口如何对齐（SDK 默认重试策略需同步）。**当前默认行为**：`expires_at` 由调用方写入，没有清理任务或 SDK 对齐。
+9. H1 是否把 PTY ticket 收敛到 host 内存（本文倾向是），还是必须落库以支持多 host。**当前默认行为**：host 尚未实现 PTY ticket，PTY 仍由 Bun 持有。
 
 ### 14.2 新增 schema/协议待决项
 
-10. `pending_request.request_key` 在无 `tool_call_id` 时的生成规则：同 turn 内 `ask_seq` 由谁分配、worker 重连后如何保持稳定？
-11. `host_event.aggregate_seq` 是否必须（还是允许 NULL 只靠全局 `seq`）；若必须，aggregate 的粒度是 session 还是 turn？
-12. `host_event.dedupe_key` 的命名规范与冲突处理：同一 `dedupe_key` 但 payload 不同应返回 409 还是覆盖诊断？
-13. `host_command_replay` 的保留窗口与清理时机是否完全由 `ipc-v0.md` 决定；恢复矩阵是否需要额外约束（本文倾向不需要）。
-14. `background_job.owner_session_id` 作为独立列（由 Bun 写）是否与 `data` JSON 内的 `ownerSessionId` 产生双写漂移；是否需要 drift-guard 测试。
-15. `session_turn_checkpoint.commit_state=committed_unconfirmed` 是否需要独立的超时/重试预算，还是统一走 `resume_policy`。
-16. `host_state.next_event_seq` 计数器与 `MAX(seq)+1` 取号二选一；若用计数器，崩溃后如何校验不回退。
+10. `pending_request.request_key` 在无 `tool_call_id` 时的生成规则：同 turn 内 `ask_seq` 由谁分配、worker 重连后如何保持稳定？**当前默认行为**：`request_key` 由调用方提供，没有 `ask_seq` 生成器。
+11. `host_event.aggregate_seq` 是否必须（还是允许 NULL 只靠全局 `seq`）；若必须，aggregate 的粒度是 session 还是 turn？**当前默认行为**：`aggregate_seq` 可空，部分唯一索引仅在非 NULL 时生效；调用方决定粒度。
+12. `host_event.dedupe_key` 的命名规范与冲突处理：同一 `dedupe_key` 但 payload 不同应返回 409 还是覆盖诊断？**当前默认行为**：`append_event` 命中已有 `dedupe_key` 时直接返回已有行，不比较 payload。
+13. `host_command_replay` 的保留窗口与清理时机是否完全由 `ipc-v0.md` 决定；恢复矩阵是否需要额外约束（本文倾向不需要）。**当前默认行为**：未实现，无窗口/清理。
+14. `background_job.owner_session_id` 作为独立列（由 Bun 写）是否与 `data` JSON 内的 `ownerSessionId` 产生双写漂移；是否需要 drift-guard 测试。**当前默认行为**：未新增列；仍读 `data` JSON 内的 `ownerSessionId`。
+15. `session_turn_checkpoint.commit_state=committed_unconfirmed` 是否需要独立的超时/重试预算，还是统一走 `resume_policy`。**当前默认行为**：未实现 `commit_state` 推进，无超时预算。
+16. `host_state.next_event_seq` 计数器与 `MAX(seq)+1` 取号二选一；若用计数器，崩溃后如何校验不回退。**当前默认行为**：`append_event` 用事务内 `MAX(seq)+1`；`next_event_seq` 列存在但未使用。
 
 ---
 
 ## 附录 A：证据锚点
 
+**Status (2026-10-22): partially updated** — 下表是 2026-10-21 的现状锚点；host 侧新增证据见 `chimera-host/src/`、`packages/chimera/src/storage/tables/host.sql.ts`、`migration/20261022022937_host_control_plane/`。
+
 | 主题 | 文件:行 |
 |---|---|
 | 主库路径/WAL/迁移应用 | `src/storage/db.ts:31-44`、`:109-177`、`:182-190`、`:224-242` |
-| 迁移目录/repair | `src/storage/db.ts:61-68`、`:83-101`；`migration/` 29 个目录 |
+| 迁移目录/repair | `src/storage/db.ts:61-68`、`:83-101`；`migration/` 30 个目录（含 `20261022022937_host_control_plane`） |
 | session/message/part 表 | `src/storage/tables/session.sql.ts:18-88` |
 | permission ruleset 表 | `src/storage/tables/session.sql.ts:182-188` |
 | turn lease 表 | `src/session/turn-lease.sql.ts:24-30` |
@@ -965,8 +1093,13 @@ INDEX request_idempotency_expires_idx(expires_at)
 | host boot id 约定 | `src/session/turn-lease.ts:6-18`；`src/chimera/store.ts:195-205` |
 | IPC 三层序号/generation | `specs/rust-host/ipc-v0.md` §1.1–§1.2、§7.3、§8.4 |
 | `host_command_replay` | `specs/rust-host/ipc-v0.md` §1.1、§5.9、§7.3、附录表 |
+| host 控制表 schema | `src/storage/tables/host.sql.ts`；`migration/20261022022937_host_control_plane/migration.sql` |
+| host store / supervisor / driver | `chimera-host/src/store.rs`、`supervisor.rs`、`host_driver.rs`、`runtime.rs`、`bin/chimera-host.rs` |
+| 双臂帧/handshake | `chimera-host/src/frame.rs`、`handshake.rs`；`packages/chimera/src/host/ipc-frame.ts`、`ipc-handshake.ts` |
 
 ## 附录 B：术语
+
+**Status (2026-10-22): unchanged** — 术语定义仍有效。
 
 - **Durable**：写入 SQLite 且跨 host/worker 重启仍可作为事实依据。
 - **Transient**：允许丢失、可从快照重建的流式状态（token delta、心跳、发送缓冲）。

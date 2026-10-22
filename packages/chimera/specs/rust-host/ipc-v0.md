@@ -1,8 +1,8 @@
 # Rust host ↔ Bun worker IPC schema v0
 
-状态：**设计提案（proposed），未实现**。
+状态：**H1 已落地（implemented）**。协议稳定面——64 字节帧编解码、握手与能力协商、连接层、supervisor、host driver、runtime、host bin、bun-worker 入口——已在 `chimera-host/src/` 与 `packages/chimera/src/host/` 实现，并有 Rust/TS 双臂单测、23 条共享 golden vectors、跨语言 e2e 与 CI 腿。三处仍在并行接线的项标记为 **Status: landing**：§2.3 心跳、§5.5/§8.2 durable event commit-before-ack、§9.3 drain deadline 单一事实源。
 服务对象：`RUST_HOST_MIGRATION_PLAN.md` 的 H1（Rust supervisor + front door）。
-性质：H1 开工前的可实施契约草案。本文不是已落地事实，不表示任何帧、表、路由或进程已经存在；文中数值是 v0 默认值，不是已批准的最终容量或性能承诺。
+性质：H1 实现契约与状态记录。已落地小节按实现回写；未落地小节保留 proposed 措辞并显式标注。文中数值仍是 candidate default，不是已批准的最终容量或性能承诺。
 
 ## 0. 范围与非目标
 
@@ -18,13 +18,17 @@ H1 需要 Rust host 成为唯一长驻父进程，并把尚未迁移的 HTTP 路
 
 ### 0.2 非目标（v0 明确不做）
 
-- 不实现 Rust host、Bun worker、Rust SDK 或任何新二进制；不构建、不安装、不执行。
+**Status (2026-10-22): partially implemented** — host/worker 骨架已落地；下列条目区分“仍不做”与“已落地但不在 v0 承诺”。
+
+- 不实现 Rust SDK、对外新二进制入口或对外 API 变更。H1 已实现内部 `chimera-host` bin 与隐藏的 `bun-worker` 入口，但两者都不是公开 CLI/API 承诺。
 - 不迁移 session 逻辑、provider、plugin、PTY/LSP/browser；它们仍由 worker 承载。
-- 不替代 HTTP/SSE/WebSocket 的对外契约。对外仍是现有 REST/SSE/PTY 语义，IPC 只是 host 与 worker 之间的内部边界。
-- 不定义 durable SQLite schema 的最终迁移文件。本文只列出 H1 需要的 host 侧逻辑表和与现有表的对应关系；迁移由 durable state/event log 设计单独评审。
+- 不替代 HTTP/SSE/WebSocket 的对外契约。对外仍是现有 REST/SSE/PTY 语义，IPC 只是 host 与 worker 之间的内部边界；H1 尚未把 HTTP 路由代理到 IPC。
+- 不定义 durable SQLite schema 的最终形态。H1 已有一个 host 控制表 migration（`migration/20261022022937_host_control_plane`），但最终 durable state/event log 设计仍需单独评审。
 - 不把逐 token 帧、共享内存、零拷贝、TCP 远程传输、跨主机联邦纳入 v0。
 
 ### 0.3 设计原则
+
+**Status (2026-10-22): implemented** — 五条原则作为实现约束落地；逐条覆盖见 §1–§12 的节首注记。
 
 1. **host 是唯一权威**：session/job/permission/question/event log 的 durable 结论只由 host 提交；worker 不把恢复所需的唯一状态留在内存。
 2. **显式失败优于静默降级**：未知版本、未知必选能力、未知必选字段一律拒绝并给出错误码；兼容只能通过协商或重启到 legacy 路径。
@@ -34,7 +38,9 @@ H1 需要 Rust host 成为唯一长驻父进程，并把尚未迁移的 HTTP 路
 
 ### 0.4 与 `RUST_HOST_MIGRATION_PLAN.md` §4.1 的差异（proposed delta）
 
-主计划 §4.1 只给出 framed protocol 的字段清单与建议（控制帧 CBOR/MessagePack、`session_id`/`job_id` 可选出现在帧字段、8 种 `frame_kind`）。本文是它的细化提案，在以下点上**有意偏离主计划正文**。这些差异是 **proposed delta，尚未获得主计划批准**：
+**Status (2026-10-22): implemented** — 实现按下列 delta 落地；`RUST_HOST_MIGRATION_PLAN.md` 正文是否已回写由主计划 owner 维护，本文件不代为声明。D4 的控制面 canonical JSON 已采用，数据面 msgpack 仍是未实现候选（见 §4.2）。
+
+主计划 §4.1 只给出 framed protocol 的字段清单与建议（控制帧 CBOR/MessagePack、`session_id`/`job_id` 可选出现在帧字段、8 种 `frame_kind`）。本文是它的细化，并在以下点上**有意偏离主计划正文**。这些 delta 已由 H1 实现采用：
 
 | # | 主计划 §4.1 | 本文 v0 | 理由 |
 |---|---|---|---|
@@ -44,9 +50,11 @@ H1 需要 Rust host 成为唯一长驻父进程，并把尚未迁移的 HTTP 路
 | D4 | 控制帧建议 CBOR/MessagePack | 控制面用 canonical JSON，数据面 msgpack 为 **candidate default**（§4） | JSON 控制面便于诊断；数据面仍保留二进制批量 |
 | D5 | 单一 `sequence` | 拆成 transport / command / event 三层序号（§1.1） | 一个序号无法同时服务传输排序、command 重放和 SSE 游标 |
 
-因此：**本文不是已批准契约**。H1 review 通过后，必须先把上述 delta 回写 `RUST_HOST_MIGRATION_PLAN.md` §4.1，再开始实现；在主计划批准前，主计划正文保持原样，实现方不得把本文当作冻结事实。
+因此：**本文的实现部分已冻结为 H1 事实，但主计划正文仍以 owner 回写为准**。后续协议变更必须同时更新本文、实现和主计划，避免三处漂移。
 
 ## 1. 术语与所有权
+
+**Status (2026-10-22): partially implemented** — `connection_id`/`worker_generation`/`transport_sequence` 已由连接层与 supervisor 实现；`event_seq` 已由 `host_event` 存储分配；`command_sequence` 尚未分配或持久化（`host_command_replay` 只有逻辑定义，见 §13）。
 
 | 术语 | 含义 | 权威所有者 |
 |---|---|---|
@@ -67,6 +75,8 @@ H1 需要 Rust host 成为唯一长驻父进程，并把尚未迁移的 HTTP 路
 
 ### 1.1 三层序号（不要混用）
 
+**Status (2026-10-22): partially implemented** — `transport_sequence` 已由 `chimera-host/src/connection.rs` 与 `packages/chimera/src/host/ipc-connection.ts` 双向实现；`event_seq` 已由 `HostStore::append_event` 分配；`command_sequence` 的分配与 replay 窗口尚未实现。
+
 | 名称 | 作用域 | 是否跨重连/重启 | 分配者 | 用途 |
 |---|---|---|---|---|
 | `transport_sequence` | 单连接 + 单发送方向 | 重连即重置（新连接从 1 开始） | 发送方 | 传输排序、去重、`MORE` 分片重组、连接内 gap 检测 |
@@ -81,6 +91,8 @@ H1 需要 Rust host 成为唯一长驻父进程，并把尚未迁移的 HTTP 路
 - header 里的线上字段名仍是 `sequence`，其 canonical 语义名是 `transport_sequence`（§3.2）。
 
 ### 1.2 Generation 层级（不要混用）
+
+**Status (2026-10-22): partially implemented** — `host_generation`/`worker_generation` 的存储与 supervisor fencing 已实现；turn/job/request 代次字段已进入 schema，但端到端写入闸门尚未接线。
 
 | 名称 | 所在层 | 载体 | 作用域 | 何时递增 |
 |---|---|---|---|---|
@@ -103,22 +115,29 @@ H1 需要 Rust host 成为唯一长驻父进程，并把尚未迁移的 HTTP 路
 
 ### 2.1 抽象
 
+**Status (2026-10-22): partially implemented** — Unix domain socket、`0700`/`0600` 权限、stale-socket 恢复与 `Listener` 抽象已实现（`chimera-host/src/host.rs`）；Windows named pipe 未实现（crate 目前 Unix-only）。
+
 v0 只支持本机、同用户的字节流 transport：
 
-- Unix：Unix domain socket，默认路径 `<data-root>/host/ipc/host.sock`，目录 `0700`、socket `0600`；路径长度必须小于平台 `sun_path` 限制。
-- Windows：named pipe，默认 `\\.\pipe\chimera-host-<user-scope>-<boot-scope>`；ACL 只允许当前用户。
-- 两端通过一个窄接口抽象：`TransportListener`（bind/accept）和 `TransportStream`（read/write/close/shutdown）。协议层不感知 Unix socket 与 pipe 的差异。
+- Unix：Unix domain socket，默认路径 `<data-root>/host/ipc/host.sock`，目录 `0700`、socket `0600`；路径长度必须小于平台 `sun_path` 限制。**已实现。**
+- Windows：named pipe，默认 `\\.\pipe\chimera-host-<user-scope>-<boot-scope>`；ACL 只允许当前用户。**未实现（proposed）。**
+- 两端通过一个窄接口抽象：`TransportListener`（bind/accept）和 `TransportStream`（read/write/close/shutdown）。协议层不感知 Unix socket 与 pipe 的差异。**已实现为 `Listener` trait + `Read`/`Write` 半连接。**
 
 `<data-root>` 必须由现有 graph/data-root 解析逻辑给出，不硬编码 `.chimera/` 或 `.codegraph/`。
 
 ### 2.2 本机约束
 
+**Status (2026-10-22): partially implemented** — 不监听 TCP、nonce 校验已实现；同用户访问目前依赖 socket 目录 `0700`/文件 `0600`，peer credentials（`SO_PEERCRED`/`LOCAL_PEERCRED`）尚未实现。原“本轮不构建、不执行”已随 H1 落地失效，改为 CI-only 端到端验证。
+
 - **不监听 TCP，不暴露网络端口**。IPC 是 host 与自有子进程之间的本地通道。
-- 本机受管环境禁止“新落盘未签名可执行物被立即执行”，因此本轮**不构建、不执行** host/worker；transport 的端到端验证为 **CI-only**，本地只做静态审阅和协议向量检查。
-- 连接建立后必须做 peer 校验：Unix 上读取 peer credentials（Linux `SO_PEERCRED`，macOS `LOCAL_PEERCRED`），要求 uid 与 host 一致；Windows 上校验 pipe 客户端身份。peer 校验失败返回 `unauthorized` 并关闭。
-- worker 由 host spawn，socket 路径和一次性 nonce 通过继承环境/句柄传递；nonce 只用于 `hello`，不写入日志。
+- **不监听 TCP，不暴露网络端口**。IPC 是 host 与自有子进程之间的本地通道。**已实现。**
+- H1 已构建并执行 host/worker 二进制；transport 的端到端验证在 CI 的 Unix 腿执行（`chimera-host/tests/e2e_bun_worker.rs`），本地受管环境仍不做发布产物的安装/执行验证。
+- 连接建立后必须做 peer 校验：Unix 上读取 peer credentials（Linux `SO_PEERCRED`，macOS `LOCAL_PEERCRED`），要求 uid 与 host 一致；Windows 上校验 pipe 客户端身份。peer 校验失败返回 `unauthorized` 并关闭。**未实现（proposed）；当前只依赖 socket 目录/文件权限与 nonce。**
+- worker 由 host spawn，socket 路径和一次性 nonce 通过继承环境/句柄传递；nonce 只用于 `hello`，不写入日志。**已实现：`CHIMERA_HOST_SOCKET` + `CHIMERA_WORKER_NONCE`，host 侧与 TS 侧握手实现都校验 nonce。**
 
 ### 2.3 连接生命周期
+
+**Status: landing** — 握手/ready/ack、drain、崩溃检测已实现；心跳帧发送 API 与 runtime tick 发送已落地，但 worker watchdog 与完整接线仍在并行推进。Rust 侧 `run_handshake` 目前没有读超时，`HANDSHAKE_TIMEOUT_MS` 仅在 TS worker 侧生效。
 
 ```text
 host listen
@@ -130,19 +149,23 @@ host listen
        host ── drain ────────▶ worker ── ack(drained) ─▶ exit
 ```
 
-- 握手超时 10s（candidate default，由 H0 基线 + H1 benchmark 校准）；超时关闭并返回 `handshake_timeout`。
-- 心跳：host 每 10s（candidate default）发送一条 transient `ipc.heartbeat` event；连续 3 次（约 30s，candidate default）无任何入站帧视为失联，关闭连接并按 worker crash 处理。
-- 正常情况下由 host 主动 `drain`；worker 不得在 host 仍存活时自行退出，除非遇到不可恢复错误并以约定退出码结束。
+- 握手超时 10s（candidate default，由 H0 基线 + H1 benchmark 校准）；超时关闭并返回 `handshake_timeout`。**TS worker 侧已实现；Rust host 侧常量已定义但阻塞读尚未加超时（landing）。**
+- 心跳：host 每 10s（candidate default）发送一条 transient `ipc.heartbeat` event；连续 3 次（约 30s，candidate default）无任何入站帧视为失联，关闭连接并按 worker crash 处理。**Status: landing** — `HostDriver::send_heartbeat` 与 runtime tick 已实现，失联标记为 `unresponsive` 已实现，但关闭/回收策略仍由调用方决定。
+- 正常情况下由 host 主动 `drain`；worker 不得在 host 仍存活时自行退出，除非遇到不可恢复错误并以约定退出码结束。**已实现（drain 见 §9.3）。**
 
 ## 3. 帧格式
 
 ### 3.1 长度前缀
+
+**Status (2026-10-22): implemented** — `chimera-host/src/frame.rs` + `packages/chimera/src/host/ipc-frame.ts`；Rust 读取器 `connection.rs` 与 TS `ipc-connection.ts` 均先读满 header 再按长度读 body。截断 header/body 一律返回 `decode_error`，不 panic/不越界分配。
 
 每帧 = **固定 64 字节 header + `payload_length` 字节 body**。header 与 body 均按小端编码。读取方必须先读满 64 字节，校验 header，再按 `payload_length` 读取 body；在通过 `MAX_FRAME_BYTES` 检查前不得按长度预分配大缓冲。
 
 `payload_length` 是 body 的字节数，不含 header。一个逻辑消息可以由多个 frame 通过 `MORE` flag 分片；分片重组后的总大小不得超过 `MAX_FRAME_BYTES`。
 
 ### 3.2 Header 布局（64 bytes）
+
+**Status (2026-10-22): implemented** — 双臂字节级一致，golden vectors 覆盖。解码器按裁决**不拒绝**任何 `protocol_version` 值（只透传），版本兼容由 §6.1 协商决定；magic 错误返回 `bad_magic`（不是 `bad_header`）。
 
 | Offset | Size | Field | 说明 |
 |---:|---:|---|---|
@@ -169,6 +192,8 @@ host listen
 
 ### 3.3 `frame_kind`
 
+**Status (2026-10-22): implemented** — 1–9 全部有枚举；`replay` 的帧类型已定义，但重放流程本身尚未实现（见 §5.9）。
+
 | 值 | 名称 | 方向 | 用途 |
 |---:|---|---|---|
 | 1 | `hello` | worker→host, host→worker | 握手与 capability 协商；`ready` 也使用该 kind，由 body 的 `phase` 区分 |
@@ -185,6 +210,8 @@ host listen
 
 ### 3.4 `flags`
 
+**Status (2026-10-22): implemented** — 未知 bit 返回 `bad_header`；`COMPRESSED` 未协商返回 `decode_error`；CRC32C 覆盖 payload 且按分片校验；reassembler 在 checksum/上限/压缩失败时立即 reset 丢弃半成品。
+
 | Bit | 名称 | 语义 |
 |---:|---|---|
 | 0x0001 | `MORE` | 当前 frame 是同一逻辑消息的一个分片；接收方按 `transport_sequence` 连续重组 |
@@ -197,6 +224,8 @@ host listen
 未定义 bit 必须为 0；收到未知 bit 返回 `bad_header`。`DURABLE` 与 `REPLAYABLE` 可以组合；`MORE` 分片的每一片必须携带相同的 durable/replayable 属性。
 
 ### 3.5 上限
+
+**Status (2026-10-22): implemented** — 常量与实现一致（`frame.rs` / `ipc-frame.ts`）；所有数值仍是 candidate default，未做最终压测校准。
 
 | 常量 | candidate default | 说明 |
 |---|---:|---|
@@ -214,7 +243,9 @@ host listen
 
 ### 4.1 控制面：canonical JSON（proposed candidate）
 
-> **proposed candidate，需 H1 review 批准**：canonical JSON 是本文推荐的 v0 控制面编码，不是已冻结事实。主计划 §4.1 建议控制帧用 CBOR/MessagePack；最终编码（以及 canonical 规则的具体实现库、浮点表示）由 H1 review 决定，批准后先回写主计划再实现。
+**Status (2026-10-22): partially implemented** — 控制面已统一用 JSON：Rust `host_driver.rs` 使用按 key 排序的 `Json` 渲染器，TS 侧使用 `JSON.stringify`。**未实现 strict 解码**：双臂 `hello` 解析都忽略未知顶层字段，不返回 `validation_error`；TS 侧也没有 canonical key 排序编码器。这两点是 spec 与实现的已知偏差（见 §18 第 1 项）。
+
+> **实现状态**：控制面选 JSON 已在 H1 落地；canonical 规则中的 key 排序仅在 Rust 侧成立，浮点表示、未知字段拒绝和长度/深度上限尚未双臂统一。
 
 - 对象 key 按字典序输出；数字只用整数或有限小数，禁止 `NaN`/`Infinity`；
 - 控制 envelope 严格解码：未知顶层字段返回 `validation_error`（不静默忽略）；
@@ -225,7 +256,9 @@ canonical JSON 只用于离散控制，不用于逐 token 数据。如果 H1 rev
 
 ### 4.2 数据面：批量 typed payload（proposed candidate）
 
-`event` 帧的 body 有两种形态，由 envelope 的 `payload_encoding` 声明。两种编码都仍是 **proposed candidate**：msgpack 是候选默认，json 是必选回退，最终选型见 §18 第 1 项。
+**Status (2026-10-22): not implemented (proposed)** — H1 只实现 `payload_encoding: "json"`；host 会协商 `encoding.msgpack` 能力，但双臂都没有 msgpack 编解码器，`bun-worker` 也只声明 `json`。
+
+`event` 帧的 body 有两种形态，由 envelope 的 `payload_encoding` 声明。两种编码都仍是 **proposed candidate**：msgpack 是候选默认，json 是必选回退，最终选型见 §18 第 1 项。当前实现只使用 `json`。
 
 - `json`：小批量或控制型事件，仍是 canonical JSON；
 - `msgpack`：批量 transient delta 的候选默认形态。双方在 hello 中声明 `encoding.msgpack` 后才可使用；否则回退 `json`。
@@ -251,6 +284,8 @@ canonical JSON 只用于离散控制，不用于逐 token 数据。如果 H1 rev
 - 单个批量 body 超过 `EVENT_BATCH_MAX` 时拆分为多个 `MORE` 分片；不得退化成逐 token 帧。
 
 #### 4.2.1 msgpack event body 的 envelope
+
+**Status (2026-10-22): not implemented (proposed)** — 以下 envelope 是设计目标，不是当前线上格式。
 
 `payload_encoding: "msgpack"` 时，**整个 `event` body 用 msgpack 编码**，不是“canonical JSON envelope 里塞一段 msgpack 字节”。body 顶层是一个 msgpack map，key 与 JSON 形态完全一致：
 
@@ -279,13 +314,19 @@ canonical JSON 只用于离散控制，不用于逐 token 数据。如果 H1 rev
 
 ### 4.3 大文本/二进制
 
+**Status (2026-10-22): implemented（分片路径）** — `MORE` 分片与 `MAX_REASSEMBLED_BYTES` 已实现；共享内存/临时文件仍不做。
+
 v0 不引入共享内存或临时文件句柄。超过 `EVENT_BATCH_MAX` 的 payload 用 `MORE` 分片承载，总大小受 `MAX_REASSEMBLED_BYTES` 限制；更大的附件传输延期到 H2/H3 单独设计。
 
 ## 5. Envelope 定义
 
+**Status (2026-10-22): partially implemented** — `hello`/`ready`/`request`/`response`/`event`/`ack`/`drain`/`error` 已实现；`replay` 未实现。body 级交叉校验（`id` vs `correlation_id`、body `transport_sequence` vs header `sequence`）目前未在双臂强制执行。
+
 所有 body 都有 `v`（协议 minor 版本号，v0 = `1`）和 `kind`。header 与 body 的 `kind` 必须一致，不一致返回 `bad_header`。
 
 ### 5.1 `hello` / `ready`
+
+**Status (2026-10-22): implemented** — `handshake.rs` + `ipc-handshake.ts`；`run_handshake` 写 `ready` 并等待 `ack(hello_complete)`。`limits.max_frame_bytes=0` 或非法值返回 `validation_error`；无 `resume` 游标时 `replay_available=false`；示例中的 `encodings` 含 `msgpack` 是目标形态，当前 worker 只声明 `json`。
 
 worker → host：
 
@@ -341,6 +382,8 @@ host → worker：
 
 ### 5.2 `request`
 
+**Status (2026-10-22): implemented（结构）** — `host_driver.rs` 解析 `request` 并路由给 `RequestRouter`；`id`/`correlation_id` 一致性校验尚未强制执行。
+
 ```json
 {
   "v": 1,
@@ -364,6 +407,8 @@ host → worker：
 
 ### 5.3 `response`
 
+**Status (2026-10-22): implemented** — `OutgoingResponse`/`response` 帧已实现，业务错误走 `response.error`。
+
 ```json
 {
   "v": 1,
@@ -379,6 +424,8 @@ host → worker：
 失败时 `status: "error"`，`error` 使用第 10 节的分类结构，`result` 为 null。业务失败（provider/tool/permission）走 `response.error`，不占用 `error` frame；`error` frame 只用于协议/连接级错误。
 
 ### 5.4 `event`
+
+**Status (2026-10-22): partially implemented** — `event` 帧解析、durable/transient 分类与 transient 发送已实现；body `transport_sequence` 与 header `sequence` 的一致性校验、durable event 的 commit/ack 尚未接线（见 §8.2）。
 
 ```json
 {
@@ -398,10 +445,12 @@ host → worker：
 
 - `DURABLE` event 的 `event_seq` 在 host 提交后由 `ack` 回填；worker 发送时可以为 null。
 - transient event 的 `event_seq` 必须为 null。
-- body 的 `transport_sequence` 必须等于同一帧 header 的 `sequence`；不一致返回 `bad_header`。它只用于连接内排序，不参与 SSE 游标。
+- body 的 `transport_sequence` 必须等于同一帧 header 的 `sequence`；不一致返回 `bad_header`。它只用于连接内排序，不参与 SSE 游标。**未强制校验（已知偏差）。**
 - `event` 名称沿用现有 Bus 事件名（如 `message.part.delta`、`permission.asked`、`session.error`），不另造平行命名；完整 allowlist 由 H0 的 operation/event 清单确定。
 
 ### 5.5 `ack`
+
+**Status: landing** — `ack` 解析、`hello_complete`/`drained` 处理已实现，`send_durable_ack` API 已存在；但 durable event 的“先落 `host_event` 再 ack”上层接线仍在并行推进。
 
 ```json
 {
@@ -420,6 +469,8 @@ host → worker：
 
 ### 5.6 `cancel`
 
+**Status (2026-10-22): partially implemented** — host 侧 `send_cancel` 已实现；worker 的 `serve` 循环目前只处理 `request`/`event`/`drain`，收到 `cancel` 不会停止目标工作；软/硬超时常量已定义但未执行。
+
 ```json
 {
   "v": 1,
@@ -434,9 +485,11 @@ host → worker：
 }
 ```
 
-取消是幂等的：同一 `target_id` 重复取消返回相同结果。worker 必须尽快停止目标工作并发送终态 `response`（`cancelled`）或 durable `event`（`turn.interrupted`）；host 在软超时（candidate default 5s）后标记 unresponsive，硬超时（candidate default 30s）后终止 worker。两个超时值均由 H1 benchmark 校准。
+取消是幂等的：同一 `target_id` 重复取消返回相同结果。worker 必须尽快停止目标工作并发送终态 `response`（`cancelled`）或 durable `event`（`turn.interrupted`）；host 在软超时（candidate default 5s）后标记 unresponsive，硬超时（candidate default 30s）后终止 worker。两个超时值均由 H1 benchmark 校准。**当前实现：host 会发 cancel 帧；worker 侧取消执行与超时终止尚未接线。**
 
 ### 5.7 `drain`
+
+**Status: landing** — `drain` 帧、`ack(drained)`、worker 侧在途请求等待与退出码已实现；deadline 的单一事实源（host config vs supervisor vs worker 本地默认）仍在收敛。
 
 ```json
 {
@@ -461,6 +514,8 @@ worker 收到后：
 
 ### 5.8 `error`
 
+**Status (2026-10-22): implemented** — 结构化 error frame、category/retryable 与握手拒绝均已实现。
+
 ```json
 {
   "v": 1,
@@ -482,6 +537,8 @@ worker 收到后：
 
 ### 5.9 `replay`
 
+**Status (2026-10-22): not implemented (proposed)** — `replay` 帧类型已定义，但 command replay 窗口、`host_command_replay` 存储与重发流程均未实现。
+
 ```json
 {
   "v": 1,
@@ -499,7 +556,11 @@ worker 收到后：
 
 ## 6. 握手与 capability 协商
 
+**Status (2026-10-22): implemented** — 版本交集、必选/未知能力、nonce、limits 收紧与结构化拒绝均在双臂落地。
+
 ### 6.1 版本
+
+**Status (2026-10-22): implemented** — `negotiateProtocol`/`intersection_highest` 返回最高共同版本；无交集返回 `unsupported_protocol_version`。解码层不拒绝版本（见 §3.2）。
 
 - `protocol_version` 是 `major << 8 | minor`。v0 线上版本为 `0x0100`（major 1，minor 0）。
 - host 维护 `supported = [1.x]`；worker 在 hello 中给出 `min`/`max`。交集为空 → `unsupported_protocol_version`，host 发送 error 后关闭。
@@ -508,16 +569,18 @@ worker 收到后：
 
 ### 6.2 能力集合
 
+**Status (2026-10-22): implemented** — `REQUIRED_CAPABILITIES` 六项、`KNOWN_CAPABILITIES` 十四项；`missing` 先于 `unknown` 报错；`json` 编码必需；`pty.bridge` 保留但 host 不提供；`encoding.msgpack` 可协商但无编解码器。
+
 v0 能力字符串（小写点分）：
 
 | Capability | 必选 | 含义 |
 |---|---|---|
 | `frame.v1` | 是 | 支持本帧格式 |
-| `control.json` | 是 | 控制面 canonical JSON（proposed candidate，见 §4.1） |
+| `control.json` | 是 | 控制面 canonical JSON（已实现；严格 canonical 规则见 §4.1） |
 | `event.batch` | 是 | 支持批量 event payload |
 | `cancel` | 是 | 支持 cancel 帧 |
 | `drain` | 是 | 支持 drain 帧 |
-| `replay.command` | 是 | 支持 host→worker durable command replay |
+| `replay.command` | 是 | 支持 host→worker durable command replay（能力已声明；重放流程未实现） |
 | `encoding.msgpack` | 否 | 数据面 msgpack |
 | `encoding.zstd` | 否 | `COMPRESSED` body |
 | `session.runtime` | 按路由 | 可执行 session prompt/turn |
@@ -535,11 +598,14 @@ v0 能力字符串（小写点分）：
 
 ### 6.3 显式拒绝
 
+**Status (2026-10-22): implemented** — 拒绝均走结构化 error frame 后关闭；`bad_magic` 与 `bad_header` 按裁决分开。
+
 拒绝必须走结构化 error frame，随后关闭连接；不得只断开 socket：
 
 | 场景 | code | 关闭 |
 |---|---|---|
-| magic/header 非法 | `bad_header` | 是 |
+| magic 非法 | `bad_magic` | 是 |
+| header 非法（header_len/reserved/flags/frame_kind） | `bad_header` | 是 |
 | 版本交集为空 | `unsupported_protocol_version` | 是 |
 | 缺必选能力 | `capability_missing` | 是 |
 | 未知非 `x-` 能力 | `unknown_capability` | 是 |
@@ -548,7 +614,11 @@ v0 能力字符串（小写点分）：
 
 ## 7. 幂等与 generation fencing
 
+**Status (2026-10-22): partially implemented** — `request_idempotency` 表与读写 API、supervisor generation fencing、transport sequence 校验已实现；HTTP/IPC 入口接线与 turn/job 代次闸门尚未完成。
+
 ### 7.1 幂等键
+
+**Status (2026-10-22): partially implemented** — `HostStore::record_idempotency` / `lookup_idempotency` 已实现（含 request hash 冲突检测）；上表方法 allowlist 与 `meta.idempotent_replay` 的入口接线尚未实现。
 
 host 对下列方法启用幂等记录（v0 allowlist）：
 
@@ -576,6 +646,8 @@ host 对下列方法启用幂等记录（v0 allowlist）：
 
 ### 7.2 Generation fencing
 
+**Status (2026-10-22): partially implemented** — header `worker_generation` 不匹配的帧被丢弃并计数（`stale_generation_dropped`）；`connection_id` 不匹配返回 `bad_header`。turn/job/request 代次闸门与重启后 `interrupted` 标记尚未接线。
+
 §1.2 已定义 generation 层级。本节只讲 IPC 上的**绑定与拒绝**：
 
 - host 在每次 spawn/resume worker 时分配新的 `worker_generation`，单调递增并持久化在 `host_worker`；worker 不能自选。
@@ -586,6 +658,8 @@ host 对下列方法启用幂等记录（v0 allowlist）：
 - `connection_id` 与 generation 绑定：同一 generation 的短暂传输重连可以复用逻辑身份，但必须换新 `connection_id`，并通过 `resume.last_acked_command_sequence` 走 replay。
 
 ### 7.3 Sequence
+
+**Status (2026-10-22): partially implemented** — `transport_sequence` 双向校验与 durable gap 拒绝已实现；`command_sequence` 重放与 `stream_epoch` 切换尚未实现；`event_seq` 由 store 分配但 SSE replay 未接线。
 
 三层序号的职责见 §1.1。本节只讲接收侧校验：
 
@@ -598,7 +672,11 @@ host 对下列方法启用幂等记录（v0 allowlist）：
 
 ## 8. Durable / transient 边界
 
+**Status (2026-10-22): partially implemented** — durable/transient 分类与 `HostEvent` 类型已实现；commit-before-ack 上层接线仍在 landing。
+
 ### 8.1 判定规则
+
+**Status (2026-10-22): implemented（分类）/ partially implemented（提交）** — 表中分类已编码为 `HostEvent::Durable` / `Transient`；`commit.confirm` 与 checkpoint 推进未实现。
 
 一个事件是 durable，当且仅当：客户端在断线重连后必须能重建它，或 host 重启后必须能据此恢复状态。其余为 transient。
 
@@ -615,6 +693,8 @@ host 对下列方法启用幂等记录（v0 allowlist）：
 
 ### 8.2 提交协议
 
+**Status: landing** — `HostStore::append_event` 与 `HostDriver::send_durable_ack` 已提供，但 runtime/bin 尚未把“append → ack → SSE fan-out”串成单一流程；driver 目前只把 durable event 放进 `take_events()`。
+
 durable event 的提交顺序：
 
 ```text
@@ -630,10 +710,14 @@ host: fan-out SSE（只在此后）
 
 ### 8.3 现有实现的对应
 
+**Status (2026-10-22): unchanged（行为参照）** — 现有 SSE 队列/合并语义未修改；host 尚未接管 `/event`。
+
 - SSE 单连接队列当前是 1024、`drop-oldest`（`src/server/routes/instance/event.ts`）；host 接管后仍可保留该连接级上限，但**durable 事件已落 event log**，连接级丢弃只影响实时性，客户端可通过 `Last-Event-ID` 补发。
 - 现有 `global-event-stream.ts` 的 40ms delta 合并和 `server.event-gap` 语义应保留；IPC 批量 delta 是它的上游批量化，不改变对外事件名。
 
 ### 8.4 durable / transient / control 映射
+
+**Status (2026-10-22): partially implemented** — 映射规则已作为类型与 store 契约存在；`host_event` 表没有 `durability` 列，只有 durable 由调用方写入。
 
 recovery-matrix §4.8 把事件分为 durable / transient / control 三类。本文的映射如下（三者互斥，不靠调用方自行解释）：
 
@@ -652,7 +736,11 @@ recovery-matrix §4.8 把事件分为 durable / transient / control 三类。本
 
 ## 9. 背压、取消、drain
 
+**Status (2026-10-22): partially implemented** — drain 与退出码已实现；背压队列、取消执行与 drain deadline 单一事实源仍在收敛。
+
 ### 9.1 背压
+
+**Status (2026-10-22): partially implemented** — 读取侧有 `MAX_FRAME_BYTES + 64` 缓冲上限，Bun transport 有 64 帧写队列与 drain 回调；表中按 session 的队列/字节上限尚未实现。
 
 每个方向、每个 session 都有有界队列：
 
@@ -672,6 +760,8 @@ recovery-matrix §4.8 把事件分为 durable / transient / control 三类。本
 
 ### 9.2 取消
 
+**Status (2026-10-22): partially implemented** — host `send_cancel` 已实现；取消意图持久化、worker 执行侧取消、软/硬超时终止尚未接线。
+
 ```text
 client → host: session.abort / job.cancel
 host: 记录取消意图（幂等）→ cancel 帧 → worker
@@ -688,6 +778,8 @@ host: 软超时 5s（candidate default）→ 标记 unresponsive；硬超时 30s
 
 ### 9.3 Drain
 
+**Status: landing** — drain 帧、`ack(drained)`、worker 在途请求等待与退出码（0/70/75/78）已实现；host 侧 `SIGTERM`/`SIGKILL` 升级由调用方执行，deadline 单一事实源仍在收敛（`supervisor::DRAIN_DEADLINE_MS`、runtime alias、`worker-bootstrap::DRAIN_TIMEOUT_MS`）。
+
 - host 在升级、重启、内存回收、shutdown 时发 `drain`；`reason` 进入审计日志。
 - drain 期间 host 停止向该 worker 路由新请求；已有请求继续，直到 deadline。
 - worker 必须报告 `active_sessions`、`interrupted_turns` 和最后 checkpoint；host 据此把未完成 turn 标为 `interrupted`。
@@ -698,7 +790,11 @@ host: 软超时 5s（candidate default）→ 标记 unresponsive；硬超时 30s
 
 ## 10. 错误分类
 
+**Status (2026-10-22): partially implemented** — 帧/握手/store 错误码已实现；完整 code 表与 HTTP 映射未全部落地。
+
 ### 10.1 结构
+
+**Status (2026-10-22): implemented** — error frame 的 `code`/`category`/`retryable`/`message`/`details` 结构已实现。
 
 ```json
 {
@@ -713,6 +809,8 @@ host: 软超时 5s（candidate default）→ 标记 unresponsive；硬超时 30s
 ```
 
 ### 10.2 类别与稳定 code
+
+**Status (2026-10-22): partially implemented** — `FrameError`/`HandshakeRejectCode`/`StoreError` 覆盖帧、握手与持久化子集；provider/tool/permission/cancel 类别尚未接入 IPC 层。
 
 | Category | code | retryable | 说明 |
 |---|---|---|---|
@@ -733,6 +831,8 @@ host: 软超时 5s（candidate default）→ 标记 unresponsive；硬超时 30s
 
 ### 10.3 HTTP 映射
 
+**Status (2026-10-22): not implemented (proposed)** — host 尚未代理 HTTP 路由，因此映射表尚未接线。
+
 host 代理未迁移路由时，把 IPC error 映射为现有 HTTP 错误形状（`src/server/error.ts` 的 400/404，`NamedError.Unknown` 的 400，以及 provider/tool 现有映射）：
 
 - `validation_error` → 400；`not_found` → 404；`permission_denied` → 403；`busy` → 409 或现有 `Session.BusyError` 的 400 语义（以现有路由为准，不擅自改状态码）；
@@ -743,7 +843,11 @@ host 代理未迁移路由时，把 IPC error 映射为现有 HTTP 错误形状�
 
 ## 11. 重连与重放
 
+**Status (2026-10-22): partially implemented** — worker 崩溃退避/崩溃预算已实现；host 重启 sweep 与 command replay 未实现。
+
 ### 11.1 worker 崩溃
+
+**Status (2026-10-22): partially implemented** — 连接关闭/durable gap 会标记 worker `crashed` 并计算退避（100/500/2000/5000ms，封顶 30s）与 5 次/5 分钟暂停；checkpoint 的 `interrupted` 标记未实现。
 
 1. host 检测 socket EOF / heartbeat 超时；
 2. 把该 generation 的 in-flight request 标为 `worker_crash`；
@@ -753,11 +857,15 @@ host 代理未迁移路由时，把 IPC error 映射为现有 HTTP 错误形状�
 
 ### 11.2 host 重启
 
+**Status (2026-10-22): not implemented (proposed)** — 尚无启动时扫描 durable 表并收敛非终态行的流程。
+
 - host 启动时读取 durable 表，把所有没有当前 live generation 的 `running` 行标为 `interrupted`；已持久化 cancel intent 的行仍标 `cancelled`；不得假定 worker 还活着。
 - worker 检测到 host 断开后，在 2s 宽限内退出；退出前可写最后 checkpoint，但不得继续提交 durable 状态。
 - 客户端 SSE 通过 `Last-Event-ID` + `stream_epoch` 恢复；host 从 event log 补发，不依赖 worker 内存。
 
 ### 11.3 command replay
+
+**Status (2026-10-22): not implemented (proposed)** — 没有 `host_command_replay` 存储，也没有 worker 重连补发流程；握手只返回 `replay_available` 布尔值。
 
 - host 为每个 workspace 保留 host→worker 的 durable command 窗口：1024 帧 / 16 MiB（**candidate default**，与参考实现的 replay journal 量级一致；最终值需 H1 benchmark 校准）。
 - worker 重连时带 `resume.last_acked_command_sequence`；host 从该 `command_sequence` 之后重发 `REPLAYABLE` command，直到窗口末尾。
@@ -767,11 +875,17 @@ host 代理未迁移路由时，把 IPC error 映射为现有 HTTP 错误形状�
 
 ### 11.4 现有 SSE 语义
 
+**Status (2026-10-22): unchanged** — 现有 SSE 行为未修改；host 接管是后续里程碑。
+
 `/event`、`/global/event` 继续由 host 终止连接，保留 heartbeat（现有 10s）、`Last-Event-ID`、`server.event-gap` 和事件名。IPC 不把每个 SSE 帧再包一层 JSON；host 只做一次事件判别和 wire serialization。
 
 ## 12. 兼容性与版本演进
 
+**Status (2026-10-22): partially implemented** — 版本/能力演进规则已编码；编码演进与完整 kill switch 行为未落地。
+
 ### 12.1 规则
+
+**Status (2026-10-22): implemented（版本/能力）/ partially implemented（未知字段拒绝）** — minor/major 规则与协议版本常量已实现；未知必选字段的 strict 拒绝尚未双臂统一。
 
 - **minor**：只允许新增可选字段、可选 capability、新的 `x-` 扩展；旧端必须能忽略。默认行为不得改变。
 - **major**：字段删除/重命名、语义变化、durable/transient 归属变化、编码默认值变化、frame kind 复用。
@@ -781,11 +895,15 @@ host 代理未迁移路由时，把 IPC error 映射为现有 HTTP 错误形状�
 
 ### 12.2 编码演进
 
+**Status (2026-10-22): not implemented（msgpack/CBOR）/ implemented（zstd 拒绝路径）** — 当前只用 JSON；未协商 `COMPRESSED` 返回 `decode_error`。
+
 - v0 控制面用 canonical JSON、数据面默认 `msgpack`（双方声明后），否则 `json`；这两项都是 **proposed candidate**，需 H1 review 批准（§18 第 1 项）。
 - CBOR 或其他编码延期；引入时必须作为新 capability + 新 `payload_encoding` 值，不能静默替换 `msgpack` 的字节语义。
 - 压缩只允许协商后的 zstd；未协商时 `COMPRESSED` 帧返回 `decode_error`。
 
 ### 12.3 Kill switch
+
+**Status (2026-10-22): partially implemented** — `CHIMERA_HOST_MODE` 与 `CHIMERA_HOST_IPC` 已解析并校验（默认 `legacy`/`off`）；`CHIMERA_HOST_ROUTE_<OPERATION>` 未实现，模式也尚未 gate 实际路由。
 
 v0 需要三层开关，默认全部保守：
 
@@ -804,6 +922,8 @@ v0 需要三层开关，默认全部保守：
 
 ## 13. H1 durable 状态（逻辑表，不是迁移文件）
 
+**Status (2026-10-22): implemented（六表）/ not implemented（`host_command_replay`）** — 首个 Drizzle migration `20261022022937_host_control_plane` 已创建 `host_worker`/`host_state`/`session_turn_checkpoint`/`pending_request`/`request_idempotency`/`host_event`，`HostStore` 提供读写；`host_command_replay` 仍只有逻辑定义。
+
 H1 需要 host 侧新增/复用的逻辑存储。以下只定义职责，最终 schema 由 durable state 设计评审：
 
 | 逻辑表 | H1 写者 | H1 读者/用途 | 与现有表的关系 |
@@ -821,6 +941,8 @@ H1 需要 host 侧新增/复用的逻辑存储。以下只定义职责，最终 
 
 ## 14. 与现有 Chimera 路由/服务的对应
 
+**Status (2026-10-22): not implemented (proposed)** — 下表是迁移目标映射；H1 尚未把任何 HTTP 路由代理到 IPC，host bin 只提供 socket + supervisor + store。
+
 | IPC 概念 | 现有锚点 | H1 处理 |
 |---|---|---|
 | session prompt/abort/command/shell | `src/server/routes/instance/session.ts`（`session.prompt`、`session.prompt_async`、`session.abort` 等） | host 先代理到 worker；未迁移前不改变响应形状 |
@@ -837,6 +959,8 @@ H1 需要 host 侧新增/复用的逻辑存储。以下只定义职责，最终 
 | graph 只读路由 | `src/server/routes/instance/graph.ts`、`src/graph/*` | H1 可先在 host 本地只读，不经 worker |
 
 ## 15. 参考实现（只读证据，不复制未验证细节）
+
+**Status (2026-10-22): unchanged（只读参考）** — 本节不描述 Chimera 实现状态。
 
 以下路径来自本地只读参考仓库，用于验证设计形状；本文不声称这些实现可直接复用，也不复制其内部未公开语义。
 
@@ -865,9 +989,13 @@ H1 需要 host 侧新增/复用的逻辑存储。以下只定义职责，最终 
 
 ## 16. 测试向量
 
+**Status (2026-10-22): implemented（向量）/ not implemented（fuzz）** — `chimera-host/tests/vectors/ipc-frame-v0.hex` 有 23 条向量，Rust `ipc_frame_vectors.rs` 与 TS `ipc-frame.test.ts` 字节级对拉；跨语言 e2e 在 `e2e_bun_worker.rs`。没有独立的 fuzz/属性测试 harness。
+
 以下向量用于 Rust/Bun 双方的协议单测和 CI parity；不执行任何新二进制。
 
 ### 16.1 Header 向量
+
+**Status (2026-10-22): implemented** — 下列字节与 `frame.rs` 单测、TS `ipc-frame.test.ts` 一致。
 
 一个 durable `request` 帧：connection 1、generation 7、transport_sequence 1、payload 123 字节、correlation id 为示意 UUID：
 
@@ -885,9 +1013,11 @@ H1 需要 host 侧新增/复用的逻辑存储。以下只定义职责，最终 
 
 ### 16.2 必测场景
 
+**Status (2026-10-22): partially implemented** — 帧级场景 1–7、16–18 已有单测；幂等/取消/drain/重连/replay/SSE 场景依赖尚未接线的上层，未作为端到端用例。
+
 | # | 场景 | 期望 |
 |---:|---|---|
-| 1 | magic 错误 | `bad_header`，不读 body，关闭 |
+| 1 | magic 错误 | `bad_magic`，不读 body，关闭 |
 | 2 | `payload_length = MAX_FRAME_BYTES + 1` | `frame_too_large`，不分配 body |
 | 3 | hello 版本 `min=0x0200` | `unsupported_protocol_version`，关闭 |
 | 4 | hello 缺 `frame.v1` | `capability_missing`，列出缺失项 |
@@ -910,6 +1040,8 @@ H1 需要 host 侧新增/复用的逻辑存储。以下只定义职责，最终 
 
 ### 16.3 Fuzz/属性测试
 
+**Status (2026-10-22): not implemented (proposed)** — 目前只有针对截断/超限/跳号的定向单测，没有随机 fuzz 或属性测试。
+
 - 随机截断 header/body：必须返回结构化错误或安全关闭，不得 panic/越界分配。
 - 随机 `payload_length` 与 `MORE` 组合：重组上限必须生效。
 - 随机 `transport_sequence` 跳号：transient 允许 gap，durable 必须拒绝。
@@ -917,7 +1049,11 @@ H1 需要 host 侧新增/复用的逻辑存储。以下只定义职责，最终 
 
 ## 17. H1 必做 vs 延期
 
+**Status (2026-10-22): partially implemented** — 逐项状态见 §17.1 末尾注记。
+
 ### 17.1 v0 必做（H1 退出门的一部分）
+
+**Status (2026-10-22): partially implemented** — 第 1–4、13（向量部分）已落地；5–9、11–12 部分落地；10 与 13（fuzz）未落地。
 
 1. 64 字节 header、长度前缀、`MAX_FRAME_BYTES` 和分片上限。
 2. `protocol_version` 协商、hello/ready/ack、显式拒绝和错误码。
@@ -933,7 +1069,11 @@ H1 需要 host 侧新增/复用的逻辑存储。以下只定义职责，最终 
 12. kill switch：legacy/proxy/rust、observe/enforce、路由级回退。
 13. 测试向量 1–20 和 framing fuzz。
 
+**逐项状态（2026-10-22）**：1–4 implemented；5 request/response/ack 结构 implemented、入口幂等 partial；6 durable 分类 implemented、commit-before-ack landing、批量 msgpack 未实现；7 队列 partial；8 cancel/drain partial（drain 实现、cancel 执行与超时未接线）；9 worker crash 退避 implemented、host restart sweep 未实现；10 command replay 未实现；11 错误分类 partial、HTTP 映射未实现；12 kill switch 解析 implemented、路由级与行为 gate 未实现；13 向量 implemented、fuzz 未实现。
+
 ### 17.2 延期（不在 H1 承诺）
+
+**Status (2026-10-22): unchanged** — 以下仍未实现。
 
 - 共享内存/零拷贝、临时文件句柄传输大附件；
 - zstd 之外的压缩、CBOR 编码；
@@ -948,18 +1088,18 @@ H1 需要 host 侧新增/复用的逻辑存储。以下只定义职责，最终 
 
 ## 18. 未决问题（交父级/评审）
 
-1. 编码选型（**proposed candidate**）：控制面 canonical JSON 与数据面 msgpack 都是本文推荐、待 H1 review 批准的候选，不是冻结事实；若评审改选 CBOR 或全 msgpack，需要改 `payload_encoding` 枚举、canonical 规则和测试向量，并同步回写主计划 §4.1。
-2. worker 粒度（每 workspace / 每 N session / 每 turn）按迁移计划 §9.1 仍未拍板；本文假设“workspace 绑定 + 硬上限”，但协议本身不绑定粒度。
-3. host durable store 是否复用现有 SQLite/WAL 事实源（计划建议复用）还是先独立 host DB；本文按复用设计表关系。
-4. `MAX_FRAME_BYTES`、replay 窗口、队列上限的最终值需要 H1 压测；本文数值只用于实现起点。
-5. H1 是否只代理 `chimera web`，还是同时覆盖 CLI/graph daemon；协议不区分调用方，但 capability 路由需要该决定。
-6. 取消后的 turn 状态对外如何呈现（现有 `session.error` / interrupted 语义）需要在 H0 状态机对账中确认。
-7. `host_event.durability` 的取值集合：本文口径是 control 不进 `host_event`（§8.4），但 `recovery-matrix.md` §8.5 允许 `durable|control`；需在 H1 review 时统一，并与主计划 §4.1 同步。
-8. 本文 §0.4 列出的 5 项 delta（64 字节 header、session/job 移 body、`replay` frame、编码、三层序号）需主计划 owner 批准；未批准前不进入实现。
+1. 编码选型（**proposed candidate**）：控制面 canonical JSON 与数据面 msgpack 都是本文推荐、待 H1 review 批准的候选，不是冻结事实；若评审改选 CBOR 或全 msgpack，需要改 `payload_encoding` 枚举、canonical 规则和测试向量，并同步回写主计划 §4.1。**当前实现默认行为**：控制面统一 JSON；数据面只用 `json`；`encoding.msgpack` 可协商但没有编解码器。
+2. worker 粒度（每 workspace / 每 N session / 每 turn）按迁移计划 §9.1 仍未拍板；本文假设“workspace 绑定 + 硬上限”，但协议本身不绑定粒度。**当前实现默认行为**：每个 workspace 一条 spawn intent/一个 worker；soft/hard limit 只解析不强制。
+3. host durable store 是否复用现有 SQLite/WAL 事实源（计划建议复用）还是先独立 host DB；本文按复用设计表关系。**当前实现默认行为**：复用主库，host 控制表由 Drizzle migration 创建，`HostStore` 只打开不迁移。
+4. `MAX_FRAME_BYTES`、replay 窗口、队列上限的最终值需要 H1 压测；本文数值只用于实现起点。**当前实现默认行为**：使用本文 candidate defaults（8 MiB / 32 MiB / 256 片等），未做校准。
+5. H1 是否只代理 `chimera web`，还是同时覆盖 CLI/graph daemon；协议不区分调用方，但 capability 路由需要该决定。**当前实现默认行为**：只有独立 host bin + 隐藏 `bun-worker`，没有 HTTP/CLI 路由代理。
+6. 取消后的 turn 状态对外如何呈现（现有 `session.error` / interrupted 语义）需要在 H0 状态机对账中确认。**当前实现默认行为**：host 可发 `cancel` 帧；worker 尚未处理 cancel，终态呈现未接线。
+7. `host_event.durability` 的取值集合：本文口径是 control 不进 `host_event`（§8.4），但 `recovery-matrix.md` §8.5 允许 `durable|control`；需在 H1 review 时统一，并与主计划 §4.1 同步。**当前实现默认行为**：`host_event` 没有 `durability` 列，只有 durable event 由调用方写入；control/transient 不落表。
+8. 本文 §0.4 列出的 5 项 delta（64 字节 header、session/job 移 body、`replay` frame、编码、三层序号）需主计划 owner 批准；未批准前不进入实现。**当前实现默认行为**：实现已按这 5 项 delta 落地；主计划正文回写待 owner 确认。
 
 ## 19. 非声明
 
-- 本文没有新增或修改任何运行时代码、表、路由、二进制或 SDK。
-- 本文没有构建、安装或执行新的 host/worker 二进制；transport 端到端验证为 CI-only。
+- 本文现在描述 H1 已落地实现与仍在 landing 的部分；不是“零实现”声明。
+- H1 已构建并执行 host/worker 二进制；transport 端到端验证在 CI 的 Unix 腿执行。
 - 文中出现的 Codex/Pinvou 路径仅作只读参考，不表示其实现细节已被验证为可直接复用。
-- 文中所有数值、错误码和字段名都是 v0 提案；在 H1 评审和压测前不得当作已批准事实或对外承诺。
+- 文中所有数值仍是 candidate default；在 H1 压测校准前不得当作已批准容量或对外承诺。
