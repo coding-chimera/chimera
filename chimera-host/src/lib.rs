@@ -33,6 +33,7 @@ pub mod connection;
 pub mod crc32c;
 pub mod frame;
 pub mod handshake;
+pub mod host;
 pub mod host_driver;
 pub mod runtime;
 pub mod store;
