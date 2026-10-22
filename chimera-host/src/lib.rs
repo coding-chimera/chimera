@@ -30,6 +30,7 @@
 
 pub mod crc32c;
 pub mod frame;
+pub mod handshake;
 
 pub use crc32c::crc32c;
 pub use frame::*;
