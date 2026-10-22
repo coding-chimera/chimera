@@ -494,8 +494,8 @@ export function buildDefaultIgnore(rootDir: string): Ignore {
  * T0-1: this is the RAW file-language set — callers filter it through
  * `filterKernelRoutedLanguages` (kernel/index.ts) before preloading, so a
  * kernel-routed language's wasm grammar is only ever loaded lazily at the
- * defer seam (deferred-grammar.ts). objc above is NOT routed, so the #1628
- * expansion survives the filter untouched.
+ * defer seam (deferred-grammar.ts). objc is now routed too (wave-5 W1), so
+ * the #1628 expansion's objc entry is filtered as well; c/cpp keep it live.
  */
 export function preloadLanguagesForFiles(
   files: string[],

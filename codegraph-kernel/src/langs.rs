@@ -38,13 +38,18 @@ extern "C" {
 extern "C" {
     fn tree_sitter_nix() -> *const ();
 }
+// Vendored Objective-C grammar (build.rs-compiled C — amaanq/tree-sitter-objc
+// 2.1.0, ABI 14, the same 2.1.0 line as the vendored wasm; see grammars/objc).
+extern "C" {
+    fn tree_sitter_objc() -> *const ();
+}
 
 /// Languages this kernel binary can extract (reported by contractInfo;
 /// TS-side routing policy decides what actually routes).
-pub const LANGUAGES: [&str; 22] = [
+pub const LANGUAGES: [&str; 23] = [
     "typescript", "tsx", "javascript", "jsx", "java", "python", "go", "c", "cpp", "rust",
     "csharp", "ruby", "php", "swift", "kotlin", "r", "lua", "luau", "scala", "dart",
-    "pascal", "nix",
+    "pascal", "nix", "objc",
 ];
 
 pub fn grammar_for(language: &str) -> Option<Language> {
@@ -105,6 +110,11 @@ pub fn grammar_for(language: &str) -> Option<Language> {
         // W1 (second language): vendored nix C regenerated with tree-sitter-cli
         // 0.25.10 (ABI 15), table-identical to the vendored wasm.
         "nix" => Some(unsafe { tree_sitter_language::LanguageFn::from_raw(tree_sitter_nix) }.into()),
+        // W1 (third language): vendored Objective-C C (2.1.0, ABI 14,
+        // 567 kinds / 46 fields), table-identical to the vendored wasm.
+        "objc" => {
+            Some(unsafe { tree_sitter_language::LanguageFn::from_raw(tree_sitter_objc) }.into())
+        }
         _ => None,
     }
 }

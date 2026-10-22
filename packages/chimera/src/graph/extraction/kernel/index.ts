@@ -222,6 +222,14 @@ const DEFAULT_ROUTED: ReadonlySet<Language> = new Set<Language>([
   // wasm; the walker mirrors languages/nix.ts. Route change ⇒
   // EXTRACTION_SEMANTICS_VERSION 7 -> 8 (see extraction-version.ts).
   'nix',
+  // wave 5 (W1 wasm retirement, 2026-10-22): objc — third and largest
+  // language of the roadmap. The kernel's vendored C is
+  // amaanq/tree-sitter-objc 2.1.0 (ABI 14, STATE_COUNT 9561, 567 kinds /
+  // 46 fields) — the same 2.1.0 line as the tree-sitter-wasms npm artifact
+  // (no re-vendor: 3.0.2 is a separate parse-table decision). The walker
+  // extends ccpp with Variant::Objc and mirrors languages/objc.ts. Route
+  // change ⇒ EXTRACTION_SEMANTICS_VERSION 8 -> 9 (see extraction-version.ts).
+  'objc',
 ]);
 
 /**
@@ -307,8 +315,8 @@ export const DEFER_ELIGIBLE_LANGUAGES: ReadonlySet<Language> = new Set<Language>
  * natively; its wasm grammar is only needed when the kernel actually DEFERS
  * a file (the `defer:` parse-error / stack-guard valve above), and every
  * async extraction seam loads it lazily at that point (see
- * deferred-grammar.ts). Non-routed languages pass through untouched: objc
- * from the `.h` ambiguity expansion (#1628), r/solidity wasm,
+ * deferred-grammar.ts). Non-routed languages pass through untouched: r/solidity
+ * wasm, ruling-⑤ names (silent unavailableGrammarErrors degradation), and
  * ruling-⑤ names (silent unavailableGrammarErrors degradation), and
  * svelte/vue/astro — whose delegated typescript/javascript grammars are
  * added downstream by expandGrammarLanguages, so the SFC languages must

@@ -50,11 +50,11 @@ const KT_SOURCE = `fun main() {\n    println(\"x\")\n}\n`;
 // kernel call), not on r's wasm output bytes.
 const R_SOURCE = `add <- function(a, b) {\n  a + b\n}\n`;
 
-/** The real vendored kernel's 22-language contract (wave 5, W1 nix). */
+/** The real vendored kernel's 23-language contract (wave 5, W1 objc). */
 const ALL_KERNEL_LANGUAGES = [
   'typescript', 'tsx', 'javascript', 'jsx', 'java', 'python', 'go', 'c', 'cpp',
   'rust', 'csharp', 'ruby', 'php', 'swift', 'kotlin', 'r', 'lua', 'luau',
-  'scala', 'dart', 'pascal', 'nix',
+  'scala', 'dart', 'pascal', 'nix', 'objc',
 ];
 
 /** Deterministic projection for byte-equivalence assertions (timestamps out). */
@@ -226,6 +226,16 @@ describe('extractFromSource kernel selector gating', () => {
     const result = extractFromSource('flake.nix', '{ pkgs }: { imports = [ ./hardware.nix ]; }', 'nix');
     expect(calls.length).toBe(1);
     expect(calls[0]?.[2]).toBe('nix');
+    expect(result.nodes.some((n) => n.name === 'kernelMarker')).toBe(true);
+  });
+
+  it('wave 5 (W1): DEFAULT_ROUTED objc takes the kernel arm with NO env', () => {
+    const { mod, calls } = makeFakeKernel({ languages: ALL_KERNEL_LANGUAGES });
+    setKernelForTests(mod);
+    expect(kernelRoutes('objc')).toBe(true);
+    const result = extractFromSource('Foo.m', '@interface Foo : NSObject\n- (void)bar;\n@end\n', 'objc');
+    expect(calls.length).toBe(1);
+    expect(calls[0]?.[2]).toBe('objc');
     expect(result.nodes.some((n) => n.name === 'kernelMarker')).toBe(true);
   });
 

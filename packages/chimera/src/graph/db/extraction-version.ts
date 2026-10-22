@@ -102,7 +102,13 @@ export const EXTRACTION_SEMANTICS_METADATA_KEY = 'extraction_semantics_version';
 //     vendored wasm; walker mirrors languages/nix.ts). Route change under
 //     the clause above: databases stamped v7 must fully re-extract so kernel
 //     and wasm nix shapes never mix.
-export const EXTRACTION_SEMANTICS_VERSION = 8;
+// v9: W1 wasm-retirement wave, third language — objc moves to the Rust
+//     kernel arm (vendored amaanq/tree-sitter-objc 2.1.0, ABI 14, the same
+//     2.1.0 line as the tree-sitter-wasms npm artifact; walker extends the
+//     ccpp module with Variant::Objc and mirrors languages/objc.ts). Route
+//     change under the clause above: databases stamped v8 must fully
+//     re-extract so kernel and wasm objc shapes never mix.
+export const EXTRACTION_SEMANTICS_VERSION = 9;
 
 /** Decoded shape of the stamp row. */
 export interface ExtractionSemanticsStamp {

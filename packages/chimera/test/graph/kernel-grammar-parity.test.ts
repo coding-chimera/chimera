@@ -60,6 +60,7 @@ const GRAMMAR_LANGUAGES: Language[] = [
   'dart',
   'pascal',
   'nix',
+  'objc',
 ]
 
 if (!kernelBuilt && expectKernel) {

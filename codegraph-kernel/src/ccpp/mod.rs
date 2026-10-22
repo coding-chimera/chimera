@@ -1,6 +1,13 @@
-//! C / C++ extraction — a faithful Rust port of `TreeSitterExtractor`'s c/cpp
-//! paths (src/extraction/tree-sitter.ts) plus languages/c-cpp.ts, one dual-
-//! language module flagged like tsjs/ (checklist:
+//! C / C++ / Objective-C extraction — a faithful Rust port of
+//! `TreeSitterExtractor`'s c/cpp paths (src/extraction/tree-sitter.ts) plus
+//! languages/c-cpp.ts, one shared module flagged like tsjs/ (checklist:
+//! docs/design/ccpp-kernel-port-checklist.md — read it before editing).
+//!
+//! The Objc variant (W1 wasm retirement, third language) reuses this C
+//! declaration machinery and layers languages/objc.ts's semantics on top:
+//! @interface/@implementation class reuse, @protocol, selector-joined
+//! methods, property declarator chains, message_expression call sites and
+//! @selector function refs. See src/objc.rs for the entry point.
 //! docs/design/ccpp-kernel-port-checklist.md — read it before editing).
 //!
 //! The seven preParse blanking passes are NOT here: the TS route point
@@ -70,7 +77,8 @@
 
 use crate::buffers::{
     build_meta, edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
-    RefRow, StrRef, Tables, FLAG_IS_ABSTRACT, FLAG_IS_EXPORTED, FUNCTION_REF_CODE, NONE, NONE_STR,
+    RefRow, StrRef, Tables, FLAG_IS_ABSTRACT, FLAG_IS_EXPORTED, FLAG_IS_STATIC,
+    FUNCTION_REF_CODE, NONE, NONE_STR,
 };
 use crate::docstring::preceding_docstring;
 use crate::ids;
@@ -151,6 +159,57 @@ fn capitalized_re() -> &'static Regex {
 fn qualified_ref_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"^[A-Za-z_][A-Za-z0-9_:]*$").unwrap())
+}
+
+/// OBJC_TYPE_QUALIFIERS (languages/objc.ts) — nullability / ARC qualifiers
+/// that sit where a method return type's first type identifier does.
+fn is_objc_type_qualifier(name: &str) -> bool {
+    matches!(
+        name,
+        "nonnull"
+            | "nullable"
+            | "null_unspecified"
+            | "null_resettable"
+            | "_Nonnull"
+            | "_Nullable"
+            | "_Null_unspecified"
+            | "__nonnull"
+            | "__nullable"
+            | "const"
+            | "volatile"
+            | "strong"
+            | "weak"
+            | "copy"
+            | "assign"
+            | "retain"
+            | "oneway"
+            | "__strong"
+            | "__weak"
+            | "__unsafe_unretained"
+            | "__autoreleasing"
+            | "__kindof"
+    )
+}
+
+/// JS `/^\w+$/` for a selector's chain-resolution eligibility.
+fn is_word(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Rightmost descendant-or-self named child of the given kind
+/// (lastNamedOfType in function-ref.ts).
+fn last_named_of_type<'t>(node: Node<'t>, kind: &str) -> Option<Node<'t>> {
+    let mut found: Option<Node<'t>> = None;
+    for i in 0..node.named_child_count() {
+        let Some(child) = node.named_child(i) else { continue };
+        if child.kind() == kind {
+            found = Some(child);
+        }
+        if let Some(deeper) = last_named_of_type(child, kind) {
+            found = Some(deeper);
+        }
+    }
+    found
 }
 
 /// CPP_NON_CLASS_RETURN (languages/c-cpp.ts).
@@ -285,6 +344,9 @@ fn arrow_dot_no_ws(s: &str) -> String {
 pub enum Variant {
     C,
     Cpp,
+    /// Objective-C (C superset — shares the C declaration handling plus the
+    /// ObjC class/protocol/method/property/message semantics).
+    Objc,
 }
 
 struct Scope {
@@ -301,6 +363,7 @@ struct Extra {
     is_exported: Option<bool>,
     is_abstract: Option<bool>,
     return_type: Option<String>,
+    is_static: Option<bool>,
     qualified_name: Option<String>,
 }
 
@@ -364,6 +427,7 @@ pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut,
     let variant = match language {
         "c" => Variant::C,
         "cpp" => Variant::Cpp,
+        "objc" => Variant::Objc,
         other => return Err(format!("ccpp walker got language '{other}'")),
     };
     let grammar = crate::langs::grammar_for(language).ok_or("no c/cpp grammar")?;
@@ -522,6 +586,9 @@ impl<'t> Walker<'t> {
         if let Some(v) = extra.is_exported {
             flags.set(FLAG_IS_EXPORTED, v);
         }
+        if let Some(v) = extra.is_static {
+            flags.set(FLAG_IS_STATIC, v);
+        }
         if let Some(v) = extra.is_abstract {
             flags.set(FLAG_IS_ABSTRACT, v);
         }
@@ -594,14 +661,25 @@ impl<'t> Walker<'t> {
     // --- name extraction -----------------------------------------------------
 
     /// extractName: extractNameRaw + the universal recoverMangledName net
-    /// (wired for BOTH c and cpp in languages/c-cpp.ts).
+    /// (wired for c/cpp only — languages/c-cpp.ts; objc has no such hook).
     fn extract_name(&self, node: Node) -> String {
+        if self.variant == Variant::Objc {
+            return self.extract_name_raw(node);
+        }
         recover_mangled_cpp_name(self.extract_name_raw(node))
     }
 
-    /// extractNameRaw for the c/cpp extractor configs (nameField 'declarator';
-    /// cpp resolveName = extractCppQualifiedMethodName).
+    /// extractNameRaw for the c/cpp/objc extractor configs (nameField
+    /// 'declarator'; cpp resolveName = extractCppQualifiedMethodName; objc
+    /// resolveName = extractObjcMethodName).
     fn extract_name_raw(&self, node: Node) -> String {
+        if self.variant == Variant::Objc {
+            if let Some(name) = self.extract_objc_method_name(node) {
+                return name;
+            }
+        } else if let Some(name) = self.recover_single_arg_macro_defined_name(node) {
+            return name;
+        }
         if let Some(name) = self.recover_single_arg_macro_defined_name(node) {
             return name;
         }
@@ -648,6 +726,107 @@ impl<'t> Walker<'t> {
             }
         }
         "<anonymous>".to_string()
+    }
+
+    /// extractObjcMethodName (languages/objc.ts): `greet`, `doThing:`,
+    /// `doThing:with:`. Only method_definition / method_declaration qualify.
+    fn extract_objc_method_name(&self, node: Node) -> Option<String> {
+        if !matches!(node.kind(), "method_definition" | "method_declaration") {
+            return None;
+        }
+        let identifiers: Vec<Node> = (0..node.named_child_count())
+            .filter_map(|i| node.named_child(i))
+            .filter(|c| c.kind() == "identifier")
+            .collect();
+        if identifiers.is_empty() {
+            return None;
+        }
+        let has_parameters = (0..node.named_child_count())
+            .filter_map(|i| node.named_child(i))
+            .any(|c| c.kind() == "method_parameter");
+        if !has_parameters {
+            return Some(self.text(identifiers[0]).to_string());
+        }
+        Some(
+            identifiers
+                .iter()
+                .map(|id| format!("{}:", self.text(*id)))
+                .collect::<String>(),
+        )
+    }
+
+    /// extractObjcReturnType: the first `type_identifier` under `method_type`
+    /// that is not a nullability/ARC qualifier. void/id/instancetype yield
+    /// none (the receiver's own class is implied).
+    fn extract_objc_return_type(&self, node: Node) -> Option<String> {
+        if !matches!(node.kind(), "method_definition" | "method_declaration") {
+            return None;
+        }
+        let method_type = (0..node.named_child_count())
+            .filter_map(|i| node.named_child(i))
+            .find(|c| c.kind() == "method_type")?;
+        let mut ids: Vec<String> = Vec::new();
+        self.collect_objc_type_identifiers(method_type, &mut ids);
+        let name = ids.into_iter().find(|n| !is_objc_type_qualifier(n))?;
+        if !simple_ident_re().is_match(&name)
+            || matches!(name.as_str(), "void" | "id" | "instancetype")
+        {
+            return None;
+        }
+        Some(name)
+    }
+
+    fn collect_objc_type_identifiers(&self, node: Node, out: &mut Vec<String>) {
+        if node.kind() == "type_identifier" {
+            out.push(self.text(node).trim().to_string());
+        }
+        for i in 0..node.named_child_count() {
+            if let Some(c) = node.named_child(i) {
+                self.collect_objc_type_identifiers(c, out);
+            }
+        }
+    }
+
+    /// extractObjcPropertyName: property_declaration → struct_declaration →
+    /// struct_declarator → declarator chain → identifier.
+    fn extract_objc_property_name(&self, node: Node) -> Option<String> {
+        if node.kind() != "property_declaration" {
+            return None;
+        }
+        let struct_decl = (0..node.named_child_count())
+            .filter_map(|i| node.named_child(i))
+            .find(|c| c.kind() == "struct_declaration")?;
+        let struct_declarator = (0..struct_decl.named_child_count())
+            .filter_map(|i| struct_decl.named_child(i))
+            .find(|c| c.kind() == "struct_declarator")?;
+        let mut current = struct_declarator;
+        loop {
+            let inner = current.child_by_field_name("declarator").or_else(|| {
+                (0..current.named_child_count())
+                    .filter_map(|i| current.named_child(i))
+                    .find(|c| matches!(c.kind(), "identifier" | "pointer_declarator"))
+            });
+            let Some(inner) = inner else { break };
+            if inner.kind() == "identifier" {
+                return Some(self.text(inner).to_string());
+            }
+            current = inner;
+        }
+        None
+    }
+
+    /// resolveBody (languages/objc.ts): the `body` field, else the first
+    /// direct `compound_statement` child (method_definition has no body field).
+    fn resolve_objc_body(&self, node: Node<'t>) -> Option<Node<'t>> {
+        node.child_by_field_name("body").or_else(|| {
+            (0..node.named_child_count())
+                .filter_map(|i| node.named_child(i))
+                .find(|c| c.kind() == "compound_statement")
+        })
+    }
+
+    fn is_objc_static(&self, node: Node) -> bool {
+        self.text(node).trim_start().starts_with('+')
     }
 
     /// extractCppQualifiedMethodName (languages/c-cpp.ts:75).
@@ -911,7 +1090,7 @@ impl<'t> Walker<'t> {
         // C/C++ function-like macros become `constant` nodes carrying the
         // directive as their signature — a value, never a callee (#1838).
         // Mirrors tree-sitter.ts visitNode.
-        if kind == "preproc_function_def" {
+        if matches!(self.variant, Variant::C | Variant::Cpp) && kind == "preproc_function_def" {
             if let Some(name_node) = node.child_by_field_name("name") {
                 let name = self.text(name_node).to_string();
                 let signature = Some(self.text(node).trim().to_string());
@@ -920,6 +1099,16 @@ impl<'t> Walker<'t> {
             return;
         }
 
+        // Objective-C @implementation: reuse the same-file @interface's class
+        // node (or mint one) and walk only the implementation_definition
+        // children — the languages/objc.ts visitNode hook, bug-for-bug. The
+        // post-hook scanFnRefSubtree mirrors the generic walker's capture-only
+        // sweep of a consumed subtree.
+        if self.variant == Variant::Objc && kind == "class_implementation" {
+            self.extract_objc_class_implementation(node);
+            self.scan_fn_ref_subtree(node, 0);
+            return;
+        }
         // C++ namespace blocks: prefix-only, no node (#1291/#1093). Anonymous
         // namespaces fall through to the generic walk.
         if self.variant == Variant::Cpp && kind == "namespace_definition" {
@@ -965,6 +1154,26 @@ impl<'t> Walker<'t> {
         } else if kind == "enum_specifier" {
             self.extract_enum(node);
             skip_children = true;
+        } else if self.variant == Variant::Objc && kind == "class_interface" {
+            // classTypes: ['class_interface'] — @interface mints the class node.
+            self.extract_objc_class_interface(node);
+            skip_children = true;
+        } else if self.variant == Variant::Objc && kind == "protocol_declaration" {
+            // interfaceTypes: ['protocol_declaration'], interfaceKind 'protocol'.
+            self.extract_objc_protocol(node);
+            skip_children = true;
+        } else if self.variant == Variant::Objc && kind == "method_definition" {
+            // methodTypes: ['method_definition'] (method_declaration is NOT
+            // extracted — it is not in the TS methodTypes list).
+            self.extract_method(node);
+            skip_children = true;
+        } else if self.variant == Variant::Objc
+            && kind == "property_declaration"
+            && self.inside_class_like()
+        {
+            self.extract_property(node);
+            self.scan_fn_ref_subtree(node, 0);
+            skip_children = true;
         } else if kind == "type_definition"
             || (self.variant == Variant::Cpp && kind == "alias_declaration")
         {
@@ -986,7 +1195,9 @@ impl<'t> Walker<'t> {
             skip_children = true;
         } else if kind == "preproc_include" {
             self.extract_import(node);
-        } else if kind == "call_expression" {
+        } else if kind == "call_expression"
+            || (self.variant == Variant::Objc && kind == "message_expression")
+        {
             self.extract_call(node);
         } else if kind == "new_expression" {
             // INSTANTIATION_KINDS: cpp `new Foo(...)`. (No anonymous-class
@@ -1022,7 +1233,7 @@ impl<'t> Walker<'t> {
             return;
         }
         // Misparse artifacts: drop the node, still walk the body (#946/#1061).
-        if self.is_misparsed_function(&name, node) {
+        if self.variant != Variant::Objc && self.is_misparsed_function(&name, node) {
             if let Some(body) = node.child_by_field_name("body") {
                 self.visit_function_body(body);
             }
@@ -1031,9 +1242,22 @@ impl<'t> Walker<'t> {
 
         let extra = Extra {
             docstring: preceding_docstring(node, self.src),
-            signature: self.constructor_signature(node),
+            signature: if self.variant == Variant::Objc {
+                None
+            } else {
+                self.constructor_signature(node)
+            },
             visibility: if self.variant == Variant::Cpp { self.visibility_of(node) } else { None },
-            return_type: self.return_type_of(node),
+            is_static: if self.variant == Variant::Objc {
+                Some(self.is_objc_static(node))
+            } else {
+                None
+            },
+            return_type: if self.variant == Variant::Objc {
+                self.extract_objc_return_type(node)
+            } else {
+                self.return_type_of(node)
+            },
             ..Extra::default()
         };
         let Some(row) = self.create_node("function", &name, node, extra) else { return };
@@ -1042,7 +1266,12 @@ impl<'t> Walker<'t> {
         // kinds never appear as direct children/preceding siblings in these
         // grammars — `attribute` only occurs under attribute_declaration.)
         self.stack.push(Scope { row, kind: "function", name });
-        if let Some(body) = node.child_by_field_name("body") {
+        let body = if self.variant == Variant::Objc {
+            self.resolve_objc_body(node)
+        } else {
+            node.child_by_field_name("body")
+        };
+        if let Some(body) = body {
             self.visit_function_body(body);
         }
         self.stack.pop();
@@ -1059,7 +1288,7 @@ impl<'t> Walker<'t> {
         }
 
         let name = self.extract_name(node);
-        if self.is_misparsed_function(&name, node) {
+        if self.variant != Variant::Objc && self.is_misparsed_function(&name, node) {
             if let Some(body) = node.child_by_field_name("body") {
                 self.visit_function_body(body);
             }
@@ -1068,14 +1297,27 @@ impl<'t> Walker<'t> {
 
         let extra = Extra {
             docstring: preceding_docstring(node, self.src),
-            signature: self.constructor_signature(node),
+            signature: if self.variant == Variant::Objc {
+                None
+            } else {
+                self.constructor_signature(node)
+            },
             visibility: if self.variant == Variant::Cpp { self.visibility_of(node) } else { None },
+            is_static: if self.variant == Variant::Objc {
+                Some(self.is_objc_static(node))
+            } else {
+                None
+            },
             is_abstract: if self.variant == Variant::Cpp && self.is_cpp_pure_virtual_method_decl(node) {
                 Some(true)
             } else {
                 None
             },
-            return_type: self.return_type_of(node),
+            return_type: if self.variant == Variant::Objc {
+                self.extract_objc_return_type(node)
+            } else {
+                self.return_type_of(node)
+            },
             qualified_name: receiver_type
                 .as_ref()
                 .map(|r| self.compose_receiver_qualified_name(r, &name)),
@@ -1112,10 +1354,130 @@ impl<'t> Walker<'t> {
         }
 
         self.stack.push(Scope { row, kind: "method", name });
-        if let Some(body) = node.child_by_field_name("body") {
+        let body = if self.variant == Variant::Objc {
+            self.resolve_objc_body(node)
+        } else {
+            node.child_by_field_name("body")
+        };
+        if let Some(body) = body {
             self.visit_function_body(body);
         }
         self.stack.pop();
+    }
+
+    /// extractClass for Objective-C `@interface` (classTypes ['class_interface']).
+    /// The generic extractor resolves no `body` field, so it walks the whole
+    /// declaration node as the member body (mirrors languages/objc.ts).
+    fn extract_objc_class_interface(&mut self, node: Node<'t>) {
+        stack_guard!();
+        let name = self.extract_name(node);
+        let extra = Extra {
+            docstring: preceding_docstring(node, self.src),
+            ..Extra::default()
+        };
+        let Some(row) = self.create_node("class", &name, node, extra) else { return };
+        self.extract_inheritance(node, row);
+        self.stack.push(Scope { row, kind: "class", name });
+        for i in 0..node.named_child_count() {
+            if let Some(c) = node.named_child(i) {
+                self.visit_node(c);
+            }
+        }
+        self.stack.pop();
+    }
+
+    /// extractInterface for Objective-C `@protocol` (interfaceTypes
+    /// ['protocol_declaration'], interfaceKind 'protocol').
+    fn extract_objc_protocol(&mut self, node: Node<'t>) {
+        stack_guard!();
+        let name = self.extract_name(node);
+        let extra = Extra {
+            docstring: preceding_docstring(node, self.src),
+            ..Extra::default()
+        };
+        let Some(row) = self.create_node("protocol", &name, node, extra) else { return };
+        self.extract_inheritance(node, row);
+        self.stack.push(Scope { row, kind: "protocol", name });
+        for i in 0..node.named_child_count() {
+            if let Some(c) = node.named_child(i) {
+                self.visit_node(c);
+            }
+        }
+        self.stack.pop();
+    }
+
+    /// languages/objc.ts visitNode hook: `@implementation` reuses the class
+    /// node minted by a same-file `@interface` (or mints one) and walks only
+    /// `implementation_definition` children. It emits no extends edge and no
+    /// docstring of its own.
+    fn extract_objc_class_implementation(&mut self, node: Node<'t>) {
+        stack_guard!();
+        let Some(name_node) = (0..node.named_child_count())
+            .filter_map(|i| node.named_child(i))
+            .find(|c| c.kind() == "identifier")
+        else {
+            return;
+        };
+        let class_name = self.text(name_node).to_string();
+        let row = self
+            .nodes_meta
+            .iter()
+            .position(|m| m.kind == "class" && m.name == class_name)
+            .map(|i| i as u32)
+            .or_else(|| self.create_node("class", &class_name, node, Extra::default()));
+        let Some(row) = row else { return };
+
+        self.stack.push(Scope { row, kind: "class", name: class_name });
+        for i in 0..node.named_child_count() {
+            let Some(child) = node.named_child(i) else { continue };
+            if child.kind() != "implementation_definition" {
+                continue;
+            }
+            for j in 0..child.named_child_count() {
+                if let Some(impl_child) = child.named_child(j) {
+                    self.visit_node(impl_child);
+                }
+            }
+        }
+        self.stack.pop();
+    }
+
+    /// extractProperty for Objective-C property_declaration. The generic
+    /// extractor takes the first named child not in its exclusion list as the
+    /// type text — for `@property (nonatomic, strong) Foo *x` that is the
+    /// property_attributes_declaration, so the signature is
+    /// `(nonatomic, strong) x` (bug-for-bug with the wasm arm).
+    fn extract_property(&mut self, node: Node<'t>) {
+        stack_guard!();
+        let Some(name) = self.extract_objc_property_name(node) else { return };
+        let type_node = (0..node.named_child_count())
+            .filter_map(|i| node.named_child(i))
+            .find(|c| {
+                !matches!(
+                    c.kind(),
+                    "modifier"
+                        | "modifiers"
+                        | "identifier"
+                        | "accessor_list"
+                        | "accessors"
+                        | "equals_value_clause"
+                )
+            });
+        let signature = type_node.map(|t| {
+            let type_text = self.text(t).trim_start_matches(':').trim_start();
+            format!("{} {}", type_text, name)
+        });
+        self.create_node(
+            "property",
+            &name,
+            node,
+            Extra {
+                docstring: preceding_docstring(node, self.src),
+                signature,
+                is_static: Some(false),
+                ..Extra::default()
+            },
+        );
     }
 
     /// extractClass for cpp class_specifier (skipBodilessClass, #1093).
@@ -1388,6 +1750,13 @@ impl<'t> Walker<'t> {
             return;
         }
         let caller_row = self.top_row();
+        // Objective-C message send — its own selector-join semantics (one
+        // `method` field child per keyword), mirroring the generic
+        // extractCall message_expression branch.
+        if self.variant == Variant::Objc && node.kind() == "message_expression" {
+            self.extract_objc_message(node, caller_row);
+            return;
+        }
         let func = node
             .child_by_field_name("function")
             .or_else(|| node.named_child(0));
@@ -1463,7 +1832,7 @@ impl<'t> Walker<'t> {
                                 callee_name = method_name.to_string();
                             }
                         }
-                        Some("call_expression") => {
+                        Some("call_expression") if self.variant != Variant::Objc => {
                             // Call-result receiver (#645/#608): re-encode as
                             // `<innerCallee>().<method>` — C/C++ re-encode any inner.
                             let inner_fn = receiver.unwrap().child_by_field_name("function");
@@ -1493,8 +1862,12 @@ impl<'t> Walker<'t> {
             }
         }
 
-        // Template-arg strip on callees (`fn<T, 256>(args)`, `ns::fn<T>()`).
-        if !callee_name.is_empty() && callee_name.contains('<') && !callee_name.contains("operator")
+        // Template-arg strip on callees (`fn<T, 256>(args)`, `ns::fn<T>()`) —
+        // c/cpp only (the generic extractCall gates it on the language).
+        if self.variant != Variant::Objc
+            && !callee_name.is_empty()
+            && callee_name.contains('<')
+            && !callee_name.contains("operator")
         {
             callee_name = strip_cpp_template_args(&callee_name);
         }
@@ -1521,6 +1894,104 @@ impl<'t> Walker<'t> {
         }
 
         if !callee_name.is_empty() {
+            self.push_ref_at(caller_row, &callee_name, calls_kind, node);
+        }
+    }
+
+    /// Objective-C message send: join the `method`-field keywords into a
+    /// selector (`reset`, `storeImage:`, `a:b:`), prefix a non-self/super
+    /// receiver, emit a `references` ref for a capitalized (class) receiver,
+    /// and handle the chained `[[Foo create] doIt]` class-factory form.
+    fn extract_objc_message(&mut self, node: Node<'t>, caller_row: u32) {
+        let calls_kind = edge_kind_index("calls").unwrap();
+        let mut keywords: Vec<String> = Vec::new();
+        for i in 0..node.named_child_count() {
+            if node.field_name_for_named_child(i as u32) == Some("method") {
+                if let Some(kw) = node.named_child(i) {
+                    keywords.push(self.text(kw).to_string());
+                }
+            }
+        }
+        if keywords.is_empty() {
+            return;
+        }
+        let mut has_colon = false;
+        for i in 0..node.child_count() {
+            if node.child(i).map(|c| c.kind() == ":").unwrap_or(false) {
+                has_colon = true;
+                break;
+            }
+        }
+        let method_name = if has_colon {
+            keywords.iter().map(|k| format!("{k}:")).collect::<String>()
+        } else {
+            keywords[0].clone()
+        };
+
+        let mut callee_name = String::new();
+        if let Some(receiver) = node.child_by_field_name("receiver") {
+            if receiver.kind() != "message_expression" {
+                let receiver_name = self.text(receiver);
+                if !receiver_name.is_empty() && !matches!(receiver_name, "self" | "super") {
+                    callee_name = format!("{receiver_name}.{method_name}");
+                    // A capitalized receiver is a CLASS message — record the
+                    // class as a dependency (its @interface may live in a header).
+                    if capitalized_re().is_match(receiver_name) {
+                        let refs_kind = edge_kind_index("references").unwrap();
+                        self.push_ref_at(caller_row, receiver_name, refs_kind, receiver);
+                    }
+                } else {
+                    callee_name = method_name.clone();
+                }
+            } else if is_word(&method_name) {
+                // Chained message send `[[Foo create] doIt]` — recover the
+                // inner `Class.selector` and encode `Class.selector().doIt`.
+                let inner_recv = receiver.child_by_field_name("receiver");
+                let inner_name = inner_recv.map(|r| self.text(r)).unwrap_or("");
+                let inner_ok = inner_recv
+                    .map(|r| {
+                        r.kind() == "identifier"
+                            && inner_name.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false)
+                    })
+                    .unwrap_or(false);
+                if inner_ok {
+                    let mut inner_kw: Vec<String> = Vec::new();
+                    for i in 0..receiver.named_child_count() {
+                        if receiver.field_name_for_named_child(i as u32) == Some("method") {
+                            if let Some(kw) = receiver.named_child(i) {
+                                inner_kw.push(self.text(kw).to_string());
+                            }
+                        }
+                    }
+                    let mut inner_colon = false;
+                    for i in 0..receiver.child_count() {
+                        if receiver.child(i).map(|c| c.kind() == ":").unwrap_or(false) {
+                            inner_colon = true;
+                            break;
+                        }
+                    }
+                    let inner_selector = if inner_colon {
+                        inner_kw.iter().map(|k| format!("{k}:")).collect::<String>()
+                    } else {
+                        inner_kw.first().cloned().unwrap_or_default()
+                    };
+                    callee_name = if inner_selector.is_empty() {
+                        method_name.clone()
+                    } else {
+                        format!("{inner_name}.{inner_selector}().{method_name}")
+                    };
+                } else {
+                    callee_name = method_name.clone();
+                }
+            } else {
+                callee_name = method_name.clone();
+            }
+        }
+
+        if !callee_name.is_empty() {
+            if let Some(c) = util::paren_conversion().captures(&callee_name) {
+                callee_name = c[1].to_string();
+            }
             self.push_ref_at(caller_row, &callee_name, calls_kind, node);
         }
     }
@@ -1768,13 +2239,15 @@ impl<'t> Walker<'t> {
         stack_guard!();
         let kind = node.kind();
         // A function-like macro defined inside a body is still a macro (#1838).
-        if kind == "preproc_function_def" {
+        if matches!(self.variant, Variant::C | Variant::Cpp) && kind == "preproc_function_def" {
             self.visit_node(node);
             return;
         }
         self.maybe_capture_fn_refs(node);
 
-        if kind == "call_expression" {
+        if kind == "call_expression"
+            || (self.variant == Variant::Objc && kind == "message_expression")
+        {
             self.extract_call(node);
         } else if kind == "new_expression" {
             self.extract_instantiation(node);
@@ -1871,6 +2344,35 @@ impl<'t> Walker<'t> {
     fn extract_inheritance(&mut self, node: Node<'t>, class_row: u32) {
         stack_guard!();
         let extends_kind = edge_kind_index("extends").unwrap();
+        // Objective-C @interface MyClass : NSObject <ProtoA, ProtoB> — the
+        // `superclass` field is the base; each parameterized_arguments child
+        // names an adopted protocol (implements). This branch RETURNS: the
+        // generic clause loop does not apply to class_interface.
+        if node.kind() == "class_interface" {
+            if let Some(superclass) = node.child_by_field_name("superclass") {
+                let name = self.text(superclass).to_string();
+                self.push_ref_at(class_row, &name, extends_kind, superclass);
+            }
+            let implements_kind = edge_kind_index("implements").unwrap();
+            for j in 0..node.named_child_count() {
+                let Some(arg_list) = node.named_child(j) else { continue };
+                if arg_list.kind() != "parameterized_arguments" {
+                    continue;
+                }
+                for k in 0..arg_list.named_child_count() {
+                    let Some(type_name) = arg_list.named_child(k) else { continue };
+                    let Some(type_id) = (0..type_name.named_child_count())
+                        .filter_map(|m| type_name.named_child(m))
+                        .find(|c| matches!(c.kind(), "type_identifier" | "identifier"))
+                    else {
+                        continue;
+                    };
+                    let protocol_name = self.text(type_id).to_string();
+                    self.push_ref_at(class_row, &protocol_name, implements_kind, type_id);
+                }
+            }
+            return;
+        }
         for i in 0..node.named_child_count() {
             let Some(child) = node.named_child(i) else { continue };
             match child.kind() {
@@ -2008,6 +2510,23 @@ impl<'t> Walker<'t> {
                     return;
                 }
                 self.normalize_fn_ref_value(inner, from, mode, explicit_ref, depth + 1);
+            }
+            // ObjC `@selector(...)` (cFamilySpec special). An identifier /
+            // simple_identifier child names the selector directly; a
+            // method_identifier (`@selector(a:b:)`) keeps its text; a Swift-
+            // style dotted form would take the rightmost simple_identifier.
+            "selector_expression" if self.variant == Variant::Objc => {
+                let Some(inner) = v.named_child(0) else { return };
+                let node = if matches!(inner.kind(), "identifier" | "simple_identifier") {
+                    inner
+                } else {
+                    last_named_of_type(v, "simple_identifier").unwrap_or(inner)
+                };
+                let name = self.text(node).trim();
+                if name.is_empty() || is_stoplisted(name) {
+                    return;
+                }
+                self.push_fn_ref_cand(from, name.to_string(), mode, explicit_ref, node);
             }
             _ => {}
         }

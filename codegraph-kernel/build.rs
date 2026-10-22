@@ -104,4 +104,25 @@ fn main() {
     nix.flag_if_supported("-utf-8"); // msvc
     nix.compile("tree-sitter-nix");
     println!("cargo:rerun-if-changed=grammars/nix");
+
+    // Objective-C grammar — vendored C (W1 wasm-retirement wave, third and
+    // largest language): the vendored wasm is tree-sitter-wasms 0.1.13's
+    // objc entry, built from amaanq/tree-sitter-objc 2.1.0 (the same 2.1.0
+    // line the crates.io tarball ships — ABI 14, STATE_COUNT 9561,
+    // SYMBOL_COUNT 567 / FIELD_COUNT 46). Sources are that crate tarball's
+    // src/ (only parser.c — no external scanner):
+    //   parser.c 5e49451fb32c3b8668750762ce9a2b5ccc2c09115ebb0a1b1872ab3922a8dfb7
+    // The crate depends on tree-sitter ~0.20.10, too old for this kernel
+    // (0.25 links ABI 13/14/15), so it is NOT a Cargo dep — build.rs compiles
+    // the C and langs.rs shims it through tree-sitter-language. Bump this
+    // vendored grammar and the wasm together.
+    let mut objc = cc::Build::new();
+    objc.include("grammars/objc");
+    objc.file("grammars/objc/parser.c");
+    objc.flag_if_supported("-Wno-unused-parameter");
+    objc.flag_if_supported("-Wno-unused-but-set-variable");
+    objc.flag_if_supported("-Wno-trigraphs");
+    objc.flag_if_supported("-utf-8"); // msvc
+    objc.compile("tree-sitter-objc");
+    println!("cargo:rerun-if-changed=grammars/objc");
 }

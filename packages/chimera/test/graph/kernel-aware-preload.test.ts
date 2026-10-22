@@ -12,10 +12,11 @@
  *     (extractWithDeferredGrammarLoad — the shared helper behind the parse
  *     worker's 'parse' handler, indexAll's no-pool branch, and
  *     indexFileWithContent), then the extraction replays once.
- *  c) Behavior-preserved surfaces: non-routed languages (objc via the #1628
- *     `.h` expansion, ruling-⑤ `r`) stay in the preload set untouched, the
- *     CODEGRAPH_KERNEL=0 kill switch restores the full preload, and
- *     defer-eligible c/cpp keep the pool (isKernelOnlyLanguageSet false).
+ *  c) Behavior-preserved surfaces: ruling-⑤ `r` stays in the preload set
+ *     untouched, the #1628 `.h` expansion still ADDS objc to the raw set but
+ *     the filter removes it (objc is wave-5 routed), the CODEGRAPH_KERNEL=0
+ *     kill switch restores the full preload, and defer-eligible c/cpp keep
+ *     the pool (isKernelOnlyLanguageSet false).
  *
  * The kernel arm is exercised with an INJECTED fake module
  * (setKernelForTests, kernel-selector.test.ts pattern) so the assertions are
@@ -60,19 +61,20 @@ const TS_SOURCE = `export class Svc {\n  run(x: number): string { return String(
 /** Fake kernel à la kernel-selector.test.ts — marker output or a `defer:` throw. */
 function makeFakeKernel(opts?: { defer?: boolean }): { mod: KernelModule; calls: string[] } {
   const calls: string[] = [];
-  const buffers = buildKernelBuffers({
-    nodes: [
-      { kind: 'file', name: 'marker-file', id: 'file:marker' },
-      { kind: 'function', name: 'kernelMarker', id: 'function:kernelMarker' },
-    ],
-    edges: [{ source: 0, target: 1, kind: 'contains' }],
-    refs: [],
-  });
   const mod: KernelModule = {
     extractFile(filePath, _content, language) {
       calls.push(`${filePath}:${language}`);
       if (opts?.defer) throw new Error('defer: parse tree contains errors — wasm recovery is canonical');
-      return buffers;
+      // Per-file ids: two kernel-routed files in one indexAll run must not
+      // collide on the fake marker rows (real extraction ids are per-file).
+      return buildKernelBuffers({
+        nodes: [
+          { kind: 'file', name: 'marker-file', id: `file:${filePath}` },
+          { kind: 'function', name: 'kernelMarker', id: `function:kernelMarker:${filePath}` },
+        ],
+        edges: [{ source: 0, target: 1, kind: 'contains' }],
+        refs: [],
+      });
     },
     contractInfo() {
       return {
@@ -80,9 +82,9 @@ function makeFakeKernel(opts?: { defer?: boolean }): { mod: KernelModule; calls:
         kernelVersion: 'fake-preload-test-kernel',
         nodeKinds: [...NODE_KINDS],
         edgeKinds: [...EDGE_KINDS],
-        // Deliberately WITHOUT objc/r: those must stay wasm-routed no matter
-        // which languages are routed here.
-        languages: ['typescript', 'tsx', 'javascript', 'jsx', 'python', 'go', 'c', 'cpp', 'lua', 'luau', 'kotlin', 'scala', 'dart'],
+        // r is deliberately absent: ruling-⑤ never routes. objc IS present —
+        // the wave-5 W1 arm covers it, so it must filter out of the preload set.
+        languages: ['typescript', 'tsx', 'javascript', 'jsx', 'python', 'go', 'c', 'cpp', 'lua', 'luau', 'kotlin', 'scala', 'dart', 'objc'],
       };
     },
     grammarInfo() {
@@ -188,15 +190,15 @@ describe('T0-1 kernel-aware grammar preload', () => {
       const raw = preloadLanguagesForFiles(['a.c', 'b.cpp']);
       // #1628 `.h`-ambiguity expansion: c drags cpp + objc into the raw set.
       expect(raw).toContain('objc');
-      // c/cpp route to the kernel ⇒ out of the preload set; objc does NOT
-      // route ⇒ it stays preloaded exactly as before (the #1628 contract).
-      expect(filterKernelRoutedLanguages(raw)).toEqual(['objc']);
+      // All three route to the kernel ⇒ the preload set is empty (objc is now
+      // routed too — the wave-5 W1 arm; #1628 still adds it to the RAW set).
+      expect(filterKernelRoutedLanguages(raw)).toEqual([]);
       // A defer-eligible language in the set ⇒ NOT kernel-only ⇒ indexAll
       // keeps the worker pool for the 10–40% defer band.
       expect(isKernelOnlyLanguageSet(raw)).toBe(false);
     });
 
-    it('mixed set with non-routed objc / ruling-⑤ r keeps them in the preload set', () => {
+    it('mixed set: routed objc filters out; ruling-⑤ r stays in the preload set', () => {
       const { mod } = makeFakeKernel();
       setKernelForTests(mod);
 
@@ -207,7 +209,7 @@ describe('T0-1 kernel-aware grammar preload', () => {
 
       const filtered = filterKernelRoutedLanguages(raw);
       expect(filtered).not.toContain('typescript'); // routed ⇒ lazy-only
-      expect(filtered).toContain('objc'); // not routed ⇒ preloaded (unchanged)
+      expect(filtered).not.toContain('objc'); // routed (W1) ⇒ lazy-only
       expect(filtered).toContain('r'); // ruling-⑤: never routed, silent degradation intact
       expect(isKernelOnlyLanguageSet(raw)).toBe(false);
     });
@@ -227,10 +229,10 @@ describe('T0-1 kernel-aware grammar preload', () => {
         durationMs: 0,
       };
       expect(missingKernelDeferredGrammar(parseErr, 'typescript')).toBeNull();
-      // Non-routed language with the no-parser shape ⇒ null: ruling-⑤ names
-      // keep their unavailableGrammarErrors silent degradation, non-routed
-      // names keep their preload. No pointless reload loop.
-      expect(missingKernelDeferredGrammar(parserErrorResult('objc'), 'objc')).toBeNull();
+      // Routed languages with the no-parser shape ⇒ lazy load, including objc
+      // (W1). Non-routed ruling-⑤ names stay null: their
+      // unavailableGrammarErrors degradation is kept, no pointless reload loop.
+      expect(missingKernelDeferredGrammar(parserErrorResult('objc'), 'objc')).toBe('objc');
       expect(missingKernelDeferredGrammar(parserErrorResult('r'), 'r')).toBeNull();
     });
   });
@@ -309,7 +311,7 @@ describe('T0-1 kernel-aware grammar preload', () => {
       }
     });
 
-    it('indexAll end-to-end: mixed ts + objc project — routed file takes the kernel, non-routed objc stays wasm', async () => {
+    it('indexAll end-to-end: mixed ts + objc project — both routed files take the kernel', async () => {
       const { mod, calls } = makeFakeKernel();
       setKernelForTests(mod);
 
@@ -325,20 +327,12 @@ describe('T0-1 kernel-aware grammar preload', () => {
       try {
         const result = await cg.indexAll();
         expect(result.success).toBe(true);
-        // The .ts file went native; the fake kernel never saw the .m file
-        // (objc is not in its language table ⇒ kernelSupports gate).
-        expect(calls).toEqual(['src/a.ts:typescript']);
-        const tsNodes = cg.getNodesInFile('src/a.ts');
-        expect(tsNodes.some((n) => n.name === 'kernelMarker')).toBe(true);
-        // objc keeps its pre-existing wasm behavior: when the grammar is
-        // available (npm tree-sitter-wasms) the file yields wasm nodes with
-        // no kernel marker; when it is genuinely unavailable on this
-        // machine, the ruling stays the pre-T0-1 silent degradation — the
-        // filter above never removed it from the preload set either way.
-        if (isGrammarLoaded('objc')) {
-          const mNodes = cg.getNodesInFile('src/b.m');
-          expect(mNodes.length).toBeGreaterThan(0);
-          expect(mNodes.some((n) => n.name === 'kernelMarker')).toBe(false);
+        // Both files went native: objc is a wave-5 W1 routed language now, so
+        // the fake kernel's language table covers it.
+        expect(calls.sort()).toEqual(['src/a.ts:typescript', 'src/b.m:objc']);
+        for (const file of ['src/a.ts', 'src/b.m']) {
+          const nodes = cg.getNodesInFile(file);
+          expect(nodes.some((n) => n.name === 'kernelMarker')).toBe(true);
         }
       } finally {
         cg.close();

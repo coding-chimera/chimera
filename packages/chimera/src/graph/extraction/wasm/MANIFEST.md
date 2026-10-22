@@ -12,8 +12,13 @@ identity between the two arms; bump the crate pin and the vendored wasm
 together, and update this manifest.
 
 `jsx` shares `tree-sitter-javascript.wasm` (mirrors the kernel's langs.rs).
-`objc` is NOT vendored — it still resolves from the tree-sitter-wasms npm
-package (the kernel has no objc arm; no parity constraint).
+`objc` is NOT vendored here — it still resolves from the tree-sitter-wasms npm
+package, but the kernel arm is now established (W1, third language): the
+kernel's vendored C is amaanq/tree-sitter-objc 2.1.0 (ABI 14, STATE_COUNT
+9561, 567 kinds / 46 fields — the same 2.1.0 line the npm artifact was built
+from; build.rs grammars/objc). The grammar stays pinned at 2.1.0: 3.0.2 is a
+different parse table and would need its own wasm re-vendor + baseline
+decision. The npm wasm path stays in service until objc's wasm is retired.
 
 | file | language(s) | grammar revision (pinned) | sha256 |
 | --- | --- | --- | --- |
@@ -40,6 +45,7 @@ package (the kernel has no objc arm; no parity constraint).
 
 Note: kotlin and dart were vendored as the hardening follow-up (2026-09-16) —
 both now load from this directory like every other kernel-routable language.
-Only `objc` still resolves through tree-sitter-wasms (no kernel arm; outside
-the parity gate). The grammar-parity test asserts all 21 gate languages
-strictly against these artifacts.
+Only `objc` still resolves through tree-sitter-wasms at runtime (its kernel
+arm exists now, but no wasm copy is vendored here yet; it is outside this
+manifest's vendored set). The grammar-parity test asserts all 22 gate
+languages strictly against these artifacts plus the kernel's objc grammar.
