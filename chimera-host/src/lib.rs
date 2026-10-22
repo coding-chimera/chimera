@@ -2,8 +2,9 @@
 //!
 //! This crate is intentionally lib-only: it implements the byte-level frame
 //! codec described in `packages/chimera/specs/rust-host/ipc-v0.md` (§3) plus
-//! CRC32C and bounded `MORE` fragment reassembly. It has no external
-//! dependencies and produces no binaries.
+//! CRC32C, bounded `MORE` fragment reassembly, and the connection layer that
+//! streams frames and enforces `transport_sequence` continuity. It has no
+//! external dependencies and produces no binaries.
 //!
 //! ```
 //! use chimera_host::frame::{
@@ -28,6 +29,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod connection;
 pub mod crc32c;
 pub mod frame;
 pub mod handshake;

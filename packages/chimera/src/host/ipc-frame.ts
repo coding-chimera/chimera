@@ -57,6 +57,7 @@ export type FrameErrorCode =
   | "decode_error"
   | "unknown_frame_kind"
   | "unsupported_protocol_version"
+  | "sequence_gap"
 
 export class FrameError extends Error {
   readonly code: FrameErrorCode

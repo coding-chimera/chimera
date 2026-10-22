@@ -105,6 +105,16 @@ pub enum FrameError {
     PayloadTooLarge,
     /// The frame is truncated, checksum-failed, or otherwise undecodable.
     DecodeError,
+    /// The receive direction skipped a `DURABLE` `transport_sequence` (§7.3).
+    ///
+    /// Transient gaps are counted by the connection layer and do not surface
+    /// here; only a durable discontinuity is fatal to the commit stream.
+    SequenceGap {
+        /// Sequence the receiver expected next.
+        expected: u64,
+        /// Sequence actually carried by the frame.
+        received: u64,
+    },
     /// `frame_kind` is not one of 1..=9.
     UnknownFrameKind(u8),
 }
@@ -118,6 +128,7 @@ impl FrameError {
             FrameError::FrameTooLarge => "frame_too_large",
             FrameError::PayloadTooLarge => "payload_too_large",
             FrameError::DecodeError => "decode_error",
+            FrameError::SequenceGap { .. } => "sequence_gap",
             FrameError::UnknownFrameKind(_) => "unknown_frame_kind",
         }
     }
@@ -125,7 +136,7 @@ impl FrameError {
     /// §10.2 category.
     pub fn category(self) -> &'static str {
         match self {
-            FrameError::UnknownFrameKind(_) => "protocol",
+            FrameError::UnknownFrameKind(_) | FrameError::SequenceGap { .. } => "protocol",
             _ => "transport",
         }
     }
@@ -134,6 +145,13 @@ impl FrameError {
 impl core::fmt::Display for FrameError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            FrameError::SequenceGap { expected, received } => write!(
+                f,
+                "{}: expected sequence {}, received {}",
+                self.code(),
+                expected,
+                received
+            ),
             FrameError::UnknownFrameKind(kind) => {
                 write!(f, "{}: unknown frame_kind {}", self.code(), kind)
             }
