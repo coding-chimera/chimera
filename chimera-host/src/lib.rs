@@ -1,10 +1,11 @@
 //! `chimera-host` — Rust host IPC v0 framing primitives.
 //!
-//! This crate is intentionally lib-only: it implements the byte-level frame
-//! codec described in `packages/chimera/specs/rust-host/ipc-v0.md` (§3) plus
-//! CRC32C, bounded `MORE` fragment reassembly, and the connection layer that
-//! streams frames and enforces `transport_sequence` continuity. It has no
-//! external dependencies and produces no binaries.
+//! This crate implements the byte-level frame codec described in
+//! `packages/chimera/specs/rust-host/ipc-v0.md` (§3) plus CRC32C, bounded
+//! `MORE` fragment reassembly, and the connection layer that streams frames
+//! and enforces `transport_sequence` continuity. It has no external
+//! dependencies and ships one binary, `chimera-host`
+//! (`src/bin/chimera-host.rs`), which runs the host as a standalone process.
 //!
 //! ```
 //! use chimera_host::frame::{

@@ -3,10 +3,14 @@ name = "chimera-host"
 version = "0.0.0"
 edition = "2021"
 publish = false
-description = "Rust host IPC v0 framing codec + durable host-control store (lib-only, no binaries)"
+description = "Rust host IPC v0 framing codec, durable host-control store, and the standalone chimera-host process"
 
 [lib]
 crate-type = ["rlib"]
+
+[[bin]]
+name = "chimera-host"
+path = "src/bin/chimera-host.rs"
 
 [dependencies]
 # H1 durable state layer (specs/rust-host/recovery-matrix.md §8): the host owns
