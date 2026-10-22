@@ -31,12 +31,13 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use crate::host_driver::{Clock, HostError};
+use crate::host_driver::{Clock, DurableEvent, HostError, HostEvent, RequestRouter, ServeOutcome};
 use crate::runtime::{
-    HostRuntime, HostRuntimeConfig, Listener, TickOutcome, WorkerRef, DRAIN_DEADLINE_CANDIDATE_MS,
-    HEARTBEAT_INTERVAL_MS, HEARTBEAT_SCAN_INTERVAL_MS, RESTART_JITTER_MS,
+    ConnectionServe, HostRuntime, HostRuntimeConfig, Listener, TickOutcome, WorkerRef,
+    DRAIN_DEADLINE_CANDIDATE_MS, HEARTBEAT_INTERVAL_MS, HEARTBEAT_SCAN_INTERVAL_MS,
+    RESTART_JITTER_MS,
 };
-use crate::store::HostStore;
+use crate::store::{HostStore, NewHostEvent, StoreError};
 use crate::supervisor::HEARTBEAT_TIMEOUT_MS;
 
 /// Environment key for the process-wide host mode (§12.3).
@@ -567,6 +568,32 @@ impl<C: Clock> Clock for SharedClock<C> {
     }
 }
 
+/// One connection handled by [`HostHandle::serve_round`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectionReport {
+    /// Workspace the connection serves.
+    pub workspace_id: String,
+    /// Fencing generation of the connection.
+    pub generation: u64,
+    /// Host-assigned connection id.
+    pub connection_id: u64,
+    /// How the serve step stopped; `None` when the driver returned an error.
+    pub outcome: Option<ServeOutcome>,
+    /// Driver error text when the serve step failed.
+    pub error: Option<String>,
+    /// Durable events committed and acknowledged this round.
+    pub durable_committed: usize,
+    /// Transient events accepted this round (never stored, §8.2).
+    pub transient_accepted: usize,
+}
+
+/// Result of one [`HostHandle::serve_round`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ServeRound {
+    /// One report per connection that was live when the round started.
+    pub connections: Vec<ConnectionReport>,
+}
+
 /// Driveable host handle returned by [`run_host`].
 ///
 /// It owns the runtime and the durable store. Each call is one bounded step;
@@ -619,6 +646,123 @@ impl<L: Listener, C: Clock> HostHandle<L, C> {
     /// Accept at most one pending worker connection.
     pub fn accept_next(&mut self) -> Result<Option<WorkerRef>, HostError> {
         self.runtime.accept_next()
+    }
+
+    /// Serve one bounded round: drive every live connection, commit durable
+    /// events, and acknowledge them in commit-before-ack order (§8.2, §8.5).
+    ///
+    /// For each [`HostEvent::Durable`] the event is appended to `host_event`
+    /// first; only a successful append sends `ack(phase=durable_committed)`.
+    /// Transient events are accepted without a store write and never acked
+    /// (§8.2: transient events need no ack). A store failure is logged to
+    /// stderr, leaves the failing event unacknowledged, and is returned to the
+    /// caller instead of being swallowed. Driver errors are recorded per
+    /// connection; the round continues with the next connection.
+    pub fn serve_round<T: RequestRouter>(
+        &mut self,
+        router: &mut T,
+    ) -> Result<ServeRound, StoreError> {
+        let mut round = ServeRound::default();
+        let now_ms = self.clock.now_ms();
+        for (workspace_id, generation) in self.runtime.live_connections() {
+            let Some(served) = self.runtime.serve_connection(&workspace_id, generation, router)
+            else {
+                continue;
+            };
+            let mut durable_committed = 0;
+            let mut transient_accepted = 0;
+            for event in &served.events {
+                match event {
+                    HostEvent::Durable(event) => {
+                        let new_event = self.new_host_event(&served, event, now_ms);
+                        let appended = match self.store.append_event(&new_event) {
+                            Ok(appended) => appended,
+                            Err(error) => {
+                                let _ = writeln!(
+                                    io::stderr(),
+                                    "chimera-host: durable event commit failed workspace={} generation={} connection={} event={}: {error}",
+                                    served.workspace_id,
+                                    served.generation,
+                                    served.connection_id,
+                                    event.event
+                                );
+                                return Err(error);
+                            }
+                        };
+                        match self.runtime.acknowledge_durable(
+                            &workspace_id,
+                            generation,
+                            appended.seq as u64,
+                        ) {
+                            Ok(()) => durable_committed += 1,
+                            Err(error) => {
+                                let _ = writeln!(
+                                    io::stderr(),
+                                    "chimera-host: durable ack failed workspace={} generation={} event_seq={}: {error}",
+                                    workspace_id, generation, appended.seq
+                                );
+                            }
+                        }
+                    }
+                    HostEvent::Transient(_) => transient_accepted += 1,
+                }
+            }
+            let error = served.outcome.as_ref().err().map(|error| error.to_string());
+            let outcome = served.outcome.as_ref().ok().cloned();
+            self.runtime.settle_connection(&workspace_id, generation, &served.outcome);
+            round.connections.push(ConnectionReport {
+                workspace_id,
+                generation,
+                connection_id: served.connection_id,
+                outcome,
+                error,
+                durable_committed,
+                transient_accepted,
+            });
+        }
+        Ok(round)
+    }
+
+    /// Map one durable inbound event onto the `host_event` row (§8.5).
+    fn new_host_event(
+        &self,
+        served: &ConnectionServe,
+        event: &DurableEvent,
+        now_ms: u64,
+    ) -> NewHostEvent {
+        let aggregate_id = event
+            .session_id
+            .clone()
+            .or_else(|| event.job_id.clone())
+            .unwrap_or_else(|| format!("{}:{}", served.workspace_id, served.generation));
+        let event_id = format!(
+            "evt_{}_{}_{}_{}",
+            served.workspace_id,
+            served.generation,
+            served.connection_id,
+            event.transport_sequence
+        );
+        let dedupe_key = match event.event_seq {
+            Some(seq) => format!("{aggregate_id}:{}:{seq}", event.event),
+            None => event_id.clone(),
+        };
+        NewHostEvent {
+            event_id,
+            dedupe_key,
+            workspace_id: Some(served.workspace_id.clone()),
+            project_id: None,
+            aggregate_id,
+            aggregate_seq: event.event_seq.map(|seq| seq as i64),
+            event_type: event.event.clone(),
+            worker_id: self
+                .runtime
+                .registry()
+                .get(&served.workspace_id, served.generation)
+                .map(|record| record.worker_id.to_string()),
+            worker_generation: Some(served.generation as i64),
+            payload: event.payload.render(),
+            created_at: now_ms as i64,
+        }
     }
 }
 
@@ -928,6 +1072,245 @@ mod tests {
         assert!(outcome.unresponsive.is_empty());
         assert!(handle.runtime().is_idle());
         assert_eq!(handle.accept_next().unwrap(), None);
+
+        drop(handle);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    // --- serve_round / commit-before-ack ------------------------------------
+
+    use crate::connection::FrameReader;
+    use crate::frame::{FrameKind, Header, FLAG_DURABLE, PROTOCOL_VERSION_V0};
+    use crate::host_driver::{IncomingRequest, Json, OutgoingResponse, RequestRouter};
+    use std::collections::VecDeque;
+    use std::io::Cursor;
+
+    const CONNECTION: u64 = 1;
+
+    #[derive(Debug, Clone, Default)]
+    struct SharedSink(Rc<RefCell<Vec<u8>>>);
+
+    impl SharedSink {
+        fn bytes(&self) -> Vec<u8> {
+            self.0.borrow().clone()
+        }
+    }
+
+    impl Write for SharedSink {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.borrow_mut().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct TestListener {
+        queued: VecDeque<(Cursor<Vec<u8>>, SharedSink)>
+    }
+
+    impl TestListener {
+        fn push(&mut self, input: Vec<u8>) -> SharedSink {
+            let sink = SharedSink::default();
+            self.queued.push_back((Cursor::new(input), sink.clone()));
+            sink
+        }
+    }
+
+    impl Listener for TestListener {
+        type Reader = Cursor<Vec<u8>>;
+        type Writer = SharedSink;
+
+        fn accept(&mut self) -> io::Result<Option<(Self::Reader, Self::Writer)>> {
+            Ok(self.queued.pop_front())
+        }
+    }
+
+    struct EchoRouter;
+
+    impl RequestRouter for EchoRouter {
+        fn route(&mut self, request: IncomingRequest) -> OutgoingResponse {
+            OutgoingResponse::ok(request.id, Json::object(vec![("echo", Json::bool(true))]))
+        }
+    }
+
+    fn fixed_clock() -> u64 {
+        1_000
+    }
+
+    fn raw_frame(
+        kind: FrameKind,
+        flags: u16,
+        sequence: u64,
+        generation: u64,
+        body: &str,
+    ) -> Vec<u8> {
+        Header {
+            protocol_version: PROTOCOL_VERSION_V0,
+            frame_kind: kind,
+            flags,
+            payload_length: 0,
+            connection_id: CONNECTION,
+            worker_generation: generation,
+            sequence,
+            correlation_id: [0; 16],
+            payload_crc32c: 0,
+        }
+        .encode(body.as_bytes())
+    }
+
+    fn hello_json() -> String {
+        r#"{
+            "v": 1,
+            "kind": "hello",
+            "phase": "hello",
+            "nonce": "one-time-token",
+            "worker": { "pid": 1, "build": "test", "runtime": "bun", "boot_id": "boot" },
+            "protocol": { "min": 256, "max": 256 },
+            "encodings": ["json"],
+            "compressions": [],
+            "capabilities": [
+                "frame.v1", "control.json", "event.batch", "cancel", "drain",
+                "replay.command", "session.runtime"
+            ],
+            "limits": { "max_frame_bytes": 8388608 },
+            "workspace": { "directory": "/abs/workspace", "project_id": "prj_test" }
+        }"#
+        .to_string()
+    }
+
+    fn handshake_input(generation: u64) -> Vec<u8> {
+        let mut input = raw_frame(FrameKind::Hello, 0, 1, 0, &hello_json());
+        input.extend(raw_frame(
+            FrameKind::Ack,
+            0,
+            2,
+            generation,
+            r#"{"v":1,"kind":"ack","id":"a1","ack_of":"hello","phase":"hello_complete","durable_through_command_sequence":42,"event_seq":null,"replay_complete":false}"#,
+        ));
+        input
+    }
+
+    fn event_frame(sequence: u64, generation: u64, durable: bool, body: &str) -> Vec<u8> {
+        let flags = if durable { FLAG_DURABLE } else { 0 };
+        raw_frame(FrameKind::Event, flags, sequence, generation, body)
+    }
+
+    fn frames_from(sink: &SharedSink) -> Vec<(Header, Json)> {
+        let mut reader = FrameReader::new(Cursor::new(sink.bytes()));
+        let mut frames = Vec::new();
+        while let Some((header, payload)) = reader.next_frame().expect("output frame") {
+            frames.push((
+                header,
+                Json::parse(std::str::from_utf8(&payload).unwrap()).unwrap(),
+            ));
+        }
+        frames
+    }
+
+    /// Real `host_event` schema from the migration, created through rusqlite so
+    /// the store's insert path is exercised (the store never migrates).
+    fn store_with_event_schema(root: &Path) -> HostStore {
+        let db = root.join("host.db");
+        {
+            let conn = rusqlite::Connection::open(&db).expect("open db");
+            conn.execute_batch(
+                "CREATE TABLE host_event (
+                    seq integer PRIMARY KEY,
+                    event_id text NOT NULL UNIQUE,
+                    dedupe_key text NOT NULL UNIQUE,
+                    workspace_id text,
+                    project_id text,
+                    aggregate_id text NOT NULL,
+                    aggregate_seq integer,
+                    type text NOT NULL,
+                    worker_id text,
+                    worker_generation integer,
+                    payload text NOT NULL,
+                    created_at integer NOT NULL
+                );",
+            )
+            .expect("create host_event");
+        }
+        HostStore::open(&db).expect("open store")
+    }
+
+    fn durable_event_body() -> &'static str {
+        r#"{"v":1,"kind":"event","event":"message.updated","session_id":"ses_1","job_id":null,"turn_id":"turn_1","event_seq":9,"payload":{"a":1}}"#
+    }
+
+    fn transient_event_body() -> &'static str {
+        r#"{"v":1,"kind":"event","event":"message.part.delta","session_id":"ses_1","turn_id":"turn_1","event_seq":null,"payload":{"delta":"x"}}"#
+    }
+
+    #[test]
+    fn serve_round_commits_durable_event_then_acks_it() {
+        let root = temp_dir("serve-round");
+        fs::create_dir_all(&root).unwrap();
+        let config = HostCliConfig::new(&root);
+        let mut listener = TestListener::default();
+        let mut input = handshake_input(1);
+        input.extend(event_frame(3, 1, true, durable_event_body()));
+        input.extend(event_frame(4, 1, false, transient_event_body()));
+        let sink = listener.push(input);
+        let store = store_with_event_schema(&root);
+        let mut handle = run_host(config, listener, fixed_clock as fn() -> u64, store);
+
+        let record = handle.runtime_mut().spawn_worker("ws_test", 0).expect("spawn");
+        assert_eq!(record.generation, 1);
+        handle.accept_next().unwrap().expect("admit");
+
+        let mut router = EchoRouter;
+        let round = handle.serve_round(&mut router).expect("serve round");
+        assert_eq!(round.connections.len(), 1);
+        let report = &round.connections[0];
+        assert_eq!(report.durable_committed, 1);
+        assert_eq!(report.transient_accepted, 1);
+        assert_eq!(report.outcome, Some(ServeOutcome::Closed));
+        assert_eq!(report.error, None);
+
+        let frames = frames_from(&sink);
+        let ack = frames
+            .iter()
+            .find(|(header, _)| header.frame_kind == FrameKind::Ack)
+            .expect("durable ack");
+        assert_eq!(ack.1.get("phase").and_then(Json::as_str), Some("durable_committed"));
+        assert_eq!(ack.1.get("event_seq").and_then(Json::as_u64), Some(1));
+        assert_ne!(ack.0.correlation_id, [0; 16], "ack must carry a correlation id");
+        assert_eq!(ack.1.get("id"), ack.1.get("ack_of"));
+
+        drop(handle);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn serve_round_returns_store_error_and_does_not_ack_on_commit_failure() {
+        let root = temp_dir("serve-round-fail");
+        fs::create_dir_all(&root).unwrap();
+        let config = HostCliConfig::new(&root);
+        let mut listener = TestListener::default();
+        let mut input = handshake_input(1);
+        input.extend(event_frame(3, 1, true, durable_event_body()));
+        let sink = listener.push(input);
+        // No schema: append_event must fail, and no ack may be written.
+        let store = HostStore::open_memory().expect("open memory store");
+        let mut handle = run_host(config, listener, fixed_clock as fn() -> u64, store);
+
+        handle.runtime_mut().spawn_worker("ws_test", 0).expect("spawn");
+        handle.accept_next().unwrap().expect("admit");
+
+        let mut router = EchoRouter;
+        let error = handle.serve_round(&mut router).expect_err("commit fails");
+        assert!(matches!(error, StoreError::Sqlite(_)));
+
+        let frames = frames_from(&sink);
+        assert!(
+            frames.iter().all(|(header, _)| header.frame_kind != FrameKind::Ack),
+            "commit-before-ack: a failed commit must not emit an ack"
+        );
 
         drop(handle);
         fs::remove_dir_all(&root).unwrap();

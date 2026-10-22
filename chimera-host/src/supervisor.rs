@@ -44,7 +44,10 @@ pub const CRASH_PAUSE_THRESHOLD: usize = 5;
 pub const CRASH_PAUSE_WINDOW_MS: u64 = 300_000;
 
 /// Candidate default drain deadline before escalating to `SIGTERM` → `SIGKILL`
-/// (§9.2/§9.3).
+/// (§9.2/§9.3). This is only the default for
+/// [`HostRuntimeConfig`](crate::runtime::HostRuntimeConfig); the registry takes
+/// the configured deadline as an explicit argument so the runtime
+/// configuration stays the single source of truth.
 pub const DRAIN_DEADLINE_MS: u64 = 30_000;
 
 /// Candidate default heartbeat loss timeout: three missed 10s heartbeats
@@ -408,17 +411,20 @@ impl WorkerRegistry {
     }
 
     /// Ask the worker to drain and record the absolute deadline. Repeated calls
-    /// keep the original deadline.
+    /// keep the original deadline. `drain_deadline_ms` is the configured
+    /// deadline (candidate default [`DRAIN_DEADLINE_MS`]); the registry never
+    /// reads a hard-coded value.
     pub fn request_drain(
         &mut self,
         workspace_id: &str,
         generation: u64,
         now_ms: u64,
+        drain_deadline_ms: u64,
     ) -> Result<(), SupervisorError> {
         let previous = self.transition(workspace_id, generation, WorkerStatus::Draining, now_ms)?;
         if previous != WorkerStatus::Draining {
             let record = self.lookup_mut(workspace_id, generation)?;
-            record.drain_deadline_ms = Some(now_ms.saturating_add(DRAIN_DEADLINE_MS));
+            record.drain_deadline_ms = Some(now_ms.saturating_add(drain_deadline_ms));
         }
         Ok(())
     }
@@ -500,13 +506,16 @@ impl WorkerRegistry {
         Ok(record.heartbeat_expired(now_ms, timeout_ms))
     }
 
-    /// Build the drain decision for every live worker in `workspace_id`.
-    ///
     /// This is a read-only planning step: it does not mutate worker state.
     /// Already-draining workers keep their recorded deadline; the plan deadline
-    /// is the latest target deadline (or `now_ms + DRAIN_DEADLINE_MS` when the
-    /// plan is empty).
-    pub fn plan_drain(&self, workspace_id: &str, now_ms: u64) -> DrainPlan {
+    /// is the latest target deadline (or `now_ms + drain_deadline_ms` when the
+    /// plan is empty). `drain_deadline_ms` comes from the runtime configuration.
+    pub fn plan_drain(
+        &self,
+        workspace_id: &str,
+        now_ms: u64,
+        drain_deadline_ms: u64,
+    ) -> DrainPlan {
         let targets: Vec<DrainTarget> = self
             .workers
             .values()
@@ -517,14 +526,14 @@ impl WorkerRegistry {
                 status: record.status,
                 deadline_ms: record
                     .drain_deadline_ms
-                    .unwrap_or_else(|| now_ms.saturating_add(DRAIN_DEADLINE_MS)),
+                    .unwrap_or_else(|| now_ms.saturating_add(drain_deadline_ms)),
             })
             .collect();
         let deadline_ms = targets
             .iter()
             .map(|target| target.deadline_ms)
             .max()
-            .unwrap_or_else(|| now_ms.saturating_add(DRAIN_DEADLINE_MS));
+            .unwrap_or_else(|| now_ms.saturating_add(drain_deadline_ms));
         DrainPlan { workspace_id: workspace_id.to_string(), targets, deadline_ms }
     }
 
@@ -755,7 +764,9 @@ mod tests {
         registry.mark_idle("ws-a", worker.generation, 1_400).expect("idle");
         assert_eq!(registry.get("ws-a", 1).unwrap().status, WorkerStatus::Ready);
 
-        registry.request_drain("ws-a", worker.generation, 1_500).expect("drain");
+        registry
+            .request_drain("ws-a", worker.generation, 1_500, DRAIN_DEADLINE_MS)
+            .expect("drain");
         let draining = registry.get("ws-a", 1).unwrap();
         assert_eq!(draining.status, WorkerStatus::Draining);
         assert_eq!(draining.drain_deadline_ms, Some(1_500 + DRAIN_DEADLINE_MS));
@@ -814,7 +825,7 @@ mod tests {
         for result in [
             registry.mark_crashed("ws-a", generation, 20),
             registry.mark_ready("ws-a", generation, 30),
-            registry.request_drain("ws-a", generation, 40),
+            registry.request_drain("ws-a", generation, 40, DRAIN_DEADLINE_MS),
             registry.mark_exited("ws-a", generation, ExitReason::Killed, 50),
         ] {
             assert!(matches!(
@@ -856,7 +867,7 @@ mod tests {
         let worker = registry.spawn_intent("ws-a", 0).expect("spawn");
         registry.mark_ready("ws-a", worker.generation, 10).expect("ready");
 
-        let plan = registry.plan_drain("ws-a", 1_000);
+        let plan = registry.plan_drain("ws-a", 1_000, DRAIN_DEADLINE_MS);
         assert_eq!(plan.targets.len(), 1);
         assert_eq!(plan.targets[0].worker_id, worker.worker_id);
         assert_eq!(plan.deadline_ms, 1_000 + DRAIN_DEADLINE_MS);
@@ -866,10 +877,35 @@ mod tests {
         assert_eq!(escalated[0].generation, worker.generation);
 
         // An explicit drain keeps its original deadline across re-planning.
-        registry.request_drain("ws-a", worker.generation, 2_000).expect("drain");
-        let replanned = registry.plan_drain("ws-a", 5_000);
+        registry
+            .request_drain("ws-a", worker.generation, 2_000, DRAIN_DEADLINE_MS)
+            .expect("drain");
+        let replanned = registry.plan_drain("ws-a", 5_000, DRAIN_DEADLINE_MS);
         assert_eq!(replanned.deadline_ms, 2_000 + DRAIN_DEADLINE_MS);
         assert_eq!(replanned.targets[0].status, WorkerStatus::Draining);
+    }
+
+    #[test]
+    fn drain_deadline_is_an_explicit_input_not_a_hard_coded_constant() {
+        let mut registry = WorkerRegistry::new();
+        let generation = ready_worker(&mut registry, "ws-a", 0);
+
+        // The configured deadline is the only source: 250ms here, not 30s.
+        registry.request_drain("ws-a", generation, 1_000, 250).expect("drain");
+        assert_eq!(
+            registry.get("ws-a", generation).unwrap().drain_deadline_ms,
+            Some(1_250)
+        );
+
+        // A re-plan keeps the recorded deadline even with another configured value.
+        let replanned = registry.plan_drain("ws-a", 5_000, 9_000);
+        assert_eq!(replanned.deadline_ms, 1_250);
+
+        // A fresh worker's plan uses the deadline passed by the caller.
+        let mut other = WorkerRegistry::new();
+        ready_worker(&mut other, "ws-b", 0);
+        let plan = other.plan_drain("ws-b", 2_000, 250);
+        assert_eq!(plan.deadline_ms, 2_250);
     }
 
     #[test]

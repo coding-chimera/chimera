@@ -45,8 +45,8 @@ use std::io::{self, Read, Write};
 use crate::connection::{ConnectionError, FrameReader, FrameWriter};
 use crate::handshake::HostConfig;
 use crate::host_driver::{
-    run_handshake, Clock, DrainOutcome, DrainReason, HostDriver, HostError, RequestRouter,
-    ServeOutcome,
+    run_handshake, Clock, DrainOutcome, DrainReason, HostDriver, HostError, HostEvent,
+    RequestRouter, ServeOutcome,
 };
 use crate::supervisor::{
     restart_backoff_with_jitter, DrainPlan, ExitReason, SupervisorError, WorkerRecord,
@@ -142,8 +142,15 @@ pub struct TickOutcome {
     /// Workers newly marked `unresponsive` by this tick. Escalation (close /
     /// kill) is the caller's decision.
     pub unresponsive: Vec<WorkerRef>,
-    /// Connections due for a transient heartbeat (§2.3). The caller emits it.
+    /// Connections whose transient heartbeat was written by this tick (§2.3).
+    ///
+    /// The runtime emits the frame itself through
+    /// [`HostDriver::send_heartbeat`]; a reference here means the frame was
+    /// written successfully.
     pub heartbeats_due: Vec<WorkerRef>,
+    /// Connections whose heartbeat frame could not be written this tick. The
+    /// caller decides whether to close or reap them.
+    pub heartbeat_send_failures: Vec<WorkerRef>,
     /// Drains whose deadline passed during this tick. The caller decides
     /// whether to escalate with [`HostRuntime::kill_worker`].
     pub drain_expired: Vec<WorkerRef>,
@@ -193,6 +200,26 @@ struct PendingSpawn {
 struct LiveConnection<R: Read, W: Write> {
     driver: HostDriver<R, W>,
     last_heartbeat_sent_ms: u64,
+}
+
+/// Events and outcome produced by driving one live connection.
+///
+/// The runtime surfaces events before applying terminal lifecycle effects so
+/// the caller can commit durable events and ack them first
+/// (commit-before-ack, §8.2). Use [`HostRuntime::settle_connection`] once the
+/// events are handled.
+#[derive(Debug)]
+pub struct ConnectionServe {
+    /// Workspace the connection serves.
+    pub workspace_id: String,
+    /// Fencing generation of the connection.
+    pub generation: u64,
+    /// Host-assigned connection id.
+    pub connection_id: u64,
+    /// Events surfaced by this serve step, in arrival order.
+    pub events: Vec<HostEvent>,
+    /// How the serve step stopped. A driver error is reported, not hidden.
+    pub outcome: Result<ServeOutcome, HostError>,
 }
 
 /// Host runtime: registry + listener + clock + live drivers.
@@ -367,12 +394,20 @@ impl<L: Listener, C: Clock> HostRuntime<L, C> {
             if !due {
                 continue;
             }
-            self.connections[index].last_heartbeat_sent_ms = now_ms;
             let identity = self.connections[index].driver.identity().clone();
-            if let Some(reference) =
+            let sent = self.connections[index].driver.send_heartbeat(now_ms).is_ok();
+            if sent {
+                self.connections[index].last_heartbeat_sent_ms = now_ms;
+            }
+            let Some(reference) =
                 self.worker_ref(&identity.workspace_id, identity.worker_generation)
-            {
+            else {
+                continue;
+            };
+            if sent {
                 outcome.heartbeats_due.push(reference);
+            } else {
+                outcome.heartbeat_send_failures.push(reference);
             }
         }
 
@@ -407,16 +442,89 @@ impl<L: Listener, C: Clock> HostRuntime<L, C> {
         generation: u64,
         router: &mut T,
     ) -> Result<ServeOutcome, HostError> {
+        let served = self.serve_connection(workspace_id, generation, router).ok_or_else(|| {
+            HostError::Supervisor(SupervisorError::UnknownWorker {
+                workspace_id: workspace_id.to_string(),
+                generation,
+            })
+        })?;
+        self.settle_connection(workspace_id, generation, &served.outcome);
+        served.outcome
+    }
+
+    /// Snapshot `(workspace_id, generation)` for every live connection.
+    pub fn live_connections(&self) -> Vec<(String, u64)> {
+        self.connections
+            .iter()
+            .map(|connection| {
+                let identity = connection.driver.identity();
+                (identity.workspace_id.clone(), identity.worker_generation)
+            })
+            .collect()
+    }
+
+    /// Drive one connection until it closes or its drain resolves, collecting
+    /// the events it surfaced without applying terminal lifecycle effects.
+    ///
+    /// Returns `None` when the connection is unknown. The caller handles the
+    /// events (durable commit + ack, commit-before-ack) and then calls
+    /// [`HostRuntime::settle_connection`] so crash/drain accounting happens
+    /// exactly once.
+    pub fn serve_connection<T: RequestRouter>(
+        &mut self,
+        workspace_id: &str,
+        generation: u64,
+        router: &mut T,
+    ) -> Option<ConnectionServe> {
+        let index = self.connection_index(workspace_id, generation)?;
+        let identity = self.connections[index].driver.identity().clone();
+        let outcome = self.connections[index].driver.serve(&mut self.registry, router, &mut self.clock);
+        let events = self.connections[index].driver.take_events();
+        Some(ConnectionServe {
+            workspace_id: identity.workspace_id,
+            generation: identity.worker_generation,
+            connection_id: identity.connection_id,
+            events,
+            outcome,
+        })
+    }
+
+    /// Write `ack(phase=durable_committed, event_seq)` on a live connection.
+    ///
+    /// Call this only after the durable event is committed to `host_event`.
+    pub fn acknowledge_durable(
+        &mut self,
+        workspace_id: &str,
+        generation: u64,
+        event_seq: u64,
+    ) -> Result<(), HostError> {
         let index = self.connection_index(workspace_id, generation).ok_or_else(|| {
             HostError::Supervisor(SupervisorError::UnknownWorker {
                 workspace_id: workspace_id.to_string(),
                 generation,
             })
         })?;
-        let connection = &mut self.connections[index];
-        let result = connection.driver.serve(&mut self.registry, router, &mut self.clock);
+        self.connections[index].driver.send_durable_ack(event_seq)?;
+        Ok(())
+    }
+
+    /// Apply the lifecycle effects of a completed serve step (§11.1).
+    ///
+    /// Crash handling: a closed transport, a driver error, or a durable
+    /// sequence gap marks the worker `crashed`, schedules the §11.1 backoff,
+    /// and drops the connection. A completed drain marks it `exited(normal)`.
+    /// A timed-out drain leaves the connection live for the caller to escalate.
+    pub fn settle_connection(
+        &mut self,
+        workspace_id: &str,
+        generation: u64,
+        outcome: &Result<ServeOutcome, HostError>,
+    ) {
         let now_ms = self.clock.now_ms();
-        match &result {
+        let Some(index) = self.connection_index(workspace_id, generation) else {
+            return;
+        };
+        match outcome {
             Ok(ServeOutcome::Drained(_)) => {
                 let _ =
                     self.registry
@@ -435,7 +543,6 @@ impl<L: Listener, C: Clock> HostRuntime<L, C> {
                 self.connections.remove(index);
             }
         }
-        result
     }
 
     /// Ask every live worker in `workspace_id` to drain (§9.3).
@@ -463,14 +570,15 @@ impl<L: Listener, C: Clock> HostRuntime<L, C> {
             if self.connections[index].driver.drain_state().is_some() {
                 continue;
             }
-            self.registry.request_drain(workspace_id, generation, now_ms)?;
+            self.registry
+                .request_drain(workspace_id, generation, now_ms, self.config.drain_deadline_ms)?;
             let deadline = now_ms.saturating_add(self.config.drain_deadline_ms);
             let drain_id = format!("drain_{workspace_id}_{generation}");
             self.connections[index]
                 .driver
                 .initiate_drain(&drain_id, reason, deadline, now_ms)?;
         }
-        Ok(self.registry.plan_drain(workspace_id, now_ms))
+        Ok(self.registry.plan_drain(workspace_id, now_ms, self.config.drain_deadline_ms))
     }
 
     /// Gather one [`DrainOutcome`] per connection with an active drain.
@@ -632,7 +740,7 @@ impl<L: Listener, C: Clock> HostRuntime<L, C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::frame::{FrameKind, Header, PROTOCOL_VERSION_V0};
+    use crate::frame::{FrameKind, Header, FLAG_DURABLE, PROTOCOL_VERSION_V0};
     use crate::host_driver::{IncomingRequest, Json, OutgoingResponse};
     use std::cell::{Cell, RefCell};
     use std::io::Cursor;
@@ -1072,6 +1180,40 @@ mod tests {
         // A second scan does not duplicate the unresponsive report.
         let again = runtime.tick(HEARTBEAT_TIMEOUT_MS + HEARTBEAT_SCAN_INTERVAL_MS);
         assert!(again.unresponsive.is_empty());
+    }
+
+    #[test]
+    fn due_heartbeat_writes_a_transient_ipc_heartbeat_frame() {
+        let (mut runtime, _clock) = runtime();
+        let record = runtime.spawn_worker("ws_test", 0).expect("spawn");
+        let sink = runtime.listener.push(handshake_input(record.generation, 1));
+        runtime.accept_next().unwrap().expect("admit");
+
+        // Admission seeds last_heartbeat_sent_ms, so nothing is due at t=0.
+        runtime.tick(0);
+        let before = frames_from(&sink).len();
+
+        let outcome = runtime.tick(HEARTBEAT_INTERVAL_MS);
+        assert_eq!(outcome.heartbeats_due.len(), 1);
+        assert!(outcome.heartbeat_send_failures.is_empty());
+
+        let frames = frames_from(&sink);
+        assert_eq!(frames.len(), before + 1, "exactly one heartbeat frame");
+        let (header, body) = frames.last().expect("heartbeat frame");
+        assert_eq!(header.frame_kind, FrameKind::Event);
+        assert_eq!(header.flags & FLAG_DURABLE, 0, "heartbeats are transient");
+        assert_eq!(body.get("event").and_then(Json::as_str), Some("ipc.heartbeat"));
+        assert_eq!(body.get("event_seq"), Some(&Json::Null));
+        assert_eq!(
+            body.get("transport_sequence").and_then(Json::as_u64),
+            Some(header.sequence)
+        );
+        assert_eq!(
+            body.get("payload")
+                .and_then(|payload| payload.get("sent_at_ms"))
+                .and_then(Json::as_u64),
+            Some(HEARTBEAT_INTERVAL_MS)
+        );
     }
 
     #[test]

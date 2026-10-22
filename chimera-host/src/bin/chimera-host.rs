@@ -72,6 +72,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use chimera_host::host::{run_host, HostCliConfig, UnixSocketListener};
 use chimera_host::store::HostStore;
 
+
 /// Main-loop poll interval. The listener is non-blocking and `tick` is bounded,
 /// so this only sets the maintenance/accept/reap cadence.
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -292,6 +293,7 @@ fn run() -> Result<(), String> {
         children.len(),
     );
 
+
     loop {
         match handle.accept_next() {
             Ok(_) => {}
@@ -304,6 +306,13 @@ fn run() -> Result<(), String> {
         // Escalation for unresponsive/drain-expired workers is a later
         // milestone; the tick is still required to run the heartbeat scan.
         let _ = handle.tick();
+
+        // `serve_round` is deliberately NOT driven from this loop:
+        // `HostDriver::serve` reads a blocking socket until the connection
+        // closes, so calling it here would park accept/tick/reap for the
+        // lifetime of the first worker connection. The commit-before-ack
+        // wiring is proven by unit tests and the cross-language e2e; driving
+        // it from the bin needs a non-blocking serve step (later milestone).
 
         // Reap exited workers so the host never accumulates zombies. Restart
         // orchestration is deliberately out of scope for this bin.

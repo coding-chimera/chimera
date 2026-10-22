@@ -635,6 +635,9 @@ pub struct DurableEvent {
     pub turn_id: Option<String>,
     /// Host-assigned sequence; `None` before the host commits it.
     pub event_seq: Option<u64>,
+    /// Frame `transport_sequence` the event arrived on. Unique per
+    /// connection; used by the upper layer to build a stable event id.
+    pub transport_sequence: u64,
     /// Event payload.
     pub payload: Json,
 }
@@ -940,8 +943,75 @@ impl<R: Read, W: Write> HostDriver<R, W> {
         (self.reader, self.writer)
     }
 
+    /// Write a host→worker transient `event` frame (§5.4, §2.3).
+    ///
+    /// The body carries `transport_sequence` equal to the frame header's
+    /// sequence, as §5.4 requires. `event_seq` stays null because transient
+    /// events are never committed, and the correlation id is all-zero because
+    /// the event is not tied to a request.
+    pub fn send_transient_event(
+        &mut self,
+        event: &str,
+        session_id: Option<&str>,
+        job_id: Option<&str>,
+        turn_id: Option<&str>,
+        payload: Json,
+    ) -> Result<u64, HostError> {
+        let transport_sequence = self.writer.next_sequence();
+        let body = Json::object(vec![
+            ("v", Json::u64(BODY_VERSION_V0 as u64)),
+            ("kind", Json::string("event")),
+            ("id", Json::Null),
+            ("event", Json::string(event)),
+            ("session_id", session_id.map(Json::string).unwrap_or(Json::Null)),
+            ("job_id", job_id.map(Json::string).unwrap_or(Json::Null)),
+            ("turn_id", turn_id.map(Json::string).unwrap_or(Json::Null)),
+            ("transport_sequence", Json::u64(transport_sequence)),
+            ("event_seq", Json::Null),
+            ("payload_encoding", Json::string("json")),
+            ("payload", payload),
+        ]);
+        self.write_control(FrameKind::Event, 0, [0; 16], &body)
+    }
+
+    /// Send the §2.3 transient `ipc.heartbeat` event.
+    ///
+    /// The heartbeat is a transient event, so it is not stored and carries no
+    /// `event_seq`. The payload records the host's logical send time so a
+    /// worker can observe cadence without treating it as durable state.
+    pub fn send_heartbeat(&mut self, now_ms: u64) -> Result<u64, HostError> {
+        self.send_transient_event(
+            "ipc.heartbeat",
+            None,
+            None,
+            None,
+            Json::object(vec![("sent_at_ms", Json::u64(now_ms))]),
+        )
+    }
+
+    /// Acknowledge a committed durable event (§5.5, §8.2).
+    ///
+    /// The caller must have committed `event_seq` to `host_event` first;
+    /// sending this frame before the commit would violate commit-before-ack.
+    pub fn send_durable_ack(&mut self, event_seq: u64) -> Result<u64, HostError> {
+        // §3.2 requires a non-zero correlation id on `ack`. The committed
+        // `host_event.seq` is the only stable id the host owns for this event,
+        // so derive a UUID-shaped id from it (32 hex digits).
+        let ack_id = format!("{event_seq:032x}");
+        let body = Json::object(vec![
+            ("v", Json::u64(BODY_VERSION_V0 as u64)),
+            ("kind", Json::string("ack")),
+            ("id", Json::string(&ack_id)),
+            ("ack_of", Json::string(&ack_id)),
+            ("phase", Json::string(AckPhase::DurableCommitted.as_str())),
+            ("durable_through_command_sequence", Json::Null),
+            ("event_seq", Json::u64(event_seq)),
+            ("replay_complete", Json::bool(false)),
+        ]);
+        self.write_control(FrameKind::Ack, 0, correlation_from_id(&ack_id), &body)
+    }
+
     /// Write a `cancel` frame (§5.6). Cancel intent is host-authoritative, so
-    /// the frame is durable and replayable.
     pub fn send_cancel(&mut self, cancel: &CancelRequest) -> Result<u64, HostError> {
         let body = Json::object(vec![
             ("v", Json::u64(BODY_VERSION_V0 as u64)),
@@ -1051,7 +1121,7 @@ impl<R: Read, W: Write> HostDriver<R, W> {
                 FrameKind::Event => {
                     let body = parse_body(&payload)?;
                     let durable = header.flags & FLAG_DURABLE != 0;
-                    self.events.push(HostEvent::from_json(&body, durable)?);
+                    self.events.push(HostEvent::from_json(&body, durable, header.sequence)?);
                 }
                 FrameKind::Ack => {
                     let ack = Ack::from_json(&parse_body(&payload)?)?;
@@ -1136,7 +1206,7 @@ impl<R: Read, W: Write> HostDriver<R, W> {
                 FrameKind::Event => {
                     let body = parse_body(&payload)?;
                     let durable = header.flags & FLAG_DURABLE != 0;
-                    self.events.push(HostEvent::from_json(&body, durable)?);
+                    self.events.push(HostEvent::from_json(&body, durable, header.sequence)?);
                 }
                 FrameKind::Error => {
                     let body = parse_body(&payload)?;
@@ -1267,7 +1337,7 @@ impl<R: Read, W: Write> HostDriver<R, W> {
 }
 
 impl HostEvent {
-    fn from_json(value: &Json, durable: bool) -> Result<Self, HostError> {
+    fn from_json(value: &Json, durable: bool, transport_sequence: u64) -> Result<Self, HostError> {
         let event = required_string(value, "event")?;
         let payload = value.get("payload").cloned().unwrap_or(Json::Null);
         if durable {
@@ -1277,6 +1347,7 @@ impl HostEvent {
                 job_id: optional_string(value, "job_id"),
                 turn_id: optional_string(value, "turn_id"),
                 event_seq: value.get("event_seq").and_then(Json::as_u64),
+                transport_sequence,
                 payload,
             }));
         }
