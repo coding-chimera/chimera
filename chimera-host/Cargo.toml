@@ -17,3 +17,12 @@ crate-type = ["rlib"]
 # depending on a system lib whose version/pragmas diverge. This crate never
 # migrates the schema: the TS-side Drizzle migration is the only creator.
 rusqlite = { version = "0.40", features = ["bundled"] }
+
+[dev-dependencies]
+# Benchmark-only harness for the protocol-layer codec benches. Dev-only, so it
+# never enters the `rlib` artifact or the runtime dependency graph.
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "codec_bench"
+harness = false
