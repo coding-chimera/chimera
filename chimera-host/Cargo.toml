@@ -1,0 +1,9 @@
+[package]
+name = "chimera-host"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Rust host IPC v0 framing codec (lib-only, no binaries)"
+
+[lib]
+crate-type = ["rlib"]
