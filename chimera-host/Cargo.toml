@@ -3,7 +3,17 @@ name = "chimera-host"
 version = "0.0.0"
 edition = "2021"
 publish = false
-description = "Rust host IPC v0 framing codec (lib-only, no binaries)"
+description = "Rust host IPC v0 framing codec + durable host-control store (lib-only, no binaries)"
 
 [lib]
 crate-type = ["rlib"]
+
+[dependencies]
+# H1 durable state layer (specs/rust-host/recovery-matrix.md §8): the host owns
+# host_worker / host_state / session_turn_checkpoint / pending_request /
+# request_idempotency / host_event, which live in the same SQLite main database
+# the Bun worker writes. `bundled` compiles the SQLite amalgamation in, matching
+# codegraph-kernel so every build leg carries the same SQLite instead of
+# depending on a system lib whose version/pragmas diverge. This crate never
+# migrates the schema: the TS-side Drizzle migration is the only creator.
+rusqlite = { version = "0.40", features = ["bundled"] }
