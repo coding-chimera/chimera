@@ -59,6 +59,7 @@ const GRAMMAR_LANGUAGES: Language[] = [
   'scala',
   'dart',
   'pascal',
+  'nix',
 ]
 
 if (!kernelBuilt && expectKernel) {

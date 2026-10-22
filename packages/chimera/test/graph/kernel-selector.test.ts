@@ -50,11 +50,11 @@ const KT_SOURCE = `fun main() {\n    println(\"x\")\n}\n`;
 // kernel call), not on r's wasm output bytes.
 const R_SOURCE = `add <- function(a, b) {\n  a + b\n}\n`;
 
-/** The real vendored kernel's 21-language contract (wave 5). */
+/** The real vendored kernel's 22-language contract (wave 5, W1 nix). */
 const ALL_KERNEL_LANGUAGES = [
   'typescript', 'tsx', 'javascript', 'jsx', 'java', 'python', 'go', 'c', 'cpp',
   'rust', 'csharp', 'ruby', 'php', 'swift', 'kotlin', 'r', 'lua', 'luau',
-  'scala', 'dart', 'pascal',
+  'scala', 'dart', 'pascal', 'nix',
 ];
 
 /** Deterministic projection for byte-equivalence assertions (timestamps out). */
@@ -216,6 +216,16 @@ describe('extractFromSource kernel selector gating', () => {
     const result = extractFromSource('Sample.pas', 'unit Sample;\ninterface\nimplementation\nend.\n', 'pascal');
     expect(calls.length).toBe(1);
     expect(calls[0]?.[2]).toBe('pascal');
+    expect(result.nodes.some((n) => n.name === 'kernelMarker')).toBe(true);
+  });
+
+  it('wave 5 (W1): DEFAULT_ROUTED nix takes the kernel arm with NO env', () => {
+    const { mod, calls } = makeFakeKernel({ languages: ALL_KERNEL_LANGUAGES });
+    setKernelForTests(mod);
+    expect(kernelRoutes('nix')).toBe(true);
+    const result = extractFromSource('flake.nix', '{ pkgs }: { imports = [ ./hardware.nix ]; }', 'nix');
+    expect(calls.length).toBe(1);
+    expect(calls[0]?.[2]).toBe('nix');
     expect(result.nodes.some((n) => n.name === 'kernelMarker')).toBe(true);
   });
 

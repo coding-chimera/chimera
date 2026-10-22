@@ -216,6 +216,12 @@ const DEFAULT_ROUTED: ReadonlySet<Language> = new Set<Language>([
   // and the walker mirrors languages/pascal.ts + visitPascalNode. Route
   // change ⇒ EXTRACTION_SEMANTICS_VERSION 6 -> 7 (see extraction-version.ts).
   'pascal',
+  // wave 5 (W1 wasm retirement, 2026-10-22): nix — second language of the
+  // roadmap. Vendored C is nix-community/tree-sitter-nix v0.3.0 regenerated
+  // with tree-sitter-cli 0.25.10 (ABI 15), table-identical to the vendored
+  // wasm; the walker mirrors languages/nix.ts. Route change ⇒
+  // EXTRACTION_SEMANTICS_VERSION 7 -> 8 (see extraction-version.ts).
+  'nix',
 ]);
 
 /**
@@ -302,7 +308,7 @@ export const DEFER_ELIGIBLE_LANGUAGES: ReadonlySet<Language> = new Set<Language>
  * a file (the `defer:` parse-error / stack-guard valve above), and every
  * async extraction seam loads it lazily at that point (see
  * deferred-grammar.ts). Non-routed languages pass through untouched: objc
- * from the `.h` ambiguity expansion (#1628), r/solidity/nix wasm,
+ * from the `.h` ambiguity expansion (#1628), r/solidity wasm,
  * ruling-⑤ names (silent unavailableGrammarErrors degradation), and
  * svelte/vue/astro — whose delegated typescript/javascript grammars are
  * added downstream by expandGrammarLanguages, so the SFC languages must

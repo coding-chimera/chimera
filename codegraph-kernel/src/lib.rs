@@ -44,6 +44,7 @@ mod langs;
 mod lua;
 mod php;
 mod pascal;
+mod nix;
 mod rlang;
 mod ruby;
 mod resolver_ctx;
@@ -264,6 +265,7 @@ pub fn extract_file(file_path: String, content: String, language: String) -> Res
         "scala" => scala::extract(&file_path, &content),
         "dart" => dart::extract(&file_path, &content),
         "pascal" => pascal::extract(&file_path, &content),
+        "nix" => nix::extract(&file_path, &content),
         _ => tsjs::extract(&file_path, &content, &language),
     })
     .map_err(Error::from_reason)?;

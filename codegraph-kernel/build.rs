@@ -83,4 +83,25 @@ fn main() {
     dart.flag_if_supported("-utf-8"); // msvc
     dart.compile("tree-sitter-dart");
     println!("cargo:rerun-if-changed=grammars/dart");
+
+    // Nix grammar — vendored C (W1 wasm-retirement wave, second language):
+    // the vendored wasm is nix-community/tree-sitter-nix @ 3d0173d, whose
+    // src/parser.c + src/scanner.c are sha-identical to the v0.3.0 tag
+    // (ea1d87f) this checkout was generated from. Both were REGENERATED with
+    // tree-sitter-cli 0.25.10 so the C tables and the ABI-15 wasm tables
+    // agree id for id (the tag's checked-in parser.c is ABI 13):
+    //   parser.c  0f185844da0e8e033127ebaa625554994eab6ef5d1a9629dd41b579fb41a8792
+    //   scanner.c 45e12521e8be62ea47525417c64d9372fa34e9e12bff643c430b8b3607be9d56
+    // tree_sitter/ headers are the tree-sitter 0.25.10 runtime's (the ABI-15
+    // generated parser initializes `.abi_version`, absent from older headers).
+    let mut nix = cc::Build::new();
+    nix.include("grammars/nix");
+    nix.file("grammars/nix/parser.c");
+    nix.file("grammars/nix/scanner.c");
+    nix.flag_if_supported("-Wno-unused-parameter");
+    nix.flag_if_supported("-Wno-unused-but-set-variable");
+    nix.flag_if_supported("-Wno-trigraphs");
+    nix.flag_if_supported("-utf-8"); // msvc
+    nix.compile("tree-sitter-nix");
+    println!("cargo:rerun-if-changed=grammars/nix");
 }

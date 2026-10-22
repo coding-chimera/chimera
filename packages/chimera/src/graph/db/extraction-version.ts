@@ -96,7 +96,13 @@ export const EXTRACTION_SEMANTICS_METADATA_KEY = 'extraction_semantics_version';
 //     wasm; walker mirrors languages/pascal.ts + visitPascalNode). Route
 //     change under the clause above: databases stamped v6 must fully
 //     re-extract so kernel and wasm pascal shapes never mix.
-export const EXTRACTION_SEMANTICS_VERSION = 7;
+// v8: W1 wasm-retirement wave, second language — nix moves to the Rust
+//     kernel arm (vendored nix-community/tree-sitter-nix v0.3.0 regenerated
+//     with tree-sitter-cli 0.25.10 for ABI 15, tables identical to the
+//     vendored wasm; walker mirrors languages/nix.ts). Route change under
+//     the clause above: databases stamped v7 must fully re-extract so kernel
+//     and wasm nix shapes never mix.
+export const EXTRACTION_SEMANTICS_VERSION = 8;
 
 /** Decoded shape of the stamp row. */
 export interface ExtractionSemanticsStamp {

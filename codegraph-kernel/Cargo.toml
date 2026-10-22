@@ -69,6 +69,11 @@ tree-sitter-luau = "=1.2.0"
 # 371 kinds / 38 fields) — table-identical to the vendored wasm (W1 grammar
 # reconnaissance; only parser.c, no scanner). Bump crate + wasm together.
 tree-sitter-pascal = "=0.10.2"
+# nix: NO crate dep — vendored C compiled in build.rs (grammars/nix).
+# nix-community/tree-sitter-nix v0.3.0 (ea1d87f; parser.c/scanner.c
+# sha-identical to the 3d0173d the vendored wasm was built from) REGENERATED
+# with tree-sitter-cli 0.25.10 for ABI 15, so the C tables match the wasm
+# id for id. The tag's checked-in parser.c is ABI 13 — never vendor it.
 # tree-sitter-language: the version-agnostic LanguageFn shim for the vendored
 # kotlin grammar C (see build.rs — no kotlin crate dep is possible).
 tree-sitter-language = "0.1"
