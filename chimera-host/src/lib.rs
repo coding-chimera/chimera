@@ -34,6 +34,7 @@ pub mod crc32c;
 pub mod frame;
 pub mod handshake;
 pub mod host_driver;
+pub mod runtime;
 pub mod supervisor;
 
 pub use crc32c::crc32c;
