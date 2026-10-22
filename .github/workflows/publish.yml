@@ -170,6 +170,95 @@ jobs:
           # legs back with download-artifact merge-multiple.
           path: codegraph-kernel/prebuilds
 
+  host-prebuild:
+    name: host-prebuild ${{ matrix.settings.platform }}
+    runs-on: ${{ matrix.settings.host }}
+    # Host legs are OPTIONAL release cargo, the same contract as
+    # kernel-prebuild: any failure here must not block a release. Status today:
+    # the staged binaries are validated + downloadable as workflow artifacts,
+    # intentionally NOT packaged into npm tarballs yet — build-cli does not
+    # need this job. The wiring lands when the runtime actually launches the
+    # host (H2).
+    continue-on-error: true
+    if: github.repository == 'coding-chimera/chimera'
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        settings:
+          # 6 host legs, no Windows: chimera-host imports std::os::unix and
+          # its transport binds Unix sockets, so the crate cannot build there.
+          #
+          # Linux legs run through cargo-zigbuild on the ubuntu runner:
+          # glibc-versioned targets pin the artifact floor to 2.28 regardless
+          # of the runner's own glibc; musl legs keep rustc's default
+          # +crt-static (a static executable is the desired shape here, unlike
+          # the kernel cdylib) and arm64 cross from x64 is zig-native.
+          - host: ubuntu-latest
+            platform: linux-x64
+            target: x86_64-unknown-linux-gnu.2.28
+            zig: true
+          - host: ubuntu-latest
+            platform: linux-arm64
+            target: aarch64-unknown-linux-gnu.2.28
+            zig: true
+          - host: ubuntu-latest
+            platform: linux-x64-musl
+            target: x86_64-unknown-linux-musl
+            zig: true
+          - host: ubuntu-latest
+            platform: linux-arm64-musl
+            target: aarch64-unknown-linux-musl
+            zig: true
+          # macOS: the arm runner cross-builds the x64 leg with the Apple
+          # toolchain; MACOSX_DEPLOYMENT_TARGET is pinned by build-host.sh
+          # (11.0) so artifacts keep a deterministic load floor.
+          - host: macos-26
+            platform: darwin-arm64
+            target: aarch64-apple-darwin
+          - host: macos-26
+            platform: darwin-x64
+            target: x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: mlugg/setup-zig@v2
+        if: matrix.settings.zig
+        with:
+          version: 0.16.0
+
+      - uses: taiki-e/install-action@v2
+        if: matrix.settings.zig
+        with:
+          tool: cargo-zigbuild
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: chimera-host -> target
+
+      - name: Build and stage host prebuild
+        shell: bash
+        run: >
+          ./packages/chimera/script/build-host.sh
+          --target "${{ matrix.settings.target }}"
+          --platform "${{ matrix.settings.platform }}"
+          ${{ matrix.settings.zig && '--zig' || '' }}
+
+      - name: Verify staged prebuild
+        shell: bash
+        run: |
+          ls -la "chimera-host/prebuilds/${{ matrix.settings.platform }}/"
+          test -s "chimera-host/prebuilds/${{ matrix.settings.platform }}/chimera-host"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: host-prebuild-${{ matrix.settings.platform }}
+          # Upload the prebuilds PARENT dir so the artifact keeps the
+          # <platform>/chimera-host structure, mirroring kernel-prebuild.
+          path: chimera-host/prebuilds
+
   build-cli:
     needs:
       - version

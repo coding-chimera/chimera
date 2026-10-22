@@ -159,3 +159,46 @@ jobs:
             packages/app/e2e/junit-*.xml
             packages/app/e2e/test-results
             packages/app/e2e/playwright-report
+
+  # Rust host (chimera-host) coverage. The crate is Unix-only — it imports
+  # std::os::unix and its transport layer binds Unix sockets — so there is no
+  # Windows leg here (cargo test would not even compile there).
+  host-rust:
+    name: host-rust (${{ matrix.settings.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        settings:
+          - name: linux
+            host: ubuntu-latest
+          - name: macos
+            host: macos-26
+    runs-on: ${{ matrix.settings.host }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # The cross-language e2e test spawns a real `bun run src/index.ts
+      # bun-worker`, so the workspace dependencies must be installed — a bare
+      # bun binary is not enough.
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: chimera-host -> target
+
+      - name: Run host tests
+        run: cargo test --manifest-path chimera-host/Cargo.toml
+
+      # Compile-only check: criterion benches are `harness = false`, so a
+      # regression in the bench surface must not need a full benchmark run.
+      - name: Compile host benches
+        run: cargo bench --no-run --manifest-path chimera-host/Cargo.toml
