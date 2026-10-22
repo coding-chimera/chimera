@@ -22,7 +22,7 @@
 
 use std::io::{Read, Write};
 
-use crate::connection::{ConnectionError, FrameReader, FrameWriter};
+use crate::connection::{ConnectionError, FrameReader, FrameWriter, NextFrame};
 use crate::frame::{
     FrameError, FrameKind, Header, FLAG_DURABLE, FLAG_REPLAYABLE, PROTOCOL_VERSION_V0,
 };
@@ -810,7 +810,6 @@ pub enum DrainOutcome {
     },
 }
 
-/// How [`HostDriver::serve`] stopped.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServeOutcome {
     /// The transport reached a clean EOF at a frame boundary.
@@ -822,6 +821,36 @@ pub enum ServeOutcome {
         /// Drain that timed out.
         drain_id: String,
     },
+    /// No complete frame arrived this round, or the step budget was reached.
+    ///
+    /// Non-terminal: the connection stays live and the next round continues
+    /// from the retained buffer (H2 Step 0, §2.4).
+    Idle,
+}
+
+/// Per-step limits for [`HostDriver::serve_available`] (H2 Step 0, §2.2).
+///
+/// The two limits are a first-past-the-post pair: whichever is reached first
+/// ends the step with [`ServeOutcome::Idle`], so one busy connection cannot
+/// starve accept/tick/reap or other connections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServeBudget {
+    /// Maximum frames handled in one step.
+    pub max_frames: usize,
+    /// Maximum wall/logical time spent in one step.
+    pub max_ms: u64,
+}
+
+impl ServeBudget {
+    /// Candidate default frame cap (§2.2).
+    pub const DEFAULT_MAX_FRAMES: usize = 64;
+    /// Candidate default time cap in milliseconds (§2.2).
+    pub const DEFAULT_MAX_MS: u64 = 10;
+    /// Candidate default budget: `max_frames = 64`, `max_ms = 10`.
+    pub const DEFAULT: Self = Self {
+        max_frames: Self::DEFAULT_MAX_FRAMES,
+        max_ms: Self::DEFAULT_MAX_MS,
+    };
 }
 
 /// Injected logical clock. Implemented for `FnMut() -> u64` closures.
@@ -1101,64 +1130,121 @@ impl<R: Read, W: Write> HostDriver<R, W> {
             let Some((header, payload)) = self.next_frame(registry, clock)? else {
                 return Ok(ServeOutcome::Closed);
             };
-            if header.worker_generation != self.identity.worker_generation {
-                self.stale_generation_dropped = self.stale_generation_dropped.saturating_add(1);
-                continue;
+            if let Some(outcome) = self.handle_frame(header, payload, router)? {
+                return Ok(outcome);
             }
-            if header.connection_id != self.identity.connection_id {
-                return Err(HostError::protocol(
-                    "bad_header",
-                    format!(
-                        "frame connection_id {} does not match connection {}",
-                        header.connection_id, self.identity.connection_id
-                    ),
-                ));
+        }
+    }
+
+    /// One bounded, non-blocking serve step (H2 Step 0, §2.2).
+    ///
+    /// Reads at most until the transport has no complete frame this round
+    /// ([`ServeOutcome::Idle`]), the connection closes, or the drain resolves.
+    /// `budget` caps frames and elapsed time so one busy connection cannot
+    /// starve accept/tick/reap or other connections. A read timeout is `Idle`,
+    /// never `Closed`.
+    pub fn serve_available<T: RequestRouter, C: Clock>(
+        &mut self,
+        registry: &mut WorkerRegistry,
+        router: &mut T,
+        clock: &mut C,
+        budget: ServeBudget,
+    ) -> Result<ServeOutcome, HostError> {
+        let started_ms = clock.now_ms();
+        let mut frames = 0usize;
+        loop {
+            if self.drain_deadline_passed(clock) {
+                return Ok(ServeOutcome::DrainTimedOut {
+                    drain_id: self
+                        .drain
+                        .as_ref()
+                        .map(|state| state.drain_id.clone())
+                        .unwrap_or_default(),
+                });
             }
-            match header.frame_kind {
-                FrameKind::Request => {
-                    self.handle_request(&payload, router)?;
-                }
-                FrameKind::Event => {
-                    let body = parse_body(&payload)?;
-                    let durable = header.flags & FLAG_DURABLE != 0;
-                    self.events.push(HostEvent::from_json(&body, durable, header.sequence)?);
-                }
-                FrameKind::Ack => {
-                    let ack = Ack::from_json(&parse_body(&payload)?)?;
-                    if let Some(outcome) = self.apply_ack(ack) {
+            match self.try_next_frame(registry, clock)? {
+                NextFrame::Eof => return Ok(ServeOutcome::Closed),
+                NextFrame::NotReady => return Ok(ServeOutcome::Idle),
+                NextFrame::Frame(header, payload) => {
+                    frames += 1;
+                    if let Some(outcome) = self.handle_frame(header, payload, router)? {
                         return Ok(outcome);
                     }
                 }
-                FrameKind::Error => {
-                    let body = parse_body(&payload)?;
-                    let error = body.get("error").unwrap_or(&body);
-                    return Err(HostError::Remote {
-                        code: error
-                            .get("code")
-                            .and_then(Json::as_str)
-                            .unwrap_or("internal_error")
-                            .to_string(),
-                        message: error
-                            .get("message")
-                            .and_then(Json::as_str)
-                            .unwrap_or_default()
-                            .to_string(),
-                    });
-                }
-                FrameKind::Hello => {
-                    return Err(HostError::protocol(
-                        "validation_error",
-                        "hello received after the handshake completed",
-                    ));
-                }
-                // `response`, `cancel`, `drain`, and `replay` are not expected
-                // from a worker in v0. They carry no host action, so ignoring
-                // them is safe; unknown numeric kinds never reach this match.
-                FrameKind::Response | FrameKind::Cancel | FrameKind::Drain | FrameKind::Replay => {
-                    self.ignored_frames = self.ignored_frames.saturating_add(1);
-                }
+            }
+            if frames >= budget.max_frames
+                || clock.now_ms().saturating_sub(started_ms) >= budget.max_ms
+            {
+                return Ok(ServeOutcome::Idle);
             }
         }
+    }
+
+    /// Apply one inbound frame. `Ok(None)` means "keep serving".
+    fn handle_frame<T: RequestRouter>(
+        &mut self,
+        header: Header,
+        payload: Vec<u8>,
+        router: &mut T,
+    ) -> Result<Option<ServeOutcome>, HostError> {
+        if header.worker_generation != self.identity.worker_generation {
+            self.stale_generation_dropped = self.stale_generation_dropped.saturating_add(1);
+            return Ok(None);
+        }
+        if header.connection_id != self.identity.connection_id {
+            return Err(HostError::protocol(
+                "bad_header",
+                format!(
+                    "frame connection_id {} does not match connection {}",
+                    header.connection_id, self.identity.connection_id
+                ),
+            ));
+        }
+        match header.frame_kind {
+            FrameKind::Request => {
+                self.handle_request(&payload, router)?;
+            }
+            FrameKind::Event => {
+                let body = parse_body(&payload)?;
+                let durable = header.flags & FLAG_DURABLE != 0;
+                self.events.push(HostEvent::from_json(&body, durable, header.sequence)?);
+            }
+            FrameKind::Ack => {
+                let ack = Ack::from_json(&parse_body(&payload)?)?;
+                if let Some(outcome) = self.apply_ack(ack) {
+                    return Ok(Some(outcome));
+                }
+            }
+            FrameKind::Error => {
+                let body = parse_body(&payload)?;
+                let error = body.get("error").unwrap_or(&body);
+                return Err(HostError::Remote {
+                    code: error
+                        .get("code")
+                        .and_then(Json::as_str)
+                        .unwrap_or("internal_error")
+                        .to_string(),
+                    message: error
+                        .get("message")
+                        .and_then(Json::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                });
+            }
+            FrameKind::Hello => {
+                return Err(HostError::protocol(
+                    "validation_error",
+                    "hello received after the handshake completed",
+                ));
+            }
+            // `response`, `cancel`, `drain`, and `replay` are not expected
+            // from a worker in v0. They carry no host action, so ignoring
+            // them is safe; unknown numeric kinds never reach this match.
+            FrameKind::Response | FrameKind::Cancel | FrameKind::Drain | FrameKind::Replay => {
+                self.ignored_frames = self.ignored_frames.saturating_add(1);
+            }
+        }
+        Ok(None)
     }
 
     /// Wait for `ack(phase=drained)` after [`HostDriver::initiate_drain`].
@@ -1200,6 +1286,8 @@ impl<R: Read, W: Write> HostDriver<R, W> {
                             ServeOutcome::Closed => {
                                 DrainOutcome::Closed { drain_id: state.drain_id.clone() }
                             }
+                            // `apply_ack` never reports Idle; keep waiting.
+                            ServeOutcome::Idle => continue,
                         });
                     }
                 }
@@ -1251,17 +1339,44 @@ impl<R: Read, W: Write> HostDriver<R, W> {
                 }
                 Ok(frame)
             }
-            Err(err) => {
-                if matches!(err.as_frame_error(), Some(FrameError::SequenceGap { .. })) {
-                    let _ = registry.mark_crashed(
-                        &self.identity.workspace_id,
-                        self.identity.worker_generation,
-                        clock.now_ms(),
-                    );
-                }
-                Err(HostError::Connection(err))
-            }
+            Err(err) => Err(self.map_read_error(err, registry, clock)),
         }
+    }
+
+    /// Read one frame without blocking past a single transport read.
+    ///
+    /// Same sequence-gap accounting as [`HostDriver::next_frame`]; a read
+    /// timeout is surfaced as [`NextFrame::NotReady`] instead of an error.
+    fn try_next_frame<C: Clock>(
+        &mut self,
+        registry: &mut WorkerRegistry,
+        clock: &mut C,
+    ) -> Result<NextFrame, HostError> {
+        match self.reader.try_next_frame() {
+            Ok(NextFrame::Frame(header, payload)) => {
+                self.last_inbound_ms = clock.now_ms();
+                Ok(NextFrame::Frame(header, payload))
+            }
+            Ok(other) => Ok(other),
+            Err(err) => Err(self.map_read_error(err, registry, clock)),
+        }
+    }
+
+    /// Map a reader error, recording a durable sequence gap as a crash.
+    fn map_read_error<C: Clock>(
+        &mut self,
+        err: ConnectionError,
+        registry: &mut WorkerRegistry,
+        clock: &mut C,
+    ) -> HostError {
+        if matches!(err.as_frame_error(), Some(FrameError::SequenceGap { .. })) {
+            let _ = registry.mark_crashed(
+                &self.identity.workspace_id,
+                self.identity.worker_generation,
+                clock.now_ms(),
+            );
+        }
+        HostError::Connection(err)
     }
 
     fn handle_request<T: RequestRouter>(
@@ -2373,5 +2488,103 @@ mod tests {
         assert_eq!(parsed.get("a").and_then(Json::as_array).map(|items| items.len()), Some(2));
         assert!(Json::parse("{").is_err());
         assert!(Json::parse("{} trailing").is_err());
+    }
+
+    #[test]
+    fn serve_available_returns_idle_at_frame_budget_then_resumes() {
+        let (mut registry, generation) = registry_and_generation();
+        let mut input = handshake_input(generation);
+        for sequence in 3..=6 {
+            input.extend(event_frame(
+                sequence,
+                generation,
+                false,
+                r#"{"v":1,"kind":"event","event":"message.part.delta","session_id":"ses_1","turn_id":"turn_1","event_seq":null,"payload":{"delta":"x"}}"#,
+            ));
+        }
+        let (mut driver, _sink) = handshake_driver(input, &mut registry, generation);
+
+        let budget = ServeBudget { max_frames: 2, max_ms: u64::MAX };
+        let mut router = RecordingRouter::new();
+        let mut clock = fixed_clock(1);
+
+        assert_eq!(
+            driver
+                .serve_available(&mut registry, &mut router, &mut clock, budget)
+                .expect("first step"),
+            ServeOutcome::Idle
+        );
+        assert_eq!(driver.take_events().len(), 2, "budget stops the step at 2 frames");
+
+        assert_eq!(
+            driver
+                .serve_available(&mut registry, &mut router, &mut clock, budget)
+                .expect("second step"),
+            ServeOutcome::Idle
+        );
+        assert_eq!(driver.take_events().len(), 2, "the remaining frames resume next step");
+
+        assert_eq!(
+            driver
+                .serve_available(&mut registry, &mut router, &mut clock, budget)
+                .expect("third step"),
+            ServeOutcome::Closed,
+            "Idle is non-terminal; the next step still sees EOF"
+        );
+    }
+
+    /// Reader that reports one read timeout, then EOF.
+    struct TimeoutThenEof {
+        timed_out: bool,
+    }
+
+    impl Read for TimeoutThenEof {
+        fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+            if self.timed_out {
+                return Ok(0);
+            }
+            self.timed_out = true;
+            Err(io::Error::new(io::ErrorKind::WouldBlock, "no data this round"))
+        }
+    }
+
+    #[test]
+    fn serve_available_read_timeout_is_idle_not_closed() {
+        let (mut registry, generation) = registry_and_generation();
+        let mut driver = HostDriver {
+            reader: FrameReader::new(TimeoutThenEof { timed_out: false }),
+            writer: FrameWriter::new(SharedSink::default()),
+            handshake: Handshake::new(config(generation)),
+            identity: HostIdentity {
+                workspace_id: "ws_test".to_string(),
+                connection_id: CONNECTION,
+                worker_generation: generation,
+            },
+            last_inbound_ms: 0,
+            stale_generation_dropped: 0,
+            ignored_frames: 0,
+            rejected_requests: 0,
+            events: Vec::new(),
+            last_acked_command_sequence: 0,
+            drain: None,
+        };
+        let mut router = RecordingRouter::new();
+        let mut clock = fixed_clock(1);
+
+        assert_eq!(
+            driver
+                .serve_available(&mut registry, &mut router, &mut clock, ServeBudget::DEFAULT)
+                .expect("timeout is not an error"),
+            ServeOutcome::Idle
+        );
+        assert_eq!(driver.last_inbound_ms(), 0, "Idle does not count as inbound traffic");
+
+        assert_eq!(
+            driver
+                .serve_available(&mut registry, &mut router, &mut clock, ServeBudget::DEFAULT)
+                .expect("eof"),
+            ServeOutcome::Closed,
+            "the Closed semantics are unchanged"
+        );
     }
 }

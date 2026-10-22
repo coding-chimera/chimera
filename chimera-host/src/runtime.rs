@@ -46,7 +46,7 @@ use crate::connection::{ConnectionError, FrameReader, FrameWriter};
 use crate::handshake::HostConfig;
 use crate::host_driver::{
     run_handshake, Clock, DrainOutcome, DrainReason, HostDriver, HostError, HostEvent,
-    RequestRouter, ServeOutcome,
+    RequestRouter, ServeBudget, ServeOutcome,
 };
 use crate::supervisor::{
     restart_backoff_with_jitter, DrainPlan, ExitReason, SupervisorError, WorkerRecord,
@@ -476,9 +476,45 @@ impl<L: Listener, C: Clock> HostRuntime<L, C> {
         generation: u64,
         router: &mut T,
     ) -> Option<ConnectionServe> {
+        self.serve_connection_inner(workspace_id, generation, router, None)
+    }
+
+    /// Bounded variant of [`HostRuntime::serve_connection`] (H2 Step 0, §2.2).
+    ///
+    /// Drives one connection for at most one `budget`-bounded step. A step
+    /// that exhausts the budget or finds no complete frame returns
+    /// [`ServeOutcome::Idle`], which [`HostRuntime::settle_connection`] treats
+    /// as a no-op; the connection stays live for the next round.
+    pub fn serve_connection_bounded<T: RequestRouter>(
+        &mut self,
+        workspace_id: &str,
+        generation: u64,
+        router: &mut T,
+        budget: ServeBudget,
+    ) -> Option<ConnectionServe> {
+        self.serve_connection_inner(workspace_id, generation, router, Some(budget))
+    }
+
+    fn serve_connection_inner<T: RequestRouter>(
+        &mut self,
+        workspace_id: &str,
+        generation: u64,
+        router: &mut T,
+        budget: Option<ServeBudget>,
+    ) -> Option<ConnectionServe> {
         let index = self.connection_index(workspace_id, generation)?;
         let identity = self.connections[index].driver.identity().clone();
-        let outcome = self.connections[index].driver.serve(&mut self.registry, router, &mut self.clock);
+        let outcome = match budget {
+            Some(budget) => self.connections[index].driver.serve_available(
+                &mut self.registry,
+                router,
+                &mut self.clock,
+                budget,
+            ),
+            None => self.connections[index]
+                .driver
+                .serve(&mut self.registry, router, &mut self.clock),
+        };
         let events = self.connections[index].driver.take_events();
         Some(ConnectionServe {
             workspace_id: identity.workspace_id,
@@ -538,6 +574,9 @@ impl<L: Listener, C: Clock> HostRuntime<L, C> {
             Ok(ServeOutcome::DrainTimedOut { .. }) => {
                 // The driver stopped at the deadline; the caller escalates.
             }
+            // Idle is non-terminal: the connection stays live and the next
+            // round continues from the retained buffer (§2.4).
+            Ok(ServeOutcome::Idle) => {}
             Err(_) => {
                 self.note_crash(workspace_id, generation, now_ms);
                 self.connections.remove(index);

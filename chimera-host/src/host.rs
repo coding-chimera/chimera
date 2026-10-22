@@ -25,13 +25,17 @@
 use std::cell::RefCell;
 use std::fmt;
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::Duration;
 
-use crate::host_driver::{Clock, DurableEvent, HostError, HostEvent, RequestRouter, ServeOutcome};
+use crate::connection::SERVE_READ_TIMEOUT_MS;
+use crate::host_driver::{
+    Clock, DurableEvent, HostError, HostEvent, RequestRouter, ServeBudget, ServeOutcome,
+};
 use crate::runtime::{
     ConnectionServe, HostRuntime, HostRuntimeConfig, Listener, TickOutcome, WorkerRef,
     DRAIN_DEADLINE_CANDIDATE_MS, HEARTBEAT_INTERVAL_MS, HEARTBEAT_SCAN_INTERVAL_MS,
@@ -534,6 +538,9 @@ impl Listener for UnixSocketListener {
     fn accept(&mut self) -> io::Result<Option<(Self::Reader, Self::Writer)>> {
         match self.listener.accept() {
             Ok((stream, _address)) => {
+                // Read half only: `FrameWriter` and durable ack rely on blocking
+                // writes, and `O_NONBLOCK` is file-description-wide (§2.2).
+                stream.set_read_timeout(Some(Duration::from_millis(SERVE_READ_TIMEOUT_MS)))?;
                 stream.set_nonblocking(false)?;
                 let reader = stream.try_clone()?;
                 Ok(Some((reader, stream)))
@@ -577,9 +584,10 @@ pub struct ConnectionReport {
     pub generation: u64,
     /// Host-assigned connection id.
     pub connection_id: u64,
-    /// How the serve step stopped; `None` when the driver returned an error.
+    /// How the serve step stopped; `None` when the driver returned an error
+    /// or a durable event commit failed.
     pub outcome: Option<ServeOutcome>,
-    /// Driver error text when the serve step failed.
+    /// Driver or store error text when the serve step failed.
     pub error: Option<String>,
     /// Durable events committed and acknowledged this round.
     pub durable_committed: usize,
@@ -655,22 +663,29 @@ impl<L: Listener, C: Clock> HostHandle<L, C> {
     /// first; only a successful append sends `ack(phase=durable_committed)`.
     /// Transient events are accepted without a store write and never acked
     /// (§8.2: transient events need no ack). A store failure is logged to
-    /// stderr, leaves the failing event unacknowledged, and is returned to the
-    /// caller instead of being swallowed. Driver errors are recorded per
-    /// connection; the round continues with the next connection.
+    /// stderr, leaves the failing event unacknowledged, and is reported to the
+    /// caller after the round finishes; the failing connection stays live and
+    /// the remaining connections are still served (H2 Step 0, §2.5). Driver
+    /// errors are recorded per connection; the round continues.
     pub fn serve_round<T: RequestRouter>(
         &mut self,
         router: &mut T,
     ) -> Result<ServeRound, StoreError> {
         let mut round = ServeRound::default();
         let now_ms = self.clock.now_ms();
+        let mut round_error: Option<StoreError> = None;
         for (workspace_id, generation) in self.runtime.live_connections() {
-            let Some(served) = self.runtime.serve_connection(&workspace_id, generation, router)
-            else {
+            let Some(served) = self.runtime.serve_connection_bounded(
+                &workspace_id,
+                generation,
+                router,
+                ServeBudget::DEFAULT,
+            ) else {
                 continue;
             };
             let mut durable_committed = 0;
             let mut transient_accepted = 0;
+            let mut store_failed = None;
             for event in &served.events {
                 match event {
                     HostEvent::Durable(event) => {
@@ -686,7 +701,11 @@ impl<L: Listener, C: Clock> HostHandle<L, C> {
                                     served.connection_id,
                                     event.event
                                 );
-                                return Err(error);
+                                store_failed = Some(error.to_string());
+                                if round_error.is_none() {
+                                    round_error = Some(error);
+                                }
+                                break;
                             }
                         };
                         match self.runtime.acknowledge_durable(
@@ -707,6 +726,20 @@ impl<L: Listener, C: Clock> HostHandle<L, C> {
                     HostEvent::Transient(_) => transient_accepted += 1,
                 }
             }
+            if let Some(error) = store_failed {
+                // Keep the connection live and the durable event unacked; the
+                // worker resends it. Do not settle or abort the whole round.
+                round.connections.push(ConnectionReport {
+                    workspace_id: workspace_id.clone(),
+                    generation,
+                    connection_id: served.connection_id,
+                    outcome: None,
+                    error: Some(format!("durable event commit failed: {error}")),
+                    durable_committed,
+                    transient_accepted,
+                });
+                continue;
+            }
             let error = served.outcome.as_ref().err().map(|error| error.to_string());
             let outcome = served.outcome.as_ref().ok().cloned();
             self.runtime.settle_connection(&workspace_id, generation, &served.outcome);
@@ -720,7 +753,10 @@ impl<L: Listener, C: Clock> HostHandle<L, C> {
                 transient_accepted,
             });
         }
-        Ok(round)
+        match round_error {
+            Some(error) => Err(error),
+            None => Ok(round),
+        }
     }
 
     /// Map one durable inbound event onto the `host_event` row (§8.5).
@@ -1083,7 +1119,7 @@ mod tests {
     use crate::frame::{FrameKind, Header, FLAG_DURABLE, PROTOCOL_VERSION_V0};
     use crate::host_driver::{IncomingRequest, Json, OutgoingResponse, RequestRouter};
     use std::collections::VecDeque;
-    use std::io::Cursor;
+    use std::io::{Cursor, Read};
 
     const CONNECTION: u64 = 1;
 
@@ -1310,6 +1346,51 @@ mod tests {
         assert!(
             frames.iter().all(|(header, _)| header.frame_kind != FrameKind::Ack),
             "commit-before-ack: a failed commit must not emit an ack"
+        );
+
+        drop(handle);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn serve_round_returns_idle_at_budget_and_resumes_without_crashing() {
+        let root = temp_dir("serve-round-idle");
+        fs::create_dir_all(&root).unwrap();
+        let config = HostCliConfig::new(&root);
+        let mut listener = TestListener::default();
+        let mut input = handshake_input(1);
+        let frames = ServeBudget::DEFAULT_MAX_FRAMES + 6;
+        for offset in 0..frames {
+            input.extend(event_frame(3 + offset as u64, 1, false, transient_event_body()));
+        }
+        let sink = listener.push(input);
+        let store = store_with_event_schema(&root);
+        let mut handle = run_host(config, listener, fixed_clock as fn() -> u64, store);
+
+        handle.runtime_mut().spawn_worker("ws_test", 0).expect("spawn");
+        handle.accept_next().unwrap().expect("admit");
+
+        let mut router = EchoRouter;
+        let first = handle.serve_round(&mut router).expect("first round");
+        assert_eq!(first.connections.len(), 1);
+        assert_eq!(first.connections[0].outcome, Some(ServeOutcome::Idle));
+        assert_eq!(
+            first.connections[0].transient_accepted,
+            ServeBudget::DEFAULT_MAX_FRAMES,
+            "the frame budget stops the step"
+        );
+        assert_eq!(handle.runtime().live_connection_count(), 1, "Idle keeps the connection");
+
+        let second = handle.serve_round(&mut router).expect("second round");
+        assert_eq!(second.connections.len(), 1);
+        assert_eq!(second.connections[0].outcome, Some(ServeOutcome::Closed));
+        assert_eq!(second.connections[0].transient_accepted, 6);
+        assert_eq!(handle.runtime().live_connection_count(), 0);
+
+        let frames = frames_from(&sink);
+        assert!(
+            frames.iter().all(|(header, _)| header.frame_kind != FrameKind::Ack),
+            "transient events are never acked"
         );
 
         drop(handle);

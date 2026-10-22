@@ -14,9 +14,10 @@
 //! # Event loop
 //!
 //! [`run_host`] deliberately has no internal main loop, so this bin owns one:
-//! each iteration accepts at most one pending worker connection and runs one
-//! bounded `tick`, then sleeps [`POLL_INTERVAL`]. The loop is single-threaded
-//! and adds no async runtime.
+//! each iteration accepts at most one pending worker connection, runs one
+//! bounded `serve_round` over every live connection, runs one bounded `tick`,
+//! then sleeps [`POLL_INTERVAL`]. The loop is single-threaded and adds no async
+//! runtime.
 //!
 //! # Worker spawning
 //!
@@ -70,6 +71,7 @@ use std::process::{Child, Command, ExitCode};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use chimera_host::host::{run_host, HostCliConfig, UnixSocketListener};
+use chimera_host::host_driver::{IncomingRequest, OutgoingResponse, RequestRouter};
 use chimera_host::store::HostStore;
 
 
@@ -189,6 +191,22 @@ fn random_nonce() -> io::Result<String> {
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
+/// H1 placeholder router. Request routing to workers is a later milestone, so
+/// every request is refused explicitly instead of being silently dropped.
+struct Unrouted;
+
+impl RequestRouter for Unrouted {
+    fn route(&mut self, request: IncomingRequest) -> OutgoingResponse {
+        OutgoingResponse::error(
+            request.id,
+            "not_implemented",
+            "host",
+            false,
+            "request routing is not wired in the H1 host bin",
+        )
+    }
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -294,6 +312,7 @@ fn run() -> Result<(), String> {
     );
 
 
+    let mut router = Unrouted;
     loop {
         match handle.accept_next() {
             Ok(_) => {}
@@ -303,16 +322,17 @@ fn run() -> Result<(), String> {
                 let _ = writeln!(io::stderr(), "chimera-host: accept failed: {error}");
             }
         }
+        // One bounded serve step per live connection (H2 Step 0): a step
+        // returns `Idle` instead of blocking accept/tick/reap until the
+        // connection closes, and a per-connection store error does not abort
+        // the round.
+        if let Err(error) = handle.serve_round(&mut router) {
+            let _ = writeln!(io::stderr(), "chimera-host: serve round failed: {error}");
+        }
+
         // Escalation for unresponsive/drain-expired workers is a later
         // milestone; the tick is still required to run the heartbeat scan.
         let _ = handle.tick();
-
-        // `serve_round` is deliberately NOT driven from this loop:
-        // `HostDriver::serve` reads a blocking socket until the connection
-        // closes, so calling it here would park accept/tick/reap for the
-        // lifetime of the first worker connection. The commit-before-ack
-        // wiring is proven by unit tests and the cross-language e2e; driving
-        // it from the bin needs a non-blocking serve step (later milestone).
 
         // Reap exited workers so the host never accumulates zombies. Restart
         // orchestration is deliberately out of scope for this bin.

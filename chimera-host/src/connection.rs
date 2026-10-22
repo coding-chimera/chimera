@@ -33,6 +33,50 @@ pub const READER_BUFFER_LIMIT: usize = MAX_FRAME_BYTES as usize + HEADER_LEN as 
 /// buffer close to the frame being assembled, large enough to amortize reads.
 const READ_CHUNK_BYTES: usize = 8 * 1024;
 
+/// Read-side socket timeout for an admitted connection (H2 Step 0, §2.2).
+///
+/// The spec names the constant but does not fix a number. The candidate default
+/// is 10ms so a single idle read costs at most the §2.2 serve step budget
+/// (`max_ms = 10`), keeping idle rounds within the §2.6 gate of
+/// `p99 <= 2 x POLL_INTERVAL` (50ms).
+///
+/// Only the read half is bounded: the write half stays blocking because
+/// `FrameWriter` and durable ack rely on blocking writes (§2.2).
+pub const SERVE_READ_TIMEOUT_MS: u64 = 10;
+
+/// Outcome of one [`FrameReader::fill_once`] call.
+enum FillOutcome {
+    /// At least one byte was read and buffered.
+    Data,
+    /// The transport reached EOF.
+    Eof,
+    /// The read timed out before any byte arrived.
+    NotReady,
+}
+
+/// Whether an I/O error means "no data this round" rather than a failure.
+///
+/// `SO_RCVTIMEO` surfaces as `WouldBlock` or `TimedOut` depending on the
+/// platform (§2.2).
+fn is_read_timeout(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+    )
+}
+
+/// Outcome of one non-blocking frame read (H2 Step 0, §2.2).
+#[derive(Debug)]
+pub enum NextFrame {
+    /// A complete frame; `transport_sequence` has been validated and advanced.
+    Frame(Header, Vec<u8>),
+    /// No complete frame is available this round. A partial frame stays
+    /// buffered for the next call.
+    NotReady,
+    /// Clean EOF at a frame boundary.
+    Eof,
+}
+
 /// A connection-layer failure: a frame/protocol error or an I/O failure.
 ///
 /// Stable `code()`/`category()` values mirror §10.2. I/O failures carry no
@@ -279,6 +323,37 @@ impl<R: Read> FrameReader<R> {
             }
         }
     }
+    /// Read the next frame without blocking past one transport read.
+    ///
+    /// First tries the bytes already buffered, then performs a single
+    /// [`FrameReader::fill_once`]. A read timeout (`WouldBlock`/`TimedOut`) is
+    /// reported as [`NextFrame::NotReady`] and the partial frame is retained;
+    /// `transport_sequence` advances only when a complete frame is returned.
+    /// EOF on a non-empty buffer is `decode_error`, matching [`FrameReader::next_frame`].
+    pub fn try_next_frame(&mut self) -> Result<NextFrame, ConnectionError> {
+        if let Some((header, payload)) = self.parse_buffered()? {
+            self.accept_sequence(&header)?;
+            return Ok(NextFrame::Frame(header, payload));
+        }
+        match self.fill_once()? {
+            FillOutcome::NotReady => Ok(NextFrame::NotReady),
+            FillOutcome::Eof => {
+                if self.buf.is_empty() {
+                    return Ok(NextFrame::Eof);
+                }
+                Err(FrameError::DecodeError.into())
+            }
+            FillOutcome::Data => match self.parse_buffered()? {
+                Some((header, payload)) => {
+                    self.accept_sequence(&header)?;
+                    Ok(NextFrame::Frame(header, payload))
+                }
+                // Data arrived but the frame is still incomplete; keep it
+                // buffered and report no progress this round.
+                None => Ok(NextFrame::NotReady),
+            },
+        }
+    }
 
     /// Consume the reader and return the underlying transport.
     pub fn into_inner(self) -> R {
@@ -288,6 +363,11 @@ impl<R: Read> FrameReader<R> {
     /// Borrow the underlying transport.
     pub fn get_ref(&self) -> &R {
         &self.inner
+    }
+
+    /// Mutably borrow the underlying transport.
+    pub fn get_mut(&mut self) -> &mut R {
+        &mut self.inner
     }
 
     /// Take the next complete frame out of the buffer, if one is fully present.
@@ -309,8 +389,23 @@ impl<R: Read> FrameReader<R> {
         Ok(Some((header, payload)))
     }
 
-    /// Pull one chunk from the transport. `Ok(false)` means EOF.
+    /// Pull one chunk from the transport, blocking until data or EOF.
+    ///
+    /// A read timeout (`WouldBlock`/`TimedOut`, as `SO_RCVTIMEO` reports on
+    /// macOS/Linux) is retried, so `next_frame` keeps its blocking contract even
+    /// when the transport carries a read timeout.
     fn fill(&mut self) -> Result<bool, ConnectionError> {
+        loop {
+            match self.fill_once()? {
+                FillOutcome::Data => return Ok(true),
+                FillOutcome::Eof => return Ok(false),
+                FillOutcome::NotReady => continue,
+            }
+        }
+    }
+
+    /// Pull one chunk from the transport without retrying a read timeout.
+    fn fill_once(&mut self) -> Result<FillOutcome, ConnectionError> {
         let remaining = self.max_buffer_bytes.saturating_sub(self.buf.len());
         if remaining == 0 {
             // A frame boundary is always consumed by `parse_buffered`, so this
@@ -321,12 +416,13 @@ impl<R: Read> FrameReader<R> {
         let capacity = remaining.min(chunk.len());
         loop {
             match self.inner.read(&mut chunk[..capacity]) {
-                Ok(0) => return Ok(false),
+                Ok(0) => return Ok(FillOutcome::Eof),
                 Ok(read) => {
                     self.buf.extend_from_slice(&chunk[..read]);
-                    return Ok(true);
+                    return Ok(FillOutcome::Data);
                 }
                 Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                Err(err) if is_read_timeout(&err) => return Ok(FillOutcome::NotReady),
                 Err(err) => return Err(err.into()),
             }
         }
@@ -803,5 +899,119 @@ mod tests {
                 received: 3,
             })
         );
+    }
+
+    /// Reader driven by a fixed script of read results, so a test can interleave
+    /// data, read timeouts, and EOF deterministically.
+    struct Scripted {
+        steps: Vec<io::Result<Vec<u8>>>,
+        index: usize,
+        pos: usize,
+    }
+
+    impl Scripted {
+        fn new(steps: Vec<io::Result<Vec<u8>>>) -> Self {
+            Self { steps, index: 0, pos: 0 }
+        }
+    }
+
+    impl Read for Scripted {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let Some(step) = self.steps.get_mut(self.index) else {
+                return Ok(0);
+            };
+            match step {
+                Ok(data) => {
+                    let count = (data.len() - self.pos).min(buf.len());
+                    buf[..count].copy_from_slice(&data[self.pos..self.pos + count]);
+                    self.pos += count;
+                    if self.pos == data.len() {
+                        self.index += 1;
+                        self.pos = 0;
+                    }
+                    Ok(count)
+                }
+                Err(error) => {
+                    let error = io::Error::new(error.kind(), error.to_string());
+                    self.index += 1;
+                    Err(error)
+                }
+            }
+        }
+    }
+
+    fn timeout(kind: io::ErrorKind) -> io::Result<Vec<u8>> {
+        Err(io::Error::new(kind, "no data this round"))
+    }
+
+    #[test]
+    fn try_next_frame_reports_not_ready_and_keeps_half_frame() {
+        let bytes = frame_bytes(1, 0, b"half frame body");
+        let split = HEADER_LEN as usize + 2;
+        let mut reader = FrameReader::new(Scripted::new(vec![
+            Ok(bytes[..split].to_vec()),
+            timeout(io::ErrorKind::WouldBlock),
+            Ok(bytes[split..].to_vec()),
+        ]));
+
+        assert!(matches!(reader.try_next_frame(), Ok(NextFrame::NotReady)));
+        assert_eq!(reader.pending_bytes(), split, "partial frame stays buffered");
+        assert_eq!(reader.expected_sequence(), 1, "half frame does not advance sequence");
+
+        assert!(matches!(reader.try_next_frame(), Ok(NextFrame::NotReady)));
+        assert_eq!(reader.pending_bytes(), split);
+        assert_eq!(reader.expected_sequence(), 1);
+
+        match reader.try_next_frame().expect("frame completes") {
+            NextFrame::Frame(header, payload) => {
+                assert_eq!(header.sequence, 1);
+                assert_eq!(payload, b"half frame body");
+            }
+            other => panic!("expected a complete frame, got {other:?}"),
+        }
+        assert_eq!(reader.expected_sequence(), 2, "sequence advances on the complete frame");
+        assert!(matches!(reader.try_next_frame(), Ok(NextFrame::Eof)));
+    }
+
+    #[test]
+    fn try_next_frame_treats_timed_out_as_not_ready() {
+        let mut reader = FrameReader::new(Scripted::new(vec![
+            timeout(io::ErrorKind::TimedOut),
+            Ok(Vec::new()),
+        ]));
+        assert!(matches!(reader.try_next_frame(), Ok(NextFrame::NotReady)));
+        assert_eq!(reader.pending_bytes(), 0);
+    }
+
+    #[test]
+    fn try_next_frame_partial_frame_then_eof_is_decode_error() {
+        let bytes = frame_bytes(1, 0, b"truncated");
+        let mut reader =
+            FrameReader::new(Scripted::new(vec![Ok(bytes[..bytes.len() - 1].to_vec())]));
+        // The partial body is buffered first; EOF on the next call is fatal.
+        assert!(matches!(reader.try_next_frame(), Ok(NextFrame::NotReady)));
+        assert_eq!(
+            reader.try_next_frame().err().and_then(|err| err.as_frame_error()),
+            Some(FrameError::DecodeError)
+        );
+    }
+
+    #[test]
+    fn try_next_frame_empty_stream_is_eof() {
+        let mut reader = FrameReader::new(Scripted::new(vec![]));
+        assert!(matches!(reader.try_next_frame(), Ok(NextFrame::Eof)));
+    }
+
+    #[test]
+    fn blocking_next_frame_retries_read_timeouts() {
+        let bytes = frame_bytes(1, 0, b"after timeout");
+        let mut reader = FrameReader::new(Scripted::new(vec![
+            timeout(io::ErrorKind::WouldBlock),
+            timeout(io::ErrorKind::TimedOut),
+            Ok(bytes),
+        ]));
+        let (header, payload) = reader.next_frame().expect("blocking read").expect("frame");
+        assert_eq!(header.sequence, 1);
+        assert_eq!(payload, b"after timeout");
     }
 }
