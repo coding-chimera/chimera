@@ -9,3 +9,11 @@ export {
   MemorySessionStateTable,
   MemoryStage1OutputTable,
 } from "../memory/memory.sql"
+export {
+  HostWorkerTable,
+  HostStateTable,
+  SessionTurnCheckpointTable,
+  PendingRequestTable,
+  RequestIdempotencyTable,
+  HostEventTable,
+} from "../storage/tables/host.sql"
