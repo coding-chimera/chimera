@@ -36,9 +36,10 @@ extern "C" {
 
 /// Languages this kernel binary can extract (reported by contractInfo;
 /// TS-side routing policy decides what actually routes).
-pub const LANGUAGES: [&str; 20] = [
+pub const LANGUAGES: [&str; 21] = [
     "typescript", "tsx", "javascript", "jsx", "java", "python", "go", "c", "cpp", "rust",
     "csharp", "ruby", "php", "swift", "kotlin", "r", "lua", "luau", "scala", "dart",
+    "pascal",
 ];
 
 pub fn grammar_for(language: &str) -> Option<Language> {
@@ -93,6 +94,9 @@ pub fn grammar_for(language: &str) -> Option<Language> {
         "dart" => {
             Some(unsafe { tree_sitter_language::LanguageFn::from_raw(tree_sitter_dart) }.into())
         }
+        // W1: Isopod/tree-sitter-pascal =0.10.2 crate, table-identical to the
+        // vendored wasm (ABI 14, 371 kinds / 38 fields). Only parser.c.
+        "pascal" => Some(tree_sitter_pascal::LANGUAGE.into()),
         _ => None,
     }
 }

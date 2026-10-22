@@ -210,6 +210,12 @@ const DEFAULT_ROUTED: ReadonlySet<Language> = new Set<Language>([
   'ruby',
   'csharp',
   'swift',
+  // wave 5 (W1 wasm retirement, 2026-10-22): pascal — the first language of
+  // the wasm-retirement roadmap. Crate tree-sitter-pascal =0.10.2 is
+  // table-identical to the vendored wasm (ABI 14, 371 kinds / 38 fields),
+  // and the walker mirrors languages/pascal.ts + visitPascalNode. Route
+  // change ⇒ EXTRACTION_SEMANTICS_VERSION 6 -> 7 (see extraction-version.ts).
+  'pascal',
 ]);
 
 /**
@@ -296,7 +302,7 @@ export const DEFER_ELIGIBLE_LANGUAGES: ReadonlySet<Language> = new Set<Language>
  * a file (the `defer:` parse-error / stack-guard valve above), and every
  * async extraction seam loads it lazily at that point (see
  * deferred-grammar.ts). Non-routed languages pass through untouched: objc
- * from the `.h` ambiguity expansion (#1628), r/solidity/pascal/nix wasm,
+ * from the `.h` ambiguity expansion (#1628), r/solidity/nix wasm,
  * ruling-⑤ names (silent unavailableGrammarErrors degradation), and
  * svelte/vue/astro — whose delegated typescript/javascript grammars are
  * added downstream by expandGrammarLanguages, so the SFC languages must

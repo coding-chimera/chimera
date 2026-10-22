@@ -31,7 +31,7 @@ import { kernelRoutes } from './kernel';
  * (TreeSitterExtractor.extract) for a kernel-routed language: the T0-1
  * filtered-preload case a defer just exposed. Null for every other failure,
  * which keeps the behavior-preserved surfaces intact: non-routed languages
- * (objc, r, solidity, pascal, nix) keep their existing preload, and the
+ * (objc, r, solidity, nix) keep their existing preload, and the
  * ruling-⑤ names (no shipped blob, never routed) keep their silent
  * unavailableGrammarErrors degradation instead of a pointless reload.
  */

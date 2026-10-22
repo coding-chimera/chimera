@@ -65,7 +65,10 @@ tree-sitter-r = "=1.2.0"
 # a157bb52… — lua-luau checklist §Grammar prep). ABI 14. Lua itself is
 # vendored C (build.rs) — its v0.4.1 revision is not on crates.io.
 tree-sitter-luau = "=1.2.0"
-
+# pascal: Isopod/tree-sitter-pascal =0.10.2 (ABI 14, STATE_COUNT 2715,
+# 371 kinds / 38 fields) — table-identical to the vendored wasm (W1 grammar
+# reconnaissance; only parser.c, no scanner). Bump crate + wasm together.
+tree-sitter-pascal = "=0.10.2"
 # tree-sitter-language: the version-agnostic LanguageFn shim for the vendored
 # kotlin grammar C (see build.rs — no kotlin crate dep is possible).
 tree-sitter-language = "0.1"

@@ -1,8 +1,8 @@
 /**
- * Kernel selector gating tests (P0-2a acceptance, updated for the wave-4
- * K-v2 P5-2 opening — DEFAULT_ROUTED = lua+luau + typescript/tsx/javascript/jsx +
- * kotlin/scala/dart + go/java/python/rust/c/cpp/php/ruby/csharp/swift; the
- * only kernel-supported language left non-routed is `r`, awaiting a parity
+ * Kernel selector gating tests (P0-2a acceptance, updated for the wave-5
+ * W1 opening — DEFAULT_ROUTED = lua+luau + typescript/tsx/javascript/jsx +
+ * kotlin/scala/dart + go/java/python/rust/c/cpp/php/ruby/csharp/swift +
+ * pascal; the only kernel-supported language left non-routed is `r`,
  * corpus):
  * - Non-routed languages (`r`) with no CODEGRAPH_KERNEL_LANGS env:
  *   extractFromSource never consults the kernel (the byte-equivalence iron
@@ -50,11 +50,11 @@ const KT_SOURCE = `fun main() {\n    println(\"x\")\n}\n`;
 // kernel call), not on r's wasm output bytes.
 const R_SOURCE = `add <- function(a, b) {\n  a + b\n}\n`;
 
-/** The real vendored kernel's 20-language contract (wave 4). */
+/** The real vendored kernel's 21-language contract (wave 5). */
 const ALL_KERNEL_LANGUAGES = [
   'typescript', 'tsx', 'javascript', 'jsx', 'java', 'python', 'go', 'c', 'cpp',
   'rust', 'csharp', 'ruby', 'php', 'swift', 'kotlin', 'r', 'lua', 'luau',
-  'scala', 'dart',
+  'scala', 'dart', 'pascal',
 ];
 
 /** Deterministic projection for byte-equivalence assertions (timestamps out). */
@@ -207,6 +207,16 @@ describe('extractFromSource kernel selector gating', () => {
     expect(calls).toEqual([['Main.kt', KT_SOURCE, 'kotlin']]);
     expect(result.nodes.some((n) => n.name === 'kernelMarker')).toBe(true);
     expect(result.nodes.some((n) => n.name === 'main')).toBe(false);
+  });
+
+  it('wave 5 (W1): DEFAULT_ROUTED pascal takes the kernel arm with NO env', () => {
+    const { mod, calls } = makeFakeKernel({ languages: ALL_KERNEL_LANGUAGES });
+    setKernelForTests(mod);
+    expect(kernelRoutes('pascal')).toBe(true);
+    const result = extractFromSource('Sample.pas', 'unit Sample;\ninterface\nimplementation\nend.\n', 'pascal');
+    expect(calls.length).toBe(1);
+    expect(calls[0]?.[2]).toBe('pascal');
+    expect(result.nodes.some((n) => n.name === 'kernelMarker')).toBe(true);
   });
 
   it('kill switch CODEGRAPH_KERNEL=0 returns default-routed kotlin to the wasm arm', () => {

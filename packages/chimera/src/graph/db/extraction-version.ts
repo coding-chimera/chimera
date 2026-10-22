@@ -91,7 +91,12 @@ export const EXTRACTION_SEMANTICS_METADATA_KEY = 'extraction_semantics_version';
 //     Stored unresolved_refs names change shape, so databases stamped v5
 //     must fully re-extract (fork counterpart of upstream EXTRACTION_VERSION
 //     26→27).
-export const EXTRACTION_SEMANTICS_VERSION = 6;
+// v7: W1 wasm-retirement wave — pascal moves to the Rust kernel arm
+//     (tree-sitter-pascal =0.10.2, grammar tables identical to the vendored
+//     wasm; walker mirrors languages/pascal.ts + visitPascalNode). Route
+//     change under the clause above: databases stamped v6 must fully
+//     re-extract so kernel and wasm pascal shapes never mix.
+export const EXTRACTION_SEMANTICS_VERSION = 7;
 
 /** Decoded shape of the stamp row. */
 export interface ExtractionSemanticsStamp {

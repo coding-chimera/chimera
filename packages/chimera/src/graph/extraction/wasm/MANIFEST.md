@@ -34,12 +34,12 @@ package (the kernel has no objc arm; no parity constraint).
 | tree-sitter-dart.wasm | dart | dart vendored from the upstream artifact (byte-identical to tree-sitter-wasms 0.1.13's build, whose github ref is UNPINNED — vendoring removes the silent-drift risk of a routine dependency bump) | 7f5364e4256cf7e55efd01dd52421ef2663caa8061b82659b7e4bf61064545ec |
 | tree-sitter-lua.wasm | lua | lua vendored C (build.rs; v0.4.1 revision, not on crates.io); ABI 15 | 6d95607fc7d78964cfdf065ccb1ba76be5ed217c5ec0d0a3cace13c59fa1ae43 |
 | tree-sitter-luau.wasm | luau | tree-sitter-grammars luau v1.2.0 (parser.c 8f25bc17… / scanner.c a157bb52…); ABI 14 | f1647052518f2bdfae8e8c0b033ffdeca1193d69d11c78ba20f84c8374fd0fe3 |
-| tree-sitter-pascal.wasm | pascal | (no kernel arm in the fork's parity gate; historical vendor) | be3634fca99c19f5e1035a1a9c7d93d6ee82b35e6d5024f02be4883b71329c3e |
+| tree-sitter-pascal.wasm | pascal | Isopod/tree-sitter-pascal =0.10.2 (ABI 14, STATE_COUNT 2715, 371 kinds / 38 fields) — kernel arm established (W1), table-identical to the crate tarball; only parser.c | be3634fca99c19f5e1035a1a9c7d93d6ee82b35e6d5024f02be4883b71329c3e |
 | tree-sitter-scala.wasm | scala | tree-sitter-scala v0.26.2 release asset (tag b931fcc338; upstream #1823/#2003 — the old master@0aca5d0a6f pin truncated multi-arg-list `extends` clauses); kernel vendored C is the same tag (build.rs grammars/scala) | 37d7fe5a91ca98941dc05493b0c05a0df0f36df5035890fa00b02497c68aaac3 |
-| tree-sitter-nix.wasm | nix | nix-community/tree-sitter-nix @ 3d0173d (MIT), upstream prebuilt artifact byte-copied 2026-09-22 — no kernel arm, outside the parity gate (same category as pascal/objc); exits K-v2 ruling ⑤ | 4acffa1c013df751193a21ce429777ca214c7d3a7e3665085b6df00dad8869f0 |
+| tree-sitter-nix.wasm | nix | nix-community/tree-sitter-nix @ 3d0173d (MIT), upstream prebuilt artifact byte-copied 2026-09-22 — no kernel arm, outside the parity gate (same category as objc); exits K-v2 ruling ⑤ | 4acffa1c013df751193a21ce429777ca214c7d3a7e3665085b6df00dad8869f0 |
 
 Note: kotlin and dart were vendored as the hardening follow-up (2026-09-16) —
 both now load from this directory like every other kernel-routable language.
 Only `objc` still resolves through tree-sitter-wasms (no kernel arm; outside
-the parity gate). The grammar-parity test asserts all 19 gate languages
+the parity gate). The grammar-parity test asserts all 20 gate languages
 strictly against these artifacts.

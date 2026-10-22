@@ -58,6 +58,7 @@ const GRAMMAR_LANGUAGES: Language[] = [
   'luau',
   'scala',
   'dart',
+  'pascal',
 ]
 
 if (!kernelBuilt && expectKernel) {
