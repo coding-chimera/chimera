@@ -75,11 +75,16 @@ export interface LocatorLike {
 export interface PageLike {
   readonly goto: (
     url: string,
-    options?: { readonly timeout?: number; readonly waitUntil?: "load" | "domcontentloaded" | "networkidle" | "commit" },
+    options?: {
+      readonly timeout?: number
+      readonly waitUntil?: "load" | "domcontentloaded" | "networkidle" | "commit"
+    },
   ) => Promise<unknown>
   readonly url: () => string
   readonly title: () => Promise<string>
   readonly close: () => Promise<void>
+  /** Lifecycle subscription; optional so page fakes can omit it. */
+  readonly on?: (event: "close" | "crash", handler: () => void) => void
   readonly screenshot: (options?: { readonly fullPage?: boolean; readonly type?: "png" }) => Promise<Uint8Array>
   readonly locator: (selector: string) => LocatorLike
   readonly evaluate: <A>(expression: string) => Promise<A>
@@ -112,7 +117,9 @@ export interface Interface {
   readonly open: (input: OpenInput) => Effect.Effect<OpenResult, RuntimeError>
   readonly tabs: (sessionID: string) => Effect.Effect<readonly TabInfo[], RuntimeError>
   readonly select: (sessionID: string, tabID: string) => Effect.Effect<void, RuntimeError>
-  readonly snapshot: (input: TabInput & { readonly options?: BrowserSnapshot.Options }) => Effect.Effect<SnapshotResult, RuntimeError>
+  readonly snapshot: (
+    input: TabInput & { readonly options?: BrowserSnapshot.Options },
+  ) => Effect.Effect<SnapshotResult, RuntimeError>
   readonly click: (input: RefInput) => Effect.Effect<void, RuntimeError>
   readonly type: (input: RefInput & { readonly text: string }) => Effect.Effect<void, RuntimeError>
   readonly screenshot: (
@@ -296,9 +303,7 @@ export const layerWith = (driver: Driver) =>
               executablePath: launch.executablePath ?? process.env.CHIMERA_BROWSER_EXECUTABLE_PATH,
             }).pipe(
               Effect.provideService(FileSystem.FileSystem, fs),
-              Effect.mapError(
-                (cause) => new RuntimeError({ operation: "discover browser", message: cause.message }),
-              ),
+              Effect.mapError((cause) => new RuntimeError({ operation: "discover browser", message: cause.message })),
             )
             // Priority: explicit launch option > config browser.headless > env > headless.
             const configured = yield* config.get().pipe(
@@ -391,6 +396,43 @@ export const layerWith = (driver: Driver) =>
         tab.refs.clear()
       }
 
+      // A page can die (closed by the user, renderer crash) without the tab
+      // being closed through closeTab, and every later info() probe then
+      // rejects. Evict it and re-point `current` at the newest survivor so a
+      // single dead tab cannot poison the whole session.
+      const dropTab = (session: SessionState, tabID: string) => {
+        session.tabs.delete(tabID)
+        if (session.current !== tabID) return
+        session.current = Array.from(session.tabs.keys()).at(-1)
+      }
+
+      // Enumerate with tolerance: a tab whose info() fails is dead, so evict it
+      // and keep going. `current` flags are recomputed after eviction because
+      // the surviving `current` may have been enumerated before the dead tab.
+      const collectTabs = (sessionID: string, session: SessionState) =>
+        Effect.forEach(Array.from(session.tabs.values()), (tab) =>
+          info(sessionID, session, tab).pipe(
+            Effect.catchCause(() =>
+              Effect.sync(() => {
+                dropTab(session, tab.id)
+                return undefined
+              }),
+            ),
+          ),
+        ).pipe(
+          Effect.map((tabs) =>
+            tabs
+              .filter((tab): tab is TabInfo => tab !== undefined)
+              .map((tab) => ({ ...tab, current: session.current === tab.id })),
+          ),
+        )
+
+      const watchTab = (session: SessionState, tab: TabState) => {
+        const drop = () => dropTab(session, tab.id)
+        tab.page.on?.("close", drop)
+        tab.page.on?.("crash", drop)
+      }
+
       return Service.of({
         open: Effect.fn("BrowserRuntime.open")(function* (input: OpenInput) {
           return yield* InstanceState.useEffect(state, (current) =>
@@ -403,11 +445,18 @@ export const layerWith = (driver: Driver) =>
                     timeout: input.launch?.timeout ?? DEFAULT_TIMEOUT,
                     waitUntil: "domcontentloaded",
                   }),
-                ).pipe(Effect.tapError(() => attempt("close failed browser tab", () => page.close()).pipe(Effect.ignore)))
+                ).pipe(
+                  Effect.tapError(() => attempt("close failed browser tab", () => page.close()).pipe(Effect.ignore)),
+                )
               const tab = { id: ulid(), page, generation: 0, refs: new Map<string, BrowserSnapshot.Target>() }
               resolved.session.tabs.set(tab.id, tab)
               resolved.session.current = tab.id
-              const opened = yield* info(input.sessionID, resolved.session, tab)
+              watchTab(resolved.session, tab)
+              const opened = yield* info(input.sessionID, resolved.session, tab).pipe(
+                // Roll the half-open tab back out of the map so a failed probe
+                // cannot leave an entry that poisons later enumeration.
+                Effect.tapError(() => Effect.sync(() => dropTab(resolved.session, tab.id))),
+              )
               return resolved.relaunched ? { ...opened, relaunched: true } : opened
             }),
           )
@@ -416,7 +465,7 @@ export const layerWith = (driver: Driver) =>
           return yield* InstanceState.useEffect(state, (current) => {
             const session = current.sessions.get(sessionID)
             if (!session) return Effect.succeed([])
-            return Effect.forEach(Array.from(session.tabs.values()), (tab) => info(sessionID, session, tab))
+            return collectTabs(sessionID, session)
           })
         }),
         select: Effect.fn("BrowserRuntime.select")(function* (sessionID: string, tabID: string) {
@@ -505,19 +554,24 @@ export const layerWith = (driver: Driver) =>
                 })
                 .pipe(
                   Effect.mapError(
-                    (cause) => new RuntimeError({ operation: "write browser screenshot", message: errorMessage(cause) }),
+                    (cause) =>
+                      new RuntimeError({ operation: "write browser screenshot", message: errorMessage(cause) }),
                   ),
                 )
-              const attachment = yield* artifacts.attachment(artifact).pipe(
-                Effect.mapError(
-                  (cause) => new RuntimeError({ operation: "attach browser screenshot", message: errorMessage(cause) }),
-                ),
-              )
+              const attachment = yield* artifacts
+                .attachment(artifact)
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new RuntimeError({ operation: "attach browser screenshot", message: errorMessage(cause) }),
+                  ),
+                )
               const url = yield* artifacts
                 .urlPath({ sessionID: input.sessionID, filename: artifact.filename })
                 .pipe(
                   Effect.mapError(
-                    (cause) => new RuntimeError({ operation: "resolve browser artifact url", message: errorMessage(cause) }),
+                    (cause) =>
+                      new RuntimeError({ operation: "resolve browser artifact url", message: errorMessage(cause) }),
                   ),
                 )
               return { artifact, attachment, url }
