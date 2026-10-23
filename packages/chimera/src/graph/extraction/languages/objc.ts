@@ -1,7 +1,29 @@
 import type { Node as SyntaxNode } from '../../web-tree-sitter-types';
 import { getChildByField, getNodeText } from '../tree-sitter-helpers';
 import type { ExtractorContext, LanguageExtractor } from '../tree-sitter-types';
-
+/**
+ * Blank standalone `NS_ASSUME_NONNULL_BEGIN` / `NS_ASSUME_NONNULL_END`
+ * lines before parsing. The vendored tree-sitter-objc grammar accepts only
+ * `#`-prefixed preprocessor directives at the top level, so the bare Foundation
+ * macros (they are real macros, normally spelled without `#`) surface as a
+ * parse-tree ERROR. The kernel treats any ERROR as `defer:`, so the whole file
+ * falls back to wasm — and wasm's recovery drops the surrounding
+ * interface/implementation declarations too.
+ *
+ * The macros are pure nullability pragmas: they annotate every declaration in
+ * the enclosed region but contribute no syntax of their own, so blanking them
+ * leaves the interface/implementation parse tree unchanged. Only a line whose
+ * entire content is whitespace + the macro name is blanked (an inline or
+ * argument-bearing use keeps its bytes and is left to the grammar).
+ *
+ * Replacement preserves byte offsets (macro text → spaces, newlines and CRs
+ * kept) so every symbol's line/column stays exact on both parser arms.
+ */
+export function blankAssumeNonNullMacros(source: string): string {
+  if (!source.includes('NS_ASSUME_NONNULL_')) return source;
+  const re = /^[ \t]*NS_ASSUME_NONNULL_(?:BEGIN|END)[ \t]*\r?$/gm;
+  return source.replace(re, (m) => m.replace(/[^\r]/g, ' '));
+}
 function findCompoundStatement(node: SyntaxNode): SyntaxNode | null {
   for (let i = 0; i < node.namedChildCount; i++) {
     const child = node.namedChild(i);
@@ -96,6 +118,7 @@ function extractObjcPropertyName(node: SyntaxNode, source: string): string | nul
 }
 
 export const objcExtractor: LanguageExtractor = {
+  preParse: blankAssumeNonNullMacros,
   functionTypes: ['function_definition'],
   // Only @interface emits a class node; @implementation reuses it via visitNode.
   classTypes: ['class_interface'],

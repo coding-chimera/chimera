@@ -108,7 +108,15 @@ export const EXTRACTION_SEMANTICS_METADATA_KEY = 'extraction_semantics_version';
 //     ccpp module with Variant::Objc and mirrors languages/objc.ts). Route
 //     change under the clause above: databases stamped v8 must fully
 //     re-extract so kernel and wasm objc shapes never mix.
-export const EXTRACTION_SEMANTICS_VERSION = 9;
+// v10: objc preParse — languages/objc.ts blanks standalone
+//      `NS_ASSUME_NONNULL_BEGIN` / `NS_ASSUME_NONNULL_END` lines before
+//      parsing (the vendored grammar only accepts `#`-prefixed directives at
+//      the top level, so the bare macros produced a parse-tree ERROR →
+//      kernel `defer:` → wasm fallback, whose recovery dropped the enclosed
+//      interface/implementation symbols). Files that previously deferred now
+//      extract symbols, a stored-output change under the
+//      field-semantics clause: databases stamped v9 must fully re-extract.
+export const EXTRACTION_SEMANTICS_VERSION = 10;
 
 /** Decoded shape of the stamp row. */
 export interface ExtractionSemanticsStamp {
