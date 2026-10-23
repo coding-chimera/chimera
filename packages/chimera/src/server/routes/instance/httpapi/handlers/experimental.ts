@@ -148,7 +148,7 @@ export const experimentalHandlers = HttpApiBuilder.group(InstanceHttpApi, "exper
       if (!backgroundEnabled) return false
       const candidates = (yield* background.list()).filter(
         (job) =>
-          job.type === "task" &&
+          (job.type === "task" || job.type === "swarm") &&
           job.status === "running" &&
           job.ownerSessionId === ctx.params.sessionID &&
           job.metadata?.background !== true,

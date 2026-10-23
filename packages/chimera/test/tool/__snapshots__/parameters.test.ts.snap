@@ -1250,6 +1250,14 @@ exports[`tool parameters JSON Schema (wire shape) chimera_swarm 1`] = `
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "background": {
+      "description": "Run the swarm workers in the background and return a startup receipt immediately. Each worker completion is injected into this session automatically. DO NOT sleep, poll, or proactively check on progress",
+      "type": "boolean",
+    },
+    "block_reason": {
+      "description": "Required when dispatching without background=true (a blocking/foreground swarm): state the concrete dependency that forces the parent to wait for every worker result inline. Omit for background swarms.",
+      "type": "string",
+    },
     "concurrency": {
       "description": "Maximum child tasks to run at once. Defaults to 16 and is capped at 16.",
       "type": "number",

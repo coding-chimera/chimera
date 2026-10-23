@@ -434,7 +434,7 @@ export const ExperimentalRoutes = lazy(() =>
           const jobs = yield* BackgroundJob.Service
           const candidates = (yield* jobs.list()).filter(
             (job) =>
-              job.type === "task" &&
+              (job.type === "task" || job.type === "swarm") &&
               job.status === "running" &&
               job.ownerSessionId === sessionID &&
               job.metadata?.background !== true,

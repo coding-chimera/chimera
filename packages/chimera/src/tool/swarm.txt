@@ -6,17 +6,33 @@ Use this tool only when the active multi-agent policy permits delegation and you
 3. Prefer a `preset` for common Chimera work; use raw `prompt_template` only when the preset shape does not fit.
 4. Summarize child results yourself, resolve any scope/conflict warnings, apply any parent-side follow-up, then rerun audit/tests/oracles as needed.
 
+## Background vs foreground dispatch
+
+Prefer `background: true` for almost every swarm. It returns a startup receipt immediately, lets you keep planning or dispatch more work, and reports each worker back to this session when it finishes. Use a foreground swarm (omit `background`, or pass `background: false`) only when you genuinely cannot proceed without every worker result inline; in that case you must set `block_reason` naming the concrete dependency that forces the wait.
+
+With `background: true`:
+- The tool returns a startup receipt before workers settle. The receipt contains `background: true`, `childRuns` (already-started workers `running`, the rest `queued`), `childSessions`, and a `note`; it does not aggregate final results or success/failure counts.
+- Every worker completion injects exactly one `<swarm_worker_result>` notification into this session. Each notification starts with `task_id: <worker child session id> (swarm worker completed)`, then carries `index`, `title`, `status`, `summary`, and `output_file`. A start failure (including a full background pool) produces one `(swarm worker error)` notification with `status: error` and an `error` field instead.
+- DO NOT sleep, poll, or proactively check on worker progress. Wait for the injected notifications, then synthesize. If you must cancel one worker, call `task_cancel` with that worker's `task_id` (the child session id); do not cancel the whole swarm through the tool.
+- Background workers occupy the shared `delegation.background_concurrent` pool (default 16). The swarm's own `concurrency` cap still bounds how many run at once; when the pool is full a worker is rejected with an error notification rather than queued forever. Foreground swarms do not consume that pool.
+- After the tool returns, the receipt's `childRuns` metadata is frozen: it is a startup snapshot, not a live status feed. Frontends derive live worker state from the child sessions themselves; do not expect this tool part to be updated later.
+- A parent turn abort does not cascade into detached background workers. They are owned by this session through the background-job engine, so `session.remove` and the session cancel cascade still stop them.
+
+With `background` omitted or `false`, the tool waits for all workers, consumes results inline, and returns the aggregated `results`/`success`/`failure`/`parentCloseout` payload. Aborting the parent turn cancels the in-flight workers. Set `block_reason` whenever you take this foreground path.
+
+When `delegation.background_subagents` is `false` (kill-switch), the `background` parameter is not exposed at all and the tool always runs the foreground path.
+
 Presets are worker prompt shapes. They are not workflow engines, permission switches, file locks, automatic repair loops, or proof that work is complete. A child subagent may edit only when its normal tools and the chosen preset/prompt allow it.
 
-This is a thin fan-out helper. It does not build PlanGraph, lock files, claim obligations, apply edits itself, rerun audits, or decide convergence for you. The parent agent owns conflict handling, final audit/test/oracle verification, and closeout. Tool output includes parent closeout recommendations after each run.
+This is a thin fan-out helper. It does not build PlanGraph, lock files, claim obligations, apply edits itself, rerun audits, or decide convergence for you. The parent agent owns conflict handling, final audit/test/oracle verification, and closeout. Foreground output includes parent closeout recommendations; background receipts leave that synthesis to the notifications you receive later.
 
-The tool publishes each worker incrementally through `metadata.childRuns` (`queued`, `running`, `completed`, `error`, or `cancelled`) and keeps `childSessions` plus final output for compatibility. Child sessions are normal subagent sessions that frontends can display, enter, and stop individually. If the parent swarm is aborted, already-created child sessions are cancelled as part of the same abort flow. Treat any interrupted child report as incomplete evidence that the parent must re-check or rerun deliberately.
+Workers are normal subagent sessions that frontends can display, enter, and stop individually. Treat any interrupted child report as incomplete evidence that the parent must re-check or rerun deliberately.
 
 Concurrency defaults to 16 and is capped at 16 — this caps how many workers run at the same time, not how many items you may submit; excess items queue automatically. It is safe and encouraged to split large tasks into as many clear, independent items as the work supports: for read-only exploration and investigation, more workers mean broader and more detailed coverage. Lower concurrency only for shared files, ordered dependencies, provider limits, or contended state.
 
 Minimal call — no selector fields are needed:
 
-{ prompt_template: "Review {{item}}", items: ["src/auth.ts", "src/api.ts"] }
+{ prompt_template: "Review {{item}}", items: ["src/auth.ts", "src/api.ts"], background: true }
 
 Omit every optional selector you are not using (`workload`, `model`, `model_profile`, `model_identity`, `provider`, `variant`). Omit the key entirely; never pass `""`, `null`, or `"none"`, because an empty string counts as a supplied value and fails mutual-exclusion validation. Pass `workload` alone to let the scheduler route every worker; pass at most one of `model`, `model_profile`, or `model_identity` to pin a route, and add `workload` only when you also want its attribution/validation.
 
@@ -45,7 +61,7 @@ Supported `preset` values:
 - `oracle-followup`: investigate one failing/unknown oracle and explain or fix the likely cause within a narrow scope.
 - `file-review`: read-only review of one explicit file/item for risks or follow-up.
 
-Preset worker prompts ask for structured labels: Status, Changed files, Verification, Remaining risk, and Parent follow-up. Treat these labels as child reports for the parent to inspect, not as automatic obligation resolution.
+Preset worker prompts ask for structured labels: Status, Changed files, Verification, Remaining risk, and Parent follow-up. Treat these labels as child reports for the parent to inspect, not as automatic obligation resolution. Background notifications render them into the `summary` field.
 
 Supported `from` sources:
 - `pending_obligations`, `claimed_obligations`, `active_obligations`: default to `audit-followup`.
@@ -55,5 +71,6 @@ Supported `from` sources:
 For parallel editing, keep items independent and scoped by file/range/symbol when possible. Workers must not broaden into unrelated refactors or take over other swarm items; the parent agent must rerun relevant checks, resolve conflicts, inspect structured child reports, and handle obligation claim/resolve/ignore decisions explicitly.
 
 Minimal call examples:
-- `{ preset: "audit-followup", from: "pending_obligations", concurrency: 8 }`
-- `{ prompt_template: "Item {{index}}/{{total}}: {{item}}", items: ["Review src/auth.ts", { file: "src/api.ts", scope: "route handlers", questions: ["callers?", "error paths?"] }] }`
+- `{ preset: "audit-followup", from: "pending_obligations", concurrency: 8, background: true }`
+- `{ prompt_template: "Item {{index}}/{{total}}: {{item}}", items: ["Review src/auth.ts", { file: "src/api.ts", scope: "route handlers", questions: ["callers?", "error paths?"] }], background: true }`
+- `{ prompt_template: "Item {{index}}/{{total}}: {{item}}", items: ["blocking check"], block_reason: "closeout needs this result inline" }`

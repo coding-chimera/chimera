@@ -2122,10 +2122,13 @@ type SwarmChildRun = {
   error?: string
 }
 
+type SwarmRunStatus = NonNullable<SwarmChildRun["status"]>
+
 type SwarmMetadata = {
   title?: string
   itemCount?: number
   subagent_type?: string
+  background?: boolean
   childRuns?: SwarmChildRun[]
   childSessions?: Array<SwarmChildRun | string>
   results?: SwarmChildRun[]
@@ -2290,7 +2293,38 @@ function Swarm(props: ToolProps<any>) {
     if (tools.length) return `${tools.length} toolcalls`
   }
 
-  const color = (value: ReturnType<typeof status>) => {
+  const background = createMemo(() => metadata().background === true)
+
+  // A background swarm's tool part settles at the launch receipt and its
+  // metadata freezes, so a run.status of "running" there never clears. Derive
+  // each child's live state from its session instead: session_status only lists
+  // non-idle sessions, so absence means the child is not running, and no
+  // messages yet means it has not started.
+  const backgroundStatus = (run: SwarmChildRun): SwarmRunStatus => {
+    if (!run.sessionId) return "queued"
+    const value = sync.data.session_status[run.sessionId]
+    if (value !== undefined && value.type !== "idle") return "running"
+    const messages = sync.data.message[run.sessionId] ?? []
+    const last = messages.findLast((message) => message.role === "assistant")
+    if (last?.role === "assistant" && last.error) return "error"
+    return messages.length > 0 ? "completed" : "queued"
+  }
+
+  const displayStatus = (run: SwarmChildRun): SwarmRunStatus => (background() ? backgroundStatus(run) : status(run))
+
+  const childRunning = (run: SwarmChildRun) => {
+    if (!run.sessionId) return false
+    const value = sync.data.session_status[run.sessionId]
+    return value !== undefined && value.type !== "idle"
+  }
+
+  const spinner = createMemo(() => {
+    if (props.part.state.status === "running") return true
+    if (!background()) return false
+    return runs().some(childRunning)
+  })
+
+  const color = (value: SwarmRunStatus) => {
     if (value === "error") return theme.error
     if (value === "cancelled") return theme.textMuted
     if (value === "completed") return theme.success
@@ -2300,8 +2334,8 @@ function Swarm(props: ToolProps<any>) {
 
   return (
     <BlockTool
-      title={`# ${metadata().title ?? `Chimera swarm (${metadata().itemCount ?? runs().length})`}`}
-      spinner={props.part.state.status === "running"}
+      title={`# ${metadata().title ?? `Chimera swarm (${metadata().itemCount ?? runs().length})`}${background() ? " (background)" : ""}`}
+      spinner={spinner()}
       part={props.part}
     >
       <box gap={1}>
@@ -2313,12 +2347,12 @@ function Swarm(props: ToolProps<any>) {
                   fg={theme.text}
                   onMouseUp={() => run.sessionId && navigate({ type: "session", sessionID: run.sessionId })}
                 >
-                  <span style={{ fg: color(status(run)) }}>[{status(run)}]</span> {run.index}. {run.title ?? "Subagent"}
+                  <span style={{ fg: color(displayStatus(run)) }}>[{displayStatus(run)}]</span> {run.index}. {run.title ?? "Subagent"}
                   <Show when={progress(run)}>
                     <span style={{ fg: theme.textMuted }}> · {progress(run)}</span>
                   </Show>
                 </text>
-                <Show when={status(run) === "running" && run.sessionId}>
+                <Show when={displayStatus(run) === "running" && run.sessionId}>
                   <text
                     fg={theme.error}
                     onMouseUp={(event) => {

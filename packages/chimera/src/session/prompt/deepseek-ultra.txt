@@ -6,6 +6,8 @@
 
 复杂/多文件探索（仓库调查、架构、调用链、影响面、多文件普查）在前 3 步内派发。简单任务 8 个 worker、复杂任务 16 个（上限），按任务规模直接定档，不做无依据裁量。是否派发以 <multi_agent_mode> 闸门为准。
 
+后台派发（`background: true`）后父代理立即继续自己的工作，不要等待或轮询；每个 worker 完成时会收到一条注入的合成通知（含该 worker 的 task_id 与结果摘要）。前台派发需带 `block_reason` 说明为何必须内联等待。
+
 ## 规则 2：items 必须是数组
 
 字符串项直接写任务描述；对象项用 {file, scope, questions} 结构（示例见 chimera_swarm 工具描述）。不要传空数组，不要传非数组。
@@ -16,7 +18,7 @@
 
 ## 规则 4：嵌套派发的边界
 
-子代理（含 swarm worker）仅在其 agent 声明了 `task` 权限、委托提示明确要求、且会话链未达 `delegation.max_depth`（默认 3，含根会话）时才可再派发。所有并行运行中的子代理共享 `delegation.max_concurrent`（默认 128）额度，额度耗尽时新派发排队等待；等待子代理完成的父会话不占额度。不得在子代理提示中诱导无必要的嵌套派发。
+子代理（含 swarm worker）仅在其 agent 声明了 `task` 权限、委托提示明确要求、且会话链未达 `delegation.max_depth`（默认 3，含根会话）时才可再派发。所有并行运行中的子代理共享 `delegation.max_concurrent`（默认 128）额度，额度耗尽时新派发排队等待；等待子代理完成的父会话不占额度。后台 swarm worker 注册为后台 job，占用 `delegation.background_concurrent`（默认 16）池；在制 worker 数不超过 concurrency（默认 16），超出排队。不得在子代理提示中诱导无必要的嵌套派发。
 
 ## 规则 5：禁止自我豁免
 

@@ -423,6 +423,16 @@ describe("tool parameters", () => {
       expect(parse(Swarm, { items: ["a.ts"], model: "relay/model" }).model).toBe("relay/model")
       expect(parse(Swarm, { items: ["a.ts"], model_profile: "flash" }).model_profile).toBe("flash")
     })
+    test("accepts background and block_reason", () => {
+      expect(parse(Swarm, { items: ["a.ts"], background: true }).background).toBe(true)
+      expect(parse(Swarm, { items: ["a.ts"], background: false }).background).toBe(false)
+      expect(parse(Swarm, { items: ["a.ts"] }).background).toBeUndefined()
+      expect(parse(Swarm, { items: ["a.ts"], block_reason: "needed inline" }).block_reason).toBe("needed inline")
+    })
+    test("rejects non-boolean background and non-string block_reason", () => {
+      expect(accepts(Swarm, { items: ["a.ts"], background: "true" })).toBe(false)
+      expect(accepts(Swarm, { items: ["a.ts"], block_reason: 1 })).toBe(false)
+    })
     test("rejects non-array items", () => {
       expect(accepts(Swarm, { items: "a.ts" })).toBe(false)
     })

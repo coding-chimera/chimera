@@ -16,7 +16,7 @@ import { readOracleResults, readPersistentObligationStore, type OracleRecord, ty
 import { Session } from "@/session/session"
 import { SessionID } from "@/contracts/session-ids"
 import path from "path"
-import { Cause, Effect, Option, Schema } from "effect"
+import { Cause, Effect, Option, Schema, Scope, Semaphore } from "effect"
 import * as Truncate from "./truncate"
 
 const id = "chimera_swarm"
@@ -35,7 +35,7 @@ const Source = Schema.Literals([
 ])
 const SwarmItem = Schema.Union([Schema.String, Schema.Record(Schema.String, Schema.Unknown)])
 
-export const Parameters = Schema.Struct({
+const BaseParameterFields = {
   prompt_template: Schema.optional(Schema.String).annotate({
     description: "Prompt template for each child task. Use {{item}} plus optional {{index}} and {{total}} placeholders.",
   }),
@@ -53,22 +53,22 @@ export const Parameters = Schema.Struct({
   }),
   workload: Schema.optional(Schema.String).annotate({
     description:
-      "Delegation workload archetype; omit to let the scheduler pick a route, or declare it for attribution and validation when a model selector is given."
+      "Delegation workload archetype; omit to let the scheduler pick a route, or declare it for attribution and validation when a model selector is given.",
   }),
   model_profile: Schema.optional(Schema.String).annotate({
-    description: "Name of a delegation.model_profiles entry to run every worker with."
+    description: "Name of a delegation.model_profiles entry to run every worker with.",
   }),
   model: Schema.optional(Schema.String).annotate({
-    description: "Exact provider/model route to run every worker with."
+    description: "Exact provider/model route to run every worker with.",
   }),
   model_identity: Schema.optional(Schema.String).annotate({
-    description: "Current runtime model identity to resolve before starting workers."
+    description: "Current runtime model identity to resolve before starting workers.",
   }),
   provider: Schema.optional(Schema.String).annotate({
-    description: "Current provider ID used only to narrow model_identity."
+    description: "Current provider ID used only to narrow model_identity.",
   }),
   variant: Schema.optional(Schema.String).annotate({
-    description: "Model variant to use with model or model_identity, when the resolved model advertises one."
+    description: "Model variant to use with model or model_identity, when the resolved model advertises one.",
   }),
   description: Schema.optional(Schema.String).annotate({
     description: "Short base description for child task titles.",
@@ -78,6 +78,22 @@ export const Parameters = Schema.Struct({
   }),
   limit: Schema.optional(Schema.Number).annotate({
     description: "Maximum items to read from a Chimera evidence source. Defaults to 20 and is capped at 100.",
+  }),
+}
+
+// Narrow parameter set exposed when the background kill-switch is off: the JSON
+// schema derived from `parameters` must not advertise `background` at all.
+const BaseParameters = Schema.Struct(BaseParameterFields)
+
+export const Parameters = Schema.Struct({
+  ...BaseParameterFields,
+  background: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Run the swarm workers in the background and return a startup receipt immediately. Each worker completion is injected into this session automatically. DO NOT sleep, poll, or proactively check on progress",
+  }),
+  block_reason: Schema.optional(Schema.String).annotate({
+    description:
+      "Required when dispatching without background=true (a blocking/foreground swarm): state the concrete dependency that forces the parent to wait for every worker result inline. Omit for background swarms.",
   }),
 })
 
@@ -415,6 +431,36 @@ function writeChildOutput(result: Tool.ExecuteResult, truncate: Truncate.Interfa
   })
 }
 
+function renderSummary(summary: { [K in SummaryKey]?: string } | undefined) {
+  if (!summary) return "(none)"
+  const parts = SUMMARY_LABELS.flatMap(([key, label]) => (summary[key] ? [`${label} ${summary[key]}`] : []))
+  return parts.length > 0 ? parts.join(" | ") : "(none)"
+}
+
+// Per-worker background notification injected into the dispatching session. Mirrors
+// task's background result shape but keeps swarm-specific index/title/output_file.
+function swarmWorkerResultText(input: {
+  index: number
+  title: string
+  sessionId?: string
+  state: "completed" | "error"
+  summary?: { [K in SummaryKey]?: string }
+  outputPath?: string
+  error?: string
+}) {
+  return [
+    `task_id: ${input.sessionId ?? "not-started"} (swarm worker ${input.state})`,
+    "<swarm_worker_result>",
+    `index: ${input.index}`,
+    `title: ${input.title}`,
+    `status: ${input.state}`,
+    ...(input.state === "completed" ? [`summary: ${renderSummary(input.summary)}`] : []),
+    ...(input.outputPath ? [`output_file: ${input.outputPath}`] : []),
+    ...(input.error ? [`error: ${clamp(input.error, 2000)}`] : []),
+    "</swarm_worker_result>",
+  ].join("\n")
+}
+
 export const ChimeraSwarmTool = Tool.define(
   id,
   Effect.gen(function* () {
@@ -426,7 +472,7 @@ export const ChimeraSwarmTool = Tool.define(
     const config = yield* Config.Service
     const background = Option.getOrUndefined(yield* Effect.serviceOption(BackgroundJob.Service))
     const scheduling = yield* SubagentModelSchedulingRuntime.make
-
+    const scope = yield* Scope.Scope
     const run = Effect.fn("ChimeraSwarmTool.execute")(function* (params: Params, ctx: Tool.Context) {
       const selectors = normalizeSubagentModelSelection({
         modelProfile: params.model_profile,
@@ -625,6 +671,14 @@ export const ChimeraSwarmTool = Tool.define(
         childRuns.set(index, { ...current, ...update })
         yield* publishMetadata()
       })
+      // Metadata-free mutation used by the background path: after the tool part
+      // reaches its terminal state ctx.metadata is silently dropped, so the
+      // background dispatcher updates its in-memory childRuns without publishing.
+      const setChildRun = (index: number, update: Partial<SwarmChildRun>) => {
+        const current = childRuns.get(index)
+        if (!current) return
+        childRuns.set(index, { ...current, ...update })
+      }
       const cancelChildren = Effect.fn("ChimeraSwarmTool.cancelChildren")(function* () {
         let metadataChanged = false
         childRuns.forEach((run, index) => {
@@ -668,6 +722,196 @@ export const ChimeraSwarmTool = Tool.define(
         return enabled ? background : undefined
       })
 
+      // Background mode: start up to `concurrency` workers synchronously so the
+      // receipt carries real child session ids, then hand the rest to a scoped
+      // dispatcher that refills slots as workers settle. Workers are registered
+      // as engine jobs with metadata.background === true and therefore consume
+      // the shared background_concurrent pool. The tool fiber never binds
+      // onInterrupt here: a parent abort must not cascade to detached workers
+      // (session.remove / task_cancel reach them through the engine instead).
+      if (params.background === true && engine) {
+        const jobs = engine
+        const cfg = yield* config.get()
+        const poolLimit = cfg.delegation?.background_concurrent ?? ConfigDelegation.DEFAULT_BACKGROUND_CONCURRENT
+        const slots = Semaphore.makeUnsafe(concurrency)
+        const workerAbort = new AbortController().signal
+        // Every worker completion (and every start failure) injects exactly one
+        // notification into the dispatching session. ctx.metadata is dead after
+        // the tool part reaches its terminal state, so these fibers never touch it.
+        const inject = (text: string) =>
+          (promptOps.injectSynthetic?.({ sessionID: ctx.sessionID, text }) ?? Effect.void).pipe(
+            Effect.ignoreCause({ log: true }),
+            Effect.forkIn(scope, { startImmediately: true }),
+          )
+        const notifySettled = Effect.fn("ChimeraSwarmTool.notifyBackgroundWorker")(function* (
+          item: (typeof workItems)[number],
+          workerSessionID: SessionID,
+          generation: number,
+        ) {
+          yield* jobs.wait({ id: workerSessionID }).pipe(
+            Effect.flatMap((waited) => {
+              const info = waited.info
+              if (!info) return Effect.void
+              const completed = info.status === "completed"
+              const text = completed ? (info.output ?? "") : (info.error ?? `worker ${info.status}`)
+              return Effect.gen(function* () {
+                const outputPath = text.length > 0 ? yield* truncate.write(text) : undefined
+                yield* inject(
+                  swarmWorkerResultText({
+                    index: item.index,
+                    title: item.title,
+                    sessionId: workerSessionID,
+                    state: completed ? "completed" : "error",
+                    summary: completed ? extractSummary(text) : undefined,
+                    outputPath,
+                    error: completed ? undefined : text,
+                  }),
+                )
+              })
+            }),
+            // Delivery is final once the notify fiber finishes, and the mark is
+            // generation-bound so a same-id restart is never falsely delivered.
+            // The slot is released only after the worker settled, preserving the
+            // swarm concurrency cap for queued items.
+            Effect.ensuring(jobs.markDelivered(workerSessionID, generation).pipe(Effect.ignore)),
+            Effect.ensuring(slots.release(1)),
+            Effect.ignoreCause({ log: true }),
+            Effect.forkIn(scope, { startImmediately: true }),
+          )
+        })
+        const notifyStartError = (item: (typeof workItems)[number], error: string) =>
+          inject(
+            swarmWorkerResultText({
+              index: item.index,
+              title: item.title,
+              state: "error",
+              error,
+            }),
+          )
+        const startWorker = Effect.fn("ChimeraSwarmTool.startBackgroundWorker")(function* (
+          item: (typeof workItems)[number],
+        ) {
+          // Precheck the background pool before materialize (which creates the
+          // child session as a side effect), so an over-cap worker never leaves
+          // an orphan empty session behind. The engine re-checks atomically.
+          const runningCount = (yield* jobs.list()).filter(
+            (job) => job.status === "running" && job.metadata?.background !== false,
+          ).length
+          if (runningCount >= poolLimit) {
+            const error = `Cannot start swarm worker ${item.index}: concurrency limit reached (${runningCount} running >= background_concurrent ${poolLimit}). Complete or cancel a running background task before starting another.`
+            setChildRun(item.index, { status: "error", error })
+            yield* notifyStartError(item, error)
+            return false
+          }
+          const materialized = yield* dispatch.materialize(prepared, item.title).pipe(
+            Effect.catchCause((cause) => {
+              const error = Cause.pretty(cause)
+              setChildRun(item.index, { status: "error", error })
+              return notifyStartError(item, error).pipe(Effect.as(undefined))
+            }),
+          )
+          if (!materialized) return false
+          const workerSessionID = materialized.nextSession.id
+          // onStarted is deliberately omitted: it fires inside the detached job
+          // after the tool returned, when ctx.metadata is no longer accepted.
+          setChildRun(item.index, {
+            status: "running",
+            sessionId: workerSessionID,
+            model: prepared.resolved.model,
+            model_profile: materialized.execution.modelProfile,
+            execution: materialized.execution,
+          })
+          const started = yield* jobs
+            .start({
+              id: workerSessionID,
+              type: "swarm",
+              title: item.title,
+              ownerSessionId: ctx.sessionID,
+              metadata: {
+                model: prepared.resolved.model,
+                background: true,
+              },
+              onInterrupt: promptOps.cancel(workerSessionID).pipe(Effect.ignore),
+              run: dispatch.runPreparedBackground({
+                  prepared,
+                  materialized,
+                  description: item.title,
+                  prompt: item.prompt,
+                  promptOps,
+                  abort: workerAbort,
+                  telemetry: item.telemetry,
+                })
+                .pipe(Effect.map((result) => result.output)),
+            })
+            .pipe(
+              Effect.map((info) => ({ info })),
+              Effect.catchTag("BackgroundJobLimitError", (error) => {
+                setChildRun(item.index, { status: "error", error: error.message })
+                return notifyStartError(item, error.message).pipe(Effect.as(undefined))
+              }),
+            )
+          if (!started) return false
+          yield* notifySettled(item, workerSessionID, started.info.generation)
+          return true
+        })
+        const startWithSlot = Effect.fn("ChimeraSwarmTool.startBackgroundWorkerWithSlot")(function* (
+          item: (typeof workItems)[number],
+        ) {
+          yield* slots.take(1)
+          const started = yield* startWorker(item)
+          // A rejected start never owns a notify fiber, so release the slot here.
+          if (!started) yield* slots.release(1)
+        })
+        if (!parent.parentID) {
+          yield* routing.recordDelegation(parent.projectID).pipe(
+            Effect.catchTag("SubagentRoutingStateFileError", (error) =>
+              Effect.logWarning("failed to record subagent routing activity", { operation: error.operation }),
+            ),
+          )
+        }
+        yield* Effect.forEach(workItems.slice(0, concurrency), startWithSlot, { discard: true })
+        const remaining = workItems.slice(concurrency)
+        if (remaining.length > 0) {
+          yield* Effect.forEach(remaining, startWithSlot, { discard: true }).pipe(
+            Effect.ignoreCause({ log: true }),
+            Effect.forkIn(scope, { startImmediately: true }),
+          )
+        }
+        const outputObject = {
+          preset: preset ?? "custom",
+          source: params.from ?? "items",
+          subagent_type: subagent,
+          model_profile: selectors.modelProfile,
+          model,
+          workload: params.workload,
+          model_identity: selectors.modelIdentity,
+          provider: selectors.provider,
+          items: items.length,
+          concurrency,
+          background: true,
+          childRuns: childRunList(),
+          childSessions: childSessionList(),
+          scopeWarnings: scopeWarnings.map((warning) => ({
+            file: warning.file,
+            itemIndexes: warning.itemIndexes,
+            message: warning.message,
+          })),
+          note: "Swarm workers are running in the background. Each worker completion injects a <swarm_worker_result> notification into this session; do not sleep, poll, or proactively check on progress. Cancel a single worker with task_cancel using its task_id (the worker child session id). This receipt's childRuns metadata is frozen at return time; frontends derive live status from the child sessions.",
+        }
+        return {
+          title,
+          metadata: {
+            ...baseMetadata,
+            // Frontends key live-status derivation off this flag: the part is
+            // terminal once the receipt lands, so childRuns below is a frozen
+            // snapshot and real progress must be derived from child sessions.
+            background: true,
+            childRuns: childRunList(),
+            childSessions: childSessionList(),
+          },
+          output: JSON.stringify(outputObject, null, 2),
+        }
+      }
       type RunPreparedResult = Effect.Success<ReturnType<typeof dispatch.runPrepared>>
       const runWorkerJob = Effect.fn("ChimeraSwarmTool.runWorkerJob")(function* (
         item: (typeof workItems)[number],
@@ -869,17 +1113,29 @@ export const ChimeraSwarmTool = Tool.define(
       }
     })
 
-    return {
-      description: DESCRIPTION,
-      parameters: Parameters,
-      execute: (params: Params, ctx: Tool.Context) => run(params, ctx).pipe(Effect.orDie),
-      formatValidationError(error) {
-        return [
-          `The ${id} tool was called with invalid arguments: ${error}.`,
-          "Expected shape: { prompt_template?: string (must include {{item}}), items?: (string | object)[], preset?: \"audit-followup\" | \"audit-review\" | \"oracle-followup\" | \"file-review\", from?: \"pending_obligations\" | \"claimed_obligations\" | \"stale_obligations\" | \"active_obligations\" | \"failing_oracles\" | \"unknown_oracles\" | \"failing_or_unknown_oracles\", subagent_type?: string, model_profile?: string, model?: string, model_identity?: string, provider?: string, variant?: string, concurrency?: number (1-16), limit?: number (1-100) }",
-          "Example: { preset: \"audit-followup\", from: \"pending_obligations\", concurrency: 8 }",
-        ].join("\n")
-      },
-    }
+    // Tool definitions are resolved lazily at init() time (inside an instance
+    // context), so killing the background kill-switch cannot be decided at the
+    // registry layer build where config is not yet instance-bound. With the
+    // switch off the schema omits `background` entirely and the tool falls back
+    // to the pre-background synchronous path.
+    return () =>
+      Effect.gen(function* () {
+        const cfg = yield* config.get()
+        const backgroundEnabled =
+          cfg.delegation?.background_subagents ?? ConfigDelegation.DEFAULT_BACKGROUND_SUBAGENTS
+        return {
+          description: DESCRIPTION,
+          parameters: (backgroundEnabled ? Parameters : BaseParameters) as unknown as typeof Parameters,
+          execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
+            run(params, ctx).pipe(Effect.orDie) as Effect.Effect<Tool.ExecuteResult>,
+          formatValidationError(error: unknown) {
+            return [
+              `The ${id} tool was called with invalid arguments: ${error}.`,
+              "Expected shape: { prompt_template?: string (must include {{item}}), items?: (string | object)[], preset?: \"audit-followup\" | \"audit-review\" | \"oracle-followup\" | \"file-review\", from?: \"pending_obligations\" | \"claimed_obligations\" | \"stale_obligations\" | \"active_obligations\" | \"failing_oracles\" | \"unknown_oracles\" | \"failing_or_unknown_oracles\", subagent_type?: string, model_profile?: string, model?: string, model_identity?: string, provider?: string, variant?: string, concurrency?: number (1-16), limit?: number (1-100), background?: boolean, block_reason?: string }",
+              "Example: { preset: \"audit-followup\", from: \"pending_obligations\", concurrency: 8, background: true }",
+            ].join("\n")
+          },
+        }
+      })
   }),
 )
