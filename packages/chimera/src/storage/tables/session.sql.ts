@@ -66,7 +66,13 @@ export const MessageTable = sqliteTable(
     ...Timestamps,
     data: text({ mode: "json" }).notNull().$type<InfoData>(),
   },
-  (table) => [index("message_session_time_created_id_idx").on(table.session_id, table.time_created, table.id)],
+  (table) => [
+    index("message_session_time_created_id_idx").on(table.session_id, table.time_created, table.id),
+    // Incremental crash-orphan reconciliation walks `session_id = ? AND
+    // time_updated >= watermark`; without the composite index SQLite still
+    // reads every row of the session (see src/session/part-reconcile.ts).
+    index("message_session_time_updated_idx").on(table.session_id, table.time_updated),
+  ],
 )
 
 export const PartTable = sqliteTable(
@@ -84,6 +90,8 @@ export const PartTable = sqliteTable(
   (table) => [
     index("part_message_id_id_idx").on(table.message_id, table.id),
     index("part_session_idx").on(table.session_id),
+    // Same incremental-reconcile index as `message_session_time_updated_idx`.
+    index("part_session_time_updated_idx").on(table.session_id, table.time_updated),
   ],
 )
 
@@ -195,4 +203,24 @@ export const SessionContextEpochTable = sqliteTable("session_context_epoch", {
   baseline: text().notNull(),
   snapshot: text({ mode: "json" }).notNull().$type<SystemContext.Snapshot>(),
   baseline_seq: integer().notNull(),
+})
+
+/**
+ * Durable per-session high-water mark for crash-orphan reconciliation
+ * (`src/session/part-reconcile.ts`).
+ *
+ * `watermark` is the largest `time_updated` observed by a reconcile pass that
+ * completed successfully. The next pass only reads `part` / `message` rows with
+ * `time_updated >= watermark`, which is what keeps the per-turn scan O(rows
+ * written since the last pass) instead of O(rows in the session).
+ *
+ * `session_id` intentionally has no foreign key to `session` (same precedent as
+ * `session_turn_lease`): reconciliation must be callable for a session id whose
+ * row is not visible yet, and a stale row left behind by a session removal is
+ * inert — session ids are never reused, and a fresh session starts its own row.
+ */
+export const SessionPartReconcileTable = sqliteTable("session_part_reconcile", {
+  session_id: text().$type<SessionID>().primaryKey(),
+  watermark: integer().notNull(),
+  ...Timestamps,
 })

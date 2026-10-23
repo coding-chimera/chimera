@@ -1,7 +1,7 @@
-import { and, eq, like, ne, sql } from "drizzle-orm"
+import { and, eq, gte, like, ne, sql } from "drizzle-orm"
 import { Database } from "@/storage/db"
 import { StorageMaintenanceTable } from "@/storage/maintenance.sql"
-import { MessageTable, PartTable } from "@/storage/tables/session.sql"
+import { MessageTable, PartTable, SessionPartReconcileTable } from "@/storage/tables/session.sql"
 import { SessionTurnLease } from "./turn-lease"
 import type { SessionID } from "@/contracts/session-ids"
 import type { MessageV2 } from "./message-v2"
@@ -72,17 +72,71 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * Callers guarantee the session has no live turn (busy registry + turn-lease
  * guards in `ensureOrphansReconciled`, lease ownership in the forced
  * turn-start path). Runs in one immediate write transaction together with the
- * live-lease recheck and the durable marker, so a concurrent process either
- * got its lease in before us (we see it and skip) or blocks on the write lock
- * until we commit (its turn writes land strictly after the scan).
+ * live-lease recheck, the durable marker, and the watermark advance, so a
+ * concurrent process either got its lease in before us (we see it and skip) or
+ * blocks on the write lock until we commit (its turn writes land strictly after
+ * the scan and are covered by the next pass).
+ *
+ * The scan is incremental: only rows with `time_updated >= watermark` are read
+ * (see the watermark rationale in the body). A session with no watermark row is
+ * scanned in full once, which is also the upgrade path for existing databases.
  */
 function reconcileOrphans(tx: Database.TxOrDb, sessionID: SessionID, bootID: string, now: number) {
+  // Incremental scan keyed by a durable per-session watermark.
+  //
+  // The first pass of a session (no watermark row yet) starts at 0, i.e. it
+  // reads every part/message of the session exactly once — the pre-watermark
+  // behavior, and the upgrade path for existing databases. Every later pass
+  // only reads rows with `time_updated >= watermark`, so the cost is O(rows
+  // written since the previous pass) instead of O(rows in the session); the
+  // `json_extract` filters only run on those rows.
+  //
+  // Why a crash orphan can never be missed:
+  //
+  // - The watermark only advances after this pass commits, to the largest
+  //   `time_updated` present in the session at that moment (see `next` below).
+  // - Any row written after that commit carries the writer's clock at write
+  //   time, which is >= the commit time under a monotonic wall clock, and
+  //   therefore >= the recorded watermark.
+  // - A crashed process leaves its `running`/`pending` rows behind when it
+  //   dies, i.e. after the last successful pass — those rows satisfy
+  //   `time_updated >= watermark` and the next pass (boot read path or turn
+  //   start) reads them.
+  // - The comparison is inclusive and the watermark is the max, so rows that
+  //   share a millisecond with the watermark are re-read rather than skipped
+  //   (bounded by that millisecond's row count).
+  // - A backwards clock jump is caught by `watermark > now`: the pass then
+  //   falls back to a full scan and the watermark follows the clock down.
+  const stored = tx
+    .select({ watermark: SessionPartReconcileTable.watermark })
+    .from(SessionPartReconcileTable)
+    .where(eq(SessionPartReconcileTable.session_id, sessionID))
+    .get()?.watermark
+  const watermark = stored !== undefined && stored <= now ? stored : 0
+
+  // Both MAX() lookups are index-only seeks on the (session_id, time_updated)
+  // indexes; they are how the watermark learns about rows that needed no
+  // repair (a pass that heals nothing still has to advance past them).
+  const partMax =
+    tx
+      .select({ max: sql<number | null>`max(${PartTable.time_updated})` })
+      .from(PartTable)
+      .where(eq(PartTable.session_id, sessionID))
+      .get()?.max ?? null
+  const messageMax =
+    tx
+      .select({ max: sql<number | null>`max(${MessageTable.time_updated})` })
+      .from(MessageTable)
+      .where(eq(MessageTable.session_id, sessionID))
+      .get()?.max ?? null
+
   const partRows = tx
     .select()
     .from(PartTable)
     .where(
       and(
         eq(PartTable.session_id, sessionID),
+        gte(PartTable.time_updated, watermark),
         sql`json_extract(${PartTable.data}, '$.type') = 'tool'`,
         sql`json_extract(${PartTable.data}, '$.state.status') IN ('running', 'pending')`,
       ),
@@ -116,6 +170,7 @@ function reconcileOrphans(tx: Database.TxOrDb, sessionID: SessionID, bootID: str
     .where(
       and(
         eq(MessageTable.session_id, sessionID),
+        gte(MessageTable.time_updated, watermark),
         sql`json_extract(${MessageTable.data}, '$.role') = 'assistant'`,
         sql`json_extract(${MessageTable.data}, '$.time.completed') IS NULL`,
       ),
@@ -129,6 +184,16 @@ function reconcileOrphans(tx: Database.TxOrDb, sessionID: SessionID, bootID: str
       .update(MessageTable)
       .set({ data: { ...row.data, time: { ...data.time, completed: now } } as typeof row.data })
       .where(eq(MessageTable.id, row.id))
+      .run()
+  }
+
+  // Advance only after the repairs above ran: a throw leaves the old watermark
+  // in place, so the next pass re-reads the same window instead of skipping it.
+  const next = Math.max(watermark, partMax ?? watermark, messageMax ?? watermark)
+  if (next !== stored) {
+    tx.insert(SessionPartReconcileTable)
+      .values({ session_id: sessionID, watermark: next })
+      .onConflictDoUpdate({ target: SessionPartReconcileTable.session_id, set: { watermark: next } })
       .run()
   }
 
@@ -165,9 +230,10 @@ function reconcileOrphans(tx: Database.TxOrDb, sessionID: SessionID, bootID: str
  * owner pid is provably dead is crash leftover and does NOT block — that is
  * precisely the case this repair exists for.
  *
- * The scan itself is idempotent (`state.status IN ('running','pending')`
- * matches nothing after the first pass), so repeated boots, repeated reads,
- * and racing processes are all safe.
+ * The scan is incremental (durable watermark, see `reconcileOrphans`) and
+ * idempotent (`state.status IN ('running','pending')` matches nothing after the
+ * first pass), so repeated boots, repeated reads, and racing processes are all
+ * safe: each pass only re-reads the rows written since the previous pass.
  */
 export function ensureOrphansReconciled(sessionID: SessionID, options?: { bootID?: string; now?: number }) {
   const bootID = options?.bootID ?? SessionTurnLease.currentBootID()
@@ -205,6 +271,10 @@ export function ensureOrphansReconciled(sessionID: SessionID, options?: { bootID
  * lazy path are unnecessary — and skipping them is the point: a long-lived
  * process whose boot-scoped marker was written before a sibling process
  * crashed mid-turn would otherwise never heal that session's orphans.
+ *
+ * Uses the same incremental watermark scan as the lazy path, so the common case
+ * (the previous turn completed normally) reads only the rows that turn wrote
+ * instead of every part in the session.
  */
 export function reconcileOrphansNow(sessionID: SessionID, options?: { bootID?: string; now?: number }) {
   const bootID = options?.bootID ?? SessionTurnLease.currentBootID()

@@ -145,6 +145,8 @@ export const layer = Layer.effect(
           // Turn-start orphan heal: forced (guard-free) reconciliation, so a
           // long-lived process also cleans up after a sibling process crashed
           // mid-turn — its stale boot marker would skip the lazy read path.
+          // The scan is incremental (durable watermark), so a normal turn start
+          // only re-reads the rows written since the previous turn.
           yield* Effect.sync(() => SessionPartReconcile.reconcileOrphansNow(sessionID))
           SessionPartReconcile.markBusy(sessionID)
           renewFiber = yield* renewalLoop.pipe(Effect.forkIn(data.scope))

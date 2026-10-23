@@ -9,7 +9,7 @@ import { ModelID, ProviderID } from "../../src/provider/schema"
 import * as Log from "@opencode-ai/core/util/log"
 import { and, eq, sql } from "drizzle-orm"
 import { Database } from "../../src/storage/db"
-import { MessageTable, PartTable } from "../../src/storage/tables/session.sql"
+import { MessageTable, PartTable, SessionPartReconcileTable } from "../../src/storage/tables/session.sql"
 import { StorageMaintenanceTable } from "../../src/storage/maintenance.sql"
 import { SessionPartReconcile } from "../../src/session/part-reconcile"
 import { SessionTurnLease } from "../../src/session/turn-lease"
@@ -155,6 +155,56 @@ function clearLease(sessionID: SessionID) {
 }
 
 const totalChanges = () => Database.use((db) => db.get(sql`select total_changes() as n`)) as { n: number }
+
+const watermarkRow = (sessionID: SessionID) =>
+  Database.use((db) =>
+    db
+      .select()
+      .from(SessionPartReconcileTable)
+      .where(eq(SessionPartReconcileTable.session_id, sessionID))
+      .get(),
+  )
+
+/** Largest `time_updated` in the session — what a reconcile pass records as its watermark. */
+function maxTimeUpdated(sessionID: SessionID) {
+  return Database.use((db) => {
+    const part = db
+      .select({ max: sql<number | null>`max(${PartTable.time_updated})` })
+      .from(PartTable)
+      .where(eq(PartTable.session_id, sessionID))
+      .get()?.max
+    const message = db
+      .select({ max: sql<number | null>`max(${MessageTable.time_updated})` })
+      .from(MessageTable)
+      .where(eq(MessageTable.session_id, sessionID))
+      .get()?.max
+    return Math.max(part ?? 0, message ?? 0)
+  })
+}
+
+/** Insert a part row with an explicit `time_updated`, bypassing the write pipeline's clock. */
+function insertToolPartRow(input: {
+  sessionID: SessionID
+  messageID: MessageID
+  state: MessageV2.ToolState
+  timeUpdated: number
+}) {
+  const id = PartID.ascending()
+  Database.use((db) =>
+    db
+      .insert(PartTable)
+      .values({
+        id,
+        message_id: input.messageID,
+        session_id: input.sessionID,
+        time_created: input.timeUpdated,
+        time_updated: input.timeUpdated,
+        data: { type: "tool", tool: "bash", callID: `call_${id}`, state: input.state } as unknown as (typeof PartTable.$inferInsert)["data"],
+      })
+      .run(),
+  )
+  return id
+}
 
 /** The full crash residue: one assistant turn with running + pending tool parts and no time.completed. */
 async function crashResidue(sessionID: SessionID) {
@@ -409,6 +459,7 @@ describe("SessionPartReconcile crash-orphan repair", () => {
         const session = await svc.create({})
         await crashResidue(session.id)
         MessageV2.page({ sessionID: session.id, limit: 10 })
+        const before = watermarkRow(session.id)!.watermark
 
         // A sibling process crashes mid-turn AFTER this process's boot marker
         // was written; the lazy read path memoizes and would never rescan.
@@ -426,8 +477,150 @@ describe("SessionPartReconcile crash-orphan repair", () => {
         SessionPartReconcile.reconcileOrphansNow(session.id)
         expect(readPartState(session.id, part)?.status).toBe("error")
         expect(readMessageCompleted(session.id, assistant)).toBeDefined()
+        // The crash happened after the previous pass, so its rows were inside
+        // the incremental window and the watermark advanced past them.
+        expect(watermarkRow(session.id)!.watermark).toBeGreaterThan(before)
 
         await svc.remove(session.id)
+      },
+    })
+  })
+  test("the first pass scans in full and records the watermark", async () => {
+    await WithInstance.provide({
+      directory: root,
+      fn: async () => {
+        const session = await svc.create({})
+        const residue = await crashResidue(session.id)
+        expect(watermarkRow(session.id)).toBeUndefined()
+        const expected = maxTimeUpdated(session.id)
+
+        MessageV2.page({ sessionID: session.id, limit: 10 })
+
+        // No watermark row = full scan: both residue parts are healed, and the
+        // watermark records the largest time_updated the pass started from.
+        expect(readPartState(session.id, residue.running)?.status).toBe("error")
+        expect(readPartState(session.id, residue.pending)?.status).toBe("error")
+        expect(watermarkRow(session.id)?.watermark).toBe(expected)
+
+        await svc.remove(session.id)
+      },
+    })
+  })
+
+  test("an incremental pass only reads rows at or after the watermark", async () => {
+    await WithInstance.provide({
+      directory: root,
+      fn: async () => {
+        const session = await svc.create({})
+        const residue = await crashResidue(session.id)
+        MessageV2.page({ sessionID: session.id, limit: 10 })
+        const watermark = watermarkRow(session.id)!.watermark
+
+        // Older than the watermark: the incremental predicate must not see it.
+        const stale = insertToolPartRow({
+          sessionID: session.id,
+          messageID: residue.assistant,
+          state: { status: "running", input: {}, time: { start: watermark - 10_000 } },
+          timeUpdated: watermark - 10_000,
+        })
+        SessionPartReconcile.reconcileOrphansNow(session.id)
+        expect(readPartState(session.id, stale)?.status).toBe("running")
+
+        // A crash orphan written after the last pass (the normal write pipeline
+        // stamps time_updated with the current clock) is inside the window and
+        // is healed by the next turn-start pass.
+        const fresh = await addToolPart(session.id, residue.assistant, {
+          status: "running",
+          input: {},
+          time: { start: Date.now() },
+        })
+        SessionPartReconcile.reconcileOrphansNow(session.id)
+        expect(readPartState(session.id, fresh)?.status).toBe("error")
+        expect(readPartState(session.id, stale)?.status).toBe("running")
+
+        await svc.remove(session.id)
+      },
+    })
+  })
+
+  test("a row sharing the watermark's millisecond is re-read, not skipped", async () => {
+    await WithInstance.provide({
+      directory: root,
+      fn: async () => {
+        const session = await svc.create({})
+        const residue = await crashResidue(session.id)
+        MessageV2.page({ sessionID: session.id, limit: 10 })
+        const watermark = watermarkRow(session.id)!.watermark
+
+        // Same timestamp as the recorded watermark: the comparison is
+        // inclusive, so a crash orphan cannot hide behind a millisecond tie.
+        const tied = insertToolPartRow({
+          sessionID: session.id,
+          messageID: residue.assistant,
+          state: { status: "running", input: {}, time: { start: watermark } },
+          timeUpdated: watermark,
+        })
+        SessionPartReconcile.reconcileOrphansNow(session.id)
+        expect(readPartState(session.id, tied)?.status).toBe("error")
+
+        await svc.remove(session.id)
+      },
+    })
+  })
+
+  test("a session without a watermark row is scanned in full once", async () => {
+    await WithInstance.provide({
+      directory: root,
+      fn: async () => {
+        const session = await svc.create({})
+        const residue = await crashResidue(session.id)
+        MessageV2.page({ sessionID: session.id, limit: 10 })
+        const watermark = watermarkRow(session.id)!.watermark
+
+        // Simulate an upgraded database: rows exist, the watermark does not.
+        // The next pass must fall back to a full scan and rebuild it.
+        Database.use((db) =>
+          db.delete(SessionPartReconcileTable).where(eq(SessionPartReconcileTable.session_id, session.id)).run(),
+        )
+        const stale = insertToolPartRow({
+          sessionID: session.id,
+          messageID: residue.assistant,
+          state: { status: "running", input: {}, time: { start: watermark - 10_000 } },
+          timeUpdated: watermark - 10_000,
+        })
+
+        SessionPartReconcile.ensureOrphansReconciled(session.id, { bootID: "boot_upgrade_1" })
+        expect(readPartState(session.id, stale)?.status).toBe("error")
+        expect(watermarkRow(session.id)?.watermark).toBeGreaterThanOrEqual(watermark - 10_000)
+
+        await svc.remove(session.id)
+      },
+    })
+  })
+
+  test("watermarks are per session and never leak across sessions", async () => {
+    await WithInstance.provide({
+      directory: root,
+      fn: async () => {
+        const first = await svc.create({})
+        const second = await svc.create({})
+        const firstResidue = await crashResidue(first.id)
+        const secondResidue = await crashResidue(second.id)
+        const secondExpected = maxTimeUpdated(second.id)
+
+        // Each session's first pass is independent: healing one must not
+        // establish (or consume) the other's watermark.
+        MessageV2.page({ sessionID: first.id, limit: 10 })
+        expect(readPartState(first.id, firstResidue.running)?.status).toBe("error")
+        expect(readPartState(second.id, secondResidue.running)?.status).toBe("running")
+        expect(watermarkRow(second.id)).toBeUndefined()
+
+        MessageV2.page({ sessionID: second.id, limit: 10 })
+        expect(readPartState(second.id, secondResidue.running)?.status).toBe("error")
+        expect(watermarkRow(second.id)?.watermark).toBe(secondExpected)
+
+        await svc.remove(first.id)
+        await svc.remove(second.id)
       },
     })
   })
