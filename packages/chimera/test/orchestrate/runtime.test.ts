@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import path from "node:path"
 import { Effect } from "effect"
-import { parseChildFrame, type ChildFrame } from "@/orchestrate/protocol"
+import { parseChildFrame, parseHostFrame, type ChildFrame } from "@/orchestrate/protocol"
 import { OrchestrateRuntime } from "@/orchestrate/runtime"
 import { testEffect } from "../lib/effect"
 
@@ -256,4 +256,60 @@ describe("OrchestrateRuntime", () => {
       }),
     TIMEOUT,
   )
+})
+describe("orchestrate timeout budgets", () => {
+  it.live(
+    "starts no timer when timeoutMs is omitted",
+    () =>
+      Effect.gen(function* () {
+        const runtime = yield* OrchestrateRuntime.Service
+        const spec = yield* runtime.resolve({ code: "return 'done'" })
+        expect(spec.timeoutMs).toBeUndefined()
+        const result = yield* runtime.run(spec)
+        expect(result.error).toBeUndefined()
+        expect(result.value).toBe("done")
+      }),
+    TIMEOUT,
+  )
+
+  it.live(
+    "floors a provided timeoutMs at 1ms and keeps large values (no 600s cap)",
+    () =>
+      Effect.gen(function* () {
+        const runtime = yield* OrchestrateRuntime.Service
+        expect((yield* runtime.resolve({ code: "return 1", timeoutMs: 0 })).timeoutMs).toBe(1)
+        expect((yield* runtime.resolve({ code: "return 1", timeoutMs: -50 })).timeoutMs).toBe(1)
+        expect((yield* runtime.resolve({ code: "return 1", timeoutMs: Number.NaN })).timeoutMs).toBeUndefined()
+        expect((yield* runtime.resolve({ code: "return 1", timeoutMs: 900_000 })).timeoutMs).toBe(900_000)
+      }),
+    TIMEOUT,
+  )
+
+  it.live(
+    "aborts a sleeping program when an explicit timeoutMs elapses",
+    () =>
+      Effect.gen(function* () {
+        const runtime = yield* OrchestrateRuntime.Service
+        const spec = yield* runtime.resolve({
+          code: "await new Promise((resolve) => setTimeout(resolve, 60_000)); return 1",
+          timeoutMs: 200,
+        })
+        const result = yield* runtime.run(spec)
+        expect(result.error?.kind).toBe("timeout")
+      }),
+    30_000,
+  )
+
+  test("accepts a boot frame without timeoutMs", () => {
+    const parsed = parseHostFrame(
+      JSON.stringify({
+        type: "boot",
+        program: "return 1",
+        namespaces: {},
+        budgets: { maxPending: 16, maxLogBytes: 1024, maxResultBytes: 1024, maxFrameBytes: 1024 },
+      }),
+    )
+    expect(parsed.ok).toBe(true)
+    if (parsed.ok && parsed.frame.type === "boot") expect(parsed.frame.budgets.timeoutMs).toBeUndefined()
+  })
 })

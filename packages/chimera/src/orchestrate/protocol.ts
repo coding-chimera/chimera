@@ -15,8 +15,6 @@
 export const PROTOCOL_LIMITS = {
   /** Hard cap for a single JSON line in either direction. */
   maxFrameBytes: 4 * 1024 * 1024,
-  defaultTimeoutMs: 120_000,
-  maxTimeoutMs: 600_000,
   maxPendingCalls: 128,
   defaultLogBytes: 64 * 1024,
   defaultResultBytes: 1024 * 1024,
@@ -26,7 +24,8 @@ export const PROTOCOL_LIMITS = {
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
 
 export interface Budgets {
-  readonly timeoutMs: number
+  /** Wall-clock budget; omitted means the run has no timer at all. */
+  readonly timeoutMs?: number
   readonly maxPending: number
   readonly maxLogBytes: number
   readonly maxResultBytes: number
@@ -223,11 +222,13 @@ function parseNamespaces(value: unknown): Record<string, readonly string[]> | un
 function parseBudgets(value: unknown): Budgets | undefined {
   const input = record(value)
   if (!input) return undefined
-  const fields = ["timeoutMs", "maxPending", "maxLogBytes", "maxResultBytes", "maxFrameBytes"] as const
+  const fields = ["maxPending", "maxLogBytes", "maxResultBytes", "maxFrameBytes"] as const
   if (fields.some((field) => typeof input[field] !== "number" || !Number.isFinite(input[field] as number)))
     return undefined
+  const timeoutMs = input.timeoutMs
+  if (timeoutMs !== undefined && (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs))) return undefined
   return {
-    timeoutMs: input.timeoutMs as number,
+    ...(timeoutMs === undefined ? {} : { timeoutMs: timeoutMs as number }),
     maxPending: input.maxPending as number,
     maxLogBytes: input.maxLogBytes as number,
     maxResultBytes: input.maxResultBytes as number,

@@ -14,8 +14,6 @@ const id = "orchestrate"
 
 const DEFAULT_MAX_TOTAL_AGENTS = 64
 const MAX_TOTAL_AGENTS = 256
-const DEFAULT_TIMEOUT_MS = 120_000
-const MAX_TIMEOUT_MS = 600_000
 const MAX_CONCURRENT = 16
 
 export const Parameters = Schema.Struct({
@@ -30,7 +28,8 @@ export const Parameters = Schema.Struct({
     description: "Maximum total subagent dispatches across the whole program. Defaults to 64; hard cap 256.",
   }),
   timeoutMs: Schema.optional(Schema.Number).annotate({
-    description: "Wall-clock budget for the whole program in milliseconds. Defaults to 120000; clamped to 600000.",
+    description:
+      "Optional wall-clock budget for the whole program in milliseconds. By default there is no wall-clock limit: the run ends when the program returns or throws, a subagent failure surfaces as `null`, or the user aborts the turn (which cancels the whole run). Set this only when you deliberately want a time budget; a provided value floors at 1ms and has no upper cap.",
   }),
 })
 
@@ -104,7 +103,6 @@ export const OrchestrateTool = Tool.define(
       })
 
       const maxTotalAgents = clamp(params.maxTotalAgents, DEFAULT_MAX_TOTAL_AGENTS, 1, MAX_TOTAL_AGENTS)
-      const timeoutMs = clamp(params.timeoutMs, DEFAULT_TIMEOUT_MS, 1, MAX_TIMEOUT_MS)
 
       const progress = new Map<string, AgentProgress>()
       const publish = () => ctx.metadata({ title: params.description, metadata: { agents: [...progress.values()] } })
@@ -144,7 +142,7 @@ export const OrchestrateTool = Tool.define(
         const runtime = yield* OrchestrateRuntime.Service
         const spec = yield* runtime.resolve({
           code: params.code,
-          timeoutMs,
+          timeoutMs: params.timeoutMs,
           signal: ctx.abort,
           bindings: bindings.bindings,
         })

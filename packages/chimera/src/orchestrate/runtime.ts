@@ -69,7 +69,7 @@ export interface Request {
 export interface Spec {
   readonly code: string
   readonly cwd: string
-  readonly timeoutMs: number
+  readonly timeoutMs?: number
   readonly maxPending: number
   readonly maxLogBytes: number
   readonly maxResultBytes: number
@@ -103,6 +103,12 @@ const CHILD_ERROR_KINDS = new Set<ErrorKind>(["exception", "protocol", "invalid-
 function clamp(value: number | undefined, fallback: number, min: number, max: number) {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback
   return Math.min(Math.max(Math.trunc(value), min), max)
+}
+
+/** Optional wall-clock budget: absent means no timer at all; provided values floor at 1ms. */
+function positiveMs(value: number | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined
+  return Math.max(Math.trunc(value), 1)
 }
 
 function isStandaloneExecutable() {
@@ -184,7 +190,7 @@ const resolve = Effect.fn("OrchestrateRuntime.resolve")(function* (request: Requ
   return {
     code: request.code,
     cwd: path.resolve(request.cwd ?? process.cwd()),
-    timeoutMs: clamp(request.timeoutMs, PROTOCOL_LIMITS.defaultTimeoutMs, 1, PROTOCOL_LIMITS.maxTimeoutMs),
+    timeoutMs: positiveMs(request.timeoutMs),
     maxPending: clamp(request.maxPending, PROTOCOL_LIMITS.maxPendingCalls, 1, PROTOCOL_LIMITS.maxPendingCalls),
     maxLogBytes: clamp(request.maxLogBytes, PROTOCOL_LIMITS.defaultLogBytes, 1, PROTOCOL_LIMITS.maxFrameBytes),
     maxResultBytes: clamp(request.maxResultBytes, PROTOCOL_LIMITS.defaultResultBytes, 1, PROTOCOL_LIMITS.maxFrameBytes),
@@ -257,7 +263,7 @@ const makeRun = (spawner: ChildProcessSpawner.ChildProcessSpawner["Service"]) =>
                 program: spec.code,
                 namespaces: spec.namespaces,
                 budgets: {
-                  timeoutMs: spec.timeoutMs,
+                  ...(spec.timeoutMs === undefined ? {} : { timeoutMs: spec.timeoutMs }),
                   maxPending: spec.maxPending,
                   maxLogBytes: spec.maxLogBytes,
                   maxResultBytes: spec.maxResultBytes,
@@ -435,12 +441,15 @@ const makeRun = (spawner: ChildProcessSpawner.ChildProcessSpawner["Service"]) =>
           ),
         )
 
-        yield* Effect.forkScoped(
-          Effect.sleep(spec.timeoutMs).pipe(
-            Effect.andThen(fail({ kind: "timeout", message: `orchestration exceeded ${spec.timeoutMs}ms` })),
-            Effect.asVoid,
-          ),
-        )
+        if (spec.timeoutMs !== undefined) {
+          const timeoutMs = spec.timeoutMs
+          yield* Effect.forkScoped(
+            Effect.sleep(timeoutMs).pipe(
+              Effect.andThen(fail({ kind: "timeout", message: `orchestration exceeded ${timeoutMs}ms` })),
+              Effect.asVoid,
+            ),
+          )
+        }
 
         if (spec.signal) {
           yield* Effect.forkScoped(
