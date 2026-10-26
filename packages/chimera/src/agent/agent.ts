@@ -96,6 +96,7 @@ export const layer = Layer.effect(
 
         const defaults = Permission.fromConfig({
           "*": "allow",
+          orchestrate: "ask",
           doom_loop: "ask",
           subagent_model_prefer: "ask",
           subagent_model_suppress: "ask",

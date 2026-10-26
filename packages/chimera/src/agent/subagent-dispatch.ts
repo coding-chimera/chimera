@@ -92,6 +92,8 @@ export type SubagentDispatchRunPreparedInput = Pick<
 > & {
   prepared: SubagentDispatchPrepared
   materialized?: SubagentDispatchMaterialized
+  /** Structured-output request forwarded to the child prompt (result lands on `message.info.structured`). */
+  format?: MessageV2.OutputFormat
   /** Periodically invoked while the dispatch waits (parks) for owned background jobs to finish delivering. */
   onParkProgress?: (info: { waiting: number; elapsedMs: number }) => Effect.Effect<void>
   /** Progress-notification cadence while parked; never an abandonment timeout. Defaults to 30s. */
@@ -259,6 +261,7 @@ export const SubagentDispatch = Effect.gen(function* () {
       ? [
           { pattern: "*", action: "deny" as const, permission: "task" as const },
           { pattern: "*", action: "deny" as const, permission: "chimera_swarm" as const },
+          { pattern: "*", action: "deny" as const, permission: "orchestrate" as const },
         ]
       : []
 
@@ -426,9 +429,10 @@ export const SubagentDispatch = Effect.gen(function* () {
                 ...Object.fromEntries(
                   (prepared.config.experimental?.primary_tools ?? []).map((item) => [item, false]),
                 ),
-                ...(atDepthCap ? { task: false, chimera_swarm: false } : {}),
+                ...(atDepthCap ? { task: false, chimera_swarm: false, orchestrate: false } : {}),
               },
               parts,
+              ...(input.format ? { format: input.format } : {}),
             })
             firstStreamedDeltaAt = firstStreamedDelta(result.parts)
             if (input.abort.aborted) return yield* Effect.interrupt

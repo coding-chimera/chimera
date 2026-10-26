@@ -1,0 +1,18 @@
+Run a model-authored orchestration program that fans out many subagents in one call.
+
+`code` is the body of an async JavaScript function (top-level `await` and `return` are allowed). It receives one binding object, `orche`:
+
+- `await orche.agent({ prompt, agent?, model?, label?, schema? })` dispatches one subagent and resolves to `{ text }`, or `{ structured }` when `schema` is given, or `null` when that subagent fails.
+- `await orche.parallel([() => orche.agent(...), ...])` runs the tasks concurrently and returns results in input order; an individual failure becomes `null`.
+- `orche.pipeline([stage, ...])([item, ...])` runs every item through the stages in order; a failed stage yields `null` for that item and skips its remaining stages.
+- `orche.log(...values)` or `console.log(...)` appends a line to the tool result log.
+- `return <json>` ends the program. The return value must be lossless JSON and is the curated result of the call.
+
+Context isolation: subagent intermediate messages, tool output, and full transcripts never enter this session's context. Only your `return` value and `orche.log` / `console.log` output come back, so the program must actively select and return exactly what the parent needs — for example a compact array of findings, a deduplicated table, or a verdict, not raw child transcripts.
+
+Use when: you need 5 or more subagents, or the fan-out has dependencies (per-item stages), or results must be synthesized inside the program (loops, branching, fan-out/fan-in, cross-item comparison, post-processing) before they reach the context.
+Do not use when: a single direct task is enough (use `task`), or the fan-out is a simple homogeneous list with no per-item orchestration (use `chimera_swarm`).
+
+Approval: `orchestrate` is approved once per call, and every `orche.agent` additionally goes through the normal `task` approval for its agent type. Subagents are real child sessions (visible, persisted, cancellable) and obey delegation depth, concurrency, and per-agent permission limits.
+
+Failure semantics: a subagent task failure resolves to `null` and the program continues; host-side problems (invalid arguments, dispatch infrastructure, an approval denial) reject that binding call, and an uncaught rejection terminates the program with an error. `timeoutMs` bounds the whole program (default 120000, clamped to 600000). `maxTotalAgents` caps the total number of child dispatches (default 64, hard cap 256).

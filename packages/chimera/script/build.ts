@@ -355,7 +355,7 @@ for (const item of targets) {
       ...(embeddedNewWebUIFileMap ? { [embeddedNewWebUIEntrypoint]: embeddedNewWebUIFileMap } : {}),
     },
     entrypoints: [
-      "./src/index.ts",
+      "./src/entry.ts",
       parserWorker,
       workerPath,
       parseWorkerPath,

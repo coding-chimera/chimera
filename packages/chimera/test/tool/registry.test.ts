@@ -123,6 +123,7 @@ describe("tool.registry", () => {
       expect(ids).toContain("chimera_obligation_resolve")
       expect(ids).toContain("chimera_obligation_ignore")
       expect(ids).toContain("workbrief")
+      expect(ids).toContain("orchestrate")
       expect(ids).toContain("browser_open")
       expect(ids).toContain("browser_snapshot")
       expect(ids).toContain("browser_click")

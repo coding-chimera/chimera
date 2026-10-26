@@ -7,6 +7,7 @@ import { GlobTool } from "./glob"
 import { GrepTool } from "./grep"
 import { ReadTool } from "./read"
 import { TaskTool } from "./task"
+import { OrchestrateTool } from "./orchestrate"
 import { TaskCancelTool } from "./task-cancel"
 import { ProcNotifyTool } from "./proc-notify"
 import { ChimeraSwarmTool } from "./swarm"
@@ -129,6 +130,7 @@ export const layer = Layer.effect(
     const truncate = yield* Truncate.Service
     const invalid = yield* InvalidTool
     const task = yield* TaskTool
+    const orchestrate = yield* OrchestrateTool
     const taskCancel = yield* TaskCancelTool
     const procNotify = yield* ProcNotifyTool
     const read = yield* ReadTool
@@ -278,6 +280,7 @@ export const layer = Layer.effect(
           goalCreate: Tool.init(goalCreate),
           goalUpdate: Tool.init(goalUpdate),
           task: Tool.init(task),
+          orchestrate: Tool.init(orchestrate),
           taskCancel: Tool.init(taskCancel),
           procNotify: Tool.init(procNotify),
           fetch: Tool.init(webfetch),
@@ -337,6 +340,7 @@ export const layer = Layer.effect(
             tool.goalCreate,
             tool.goalUpdate,
             tool.task,
+            tool.orchestrate,
             tool.taskCancel,
             tool.procNotify,
             tool.chimeraSwarm,
@@ -465,7 +469,9 @@ export const layer = Layer.effect(
             id: tool.id,
             description: [
               output.description,
-              tool.id === TaskTool.id || tool.id === ChimeraSwarmTool.id ? yield* describeTask(input.agent) : undefined,
+              tool.id === TaskTool.id || tool.id === ChimeraSwarmTool.id || tool.id === OrchestrateTool.id
+                ? yield* describeTask(input.agent)
+                : undefined,
             ]
               .filter(Boolean)
               .join("\n"),

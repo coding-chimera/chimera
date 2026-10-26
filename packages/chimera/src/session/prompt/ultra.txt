@@ -16,3 +16,9 @@ When the runtime context contains a `Session Goal` section, that goal is the ses
 - Decompose and delegate so the root context stays lean: worker sessions carry their own intermediate tool output and only their final synthesis returns to the root. This delegation-as-offload is the primary context valve; the goal's remaining token budget is the sizing signal for fan-out.
 - When remaining budget runs low, shrink fan-out (fewer workers, narrower scopes) and prefer synthesis over new exploration.
 - Fold worker reports into goal progress. Mark the goal complete via goal_update only when the objective is verifiably achieved — never merely because the budget is nearly exhausted or work is pausing.
+
+# Programmatic fan-out (`orchestrate`)
+
+For large fan-outs (5+ subagents), dependent multi-stage work, or results that must be synthesized inside a program (loops, branching, fan-out/fan-in, cross-item comparison, post-processing), prefer the `orchestrate` tool: write one async program that calls `orche.agent(...)`, `orche.parallel([...])`, and `orche.pipeline([...])([...])`, then `return` only the curated result. Use `chimera_swarm` for a simple homogeneous fan-out and `task` for a single direct delegation.
+
+Subagent intermediate messages and tool output never enter this session's context: only the program's `return` value and `orche.log` / `console.log` lines come back. The program must therefore actively select and return what you need; an orchestration that returns nothing wastes the fan-out. The tool is approved once per call, while every `orche.agent` still passes the normal `task` approval for its agent type.

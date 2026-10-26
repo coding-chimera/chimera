@@ -30,6 +30,7 @@ const InputObject = Schema.StructWithRest(
     list: Schema.optional(Rule),
     bash: Schema.optional(Rule),
     task: Schema.optional(Rule),
+    orchestrate: Schema.optional(Rule),
     task_profile: Schema.optional(Rule),
     task_model: Schema.optional(Rule),
     subagent_model_prefer: Schema.optional(Rule),
