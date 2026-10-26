@@ -16,6 +16,7 @@ import { ConfigMarkdown } from "@/config/markdown"
 import { Glob } from "@opencode-ai/core/util/glob"
 import * as Log from "@opencode-ai/core/util/log"
 import { Discovery } from "./discovery"
+import { SkillBuiltin } from "./builtin"
 
 const log = Log.create({ service: "skill" })
 const CLAUDE_EXTERNAL_DIR = ".claude"
@@ -97,10 +98,11 @@ const add = Effect.fnUntraced(function* (state: State, match: string, bus: Bus.I
   const parsed = z.object({ name: z.string(), description: z.string() }).safeParse(md.data)
   if (!parsed.success) return
 
-  if (state.skills[parsed.data.name]) {
+  const existing = state.skills[parsed.data.name]
+  if (existing && !SkillBuiltin.isBuiltinLocation(existing.location)) {
     log.warn("duplicate skill name", {
       name: parsed.data.name,
-      existing: state.skills[parsed.data.name].location,
+      existing: existing.location,
       duplicate: match,
     })
   }
@@ -230,7 +232,10 @@ export const layer = Layer.effect(
     )
     const state = yield* InstanceState.make(
       Effect.fn("Skill.state")(function* () {
-        const s: State = { skills: {}, dirs: new Set() }
+        const s: State = {
+          skills: Object.fromEntries(SkillBuiltin.BUILTIN_SKILLS.map((skill) => [skill.name, skill])),
+          dirs: new Set(),
+        }
         yield* loadSkills(s, yield* InstanceState.get(discovered), bus)
         return s
       }),

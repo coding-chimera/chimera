@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { Effect, Layer, Schema } from "effect"
 import z from "zod"
 import { Skill } from "../../src/skill"
+import { SkillBuiltin } from "../../src/skill/builtin"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { provideInstance, provideTmpdirInstance, tmpdir } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
@@ -9,6 +10,8 @@ import path from "path"
 import fs from "fs/promises"
 
 const node = CrossSpawnSpawner.defaultLayer
+
+const filesystemSkills = (list: Skill.Info[]) => list.filter((skill) => !SkillBuiltin.isBuiltinLocation(skill.location))
 
 const it = testEffect(Layer.mergeAll(Skill.defaultLayer, node))
 
@@ -64,7 +67,7 @@ Instructions here.
           )
 
           const skill = yield* Skill.Service
-          const list = yield* skill.all()
+          const list = filesystemSkills(yield* skill.all())
           expect(list.length).toBe(1)
           const item = list.find((x) => x.name === "test-skill")
           expect(item).toBeDefined()
@@ -134,7 +137,7 @@ description: Second test skill.
           )
 
           const skill = yield* Skill.Service
-          const list = yield* skill.all()
+          const list = filesystemSkills(yield* skill.all())
           expect(list.length).toBe(2)
           expect(list.find((x) => x.name === "skill-one")).toBeDefined()
           expect(list.find((x) => x.name === "skill-two")).toBeDefined()
@@ -158,7 +161,7 @@ Just some content without YAML frontmatter.
           )
 
           const skill = yield* Skill.Service
-          expect(yield* skill.all()).toEqual([])
+          expect(filesystemSkills(yield* skill.all())).toEqual([])
         }),
       { git: true },
     ),
@@ -182,7 +185,7 @@ description: A skill in the .claude/skills directory.
           )
 
           const skill = yield* Skill.Service
-          const list = yield* skill.all()
+          const list = filesystemSkills(yield* skill.all())
           expect(list.length).toBe(1)
           const item = list.find((x) => x.name === "claude-skill")
           expect(item).toBeDefined()
@@ -205,7 +208,7 @@ description: A skill in the .claude/skills directory.
           yield* Effect.promise(() => createGlobalSkill(tmp.path))
           yield* Effect.gen(function* () {
             const skill = yield* Skill.Service
-            const list = yield* skill.all()
+            const list = filesystemSkills(yield* skill.all())
             expect(list.length).toBe(1)
             expect(list[0].name).toBe("global-test-skill")
             expect(list[0].description).toBe("A global skill from ~/.claude/skills for testing.")
@@ -221,7 +224,7 @@ description: A skill in the .claude/skills directory.
       () =>
         Effect.gen(function* () {
           const skill = yield* Skill.Service
-          expect(yield* skill.all()).toEqual([])
+          expect(filesystemSkills(yield* skill.all())).toEqual([])
         }),
       { git: true },
     ),
@@ -245,7 +248,7 @@ description: A skill in the .agents/skills directory.
           )
 
           const skill = yield* Skill.Service
-          const list = yield* skill.all()
+          const list = filesystemSkills(yield* skill.all())
           expect(list.length).toBe(1)
           const item = list.find((x) => x.name === "agent-skill")
           expect(item).toBeDefined()
@@ -284,7 +287,7 @@ This skill is loaded from the global home directory.
 
           yield* Effect.gen(function* () {
             const skill = yield* Skill.Service
-            const list = yield* skill.all()
+            const list = filesystemSkills(yield* skill.all())
             expect(list.length).toBe(1)
             expect(list[0].name).toBe("global-agent-skill")
             expect(list[0].description).toBe("A global skill from ~/.agents/skills for testing.")
@@ -325,7 +328,7 @@ description: A skill in the .agents/skills directory.
           )
 
           const skill = yield* Skill.Service
-          const list = yield* skill.all()
+          const list = filesystemSkills(yield* skill.all())
           expect(list.length).toBe(2)
           expect(list.find((x) => x.name === "claude-skill")).toBeDefined()
           expect(list.find((x) => x.name === "agent-skill")).toBeDefined()

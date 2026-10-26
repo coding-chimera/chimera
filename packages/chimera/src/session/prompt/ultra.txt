@@ -21,4 +21,6 @@ When the runtime context contains a `Session Goal` section, that goal is the ses
 
 For large fan-outs (5+ subagents), dependent multi-stage work, or results that must be synthesized inside a program (loops, branching, fan-out/fan-in, cross-item comparison, post-processing), prefer the `orchestrate` tool: write one async program that calls `orche.agent(...)`, `orche.parallel([...])`, and `orche.pipeline([...])([...])`, then `return` only the curated result. Use `chimera_swarm` for a simple homogeneous fan-out and `task` for a single direct delegation.
 
+Before writing the first orchestrate program in a session, load the `orchestrate-authoring` skill via the skill tool for the API contract and quality patterns.
+
 Subagent intermediate messages and tool output never enter this session's context: only the program's `return` value and `orche.log` / `console.log` lines come back. The program must therefore actively select and return what you need; an orchestration that returns nothing wastes the fan-out. The tool is approved once per call, while every `orche.agent` still passes the normal `task` approval for its agent type.

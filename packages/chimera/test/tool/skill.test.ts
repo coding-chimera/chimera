@@ -97,4 +97,31 @@ Use this skill.
       { git: true },
     ),
   )
+
+  it.live("execute skips ripgrep for a built-in skill", () =>
+    provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const registry = yield* ToolRegistry.Service
+          const agent = { name: "build", mode: "primary" as const, permission: [], options: {} }
+          const tool = (yield* registry.tools({
+            providerID: "opencode" as any,
+            modelID: "gpt-5" as any,
+            agent,
+          })).find((tool) => tool.id === SkillTool.id)
+          if (!tool) throw new Error("Skill tool not found")
+
+          const ctx: Tool.Context = { ...baseCtx, ask: () => Effect.void }
+
+          const result = yield* tool.execute({ name: "orchestrate-authoring" }, ctx)
+
+          expect(result.output).toContain(`<skill_content name="orchestrate-authoring">`)
+          expect(result.output).toContain(`# Skill: orchestrate-authoring`)
+          expect(result.output).toContain("This skill is bundled with chimera; it has no on-disk directory or extra files.")
+          expect(result.output).not.toContain("Base directory for this skill:")
+          expect(result.output).not.toContain("<skill_files>")
+        }),
+      { git: true },
+    ),
+  )
 })
