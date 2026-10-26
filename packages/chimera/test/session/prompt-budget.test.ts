@@ -34,10 +34,10 @@ const BASELINE = {
 const TOOL_BUDGETS = {
   "todowrite.txt": 9183,
   "ast_edit.txt": 10984,
-  "task.txt": 7055,
-  "swarm.txt": 6951,
+  "task.txt": 7805,
+  "swarm.txt": 10471,
   "workbrief.txt": 6546,
-  "shell/shell.txt": 7501,
+  "shell/shell.txt": 7852,
 } as const
 
 // 2026-10-08 re-record: the experimental session-goal tools (goal_get.txt,
@@ -87,13 +87,21 @@ const TOOL_BUDGETS = {
 // shell.txt further (7375 -> 7501) and the deferred browser_open/
 // browser_screenshot/proc_notify wording (+411 B deferred). Floor 101308 ->
 // 104151; DEFERRED_TXT_BUDGET 14354 -> 14765.
-const TOOL_TOTAL_BUDGET = 104151
+// 2026-10-23 re-record (ultracode orchestrate tool + concurrent growth): the new
+// always-on orchestrate.txt (2450 B, programmatic subagent orchestration) is the
+// intentional ULTRACODE_PLAN addition. Folded into the same recording, per the
+// concurrency-note convention above: task.txt (7055 -> 7805) and swarm.txt
+// (6951 -> 10471) grew with the landed swarm background-dispatch mode
+// (bc6620bb8/bad27d5e3), and shell/shell.txt (7501 -> 7852) plus the deferred set
+// (14765 -> 15028) grew in concurrent sessions. Total floor 104151 -> 109718.
+const TOOL_TOTAL_BUDGET = 109718
 
 // The description bytes withheld from the default model-facing set by the
 // ToolSearch defer filter: every registered deferred tool's .txt is off the
 // wire until revealed, so the per-request description cost drops below the
 // full-registration floor recorded above.
-const DEFERRED_TXT_BUDGET = 14765
+const DEFERRED_TXT_BUDGET = 15028
+
 const TOOL_SEARCH_TXT_BUDGET = 2030
 
 const CAPABILITY_TOOLS = { chimera_search: {}, workbrief: {}, browser_open: {}, read: {}, bash: {} }
