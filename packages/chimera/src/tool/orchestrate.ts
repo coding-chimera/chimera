@@ -8,7 +8,7 @@ import {
 } from "../orchestrate/host-bindings"
 import { OrchestrateRuntime, type ErrorKind, type Result } from "../orchestrate/runtime"
 import type { JsonValue } from "../orchestrate/protocol"
-import { Effect, Schema } from "effect"
+import { Cause, Effect, Fiber, Queue, Schema, Scope } from "effect"
 
 const id = "orchestrate"
 
@@ -43,6 +43,16 @@ type AgentProgress = {
   readonly agent: string
   readonly sessionId: string
   readonly status: "running" | "completed" | "failed" | "aborted"
+}
+
+/** Metadata log tail stays small so every publish is a bounded write. */
+export const ORCHESTRATE_LOG_LIMIT = 50
+const LOG_PUBLISH_INTERVAL_MS = 1_000
+
+/** Append one program log line, keeping only the most recent `limit` lines. */
+export function appendOrchestrateLog(logs: string[], line: string, limit = ORCHESTRATE_LOG_LIMIT) {
+  logs.push(line)
+  if (logs.length > limit) logs.splice(0, logs.length - limit)
 }
 
 const ERROR_HEADINGS: Record<ErrorKind, string> = {
@@ -87,6 +97,7 @@ export const OrchestrateTool = Tool.define(
   id,
   Effect.gen(function* () {
     const dispatch = yield* SubagentDispatch
+    const scope = yield* Scope.Scope
 
     const run = Effect.fn("OrchestrateTool.execute")(function* (
       params: Schema.Schema.Type<typeof Parameters>,
@@ -105,7 +116,32 @@ export const OrchestrateTool = Tool.define(
       const maxTotalAgents = clamp(params.maxTotalAgents, DEFAULT_MAX_TOTAL_AGENTS, 1, MAX_TOTAL_AGENTS)
 
       const progress = new Map<string, AgentProgress>()
-      const publish = () => ctx.metadata({ title: params.description, metadata: { agents: [...progress.values()] } })
+      const logs: string[] = []
+      const logQueue = yield* Queue.unbounded<string, Cause.Done>()
+      const publish = () =>
+        ctx.metadata({
+          title: params.description,
+          metadata: {
+            agents: [...progress.values()],
+            ...(logs.length ? { logs: [...logs] } : {}),
+          },
+        })
+
+      // Log-only bursts must not republish on every line: a single consumer
+      // publishes at most once per window, while agent events below still
+      // publish immediately. Queue.offerUnsafe bridges the synchronous
+      // runtime callback back into this Effect context.
+      const logPublisher = yield* Effect.gen(function* () {
+        while (true) {
+          yield* Queue.take(logQueue)
+          yield* publish()
+          yield* Effect.sleep(`${LOG_PUBLISH_INTERVAL_MS} millis`)
+        }
+      }).pipe(Effect.forkIn(scope, { startImmediately: true }))
+      const onLog = (line: string) => {
+        appendOrchestrateLog(logs, line)
+        Queue.offerUnsafe(logQueue, line)
+      }
 
       const onEvent = (event: OrchestrationAgentEvent) =>
         Effect.gen(function* () {
@@ -145,12 +181,16 @@ export const OrchestrateTool = Tool.define(
           timeoutMs: params.timeoutMs,
           signal: ctx.abort,
           bindings: bindings.bindings,
+          onLog,
         })
         return yield* runtime.run(spec)
       }).pipe(Effect.provide(OrchestrateRuntime.defaultLayer), Effect.ensuring(bindings.disposeAll()))
 
+      yield* Fiber.interrupt(logPublisher).pipe(Effect.ignore)
+
       const metadata = {
         agents: [...progress.values()],
+        ...(logs.length ? { logs: [...logs] } : {}),
         ...(result.error ? { error: result.error.kind } : {}),
       }
 

@@ -64,6 +64,8 @@ export interface Request {
   readonly maxResultBytes?: number
   readonly signal?: AbortSignal
   readonly bindings?: Bindings
+  /** Called once per program log line as it arrives; never used for the final result snapshot. */
+  readonly onLog?: (line: string) => void
 }
 
 export interface Spec {
@@ -78,6 +80,7 @@ export interface Spec {
   readonly namespaces: Readonly<Record<string, readonly string[]>>
   /** Binding name -> implementation. Names are globally unique across namespaces. */
   readonly bindingIndex: ReadonlyMap<string, Binding>
+  readonly onLog?: (line: string) => void
 }
 
 export class OrchestrateConfigError extends Schema.TaggedErrorClass<OrchestrateConfigError>()(
@@ -195,6 +198,7 @@ const resolve = Effect.fn("OrchestrateRuntime.resolve")(function* (request: Requ
     maxLogBytes: clamp(request.maxLogBytes, PROTOCOL_LIMITS.defaultLogBytes, 1, PROTOCOL_LIMITS.maxFrameBytes),
     maxResultBytes: clamp(request.maxResultBytes, PROTOCOL_LIMITS.defaultResultBytes, 1, PROTOCOL_LIMITS.maxFrameBytes),
     ...(request.signal ? { signal: request.signal } : {}),
+    ...(request.onLog ? { onLog: request.onLog } : {}),
     bindings,
     namespaces,
     bindingIndex,
@@ -282,6 +286,8 @@ const makeRun = (spawner: ChildProcessSpawner.ChildProcessSpawner["Service"]) =>
               }
               logBytes += bytes
               logs.push(frame.text)
+              // A host callback must never break protocol handling: swallow any defect it throws.
+              yield* Effect.sync(() => spec.onLog?.(frame.text)).pipe(Effect.catchCause(() => Effect.void))
               return
             }
 

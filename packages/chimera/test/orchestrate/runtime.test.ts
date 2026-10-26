@@ -202,20 +202,38 @@ describe("OrchestrateRuntime", () => {
   )
 
   it.live(
-    "routes a host binding through the worker",
+    "streams every program log line through onLog",
     () =>
       Effect.gen(function* () {
         const runtime = yield* OrchestrateRuntime.Service
+        const lines: string[] = []
         const spec = yield* runtime.resolve({
-          code: "const ns = orche.echo; return await ns.echo({ value: 7 })",
-          bindings: { echo: { echo: async (args) => args } },
+          code: "console.log('first'); console.log('second'); return 'done'",
+          onLog: (line) => lines.push(line),
         })
         const result = yield* runtime.run(spec)
-        expect(result.error).toBeUndefined()
-        expect(result.value).toEqual({ value: 7 })
+        expect(result.value).toBe("done")
+        expect(lines).toEqual(["first", "second"])
+        expect(result.logs).toEqual(["first", "second"])
       }),
     TIMEOUT,
   )
+
+  it.live(
+"routes a host binding through the worker",
+() =>
+Effect.gen(function* () {
+const runtime = yield* OrchestrateRuntime.Service
+const spec = yield* runtime.resolve({
+code: "const ns = orche.echo; return await ns.echo({ value: 7 })",
+bindings: { echo: { echo: async (args) => args } },
+})
+const result = yield* runtime.run(spec)
+expect(result.error).toBeUndefined()
+expect(result.value).toEqual({ value: 7 })
+}),
+TIMEOUT,
+)
 
   it.live(
     "reports a program exception as a result error",

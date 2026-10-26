@@ -1,4 +1,4 @@
-import { afterEach, describe, expect } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { Effect, Stream } from "effect"
 import { Bus } from "../../src/bus"
 import { Permission } from "../../src/permission"
@@ -6,6 +6,7 @@ import { Session } from "@/session/session"
 import { SessionPrompt } from "../../src/session/prompt"
 import { MessageV2 } from "../../src/session/message-v2"
 import { makePromptHarness, testProviderConfig } from "../fixture/prompt-harness"
+import { ORCHESTRATE_LOG_LIMIT, appendOrchestrateLog } from "@/tool/orchestrate"
 import { disposeAllInstances, provideTmpdirServer } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
@@ -107,9 +108,15 @@ describe("orchestrate tool", () => {
           expect(parentText).toContain("root summary")
 
           // Progress metadata records both children with their terminal status.
-          const agents = (tool.state.metadata as { agents?: { label: string; status: string }[] } | undefined)?.agents ?? []
+          const metadata = tool.state.metadata as
+            | { agents?: { label: string; status: string }[]; logs?: string[] }
+            | undefined
+          const agents = metadata?.agents ?? []
           expect(agents.map((agent) => agent.label).sort()).toEqual(["alpha", "beta"])
           expect(agents.every((agent) => agent.status === "completed")).toBe(true)
+
+          // orchestr.log lines ride the same metadata so the WebUI can stream them.
+          expect(metadata?.logs).toContain("fanout complete 2")
 
           // One orchestrate approval plus one task approval per child.
           expect(asked.filter((name) => name === "orchestrate")).toHaveLength(1)
@@ -155,4 +162,14 @@ describe("orchestrate tool", () => {
       ),
     30_000,
   )
+})
+
+describe("orchestrate log tail", () => {
+  test("keeps only the most recent lines", () => {
+    const logs: string[] = []
+    for (let index = 0; index < ORCHESTRATE_LOG_LIMIT + 5; index += 1) appendOrchestrateLog(logs, `line ${index}`)
+    expect(logs).toHaveLength(ORCHESTRATE_LOG_LIMIT)
+    expect(logs[0]).toBe("line 5")
+    expect(logs.at(-1)).toBe(`line ${ORCHESTRATE_LOG_LIMIT + 4}`)
+  })
 })
