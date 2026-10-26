@@ -105,24 +105,48 @@ function wrapSSE(res: Response, ms: number, ctl: AbortController) {
   })
 }
 
-// W6 (responses-wire): relays may emit the non-standard reasoning event names
-// "response.reasoning_text.delta"/".done". @ai-sdk/openai has no mapping for
-// them — they hit the unknown_chunk schema fallback and are silently dropped
-// (3.0.88 dist/index.js:4283-4287). The SDK does decode
+// W6 (responses-wire): relays may emit the standard OpenAI Responses
+// "response.reasoning_text.delta"/".done" events. @ai-sdk/openai 3.0.88 has
+// no mapping for them — they hit the unknown_chunk schema fallback and are
+// silently dropped (3.0.88 dist/index.js:4283-4287). The SDK does decode
 // "response.reasoning_summary_text.delta" (3.0.88 dist/index.js:4258-4263,
 // 6734-6744), so the delta rename surfaces relay reasoning text as reasoning
 // parts; the ".done" rename keeps the frame inside the known event family and
-// it is then safely ignored like any unknown chunk. Rewriting is strictly
-// string-level per complete SSE frame — frames are never JSON-parsed, so
-// malformed relay frames pass through untouched (F11).
+// it is then safely ignored like any unknown chunk. The summary event schema
+// requires "summary_index", which the standard reasoning_text payload does not
+// carry, so a valid JSON payload without it gets summary_index copied from
+// content_index (or 0). Malformed frames fall back to the string rename and
+// pass through without throwing (F11).
 const RELAY_REASONING_EVENT_REWRITES: ReadonlyArray<readonly [string, string]> = [
   ["response.reasoning_text.delta", "response.reasoning_summary_text.delta"],
   ["response.reasoning_text.done", "response.reasoning_summary_text.done"],
 ]
 
+function injectReasoningSummaryIndex(frame: string) {
+  const lines = frame.split("\n")
+  let changed = false
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (!line.startsWith("data:")) continue
+    const raw = line.slice(5).trimStart()
+    if (!raw.includes('"response.reasoning_text.')) continue
+    try {
+      const payload = JSON.parse(raw)
+      if (typeof payload !== "object" || payload === null) continue
+      if (payload.summary_index !== undefined) continue
+      payload.summary_index = typeof payload.content_index === "number" ? payload.content_index : 0
+      lines[i] = "data: " + JSON.stringify(payload)
+      changed = true
+    } catch {
+      // Malformed relay frame: keep the original data payload; string rename still applies.
+    }
+  }
+  return changed ? lines.join("\n") : frame
+}
+
 function rewriteRelayReasoningFrame(frame: string) {
   if (!frame.includes("response.reasoning_text.")) return frame
-  let rewritten = frame
+  let rewritten = injectReasoningSummaryIndex(frame)
   for (const [from, to] of RELAY_REASONING_EVENT_REWRITES) {
     rewritten = rewritten.replaceAll(from, to)
   }

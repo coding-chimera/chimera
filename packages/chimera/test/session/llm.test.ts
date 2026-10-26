@@ -2522,10 +2522,10 @@ describe("session.llm.stream", () => {
     expect(tools.some((item) => item.type === "web_search")).toBe(false)
   })
 
-  // W6 (responses-wire): relays emit the non-standard reasoning event names
-  // "response.reasoning_text.delta"/".done"; the fetch wrapper renames them to
-  // the SDK-known "response.reasoning_summary_text.*" family (3.0.88
-  // dist/index.js:4258-4263/6734-6744) so reasoning parts carry text.
+  // W6 (responses-wire): relays emit the standard "response.reasoning_text.delta"/".done"
+  // events, which @ai-sdk/openai 3.0.88 does not map; the fetch wrapper injects
+  // summary_index and renames them to the SDK-known "response.reasoning_summary_text.*"
+  // family (3.0.88 dist/index.js:4258-4263/6734-6744) so reasoning parts carry text.
   test("surfaces relay reasoning_text events as reasoning deltas on responses wire", async () => {
     const server = state.server
     if (!server) throw new Error("Server not initialized")
@@ -2549,9 +2549,9 @@ describe("session.llm.stream", () => {
             output_index: 0,
             item: { id: "rs_relay", type: "reasoning", summary: [] },
           },
-          { type: "response.reasoning_text.delta", item_id: "rs_relay", summary_index: 0, delta: "Because " },
-          { type: "response.reasoning_text.delta", item_id: "rs_relay", summary_index: 0, delta: "42" },
-          { type: "response.reasoning_text.done", item_id: "rs_relay", summary_index: 0 },
+          { type: "response.reasoning_text.delta", item_id: "rs_relay", content_index: 0, delta: "Because " },
+          { type: "response.reasoning_text.delta", item_id: "rs_relay", content_index: 0, delta: "42" },
+          { type: "response.reasoning_text.done", item_id: "rs_relay", content_index: 0 },
           {
             type: "response.output_item.done",
             output_index: 0,
