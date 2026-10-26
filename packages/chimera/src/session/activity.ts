@@ -1,8 +1,17 @@
 import { BackgroundJob } from "@/agent/background-job"
+import { Bus } from "@/bus"
 import { SessionID } from "@/contracts/session-ids"
 import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
-import { Context, Effect, Layer, Option, Schedule, Stream } from "effect"
+import { Context, Deferred, Effect, Layer, Option, Queue, Stream } from "effect"
+
+/**
+ * Upper bound on how long a quiescence wait can miss a wake-up signal. The
+ * wait is event-driven (SessionStatus transitions + job settle/delivery
+ * deferreds); this timer only bounds residual gaps, so it is deliberately
+ * slow — the old 50ms poll re-read the whole family and job registry per tick.
+ */
+const FALLBACK_QUIESCENCE_INTERVAL = "2 seconds"
 
 /**
  * SessionActivity — the single authority for "is this session's family still
@@ -21,7 +30,7 @@ export interface Interface {
   readonly ownedActiveJobs: (sessionID: SessionID) => Effect.Effect<BackgroundJob.Info[]>
   /** True while any family member is non-idle or the family owns an active job. */
   readonly isActive: (sessionID: SessionID) => Effect.Effect<boolean>
-  /** Resolves once isActive reads false; polls on a short cadence so it always resolves. */
+  /** Resolves once isActive reads false; event-driven with a low-frequency fallback timer. */
   readonly waitQuiescent: (sessionID: SessionID) => Effect.Effect<void>
 }
 
@@ -32,6 +41,7 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const status = yield* SessionStatus.Service
     const sessions = yield* Session.Service
+    const bus = yield* Bus.Service
     // Same optional treatment as SessionPrompt: compositions without the job
     // engine degrade to status-only family liveness (ownedActiveJobs -> []).
     const background = yield* Effect.serviceOption(BackgroundJob.Service)
@@ -45,7 +55,8 @@ export const layer = Layer.effect(
         const current = pending.shift()!
         if (family.has(current)) continue
         family.add(current)
-        // Id-only projection (B4 bounded reads): the 50ms isActive poll used
+        // Id-only projection (B4 bounded reads): the liveness checks used to
+        // run children() — a full-row SELECT parsing every json column
         // to run children() — a full-row SELECT parsing every json column
         // (summary_diffs, revert, ...) per child — while only .id is read.
         // Falls back to children() for partial Session.Service mocks that
@@ -81,6 +92,13 @@ export const layer = Layer.effect(
       return yield* activeJobsIn(yield* familyIDs(sessionID))
     })
 
+    const anyMemberBusy = Effect.fnUntraced(function* (family: ReadonlySet<string>) {
+      for (const member of family) {
+        if ((yield* status.get(SessionID.make(member))).type !== "idle") return true
+      }
+      return false
+    })
+
     // Single authoritative predicate: family has work in flight (a member's
     // turn running/retrying/busy, or a running∨delivery-pending job the family
     // owns) = active. Cross-process or crashed jobs are invisible to this
@@ -89,21 +107,46 @@ export const layer = Layer.effect(
     const isActive = Effect.fn("SessionActivity.isActive")(function* (sessionID: SessionID) {
       const family = yield* familyIDs(sessionID)
       if ((yield* activeJobsIn(family)).length > 0) return true
-      for (const member of family) {
-        if ((yield* status.get(SessionID.make(member))).type !== "idle") return true
-      }
-      return false
+      return yield* anyMemberBusy(family)
     })
 
     const waitQuiescent = Effect.fn("SessionActivity.waitQuiescent")(function* (sessionID: SessionID) {
-      // Polls instead of only subscribing to the status bus: a transition
-      // landing between a read and a later subscription would hang the waiter
-      // forever, and quiescence waits must always resolve. With no job engine
-      // in the context this degrades to watching family statuses only.
-      yield* Stream.fromEffectSchedule(isActive(sessionID), Schedule.spaced("50 millis")).pipe(
-        Stream.dropWhile((active) => active),
-        Stream.take(1),
-        Stream.runDrain,
+      // Event-driven instead of a 50ms family poll: one persistent subscription
+      // to family SessionStatus transitions feeds a capacity-1 queue, so a
+      // transition that lands between two iterations is never lost, and each
+      // iteration awaits the first of: a queued status transition, the
+      // BackgroundJob settle/delivery deferreds of the family's active jobs, or
+      // the fallback timer. The timer bounds any residual gap (a dropped event,
+      // a family that gains a member without a status event) so a quiescence
+      // wait always resolves. With no job engine in the context this degrades
+      // to status watching only.
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const wake = yield* Queue.sliding<void>(1)
+          // Updated every iteration; the filter reads it at publish time so a
+          // family that gains members mid-wait is covered without re-subscribing.
+          let family: ReadonlySet<string> = new Set<string>()
+          // Subscribe BEFORE the first liveness read: a transition landing
+          // between the read and the wait must not be missed.
+          yield* bus.subscribe(SessionStatus.Event.Status).pipe(
+            Stream.filter((event) => family.has(event.properties.sessionID)),
+            Stream.runForEach(() => Queue.offer(wake, undefined)),
+            Effect.forkScoped({ startImmediately: true }),
+          )
+          for (;;) {
+            family = yield* familyIDs(sessionID)
+            const jobs = yield* activeJobsIn(family)
+            if (jobs.length === 0 && !(yield* anyMemberBusy(family))) return
+            const engine = Option.getOrUndefined(background)
+            const owners = new Set(jobs.flatMap((job) => (job.ownerSessionId ? [job.ownerSessionId] : [])))
+            const jobWaits = engine ? Array.from(owners).map((owner) => engine.waitOwnerQuiescent(owner)) : []
+            yield* Effect.raceAll([
+              Queue.take(wake).pipe(Effect.asVoid),
+              ...jobWaits,
+              Effect.sleep(FALLBACK_QUIESCENCE_INTERVAL),
+            ])
+          }
+        }),
       )
     })
 
@@ -118,7 +161,9 @@ export const layer = Layer.effect(
 // plus the ambient per-directory InstanceState registry keep every composition
 // on the same live engine.
 export const defaultLayer = layer.pipe(
-  Layer.provide(Layer.mergeAll(SessionStatus.defaultLayer, Session.defaultLayer, BackgroundJob.defaultLayer)),
+  Layer.provide(
+    Layer.mergeAll(SessionStatus.defaultLayer, Session.defaultLayer, BackgroundJob.defaultLayer, Bus.layer),
+  ),
 )
 
 export * as SessionActivity from "./activity"

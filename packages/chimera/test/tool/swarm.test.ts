@@ -347,6 +347,50 @@ describe("tool.chimera_swarm", () => {
     }),
   )
 
+  // (Phase 4) Metadata publishing used to write the full childRuns/childSessions
+  // snapshot on every worker transition: 16 workers × 2 transitions = 32 DB
+  // writes, each serializing an O(N) payload (O(N²) bytes). Coalescing keeps the
+  // write count bounded independently of the transition count.
+  it.instance("coalesces metadata publishes instead of writing one per worker transition", () =>
+    Effect.gen(function* () {
+      const parent = yield* seed()
+      const tool = yield* ChimeraSwarmTool
+      const def = yield* tool.init()
+      const publishes: Array<{ metadata?: Record<string, unknown> }> = []
+      const items = Array.from({ length: 16 }, (_, index) => `item-${index + 1}`)
+
+      const result = yield* def.execute(
+        {
+          prompt_template: "Review {{item}}",
+          items,
+          subagent_type: "general",
+          description: "fanout",
+          concurrency: 16,
+        },
+        {
+          ...ctx(parent, stubOps()),
+          metadata: (input) =>
+            Effect.sync(() => {
+              publishes.push(input)
+            }),
+        },
+      )
+
+      const transitions = items.length * 2
+      // 4 publishes for 32 transitions: the initial queued snapshot, the first
+      // running snapshot, the first completed snapshot, and the final flush.
+      expect(publishes.length).toBeLessThanOrEqual(items.length / 2)
+      // Progressive observability is preserved: the first publish is the queued
+      // snapshot and the last one is the terminal snapshot.
+      expect((publishes[0]?.metadata?.childRuns as Array<{ status: string }>).map((run) => run.status)).toEqual(
+        items.map(() => "queued"),
+      )
+      const lastRuns = publishes.at(-1)?.metadata?.childRuns as Array<{ status: string }>
+      expect(lastRuns.map((run) => run.status)).toEqual(items.map(() => "completed"))
+      expect(result.metadata.successCount).toBe(items.length)
+    }),
+  )
+
   it.instance("isolates failed children and publishes final child run states", () =>
     Effect.gen(function* () {
       const parent = yield* seed()

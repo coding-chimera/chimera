@@ -1,5 +1,5 @@
 export * as BackgroundJob from "./background-job"
-import { Cause, Clock, Context, Deferred, Effect, Exit, Fiber, Layer, Scope, Schema, SynchronizedRef } from "effect"
+import { Cause, Clock, Context, Deferred, Effect, Exit, Fiber, Layer, Ref, Scope, Schema, SynchronizedRef } from "effect"
 import { and, desc, eq } from "drizzle-orm"
 import * as Log from "@opencode-ai/core/util/log"
 import { Config } from "@/config/config"
@@ -62,6 +62,8 @@ type Active = {
 type State = {
   jobs: SynchronizedRef.SynchronizedRef<Map<string, Active>>
   scope: Scope.Scope
+  /** Ids this registry knows to have a durable row (seeded at open, extended by write-through). */
+  durableIDs: Ref.Ref<ReadonlySet<string>>
 }
 
 type FinishResult = {
@@ -328,13 +330,19 @@ export const make = (config: Config.Interface, directory?: string, options?: { s
     const limit = cfg.delegation?.background_concurrent ?? ConfigDelegation.DEFAULT_BACKGROUND_CONCURRENT
     const settledLiveMax = Math.max(1, Math.floor(options?.settledLiveMax ?? DEFAULT_SETTLED_LIVE_MAX))
 
+  // (Phase 4) Ids known to have a durable row. Seeded from the open-time read
+  // and extended by every write-through, so list() can tell whether the live
+  // map already covers the whole durable set without re-reading the table.
+  const durableIDs = yield* Ref.make<ReadonlySet<string>>(new Set<string>())
   if (directory !== undefined) {
     // Open-time reconciliation: `running` rows were persisted by a process
     // whose fibers are gone; rewrite them to an interrupted terminal state so
     // durable readers never see a phantom running job. Rows for jobs this
     // process will (re)start get overwritten by start()'s write-through.
     const reconciledAt = yield* Clock.currentTimeMillis
-    for (const info of readDurableJobs(directory)) {
+    const opened = readDurableJobs(directory)
+    yield* Ref.set(durableIDs, new Set(opened.map((info) => info.id)))
+    for (const info of opened) {
       if (info.status !== "running") continue
       persistJobInfo(directory, {
         ...info,
@@ -349,7 +357,15 @@ export const make = (config: Config.Interface, directory?: string, options?: { s
   const state: State = {
     jobs: yield* SynchronizedRef.make(new Map<string, Active>()),
     scope: yield* Scope.Scope,
+    durableIDs,
   }
+
+  /** Write-through persistence that also records the id for list()'s coverage check. */
+  const persist = Effect.fnUntraced(function* (info: Info) {
+    if (directory === undefined) return
+    yield* Effect.sync(() => persistJobInfo(directory, info))
+    yield* Ref.update(durableIDs, (ids) => (ids.has(info.id) ? ids : new Set(ids).add(info.id)))
+  })
 
   const settle = Effect.fn("BackgroundJob.settle")(function* (
     id: string,
@@ -403,7 +419,7 @@ export const make = (config: Config.Interface, directory?: string, options?: { s
     })
     if (result.info && result.done) {
       yield* Deferred.succeed(result.done, result.info).pipe(Effect.ignore)
-      if (directory !== undefined) yield* Effect.sync(() => persistJobInfo(directory, result.info!))
+      yield* persist(result.info)
     }
     if (result.onInterrupt) yield* result.onInterrupt.pipe(Effect.ignore)
     if (result.scope) {
@@ -443,7 +459,15 @@ export const make = (config: Config.Interface, directory?: string, options?: { s
     // (R1 A3) Merge durable rows the live map no longer holds (pre-restart or
     // settled-evicted); live entries win over their own durable snapshot.
     const liveIDs = new Set(live.map((info) => info.id))
-    const durable = readDurableJobs(directory).filter((info) => !liveIDs.has(info.id))
+    // (Phase 4) The durable table is the fallback, not the source of truth: when
+    // the live map already covers every durable id this registry knows about
+    // (each one written through by persist()), a full-table SELECT + per-row
+    // JSON.parse would only re-read rows we already hold.
+    const known = yield* Ref.get(durableIDs)
+    if (Array.from(known).every((id) => liveIDs.has(id))) return live.toSorted((a, b) => a.started_at - b.started_at)
+    const durableRows = readDurableJobs(directory)
+    yield* Ref.set(durableIDs, new Set(durableRows.map((info) => info.id)))
+    const durable = durableRows.filter((info) => !liveIDs.has(info.id))
     return [...live, ...durable].toSorted((a, b) => a.started_at - b.started_at)
   })
 
@@ -451,7 +475,11 @@ export const make = (config: Config.Interface, directory?: string, options?: { s
     const job = (yield* SynchronizedRef.get(state.jobs)).get(id)
     if (job) return snapshot(job)
     if (directory === undefined) return
-    return readDurableJob(directory, id)
+    const durable = readDurableJob(directory, id)
+    // Remember ids discovered through the durable fallback so a later list()
+    // keeps reading the table until the live map actually covers them.
+    if (durable) yield* Ref.update(durableIDs, (ids) => (ids.has(id) ? ids : new Set(ids).add(id)))
+    return durable
   })
 
   const start: Interface["start"] = Effect.fn("BackgroundJob.start")(function* (input: StartInput) {
@@ -529,7 +557,7 @@ export const make = (config: Config.Interface, directory?: string, options?: { s
             restore(input.run).pipe(Effect.ensuring(Deferred.succeed(tail, undefined))),
           )
           yield* attachFiber(input.id, result.token, fiber)
-          if (directory !== undefined) yield* Effect.sync(() => persistJobInfo(directory, result.info))
+          yield* persist(result.info)
 }
         return result.info
       }),
@@ -581,7 +609,7 @@ export const make = (config: Config.Interface, directory?: string, options?: { s
     )
     if (result.deferred) yield* Deferred.succeed(result.deferred, undefined).pipe(Effect.ignore)
     if (result.info) {
-      if (directory !== undefined) yield* Effect.sync(() => persistJobInfo(directory, result.info!))
+      yield* persist(result.info)
       yield* evictSettled()
     }
   })
@@ -692,7 +720,7 @@ export const make = (config: Config.Interface, directory?: string, options?: { s
     })
     if (result.info && result.done) {
       yield* Deferred.succeed(result.done, result.info).pipe(Effect.ignore)
-      if (directory !== undefined) yield* Effect.sync(() => persistJobInfo(directory, result.info!))
+      yield* persist(result.info)
     }
     if (result.onInterrupt) yield* result.onInterrupt.pipe(Effect.ignore)
     if (result.scope) yield* Scope.close(result.scope, Exit.void)
@@ -742,7 +770,7 @@ export const make = (config: Config.Interface, directory?: string, options?: { s
             )
             if (result.info && result.done) {
               yield* Deferred.succeed(result.done, result.info).pipe(Effect.ignore)
-              if (directory !== undefined) yield* Effect.sync(() => persistJobInfo(directory, result.info!))
+              yield* persist(result.info)
             }
             if (result.onInterrupt) yield* result.onInterrupt.pipe(Effect.ignoreCause({ log: true }))
           }),
@@ -798,7 +826,7 @@ export const make = (config: Config.Interface, directory?: string, options?: { s
       }),
     )
     if (result.info && result.promoted) yield* Deferred.succeed(result.promoted, result.info).pipe(Effect.ignore)
-    if (result.info && directory !== undefined) yield* Effect.sync(() => persistJobInfo(directory, result.info!))
+    if (result.info) yield* persist(result.info)
     if (result.onPromote) yield* result.onPromote.pipe(Effect.ignore)
     return result.info
   })

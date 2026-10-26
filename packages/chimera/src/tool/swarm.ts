@@ -16,7 +16,7 @@ import { readOracleResults, readPersistentObligationStore, type OracleRecord, ty
 import { Session } from "@/session/session"
 import { SessionID } from "@/contracts/session-ids"
 import path from "path"
-import { Cause, Effect, Option, Schema, Scope, Semaphore } from "effect"
+import { Cause, Clock, Effect, Fiber, Option, Ref, Schema, Scope, Semaphore } from "effect"
 import * as Truncate from "./truncate"
 
 const id = "chimera_swarm"
@@ -164,6 +164,16 @@ type SwarmChildRun = {
   summary?: SwarmSummary
   error?: string
 }
+
+/** Throttled tool-part metadata publishing (Phase 4 scale fix). */
+type PublishState = {
+  dirty: boolean
+  scheduled: boolean
+  lastPublishedAt: number
+  /** Child-run statuses the tool part has already shown; a new one publishes immediately. */
+  statuses: ReadonlySet<string>
+}
+type PublishDecision = "now" | "scheduled" | "coalesced"
 
 const RETURN_CONTRACT = [
   "Return a concise structured report with these labels:",
@@ -653,23 +663,84 @@ export const ChimeraSwarmTool = Tool.define(
               ]
             : [],
         )
-      const publishMetadata = () =>
-        ctx.metadata({
+      // (Phase 4) Progressive observability without O(N²) write amplification.
+      // Every child-run transition used to serialize the full childRuns/
+      // childSessions snapshot into the tool part, so N workers × transitions
+      // cost O(N²) bytes and DB writes. Transitions now coalesce into one
+      // publish per window; a status phase the part has never shown yet
+      // (queued → running → completed → cancelled) still publishes immediately
+      // so the progressive-observability contract holds, a trailing timer
+      // flushes coalesced transitions, and the run's final flush pins the
+      // terminal snapshot before the tool part settles.
+      const METADATA_PUBLISH_INTERVAL_MS = 250
+      const publishState = yield* Ref.make<PublishState>({
+        dirty: false,
+        scheduled: false,
+        lastPublishedAt: 0,
+        statuses: new Set<string>(),
+      })
+      const publishTimer = yield* Ref.make<Fiber.Fiber<void> | undefined>(undefined)
+      const publishSnapshot = Effect.fnUntraced(function* () {
+        const publishedAt = yield* Clock.currentTimeMillis
+        const runs = childRunList()
+        // Clear the pending flag BEFORE the write: a transition that lands while
+        // ctx.metadata is in flight re-marks dirty and schedules its own flush,
+        // so no update can be swallowed by this publish.
+        yield* Ref.set(publishState, {
+          dirty: false,
+          scheduled: false,
+          lastPublishedAt: publishedAt,
+          statuses: new Set(runs.map((run) => run.status)),
+        })
+        yield* ctx.metadata({
           title,
           metadata: {
             ...baseMetadata,
-            childRuns: childRunList(),
+            childRuns: runs,
             childSessions: childSessionList(),
           },
         })
+      })
+      const flushPendingPublish = Effect.fnUntraced(function* () {
+        const dirty = yield* Ref.modify(publishState, (state) => [
+          state.dirty,
+          { ...state, dirty: false, scheduled: false },
+        ])
+        if (dirty) yield* publishSnapshot()
+      })
+      const requestPublish = Effect.fnUntraced(function* (status: string) {
+        const now = yield* Clock.currentTimeMillis
+        const decision = yield* Ref.modify(publishState, (state): readonly [PublishDecision, PublishState] => {
+          if (!state.statuses.has(status) || now - state.lastPublishedAt >= METADATA_PUBLISH_INTERVAL_MS)
+            return ["now", state]
+          if (state.scheduled) return ["coalesced", { ...state, dirty: true }]
+          return ["scheduled", { ...state, dirty: true, scheduled: true }]
+        })
+        if (decision === "coalesced") return
+        if (decision === "now") return yield* publishSnapshot()
+        const fiber = yield* Effect.sleep(`${METADATA_PUBLISH_INTERVAL_MS} millis`).pipe(
+          Effect.andThen(flushPendingPublish()),
+          Effect.forkIn(scope, { startImmediately: true }),
+        )
+        yield* Ref.set(publishTimer, fiber)
+      })
+      // Forced publish of the latest snapshot: run start, cancellation, and the
+      // final result. A still-pending trailing timer is interrupted first so it
+      // cannot publish a stale snapshot after the tool part settles.
+      const flushPublish = Effect.fnUntraced(function* () {
+        const timer = yield* Ref.getAndSet(publishTimer, undefined)
+        if (timer) yield* Fiber.interrupt(timer).pipe(Effect.ignore)
+        yield* publishSnapshot()
+      })
       const updateChildRun = Effect.fn("ChimeraSwarmTool.updateChildRun")(function* (
         index: number,
         update: Partial<SwarmChildRun>,
       ) {
         const current = childRuns.get(index)
         if (!current) return
-        childRuns.set(index, { ...current, ...update })
-        yield* publishMetadata()
+        const next = { ...current, ...update }
+        childRuns.set(index, next)
+        yield* requestPublish(next.status)
       })
       // Metadata-free mutation used by the background path: after the tool part
       // reaches its terminal state ctx.metadata is silently dropped, so the
@@ -686,7 +757,7 @@ export const ChimeraSwarmTool = Tool.define(
           childRuns.set(index, { ...run, status: "cancelled" })
           metadataChanged = true
         })
-        if (metadataChanged) yield* publishMetadata()
+        if (metadataChanged) yield* flushPublish()
         // (F4-P2) Engine-backed workers are cancelled through their durable job handles:
         // jobs.cancel fires the job's onInterrupt hook (which cancels the bound child
         // session exactly once) and interrupts the run fiber. Calling promptOps.cancel
@@ -702,7 +773,7 @@ export const ChimeraSwarmTool = Tool.define(
         )
       })
 
-      yield* publishMetadata()
+      yield* flushPublish()
       let activityRecorded = false
 
       // (F4-P2) Swarm workers ride the background-job engine as foreground jobs so their
@@ -1090,6 +1161,10 @@ export const ChimeraSwarmTool = Tool.define(
         })),
         note: "Each child result was saved to its own file. Use Read with the outputFile path to view the full output.",
       }
+
+      // Final flush: pin the terminal childRuns snapshot before the tool part
+      // settles, and interrupt any pending trailing timer.
+      yield* flushPublish()
 
       return {
         title,

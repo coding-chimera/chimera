@@ -7,10 +7,11 @@
  * so a "process restart" is simulated by opening a second registry on the same
  * key — no instance machinery required.
  */
-import { describe, expect } from "bun:test"
+import { describe, expect, spyOn } from "bun:test"
 import { Deferred, Effect, Fiber, Layer } from "effect"
 import { BackgroundJob } from "../../src/agent/background-job"
 import { Config } from "../../src/config/config"
+import * as Database from "../../src/storage/db"
 import { testEffect } from "../lib/effect"
 
 const it = testEffect(Config.defaultLayer)
@@ -142,6 +143,41 @@ describe("agent.background-job durable registry (R1 A3)", () => {
       const evicted = yield* jobs.get("ses_a3_durable_0")
       expect(evicted?.status).toBe("completed")
       expect(evicted?.output).toBe("out-0")
+    }),
+  )
+  // (Phase 4) list() used to run a full-table SELECT + per-row JSON.parse on
+  // every call whenever a directory was bound, even when the live map already
+  // held every durable row. The durable table is only a fallback for ids the
+  // live map lost (restart, settled-eviction).
+  it.instance("list() skips the durable read while the live map covers every durable id", () =>
+    Effect.gen(function* () {
+      const config = yield* Config.Service
+      const dir = testDirectory("list-live")
+      const jobs = yield* BackgroundJob.make(config, dir)
+      yield* jobs.start({ id: "ses_a4_list_live", title: "probe", run: Effect.succeed("payload") })
+      yield* jobs.wait({ id: "ses_a4_list_live" })
+      yield* jobs.markDelivered("ses_a4_list_live")
+
+      const use = spyOn(Database, "use")
+      try {
+        const list = yield* jobs.list()
+        expect(list.map((job) => job.id)).toEqual(["ses_a4_list_live"])
+        expect(use).not.toHaveBeenCalled()
+      } finally {
+        use.mockRestore()
+      }
+
+      // Control: a registry that does not hold the durable id in its live map
+      // still reads the table (restart/eviction fallback stays intact).
+      const second = yield* BackgroundJob.make(config, dir)
+      const fallbackUse = spyOn(Database, "use")
+      try {
+        const recovered = yield* second.list()
+        expect(recovered.map((job) => job.id)).toEqual(["ses_a4_list_live"])
+        expect(fallbackUse).toHaveBeenCalled()
+      } finally {
+        fallbackUse.mockRestore()
+      }
     }),
   )
 })
