@@ -3355,10 +3355,12 @@ describe("session.llm effort byte-identity", () => {
 })
 describe("session.llm.resolveToolChoice", () => {
   // alibailian relays reject tool_choice "required" with more than one tool
-  // ("Please set one tool in required mode"), so structured output names the
-  // StructuredOutput tool instead. Everything else keeps the legacy shape.
-  function model(backend_semantics?: "openai" | "codex" | "alibailian") {
-    return { providerID: ProviderID.make("relay"), id: ModelID.make("relay-model"), backend_semantics } as any
+  // ("Please set one tool in required mode"). The responses wire still names
+  // the injected StructuredOutput tool; chat + alibailian takes the native
+  // response_format path and sends no tool_choice at all. Everything else
+  // keeps the legacy shape.
+  function model(backend_semantics?: "openai" | "codex" | "alibailian", wire_api?: "chat" | "responses") {
+    return { providerID: ProviderID.make("relay"), id: ModelID.make("relay-model"), backend_semantics, wire_api } as any
   }
   const tools = { StructuredOutput: {}, read: {}, bash: {} }
   const run = (input: {
@@ -3382,12 +3384,15 @@ describe("session.llm.resolveToolChoice", () => {
     }
   })
 
-  test("json_schema format downgrades on alibailian and keeps required elsewhere", () => {
-    expect(LLM.toolChoiceForFormat({ type: "json_schema" }, model("alibailian"), tools)).toEqual({
+  test("json_schema format: native response_format on chat + alibailian, required elsewhere", () => {
+    expect(LLM.toolChoiceForFormat({ type: "json_schema" }, model("alibailian", "chat"), tools)).toBeUndefined()
+    expect(LLM.toolChoiceForFormat({ type: "json_schema" }, model("alibailian", "chat"), tools, "chat")).toBeUndefined()
+    expect(LLM.toolChoiceForFormat({ type: "json_schema" }, model("alibailian"), tools, "chat")).toBeUndefined()
+    expect(LLM.toolChoiceForFormat({ type: "json_schema" }, model("alibailian", "responses"), tools)).toEqual({
       type: "tool",
       toolName: "StructuredOutput",
     })
-    expect(LLM.toolChoiceForFormat({ type: "json_schema" }, model("openai"), tools)).toBe("required")
+    expect(LLM.toolChoiceForFormat({ type: "json_schema" }, model("openai", "chat"), tools)).toBe("required")
     expect(LLM.toolChoiceForFormat({ type: "json_schema" }, model(undefined), tools)).toBe("required")
   })
 
@@ -3424,6 +3429,37 @@ describe("session.llm.resolveToolChoice", () => {
     const result = run({ toolChoice: "required", backend: "alibailian", tools: { StructuredOutput: {} } })
     expect(result.ok).toBe(true)
     if (result.ok) expect(result.value).toBe("required")
+  })
+})
+
+describe("session.llm.resolveTools", () => {
+  test("restores the session-internal StructuredOutput tool after permission filtering", () => {
+    const tools = {
+      StructuredOutput: { description: "structured" },
+      read: { description: "read" },
+      bash: { description: "bash" },
+    }
+    const filtered = LLM.resolveTools({
+      tools: tools as any,
+      // explore-style ruleset: deny everything, allow one read tool.
+      agent: {
+        permission: [
+          { permission: "*", pattern: "*", action: "deny" },
+          { permission: "read", pattern: "*", action: "allow" },
+        ],
+      } as any,
+      user: {} as any,
+    })
+    expect(Object.keys(filtered).sort()).toEqual(["StructuredOutput", "read"])
+  })
+
+  test("does not invent StructuredOutput when the caller did not inject it", () => {
+    const filtered = LLM.resolveTools({
+      tools: { read: { description: "read" } } as any,
+      agent: { permission: [{ permission: "read", pattern: "*", action: "allow" }] } as any,
+      user: {} as any,
+    })
+    expect(Object.keys(filtered)).toEqual(["read"])
   })
 })
 

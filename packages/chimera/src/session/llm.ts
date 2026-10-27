@@ -2,7 +2,7 @@ import { Provider } from "@/provider/provider"
 import * as Log from "@opencode-ai/core/util/log"
 import { Context, Effect, Layer, Record } from "effect"
 import * as Stream from "effect/Stream"
-import { streamText, wrapLanguageModel, NoSuchToolError, type ModelMessage, type Tool, tool, jsonSchema } from "ai"
+import { streamText, wrapLanguageModel, NoSuchToolError, Output, type JSONSchema7, type ModelMessage, type Tool, tool, jsonSchema } from "ai"
 import { openai } from "@ai-sdk/openai"
 import { mergeDeep } from "remeda"
 import { GitLabWorkflowLanguageModel } from "gitlab-ai-provider"
@@ -47,9 +47,10 @@ const mergeOptions = (target: Record<string, any>, source: Record<string, any> |
 
 // alibailian relays (Model Studio endpoints and relays) 400 on
 // tool_choice "required" whenever the request carries more than one tool
-// ("Please set one tool in required mode"). Structured output is the only
-// producer of "required", so widen it to a named-tool choice on the injected
-// StructuredOutput tool: identical intent, single-tool wire shape.
+// ("Please set one tool in required mode"). Structured output on the
+// responses wire still names the injected StructuredOutput tool; the chat
+// wire no longer sends tool_choice at all (native response_format path).
+// This guard is a defensive backstop for any other "required" caller.
 /** @internal Exported for testing */
 export function resolveToolChoice(
   input: {
@@ -68,6 +69,18 @@ export function resolveToolChoice(
   )
 }
 
+// Native chat-completions structured output: the AI SDK maps `output` to
+// `response_format`, validates the final text against the schema, and exposes
+// the parsed object on the stream result. The chat wire + alibailian branch
+// therefore sends no synthetic tool and no tool_choice.
+/** @internal Exported for testing */
+export function nativeStructuredOutputWire(
+  model: Pick<Provider.Model, "backend_semantics" | "wire_api">,
+  providerWireAPI?: Provider.Info["wire_api"],
+) {
+  return (model.wire_api ?? providerWireAPI) === "chat" && model.backend_semantics === "alibailian"
+}
+
 // The tool_choice a user-facing turn sends: structured output requires a tool
 // call, text turns leave the choice to the model. Kept next to
 // resolveToolChoice so the format gate and the alibailian downgrade share one
@@ -75,10 +88,14 @@ export function resolveToolChoice(
 /** @internal Exported for testing */
 export function toolChoiceForFormat(
   format: { type: string },
-  model: Pick<Provider.Model, "backend_semantics" | "providerID">,
+  model: Pick<Provider.Model, "backend_semantics" | "providerID" | "wire_api">,
   tools: Record<string, unknown>,
+  providerWireAPI?: Provider.Info["wire_api"],
 ): StreamInput["toolChoice"] {
   if (format.type !== "json_schema") return undefined
+  // chat + alibailian takes the native response_format path: no synthetic
+  // StructuredOutput tool exists, so there is nothing to name.
+  if (nativeStructuredOutputWire(model, providerWireAPI)) return undefined
   return resolveToolChoice({ toolChoice: "required", model }, tools)
 }
 
@@ -189,6 +206,17 @@ export type StreamInput = {
   abort?: AbortSignal
   retries?: number
   toolChoice?: "auto" | "required" | "none" | { type: "tool"; toolName: string }
+  // Native chat-completions structured output. Set only by SessionPrompt for
+  // the chat-wire + alibailian branch: the AI SDK maps it to `response_format`,
+  // parses the final text against the schema, and hands the validated object to
+  // onSuccess once the stream drains. The synthetic StructuredOutput tool path
+  // stays for the responses wire and every other provider.
+  structuredOutput?: {
+    schema: Record<string, unknown>
+    name?: string
+    description?: string
+    onSuccess: (output: unknown) => void
+  }
 }
 
 export type StreamRequest = Omit<StreamInput, "abort"> & {
@@ -640,6 +668,17 @@ const live: Layer.Layer<
       const opencodeProjectID = input.model.providerID.startsWith("opencode")
         ? (yield* InstanceState.context).project.id
         : undefined
+      // Native structured output (chat wire + alibailian, resolved by
+      // SessionPrompt): let the AI SDK own the response_format mapping, JSON
+      // parsing, and schema validation. Other providers keep the synthetic
+      // StructuredOutput tool and never set this field.
+      const structuredOutput = input.structuredOutput
+        ? Output.object({
+            schema: jsonSchema(input.structuredOutput.schema as JSONSchema7),
+            name: input.structuredOutput.name,
+            description: input.structuredOutput.description,
+          })
+        : undefined
 
       return streamText({
         // Copilot returns the authoritative billed amount only in provider-specific response fields.
@@ -731,6 +770,7 @@ const live: Layer.Layer<
         activeTools: Object.keys(tools).filter((x) => x !== "invalid"),
         tools,
         toolChoice,
+        output: structuredOutput,
         maxOutputTokens: params.maxOutputTokens,
         abortSignal: input.abort,
         headers: {
@@ -793,7 +833,22 @@ const live: Layer.Layer<
               abort: input.abort ? AbortSignal.any([input.abort, ctrl.signal]) : ctrl.signal,
             })
 
-            return Stream.fromAsyncIterable(result.fullStream, (e) => (e instanceof Error ? e : new Error(String(e))))
+            const events = Stream.fromAsyncIterable(result.fullStream, (e) =>
+              e instanceof Error ? e : new Error(String(e)),
+            )
+            const structuredOutput = input.structuredOutput
+            if (!structuredOutput) return events
+            // Deliver the SDK-validated object after the stream drains. A
+            // schema/JSON failure rejects here and leaves the callback unset, so
+            // SessionPrompt's existing StructuredOutputError path still governs
+            // retries (same semantics as a missing tool call on the responses
+            // wire).
+            return Stream.ensuring(
+              events,
+              Effect.tryPromise(async () => {
+                structuredOutput.onSuccess(await result.output)
+              }).pipe(Effect.catchCause(() => Effect.void)),
+            )
           }),
         ),
       )
@@ -814,7 +869,8 @@ export const defaultLayer = Layer.suspend(() =>
   ),
 )
 
-function resolveTools(input: Pick<StreamInput, "tools" | "agent" | "permission" | "user">) {
+/** @internal Exported for testing */
+export function resolveTools(input: Pick<StreamInput, "tools" | "agent" | "permission" | "user">) {
   const disabled = Permission.disabled(
     Object.keys(input.tools),
     Permission.merge(input.agent.permission, input.permission ?? []),
@@ -834,6 +890,14 @@ function resolveTools(input: Pick<StreamInput, "tools" | "agent" | "permission" 
     !filtered[ToolSearch.TOOL_SEARCH_ID]
   )
     filtered[ToolSearch.TOOL_SEARCH_ID] = input.tools[ToolSearch.TOOL_SEARCH_ID]
+  // StructuredOutput is injected by SessionPrompt after permission resolution:
+  // it is a session-internal control tool, not part of the user permission
+  // domain. A restricted agent (for example explore's "*": "deny" allowlist)
+  // would otherwise strip it from the wire while the caller already picked the
+  // named tool_choice for it, producing "no function named StructuredOutput" on
+  // the responses wire.
+  if (input.tools[STRUCTURED_OUTPUT_TOOL_NAME] && !filtered[STRUCTURED_OUTPUT_TOOL_NAME])
+    filtered[STRUCTURED_OUTPUT_TOOL_NAME] = input.tools[STRUCTURED_OUTPUT_TOOL_NAME]
   return filtered
 }
 

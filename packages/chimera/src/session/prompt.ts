@@ -3047,7 +3047,15 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               onPolicyViolation: (error) => toolAbort.abort(error),
             })
 
-            if (lastUser.format?.type === "json_schema") {
+            // chat wire + alibailian takes the native response_format path: no
+            // synthetic StructuredOutput tool, no tool_choice. Every other
+            // provider keeps the tool-call protocol below.
+            const providerInfo = yield* provider.getProvider(model.providerID)
+            const nativeStructuredOutput =
+              lastUser.format?.type === "json_schema" &&
+              LLM.nativeStructuredOutputWire(model, providerInfo?.wire_api)
+
+            if (lastUser.format?.type === "json_schema" && !nativeStructuredOutput) {
               tools[LLM.STRUCTURED_OUTPUT_TOOL_NAME] = createStructuredOutputTool({
                 schema: lastUser.format.schema,
                 onSuccess(output) {
@@ -3130,7 +3138,8 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               cutoffPending = false
             }
             const format = lastUser.format ?? { type: "text" as const }
-            if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
+            if (format.type === "json_schema" && !nativeStructuredOutput)
+              system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
             const extraModelMsgs = isLastStep ? [{ role: "assistant" as const, content: MAX_STEPS }] : []
             yield* bus.publish(
               PromptStats.Event.Updated,
@@ -3165,8 +3174,19 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               model,
               // alibailian relays reject tool_choice "required" when more than
               // one tool is present ("Please set one tool in required mode");
-              // toolChoiceForFormat names StructuredOutput there instead.
-              toolChoice: LLM.toolChoiceForFormat(format, model, tools),
+              // the responses-wire path names StructuredOutput there instead.
+              // chat + alibailian sends no tool_choice at all (native
+              // response_format).
+              toolChoice: LLM.toolChoiceForFormat(format, model, tools, providerInfo?.wire_api),
+              structuredOutput:
+                nativeStructuredOutput && lastUser.format?.type === "json_schema"
+                  ? {
+                      schema: lastUser.format.schema,
+                      onSuccess(output) {
+                        structured = output
+                      },
+                    }
+                  : undefined,
             })
 
             if (structured !== undefined) {

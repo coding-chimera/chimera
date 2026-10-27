@@ -3574,3 +3574,96 @@ it.live("command file references deduplicate against input.parts (regression for
     },
   )
 )
+
+// chat wire + alibailian structured output uses the native response_format
+// path: no synthetic StructuredOutput tool, no tool_choice, no tool-usage
+// system prompt. The SDK parses/validates the final text and SessionPrompt
+// records the object on the assistant message.
+function nativeStructuredOutputCfg(url: string) {
+  const base = providerCfg(url)
+  return {
+    ...base,
+    provider: {
+      ...base.provider,
+      test: {
+        ...base.provider.test,
+        wire_api: "chat" as const,
+        backend_semantics: "alibailian" as const,
+        models: {
+          "test-model": {
+            ...base.provider.test.models["test-model"],
+            wire_api: "chat" as const,
+            backend_semantics: "alibailian" as const,
+          },
+        },
+      },
+    },
+  }
+}
+
+const nativeSchema = {
+  type: "object",
+  properties: { answer: { type: "number" } },
+  required: ["answer"],
+  additionalProperties: false,
+}
+
+it.live("chat + alibailian json_schema uses native response_format and records the validated object", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      yield* llm.text('{"answer":4}')
+      const chat = yield* sessions.create({ title: "Native structured output" })
+
+      const result = yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        model: ref,
+        format: { type: "json_schema", schema: nativeSchema, retryCount: 0 },
+        parts: [{ type: "text", text: "What is 2 + 2?" }],
+      })
+
+      expect(result.info.role).toBe("assistant")
+      if (result.info.role !== "assistant") return
+      expect(result.info.structured).toEqual({ answer: 4 })
+      expect(result.info.error).toBeUndefined()
+
+      const inputs = yield* llm.inputs
+      const request = inputs.find((body) => !JSON.stringify(body).includes("Generate a title for this conversation"))
+      if (!request) throw new Error("structured-output request was not captured")
+      const tools = Array.isArray(request.tools) ? (request.tools as Array<Record<string, any>>) : []
+      expect(tools.some((entry) => entry?.function?.name === "StructuredOutput")).toBe(false)
+      expect(request.tool_choice).not.toBe("required")
+      expect(JSON.stringify(request.tool_choice)).not.toContain("StructuredOutput")
+      expect(request.response_format).toBeDefined()
+      expect(JSON.stringify(request)).not.toContain("You MUST use the StructuredOutput tool")
+    }),
+    { config: nativeStructuredOutputCfg },
+  ),
+)
+
+it.live("chat + alibailian json_schema maps an invalid payload to StructuredOutputError", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      yield* llm.text("this is not json")
+      const chat = yield* sessions.create({ title: "Native structured output failure" })
+
+      const result = yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        model: ref,
+        format: { type: "json_schema", schema: nativeSchema, retryCount: 0 },
+        parts: [{ type: "text", text: "What is 2 + 2?" }],
+      })
+
+      expect(result.info.role).toBe("assistant")
+      if (result.info.role !== "assistant") return
+      expect(result.info.structured).toBeUndefined()
+      expect(result.info.error?.name).toBe("StructuredOutputError")
+    }),
+    { config: nativeStructuredOutputCfg },
+  ),
+)
