@@ -2864,6 +2864,69 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       return resolution.replay.mode === "encoded" ? ("encoded" as const) : ("text" as const)
     })
 
+    // Native structured-output closeout. A turn can end at the loop-top exit
+    // (normal end of turn), which never reaches the per-step extraction branch
+    // inside the loop. This single post-loop hook re-reads the persisted turn
+    // and, for the native chat+alibailian path only, runs one tool-free
+    // extraction request so a json_schema turn always ends with structured
+    // output or a StructuredOutputError. Non-native providers keep their
+    // synthetic-tool behavior untouched.
+    const finalizeNativeStructuredOutput = Effect.fnUntraced(function* (input: {
+      sessionID: SessionID
+      session: Session.Info
+    }) {
+      const msgs = yield* MessageV2.filterCompactedEffect(input.sessionID)
+      const { lastUser, lastAssistant } = inspectLoopMessages(msgs)
+      if (lastUser?.format?.type !== "json_schema") return
+      if (!lastAssistant || lastAssistant.role !== "assistant") return
+      if (lastAssistant.structured !== undefined || lastAssistant.error) return
+      if (!lastAssistant.finish || ["tool-calls", "unknown"].includes(lastAssistant.finish)) return
+      const model = yield* getModel(lastUser.model.providerID, lastUser.model.modelID, input.sessionID)
+      const providerInfo = yield* provider.getProvider(model.providerID)
+      if (!LLM.nativeStructuredOutputWire(model, providerInfo?.wire_api)) return
+      const agent = yield* agents.get(lastUser.agent)
+      const remoteCompaction = yield* remoteCompactionReplay(input.sessionID, model)
+      const modelMsgs = yield* MessageV2.toModelMessagesEffect(msgs, model, { remoteCompaction })
+      let structured: unknown
+      yield* llm
+        .stream({
+          user: lastUser,
+          agent,
+          permission: input.session.permission,
+          sessionID: input.sessionID,
+          parentSessionID: input.session.parentID,
+          // Extraction guidance lives entirely in the appended user message.
+          system: [],
+          messages: [
+            ...modelMsgs,
+            { role: "user", content: STRUCTURED_OUTPUT_EXTRACTION_PROMPT(lastUser.format.schema) },
+          ],
+          tools: {},
+          model,
+          structuredOutput: {
+            schema: lastUser.format.schema,
+            onSuccess(output) {
+              structured = output
+            },
+          },
+        })
+        .pipe(
+          Stream.runDrain,
+          Effect.catchCause((cause) => (Cause.hasInterruptsOnly(cause) ? Effect.interrupt : Effect.void)),
+        )
+      if (structured !== undefined) {
+        lastAssistant.structured = structured
+        lastAssistant.finish = lastAssistant.finish ?? "stop"
+        yield* sessions.updateMessage(lastAssistant)
+        return
+      }
+      lastAssistant.error = new MessageV2.StructuredOutputError({
+        message: "Model did not produce structured output",
+        retries: 0,
+      }).toObject()
+      yield* sessions.updateMessage(lastAssistant)
+    })
+
     const runLoop: (sessionID: SessionID) => Effect.Effect<MessageV2.WithParts> = Effect.fn("SessionPrompt.run")(
       function* (sessionID: SessionID) {
         const ctx = yield* InstanceState.context
@@ -3303,6 +3366,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           continue
         }
 
+        yield* finalizeNativeStructuredOutput({ sessionID, session })
         yield* compaction.prune({ sessionID }).pipe(Effect.ignore, Effect.forkIn(scope))
         return yield* lastAssistant(sessionID)
       },

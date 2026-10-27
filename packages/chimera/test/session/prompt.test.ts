@@ -3694,3 +3694,106 @@ it.live("chat + alibailian json_schema maps a failed extraction to StructuredOut
     { config: nativeStructuredOutputCfg },
   ),
 )
+
+// Regression for the structural bypass: a turn can end at the loop-top exit
+// (normal end of turn) instead of the per-step branch, so the post-loop hook
+// must still run the native extraction request.
+const seedFinishedTurn = (sessions: Session.Interface, sessionID: SessionID, text: string) =>
+  Effect.gen(function* () {
+    const msgs = yield* sessions.messages({ sessionID })
+    const user = msgs.find((msg) => msg.info.role === "user")?.info
+    if (!user) throw new Error("missing seeded user message")
+    const assistant: MessageV2.Assistant = {
+      id: MessageID.ascending(),
+      role: "assistant",
+      parentID: user.id,
+      sessionID,
+      mode: "build",
+      agent: "build",
+      finish: "stop",
+      cost: 0,
+      path: { cwd: "/tmp", root: "/tmp" },
+      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      modelID: ref.modelID,
+      providerID: ref.providerID,
+      time: { created: Date.now() },
+    }
+    yield* sessions.updateMessage(assistant)
+    yield* sessions.updatePart({
+      id: PartID.ascending(),
+      messageID: assistant.id,
+      sessionID,
+      type: "text",
+      text,
+    })
+  })
+
+it.live("loop-top turn end still extracts native structured output", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({ title: "Loop-top structured output" })
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        model: ref,
+        noReply: true,
+        format: { type: "json_schema", schema: nativeSchema, retryCount: 0 },
+        parts: [{ type: "text", text: "What is 2 + 2?" }],
+      })
+      yield* seedFinishedTurn(sessions, chat.id, "final report after exploration")
+      yield* llm.text('{"answer":4}')
+
+      const result = yield* prompt.loop({ sessionID: chat.id })
+      expect(result.info.role).toBe("assistant")
+      if (result.info.role !== "assistant") return
+      expect(result.info.structured).toEqual({ answer: 4 })
+      expect(result.info.error).toBeUndefined()
+
+      const inputs = (yield* llm.inputs).filter(
+        (body) => !JSON.stringify(body).includes("Generate a title for this conversation"),
+      )
+      expect(inputs).toHaveLength(1)
+      const extraction = inputs[0]!
+      const tools = Array.isArray(extraction.tools) ? extraction.tools : []
+      expect(tools).toHaveLength(0)
+      expect(extraction.response_format).toBeDefined()
+      const messages = extraction.messages as Array<{ role: string; content: unknown }>
+      const instruction = messages.at(-1)?.content
+      expect(typeof instruction).toBe("string")
+      expect(instruction).toContain("JSON Schema")
+      expect(instruction).toContain('"answer"')
+      // The extraction request carries the final assistant report.
+      expect(JSON.stringify(messages)).toContain("final report after exploration")
+    }),
+    { config: nativeStructuredOutputCfg },
+  ),
+)
+
+it.live("loop-top turn end maps a failed extraction to StructuredOutputError", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({ title: "Loop-top structured output failure" })
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        model: ref,
+        noReply: true,
+        format: { type: "json_schema", schema: nativeSchema, retryCount: 0 },
+        parts: [{ type: "text", text: "What is 2 + 2?" }],
+      })
+      yield* seedFinishedTurn(sessions, chat.id, "final report")
+      yield* llm.text("not json")
+
+      const result = yield* prompt.loop({ sessionID: chat.id })
+      expect(result.info.role).toBe("assistant")
+      if (result.info.role !== "assistant") return
+      expect(result.info.structured).toBeUndefined()
+      expect(result.info.error?.name).toBe("StructuredOutputError")
+    }),
+    { config: nativeStructuredOutputCfg },
+  ),
+)
