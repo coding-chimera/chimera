@@ -3353,3 +3353,179 @@ describe("session.llm effort byte-identity", () => {
     })
   })
 })
+describe("session.llm.resolveToolChoice", () => {
+  // alibailian relays reject tool_choice "required" with more than one tool
+  // ("Please set one tool in required mode"), so structured output names the
+  // StructuredOutput tool instead. Everything else keeps the legacy shape.
+  function model(backend_semantics?: "openai" | "codex" | "alibailian") {
+    return { providerID: ProviderID.make("relay"), id: ModelID.make("relay-model"), backend_semantics } as any
+  }
+  const tools = { StructuredOutput: {}, read: {}, bash: {} }
+  const run = (input: {
+    toolChoice?: LLM.StreamInput["toolChoice"]
+    backend?: "openai" | "codex" | "alibailian"
+    tools?: Record<string, unknown>
+  }): { ok: true; value: LLM.StreamInput["toolChoice"] } | { ok: false; error: Error } => {
+    try {
+      const value = LLM.resolveToolChoice(
+        { toolChoice: input.toolChoice, model: model(input.backend) },
+        input.tools ?? tools,
+      )
+      return { ok: true, value }
+    } catch (error) {
+      return { ok: false, error: error as Error }
+    }
+  }
+  test("text format sends no tool_choice regardless of backend", () => {
+    for (const backend of ["openai", "alibailian", undefined] as const) {
+      expect(LLM.toolChoiceForFormat({ type: "text" }, model(backend), tools)).toBeUndefined()
+    }
+  })
+
+  test("json_schema format downgrades on alibailian and keeps required elsewhere", () => {
+    expect(LLM.toolChoiceForFormat({ type: "json_schema" }, model("alibailian"), tools)).toEqual({
+      type: "tool",
+      toolName: "StructuredOutput",
+    })
+    expect(LLM.toolChoiceForFormat({ type: "json_schema" }, model("openai"), tools)).toBe("required")
+    expect(LLM.toolChoiceForFormat({ type: "json_schema" }, model(undefined), tools)).toBe("required")
+  })
+
+  test("names StructuredOutput on alibailian with multiple tools", () => {
+    const result = run({ toolChoice: "required", backend: "alibailian" })
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.value).toEqual({ type: "tool", toolName: "StructuredOutput" })
+  })
+
+  test("keeps required for non-alibailian models", () => {
+    for (const backend of ["openai", "codex", undefined] as const) {
+      const result = run({ toolChoice: "required", backend })
+      expect(result.ok).toBe(true)
+      if (result.ok) expect(result.value).toBe("required")
+    }
+  })
+
+  test("leaves auto/none/undefined and named tool choices untouched", () => {
+    const named = { type: "tool", toolName: "read" } as const
+    for (const toolChoice of ["auto", "none", undefined, named] as const) {
+      const result = run({ toolChoice, backend: "alibailian" })
+      expect(result.ok).toBe(true)
+      if (result.ok) expect(result.value).toEqual(toolChoice)
+    }
+  })
+
+  test("fails readably when alibailian required has no StructuredOutput tool", () => {
+    const result = run({ toolChoice: "required", backend: "alibailian", tools: { read: {}, bash: {} } })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error.message).toContain("Please set one tool in required mode")
+  })
+
+  test("single-tool alibailian requests keep required", () => {
+    const result = run({ toolChoice: "required", backend: "alibailian", tools: { StructuredOutput: {} } })
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.value).toBe("required")
+  })
+})
+
+describe("session.llm alibailian structured-output tool_choice on the wire", () => {
+  test("serializes named StructuredOutput instead of required", async () => {
+    const server = state.server
+    if (!server) throw new Error("Server not initialized")
+    const providerID = "test-bailian-required-relay"
+    const modelID = "relay-model"
+    const request = waitRequest(
+      "/responses",
+      createEventResponse(
+        [
+          {
+            type: "response.created",
+            response: {
+              id: "resp-required",
+              created_at: Math.floor(Date.now() / 1000),
+              model: modelID,
+              service_tier: null,
+            },
+          },
+          { type: "response.output_text.delta", item_id: "item-required", delta: "ok", logprobs: null },
+          {
+            type: "response.completed",
+            response: {
+              incomplete_details: null,
+              usage: {
+                input_tokens: 1,
+                input_tokens_details: null,
+                output_tokens: 1,
+                output_tokens_details: null,
+              },
+              service_tier: null,
+            },
+          },
+        ],
+        true,
+      ),
+    )
+
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(
+          path.join(dir, "chimera.json"),
+          JSON.stringify({
+            $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+            enabled_providers: [providerID],
+            provider: {
+              [providerID]: {
+                name: "Test Bailian Required Relay",
+                wire_api: "responses",
+                backend_semantics: "alibailian",
+                env: [],
+                models: { [modelID]: {} },
+                options: { apiKey: "test-relay-key", baseURL: `${server.url.origin}/v1` },
+              },
+            },
+          }),
+        )
+      },
+    })
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const resolved = await getModel(ProviderID.make(providerID), ModelID.make(modelID))
+        const sessionID = SessionID.make("session-test-required")
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        } satisfies Agent.Info
+        const user = {
+          id: MessageID.make("user-required"),
+          sessionID,
+          role: "user",
+          time: { created: Date.now() },
+          agent: agent.name,
+          model: { providerID: ProviderID.make(providerID), modelID: resolved.id },
+        } satisfies MessageV2.User
+
+        // The prompt layer already downgrades this; the guardrail in LLM.stream
+        // repeats it for any direct caller that still passes "required".
+        await drain({
+          user,
+          sessionID,
+          model: resolved,
+          agent,
+          system: ["You are a helpful assistant."],
+          messages: [{ role: "user", content: "Hello" }],
+          tools: {
+            StructuredOutput: tool({ description: "structured", inputSchema: z.object({}), execute: async () => ({}) }),
+            read: tool({ description: "read", inputSchema: z.object({}), execute: async () => ({}) }),
+          },
+          toolChoice: "required",
+        })
+      },
+    })
+
+    const capture = await request
+    expect(capture.body.tool_choice).toEqual({ type: "function", name: "StructuredOutput" })
+  })
+})

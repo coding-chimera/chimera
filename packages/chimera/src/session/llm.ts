@@ -37,10 +37,50 @@ const log = Log.create({ service: "llm" })
 export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
 type Result = Awaited<ReturnType<typeof streamText>>
 const OPENAI_HOSTED_WEB_SEARCH_TOOL = "web_search"
+// Structured-output tool the session prompt injects when a user message asks
+// for a json_schema format (SessionPrompt.createStructuredOutputTool).
+export const STRUCTURED_OUTPUT_TOOL_NAME = "StructuredOutput"
 
 // Avoid re-instantiating remeda's deep merge types in this hot LLM path; the runtime behavior is still mergeDeep.
 const mergeOptions = (target: Record<string, any>, source: Record<string, any> | undefined): Record<string, any> =>
   mergeDeep(target, source ?? {}) as Record<string, any>
+
+// alibailian relays (Model Studio endpoints and relays) 400 on
+// tool_choice "required" whenever the request carries more than one tool
+// ("Please set one tool in required mode"). Structured output is the only
+// producer of "required", so widen it to a named-tool choice on the injected
+// StructuredOutput tool: identical intent, single-tool wire shape.
+/** @internal Exported for testing */
+export function resolveToolChoice(
+  input: {
+    toolChoice?: StreamInput["toolChoice"]
+    model: Pick<Provider.Model, "backend_semantics" | "providerID">
+  },
+  tools: Record<string, unknown>,
+): StreamInput["toolChoice"] {
+  const toolChoice = input.toolChoice
+  if (toolChoice !== "required") return toolChoice
+  if (input.model.backend_semantics !== "alibailian") return toolChoice
+  if (Object.keys(tools).length <= 1) return toolChoice
+  if (tools[STRUCTURED_OUTPUT_TOOL_NAME]) return { type: "tool", toolName: STRUCTURED_OUTPUT_TOOL_NAME }
+  throw new Error(
+    `Provider ${input.model.providerID} uses backend_semantics "alibailian", which rejects tool_choice "required" when more than one tool is present (the relay returns "Please set one tool in required mode"). Name the tool instead, e.g. toolChoice { type: "tool", toolName: "<tool>" }, or drop the extra tools. If this came from a structured-output request, make sure the StructuredOutput tool is registered for the call.`,
+  )
+}
+
+// The tool_choice a user-facing turn sends: structured output requires a tool
+// call, text turns leave the choice to the model. Kept next to
+// resolveToolChoice so the format gate and the alibailian downgrade share one
+// tested path (SessionPrompt calls this).
+/** @internal Exported for testing */
+export function toolChoiceForFormat(
+  format: { type: string },
+  model: Pick<Provider.Model, "backend_semantics" | "providerID">,
+  tools: Record<string, unknown>,
+): StreamInput["toolChoice"] {
+  if (format.type !== "json_schema") return undefined
+  return resolveToolChoice({ toolChoice: "required", model }, tools)
+}
 
 // W2 (responses-wire): hosted web_search injection as capability resolution.
 // The openai provider keeps its tuned args; alibailian-semantics providers on
@@ -50,7 +90,13 @@ const mergeOptions = (target: Record<string, any>, source: Record<string, any> |
 // model (model wins): false disables injection, true forces the bare tool on
 // any non-openai responses-wire model.
 function hostedWebSearchArgs(input: StreamRequest, provider: Provider.Info) {
-  if (input.small || input.toolChoice === "required" || !input.model.capabilities.toolcall) return
+  if (
+    input.small ||
+    input.toolChoice === "required" ||
+    typeof input.toolChoice === "object" ||
+    !input.model.capabilities.toolcall
+  )
+    return
   const flag = input.model.hosted_web_search ?? provider.hosted_web_search
   if (flag === false) return
   if (input.model.providerID === "openai") {
@@ -142,7 +188,7 @@ export type StreamInput = {
   nativeToolSearch?: Tool
   abort?: AbortSignal
   retries?: number
-  toolChoice?: "auto" | "required" | "none"
+  toolChoice?: "auto" | "required" | "none" | { type: "tool"; toolName: string }
 }
 
 export type StreamRequest = Omit<StreamInput, "abort"> & {
@@ -240,6 +286,10 @@ const live: Layer.Layer<
       // the model can actually see, not the raw pre-permission list.
       const tools = resolveTools(input)
       const revealedCallable = revealedCallableTools(input)
+      // Guardrail: alibailian relays 400 on "required" + multiple tools. The
+      // normal structured-output path already names StructuredOutput in
+      // SessionPrompt; this catches any other caller of the "required" shape.
+      const toolChoice = resolveToolChoice(input, tools)
       // Capability layers must stay byte-identical to the pre-defer assembly:
       // gate on the permission-allowed view that re-includes the ids the
       // ToolSearch defer filter hid (capabilitySegments only checks key
@@ -385,7 +435,9 @@ const live: Layer.Layer<
             messages: input.messages,
             tools,
             revealedCallable,
-            toolChoice: input.toolChoice,
+            // The Codex OAuth branch is the official openai provider, which is
+            // never alibailian, so the named-tool form cannot reach it.
+            toolChoice: typeof toolChoice === "string" ? toolChoice : undefined,
             params,
             headers: directHeaders,
             auth: info,
@@ -678,7 +730,7 @@ const live: Layer.Layer<
         providerOptions: ProviderTransform.providerOptions(input.model, params.options),
         activeTools: Object.keys(tools).filter((x) => x !== "invalid"),
         tools,
-        toolChoice: input.toolChoice,
+        toolChoice,
         maxOutputTokens: params.maxOutputTokens,
         abortSignal: input.abort,
         headers: {

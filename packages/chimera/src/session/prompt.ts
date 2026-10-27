@@ -3048,7 +3048,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             })
 
             if (lastUser.format?.type === "json_schema") {
-              tools["StructuredOutput"] = createStructuredOutputTool({
+              tools[LLM.STRUCTURED_OUTPUT_TOOL_NAME] = createStructuredOutputTool({
                 schema: lastUser.format.schema,
                 onSuccess(output) {
                   structured = output
@@ -3163,7 +3163,10 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               revealedCallable,
               nativeToolSearch,
               model,
-              toolChoice: format.type === "json_schema" ? "required" : undefined,
+              // alibailian relays reject tool_choice "required" when more than
+              // one tool is present ("Please set one tool in required mode");
+              // toolChoiceForFormat names StructuredOutput there instead.
+              toolChoice: LLM.toolChoiceForFormat(format, model, tools),
             })
 
             if (structured !== undefined) {
