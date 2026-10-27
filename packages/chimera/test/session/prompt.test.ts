@@ -3608,11 +3608,14 @@ const nativeSchema = {
   additionalProperties: false,
 }
 
-it.live("chat + alibailian json_schema uses native response_format and records the validated object", () =>
+it.live("chat + alibailian json_schema keeps the loop tool-only and extracts in a final tool-free call", () =>
   provideTmpdirServer(
     Effect.fnUntraced(function* ({ llm }) {
       const prompt = yield* SessionPrompt.Service
       const sessions = yield* Session.Service
+      // Step 1 is the agentic loop turn (no response_format); step 2 is the
+      // final extraction call.
+      yield* llm.text("ok")
       yield* llm.text('{"answer":4}')
       const chat = yield* sessions.create({ title: "Native structured output" })
 
@@ -3629,25 +3632,43 @@ it.live("chat + alibailian json_schema uses native response_format and records t
       expect(result.info.structured).toEqual({ answer: 4 })
       expect(result.info.error).toBeUndefined()
 
-      const inputs = yield* llm.inputs
-      const request = inputs.find((body) => !JSON.stringify(body).includes("Generate a title for this conversation"))
-      if (!request) throw new Error("structured-output request was not captured")
-      const tools = Array.isArray(request.tools) ? (request.tools as Array<Record<string, any>>) : []
-      expect(tools.some((entry) => entry?.function?.name === "StructuredOutput")).toBe(false)
-      expect(request.tool_choice).not.toBe("required")
-      expect(JSON.stringify(request.tool_choice)).not.toContain("StructuredOutput")
-      expect(request.response_format).toBeDefined()
-      expect(JSON.stringify(request)).not.toContain("You MUST use the StructuredOutput tool")
+      const inputs = (yield* llm.inputs).filter(
+        (body) => !JSON.stringify(body).includes("Generate a title for this conversation"),
+      )
+      expect(inputs).toHaveLength(2)
+      const loopRequest = inputs[0]!
+      const extractionRequest = inputs[1]!
+
+      // Agentic loop: tools present, no synthetic tool, no forced choice, no
+      // response_format.
+      const loopTools = Array.isArray(loopRequest.tools) ? (loopRequest.tools as Array<Record<string, any>>) : []
+      expect(loopTools.length).toBeGreaterThan(0)
+      expect(loopTools.some((entry) => entry?.function?.name === "StructuredOutput")).toBe(false)
+      expect(loopRequest.tool_choice).not.toBe("required")
+      expect(JSON.stringify(loopRequest.tool_choice)).not.toContain("StructuredOutput")
+      expect(loopRequest.response_format).toBeUndefined()
+      expect(JSON.stringify(loopRequest)).not.toContain("You MUST use the StructuredOutput tool")
+
+      // Extraction: no tools, native response_format, schema in the prompt.
+      const extractionTools = Array.isArray(extractionRequest.tools) ? extractionRequest.tools : []
+      expect(extractionTools).toHaveLength(0)
+      expect(extractionRequest.response_format).toBeDefined()
+      const extractionMessages = extractionRequest.messages as Array<{ role: string; content: unknown }>
+      const instruction = extractionMessages.at(-1)?.content
+      expect(typeof instruction).toBe("string")
+      expect(instruction).toContain("JSON Schema")
+      expect(instruction).toContain('"answer"')
     }),
     { config: nativeStructuredOutputCfg },
   ),
 )
 
-it.live("chat + alibailian json_schema maps an invalid payload to StructuredOutputError", () =>
+it.live("chat + alibailian json_schema maps a failed extraction to StructuredOutputError", () =>
   provideTmpdirServer(
     Effect.fnUntraced(function* ({ llm }) {
       const prompt = yield* SessionPrompt.Service
       const sessions = yield* Session.Service
+      yield* llm.text("ok")
       yield* llm.text("this is not json")
       const chat = yield* sessions.create({ title: "Native structured output failure" })
 
@@ -3663,6 +3684,12 @@ it.live("chat + alibailian json_schema maps an invalid payload to StructuredOutp
       if (result.info.role !== "assistant") return
       expect(result.info.structured).toBeUndefined()
       expect(result.info.error?.name).toBe("StructuredOutputError")
+
+      const inputs = (yield* llm.inputs).filter(
+        (body) => !JSON.stringify(body).includes("Generate a title for this conversation"),
+      )
+      expect(inputs).toHaveLength(2)
+      expect(inputs[1]?.response_format).toBeDefined()
     }),
     { config: nativeStructuredOutputCfg },
   ),

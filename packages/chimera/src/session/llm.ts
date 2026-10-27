@@ -71,14 +71,16 @@ export function resolveToolChoice(
 
 // Native chat-completions structured output: the AI SDK maps `output` to
 // `response_format`, validates the final text against the schema, and exposes
-// the parsed object on the stream result. The chat wire + alibailian branch
-// therefore sends no synthetic tool and no tool_choice.
+// the parsed object on the stream result. Chat completions are the default
+// wire shape; only the responses wire is the marked exception. The branch is
+// alibailian-scoped because other providers work fine through the synthetic
+// StructuredOutput tool.
 /** @internal Exported for testing */
 export function nativeStructuredOutputWire(
   model: Pick<Provider.Model, "backend_semantics" | "wire_api">,
   providerWireAPI?: Provider.Info["wire_api"],
 ) {
-  return (model.wire_api ?? providerWireAPI) === "chat" && model.backend_semantics === "alibailian"
+  return model.backend_semantics === "alibailian" && (model.wire_api ?? providerWireAPI) !== "responses"
 }
 
 // The tool_choice a user-facing turn sends: structured output requires a tool
@@ -293,6 +295,11 @@ const live: Layer.Layer<
 
       // TODO: move this to a proper hook
       const isOpenaiOauth = item.id === "openai" && info?.type === "oauth"
+      // Defensive: only the native chat+alibailian branch may request
+      // response_format. Clear it before any transport so stream() can trust
+      // the request object after run() normalizes it.
+      if (input.structuredOutput && !nativeStructuredOutputWire(input.model, item.wire_api))
+        input.structuredOutput = undefined
 
       const profile: VariantProfile = input.small
         ? { options: {} }
@@ -671,14 +678,21 @@ const live: Layer.Layer<
       // Native structured output (chat wire + alibailian, resolved by
       // SessionPrompt): let the AI SDK own the response_format mapping, JSON
       // parsing, and schema validation. Other providers keep the synthetic
-      // StructuredOutput tool and never set this field.
-      const structuredOutput = input.structuredOutput
-        ? Output.object({
-            schema: jsonSchema(input.structuredOutput.schema as JSONSchema7),
-            name: input.structuredOutput.name,
-            description: input.structuredOutput.description,
-          })
-        : undefined
+      // StructuredOutput tool and never set this field. `response_format` is
+      // only sent on requests without tools: agentic loop steps keep their
+      // tools, and the final extraction call runs with an empty tool set.
+      const structuredOutput =
+        input.structuredOutput && Object.keys(tools).length === 0
+          ? Output.object({
+              schema: jsonSchema(input.structuredOutput.schema as JSONSchema7),
+              name: input.structuredOutput.name,
+              description: input.structuredOutput.description,
+            })
+          : undefined
+      // stream() reads the normalized request after run() returns, so a
+      // request that could not attach `output` (tools present) must not leave
+      // a stale callback behind.
+      if (!structuredOutput) input.structuredOutput = undefined
 
       return streamText({
         // Copilot returns the authoritative billed amount only in provider-specific response fields.
@@ -828,15 +842,19 @@ const live: Layer.Layer<
               (ctrl) => Effect.sync(() => ctrl.abort()),
             )
 
-            const result = yield* run({
+            const request = {
               ...input,
               abort: input.abort ? AbortSignal.any([input.abort, ctrl.signal]) : ctrl.signal,
-            })
+            }
+            const result = yield* run(request)
 
             const events = Stream.fromAsyncIterable(result.fullStream, (e) =>
               e instanceof Error ? e : new Error(String(e)),
             )
-            const structuredOutput = input.structuredOutput
+            // run() clears structuredOutput when it could not attach `output`
+            // (tools present, non-native provider), so this only fires for the
+            // tool-free extraction request.
+            const structuredOutput = request.structuredOutput
             if (!structuredOutput) return events
             // Deliver the SDK-validated object after the stream drains. A
             // schema/JSON failure rejects here and leaves the callback unset, so

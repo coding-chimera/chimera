@@ -103,6 +103,15 @@ IMPORTANT:
 
 const STRUCTURED_OUTPUT_SYSTEM_PROMPT = `IMPORTANT: The user has requested structured output. You MUST use the StructuredOutput tool to provide your final response. Do NOT respond with plain text - you MUST call the StructuredOutput tool with your answer formatted according to the schema.`
 
+// Final extraction turn for the native chat-completions path. The request
+// carries no tools and no tool_choice, so the schema must travel in the prompt
+// itself (DashScope's json_object mode requires an explicit JSON instruction).
+const STRUCTURED_OUTPUT_EXTRACTION_PROMPT = (schema: Record<string, unknown>) => `You have finished the work above. Return the final answer for the user's request as a single JSON value that conforms to this JSON Schema:
+
+${JSON.stringify(schema, null, 2)}
+
+Respond with the JSON value only. Do not include markdown code fences, commentary, or tool calls.`
+
 // Steering text for the synthetic goal-continuation user message.
 const GOAL_CONTINUATION_PROMPT = `<goal-continuation>
 Continue working toward the active session goal (see the Session Goal section of the runtime context).
@@ -3051,9 +3060,10 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             // synthetic StructuredOutput tool, no tool_choice. Every other
             // provider keeps the tool-call protocol below.
             const providerInfo = yield* provider.getProvider(model.providerID)
+            const structuredSchema =
+              lastUser.format?.type === "json_schema" ? lastUser.format.schema : undefined
             const nativeStructuredOutput =
-              lastUser.format?.type === "json_schema" &&
-              LLM.nativeStructuredOutputWire(model, providerInfo?.wire_api)
+              structuredSchema !== undefined && LLM.nativeStructuredOutputWire(model, providerInfo?.wire_api)
 
             if (lastUser.format?.type === "json_schema" && !nativeStructuredOutput) {
               tools[LLM.STRUCTURED_OUTPUT_TOOL_NAME] = createStructuredOutputTool({
@@ -3178,15 +3188,6 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               // chat + alibailian sends no tool_choice at all (native
               // response_format).
               toolChoice: LLM.toolChoiceForFormat(format, model, tools, providerInfo?.wire_api),
-              structuredOutput:
-                nativeStructuredOutput && lastUser.format?.type === "json_schema"
-                  ? {
-                      schema: lastUser.format.schema,
-                      onSuccess(output) {
-                        structured = output
-                      },
-                    }
-                  : undefined,
             })
 
             if (structured !== undefined) {
@@ -3199,6 +3200,45 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             const finished = handle.message.finish && !["tool-calls", "unknown"].includes(handle.message.finish)
             if (finished && !handle.message.error) {
               if (format.type === "json_schema") {
+                // Native path: agentic loop steps carry tools, so they never
+                // send response_format. One final tool-free call extracts the
+                // answer, with the schema in the prompt because DashScope's
+                // json_object mode requires an explicit JSON instruction.
+                if (nativeStructuredOutput && structuredSchema) {
+                  yield* llm
+                    .stream({
+                      user: lastUser,
+                      agent,
+                      permission: session.permission,
+                      sessionID,
+                      parentSessionID: session.parentID,
+                      system,
+                      messages: [
+                        ...modelMsgs,
+                        { role: "user", content: STRUCTURED_OUTPUT_EXTRACTION_PROMPT(structuredSchema) },
+                      ],
+                      tools: {},
+                      model,
+                      structuredOutput: {
+                        schema: structuredSchema,
+                        onSuccess(output) {
+                          structured = output
+                        },
+                      },
+                    })
+                    .pipe(
+                      Stream.runDrain,
+                      Effect.catchCause((cause) =>
+                        Cause.hasInterruptsOnly(cause) ? Effect.interrupt : Effect.void,
+                      ),
+                    )
+                }
+                if (structured !== undefined) {
+                  handle.message.structured = structured
+                  handle.message.finish = handle.message.finish ?? "stop"
+                  yield* sessions.updateMessage(handle.message)
+                  return "break" as const
+                }
                 handle.message.error = new MessageV2.StructuredOutputError({
                   message: "Model did not produce structured output",
                   retries: 0,

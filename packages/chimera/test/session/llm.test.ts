@@ -3385,15 +3385,31 @@ describe("session.llm.resolveToolChoice", () => {
   })
 
   test("json_schema format: native response_format on chat + alibailian, required elsewhere", () => {
+    // Chat completions are the default shape: a missing wire_api is native.
+    expect(LLM.toolChoiceForFormat({ type: "json_schema" }, model("alibailian"), tools)).toBeUndefined()
     expect(LLM.toolChoiceForFormat({ type: "json_schema" }, model("alibailian", "chat"), tools)).toBeUndefined()
-    expect(LLM.toolChoiceForFormat({ type: "json_schema" }, model("alibailian", "chat"), tools, "chat")).toBeUndefined()
     expect(LLM.toolChoiceForFormat({ type: "json_schema" }, model("alibailian"), tools, "chat")).toBeUndefined()
+    // Only the responses wire keeps the named synthetic-tool choice.
     expect(LLM.toolChoiceForFormat({ type: "json_schema" }, model("alibailian", "responses"), tools)).toEqual({
       type: "tool",
       toolName: "StructuredOutput",
     })
+    expect(LLM.toolChoiceForFormat({ type: "json_schema" }, model("alibailian"), tools, "responses")).toEqual({
+      type: "tool",
+      toolName: "StructuredOutput",
+    })
+    // The native path stays alibailian-scoped.
     expect(LLM.toolChoiceForFormat({ type: "json_schema" }, model("openai", "chat"), tools)).toBe("required")
     expect(LLM.toolChoiceForFormat({ type: "json_schema" }, model(undefined), tools)).toBe("required")
+  })
+
+  test("nativeStructuredOutputWire treats missing wire_api as chat and responses as the exception", () => {
+    expect(LLM.nativeStructuredOutputWire(model("alibailian"))).toBe(true)
+    expect(LLM.nativeStructuredOutputWire(model("alibailian", "chat"))).toBe(true)
+    expect(LLM.nativeStructuredOutputWire(model("alibailian"), "chat")).toBe(true)
+    expect(LLM.nativeStructuredOutputWire(model("alibailian", "responses"))).toBe(false)
+    expect(LLM.nativeStructuredOutputWire(model("alibailian"), "responses")).toBe(false)
+    expect(LLM.nativeStructuredOutputWire(model("openai", "chat"))).toBe(false)
   })
 
   test("names StructuredOutput on alibailian with multiple tools", () => {
@@ -3563,5 +3579,92 @@ describe("session.llm alibailian structured-output tool_choice on the wire", () 
 
     const capture = await request
     expect(capture.body.tool_choice).toEqual({ type: "function", name: "StructuredOutput" })
+  })
+})
+
+describe("session.llm native structured output request gating", () => {
+  test("attaches output only when the wire request has no tools", async () => {
+    const server = state.server
+    if (!server) throw new Error("Server not initialized")
+    const providerID = "test-bailian-native-chat"
+    const modelID = "relay-model"
+    const headers = { "Content-Type": "text/event-stream" }
+    const withTools = waitRequest("/chat/completions", new Response(createChatStream("ok"), { status: 200, headers }))
+    const withoutTools = waitRequest(
+      "/chat/completions",
+      new Response(createChatStream('{"answer":4}'), { status: 200, headers }),
+    )
+
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(
+          path.join(dir, "chimera.json"),
+          JSON.stringify({
+            $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+            enabled_providers: [providerID],
+            provider: {
+              [providerID]: {
+                name: "Test Bailian Native Chat",
+                npm: "@ai-sdk/openai-compatible",
+                backend_semantics: "alibailian",
+                env: [],
+                models: { [modelID]: {} },
+                options: { apiKey: "test-relay-key", baseURL: `${server.url.origin}/v1` },
+              },
+            },
+          }),
+        )
+      },
+    })
+
+    await WithInstance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const resolved = await getModel(ProviderID.make(providerID), ModelID.make(modelID))
+        const sessionID = SessionID.make("session-test-native-gating")
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        } satisfies Agent.Info
+        const user = {
+          id: MessageID.make("user-native-gating"),
+          sessionID,
+          role: "user",
+          time: { created: Date.now() },
+          agent: agent.name,
+          model: { providerID: ProviderID.make(providerID), modelID: resolved.id },
+        } satisfies MessageV2.User
+        const structuredOutput = {
+          schema: { type: "object", properties: { answer: { type: "number" } }, required: ["answer"] },
+          onSuccess() {},
+        }
+
+        await drain({
+          user,
+          sessionID,
+          model: resolved,
+          agent,
+          system: ["You are a helpful assistant."],
+          messages: [{ role: "user", content: "Hello" }],
+          tools: { read: tool({ description: "read", inputSchema: z.object({}), execute: async () => ({}) }) },
+          structuredOutput,
+        })
+        await drain({
+          user,
+          sessionID,
+          model: resolved,
+          agent,
+          system: ["You are a helpful assistant."],
+          messages: [{ role: "user", content: "Hello" }],
+          tools: {},
+          structuredOutput,
+        })
+      },
+    })
+
+    expect((await withTools).body.response_format).toBeUndefined()
+    expect((await withoutTools).body.response_format).toBeDefined()
   })
 })
