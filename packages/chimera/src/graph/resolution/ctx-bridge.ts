@@ -157,8 +157,12 @@ export class CtxBridge {
   // --- node getters (batch wire under the hood; single-key = batch-of-one) ---
 
   getNodesInFile(filePath: string): Node[] {
+    return this.getNodesInFiles([filePath])[0] ?? [];
+  }
+  /** Batched node read — one crossing for many files (audit projections). */
+  getNodesInFiles(filePaths: string[]): Node[][] {
     this.callCount++;
-    return decodeCtxNodes(this.mod.ctxGetNodesInFiles(this.handle, [filePath]))[0] ?? [];
+    return decodeCtxNodes(this.mod.ctxGetNodesInFiles(this.handle, filePaths));
   }
   getNodesByName(name: string): Node[] {
     this.callCount++;
@@ -204,9 +208,14 @@ export class CtxBridge {
   }
   /** One absent str row = the readFile `null` outcome (failures cache like TS). */
   readFile(filePath: string): string | null {
+    return this.readFiles([filePath])[0] ?? null;
+  }
+  /** Batched source read — one crossing for many files (audit projections). */
+  readFiles(filePaths: string[]): Array<string | null> {
     this.callCount++;
-    const group = decodeCtxStrings(this.mod.ctxReadFiles(this.handle, [filePath]))[0] ?? [];
-    return group.length > 0 ? group[0] : null;
+    return decodeCtxStrings(this.mod.ctxReadFiles(this.handle, filePaths)).map(
+      (group) => group[0] ?? null,
+    );
   }
   /** Empty group = unreadable `[]` (NOT lines-cached, TS parity). */
   getFileLines(filePath: string): string[] {

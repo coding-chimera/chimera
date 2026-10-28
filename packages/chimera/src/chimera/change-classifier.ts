@@ -18,6 +18,7 @@ import {
   type FrozenRelation,
   type FrozenSemanticObject,
   type LanguageAwareSignal,
+  type Node as CodeGraphNode,
   type NodeSemanticDiff,
   type RelationDeltaEvidence,
   type SourceRange,
@@ -323,22 +324,29 @@ function parseHunks(patch: string): SourceHunk[] {
   return hunks
 }
 
-function metadataDiffs(record: ToolMutationRecord): DiffInfo[] {
-  const metadata = record.metadata
+type DiffSource = {
+  metadata: unknown
+  projectRoot: string
+  files: readonly Pick<ProvenanceFile, "graphPath">[]
+  statusFor?: (filePath: string) => string | undefined
+}
+
+function metadataDiffInfos(input: DiffSource): DiffInfo[] {
+  const metadata = input.metadata
   if (!isRecord(metadata)) return []
-  const firstFile = record.files.find((file) => file.graphPath)?.graphPath
+  const firstFile = input.files.find((file) => file.graphPath)?.graphPath
   const direct = stringValue(metadata.diff)
-  const directDiffs = direct && firstFile ? [{ filePath: firstFile, status: metadataStatus(record, firstFile), patch: direct, hunks: parseHunks(direct) }] : []
+  const directDiffs = direct && firstFile ? [{ filePath: firstFile, status: input.statusFor?.(firstFile), patch: direct, hunks: parseHunks(direct) }] : []
   const fileDiffs = Array.isArray(metadata.files)
     ? metadata.files.flatMap((item) => {
         if (!isRecord(item)) return []
         const patch = stringValue(item.patch)
         if (!patch) return []
-        const filePath = graphPath(record.project.root, stringValue(item.movePath) ?? stringValue(item.filePath) ?? stringValue(item.relativePath))
+        const filePath = graphPath(input.projectRoot, stringValue(item.movePath) ?? stringValue(item.filePath) ?? stringValue(item.relativePath))
         if (!filePath) return []
         return [{
           filePath,
-          oldPath: graphPath(record.project.root, stringValue(item.filePath)),
+          oldPath: graphPath(input.projectRoot, stringValue(item.filePath)),
           status: stringValue(item.type),
           patch,
           hunks: parseHunks(patch),
@@ -348,17 +356,86 @@ function metadataDiffs(record: ToolMutationRecord): DiffInfo[] {
   return [...directDiffs, ...fileDiffs]
 }
 
+function metadataDiffs(record: ToolMutationRecord): DiffInfo[] {
+  return metadataDiffInfos({
+    metadata: record.metadata,
+    projectRoot: record.project.root,
+    files: record.files,
+    statusFor: (filePath) => metadataStatus(record, filePath),
+  })
+}
+
+/**
+ * Changed-line ranges per file, extracted from the mutation metadata before
+ * the graph sync. `undefined` for a file means the metadata carries no diff
+ * for it (whole-file projection fallback).
+ */
+export function mutationHunks(input: {
+  metadata: unknown
+  projectRoot: string
+  files: readonly ProvenanceFile[]
+}): Map<string, SourceHunk[]> {
+  const hunks = new Map<string, SourceHunk[]>()
+  for (const diff of metadataDiffInfos(input)) {
+    if (diff.hunks.length === 0) continue
+    hunks.set(diff.filePath, [...(hunks.get(diff.filePath) ?? []), ...diff.hunks])
+  }
+  return hunks
+}
+
+/** Node identity shared with frozen projection node keys. */
+export function projectionNodeKey(node: Pick<CodeGraphNode, "filePath" | "kind" | "name" | "qualifiedName">) {
+  return `${node.filePath}:${node.kind}:${node.qualifiedName || node.name}`
+}
+
+/**
+ * Narrow a file's nodes to the audit projection set: nodes intersecting a
+ * changed-line range, containers (file/module facts), and keys selected in
+ * the paired snapshot (before/after counterparts). `ranges: undefined` keeps
+ * the whole-file projection for files whose diff is unknown.
+ *
+ * This is a superset of the classifier's `touched()` set, so statement
+ * nodes, import/export boundaries, and file-level relation evidence keep
+ * their existing semantics.
+ */
+export function selectProjectionNodes(
+  nodes: readonly CodeGraphNode[],
+  options: { ranges?: readonly SourceRange[]; counterpartKeys?: ReadonlySet<string> },
+): CodeGraphNode[] {
+  if (!options.ranges) return [...nodes]
+  const ranges = options.ranges
+  return nodes.filter((node) =>
+    node.kind === "file" ||
+    node.kind === "module" ||
+    options.counterpartKeys?.has(projectionNodeKey(node)) === true ||
+    ranges.some((range) => rawNodeIntersectsRange(node, range)),
+  )
+}
+
+function rawNodeIntersectsRange(node: CodeGraphNode, range: SourceRange) {
+  return node.startLine <= (range.endLine ?? range.startLine) && node.endLine >= range.startLine
+}
+
+/** Project a pre-selected node list; the memo keeps before/after phases
+ * revision-scoped (see CodeGraphAdapter.projectNodeWithMemo). */
+export function projectNodeSelection(
+  graph: ProjectionGraph,
+  nodes: readonly CodeGraphNode[],
+  snapshot: CodeGraphSnapshot,
+  memo?: ProjectionMemo,
+): FrozenSemanticObject[] {
+  return nodes.flatMap((node) => {
+    if (memo) {
+      const projection = graph.projectNodeWithMemo(node, memo, snapshot)
+      return projection ? [projection] : []
+    }
+    return graph.projectNode(node, snapshot) ?? []
+  })
+}
+
 export function collectFileProjections(graph: ProjectionGraph, files: ProvenanceFile[], snapshot: CodeGraphSnapshot, memo?: ProjectionMemo) {
   return files.flatMap((file) =>
-    file.graphPath
-      ? graph.nodesInFile(file.graphPath).flatMap((node) => {
-          if (memo) {
-            const projection = graph.projectNodeWithMemo(node, memo, snapshot)
-            return projection ? [projection] : []
-          }
-          return graph.projectNode(node, snapshot) ?? []
-        })
-      : [],
+    file.graphPath ? projectNodeSelection(graph, graph.nodesInFile(file.graphPath), snapshot, memo) : [],
   )
 }
 

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { classifyChangeRecord } from "../../src/chimera/change-classifier"
-import type { FrozenRelation, FrozenSemanticObject, LanguageAwareSignal } from "@/graph"
+import { classifyChangeRecord, mutationHunks, projectionNodeKey, selectProjectionNodes } from "../../src/chimera/change-classifier"
+import type { FrozenRelation, FrozenSemanticObject, LanguageAwareSignal, Node as CodeGraphNode } from "@/graph"
 import type { ToolMutationRecord } from "../../src/chimera/provenance"
 
 const bodyPatch = `--- sample.ts
@@ -605,5 +605,60 @@ describe("change classifier", () => {
     const deleted = facts.find((fact) => fact.changeKind === "delete" && fact.nodeKey?.includes(":function:one"))
     expect(deleted?.evidence.relationDelta?.removedRelations[0]?.payload.relation).toBe("CalledBy")
     expect(deleted?.evidence.relationDelta?.removedRelations[0]?.payload.otherNode.name).toBe("caller")
+  })
+})
+
+function rawNode(input: {
+  id: string
+  kind: CodeGraphNode["kind"]
+  name: string
+  filePath?: string
+  startLine: number
+  endLine: number
+}): CodeGraphNode {
+  return {
+    id: input.id,
+    kind: input.kind,
+    name: input.name,
+    qualifiedName: input.name,
+    filePath: input.filePath ?? "sample.ts",
+    language: "typescript",
+    startLine: input.startLine,
+    endLine: input.endLine,
+    startColumn: 0,
+    endColumn: 0,
+    updatedAt: 1,
+  }
+}
+
+describe("projection selection", () => {
+  test("extracts changed-line ranges per file from mutation metadata", () => {
+    const hunks = mutationHunks({
+      metadata: record().metadata,
+      projectRoot: "/project",
+      files: [{ absolutePath: "/project/sample.ts", graphPath: "sample.ts", insideGraph: true }],
+    })
+
+    expect(hunks.get("sample.ts")).toHaveLength(1)
+    expect(hunks.get("sample.ts")?.[0]?.oldRange?.startLine).toBe(2)
+    expect(hunks.get("sample.ts")?.[0]?.newRange?.startLine).toBe(2)
+  })
+
+  test("keeps hunk nodes, containers, and paired-snapshot counterparts", () => {
+    const nodes = [
+      rawNode({ id: "file", kind: "file", name: "sample.ts", startLine: 1, endLine: 20 }),
+      rawNode({ id: "a", kind: "function", name: "a", startLine: 1, endLine: 3 }),
+      rawNode({ id: "b", kind: "function", name: "b", startLine: 5, endLine: 7 }),
+      rawNode({ id: "statement", kind: "statement", name: "local", startLine: 2, endLine: 2 }),
+    ]
+
+    const selected = selectProjectionNodes(nodes, {
+      ranges: [{ startLine: 2, endLine: 2 }],
+      counterpartKeys: new Set([projectionNodeKey(nodes[2]!)]),
+    })
+
+    expect(selected.map((node) => node.id)).toEqual(["file", "a", "b", "statement"])
+    expect(selectProjectionNodes(nodes, { ranges: undefined })).toEqual(nodes)
+    expect(selectProjectionNodes(nodes, { ranges: [] }).map((node) => node.id)).toEqual(["file"])
   })
 })

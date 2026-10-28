@@ -91,6 +91,7 @@ import { ContextBuilder, createContextBuilder } from './context';
 import { Mutex, FileLock } from './utils';
 import { FileWatcher, LockUnavailableError, type WatchOptions, type PendingFile, type WatchBatch } from './sync';
 import { StoreBridge } from './store/bridge';
+import { isCtxWireError, type CtxBridge } from './resolution/ctx-bridge';
 import {
   diffNodeLanguageSignals as diffLanguageAwareSignals,
   projectLanguageAwareSignals,
@@ -969,6 +970,23 @@ function openStoreBridge(dbPath: string, readOnly: boolean | undefined): StoreBr
 }
 
 /**
+ * Revision-scoped per-file projection inputs. The mutation audit projects
+ * every hunk node in a changed file around a sync; caching the file row,
+ * semantic role, source text, and the file's override set per revision
+ * keeps that at one read per file instead of one per node. The revision key
+ * also keeps a before-phase projection from reading post-sync state. Entries
+ * are retained for the whole revision (no per-file cap): a mutation can touch
+ * more files than any fixed limit, and evicting one mid-audit would re-read
+ * post-edit source for a before projection.
+ */
+type ProjectionRevisionCache = {
+  files: Map<string, FileRecord | null>;
+  semantics: Map<string, FileSemanticInfo>;
+  sources: Map<string, string | undefined>;
+  overrides: Map<string, ReadonlySet<string>>;
+};
+
+/**
  * Main CodeGraph class
  *
  * Provides the primary interface for interacting with the code knowledge graph.
@@ -1038,6 +1056,9 @@ export class CodeGraph {
   /** dev/ino of the database file when the current handle was opened (POSIX only). */
   private dbIdentity: { dev: number; ino: number } | null = null;
 
+  /** Revision -> per-file projection inputs (see ProjectionRevisionCache). */
+  private projectionCaches = new Map<string, ProjectionRevisionCache>();
+
   /** How long a recreated, not-yet-indexed database is treated as a rebuild in progress. */
   private static readonly RECREATE_GRACE_MS = 120_000;
 
@@ -1098,6 +1119,7 @@ export class CodeGraph {
     this.db = fresh;
     this.queries = new QueryBuilder(fresh.getDb(), openStoreBridge(dbPath, false));
     this.wireLayers();
+    this.projectionCaches.clear();
     this.dbIdentity = this.statDbIdentity();
     this.pendingFullReconcile = true;
     // Releasing the dead handle also frees the leaked db/-wal/-shm fds that
@@ -1348,9 +1370,10 @@ export class CodeGraph {
     return diffCodePlanRelations(beforeRelations, afterRelations);
   }
 
-  private readNodeSource(node: Node): string | undefined {
+
+  private readSourceFile(filePath: string): string | undefined {
     try {
-      return fs.readFileSync(path.join(this.projectRoot, node.filePath), 'utf-8');
+      return fs.readFileSync(path.join(this.projectRoot, filePath), 'utf-8');
     } catch {
       return undefined;
     }
@@ -1365,7 +1388,11 @@ export class CodeGraph {
   }
 
   private fileSemanticInputNodes(filePath: string): FileSemanticInputNode[] {
-    return this.queries.getNodesByFile(filePath).map((node) => ({
+    return this.fileSemanticInputNodesFrom(this.queries.getNodesByFile(filePath));
+  }
+
+  private fileSemanticInputNodesFrom(nodes: readonly Node[]): FileSemanticInputNode[] {
+    return nodes.map((node) => ({
       kind: node.kind,
       filePath: node.filePath,
       range: {
@@ -1424,6 +1451,7 @@ export class CodeGraph {
       // (R3b) Release the resolver's native read-context handle BEFORE the
       // store handle it borrows the commit-generation counter from (R1
       // pairing: ctx → store → connection, reverse of construction).
+      this.projectionCaches.clear();
       this.resolver.dispose();
       // (R1 A10) Finalize prepared statements deterministically before the
       // connection close instead of relying on db-close/GC cleanup.
@@ -2462,12 +2490,87 @@ export class CodeGraph {
   ): FrozenSemanticObject | null {
     const node = typeof nodeOrId === 'string' ? this.getNode(nodeOrId) : nodeOrId;
     if (!node) return null;
-    const file = this.getFile(node.filePath);
-    const fileSemantic = this.getFileSemanticInfo(node.filePath);
-    const languageSignals = projectLanguageAwareSignals(node, this.readNodeSource(node), {
-      hasOverrideRelation: this.queries.getOutgoingEdges(node.id, ['overrides']).length > 0,
+    const cache = this.projectionCache(snapshot.revision);
+    return this.projectNodePayload(node, snapshot, {
+      file: this.projectionFile(node.filePath, cache),
+      fileSemantic: this.projectionFileSemanticInfo(node.filePath, cache),
+      source: this.projectionSource(node.filePath, cache),
+      hasOverrideRelation: this.projectionOverrideIds(node.filePath, cache).has(node.id),
     });
+  }
 
+  private projectionCache(revision: string): ProjectionRevisionCache {
+    const cached = this.projectionCaches.get(revision);
+    if (cached) {
+      this.projectionCaches.delete(revision);
+      this.projectionCaches.set(revision, cached);
+      return cached;
+    }
+    const created: ProjectionRevisionCache = {
+      files: new Map(),
+      semantics: new Map(),
+      sources: new Map(),
+      overrides: new Map(),
+    };
+    this.projectionCaches.set(revision, created);
+    // Before/after audit phases span two revisions; four keeps concurrent
+    // tool calls from thrashing while still bounding retained source text.
+    while (this.projectionCaches.size > 4) {
+      const oldest = this.projectionCaches.keys().next().value;
+      if (oldest === undefined) break;
+      this.projectionCaches.delete(oldest);
+    }
+    return created;
+  }
+
+  private projectionFile(filePath: string, cache: ProjectionRevisionCache): FileRecord | null {
+    const cached = cache.files.get(filePath);
+    if (cached !== undefined) return cached;
+    const file = this.getFile(filePath);
+    cache.files.set(filePath, file);
+    return file;
+  }
+
+  private projectionFileSemanticInfo(filePath: string, cache: ProjectionRevisionCache): FileSemanticInfo {
+    const cached = cache.semantics.get(filePath);
+    if (cached) return cached;
+    const semantic = this.getFileSemanticInfo(filePath);
+    cache.semantics.set(filePath, semantic);
+    return semantic;
+  }
+
+  private projectionSource(filePath: string, cache: ProjectionRevisionCache): string | undefined {
+    if (cache.sources.has(filePath)) return cache.sources.get(filePath);
+    const source = this.batchReadSources([filePath]).get(filePath);
+    cache.sources.set(filePath, source);
+    return source;
+  }
+
+  /** One override-edge read for the whole file instead of one per node. */
+  private projectionOverrideIds(filePath: string, cache: ProjectionRevisionCache): ReadonlySet<string> {
+    const cached = cache.overrides.get(filePath);
+    if (cached) return cached;
+    const graphPath = this.toGraphPath(filePath);
+    const nodes = this.batchNodesInFiles([graphPath]).get(graphPath) ?? [];
+    const overrides = this.overrideSourceIds(nodes.map((node) => node.id));
+    cache.overrides.set(filePath, overrides);
+    return overrides;
+  }
+
+
+  private projectNodePayload(
+    node: Node,
+    snapshot: CodeGraphSnapshot,
+    input: {
+      file: FileRecord | null;
+      fileSemantic: FileSemanticInfo;
+      source: string | undefined;
+      hasOverrideRelation: boolean;
+    },
+  ): FrozenSemanticObject {
+    const languageSignals = projectLanguageAwareSignals(node, input.source, {
+      hasOverrideRelation: input.hasOverrideRelation,
+    });
     return {
       schemaVersion: 1,
       objectType: 'node',
@@ -2492,8 +2595,8 @@ export class CodeGraph {
         },
         semantic: nodeSemanticInfo(node),
         languageSignals,
-        fileSemantic,
-        fileRole: fileSemantic.role,
+        fileSemantic: input.fileSemantic,
+        fileRole: input.fileSemantic.role,
         signature: node.signature,
         visibility: node.visibility,
         isExported: node.isExported,
@@ -2502,9 +2605,54 @@ export class CodeGraph {
         isAbstract: node.isAbstract,
         decorators: node.decorators,
         typeParameters: node.typeParameters,
-        fileContentHash: file?.contentHash,
+        fileContentHash: input.file?.contentHash,
       },
     };
+  }
+
+  private batchNodesInFiles(filePaths: readonly string[]): Map<string, Node[]> {
+    const nodesByFile = new Map<string, Node[]>();
+    if (filePaths.length === 0) return nodesByFile;
+    const native = this.ctxBatch((ctx) => ctx.getNodesInFiles([...filePaths]));
+    if (native) {
+      filePaths.forEach((filePath, index) => nodesByFile.set(filePath, native[index] ?? []));
+      return nodesByFile;
+    }
+    for (const filePath of filePaths) nodesByFile.set(filePath, this.queries.getNodesByFile(filePath));
+    return nodesByFile;
+  }
+
+  private batchReadSources(filePaths: readonly string[]): Map<string, string | undefined> {
+    const sources = new Map<string, string | undefined>();
+    if (filePaths.length === 0) return sources;
+    const native = this.ctxBatch((ctx) => ctx.readFiles([...filePaths]));
+    if (native) {
+      filePaths.forEach((filePath, index) => sources.set(filePath, native[index] ?? undefined));
+      return sources;
+    }
+    for (const filePath of filePaths) sources.set(filePath, this.readSourceFile(filePath));
+    return sources;
+  }
+
+  /** Native ctx batch read; wire/handle faults disable the bridge like the resolver. */
+  private ctxBatch<T>(fn: (ctx: CtxBridge) => T): T | null {
+    const ctx = this.resolver.getCtxBridge();
+    if (!ctx?.live()) return null;
+    try {
+      return fn(ctx);
+    } catch (error) {
+      if (isCtxWireError(error)) ctx.disable(error instanceof Error ? error.message : String(error));
+      return null;
+    }
+  }
+
+  /** One edge read for every projected node instead of one per node. */
+  private overrideSourceIds(nodeIds: readonly string[]): Set<string> {
+    if (nodeIds.length === 0) return new Set();
+    const rows = this.db.getDb()
+      .prepare("SELECT DISTINCT source FROM edges WHERE kind = 'overrides' AND source IN (SELECT value FROM json_each(?))")
+      .all(JSON.stringify(nodeIds)) as Array<{ source: string }>;
+    return new Set(rows.map((row) => row.source));
   }
 
   /**

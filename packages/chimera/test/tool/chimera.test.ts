@@ -1268,6 +1268,78 @@ describe("tool.chimera", () => {
     }),
   )
 
+  it.instance("keeps caller relations stable for a pure insertion inside an existing function", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const base = path.join(test.directory, "insert-base.ts")
+      yield* Effect.promise(() => fs.writeFile(base, "export function target() {\n  return 1\n}\n"))
+      yield* Effect.promise(() =>
+        fs.writeFile(
+          path.join(test.directory, "insert-consumer.ts"),
+          "import { target } from './insert-base'\nexport function consumer() { return target() }\n",
+        ),
+      )
+
+      yield* trackWrite({
+        filePath: base,
+        content: "export function target() {\n  const local = 2\n  return 1\n}\n",
+        callID: "call_chimera_relation_delta_pure_insert",
+        patch: `--- insert-base.ts
++++ insert-base.ts
+@@ -1,3 +1,4 @@
+ export function target() {
++  const local = 2
+   return 1
+ }
+`,
+      })
+
+      const result = yield* runAuditRecent({ refresh: false })
+      const fact = result.metadata.changeFacts.find((item) => item.filePath === "insert-base.ts" && item.subjectKind === "body")
+
+      expect(result.metadata.source).toBe("recent_provenance")
+      expect(fact?.evidence.beforeNode?.payload.name).toBe("target")
+      expect(fact?.evidence.afterNode?.payload.name).toBe("target")
+      expect(fact?.evidence.relationDelta).toBeUndefined()
+      expect(result.metadata.obligations.some((item) => item.evidence === "codegraph:relation_delta:added:CalledBy")).toBe(false)
+    }),
+  )
+
+  it.instance("keeps pre-edit projections for mutations spanning more than 64 files", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const files = Array.from({ length: 70 }, (_, index) => path.join(test.directory, `many-${index}.ts`))
+      const source = (index: number) => `export function many${index}(value: number) {\n  return value\n}\n`
+      const edited = (index: number) => `export function many${index}(value: number) {\n  this.value = value\n  return value\n}\n`
+      yield* Effect.promise(() => Promise.all(files.map((filePath, index) => fs.writeFile(filePath, source(index)))))
+      yield* initGraph()
+
+      yield* Chimera.trackToolMutation(
+        {
+          toolID: "edit",
+          ctx: { ...ctx, callID: "call_chimera_many_file_projections" },
+          files,
+          metadata: {
+            files: files.map((filePath, index) => ({
+              filePath,
+              patch: `--- many-${index}.ts\n+++ many-${index}.ts\n@@ -1,3 +1,4 @@\n export function many${index}(value: number) {\n+  this.value = value\n   return value\n }\n`,
+            })),
+          },
+        },
+        Effect.promise(() => Promise.all(files.map((filePath, index) => fs.writeFile(filePath, edited(index))))),
+      )
+
+      const result = yield* runAuditRecent({ refresh: false })
+      const fact = result.metadata.changeFacts.find((item) => item.filePath === "many-0.ts" && item.subjectKind === "body")
+      const beforeSignals = fact?.evidence.beforeNode?.payload.languageSignals?.map((signal) => signal.kind) ?? []
+      const afterSignals = fact?.evidence.afterNode?.payload.languageSignals?.map((signal) => signal.kind) ?? []
+
+      expect(result.metadata.source).toBe("recent_provenance")
+      expect(beforeSignals).not.toContain("this_field_write")
+      expect(afterSignals).toContain("this_field_write")
+    }),
+  )
+
   it.instance("keeps local-only TS body signal details out of default audit output", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance

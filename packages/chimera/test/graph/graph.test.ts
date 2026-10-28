@@ -224,6 +224,68 @@ export { main };
       expect(projection?.payload.fileRole).toBe('source');
     });
 
+    it('should keep projection caches bound to the graph revision', async () => {
+      const cachePath = path.join(testDir, 'src', 'projection-cache.ts');
+      fs.writeFileSync(cachePath, `export function cachedValue(value: number) {
+  return value;
+}
+`);
+      await cg.syncFiles([cachePath]);
+
+      const beforeNode = cg.getNodesByName('cachedValue').find((node) => node.filePath === 'src/projection-cache.ts');
+      expect(beforeNode).toBeTruthy();
+      const beforeSnapshot = cg.getSnapshot();
+      const before = cg.projectNode(beforeNode!, beforeSnapshot);
+      expect(before?.payload.languageSignals?.map((signal) => signal.kind)).not.toContain('this_field_write');
+
+      fs.writeFileSync(cachePath, `export function cachedValue(value: number) {
+  this.value = value;
+  return value;
+}
+`);
+      await cg.syncFiles([cachePath]);
+
+      const afterNode = cg.getNodesByName('cachedValue').find((node) => node.filePath === 'src/projection-cache.ts');
+      expect(afterNode).toBeTruthy();
+      const afterSnapshot = cg.getSnapshot();
+      const after = cg.projectNode(afterNode!, afterSnapshot);
+      expect(after?.source.graphRevision).toBe(afterSnapshot.revision);
+      expect(after?.payload.languageSignals?.map((signal) => signal.kind)).toContain('this_field_write');
+
+      // The before revision keeps serving its cached pre-edit source after sync.
+      const replay = cg.projectNode(beforeNode!, beforeSnapshot);
+      expect(replay).toEqual(before);
+      expect(replay?.payload.languageSignals?.map((signal) => signal.kind)).not.toContain('this_field_write');
+    });
+
+    it('should keep pre-edit source for mutations spanning more than 64 files', async () => {
+      const files = Array.from({ length: 70 }, (_, index) => {
+        const filePath = path.join(testDir, 'src', 'many', `file-${index}.ts`);
+        fs.mkdirSync(path.dirname(filePath), { recursive: true });
+        fs.writeFileSync(filePath, `export function cached${index}(value: number) {\n  return value;\n}\n`);
+        return filePath;
+      });
+      await cg.syncFiles(files);
+
+      const beforeSnapshot = cg.getSnapshot();
+      const nodes = Array.from({ length: 70 }, (_, index) => {
+        const node = cg.getNodesByName(`cached${index}`)[0];
+        expect(node).toBeTruthy();
+        return node!;
+      });
+      const before = nodes.map((node) => cg.projectNode(node, beforeSnapshot));
+      expect(before[0]?.payload.languageSignals?.map((signal) => signal.kind)).not.toContain('this_field_write');
+
+      files.forEach((filePath, index) => {
+        fs.writeFileSync(filePath, `export function cached${index}(value: number) {\n  this.value = value;\n  return value;\n}\n`);
+      });
+
+      // No sync here: every replay must come from the before revision's cache,
+      // including files whose entries used to be evicted past the old 64-file cap.
+      const replay = nodes.map((node) => cg.projectNode(node, beforeSnapshot));
+      expect(replay).toEqual(before);
+    });
+
     it('should classify CodeGraph-owned file roles', () => {
       expect(CodeGraph.getFileSemanticInfo('package.json').role).toBe('dependency_manifest');
       expect(CodeGraph.getFileSemanticInfo('src/main.test.ts').role).toBe('test');

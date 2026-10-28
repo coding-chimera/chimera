@@ -8,10 +8,10 @@ import { BusEvent } from "@/bus/bus-event"
 import { InstanceState } from "@/effect/instance-state"
 import { registerDisposer } from "@/effect/instance-registry"
 import type { Tool } from "@/tool/tool"
-import { classifyChangeRecord, classifyFileBoundary, collectFileProjections, collectIncidentRelations } from "./change-classifier"
+import { classifyChangeRecord, classifyFileBoundary, collectIncidentRelations, mutationHunks, projectionNodeKey, projectNodeSelection, selectProjectionNodes, type SourceHunk } from "./change-classifier"
 import { ProjectionMemo } from "./projection-memo"
 import { CodeGraphAdapter } from "./codegraph-adapter"
-import { findNearestCodeGraphRoot, getCodeGraphDir, getDatabasePath, isInitialized, type CodeGraphSnapshot, type IndexProgress as CodeGraphIndexProgress, type SyncResult as CodeGraphSyncResult } from "@/graph"
+import { findNearestCodeGraphRoot, getCodeGraphDir, getDatabasePath, isInitialized, type CodeGraphSnapshot, type IndexProgress as CodeGraphIndexProgress, type Node as CodeGraphNode, type SyncResult as CodeGraphSyncResult } from "@/graph"
 import { validateProjectPath } from "@/graph/utils"
 import { ModelTelemetry } from "@/agent/model-telemetry"
 import { Session } from "@/session/session"
@@ -1107,6 +1107,49 @@ export const recordToolOracle = Effect.fn("Chimera.recordToolOracle")(function* 
   return record
 })
 
+function readFileNodes(graph: Pick<CodeGraphAdapter, "nodesInFile">, files: ProvenanceFile[]) {
+  return new Map(files.flatMap((file) =>
+    file.graphPath ? [[file.graphPath, graph.nodesInFile(file.graphPath)] as const] : [],
+  ))
+}
+
+/** One node per file is enough to warm the revision-scoped projection cache. */
+function warmProjectionNodes(nodesByFile: ReadonlyMap<string, readonly CodeGraphNode[]>) {
+  return [...nodesByFile.values()].flatMap((nodes) => {
+    const container = nodes.find((node) => node.kind === "file" || node.kind === "module")
+    return container ? [container] : nodes.slice(0, 1)
+  })
+}
+
+type ProjectionPhase = "old" | "new"
+
+/** Changed-line ranges for the requested sides of a file's hunks. */
+function projectionRanges(hunks: readonly SourceHunk[] | undefined, phases: readonly ProjectionPhase[]) {
+  if (!hunks) return undefined
+  return hunks.flatMap((hunk) =>
+    phases.flatMap((phase) => {
+      const range = phase === "old" ? hunk.oldRange : hunk.newRange
+      return range ? [range] : []
+    }),
+  )
+}
+
+function projectionSelection(
+  nodesByFile: ReadonlyMap<string, readonly CodeGraphNode[]>,
+  files: ProvenanceFile[],
+  hunksByFile: ReadonlyMap<string, readonly SourceHunk[]>,
+  phases: readonly ProjectionPhase[],
+  counterpartKeys?: ReadonlySet<string>,
+): CodeGraphNode[] {
+  return files.flatMap((file) => {
+    if (!file.graphPath) return []
+    return selectProjectionNodes(nodesByFile.get(file.graphPath) ?? [], {
+      ranges: projectionRanges(hunksByFile.get(file.graphPath), phases),
+      counterpartKeys,
+    })
+  })
+}
+
 export function trackToolMutation<A, E, R>(
   input: ToolMutationInput,
   effect: Effect.Effect<A, E, R>,
@@ -1125,16 +1168,36 @@ export function trackToolMutation<A, E, R>(
     const syncFiles = files.filter((file) => file.insideGraph).map((file) => file.absolutePath)
     const before = s.graph.snapshot()
     // One memo per tool-call, keyed by graph revision inside projectNodeWithMemo:
-    // it dedupes repeated projections within a phase and across phases only while
-    // the graph is unchanged; syncFiles bumps the revision so after-projections
-    // never reuse stale pre-sync frozen objects.
+    // before/after phases never reuse a frozen object across a sync.
     const memo = new ProjectionMemo()
-    const beforeNodes = collectFileProjections(s.graph, files, before, memo)
-    const beforeRelations = collectIncidentRelations(s.graph, beforeNodes, before)
+    // Read pre-edit node rows and warm the revision-scoped projection cache
+    // with one node per file: the effect rewrites source on disk, so the
+    // before projection must serve cached pre-edit text, file rows, and
+    // override sets instead of re-reading after the effect.
+    const beforeNodesByFile = readFileNodes(s.graph, files)
+    projectNodeSelection(s.graph, warmProjectionNodes(beforeNodesByFile), before, memo)
     const exit = yield* effect.pipe(Effect.exit)
+    // Tool metadata may be a thunk computed inside the effect (edit builds its
+    // diff there); evaluate it once after the effect and reuse it below.
+    const metadata = safeMetadata(input.metadata)
+    const hunksByFile = mutationHunks({ metadata, projectRoot: s.projectRoot, files })
+    // Only hunk-hit nodes are projected. Before nodes are selected by both the
+    // old and new sides: a pure insertion has no old range, and every after-side
+    // counterpart needs its before projection (and relations) captured before
+    // the sync. File/module containers keep file-level facts intact.
+    const beforeInitial = projectionSelection(beforeNodesByFile, files, hunksByFile, ["old", "new"])
+    const beforeKeys = new Set(beforeInitial.map(projectionNodeKey))
+    const beforeNodes = projectNodeSelection(s.graph, beforeInitial, before, memo)
+    const beforeRelations = collectIncidentRelations(s.graph, beforeNodes, before)
     const sync = yield* Effect.promise(() => s.graph.syncFiles(syncFiles)).pipe(Effect.orDie)
     const after = s.graph.snapshot()
-    const afterNodes = collectFileProjections(s.graph, files, after, memo)
+    const afterNodesByFile = readFileNodes(s.graph, files)
+    const afterNodes = projectNodeSelection(
+      s.graph,
+      projectionSelection(afterNodesByFile, files, hunksByFile, ["new"], beforeKeys),
+      after,
+      memo,
+    )
     const afterRelations = collectIncidentRelations(s.graph, afterNodes, after)
     const finishedAt = new Date().toISOString()
     const record: ToolMutationRecord = {
@@ -1169,7 +1232,7 @@ export function trackToolMutation<A, E, R>(
         sync,
       },
       files,
-      metadata: safeMetadata(input.metadata),
+      metadata,
     }
 
     yield* Effect.promise(() => appendProvenanceRecord(s.projectRoot, s.artifact, record)).pipe(Effect.orDie)
