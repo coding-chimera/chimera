@@ -1572,6 +1572,17 @@ export const filterCompactedEffect = Effect.fnUntraced(function* (
   return filterCompacted(streamCompactionPruned(sessionID), options)
 })
 
+/**
+ * (P1-5) Materialized form of the filterCompactedEffect read chain: the same
+ * pruned newest-first stream, returned unfiltered. A caller that needs more
+ * than one compaction view of the same step (local + remote-text) reads once
+ * and runs filterCompacted over the array in memory instead of re-reading the
+ * whole session.
+ */
+export const streamCompactedEffect = Effect.fnUntraced(function* (sessionID: SessionID) {
+  return Array.from(streamCompactionPruned(sessionID))
+})
+
 function codexResponsesMetadata(value: unknown) {
   if (!isRecord(value) || value.source !== "codex-responses") return undefined
   return Object.fromEntries(

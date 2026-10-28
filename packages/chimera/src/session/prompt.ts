@@ -2948,12 +2948,23 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         // it rides a synthetic user message assembled by ensureRuntimeContext
         // above, not this system-prompt tuple.
         let instructionsCache: { turnKey: string; value: string[] } | undefined
+        // (P1-5) Remote-compaction replay resolution (lock scan + provider
+        // route resolve) is stable for a turn: only a compaction installs a
+        // remote part, and the compaction branch below drops this cache
+        // explicitly. Cache it like instructionsCache so a multi-step turn
+        // resolves once instead of once per step.
+        let remoteCompactionCache: { turnKey: string; value: MessageV2.RemoteCompactionReplay } | undefined
 
         while (true) {
           yield* status.set(sessionID, { type: "busy" })
           yield* slog.info("loop", { step })
 
-          let msgs = yield* MessageV2.filterCompactedEffect(sessionID)
+          // (P1-5) One session read per step. Both compaction views (local and
+          // remote-text) are derived in memory from the same pruned
+          // newest-first snapshot; the text view used to re-read the whole
+          // session whenever the replay mode was "text".
+          const rawMessages = yield* MessageV2.streamCompactedEffect(sessionID)
+          let msgs = MessageV2.filterCompacted(rawMessages)
           let loopState = inspectLoopMessages(msgs)
 
           if (!loopState.lastUser) throw new Error("No user message found in stream. This should never happen.")
@@ -2962,9 +2973,26 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             loopState.lastUser.model.modelID,
             sessionID,
           )
-          const remoteCompaction = yield* remoteCompactionReplay(sessionID, model)
-          if (remoteCompaction === "text") {
-            msgs = yield* MessageV2.filterCompactedEffect(sessionID, { remoteCompaction })
+          // A remote part anywhere in the session is the only thing that can
+          // make replay resolve to "encoded"; without one the lock is absent
+          // and replay is "text" by definition, so the targeted lock scan (a
+          // second session read) is skipped entirely.
+          const hasRemoteCompaction = rawMessages.some((msg) =>
+            msg.parts.some((part) => part.type === "compaction" && part.remote !== undefined),
+          )
+          const remoteCompactionTurnKey = loopState.lastUser.id
+          const cachedRemoteCompaction =
+            remoteCompactionCache?.turnKey === remoteCompactionTurnKey ? remoteCompactionCache.value : undefined
+          const remoteCompaction =
+            cachedRemoteCompaction ??
+            (hasRemoteCompaction ? yield* remoteCompactionReplay(sessionID, model) : ("text" as const))
+          if (cachedRemoteCompaction === undefined)
+            remoteCompactionCache = { turnKey: remoteCompactionTurnKey, value: remoteCompaction }
+          // The text view differs from the local view only by remote compaction
+          // boundaries; with none in the snapshot it is identical, so keep the
+          // first filter result instead of re-running it.
+          if (remoteCompaction === "text" && hasRemoteCompaction) {
+            msgs = MessageV2.filterCompacted(rawMessages, { remoteCompaction })
             loopState = inspectLoopMessages(msgs)
           }
           const { lastUser, lastAssistant, lastFinished, tasks } = loopState
@@ -3040,6 +3068,9 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               auto: task.part.auto,
               overflow: task.part.overflow,
             })
+            // A compaction can install or replace the remote part the replay
+            // cache was resolved from; drop it so the next iteration re-resolves.
+            remoteCompactionCache = undefined
             if (result === "stop") break
             continue
           }
