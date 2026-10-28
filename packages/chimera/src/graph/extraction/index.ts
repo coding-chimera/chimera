@@ -38,7 +38,7 @@ import {
   readBoundedSourceSync,
 } from '../file-limits';
 import ignore, { Ignore } from 'ignore';
-import { detectFrameworks } from '../resolution/frameworks';
+import { detectFrameworks, getAllFrameworkResolvers, getApplicableFrameworks } from '../resolution/frameworks';
 import type { ResolutionContext } from '../resolution/types';
 
 /**
@@ -508,6 +508,27 @@ export function preloadLanguagesForFiles(
     }
   }
   return languages;
+}
+
+/**
+ * Languages a detected framework's extract() hook can hit in this file set —
+ * the framework arm of isKernelOnlyLanguageSet. A framework repo keeps its
+ * parse worker pool even when every language routes to the kernel (P1-1):
+ * the per-file extract() merge and any kernel `defer:` wasm fallback must run
+ * in the workers, never on the main thread. Frameworks without an explicit
+ * `languages` list are universal (the getApplicableFrameworks rule).
+ */
+function frameworkExtractLanguages(
+  frameworkNames: string[],
+  languages: Language[]
+): ReadonlySet<Language> {
+  if (frameworkNames.length === 0) return new Set();
+  const extractors = getAllFrameworkResolvers().filter(
+    (resolver) => resolver.extract !== undefined && frameworkNames.includes(resolver.name)
+  );
+  return new Set(
+    languages.filter((language) => getApplicableFrameworks(extractors, language).length > 0)
+  );
 }
 
 /**
@@ -1269,8 +1290,13 @@ export class ExtractionOrchestrator {
     // pool's workers would hold resident heaps for nothing — the in-process
     // branch below runs the kernel arm on the main thread, and a rare
     // parse-error defer lazily loads its grammar there). Defer-eligible c/cpp
-    // KEEP the pool: their 10–40% defer band is real wasm work.
-    const kernelOnly = isKernelOnlyLanguageSet(fileLanguages);
+    // KEEP the pool: their 10–40% defer band is real wasm work. Framework
+    // repos KEEP it too (P1-1): their extract() merge and any deferred wasm
+    // parse must stay off the main thread.
+    const kernelOnly = isKernelOnlyLanguageSet(
+      fileLanguages,
+      frameworkExtractLanguages(frameworkNames, fileLanguages)
+    );
     const parseWorkerPath = resolveParseWorkerPath()
     const useWorker = parseWorkerPath !== undefined && !kernelOnly
 

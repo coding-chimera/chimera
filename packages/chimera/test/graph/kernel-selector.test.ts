@@ -18,7 +18,9 @@
  *   in pulls default-routed python back to wasm.
  * - `defer:` signals fall back to the wasm arm (error recovery canonical)
  *   and the one-slot memo short-circuits repeat attempts.
- * - A framework extract() hook hit skips the kernel arm.
+ * - Framework extract() hooks no longer block the kernel arm (P1-1): the
+ *   kernel extracts the base tree and the framework nodes merge afterwards,
+ *   deduped against the extractor nodes.
  * - CODEGRAPH_KERNEL=0 kill switch wins over routing env.
  * The kernel arm is exercised with an INJECTED fake module
  * (setKernelForTests). The wasm baselines are computed with
@@ -39,12 +41,20 @@ import {
   type KernelModule,
 } from '../../src/graph/extraction/kernel';
 import { EDGE_KINDS } from '../../src/graph/extraction/kernel/layout';
-import { buildKernelBuffers } from './kernel-testutil';
+import { buildKernelBuffers, type SyntheticNode } from './kernel-testutil';
 
 const TS_SOURCE = `export class Svc {\n  run(x: number): string { return String(x); }\n}\n`;
 const PY_SOURCE = `def top(a):\n    return a\n`;
 const LUA_SOURCE = `local core = {}\nfunction core.run(x)\n  return tostring(x)\nend\nreturn core\n`;
 const KT_SOURCE = `fun main() {\n    println(\"x\")\n}\n`;
+// React/Next fixtures: framework extract() hooks that hit a .ts file
+// (react's hook pattern + Next.js page route) exercise the P1-1 merge.
+const REACT_HOOK_SOURCE = `import { useState } from 'react';\n\nexport function useCounter() {\n  const [count, setCount] = useState(0);\n  return { count, setCount };\n}\n`;
+const REACT_COMPONENT_SOURCE = `import React from 'react';\n\nexport const Button = React.memo(function Button() { return <button />; });\n`;
+const NEXT_PAGE_SOURCE = `export default function Page() {\n  return null;\n}\n`;
+// Spring `@Value` on the same line as its field: the framework binding node
+// restates the extractor's constant declaration AND is a reference source.
+const SPRING_VALUE_SOURCE = `public class C {\n  @Value("\${port}") private static final int port = 1;\n}\n`;
 // The `r` wasm grammar blob is optional on dev checkouts (graceful
 // parser-init failure), so the iron-rule test gates on the SELECTOR (no
 // kernel call), not on r's wasm output bytes.
@@ -66,12 +76,17 @@ function normalize(result: ExtractionResult): unknown {
   );
 }
 
-function makeFakeKernel(opts?: { defer?: boolean; languages?: string[] }): { mod: KernelModule; calls: Array<[string, string, string]> } {
+function makeFakeKernel(opts?: {
+  defer?: boolean;
+  languages?: string[];
+  extraNodes?: SyntheticNode[];
+}): { mod: KernelModule; calls: Array<[string, string, string]> } {
   const calls: Array<[string, string, string]> = [];
   const buffers = buildKernelBuffers({
     nodes: [
       { kind: 'file', name: 'marker-file', id: 'file:marker' },
       { kind: 'function', name: 'kernelMarker', id: 'function:kernelMarker' },
+      ...(opts?.extraNodes ?? []),
     ],
     edges: [{ source: 0, target: 1, kind: 'contains' }],
     refs: [{ from: 1, kind: 'calls', referenceName: 'String' }],
@@ -328,14 +343,106 @@ describe('extractFromSource kernel selector gating', () => {
     expect(calls.length).toBe(2);
   });
 
-  it('framework extract() hook hit ⇒ kernel arm skipped, merge pass still runs', () => {
+  it('framework extract() hook no longer blocks the kernel arm; the merge pass still runs (P1-1)', () => {
     const { mod, calls } = makeFakeKernel();
     setKernelForTests(mod);
     // 'react' is language-applicable for typescript and has an extract() hook.
     const result = extractFromSource('svc.ts', TS_SOURCE, 'typescript', ['react']);
-    expect(calls.length).toBe(0);
-    expect(result.nodes.some((n) => n.name === 'kernelMarker')).toBe(false);
-    expect(result.nodes.some((n) => n.kind === 'class' && n.name === 'Svc')).toBe(true);
+    expect(calls).toEqual([['svc.ts', TS_SOURCE, 'typescript']]);
+    expect(result.nodes.some((n) => n.name === 'kernelMarker')).toBe(true);
+    // The base tree is the kernel's, not the wasm extractor's.
+    expect(result.nodes.some((n) => n.kind === 'class' && n.name === 'Svc')).toBe(false);
+  });
+
+  it('React .ts fixture: kernel arm + framework merge — a hook node never duplicates the extractor node', () => {
+    const { mod, calls } = makeFakeKernel({
+      extraNodes: [
+        { kind: 'function', name: 'useCounter', id: 'function:useCounter', startLine: 3, endLine: 6 },
+      ],
+    });
+    setKernelForTests(mod);
+    const result = extractFromSource('src/hooks.ts', REACT_HOOK_SOURCE, 'typescript', ['react']);
+    expect(calls).toEqual([['src/hooks.ts', REACT_HOOK_SOURCE, 'typescript']]);
+    // react's extract() re-states `function useCounter` as a `hook:` node; the
+    // merge keeps the extractor node and drops the restatement.
+    const hooks = result.nodes.filter((n) => n.kind === 'function' && n.name === 'useCounter');
+    expect(hooks).toHaveLength(1);
+    expect(hooks[0]!.id).toBe('function:useCounter');
+  });
+
+  it('React .js fixture: a memo component is not duplicated by the framework merge', () => {
+    const { mod } = makeFakeKernel({
+      extraNodes: [
+        { kind: 'component', name: 'Button', id: 'component:kernel', startLine: 3, endLine: 3 },
+      ],
+    });
+    setKernelForTests(mod);
+    const result = extractFromSource('src/Button.js', REACT_COMPONENT_SOURCE, 'javascript', ['react']);
+    const components = result.nodes.filter((n) => n.kind === 'component' && n.name === 'Button');
+    expect(components).toHaveLength(1);
+    expect(components[0]!.id).toBe('component:kernel');
+  });
+
+  it('Next .ts fixture: kernel arm + framework route merge keeps a stable node order', () => {
+    const { mod, calls } = makeFakeKernel();
+    setKernelForTests(mod);
+    const first = extractFromSource('src/app/page.ts', NEXT_PAGE_SOURCE, 'typescript', ['react']);
+    expect(calls).toEqual([['src/app/page.ts', NEXT_PAGE_SOURCE, 'typescript']]);
+    // Kernel nodes first (wire order), then the framework route appended.
+    expect(first.nodes.map((n) => `${n.kind}:${n.name}`)).toEqual([
+      'file:marker-file',
+      'function:kernelMarker',
+      'route:/',
+    ]);
+    const second = extractFromSource('src/app/page.ts', NEXT_PAGE_SOURCE, 'typescript', ['react']);
+    expect(second.nodes.map((n) => `${n.kind}:${n.name}`)).toEqual(
+      first.nodes.map((n) => `${n.kind}:${n.name}`)
+    );
+  });
+
+  it('framework merge still runs on the wasm result when the kernel defers', () => {
+    const { mod, calls } = makeFakeKernel({ defer: true });
+    setKernelForTests(mod);
+    const result = extractFromSource('src/hooks.ts', REACT_HOOK_SOURCE, 'typescript', ['react']);
+    expect(calls.length).toBe(1);
+    // The wasm arm answered (its `function useCounter` is present) and react's
+    // restatement is deduped, exactly as on the kernel arm.
+    const hooks = result.nodes.filter((n) => n.kind === 'function' && n.name === 'useCounter');
+    expect(hooks).toHaveLength(1);
+    expect(hooks[0]!.id.startsWith('hook:')).toBe(false);
+  });
+
+  it('a deduped framework restatement keeps its references attached (no dangling fromNodeId)', () => {
+    const { mod } = makeFakeKernel({
+      languages: ALL_KERNEL_LANGUAGES,
+      extraNodes: [
+        { kind: 'constant', name: 'port', id: 'constant:port', startLine: 2, endLine: 2 },
+      ],
+    });
+    setKernelForTests(mod);
+    // spring's `@Value("${port}")` emits `spring-value:C.java:2:port`: same
+    // kind/name/file/line as the extractor's `constant:port` field. The node
+    // collapses, but its reference must follow the retained declaration.
+    const result = extractFromSource('C.java', SPRING_VALUE_SOURCE, 'java', ['spring']);
+    const ports = result.nodes.filter((n) => n.kind === 'constant' && n.name === 'port');
+    expect(ports).toHaveLength(1);
+    expect(ports[0]!.id).toBe('constant:port');
+    const springRef = result.unresolvedReferences.find((r) => r.referenceName === 'port');
+    expect(springRef).toEqual(
+      expect.objectContaining({ fromNodeId: 'constant:port', referenceKind: 'references' })
+    );
+    // Every merged reference still points at a node the merge kept.
+    for (const ref of result.unresolvedReferences) {
+      expect(result.nodes.some((n) => n.id === ref.fromNodeId)).toBe(true);
+    }
+    // Same guarantee on the wasm arm (kill switch), where the restatement
+    // collides with the wasm extractor's own constant node.
+    process.env.CODEGRAPH_KERNEL = '0';
+    const wasm = extractFromSource('C.java', SPRING_VALUE_SOURCE, 'java', ['spring']);
+    expect(wasm.nodes.filter((n) => n.kind === 'constant' && n.name === 'port')).toHaveLength(1);
+    for (const ref of wasm.unresolvedReferences) {
+      expect(wasm.nodes.some((n) => n.id === ref.fromNodeId)).toBe(true);
+    }
   });
 
   it('framework names without an applicable extract() hook do NOT block the kernel arm', () => {

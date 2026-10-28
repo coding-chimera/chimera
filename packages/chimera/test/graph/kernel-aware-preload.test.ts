@@ -17,6 +17,9 @@
  *     the filter removes it (objc is wave-5 routed), the CODEGRAPH_KERNEL=0
  *     kill switch restores the full preload, and defer-eligible c/cpp keep
  *     the pool (isKernelOnlyLanguageSet false).
+ *  d) P1-1: a detected framework's extract() hook keeps the pool even when
+ *     every language routes to the kernel — the per-file framework merge and
+ *     a kernel `defer:` wasm fallback must never run on the main thread.
  *
  * The kernel arm is exercised with an INJECTED fake module
  * (setKernelForTests, kernel-selector.test.ts pattern) so the assertions are
@@ -176,6 +179,23 @@ describe('T0-1 kernel-aware grammar preload', () => {
       expect(kernelRoutes('typescript')).toBe(false);
       expect(filterKernelRoutedLanguages(raw)).toEqual(raw);
       expect(isKernelOnlyLanguageSet(raw)).toBe(false);
+    });
+
+    it('framework extract() hooks keep the pool even for a fully kernel-routed set (P1-1)', () => {
+      const { mod } = makeFakeKernel();
+      setKernelForTests(mod);
+
+      const raw = preloadLanguagesForFiles(['src/App.ts', 'src/main.js']);
+      // Every language routes, so no wasm grammar is preloaded…
+      expect(filterKernelRoutedLanguages(raw)).toEqual([]);
+      // …and with no framework hook the set is kernel-only (main-thread arm).
+      expect(isKernelOnlyLanguageSet(raw)).toBe(true);
+      // A detected framework whose extract() hook can hit typescript/javascript
+      // keeps the pool: the merge pass and any deferred wasm parse stay in the
+      // workers instead of degrading to the main thread.
+      expect(isKernelOnlyLanguageSet(raw, new Set(['typescript']))).toBe(false);
+      // A hook for a language outside the set changes nothing.
+      expect(isKernelOnlyLanguageSet(raw, new Set(['python']))).toBe(true);
     });
   });
 

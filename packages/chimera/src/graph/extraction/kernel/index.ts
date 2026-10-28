@@ -309,6 +309,9 @@ export function kernelRoutes(language: Language): boolean {
  */
 export const DEFER_ELIGIBLE_LANGUAGES: ReadonlySet<Language> = new Set<Language>(['c', 'cpp']);
 
+/** No framework extract() hook applies — the default for isKernelOnlyLanguageSet. */
+const NO_FRAMEWORK_EXTRACT_LANGUAGES: ReadonlySet<Language> = new Set<Language>();
+
 /**
  * The wasm-grammar preload set for a file set's languages (T0-1): every
  * language the kernel routes right now is removed. A routed language parses
@@ -333,8 +336,18 @@ export function filterKernelRoutedLanguages(languages: Language[]): Language[] {
  * the kernel arm (T0-1). The empty set qualifies (nothing to parse). A
  * defer-eligible language (c/cpp) keeps the pool: its 10–40% defer band is
  * real wasm work, lazily loaded inside the workers.
+ *
+ * `frameworkExtractLanguages` names the languages a detected framework's
+ * extract() hook can hit. Any overlap keeps the pool too (P1-1): framework
+ * repos run that merge pass per file and can hit the per-file `defer:` valve,
+ * and neither the merge pass nor a deferred wasm fallback may degrade to the
+ * main thread. The kernel arm itself works inside the workers.
  */
-export function isKernelOnlyLanguageSet(languages: Language[]): boolean {
+export function isKernelOnlyLanguageSet(
+  languages: Language[],
+  frameworkExtractLanguages: ReadonlySet<Language> = NO_FRAMEWORK_EXTRACT_LANGUAGES
+): boolean {
+  if (languages.some((lang) => frameworkExtractLanguages.has(lang))) return false;
   return languages.every((lang) => kernelRoutes(lang) && !DEFER_ELIGIBLE_LANGUAGES.has(lang));
 }
 
