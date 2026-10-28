@@ -350,4 +350,39 @@ export function onPing(): void {}
       db.close();
     }
   });
+
+  it.each([false, true])(
+    'synthesizes a changed handler registered by an unchanged dependent (scoped=%s)',
+    async (scoped) => {
+      // The dispatcher and registration live in bus.ts; the handler is
+      // added later in handlers.ts. Only the handler file changes, so
+      // bus.ts is unchanged — but it imports pingHandler and therefore
+      // depends on the changed file, and the synced graph must converge to
+      // the rebuilt graph's dispatch edge.
+      write(
+        'bus.ts',
+        `import { EventEmitter } from 'events';
+import { pingHandler } from './handlers';
+export const bus = new EventEmitter();
+export function fire(): void { bus.emit('ping'); }
+bus.on('ping', pingHandler);
+`
+      );
+      write('handlers.ts', 'export function placeholder(): void {}\n');
+      await load();
+      expect(readEdges()).toHaveLength(0);
+
+      write(
+        'handlers.ts',
+        'export function placeholder(): void {}\nexport function pingHandler(): void {}\n'
+      );
+      await (scoped ? cg.syncFiles(['handlers.ts']) : cg.sync());
+
+      const edges = readEdges();
+      expect(edges).toHaveLength(1);
+      expect(edges[0]!.target).toBe(cg.getNodesByName('pingHandler')[0]!.id);
+      expect(JSON.parse(edges[0]!.metadata!).synthesizedBy).toBe('event-emitter');
+      await converges();
+    }
+  );
 });

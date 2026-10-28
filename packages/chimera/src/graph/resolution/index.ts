@@ -350,6 +350,28 @@ export class ReferenceResolver {
   }
 
   /**
+   * Warm the read path for a TS resolution batch. With the native ctx bridge
+   * live, ctx_warm builds the native knownFiles/knownNames indexes and the JS
+   * Set projections stay unbuilt — a null projection is the documented
+   * "no pre-filter" state. Every JS-side consumer must read null as "unknown,
+   * keep": the fast pre-filter (hasAnyPossibleMatch) skips itself and the
+   * Python builtin-name guards below never drop a ref on a null projection.
+   * Without the ctx arm the JS projections are the only reader of truth.
+   */
+  private warmForTsBatch(): void {
+    if (this.cachesWarmed) return;
+    if (this.ctx?.live()) {
+      try {
+        this.ctx.warm();
+        return;
+      } catch (err) {
+        this.handleCtxFailure(err);
+      }
+    }
+    this.warmCaches();
+  }
+
+  /**
    * Clear internal caches
    */
   clearCaches(): void {
@@ -686,7 +708,7 @@ export class ReferenceResolver {
     unresolvedRefs: UnresolvedReference[],
     maybeYield: MaybeYield
   ): Promise<ResolutionResult> {
-    this.warmCaches();
+    this.warmForTsBatch();
 
     const resolved: ResolvedRef[] = [];
     const unresolved: UnresolvedRef[] = [];
@@ -730,37 +752,22 @@ export class ReferenceResolver {
   }
 
   /**
-   * (R3c) Attempt the native batch arm: Plan A precompute (TS reads through
-   * the SAME ResolutionContext) → ONE resolve_batch crossing → decoded
-   * persist plan + the ResolutionResult view the shared aggregation needs.
-   * Null when the arm is not live or the crossing failed — the caller falls
-   * back to the TS batch for THIS batch (wire-shaped failures sticky-disable
-   * the bridge: a systematic bug degrades once, not per call).
+   * (R3c) The synchronous native-batch core: denormalize → ONE resolve_batch
+   * crossing → decoded persist plan. Null when the arm is not live or the
+   * crossing failed — the caller falls back to the TS arm for THIS batch
+   * (wire-shaped failures sticky-disable the bridge: a systematic bug
+   * degrades once, not per call).
    */
-  private async tryNativeBatch(
-    batch: UnresolvedReference[],
-    maybeYield: MaybeYield
-  ): Promise<{ result: ResolutionResult; decoded: DecodedBatch } | null> {
+  private nativeBatchPlan(
+    batch: UnresolvedReference[]
+  ): { result: ResolutionResult; decoded: DecodedBatch } | null {
     if (!this.resolve?.live()) return null;
     try {
-      // Same denormalization as resolveBatchYielding — the wire carries the
-      // final per-ref values the TS arm would resolveOne with.
-      const refs: UnresolvedRef[] = batch.map((ref) => ({
-        id: ref.id,
-        fromNodeId: ref.fromNodeId,
-        referenceName: ref.referenceName,
-        referenceKind: ref.referenceKind,
-        line: ref.line,
-        column: ref.column,
-        filePath: ref.filePath || this.getFilePathFromNodeId(ref.fromNodeId),
-        language: ref.language || this.getLanguageFromNodeId(ref.fromNodeId),
-      }));
-      const decoded = this.resolve.resolveBatch(refs, {
+      const decoded = this.resolve.resolveBatch(this.denormalizeRefs(batch), {
         context: this.context,
         frameworks: this.frameworks,
         gateKeep: (ref, claims) => this.resolveOneKeepGate(ref, claims),
       });
-      await maybeYield();
       return {
         result: {
           // The batched path persists from the decoded plan, not from these
@@ -785,6 +792,38 @@ export class ReferenceResolver {
       });
       return null;
     }
+  }
+
+  /**
+   * (R3c) Attempt the native batch arm for the yielding batched caller.
+   * Null when the arm is not live or the crossing failed — the caller falls
+   * back to the TS batch for THIS batch.
+   */
+  private async tryNativeBatch(
+    batch: UnresolvedReference[],
+    maybeYield: MaybeYield
+  ): Promise<{ result: ResolutionResult; decoded: DecodedBatch } | null> {
+    const native = this.nativeBatchPlan(batch);
+    if (native) await maybeYield();
+    return native;
+  }
+
+  /**
+   * Denormalize extraction refs into the wire shape — the same per-ref values
+   * the TS arm would resolveOne with (file/language fall back to the source
+   * node when the caller did not carry them).
+   */
+  private denormalizeRefs(batch: UnresolvedReference[]): UnresolvedRef[] {
+    return batch.map((ref) => ({
+      id: ref.id,
+      fromNodeId: ref.fromNodeId,
+      referenceName: ref.referenceName,
+      referenceKind: ref.referenceKind,
+      line: ref.line,
+      column: ref.column,
+      filePath: ref.filePath || this.getFilePathFromNodeId(ref.fromNodeId),
+      language: ref.language || this.getLanguageFromNodeId(ref.fromNodeId),
+    }));
   }
 
   /**
@@ -1336,13 +1375,49 @@ export class ReferenceResolver {
   }
 
   /**
-   * Resolve and persist edges to database
+   * Resolve and persist edges to database.
+   *
+   * Scoped syncs (incremental watcher / syncFiles) pass `scopeFilePaths` —
+   * the changed+dependent file set — so the file-level import sweep stays
+   * scoped instead of walking every indexed file, and additive synthesis
+   * scans only those files. Full callers omit it and keep whole-project
+   * semantics. `fullImportSweep` forces the import sweep back to the whole
+   * project even on a scoped call: a sync that added or removed files must
+   * rebuild the `imports` edges of unchanged importers, which the changed
+   * scope cannot name.
+   *
+   * When the native batch arm is live the refs cross the wire as ONE
+   * resolve_batch (0-ref guard: an empty batch never crosses) and the JS
+   * knownFiles/knownNames projections are never warmed; a failed crossing
+   * falls back to the TS arm for this call, sticky-disabling the bridge on
+   * wire-shaped faults exactly like resolveAndPersistBatched.
    */
   resolveAndPersist(
     unresolvedRefs: UnresolvedReference[],
     onProgress?: (current: number, total: number) => void,
-    synthesize: boolean = true
+    synthesize: boolean = true,
+    scopeFilePaths?: string[],
+    fullImportSweep: boolean = false
   ): ResolutionResult {
+    if (unresolvedRefs.length === 0) {
+      // 0-ref guard: an import-only edit emits no refs, so there is nothing
+      // to resolve and no reason to warm the JS projections — but the
+      // scoped sweep/synthesis below still run.
+      const result = this.emptyResult();
+      this.materializeFileLevelImportEdges(this.sweepFilePaths([], scopeFilePaths, fullImportSweep));
+      this.runAdditiveSynthesis(result, synthesize, scopeFilePaths);
+      return result;
+    }
+
+    const native = this.nativeBatchPlan(unresolvedRefs);
+    if (native) {
+      const result = this.persistNativeBatch(native.decoded, unresolvedRefs, scopeFilePaths, fullImportSweep);
+      onProgress?.(unresolvedRefs.length, unresolvedRefs.length);
+      this.runAdditiveSynthesis(result, synthesize, scopeFilePaths);
+      return result;
+    }
+
+    // TS fallback (no native arm, or this call's crossing failed).
     const result = this.resolveAll(unresolvedRefs, onProgress);
 
     // Create edges from resolved references
@@ -1352,9 +1427,12 @@ export class ReferenceResolver {
     if (edges.length > 0) {
       this.queries.insertEdges(edges);
     }
-    // Persist file-level import edges — full sweep over every indexed file so
-    // import-only dependencies land even when no symbol ref crossed the boundary.
-    this.materializeFileLevelImportEdges(this.queries.getAllFilePaths());
+    // Persist file-level import edges — scoped to the changed+dependent set
+    // on incremental syncs so import-only dependencies land without an
+    // O(files) sweep; full callers and add/remove batches keep the
+    // whole-project sweep (an unchanged importer's edge can only resolve
+    // against the new file set).
+    this.materializeFileLevelImportEdges(this.sweepFilePaths(unresolvedRefs, scopeFilePaths, fullImportSweep));
 
     // Scoped sync resolves only the changed files' refs, but dynamic-dispatch
     // edges can depend on unchanged neighbors (e.g. base method -> new override).
@@ -1363,13 +1441,7 @@ export class ReferenceResolver {
     // refreshSynthesis afterwards passes synthesize=false: the staged refresh
     // replaces the whole owned set from a clean base, so the additive pass
     // here would just compute the same edges twice (upstream #2033).
-    if (synthesize) {
-      try {
-        result.stats.byMethod['callback-synthesis'] = synthesizeCallbackEdges(this.queries, this.context);
-      } catch {
-        // synthesis is additive and optional; ignore failures
-      }
-    }
+    this.runAdditiveSynthesis(result, synthesize, scopeFilePaths);
 
     // Clean up resolved refs from unresolved_refs so metrics stay accurate.
     if (result.resolved.length > 0) {
@@ -1392,6 +1464,135 @@ export class ReferenceResolver {
     }
 
     return result;
+  }
+
+  private emptyResult(): ResolutionResult {
+    return {
+      resolved: [],
+      unresolved: [],
+      stats: { total: 0, resolved: 0, unresolved: 0, byMethod: {} },
+    };
+  }
+
+  /**
+   * TS-arm sweep scope: scoped callers name the changed+dependent set; the
+   * refs' own files are unioned in so a narrower caller scope can never drop
+   * an import edge the resolution pass itself touched. A batch that added or
+   * removed files forces the whole-project sweep: an unchanged importer's
+   * imports edge can only resolve against the new file set, and the importer
+   * itself is never in the changed scope.
+   */
+  private sweepFilePaths(
+    refs: UnresolvedReference[],
+    scopeFilePaths: string[] | undefined,
+    fullImportSweep: boolean
+  ): string[] {
+    if (!scopeFilePaths || fullImportSweep) return this.queries.getAllFilePaths();
+    return [
+      ...new Set([
+        ...scopeFilePaths,
+        ...refs.map((ref) => ref.filePath || this.getFilePathFromNodeId(ref.fromNodeId)),
+      ]),
+    ];
+  }
+
+  /**
+   * Persist a decoded native batch through the same QueryBuilder arms the TS
+   * path uses. The Rust sweep already covered the refs' files; scoped callers
+   * still get the TS sweep for their non-ref files (ref-less barrels), and an
+   * add/remove batch widens that sweep to every indexed file.
+   */
+  private persistNativeBatch(
+    decoded: DecodedBatch,
+    refs: UnresolvedReference[],
+    scopeFilePaths: string[] | undefined,
+    fullImportSweep: boolean
+  ): ResolutionResult {
+    if (decoded.batchEdges.length > 0) this.queries.insertEdges(decoded.batchEdges);
+    for (const sweep of decoded.sweeps) {
+      this.queries.deleteFileLevelImportEdgesBySource(sweep.sourceNodeId);
+      if (sweep.edges.length > 0) this.queries.insertEdges(sweep.edges);
+    }
+    const sweptFiles = new Set(
+      refs.map((ref) => ref.filePath || this.getFilePathFromNodeId(ref.fromNodeId))
+    );
+    const sweepScope = scopeFilePaths && !fullImportSweep ? scopeFilePaths : this.queries.getAllFilePaths();
+    this.materializeFileLevelImportEdges(
+      sweepScope.filter((filePath) => !sweptFiles.has(filePath))
+    );
+    if (decoded.resolved.length > 0) {
+      this.deleteUnresolvedReferences(decoded.resolved as unknown as UnresolvedRef[]);
+    }
+    if (decoded.failed.length > 0) this.queries.markReferencesFailed(decoded.failed);
+    return {
+      resolved: [],
+      unresolved: [],
+      stats: {
+        total: decoded.stats.total,
+        resolved: decoded.stats.resolved,
+        unresolved: decoded.stats.unresolved,
+        byMethod: { ...decoded.stats.byMethod },
+      },
+    };
+  }
+
+  /**
+   * Additive callback synthesis for this pass. Scoped to the changed set so
+   * an incremental save does not re-scan the whole graph; a sync that will
+   * run the staged refresh passes synthesize=false (upstream #2033).
+   */
+  private runAdditiveSynthesis(
+    result: ResolutionResult,
+    synthesize: boolean,
+    scopeFilePaths?: string[]
+  ): void {
+    if (!synthesize) return;
+    try {
+      result.stats.byMethod['callback-synthesis'] = synthesizeCallbackEdges(
+        this.queries,
+        this.context,
+        this.synthesisScope(scopeFilePaths)
+      );
+    } catch {
+      // synthesis is additive and optional; ignore failures
+    }
+  }
+
+  /**
+   * Additive-synthesis scan scope: the changed+dependent set plus the files
+   * that depend on it. A changed file's new symbols only reach a synthesized
+   * channel through a counterpart (registration/dispatch site) that lives in
+   * a file referencing the changed one — an unchanged importer a changed-only
+   * scan would never visit. The import sweep above already refreshed those
+   * file-level `imports` edges, so the lookup sees this pass's additions and
+   * removals.
+   */
+  private synthesisScope(scopeFilePaths?: string[]): string[] | undefined {
+    if (!scopeFilePaths) return undefined;
+    const MAX_SCOPE_FILES = 200;
+    const scope = new Set(scopeFilePaths);
+    if (scope.size > MAX_SCOPE_FILES) return undefined;
+    // Transitive importer closure: a counterpart registration site can sit
+    // two or more hops away from the changed file (dispatcher → barrel →
+    // changed file). One direct-importer hop misses it, so walk the
+    // `imports` incoming edges breadth-first. Over the cap the scope is
+    // dropped entirely — a full synthesis scan converges correctly, just
+    // without the incremental read saving.
+    const queue = [...scopeFilePaths];
+    while (queue.length > 0) {
+      const filePath = queue.shift();
+      if (filePath === undefined) break;
+      const fileNode = this.queries.getNodesByFile(filePath).find((node) => node.kind === 'file');
+      if (!fileNode) continue;
+      for (const edge of this.queries.getIncomingEdges(fileNode.id, ['imports'])) {
+        const source = this.queries.getNodeById(edge.source);
+        if (!source || scope.has(source.filePath)) continue;
+        scope.add(source.filePath);
+        if (scope.size > MAX_SCOPE_FILES) return undefined;
+        queue.push(source.filePath);
+      }
+    }
+    return [...scope];
   }
 
   /**
@@ -1475,7 +1676,8 @@ export class ReferenceResolver {
       // (R3c) Native arm: warm ONLY the Rust-side knownFiles/knownNames
       // indexes. The JS Set projections are skipped — the ~85MB-heap win the
       // R3b note (warmCaches) deferred to this baton. A batch that falls
-      // back to TS builds them lazily via warmCaches() below.
+      // back to TS keeps the native warm: a null projection is the
+      // documented "no pre-filter" state, never a dropped ref.
       if (this.ctx?.live()) {
         try {
           this.ctx.warm();
@@ -1739,7 +1941,7 @@ export class ReferenceResolver {
         // But allow if the capitalized receiver matches a known codebase class
         if (PYTHON_BUILT_IN_METHODS.has(method)) {
           const capitalized = receiver.charAt(0).toUpperCase() + receiver.slice(1);
-          if (!this.knownNames?.has(capitalized)) {
+          if (this.knownNames && !this.knownNames.has(capitalized)) {
             return true;
           }
         }
@@ -1750,7 +1952,7 @@ export class ReferenceResolver {
       // `def get()` — is a real reference target. Mirrors the knownNames guard on
       // the dotted branch above; without it, every handler named after a builtin
       // method silently loses its route→handler edge.
-      if (PYTHON_BUILT_IN_METHODS.has(name) && !this.knownNames?.has(name)) {
+      if (PYTHON_BUILT_IN_METHODS.has(name) && this.knownNames && !this.knownNames.has(name)) {
         return true;
       }
     }

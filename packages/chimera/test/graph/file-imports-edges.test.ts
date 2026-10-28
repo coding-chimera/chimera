@@ -124,4 +124,30 @@ describe('File-level imports edge materialization', () => {
       .filter((edge: Edge) => cg.getNode(edge.target)?.kind === 'import');
     expect(syntaxEdges.length).toBeGreaterThanOrEqual(1);
   });
+
+  it.each([false, true])(
+    'rebuilds an unchanged importer when a new target file appears (full=%s)',
+    async (full) => {
+      write('src/utils.ts', 'export function fmt(): number { return 1 }\n');
+      write(
+        'src/main.ts',
+        'import { fmt } from "./utils";\nimport { later } from "./later";\nexport function run(): number { return fmt() + later(); }\n'
+      );
+      cg = await CodeGraph.init(tempDir, { index: true });
+      expect(fileLevelImportEdges('src/main.ts').map((e) => cg.getNode(e.target)?.filePath)).toEqual([
+        'src/utils.ts',
+      ]);
+
+      // The missing target lands. main.ts is unchanged and outside the
+      // changed scope, so only the add-batch full sweep can rebuild its
+      // file-level edge against the new file set.
+      write('src/later.ts', 'import { fmt } from "./utils";\nexport function later(): number { return fmt(); }\n');
+      await (full ? cg.sync() : cg.syncFiles(['src/later.ts']));
+
+      const after = fileLevelImportEdges('src/main.ts').map((e) => cg.getNode(e.target)?.filePath);
+      expect(after).toContain('src/utils.ts');
+      expect(after).toContain('src/later.ts');
+      expect(cg.getFileDependents('src/later.ts')).toContain('src/main.ts');
+    }
+  );
 });

@@ -26,6 +26,7 @@ import type { QueryBuilder } from '../db/queries';
 import type { ResolutionContext } from './types';
 import { isGeneratedFile } from '../extraction/generated-detection';
 import { stripCommentsForRegex } from './strip-comments';
+import { makeLineAt } from './synth-utils';
 import { crossesCodeBoundary } from './name-matcher';
 import { vueRouterLinkEdges } from './vue-router-synthesizer';
 import { svelteKitLinkEdges, svelteKitPageComponentEdges } from './sveltekit-synthesizer';
@@ -87,6 +88,35 @@ function dispatcherField(src: string): string | null {
 
 const FN_KINDS = new Set(['method', 'function', 'component']);
 
+/**
+ * Incremental-sync scan scope: when set, a pass's scan scaffold (the
+ * whole-graph file / node-kind iterations) visits only these files. The
+ * adjudication heuristics keep reading the full graph through the context —
+ * name lookups, import resolution, contains/extends edges — so pairing
+ * semantics are unchanged; only the number of files read is.
+ */
+type ScanScope = ReadonlySet<string> | undefined;
+
+let activeScope: ScanScope;
+
+function scanFiles(ctx: ResolutionContext): string[] {
+  const files = ctx.getAllFiles();
+  return activeScope ? files.filter((file) => activeScope!.has(file)) : files;
+}
+
+function scanNodes(nodes: Node[]): Node[] {
+  return activeScope ? nodes.filter((node) => activeScope!.has(node.filePath)) : nodes;
+}
+
+function inScope(filePath: string): boolean {
+  return activeScope === undefined || activeScope.has(filePath);
+}
+
+/** A context whose whole-graph file scan is narrowed to the incremental set. */
+function scopedContext(ctx: ResolutionContext, scope: ReadonlySet<string>): ResolutionContext {
+  return { ...ctx, getAllFiles: () => ctx.getAllFiles().filter((file) => scope.has(file)) };
+}
+
 /** Innermost function/method node whose line range contains `line`. */
 function enclosingFn(nodesInFile: Node[], line: number): Node | null {
   let best: Node | null = null;
@@ -102,7 +132,7 @@ function enclosingFn(nodesInFile: Node[], line: number): Node | null {
 
 /** Phase 1: field-backed observer channels (registrar/dispatcher share a store). */
 function fieldChannelEdges(queries: QueryBuilder, ctx: ResolutionContext): Edge[] {
-  const candidates = [...queries.getNodesByKind('method'), ...queries.getNodesByKind('function')];
+  const candidates = scanNodes([...queries.getNodesByKind('method'), ...queries.getNodesByKind('function')]);
   const registrars: Array<{ node: Node; field: string }> = [];
   const dispatchers: Array<{ node: Node; field: string }> = [];
 
@@ -189,7 +219,7 @@ function fieldChannelEdges(queries: QueryBuilder, ctx: ResolutionContext): Edge[
  * name shared across unrelated classes can't fan out into noise.
  */
 function closureCollectionEdges(queries: QueryBuilder, ctx: ResolutionContext): Edge[] {
-  const candidates = [...queries.getNodesByKind('method'), ...queries.getNodesByKind('function')];
+  const candidates = scanNodes([...queries.getNodesByKind('method'), ...queries.getNodesByKind('function')]);
   const dispatchers = new Map<string, Array<{ node: Node; line: number }>>(); // field → dispatcher methods + forEach line
   const registrars = new Map<string, Array<{ node: Node; line: number }>>();   // field → registrar methods + append line
 
@@ -207,7 +237,7 @@ function closureCollectionEdges(queries: QueryBuilder, ctx: ResolutionContext): 
     const hasForEach = src.includes('.forEach');
     const hasAppend = src.includes('.append(') || src.includes('.add(') || src.includes('.push(') || src.includes('.insert(');
     if (!hasForEach && !hasAppend) continue;
-    const lineAt = (idx: number) => (m.startLine ?? 1) + src.slice(0, idx).split('\n').length - 1;
+    const lineAt = makeLineAt(src, m.startLine ?? 1);
 
     if (hasForEach) {
       CC_DISPATCH_RE.lastIndex = 0;
@@ -254,14 +284,14 @@ function eventEmitterEdges(ctx: ResolutionContext): Edge[] {
   const emitsByEvent = new Map<string, Set<string>>();          // event → dispatcher node ids
   const handlersByEvent = new Map<string, Map<string, string>>(); // event → handler id → registration site (file:line)
 
-  for (const file of ctx.getAllFiles()) {
+  for (const file of scanFiles(ctx)) {
     const content = ctx.readFile(file);
     if (!content) continue;
     const hasEmit = content.includes('.emit(') || content.includes('.fire(') || content.includes('.dispatchEvent(');
     const hasOn = content.includes('.on(') || content.includes('.once(') || content.includes('.addListener(');
     if (!hasEmit && !hasOn) continue;
     const nodesInFile = ctx.getNodesInFile(file);
-    const lineOf = (idx: number) => content.slice(0, idx).split('\n').length;
+    const lineOf = makeLineAt(content, 1);
 
     if (hasEmit) {
       EMIT_RE.lastIndex = 0;
@@ -320,7 +350,7 @@ function eventEmitterEdges(ctx: ResolutionContext): Edge[] {
 function reactRenderEdges(queries: QueryBuilder, ctx: ResolutionContext): Edge[] {
   const edges: Edge[] = [];
   const seen = new Set<string>();
-  for (const cls of queries.getNodesByKind('class')) {
+  for (const cls of scanNodes(queries.getNodesByKind('class'))) {
     const children = queries.getOutgoingEdges(cls.id, ['contains'])
       .map((e) => queries.getNodeById(e.target))
       .filter((n): n is Node => !!n && n.kind === 'method');
@@ -359,7 +389,7 @@ function reactRenderEdges(queries: QueryBuilder, ctx: ResolutionContext): Edge[]
 function flutterBuildEdges(queries: QueryBuilder, ctx: ResolutionContext): Edge[] {
   const edges: Edge[] = [];
   const seen = new Set<string>();
-  for (const cls of queries.getNodesByKind('class')) {
+  for (const cls of scanNodes(queries.getNodesByKind('class'))) {
     const children = queries.getOutgoingEdges(cls.id, ['contains'])
       .map((e) => queries.getNodeById(e.target))
       .filter((n): n is Node => !!n && n.kind === 'method');
@@ -404,7 +434,7 @@ function cppOverrideEdges(queries: QueryBuilder): Edge[] {
       .getOutgoingEdges(classId, ['contains'])
       .map((e) => queries.getNodeById(e.target))
       .filter((n): n is Node => !!n && n.kind === 'method');
-  for (const cls of queries.getNodesByKind('class')) {
+  for (const cls of scanNodes(queries.getNodesByKind('class'))) {
     const subMethods = methodsOf(cls.id).filter((n) => n.language === 'cpp');
     if (subMethods.length === 0) continue;
     for (const ext of queries.getOutgoingEdges(cls.id, ['extends'])) {
@@ -469,7 +499,7 @@ function interfaceOverrideEdges(queries: QueryBuilder): Edge[] {
   // gained a real implements edge (5b0c4b8, #1515). Iterate all.
   const concreteKinds = ['class', 'struct', 'union'] as const;
   for (const kind of concreteKinds) {
-  for (const cls of queries.getNodesByKind(kind)) {
+  for (const cls of scanNodes(queries.getNodesByKind(kind))) {
     const implMethods = methodsOf(cls.id).filter((n) => IFACE_OVERRIDE_LANGS.has(n.language));
     if (implMethods.length === 0) continue;
     for (const sup of queries.getOutgoingEdges(cls.id, ['implements', 'extends'])) {
@@ -561,7 +591,7 @@ function goGrpcStubImplEdges(queries: QueryBuilder): Edge[] {
   }
 
   for (const stub of goStructs) {
-    if (!STUB_RE.test(stub.name)) continue;
+    if (!STUB_RE.test(stub.name) || !inScope(stub.filePath)) continue;
     // The stub MUST live in a generated file — that's what tells us this is
     // a protoc-emitted scaffold rather than someone naming a struct
     // `UnimplementedXxxServer` by hand. Without this gate we'd also bridge
@@ -632,7 +662,7 @@ function reactJsxChildEdges(ctx: ResolutionContext): Edge[] {
   const edges: Edge[] = [];
   const seen = new Set<string>();
   const PARENT_KINDS = new Set(['method', 'function', 'component']);
-  for (const file of ctx.getAllFiles()) {
+  for (const file of scanFiles(ctx)) {
     const content = ctx.readFile(file);
     if (!content || (!content.includes('</') && !content.includes('/>'))) continue; // JSX-file gate
     const parents = ctx.getNodesInFile(file).filter((n) => PARENT_KINDS.has(n.kind));
@@ -685,7 +715,7 @@ function vueTemplateEdges(ctx: ResolutionContext): Edge[] {
   // A composable's returned member may be a fn (`function close(){}`) or an
   // arrow assigned to a const (`const close = () => {}`).
   const RETURN_KINDS = new Set(['method', 'function', 'variable', 'constant']);
-  for (const file of ctx.getAllFiles()) {
+  for (const file of scanFiles(ctx)) {
     if (!file.endsWith('.vue')) continue;
     const content = ctx.readFile(file);
     const tpl = content && content.match(/<template[^>]*>([\s\S]*)<\/template>/i)?.[1];
@@ -799,12 +829,12 @@ function rnEventEdges(ctx: ResolutionContext): Edge[] {
   const nativeDispatchersByEvent = new Map<string, Set<string>>();
   const jsHandlersByEvent = new Map<string, Map<string, string>>();
 
-  for (const file of ctx.getAllFiles()) {
+  for (const file of scanFiles(ctx)) {
     const content = ctx.readFile(file);
     if (!content) continue;
 
     const nodesInFile = ctx.getNodesInFile(file);
-    const lineOf = (idx: number) => content.slice(0, idx).split('\n').length;
+    const lineOf = makeLineAt(content, 1);
     const addDispatcher = (event: string, line: number) => {
       const disp = enclosingFn(nodesInFile, line);
       if (!disp) return;
@@ -968,7 +998,7 @@ function fabricNativeImplEdges(ctx: ResolutionContext): Edge[] {
 
   // The Fabric extractor IDs are prefixed `fabric-component:` so we can
   // filter to just those without iterating all `component` nodes.
-  const components = ctx.getNodesByKind('component').filter((n) => n.id.startsWith('fabric-component:'));
+  const components = scanNodes(ctx.getNodesByKind('component')).filter((n) => n.id.startsWith('fabric-component:'));
   if (components.length === 0) return edges;
 
   // Pre-index native classes by name for O(1) lookup.
@@ -1041,7 +1071,7 @@ function mybatisJavaXmlEdges(queries: QueryBuilder): Edge[] {
   }
 
   for (const xml of queries.getNodesByKind('method')) {
-    if (xml.language !== 'xml') continue;
+    if (xml.language !== 'xml' || !inScope(xml.filePath)) continue;
     // Qualified name: `<namespace>::<id>`. Extract the simple class name.
     const colonIdx = xml.qualifiedName.lastIndexOf('::');
     if (colonIdx < 0) continue;
@@ -1137,7 +1167,7 @@ function goHandlerIdent(expr: string): string | null {
 function ginMiddlewareChainEdges(queries: QueryBuilder, ctx: ResolutionContext): Edge[] {
   // 1. Find the chain dispatcher(s): a Go method that invokes a `handlers` slice by index.
   const dispatchers = queries.getNodesByKind('method').filter((n) => {
-    if (n.language !== 'go') return false;
+    if (n.language !== 'go' || !inScope(n.filePath)) return false;
     const content = ctx.readFile(n.filePath);
     const src = content && sliceLines(content, n.startLine, n.endLine);
     return !!src && GIN_DISPATCH_RE.test(src);
@@ -1148,18 +1178,19 @@ function ginMiddlewareChainEdges(queries: QueryBuilder, ctx: ResolutionContext):
   //    (.Use / .GET / … / .Handle). String args (paths/methods) and inline
   //    closures are dropped by goHandlerIdent; the rest are HandlerFuncs.
   const registered = new Map<string, string>();                         // name → registeredAt (file:line)
-  for (const file of ctx.getAllFiles()) {
+  for (const file of scanFiles(ctx)) {
     if (!file.endsWith('.go')) continue;
     const content = ctx.readFile(file);
     if (!content || (!content.includes('.Use(') && !/\.(?:GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD|Any|Handle)\(/.test(content))) continue;
     const safe = stripCommentsForRegex(content, 'go');
+    const lineOf = makeLineAt(safe, 1);
     GIN_REG_RE.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = GIN_REG_RE.exec(safe))) {
       const parenIdx = m.index + m[0].length - 1;
       const argStr = goBalancedArgs(safe, parenIdx);
       if (!argStr) continue;
-      const line = safe.slice(0, m.index).split('\n').length;
+      const line = lineOf(m.index);
       for (const arg of goSplitArgs(argStr)) {
         const name = goHandlerIdent(arg);
         if (name && !registered.has(name)) registered.set(name, `${file}:${line}`);
@@ -1250,11 +1281,12 @@ function vuexDispatchEdges(ctx: ResolutionContext): Edge[] {
 
   const edges: Edge[] = [];
   const seen = new Set<string>();
-  for (const file of ctx.getAllFiles()) {
+  for (const file of scanFiles(ctx)) {
     if (!PINIA_CONSUMER_EXT.test(file)) continue;
     const content = ctx.readFile(file);
     if (!content || (!content.includes('dispatch(') && !content.includes('commit('))) continue;
     const safe = stripCommentsForRegex(content, /\.(?:jsx?|mjs|cjs)$/.test(file) ? 'javascript' : 'typescript');
+    const lineOf = makeLineAt(safe, 1);
     const nodesInFile = ctx.getNodesInFile(file);
     const fallback = nodesInFile.find((n) => n.kind === 'component'); // .vue top-level
     VUEX_DISPATCH_RE.lastIndex = 0;
@@ -1262,7 +1294,7 @@ function vuexDispatchEdges(ctx: ResolutionContext): Edge[] {
     let added = 0;
     while ((m = VUEX_DISPATCH_RE.exec(safe)) && added < VUEX_FANOUT_CAP) {
       const key = m[1]!;
-      const line = safe.slice(0, m.index).split('\n').length;
+      const line = lineOf(m.index);
       const disp = enclosingFn(nodesInFile, line) ?? fallback;
       if (!disp) continue;
       const target = resolve(key, file);
@@ -1325,69 +1357,86 @@ export function hasSynthesisPattern(filePath: string, content: string): boolean 
  * `<a href>` markup). Returns the count added. Never throws into indexing —
  * callers wrap in try/catch.
  */
-export function synthesizeCallbackEdges(queries: QueryBuilder, ctx: ResolutionContext): number {
-  // Language gate: skip passes whose target language(s) are absent from the
-  // project — a pass over an empty language class is provably empty, so
-  // single-language repos skip unrelated scan work entirely (upstream #1235).
-  const langs = queries.getDistinctFileLanguages();
-  const has = (...ls: string[]) => ls.some((l) => langs.has(l));
-  const fieldEdges = fieldChannelEdges(queries, ctx);
-  const closureCollEdges = closureCollectionEdges(queries, ctx);
-  const emitterEdges = eventEmitterEdges(ctx);
-  const renderEdges = reactRenderEdges(queries, ctx);
-  const jsxEdges = reactJsxChildEdges(ctx);
-  const vueEdges = has('vue') ? vueTemplateEdges(ctx) : [];
-  const flutterEdges = has('dart') ? flutterBuildEdges(queries, ctx) : [];
-  const cppEdges = has('cpp') ? cppOverrideEdges(queries) : [];
-  const ifaceEdges = has(...IFACE_OVERRIDE_LANGS) ? interfaceOverrideEdges(queries) : [];
-  const goGrpcEdges = has('go') ? goGrpcStubImplEdges(queries) : [];
-  const rnEventEdgesList = rnEventEdges(ctx);
-  const fabricNativeEdges = fabricNativeImplEdges(ctx);
-  const mybatisEdges = has('java', 'kotlin') && has('xml') ? mybatisJavaXmlEdges(queries) : [];
-  const ginEdges = has('go') ? ginMiddlewareChainEdges(queries, ctx) : [];
-  const vuexEdges = has('vue', ...JS_FAMILY) ? vuexDispatchEdges(ctx) : [];
-  const vueRouterLinkList = has('vue', ...JS_FAMILY) ? vueRouterLinkEdges(ctx) : [];
-  const svelteKitPageList = has('svelte') ? svelteKitPageComponentEdges(ctx) : [];
-  const svelteKitLinkList = has('svelte') ? svelteKitLinkEdges(ctx) : [];
+export function synthesizeCallbackEdges(
+  queries: QueryBuilder,
+  ctx: ResolutionContext,
+  scopeFilePaths?: readonly string[]
+): number {
+  // Incremental sync passes the changed+dependent files: each pass's scan
+  // scaffold visits only those, while its pairing heuristics still read the
+  // full graph through ctx/queries. Undefined keeps the whole-graph pass
+  // (full index and the staged refresh). The passes are synchronous, so the
+  // module-level scope cannot interleave with another call.
+  activeScope = scopeFilePaths ? new Set(scopeFilePaths) : undefined;
+  try {
+    const scanCtx = activeScope ? scopedContext(ctx, activeScope) : ctx;
+    // Language gate: skip passes whose target language(s) are absent from the
+    // project — a pass over an empty language class is provably empty, so
+    // single-language repos skip unrelated scan work entirely (upstream #1235).
+    const langs = queries.getDistinctFileLanguages();
+    const has = (...ls: string[]) => ls.some((l) => langs.has(l));
+    const fieldEdges = fieldChannelEdges(queries, ctx);
+    const closureCollEdges = closureCollectionEdges(queries, ctx);
+    const emitterEdges = eventEmitterEdges(ctx);
+    const renderEdges = reactRenderEdges(queries, ctx);
+    const jsxEdges = reactJsxChildEdges(ctx);
+    const vueEdges = has('vue') ? vueTemplateEdges(ctx) : [];
+    const flutterEdges = has('dart') ? flutterBuildEdges(queries, ctx) : [];
+    const cppEdges = has('cpp') ? cppOverrideEdges(queries) : [];
+    const ifaceEdges = has(...IFACE_OVERRIDE_LANGS) ? interfaceOverrideEdges(queries) : [];
+    const goGrpcEdges = has('go') ? goGrpcStubImplEdges(queries) : [];
+    const rnEventEdgesList = rnEventEdges(ctx);
+    const fabricNativeEdges = fabricNativeImplEdges(ctx);
+    const mybatisEdges = has('java', 'kotlin') && has('xml') ? mybatisJavaXmlEdges(queries) : [];
+    const ginEdges = has('go') ? ginMiddlewareChainEdges(queries, ctx) : [];
+    const vuexEdges = has('vue', ...JS_FAMILY) ? vuexDispatchEdges(ctx) : [];
+    const vueRouterLinkList = has('vue', ...JS_FAMILY) ? vueRouterLinkEdges(scanCtx) : [];
+    const svelteKitPageList = has('svelte') ? svelteKitPageComponentEdges(scanCtx) : [];
+    const svelteKitLinkList = has('svelte') ? svelteKitLinkEdges(scanCtx) : [];
 
-  const merged: Edge[] = [];
-  const seen = new Set<string>();
-  for (const e of [
-    ...fieldEdges,
-    ...closureCollEdges,
-    ...emitterEdges,
-    ...renderEdges,
-    ...jsxEdges,
-    ...vueEdges,
-    ...flutterEdges,
-    ...cppEdges,
-    ...ifaceEdges,
-    ...goGrpcEdges,
-    ...rnEventEdgesList,
-    ...fabricNativeEdges,
-    ...mybatisEdges,
-    ...ginEdges,
-    ...vuexEdges,
-    ...vueRouterLinkList,
-    ...svelteKitPageList,
-    ...svelteKitLinkList,
-  ]) {
-    const key = `${e.source}>${e.target}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    merged.push(e);
+    const merged: Edge[] = [];
+    const seen = new Set<string>();
+    for (const e of [
+      ...fieldEdges,
+      ...closureCollEdges,
+      ...emitterEdges,
+      ...renderEdges,
+      ...jsxEdges,
+      ...vueEdges,
+      ...flutterEdges,
+      ...cppEdges,
+      ...ifaceEdges,
+      ...goGrpcEdges,
+      ...rnEventEdgesList,
+      ...fabricNativeEdges,
+      ...mybatisEdges,
+      ...ginEdges,
+      ...vuexEdges,
+      ...vueRouterLinkList,
+      ...svelteKitPageList,
+      ...svelteKitLinkList,
+    ]) {
+      const key = `${e.source}>${e.target}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(e);
+    }
+    if (merged.length > 0) queries.insertEdges(merged);
+    // Remember source gates, including inputs that currently produce NO edges
+    // (e.g. an over-cap channel): deleting one may make a full pass viable
+    // again, so the sync-time refresh trigger must know about it (upstream
+    // #2033). On a staged refresh this writes the overlay's TEMP table and
+    // lands in main at publish.
+    const inputs: string[] = [];
+    for (const file of scanFiles(ctx)) {
+      const content = ctx.readFile(file);
+      if (content !== null && hasSynthesisPattern(file, content)) inputs.push(file);
+    }
+    if (!activeScope) queries.replaceSynthesisInputs(inputs);
+    return merged.length;
+  } finally {
+    // The scope is module-level scratch state; a throw anywhere above must not
+    // leak it into the next call (whose scope may be wider or absent).
+    activeScope = undefined;
   }
-  if (merged.length > 0) queries.insertEdges(merged);
-  // Remember source gates, including inputs that currently produce NO edges
-  // (e.g. an over-cap channel): deleting one may make a full pass viable
-  // again, so the sync-time refresh trigger must know about it (upstream
-  // #2033). On a staged refresh this writes the overlay's TEMP table and
-  // lands in main at publish.
-  const inputs: string[] = [];
-  for (const file of ctx.getAllFiles()) {
-    const content = ctx.readFile(file);
-    if (content !== null && hasSynthesisPattern(file, content)) inputs.push(file);
-  }
-  queries.replaceSynthesisInputs(inputs);
-  return merged.length;
 }

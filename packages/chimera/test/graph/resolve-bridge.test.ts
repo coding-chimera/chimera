@@ -712,3 +712,518 @@ describe('native resolve arm end-to-end', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// resolveAndPersist — scoped sync native arm (P1-2/P1-3)
+// ---------------------------------------------------------------------------
+
+const OTHER_TS = "import { alpha } from './lib';\n";
+
+function addImportOnlyFile(fix: Fix, filePath: string, content: string): void {
+  fs.writeFileSync(path.join(fix.dir, filePath), content, 'utf8');
+  fix.queries.insertNodes([
+    node({
+      id: `file:${filePath}`,
+      kind: 'file',
+      name: filePath,
+      filePath,
+      startLine: 1,
+      endLine: 2,
+    }),
+  ]);
+  fix.queries.upsertFile({
+    path: filePath,
+    contentHash: `h-${filePath}`,
+    language: 'typescript',
+    size: content.length,
+    modifiedAt: 1_700_000_000_000,
+    indexedAt: 1_700_000_000_000,
+    nodeCount: 1,
+  });
+}
+
+function importTargets(fix: Fix, sourceId: string): string[] {
+  return fix.queries.getOutgoingEdges(sourceId, ['imports']).map((edge) => edge.target);
+}
+
+interface PersistArmOpts {
+  customize?: (fix: Fix) => void;
+  scope?: string[];
+}
+
+/** resolveAndPersist arm (unlike buildArm, which drains the batched path). */
+function buildPersistArm(native: boolean, opts: PersistArmOpts = {}): Arm {
+  if (native) delete process.env.CODEGRAPH_RESOLVE;
+  else process.env.CODEGRAPH_RESOLVE = '0';
+  const fix = makeFixture();
+  seed(fix);
+  opts.customize?.(fix);
+  const resolver = createResolver(fix.dir, fix.queries);
+  resolver.runPostExtract();
+  const refs = fix.queries.getUnresolvedReferencesByFiles(['app.ts']);
+  const result = resolver.resolveAndPersist(refs, undefined, false, opts.scope ?? ['app.ts']);
+  return { fix, resolver, stats: result.stats };
+}
+
+describe('resolveAndPersist scoped sync arm', () => {
+  nativeIt('crosses resolve_batch once and sweeps only the scoped files', () => {
+    const withOther = (fix: Fix) => addImportOnlyFile(fix, 'other.ts', OTHER_TS);
+    const ts = buildPersistArm(false, { customize: withOther });
+    const nat = buildPersistArm(true, { customize: withOther });
+    try {
+      const bridge = nat.resolver.getResolveBridge();
+      expect(bridge).not.toBeNull();
+      expect(bridge!.batchCount).toBe(1);
+
+      // Dual-arm equality on the scoped path.
+      expect(dumpEdges(nat.fix.dbPath)).toEqual(dumpEdges(ts.fix.dbPath));
+      expect(dumpRefs(nat.fix.dbPath)).toEqual(dumpRefs(ts.fix.dbPath));
+      expect(nat.stats).toEqual(ts.stats);
+
+      // The ref file is swept; the out-of-scope import-only file is not.
+      expect(importTargets(nat.fix, 'file:app.ts')).toEqual(['file:lib.ts']);
+      expect(importTargets(nat.fix, 'file:other.ts')).toEqual([]);
+
+      // 0-ref guard: an import-only scoped pass must not cross the wire, and
+      // the scoped TS sweep still materializes the file's import edges.
+      const before = bridge!.batchCount;
+      nat.resolver.resolveAndPersist([], undefined, false, ['other.ts']);
+      expect(bridge!.batchCount).toBe(before);
+      expect(importTargets(nat.fix, 'file:other.ts')).toEqual(['file:lib.ts']);
+    } finally {
+      disposeArm(ts);
+      disposeArm(nat);
+    }
+  });
+
+  nativeIt('falls back to the TS arm and sticky-disables on a wire failure', () => {
+    const ts = buildPersistArm(false);
+    let calls = 0;
+    setResolveModuleForTests(
+      fakeResolveModule({
+        resolveBatch: () => {
+          calls++;
+          throw new Error('resolve wire: injected meta truncation');
+        },
+      })
+    );
+    const nat = buildPersistArm(true);
+    try {
+      expect(calls).toBeGreaterThan(0);
+      const bridge = nat.resolver.getResolveBridge();
+      expect(bridge).not.toBeNull();
+      expect(bridge!.isDisabled).toBe(true);
+      expect(bridge!.disableReason).toContain('resolve wire');
+      expect(dumpEdges(nat.fix.dbPath)).toEqual(dumpEdges(ts.fix.dbPath));
+      expect(dumpRefs(nat.fix.dbPath)).toEqual(dumpRefs(ts.fix.dbPath));
+      expect(nat.stats).toEqual(ts.stats);
+    } finally {
+      disposeArm(ts);
+      disposeArm(nat);
+    }
+  });
+
+  nativeIt('drives callback synthesis from the scoped file set only', () => {
+    const bus = [
+      "import { EventEmitter } from 'events';",
+      'export const bus = new EventEmitter();',
+      "export function fire(): void { bus.emit('ping'); }",
+      'export function onPing(): void {}',
+      "bus.on('ping', onPing);",
+      '',
+    ].join('\n');
+    const withBus = (fix: Fix) => {
+      fs.writeFileSync(path.join(fix.dir, 'bus.ts'), bus, 'utf8');
+      fix.queries.insertNodes([
+        node({ id: 'function:fire', name: 'fire', qualifiedName: 'bus.fire', filePath: 'bus.ts', startLine: 3, endLine: 3 }),
+        node({ id: 'function:onPing', name: 'onPing', qualifiedName: 'bus.onPing', filePath: 'bus.ts', startLine: 4, endLine: 4 }),
+        node({ id: 'file:bus.ts', kind: 'file', name: 'bus.ts', filePath: 'bus.ts', startLine: 1, endLine: 6 }),
+      ]);
+      fix.queries.upsertFile({
+        path: 'bus.ts',
+        contentHash: 'h-bus',
+        language: 'typescript',
+        size: bus.length,
+        modifiedAt: 1_700_000_000_000,
+        indexedAt: 1_700_000_000_000,
+        nodeCount: 3,
+      });
+    };
+    const nat = buildPersistArm(true, { customize: withBus, scope: ['app.ts'] });
+    try {
+      const bridge = nat.resolver.getResolveBridge();
+      expect(bridge).not.toBeNull();
+      const synthEdges = () => nat.fix.queries.getOutgoingEdges('function:fire', ['calls']);
+      expect(synthEdges()).toEqual([]);
+      expect(nat.fix.queries.wasSynthesisInput('bus.ts')).toBe(false);
+
+      const before = bridge!.batchCount;
+      nat.resolver.resolveAndPersist([], undefined, true, ['bus.ts']);
+      expect(bridge!.batchCount).toBe(before);
+      expect(synthEdges().map((edge) => edge.target)).toEqual(['function:onPing']);
+      expect(synthEdges()[0]!.metadata?.synthesizedBy).toBe('event-emitter');
+    } finally {
+      disposeArm(nat);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scoped sync convergence: add/remove import sweep + failed-ref retry warm
+// ---------------------------------------------------------------------------
+
+const LATE_APP_TS = [
+  "import { alpha } from './lib';",
+  "import { later } from './later';",
+  'export function main(): number {',
+  '  return alpha(1) + later();',
+  '}',
+  ].join('\n');
+
+const PY_APP = [
+  'def get():',
+  '    return 1',
+  '',
+  'def items():',
+  '    return 2',
+  '',
+  'def handler():',
+  '    return get() + items()',
+  '',
+].join('\n');
+
+/** Python fixture whose local methods collide with builtin method names. */
+function makePythonFixture(): Fix {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-resolve-bridge-py-'));
+  fs.writeFileSync(path.join(dir, 'app.py'), PY_APP, 'utf8');
+  const dbPath = path.join(dir, 'test.db');
+  const conn = DatabaseConnection.initialize(dbPath);
+  const store = StoreBridge.open(dbPath);
+  const queries = new QueryBuilder(conn.getDb(), store);
+  const fix: Fix = { dir, dbPath, conn, queries, store };
+  fix.queries.insertNodes([
+    node({ id: 'file:app.py', kind: 'file', name: 'app.py', filePath: 'app.py', language: 'python', startLine: 1, endLine: 8 }),
+    node({ id: 'function:get', name: 'get', qualifiedName: 'app.get', filePath: 'app.py', language: 'python', startLine: 1, endLine: 2 }),
+    node({ id: 'function:items', name: 'items', qualifiedName: 'app.items', filePath: 'app.py', language: 'python', startLine: 4, endLine: 5 }),
+    node({ id: 'function:handler', name: 'handler', qualifiedName: 'app.handler', filePath: 'app.py', language: 'python', startLine: 7, endLine: 8 }),
+  ]);
+  fix.queries.upsertFile({
+    path: 'app.py',
+    contentHash: 'h-py-app',
+    language: 'python',
+    size: PY_APP.length,
+    modifiedAt: 1_700_000_000_000,
+    indexedAt: 1_700_000_000_000,
+    nodeCount: 4,
+  });
+  fix.queries.insertUnresolvedRefsBatch([
+    {
+      fromNodeId: 'function:handler',
+      referenceName: 'get',
+      referenceKind: 'calls',
+      line: 8,
+      column: 11,
+      filePath: 'app.py',
+      language: 'python',
+    },
+    {
+      fromNodeId: 'function:handler',
+      referenceName: 'items',
+      referenceKind: 'calls',
+      line: 8,
+      column: 19,
+      filePath: 'app.py',
+      language: 'python',
+    },
+  ] as UnresolvedReference[]);
+  return fix;
+}
+
+/**
+ * One arm of the add-batch sweep fixture: index app.ts with an import of a
+ * not-yet-existing './later', then let later.ts land. A content-scoped pass
+ * over later.ts must not rebuild app.ts (it is unchanged and out of scope);
+ * the add-batch full sweep must.
+ */
+function buildSweepArm(native: boolean) {
+  if (native) delete process.env.CODEGRAPH_RESOLVE;
+  else process.env.CODEGRAPH_RESOLVE = '0';
+  const fix = makeFixture();
+  seed(fix);
+  fs.writeFileSync(path.join(fix.dir, 'app.ts'), LATE_APP_TS, 'utf8');
+  const resolver = createResolver(fix.dir, fix.queries);
+  resolver.runPostExtract();
+  resolver.resolveAndPersist([], undefined, false, ['app.ts']);
+  const before = importTargets(fix, 'file:app.ts');
+  addImportOnlyFile(fix, 'later.ts', 'export function later(): number { return 2 }\n');
+  resolver.resolveAndPersist([], undefined, false, ['later.ts']);
+  const scoped = importTargets(fix, 'file:app.ts');
+  resolver.resolveAndPersist([], undefined, false, ['later.ts'], true);
+  return { fix, resolver, before, scoped, swept: importTargets(fix, 'file:app.ts') };
+}
+
+describe('sync scope convergence', () => {
+  nativeIt('add/remove batches sweep file-level imports project-wide in both arms', () => {
+    const ts = buildSweepArm(false);
+    const nat = buildSweepArm(true);
+    try {
+      for (const arm of [ts, nat]) {
+        expect(arm.before).toEqual(['file:lib.ts']);
+        // A scoped pass over the new file alone leaves the unchanged
+        // importer's edge missing — the regression this flag fixes.
+        expect(arm.scoped).toEqual(['file:lib.ts']);
+        expect(arm.swept).toHaveLength(2);
+        expect(arm.swept).toContain('file:lib.ts');
+        expect(arm.swept).toContain('file:later.ts');
+      }
+    } finally {
+      ts.resolver.dispose();
+      disposeFixture(ts.fix);
+      nat.resolver.dispose();
+      disposeFixture(nat.fix);
+    }
+  });
+
+  nativeIt('failed-ref retry warms the native ctx without building the JS projections', async () => {
+    const fix = makeFixture();
+    seed(fix);
+    const resolver = createResolver(fix.dir, fix.queries);
+    resolver.runPostExtract();
+    const ctx = resolver.getCtxBridge();
+    expect(ctx).not.toBeNull();
+    let warms = 0;
+    const nativeWarm = ctx!.warm.bind(ctx);
+    ctx!.warm = () => {
+      warms++;
+      nativeWarm();
+    };
+    try {
+      const refs = fix.queries.getUnresolvedReferencesByFiles(['app.ts']);
+      const result = await resolver.resolveAndPersistListYielding(refs);
+      expect(warms).toBeGreaterThan(0);
+      const internals = resolver as unknown as {
+        knownNames: Set<string> | null;
+        knownFiles: Set<string> | null;
+      };
+      expect(internals.knownNames).toBeNull();
+      expect(internals.knownFiles).toBeNull();
+      // The TS retry arm still resolves through the native read context.
+      expect(result.resolved.length).toBeGreaterThan(0);
+      expect(fix.queries.getOutgoingEdges('function:main', ['calls']).map((edge) => edge.target)).toContain(
+        'function:alpha'
+      );
+    } finally {
+      resolver.dispose();
+      disposeFixture(fix);
+    }
+  });
+
+  it('keeps the JS projections when the native ctx arm is unavailable', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-resolve-bridge-'));
+    fs.writeFileSync(path.join(dir, 'lib.ts'), LIB_TS, 'utf8');
+    fs.writeFileSync(path.join(dir, 'app.ts'), APP_TS, 'utf8');
+    const dbPath = path.join(dir, 'test.db');
+    const conn = DatabaseConnection.initialize(dbPath);
+    const fix: Fix = { dir, dbPath, conn, queries: new QueryBuilder(conn.getDb()), store: null };
+    seed(fix);
+    const resolver = createResolver(dir, fix.queries);
+    resolver.runPostExtract();
+    expect(resolver.getCtxBridge()).toBeNull();
+    try {
+      const refs = fix.queries.getUnresolvedReferencesByFiles(['app.ts']);
+      await resolver.resolveAndPersistListYielding(refs);
+      const internals = resolver as unknown as {
+        knownNames: Set<string> | null;
+        knownFiles: Set<string> | null;
+      };
+      expect(internals.knownNames).toBeInstanceOf(Set);
+      expect(internals.knownFiles).toBeInstanceOf(Set);
+    } finally {
+      resolver.dispose();
+      disposeFixture(fix);
+    }
+  });
+
+  nativeIt('synthesizes a changed handler registered by an unchanged dependent file', () => {
+    // bus.ts owns the emit site and the registration; the handler is added
+    // later in handlers.ts. Only handlers.ts is in the sync scope, so the
+    // scoped synthesis scan must widen to the unchanged importer.
+    const handlersV1 = 'export function placeholder(): void {}\n';
+    const handlersV2 = 'export function placeholder(): void {}\nexport function pingHandler(): void {}\n';
+    const busTs = [
+      "import { EventEmitter } from 'events';",
+      "import { pingHandler } from './handlers';",
+      'export const bus = new EventEmitter();',
+      "export function fire(): void { bus.emit('ping'); }",
+      "bus.on('ping', pingHandler);",
+      '',
+    ].join('\n');
+    const fix = makeFixture();
+    seed(fix);
+    fs.writeFileSync(path.join(fix.dir, 'handlers.ts'), handlersV1, 'utf8');
+    fs.writeFileSync(path.join(fix.dir, 'bus.ts'), busTs, 'utf8');
+    fix.queries.insertNodes([
+      node({ id: 'function:placeholder', name: 'placeholder', filePath: 'handlers.ts', startLine: 1, endLine: 1 }),
+      node({ id: 'function:fire', name: 'fire', filePath: 'bus.ts', startLine: 4, endLine: 4 }),
+      node({ id: 'file:handlers.ts', kind: 'file', name: 'handlers.ts', filePath: 'handlers.ts', startLine: 1, endLine: 2 }),
+      node({ id: 'file:bus.ts', kind: 'file', name: 'bus.ts', filePath: 'bus.ts', startLine: 1, endLine: 6 }),
+    ]);
+    fix.queries.upsertFile({
+      path: 'handlers.ts',
+      contentHash: 'h-handlers',
+      language: 'typescript',
+      size: handlersV1.length,
+      modifiedAt: 1_700_000_000_000,
+      indexedAt: 1_700_000_000_000,
+      nodeCount: 2,
+    });
+    fix.queries.upsertFile({
+      path: 'bus.ts',
+      contentHash: 'h-bus',
+      language: 'typescript',
+      size: busTs.length,
+      modifiedAt: 1_700_000_000_000,
+      indexedAt: 1_700_000_000_000,
+      nodeCount: 2,
+    });
+    const resolver = createResolver(fix.dir, fix.queries);
+    resolver.runPostExtract();
+    try {
+      // Initial full sweep (synthesis off) records bus.ts -> handlers.ts.
+      resolver.resolveAndPersist([], undefined, false);
+      expect(importTargets(fix, 'file:bus.ts')).toContain('file:handlers.ts');
+
+      // The handler appears; bus.ts is unchanged but depends on handlers.ts.
+      fs.writeFileSync(path.join(fix.dir, 'handlers.ts'), handlersV2, 'utf8');
+      fix.queries.insertNodes([
+        node({ id: 'function:pingHandler', name: 'pingHandler', filePath: 'handlers.ts', startLine: 2, endLine: 2 }),
+      ]);
+      resolver.resolveAndPersist([], undefined, true, ['handlers.ts']);
+
+      const synthesized = fix.queries.getOutgoingEdges('function:fire', ['calls']);
+      expect(synthesized.map((edge) => edge.target)).toEqual(['function:pingHandler']);
+      expect(synthesized[0]!.metadata?.synthesizedBy).toBe('event-emitter');
+    } finally {
+      resolver.dispose();
+      disposeFixture(fix);
+    }
+  });
+
+  nativeIt('retry path keeps Python refs whose names collide with builtin methods', async () => {
+    // The retry pass resolves through the TS arm while the native ctx is live,
+    // so the JS knownNames projection stays null. A null projection means
+    // "unknown", never "absent" — a local `get`/`items` must survive.
+    delete process.env.CODEGRAPH_RESOLVE;
+    const fix = makePythonFixture();
+    const resolver = createResolver(fix.dir, fix.queries);
+    resolver.runPostExtract();
+    try {
+      const refs = fix.queries.getUnresolvedReferencesByFiles(['app.py']);
+      const result = await resolver.resolveAndPersistListYielding(refs);
+      expect((resolver as unknown as { knownNames: Set<string> | null }).knownNames).toBeNull();
+      expect(result.resolved.map((ref) => ref.targetNodeId).sort()).toEqual(['function:get', 'function:items']);
+      const targets = fix.queries.getOutgoingEdges('function:handler', ['calls']).map((edge) => edge.target);
+      expect(targets.sort()).toEqual(['function:get', 'function:items']);
+    } finally {
+      resolver.dispose();
+      disposeFixture(fix);
+    }
+  });
+
+  it('keeps Python builtin-method-named refs when knownNames is unavailable', () => {
+    const previous = process.env.CODEGRAPH_RESOLVE;
+    process.env.CODEGRAPH_RESOLVE = '0';
+    const fix = makePythonFixture();
+    const resolver = createResolver(fix.dir, fix.queries);
+    resolver.runPostExtract();
+    const internals = resolver as unknown as { knownNames: Set<string> | null; cachesWarmed: boolean };
+    internals.knownNames = null;
+    internals.cachesWarmed = true;
+    try {
+      for (const [name, target] of [
+        ['get', 'function:get'],
+        ['items', 'function:items'],
+      ] as const) {
+        const result = resolver.resolveOne({
+          fromNodeId: 'function:handler',
+          referenceName: name,
+          referenceKind: 'calls',
+          line: 8,
+          column: 11,
+          filePath: 'app.py',
+          language: 'python',
+        });
+        expect(result?.targetNodeId).toBe(target);
+      }
+    } finally {
+      if (previous === undefined) delete process.env.CODEGRAPH_RESOLVE;
+      else process.env.CODEGRAPH_RESOLVE = previous;
+      resolver.dispose();
+      disposeFixture(fix);
+    }
+  });
+
+  nativeIt('synthesis scope walks importer chains past a barrel to the dispatcher', () => {
+    // dispatcher → barrel → handlers. The changed file is handlers.ts; its
+    // registration counterpart lives two import hops away, so a one-hop
+    // direct-importer scope would never scan dispatcher.ts.
+    const handlersV1 = 'export function placeholder(): void {}\n';
+    const handlersV2 = 'export function placeholder(): void {}\nexport function pingHandler(): void {}\n';
+    const barrelTs = "export { pingHandler } from './handlers';\n";
+    const dispatcherTs = [
+      "import { pingHandler } from './barrel';",
+      "import { EventEmitter } from 'events';",
+      'export const bus = new EventEmitter();',
+      "export function fire(): void { bus.emit('ping'); }",
+      "bus.on('ping', pingHandler);",
+      '',
+    ].join('\n');
+    const fix = makeFixture();
+    seed(fix);
+    fs.writeFileSync(path.join(fix.dir, 'handlers.ts'), handlersV1, 'utf8');
+    fs.writeFileSync(path.join(fix.dir, 'barrel.ts'), barrelTs, 'utf8');
+    fs.writeFileSync(path.join(fix.dir, 'dispatcher.ts'), dispatcherTs, 'utf8');
+    fix.queries.insertNodes([
+      node({ id: 'function:placeholder', name: 'placeholder', filePath: 'handlers.ts', startLine: 1, endLine: 1 }),
+      node({ id: 'function:fire', name: 'fire', filePath: 'dispatcher.ts', startLine: 4, endLine: 4 }),
+      node({ id: 'file:handlers.ts', kind: 'file', name: 'handlers.ts', filePath: 'handlers.ts', startLine: 1, endLine: 2 }),
+      node({ id: 'file:barrel.ts', kind: 'file', name: 'barrel.ts', filePath: 'barrel.ts', startLine: 1, endLine: 1 }),
+      node({ id: 'file:dispatcher.ts', kind: 'file', name: 'dispatcher.ts', filePath: 'dispatcher.ts', startLine: 1, endLine: 5 }),
+    ]);
+    for (const [filePath, content, nodeCount] of [
+      ['handlers.ts', handlersV1, 2],
+      ['barrel.ts', barrelTs, 1],
+      ['dispatcher.ts', dispatcherTs, 2],
+    ] as const) {
+      fix.queries.upsertFile({
+        path: filePath,
+        contentHash: `h-${filePath}`,
+        language: 'typescript',
+        size: content.length,
+        modifiedAt: 1_700_000_000_000,
+        indexedAt: 1_700_000_000_000,
+        nodeCount,
+      });
+    }
+    const resolver = createResolver(fix.dir, fix.queries);
+    resolver.runPostExtract();
+    try {
+      resolver.resolveAndPersist([], undefined, false);
+      expect(importTargets(fix, 'file:barrel.ts')).toContain('file:handlers.ts');
+      expect(importTargets(fix, 'file:dispatcher.ts')).toContain('file:barrel.ts');
+
+      fs.writeFileSync(path.join(fix.dir, 'handlers.ts'), handlersV2, 'utf8');
+      fix.queries.insertNodes([
+        node({ id: 'function:pingHandler', name: 'pingHandler', filePath: 'handlers.ts', startLine: 2, endLine: 2 }),
+      ]);
+      resolver.resolveAndPersist([], undefined, true, ['handlers.ts']);
+
+      const synthesized = fix.queries.getOutgoingEdges('function:fire', ['calls']);
+      expect(synthesized.map((edge) => edge.target)).toEqual(['function:pingHandler']);
+      expect(synthesized[0]!.metadata?.synthesizedBy).toBe('event-emitter');
+    } finally {
+      resolver.dispose();
+      disposeFixture(fix);
+    }
+  });
+});

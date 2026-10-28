@@ -1801,13 +1801,16 @@ export class CodeGraph {
               total: unresolvedRefs.length,
             });
 
+            // Add/remove batches force the whole-project import sweep: an
+            // unchanged importer's file-level edge can only resolve against
+            // the new file set (pure content edits stay scoped).
             this.resolver.resolveAndPersist(unresolvedRefs, (current, total) => {
               onProgress({
                 phase: 'resolving',
                 current,
                 total,
               });
-            }, !refreshSynthesis);
+            }, !refreshSynthesis, result.changedFilePaths, result.filesAdded > 0 || result.filesRemoved > 0);
 
             // Retry previously-failed refs the changed files may now satisfy
             // (#1240). Scoped resolution above only re-resolves refs FROM the
@@ -2113,13 +2116,15 @@ export class CodeGraph {
             total: unresolvedRefs.length,
           });
 
+          // Add/remove batches force the whole-project import sweep (same
+          // rationale as the full-sync path above).
           this.resolver.resolveAndPersist(unresolvedRefs, (current, total) => {
             onProgress({
               phase: 'resolving',
               current,
               total,
             });
-          }, !refreshSynthesis);
+          }, !refreshSynthesis, resolutionFilePaths, result.filesAdded > 0 || result.filesRemoved > 0);
 
           // Retry previously-failed refs the changed files may now satisfy
           // (#1240) — same rationale as the full-sync path.
