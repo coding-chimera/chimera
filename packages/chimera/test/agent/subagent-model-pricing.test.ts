@@ -174,4 +174,40 @@ describe("subagent model pricing", () => {
     expect(result.status).toBe("unknown")
     expect(result).toMatchObject({ reason: expect.stringContaining("provider pricing") })
   })
+
+  test("selects the highest matching context tier before the over-200K fallback", () => {
+    const result = projectCost({
+      disposition: "metered",
+      pricing: {
+        input: 1,
+        output: 2,
+        cache: { read: 0.5, write: 1 },
+        tiers: [
+          { input: 2, output: 4, cache: { read: 1, write: 2 }, tier: { type: "context", size: 100_000 } },
+          { input: 3, output: 6, cache: { read: 1.5, write: 3 }, tier: { type: "context", size: 200_000 } },
+        ],
+        experimentalOver200K: { input: 9, output: 9, cache: { read: 9, write: 9 } },
+      },
+      basket: basket({ input: 250_000, output: 0 }),
+    })
+
+    expect(result.status).toBe("known")
+    expect(result.source).toBe("provider-pricing")
+    expect(known(result).usd).toBeCloseTo((250_000 * 3) / 1_000_000)
+  })
+
+  test("falls back to base pricing below every context tier", () => {
+    const result = projectCost({
+      disposition: "metered",
+      pricing: {
+        input: 1,
+        output: 2,
+        cache: { read: 0.5, write: 1 },
+        tiers: [{ input: 2, output: 4, cache: { read: 1, write: 2 }, tier: { type: "context", size: 100_000 } }],
+      },
+      basket: basket({ input: 50_000, output: 0 }),
+    })
+
+    expect(known(result).usd).toBeCloseTo((50_000 * 1) / 1_000_000)
+  })
 })

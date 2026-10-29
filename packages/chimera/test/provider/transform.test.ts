@@ -195,6 +195,94 @@ describe("ProviderTransform.options - store passthrough (responses-wire)", () =>
   })
 })
 
+describe("ProviderTransform.options - parallel tool calls (OpenAI family)", () => {
+  const sessionID = "test-session-parallel"
+
+  const base = {
+    name: "Parallel model",
+    capabilities: {
+      temperature: true,
+      reasoning: false,
+      attachment: false,
+      toolcall: true,
+      input: { text: true, audio: false, image: false, video: false, pdf: false },
+      output: { text: true, audio: false, image: false, video: false, pdf: false },
+      interleaved: false,
+    },
+    cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+    limit: { context: 128000, output: 4096 },
+    status: "active",
+    options: {},
+    headers: {},
+  }
+  const compatibleModel = {
+    ...base,
+    id: "test-compatible/model",
+    providerID: "test-compatible",
+    api: { id: "model", url: "https://compatible.test", npm: "@ai-sdk/openai-compatible" },
+  } as any
+  const openaiModel = {
+    ...base,
+    id: "openai/gpt-5.2",
+    providerID: "openai",
+    api: { id: "gpt-5.2", url: "https://api.openai.com", npm: "@ai-sdk/openai" },
+  } as any
+  const anthropicModel = {
+    ...base,
+    id: "anthropic/claude-3-5-sonnet",
+    providerID: "anthropic",
+    api: { id: "claude-3-5-sonnet-20241022", url: "https://api.anthropic.com", npm: "@ai-sdk/anthropic" },
+  } as any
+
+  test("openai-compatible models default to parallel_tool_calls=true", () => {
+    const result = ProviderTransform.options({ model: compatibleModel, sessionID, providerOptions: {} })
+    expect(result.parallel_tool_calls).toBe(true)
+  })
+
+  test("@ai-sdk/openai models default to parallelToolCalls=true", () => {
+    const result = ProviderTransform.options({ model: openaiModel, sessionID, providerOptions: {} })
+    expect(result.parallelToolCalls).toBe(true)
+    expect(result.parallel_tool_calls).toBeUndefined()
+  })
+
+  test("provider-level parallel_tool_calls=false is respected for openai-compatible", () => {
+    const result = ProviderTransform.options({
+      model: compatibleModel,
+      sessionID,
+      providerOptions: { parallel_tool_calls: false },
+    })
+    expect(result.parallel_tool_calls).toBe(false)
+  })
+
+  test("provider-level camelCase parallelToolCalls=false is respected for @ai-sdk/openai", () => {
+    const result = ProviderTransform.options({
+      model: openaiModel,
+      sessionID,
+      providerOptions: { parallelToolCalls: false },
+    })
+    expect(result.parallelToolCalls).toBe(false)
+  })
+
+  test("unrelated providers receive no parallel tool-call option", () => {
+    const result = ProviderTransform.options({ model: anthropicModel, sessionID, providerOptions: {} })
+    expect(result.parallel_tool_calls).toBeUndefined()
+    expect(result.parallelToolCalls).toBeUndefined()
+  })
+
+  test("the default reaches the providerOptions namespace for both wires", () => {
+    const compatibleWire = ProviderTransform.providerOptions(
+      compatibleModel,
+      ProviderTransform.options({ model: compatibleModel, sessionID, providerOptions: {} }),
+    )
+    expect(compatibleWire["test-compatible"].parallel_tool_calls).toBe(true)
+    const openaiWire = ProviderTransform.providerOptions(
+      openaiModel,
+      ProviderTransform.options({ model: openaiModel, sessionID, providerOptions: {} }),
+    )
+    expect(openaiWire.openai.parallelToolCalls).toBe(true)
+  })
+})
+
 describe("ProviderTransform.message - replayCompensation (responses-wire)", () => {
   // Activation rule (auto): @ai-sdk/openai npm + wire_api responses + non-openai
   // provider. store value is deliberately NOT consulted (F4): under the fork's

@@ -1151,6 +1151,20 @@ export function options(input: {
   if (typeof input.providerOptions?.replay_compensation === "string") {
     result["replay_compensation"] = input.providerOptions.replay_compensation
   }
+  // Parallel tool calls default on for the two OpenAI SDK npm packages. The key
+  // shape is provider-specific: @ai-sdk/openai-compatible spreads unknown
+  // providerOptions keys verbatim into the request body (snake_case wire name),
+  // while @ai-sdk/openai reads a typed camelCase option it maps to the wire name.
+  // A provider-level boolean in either spelling overrides the default; later
+  // merge layers (model/agent/profile options) still win, so explicit false disables it.
+  const configuredParallel = input.providerOptions?.parallel_tool_calls ?? input.providerOptions?.parallelToolCalls
+  const parallelToolCalls = typeof configuredParallel === "boolean" ? configuredParallel : true
+  if (input.model.api.npm === "@ai-sdk/openai-compatible") {
+    result["parallel_tool_calls"] = parallelToolCalls
+  }
+  if (input.model.api.npm === "@ai-sdk/openai") {
+    result["parallelToolCalls"] = parallelToolCalls
+  }
 
   if (input.model.api.npm === "@openrouter/ai-sdk-provider" || input.model.api.npm === "@llmgateway/ai-sdk-provider") {
     result["usage"] = {

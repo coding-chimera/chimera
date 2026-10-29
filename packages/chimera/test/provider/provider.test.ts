@@ -1782,6 +1782,145 @@ test("model with custom cost values", async () => {
   })
 })
 
+test("config model cost tiers are parsed into provider cost", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "chimera.json"),
+        JSON.stringify({
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+          provider: {
+            "test-provider": {
+              name: "Test",
+              npm: "@ai-sdk/openai-compatible",
+              env: [],
+              models: {
+                "test-model": {
+                  name: "Test Model",
+                  cost: {
+                    input: 1,
+                    output: 2,
+                    tiers: [
+                      {
+                        input: 10,
+                        output: 20,
+                        cache_read: 1.5,
+                        cache_write: 2.5,
+                        tier: { type: "context", size: 128000 },
+                      },
+                    ],
+                  },
+                },
+              },
+              options: { apiKey: "test" },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const providers = await list()
+      const model = providers[ProviderID.make("test-provider")].models["test-model"]
+      expect(model.cost.tiers).toEqual([
+        {
+          input: 10,
+          output: 20,
+          cache: { read: 1.5, write: 2.5 },
+          tier: { type: "context", size: 128000 },
+        },
+      ])
+    },
+  })
+})
+
+test("config model inherits models.dev cost tiers when it does not declare them", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "chimera.json"),
+        JSON.stringify({
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+          provider: {
+            "github-copilot": {
+              name: "GitHub Copilot",
+              models: {
+                "gpt-5": { name: "GPT-5" },
+              },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const providers = await list()
+      const model = providers[ProviderID.make("github-copilot")].models["gpt-5"]
+      expect(model.cost.tiers).toEqual([
+        {
+          input: 8,
+          output: 30,
+          cache: { read: 0.8, write: 10 },
+          tier: { type: "context", size: 272000 },
+        },
+      ])
+    },
+  })
+})
+
+test("config model cost tiers replace inherited models.dev tiers", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "chimera.json"),
+        JSON.stringify({
+          $schema: "https://coding-chimera.github.io/chimera/schemas/config.json",
+          provider: {
+            "github-copilot": {
+              name: "GitHub Copilot",
+              models: {
+                "gpt-5": {
+                  name: "GPT-5",
+                  cost: {
+                    input: 1,
+                    output: 2,
+                    tiers: [
+                      {
+                        input: 3,
+                        output: 4,
+                        tier: { type: "context", size: 64000 },
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await WithInstance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const providers = await list()
+      const model = providers[ProviderID.make("github-copilot")].models["gpt-5"]
+      expect(model.cost.tiers).toEqual([
+        {
+          input: 3,
+          output: 4,
+          cache: { read: 0, write: 0 },
+          tier: { type: "context", size: 64000 },
+        },
+      ])
+    },
+  })
+})
+
 test("getSmallModel returns appropriate small model", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {

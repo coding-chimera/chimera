@@ -67,7 +67,16 @@ function wrapSSE(res: Response, ms: number, ctl: AbortController) {
     async pull(ctrl) {
       const part = await new Promise<Awaited<ReturnType<typeof reader.read>>>((resolve, reject) => {
         const id = setTimeout(() => {
+          // @ai-sdk/openai-compatible >= 2.0.70 flags a stream that ends with
+          // no finish reason as truncated and enqueues InvalidResponseDataError
+          // at flush. Its response-body wrapper also rewraps non-abort read
+          // errors into APICallError("Failed to process successful response"),
+          // masking the timeout identity. Naming the error TimeoutError (a real
+          // timeout, not a user abort) makes the wrapper rethrow it unchanged,
+          // so the consumer sees "SSE read timed out" while genuine truncation
+          // still hits the SDK check.
           const err = new Error("SSE read timed out")
+          err.name = "TimeoutError"
           ctl.abort(err)
           reader.cancel(err).catch(() => {})
           reject(err)
@@ -1852,6 +1861,22 @@ const layer: Layer.Layer<
                   read: model?.cost?.cache_read ?? metadataModel?.cost?.cache.read ?? 0,
                   write: model?.cost?.cache_write ?? metadataModel?.cost?.cache.write ?? 0,
                 },
+                ...iife(() => {
+                  if (model.cost?.tiers)
+                    return {
+                      tiers: model.cost.tiers.map((item) => ({
+                        input: item.input,
+                        output: item.output,
+                        cache: {
+                          read: item.cache_read ?? 0,
+                          write: item.cache_write ?? 0,
+                        },
+                        tier: item.tier,
+                      })),
+                    }
+                  if (metadataModel?.cost.tiers) return { tiers: metadataModel.cost.tiers }
+                  return {}
+                }),
                 ...iife(() => {
                   const over200K = model.cost?.context_over_200k
                   if (over200K)

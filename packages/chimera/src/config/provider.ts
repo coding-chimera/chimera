@@ -128,6 +128,23 @@ export const Model = Schema.Struct({
       output: Schema.Finite,
       cache_read: Schema.optional(Schema.Finite),
       cache_write: Schema.optional(Schema.Finite),
+      tiers: Schema.optional(
+        Schema.Array(
+          Schema.Struct({
+            input: Schema.Finite,
+            output: Schema.Finite,
+            cache_read: Schema.optional(Schema.Finite),
+            cache_write: Schema.optional(Schema.Finite),
+            tier: Schema.Struct({
+              type: Schema.Literal("context"),
+              size: Schema.Finite,
+            }),
+          }),
+        ),
+      ).annotate({
+        description:
+          "Context-threshold price tiers; the highest tier whose size is below the request context wins",
+      }),
       context_over_200k: Schema.optional(
         Schema.Struct({
           input: Schema.Finite,

@@ -113,7 +113,12 @@ function isUsableBasket(basket: TokenBasket) {
 }
 
 function effectivePricing(pricing: ModelPricing, basket: TokenBasket) {
-  if (pricing.experimentalOver200K && basket.input + basket.cacheRead > OVER_200K_INPUT_TOKENS) {
+  const contextTokens = basket.input + basket.cacheRead
+  const tier = pricing.tiers
+    ?.filter((item) => item.tier.type === "context" && contextTokens > item.tier.size)
+    .sort((a, b) => b.tier.size - a.tier.size)[0]
+  if (tier) return { pricing: tier, over200K: false }
+  if (pricing.experimentalOver200K && contextTokens > OVER_200K_INPUT_TOKENS) {
     return { pricing: pricing.experimentalOver200K, over200K: true }
   }
   return { pricing, over200K: false }
