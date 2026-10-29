@@ -17,4 +17,14 @@ Do not use when: a single direct task is enough (use `task`), or the fan-out is 
 
 Approval: `orchestrate` is approved once per call, and every `orche.agent` additionally goes through the normal `task` approval for its agent type. Subagents are real child sessions (visible, persisted, cancellable) and obey delegation depth, concurrency, and per-agent permission limits.
 
-Failure semantics: a subagent task failure resolves to `null` and the program continues; host-side problems (invalid arguments, dispatch infrastructure, an approval denial) reject that binding call, and an uncaught rejection terminates the program with an error. By default the run has no wall-clock limit: it ends only when the program returns or throws, a subagent failure surfaces as `null`, or the user aborts the turn (which cancels the whole run). `timeoutMs` is an optional budget knob you set only when you deliberately want a time limit; when omitted no timer is started, and a provided value floors at 1ms with no upper cap. `maxTotalAgents` caps the total number of child dispatches (default 64, hard cap 256).
+Failure semantics: a subagent task failure resolves to `null` and the program continues; host-side problems (invalid arguments, dispatch infrastructure, an approval denial) reject that binding call, and an uncaught rejection terminates the program with an error. Returning completes the program; uncaught exceptions, orchestration-worker failures (including output/protocol errors), a positive `timeoutMs` budget expiring, or user cancellation terminate the run.
+
+`timeoutMs` controls the global wall-clock budget. Use `timeoutMs: 0` for an unlimited run (recommended default); negative values and omission also mean unlimited, with no global timer. `null` is rejected by the schema. A finite positive number enables a deadline; it is rounded down to whole milliseconds with a 1ms floor (so `0.5` is 1ms) and no upper cap. Set a positive budget only when you deliberately want a time limit. `timeoutMs` is an outer tool argument, never an `orche.agent` field.
+
+The outer tool arguments are JSON. Prefer this complete template and change only what the task needs:
+
+```json
+{ "description": "Run without deadline", "code": "return { ok: true }", "timeoutMs": 0, "maxTotalAgents": 64 }
+```
+
+`timeoutMs: 0` means no global timer; omission and negative values are also unlimited, but the explicit `0` is preferred over deleting the field. `maxTotalAgents` caps total child dispatches (default 64, hard cap 256) — 64 is the built-in default, so keep it unless the task needs a different cap.

@@ -108,9 +108,10 @@ function clamp(value: number | undefined, fallback: number, min: number, max: nu
   return Math.min(Math.max(Math.trunc(value), min), max)
 }
 
-/** Optional wall-clock budget: absent means no timer at all; provided values floor at 1ms. */
+/** Optional wall-clock budget: absent or non-positive means no timer at all; positive values floor at 1ms. */
 function positiveMs(value: number | undefined) {
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined
+  if (value <= 0) return undefined
   return Math.max(Math.trunc(value), 1)
 }
 

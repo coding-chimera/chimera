@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import path from "node:path"
-import { Effect } from "effect"
+import { Effect, Fiber } from "effect"
 import { parseChildFrame, parseHostFrame, type ChildFrame } from "@/orchestrate/protocol"
 import { OrchestrateRuntime } from "@/orchestrate/runtime"
 import { testEffect } from "../lib/effect"
@@ -291,16 +291,57 @@ describe("orchestrate timeout budgets", () => {
   )
 
   it.live(
-    "floors a provided timeoutMs at 1ms and keeps large values (no 600s cap)",
+    "treats non-positive timeoutMs as unlimited and floors positive values at 1ms",
     () =>
       Effect.gen(function* () {
         const runtime = yield* OrchestrateRuntime.Service
-        expect((yield* runtime.resolve({ code: "return 1", timeoutMs: 0 })).timeoutMs).toBe(1)
-        expect((yield* runtime.resolve({ code: "return 1", timeoutMs: -50 })).timeoutMs).toBe(1)
+        expect((yield* runtime.resolve({ code: "return 1", timeoutMs: 0 })).timeoutMs).toBeUndefined()
+        expect((yield* runtime.resolve({ code: "return 1", timeoutMs: -50 })).timeoutMs).toBeUndefined()
         expect((yield* runtime.resolve({ code: "return 1", timeoutMs: Number.NaN })).timeoutMs).toBeUndefined()
+        expect((yield* runtime.resolve({ code: "return 1", timeoutMs: 0.5 })).timeoutMs).toBe(1)
         expect((yield* runtime.resolve({ code: "return 1", timeoutMs: 900_000 })).timeoutMs).toBe(900_000)
       }),
     TIMEOUT,
+  )
+
+  it.live(
+    "runs a waiting program to completion when timeoutMs is explicitly 0 or negative",
+    () =>
+      Effect.gen(function* () {
+        const runtime = yield* OrchestrateRuntime.Service
+        for (const timeoutMs of [0, -50]) {
+          const spec = yield* runtime.resolve({
+            code: "await new Promise((resolve) => setTimeout(resolve, 50)); return 'waited'",
+            timeoutMs,
+          })
+          expect(spec.timeoutMs).toBeUndefined()
+          const result = yield* runtime.run(spec)
+          expect(result.error).toBeUndefined()
+          expect(result.value).toBe("waited")
+        }
+      }),
+    30_000,
+  )
+
+  it.live(
+    "still honors an abort signal when timeoutMs is explicitly unlimited",
+    () =>
+      Effect.gen(function* () {
+        const runtime = yield* OrchestrateRuntime.Service
+        const controller = new AbortController()
+        const spec = yield* runtime.resolve({
+          code: "await new Promise((resolve) => setTimeout(resolve, 60_000)); return 1",
+          timeoutMs: 0,
+          signal: controller.signal,
+        })
+        expect(spec.timeoutMs).toBeUndefined()
+        const fiber = yield* runtime.run(spec).pipe(Effect.forkChild)
+        yield* Effect.sleep(100)
+        controller.abort()
+        const result = yield* Fiber.join(fiber)
+        expect(result.error?.kind).toBe("abort")
+      }),
+    30_000,
   )
 
   it.live(

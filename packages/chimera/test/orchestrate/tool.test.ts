@@ -1,12 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { Effect, Stream } from "effect"
+import { Effect, Result, Schema, Stream } from "effect"
 import { Bus } from "../../src/bus"
 import { Permission } from "../../src/permission"
 import { Session } from "@/session/session"
 import { SessionPrompt } from "../../src/session/prompt"
 import { MessageV2 } from "../../src/session/message-v2"
 import { makePromptHarness, testProviderConfig } from "../fixture/prompt-harness"
-import { ORCHESTRATE_LOG_LIMIT, appendOrchestrateLog } from "@/tool/orchestrate"
+import { ORCHESTRATE_LOG_LIMIT, Parameters as OrchestrateParameters, appendOrchestrateLog } from "@/tool/orchestrate"
+import ORCHESTRATE_DESCRIPTION from "../../src/tool/orchestrate.txt"
+import { toJsonSchema } from "../../src/util/effect-zod"
 import { disposeAllInstances, provideTmpdirServer } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
@@ -171,5 +173,76 @@ describe("orchestrate log tail", () => {
     expect(logs).toHaveLength(ORCHESTRATE_LOG_LIMIT)
     expect(logs[0]).toBe("line 5")
     expect(logs.at(-1)).toBe(`line ${ORCHESTRATE_LOG_LIMIT + 4}`)
+  })
+})
+
+function promptJsonExamples(text: string): unknown[] {
+  return [...text.matchAll(/```json\n([\s\S]*?)\n```/g)].map((match) => JSON.parse(match[1]!))
+}
+
+describe("orchestrate parameters", () => {
+  test("accepts real tool args with timeoutMs omitted", () => {
+    const parsed = Schema.decodeUnknownSync(OrchestrateParameters)({
+      code: "return 1",
+      description: "no wall-clock budget",
+    })
+    expect(parsed.timeoutMs).toBeUndefined()
+  })
+
+  test("accepts 0 and negative timeoutMs values", () => {
+    const zero = Schema.decodeUnknownSync(OrchestrateParameters)({
+      code: "return 1",
+      description: "zero budget",
+      timeoutMs: 0,
+    })
+    expect(zero.timeoutMs).toBe(0)
+
+    const negative = Schema.decodeUnknownSync(OrchestrateParameters)({
+      code: "return 1",
+      description: "negative budget",
+      timeoutMs: -5,
+    })
+    expect(negative.timeoutMs).toBe(-5)
+  })
+
+  test("rejects an explicit null timeoutMs", () => {
+    expect(
+      Result.isSuccess(
+        Schema.decodeUnknownResult(OrchestrateParameters)({
+          code: "return 1",
+          description: "null budget",
+          timeoutMs: null,
+        }),
+      ),
+    ).toBe(false)
+  })
+
+  test("keeps timeoutMs optional in the model-facing JSON schema", () => {
+    const schema = toJsonSchema(OrchestrateParameters) as {
+      properties?: Record<string, { type?: string; description?: string }>
+      required?: string[]
+    }
+    const description = schema.properties?.timeoutMs?.description ?? ""
+    expect(schema.properties?.timeoutMs?.type).toBe("number")
+    expect(description).toMatch(/0[^.]{0,120}(unlimited|no global timer)/i)
+    expect(description).toMatch(/negative[^.]{0,120}(unlimited|no global timer)/i)
+    expect(description).toMatch(/positive[^.]{0,120}(budget|deadline)/i)
+    expect(description).toMatch(/null[^.]{0,80}(reject|error)/i)
+    expect(schema.required).toEqual(["code", "description"])
+    expect(schema.required).not.toContain("timeoutMs")
+  })
+
+  test("description teaches the unlimited sentinel and decodes the fixed JSON template", () => {
+    expect(ORCHESTRATE_DESCRIPTION).toMatch(/timeoutMs/)
+    expect(ORCHESTRATE_DESCRIPTION).toMatch(/0[^.]{0,120}(unlimited|no global timer)/i)
+    expect(ORCHESTRATE_DESCRIPTION).toMatch(/negative[^.]{0,120}(unlimited|no global timer)/i)
+    expect(ORCHESTRATE_DESCRIPTION).toMatch(/positive[^.]{0,120}(budget|deadline)/i)
+    expect(ORCHESTRATE_DESCRIPTION).toMatch(/null[^.]{0,80}(reject|error)/i)
+    expect(ORCHESTRATE_DESCRIPTION).toMatch(/subagent[^.]{0,80}null/i)
+
+    const examples = promptJsonExamples(ORCHESTRATE_DESCRIPTION)
+    expect(examples.length).toBeGreaterThan(0)
+    const parsed = examples.map((example) => Schema.decodeUnknownSync(OrchestrateParameters)(example))
+    expect(parsed.some((entry) => entry.timeoutMs === 0 && entry.maxTotalAgents === 64)).toBe(true)
   })
 })

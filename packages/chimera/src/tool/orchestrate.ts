@@ -29,7 +29,7 @@ export const Parameters = Schema.Struct({
   }),
   timeoutMs: Schema.optional(Schema.Number).annotate({
     description:
-      "Optional wall-clock budget for the whole program in milliseconds. By default there is no wall-clock limit: the run ends when the program returns or throws, a subagent failure surfaces as `null`, or the user aborts the turn (which cancels the whole run). Set this only when you deliberately want a time budget; a provided value floors at 1ms and has no upper cap.",
+      "Wall-clock budget for the whole program in milliseconds. Use `timeoutMs: 0` for an unlimited run (the default); negative values and omission also mean unlimited, with no global timer. `null` is rejected by the schema. A finite positive number enables a deadline; it is rounded down to whole milliseconds with a 1ms floor and no upper cap. Set a positive budget only when you deliberately want a time limit.",
   }),
 })
 

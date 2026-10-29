@@ -24,6 +24,14 @@ Common single-phase programs you can chain across turns:
 
 `code` is the body of one async function: top-level `await` and `return` are allowed, plus a `description` (3-5 word UI label) on the tool call itself. Plain JavaScript, NOT TypeScript — type annotations, interfaces, and generics fail to parse.
 
+The outer tool arguments are JSON. Prefer this complete template and change only what the task needs:
+
+```json
+{ "description": "Run without deadline", "code": "return { ok: true }", "timeoutMs": 0, "maxTotalAgents": 64 }
+```
+
+`timeoutMs: 0` means no global timer; omission and negative values are also unlimited, but the explicit `0` is preferred over deleting the field. `maxTotalAgents` caps total child dispatches (default 64, hard cap 256) — 64 is the built-in default, so keep it unless the task needs a different cap.
+
 The program runs in a dedicated worker process with a scrubbed environment. Standard JS built-ins (JSON, Math, Date, Array, ...) are available — including `Date.now()` and `Math.random()` (there is no resume mechanism, so nothing restricts them). There is NO filesystem, Node.js API, network, or tool access: the only way to touch the outside world is `orche.agent`.
 
 `return <value>` ends the program. The value must be lossless JSON (no `undefined`, functions, `Date`/`Map` objects, circular refs) and is byte-capped — return the curated result, not raw child transcripts. Logs are byte-capped too; log milestones, not streams.
@@ -47,13 +55,14 @@ The program runs in a dedicated worker process with a scrubbed environment. Stan
 
 - A subagent that fails (error turn, crash, abort) resolves to `null`. Treat `null` as a normal outcome: filter it, count it, never let one failure sink the program.
 - Host-side problems reject the binding call instead: invalid arguments, dispatch infrastructure errors, and permission denials. An UNCAUGHT rejection aborts the whole program. Catch around `orche.agent` only when you deliberately want to survive those.
+- Returning completes the program; uncaught exceptions, orchestration-worker failures (including output/protocol errors), a positive `timeoutMs` budget expiring, or user cancellation terminate the whole run.
 - Approval: the orchestrate call is approved once; every `orche.agent` still passes the normal `task` permission for its agent type. A denial rejects that call (see above).
 
 ## Limits
 
 - `maxTotalAgents` caps total dispatches per program (default 64, hard cap 256) — a runaway-loop backstop.
 - At most 16 agents run concurrently (FIFO queue); you can pass 100 items to parallel/pipeline and they all complete, ~16 at a time.
-- `timeoutMs` is optional; absent means no wall-clock limit. Set it only when you deliberately want a time budget.
+- Use `timeoutMs: 0` for an unlimited run (recommended default); negative values and omission also mean unlimited, with no global timer. `null` is a schema error. A finite positive number enables a deadline; it is rounded down to whole milliseconds with a 1ms floor (so `0.5` is 1ms) and no upper cap. Set a positive budget only when you deliberately want a time limit.
 - Subagents are real child sessions (visible, persisted, individually cancellable) and obey delegation depth, concurrency budgets, and their own permission rules. Subagents never run the ultra variant.
 - Each worker's intermediate messages and tool output NEVER enter the parent context — only its returned text/structured value crosses. Every prompt must be fully self-contained: context, constraints, file lists, acceptance criteria, and exactly what to return (its final message, or the structured object, is the only thing that comes back). Workers know nothing you don't write.
 
