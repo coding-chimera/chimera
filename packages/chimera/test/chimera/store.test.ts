@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import fs from "fs/promises"
 import path from "path"
 import { DatabaseConnection, diffNodeSemantics, diffRelations, getDatabasePath, type FrozenRelation, type FrozenSemanticObject } from "@/graph"
-import { appendProvenanceRecord, CHIMERA_STORAGE_EXTENSION, closeStoreConnections, compactCommittedChangeEvidence, currentHostBootID, readChangeFacts, readCommitChangeSummaries, readEditIntentWaiters, readPersistentObligationStore, readPersistentObligationStoreReadOnly, recordOracleResult, registerEditIntentWaiter, storeConnectionCount, writeChangeFacts } from "../../src/chimera/store"
+import { appendProvenanceRecord, CHIMERA_STORAGE_EXTENSION, closeStoreConnections, compactCommittedChangeEvidence, currentHostBootID, readActiveProcesses, readAuditRunReadonly, readChangeFacts, readCommitChangeSummaries, readEditIntentWaiters, readPersistentObligationStore, readPersistentObligationStoreReadOnly, readProvenanceRecords, recordAuditRun, recordOracleResult, registerEditIntentWaiter, storeConnectionCount, writeChangeFacts } from "../../src/chimera/store"
 import type { ChangeFact } from "../../src/chimera/change-classifier"
 import type { ToolMutationRecord } from "../../src/chimera/provenance"
 import { tmpdir } from "../fixture/fixture"
@@ -616,7 +616,7 @@ describe("Chimera store", () => {
       },
     })
 
-    const result = await compactCommittedChangeEvidence(tmp.path, { now: "2026-01-01T00:00:03.000Z" })
+    const result = await compactCommittedChangeEvidence(tmp.path, { now: "2026-01-01T00:00:03.000Z", retentionDays: 0 })
     expect(result.candidateEvents).toBe(1)
     expect(result.compactedEvents).toBe(1)
     expect(result.deletedFacts).toBe(1)
@@ -645,7 +645,7 @@ describe("Chimera store", () => {
     }
   })
 
-  test("imports legacy persistent obligations into the database store", async () => {
+  test("reads legacy persistent obligations without importing them into the database store", async () => {
     await using tmp = await tmpdir()
     DatabaseConnection.initialize(getDatabasePath(tmp.path)).close()
     const artifact = path.join(tmp.path, ".codegraph", "chimera", "obligations.json")
@@ -666,16 +666,61 @@ describe("Chimera store", () => {
     await Bun.write(artifact, `${JSON.stringify({ schemaVersion: 1, obligations: [obligation] })}\n`)
 
     const store = await readPersistentObligationStore<typeof obligation>(tmp.path, artifact, { schemaVersion: 1, obligations: [] })
-    expect(store.obligations).toHaveLength(1)
-    expect(store.obligations[0]).toMatchObject({ id: "obl_legacy", target: "legacy.ts", status: "pending" })
+    expect(store.obligations).toHaveLength(0)
 
     const db = DatabaseConnection.open(getDatabasePath(tmp.path))
     try {
       const row = db.getDb().prepare("SELECT COUNT(*) as count FROM chimera_audit_obligation WHERE id = ?").get(obligation.id) as { count: number }
-      expect(row.count).toBe(1)
+      expect(row.count).toBe(0)
     } finally {
       db.close()
     }
+  })
+
+  test("reads legacy provenance without importing it into the store", async () => {
+    await using tmp = await tmpdir()
+    DatabaseConnection.initialize(getDatabasePath(tmp.path)).close()
+    const artifact = path.join(tmp.path, ".codegraph", "chimera", "tool-provenance.jsonl")
+    await fs.mkdir(path.dirname(artifact), { recursive: true })
+    await Bun.write(artifact, `${JSON.stringify(record(tmp.path))}\n`)
+
+    expect(await readProvenanceRecords(tmp.path, artifact)).toHaveLength(0)
+
+    const db = DatabaseConnection.open(getDatabasePath(tmp.path))
+    try {
+      const row = db.getDb().prepare("SELECT COUNT(*) as count FROM chimera_change_event").get() as { count: number }
+      expect(row.count).toBe(0)
+    } finally {
+      db.close()
+    }
+  })
+
+  test("stores only a stat when an audit payload diff exceeds 64KB", async () => {
+    await using tmp = await tmpdir()
+    DatabaseConnection.initialize(getDatabasePath(tmp.path)).close()
+    const diff = [
+      "diff --git a/a.ts b/a.ts",
+      "--- a/a.ts",
+      "+++ b/a.ts",
+      "-removed",
+      ...Array.from({ length: 9000 }, (_, index) => `+line ${index} padding padding`),
+    ].join("\n")
+    expect(diff.length).toBeGreaterThan(64 * 1024)
+
+    const auditID = await recordAuditRun(tmp.path, {
+      source: "git_diff",
+      changedFiles: ["a.ts"],
+      snapshotRevision: "rev",
+      seedNodes: [],
+      obligations: [],
+      payload: { git_diff: diff },
+    })
+    const stored = await readAuditRunReadonly(tmp.path, auditID)
+    const stat = (stored?.payload as { git_diff: { omitted?: boolean; files?: number; insertions?: number; deletions?: number } }).git_diff
+    expect(stat.omitted).toBe(true)
+    expect(stat.files).toBe(1)
+    expect(stat.insertions).toBe(9000)
+    expect(stat.deletions).toBe(1)
   })
 })
 

@@ -189,6 +189,7 @@ export type CompactEvidenceOptions = {
   dryRun?: boolean;
   vacuum?: boolean;
   activeSessionID?: string;
+  retentionDays?: number;
 };
 
 export type CompactEvidenceResult = {
@@ -319,6 +320,21 @@ function resolveProjectPath(pathArg?: string): string {
 
   // Not found - return original path (will fail later with helpful error)
   return absolutePath;
+}
+
+/**
+ * Parse a compact duration (30d, 12h, 2w, 90m) into days for evidence
+ * retention. A bare number is interpreted as days.
+ */
+function parseOlderThan(value: string): number {
+  const match = /^(\d+(?:\.\d+)?)\s*([dhwm]?)$/i.exec(value.trim());
+  if (!match) throw new Error(`Invalid --older-than duration: ${value} (use e.g. 30d, 12h, 2w)`);
+  const amount = Number(match[1]);
+  const unit = (match[2] || 'd').toLowerCase();
+  if (unit === 'h') return amount / 24;
+  if (unit === 'w') return amount * 7;
+  if (unit === 'm') return amount / 1440;
+  return amount;
 }
 
 /**
@@ -1087,8 +1103,9 @@ program
   .option('--dry-run', 'Show eligible evidence without deleting hot fact/evidence rows')
   .option('--vacuum', 'Run SQLite VACUUM after compaction to physically shrink the database')
   .option('--active-session <id>', 'Protect a currently active Chimera session from compaction')
+  .option('--older-than <duration>', 'Only compact evidence older than this duration (default: 30d)', '30d')
   .option('-j, --json', 'Output as JSON')
-  .action(async (pathArg: string | undefined, options: { dryRun?: boolean; vacuum?: boolean; activeSession?: string; json?: boolean }) => {
+  .action(async (pathArg: string | undefined, options: { dryRun?: boolean; vacuum?: boolean; activeSession?: string; olderThan: string; json?: boolean }) => {
     const projectPath = resolveProjectPath(pathArg);
 
     try {
@@ -1105,6 +1122,7 @@ program
         dryRun: options.dryRun,
         vacuum: options.vacuum,
         activeSessionID: options.activeSession,
+        retentionDays: parseOlderThan(options.olderThan),
       });
 
       if (options.json) {

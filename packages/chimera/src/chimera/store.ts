@@ -287,7 +287,11 @@ export type CommittedEvidenceCompactionOptions = {
   dryRun?: boolean
   vacuum?: boolean
   now?: string
+  /** Only compact events finished at least this many days ago. Defaults to 30; <= 0 disables the age gate. */
+  retentionDays?: number
 }
+
+export const DEFAULT_COMMITTED_EVIDENCE_RETENTION_DAYS = 30
 
 export type CommittedEvidenceCompactionResult = {
   projectRoot: string
@@ -1388,15 +1392,18 @@ export async function appendProvenanceRecord(projectRoot: string, artifact: stri
   await appendJsonl(artifact, normalizeProvenanceRecord(record))
 }
 
+// Read paths are pure: legacy JSONL records are no longer backfilled into the
+// store on read (that INSERT made every prompt-context render a write). The
+// JSONL artifact remains the fallback when the store is unavailable;
+// DB-backed rows are authoritative once the store exists.
 export async function readProvenanceRecords(projectRoot: string, artifact: string): Promise<ToolMutationRecord[]> {
-  const legacy = (await readLegacyProvenanceRecords(artifact)).map(normalizeProvenanceRecord)
-  const records = await withDb(projectRoot, (db) => {
-    for (const record of legacy) writeProvenanceRecordToDb(db, record, artifact)
-    return (db.prepare("SELECT payload_json FROM chimera_change_event ORDER BY finished_at ASC, id ASC").all() as PayloadRow[])
+  const records = await withDb(projectRoot, (db) =>
+    (db.prepare("SELECT payload_json FROM chimera_change_event ORDER BY finished_at ASC, id ASC").all() as PayloadRow[])
       .flatMap((row) => parseJson<ToolMutationRecord>(row.payload_json))
-      .map(normalizeProvenanceRecord)
-  })
-  return records ?? legacy
+      .map(normalizeProvenanceRecord),
+  )
+  if (records) return records
+  return (await readLegacyProvenanceRecords(artifact)).map(normalizeProvenanceRecord)
 }
 
 export async function readRecentProvenanceRecords(
@@ -1526,9 +1533,35 @@ export async function readChangeFacts(projectRoot: string, eventIDs?: string[]) 
   return facts ?? []
 }
 
+const MAX_AUDIT_DIFF_BYTES = 64 * 1024
+const AUDIT_DIFF_KEYS = new Set(["git_diff", "gitDiff", "diff"])
+
+function diffStat(patch: string) {
+  const lines = patch.split("\n")
+  return {
+    files: Math.max(1, lines.filter((line) => line.startsWith("diff --git ")).length),
+    insertions: lines.filter((line) => line.startsWith("+") && !line.startsWith("+++")).length,
+    deletions: lines.filter((line) => line.startsWith("-") && !line.startsWith("---")).length,
+  }
+}
+
+/**
+ * Audit rows are replay evidence, not a diff archive: an oversized diff is
+ * replaced with its stat so one huge patch cannot dominate payload_json.
+ */
+function compactAuditPayload(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(compactAuditPayload)
+  if (!value || typeof value !== "object") return value
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => {
+    if (AUDIT_DIFF_KEYS.has(key) && typeof item === "string" && item.length > MAX_AUDIT_DIFF_BYTES)
+      return [key, { omitted: true, bytes: item.length, ...diffStat(item) }]
+    return [key, compactAuditPayload(item)]
+  }))
+}
+
 export async function recordAuditRun(projectRoot: string, input: AuditRunInput) {
   const createdAt = new Date().toISOString()
-  const payload = safeJson(input.payload)
+  const payload = safeJson(compactAuditPayload(input.payload))
   // Identity fields are part of the hash input: same-millisecond records with a
   // colliding id would silently REPLACE each other (audit rows lost under
   // concurrent multi-session waves).
@@ -1649,54 +1682,21 @@ export async function recordPredesignRun(projectRoot: string, artifact: string, 
 }
 
 export async function readPredesignRuns(projectRoot: string, artifact: string, options: { sessionID?: string; limit?: number } = {}) {
-  const legacy = await readJsonl<PredesignRunRecord>(artifact)
   const limit = Math.max(1, Math.min(100, Math.floor(options.limit ?? 20)))
+  // Pure read: legacy JSONL rows are no longer INSERTed here (backfill made
+  // every propagation-probe/prompt read a write). DB rows win; JSONL is only
+  // the fallback when the store is unavailable.
   const records = await withDb(projectRoot, (db) => {
-    for (const record of legacy) {
-      db.prepare(`
-        INSERT OR IGNORE INTO chimera_predesign_run (
-          id,
-          session_id,
-          message_id,
-          call_id,
-          agent,
-          intent,
-          files_json,
-          seed_nodes_json,
-          impacted_nodes_json,
-          file_dependents_json,
-          evidence_json,
-          snapshot_revision,
-          payload_json,
-          created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        record.id,
-        record.sessionID,
-        record.messageID,
-        record.callID ?? null,
-        record.agent,
-        record.intent,
-        safeJson(record.files),
-        safeJson(record.seedNodes),
-        safeJson(record.impactedNodes),
-        safeJson(record.fileDependents),
-        safeJson(record.evidence),
-        record.snapshotRevision,
-        safeJson(record),
-        record.createdAt,
-      )
-    }
     const rows = options.sessionID
       ? db.prepare("SELECT payload_json FROM chimera_predesign_run WHERE session_id = ? ORDER BY created_at DESC, id DESC LIMIT ?").all(options.sessionID, limit)
       : db.prepare("SELECT payload_json FROM chimera_predesign_run ORDER BY created_at DESC, id DESC LIMIT ?").all(limit)
     return (rows as PayloadRow[]).flatMap((row) => parseJson<PredesignRunRecord>(row.payload_json))
   })
-  const fallback = legacy
+  if (records) return records
+  return (await readJsonl<PredesignRunRecord>(artifact))
     .filter((record) => !options.sessionID || record.sessionID === options.sessionID)
     .toSorted((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))
     .slice(0, limit)
-  return records ?? fallback
 }
 
 export async function readPredesignRunReadonly(projectRoot: string, artifact: string, predesignID: string) {
@@ -1855,8 +1855,9 @@ export async function readActiveEditIntentClaims(
   const now = options.now ?? new Date().toISOString()
   const limit = Math.max(1, Math.min(500, Math.floor(options.limit ?? 200)))
   const files = options.files ? unique(options.files.map(claimFilePath).filter(Boolean)) : undefined
+  // Pure read: stale claims are filtered by expires_at but no longer flipped
+  // here. The 5-minute sweep (sweepExpiredStoreRows) persists the expiry.
   const records = await withDb(projectRoot, (db) => {
-    expireStaleEditIntentClaims(db, now)
     const where = ["status = 'active'", "expires_at > ?"]
     const params: unknown[] = [now]
     if (files && files.length > 0) {
@@ -2228,12 +2229,30 @@ function isPIDAlive(pid: number) {
   }
 }
 
-// Lazy TTL enforcement (same philosophy as the claim TTL): a registered row
-// past its crash-fallback lifetime flips to expired on any writable read, so
-// a host that died before reporting the child's exit stops claiming ownership
-// without a background sweeper.
+// TTL enforcement for the process registry. It used to run inside the active
+// read path; reads are pure now, so expiry is persisted by the 5-minute
+// background sweep (sweepExpiredStoreRows) and opportunistically on writes.
 function expireStaleProcesses(db: ChimeraDb, now: string) {
   db.prepare("UPDATE chimera_process_registry SET status = 'expired', exited_at = ? WHERE status = 'running' AND expires_at <= ?").run(now, now)
+}
+
+/**
+ * Low-frequency maintenance for row state that read paths used to mutate:
+ * claim TTL expiry, process TTL expiry, and dead-pid process flips. The
+ * edit-intent poll calls this every 5 minutes; read surfaces stay write-free.
+ */
+export async function sweepExpiredStoreRows(projectRoot: string, options: { now?: string } = {}) {
+  const now = options.now ?? new Date().toISOString()
+  return withDb(projectRoot, (db) => {
+    expireStaleEditIntentClaims(db, now)
+    expireStaleProcesses(db, now)
+    const running = db.prepare("SELECT id, pid FROM chimera_process_registry WHERE status = 'running'").all() as Array<{ id: string; pid: number }>
+    const dead = running.filter((item) => !isPIDAlive(item.pid)).map((item) => item.id)
+    if (dead.length > 0) {
+      db.prepare(`UPDATE chimera_process_registry SET status = 'expired', exited_at = ? WHERE status = 'running' AND id IN (${dead.map(() => "?").join(", ")})`).run(now, ...dead)
+    }
+    return true
+  })
 }
 
 export async function registerProcess(projectRoot: string, input: ProcessRegistryInput): Promise<ProcessRegistryRecord | undefined> {
@@ -2304,11 +2323,10 @@ export async function markProcessKilled(
 }
 
 /**
- * Active rows: lazy TTL expiry, then a signal-0 liveness sweep so a crashed
- * host's still-'running' rows stop claiming ownership before the TTL horizon
- * (rows failing liveness flip to 'expired', persisted, not just filtered).
- * Like the claim surface this opens the db read-write for the flip; degrade
- * open to an empty list when the store is unavailable.
+ * Active rows. Pure read: TTL-expired rows are filtered out and dead pids are
+ * filtered in memory, but nothing is flipped here. sweepExpiredStoreRows
+ * persists both verdicts on its 5-minute cadence. Degrade-open to an empty
+ * list when the store is unavailable.
  */
 export async function readActiveProcesses(
   projectRoot: string,
@@ -2317,18 +2335,8 @@ export async function readActiveProcesses(
   const now = options.now ?? new Date().toISOString()
   const limit = Math.max(1, Math.min(500, Math.floor(options.limit ?? 200)))
   const rows = await withDb(projectRoot, (db) => {
-    expireStaleProcesses(db, now)
-    const running = db
-      .prepare("SELECT id, pid FROM chimera_process_registry WHERE status = 'running'")
-      .all() as Array<{ id: string; pid: number }>
-    const dead = running.filter((item) => !isPIDAlive(item.pid)).map((item) => item.id)
-    if (dead.length > 0) {
-      db.prepare(
-        `UPDATE chimera_process_registry SET status = 'expired', exited_at = ? WHERE status = 'running' AND id IN (${dead.map(() => "?").join(", ")})`,
-      ).run(now, ...dead)
-    }
-    const where = ["status = 'running'"]
-    const params: unknown[] = []
+    const where = ["status = 'running'", "expires_at > ?"]
+    const params: unknown[] = [now]
     if (options.sessionID) {
       where.push("session_id = ?")
       params.push(options.sessionID)
@@ -2342,7 +2350,7 @@ export async function readActiveProcesses(
       .prepare(`SELECT * FROM chimera_process_registry WHERE ${where.join(" AND ")} ORDER BY started_at ASC, rowid ASC LIMIT ?`)
       .all(...params) as ProcessRegistryRow[]
   })
-  return (rows ?? []).map(processRegistryRecord)
+  return (rows ?? []).filter((row) => isPIDAlive(row.pid)).map(processRegistryRecord)
 }
 
 /** Flip every running row of one session to released; returns the flipped records. */
@@ -2483,12 +2491,11 @@ export async function readOracleResults(
   options: { sessionID?: string; limit?: number; includePassing?: boolean } = {},
 ) {
   const limit = Math.max(1, Math.min(100, Math.floor(options.limit ?? 20)))
-  const legacy = await readRecentJsonl<OracleRecord>(artifact, Math.max(limit * 5, 100))
   const keep = (record: OracleRecord) =>
     (!options.sessionID || record.tool.sessionID === options.sessionID) &&
     (options.includePassing || record.status !== "pass")
+  // Pure read: legacy JSONL oracle rows are no longer backfilled on read.
   const records = await withDb(projectRoot, (db) => {
-    for (const record of legacy) writeOracleResultToDb(db, record)
     const where = [
       ...(options.sessionID ? ["session_id = ?"] : []),
       ...(!options.includePassing ? ["status != 'pass'"] : []),
@@ -2507,17 +2514,21 @@ export async function readOracleResults(
       .flatMap((row) => parseJson<OracleRecord>(row.payload_json))
       .map(normalizeOracleRecord)
   })
-  return records ?? legacy.map(normalizeOracleRecord).filter(keep).toSorted((a, b) => b.finishedAt.localeCompare(a.finishedAt) || b.id.localeCompare(a.id)).slice(0, limit)
+  if (records) return records
+  return (await readRecentJsonl<OracleRecord>(artifact, Math.max(limit * 5, 100)))
+    .map(normalizeOracleRecord)
+    .filter(keep)
+    .toSorted((a, b) => b.finishedAt.localeCompare(a.finishedAt) || b.id.localeCompare(a.id))
+    .slice(0, limit)
 }
 
 export async function readOracleResult(projectRoot: string, artifact: string, oracleID: string) {
-  const legacy = await readJsonl<OracleRecord>(artifact)
   const record = await withDb(projectRoot, (db) => {
-    for (const item of legacy) writeOracleResultToDb(db, item)
     const row = db.prepare("SELECT payload_json FROM chimera_oracle_result WHERE id = ?").get(oracleID) as PayloadRow | undefined
     return row ? parseJson<OracleRecord>(row.payload_json).map(normalizeOracleRecord)[0] : undefined
   })
-  return record ?? legacy.map(normalizeOracleRecord).find((item) => item.id === oracleID)
+  if (record) return record
+  return (await readJsonl<OracleRecord>(artifact)).map(normalizeOracleRecord).find((item) => item.id === oracleID)
 }
 
 export async function readOracleResultReadonly(projectRoot: string, artifact: string, oracleID: string) {
@@ -2692,6 +2703,8 @@ function activeObligationText(db: ChimeraDb) {
 }
 
 function compactionCandidates(db: ChimeraDb, options: CommittedEvidenceCompactionOptions) {
+  const retentionDays = options.retentionDays ?? DEFAULT_COMMITTED_EVIDENCE_RETENTION_DAYS
+  const cutoff = retentionDays > 0 ? Date.parse(options.now ?? new Date().toISOString()) - retentionDays * 86_400_000 : undefined
   const records = oracleRecordsFromDb(db)
   const protectedEvents = new Set<string>()
   const candidates = new Map<string, { eventID: string; oracleIDs: Set<string>; changeIDs: Set<string>; files: Set<string> }>()
@@ -2714,12 +2727,12 @@ function compactionCandidates(db: ChimeraDb, options: CommittedEvidenceCompactio
   const eventIDs = [...candidates.keys()]
   if (eventIDs.length === 0) return []
   const eventRows = (db.prepare(`
-    SELECT id, actor_session_id, after_revision
+    SELECT id, actor_session_id, after_revision, finished_at
     FROM chimera_change_event
     WHERE id IN (${eventIDs.map(() => "?").join(", ")})
-  `).all(...eventIDs) as Array<{ id: string; actor_session_id: string | null; after_revision: string }>)
+  `).all(...eventIDs) as Array<{ id: string; actor_session_id: string | null; after_revision: string; finished_at: string }>)
   const eventIDsInStore = new Set(eventRows
-    .filter((row) => row.actor_session_id !== options.activeSessionID)
+    .filter((row) => row.actor_session_id !== options.activeSessionID && (cutoff === undefined || Date.parse(row.finished_at) <= cutoff))
     .map((row) => row.id))
   const obligationText = activeObligationText(db)
   return eventIDs
@@ -2960,16 +2973,14 @@ export async function readPersistentObligationStore<T extends ObligationLike>(
   artifact: string,
   fallback: ObligationStoreLike<T>,
 ) {
-  const legacy = await readJson<ObligationStoreLike<T>>(artifact, fallback)
-  const store = await withDb(projectRoot, (db) => {
-    for (const item of legacy.obligations ?? []) writeObligationToDb(db, item, undefined, "ignore")
-    return {
-      schemaVersion: 1 as const,
-      obligations: (db.prepare("SELECT payload_json FROM chimera_audit_obligation ORDER BY created_at ASC, id ASC").all() as PayloadRow[])
-        .flatMap((row) => parseJson<T>(row.payload_json)),
-    }
-  })
-  return store ?? legacy
+  // Pure read: legacy obligations are no longer imported on read. The JSONL
+  // artifact stays the fallback when the store is unavailable.
+  const store = await withDb(projectRoot, (db) => ({
+    schemaVersion: 1 as const,
+    obligations: (db.prepare("SELECT payload_json FROM chimera_audit_obligation ORDER BY created_at ASC, id ASC").all() as PayloadRow[])
+      .flatMap((row) => parseJson<T>(row.payload_json)),
+  }))
+  return store ?? (await readJson<ObligationStoreLike<T>>(artifact, fallback))
 }
 
 /**

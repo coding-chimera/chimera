@@ -24,6 +24,7 @@ import {
   releaseEditIntentClaims,
   releaseEditIntentClaimsForFiles,
   takeWokenEditIntentWaiters,
+  sweepExpiredStoreRows,
   type EditIntentClaimRecord,
   type EditIntentClaimReleaseReason,
   type EditIntentQueuePosition,
@@ -35,6 +36,18 @@ const log = Log.create({ service: "chimera.edit-intent" })
 
 const MAX_CONTEXT_FILES = 8
 const MAX_INTENT_CHARS = 140
+const STORE_SWEEP_INTERVAL_MS = 5 * 60 * 1000
+const lastStoreSweepAt = new Map<string, number>()
+
+// Read paths no longer flip TTL-expired claims/process rows. This throttled
+// sweep runs from the 3s cross-process poll and persists those flips every
+// 5 minutes, keeping reads write-free without adding a new timer.
+async function sweepExpiredStores(projectRoot: string) {
+  const now = Date.now()
+  if (now - (lastStoreSweepAt.get(projectRoot) ?? 0) < STORE_SWEEP_INTERVAL_MS) return
+  lastStoreSweepAt.set(projectRoot, now)
+  await sweepExpiredStoreRows(projectRoot).catch((error) => log.warn("expired store sweep failed", { error }))
+}
 
 /**
  * Bounded wake-priority window (G1 fairness handoff). After a release wakes
@@ -872,6 +885,7 @@ export const sweepStaleHosts = Effect.fn("EditIntentClaims.sweepStaleHosts")(fun
  * zero DB access for the tick. Stale-boot cleanup piggybacks on active ticks.
  */
 export const pollCrossProcessWakes = Effect.fn("EditIntentClaims.pollCrossProcessWakes")(function* (input: { projectRoot: string }) {
+  yield* Effect.promise(() => sweepExpiredStores(input.projectRoot))
   if (!pendingPollRoots.has(input.projectRoot)) return [] as EditIntentWakeTarget[]
   const own = yield* Effect.promise(() =>
     readEditIntentWaiters(input.projectRoot, { status: "waiting", hostBootID: currentHostBootID(), limit: 200 }).catch((error) => {

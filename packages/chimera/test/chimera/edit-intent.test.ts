@@ -13,8 +13,9 @@ import {
   registerEditIntentClaims,
   registerEditIntentWaiter,
   releaseEditIntentClaims,
+  sweepExpiredStoreRows,
   takeWokenEditIntentWaiters,
-} from "@/chimera/store"
+  } from "@/chimera/store"
 import { MessageID, SessionID } from "@/contracts/session-ids"
 import { disposeAllInstances, tmpdir, TestInstance } from "../fixture/fixture"
 import { it } from "../lib/effect"
@@ -84,7 +85,8 @@ describe("edit-intent claims store", () => {
     await registerEditIntentClaims(tmp.path, { ...claimInput("predesign_ttl", "ses_a", ["x.ts"]), ttlMs: 60_000 })
     const future = new Date(Date.now() + 61_000).toISOString()
     expect(await readActiveEditIntentClaims(tmp.path, { now: future })).toHaveLength(0)
-    // The expiry was persisted, not just filtered: a current-time read stays empty.
+    // The expiry is persisted by the background sweep, not by the read path.
+    await sweepExpiredStoreRows(tmp.path, { now: future })
     expect(await readActiveEditIntentClaims(tmp.path)).toHaveLength(0)
     // An expired holder no longer suppresses waiter wakes.
     await registerEditIntentWaiter(tmp.path, { sessionID: "ses_b", filePath: "x.ts", blockerSessionID: "ses_a" })

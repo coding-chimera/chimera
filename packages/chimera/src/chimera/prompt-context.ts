@@ -2,6 +2,7 @@ import path from "path"
 import { Context, Effect, Layer, Option } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import {
+  databaseStorePath,
   readAuditRuns,
   readOracleResults,
   readPersistentObligationStore,
@@ -73,6 +74,24 @@ function artifactPaths(root: string, file: string) {
   const active = path.join(info.dataRoot, "chimera", file)
   const legacy = path.join(info.legacyRoot, "chimera", file)
   return active === legacy ? [active] : [active, legacy]
+}
+
+const CACHE_ARTIFACTS = ["tool-provenance.jsonl", "predesign-runs.jsonl", "obligations.json", "oracle-results.jsonl"]
+
+async function fileRevision(file: string) {
+  const handle = Bun.file(file)
+  if (!(await handle.exists())) return "-"
+  const info = await handle.stat()
+  return `${info.size}:${info.mtimeMs}`
+}
+
+/** Cheap backing-store fingerprint: database, WAL, and legacy artifacts. */
+async function storeRevision(root: string) {
+  const info = getGraphDataRootInfo(root)
+  const roots = info.dataRoot === info.legacyRoot ? [info.dataRoot] : [info.dataRoot, info.legacyRoot]
+  const database = databaseStorePath(root)
+  const files = [database, `${database}-wal`, ...roots.flatMap((dataRoot) => CACHE_ARTIFACTS.map((artifact) => path.join(dataRoot, "chimera", artifact)))]
+  return (await Promise.all(files.map(fileRevision))).join("|")
 }
 
 async function readProvenanceWithFallback(root: string) {
@@ -542,18 +561,29 @@ function renderContext(
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
+    // One entry per session: the last rendered turn. Prompt assembly calls
+    // render up to three times per turn, and the store reads are identical
+    // while the backing database/WAL/artifacts are unchanged. The latest user
+    // message id identifies the turn; a cheap file fingerprint guards the
+    // mid-turn mutation case so cached context cannot go stale.
+    const turnCache = new Map<SessionID, { turnID: string; revision: string; context: string | undefined }>()
     const render = Effect.fn("ChimeraPromptContext.render")(function* (
       sessionID: SessionID,
       sessions: Session.Interface,
     ) {
       const instance = yield* InstanceState.context
       const root = projectRoot(instance)
+      const messages = yield* sessions.messages({ sessionID, limit: MAX_SCAN_MESSAGES }).pipe(Effect.option)
+      const turnID = (Option.isSome(messages) ? messages.value : []).findLast((message) => message.info.role === "user")?.info.id
+      const revision = yield* Effect.promise(() => storeRevision(root))
+      const cached = turnID ? turnCache.get(sessionID) : undefined
+      if (turnID && cached?.turnID === turnID && cached.revision === revision) return cached.context
+      const claimsLines = yield* EditIntentClaims.contextLines({ projectRoot: root, sessionID })
       const records = yield* Effect.promise(() => readProvenanceWithFallback(root))
       const predesigns = yield* Effect.promise(() => readPredesignsWithFallback(root, sessionID))
       const store = yield* Effect.promise(() => readObligationsWithFallback(root))
       const audits = yield* Effect.promise(() => readAuditRuns(root, { limit: 20 }))
       const oracles = yield* Effect.promise(() => readOraclesWithFallback(root, sessionID))
-      const messages = yield* sessions.messages({ sessionID, limit: MAX_SCAN_MESSAGES }).pipe(Effect.option)
       const hint = yield* graphDiscoveryHint(root, messages)
       const sessionPredesigns = recentPredesigns(predesigns, sessionID)
       const drift = scopeDriftSignal(
@@ -562,8 +592,7 @@ export const layer = Layer.effect(
         sessionID,
         sessionPredesigns,
       )
-      const claimsLines = yield* EditIntentClaims.contextLines({ projectRoot: root, sessionID })
-      return renderContext(
+      const context = renderContext(
         recentMutations(records, sessionID),
         activeObligations(store),
         sessionPredesigns,
@@ -573,6 +602,8 @@ export const layer = Layer.effect(
         drift,
         claimsLines,
       )
+      if (turnID) turnCache.set(sessionID, { turnID, revision, context })
+      return context
     })
 
     return Service.of({ render })

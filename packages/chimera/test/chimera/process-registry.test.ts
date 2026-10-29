@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { DatabaseConnection, getDatabasePath } from "@/graph"
 import { ProcessRegistry } from "@/chimera/process-registry"
-import { markProcessExited, readActiveProcesses, registerProcess } from "@/chimera/store"
+import { markProcessExited, readActiveProcesses, registerProcess, sweepExpiredStoreRows } from "@/chimera/store"
 import { disposeAllInstances, tmpdir } from "../fixture/fixture"
 
 afterEach(async () => {
@@ -106,7 +106,8 @@ describe("process registry store", () => {
 
     const future = new Date(Date.now() + 61_000).toISOString()
     expect(await readActiveProcesses(tmp.path, { now: future })).toHaveLength(0)
-    // Persisted, not just filtered: a current-time read stays empty.
+    // The expiry is persisted by the background sweep, not by the read path.
+    await sweepExpiredStoreRows(tmp.path, { now: future })
     expect(await ProcessRegistry.listActive(tmp.path)).toHaveLength(0)
     if (entry) expect(await markProcessExited(tmp.path, entry.id, null)).toBeUndefined()
   })
@@ -124,7 +125,8 @@ describe("process registry store", () => {
 
     const active = await ProcessRegistry.listActive(tmp.path)
     expect(active.map((entry) => entry.command)).toEqual(["still here"])
-    // Sweep was persisted: the dead row can no longer transition.
+    // The background sweep persists the dead-pid flip; reads only filter it.
+    await sweepExpiredStoreRows(tmp.path)
     if (stale) expect(await markProcessExited(tmp.path, stale.id, null)).toBeUndefined()
   })
 })
