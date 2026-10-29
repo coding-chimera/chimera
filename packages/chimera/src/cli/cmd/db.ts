@@ -63,6 +63,102 @@ const PathCommand = cmd({
   },
 })
 
+export const SUMMARY_DIFFS_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
+
+export function summaryDiffsCutoff(now = Date.now()) {
+  return now - SUMMARY_DIFFS_RETENTION_MS
+}
+
+// Old messages can still carry the legacy `summary.diffs` blob. The read path
+// repairs oversized ones per session (message-v2.ts); this is the bulk sweep
+// for rows that have aged out of the retention window.
+const STALE_SUMMARY_DIFFS_WHERE = `
+  time_created < ?
+    AND json_valid(data)
+    AND json_type(data, '$.summary.diffs') = 'array'
+    AND json_array_length(data, '$.summary.diffs') > 0
+`
+
+export function countStaleSummaryDiffs(db: BunDatabase, cutoff: number) {
+  const row = db
+    .query(`SELECT count(*) AS count FROM message WHERE ${STALE_SUMMARY_DIFFS_WHERE}`)
+    .get(cutoff) as { count: number }
+  return Number(row.count)
+}
+
+export function clearStaleSummaryDiffs(db: BunDatabase, cutoff: number) {
+  return db
+    .run(`UPDATE message SET data = json_set(data, '$.summary.diffs', json('[]')) WHERE ${STALE_SUMMARY_DIFFS_WHERE}`, [cutoff])
+    .changes
+}
+
+function pragmaNumber(db: BunDatabase, name: string) {
+  const row = db.query(`PRAGMA ${name}`).get() as Record<string, number> | null
+  return row ? Number(Object.values(row)[0] ?? 0) : 0
+}
+
+export function vacuumEstimate(db: BunDatabase) {
+  const pageCount = pragmaNumber(db, "page_count")
+  const freePages = pragmaNumber(db, "freelist_count")
+  const pageSize = pragmaNumber(db, "page_size")
+  return { pageCount, freePages, pageSize, reclaimableBytes: freePages * pageSize }
+}
+
+export function formatBytes(bytes: number) {
+  if (bytes <= 0) return "0 B"
+  const units = ["B", "KB", "MB", "GB", "TB"]
+  const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
+  return `${(bytes / 1024 ** exponent).toFixed(exponent === 0 ? 0 : 1)} ${units[exponent]}`
+}
+
+const VacuumCommand = cmd({
+  command: "vacuum",
+  describe: "reclaim database space: clear stale message summary diffs, checkpoint the WAL, VACUUM, and optimize",
+  builder: (yargs: Argv) =>
+    yargs.option("yes", {
+      type: "boolean",
+      default: false,
+      describe: "apply the cleanup and run VACUUM (default is a dry run)",
+    }),
+  handler: (args: { yes: boolean }) => {
+    const cutoff = summaryDiffsCutoff()
+    // Bun rejects an explicit `readonly: false`, so only pass the option for dry runs.
+    const db = args.yes ? new BunDatabase(Database.Path) : new BunDatabase(Database.Path, { readonly: true })
+    try {
+      const stale = countStaleSummaryDiffs(db, cutoff)
+      const before = vacuumEstimate(db)
+      console.log(`Messages older than ${new Date(cutoff).toISOString()} with summary.diffs: ${stale}`)
+      console.log(
+        `Database: ${before.pageCount} pages x ${before.pageSize} bytes, ${before.freePages} free pages (~${formatBytes(before.reclaimableBytes)} reclaimable)`,
+      )
+      console.log("Warning: VACUUM needs up to 2x the database size in free disk space and blocks writes while it runs.")
+      if (!args.yes) {
+        console.log("Dry run: no changes applied. Re-run with --yes to clear stale summary diffs, checkpoint the WAL, VACUUM, and optimize.")
+        return
+      }
+      console.log(`Cleared summary.diffs on ${clearStaleSummaryDiffs(db, cutoff)} message(s)`)
+      const checkpoint = db.query("PRAGMA wal_checkpoint(TRUNCATE)").get() as Record<string, number> | null
+      console.log(
+        checkpoint && checkpoint.log >= 0
+          ? `WAL checkpoint: busy=${checkpoint.busy} log=${checkpoint.log} checkpointed=${checkpoint.checkpointed}`
+          : "WAL checkpoint: skipped (database is not in WAL mode)",
+      )
+      console.log("Running VACUUM...")
+      db.exec("VACUUM")
+      db.exec("PRAGMA optimize")
+      const after = vacuumEstimate(db)
+      console.log(
+        `VACUUM complete: ${after.pageCount} pages, ${after.freePages} free pages (~${formatBytes(after.reclaimableBytes)} reclaimable)`,
+      )
+    } catch (err) {
+      UI.error(`Database vacuum failed: ${errorMessage(err)}`)
+      process.exit(1)
+    } finally {
+      db.close()
+    }
+  },
+})
+
 const CompactToolMetadataCommand = cmd({
   command: "compact-tool-metadata",
   describe: "analyze recoverable Chimera tool metadata and compact it only with --apply",
@@ -150,7 +246,13 @@ export const DbCommand = cmd({
   command: "db",
   describe: "database tools",
   builder: (yargs: Argv) => {
-    return yargs.command(QueryCommand).command(PathCommand).command(MigrateCommand).command(CompactToolMetadataCommand).demandCommand()
+    return yargs
+      .command(QueryCommand)
+      .command(PathCommand)
+      .command(MigrateCommand)
+      .command(CompactToolMetadataCommand)
+      .command(VacuumCommand)
+      .demandCommand()
   },
   handler: () => {},
 })

@@ -13,7 +13,7 @@ import { InstallationVersion } from "@opencode-ai/core/installation/version"
 
 import { Database } from "@/storage/db"
 import { NotFoundError } from "@/storage/storage"
-import { eq } from "drizzle-orm"
+import { eq, sql } from "drizzle-orm"
 import { and } from "drizzle-orm"
 import { gte } from "drizzle-orm"
 import { isNull } from "drizzle-orm"
@@ -25,7 +25,7 @@ import { lt } from "drizzle-orm"
 import { or } from "drizzle-orm"
 import { SyncEvent } from "../sync"
 import type { SQL } from "drizzle-orm"
-import { PartTable, SessionTable } from "@/storage/tables/session.sql"
+import { MessageTable, PartTable, SessionTable } from "@/storage/tables/session.sql"
 import { ProjectTable } from "../project/project.sql"
 import { Storage } from "@/storage/storage"
 import * as Log from "@opencode-ai/core/util/log"
@@ -46,6 +46,7 @@ import { Permission } from "@/permission"
 import { Global } from "@opencode-ai/core/global"
 import { copySessionState, deleteSessionMemory, ensureSessionState } from "@/memory/store"
 import { Effect, Layer, Option, Context, Schema, Types } from "effect"
+import { SessionStatus } from "./status"
 import { zod } from "@/util/effect-zod"
 import { NonNegativeInt, optionalOmitUndefined, withStatics } from "@/util/schema"
 
@@ -330,6 +331,37 @@ export type ListInput = {
   archived?: boolean
 }
 
+export interface PruneInput {
+  /** Remove sessions whose `time.updated` is older than this epoch-ms cutoff. */
+  cutoff: number
+  /** Report what would be removed without deleting anything. Defaults to true. */
+  dryRun?: boolean
+}
+
+export interface PruneSession {
+  id: SessionID
+  title: string
+  timeUpdated: number
+  messages: number
+  parts: number
+  bytes: number
+}
+
+export interface PruneResult {
+  cutoff: number
+  dryRun: boolean
+  sessions: PruneSession[]
+  totalMessages: number
+  totalParts: number
+  totalBytes: number
+  /** Old sessions kept because they (or a descendant) are still active. */
+  skippedActive: number
+  /** Sessions actually removed; always 0 on a dry run. */
+  removedSessions: number
+  /** Orphan `session_diff` files removed by the GC pass; 0 on a dry run. */
+  removedOrphanDiffs: number
+}
+
 const CreatedEventSchema = Schema.Struct({
   sessionID: SessionID,
   info: Info,
@@ -604,6 +636,17 @@ export interface Interface {
    */
   readonly childrenIDs?: (parentID: SessionID) => Effect.Effect<string[]>
   readonly remove: (sessionID: SessionID) => Effect.Effect<void, NotFound>
+  /**
+   * Retention cleanup: remove every session in the current project whose
+   * `time.updated` is older than `cutoff`, skipping sessions that are active
+   * (SessionStatus) or own a running background job. Dry runs report counts
+   * and bytes without mutating; real runs reuse `remove` so message/part and
+   * `session_diff` cleanup stay in one place, then GC orphan diff files.
+   * Optional on the interface for the same reason as `setCompacting`: partial
+   * Session.Service mocks exist outside this module; the real layer always
+   * provides it.
+   */
+  readonly prune?: (input: PruneInput) => Effect.Effect<PruneResult>
   readonly updateMessage: <T extends MessageV2.Info>(msg: T) => Effect.Effect<T>
   readonly removeMessage: (input: { sessionID: SessionID; messageID: MessageID }) => Effect.Effect<MessageID>
   readonly removePart: (input: { sessionID: SessionID; messageID: MessageID; partID: PartID }) => Effect.Effect<PartID>
@@ -799,6 +842,137 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
       } catch (e) {
         log.error(e)
       }
+    })
+
+    const prune: NonNullable<Interface["prune"]> = Effect.fn("Session.prune")(function* (input) {
+      const ctx = yield* InstanceState.context
+      const rows = yield* db((d) =>
+        d
+          .select({
+            id: SessionTable.id,
+            title: SessionTable.title,
+            parentID: SessionTable.parent_id,
+            timeUpdated: SessionTable.time_updated,
+          })
+          .from(SessionTable)
+          .where(eq(SessionTable.project_id, ctx.project.id))
+          .all(),
+      )
+
+      // Active = non-idle in this process, or owns a running background job.
+      // Both are process-local: a session active in another process cannot be
+      // observed here, so pruning keeps the same single-writer assumption as
+      // the rest of the session store.
+      const status = Option.getOrUndefined(yield* Effect.serviceOption(SessionStatus.Service))
+      const active = new Set<SessionID>()
+      if (status) {
+        for (const [id, info] of yield* status.list()) {
+          if (info.type !== "idle") active.add(id)
+        }
+      }
+      if (background) {
+        for (const job of yield* background.list()) {
+          if (job.status !== "running") continue
+          active.add(SessionID.make(job.id))
+          if (job.ownerSessionId) active.add(SessionID.make(job.ownerSessionId))
+        }
+      }
+
+      const parentOf = new Map(rows.map((row) => [row.id, row.parentID]))
+      const childrenOf = new Map<SessionID, SessionID[]>()
+      for (const row of rows) {
+        if (!row.parentID) continue
+        const siblings = childrenOf.get(row.parentID)
+        if (siblings) siblings.push(row.id)
+        else childrenOf.set(row.parentID, [row.id])
+      }
+
+      // Never touch an active session, and never touch one of its ancestors:
+      // remove() cascades downward, so deleting a parent would kill live work.
+      const protectedIDs = new Set<SessionID>()
+      for (const id of active) {
+        for (let current: SessionID | null | undefined = id; current; current = parentOf.get(current)) {
+          if (protectedIDs.has(current)) break
+          protectedIDs.add(current)
+        }
+      }
+
+      const old = rows.filter((row) => row.timeUpdated < input.cutoff)
+      const selected = new Set(old.filter((row) => !protectedIDs.has(row.id)).map((row) => row.id))
+
+      // An old root drags its (possibly newer) descendants into the same
+      // removal, so dry-run totals match what remove() will actually cascade.
+      const queue = [...selected]
+      for (let id = queue.pop(); id !== undefined; id = queue.pop()) {
+        for (const child of childrenOf.get(id) ?? []) {
+          if (protectedIDs.has(child) || selected.has(child)) continue
+          selected.add(child)
+          queue.push(child)
+        }
+      }
+
+      const sessions =
+        selected.size > 0
+          ? yield* db((d) =>
+              d
+                .select({
+                  id: SessionTable.id,
+                  title: SessionTable.title,
+                  timeUpdated: SessionTable.time_updated,
+                  // Correlated subqueries keep message/part counts independent
+                  // (a plain join multiplies them). Columns are qualified by
+                  // hand: inside a `sql` template drizzle emits bare column
+                  // names, which would resolve to the subquery's own table.
+                  messages: sql<number>`(select count(*) from ${MessageTable} where "message"."session_id" = "session"."id")`,
+                  parts: sql<number>`(select count(*) from ${PartTable} where "part"."session_id" = "session"."id")`,
+                  bytes: sql<number>`(select coalesce(sum(length("message"."data")), 0) from ${MessageTable} where "message"."session_id" = "session"."id") + (select coalesce(sum(length("part"."data")), 0) from ${PartTable} where "part"."session_id" = "session"."id")`,
+                })
+                .from(SessionTable)
+                .where(inArray(SessionTable.id, [...selected]))
+                .orderBy(desc(SessionTable.time_updated))
+                .all(),
+            )
+          : []
+
+      const result: PruneResult = {
+        cutoff: input.cutoff,
+        dryRun: input.dryRun !== false,
+        sessions,
+        totalMessages: sessions.reduce((sum, session) => sum + session.messages, 0),
+        totalParts: sessions.reduce((sum, session) => sum + session.parts, 0),
+        totalBytes: sessions.reduce((sum, session) => sum + session.bytes, 0),
+        skippedActive: old.filter((row) => protectedIDs.has(row.id)).length,
+        removedSessions: 0,
+        removedOrphanDiffs: 0,
+      }
+      if (result.dryRun) return result
+
+      const candidateIDs = new Set(sessions.map((session) => session.id))
+      const roots = sessions
+        .map((session) => session.id)
+        .filter((id) => {
+          const parent = parentOf.get(id)
+          return !parent || !candidateIDs.has(parent)
+        })
+      yield* Effect.forEach(
+        roots,
+        (id) => remove(id).pipe(Effect.catchIf(NotFoundError.isInstance, () => Effect.void)),
+        { concurrency: 1, discard: true },
+      )
+
+      // Orphan diff GC: session rows are the source of truth, so a diff file
+      // without a row was left behind by an interrupted removal.
+      const existing = new Set(
+        (yield* db((d) => d.select({ id: SessionTable.id }).from(SessionTable).all())).map((row) => row.id as string),
+      )
+      const orphanDiffs = (yield* storage.list(["session_diff"]).pipe(Effect.orDie)).filter(
+        (key) => !existing.has(key[1]),
+      )
+      for (const key of orphanDiffs) {
+        yield* storage.remove(key).pipe(Effect.ignoreCause({ log: true }))
+      }
+
+      return { ...result, removedSessions: sessions.length, removedOrphanDiffs: orphanDiffs.length }
     })
 
     const updateMessage = <T extends MessageV2.Info>(msg: T): Effect.Effect<T> =>
@@ -1087,6 +1261,7 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
       children,
       childrenIDs,
       remove,
+      prune,
       updateMessage,
       removeMessage,
       removePart,

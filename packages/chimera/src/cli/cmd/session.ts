@@ -62,8 +62,75 @@ export const pageOutput = Effect.fnUntraced(
 export const SessionCommand = cmd({
   command: "session",
   describe: "manage sessions",
-  builder: (yargs: Argv) => yargs.command(SessionListCommand).command(SessionDeleteCommand).demandCommand(),
+  builder: (yargs: Argv) =>
+    yargs.command(SessionListCommand).command(SessionDeleteCommand).command(SessionPruneCommand).demandCommand(),
   async handler() {},
+})
+
+const DURATION_MS: Record<string, number> = {
+  s: 1_000,
+  m: 60_000,
+  h: 3_600_000,
+  d: 86_400_000,
+  w: 604_800_000,
+}
+
+/** Parses a compact retention window such as `30d`, `12h`, `90m`, `3600s`, `2w`. */
+export function parseDuration(value: string): number | undefined {
+  const match = /^(\d+)([smhdw])$/.exec(value.trim())
+  if (!match) return undefined
+  return Number(match[1]) * DURATION_MS[match[2]]
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  const units = ["KB", "MB", "GB", "TB"]
+  const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length)
+  return `${(bytes / 1024 ** exponent).toFixed(1)} ${units[exponent - 1]}`
+}
+
+export const SessionPruneCommand = effectCmd({
+  command: "prune",
+  describe: "delete sessions older than a retention window",
+  builder: (yargs) =>
+    yargs
+      .option("older-than", {
+        describe: "retention window, e.g. 30d, 12h, 90m (units: s/m/h/d/w)",
+        type: "string",
+        demandOption: true,
+      })
+      .option("yes", {
+        describe: "actually delete; without it prune is a dry run",
+        type: "boolean",
+        default: false,
+      }),
+  handler: Effect.fn("Cli.session.prune")(function* (args) {
+    const age = parseDuration(args.olderThan)
+    if (age === undefined) return yield* fail(`Invalid --older-than value: ${args.olderThan} (use e.g. 30d, 12h, 90m)`)
+    const result = yield* Session.Service.use((svc) => {
+      if (!svc.prune) return fail("Session pruning is unavailable")
+      return svc.prune({ cutoff: Date.now() - age, dryRun: !args.yes })
+    })
+    if (result.sessions.length === 0) {
+      UI.println(`No sessions older than ${args.olderThan}`)
+      return
+    }
+    const planned = result.dryRun ? `Would delete ${result.sessions.length}` : `Deleted ${result.removedSessions}`
+    UI.println(
+      `${planned} session(s), ${result.totalMessages} message(s), ${result.totalParts} part(s), ${formatBytes(result.totalBytes)}`,
+    )
+    if (result.skippedActive > 0) UI.println(`Skipped ${result.skippedActive} active session(s)`)
+    if (result.dryRun) {
+      for (const session of result.sessions) {
+        UI.println(
+          `  ${session.id}  ${Locale.truncate(session.title, 60)}  ${Locale.todayTimeOrDateTime(session.timeUpdated)}`,
+        )
+      }
+      UI.println("Dry run: re-run with --yes to delete")
+      return
+    }
+    if (result.removedOrphanDiffs > 0) UI.println(`Removed ${result.removedOrphanDiffs} orphan session_diff file(s)`)
+  }),
 })
 
 export const SessionDeleteCommand = effectCmd({
