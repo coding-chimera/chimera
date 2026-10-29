@@ -11,7 +11,6 @@ import * as Log from "@opencode-ai/core/util/log"
 import { and, eq, sql } from "drizzle-orm"
 import { Database } from "../../src/storage/db"
 import { MessageTable } from "../../src/storage/tables/session.sql"
-import { StorageMaintenanceTable } from "../../src/storage/maintenance.sql"
 
 const root = path.join(__dirname, "../..")
 void Log.init({ print: false })
@@ -1376,7 +1375,7 @@ describe("MessageV2 consistency", () => {
   })
 })
 
-describe("MessageV2 stored summary repair", () => {
+describe("MessageV2 stored summary repair (retired)", () => {
   const storedSummaryDiffs = (sessionID: SessionID, messageID: MessageID) => {
     const row = Database.use((db) =>
       db
@@ -1390,17 +1389,8 @@ describe("MessageV2 stored summary repair", () => {
 
   const totalChanges = () => Database.use((db) => db.get(sql`select total_changes() as n`)) as { n: number }
 
-  const marker = (sessionID: SessionID) =>
-    Database.use((db) =>
-      db
-        .select()
-        .from(StorageMaintenanceTable)
-        .where(eq(StorageMaintenanceTable.key, `message-summary-trim:${sessionID}`))
-        .get(),
-    )
-
-  // A diff blob whose serialized JSON is larger than the stored budget, which
-  // is what the legacy read-path repair existed for.
+  // A diff blob whose serialized JSON is larger than the retired write budget.
+  // New writes never store message diffs, so these rows model legacy data only.
   const oversizedDiffs = () => [
     {
       file: "big.txt",
@@ -1426,50 +1416,46 @@ describe("MessageV2 stored summary repair", () => {
     return id
   }
 
-  test("repairs an oversized legacy summary once and marks the session", async () => {
+  test("paging leaves a legacy oversized summary untouched", async () => {
     await WithInstance.provide({
       directory: root,
       fn: async () => {
         const session = await svc.create({})
         const legacy = await addWithSummary(session.id, oversizedDiffs())
-        expect(marker(session.id)).toBeUndefined()
         expect(storedSummaryDiffs(session.id, legacy)).not.toEqual([])
 
         MessageV2.page({ sessionID: session.id, limit: 10 })
 
-        expect(storedSummaryDiffs(session.id, legacy)).toEqual([])
-        expect(marker(session.id)).toBeDefined()
+        expect(storedSummaryDiffs(session.id, legacy)).not.toEqual([])
 
         await svc.remove(session.id)
       },
     })
   })
 
-  test("paging a migrated long session performs no writes", async () => {
+  test("paging a long session with legacy blobs performs no writes", async () => {
     await WithInstance.provide({
       directory: root,
       fn: async () => {
         const session = await svc.create({})
-        await addWithSummary(session.id, oversizedDiffs())
-        // First read migrates the session and records the completion marker.
-        MessageV2.page({ sessionID: session.id, limit: 50 })
-        expect(marker(session.id)).toBeDefined()
-
         // 120 messages => MessageV2.stream pages 50 at a time, so this is the
         // long-session paging pattern that used to re-run the UPDATE per page.
         await fill(session.id, 120)
         const late = await addWithSummary(session.id, oversizedDiffs())
+
+        // Prime the per-boot part-reconcile marker; only the retired summary
+        // repair is under test here, and it must stay off the read path.
+        MessageV2.page({ sessionID: session.id, limit: 50 })
 
         const before = totalChanges().n
         for (let i = 0; i < 3; i++) MessageV2.page({ sessionID: session.id, limit: 50 })
         const paged = MessageV2.page({ sessionID: session.id, limit: 50 })
         MessageV2.page({ sessionID: session.id, limit: 50, before: paged.cursor! })
         MessageV2.get({ sessionID: session.id, messageID: late })
-        expect(Array.from(MessageV2.stream(session.id)).length).toBe(122)
+        expect(Array.from(MessageV2.stream(session.id)).length).toBe(121)
         expect(totalChanges().n - before).toBe(0)
 
-        // Proof the trim really did not run again: a row written after the
-        // migration keeps its oversized blob instead of being repaired.
+        // The retired repair never rewrites legacy rows, on read or later.
         expect(storedSummaryDiffs(session.id, late)).not.toEqual([])
 
         await svc.remove(session.id)

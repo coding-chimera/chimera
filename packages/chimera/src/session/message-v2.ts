@@ -10,7 +10,6 @@ import { Database } from "@/storage/db"
 import { NotFoundError } from "@/storage/storage"
 import { and, desc, eq, inArray, lt, or, sql } from "drizzle-orm"
 import { MessageTable, PartTable, SessionTable } from "@/storage/tables/session.sql"
-import { StorageMaintenanceTable } from "@/storage/maintenance.sql"
 import { SessionPartReconcile } from "./part-reconcile"
 import * as ProviderError from "@/provider/error"
 import { iife } from "@/util/iife"
@@ -47,60 +46,18 @@ export const SYNTHETIC_ATTACHMENT_PROMPT = "Attached image(s) from tool result:"
 export { isMedia }
 
 
+/** Legacy cap for stored message-level summary diffs; new writes store none. */
 export const MAX_STORED_MESSAGE_SUMMARY_BYTES = 1024 * 1024
 
-/** Marker prefix in `storage_maintenance` for the one-off summary repair. */
-const SUMMARY_TRIM_MARKER = "message-summary-trim"
-
-// Sessions already repaired in this process; the durable marker keeps the
-// repair from running again after a restart. (R1 A6) The set is capped with FIFO
-// eviction: the durable storage_maintenance marker is the source of truth, so an
-// evicted id only costs one indexed SELECT the next time the session is touched.
-const TRIMMED_SESSIONS_MAX = 10_000
-const trimmedSessions = new Set<string>()
-
-function rememberTrimmedSession(sessionID: SessionID) {
-  trimmedSessions.add(sessionID)
-  for (const key of trimmedSessions) {
-    if (trimmedSessions.size <= TRIMMED_SESSIONS_MAX) break
-    trimmedSessions.delete(key)
-  }
-}
-
 /**
- * Legacy rows can carry a message `summary.diffs` blob larger than the write
- * side allows today. This repair used to run on every `page()` and `get()`
- * call, which turned paging a long session into O(N^2/50) synchronous UPDATE
- * scans hidden inside a read path. It now runs at most once per session,
- * guarded by a durable completion marker, and `SessionSummary` caps new writes
- * at the same serialized size so nothing oversized is created anymore.
+ * Retired repair hook. Legacy message rows may still carry an oversized
+ * `summary.diffs` blob, but new writes no longer persist message-level diffs
+ * (readers use the `session_diff` file), and the storage vacuum reclaims old
+ * blobs. Keeping the call sites as a pure no-op documents that the read path
+ * must never repair rows again; the `storage_maintenance` marker rows written
+ * by the old repair remain valid and are left untouched.
  */
-function ensureStoredSummariesTrimmed(sessionID: SessionID) {
-  if (trimmedSessions.has(sessionID)) return
-  const key = `${SUMMARY_TRIM_MARKER}:${sessionID}`
-  const marked = Database.use((db) =>
-    db
-      .select({ key: StorageMaintenanceTable.key })
-      .from(StorageMaintenanceTable)
-      .where(eq(StorageMaintenanceTable.key, key))
-      .get(),
-  )
-  if (marked) {
-    rememberTrimmedSession(sessionID)
-    return
-  }
-  Database.use((db) => {
-    db.run(sql`
-      UPDATE message
-      SET data = json_set(data, '$.summary.diffs', json('[]'))
-      WHERE session_id = ${sessionID}
-        AND json_type(data, '$.summary.diffs') IS NOT NULL
-        AND length(json_extract(data, '$.summary.diffs')) > ${MAX_STORED_MESSAGE_SUMMARY_BYTES}
-    `)
-    db.insert(StorageMaintenanceTable).values({ key }).onConflictDoNothing().run()
-  })
-  rememberTrimmedSession(sessionID)
-}
+function ensureStoredSummariesTrimmed(_sessionID: SessionID) {}
 
 export class OutputFormatText extends Schema.Class<OutputFormatText>("OutputFormatText")({
   type: Schema.Literal("text"),

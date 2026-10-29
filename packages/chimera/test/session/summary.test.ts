@@ -1,44 +1,99 @@
 import { describe, expect, test } from "bun:test"
+import { Effect, Layer } from "effect"
+import path from "path"
+import { and, eq } from "drizzle-orm"
+import { Session } from "@/session/session"
 import { SessionSummary } from "@/session/summary"
 import { MessageV2 } from "@/session/message-v2"
-import type { Snapshot } from "@/snapshot"
+import { MessageID, type SessionID } from "@/contracts/session-ids"
+import { WithInstance } from "@/project/with-instance"
+import { Database } from "@/storage/db"
+import { MessageTable } from "@/storage/tables/session.sql"
 
-const diff = (patch: string, file = "file.txt"): Snapshot.FileDiff => ({
-  file,
-  patch,
-  additions: 1,
-  deletions: 0,
-})
+const root = path.join(__dirname, "../..")
+const layer = Layer.mergeAll(SessionSummary.defaultLayer, Session.defaultLayer)
+const run = <A, E>(fx: Effect.Effect<A, E, Session.Service | SessionSummary.Service>) =>
+  Effect.runPromise(fx.pipe(Effect.provide(layer)))
 
-describe("SessionSummary.messageSummaryDiffs", () => {
-  test("keeps diffs that fit the stored budget", () => {
-    const diffs = [diff("+ small patch\n"), diff("+ other\n", "other.txt")]
+function storedSummary(sessionID: SessionID, messageID: MessageID) {
+  return Database.use((db) =>
+    db
+      .select({ data: MessageTable.data })
+      .from(MessageTable)
+      .where(and(eq(MessageTable.id, messageID), eq(MessageTable.session_id, sessionID)))
+      .get(),
+  )?.data.summary
+}
 
-    expect(SessionSummary.messageSummaryDiffs(diffs)).toEqual(diffs)
+function addUserSummary(sessionID: SessionID, summary?: MessageV2.User["summary"]) {
+  return run(
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const id = MessageID.ascending()
+      yield* sessions.updateMessage({
+        id,
+        sessionID,
+        role: "user",
+        time: { created: Date.now() },
+        agent: "test",
+        model: { providerID: "test", modelID: "test" },
+        tools: {},
+        mode: "",
+        ...(summary ? { summary } : {}),
+      } as unknown as MessageV2.Info)
+      return id
+    }),
+  )
+}
+
+function summarize(sessionID: SessionID, messageID: MessageID) {
+  return run(
+    Effect.gen(function* () {
+      const summary = yield* SessionSummary.Service
+      yield* summary.summarize({ sessionID, messageID })
+    }),
+  )
+}
+
+describe("SessionSummary.summarize", () => {
+  test("does not persist message summary diffs", async () => {
+    await WithInstance.provide({
+      directory: root,
+      fn: async () => {
+        const session = await run(
+          Effect.gen(function* () {
+            const sessions = yield* Session.Service
+            return yield* sessions.create({})
+          }),
+        )
+        const messageID = await addUserSummary(session.id)
+
+        expect(storedSummary(session.id, messageID)).toBeUndefined()
+
+        await summarize(session.id, messageID)
+
+        expect(storedSummary(session.id, messageID)).toBeUndefined()
+      },
+    })
   })
 
-  test("drops diffs over the item cap", () => {
-    const diffs = Array.from({ length: 201 }, (_, index) => diff("+x\n", `file-${index}.txt`))
+  test("leaves an existing summary body untouched", async () => {
+    await WithInstance.provide({
+      directory: root,
+      fn: async () => {
+        const session = await run(
+          Effect.gen(function* () {
+            const sessions = yield* Session.Service
+            return yield* sessions.create({})
+          }),
+        )
+        const summary = { title: "title", body: "body", diffs: [] }
+        const messageID = await addUserSummary(session.id, summary)
 
-    expect(SessionSummary.messageSummaryDiffs(diffs)).toBeUndefined()
-  })
+        await summarize(session.id, messageID)
 
-  test("drops diffs whose estimated size exceeds the budget", () => {
-    const diffs = [diff("x".repeat(MessageV2.MAX_STORED_MESSAGE_SUMMARY_BYTES))]
-
-    expect(SessionSummary.messageSummaryDiffs(diffs)).toBeUndefined()
-  })
-
-  test("drops diffs whose serialized form exceeds the stored budget", () => {
-    // Control characters cost one character in the estimate but six bytes once
-    // JSON escapes them, so this payload passes the cheap size gate and only
-    // the serialized check catches it. Storing it is what used to force the
-    // read-path repair in MessageV2.
-    const patch = "\u0001".repeat(Math.floor(MessageV2.MAX_STORED_MESSAGE_SUMMARY_BYTES / 4))
-    const diffs = [diff(patch)]
-    expect(patch.length).toBeLessThan(MessageV2.MAX_STORED_MESSAGE_SUMMARY_BYTES)
-    expect(Buffer.byteLength(JSON.stringify(diffs))).toBeGreaterThan(MessageV2.MAX_STORED_MESSAGE_SUMMARY_BYTES)
-
-    expect(SessionSummary.messageSummaryDiffs(diffs)).toBeUndefined()
+        expect(storedSummary(session.id, messageID)).toEqual(summary)
+      },
+    })
   })
 })

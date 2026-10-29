@@ -64,27 +64,6 @@ function unquoteGitPath(input: string) {
   return Buffer.from(bytes).toString()
 }
 
-const MAX_MESSAGE_SUMMARY_DIFFS = 200
-const MAX_MESSAGE_SUMMARY_DIFF_BYTES = 1024 * 1024
-
-function estimatedDiffBytes(diffs: Snapshot.FileDiff[]) {
-  return diffs.reduce((sum, item) => sum + item.file.length + item.patch.length + 80, 2)
-}
-
-/**
- * Size gate for the diffs stored inside a message row. The estimate above can
- * undercount the serialized form (JSON escaping of paths and patch bodies), and
- * an oversized blob is exactly what `MessageV2` used to repair on every read,
- * so the size that actually lands in SQLite is verified here too. Returns
- * undefined when the diffs must be dropped, matching the legacy repair, which
- * stored `[]`.
- */
-export function messageSummaryDiffs(diffs: Snapshot.FileDiff[]) {
-  if (diffs.length > MAX_MESSAGE_SUMMARY_DIFFS) return undefined
-  if (estimatedDiffBytes(diffs) > MAX_MESSAGE_SUMMARY_DIFF_BYTES) return undefined
-  if (Buffer.byteLength(JSON.stringify(diffs)) > MessageV2.MAX_STORED_MESSAGE_SUMMARY_BYTES) return undefined
-  return diffs
-}
 export interface Interface {
   readonly summarize: (input: { sessionID: SessionID; messageID: MessageID }) => Effect.Effect<void>
   readonly diff: (input: { sessionID: SessionID; messageID?: MessageID }) => Effect.Effect<Snapshot.FileDiff[]>
@@ -127,9 +106,9 @@ export const layer = Layer.effect(
     }) {
       // B3 residency convergence: targeted reads replace a full-session load.
       // The session diff only needs the snapshot range (earliest step-start /
-      // latest step-finish) and the message diff only the target thread; the
-      // old path materialized every message/part here on every assistant
-      // message, ratcheting resident memory in a long-lived server.
+      // latest step-finish); the old path materialized every message/part here
+      // on every assistant message, ratcheting resident memory in a long-lived
+      // server.
       if (!MessageV2.hasMessages(input.sessionID)) return
       const range = MessageV2.snapshotRange(input.sessionID)
       const diffs = range.from && range.to ? yield* snapshot.diffFull(range.from, range.to) : []
@@ -144,13 +123,11 @@ export const layer = Layer.effect(
       yield* storage.write(["session_diff", input.sessionID], diffs).pipe(Effect.ignore)
       yield* bus.publish(Session.Event.Diff, { sessionID: input.sessionID, diff: diffs })
 
-      const messages = MessageV2.messageThread(input.sessionID, input.messageID)
-      const target = messages.find((m) => m.info.id === input.messageID)
-      if (!target || target.info.role !== "user") return
-      const msgDiffs = messageSummaryDiffs(yield* computeDiff({ messages }))
-      const summary = target.info.summary ?? { diffs: [] }
-      target.info.summary = msgDiffs ? { ...summary, diffs: msgDiffs } : { ...summary, diffs: [] }
-      yield* sessions.updateMessage(target.info)
+      // Message-level diffs are intentionally not persisted on the user message:
+      // they duplicated the session diff written above and made every assistant
+      // message write a large blob into `message.data.summary.diffs`. Readers
+      // recompute them from the `session_diff` file (see `diff` below) or the
+      // snapshot, so an existing summary body is left untouched.
     })
 
     const diff = Effect.fn("SessionSummary.diff")(function* (input: { sessionID: SessionID; messageID?: MessageID }) {
