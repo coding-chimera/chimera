@@ -32,7 +32,8 @@ import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import * as Stream from "effect/Stream"
 import { Command } from "../command"
 import { Chimera } from "@/chimera"
-import type { IndexProgress } from "@/graph"
+import { databaseStorePath } from "@/chimera/store"
+import { getGraphDataRootInfo, type IndexProgress } from "@/graph"
 import { Question } from "@/question"
 import { pathToFileURL, fileURLToPath } from "url"
 import { Config } from "@/config/config"
@@ -87,7 +88,7 @@ import * as DateTime from "effect/DateTime"
 import { eq } from "@/storage/db"
 import * as Database from "@/storage/db"
 import { NotFoundError } from "@/storage/storage"
-import { SessionTable } from "@/storage/tables/session.sql"
+import { SessionTable, WorkBriefTable } from "@/storage/tables/session.sql"
 import { Memory } from "@/memory/memory"
 
 // @ts-ignore
@@ -241,6 +242,42 @@ function isPromotedReveal(revealTime: number | undefined, compactionTime: number
 
 function runtimeContextHash(sections: RuntimeContextSection[]) {
   return hash(JSON.stringify(sections.map((section) => [section.key, section.hash])))
+}
+
+// Per-step store tax: the store-backed runtime-context sections (work brief and
+// Chimera context) change only when their backing rows/files change, so a cheap
+// dirty signature lets a clean step skip those reads entirely. The in-memory
+// sections (subagent catalog/scheduling, background tasks, revealed tools) and
+// the goal section are always rebuilt: they can change without a store write,
+// and `goal.render` also advances token accounting. The signature combines the
+// work-brief row content hash with the Chimera store's file revision (database,
+// WAL, and the legacy jsonl/json artifacts the read path falls back to).
+const RUNTIME_CONTEXT_STORE_ARTIFACTS = [
+  "tool-provenance.jsonl",
+  "predesign-runs.jsonl",
+  "obligations.json",
+  "oracle-results.jsonl",
+]
+const RUNTIME_CONTEXT_CACHE_MAX = 256
+
+function runtimeContextStoreFiles(root: string) {
+  const info = getGraphDataRootInfo(root)
+  const dataRoots = info.dataRoot === info.legacyRoot ? [info.dataRoot] : [info.dataRoot, info.legacyRoot]
+  const database = databaseStorePath(root)
+  return [
+    database,
+    `${database}-wal`,
+    ...dataRoots.flatMap((dataRoot) =>
+      RUNTIME_CONTEXT_STORE_ARTIFACTS.map((artifact) => path.join(dataRoot, "chimera", artifact)),
+    ),
+  ]
+}
+
+async function fileRevision(file: string) {
+  const handle = Bun.file(file)
+  if (!(await handle.exists())) return "-"
+  const stat = await handle.stat()
+  return `${stat.size}:${stat.mtimeMs}`
 }
 
 function runtimeContextMetadata(part: MessageV2.Part): RuntimeContextMetadata | undefined {
@@ -477,19 +514,70 @@ export const layer = Layer.effect(
       ].join("\n")
     })
 
+    // Store-backed sections are cached per session behind a cheap dirty
+    // signature: a clean step reuses the previous render and skips the store
+    // reads, while any backing change (or a new session) re-renders. In-memory
+    // sections below are always rebuilt because they can change without a
+    // store write.
+    const runtimeContextStoreCache = new Map<
+      SessionID,
+      { signature: string; workBrief: string | undefined; chimera: string | undefined }
+    >()
+
+    const runtimeContextStoreSignature = Effect.fn("SessionPrompt.runtimeContextStoreSignature")(
+      function* (sessionID: SessionID) {
+        const ctx = yield* InstanceState.context
+        const root = ctx.worktree === "/" ? ctx.directory : ctx.worktree
+        const workBriefVersion = yield* Effect.sync(() =>
+          hash(
+            JSON.stringify(
+              Database.use((db) =>
+                db
+                  .select({ data: WorkBriefTable.data })
+                  .from(WorkBriefTable)
+                  .where(eq(WorkBriefTable.session_id, sessionID))
+                  .get()?.data ?? null,
+              ),
+            ),
+          ),
+        )
+        const revisions = yield* Effect.promise(() =>
+          Promise.all(runtimeContextStoreFiles(root).map(fileRevision)),
+        )
+        return hash(JSON.stringify([workBriefVersion, ...revisions]))
+      },
+    )
+
     const runtimeContextSections = Effect.fn("SessionPrompt.runtimeContextSections")(function* (input: {
       sessionID: SessionID
       agent: string
       tools?: Record<string, boolean>
       messages: Iterable<MessageV2.WithParts>
+      session?: Session.Info
     }) {
-      const [workBriefSuffix, chimeraContextSuffix] = yield* Effect.all([
-        workBrief.render(input.sessionID),
-        chimeraPromptContext.render(input.sessionID, sessions),
-      ])
+      const session = input.session ?? (yield* sessions.get(input.sessionID).pipe(Effect.orDie))
+      const signature = yield* runtimeContextStoreSignature(input.sessionID)
+      const cached = runtimeContextStoreCache.get(input.sessionID)
+      const store = cached?.signature === signature ? cached : undefined
+      const [workBriefSuffix, chimeraContextSuffix] = store
+        ? [store.workBrief, store.chimera]
+        : yield* Effect.all([
+            workBrief.render(input.sessionID),
+            chimeraPromptContext.render(input.sessionID, sessions),
+          ])
+      if (!store) {
+        runtimeContextStoreCache.set(input.sessionID, {
+          signature,
+          workBrief: workBriefSuffix,
+          chimera: chimeraContextSuffix,
+        })
+        if (runtimeContextStoreCache.size > RUNTIME_CONTEXT_CACHE_MAX) {
+          const oldest = runtimeContextStoreCache.keys().next().value
+          if (oldest !== undefined) runtimeContextStoreCache.delete(oldest)
+        }
+      }
       const goalSuffix = yield* goal.render(input.sessionID)
       const revealedToolsSuffix = yield* renderRevealedTools({ sessionID: input.sessionID, messages: input.messages })
-      const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
       const agent = yield* agents.get(input.agent)
       const ruleset = Permission.merge(agent.permission, session.permission ?? [])
       const disabled = Permission.disabled([TaskTool.id, "chimera_swarm"], ruleset)
@@ -672,12 +760,14 @@ export const layer = Layer.effect(
       newestFirst?: boolean
       time?: number
       tools?: Record<string, boolean>
+      session?: Session.Info
     }) {
       const sections = yield* runtimeContextSections({
         sessionID: input.sessionID,
         agent: input.agent,
         tools: input.tools,
         messages: input.messages,
+        session: input.session,
       })
       const nextHash = runtimeContextHash(sections)
       const previous = latestRuntimeContext(input.messages, input.newestFirst)
@@ -3098,6 +3188,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             model: lastUser.model,
             messages: msgs,
             tools: lastUser.tools,
+            session,
           })
           if (runtimeContext) msgs = [...msgs, runtimeContext]
           const maxSteps = agent.steps ?? Infinity
@@ -3581,6 +3672,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             bus,
             source: "command.init",
             sessionID: input.sessionID,
+            watch: false,
             onProgress: graphProgress.onProgress,
           }).pipe(
             Effect.catchCause((cause) =>
