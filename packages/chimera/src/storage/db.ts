@@ -144,18 +144,45 @@ export function walCheckpointTimerRunning() {
   return walCheckpointTimer !== undefined
 }
 
+// Main-db memory tuning: mmap keeps hot pages resident while letting the OS
+// evict cold ones, and cache_size is the per-connection page cache. Both are
+// env-overridable in MB — CHIMERA_SQLITE_MMAP_MB (default 256; 0 disables
+// mmap) and CHIMERA_SQLITE_CACHE_MB (unset keeps the historical -16000 KiB
+// ≈ 15.6 MB budget). Exported for the pragma tests.
+const DEFAULT_MMAP_MB = 256
+const DEFAULT_CACHE_KIB = 16000
+
+export function mainCacheSizeKiB() {
+  const raw = process.env.CHIMERA_SQLITE_CACHE_MB
+  if (raw === undefined || raw === "") return DEFAULT_CACHE_KIB
+  const mb = Number(raw)
+  return Number.isFinite(mb) && mb > 0 ? Math.floor(mb) * 1024 : DEFAULT_CACHE_KIB
+}
+
+export function mainMmapSizeBytes() {
+  const raw = process.env.CHIMERA_SQLITE_MMAP_MB
+  const mb = raw === undefined || raw === "" ? DEFAULT_MMAP_MB : Number(raw)
+  return (Number.isFinite(mb) && mb >= 0 ? Math.floor(mb) : DEFAULT_MMAP_MB) * 1024 * 1024
+}
+
+/** Main-connection PRAGMA sequence (exported for the pragma tests). */
+export function applyConnectionPragmas(db: SQLiteBunDatabase) {
+  db.run("PRAGMA journal_mode = WAL")
+  db.run("PRAGMA synchronous = NORMAL")
+  db.run("PRAGMA busy_timeout = 5000")
+  db.run(`PRAGMA cache_size = -${mainCacheSizeKiB()}`)
+  db.run(`PRAGMA mmap_size = ${mainMmapSizeBytes()}`)
+  db.run("PRAGMA foreign_keys = ON")
+  db.run(`PRAGMA journal_size_limit = ${WAL_JOURNAL_SIZE_LIMIT_BYTES}`)
+  db.run("PRAGMA wal_checkpoint(PASSIVE)")
+}
+
 export const Client = lazy(() => {
   log.info("opening database", { path: Path })
 
   const db = init(Path)
 
-  db.run("PRAGMA journal_mode = WAL")
-  db.run("PRAGMA synchronous = NORMAL")
-  db.run("PRAGMA busy_timeout = 5000")
-  db.run("PRAGMA cache_size = -16000")
-  db.run("PRAGMA foreign_keys = ON")
-  db.run(`PRAGMA journal_size_limit = ${WAL_JOURNAL_SIZE_LIMIT_BYTES}`)
-  db.run("PRAGMA wal_checkpoint(PASSIVE)")
+  applyConnectionPragmas(db)
   startWalCheckpointTimer()
 
   // Apply schema migrations

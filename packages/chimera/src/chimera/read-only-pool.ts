@@ -14,12 +14,13 @@ import type { ProjectGraphState } from "./provenance"
  * short-lived.
  *
  * Design (mirrors tarn.js create/validate/destroy plus sqlx pool semantics):
- * - Capacity is max 1 pooled connection per project root
- *   (CHIMERA_GRAPH_RO_POOL_MAX). One is enough because read-only graph
- *   requests are fast synchronous SQLite reads over a shared WAL reader — a
- *   second connection would only double the per-connection page cache and
- *   mmap footprint without adding throughput, and the pool exists precisely
- *   to bound that native-memory footprint (mimalloc never returns it).
+ * - Capacity is max 4 pooled connections per project root
+ *   (CHIMERA_GRAPH_RO_POOL_MAX). Read-only graph requests are synchronous
+ *   SQLite reads on the main thread, so a single connection serialized
+ *   every concurrent request behind the others; four lets independent
+ *   requests proceed without a queue wait while still bounding the
+ *   per-connection page cache + mmap footprint (mimalloc never returns it).
+ *   Lower the cap when the RSS budget matters more than read concurrency.
  * - Validate-on-checkout (tarn `validate` / sqlx `test_before_acquire`): an
  *   idle entry is destroyed and recreated when the database file disappeared,
  *   the connection was closed underneath the pool, or the entry reached
@@ -86,7 +87,7 @@ interface Waiter {
 
 const graphLog = Log.create({ service: "chimera.read-only-pool" })
 
-const DEFAULT_POOL_MAX = 1
+const DEFAULT_POOL_MAX = 4
 const DEFAULT_ACQUIRE_TIMEOUT_MS = 5_000
 const DEFAULT_MAX_LIFETIME_MS = 10 * 60 * 1000
 const DEFAULT_IDLE_TTL_MS = 60 * 1000
