@@ -474,57 +474,63 @@ impl BridgeConn {
         if column_count > u16::MAX as usize {
             return Err(Error::from_reason("sqlite bridge: packed read result has more than 65535 columns"));
         }
+        // The 32-byte header is reserved as a placeholder and backfilled once
+        // the segment lengths are known; the name table and the cell grid are
+        // encoded DIRECTLY into `out`, so the grid pays no second full copy.
+        let mut out: Vec<u8> = Vec::with_capacity(PACKED_HEADER_SIZE);
+        out.resize(PACKED_HEADER_SIZE, 0);
+        // Cell payload bytes (and the leading column-name bytes) land in this
+        // arena scratch: their offsets are relative to the arena start, which
+        // is the grid end — unknown until the last row steps. The arena is
+        // appended to `out` exactly once at the end.
         let mut arena: Vec<u8> = Vec::new();
-        // Column names lead the arena; the name table stores (off, len) pairs.
         let mut names: Vec<(u32, u32)> = Vec::new();
         if with_column_names {
             for name in stmt.column_names() {
                 names.push((arena.len() as u32, name.len() as u32));
                 arena.extend_from_slice(name.as_bytes());
             }
+            for (off, len) in &names {
+                out.extend_from_slice(&off.to_le_bytes());
+                out.extend_from_slice(&len.to_le_bytes());
+            }
         }
-        let mut grid: Vec<u8> = Vec::new();
+        let grid_offset = out.len();
         let mut row_count: u64 = 0;
         {
             let mut query = stmt.raw_query();
             while let Some(row) = query.next().map_err(err)? {
                 row_count += 1;
                 for i in 0..column_count {
-                    write_packed_cell(&mut grid, &mut arena, row.get_ref(i)).map_err(err)?;
+                    write_packed_cell(&mut out, &mut arena, row.get_ref(i)).map_err(err)?;
                 }
             }
         }
+        let grid_len = out.len() - grid_offset;
+        let arena_offset = out.len();
         // u32 wire guards — a result set beyond 4GB per segment is refused
         // rather than silently truncated (the object path would have died in
         // JS long before, but the packed encoder must not wrap).
-        if row_count > u32::MAX as u64 || grid.len() > u32::MAX as usize || arena.len() > u32::MAX as usize {
+        if row_count > u32::MAX as u64 || grid_len > u32::MAX as usize || arena.len() > u32::MAX as usize {
             return Err(Error::from_reason("sqlite bridge: packed read result set too large for the u32 wire"));
         }
         let names_len = if with_column_names { names.len() * PACKED_NAME_ENTRY_SIZE } else { 0 };
-        let grid_offset = PACKED_HEADER_SIZE + names_len;
-        let arena_offset = grid_offset + grid.len();
         let total = arena_offset + arena.len();
         if total > u32::MAX as usize {
             return Err(Error::from_reason("sqlite bridge: packed read result set too large for the u32 wire"));
         }
-        let mut out = Vec::with_capacity(total);
-        out.push(PACKED_LAYOUT_VERSION);
-        out.push(if with_column_names { PACKED_FLAG_COLUMN_NAMES } else { 0 });
-        out.extend_from_slice(&(column_count as u16).to_le_bytes());
-        out.extend_from_slice(&(row_count as u32).to_le_bytes());
-        out.extend_from_slice(&(grid_offset as u32).to_le_bytes());
-        out.extend_from_slice(&(grid.len() as u32).to_le_bytes());
-        out.extend_from_slice(&(if with_column_names { PACKED_HEADER_SIZE as u32 } else { PACKED_NONE }).to_le_bytes());
-        out.extend_from_slice(&(names_len as u32).to_le_bytes());
-        out.extend_from_slice(&(arena_offset as u32).to_le_bytes());
-        out.extend_from_slice(&(arena.len() as u32).to_le_bytes());
-        debug_assert_eq!(out.len(), PACKED_HEADER_SIZE);
-        for (off, len) in &names {
-            out.extend_from_slice(&off.to_le_bytes());
-            out.extend_from_slice(&len.to_le_bytes());
-        }
-        out.extend_from_slice(&grid);
         out.extend_from_slice(&arena);
+        // Backfill the reserved header in place.
+        out[0] = PACKED_LAYOUT_VERSION;
+        out[1] = if with_column_names { PACKED_FLAG_COLUMN_NAMES } else { 0 };
+        out[2..4].copy_from_slice(&(column_count as u16).to_le_bytes());
+        out[4..8].copy_from_slice(&(row_count as u32).to_le_bytes());
+        out[8..12].copy_from_slice(&(grid_offset as u32).to_le_bytes());
+        out[12..16].copy_from_slice(&(grid_len as u32).to_le_bytes());
+        out[16..20].copy_from_slice(&(if with_column_names { PACKED_HEADER_SIZE as u32 } else { PACKED_NONE }).to_le_bytes());
+        out[20..24].copy_from_slice(&(names_len as u32).to_le_bytes());
+        out[24..28].copy_from_slice(&(arena_offset as u32).to_le_bytes());
+        out[28..32].copy_from_slice(&(arena.len() as u32).to_le_bytes());
         debug_assert_eq!(out.len(), total);
         Ok(out)
     }
@@ -694,39 +700,24 @@ fn cell_js(c: CellValue) -> Cell {
     }
 }
 
-/// Streaming read mapping: one rusqlite cell straight into its JS `Cell`
-/// form — the exact bun:sqlite default mapping of cell_js/cell_of, but the
-/// cell is never materialized as CellValue first (TEXT/BLOB pay ONE copy
-/// into their owned JS form instead of copy-then-clone).
-fn cell_js_ref(v: rusqlite::Result<ValueRef<'_>>) -> Result<Cell> {
-    Ok(match v.map_err(err)? {
-        ValueRef::Null => Cell::A(Null),
-        ValueRef::Integer(i) => Cell::B(i as f64),
-        ValueRef::Real(f) => Cell::B(f),
-        // SQLite TEXT is UTF-8 by contract; lossy keeps a corrupt value
-        // readable instead of failing the query (cell_of parity).
-        ValueRef::Text(t) => Cell::C(String::from_utf8_lossy(t).into_owned()),
-        ValueRef::Blob(b) => Cell::D(Uint8Array::from(b.to_vec())),
-    })
-}
-
-/// cell_js_ref projected to an untyped JS handle for set_property with an
-/// interned key (the row-object path).
-fn cell_unknown<'env>(env: &Env, v: rusqlite::Result<ValueRef<'_>>) -> Result<Unknown<'env>> {
+/// Streaming read mapping: one rusqlite cell straight into its JS value —
+/// the exact bun:sqlite default mapping of cell_js/cell_of, but the cell is
+/// never materialized as CellValue first. TEXT goes straight through
+/// env.create_string (ONE copy from the SQLite buffer into the JS string);
+/// a lossy re-encode happens only for invalid UTF-8 (cell_of parity).
+fn cell_js_ref<'env>(env: &Env, v: rusqlite::Result<ValueRef<'_>>) -> Result<Unknown<'env>> {
     // SAFETY: env.raw() is the live napi env of this synchronous call; every
     // produced napi_value is valid for the enclosing handle scope and is
     // wrapped into an Unknown of the same env immediately.
     let raw = match v.map_err(err)? {
-        // TEXT fast path: napi copies the borrowed SQLite bytes straight into
-        // the JS string (ONE copy). The Cell::C route would first materialize
-        // an intermediate Rust String — a full extra copy per text cell on
-        // the payload-dominated storage reads. Lossy re-encoding only for
-        // invalid UTF-8 (cell_of parity).
         ValueRef::Text(t) => match String::from_utf8_lossy(t) {
             std::borrow::Cow::Borrowed(s) => env.create_string(s)?.raw(),
             std::borrow::Cow::Owned(s) => env.create_string_from_std(s)?.raw(),
         },
-        other => unsafe { Cell::to_napi_value(env.raw(), cell_js_ref(Ok(other))?) }?,
+        ValueRef::Null => unsafe { Cell::to_napi_value(env.raw(), Cell::A(Null)) }?,
+        ValueRef::Integer(i) => unsafe { Cell::to_napi_value(env.raw(), Cell::B(i as f64)) }?,
+        ValueRef::Real(f) => unsafe { Cell::to_napi_value(env.raw(), Cell::B(f)) }?,
+        ValueRef::Blob(b) => unsafe { Cell::to_napi_value(env.raw(), Cell::D(Uint8Array::from(b.to_vec()))) }?,
     };
     // SAFETY: `raw` was just produced by this same valid env.
     unsafe { Unknown::from_napi_value(env.raw(), raw) }
@@ -764,7 +755,7 @@ fn row_object_from_row<'env>(
     let mut obj = Object::new(env)?;
     props.clear();
     for i in 0..columns.len() {
-        props.push(Property::new().with_name(env, keys[i])?.with_value(&cell_unknown(env, row.get_ref(i))?));
+        props.push(Property::new().with_name(env, keys[i])?.with_value(&cell_js_ref(env, row.get_ref(i))?));
     }
     obj.define_properties(props)?;
     Ok(obj)
@@ -850,22 +841,23 @@ pub fn sqlite_bridge_all<'env>(
 }
 
 /// Array of positional row arrays — bun:sqlite Statement.values shape
-/// (drizzle's field-mapped reads go through this).
+/// (drizzle's field-mapped reads go through this). Cells are projected
+/// straight into their JS values (TEXT via env.create_string) instead of an
+/// intermediate owned String that napi would copy a second time.
 #[napi]
 pub fn sqlite_bridge_values<'env>(
     env: Env,
     handle: &SqliteBridgeHandle,
     sql: String,
     params: Vec<Unknown<'env>>,
-) -> Result<Vec<Vec<Cell>>> {
-    let _ = env;
+) -> Result<Vec<Vec<Unknown<'env>>>> {
     let decoded = decode_params(&env, &params)?;
     handle.with_conn(|c| {
         c.query_map(&sql, &decoded, |_columns, row| {
             let count = row.as_ref().column_count();
             let mut cells = Vec::with_capacity(count);
             for i in 0..count {
-                cells.push(cell_js_ref(row.get_ref(i))?);
+                cells.push(cell_js_ref(&env, row.get_ref(i))?);
             }
             Ok(cells)
         })
