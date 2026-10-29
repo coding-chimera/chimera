@@ -2,6 +2,8 @@ Launch a new agent to handle complex, multistep tasks autonomously.
 
 When using the Task tool, you must specify a subagent_type parameter to select which agent type to use.
 
+Orchestration cross-reference: under the ultra policy, multi-agent fan-out runs through one `orchestrate` program. Use `task` for a single delegation, a `task_id` resume, or a single background delegation whose result is not needed in this turn; use `chimera_swarm` only for preset/`from` evidence flows.
+
 When to use the Task tool:
 - When you are instructed to execute custom slash commands. Use the Task tool with the slash command invocation as the entire prompt. The slash command can take arguments. For example: Task(description="Check the file", prompt="/check-file path/to/file.py")
 - For a self-contained research, implementation, review, or verification axis that can run independently from the parent's other work and would materially benefit from delegation. Concrete file paths do not disqualify delegation.
@@ -13,7 +15,7 @@ When NOT to use the Task tool:
 
 
 Usage notes:
-1. Launch multiple agents concurrently only for genuinely independent, non-overlapping work with material parallel benefit; issue independent Task calls in one message when possible. Do not fan out by item count alone.
+1. Launch multiple agents concurrently only for genuinely independent, non-overlapping work with material parallel benefit. Under the ultra policy, express that fan-out as one `orchestrate` program instead of separate Task calls. Do not fan out by item count alone.
 2. When the agent is done, it will return a single message back to you. The result returned by the agent is not visible to the user. To show the user the result, you should send a text message back to the user with a concise summary of the result. The output includes a task_id you can reuse later to continue the same subagent session.
 3. Each agent invocation starts with a fresh context unless you provide task_id to resume a previous task (which continues with its previous messages and tool outputs). When starting fresh, your prompt should contain a highly detailed task description for the agent to perform autonomously and specify exactly what information it should return in its final and only message.
 4. Treat the agent's output as scoped evidence. The parent remains responsible for conflict handling, synthesis, audit, verification, and final closeout.

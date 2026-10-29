@@ -20,7 +20,7 @@ import { ToolSearch } from "../../src/session/tool-search"
 const BASELINE = {
   generic: 25888,
   deepseek: 28528,
-  deepseekUltra: 32467,
+  deepseekUltra: 32876, // 2026-10-28 re-record (orchestrate-default prompt rewrite)
   kimi: 27905,
   gpt55: 30900,
   claude: 30008,
@@ -34,9 +34,10 @@ const BASELINE = {
 const TOOL_BUDGETS = {
   "todowrite.txt": 9183,
   "ast_edit.txt": 10984,
-  "task.txt": 7805,
-  "swarm.txt": 10471,
+  "task.txt": 8158, // 2026-10-28 re-record
+  "swarm.txt": 10713, // 2026-10-28 re-record
   "workbrief.txt": 6546,
+  "orchestrate.txt": 5223, // 2026-10-28 re-record (new budget)
   "shell/shell.txt": 7852,
 } as const
 
@@ -87,14 +88,18 @@ const TOOL_BUDGETS = {
 // shell.txt further (7375 -> 7501) and the deferred browser_open/
 // browser_screenshot/proc_notify wording (+411 B deferred). Floor 101308 ->
 // 104151; DEFERRED_TXT_BUDGET 14354 -> 14765.
-// 2026-10-23 re-record (ultracode orchestrate tool + concurrent growth): the new
-// always-on orchestrate.txt (2450 B, programmatic subagent orchestration) is the
-// intentional ULTRACODE_PLAN addition. Folded into the same recording, per the
-// concurrency-note convention above: task.txt (7055 -> 7805) and swarm.txt
-// (6951 -> 10471) grew with the landed swarm background-dispatch mode
-// (bc6620bb8/bad27d5e3), and shell/shell.txt (7501 -> 7852) plus the deferred set
-// (14765 -> 15028) grew in concurrent sessions. Total floor 104151 -> 109718.
-const TOOL_TOTAL_BUDGET = 109718
+// 2026-10-28 re-record (orchestrate-default prompt rewrite): ultra.txt,
+// deepseek-ultra.txt, chimera.txt, llm.ts, and the orchestrate/task/swarm
+// descriptions now route substantive work to one orchestrate program. task.txt
+// (7805 -> 8158), swarm.txt (10471 -> 10713), and orchestrate.txt
+// (3684 -> 5223, including the background/worker-notification contract) grew
+// with that rewrite; task_cancel.txt (1918 -> 2358) grew with the orchestrate
+// background surface in the same batch. This recording also folds the ~469
+// characters of pre-existing drift already present when the plan was written
+// (110187 measured vs 109718 recorded) plus later HEAD growth (110952 at this
+// recording), per the concurrency-note convention above. Total floor
+// 109718 -> 113526.
+const TOOL_TOTAL_BUDGET = 113526
 
 // The description bytes withheld from the default model-facing set by the
 // ToolSearch defer filter: every registered deferred tool's .txt is off the

@@ -1,4 +1,4 @@
-Run a model-authored orchestration program that fans out many subagents in one call.
+Run a model-authored orchestration program that fans out subagents in one call. It is the default execution surface for substantive tasks when the active multi-agent policy permits delegation.
 
 `code` is the body of an async JavaScript function (top-level `await` and `return` are allowed). It receives one binding object, `orche`:
 
@@ -8,12 +8,15 @@ Run a model-authored orchestration program that fans out many subagents in one c
 - `orche.log(...values)` or `console.log(...)` appends a line to the tool result log.
 - `return <json>` ends the program. The return value must be lossless JSON and is the curated result of the call.
 
-Before writing a non-trivial program, load the orchestrate-authoring skill (script API, failure semantics, limits, quality patterns, worked examples) via the skill tool.
+Load the orchestrate-authoring skill (script API, failure semantics, limits, quality patterns, worked examples) via the skill tool before the first program of a session and before any multi-stage program. Do not write a non-trivial program from memory.
 
 Context isolation: subagent intermediate messages, tool output, and full transcripts never enter this session's context. Only your `return` value and `orche.log` / `console.log` output come back, so the program must actively select and return exactly what the parent needs — for example a compact array of findings, a deduplicated table, or a verdict, not raw child transcripts.
 
-Use when: you need 5 or more subagents, or the fan-out has dependencies (per-item stages), or results must be synthesized inside the program (loops, branching, fan-out/fan-in, cross-item comparison, post-processing) before they reach the context.
-Do not use when: a single direct task is enough (use `task`), or the fan-out is a simple homogeneous list with no per-item orchestration (use `chimera_swarm`).
+Use when: every substantive task (any task that reads or changes repository state) under the active multi-agent policy. Write one program per task: a single `orche.agent` when the work is one axis; `orche.parallel` or `orche.pipeline` when it has two or more independent axes. A 2-4 agent program is normal; 5-9 is medium; 10-30 is large. `maxTotalAgents` and the concurrency window are backstops, not thresholds.
+
+Do not use when: the turn is conversational and requires no repository work, or the change is a trivial mechanical edit (a typo, a one-line rename, a one-line constant change). `task` is for resuming an existing child session, one blocking dependency the program cannot express, or a single background delegation whose result is not needed in this turn; `chimera_swarm` is only for a preset/`from` audit-evidence fan-out. A hard blocker (shared files, ordering constraints, provider limits) changes the program's shape — pipeline stages, narrower scopes, split phases — never whether a program runs.
+
+Before the first dispatch of a task, write one plan line in your reply: phases, estimated agent count, and what each phase returns. Update it when the phase structure changes. This is a preview, not a permission request; write it and execute immediately. Token cost is not a reason to shrink the plan.
 
 Approval: `orchestrate` is approved once per call, and every `orche.agent` additionally goes through the normal `task` approval for its agent type. Subagents are real child sessions (visible, persisted, cancellable) and obey delegation depth, concurrency, and per-agent permission limits.
 
@@ -28,3 +31,7 @@ The outer tool arguments are JSON. Prefer this complete template and change only
 ```
 
 `timeoutMs: 0` means no global timer; omission and negative values are also unlimited, but the explicit `0` is preferred over deleting the field. `maxTotalAgents` caps total child dispatches (default 64, hard cap 256) — 64 is the built-in default, so keep it unless the task needs a different cap.
+
+`background` (default `false`) registers the program as a program-level background job: with `background: true` the call returns a startup receipt immediately, every worker completion injects an `<orchestrate_worker_result>` notification into this session, and the program's final result arrives as an `<orchestrate_result>` notification.
+
+A foreground call must pass `block_reason` naming the concrete dependency that forces the wait.

@@ -168,9 +168,9 @@ describe("session.system", () => {
       } as unknown as Parameters<typeof SystemPrompt.ultraVariant>[0]
 
       expect(SystemPrompt.ultraVariant(deepseek, "ultra").join("\n")).toContain("You are running on the ultra tier")
-      expect(SystemPrompt.ultraVariant(deepseek, "ultra").join("\n")).toContain("swarm 派发纪律")
+      expect(SystemPrompt.ultraVariant(deepseek, "ultra").join("\n")).toContain("多代理编排纪律")
       expect(SystemPrompt.ultraVariant(deepseek, "ultra").join("\n")).toContain("block_reason")
-      expect(SystemPrompt.ultraVariant(deepseek, "ultra").join("\n")).toContain("规则 1：探索类任务前 3 步内派发 chimera_swarm")
+      expect(SystemPrompt.ultraVariant(deepseek, "ultra").join("\n")).toContain("规则 1：实质性任务默认写 orchestrate 程序")
       expect(SystemPrompt.ultraVariant(deepseek, "ultra").join("\n")).toContain("规则 5：禁止自我豁免")
       expect(SystemPrompt.ultraVariant(deepseek, "max")).toEqual([])
       expect(SystemPrompt.ultraVariant(deepseek, undefined)).toEqual([])
@@ -180,7 +180,7 @@ describe("session.system", () => {
         api: { id: "k3" },
       } as unknown as Parameters<typeof SystemPrompt.ultraVariant>[0]
       expect(SystemPrompt.ultraVariant(kimi, "ultra").join("\n")).toContain("You are running on the ultra tier")
-      expect(SystemPrompt.ultraVariant(kimi, "ultra").join("\n")).not.toContain("swarm 派发纪律")
+      expect(SystemPrompt.ultraVariant(kimi, "ultra").join("\n")).not.toContain("多代理编排纪律")
       yield* Effect.void
     }),
   )

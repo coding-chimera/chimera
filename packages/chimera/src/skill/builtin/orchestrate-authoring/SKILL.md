@@ -1,24 +1,24 @@
 ---
 name: orchestrate-authoring
-description: Reference for writing an orchestrate tool program (orche API and gotchas, failure semantics, limits, quality patterns, worked examples). Load before writing a non-trivial orchestrate code body; not needed for a single task dispatch or a simple homogeneous chimera_swarm fan-out.
+description: Required reference for writing an orchestrate tool program (orche API and gotchas, failure semantics, limits, quality patterns, worked examples). Load before the first program of a session and before any multi-stage or multi-agent program.
 ---
 
 # Orchestrate authoring reference
 
-`orchestrate` structures work across many subagents — to be comprehensive (decompose and cover in parallel), to be confident (independent perspectives and adversarial checks before committing), or to take on scale one context can't hold (migrations, audits, broad sweeps). The program is where you encode that structure: what fans out, what verifies, what synthesizes.
+`orchestrate` is the default execution surface for substantive tasks under the ultra policy: one program per task, a single agent when the task is one axis, parallel/pipeline when it has several. It structures work across many subagents — to be comprehensive (decompose and cover in parallel), to be confident (independent perspectives and adversarial checks before committing), or to take on scale one context cannot hold (migrations, audits, broad sweeps). The program is where you encode that structure: what fans out, what verifies, what synthesizes.
 
-The right move is often **hybrid**: scope the work-list first (your own grep/glob/graph calls, or one cheap `orche.agent` scout), then fan out over it. You don't need to know the shape before the *task* — only before the *fan-out step*.
+The right move is often **hybrid**: scope the work-list first (your own grep/glob/graph calls, or one cheap `orche.agent` scout), then fan out over it. Decide the program shape before the fan-out step, not before the task.
 
-When NOT to use orchestrate: a single delegation (use `task`), or a simple homogeneous fan-out with no per-item logic (use `chimera_swarm`, which also gives you background execution and per-worker notifications).
+Only two shapes stay outside a program: a conversational turn that requires no repository work, and a trivial mechanical edit (a typo, a one-line rename, a one-line constant change). `task` is for resuming an existing child session, one blocking dependency the program cannot express, or a single background delegation whose result is not needed in this turn; `chimera_swarm` is only for a preset/`from` audit-evidence fan-out.
 
-Common single-phase programs you can chain across turns:
+Common single-phase programs to chain across turns:
 - **Understand** — parallel readers over subsystems -> structured map
 - **Design** — judge panel of N independent approaches -> scored synthesis
 - **Review** — dimensions -> find -> adversarially verify (worked example below)
 - **Research** — multi-angle sweep -> deep-read -> synthesize
 - **Migrate** — discover sites -> transform each -> verify
 
-**Ultra tier.** When the runtime context carries the multi-agent orchestration block (ultra root session), proactive delegation is standing policy: reach for orchestrate whenever the fan-out is 5+ agents or has per-item stages. The quality patterns below are the tools; pick what fits. Solo only on conversational turns or trivial mechanical edits.
+**Ultra tier.** The multi-agent orchestration block in the runtime context is a standing opt-in, not a hint: every substantive task gets a program. Do not wait for 5+ agents; a 2-4 agent program is normal. Write the plan line (phases, estimated agent count, what each phase returns) before the first dispatch, then write the program. Solo only on conversational turns or trivial mechanical edits.
 
 ## Program shape
 
@@ -50,6 +50,19 @@ The program runs in a dedicated worker process with a scrubbed environment. Stan
   - A stage that throws or returns `null` drops that item to `null` and skips its remaining stages.
   - Stages must be functions: a non-function stage fails the whole program, not just the item.
 - `orche.log(...values)` / `console.log(...)` appends a progress line to the tool result.
+
+### orche.batch
+
+`await orche.batch({ items?, from?, preset?, concurrency?, scope? })` declares a homogeneous batch inside the program: it materializes the items, renders each worker prompt from a preset template, dispatches with bounded concurrency, and returns one result per item. Pass `items` for an explicit work list or `from` for a Chimera evidence source, not both.
+
+- `from` materializes a Chimera evidence source: `pending_obligations`, `claimed_obligations`, `stale_obligations`, `active_obligations`, `failing_oracles`, `unknown_oracles`, or `failing_or_unknown_oracles` (limit defaults to 20, max 100).
+- `preset` picks the worker prompt shape: `audit-followup` (default for obligation sources except stale), `audit-review` (default for `stale_obligations`), `oracle-followup` (default for oracle sources), or `file-review`. A preset changes the prompt and default subagent only; it never changes permissions or tools.
+- `concurrency` caps concurrent workers (default 16, max 16).
+- `scope` conflicts are advisory: when explicit items name the same file (`files` / `file` / `path` / `target`, including under `scope`), those items get a scope-conflict warning prefix. Nothing is locked and no dispatch is denied — keep edits scoped and resolve conflicts in the parent.
+
+The call resolves to an array aligned with the input items: `{ item, index, status, summary, outputFile? }` per item, or `null` for an item whose worker failed. Filter `null` like any other orchestration result.
+
+Use `orche.batch` when the work is a homogeneous audit / obligation / oracle batch that a built-in template already describes. Use hand-written `orche.parallel` / `orche.pipeline` when items need heterogeneous custom prompts, per-item control flow, or in-program synthesis.
 
 ## Failure semantics
 

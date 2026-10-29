@@ -19,6 +19,9 @@ export function deriveSubagentSessionPermission(input: {
       : [
           { permission: "task" as const, pattern: "*" as const, action: "deny" as const },
           { permission: "chimera_swarm" as const, pattern: "*" as const, action: "deny" as const },
+          // orchestrate fans out real subagents and gates each one on `task`;
+          // denying task without denying orchestrate is a permission bypass.
+          { permission: "orchestrate" as const, pattern: "*" as const, action: "deny" as const },
         ]),
     { permission: "subagent_model_prefer", pattern: "*", action: "deny" },
     { permission: "subagent_model_suppress", pattern: "*", action: "deny" },

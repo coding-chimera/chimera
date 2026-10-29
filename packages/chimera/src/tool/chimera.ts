@@ -2115,6 +2115,7 @@ function swarmFollowupGuidance(input: { count: number; source: "audit" | "obliga
     `- ${data.reason}`,
     data.from ? `- Source shortcut: \`from: \"${data.from}\"\`.` : "- For transient audit findings, pass selected findings as explicit `items`.",
     `- ${data.guidance}`,
+    "- Inside an orchestrate program, use orche.batch for the same homogeneous preset/from batch; chimera_swarm remains available for direct tool calls.",
   ]
 }
 

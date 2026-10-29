@@ -621,7 +621,7 @@ export const layer = Layer.effect(
           "",
           ...lines,
           "",
-          `${running.length} running background ${running.length === 1 ? "task" : "tasks"}. You will be notified automatically when a task finishes — do not sleep, poll, or check its progress. Cancel one with the task_cancel tool using its task_id (background chimera_swarm workers appear here too and are cancelled individually the same way).`,
+          `${running.length} running background ${running.length === 1 ? "task" : "tasks"}. You will be notified automatically when a task finishes — do not sleep, poll, or check its progress. Cancel one with the task_cancel tool using its task_id (background chimera_swarm workers and background orchestrate programs appear here too and are cancelled individually the same way).`,
         ].join("\n")
       })
       // Cross-session OS process visibility: push the session process registry into the

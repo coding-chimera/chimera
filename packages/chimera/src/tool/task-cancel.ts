@@ -12,7 +12,8 @@ export const Parameters = Schema.Struct({
 })
 
 function snapshotText(taskId: string, info: BackgroundJob.Info) {
-  return `task_id: ${taskId} (already ${info.status}) — nothing to cancel.`
+  const kind = info.type === "orchestrate" ? "orchestration program" : "task"
+  return `task_id: ${taskId} (already ${info.status}) — nothing to cancel; the ${kind} is not running.`
 }
 
 export const TaskCancelTool = Tool.define(
@@ -43,7 +44,7 @@ export const TaskCancelTool = Tool.define(
           if (!info) {
             return yield* Effect.fail(
               new Error(
-                `No background task found with task_id: ${taskId}. Use the task tool with background=true to start one, or check the task_id you were given.`,
+                `No background task found with task_id: ${taskId}. Use the task or orchestrate tool with background=true to start one, or check the task_id you were given.`,
               ),
             )
           }
@@ -61,12 +62,15 @@ export const TaskCancelTool = Tool.define(
           const status = after?.status ?? "cancelled"
           const metadata = { taskId, status, cancelled: status === "cancelled" }
           yield* ctx.metadata({ title: `task_cancel: ${taskId}`, metadata })
+          const orchestration = info.type === "orchestrate"
           return {
             title: `task_cancel: ${taskId}`,
             metadata,
             output:
               status === "cancelled"
-                ? `task_id: ${taskId} (cancelled) — its child run has been interrupted. If it had launched sub-work, that is being cancelled recursively.`
+                ? orchestration
+                  ? `task_id: ${taskId} (cancelled) — the orchestration program has been interrupted, and every subagent it was running is being cancelled recursively.`
+                  : `task_id: ${taskId} (cancelled) — its child run has been interrupted. If it had launched sub-work, that is being cancelled recursively.`
                 : `task_id: ${taskId} (terminated as ${status}) — cancellation was requested but the task already settled.`,
           }
         }).pipe(Effect.orDie),

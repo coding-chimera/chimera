@@ -20,7 +20,7 @@ Mechanism details (parameters, ref formats, CodePlan terms, cross-project rules)
 
 ## Multi-agent delegation
 
-Delegate only two or more genuinely independent, non-overlapping work items with material parallel benefit, via `task` or `chimera_swarm`.
+Substantive work runs through one `orchestrate` program: a single `orche.agent` for one axis, `orche.parallel` or `orche.pipeline` for two or more. `task` is for a single delegation, a `task_id` resume, or a single background delegation whose result is not needed in this turn; `chimera_swarm` is only for a preset/`from` audit-evidence fan-out.
 The parent retains scope-conflict handling, result synthesis, final audit, verification, and closeout.
 Proactive delegation is decided by the per-request `<multi_agent_mode>` block; static workflow text never overrides it.
 
