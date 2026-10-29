@@ -330,18 +330,28 @@ function process<Def extends Definition>(
           void publish(result)
         }
 
-        GlobalBus.emit("event", {
-          directory: options.context.instance.directory,
-          project: options.context.instance.project.id,
-          workspace: options.context.workspace,
-          payload: {
-            type: "sync",
-            syncEvent: {
-              type: versionedType(def.type, def.version),
-              ...event,
+        // `ProjectBus.publish` above already forwarded this event to `GlobalBus`
+        // with the converted bus payload, and that frame is the only one local
+        // consumers (TUI/WebUI/SDK) read. The `sync` envelope below exists only so
+        // a remote workspace can `sync.replay` it, and replicas have no event rows
+        // to replay unless workspace syncing is enabled (same flag gates the
+        // persistence above), so emitting it otherwise just duplicates every event
+        // on the global stream. Derived events keep their ProjectBus.publish
+        // unconditional; only their GlobalBus `sync` envelopes are gated.
+        if (Flag.OPENCODE_EXPERIMENTAL_WORKSPACES) {
+          GlobalBus.emit("event", {
+            directory: options.context.instance.directory,
+            project: options.context.instance.project.id,
+            workspace: options.context.workspace,
+            payload: {
+              type: "sync",
+              syncEvent: {
+                type: versionedType(def.type, def.version),
+                ...event,
+              },
             },
-          },
-        })
+          })
+        }
 
         // Derived events are published after the main event with their own
         // event identity (`derived: true` + a fresh id) so remote consumers
@@ -363,22 +373,24 @@ function process<Def extends Definition>(
           } else {
             void publishDerived(converted)
           }
-          GlobalBus.emit("event", {
-            directory: options.context.instance.directory,
-            project: options.context.instance.project.id,
-            workspace: options.context.workspace,
-            payload: {
-              type: "sync",
-              syncEvent: {
-                type: versionedType(derived.type, version),
-                id: derivedID,
-                seq: event.seq,
-                aggregateID: event.aggregateID,
-                data: derived.data,
-                derived: true,
+          if (Flag.OPENCODE_EXPERIMENTAL_WORKSPACES) {
+            GlobalBus.emit("event", {
+              directory: options.context.instance.directory,
+              project: options.context.instance.project.id,
+              workspace: options.context.workspace,
+              payload: {
+                type: "sync",
+                syncEvent: {
+                  type: versionedType(derived.type, version),
+                  id: derivedID,
+                  seq: event.seq,
+                  aggregateID: event.aggregateID,
+                  data: derived.data,
+                  derived: true,
+                },
               },
-            },
-          })
+            })
+          }
         }
       }
     })
