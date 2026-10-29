@@ -73,7 +73,7 @@ import { ApplyPatchTool } from "./apply_patch"
 import { Glob } from "@opencode-ai/core/util/glob"
 import path from "path"
 import { pathToFileURL } from "url"
-import { Effect, Layer, Context } from "effect"
+import { Clock, Effect, Layer, Context } from "effect"
 import { FetchHttpClient, HttpClient } from "effect/unstable/http"
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
@@ -105,11 +105,33 @@ const log = Log.create({ service: "tool.registry" })
 type TaskDef = Tool.InferDef<typeof TaskTool>
 type ReadDef = Tool.InferDef<typeof ReadTool>
 
+// The scheduling disclosure folds live provider/auth/speed-evidence state, so
+// a bounded window keeps it fresh while collapsing the per-step rebuild that
+// every concurrent session would otherwise repeat several times per step.
+const SCHEDULING_SNAPSHOT_WINDOW_MS = 30_000
+
+type CachedTaskDescription = {
+  permission: Agent.Info["permission"]
+  config: Config.Info
+  schedulingVersion: number
+  value: string
+}
+
+type CachedToolList = {
+  permission: Agent.Info["permission"]
+  config: Config.Info
+  hooks: Effect.Success<ReturnType<Plugin.Interface["list"]>>
+  schedulingVersion: number
+  value: Tool.Def[]
+}
+
 type State = {
   custom: Tool.Def[]
   builtin: Tool.Def[]
   task: TaskDef
   read: ReadDef
+  taskDescriptions: Map<string, CachedTaskDescription>
+  toolLists: Map<string, CachedToolList>
 }
 
 export interface Interface {
@@ -184,10 +206,15 @@ export const layer = Layer.effect(
     const memoryRead = yield* MemoryReadTool
     const agent = yield* Agent.Service
     const scheduling = yield* SubagentModelSchedulingRuntime.make
+    const currentSchedulingVersion = Clock.currentTimeMillis.pipe(
+      Effect.map((now) => Math.floor(now / SCHEDULING_SNAPSHOT_WINDOW_MS)),
+    )
 
     const state = yield* InstanceState.make<State>(
       Effect.fn("ToolRegistry.state")(function* (ctx) {
         const custom: Tool.Def[] = []
+        const taskDescriptions: State["taskDescriptions"] = new Map()
+        const toolLists: State["toolLists"] = new Map()
 
         function fromPlugin(id: string, def: ToolDefinition): Tool.Def {
           // Plugin tools define their args as a raw Zod shape. Wrap the
@@ -381,6 +408,8 @@ export const layer = Layer.effect(
           ],
           task: tool.task,
           read: tool.read,
+          taskDescriptions,
+          toolLists,
         }
       }),
     )
@@ -396,6 +425,17 @@ export const layer = Layer.effect(
 
 
     const describeTask = Effect.fn("ToolRegistry.describeTask")(function* (agent: Agent.Info) {
+      const s = yield* InstanceState.get(state)
+      const cfg = yield* config.get()
+      const schedulingVersion = yield* currentSchedulingVersion
+      const cached = s.taskDescriptions.get(agent.name)
+      if (
+        cached &&
+        cached.permission === agent.permission &&
+        cached.config === cfg &&
+        cached.schedulingVersion === schedulingVersion
+      )
+        return cached.value
       const items = (yield* agents.list()).filter((item) => item.mode !== "primary")
       const filtered = items.filter(
         (item) => Permission.evaluate("task", item.name, agent.permission).action !== "deny",
@@ -407,7 +447,6 @@ export const layer = Layer.effect(
             `- ${item.name}: ${item.description ?? "This subagent should only be called manually by the user."}`,
         )
         .join("\n")
-      const cfg = yield* config.get()
       const profiles = Object.entries(cfg.delegation?.model_profiles ?? {}).filter(
         ([name]) => Permission.evaluate("task_profile", name, agent.permission).action !== "deny",
       )
@@ -425,7 +464,7 @@ export const layer = Layer.effect(
         limit: 1,
       })
       const workloadSection = schedulingView ? SubagentModelScheduling.disclosure(schedulingView) : undefined
-      return [
+      const value = [
         "Available agent types and the tools they have access to:",
         description,
         profileSection,
@@ -434,10 +473,31 @@ export const layer = Layer.effect(
       ]
         .filter(Boolean)
         .join("\n")
+      s.taskDescriptions.set(agent.name, {
+        permission: agent.permission,
+        config: cfg,
+        schedulingVersion,
+        value,
+      })
+      return value
     })
 
     const tools: Interface["tools"] = Effect.fn("ToolRegistry.tools")(function* (input) {
-      const filtered = (yield* all()).filter((tool) => {
+      const s = yield* InstanceState.get(state)
+      const cfg = yield* config.get()
+      const hooks = yield* plugin.list()
+      const schedulingVersion = yield* currentSchedulingVersion
+      const key = `${input.agent.name}\0${input.agent.mode}\0${input.providerID}\0${input.modelID}`
+      const cached = s.toolLists.get(key)
+      if (
+        cached &&
+        cached.permission === input.agent.permission &&
+        cached.config === cfg &&
+        cached.hooks === hooks &&
+        cached.schedulingVersion === schedulingVersion
+      )
+        return cached.value
+      const filtered = [...s.builtin, ...s.custom].filter((tool) => {
         if (input.agent.mode === "subagent") {
           if (tool.id === SubagentModelPreferTool.id || tool.id === SubagentModelSuppressTool.id) return false
           // Goals are a root-session feature: continuation skips subagent sessions
@@ -456,7 +516,7 @@ export const layer = Layer.effect(
         return true
       })
 
-      return yield* Effect.forEach(
+      const value = yield* Effect.forEach(
         filtered,
         Effect.fnUntraced(function* (tool: Tool.Def) {
           using _ = log.time(tool.id)
@@ -482,6 +542,14 @@ export const layer = Layer.effect(
         }),
         { concurrency: "unbounded" },
       )
+      s.toolLists.set(key, {
+        permission: input.agent.permission,
+        config: cfg,
+        hooks,
+        schedulingVersion,
+        value,
+      })
+      return value
     })
 
     const named: Interface["named"] = Effect.fn("ToolRegistry.named")(function* () {

@@ -49,14 +49,28 @@ function isZodType(value: unknown): value is z.ZodTypeAny {
   return typeof value === "object" && value !== null && "_zod" in value
 }
 
+// Tool parameter schemas are module-scope constants, so the derived JSON
+// Schema is stable for the lifetime of the schema object. Memoizing by schema
+// reference keeps per-step tool serialization from re-walking the same zod
+// tree on every LLM request (26 concurrent sessions × ~44 tools × every step).
+function computeToolJsonSchema(schema: Schema.Top) {
+  return z.toJSONSchema(zod(schema), { io: "input" })
+}
+const jsonSchemaCache = new WeakMap<object, ReturnType<typeof computeToolJsonSchema>>()
+
 /**
  * Emit a JSON Schema for a tool/route parameter schema — derives the zod form
  * via the walker so Effect Schema inputs flow through the same zod-openapi
  * pipeline the LLM/SDK layer already depends on.  `io: "input"` mirrors what
  * `session/prompt.ts` has always passed to `ai`'s `jsonSchema()` helper.
  */
+
 export function toJsonSchema<S extends Schema.Top>(schema: S) {
-  return z.toJSONSchema(zod(schema), { io: "input" })
+  const cached = jsonSchemaCache.get(schema)
+  if (cached) return cached
+  const result = computeToolJsonSchema(schema)
+  jsonSchemaCache.set(schema, result)
+  return result
 }
 
 function walk(ast: SchemaAST.AST): z.ZodTypeAny {
