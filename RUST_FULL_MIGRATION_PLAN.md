@@ -1,13 +1,12 @@
 # Chimera 全量 Rust 化计划（承诺终点 · 加速绞杀）
 
 制定：2026-10-29
-修订：2026-10-29（24 轴静态核查 + 3 组跨轴 review 结论回写）
-性质：执行计划草案。立项与长尾取舍仍待拍板（§13）；文中建议不等于用户已拍板。
+修订：2026-10-30（进展摘要 + Codex 直连复用 + 首批开工包；24 轴核查结论保留）
 
 文档关系：
 - 取代 `RUST_HOST_MIGRATION_PLAN.md`（2026-10-21）的 H3「Bun session worker 化」路线——该路线整体删除；
 - `RUST_MIGRATION_PLAN.md`（R0–R6 / A·B·C 方案）保留为历史调研证据，不再按原顺序执行；
-- 证据基线 = 2026-10-28 并发调查（10 份探查报告 + 主线程采样 + dbstat 实测）+ 同日 W-E Effect 解剖战役（16 worker 两阶段，343 语义点全清单）+ 2026-10-29 24 轴静态核查；索引见 `memory.md` 当日条目与附录 B。
+- 证据基线 = 2026-10-28 并发调查（10 份探查报告 + 主线程采样 + dbstat 实测）+ 同日 W-E Effect 解剖战役（16 worker 两阶段，343 语义点全清单）+ 2026-10-29 24 轴静态核查 + 2026-10-30 Codex crate 调研；索引见 `memory.md` 当日条目与附录 B。
 
 ---
 
@@ -19,7 +18,7 @@
 |---|---|---|
 | H1 定位 | H1 是协议/控制存储基础，不是生产 Rust runtime：`chimera-host/Cargo.toml:15-23` 仅 rusqlite；TS Drizzle 是唯一 migrator；`src/store.rs:16-19,341-368` 同步 conn 只拥有 6 张控制表；`bin/chimera-host.rs:194-207,315` 为 Unrouted；`:180-181` 默认 host/host.db 未接 canonical 主库。 | 新增 runtime foundation / router / boot-path-capability-launcher 工作包（WP-07）；W1/W2 不假设 H1 可直接承载生产面。 |
 | H2 状态 | Step0 已实现：`host_driver.rs:1139-1180` serve_available 已带预算与 Idle。 | 从“未实现”改为“保留并复验”，不重复立项。 |
-| W3 缺 LLM | Codex Responses/OAuth 在会话侧（`session/llm.ts:455-483`），`:489-521` 有 TS native-llm 试点；`packages/llm` 的协议/fixture 可复用，但不是 Rust 资产。 | W3 前需可用且通过 oracle 的 provider 通路；优先验证 genai 0.7.2 薄适配器，不以自建全量 SDK 为前置。特殊通路显式保留 provider-only 兼容执行体；详见 §15。 |
+| W3 缺 LLM | Codex Responses/OAuth 在会话侧（`session/llm.ts:455-483`），`:489-521` 有 TS native-llm 试点；`packages/llm` 的协议/fixture 可复用，但不是 Rust 资产。 | W3 前需可用且通过 oracle 的 provider 通路；优先验证 genai 0.7.2 薄适配器，不以自建全量 SDK 为前置。Codex 特殊通路优先直连 codex-rs wire crates（§15.6），未覆盖项保留 provider-only 兼容执行体；详见 §15。 |
 | W3 缺 hook | 插件影响 config/bootstrap、tool.definition、chat.params/headers、tool.before/after、auth refresh（`plugin/codex.ts:501-560`）；只有 hook spec 不足以让 W3 跑通。 | 插件 hook IPC 契约 + 最小真实 sidecar 提前；W5 保留生态硬化。不新建“把整套 TS session 塞进去”的 worker。 |
 | 数据权威 | 缺库/表级权威矩阵。audit/process/claims 与 graph 同库（`src/chimera/store.ts:630-631` → `graph/db/index.ts:628-629`），并非审计已分库。多文件 WAL 无跨文件 crash 原子性（SQLite `lang_attach` 文档），但不能泛称所有 SQLite 跨库不原子。 | 先保持 schema 与权威兼容，再拆可重建投影；语言迁移/分库/换权不同时做；Rust 迁移权接棒不拖到 W6。 |
 | W0 oracle | 四序列不足：缺 tool result/LINE#ID、关键 prompt 分段/锚点、tool visibility/history/native tool_search、hook/permission/question/job family/delivery generation、MCP 协议与进程资源。 | W0 扩为“确定性字节/规范化 schema + 请求/因果行为 + fault matrix + 统计性能”分层 oracle；禁止用全局排序吞顺序 bug。 |
@@ -40,13 +39,30 @@
 4. **发布门禁前移**：在首个用户可启用的 host 能力前建立 npm 两变体验收与 CI hard gate。
 5. **编排纪律入计划**：work manifest、独立 review、focused verify、canary-first、显式 checkpoint。
 
+## 当前进展摘要 / 已完成成果（2026-10-30）
+
+**已完成（均为调研/审计/文档工作，不含迁移源码）**：
+
+| 项 | 状态 | 落点 |
+|---|---|---|
+| 24 轴静态核查 + 3 组跨轴 review | 已完成，结论已回写本文 | §1、附录 B；未另落独立文档 |
+| genai 0.7.2 选型研究 | 已完成；**建议**锁 `=0.7.2`，未编译/未实测 | §15 |
+| Codex Rust crates 直接复用调研 | 已完成；本地 codex HEAD `95273b84`，`codex-api` 公开 `ResponsesClient`/`ResponsesWebsocketClient`/异步 `AuthProvider`，Apache-2.0 + NOTICE | §15.6 |
+| 两仓审计与推送 | 已完成：newweb `aa8a25e7`（11 commits）；chimera `59b4e5780`（32 commits，pre-push 19 个 typecheck 任务通过） | 本机 git 记录 |
+| 当前 git 基线 | `9600ee7f4` "docs: add GPUI desktop app plan and full Rust migration plan"；`main` ahead 2 | 本机 git 记录 |
+| Rust 运行时迁移代码 / PoC | **尚未开始**；无生产迁移代码、无 genai 编译验证、无真实 provider 调用、未集成 codex crates | 本文为计划，不是实施记录 |
+
+**决策状态**：
+- **已拍板**（§13 已拍板记录）：取消 Bun session worker 中间态，执行体直接落 Rust host；session/图审计证据保留 30 天；遥测 DB 移除、调度信号改进程内存态；patch2 止血包已落地。
+- **建议（未拍板）**：oracle 先行（W0 硬门）；genai `=0.7.2` 薄适配器作为主力 provider 首选；Codex 通路直接复用 codex-rs wire crates（§15.6）；首批开工顺序（§16）；§13 D1–D8。
+- **待拍板**：本文档立项（全量 Rust 作为承诺终点）与 provider 长尾取舍（§13 前两条）。
 ---
 
 ## 2. 决策摘要
 
 1. **全量 Rust 化是承诺终点**，不再是「H6 再评估」的可选项。终态 = Rust host 承载 HTTP/存储/图/事件/会话运行时/主力 provider；Bun 仅保留为插件生态与必要长尾的兼容 sidecar（范围待 §13 拍板），不再是运行时主进程。
 2. **形态 = 加速绞杀，不是大爆炸**。沿用 kernel 战役验证过的纪律：波次推进、每波 parity 门、kill switch、旧实现保留一个发布周期、parent 独立复验。
-3. **删除 Bun session Worker 过渡形态**（不新增线程或进程 session worker）。TS 侧调用接口异步化（Promise/RPC），执行体直接落在 Rust host；不新建“把整套 TS session 塞进去”的 worker 来顶 W3。现存 TUI 的 server 托管须迁出；orchestrate 脚本 sandbox 是独立兼容能力，归属按 §13 决定。
+3. **删除 Bun session Worker 过渡形态**（不新增线程或进程 session worker）。TS 侧调用接口异步化（Promise/RPC），执行体直接落在 Rust host；不新建“把整套 TS session 塞进去”的 worker 来顶 W3。W3 前的插件 hook sidecar 是 plugin-only 兼容面，不承载 session/agent loop/工具执行循环；任何 Bun 进程都不得成为 session 执行体。现存 TUI 的 server 托管须迁出；orchestrate 脚本 sandbox 是独立兼容能力，归属按 §13 决定。
 4. **oracle 不立不动工**：W0 的分层 oracle 是所有后续切换的前置。
 5. **性能问题不单独立项**：止血包已随 `0.0.7-beta8-patch2` 落地；其余（codex 式数据面、写后置、异步化）并入对应波次，随 Rust 化推进解决。
 6. **数据权威与语言迁移分离**：先保持 schema 与权威兼容，再拆可重建投影；单写者换权、fencing、ACK 与回退流程须先有矩阵与 oracle。
@@ -69,7 +85,7 @@
 - **并发调查**：单 Bun 进程单事件循环跑 26 会话；主线程 ~76% 采样在 `sqlite3_step` 同步 pread（大行溢出链、非 mmap）；每 step 固定税（~10 次同步库往返 / 全量历史重读 / git status 全扫描 / 44 工具 schema 重建）；主库 3.66GB、图库 3.67GB（审计证据 3.4GB）。
 - **codex 对照**（fork 版 codex-rs）：历史常驻内存 `Arc<Vec>` 每 step O(1) 快照；JSONL 权威 + SQLite 可重建投影（7 库降锁竞争、sqlx 异步池、每库 5 连接）；每会话后台 writer task + mpsc；元数据 5s 去抖；无进程注册表/编辑意图/图谱同步/审计写库；多线程 tokio runtime。
 - **已有 Rust 资产**：`codegraph-kernel`（30 文件 / 40,273 行 / 52 napi 函数，extraction+store+resolution 默认 ON）；`chimera-host`（10,723 行，H1 的协议/控制存储基础已落地，生产 runtime 未落地）；`packages/chimera/specs/rust-host/`（3,063 行规格：ipc-v0 / recovery-matrix / h2-data-plane）。
-- **orchestrate 实测边界**：16 并发 / 64 默认总派发 / 256 上限；子代理上下文隔离只回传结果；edit-intent 同 family 豁免（战役内文件冲突需靠文件分区纪律，不能靠 claims）；schema 结构化输出在 flash 路线上对大 schema 不稳定（用文本 JSON + 程序内解析）。可做：侦察、模块翻译起草、独立验证。不可做：共享编译循环、跨模块语义收敛、契约单点决策。
+- **orchestrate 实测边界**：16 并发 / 64 默认总派发 / 256 上限；`orche.agent` 仅 `prompt/agent/model/label/schema`，无 `workload/variant`（variant 由 dispatch 自动补最高非 ultra）；`orche.batch` 存在但不接受 model 选择器。子代理上下文隔离只回传结果；edit-intent 同 family 豁免（战役内文件冲突需靠文件分区纪律，不能靠 claims）；schema 结构化输出在 flash 路线上对大 schema 不稳定（用文本 JSON + 程序内解析）。可做：侦察、模块翻译起草、独立验证。不可做：共享编译循环、跨模块语义收敛、契约单点决策。
 
 ---
 
@@ -95,13 +111,12 @@
    └─────────────────────────┘                          └─────────────────────────┘
 ```
 
-原则：**host 可以重启，提交过的事实不能丢**；任何面失败只降级该面，不拖垮宿主。CLI/TUI 是薄客户端，其承载的 server/session 必须由 host 提供，不自宿主。
-
+原则：**host 可以重启，提交过的事实不能丢**；任何面失败只降级该面，不拖垮宿主。CLI/TUI 是薄客户端，其承载的 server/session 必须由 host 提供，不自宿主。Bun 侧只保留插件/长尾/可选 sandbox 兼容面，不承载 session/agent loop/工具执行循环。
 ---
 
 ## 5. 范围与非目标
 
-**迁移**：storage 访问层、graph 全面、watcher、SSE/事件 fan-out、HTTP 路由、session/job durable state、session 运行时（历史/工具执行/LLM 流）、主力 provider transport（实际在用的 3–4 家）、遥测替代（内存态）。
+**迁移**：storage 访问层、graph 全面、watcher、SSE/事件 fan-out、HTTP 路由、session/job durable state、session 运行时（历史/工具执行/LLM 流）、主力 provider transport（实际在用的 3–4 家；Codex 特殊通路按 §15.6 直连 wire crates）、遥测替代（内存态）。
 
 **显式控制面 WBS（原计划缺失，本轮补登记）**：
 - config/bootstrap/skills/instructions/workbrief/goal；
@@ -160,9 +175,10 @@ oracle：`httpapi-exercise` 双臂 parity（现成模板，但仅 Effect/Hono �
 
 ### W3：会话运行时（第一条 Rust 主控闭环）
 
-前置（本轮核查新增，必须在 W3 前完成）：
-- 至少一条可用且经 oracle 验收的 provider 通路：优先 genai 0.7.2 Rust 薄适配器；标准 Chat/API-key Responses 分 profile 准入。尚未覆盖的特殊协议可明确走 provider-only TS 兼容服务，不把整个 TS session 塞进 worker，也不要求先自建全量 provider SDK；
-- 插件 hook IPC 契约 + 最小真实 sidecar（覆盖 config/bootstrap、tool.definition、chat.params/headers、tool.before/after、auth refresh）；
+前置（本轮核查新增，必须在 W3 前完成；与 §8 依赖闭合、§16 硬门一致）：
+- T1 runtime foundation 与数据/运行时最小集可用（不要求 W1–W5 全量完成）；
+- 至少一条可用且经 oracle 验收的 provider 通路：优先 genai 0.7.2 Rust 薄适配器；首个 profile 建议 OpenAI-compatible Chat/API-key，Responses/OAuth/WS 分 profile 独立验收（§13 D1），不在首个闭环混入。Codex 通路按 §15.6 直连 codex-rs wire crates；尚未覆盖的特殊协议可明确走 provider-only TS 兼容服务，不把整个 TS session 塞进 worker，也不要求先自建全量 provider SDK；
+- 插件 hook IPC 契约 + 最小真实 sidecar（plugin-only 兼容面，覆盖 config/bootstrap、tool.definition、chat.params/headers、tool.before/after、auth refresh；不承载 session/agent loop）；
 - W0 因果层 oracle 与 fault matrix 就绪。
 
 蓝本 = codex 架构，不是逐行翻译 TS：
@@ -173,13 +189,13 @@ oracle：`httpapi-exercise` 双臂 parity（现成模板，但仅 Effect/Hono �
 - 工具执行：文件/graph/storage 相关工具先入 Rust；shell/子进程由 Rust 拥有 spawn/stream/kill；
 - 中断语义：`uninterruptibleMask` 三区结构改写为「关键区无 await 取消点 + shield 任务」；取消路径必须保留落账（failToolCall 终态写入），不能只丢 JoinHandle。
 
-**第一条闭环验收**：Rust host 拥有 HTTP/session → LLM 调用 → 本地 tool → commit → SSE → cancel/resume 的会话状态与执行循环；默认候选 provider 为 genai，兼容分支按 profile 单列。TS monolith 只作对照与未切面 caller；provider-only 服务不得承载 session/agent loop。
+**第一条闭环验收**：Rust host 拥有 HTTP/session → LLM 调用 → 本地 tool → commit → SSE → cancel/resume 的会话状态与执行循环；默认候选 provider 为 genai，Codex 通路按 §15.6 直连（未过 GP-4 则保留兼容边），兼容分支按 profile 单列。TS monolith 只作对照与未切面 caller；provider-only 服务不得承载 session/agent loop。
 
 退出：golden transcript + 崩溃注入/恢复对账 + 26/50/100 路 lag/step 门；同会话 24h/72h soak 无丢失、无单调增长；中断/恢复与 TS 逐条对账。
 
 ### W4：provider 扩面
 
-在 W3 已闭环的一家之外，扩到实际在用的 3–4 家（ali-inc / kimi / openai-codex / deepseek，按实际用量定名单）：复用协议与 cassette，冻结 header/body/error/retry/auth 的规范化契约。稳定字段做字节对账；流式按解析事件、内容、工具参数与终态保序对账，并用不同分块方式重放检验 parser，不能要求真实网络 chunk 边界逐字节相同。长尾暂经兼容边，范围按 §13 决定。
+在 W3 已闭环的一家之外，扩到实际在用的 3–4 家（内部中转 provider / kimi / openai-codex / deepseek，按实际用量定名单）：复用协议与 cassette，冻结 header/body/error/retry/auth 的规范化契约。稳定字段做字节对账；流式按解析事件、内容、工具参数与终态保序对账，并用不同分块方式重放检验 parser，不能要求真实网络 chunk 边界逐字节相同。长尾暂经兼容边，范围按 §13 决定。`openai-codex` 若 §15.6 直连复用未通过 GP-4，则保留 TS provider-only 兼容边，不计入本波必达；W4 不因 provider 名字推断 Codex WS/native tool_search/compaction 已覆盖。
 
 ### W5：plugin 生态硬化
 
@@ -221,32 +237,33 @@ T1 runtime/core/layout/launcher/IPC 安全基础
 ```
 
 要点：
-- A0 只做范围与最少决策，不写迁移源码；契约/fixture 可并行准备。
+- A0 是 parent 门，不是工作包：输出为 §9 manifest 的 scope/decisions 段与最少决策清单；WP-01 以其为输入。A0 只做范围与最少决策，不写迁移源码；契约/fixture 可并行准备。
 - G0 是硬门；W0 未过不得写生产迁移代码，但可写契约、fixture、harness。
 - T1 的 runtime foundation 是 W2/W3 的共同底座，优先于任何路由抢跑。
 - 并行 track 之间不共享 owned files；跨 track 收敛与集成设 barrier；箭头表示默认扩面/换权顺序，不禁止同波内设计、fixture、oracle 并行。
+- 五轨汇合是首条闭环的最小验收，不要求每条 track 全量完成；HTTP/UI 与控制面 primitive 只需闭环所需最小子集。
 - 首条闭环先窄后宽，不先接 96 个含 TS session 依赖的路由。
 
 ---
 
-## 8. 首批工作包（8–10 个，contract/oracle 优先）
+## 8. 首批工作包（10 个：WP-01..WP-10，contract/oracle 优先）
 
 业务域各自 owned paths；下列产物路径为建议，本轮不创建。parent 负责共享 contract/manifest 签定；库拓扑、共享 contracts、codegen、migrator 各设单一 owner；CI 集成 owner 独占 Cargo/lock/mod.rs/registry/schema/SDK-gen/CI。
 
 | ID | 范围 | owner | 依赖 | 产物（建议） | DoD |
 |---|---|---|---|---|---|
-| WP-01 | 范围/base 指纹、共享契约约定与 work manifest | parent | A0 | `specs/rust-host/` 内的 manifest 与分区表 | contract_rev/owner/具体 owned files 可追溯；派发前排除文件交集 |
-| WP-02 | W0 recorder/harness（tool result、DB、SSE、prompt 分段） | oracle owner | WP-01 | `test/oracle/transcript/` | 同输入 TS 双臂零 diff；两臂隔离目录/DB，完整记录可重放 |
-| WP-03 | W0 比较器、故障分类与统计门定义 | oracle owner | WP-02 | `test/oracle/faults/`、基线描述 | 注入丢失/乱序/重复/中断/部分写能被辨别；归一化不吞因果差异 |
-| WP-04 | live OpenAPI/inventory 冻结与 SDK 漂移验证 | HTTP contract owner | WP-01 | 完整 spec、170-op 清单与漂移用例 | 正式生成链可复验；116/54 覆盖差距逐项有归属；96 候选按真实依赖重新分诊 |
-| WP-05 | 库/表权威、schema/migrator、ACK/回退/保留契约 | storage owner | WP-01 | `specs/rust-host/` 内的权威矩阵 | 每表 owner/事务/恢复/换权明确；已应用迁移不改；跨库投影可恢复 |
-| WP-06 | graph 资产清点、core/NAPI 拆层设计与 parity fixture | graph owner | WP-01 | graph 契约与 fixture 分区 | kernel 复用边界、pattern/search/框架 fallback、UTF-8/UTF-16、daemon writer 归属明确；此包不实现生产 core |
-| WP-07 | runtime/router/boot-path-capability/launcher 与平台契约 | runtime owner | WP-01 | runtime/IPC/启动故障矩阵 | H1/H2 已有能力与未实现接线分开；关闭/重启、IPC trust、Windows、两变体安装都有验收向量；此包不实现生产 runtime |
-| WP-08 | 首个 provider profile 的协议/请求/流/auth fixture 与 genai 准入规格 | provider owner | WP-01、WP-02 | provider-host fixture 分区 | 明确 genai 可接管与需兼容的 profile；含 hosted tools/native tool_search、重试与刷新归属；对账保序；此包不实现生产 transport |
-| WP-09 | hook IPC/JS 兼容拓扑与调用轨迹 fixture | plugin owner | WP-01、WP-02 | plugin-host 契约与 fixture 分区 | config/bootstrap/tool.definition/chat/tool before-after/auth 的可变性、顺序、取消和失败策略明确；npm 单一 owner；此包不实现生产 sidecar |
-| WP-10 | 控制面、mutation/MCP/job-family/retention 行为 fixture | control-plane owner | WP-02 | `test/oracle/control/` | 343 语义点映射到 owner/已有或待补 oracle；新增能力与已知差异单列，不冒充旧行为 parity |
+| WP-01 | 范围/base 指纹、共享契约约定与 work manifest | parent | A0（parent 门） | `specs/rust-host/` 内的 manifest 与分区表 | manifest 含 `contract_rev/owner/owned_files/base_hash` 四字段且可机检；`owned_files` 两两交集为空才允许派发；分区表覆盖 WP-02..WP-10 |
+| WP-02 | W0 recorder/harness（tool result、DB、SSE、prompt 分段） | oracle owner | WP-01 | `test/oracle/transcript/` | 同输入 TS 双臂零 diff；两臂隔离目录/DB，完整记录可重放；确定性层与因果层各有 ≥1 组 golden + 1 组负例 |
+| WP-03 | W0 比较器、故障分类与统计门定义 | oracle owner | WP-02 | `test/oracle/faults/`、基线描述 | fault matrix 至少覆盖丢失/乱序/重复/中断/部分写/超时/取消/重放 8 类，每类有注入 fixture 与期望判定；比较器在故意注入下必须报错（meta-test）；统计层给出同环境重复基线与噪声带 |
+| WP-04 | live OpenAPI/inventory 冻结与 SDK 漂移验证 | HTTP contract owner | WP-01 | 完整 spec、170-op 清单与漂移用例 | 正式生成链可复验；116/54 覆盖差距逐项有 owner；96 候选按真实依赖重新分诊并产出 host-first/依赖 session 二分清单；SDK 重生成零 diff 或显式 approved_delta |
+| WP-05 | 库/表权威、schema/migrator、ACK/回退/保留契约 | storage owner | WP-01 | `specs/rust-host/` 内的权威矩阵 | 每表一行含 owner/migrator/reader/writer/可重建性/恢复/保留/换权协议 8 列；已应用迁移不改；跨库投影恢复演练 ≥1 次（kill -9 + 重启对账） |
+| WP-06 | graph 资产清点、core/NAPI 拆层设计与 parity fixture | graph owner | WP-01 | graph 契约与 fixture 分区 | extraction/store/resolution/query/traversal/pattern 六面各有 ≥1 组 golden + 1 组负例；52 个 NAPI 函数逐个映射到 core 入口或标注保留；UTF-8/UTF-16、pattern/search/框架 fallback、daemon writer 归属明确；此包不实现生产 core |
+| WP-07 | runtime/router/boot-path-capability/launcher 与平台契约 | runtime owner | WP-01 | runtime/IPC/启动故障矩阵 | H1/H2 能力表逐项标 已实现/未接线/未实现；关闭/重启、IPC trust、Windows、两变体安装各 ≥1 条可执行验收向量；此包不实现生产 runtime |
+| WP-08 | 首个 provider profile 的协议/请求/流/auth fixture 与 genai 准入规格 | provider owner | WP-01、WP-02 | provider-host fixture 分区、profile 准入表 | profile 表至少列 Chat/API-key、Responses/API-key、Responses/OAuth、WS、native tool_search、compaction 六项，每项标 genai 可接管/需兼容/未覆盖；含 hosted tools、重试与刷新归属；对账保序；WP-08 只出规格，GP-0 固化版本与实际路由并执行该规格；此包不实现生产 transport |
+| WP-09 | hook IPC/JS 兼容拓扑与调用轨迹 fixture | plugin owner | WP-01、WP-02 | plugin-host 契约与 fixture 分区 | config/bootstrap、tool.definition、chat.params/headers、tool.before/after、auth refresh 六类各列顺序、可变性、取消、失败策略；≥1 条完整轨迹 replay；npm 单一 owner；此包不实现生产 sidecar |
+| WP-10 | 控制面、mutation/MCP/job-family/retention 行为 fixture | control-plane owner | WP-02、WP-05、WP-09 | `test/oracle/control/` | 343/343 语义点每个有 owner + fixture（已有/待补/不适用），不允许空 owner；覆盖 config/bootstrap/skills/instructions/workbrief/goal/prompt assembly/tool_search/compaction/mutation 链/MCP 三 transport/job family/retention；新增能力与已知差异单列 |
 
-**依赖闭合**：以上是 W0 契约/fixture/harness 工作，不依赖“W0 已过”或其自身实现阶段。WP-02–WP-10 的适用出口与差异清单汇合为 G0。G0 通过后才开 T1 生产 runtime/core/launcher 实现；再拆 graph/data、provider、最小 hook sidecar、HTTP/UI、control-plane 实现包。W3 必须等数据/运行时、至少一条经 oracle 验收的 provider 通路、最小真实 hook sidecar 全部可用，不能仅凭契约完成进入闭环。Provider 采用 genai 与特殊兼容通路的边界见 §15。
+**依赖闭合**：以上是 W0 契约/fixture/harness 工作，不依赖“W0 已过”或其自身实现阶段。**WP-01–WP-10 的适用出口与差异清单汇合为 G0**（WP-01 的 manifest 是其余包的入口，不得被 G0 聚合遗漏）。G0 通过后才开 T1 生产 runtime/core/launcher 实现；再拆 graph/data、provider、最小 hook sidecar、HTTP/UI、control-plane 实现包。W3 必须同时满足：T1 与数据/运行时最小集可用、至少一条经 oracle 验收的 provider 通路、最小真实 hook sidecar（plugin-only）可用、W0 因果层/fault matrix 就绪；不能仅凭契约完成进入闭环。依赖图无环：A0 → WP-01；WP-01 → WP-02/WP-04/WP-05/WP-06/WP-07；WP-02 → WP-03/WP-08/WP-09；WP-02+WP-05+WP-09 → WP-10。Provider 采用 genai 与 Codex/特殊兼容通路的边界见 §15、§15.6。
 
 包纪律：每个包有独立 owned files、独立 build/test 命令、独立结果/checkpoint；不得共享编译输出或临时 DB；集成编译在单一 build root 由 CI owner 单写。
 
@@ -254,15 +271,16 @@ T1 runtime/core/layout/launcher/IPC 安全基础
 
 ## 9. 固定编排与 work manifest
 
-**work manifest 字段**：`work_id / scope / owned_files / base 与文件 hash / contract_rev / dependencies / role / model+variant / oracle_commands / status / attempt / result_refs / approved_delta`。
+**work manifest 字段**：`work_id / scope / owned_files / base 与文件 hash / contract_rev / dependencies / role / model+variant / oracle_commands / status / attempt / result_refs / approved_delta`。`model+variant` 由调度器或显式选择器填充；`orche.agent` 本身只接受 `model`，variant 自动补，不作为 manifest 可经 orche.agent 指定 variant 的依据。
 
 **状态机**：`queued → building → reviewed → verified → integrated`；异常显式标 `blocked / error`，不得静默跳过。
 
 **pipeline**：discover/design → scoped build → 独立 review → focused verify。只有跨项收敛/集成设 barrier；shared files 串行。
 
 **调度事实与纪律**：
-- orchestrate 真实 API 只有 `prompt/agent/model/label/schema`（`host-bindings.ts:66,226-232`）；`workload/variant` 尚未暴露。开工前补选择器透传，或改用已有 task/swarm 保证调度纪律；不编造这些已支持。
-- 16 并发 / 64 默认总派发 / 256 总上限 / 128 pending-call 预算；256 不等于可一次 `parallel` 256 个绑定调用，程序须分块或限制在飞请求。runtime 全局池与后台项目池另有作用域。累计派发可过百，但按文件分区、多批滚动，不擅自提高 caps。
+- orchestrate 真实 API：`orche.agent` 只接受 `prompt/agent/model/label/schema`（`host-bindings.ts:84,114-116`）；`workload/variant` 未暴露，传入未知字段直接抛错。`orche.batch` 存在（`:461`），只接受 `items/from/preset/concurrency/scope`，不接受 `agent/model/workload/variant`，子代理由 preset 推断。
+- `variant` 由 dispatch 自动补：显式 `model` 未给 variant 时取最高非 ultra（`subagent-execution.ts:114-124`）；省略 `model` 时走 agent 配置/父模型回退，不保证补 variant。计划不得承诺 per-agent variant 选择；需要固定 variant 时改用 task/swarm 的显式选择器，不编造 orchestrate 已支持。
+- 16 并发 / 64 默认总派发 / 256 硬上限（`orchestrate.ts:20-22,212,290-293`）；256 不等于可一次 `parallel` 256 个绑定调用，程序须分块或限制在飞请求。runtime 全局并发池默认 128（`delegation.max_concurrent`），与单程序 caps 作用域不同。累计派发可过百，但按文件分区、多批滚动，不擅自提高 caps。
 - 大规模 family 还须验证活跃性/取消/交付边界：当前 `packages/chimera/src/session/activity.ts:49-70` 的 family 遍历最多 256 成员。WP-10 记录该边界，规模扩展的 oracle 必须检验超边界 family 的 quiescence/取消/claim 释放，不能把每次调用的总派发上限当作产品级可扩展性证明。
 - 长战役不随手给任意总 deadline；`timeoutMs` 省略才无限，0/负数会变 1ms。单子失败返回 null，infra 错误 reject；worker/program 没有 durable resume。
 - 本轮记录：0-agent 与 1-agent canary 均成功；首轮显式 `1800000ms` 总期限触发超时且无聚合（耗时来源未定），随后分组 24 轴报告全收齐。不据此说工具不可用，也不声称默认 30min 上限。
@@ -299,7 +317,7 @@ T1 runtime/core/layout/launcher/IPC 安全基础
 - 显式 ctx 传参替代 AsyncLocalStorage（EffectBridge/InstanceState.bind 双轨桥迁完即删，净简化）。
 - 租约/孤儿恢复：租约到期、取消 cascade、family quiescence、pending delivery 的 generation 语义须逐项 oracle。
 
-完整语义清单（343 点、file:line 级）：`~/.local/share/chimera/tool-output/tool_1817c7215001Jj52Lh6h4U02cg`；版本化语义映射由 WP-10 汇总，WP-02/WP-03 提供记录与比较框架。
+完整语义清单（343 点、file:line 级）本轮存于本机 tool-output 归档（索引见 `memory.md` 2026-10-28/29 条目），不作为版本化权威；WP-10 将其固化为版本化“语义点→owner→fixture”映射，WP-02/WP-03 提供记录与比较框架。
 
 ---
 
@@ -315,6 +333,7 @@ T1 runtime/core/layout/launcher/IPC 安全基础
 | 子代理能力 | flash 路线大 schema 结构化输出不稳；扇出不自动提升质量 | 文本 JSON 回传；翻译起草用扇出、语义收敛靠 parent |
 | host 自身无界增长 | JSC 棘轮换成 Rust cache 无界 | 所有 cache/队列/连接字节或条目上限；soak 门禁 |
 | provider 行为漂移 | 重试/流式/错误体差异 | 先一家闭环再扩大；长尾保留兼容边 |
+| Codex crate 复用越界/许可 | codex-api 为 workspace 内部 crate、非发布依赖；误引入 codex-core 或漏带 NOTICE | vendoring/git pin + 依赖闭包锁定；只复用 wire 层；LICENSE/NOTICE 进分发；GP-4 门 |
 | 发布滞后 | host 不可安装/CI 不 gate，用户无法启用 | 发布门禁前移；两变体 npm 验收 |
 | 编排不可恢复 | 无 durable resume；重启重复副作用 | 外置 checkpoint；按 work_id+attempt 重跑；幂等边界显式 |
 | 上游同步断裂 | fork 长期分叉 | 迁移批次小而可回退；分界面对上游 TS 层透明 |
@@ -337,6 +356,7 @@ T1 runtime/core/layout/launcher/IPC 安全基础
 - D5 发布门禁时点：首个用户可启用 host 能力的版本即启用 npm 两变体 + CI hard gate。
 - D6 性能阈值由开工时同环境重复基线签定，不预先写死。
 - D7 共享 contract/CI 集成 owner 与业务域 owner 的边界（parent 签定）。
+- D8 Codex 特殊通路：直接复用 codex-rs wire crates（`codex-api`）而非逐行翻译 TS；依赖 vendoring/git pin、Apache-2.0 LICENSE+NOTICE 保留与上游同步策略（详见 §15.6）。
 
 **已拍板（2026-10-28/29 会话，记录在此）**：
 - session 与图审计证据保留期均 30 天；
@@ -355,13 +375,14 @@ T1 runtime/core/layout/launcher/IPC 安全基础
 | RUST_HOST H3（Bun session worker 化） | **删除**，由 W3（Rust 会话运行时）取代 |
 | RUST_HOST H4–H6 | 并入 W4–W6 |
 | 并发调查「阶段 2」（codex 式数据面 TS 版） | 取消 TS 版落地，四原则在 W3 的 Rust 会话运行时原生实现 |
+| codex 对照（fork 版 codex-rs） | 数据面四原则并入 W3；Codex 协议/传输按 §15.6 直接复用 wire crates，不引入 codex-core |
 | patch2 止血包（2026-10-29 已构建安装） | 已落地；其压测 harness 为基线之一，需按 §1 扩充后才作全计划裁判 |
 
 ---
 
-## 15. Provider 选型追补：genai 0.7.2（2026-10-29 研究，候选未上线）
+## 15. Provider 选型追补：genai 0.7.2 与 Codex crates（2026-10-29/30 研究，候选未上线）
 
-**建议**：优先采用 genai + Chimera 薄 provider adapter；agent/tool 执行循环仍由 Rust host 自有。不先重写全量 `ai-provider-rs`，也不把保留 TS provider 等同于保留 Bun session worker。若有通用扩展价值，待 adapter 的真实使用边界与 oracle 稳定后再评估独立公开库；本轮未建库或发布。
+**建议**：优先采用 genai + Chimera 薄 provider adapter；agent/tool 执行循环仍由 Rust host 自有。不先重写全量 `ai-provider-rs`，也不把保留 TS provider 等同于保留 Bun session worker。Codex 特殊通路另按 §15.6 直连 codex-rs wire crates；两条路径共用同一 LLMEvent/oracle 边界。若有通用扩展价值，待 adapter 的真实使用边界与 oracle 稳定后再评估独立公开库；本轮未建库或发布。
 
 ### 15.1 固定版本与职责
 
@@ -377,8 +398,8 @@ T1 runtime/core/layout/launcher/IPC 安全基础
 | 标准 API-key Chat、Anthropic/Gemini 等内置协议 | 适合作首批候选；自定义网关用显式 ModelSpec/ServiceTarget 与逐请求 headers/options，避免依赖名字嗅探或修改进程 env。每个实际路由仍需 fixture 准入。 |
 | API-key OpenAI Responses | 已有专用 adapter：instructions、store/previous_response_id、response_id、工具、reasoning/usage；与 Chat 独立对账。加密 reasoning 已有捕获/回放支持，但 metadata/终态/续接 fidelity 必须验收。 |
 | 函数工具与流式 tool-call | 支持多调用入队；capture_tool_calls=true 时 OpenAI chunk 是累计快照，不可再当 delta 拼接。ToolResponse.content 为 String，JSON 结果需规范化序列化，媒体/复合工具结果须单列适配或兼容。 |
-| Codex OAuth HTTP | endpoint/token/headers 可由 caller 配置；账号头、刷新并发、body、历史和加密数据等价性未验证，不能由 API-key Responses 成功推断。 |
-| Codex WebSocket、native tool_search、remote compaction、其他 hosted tool 事件 | 尚无完整原生契约覆盖；保留专用 route/transport 或经 oracle 验收的 TS provider-only 兼容执行体。按能力分流，不把失败半回合盲目重跑成另一后端。 |
+| Codex OAuth HTTP | endpoint/token/headers 可由 caller 配置；账号头、刷新并发、body、历史和加密数据等价性未验证，不能由 API-key Responses 成功推断。直连复用评估见 §15.6。 |
+| Codex WebSocket、native tool_search、remote compaction、其他 hosted tool 事件 | 尚无完整原生契约覆盖；保留专用 route/transport 或经 oracle 验收的 TS provider-only 兼容执行体。按能力分流，不把失败半回合盲目重跑成另一后端。`codex-api` 提供 WS client，但 compaction/tool_search 循环不在其内；见 §15.6。 |
 | raw_frame_sink | 能观测规范化层之外的帧，但不是可插拔完整协议实现。同步 sink 不可阻塞；CollectorSink 无界、ChannelSink 满队列可丢帧，均不能直接作为可靠执行/恢复通道；终端 hook 也不是 cleanup 保证。 |
 
 ### 15.3 Adapter 的硬约束
@@ -392,13 +413,13 @@ T1 runtime/core/layout/launcher/IPC 安全基础
 
 | 包 | 依赖 / owned scope | 出口 |
 |---|---|---|
-| GP-0 profile 与 oracle | WP-08；provider fixture/能力表 | 固定版本、实际路由/model/auth/options、受支持与兼容清单；复用 packages/llm 的 recorded-golden/recorded-scenarios，不以真实重复副作用测 parity。 |
+| GP-0 profile 与 oracle | WP-08 的 profile 准入表；provider fixture/能力表 | 固化版本、实际路由/model/auth/options、受支持与兼容清单；WP-08 只出规格，GP-0 执行并回填结果；复用 packages/llm 的 recorded-golden/recorded-scenarios，不以真实重复副作用测 parity。 |
 | GP-1 隔离 SDK adapter/harness | GP-0 + 测试契约；独立 provider 评估目录，不依赖 T1、不接生产 host | 单请求→流式工具调用→由测试 caller 执行工具→结果回放→下一轮响应；SDK 不自行循环。正常终态与 tool call_id 对齐；可作为 W0 选型验证工装先做。 |
 | GP-2 协议与故障对账 | GP-1；provider replay 测试 | 多工具同帧、碎片/累计参数、reasoning/text 混合、usage 尾帧、invalid JSON、EOF/取消/超时/429、结构化与媒体输出；无误执行、无重复终态。Responses 与 signed/encrypted replay 独立验收。 |
 | GP-3 并发与资源 | GP-1；独立 provider bench | 1/26/50/100 并发，同 cassette 发帧节奏；小/大 prompt 与大工具参数、不同 chunk 大小、慢消费者/drop。比较 TS provider 与 Rust genai adapter 的准备/首帧/交付延迟、CPU、峰值/回落 RSS、fd/连接、队列与错误率；阈值由同环境基线签定。 |
-| GP-4 特殊通路、生产准入与分发 | GP-2/GP-3；生产注入另依赖 G0 + T1，Codex 专用实现与平台 CI 独立分区 | WS/native tool_search/remote compaction/OAuth 矩阵；未通过项保留明确兼容分支。SDK 可在隔离 harness 先评估，生产 host 不绕 W0 门。检查 reqwest/TLS/system-proxy/crypto features、实际 MSRV 与原平台构建矩阵，不以 edition 或库名称代替验证。 |
+| GP-4 特殊通路、生产准入与分发 | GP-2/GP-3；生产注入另依赖 G0 + T1，Codex 专用实现与平台 CI 独立分区 | WS/native tool_search/remote compaction/OAuth 矩阵；Codex 直连按 §15.6 验证 codex-api HTTP/WS/auth，compaction/native tool_search 仍归 Chimera；未通过项保留明确兼容分支。SDK 可在隔离 harness 先评估，生产 host 不绕 W0 门。检查 reqwest/TLS/system-proxy/crypto features、实际 MSRV 与原平台构建矩阵，不以 edition 或库名称代替验证。 |
 
-本轮仅完成 4 轴静态研究与关键发布源码复核，未编译、未跑上述 PoC/性能测试、未调用真实 provider；采用与 fork/公开库立项仍须依据准入结果决定。
+本轮仅完成 genai 4 轴静态研究、关键发布源码复核与 codex-rs wire 层调研；未编译、未跑上述 PoC/性能测试、未调用真实 provider、未集成 codex crates。采用与 fork/公开库立项仍须依据准入结果决定。
 
 ### 15.5 固定版本证据
 
@@ -407,6 +428,45 @@ T1 runtime/core/layout/launcher/IPC 安全基础
 - [Responses 输出规范化范围](https://docs.rs/genai/0.7.2/src/genai/adapter/adapters/openai_resp/resp_types/resp_output_helper.rs.html)（105–122）
 - [Raw frame sink 的顺序、终端与队列契约](https://docs.rs/genai/0.7.2/src/genai/chat/frame_sink.rs.html)（150–179、216–294）
 - 本仓 oracle：`packages/llm/test/recorded-golden.ts:58-93`、`recorded-scenarios.ts:91-121,206-213,275-284`。
+
+### 15.6 Codex 特殊通路：直接复用 Rust crates（2026-10-30 调研，建议）
+
+**结论（建议，待 §13 D8 拍板）**：Codex 通路不再以逐行翻译 `packages/chimera/src/session/codex-responses.ts` + `src/plugin/codex.ts` 为主方案，改为直接复用本地 codex-rs 的 wire 层 crates。核查基线：本地 codex checkout HEAD `95273b84`（只读证据，本轮不修改、不读取 auth 配置、不打印 codex 后端地址）。
+
+| 层 | 归属 | 说明 |
+|---|---|---|
+| 协议/传输 | codex-rs `codex-api` | 公开 `ResponsesClient`（HTTP）、`ResponsesWebsocketClient`（WS）、异步 `AuthProvider`；类型化 `stream_request` + `stream(Value)` 原始体逃生口 |
+| 认证 | Chimera 实现 `AuthProvider` | 刷新/去重/持久化仍归 Chimera 自有存储；不接管 Codex `AuthManager` 的存储层 |
+| agent loop / 权限 / 工具执行 | Chimera Rust host | `codex-api` 是 wire 层，不含 loop/permissions/approval/audit；明确不引入 `codex-core` |
+| 存储 / 图审计 / 会话状态 | Chimera | 不随 crates 迁移 |
+| compaction | Chimera 自有 | `codex-api` 不含 compaction；只复用 wire 格式，端点与逻辑仍归 Chimera |
+| native tool_search | Chimera 自有循环 | 只复用 `tool_search_call`/`tool_search_output`/`defer_loading` 的 wire 格式；client-execution 循环与 revealed tool 注入归 Chimera |
+| 请求/事件模型 | Chimera adapter | `ResponsesApiRequest` 无 `instructions/temperature/top_p/max_output_tokens` 且 `parallel_tool_calls` 必填；需 fork/扩展或 HTTP 走 raw body、WS 走自定义请求；`ResponseEvent`/`ResponseItem` ↔ `LLMEvent` 需显式 adapter |
+
+**硬约束**：
+- 依赖形态：`codex-api` 是 workspace 内部 crate（`0.0.0`、path-only deps、未发布 crates.io），必须 vendoring 或 git pin，并锁定其依赖闭包（`codex-client`/`codex-protocol`/`codex-tools` 等）；建立对 codex HEAD 的上游同步策略。
+- 许可：Apache-2.0；分发必须保留 `LICENSE` 与 `NOTICE`（含 Ratatui MIT 声明）。
+- 边界：只复用 wire 层；不把 `codex-core` 的 session/world-state/hooks 拉进来。compaction 若需复用 codex-core 实现，视为越界，须单独立项。
+- 认证：`AuthProvider` 的异步路径用于 HTTP；WS 建连当前只走同步 `add_auth_headers`，若需 WS 异步刷新，须在 Chimera 侧先刷新或向上游提交补丁。
+- cassette：现有 recorded-golden 绑定 Chimera LLM client 的 wire shape；Rust 通路必须位于同一 client 边界之后，或重录/翻译 cassette，否则不能复用现有 oracle 断言。
+- 安全：codex checkout 只读；不打印 codex 后端地址，不读取任何 auth 配置。
+
+**验收**：GP-0/GP-1 先以隔离 harness 验证 `codex-api` 的 HTTP/WS 请求、事件映射与 auth 注入；GP-4 再评估生产准入。未通过项保留 TS provider-only 兼容执行体，不阻塞其他 provider 的 W3 闭环。
+
+---
+
+## 16. 下一轮第一批开工包（按序，不跳门）
+
+| 序 | 包 | 前置 | 出口（可机检） |
+|---|---|---|---|
+| 1 | WP-01 契约/manifest 冻结 | A0（parent 范围与最少决策） | manifest 四字段齐全；`owned_files` 交集为空；`contract_rev` 锁定；WP-02..WP-10 均有 owner/产物/DoD |
+| 2 | W0 oracle fixture 四层 | WP-01；WP-02/WP-03 先行 | 确定性/因果/fault matrix/统计四层各有 fixture 与判定；故意注入必报错；TS 双臂零 diff |
+| 3 | GP-0/GP-1 隔离 genai 验证 | WP-08 的 profile 准入规格；不依赖 T1 | 固定 `=0.7.2`；单请求→流式工具调用→caller 执行→结果回放→下一轮；SDK 不自行循环；Codex 直连按 §15.6 同批评估 |
+| 4 | T1 Rust 基础 | **G0 通过**（WP-01–WP-10 出口 + W0 oracle） | runtime/core/layout/launcher/IPC 安全基础可构建；不含业务迁移 |
+
+**硬门**：W0 oracle 未通过前，不写任何生产迁移代码；只允许写契约、fixture、harness、隔离 PoC。W3 首条闭环还额外要求：至少一条经 oracle 验收的 LLM 通路（genai 或 Codex 直连）+ 最小真实 hook sidecar（plugin-only，不承载 session/agent loop）+ W0 因果层/fault matrix 就绪 + T1 与数据/运行时最小集可用。
+
+**并行边界**：WP-02..WP-10 可在 WP-01 后并行起草，但共享 contract/CI 集成单写者；GP-0/GP-1 在独立目录，不接生产 host；首批不接 W2 的 96 条会话依赖路由。
 
 ---
 
@@ -421,8 +481,8 @@ T1 runtime/core/layout/launcher/IPC 安全基础
 
 ## 附录 B：证据索引
 
-- 主线程采样 ×2 + lsof + pragma 实测：`/var/folders/dt/wxzvy2252txfv2mrcbpxsh3h0000gn/T/chimera/perf-2026-10-28/`；
-- 探查报告 10 份 + 二轮 3 份 + W-E 1 份：`~/.local/share/chimera/tool-output/`（索引见 `memory.md` 2026-10-28/29 条目）；
+- 主线程采样 ×2 + lsof + pragma 实测：本机临时目录 `perf-2026-10-28/`；
+- 探查报告 10 份 + 二轮 3 份 + W-E 1 份：本机 tool-output 归档（索引见 `memory.md` 2026-10-28/29 条目）；
 - 体积 dbstat 实测、读写三桶清单、codex 对照表：同上报各件；
-- 压测基线：`/Volumes/workspace/cbench/concurrency/concurrency-smoke-20261028-180545.json`（patch2 前：1 路 lag p50 0.72ms → 100 路 90ms；单路吞吐 695.7 → 9.4 steps/s）；
-- 本轮 24 轴核查与 3 组跨轴 review：parent 会话记录（未落盘为独立文档）。
+- 压测基线：`cbench` 仓 `concurrency/concurrency-smoke-20261028-180545.json`（patch2 前：1 路 lag p50 0.72ms → 100 路 90ms；单路吞吐 695.7 → 9.4 steps/s）；
+- 本轮 24 轴核查与 3 组跨轴 review：结论已回写 §1 与“当前进展摘要”，parent 会话记录保留（未另落独立文档）。
