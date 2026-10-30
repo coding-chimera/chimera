@@ -1,0 +1,88 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "id": "pattern/golden/utf16-astral",
+  "face": "pattern",
+  "kind": "golden",
+  "title": "Astral character: pattern ranges are UTF-16 code units, not UTF-8 bytes",
+  "description": "The same call pattern over a source containing an emoji pins the offset contract. UTF-16 range is [10,22); the equivalent UTF-8 byte range is [10,24). An implementation returning byte offsets must fail this fixture.",
+  "input": {
+    "language": "typescript",
+    "grammar_loaded": true,
+    "source": "const x = foo(\"😀\", 2);\n",
+    "pattern": "foo($$$ARGS)",
+    "template": "bar($$$ARGS)"
+  },
+  "expect": {
+    "status": "ok",
+    "match": "exact_after_canonicalization",
+    "canonicalization": "matches_order_is_result_array_order; captures_object_keyed_by_metavar",
+    "offset_contract": {
+      "range_units": "utf16_code_units",
+      "utf8_byte_range": [10, 24],
+      "note": "The emoji is one code point, two UTF-16 code units, four UTF-8 bytes. The fixture pins the UTF-16 range; the UTF-8 range is recorded only as a counter-example."
+    },
+    "compile": {
+      "ok": true,
+      "rootKindType": "call_expression"
+    },
+    "matches": [
+      {
+        "range": {
+          "start": 10,
+          "end": 22
+        },
+        "replacedRange": {
+          "start": 10,
+          "end": 22
+        },
+        "captures": {
+          "ARGS": {
+            "multi": true,
+            "text": "\"😀\", 2",
+            "sourceIndent": 0,
+            "nodes": [
+              {
+                "start": 14,
+                "end": 18,
+                "text": "\"😀\""
+              },
+              {
+                "start": 18,
+                "end": 19,
+                "text": ","
+              },
+              {
+                "start": 20,
+                "end": 21,
+                "text": "2"
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "replacement": "bar(\"😀\", 2)",
+    "edit": {
+      "start": 10,
+      "end": 22,
+      "replacement": "bar(\"😀\", 2)"
+    },
+    "output": "const x = bar(\"😀\", 2);\n",
+    "must_not": [
+      "return range [10,24] (UTF-8 byte offsets)",
+      "return capture node range [14,20] for the emoji string",
+      "corrupt the emoji in the replacement output"
+    ]
+  },
+  "provenance": {
+    "evidence": [
+      "packages/chimera/src/graph/pattern/index.ts:29-37",
+      "packages/chimera/src/graph/pattern/pattern.ts:12-16",
+      "packages/chimera/src/graph/pattern/replacer.ts:25"
+    ],
+    "derivation": "Executed ensureGrammarLoaded('typescript') + compilePattern/findMatches/renderTemplateReplacement/applyReplacements on 2026-10-30; UTF-8 range computed from the same source.",
+    "executed": true,
+    "engine": "TS pattern port over web-tree-sitter WASM"
+  }
+}

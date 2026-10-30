@@ -1,0 +1,114 @@
+{
+  "schema": "chimera.runtime.oracle.v1",
+  "contract_rev": "cr-2026-10-30-r1",
+  "work_id": "WP-07",
+  "area": "ipc-trust",
+  "owner": "runtime owner",
+  "generated_at": "2026-10-30",
+  "notes": "静态向量；本轮不执行。IPC trust 的当前边界是目录/文件权限 + nonce；peer credentials 与 Rust 握手读超时仍是缺口。",
+  "vectors": [
+    {
+      "id": "RT-IPC-001",
+      "title": "host 创建的 IPC 目录为 0700、socket 为 0600",
+      "class": "current-state",
+      "platform": ["darwin", "linux"],
+      "workdir": "repo-root",
+      "requires": ["built chimera-host binary", "bash", "mktemp", "stat"],
+      "command": "set -euo pipefail\nroot=\"$(mktemp -d)\"\nhost_bin=\"${HOST_BIN:-chimera-host/target/debug/chimera-host}\"\ntest -x \"$host_bin\"\n\"$host_bin\" \"$root\" >\"$root/out\" 2>\"$root/err\" &\npid=$!\ntrap 'kill -TERM \"$pid\" 2>/dev/null || true; wait \"$pid\" 2>/dev/null || true; rm -rf \"$root\"' EXIT\nfor i in $(seq 1 50); do [ -S \"$root/host/ipc/host.sock\" ] && break; sleep 0.1; done\ncase \"$(uname -s)\" in\n  Darwin) dir_mode=\"$(stat -f '%Lp' \"$root/host/ipc\")\"; sock_mode=\"$(stat -f '%Lp' \"$root/host/ipc/host.sock\")\" ;;\n  *) dir_mode=\"$(stat -c '%a' \"$root/host/ipc\")\"; sock_mode=\"$(stat -c '%a' \"$root/host/ipc/host.sock\")\" ;;\nesac\nprintf 'dir=%s sock=%s\\n' \"$dir_mode\" \"$sock_mode\"",
+      "pass_condition": {
+        "exit_code": 0,
+        "stdout_contains": ["dir=700 sock=600"]
+      },
+      "expected_today": "pass",
+      "blocked_by": null,
+      "evidence": [
+        "chimera-host/src/host.rs:418-422",
+        "chimera-host/src/host.rs:500-526",
+        "chimera-host/src/host.rs:993-1090"
+      ],
+      "cleanup": "trap 终止 host 并删除临时目录"
+    },
+    {
+      "id": "RT-IPC-002",
+      "title": "nonce 不匹配返回 unauthorized",
+      "class": "current-state",
+      "platform": ["darwin", "linux"],
+      "workdir": "repo-root",
+      "requires": ["Rust toolchain", "cargo"],
+      "command": "cargo test --manifest-path chimera-host/Cargo.toml handshake::tests::nonce_mismatch_is_unauthorized",
+      "pass_condition": {
+        "exit_code": 0,
+        "stdout_contains": ["test result: ok"]
+      },
+      "expected_today": "pass",
+      "blocked_by": null,
+      "evidence": [
+        "chimera-host/src/handshake.rs:274,285,436-441",
+        "chimera-host/src/handshake.rs:855-866"
+      ],
+      "cleanup": "cargo 产物保留在 chimera-host/target；不写用户 home"
+    },
+    {
+      "id": "RT-IPC-003",
+      "title": "不同 uid 的连接被 peer credentials 拒绝为 unauthorized",
+      "class": "target-acceptance",
+      "platform": ["darwin", "linux"],
+      "workdir": "repo-root",
+      "requires": ["Rust toolchain", "cargo"],
+      "command": "set -euo pipefail\ntest_name=\"peer_uid_mismatch_is_unauthorized\"\nlist=\"$(cargo test --manifest-path chimera-host/Cargo.toml -- --list 2>&1)\"\nprintf '%s\\n' \"$list\" | grep -E \"${test_name}: test$\"\nout=\"$(cargo test --manifest-path chimera-host/Cargo.toml \"$test_name\" 2>&1)\" || { printf '%s\\n' \"$out\"; exit 1; }\nprintf '%s\\n' \"$out\"\npassed=\"$(printf '%s\\n' \"$out\" | sed -n 's/^test result: ok\\. \\([0-9][0-9]*\\) passed;.*/\\1/p' | awk '{s += $1} END {print s + 0}')\"\nprintf 'test_exists=yes passed=%s\\n' \"$passed\"\ntest \"$passed\" -eq 1",
+      "pass_condition": {
+        "exit_code": 0,
+        "stdout_contains": ["test_exists=yes passed=1"]
+      },
+      "expected_today": "fail",
+      "blocked_by": "G3",
+      "evidence": [
+        "packages/chimera/specs/rust-host/ipc-v0.md:128-136",
+        "packages/chimera/specs/rust-host/h2-data-plane.md:650"
+      ],
+      "cleanup": "无",
+      "notes": "目标测试名固定为 peer_uid_mismatch_is_unauthorized；命令先用 cargo test -- --list 确认存在，再要求筛选结果总计恰好 1 passed；当前测试不存在，因此判 fail。"
+    },
+    {
+      "id": "RT-IPC-004",
+      "title": "host 源码不包含 TCP listener/stream",
+      "class": "current-state",
+      "platform": ["darwin", "linux"],
+      "workdir": "repo-root",
+      "requires": ["rg"],
+      "command": "if rg -n \"TcpListener|TcpStream\" chimera-host/src >/dev/null; then echo \"tcp found\"; exit 1; fi\necho \"no tcp listener\"",
+      "pass_condition": {
+        "exit_code": 0,
+        "stdout_contains": ["no tcp listener"]
+      },
+      "expected_today": "pass",
+      "blocked_by": null,
+      "evidence": [
+        "chimera-host/src/host.rs:29-30",
+        "packages/chimera/specs/rust-host/ipc-v0.md:128-136"
+      ],
+      "cleanup": "无"
+    },
+    {
+      "id": "RT-IPC-005",
+      "title": "握手读超时返回 handshake_timeout",
+      "class": "target-acceptance",
+      "platform": ["darwin", "linux"],
+      "workdir": "repo-root",
+      "requires": ["Rust toolchain", "cargo"],
+      "command": "set -euo pipefail\ntest_name=\"handshake_timeout\"\nlist=\"$(cargo test --manifest-path chimera-host/Cargo.toml -- --list 2>&1)\"\nprintf '%s\\n' \"$list\" | grep -E \"${test_name}: test$\"\nout=\"$(cargo test --manifest-path chimera-host/Cargo.toml \"$test_name\" 2>&1)\" || { printf '%s\\n' \"$out\"; exit 1; }\nprintf '%s\\n' \"$out\"\npassed=\"$(printf '%s\\n' \"$out\" | sed -n 's/^test result: ok\\. \\([0-9][0-9]*\\) passed;.*/\\1/p' | awk '{s += $1} END {print s + 0}')\"\nprintf 'test_exists=yes passed=%s\\n' \"$passed\"\ntest \"$passed\" -eq 1",
+      "pass_condition": {
+        "exit_code": 0,
+        "stdout_contains": ["test_exists=yes passed=1"]
+      },
+      "expected_today": "fail",
+      "blocked_by": "G2",
+      "evidence": [
+        "packages/chimera/specs/rust-host/ipc-v0.md:138-150",
+        "packages/chimera/specs/rust-host/h2-data-plane.md:648"
+      ],
+      "cleanup": "无",
+      "notes": "当前 Rust run_handshake 没有读超时；目标测试名固定为 handshake_timeout，命令先用 cargo test -- --list 确认存在，再要求总计恰好 1 passed。"
+    }
+  ]
+}

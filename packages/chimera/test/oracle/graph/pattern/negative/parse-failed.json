@@ -1,0 +1,45 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "id": "pattern/negative/parse-failed",
+  "face": "pattern",
+  "kind": "negative",
+  "title": "A malformed pattern fails compilation with parse-failed, not empty matches",
+  "description": "With the TypeScript grammar loaded, compilePattern('function (') must return ok:false/parse-failed. The negative assertion forbids treating the compile failure as 'no matches' or returning a partial pattern.",
+  "input": {
+    "language": "typescript",
+    "grammar_loaded": true,
+    "source": "const x = foo(1, 2);\n",
+    "pattern": "function (",
+    "template": "bar($$$ARGS)"
+  },
+  "expect": {
+    "status": "error",
+    "match": "error",
+    "error": {
+      "code": "parse-failed",
+      "message_contains": "Fails to parse the pattern query"
+    },
+    "compile": {
+      "ok": false,
+      "error": {
+        "kind": "parse-failed",
+        "message": "Fails to parse the pattern query: `function (`"
+      }
+    },
+    "must_not": [
+      "return ok:true with a partial pattern",
+      "return zero matches as a successful result",
+      "fall back to a substring/regex match"
+    ]
+  },
+  "provenance": {
+    "evidence": [
+      "packages/chimera/src/graph/pattern/pattern.ts:279-288,237-260",
+      "packages/chimera/src/graph/pattern/index.ts:43-48"
+    ],
+    "derivation": "Executed ensureGrammarLoaded('typescript') + compilePattern('function (', 'typescript') on 2026-10-30.",
+    "executed": true,
+    "engine": "TS pattern port over web-tree-sitter WASM"
+  }
+}

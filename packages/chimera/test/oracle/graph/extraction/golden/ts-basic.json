@@ -1,0 +1,130 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "id": "extraction/golden/ts-basic",
+  "face": "extraction",
+  "kind": "golden",
+  "title": "TypeScript file/import/function/statement nodes, contains edges, and refs",
+  "description": "Pins the current TS extractor shape for one file with an import, an exported function, and a call. IDs are symbolic; the harness canonicalizes hashed IDs by (kind,name,startLine,startColumn) before comparison.",
+  "input": {
+    "file_path": "src/sample.ts",
+    "language": "typescript",
+    "extraction_semantics_version": 10,
+    "source": "import { helper } from './helper';\n\nexport function add(a: number, b: number): number {\n  return helper(a) + b;\n}\n"
+  },
+  "expect": {
+    "status": "ok",
+    "match": "exact_after_canonicalization",
+    "canonicalization": "ids_symbolic; nodes_sorted_by(kind,name,startLine,startColumn); edges_sorted_by(source,target,kind,line,column); refs_sorted_by(from,referenceName,referenceKind,line,column)",
+    "nodes": [
+      {
+        "ref": "n_file",
+        "kind": "file",
+        "name": "sample.ts",
+        "qualifiedName": "src/sample.ts",
+        "startLine": 1,
+        "startColumn": 0,
+        "endLine": 6,
+        "endColumn": 0,
+        "isExported": false
+      },
+      {
+        "ref": "n_import",
+        "kind": "import",
+        "name": "./helper",
+        "qualifiedName": "./helper",
+        "startLine": 1,
+        "startColumn": 0,
+        "endLine": 1,
+        "endColumn": 34
+      },
+      {
+        "ref": "n_add",
+        "kind": "function",
+        "name": "add",
+        "qualifiedName": "add",
+        "startLine": 3,
+        "startColumn": 7,
+        "endLine": 5,
+        "endColumn": 1,
+        "isExported": true
+      },
+      {
+        "ref": "n_stmt",
+        "kind": "statement",
+        "name": "stmt@4:2",
+        "qualifiedName": "add::stmt@4:2",
+        "startLine": 4,
+        "startColumn": 2,
+        "endLine": 4,
+        "endColumn": 23
+      }
+    ],
+    "edges": [
+      {
+        "source": "n_file",
+        "target": "n_import",
+        "kind": "contains"
+      },
+      {
+        "source": "n_file",
+        "target": "n_add",
+        "kind": "contains"
+      },
+      {
+        "source": "n_add",
+        "target": "n_stmt",
+        "kind": "contains"
+      }
+    ],
+    "refs": [
+      {
+        "from": "n_file",
+        "referenceName": "./helper",
+        "referenceKind": "imports",
+        "line": 1,
+        "column": 0,
+        "filePath": "src/sample.ts",
+        "language": "typescript"
+      },
+      {
+        "from": "n_file",
+        "referenceName": "helper",
+        "referenceKind": "imports",
+        "line": 1,
+        "column": 9,
+        "filePath": "src/sample.ts",
+        "language": "typescript"
+      },
+      {
+        "from": "n_stmt",
+        "referenceName": "helper",
+        "referenceKind": "calls",
+        "line": 4,
+        "column": 9,
+        "filePath": "src/sample.ts",
+        "language": "typescript"
+      },
+      {
+        "from": "n_add",
+        "referenceName": "helper",
+        "referenceKind": "calls",
+        "line": 4,
+        "column": 9,
+        "filePath": "src/sample.ts",
+        "language": "typescript"
+      }
+    ],
+    "notes": "The duplicate helper calls ref (from the statement node and from the function node) is current extractor behavior and must be preserved, not deduped."
+  },
+  "provenance": {
+    "evidence": [
+      "packages/chimera/src/graph/extraction/tree-sitter.ts:734",
+      "packages/chimera/src/graph/extraction/tree-sitter.ts:788-810",
+      "packages/chimera/src/graph/extraction/tree-sitter-helpers.ts:34-49"
+    ],
+    "derivation": "Executed extractFromSource('src/sample.ts', source) against the current TS wasm arm on 2026-10-30; hashed IDs replaced by symbolic refs.",
+    "executed": true,
+    "engine": "TS wasm arm (extractFromSource)"
+  }
+}

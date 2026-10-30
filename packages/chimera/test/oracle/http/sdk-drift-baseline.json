@@ -1,0 +1,128 @@
+{
+  "schema_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "work_id": "WP-04",
+  "kind": "sdk-drift-baseline",
+  "generator": {
+    "path": "packages/sdk/js/script/build.ts",
+    "command": "cd packages/sdk/js && bun script/build.ts",
+    "openapi_source_env": "OPENCODE_SDK_OPENAPI=httpapi (default); hono = legacy parity only",
+    "openapi_source": "cd packages/chimera && bun dev generate",
+    "generated_tree": "packages/sdk/js/src/v2/gen",
+    "transient_spec": "packages/sdk/js/openapi.json (removed by build.ts:54)",
+    "client_version": "@hey-api/openapi-ts 0.97.3"
+  },
+  "git": {
+    "head": "9600ee7f49ddcb065a33511f21f570d2b2d13a19",
+    "head_subject": "docs: add GPUI desktop app plan and full Rust migration plan",
+    "generated_tree_tracked_files": 15
+  },
+  "capture": {
+    "method": "sha256 of the worktree files at 2026-10-30",
+    "worktree_state": "dirty: packages/sdk/js/src/v2/gen/types.gen.ts already contained the external 2-line delta",
+    "head": "9600ee7f49ddcb065a33511f21f570d2b2d13a19",
+    "limitation": "the baseline absorbed the dirty worktree bytes; a matching hash proves only worktree == baseline, not generator output == committed HEAD; G0 must compare against HEAD"
+  },
+  "comparison_scope": {
+    "include": [
+      "packages/sdk/js/src/v2/gen/**"
+    ],
+    "exclude": [
+      "packages/sdk/js/dist/**",
+      "packages/sdk/js/src/gen/**"
+    ],
+    "exclude_reason": "dist is build output; src/gen is legacy generated output last touched 2026-06-18 and is not produced by build.ts (build.ts only runs prettier on it at line 50)"
+  },
+  "files": [
+    {
+      "path": "packages/sdk/js/src/v2/gen/client.gen.ts",
+      "sha256": "55f1374184c4abdd20aa34e31df126b294191af85e16ba4a4a3746c972934c4e"
+    },
+    {
+      "path": "packages/sdk/js/src/v2/gen/client/client.gen.ts",
+      "sha256": "102f9e517edc6da2af0f543c852da8e5acf5a6a846a96952e1c7123f3cb31f31"
+    },
+    {
+      "path": "packages/sdk/js/src/v2/gen/client/index.ts",
+      "sha256": "0830d8378fa253f001c264d39e252bd88690966fa298727a687dba4a0956e9c1"
+    },
+    {
+      "path": "packages/sdk/js/src/v2/gen/client/types.gen.ts",
+      "sha256": "7e2fcbf8360530981bd3fbb3d86d164038648e19ea4a80ba916d3f25a218ecc1"
+    },
+    {
+      "path": "packages/sdk/js/src/v2/gen/client/utils.gen.ts",
+      "sha256": "aed02e73c997a92267343d031d4a29234c6f1b814d31dda2305f5737569ba8b3"
+    },
+    {
+      "path": "packages/sdk/js/src/v2/gen/core/auth.gen.ts",
+      "sha256": "f3f9784fc4278d75604c87cb1a3d371ec1d368819e5f61a1f9b7d3850bf0c797"
+    },
+    {
+      "path": "packages/sdk/js/src/v2/gen/core/bodySerializer.gen.ts",
+      "sha256": "a2af12fa91874b3a11bc98ca6c5c028754d6fedfd3381b9a09e60d684f41ac38"
+    },
+    {
+      "path": "packages/sdk/js/src/v2/gen/core/params.gen.ts",
+      "sha256": "f68ad12e220a5000572e171bb4f8762272ecf25571b0bd5d8ca4deec08fd6477"
+    },
+    {
+      "path": "packages/sdk/js/src/v2/gen/core/pathSerializer.gen.ts",
+      "sha256": "32247c341763861725db5f2a9507edd17a0ac5b6175c1259b38d4fe5d86c3b0d"
+    },
+    {
+      "path": "packages/sdk/js/src/v2/gen/core/queryKeySerializer.gen.ts",
+      "sha256": "ae2f324aef441962db761712f8446297996cab4d0bf39dc79751737b98bd223b"
+    },
+    {
+      "path": "packages/sdk/js/src/v2/gen/core/serverSentEvents.gen.ts",
+      "sha256": "0020ff28d6b48c953dd66dc82ab00578f39fe3cfa6108d7590327cda808829a5"
+    },
+    {
+      "path": "packages/sdk/js/src/v2/gen/core/types.gen.ts",
+      "sha256": "dd6383c62ed9ccadd36cb94ad230dde4f354ebd373c4ad80bdb4245e00940038"
+    },
+    {
+      "path": "packages/sdk/js/src/v2/gen/core/utils.gen.ts",
+      "sha256": "a203d66a92f1cabbc0e205cdf3962d83d42d0923044b17d1a7be6b2b21bf5346"
+    },
+    {
+      "path": "packages/sdk/js/src/v2/gen/sdk.gen.ts",
+      "sha256": "50e3c4f6a2002e7828751a4bc70551a3ead337f918acfa67c557fa656f2af346"
+    },
+    {
+      "path": "packages/sdk/js/src/v2/gen/types.gen.ts",
+      "sha256": "67ea2036312335087568d2a274ab183ad80b8ccde8c222a47486c71033758dbc"
+    }
+  ],
+  "preexisting_worktree_drift": {
+    "path": "packages/sdk/js/src/v2/gen/types.gen.ts",
+    "status": "modified-vs-HEAD",
+    "numstat": {
+      "added": 2,
+      "removed": 0
+    },
+    "observed_change": "adds optional timeout?: number to ProviderConfig.codex-responses and Provider.codex-responses profile objects",
+    "evidence": "git diff packages/sdk/js/src/v2/gen/types.gen.ts; git status --short packages/chimera/src/config/provider.ts",
+    "last_commit": "fcdb1f75b Thu Oct 29 17:02:21 2026 +0800 feat(provider): context-threshold cost tiers, parallel tool calls default, openai-compatible 2.0.87",
+    "head_sha256": "3b1a205da7587390f4d1e5a15d061c47baa3b6a9a102d9614f5fe688569bda6b",
+    "worktree_sha256": "67ea2036312335087568d2a274ab183ad80b8ccde8c222a47486c71033758dbc",
+    "ownership": "external-session-in-progress (2026-10-29 provider remote-compaction timeout field)",
+    "classification": "external-blocked",
+    "approved_delta": false,
+    "resolution": "external session commits or reverts; this package does not approve the delta; if it lands before G0, re-record the baseline from committed HEAD"
+  },
+  "gate": {
+    "pass": "regenerated src/v2/gen/** is byte-identical to committed HEAD (git diff HEAD --exit-code) and a second regeneration is deterministic; baseline hashes alone are not sufficient",
+    "approved_delta": "a diff is allowed only when the WP result records path, reason, expected behavior, affected contract, affected test, approver, and contract_rev bump when the shared contract changes",
+    "fail": "any unrecorded diff, missing file, extra file, or non-deterministic second run fails the gate",
+    "commands": [
+      "git rev-parse HEAD",
+      "git status --porcelain packages/sdk/js/src/v2/gen",
+      "git diff HEAD --exit-code -- packages/sdk/js/src/v2/gen",
+      "cd packages/sdk/js && bun script/build.ts",
+      "git diff HEAD --exit-code -- packages/sdk/js/src/v2/gen",
+      "bun test/oracle/http/verify-http-contract.ts"
+    ]
+  }
+}

@@ -1,0 +1,154 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "id": "store/golden/commit-batch",
+  "face": "store",
+  "kind": "golden",
+  "title": "One native commit batch: 3 nodes, 2 edges, 2 refs, 1 file",
+  "description": "Pins StoreWriteStats counters for a valid logical op log committed through the native store bridge. Volatile counters (walPages, durationMs) are type-constrained, not value-pinned.",
+  "input": {
+    "db_state": "initialized graph schema (schema.sql + migrations applied)",
+    "fuse": false,
+    "ops": [
+      {
+        "kind": "insertNodes",
+        "nodes": [
+          {
+            "id": "fn:a",
+            "kind": "function",
+            "name": "a",
+            "qualifiedName": "a",
+            "filePath": "src/a.ts",
+            "language": "typescript",
+            "startLine": 1,
+            "endLine": 1,
+            "startColumn": 0,
+            "endColumn": 0,
+            "isExported": false
+          },
+          {
+            "id": "fn:b",
+            "kind": "function",
+            "name": "b",
+            "qualifiedName": "b",
+            "filePath": "src/a.ts",
+            "language": "typescript",
+            "startLine": 1,
+            "endLine": 1,
+            "startColumn": 0,
+            "endColumn": 0,
+            "isExported": false
+          },
+          {
+            "id": "fn:c",
+            "kind": "function",
+            "name": "c",
+            "qualifiedName": "c",
+            "filePath": "src/a.ts",
+            "language": "typescript",
+            "startLine": 1,
+            "endLine": 1,
+            "startColumn": 0,
+            "endColumn": 0,
+            "isExported": false
+          }
+        ]
+      },
+      {
+        "kind": "insertEdges",
+        "edges": [
+          {
+            "source": "fn:a",
+            "target": "fn:b",
+            "kind": "calls",
+            "line": 1,
+            "column": 0
+          },
+          {
+            "source": "fn:b",
+            "target": "fn:c",
+            "kind": "calls",
+            "line": 2,
+            "column": 0
+          }
+        ]
+      },
+      {
+        "kind": "insertRefs",
+        "refs": [
+          {
+            "fromNodeId": "fn:a",
+            "referenceName": "b",
+            "referenceKind": "calls",
+            "line": 1,
+            "column": 0,
+            "filePath": "src/a.ts",
+            "language": "typescript"
+          },
+          {
+            "fromNodeId": "fn:b",
+            "referenceName": "c",
+            "referenceKind": "calls",
+            "line": 2,
+            "column": 0,
+            "filePath": "src/a.ts",
+            "language": "typescript"
+          }
+        ]
+      },
+      {
+        "kind": "upsertFile",
+        "file": {
+          "path": "src/a.ts",
+          "contentHash": "h1",
+          "language": "typescript",
+          "size": 10,
+          "modifiedAt": 1,
+          "indexedAt": 2,
+          "nodeCount": 3,
+          "errors": null
+        }
+      }
+    ]
+  },
+  "expect": {
+    "status": "ok",
+    "match": "stats_only",
+    "stats": {
+      "nodesInserted": 3,
+      "nodesSkippedInvalid": 0,
+      "edgesInserted": 2,
+      "edgesDroppedDangling": 0,
+      "edgesDroppedNotInBatch": 0,
+      "edgesReattached": 0,
+      "refsInserted": 2,
+      "refsDroppedNotInBatch": 0,
+      "refsResurrected": 0,
+      "refsDeleted": 0,
+      "refsMarkedFailed": 0,
+      "filesDeleted": 0,
+      "filesUpserted": 1,
+      "filesSkippedUnchanged": 0
+    },
+    "row_counts": {
+      "nodes": 3,
+      "edges": 2,
+      "unresolved_refs": 2,
+      "files": 1
+    },
+    "volatile_fields": {
+      "walPages": "non_negative_integer",
+      "durationMs": "non_negative_number"
+    }
+  },
+  "provenance": {
+    "evidence": [
+      "packages/chimera/src/graph/store/bridge.ts:346-516",
+      "packages/chimera/src/graph/store/encoder.ts:75-325",
+      "codegraph-kernel/src/store.rs:1381-1536"
+    ],
+    "derivation": "Executed StoreBridge.commit(ops, false) against an initialized temp graph DB and the darwin-arm64 kernel prebuild on 2026-10-30.",
+    "executed": true,
+    "engine": "native store bridge (codegraph-kernel.node)"
+  }
+}

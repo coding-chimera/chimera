@@ -1,0 +1,97 @@
+{
+  "schema": "chimera.runtime.oracle.v1",
+  "contract_rev": "cr-2026-10-30-r1",
+  "work_id": "WP-07",
+  "area": "install-variants",
+  "owner": "runtime owner",
+  "generated_at": "2026-10-30",
+  "notes": "静态向量；本轮不执行。安装类向量必须使用 npm（不是 bun install -g），并在一次性 CI 容器/临时 prefix 中运行；不写真实凭据。",
+  "vectors": [
+    {
+      "id": "RT-INST-001",
+      "title": "两变体的 license/文件映射与 tarball 后缀单测通过",
+      "class": "current-state",
+      "platform": ["darwin", "linux"],
+      "workdir": "packages/chimera",
+      "requires": ["bun"],
+      "command": "bun test test/script/package-variant.test.ts",
+      "pass_condition": {
+        "exit_code": 0
+      },
+      "expected_today": "pass",
+      "blocked_by": null,
+      "evidence": [
+        "packages/chimera/script/package-variant.ts:7,88-93,141-142",
+        "packages/chimera/test/script/package-variant.test.ts:80-117"
+      ],
+      "cleanup": "无"
+    },
+    {
+      "id": "RT-INST-002",
+      "title": "no-webui 变体：npm 安装后 MIT、无 NOTICE、health 正常",
+      "class": "target-acceptance",
+      "platform": ["darwin", "linux"],
+      "workdir": "packages/chimera",
+      "requires": ["built no-webui tarballs", "npm", "node", "curl", "free local port via PORT"],
+      "command": "set -euo pipefail\nversion=\"<version>\"\nplatform=\"<platform>\"\nport=\"${PORT:?set PORT to a free local port}\"\ntmp=\"$(mktemp -d)\"\ntrap 'npm uninstall -g @coding-chimera/chimera >/dev/null 2>&1 || true; rm -rf \"$tmp\"' EXIT\nnpm install -g \"./dist/npm-tarballs/coding-chimera-chimera-${platform}-no-webui-${version}.tgz\" \"./dist/npm-tarballs/coding-chimera-chimera-no-webui-${version}.tgz\"\ncommand -v chimera\nchimera --version\npkg=\"$(npm root -g)/@coding-chimera/chimera/package.json\"\nnode -e 'const p=require(process.argv[1]); if(p.license!==\"MIT\") process.exit(1); console.log(\"license=\"+p.license)' \"$pkg\"\ntest ! -e \"$(npm root -g)/@coding-chimera/chimera/NOTICE\"\nchimera serve --port \"$port\" --hostname localhost >\"$tmp/out\" 2>\"$tmp/err\" &\npid=$!\nfor i in $(seq 1 50); do if curl -fsS \"http://localhost:$port/global/health\" >\"$tmp/health\" 2>/dev/null; then break; fi; sleep 0.2; done\ngrep -q '\"healthy\":true' \"$tmp/health\"\nkill -TERM \"$pid\" 2>/dev/null || true\nwait \"$pid\" 2>/dev/null || true\nprintf 'license=MIT health=ok\\n'",
+      "pass_condition": {
+        "exit_code": 0,
+        "stdout_contains": ["license=MIT health=ok"]
+      },
+      "expected_today": "not-run",
+      "blocked_by": "release gate: built tarballs",
+      "evidence": [
+        "packages/chimera/script/package-variant.ts:88-93",
+        "packages/chimera/script/build.ts:159-183,422-433",
+        "packages/chimera/src/server/routes/global.ts:45-62"
+      ],
+      "cleanup": "trap 卸载全局包并删除临时目录",
+      "notes": "需要先按 build.ts --no-webui 构建出 tarball；本目录不代为构建。"
+    },
+    {
+      "id": "RT-INST-003",
+      "title": "with-webui 变体：npm 安装后 GPL-3.0-only、NOTICE 存在、根路径不是 missing-assets",
+      "class": "target-acceptance",
+      "platform": ["darwin", "linux"],
+      "workdir": "packages/chimera",
+      "requires": ["built with-webui tarballs", "npm", "node", "curl", "free local port via PORT"],
+      "command": "set -euo pipefail\nversion=\"<version>\"\nplatform=\"<platform>\"\nport=\"${PORT:?set PORT to a free local port}\"\ntmp=\"$(mktemp -d)\"\ntrap 'npm uninstall -g @coding-chimera/chimera >/dev/null 2>&1 || true; rm -rf \"$tmp\"' EXIT\nnpm install -g \"./dist/npm-tarballs/coding-chimera-chimera-${platform}-with-webui-${version}.tgz\" \"./dist/npm-tarballs/coding-chimera-chimera-with-webui-${version}.tgz\"\ncommand -v chimera\nchimera --version\npkg=\"$(npm root -g)/@coding-chimera/chimera/package.json\"\nnode -e 'const p=require(process.argv[1]); if(p.license!==\"GPL-3.0-only\") process.exit(1); console.log(\"license=\"+p.license)' \"$pkg\"\ntest -e \"$(npm root -g)/@coding-chimera/chimera/NOTICE\"\nexport OPENCODE_SERVER_PASSWORD=\"$(node -e 'console.log(require(\"crypto\").randomBytes(16).toString(\"hex\"))')\"\nchimera web --open=false --port \"$port\" --hostname localhost >\"$tmp/out\" 2>\"$tmp/err\" &\npid=$!\nfor i in $(seq 1 50); do if curl -fsS -u \"chimera:${OPENCODE_SERVER_PASSWORD}\" \"http://localhost:$port/\" >\"$tmp/root.html\" 2>/dev/null; then break; fi; sleep 0.2; done\nif grep -q \"not embedded in this build\" \"$tmp/root.html\"; then echo \"missing webui assets\"; exit 1; fi\nkill -TERM \"$pid\" 2>/dev/null || true\nwait \"$pid\" 2>/dev/null || true\nprintf 'license=GPL-3.0-only webui=ok\\n'",
+      "pass_condition": {
+        "exit_code": 0,
+        "stdout_contains": ["license=GPL-3.0-only webui=ok"]
+      },
+      "expected_today": "not-run",
+      "blocked_by": "release gate: built tarballs",
+      "evidence": [
+        "packages/chimera/script/package-variant.ts:88-93",
+        "packages/chimera/script/build.ts:159-183",
+        "packages/chimera/src/server/shared/newweb-ui.ts:14",
+        "packages/chimera/src/server/shared/ui.ts:12"
+      ],
+      "cleanup": "trap 卸载全局包、清理临时目录；不保留密码",
+      "notes": "需要先按 build.ts --with-webui 构建出 tarball；密码由 node crypto 现场生成，不落盘。"
+    },
+    {
+      "id": "RT-INST-004",
+      "title": "当前安装包内不存在 host 二进制，CLI 仍可运行（legacy）",
+      "class": "current-state",
+      "platform": ["darwin", "linux"],
+      "workdir": "packages/chimera",
+      "requires": ["installed npm package", "installed platform package @coding-chimera/chimera-<platform>", "npm", "node"],
+      "command": "set -euo pipefail\nplatform=\"<platform>\"\npkg_root=\"$(npm root -g)/@coding-chimera/chimera\"\nplatform_pkg_root=\"$(npm root -g)/@coding-chimera/chimera-${platform}\"\ntest -d \"$platform_pkg_root\"\ntest ! -e \"$pkg_root/bin/host/chimera-host\"\ntest ! -e \"$platform_pkg_root/bin/host/chimera-host\"\ncommand -v chimera\nchimera --version\nprintf 'host_binary=absent cli=ok\\n'",
+      "pass_condition": {
+        "exit_code": 0,
+        "stdout_contains": ["host_binary=absent cli=ok"]
+      },
+      "expected_today": "not-run",
+      "blocked_by": null,
+      "evidence": [
+        "packages/chimera/script/build.ts:118,400",
+        "packages/chimera/script/postinstall.mjs:29,62",
+        ".github/workflows/publish.yml:173-190"
+      ],
+      "cleanup": "无",
+      "notes": "需要先安装任一变体（含对应平台包）；同时检查主包与平台包 @coding-chimera/chimera-<platform> 均无 bin/host/chimera-host。"
+    }
+  ]
+}

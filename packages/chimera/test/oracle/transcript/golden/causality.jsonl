@@ -1,0 +1,20 @@
+{"contract_rev":"cr-2026-10-30-r1","description":"Synthetic prompt segments, two tool calls/results, three sqlite rows, and two interleaved SSE streams.","format":"chimera.oracle.transcript","layer":"causality","record":"header","scenario":"causal-order-four-classes","version":1}
+{"content":"Causal-order fixture: all events carry a stable sequence.","key":"core/default","kind":"prompt.segment","segment_index":0,"seq":1,"sha256":"0e9f6bd23da16df91805a7e60a3cdef5d264564a690e6414898163224d941ef9"}
+{"content":"A tool result must follow the tool call that produced it.","key":"core/workflow","kind":"prompt.segment","segment_index":1,"seq":2,"sha256":"dd7836f047413f949d86b1fde7cd3953b4d131f668bb16096d3ef6a506c38570"}
+{"content":"SSE frames are monotonic per stream.","key":"overlay/synthetic","kind":"prompt.segment","segment_index":2,"seq":3,"sha256":"121d221f5168d9ae641b815f915cc6a978f374fb23a1e8255865480b0a478a96"}
+{"call_id":"call-0001","input":{"path":"synthetic://workspace/notes.txt"},"kind":"tool.call","seq":4,"tool":"synthetic_read"}
+{"call_id":"call-0001","kind":"tool.result","output":{"bytes":42,"summary":"synthetic file body"},"seq":5,"status":"ok"}
+{"call_id":"call-0002","input":{"reason":"fixture"},"kind":"tool.call","seq":6,"tool":"synthetic_fail"}
+{"call_id":"call-0002","kind":"tool.result","output":{"error":"synthetic failure"},"seq":7,"status":"error"}
+{"kind":"db.write","op":"insert","row":{"amount":100,"id":1,"label":"one"},"seq":8,"table":"transcript_items"}
+{"kind":"db.write","op":"insert","row":{"amount":200,"id":2,"label":"two"},"seq":9,"table":"transcript_items"}
+{"kind":"db.write","op":"insert","row":{"amount":300,"id":3,"label":"three"},"seq":10,"table":"transcript_items"}
+{"kind":"db.read","query":"SELECT id, label, amount FROM transcript_items ORDER BY id","rows":[{"amount":100,"id":1,"label":"one"},{"amount":200,"id":2,"label":"two"},{"amount":300,"id":3,"label":"three"}],"seq":11,"table":"transcript_items"}
+{"kind":"db.snapshot","rows":[{"amount":100,"id":1,"label":"one"},{"amount":200,"id":2,"label":"two"},{"amount":300,"id":3,"label":"three"}],"seq":12,"table":"transcript_items"}
+{"data":{"index":0},"event":"message.start","event_seq":1,"kind":"sse.event","seq":13,"stream_id":"synthetic-stream-a"}
+{"data":{"index":1},"event":"message.start","event_seq":1,"kind":"sse.event","seq":14,"stream_id":"synthetic-stream-b"}
+{"data":{"delta":"a1"},"event":"message.delta","event_seq":2,"kind":"sse.event","seq":15,"stream_id":"synthetic-stream-a"}
+{"data":{"delta":"b1"},"event":"message.delta","event_seq":2,"kind":"sse.event","seq":16,"stream_id":"synthetic-stream-b"}
+{"data":{"index":0},"event":"message.done","event_seq":3,"kind":"sse.event","seq":17,"stream_id":"synthetic-stream-a"}
+{"byte_length":154,"digest":"69b7b1139c5d8ec976325ca4060969ccc292d94eec3e4e4ac043549f4abde1f7","kind":"prompt.join","segment_count":3,"seq":18}
+{"body_sha256":"2d5325aa6379be1715a47eb50723bf4976713220bce5edc38e1c390d21a36c99","event_count":18,"record":"footer"}

@@ -1,0 +1,249 @@
+{
+  "schema": "wp05.cross-db-projection-drill/v1",
+  "generated_at": "2026-10-30T06:54:12.585Z",
+  "bun": "1.4.0",
+  "model": {
+    "authority": "authority.db",
+    "projection": "projection.db",
+    "fact_count": 12,
+    "batches": [
+      [
+        1,
+        5
+      ],
+      [
+        6,
+        10
+      ],
+      [
+        11,
+        12
+      ]
+    ],
+    "crash_signal": "SIGKILL (kill -9 equivalent)"
+  },
+  "scenarios": [
+    {
+      "name": "authority-only",
+      "crash": "authority-only",
+      "child_exit_code": 137,
+      "child_signal": "SIGKILL",
+      "before": {
+        "authority_rows": 12,
+        "projection_rows": 0,
+        "checkpoint": 0,
+        "acked_seq": 0,
+        "wal_present": true,
+        "wal_bytes": 12392
+      },
+      "fencing": {
+        "lease_before": 1,
+        "stale_acquire_rejected": true,
+        "new_generation": 2,
+        "new_acquire_ok": true,
+        "stale_insert_rejected": true
+      },
+      "first_reconcile": {
+        "ok": true,
+        "phantoms": [],
+        "replayed": 12,
+        "checkpoint_before": 0,
+        "checkpoint_after": 12,
+        "acked_seq": 12,
+        "authority_checksum": "e9effc5475fea754cbbfdc467036901dae5bdfd7b732454c8385ae4ff7078371",
+        "projection_checksum": "e9effc5475fea754cbbfdc467036901dae5bdfd7b732454c8385ae4ff7078371"
+      },
+      "second_reconcile": {
+        "ok": true,
+        "phantoms": [],
+        "replayed": 0,
+        "checkpoint_before": 12,
+        "checkpoint_after": 12,
+        "acked_seq": 12,
+        "authority_checksum": "e9effc5475fea754cbbfdc467036901dae5bdfd7b732454c8385ae4ff7078371",
+        "projection_checksum": "e9effc5475fea754cbbfdc467036901dae5bdfd7b732454c8385ae4ff7078371"
+      },
+      "pass": true,
+      "failures": []
+    },
+    {
+      "name": "mid-projection",
+      "crash": "mid-projection",
+      "child_exit_code": 137,
+      "child_signal": "SIGKILL",
+      "before": {
+        "authority_rows": 12,
+        "projection_rows": 5,
+        "checkpoint": 5,
+        "acked_seq": 0,
+        "wal_present": true,
+        "wal_bytes": 12392
+      },
+      "fencing": {
+        "lease_before": 1,
+        "stale_acquire_rejected": true,
+        "new_generation": 2,
+        "new_acquire_ok": true,
+        "stale_insert_rejected": true
+      },
+      "first_reconcile": {
+        "ok": true,
+        "phantoms": [],
+        "replayed": 7,
+        "checkpoint_before": 5,
+        "checkpoint_after": 12,
+        "acked_seq": 12,
+        "authority_checksum": "e9effc5475fea754cbbfdc467036901dae5bdfd7b732454c8385ae4ff7078371",
+        "projection_checksum": "e9effc5475fea754cbbfdc467036901dae5bdfd7b732454c8385ae4ff7078371"
+      },
+      "second_reconcile": {
+        "ok": true,
+        "phantoms": [],
+        "replayed": 0,
+        "checkpoint_before": 12,
+        "checkpoint_after": 12,
+        "acked_seq": 12,
+        "authority_checksum": "e9effc5475fea754cbbfdc467036901dae5bdfd7b732454c8385ae4ff7078371",
+        "projection_checksum": "e9effc5475fea754cbbfdc467036901dae5bdfd7b732454c8385ae4ff7078371"
+      },
+      "pass": true,
+      "failures": []
+    },
+    {
+      "name": "projection-before-checkpoint",
+      "crash": "projection-before-checkpoint",
+      "child_exit_code": 137,
+      "child_signal": "SIGKILL",
+      "before": {
+        "authority_rows": 12,
+        "projection_rows": 10,
+        "checkpoint": 5,
+        "acked_seq": 0,
+        "wal_present": true,
+        "wal_bytes": 12392
+      },
+      "fencing": {
+        "lease_before": 1,
+        "stale_acquire_rejected": true,
+        "new_generation": 2,
+        "new_acquire_ok": true,
+        "stale_insert_rejected": true
+      },
+      "first_reconcile": {
+        "ok": true,
+        "phantoms": [],
+        "replayed": 2,
+        "checkpoint_before": 5,
+        "checkpoint_after": 12,
+        "acked_seq": 12,
+        "authority_checksum": "e9effc5475fea754cbbfdc467036901dae5bdfd7b732454c8385ae4ff7078371",
+        "projection_checksum": "e9effc5475fea754cbbfdc467036901dae5bdfd7b732454c8385ae4ff7078371"
+      },
+      "second_reconcile": {
+        "ok": true,
+        "phantoms": [],
+        "replayed": 0,
+        "checkpoint_before": 12,
+        "checkpoint_after": 12,
+        "acked_seq": 12,
+        "authority_checksum": "e9effc5475fea754cbbfdc467036901dae5bdfd7b732454c8385ae4ff7078371",
+        "projection_checksum": "e9effc5475fea754cbbfdc467036901dae5bdfd7b732454c8385ae4ff7078371"
+      },
+      "pass": true,
+      "failures": []
+    },
+    {
+      "name": "after-ack",
+      "crash": "after-ack",
+      "child_exit_code": 137,
+      "child_signal": "SIGKILL",
+      "before": {
+        "authority_rows": 12,
+        "projection_rows": 12,
+        "checkpoint": 12,
+        "acked_seq": 12,
+        "wal_present": true,
+        "wal_bytes": 16512
+      },
+      "fencing": {
+        "lease_before": 1,
+        "stale_acquire_rejected": true,
+        "new_generation": 2,
+        "new_acquire_ok": true,
+        "stale_insert_rejected": true
+      },
+      "first_reconcile": {
+        "ok": true,
+        "phantoms": [],
+        "replayed": 0,
+        "checkpoint_before": 12,
+        "checkpoint_after": 12,
+        "acked_seq": 12,
+        "authority_checksum": "e9effc5475fea754cbbfdc467036901dae5bdfd7b732454c8385ae4ff7078371",
+        "projection_checksum": "e9effc5475fea754cbbfdc467036901dae5bdfd7b732454c8385ae4ff7078371"
+      },
+      "second_reconcile": {
+        "ok": true,
+        "phantoms": [],
+        "replayed": 0,
+        "checkpoint_before": 12,
+        "checkpoint_after": 12,
+        "acked_seq": 12,
+        "authority_checksum": "e9effc5475fea754cbbfdc467036901dae5bdfd7b732454c8385ae4ff7078371",
+        "projection_checksum": "e9effc5475fea754cbbfdc467036901dae5bdfd7b732454c8385ae4ff7078371"
+      },
+      "pass": true,
+      "failures": []
+    },
+    {
+      "name": "phantom-negative",
+      "crash": "none",
+      "child_exit_code": 0,
+      "child_signal": null,
+      "before": {
+        "authority_rows": 12,
+        "projection_rows": 13,
+        "checkpoint": 12,
+        "acked_seq": 0,
+        "wal_present": true,
+        "wal_bytes": 0
+      },
+      "fencing": {
+        "lease_before": 1,
+        "stale_acquire_rejected": true,
+        "new_generation": 2,
+        "new_acquire_ok": true,
+        "stale_insert_rejected": true
+      },
+      "first_reconcile": {
+        "ok": false,
+        "phantoms": [
+          999
+        ],
+        "replayed": 0,
+        "checkpoint_before": 12,
+        "checkpoint_after": 12,
+        "acked_seq": 0,
+        "authority_checksum": "e9effc5475fea754cbbfdc467036901dae5bdfd7b732454c8385ae4ff7078371",
+        "projection_checksum": "abb38adfc047507fe0ced94a7590a4d766d0b2b7bbb95f908acf06d61a9e10b4"
+      },
+      "second_reconcile": {
+        "ok": true,
+        "phantoms": [],
+        "replayed": 0,
+        "checkpoint_before": 12,
+        "checkpoint_after": 12,
+        "acked_seq": 12,
+        "authority_checksum": "e9effc5475fea754cbbfdc467036901dae5bdfd7b732454c8385ae4ff7078371",
+        "projection_checksum": "e9effc5475fea754cbbfdc467036901dae5bdfd7b732454c8385ae4ff7078371"
+      },
+      "pass": true,
+      "failures": []
+    }
+  ],
+  "summary": {
+    "total": 5,
+    "passed": 5,
+    "failed": 0
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "id": "extraction/negative/kernel-defer-parse-error",
+  "face": "extraction",
+  "kind": "negative",
+  "title": "Kernel-routed TypeScript with a parse error defers to the wasm arm",
+  "description": "A routed language whose parse tree contains errors must surface the kernel's `defer:` signal, leave a defer memo, and fall back to the wasm extractor. The negative assertion forbids silently returning an empty ExtractionResult without an error.",
+  "input": {
+    "file_path": "src/broken.ts",
+    "language": "typescript",
+    "extraction_semantics_version": 10,
+    "kernel_routing": {
+      "default_routed": true,
+      "kill_switch_env": "CODEGRAPH_KERNEL",
+      "kill_switch_value": "unset"
+    },
+    "source": "export function broken( {\n  return 1;\n}\n"
+  },
+  "expect": {
+    "status": "defer",
+    "match": "error",
+    "kernel": {
+      "decision": "defer_to_wasm",
+      "try_kernel_extract_result": null,
+      "defer_memo_hit": true
+    },
+    "wasm_fallback": {
+      "required": true,
+      "grammar": "typescript",
+      "without_preload": {
+        "errors": [
+          {
+            "code": "parser_error",
+            "message_contains": "Failed to get parser for language"
+          }
+        ]
+      },
+      "with_lazy_preload": {
+        "errors_non_empty": true
+      }
+    },
+    "must_not": [
+      "return a non-null kernel ExtractionResult for this source",
+      "return an empty ExtractionResult with no error and no defer signal",
+      "throw a kernel error whose message does not contain 'defer:'"
+    ]
+  },
+  "provenance": {
+    "evidence": [
+      "packages/chimera/src/graph/extraction/kernel/index.ts:158-162",
+      "packages/chimera/src/graph/extraction/kernel/index.ts:476-499",
+      "packages/chimera/src/graph/extraction/deferred-grammar.ts:38-68"
+    ],
+    "derivation": "Executed tryKernelExtract and takeDeferredPreParse against the darwin-arm64 kernel prebuild on 2026-10-30; wasm-without-preload error observed via extractFromSource.",
+    "executed": true,
+    "engine": "native kernel + TS wasm arm"
+  }
+}

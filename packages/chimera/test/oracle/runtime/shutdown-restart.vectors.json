@@ -1,0 +1,115 @@
+{
+  "schema": "chimera.runtime.oracle.v1",
+  "contract_rev": "cr-2026-10-30-r1",
+  "work_id": "WP-07",
+  "area": "shutdown-restart",
+  "owner": "runtime owner",
+  "generated_at": "2026-10-30",
+  "notes": "静态向量；本轮不执行。current-state 用于冻结缺口，target-acceptance 在 G0/T1 后作为门禁。所有路径使用临时目录占位符，不写真实凭据/home 路径。",
+  "vectors": [
+    {
+      "id": "RT-SD-001",
+      "title": "当前 host bin 对 SIGTERM 走默认处置，不产生 drain",
+      "class": "current-state",
+      "platform": ["darwin", "linux"],
+      "workdir": "repo-root",
+      "requires": ["built chimera-host binary", "bash", "mktemp"],
+      "command": "set -euo pipefail\nroot=\"$(mktemp -d)\"\nhost_bin=\"${HOST_BIN:-chimera-host/target/debug/chimera-host}\"\ntest -x \"$host_bin\"\n\"$host_bin\" \"$root\" >\"$root/out\" 2>\"$root/err\" &\npid=$!\ntrap 'kill -TERM \"$pid\" 2>/dev/null || true; wait \"$pid\" 2>/dev/null || true; rm -rf \"$root\"' EXIT\nsleep 1\nkill -TERM \"$pid\"\nset +e\nwait \"$pid\"\nstatus=$?\nset -e\nprintf 'exit=%s\\n' \"$status\"",
+      "pass_condition": {
+        "exit_code": 0,
+        "stdout_contains": ["exit=143"]
+      },
+      "expected_today": "pass",
+      "blocked_by": null,
+      "evidence": [
+        "chimera-host/src/bin/chimera-host.rs:43-49"
+      ],
+      "cleanup": "trap 删除临时目录并等待 host 退出",
+      "notes": "若未来接入信号处理，本向量会从 pass 变为 fail，提示 current-state 漂移；此时应更新文档而不是放宽判定。"
+    },
+    {
+      "id": "RT-SD-002",
+      "title": "SIGTERM 后 host 完成 graceful drain 并以 0 退出，worker 无孤儿",
+      "class": "target-acceptance",
+      "platform": ["darwin", "linux"],
+      "workdir": "repo-root",
+      "requires": ["built chimera-host binary", "bun", "bash", "pgrep"],
+      "command": "set -euo pipefail\nroot=\"$(mktemp -d)\"\nhost_bin=\"${HOST_BIN:-chimera-host/target/debug/chimera-host}\"\ntest -x \"$host_bin\"\n\"$host_bin\" \"$root\" --db \"$root/host.db\" --worker 1 --worker-cmd bun run packages/chimera/src/index.ts bun-worker \"$root/ws\" >\"$root/out\" 2>\"$root/err\" &\npid=$!\ntrap 'kill -TERM \"$pid\" 2>/dev/null || true; wait \"$pid\" 2>/dev/null || true; rm -rf \"$root\"' EXIT\nsleep 2\nkill -TERM \"$pid\"\nset +e\nwait \"$pid\"\nstatus=$?\nset -e\nif pgrep -f \"bun-worker $root/ws\" >/dev/null; then echo \"orphan worker\"; exit 1; fi\nprintf 'exit=%s\\n' \"$status\"",
+      "pass_condition": {
+        "exit_code": 0,
+        "stdout_contains": ["exit=0"]
+      },
+      "expected_today": "fail",
+      "blocked_by": "T1",
+      "evidence": [
+        "chimera-host/src/bin/chimera-host.rs:43-49",
+        "chimera-host/src/runtime.rs:593-703",
+        "packages/chimera/src/host/worker-bootstrap.ts:466-528"
+      ],
+      "cleanup": "trap 删除临时目录并确保 worker 不残留"
+    },
+    {
+      "id": "RT-RS-001",
+      "title": "worker 崩溃后 host 按退避重启并递增 generation",
+      "class": "target-acceptance",
+      "platform": ["darwin", "linux"],
+      "workdir": "repo-root",
+      "requires": ["built chimera-host binary", "bun", "bash", "pgrep"],
+      "command": "set -euo pipefail\nroot=\"$(mktemp -d)\"\nhost_bin=\"${HOST_BIN:-chimera-host/target/debug/chimera-host}\"\ntest -x \"$host_bin\"\n\"$host_bin\" \"$root\" --db \"$root/host.db\" --worker 1 --worker-cmd bun run packages/chimera/src/index.ts bun-worker \"$root/ws\" >\"$root/out\" 2>\"$root/err\" &\npid=$!\ntrap 'kill -TERM \"$pid\" 2>/dev/null || true; wait \"$pid\" 2>/dev/null || true; rm -rf \"$root\"' EXIT\nsleep 2\nchild=\"$(pgrep -P \"$pid\" | head -n 1)\"\ntest -n \"$child\"\nkill -KILL \"$child\"\nsleep 3\nspawn_count=\"$(grep -c 'worker workspace=' \"$root/err\" || true)\"\nprintf 'spawn_count=%s\\n' \"$spawn_count\"\nif [ \"$spawn_count\" -lt 2 ]; then echo \"no restart\"; exit 1; fi",
+      "pass_condition": {
+        "exit_code": 0,
+        "stdout_contains": ["spawn_count="]
+      },
+      "expected_today": "fail",
+      "blocked_by": "T1",
+      "evidence": [
+        "chimera-host/src/bin/chimera-host.rs:30-33,339-353",
+        "chimera-host/src/runtime.rs:706-743",
+        "chimera-host/src/supervisor.rs:33-44,659-675"
+      ],
+      "cleanup": "trap 终止 host 并删除临时目录",
+      "notes": "命令断言 spawn_count>=2；当前 bin 只 spawn 一次，因此 expected_today=fail。"
+    },
+    {
+      "id": "RT-RS-002",
+      "title": "host 重启 sweep 把无 live generation 的 running turn 标为 interrupted",
+      "class": "target-acceptance",
+      "platform": ["darwin", "linux"],
+      "workdir": "repo-root",
+      "requires": ["built chimera-host binary", "sqlite3", "bash"],
+      "command": "set -euo pipefail\nroot=\"$(mktemp -d)\"\ndb=\"$root/host.db\"\nsqlite3 \"$db\" < packages/chimera/migration/20261022022937_host_control_plane/migration.sql\nsqlite3 \"$db\" \"INSERT INTO session_turn_checkpoint (session_id,turn_id,turn_seq,generation,status,commit_state,intent,resume_policy,side_effect_state,created_at,updated_at) VALUES ('ses_x','turn_x',1,1,'running','pending','{}','auto','unknown',1,1);\"\nhost_bin=\"${HOST_BIN:-chimera-host/target/debug/chimera-host}\"\ntest -x \"$host_bin\"\n\"$host_bin\" \"$root\" --db \"$db\" >\"$root/out\" 2>\"$root/err\" &\npid=$!\ntrap 'kill -TERM \"$pid\" 2>/dev/null || true; wait \"$pid\" 2>/dev/null || true; rm -rf \"$root\"' EXIT\nsleep 2\nkill -TERM \"$pid\" 2>/dev/null || true\nwait \"$pid\" 2>/dev/null || true\nstatus=\"$(sqlite3 \"$db\" \"SELECT status FROM session_turn_checkpoint WHERE session_id='ses_x' AND turn_id='turn_x';\")\"\nprintf 'status=%s\\n' \"$status\"\ntest \"$status\" = \"interrupted\"",
+      "pass_condition": {
+        "exit_code": 0,
+        "stdout_contains": ["status=interrupted"]
+      },
+      "expected_today": "fail",
+      "blocked_by": "T1 + G14",
+      "evidence": [
+        "chimera-host/src/bin/chimera-host.rs:253-259",
+        "chimera-host/src/store.rs:212-220",
+        "packages/chimera/specs/rust-host/h2-data-plane.md:661"
+      ],
+      "cleanup": "trap 终止 host 并删除临时目录"
+    },
+    {
+      "id": "RT-RS-003",
+      "title": "当前 bin 没有 try_restart/request_drain 接线",
+      "class": "current-state",
+      "platform": ["darwin", "linux"],
+      "workdir": "repo-root",
+      "requires": ["rg"],
+      "command": "if rg -q \"try_restart|request_drain\" chimera-host/src/bin/chimera-host.rs; then echo \"unexpected wiring\"; exit 1; fi\necho \"no restart/drain wiring\"",
+      "pass_condition": {
+        "exit_code": 0,
+        "stdout_contains": ["no restart/drain wiring"]
+      },
+      "expected_today": "pass",
+      "blocked_by": null,
+      "evidence": [
+        "chimera-host/src/bin/chimera-host.rs:30-33,339-353",
+        "chimera-host/src/runtime.rs:593-743"
+      ],
+      "cleanup": "无"
+    }
+  ]
+}

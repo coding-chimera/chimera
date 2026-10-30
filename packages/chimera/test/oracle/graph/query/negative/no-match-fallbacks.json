@@ -1,0 +1,84 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "id": "query/negative/no-match-fallbacks",
+  "face": "query",
+  "kind": "negative",
+  "title": "FTS, LIKE and fuzzy all miss; the search returns empty",
+  "description": "A query with no prefix, substring, or close edit-distance match must return an empty result set after all three fallbacks, without throwing and without inventing a candidate.",
+  "input": {
+    "nodes": [
+      {
+        "id": "n_parse",
+        "kind": "function",
+        "name": "parse",
+        "qualifiedName": "parse",
+        "filePath": "src/q.ts",
+        "language": "typescript",
+        "startLine": 1,
+        "endLine": 1,
+        "startColumn": 0,
+        "endColumn": 0,
+        "isExported": false
+      },
+      {
+        "id": "n_parseQuery",
+        "kind": "function",
+        "name": "parseQuery",
+        "qualifiedName": "parseQuery",
+        "filePath": "src/q.ts",
+        "language": "typescript",
+        "startLine": 2,
+        "endLine": 2,
+        "startColumn": 0,
+        "endColumn": 0,
+        "isExported": false
+      },
+      {
+        "id": "n_other",
+        "kind": "function",
+        "name": "other",
+        "qualifiedName": "other",
+        "filePath": "src/q.ts",
+        "language": "typescript",
+        "startLine": 3,
+        "endLine": 3,
+        "startColumn": 0,
+        "endColumn": 0,
+        "isExported": false
+      }
+    ],
+    "query": "zzzz",
+    "options": {
+      "limit": 10
+    }
+  },
+  "expect": {
+    "status": "empty",
+    "match": "exact_after_canonicalization",
+    "result_names": [],
+    "result_ids": [],
+    "terms": [
+      {
+        "term": "zzzz",
+        "count": 0
+      }
+    ],
+    "fallbacks_tried": ["fts", "like", "fuzzy"],
+    "must_not": [
+      "return any node for this query",
+      "throw an error instead of returning empty",
+      "skip the LIKE or fuzzy fallback without trying them"
+    ]
+  },
+  "provenance": {
+    "evidence": [
+      "packages/chimera/src/graph/db/queries.ts:1509-1538",
+      "packages/chimera/src/graph/db/queries.ts:1666-1720",
+      "packages/chimera/src/graph/search/query-parser.ts:157-190"
+    ],
+    "derivation": "Executed QueryBuilder.searchNodesDetailed('zzzz', {limit:10}) against an initialized temp graph DB on 2026-10-30; fallback list derived from the code path.",
+    "executed": true,
+    "engine": "TS QueryBuilder + SQLite FTS5"
+  }
+}

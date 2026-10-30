@@ -1,0 +1,17 @@
+{"contract_rev":"cr-2026-10-30-r1","description":"Synthetic prompt segments, one tool call/result, three sqlite rows, and one SSE stream.","format":"chimera.oracle.transcript","layer":"determinism","record":"header","scenario":"deterministic-four-classes","version":1}
+{"content":"Synthetic base instruction for the transcript harness.","key":"core/default","kind":"prompt.segment","segment_index":0,"seq":1,"sha256":"769ad0308d9b7276077f27aa88e42f71e426627a5b83be1bdea8b727e763fbf1"}
+{"content":"Use synthetic tool calls and deterministic outputs.","key":"core/workflow","kind":"prompt.segment","segment_index":1,"seq":2,"sha256":"56995a4410e45307b6ebbf6fd42acc8526f6363025706764ebb9a80b01a23642"}
+{"content":"Model overlay: reply with fixed tokens only.","key":"model/synthetic","kind":"prompt.segment","segment_index":2,"seq":3,"sha256":"d636777327fd4ef7d91337770be876ccab50df9c60d5faa63b5eb42195e5c8c2"}
+{"call_id":"call-0001","input":{"text":"ping"},"kind":"tool.call","seq":4,"tool":"synthetic_echo"}
+{"call_id":"call-0001","kind":"tool.result","output":{"bytes":4,"text":"pong"},"seq":5,"status":"ok"}
+{"kind":"db.write","op":"insert","row":{"amount":10,"id":1,"label":"alpha"},"seq":6,"table":"transcript_items"}
+{"kind":"db.write","op":"insert","row":{"amount":20,"id":2,"label":"beta"},"seq":7,"table":"transcript_items"}
+{"kind":"db.write","op":"insert","row":{"amount":30,"id":3,"label":"gamma"},"seq":8,"table":"transcript_items"}
+{"kind":"db.read","query":"SELECT id, label, amount FROM transcript_items ORDER BY id","rows":[{"amount":10,"id":1,"label":"alpha"},{"amount":20,"id":2,"label":"beta"},{"amount":30,"id":3,"label":"gamma"}],"seq":9,"table":"transcript_items"}
+{"kind":"db.snapshot","rows":[{"amount":10,"id":1,"label":"alpha"},{"amount":20,"id":2,"label":"beta"},{"amount":30,"id":3,"label":"gamma"}],"seq":10,"table":"transcript_items"}
+{"data":{"index":0},"event":"message.start","event_seq":1,"kind":"sse.event","seq":11,"stream_id":"synthetic-stream"}
+{"data":{"delta":"hel"},"event":"message.delta","event_seq":2,"kind":"sse.event","seq":12,"stream_id":"synthetic-stream"}
+{"data":{"delta":"lo"},"event":"message.delta","event_seq":3,"kind":"sse.event","seq":13,"stream_id":"synthetic-stream"}
+{"data":{"index":0},"event":"message.done","event_seq":4,"kind":"sse.event","seq":14,"stream_id":"synthetic-stream"}
+{"byte_length":153,"digest":"4aa3c56745300f4cd6a32c25dfcabc4af509e3bd912521174e077d6a7d066d03","kind":"prompt.join","segment_count":3,"seq":15}
+{"body_sha256":"d2decd0edef3eca014bf4ca022c0db7c74ffacc0be8957146a116f970ef54c55","event_count":15,"record":"footer"}

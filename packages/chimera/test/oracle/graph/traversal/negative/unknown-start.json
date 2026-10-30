@@ -1,0 +1,69 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "id": "traversal/negative/unknown-start",
+  "face": "traversal",
+  "kind": "negative",
+  "title": "An unknown start node returns an empty caller list, not an error",
+  "description": "getCallers on a node id that does not exist must return an empty array (the walk seeds, finds no incoming edges, and stops). The negative assertion forbids throwing or fabricating a caller.",
+  "input": {
+    "nodes": [
+      {
+        "id": "t",
+        "kind": "function",
+        "name": "t",
+        "qualifiedName": "t",
+        "filePath": "src/t.ts",
+        "language": "typescript",
+        "startLine": 1,
+        "endLine": 10,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      {
+        "id": "a",
+        "kind": "function",
+        "name": "a",
+        "qualifiedName": "a",
+        "filePath": "src/a.ts",
+        "language": "typescript",
+        "startLine": 1,
+        "endLine": 10,
+        "startColumn": 0,
+        "endColumn": 0
+      }
+    ],
+    "edges": [
+      {
+        "source": "a",
+        "target": "t",
+        "kind": "calls",
+        "line": 1
+      }
+    ],
+    "operation": "getCallers",
+    "args": {
+      "nodeId": "missing",
+      "maxDepth": 2
+    }
+  },
+  "expect": {
+    "status": "empty",
+    "match": "exact_after_canonicalization",
+    "callers": [],
+    "must_not": [
+      "throw an error for the missing start node",
+      "return a or t as a caller of missing",
+      "fall back to a full-graph scan"
+    ]
+  },
+  "provenance": {
+    "evidence": [
+      "packages/chimera/src/graph/graph/traversal.ts:278-329",
+      "packages/chimera/src/graph/graph/traversal.ts:48-54"
+    ],
+    "derivation": "Derived from getCallersRecursive: the seed is marked visited, getIncomingEdges returns empty, and the result array stays empty.",
+    "executed": false,
+    "engine": "TS GraphTraverser (code semantics)"
+  }
+}

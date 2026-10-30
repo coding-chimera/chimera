@@ -1,0 +1,83 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "id": "pattern/golden/metavar-rewrite",
+  "face": "pattern",
+  "kind": "golden",
+  "title": "$$$ARGS capture and template rewrite over a TypeScript call",
+  "description": "Pins compilePattern/findMatches/renderTemplateReplacement/applyReplacements for a simple call pattern. Captures are serialized as an object keyed by metavariable name; ranges are UTF-16 code units.",
+  "input": {
+    "language": "typescript",
+    "grammar_loaded": true,
+    "source": "const x = foo(1, 2);\n",
+    "pattern": "foo($$$ARGS)",
+    "template": "bar($$$ARGS)"
+  },
+  "expect": {
+    "status": "ok",
+    "match": "exact_after_canonicalization",
+    "canonicalization": "matches_order_is_result_array_order; captures_object_keyed_by_metavar",
+    "compile": {
+      "ok": true,
+      "rootKindType": "call_expression"
+    },
+    "matches": [
+      {
+        "range": {
+          "start": 10,
+          "end": 19
+        },
+        "replacedRange": {
+          "start": 10,
+          "end": 19
+        },
+        "captures": {
+          "ARGS": {
+            "multi": true,
+            "text": "1, 2",
+            "sourceIndent": 0,
+            "nodes": [
+              {
+                "start": 14,
+                "end": 15,
+                "text": "1"
+              },
+              {
+                "start": 15,
+                "end": 16,
+                "text": ","
+              },
+              {
+                "start": 17,
+                "end": 18,
+                "text": "2"
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "replacement": "bar(1, 2)",
+    "edit": {
+      "start": 10,
+      "end": 19,
+      "replacement": "bar(1, 2)"
+    },
+    "output": "const x = bar(1, 2);\n",
+    "must_not": [
+      "return zero matches",
+      "return the original source unchanged",
+      "include the comma in the ARGS text without the surrounding nodes"
+    ]
+  },
+  "provenance": {
+    "evidence": [
+      "packages/chimera/src/graph/pattern/pattern.ts:237-405",
+      "packages/chimera/src/graph/pattern/replacer.ts:33-79,179-217",
+      "packages/chimera/src/graph/pattern/meta-var.ts:136-198"
+    ],
+    "derivation": "Executed ensureGrammarLoaded('typescript') + compilePattern/findMatches/renderTemplateReplacement/applyReplacements on 2026-10-30.",
+    "executed": true,
+    "engine": "TS pattern port over web-tree-sitter WASM"
+  }
+}

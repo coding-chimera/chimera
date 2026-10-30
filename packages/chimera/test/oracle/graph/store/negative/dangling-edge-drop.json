@@ -1,0 +1,110 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "id": "store/negative/dangling-edge-drop",
+  "face": "store",
+  "kind": "negative",
+  "title": "A dangling edge is dropped, not inserted, and the valid edge survives",
+  "description": "insertEdges drops edges whose target is not in the batch and reports edgesDroppedDangling. The negative assertion forbids writing the dangling edge or failing the whole batch.",
+  "input": {
+    "db_state": "initialized graph schema (schema.sql + migrations applied)",
+    "fuse": false,
+    "ops": [
+      {
+        "kind": "insertNodes",
+        "nodes": [
+          {
+            "id": "fn:a",
+            "kind": "function",
+            "name": "a",
+            "qualifiedName": "a",
+            "filePath": "src/a.ts",
+            "language": "typescript",
+            "startLine": 1,
+            "endLine": 1,
+            "startColumn": 0,
+            "endColumn": 0,
+            "isExported": false
+          },
+          {
+            "id": "fn:b",
+            "kind": "function",
+            "name": "b",
+            "qualifiedName": "b",
+            "filePath": "src/a.ts",
+            "language": "typescript",
+            "startLine": 1,
+            "endLine": 1,
+            "startColumn": 0,
+            "endColumn": 0,
+            "isExported": false
+          }
+        ]
+      },
+      {
+        "kind": "insertEdges",
+        "edges": [
+          {
+            "source": "fn:a",
+            "target": "fn:b",
+            "kind": "calls",
+            "line": 1,
+            "column": 0
+          },
+          {
+            "source": "fn:a",
+            "target": "fn:missing",
+            "kind": "calls",
+            "line": 2,
+            "column": 0
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "status": "ok",
+    "match": "stats_only",
+    "stats": {
+      "nodesInserted": 2,
+      "nodesSkippedInvalid": 0,
+      "edgesInserted": 1,
+      "edgesDroppedDangling": 1,
+      "edgesDroppedNotInBatch": 0,
+      "edgesReattached": 0,
+      "refsInserted": 0,
+      "refsDroppedNotInBatch": 0,
+      "refsResurrected": 0,
+      "refsDeleted": 0,
+      "refsMarkedFailed": 0,
+      "filesDeleted": 0,
+      "filesUpserted": 0,
+      "filesSkippedUnchanged": 0
+    },
+    "row_counts": {
+      "nodes": 2,
+      "edges": 1,
+      "unresolved_refs": 0,
+      "files": 0
+    },
+    "must_not": [
+      "insert an edge whose target is fn:missing",
+      "abort the batch because one edge is dangling",
+      "report edgesDroppedDangling = 0"
+    ],
+    "volatile_fields": {
+      "walPages": "non_negative_integer",
+      "durationMs": "non_negative_number"
+    }
+  },
+  "provenance": {
+    "evidence": [
+      "packages/chimera/src/graph/store/bridge.ts:491-514",
+      "codegraph-kernel/src/store.rs:1381-1536",
+      "packages/chimera/src/graph/db/schema.sql:47-60"
+    ],
+    "derivation": "Executed StoreBridge.commit(ops, false) with one valid and one dangling edge against the darwin-arm64 kernel prebuild on 2026-10-30.",
+    "executed": true,
+    "engine": "native store bridge (codegraph-kernel.node)"
+  }
+}

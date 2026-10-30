@@ -1,0 +1,112 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "id": "resolution/negative/unknown-name",
+  "face": "resolution",
+  "kind": "negative",
+  "title": "An unknown reference name stays unresolved and creates no edge",
+  "description": "No declaration or import matches `missing`; the resolver must keep the ref in `unresolved`, report zero resolved methods, and produce no edge. The negative assertion forbids inventing a fuzzy target or silently dropping the ref from the report.",
+  "input": {
+    "project": {
+      "root": "virtual://project",
+      "files": {
+        "src/main.ts": "import { foo } from './bar';\nmissing();\n",
+        "src/bar.ts": "export function foo() { return 1; }\n"
+      }
+    },
+    "nodes": [
+      {
+        "id": "file:src/main.ts",
+        "kind": "file",
+        "name": "main.ts",
+        "qualifiedName": "src/main.ts",
+        "filePath": "src/main.ts",
+        "language": "typescript",
+        "startLine": 1,
+        "endLine": 2,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      {
+        "id": "fn:main",
+        "kind": "function",
+        "name": "main",
+        "qualifiedName": "main",
+        "filePath": "src/main.ts",
+        "language": "typescript",
+        "startLine": 2,
+        "endLine": 2,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      {
+        "id": "file:src/bar.ts",
+        "kind": "file",
+        "name": "bar.ts",
+        "qualifiedName": "src/bar.ts",
+        "filePath": "src/bar.ts",
+        "language": "typescript",
+        "startLine": 1,
+        "endLine": 1,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      {
+        "id": "fn:foo_bar",
+        "kind": "function",
+        "name": "foo",
+        "qualifiedName": "foo",
+        "filePath": "src/bar.ts",
+        "language": "typescript",
+        "startLine": 1,
+        "endLine": 1,
+        "startColumn": 0,
+        "endColumn": 0,
+        "isExported": true
+      }
+    ],
+    "refs": [
+      {
+        "fromNodeId": "fn:main",
+        "referenceName": "missing",
+        "referenceKind": "calls",
+        "line": 2,
+        "column": 0,
+        "filePath": "src/main.ts",
+        "language": "typescript"
+      }
+    ]
+  },
+  "expect": {
+    "status": "empty",
+    "match": "exact_after_canonicalization",
+    "stats": {
+      "total": 1,
+      "resolved": 0,
+      "unresolved": 1,
+      "byMethod": {}
+    },
+    "resolved": [],
+    "unresolved": [
+      {
+        "referenceName": "missing",
+        "referenceKind": "calls",
+        "fromNodeId": "fn:main"
+      }
+    ],
+    "must_not": [
+      "resolve missing to fn:foo_bar or any other node",
+      "report a non-empty byMethod",
+      "drop the ref from both resolved and unresolved"
+    ]
+  },
+  "provenance": {
+    "evidence": [
+      "packages/chimera/src/graph/resolution/index.ts:937-1010",
+      "packages/chimera/src/graph/resolution/index.ts:635-700"
+    ],
+    "derivation": "Derived from resolveOneCore's early return when no name/import/framework matches; shape checked against resolveAll's result construction.",
+    "executed": false,
+    "engine": "TS ReferenceResolver (code semantics)"
+  }
+}

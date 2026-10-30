@@ -1,0 +1,98 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "id": "query/golden/fts-prefix",
+  "face": "query",
+  "kind": "golden",
+  "title": "FTS prefix search returns exact name first, then prefix siblings",
+  "description": "Pins the FTS5 prefix path and the post-scoring order for a single-token query. BM25 scores are volatile across SQLite builds; the fixture pins order/names/term count, not float values.",
+  "input": {
+    "nodes": [
+      {
+        "id": "n_parse",
+        "kind": "function",
+        "name": "parse",
+        "qualifiedName": "parse",
+        "filePath": "src/q.ts",
+        "language": "typescript",
+        "startLine": 1,
+        "endLine": 1,
+        "startColumn": 0,
+        "endColumn": 0,
+        "isExported": false
+      },
+      {
+        "id": "n_parseQuery",
+        "kind": "function",
+        "name": "parseQuery",
+        "qualifiedName": "parseQuery",
+        "filePath": "src/q.ts",
+        "language": "typescript",
+        "startLine": 2,
+        "endLine": 2,
+        "startColumn": 0,
+        "endColumn": 0,
+        "isExported": false
+      },
+      {
+        "id": "n_parseNode",
+        "kind": "function",
+        "name": "parseNode",
+        "qualifiedName": "parseNode",
+        "filePath": "src/q.ts",
+        "language": "typescript",
+        "startLine": 3,
+        "endLine": 3,
+        "startColumn": 0,
+        "endColumn": 0,
+        "isExported": false
+      },
+      {
+        "id": "n_other",
+        "kind": "function",
+        "name": "other",
+        "qualifiedName": "other",
+        "filePath": "src/q.ts",
+        "language": "typescript",
+        "startLine": 4,
+        "endLine": 4,
+        "startColumn": 0,
+        "endColumn": 0,
+        "isExported": false
+      }
+    ],
+    "query": "parse",
+    "options": {
+      "limit": 10
+    }
+  },
+  "expect": {
+    "status": "ok",
+    "match": "exact_after_canonicalization",
+    "canonicalization": "result_order_is_significant; scores_not_compared",
+    "result_names": ["parse", "parseNode", "parseQuery"],
+    "result_ids": ["n_parse", "n_parseNode", "n_parseQuery"],
+    "terms": [
+      {
+        "term": "parse",
+        "count": 3
+      }
+    ],
+    "score_order": "desc",
+    "scores_positive": true,
+    "must_not": [
+      "include n_other in the result set",
+      "return parseQuery or parseNode before the exact name parse"
+    ]
+  },
+  "provenance": {
+    "evidence": [
+      "packages/chimera/src/graph/db/queries.ts:1483-1600",
+      "packages/chimera/src/graph/db/queries.ts:1732-1858",
+      "packages/chimera/src/graph/search/query-utils.ts:218-460"
+    ],
+    "derivation": "Executed QueryBuilder.searchNodesDetailed('parse', {limit:10}) against an initialized temp graph DB on 2026-10-30; scores observed but intentionally not pinned.",
+    "executed": true,
+    "engine": "TS QueryBuilder + SQLite FTS5"
+  }
+}

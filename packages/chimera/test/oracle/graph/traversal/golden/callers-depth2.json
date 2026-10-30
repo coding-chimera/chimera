@@ -1,0 +1,140 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "id": "traversal/golden/callers-depth2",
+  "face": "traversal",
+  "kind": "golden",
+  "title": "getCallers at depth 2 finds a, b, c exactly once",
+  "description": "Topology a->t, b->a, b->t, c->b. From t, the depth-2 caller walk must return a (1 hop), b (via a and directly), and c (2 hops), each once, in DFS/edge order.",
+  "input": {
+    "nodes": [
+      {
+        "id": "t",
+        "kind": "function",
+        "name": "t",
+        "qualifiedName": "t",
+        "filePath": "src/t.ts",
+        "language": "typescript",
+        "startLine": 1,
+        "endLine": 10,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      {
+        "id": "a",
+        "kind": "function",
+        "name": "a",
+        "qualifiedName": "a",
+        "filePath": "src/a.ts",
+        "language": "typescript",
+        "startLine": 1,
+        "endLine": 10,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      {
+        "id": "b",
+        "kind": "function",
+        "name": "b",
+        "qualifiedName": "b",
+        "filePath": "src/b.ts",
+        "language": "typescript",
+        "startLine": 1,
+        "endLine": 10,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      {
+        "id": "c",
+        "kind": "function",
+        "name": "c",
+        "qualifiedName": "c",
+        "filePath": "src/c.ts",
+        "language": "typescript",
+        "startLine": 1,
+        "endLine": 10,
+        "startColumn": 0,
+        "endColumn": 0
+      }
+    ],
+    "edges": [
+      {
+        "source": "a",
+        "target": "t",
+        "kind": "calls",
+        "line": 1
+      },
+      {
+        "source": "b",
+        "target": "a",
+        "kind": "calls",
+        "line": 2
+      },
+      {
+        "source": "b",
+        "target": "t",
+        "kind": "calls",
+        "line": 3
+      },
+      {
+        "source": "c",
+        "target": "b",
+        "kind": "calls",
+        "line": 4
+      }
+    ],
+    "operation": "getCallers",
+    "args": {
+      "nodeId": "t",
+      "maxDepth": 2
+    }
+  },
+  "expect": {
+    "status": "ok",
+    "match": "exact_after_canonicalization",
+    "canonicalization": "callers_order_is_result_array_order",
+    "callers": [
+      {
+        "nodeId": "a",
+        "edge": {
+          "source": "a",
+          "target": "t",
+          "kind": "calls",
+          "line": 1
+        }
+      },
+      {
+        "nodeId": "b",
+        "edge": {
+          "source": "b",
+          "target": "a",
+          "kind": "calls",
+          "line": 2
+        }
+      },
+      {
+        "nodeId": "c",
+        "edge": {
+          "source": "c",
+          "target": "b",
+          "kind": "calls",
+          "line": 4
+        }
+      }
+    ],
+    "must_not": [
+      "duplicate b in the result",
+      "omit c (the depth-limit re-expansion case)",
+      "include t itself as its own caller"
+    ]
+  },
+  "provenance": {
+    "evidence": [
+      "packages/chimera/src/graph/graph/traversal.ts:278-329",
+      "packages/chimera/test/graph/traversal-depth-reexpansion.test.ts:65-76"
+    ],
+    "derivation": "Executed GraphTraverser.getCallers('t', 2) over the fixed node/edge set with a fake QueryBuilder on 2026-10-30.",
+    "executed": true,
+    "engine": "TS GraphTraverser"
+  }
+}

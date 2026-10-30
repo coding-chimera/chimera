@@ -1,0 +1,142 @@
+{
+  "fixture_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "id": "resolution/golden/import-over-same-name",
+  "face": "resolution",
+  "kind": "golden",
+  "title": "Import evidence beats same-name exact-match across two files",
+  "description": "Two files export the same symbol name; main.ts imports foo from ./bar. The resolver must pick bar's foo via the import strategy, not baz's foo via exact-match, even though both candidates are exported.",
+  "input": {
+    "project": {
+      "root": "virtual://project",
+      "files": {
+        "src/main.ts": "import { foo } from './bar';\nfoo();\n",
+        "src/bar.ts": "export function foo() { return 1; }\n",
+        "src/baz.ts": "export function foo() { return 2; }\n"
+      }
+    },
+    "nodes": [
+      {
+        "id": "file:src/main.ts",
+        "kind": "file",
+        "name": "main.ts",
+        "qualifiedName": "src/main.ts",
+        "filePath": "src/main.ts",
+        "language": "typescript",
+        "startLine": 1,
+        "endLine": 2,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      {
+        "id": "fn:main",
+        "kind": "function",
+        "name": "main",
+        "qualifiedName": "main",
+        "filePath": "src/main.ts",
+        "language": "typescript",
+        "startLine": 2,
+        "endLine": 2,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      {
+        "id": "file:src/bar.ts",
+        "kind": "file",
+        "name": "bar.ts",
+        "qualifiedName": "src/bar.ts",
+        "filePath": "src/bar.ts",
+        "language": "typescript",
+        "startLine": 1,
+        "endLine": 1,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      {
+        "id": "fn:foo_bar",
+        "kind": "function",
+        "name": "foo",
+        "qualifiedName": "foo",
+        "filePath": "src/bar.ts",
+        "language": "typescript",
+        "startLine": 1,
+        "endLine": 1,
+        "startColumn": 0,
+        "endColumn": 0,
+        "isExported": true
+      },
+      {
+        "id": "file:src/baz.ts",
+        "kind": "file",
+        "name": "baz.ts",
+        "qualifiedName": "src/baz.ts",
+        "filePath": "src/baz.ts",
+        "language": "typescript",
+        "startLine": 1,
+        "endLine": 1,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      {
+        "id": "fn:foo_baz",
+        "kind": "function",
+        "name": "foo",
+        "qualifiedName": "foo",
+        "filePath": "src/baz.ts",
+        "language": "typescript",
+        "startLine": 1,
+        "endLine": 1,
+        "startColumn": 0,
+        "endColumn": 0,
+        "isExported": true
+      }
+    ],
+    "refs": [
+      {
+        "fromNodeId": "fn:main",
+        "referenceName": "foo",
+        "referenceKind": "calls",
+        "line": 2,
+        "column": 0,
+        "filePath": "src/main.ts",
+        "language": "typescript"
+      }
+    ]
+  },
+  "expect": {
+    "status": "ok",
+    "match": "exact_after_canonicalization",
+    "canonicalization": "ids_symbolic; resolved_sorted_by(referenceName,resolvedBy,targetNodeId)",
+    "stats": {
+      "total": 1,
+      "resolved": 1,
+      "unresolved": 0,
+      "byMethod": {
+        "import": 1
+      }
+    },
+    "resolved": [
+      {
+        "targetNodeId": "fn:foo_bar",
+        "resolvedBy": "import",
+        "referenceName": "foo",
+        "referenceKind": "calls"
+      }
+    ],
+    "unresolved": [],
+    "must_not": [
+      "resolve foo to fn:foo_baz",
+      "report resolvedBy exact-match for this ref"
+    ]
+  },
+  "provenance": {
+    "evidence": [
+      "packages/chimera/src/graph/resolution/index.ts:937-1190",
+      "packages/chimera/src/graph/resolution/import-resolver.ts:985-1085",
+      "packages/chimera/src/graph/store/loader.ts:459-468"
+    ],
+    "derivation": "Executed ReferenceResolver.resolveAll against a temp project with two same-name exported functions and an import edge; TS arm (no native bridge attached in the derivation harness).",
+    "executed": true,
+    "engine": "TS ReferenceResolver"
+  }
+}

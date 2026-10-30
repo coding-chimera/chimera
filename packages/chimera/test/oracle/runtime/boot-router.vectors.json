@@ -1,0 +1,93 @@
+{
+  "schema": "chimera.runtime.oracle.v1",
+  "contract_rev": "cr-2026-10-30-r1",
+  "work_id": "WP-07",
+  "area": "boot-router",
+  "owner": "runtime owner",
+  "generated_at": "2026-10-30",
+  "notes": "静态向量；本轮不执行。用于冻结 TS 进程内 server 与 host Unrouted 的现状，并为 host front door 目标留门。",
+  "vectors": [
+    {
+      "id": "RT-BOOT-001",
+      "title": "当前 serve/web/TUI worker 仍通过 Server.listen 进程内启动",
+      "class": "current-state",
+      "platform": ["darwin", "linux"],
+      "workdir": "repo-root",
+      "requires": ["grep"],
+      "command": "set -euo pipefail\nfor f in packages/chimera/src/cli/cmd/serve.ts packages/chimera/src/cli/cmd/web.ts packages/chimera/src/cli/cmd/tui/worker.ts; do grep -q \"Server.listen\" \"$f\"; done\necho \"in-process server boot confirmed\"",
+      "pass_condition": {
+        "exit_code": 0,
+        "stdout_contains": ["in-process server boot confirmed"]
+      },
+      "expected_today": "pass",
+      "blocked_by": null,
+      "evidence": [
+        "packages/chimera/src/cli/cmd/serve.ts:19",
+        "packages/chimera/src/cli/cmd/web.ts:49",
+        "packages/chimera/src/cli/cmd/tui/worker.ts:55,99",
+        "packages/chimera/src/server/server.ts:199-237"
+      ],
+      "cleanup": "无"
+    },
+    {
+      "id": "RT-BOOT-002",
+      "title": "host bin 仍是 Unrouted，所有请求返回 not_implemented",
+      "class": "current-state",
+      "platform": ["darwin", "linux"],
+      "workdir": "repo-root",
+      "requires": ["grep"],
+      "command": "grep -q \"struct Unrouted\" chimera-host/src/bin/chimera-host.rs\ngrep -q \"request routing is not wired\" chimera-host/src/bin/chimera-host.rs\necho \"unrouted confirmed\"",
+      "pass_condition": {
+        "exit_code": 0,
+        "stdout_contains": ["unrouted confirmed"]
+      },
+      "expected_today": "pass",
+      "blocked_by": null,
+      "evidence": [
+        "chimera-host/src/bin/chimera-host.rs:194-207,315"
+      ],
+      "cleanup": "无"
+    },
+    {
+      "id": "RT-BOOT-003",
+      "title": "host 源码没有 HTTP listener",
+      "class": "current-state",
+      "platform": ["darwin", "linux"],
+      "workdir": "repo-root",
+      "requires": ["rg"],
+      "command": "if rg -n \"TcpListener|HttpServer|hyper::Server|axum::\" chimera-host/src >/dev/null; then echo \"http found\"; exit 1; fi\necho \"no host http listener\"",
+      "pass_condition": {
+        "exit_code": 0,
+        "stdout_contains": ["no host http listener"]
+      },
+      "expected_today": "pass",
+      "blocked_by": null,
+      "evidence": [
+        "chimera-host/src/lib.rs:31-44",
+        "packages/chimera/src/server/server.ts:199-237"
+      ],
+      "cleanup": "无"
+    },
+    {
+      "id": "RT-BOOT-004",
+      "title": "host front door 启动后 /global/health 返回 healthy",
+      "class": "target-acceptance",
+      "platform": ["darwin", "linux"],
+      "workdir": "repo-root",
+      "requires": ["built chimera-host binary", "curl", "free local port via PORT"],
+      "command": "set -euo pipefail\nroot=\"$(mktemp -d)\"\nport=\"${PORT:?set PORT to a free local port}\"\nhost_bin=\"${HOST_BIN:-chimera-host/target/debug/chimera-host}\"\ntest -x \"$host_bin\"\nCHIMERA_HOST_HTTP_PORT=\"$port\" \"$host_bin\" \"$root\" --db \"$root/host.db\" >\"$root/out\" 2>\"$root/err\" &\npid=$!\ntrap 'kill -TERM \"$pid\" 2>/dev/null || true; wait \"$pid\" 2>/dev/null || true; rm -rf \"$root\"' EXIT\nfor i in $(seq 1 50); do if curl -fsS \"http://localhost:$port/global/health\" >\"$root/health\" 2>/dev/null; then break; fi; sleep 0.2; done\ngrep -q '\"healthy\":true' \"$root/health\"\nprintf 'health=ok\\n'",
+      "pass_condition": {
+        "exit_code": 0,
+        "stdout_contains": ["health=ok"]
+      },
+      "expected_today": "fail",
+      "blocked_by": "T1",
+      "evidence": [
+        "packages/chimera/src/server/routes/global.ts:45-62",
+        "packages/chimera/src/server/routes/instance/httpapi/groups/global.ts:46"
+      ],
+      "cleanup": "trap 终止 host 并删除临时目录",
+      "notes": "CHIMERA_HOST_HTTP_PORT 是目标契约的候选 env；实现时需在 boot-path-capability 中冻结。"
+    }
+  ]
+}

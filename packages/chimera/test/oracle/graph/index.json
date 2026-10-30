@@ -1,0 +1,120 @@
+{
+  "index_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "work_id": "WP-06",
+  "schema": "schema.json",
+  "fixtures": [
+    {
+      "id": "extraction/golden/ts-basic",
+      "path": "extraction/golden/ts-basic.json",
+      "face": "extraction",
+      "kind": "golden",
+      "title": "TypeScript file/import/function/statement nodes, contains edges, and refs",
+      "pins": ["node rows", "contains edges", "import/calls refs", "symbolic id canonicalization"]
+    },
+    {
+      "id": "extraction/negative/kernel-defer-parse-error",
+      "path": "extraction/negative/kernel-defer-parse-error.json",
+      "face": "extraction",
+      "kind": "negative",
+      "title": "Kernel-routed TypeScript with a parse error defers to the wasm arm",
+      "pins": ["defer: signal", "defer memo", "wasm fallback"]
+    },
+    {
+      "id": "store/golden/commit-batch",
+      "path": "store/golden/commit-batch.json",
+      "face": "store",
+      "kind": "golden",
+      "title": "One native commit batch: 3 nodes, 2 edges, 2 refs, 1 file",
+      "pins": ["StoreWriteStats counters", "row counts", "volatile field policy"]
+    },
+    {
+      "id": "store/negative/dangling-edge-drop",
+      "path": "store/negative/dangling-edge-drop.json",
+      "face": "store",
+      "kind": "negative",
+      "title": "A dangling edge is dropped, not inserted, and the valid edge survives",
+      "pins": ["edgesDroppedDangling", "batch not aborted", "no dangling row"]
+    },
+    {
+      "id": "resolution/golden/import-over-same-name",
+      "path": "resolution/golden/import-over-same-name.json",
+      "face": "resolution",
+      "kind": "golden",
+      "title": "Import evidence beats same-name exact-match across two files",
+      "pins": ["resolvedBy import", "target selection", "byMethod"]
+    },
+    {
+      "id": "resolution/negative/unknown-name",
+      "path": "resolution/negative/unknown-name.json",
+      "face": "resolution",
+      "kind": "negative",
+      "title": "An unknown reference name stays unresolved and creates no edge",
+      "pins": ["unresolved bucket", "empty byMethod", "no invented target"]
+    },
+    {
+      "id": "query/golden/fts-prefix",
+      "path": "query/golden/fts-prefix.json",
+      "face": "query",
+      "kind": "golden",
+      "title": "FTS prefix search returns exact name first, then prefix siblings",
+      "pins": ["result order", "term count", "score order"]
+    },
+    {
+      "id": "query/negative/no-match-fallbacks",
+      "path": "query/negative/no-match-fallbacks.json",
+      "face": "query",
+      "kind": "negative",
+      "title": "FTS, LIKE and fuzzy all miss; the search returns empty",
+      "pins": ["empty result", "term count 0", "fallback chain"]
+    },
+    {
+      "id": "traversal/golden/callers-depth2",
+      "path": "traversal/golden/callers-depth2.json",
+      "face": "traversal",
+      "kind": "golden",
+      "title": "getCallers at depth 2 finds a, b, c exactly once",
+      "pins": ["depth re-expansion", "result order", "edge attribution"]
+    },
+    {
+      "id": "traversal/negative/unknown-start",
+      "path": "traversal/negative/unknown-start.json",
+      "face": "traversal",
+      "kind": "negative",
+      "title": "An unknown start node returns an empty caller list, not an error",
+      "pins": ["empty result", "no throw", "no full-graph fallback"]
+    },
+    {
+      "id": "pattern/golden/metavar-rewrite",
+      "path": "pattern/golden/metavar-rewrite.json",
+      "face": "pattern",
+      "kind": "golden",
+      "title": "$$$ARGS capture and template rewrite over a TypeScript call",
+      "pins": ["compile ok", "match range", "captures", "rewrite output"]
+    },
+    {
+      "id": "pattern/golden/utf16-astral",
+      "path": "pattern/golden/utf16-astral.json",
+      "face": "pattern",
+      "kind": "golden",
+      "title": "Astral character: pattern ranges are UTF-16 code units, not UTF-8 bytes",
+      "pins": ["UTF-16 range", "astral capture", "byte-range counter-example"]
+    },
+    {
+      "id": "pattern/negative/parse-failed",
+      "path": "pattern/negative/parse-failed.json",
+      "face": "pattern",
+      "kind": "negative",
+      "title": "A malformed pattern fails compilation with parse-failed, not empty matches",
+      "pins": ["parse-failed error", "no partial pattern", "no regex fallback"]
+    }
+  ],
+  "coverage": {
+    "extraction": { "golden": 1, "negative": 1 },
+    "store": { "golden": 1, "negative": 1 },
+    "resolution": { "golden": 1, "negative": 1 },
+    "query": { "golden": 1, "negative": 1 },
+    "traversal": { "golden": 1, "negative": 1 },
+    "pattern": { "golden": 2, "negative": 1 }
+  }
+}

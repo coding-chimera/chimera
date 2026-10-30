@@ -1,0 +1,71 @@
+{
+  "schema": "chimera.runtime.oracle.v1",
+  "contract_rev": "cr-2026-10-30-r1",
+  "work_id": "WP-07",
+  "area": "windows",
+  "owner": "runtime owner",
+  "generated_at": "2026-10-30",
+  "notes": "静态向量；本轮不执行。当前 Windows 无 host 产物，只能 legacy；D3 未拍板前不实现 named pipe。",
+  "vectors": [
+    {
+      "id": "RT-WIN-001",
+      "title": "chimera-host 不能为 Windows target 编译（std::os::unix）",
+      "class": "current-state",
+      "platform": ["darwin", "linux", "windows"],
+      "workdir": "repo-root",
+      "requires": ["Rust toolchain", "rustup target add x86_64-pc-windows-msvc", "cargo"],
+      "command": "set +e\nout=\"$(cargo check --manifest-path chimera-host/Cargo.toml --target x86_64-pc-windows-msvc 2>&1)\"\nstatus=$?\nset -e\nprintf '%s\\n' \"$out\" | grep -q \"std::os::unix\\|unresolved import\"\nif [ \"$status\" -eq 0 ]; then echo \"unexpected windows build\"; exit 1; fi\necho \"windows host build fails as expected\"",
+      "pass_condition": {
+        "exit_code": 0,
+        "stdout_contains": ["windows host build fails as expected"]
+      },
+      "expected_today": "pass",
+      "blocked_by": null,
+      "evidence": [
+        "chimera-host/src/host.rs:29-30",
+        "chimera-host/src/bin/chimera-host.rs:190"
+      ],
+      "cleanup": "cargo 产物保留在 chimera-host/target；不写用户 home"
+    },
+    {
+      "id": "RT-WIN-002",
+      "title": "publish 的 host-prebuild 矩阵不含 win32",
+      "class": "current-state",
+      "platform": ["darwin", "linux"],
+      "workdir": "repo-root",
+      "requires": ["sed", "grep"],
+      "command": "set -euo pipefail\ngrep -q '^  host-prebuild:' .github/workflows/publish.yml\nsection=\"$(sed -n '/^  host-prebuild:/,/^  build-cli:/p' .github/workflows/publish.yml)\"\ntest -n \"$section\"\nif printf '%s' \"$section\" | grep -q \"win32\"; then echo \"windows host leg found\"; exit 1; fi\necho \"no windows host leg\"",
+      "pass_condition": {
+        "exit_code": 0,
+        "stdout_contains": ["no windows host leg"]
+      },
+      "expected_today": "pass",
+      "blocked_by": null,
+      "evidence": [
+        ".github/workflows/publish.yml:173-190"
+      ],
+      "cleanup": "无"
+    },
+    {
+      "id": "RT-WIN-003",
+      "title": "Windows named pipe 上完成 hello/ready/ack，错误身份返回 unauthorized",
+      "class": "target-acceptance",
+      "platform": ["windows"],
+      "workdir": "repo-root",
+      "requires": ["Windows runner", "Rust toolchain", "cargo", "bash"],
+      "command": "set -euo pipefail\ntest_name=\"windows_named_pipe_handshake\"\nlist=\"$(cargo test --manifest-path chimera-host/Cargo.toml -- --list 2>&1)\"\nprintf '%s\\n' \"$list\" | grep -E \"${test_name}: test$\"\nout=\"$(cargo test --manifest-path chimera-host/Cargo.toml \"$test_name\" 2>&1)\" || { printf '%s\\n' \"$out\"; exit 1; }\nprintf '%s\\n' \"$out\"\npassed=\"$(printf '%s\\n' \"$out\" | sed -n 's/^test result: ok\\. \\([0-9][0-9]*\\) passed;.*/\\1/p' | awk '{s += $1} END {print s + 0}')\"\nprintf 'test_exists=yes passed=%s\\n' \"$passed\"\ntest \"$passed\" -eq 1",
+      "pass_condition": {
+        "exit_code": 0,
+        "stdout_contains": ["test_exists=yes passed=1"]
+      },
+      "expected_today": "fail",
+      "blocked_by": "D3 + T1",
+      "evidence": [
+        "packages/chimera/specs/rust-host/h2-data-plane.md:39",
+        ".github/workflows/publish.yml:189"
+      ],
+      "cleanup": "无",
+      "notes": "D3 决定是否支持 Windows host；不支持时本向量标记为 not-applicable，而不是 pass。目标测试名固定为 windows_named_pipe_handshake；命令先用 cargo test -- --list 确认存在，再要求总计恰好 1 passed。"
+    }
+  ]
+}
