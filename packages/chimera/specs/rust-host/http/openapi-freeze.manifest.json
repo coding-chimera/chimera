@@ -1,0 +1,147 @@
+{
+  "schema_version": 1,
+  "contract_rev": "cr-2026-10-30-r1",
+  "work_id": "WP-04",
+  "kind": "openapi-freeze-manifest",
+  "authority": {
+    "live_source": "Server.openapi()",
+    "server_entry": "packages/chimera/src/server/server.ts:159-173",
+    "cli_entry": "packages/chimera/src/cli/cmd/generate.ts:24-66",
+    "note": "Server.openapi() is OpenApi.fromApi(PublicApi); the Hono-derived spec is parity-only via Server.openapiHono() at packages/chimera/src/server/server.ts:178-195."
+  },
+  "generation_chain": [
+    {
+      "step": "cli-generate",
+      "path": "packages/chimera/src/cli/cmd/generate.ts",
+      "lines": "24-66",
+      "command": "cd packages/chimera && bun dev generate",
+      "output": "prettier-formatted OpenAPI JSON on stdout; x-codeSamples injected per operation"
+    },
+    {
+      "step": "sdk-generate",
+      "path": "packages/sdk/js/script/build.ts",
+      "lines": "12-48",
+      "command": "cd packages/sdk/js && bun script/build.ts",
+      "output": "packages/sdk/js/src/v2/gen/** via @hey-api/openapi-ts 0.97.3; transient openapi.json removed at line 54"
+    },
+    {
+      "step": "inventory-check",
+      "path": "packages/chimera/script/httpapi-inventory.ts",
+      "lines": "213-288",
+      "command": "cd packages/chimera && bun script/httpapi-inventory.ts --check",
+      "output": "exit 0 when test/fixtures/httpapi-inventory.json matches live Server.openapi(); exit 1 on drift"
+    }
+  ],
+  "frozen_artifacts": {
+    "inventory_fixture": {
+      "path": "packages/chimera/test/fixtures/httpapi-inventory.json",
+      "sha256": "e91fdde891c3ad7f5486f7a44dc2164a102164e92136f26819cc507bc175b757",
+      "version": 1,
+      "source": "Server.openapi()",
+      "pathCount": 142,
+      "operationCount": 170,
+      "migrationClassCounts": {
+        "host-first": 96,
+        "proxy-first": 50,
+        "special": 24
+      },
+      "parityCoverageCounts": {
+        "exercise": 116,
+        "none": 54
+      },
+      "commit": "5b6078a3b670e7538cdca77840d1bac69eff7764",
+      "commit_subject": "feat(migration): add H0 route inventory and process-tree benchmark"
+    },
+    "inventory_frozen": {
+      "path": "packages/chimera/test/oracle/http/httpapi-inventory.frozen.json",
+      "sha256": "e91fdde891c3ad7f5486f7a44dc2164a102164e92136f26819cc507bc175b757",
+      "bytes": 84182,
+      "note": "byte-for-byte copy of the live inventory fixture; the checker verifies the hash and operation set"
+    },
+    "coverage_170": {
+      "path": "packages/chimera/test/oracle/http/coverage-170.json",
+      "sha256": "d03f982e8503e39e9fe395d7a1b51eb154851d140f9f21ce7c799325eacf4291",
+      "rows": 170,
+      "note": "frozen operation list with per-row semantic owner and coverage-gap action"
+    },
+    "triage_96": {
+      "path": "packages/chimera/test/oracle/http/triage-96.json",
+      "sha256": "8ae26bad89c786a21bb5e563b3885312823eab8563b50d5134e1ae4be820461d",
+      "rows": 96,
+      "note": "host-first candidates re-triaged by real TS session dependency; constructionLayerDeps lists the 30 handler-clean but layer-blocked entries"
+    }
+  },
+  "full_openapi_spec": {
+    "status": "G0-environment-item",
+    "reason": "The checkout has no committed live full OpenAPI document. packages/sdk/openapi.json is stale (109 paths / 127 operations, openapi 3.1.0, committed 2026-05-07) and packages/docs/openapi.json is a symlink to it. WP-04 scope forbids regenerating the spec in this round.",
+    "artifact_dir": "packages/chimera/dist/openapi-freeze",
+    "acquisition": {
+      "effect_httpapi": "cd packages/chimera && mkdir -p dist/openapi-freeze && bun dev generate > dist/openapi-freeze/openapi.json",
+      "hono_parity": "cd packages/chimera && mkdir -p dist/openapi-freeze && bun dev generate --hono > dist/openapi-freeze/openapi.hono.json",
+      "sha256": "cd packages/chimera && shasum -a 256 dist/openapi-freeze/openapi.json dist/openapi-freeze/openapi.hono.json | tee dist/openapi-freeze/sha256.txt",
+      "operation_list_check": "cd packages/chimera && bun script/httpapi-inventory.ts --check",
+      "existing_test": "cd packages/chimera && bun test --timeout 30000 test/server/httpapi-inventory.test.ts"
+    },
+    "expected": {
+      "pathCount": 142,
+      "operationCount": 170
+    },
+    "capture_requirements": [
+      "record sha256 of the captured openapi.json",
+      "compare path set and operationId set against coverage-170.json",
+      "compare Effect HttpApi output against --hono output; differences must be listed as approved_delta or fixed",
+      "do not commit the captured spec unless the parent decides to version it"
+    ]
+  },
+  "stale_artifacts": [
+    {
+      "path": "packages/sdk/openapi.json",
+      "status": "stale-do-not-use-as-live-authority",
+      "sha256": "327d5495e4a06072a19f9f4440e0d400ab3a80627807f250bcde6c981b2dd1a2",
+      "observed": {
+        "openapi": "3.1.0",
+        "pathCount": 109,
+        "operationCount": 127
+      },
+      "commit": "bb2f4ff22e5261662b3781dcee2a8a667de5a965",
+      "commit_date": "2026-05-07",
+      "note": "Historical SDK input, not the current server surface; plan line 25 explicitly forbids treating it as live authority."
+    },
+    {
+      "path": "packages/docs/openapi.json",
+      "status": "symlink-to-stale",
+      "target": "../sdk/openapi.json"
+    }
+  ],
+  "g0_items": [
+    {
+      "id": "G0-HTTP-01",
+      "action": "Capture the full live Effect HttpApi OpenAPI document",
+      "command": "cd packages/chimera && mkdir -p dist/openapi-freeze && bun dev generate > dist/openapi-freeze/openapi.json",
+      "acceptance": "pathCount=142, operationCount=170, operationId set equals coverage-170.json"
+    },
+    {
+      "id": "G0-HTTP-02",
+      "action": "Capture the Hono parity document and diff it against G0-HTTP-01",
+      "command": "cd packages/chimera && mkdir -p dist/openapi-freeze && bun dev generate --hono > dist/openapi-freeze/openapi.hono.json",
+      "acceptance": "every difference is classified as approved_delta with reason/expected behavior/affected contract/test"
+    },
+    {
+      "id": "G0-HTTP-03",
+      "action": "Run the SDK regeneration drift gate on a clean checkout",
+      "command": "cd packages/sdk/js && bun script/build.ts",
+      "acceptance": "zero diff under packages/sdk/js/src/v2/gen against committed HEAD (git diff HEAD --exit-code) or an explicit approved_delta; worktree-captured baseline hashes alone are not sufficient"
+    },
+    {
+      "id": "G0-HTTP-04",
+      "action": "Resolve the pre-existing types.gen.ts worktree delta owned by another session",
+      "command": "git diff HEAD -- packages/sdk/js/src/v2/gen/types.gen.ts",
+      "acceptance": "external session commits or reverts the delta; this package does not record approved_delta. If it lands before G0, re-record sdk-drift-baseline.json from committed HEAD; otherwise G0-HTTP-03 is blocked, not passed"
+    }
+  ],
+  "determinism": {
+    "json_format": "prettier parser=json, printWidth=120 (packages/chimera/src/cli/cmd/generate.ts:47-57)",
+    "sdk_output": "clean=true (packages/sdk/js/script/build.ts:23-29), so removed operations disappear from src/v2/gen",
+    "comparison": "byte hash + git diff HEAD; operation-set comparison is secondary evidence"
+  }
+}

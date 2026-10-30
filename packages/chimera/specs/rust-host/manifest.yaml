@@ -1,0 +1,282 @@
+# Chimera 全量 Rust 化 · work manifest（WP-01 交付）
+# 依据：RUST_FULL_MIGRATION_PLAN.md §8 / §9 / §13 / §16（2026-10-30 工作树版本）
+# 机检字段：每个 works 条目均含 contract_rev / owner / owned_files / base_hash
+schema_version: 1
+manifest_owner: parent
+contract_rev: cr-2026-10-30-r1
+contract_rev_rule: "cr-YYYY-MM-DD-rN；共享契约变更才递增；rebase/merge 只更新 base_hash"
+partition_table: packages/chimera/specs/rust-host/partition-table.md
+scope_decisions: packages/chimera/specs/rust-host/a0-scope-decisions.md
+
+state_machine:
+  states: [queued, building, reviewed, verified, integrated]
+  exceptions: [blocked, error]
+  rule: "异常显式标 blocked/error，不得静默跳过；重跑按 work_id + attempt 定位"
+
+scheduling:
+  model_field: "orche.agent 只接受 prompt/agent/model/label/schema"
+  variant_field: "variant 由 dispatch 自动补最高非 ultra；orche.agent 不暴露 variant"
+  note: "model/variant 只记录派发事实，不承诺 per-agent variant 选择"
+
+base:
+  commit: 9600ee7f49ddcb065a33511f21f570d2b2d13a19
+  commit_subject: "docs: add GPUI desktop app plan and full Rust migration plan"
+  plan_path: RUST_FULL_MIGRATION_PLAN.md
+  plan_sha256: 7b83b54e495fd7ef3126567ff409a4b209c25f44d62acdb74c5687f2f3247a03
+  committed_plan_sha256: 444b9461323b35af4a03f7143cbdafd8d15665d6e2bc94c7bf8da5d871d4d375
+  worktree_dirty: true
+  note: "base_hash 一律等于当前 HEAD；file_hashes 在 WP 开工时记录；WP-01 自指文件在退出时补"
+
+roles:
+  parent: "门禁、契约签定与集成裁决，不写业务实现"
+  domain-owner: "业务域单写者，只写本包 owned_files"
+
+external_gates:
+  A0: "parent 门：范围与最少决策；不是工作包，不拥有文件"
+  G0: "WP-01..WP-10 出口 + W0 oracle 聚合；未过不得写生产迁移代码"
+
+works:
+  - work_id: WP-01
+    scope: "范围/base 指纹、共享契约约定与 work manifest"
+    owner: parent
+    role: parent
+    dependencies: [A0]
+    owned_files:
+      - packages/chimera/specs/rust-host/manifest.yaml
+      - packages/chimera/specs/rust-host/partition-table.md
+      - packages/chimera/specs/rust-host/a0-scope-decisions.md
+    base_hash: 9600ee7f49ddcb065a33511f21f570d2b2d13a19
+    file_hashes: {}
+    contract_rev: cr-2026-10-30-r1
+    model: "deepseek-v4.1-flash（内部中转 provider，部署后缀按审计规则省略）"
+    variant: auto
+    deliverables:
+      - packages/chimera/specs/rust-host/manifest.yaml
+      - packages/chimera/specs/rust-host/partition-table.md
+      - packages/chimera/specs/rust-host/a0-scope-decisions.md
+    dod: "manifest 四字段可机检；owned_files 两两交集为空；分区表覆盖 WP-02..WP-10；contract_rev 锁定"
+    oracle_commands: []
+    status: verified
+    attempt: 1
+    result_refs: []
+    approved_delta: []
+
+  - work_id: WP-02
+    scope: "W0 recorder/harness（tool result、DB、SSE、prompt 分段）"
+    owner: oracle owner
+    role: domain-owner
+    dependencies: [WP-01]
+    owned_files:
+      - packages/chimera/test/oracle/transcript/**
+    base_hash: 9600ee7f49ddcb065a33511f21f570d2b2d13a19
+    file_hashes: {}
+    contract_rev: cr-2026-10-30-r1
+    model: "deepseek-v4.1-flash（内部中转 provider，部署后缀按审计规则省略）"
+    variant: auto
+    deliverables:
+      - packages/chimera/test/oracle/transcript/
+    dod: "同输入 TS 双臂零 diff；两臂隔离目录/DB，完整记录可重放；确定性层与因果层各 ≥1 组 golden + 1 组负例"
+    oracle_commands:
+      - "cd packages/chimera && bun test --timeout 30000 test/oracle/transcript/transcript.test.ts"
+      - "cd packages/chimera && bun run test/oracle/transcript/run.ts"
+    status: verified
+    attempt: 1
+    result_refs:
+      - "review pass-with-issues 2026-10-30 已修正；双臂=确定性证明非跨实现 parity，已知限制待 G0 拍板 approved_delta"
+    approved_delta: []
+
+  - work_id: WP-03
+    scope: "W0 比较器、故障分类与统计门定义"
+    owner: oracle owner
+    role: domain-owner
+    dependencies: [WP-02]
+    owned_files:
+      - packages/chimera/test/oracle/faults/**
+      - packages/chimera/test/oracle/baselines/**
+      - packages/chimera/test/oracle/compare/**
+    base_hash: 9600ee7f49ddcb065a33511f21f570d2b2d13a19
+    file_hashes: {}
+    contract_rev: cr-2026-10-30-r1
+    model: TBD
+    variant: auto
+    deliverables:
+      - packages/chimera/test/oracle/faults/
+      - packages/chimera/test/oracle/baselines/
+      - packages/chimera/test/oracle/compare/
+    dod: "fault matrix 覆盖丢失/乱序/重复/中断/部分写/超时/取消/重放 8 类，每类有注入 fixture 与期望判定；比较器在故意注入下必须报错（meta-test）；统计层给出同环境重复基线与噪声带"
+    oracle_commands: []
+    status: queued
+    attempt: 0
+    result_refs: []
+    approved_delta: []
+
+  - work_id: WP-04
+    scope: "live OpenAPI/inventory 冻结与 SDK 漂移验证"
+    owner: HTTP contract owner
+    role: domain-owner
+    dependencies: [WP-01]
+    owned_files:
+      - packages/chimera/specs/rust-host/http/**
+      - packages/chimera/test/oracle/http/**
+    base_hash: 9600ee7f49ddcb065a33511f21f570d2b2d13a19
+    file_hashes: {}
+    contract_rev: cr-2026-10-30-r1
+    model: "deepseek-v4.1-flash（内部中转 provider，部署后缀按审计规则省略）"
+    variant: auto
+    deliverables:
+      - packages/chimera/specs/rust-host/http/
+      - packages/chimera/test/oracle/http/
+    dod: "正式生成链可复验；116/54 覆盖差距逐项有 owner；96 候选按真实依赖重新分诊并产出 host-first/依赖 session 二分清单；SDK 重生成零 diff 或显式 approved_delta"
+    oracle_commands:
+      - "cd packages/chimera && bun test/oracle/http/verify-http-contract.ts"
+      - "cd packages/chimera && bun test --timeout 30000 test/server/httpapi-inventory.test.ts"
+    status: verified
+    attempt: 1
+    result_refs:
+      - "review pass-with-issues 2026-10-30 已修正；30 条 layer 构造依赖补标 [L]；types.gen.ts 外部 delta 登记 external-blocked（D-WP04-4）；完整 spec 冻结与 baseline 重录为 G0 环境项"
+    approved_delta: []
+
+  - work_id: WP-05
+    scope: "库/表权威、schema/migrator、ACK/回退/保留契约"
+    owner: storage owner
+    role: domain-owner
+    dependencies: [WP-01]
+    owned_files:
+      - packages/chimera/specs/rust-host/authority/**
+      - packages/chimera/test/oracle/storage/**
+    base_hash: 9600ee7f49ddcb065a33511f21f570d2b2d13a19
+    file_hashes: {}
+    contract_rev: cr-2026-10-30-r1
+    model: "deepseek-v4.1-flash（内部中转 provider，部署后缀按审计规则省略）"
+    variant: auto
+    deliverables:
+      - packages/chimera/specs/rust-host/authority/
+      - packages/chimera/test/oracle/storage/
+    dod: "每表一行含 owner/migrator/reader/writer/可重建性/恢复/保留/换权协议 8 列；已应用迁移不改；跨库投影恢复演练 ≥1 次（kill -9 + 重启对账）"
+    oracle_commands:
+      - "cd packages/chimera && bun test/oracle/storage/matrix-check.ts"
+      - "cd packages/chimera && bun test/oracle/storage/cross-db-projection-drill.ts"
+    status: verified
+    attempt: 1
+    result_refs:
+      - "review pass-with-issues 2026-10-30 已修正：v5 migrator、process_registry 恢复列、行号补齐；recovery-matrix/h2-data-plane 旧说法待 parent 另派修复"
+    approved_delta: []
+
+  - work_id: WP-06
+    scope: "graph 资产清点、core/NAPI 拆层设计与 parity fixture"
+    owner: graph owner
+    role: domain-owner
+    dependencies: [WP-01]
+    owned_files:
+      - packages/chimera/specs/rust-host/graph/**
+      - packages/chimera/test/oracle/graph/**
+    base_hash: 9600ee7f49ddcb065a33511f21f570d2b2d13a19
+    file_hashes: {}
+    contract_rev: cr-2026-10-30-r1
+    model: "deepseek-v4.1-flash（内部中转 provider，部署后缀按审计规则省略）"
+    variant: auto
+    deliverables:
+      - packages/chimera/specs/rust-host/graph/
+      - packages/chimera/test/oracle/graph/
+    dod: "extraction/store/resolution/query/traversal/pattern 六面各有 ≥1 组 golden + 1 组负例；52 个 NAPI 函数逐个映射到 core 入口或标注保留；UTF-8/UTF-16、pattern/search/框架 fallback、daemon writer 归属明确；不实现生产 core"
+    oracle_commands:
+      - "cd packages/chimera && bun run test/oracle/graph/validate-fixtures.ts"
+    status: verified
+    attempt: 1
+    result_refs:
+      - "review pass-with-issues 2026-10-30 已修正：types.ts/parse-error/initialize/layout.ts 引用行号"
+    approved_delta: []
+
+  - work_id: WP-07
+    scope: "runtime/router/boot-path-capability/launcher 与平台契约"
+    owner: runtime owner
+    role: domain-owner
+    dependencies: [WP-01]
+    owned_files:
+      - packages/chimera/specs/rust-host/runtime/**
+      - packages/chimera/test/oracle/runtime/**
+    base_hash: 9600ee7f49ddcb065a33511f21f570d2b2d13a19
+    file_hashes: {}
+    contract_rev: cr-2026-10-30-r1
+    model: "deepseek-v4.1-flash（内部中转 provider，部署后缀按审计规则省略）"
+    variant: auto
+    deliverables:
+      - packages/chimera/specs/rust-host/runtime/
+      - packages/chimera/test/oracle/runtime/
+    dod: "H1/H2 能力表逐项标 已实现/未接线/未实现；关闭/重启、IPC trust、Windows、两变体安装各 ≥1 条可执行验收向量；不实现生产 runtime"
+    oracle_commands:
+      - "验收向量为静态 JSON（21 条 RT-*），G0 环境按 test/oracle/runtime/README.md 程序执行"
+    status: verified
+    attempt: 1
+    result_refs:
+      - "review pass-with-issues 2026-10-30 已修正：假通过向量硬化、H1-14 改标未接线、H1-07/H2-11 补证据、RT-WIN-002/RT-INST-004 加固"
+    approved_delta: []
+
+  - work_id: WP-08
+    scope: "首个 provider profile 的协议/请求/流/auth fixture 与 genai 准入规格"
+    owner: provider owner
+    role: domain-owner
+    dependencies: [WP-01, WP-02]
+    owned_files:
+      - packages/chimera/specs/rust-host/provider/**
+      - packages/chimera/test/oracle/provider/**
+    base_hash: 9600ee7f49ddcb065a33511f21f570d2b2d13a19
+    file_hashes: {}
+    contract_rev: cr-2026-10-30-r1
+    model: TBD
+    variant: auto
+    deliverables:
+      - packages/chimera/specs/rust-host/provider/
+      - packages/chimera/test/oracle/provider/
+    dod: "profile 表至少列 Chat/API-key、Responses/API-key、Responses/OAuth、WS、native tool_search、compaction 六项，每项标 genai 可接管/需兼容/未覆盖；含 hosted tools、重试与刷新归属；对账保序；只出规格，不实现生产 transport"
+    oracle_commands: []
+    status: queued
+    attempt: 0
+    result_refs: []
+    approved_delta: []
+
+  - work_id: WP-09
+    scope: "hook IPC/JS 兼容拓扑与调用轨迹 fixture"
+    owner: plugin owner
+    role: domain-owner
+    dependencies: [WP-01, WP-02]
+    owned_files:
+      - packages/chimera/specs/rust-host/plugin/**
+      - packages/chimera/test/oracle/plugin/**
+    base_hash: 9600ee7f49ddcb065a33511f21f570d2b2d13a19
+    file_hashes: {}
+    contract_rev: cr-2026-10-30-r1
+    model: TBD
+    variant: auto
+    deliverables:
+      - packages/chimera/specs/rust-host/plugin/
+      - packages/chimera/test/oracle/plugin/
+    dod: "config/bootstrap、tool.definition、chat.params/headers、tool.before/after、auth refresh 六类各列顺序、可变性、取消、失败策略；≥1 条完整轨迹 replay；npm 单一 owner；不实现生产 sidecar"
+    oracle_commands: []
+    status: queued
+    attempt: 0
+    result_refs: []
+    approved_delta: []
+
+  - work_id: WP-10
+    scope: "控制面、mutation/MCP/job-family/retention 行为 fixture"
+    owner: control-plane owner
+    role: domain-owner
+    dependencies: [WP-02, WP-05, WP-09]
+    owned_files:
+      - packages/chimera/test/oracle/control/**
+      - packages/chimera/specs/rust-host/control/**
+    base_hash: 9600ee7f49ddcb065a33511f21f570d2b2d13a19
+    file_hashes: {}
+    contract_rev: cr-2026-10-30-r1
+    model: TBD
+    variant: auto
+    deliverables:
+      - packages/chimera/test/oracle/control/
+      - packages/chimera/specs/rust-host/control/
+    dod: "343/343 语义点每个有 owner + fixture（已有/待补/不适用），不允许空 owner；覆盖 config/bootstrap/skills/instructions/workbrief/goal/prompt assembly/tool_search/compaction/mutation 链/MCP 三 transport/job family/retention；新增能力与已知差异单列"
+    oracle_commands: []
+    status: queued
+    attempt: 0
+    result_refs: []
+    approved_delta: []
