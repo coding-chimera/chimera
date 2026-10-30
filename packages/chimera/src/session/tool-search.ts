@@ -18,6 +18,7 @@ import DESC_BROWSER_CLICK from "@/tool/browser_click.txt"
 import DESC_BROWSER_TYPE from "@/tool/browser_type.txt"
 import DESC_BROWSER_SCREENSHOT from "@/tool/browser_screenshot.txt"
 import DESC_BROWSER_CLOSE from "@/tool/browser_close.txt"
+import DESC_BROWSER_EVALUATE from "@/tool/browser_evaluate.txt"
 import DESC_LSP from "@/tool/lsp.txt"
 import DESC_SUBAGENT_ROUTES from "@/tool/subagent_model_routes.txt"
 import DESC_SUBAGENT_SCHEDULE from "@/tool/subagent_model_schedule.txt"
@@ -58,6 +59,11 @@ export const DEFERRED_TOOLS: readonly DeferredTool[] = [
   { id: "browser_type", summary: "Replace the value of a browser form control identified by a snapshot ref." },
   { id: "browser_screenshot", summary: "Capture a PNG screenshot of the current browser tab as visual evidence." },
   { id: "browser_close", summary: "Close a browser tab, or all browser state for the current agent session." },
+  {
+    id: "browser_evaluate",
+    summary:
+      "Evaluate arbitrary JavaScript (devtools-console style) in the current browser tab and return a JSON-serializable result.",
+  },
   {
     id: "lsp",
     summary:
@@ -112,6 +118,7 @@ export const DEFERRED_DESCRIPTIONS: Record<string, string> = {
   browser_type: DESC_BROWSER_TYPE,
   browser_screenshot: DESC_BROWSER_SCREENSHOT,
   browser_close: DESC_BROWSER_CLOSE,
+  browser_evaluate: DESC_BROWSER_EVALUATE,
   lsp: DESC_LSP,
   subagent_model_routes: DESC_SUBAGENT_ROUTES,
   subagent_model_schedule: DESC_SUBAGENT_SCHEDULE,

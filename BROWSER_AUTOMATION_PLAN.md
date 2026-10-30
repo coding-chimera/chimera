@@ -20,8 +20,9 @@
 - `browser_type`：向当前可见 snapshot ref 输入文本。
 - `browser_screenshot`：保存截图并以 `FilePart` attachment 返回。
 - `browser_close`：关闭 tab 或整个 browser session。
+- `browser_evaluate`：在页面上下文执行 agent 自构造的 JavaScript，返回 JSON 序列化结果；每次调用都按 origin 单独请求权限（不持久化 always 规则），输出按 untrusted 内容包装并截断，求值后所有 snapshot ref 失效。
 
-后续仅在有明确用例和权限边界时增加 `browser_select`、`browser_press`、`browser_wait`、`browser_console` 或 `browser_evaluate`。其中脚本求值必须保持独立且默认更严格，不能作为首批基础动作的隐式后门。
+后续仅在有明确用例和权限边界时增加 `browser_select`、`browser_press`、`browser_wait` 或 `browser_console`。脚本求值保持独立且默认更严格，不能作为基础动作的隐式后门。
 
 ### BrowserSnapshot
 
@@ -156,7 +157,7 @@ ref 只在同一 tab 的当前 snapshot generation 内有效。任何导航、�
 - `browser_open`：按规范化 origin/URL 请求导航权限。
 - `browser_snapshot`、`browser_click`、`browser_type`、`browser_screenshot`：按当前页面 origin 请求权限。
 - `browser_close`：按 browser session/tab 请求低风险清理权限。
-- 未来的 evaluate、upload、download 使用独立且更严格的 permission。
+- `browser_evaluate`：按当前页面 origin 请求独立 permission，且每次调用都重新请求（不持久化 always 规则）；未来的 upload、download 使用独立且更严格的 permission。
 
 安全规则：
 
@@ -236,6 +237,7 @@ ref 只在同一 tab 的当前 snapshot generation 内有效。任何导航、�
 - [x] 实现 `browser_type`。
 - [x] 实现 `browser_screenshot`。
 - [x] 实现 `browser_close`。
+- [x] 实现 `browser_evaluate`：页面上下文脚本求值、JSON 结果截断、JS 错误透传、按调用权限与 ref 失效。
 - [x] 在 ToolRegistry 注册工具和 BrowserRuntime layer。
 - [x] 增加 `.txt` 工具描述、browser workflow 高显著性指引和 permission defaults。
 - [x] 测试 schema、按 origin permission pattern、stale ref、attachments、truncation 与 registry 可见性。
@@ -322,6 +324,8 @@ packages/chimera/src/tool/browser_screenshot.ts
 packages/chimera/src/tool/browser_screenshot.txt
 packages/chimera/src/tool/browser_close.ts
 packages/chimera/src/tool/browser_close.txt
+packages/chimera/src/tool/browser_evaluate.ts
+packages/chimera/src/tool/browser_evaluate.txt
 packages/chimera/test/browser/*.test.ts
 ```
 

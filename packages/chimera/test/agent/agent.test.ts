@@ -546,6 +546,7 @@ test("browser tools ask for permission by default", async () => {
       expect(evalPerm(build, "browser_type")).toBe("ask")
       expect(evalPerm(build, "browser_screenshot")).toBe("ask")
       expect(evalPerm(build, "browser_close")).toBe("ask")
+      expect(evalPerm(build, "browser_evaluate")).toBe("ask")
     },
   })
 })

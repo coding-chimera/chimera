@@ -35,6 +35,9 @@ class FakePage implements BrowserRuntime.PageLike {
   closed = false
   crashed = false
   readonly locatorState = new Map<string, FakeLocator>()
+  readonly expressions: string[] = []
+  evaluation: unknown = undefined
+  evaluateError: Error | undefined
   private readonly listeners = new Map<"close" | "crash", Array<() => void>>()
   readonly nodes: readonly BrowserSnapshot.Node[] = [
     {
@@ -93,8 +96,10 @@ class FakePage implements BrowserRuntime.PageLike {
     return next
   }
 
-  async evaluate<A>() {
-    return this.nodes as A
+  async evaluate<A>(expression: string) {
+    this.expressions.push(expression)
+    if (this.evaluateError) throw this.evaluateError
+    return (this.evaluation === undefined ? this.nodes : this.evaluation) as A
   }
 
   private emit(event: "close" | "crash") {
@@ -426,6 +431,77 @@ describe("browser.runtime", () => {
             expect(snapshot.tabID).toBe(healthy.id)
             expect(snapshot.text).toContain("[ref=g1e1]")
             expect(dead.id).not.toBe(current.id)
+          }),
+        ),
+      )
+    }),
+  )
+
+  it.live("evaluates page scripts, returns the value, and invalidates refs", () =>
+    Effect.gen(function* () {
+      const runtime = yield* BrowserRuntime.Service
+      resetDriver()
+      yield* Effect.scoped(
+        provideTmpdirInstance(() =>
+          Effect.gen(function* () {
+            const opened = yield* runtime.open({
+              sessionID: "evaluate-session",
+              launch: { cdpUrl: "http://browser.test" },
+            })
+            const page = driver.browsers.at(-1)!.contexts[0]!.pages[0]!
+            const snapshot = yield* runtime.snapshot({ sessionID: "evaluate-session", tabID: opened.id })
+            expect(snapshot.refs.size).toBe(1)
+
+            page.evaluation = { answer: 42 }
+            const result = yield* runtime.evaluate({
+              sessionID: "evaluate-session",
+              tabID: opened.id,
+              script: "({ answer: 42 })",
+            })
+
+            expect(page.expressions).toContain("({ answer: 42 })")
+            expect(result).toMatchObject({
+              tabID: opened.id,
+              value: { answer: 42 },
+              url: "about:blank",
+              title: "Fake App",
+              generation: 2,
+            })
+            const stale = yield* runtime
+              .click({ sessionID: "evaluate-session", tabID: opened.id, ref: "g1e1" })
+              .pipe(Effect.flip)
+            expect(stale.message).toContain("Unknown or stale browser ref")
+          }),
+        ),
+      )
+    }),
+  )
+
+  it.live("invalidates refs even when a page script throws", () =>
+    Effect.gen(function* () {
+      const runtime = yield* BrowserRuntime.Service
+      resetDriver()
+      yield* Effect.scoped(
+        provideTmpdirInstance(() =>
+          Effect.gen(function* () {
+            const opened = yield* runtime.open({
+              sessionID: "evaluate-error-session",
+              launch: { cdpUrl: "http://browser.test" },
+            })
+            const page = driver.browsers.at(-1)!.contexts[0]!.pages[0]!
+            yield* runtime.snapshot({ sessionID: "evaluate-error-session", tabID: opened.id })
+            page.evaluateError = new Error("Error: boom\n    at <anonymous>:1:7")
+
+            const failure = yield* runtime
+              .evaluate({ sessionID: "evaluate-error-session", tabID: opened.id, script: "throw new Error('boom')" })
+              .pipe(Effect.flip)
+            expect(failure.operation).toBe("evaluate browser script")
+            expect(failure.message).toContain("at <anonymous>:1:7")
+
+            const stale = yield* runtime
+              .click({ sessionID: "evaluate-error-session", tabID: opened.id, ref: "g1e1" })
+              .pipe(Effect.flip)
+            expect(stale.message).toContain("Unknown or stale browser ref")
           }),
         ),
       )

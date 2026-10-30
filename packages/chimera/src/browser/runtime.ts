@@ -55,6 +55,14 @@ export interface SnapshotResult extends BrowserSnapshot.Result {
   readonly title: string
 }
 
+export interface EvaluateResult {
+  readonly tabID: string
+  readonly value: unknown
+  readonly url: string
+  readonly title: string
+  readonly generation: number
+}
+
 export interface ScreenshotResult {
   readonly artifact: BrowserArtifact.Artifact
   readonly attachment: BrowserArtifact.Attachment
@@ -120,6 +128,7 @@ export interface Interface {
   readonly snapshot: (
     input: TabInput & { readonly options?: BrowserSnapshot.Options },
   ) => Effect.Effect<SnapshotResult, RuntimeError>
+  readonly evaluate: (input: TabInput & { readonly script: string }) => Effect.Effect<EvaluateResult, RuntimeError>
   readonly click: (input: RefInput) => Effect.Effect<void, RuntimeError>
   readonly type: (input: RefInput & { readonly text: string }) => Effect.Effect<void, RuntimeError>
   readonly screenshot: (
@@ -496,6 +505,23 @@ export const layerWith = (driver: Driver) =>
                 tabID: resolved.tab.id,
                 generation: resolved.tab.generation,
                 title: yield* attempt("read browser title", () => resolved.tab.page.title()),
+              }
+            }),
+          )
+        }),
+        evaluate: Effect.fn("BrowserRuntime.evaluate")(function* (input: TabInput & { readonly script: string }) {
+          return yield* InstanceState.useEffect(state, (current) =>
+            Effect.gen(function* () {
+              const resolved = yield* getTab(current, input)
+              const value = yield* attempt("evaluate browser script", () =>
+                resolved.tab.page.evaluate<unknown>(input.script),
+              ).pipe(Effect.ensuring(Effect.sync(() => invalidate(resolved.tab))))
+              return {
+                tabID: resolved.tab.id,
+                value,
+                url: resolved.tab.page.url(),
+                title: yield* attempt("read browser title", () => resolved.tab.page.title()),
+                generation: resolved.tab.generation,
               }
             }),
           )

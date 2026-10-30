@@ -69,10 +69,11 @@ describe("session.tool-search", () => {
     Effect.gen(function* () {
       const toolSearch = yield* ToolSearch.Service
       const matches = toolSearch.search({ query: "browser", limit: 11, candidates })
-      expect(matches.length).toBe(6)
+      expect(matches.length).toBe(7)
       expect(matches.map((match) => match.id).toSorted()).toEqual([
         "browser_click",
         "browser_close",
+        "browser_evaluate",
         "browser_open",
         "browser_screenshot",
         "browser_snapshot",
@@ -140,7 +141,7 @@ describe("session.tool-search", () => {
       // flow-entry tools stay always-exposed (85-call entry, closeout evidence)
       expect(toolSearch.isDeferred("chimera_obligations_list")).toBe(false)
       expect(toolSearch.isDeferred("chimera_audit_recent")).toBe(false)
-      expect(ToolSearch.DEFERRED_TOOL_IDS.size).toBe(17)
+      expect(ToolSearch.DEFERRED_TOOL_IDS.size).toBe(18)
     }),
   )
 

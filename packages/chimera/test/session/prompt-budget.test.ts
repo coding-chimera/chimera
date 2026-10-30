@@ -20,7 +20,7 @@ import { ToolSearch } from "../../src/session/tool-search"
 const BASELINE = {
   generic: 25888,
   deepseek: 28528,
-  deepseekUltra: 32876, // 2026-10-28 re-record (orchestrate-default prompt rewrite)
+  deepseekUltra: 33194, // 2026-10-30 re-record (browser_evaluate prompt guidance)
   kimi: 27905,
   gpt55: 30900,
   claude: 30008,
@@ -99,15 +99,19 @@ const TOOL_BUDGETS = {
 // (110187 measured vs 109718 recorded) plus later HEAD growth (110952 at this
 // recording), per the concurrency-note convention above. Total floor
 // 109718 -> 113526.
-const TOOL_TOTAL_BUDGET = 113526
+// 2026-10-30 re-record (browser_evaluate): browser_evaluate.txt (1,085 B) joins
+// the deferred set, tool_search.txt grows by 39 B, and the browser workflow
+// prompt gains the evaluate escape hatch. Floor 113526 -> 114668;
+// DEFERRED_TXT_BUDGET 15028 -> 16131; TOOL_SEARCH_TXT_BUDGET 2030 -> 2069.
+const TOOL_TOTAL_BUDGET = 114668
 
 // The description bytes withheld from the default model-facing set by the
 // ToolSearch defer filter: every registered deferred tool's .txt is off the
 // wire until revealed, so the per-request description cost drops below the
 // full-registration floor recorded above.
-const DEFERRED_TXT_BUDGET = 15028
+const DEFERRED_TXT_BUDGET = 16131
 
-const TOOL_SEARCH_TXT_BUDGET = 2030
+const TOOL_SEARCH_TXT_BUDGET = 2069
 
 const CAPABILITY_TOOLS = { chimera_search: {}, workbrief: {}, browser_open: {}, read: {}, bash: {} }
 

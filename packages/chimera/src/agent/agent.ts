@@ -106,6 +106,7 @@ export const layer = Layer.effect(
           browser_type: "ask",
           browser_screenshot: "ask",
           browser_close: "ask",
+          browser_evaluate: "ask",
           external_directory: {
             "*": "ask",
             ...Object.fromEntries(whitelistedDirs.map((dir) => [dir, "allow"])),

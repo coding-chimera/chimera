@@ -130,6 +130,7 @@ describe("tool.registry", () => {
       expect(ids).toContain("browser_type")
       expect(ids).toContain("browser_screenshot")
       expect(ids).toContain("browser_close")
+      expect(ids).toContain("browser_evaluate")
       expect(ids).toContain("subagent_model_routes")
       expect(ids).toContain("subagent_model_schedule")
       expect(ids).toContain("subagent_model_prefer")

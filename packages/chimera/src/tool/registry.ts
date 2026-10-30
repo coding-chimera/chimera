@@ -23,6 +23,7 @@ import { BrowserClickTool } from "./browser_click"
 import { BrowserTypeTool } from "./browser_type"
 import { BrowserScreenshotTool } from "./browser_screenshot"
 import { BrowserCloseTool } from "./browser_close"
+import { BrowserEvaluateTool } from "./browser_evaluate"
 import { WriteTool } from "./write"
 import { AstEditTool } from "./ast_edit"
 import { WorkBriefTool } from "./workbrief"
@@ -168,6 +169,7 @@ export const layer = Layer.effect(
     const browserType = yield* BrowserTypeTool
     const browserScreenshot = yield* BrowserScreenshotTool
     const browserClose = yield* BrowserCloseTool
+    const browserEvaluate = yield* BrowserEvaluateTool
     const shell = yield* ShellTool
     const globtool = yield* GlobTool
     const writetool = yield* WriteTool
@@ -319,6 +321,7 @@ export const layer = Layer.effect(
           browserType: Tool.init(browserType),
           browserScreenshot: Tool.init(browserScreenshot),
           browserClose: Tool.init(browserClose),
+          browserEvaluate: Tool.init(browserEvaluate),
           skill: Tool.init(skilltool),
           patch: Tool.init(patchtool),
           question: Tool.init(question),
@@ -384,6 +387,7 @@ export const layer = Layer.effect(
             tool.browserType,
             tool.browserScreenshot,
             tool.browserClose,
+            tool.browserEvaluate,
             tool.skill,
             tool.patch,
             tool.chimeraStatus,

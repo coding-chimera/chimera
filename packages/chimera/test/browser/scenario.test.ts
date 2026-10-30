@@ -124,6 +124,14 @@ function makeRuntime(options: {
       Effect.sync(() => {
         calls.type.push(input)
       }),
+    evaluate: () =>
+      Effect.succeed({
+        tabID: "tab-1",
+        value: undefined,
+        url: calls.open.at(-1)?.url ?? "https://example.com/app",
+        title: "Scenario",
+        generation: 1,
+      }),
     screenshot: () => {
       if (calls.closed)
         return Effect.fail(new BrowserRuntime.RuntimeError({ operation: "screenshot", message: "Browser session is closed" }))

@@ -21,6 +21,7 @@ import { BrowserOpenTool } from "@/tool/browser_open"
 import { BrowserScreenshotTool } from "@/tool/browser_screenshot"
 import { BrowserSnapshotTool } from "@/tool/browser_snapshot"
 import { BrowserTypeTool } from "@/tool/browser_type"
+import { BrowserEvaluateTool } from "@/tool/browser_evaluate"
 import type { Tool } from "@/tool/tool"
 import { Truncate } from "@/tool/truncate"
 import { WithInstance } from "@/project/with-instance"
@@ -78,6 +79,14 @@ function fakeRuntime(overrides: Partial<BrowserRuntime.Interface> = {}): Browser
       }),
     click: () => Effect.void,
     type: () => Effect.void,
+    evaluate: () =>
+      Effect.succeed({
+        tabID: tab.id,
+        value: { title: "Example" },
+        url: tab.url,
+        title: tab.title,
+        generation: 2,
+      }),
 screenshot: () =>
 Effect.succeed({
 artifact: {
@@ -286,6 +295,105 @@ describe("browser tools", () => {
     expect(result.output).toContain("Relaunched the browser in headed mode")
     expect(result.output).toContain("previous browser tabs were closed")
     expect(result.output).toContain("Run browser_snapshot before interacting")
+  })
+
+  test("browser_evaluate asks per call and returns untrusted JSON without echoing the script", async () => {
+    const asks: Ask[] = []
+    const runtime = fakeRuntime({
+      evaluate: (input) =>
+        Effect.sync(() => {
+          expect(input.script).toBe("({ title: document.title })")
+          return { tabID: tab.id, value: { title: "Example" }, url: tab.url, title: tab.title, generation: 2 }
+        }),
+    })
+    const result = await run(
+      BrowserEvaluateTool.pipe(
+        Effect.flatMap((info) => info.init()),
+        Effect.flatMap((tool) => tool.execute({ script: "({ title: document.title })" }, context(asks))),
+      ),
+      runtime,
+    )
+
+    expect(asks[0]?.permission).toBe("browser_evaluate")
+    expect(asks[0]?.patterns).toEqual(["https://example.com"])
+    expect(asks[0]?.always).toEqual([])
+    expect(JSON.stringify(asks[0])).not.toContain("document.title")
+    expect(result.output).toStartWith("[UNTRUSTED BROWSER CONTENT]")
+    expect(result.output).toContain('"title": "Example"')
+    expect(result.output).toContain("run browser_snapshot again")
+    expect(result.metadata).toMatchObject({
+      tabID: tab.id,
+      origin: "https://example.com",
+      untrusted: true,
+      refsInvalidated: true,
+      truncated: false,
+    })
+  })
+
+  test("browser_evaluate truncates large results with a note", async () => {
+    const asks: Ask[] = []
+    const runtime = fakeRuntime({
+      evaluate: () =>
+        Effect.succeed({
+          tabID: tab.id,
+          value: { body: "x".repeat(5_000) },
+          url: tab.url,
+          title: tab.title,
+          generation: 2,
+        }),
+    })
+    const result = await run(
+      BrowserEvaluateTool.pipe(
+        Effect.flatMap((info) => info.init()),
+        Effect.flatMap((tool) => tool.execute({ script: "document.body.innerText" }, context(asks))),
+      ),
+      runtime,
+    )
+
+    expect(result.metadata.truncated).toBe(true)
+    expect(result.output).toContain("[truncated:")
+    expect(result.output.length).toBeLessThan(4_500)
+  })
+
+  test("browser_evaluate surfaces page script errors with the page stack", async () => {
+    const asks: Ask[] = []
+    const runtime = fakeRuntime({
+      evaluate: () =>
+        Effect.fail(
+          new BrowserRuntime.RuntimeError({
+            operation: "evaluate browser script",
+            message: "Error: boom\n    at <anonymous>:1:7",
+          }),
+        ),
+    })
+
+    await expect(
+      run(
+        BrowserEvaluateTool.pipe(
+          Effect.flatMap((info) => info.init()),
+          Effect.flatMap((tool) => tool.execute({ script: "throw new Error('boom')" }, context(asks))),
+        ),
+        runtime,
+      ),
+    ).rejects.toThrow(/boom[\s\S]*at <anonymous>:1:7/)
+    expect(asks[0]?.permission).toBe("browser_evaluate")
+  })
+
+  test("browser_evaluate returns primitive results as-is", async () => {
+    const asks: Ask[] = []
+    const runtime = fakeRuntime({
+      evaluate: () =>
+        Effect.succeed({ tabID: tab.id, value: 42, url: tab.url, title: tab.title, generation: 2 }),
+    })
+    const result = await run(
+      BrowserEvaluateTool.pipe(
+        Effect.flatMap((info) => info.init()),
+        Effect.flatMap((tool) => tool.execute({ script: "6 * 7" }, context(asks))),
+      ),
+      runtime,
+    )
+
+    expect(result.output).toContain("\n42\n")
   })
 })
 
